@@ -1,0 +1,2 @@
+# No external Python dependencies required.
+# ComfyUI core provides all necessary APIs.

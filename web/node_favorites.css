@@ -1,0 +1,488 @@
+#node-favorites-panel {
+    position: fixed;
+    top: 100px;
+    right: 10px;
+    width: 450px;
+    background: rgba(30, 30, 30, 0.95);
+    border: 1px solid #444;
+    border-radius: 8px;
+    color: #ddd;
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+    z-index: 1000;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    user-select: none;
+}
+
+.nf-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: rgba(50, 50, 50, 0.8);
+    border-bottom: 1px solid #444;
+    border-radius: 8px 8px 0 0;
+    cursor: move;
+}
+
+.nf-title {
+    font-weight: bold;
+    font-size: 14px;
+}
+
+.nf-toggle-btn {
+    background: transparent;
+    border: 1px solid #666;
+    color: #ddd;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nf-toggle-btn:hover {
+    background: #555;
+    border-color: #888;
+}
+
+.nf-content {
+    padding: 10px;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.nf-search-box {
+    margin-bottom: 10px;
+}
+
+#nf-search-input {
+    width: 100%;
+    padding: 8px 10px;
+    background: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #ddd;
+    font-size: 13px;
+    box-sizing: border-box;
+}
+
+#nf-search-input:focus {
+    outline: none;
+    border-color: #4CAF50;
+}
+
+.nf-categories {
+    margin-bottom: 12px;
+}
+
+.nf-categories-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-weight: bold;
+    color: #aaa;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.nf-add-cat-btn {
+    background: #3a3a3a;
+    border: 1px solid #555;
+    color: #aaa;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nf-add-cat-btn:hover {
+    background: #4CAF50;
+    color: #fff;
+    border-color: #4CAF50;
+}
+
+.nf-category-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.nf-category-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    gap: 8px;
+}
+
+.nf-category-item:hover {
+    background: #333;
+    border-color: #555;
+}
+
+.nf-category-item.active {
+    background: rgba(76, 175, 80, 0.2);
+    border-color: #4CAF50;
+}
+
+.nf-cat-color {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.nf-cat-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nf-cat-count {
+    background: #444;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 11px;
+    color: #aaa;
+}
+
+.nf-cat-edit-btn,
+.nf-cat-del-btn {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.nf-category-item:hover .nf-cat-edit-btn,
+.nf-category-item:hover .nf-cat-del-btn {
+    opacity: 1;
+}
+
+.nf-cat-edit-btn:hover {
+    background: #2196F3;
+    color: #fff;
+}
+
+.nf-cat-del-btn:hover {
+    background: #f44336;
+    color: #fff;
+}
+
+.nf-favorites-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0 8px 0;
+    font-weight: bold;
+    color: #aaa;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.nf-count {
+    background: #444;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+}
+
+.nf-favorites-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.nf-fav-item {
+    display: flex;
+    align-items: center;
+    padding: 8px;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    gap: 8px;
+}
+
+.nf-fav-item:hover {
+    background: #333;
+    border-color: #4CAF50;
+    transform: translateX(-2px);
+}
+
+.nf-fav-color {
+    width: 4px;
+    height: 32px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.nf-fav-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.nf-fav-name {
+    font-weight: bold;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nf-fav-type {
+    font-size: 11px;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nf-fav-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.nf-fav-del-btn {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 16px;
+    line-height: 1;
+    opacity: 0;
+    transition: all 0.2s;
+}
+
+.nf-fav-item:hover .nf-fav-del-btn {
+    opacity: 1;
+}
+
+.nf-fav-del-btn:hover {
+    background: #f44336;
+    color: #fff;
+}
+
+.nf-empty-tip {
+    text-align: center;
+    padding: 30px 10px;
+    color: #666;
+    font-size: 12px;
+    line-height: 1.8;
+}
+
+.nf-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.nf-content::-webkit-scrollbar-track {
+    background: #1e1e1e;
+}
+
+.nf-content::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+.nf-content::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+.nf-dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+
+.nf-dialog {
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    min-width: 300px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.nf-dialog-title {
+    padding: 12px 16px;
+    border-bottom: 1px solid #444;
+    font-weight: bold;
+    color: #ddd;
+}
+
+.nf-dialog-body {
+    padding: 16px;
+    color: #ccc;
+}
+
+.nf-dialog-body label {
+    display: block;
+    margin-bottom: 8px;
+}
+
+.nf-dialog-body select {
+    width: 100%;
+    padding: 8px;
+    background: #1e1e1e;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #ddd;
+    font-size: 13px;
+}
+
+.nf-dialog-body select:focus {
+    outline: none;
+    border-color: #4CAF50;
+}
+
+.nf-dialog-footer {
+    padding: 12px 16px;
+    border-top: 1px solid #444;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.nf-btn {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+
+.nf-btn-cancel {
+    background: #444;
+    color: #ddd;
+}
+
+.nf-btn-cancel:hover {
+    background: #555;
+}
+
+.nf-btn-ok {
+    background: #4CAF50;
+    color: #fff;
+}
+
+.nf-btn-ok:hover {
+    background: #45a049;
+}
+
+.litemenu-entry[data-content="收藏节点"],
+.litemenu-entry[data-content="取消收藏"] {
+    color: #4CAF50;
+}
+
+.xz-note-dialog input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #a0d8f0;
+    cursor: pointer;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.xz-note-dialog input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #a0d8f0;
+    cursor: pointer;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.xz-note-dialog input[type="color"] {
+    -webkit-appearance: none;
+    appearance: none;
+    border: none;
+    padding: 0;
+}
+
+.xz-note-dialog input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.xz-note-dialog input[type="color"]::-webkit-color-swatch {
+    border: 1px solid #555;
+    border-radius: 3px;
+}
+
+.xz-note-dialog input[type="color"]:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.xz-note-dialog input[type="range"]:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.xz-note-dialog input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: #4CAF50;
+}
+
+#node-favorites-panel::before {
+    content: "";
+    position: absolute;
+    left: -6px;
+    top: 0;
+    bottom: 0;
+    width: 12px;
+    cursor: ew-resize;
+    z-index: 1001;
+    border-radius: 6px 0 0 6px;
+}
+#node-favorites-panel::before:hover {
+    background: rgba(76, 175, 80, 0.4);
+}
+#node-favorites-panel:hover::before {
+    background: rgba(76, 175, 80, 0.2);
+}
+
+/* 小珠光选择器节点样式 */
+.xz-selector-container {
+    min-width: 190px;
+    overflow: visible !important;
+    padding: 1px 2px !important;
+}
+
+.xz-selector-container .xz-btn-container {
+    overflow: visible !important;
+}
