@@ -394,7 +394,6 @@ const XZGGroup = {
         if (!graph?._nodes) return;
         if (!bounds) return;
 
-        // 找到超过一半面积被当前编组覆盖的子编组，它们的节点由子编组自行管理
         const childGroupIds = new Set();
         for (const [otherGid, otherG] of Object.entries(this.groups)) {
             if (otherGid === group.id) continue;
@@ -408,20 +407,17 @@ const XZGGroup = {
         const inBounds = new Set();
         const inBoundsNodes = [];
 
-        // 扫描所有节点
         graph._nodes.forEach(n => {
-            if (!n?.pos) return;
+            if (!n?.pos || typeof n.pos[0] !== 'number' || typeof n.pos[1] !== 'number') return;
             const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
+            if (typeof nw !== 'number' || typeof nh !== 'number') return;
             const cx = n.pos[0] + nw / 2, cy = n.pos[1] + nh / 2;
             if (cx >= bounds.x && cx <= bounds.x + bounds.w && cy >= bounds.y && cy <= bounds.y + bounds.h) {
-                // 子编组内的节点不抢到大编组
                 if (n._xzgGroupId && this._idInSet(childGroupIds, n._xzgGroupId)) return;
 
                 inBounds.add(n.id);
                 inBoundsNodes.push(n);
-                // 自动加入
                 if (!this._idInArray(group.nodeIds, n.id)) {
-                    // 从旧组移除（清理旧数据）
                     if (n._xzgGroupId && this.groups[n._xzgGroupId] && !this._idEq(n._xzgGroupId, group.id)) {
                         const old = this.groups[n._xzgGroupId];
                         old.nodeIds = old.nodeIds.filter(id => !this._idEq(id, n.id));
@@ -432,7 +428,17 @@ const XZGGroup = {
             }
         });
 
-        // 释出脱离的节点
+        const prevCount = group.nodeIds.length;
+        const newCount = inBounds.size;
+
+        if (prevCount > 0 && newCount === 0) {
+            return;
+        }
+
+        if (prevCount > 0 && newCount < prevCount * 0.3) {
+            return;
+        }
+
         group.nodeIds = group.nodeIds.filter(nid => {
             if (!this._idInSet(inBounds, nid)) {
                 const n = graph._nodes.find(x => this._idEq(x.id, nid));
@@ -1492,23 +1498,10 @@ const XZGGroup = {
                 const s = LG.LGraph.prototype.serialize;
                 if (s) {
                     LG.LGraph.prototype.serialize = function() {
-                        // 写入节点数据
-                        for (const [id, g] of Object.entries(self.groups)) {
-                            const groupData = { id: g.id, title: g.title, nodeIds: g.nodeIds, bypassed: g.bypassed, bounds: g.bounds, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
-                            for (const nid of g.nodeIds) {
-                                const n = this._nodes?.find(x => x.id === nid || x.id == nid);
-                                if (n) {
-                                    n.properties = n.properties || {};
-                                    n.properties._xzgGroup = JSON.parse(JSON.stringify(groupData));
-                                    n._xzgGroupData = JSON.parse(JSON.stringify(groupData));
-                                    n._xzgGroupId = g.id;
-                                }
-                            }
-                        }
                         const d = s.apply(this, arguments);
                         const gd = {};
                         for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: g.nodeIds, bypassed: g.bypassed, bounds: g.bounds, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
                         }
                         if (Object.keys(gd).length) {
                             console.log('[小珠光编组] LGraph.serialize写入编组数据:', Object.keys(gd).length, '个');
@@ -1516,6 +1509,24 @@ const XZGGroup = {
                         }
                         d.extra = d.extra || {};
                         d.extra.xzgGroups = gd;
+
+                        if (d.nodes && d.nodes.length) {
+                            const nodeGroupMap = {};
+                            for (const [gid, g] of Object.entries(self.groups)) {
+                                const groupData = gd[gid];
+                                for (const nid of g.nodeIds) {
+                                    nodeGroupMap[nid] = { groupId: gid, groupData: groupData };
+                                }
+                            }
+                            for (const nd of d.nodes) {
+                                const nid = nd.id;
+                                const match = nodeGroupMap[nid] || Object.entries(nodeGroupMap).find(([k]) => k == nid)?.[1];
+                                if (match) {
+                                    nd._xzgGroupId = match.groupId;
+                                    nd._xzgGroup = JSON.parse(JSON.stringify(match.groupData));
+                                }
+                            }
+                        }
                         return d;
                     };
                 }
