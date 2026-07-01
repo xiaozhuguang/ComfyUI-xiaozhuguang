@@ -373,6 +373,21 @@ const XZGGroup = {
         }
     },
 
+    _idEq(a, b) {
+        return a === b || a == b;
+    },
+
+    _idInArray(arr, id) {
+        return arr.some(x => this._idEq(x, id));
+    },
+
+    _idInSet(set, id) {
+        for (const v of set) {
+            if (this._idEq(v, id)) return true;
+        }
+        return false;
+    },
+
     /* ── 自动收纳/释放节点 ── */
     syncNodeMembership(group, bounds) {
         const graph = app?.graph;
@@ -391,6 +406,7 @@ const XZGGroup = {
         }
 
         const inBounds = new Set();
+        const inBoundsNodes = [];
 
         // 扫描所有节点
         graph._nodes.forEach(n => {
@@ -399,15 +415,16 @@ const XZGGroup = {
             const cx = n.pos[0] + nw / 2, cy = n.pos[1] + nh / 2;
             if (cx >= bounds.x && cx <= bounds.x + bounds.w && cy >= bounds.y && cy <= bounds.y + bounds.h) {
                 // 子编组内的节点不抢到大编组
-                if (n._xzgGroupId && childGroupIds.has(n._xzgGroupId)) return;
+                if (n._xzgGroupId && this._idInSet(childGroupIds, n._xzgGroupId)) return;
 
                 inBounds.add(n.id);
+                inBoundsNodes.push(n);
                 // 自动加入
-                if (!group.nodeIds.includes(n.id)) {
+                if (!this._idInArray(group.nodeIds, n.id)) {
                     // 从旧组移除（清理旧数据）
-                    if (n._xzgGroupId && this.groups[n._xzgGroupId] && n._xzgGroupId !== group.id) {
+                    if (n._xzgGroupId && this.groups[n._xzgGroupId] && !this._idEq(n._xzgGroupId, group.id)) {
                         const old = this.groups[n._xzgGroupId];
-                        old.nodeIds = old.nodeIds.filter(id => id !== n.id && id != n.id);
+                        old.nodeIds = old.nodeIds.filter(id => !this._idEq(id, n.id));
                     }
                     group.nodeIds.push(n.id);
                     n._xzgGroupId = group.id;
@@ -417,8 +434,8 @@ const XZGGroup = {
 
         // 释出脱离的节点
         group.nodeIds = group.nodeIds.filter(nid => {
-            if (!inBounds.has(nid)) {
-                const n = graph._nodes.find(x => x.id === nid || x.id == nid);
+            if (!this._idInSet(inBounds, nid)) {
+                const n = graph._nodes.find(x => this._idEq(x.id, nid));
                 if (n) this._clearNodeGroupData(n);
                 return false;
             }
@@ -466,9 +483,10 @@ const XZGGroup = {
         }
 
         // 新编组只收纳未被任何子编组包含的选中节点
+        const self = this;
         const directNodeIds = nids.filter(nid => {
-            const n = sel.find(x => x.id === nid || x.id == nid);
-            return !(n._xzgGroupId && childGroupIds.has(n._xzgGroupId));
+            const n = sel.find(x => self._idEq(x.id, nid));
+            return !(n._xzgGroupId && self._idInSet(childGroupIds, n._xzgGroupId));
         });
 
         // 计算新编组将控制的所有节点（直接节点 + 子编组节点）
@@ -1166,21 +1184,22 @@ const XZGGroup = {
         // 当前编组：收集在框体内且不属于子编组的节点
         const nodeStarts = [];
         const idsInBounds = new Set();
+        const self = this;
         graph._nodes.forEach(n => {
             if (!n?.pos) return;
             const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
             const cx = n.pos[0] + nw / 2, cy = n.pos[1] + nh / 2;
             if (cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h) {
                 // 子编组节点由子编组自行管理，不归入当前编组
-                if (n._xzgGroupId && childGroupIds.has(n._xzgGroupId)) return;
+                if (n._xzgGroupId && self._idInSet(childGroupIds, n._xzgGroupId)) return;
 
                 nodeStarts.push({ node: n, x: n.pos[0], y: n.pos[1] });
                 idsInBounds.add(n.id);
                 // 自动加入当前编组
-                if (!n._xzgGroupId || n._xzgGroupId !== gid) {
-                    if (n._xzgGroupId && this.groups[n._xzgGroupId]) {
-                        const old = this.groups[n._xzgGroupId];
-                        old.nodeIds = old.nodeIds.filter(id => id !== n.id || id != n.id);
+                if (!n._xzgGroupId || !self._idEq(n._xzgGroupId, gid)) {
+                    if (n._xzgGroupId && self.groups[n._xzgGroupId]) {
+                        const old = self.groups[n._xzgGroupId];
+                        old.nodeIds = old.nodeIds.filter(id => !self._idEq(id, n.id));
                     }
                     n._xzgGroupId = gid;
                 }
@@ -1454,14 +1473,16 @@ const XZGGroup = {
                 if (c) {
                     LG.LGraphNode.prototype.configure = function(d) {
                         c.apply(this, arguments);
-                        if (d?._xzgGroupId) {
-                            this._xzgGroupId = d._xzgGroupId;
-                            this._xzgGroupData = d._xzgGroup || null;
-                        } else {
-                            this._xzgGroupId = null;
-                            this._xzgGroupData = null;
+                        if (d?._xzgGroupId !== undefined) {
+                            if (d._xzgGroupId) {
+                                this._xzgGroupId = d._xzgGroupId;
+                                this._xzgGroupData = d._xzgGroup || null;
+                            } else {
+                                this._xzgGroupId = null;
+                                this._xzgGroupData = null;
+                            }
+                            self._needRestore = true;
                         }
-                        self._needRestore = true;
                     };
                 }
             } catch(e) {}
