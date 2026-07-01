@@ -1267,10 +1267,8 @@ const XZGGroup = {
             if (!hasEffect) el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${bo})`;
             el.style.background = 'transparent';
             if (refs.title) {
-                if (!hasEffect) {
+                if (!hasEffect || g.effect === 'marquee' || g.effect === 'marqueebreathe') {
                     refs.title.style.color = g.titleColor || '#FFD700';
-                } else if (g.effect === 'marquee' || g.effect === 'marqueebreathe') {
-                    refs.title.style.color = `hsla(${h},${s}%,${l}%,0.85)`;
                 }
             }
             if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
