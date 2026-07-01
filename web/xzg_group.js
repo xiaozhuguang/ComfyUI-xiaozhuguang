@@ -310,6 +310,13 @@ const XZGGroup = {
                 el.style.boxShadow = 'none';
                 if (refs.delBtn) refs.delBtn.style.color = `hsla(${h0},100%,65%,0.6)`;
                 if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h0},100%,65%,0.7)`);
+                if (refs.title) {
+                    refs.title.style.background = `linear-gradient(90deg, hsl(${h0},100%,65%), hsl(${(h0+60)%360},100%,65%), hsl(${(h0+120)%360},100%,65%), hsl(${(h0+180)%360},100%,65%), hsl(${(h0+240)%360},100%,65%), hsl(${(h0+300)%360},100%,65%), hsl(${h0},100%,65%))`;
+                    refs.title.style.webkitBackgroundClip = 'text';
+                    refs.title.style.webkitTextFillColor = 'transparent';
+                    refs.title.style.backgroundClip = 'text';
+                    refs.title.style.color = 'transparent';
+                }
                 break;
             }
             case 'marqueebreathe': {
@@ -325,6 +332,13 @@ const XZGGroup = {
                 const lv = 5 + wave * 60;
                 if (refs.delBtn) refs.delBtn.style.color = `hsla(${h0},100%,${lv}%,0.6)`;
                 if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h0},100%,${lv}%,0.7)`);
+                if (refs.title) {
+                    refs.title.style.background = `linear-gradient(90deg, hsl(${h0},100%,${lv}%), hsl(${(h0+60)%360},100%,${lv}%), hsl(${(h0+120)%360},100%,${lv}%), hsl(${(h0+180)%360},100%,${lv}%), hsl(${(h0+240)%360},100%,${lv}%), hsl(${(h0+300)%360},100%,${lv}%), hsl(${h0},100%,${lv}%))`;
+                    refs.title.style.webkitBackgroundClip = 'text';
+                    refs.title.style.webkitTextFillColor = 'transparent';
+                    refs.title.style.backgroundClip = 'text';
+                    refs.title.style.color = 'transparent';
+                }
                 break;
             }
             case 'glow': {
@@ -1267,7 +1281,7 @@ const XZGGroup = {
             if (!hasEffect) el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${bo})`;
             el.style.background = 'transparent';
             if (refs.title) {
-                if (!hasEffect || g.effect === 'marquee' || g.effect === 'marqueebreathe') {
+                if (!hasEffect) {
                     refs.title.style.color = g.titleColor || '#FFD700';
                 }
             }
