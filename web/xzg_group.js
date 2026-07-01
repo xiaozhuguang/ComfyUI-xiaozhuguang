@@ -198,6 +198,24 @@ const XZGGroup = {
         const ox = c.ds.offset[0] || 0;
         const oy = c.ds.offset[1] || 0;
 
+        if (Object.keys(this.groups).length === 0) {
+            const graph = app?.graph;
+            if (graph?._nodes?.length) {
+                let hasGroupData = false;
+                for (const n of graph._nodes) {
+                    if (n._xzgGroupId || n._xzgGroupData || n.properties?._xzgGroup) {
+                        hasGroupData = true;
+                        break;
+                    }
+                }
+                if (hasGroupData) {
+                    console.log('[小珠光编组] 检测到编组数据丢失，自动恢复');
+                    this._needRestore = true;
+                    this.restoreGroups();
+                }
+            }
+        }
+
         for (const [gid, g] of Object.entries(this.groups)) {
             const el = this.groupEls[gid];
             if (!el) continue;
@@ -1538,12 +1556,12 @@ const XZGGroup = {
                         const pendingFromTop = d?._xzgGroups || d?.extra?.xzgGroups || null;
                         if (pendingFromTop) console.log('[小珠光编组] LGraph.configure检测到编组数据:', Object.keys(pendingFromTop).length, '个');
                         c.apply(this, arguments);
+                        if (app?.graph !== this) return;
                         for (const gid of Object.keys(self.groups)) self.killGroup(gid);
                         self.groups = {};
                         self._needRestore = true;
                         self._pendingGroups = pendingFromTop;
-                        // 如果 graph 有节点且与 app.graph 一致，立即恢复
-                        if (app?.graph === this && app.graph._nodes?.length) {
+                        if (app.graph._nodes?.length) {
                             console.log('[小珠光编组] LGraph.configure立即恢复');
                             self.restoreGroups();
                         }
