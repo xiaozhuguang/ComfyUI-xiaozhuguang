@@ -2054,7 +2054,7 @@ class Xiaozhuguang {
             </div>
             <div style="border-top:1px solid #444;margin:4px 0;"></div>
             <div class="nf-cat-menu-item" data-action="delete" style="padding:8px 16px;cursor:pointer;color:#ddd;font-size:13px;display:flex;align-items:center;gap:8px;transition:background:0.15s;">
-                <span style="color:#f44336;">×</span> 删除工作流
+                <span style="color:#f44336;">×</span> 删除多节点收藏
             </div>
         `;
 
@@ -2073,7 +2073,7 @@ class Xiaozhuguang {
                         if (wf) { wf.useCount = 0; this.saveFavorites(); this.renderFavorites(); }
                     }
                 } else if (el.dataset.action === "delete") {
-                    if (confirm(`确定要删除工作流"${wfName}"吗？`)) {
+                    if (confirm(`确定要删除多节点收藏"${wfName}"吗？`)) {
                         this.removeFavoriteWorkflow(wfId);
                     }
                 }
