@@ -3914,8 +3914,6 @@ app.registerExtension({
                 this.properties = { ...DEFAULT_PROPS };
                 this.color = "#fff0";
                 this.bgcolor = "transparent";
-                this.title = "";
-                this.label = "";
                 this.isEditing = false;
                 this.editTextarea = null;
                 this._removed = false;
@@ -3927,8 +3925,7 @@ app.registerExtension({
                     if (this._removed) return;
                     applyNodeStyle(this, false);
                     attachVueDblClick(this);
-                    if (this.title) this.title = "";
-                    if (this.label) this.label = "";
+                    // 不清理title/label，保留名称供管理面板识别
                     if (++tries >= 20) return;
                     setTimeout(_tick, 100);
                 };
