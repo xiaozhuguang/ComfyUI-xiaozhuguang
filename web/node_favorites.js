@@ -99,7 +99,7 @@ class Xiaozhuguang {
     _loadPinyinLib() {
         if (window.pinyinPro) return;
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/pinyin-pro@3.26.0/dist/pinyin-pro.min.js';
+        script.src = 'https://unpkg.com/pinyin-pro';
         script.onload = () => {
             if (this.currentSearch) {
                 this.renderFavorites();
@@ -2264,7 +2264,7 @@ class Xiaozhuguang {
                 '实':'shi','容':'rong','宽':'kuan','密':'mi','对':'dui','导':'dao','小':'xiao','少':'shao',
                 '就':'jiu','层':'ceng','展':'zhan','工':'gong','左':'zuo','差':'cha','布':'bu','干':'gan',
                 '并':'bing','广':'guang','应':'ying','度':'du','建':'jian','开':'kai','式':'shi','强':'qiang',
-                '弹':'dan','归':'gui','当':'dang','形':'xing','影':'ying','微':'wei','心':'xin','态':'tai',
+                '弹':'dan','任':'ren','归':'gui','当':'dang','形':'xing','影':'ying','微':'wei','心':'xin','态':'tai',
                 '总':'zong','恢':'hui','恒':'heng','性':'xing','情':'qing','意':'yi','感':'gan','成':'cheng',
                 '截':'jie','手':'shou','打':'da','执':'zhi','扩':'kuo','扫':'sao','扭':'niu','批':'pi',
                 '找':'zhao','承':'cheng','投':'tou','抽':'chou','拆':'chai','拖':'tuo','拍':'pai','拉':'la',
