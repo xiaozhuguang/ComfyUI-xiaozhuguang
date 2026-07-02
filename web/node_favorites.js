@@ -2187,6 +2187,48 @@ class Xiaozhuguang {
         this.renderCategories();
     }
 
+    showRenameNodeDialog(nodeType) {
+        const node = this.favorites.nodes.find(n => n.type === nodeType);
+        if (!node) return;
+        const oldName = node.displayName || node.type;
+
+        const dialog = document.createElement("div");
+        dialog.className = "nf-dialog-overlay";
+        dialog.innerHTML = `
+            <div class="nf-dialog">
+                <div class="nf-dialog-title">重命名</div>
+                <div class="nf-dialog-body">
+                    <label>显示名称：</label>
+                    <input type="text" id="nf-node-rename-input" value="${oldName.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #555;border-radius:4px;color:#ddd;margin-bottom:10px;box-sizing:border-box;" />
+                </div>
+                <div class="nf-dialog-footer">
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(dialog);
+
+        const input = dialog.querySelector("#nf-node-rename-input");
+        input.focus();
+        input.select();
+
+        dialog.querySelector("#nf-dlg-cancel").addEventListener("click", () => dialog.remove());
+        dialog.querySelector("#nf-dlg-ok").addEventListener("click", () => {
+            const newName = input.value.trim();
+            if (!newName) { dialog.remove(); return; }
+            node.displayName = newName;
+            this.saveFavorites();
+            this.renderFavorites();
+            dialog.remove();
+        });
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") dialog.querySelector("#nf-dlg-ok").click();
+            if (e.key === "Escape") dialog.remove();
+        });
+        dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) dialog.remove(); });
+    }
+
     // ====== 拼音搜索支持 ======
 
     // 汉字 -> 拼音 映射（覆盖常见节点名称用字）
@@ -2659,7 +2701,7 @@ class Xiaozhuguang {
             const useCount = node.useCount || 0;
             const itemClass = `nf-fav-item${isValid ? '' : ' nf-invalid'}`;
             const titleText = isValid
-                ? "点击添加到画布中央 · 拖到分类上可移入该分类"
+                ? ""
                 : "节点已失效（插件可能已卸载）· 右键可删除";
             const nameText = isValid
                 ? node.displayName
@@ -2692,7 +2734,7 @@ class Xiaozhuguang {
                 const catColor = cat ? cat.color : "#888";
                 const useCount = wf.useCount || 0;
                 html += `
-                    <div class="nf-fav-item nf-wf-item" data-wf-id="${wf.id}" data-kind="workflow" draggable="false" title="点击添加到画布中央">
+                    <div class="nf-fav-item nf-wf-item" data-wf-id="${wf.id}" data-kind="workflow" draggable="false">
                         <div class="nf-fav-color" style="background: ${catColor};"></div>
                         <div class="nf-fav-info">
                             <div class="nf-fav-name">🔗 ${wf.name}</div>
