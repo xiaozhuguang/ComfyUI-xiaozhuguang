@@ -2187,10 +2187,10 @@ class Xiaozhuguang {
         this.renderCategories();
     }
 
-    showRenameNodeDialog(nodeType) {
+    showRenameNodeDialog(nodeType, currentName) {
         const node = this.favorites.nodes.find(n => n.type === nodeType);
         if (!node) return;
-        const oldName = node.displayName || node.type;
+        const oldName = currentName || node.displayName || node.type;
 
         const dialog = document.createElement("div");
         dialog.className = "nf-dialog-overlay";
@@ -2617,7 +2617,7 @@ class Xiaozhuguang {
                 e.stopPropagation();
                 menu.remove();
                 if (el.dataset.action === "rename") {
-                    this.showRenameNodeDialog(nodeType);
+                    this.showRenameNodeDialog(nodeType, nodeName);
                 } else if (el.dataset.action === "move") {
                     this.showMoveNodeCategoryDialog(nodeType);
                 } else if (el.dataset.action === "clear") {
