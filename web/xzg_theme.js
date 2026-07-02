@@ -25,7 +25,7 @@ window.XZGThemeManager = {
     border: 1px solid #444;
     border-radius: 8px;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-    font-family: Arial, sans-serif;
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;
     color: #ddd;
     display: none;
     overflow: hidden;
@@ -551,7 +551,7 @@ window.XZGThemeManager = {
     min-width: 280px;
     max-width: 90vw;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-    font-family: Arial, sans-serif;
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;
     color: #ddd;
 }
 
@@ -798,7 +798,7 @@ window.XZGThemeManager = {
                         const color = cfg.titleText || '#ffffff';
                         const align = cfg.textAlign || 'left';
                         ctx.save();
-                        ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+                        ctx.font = `bold ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.fillStyle = color;
                         ctx.textBaseline = 'middle';
                         

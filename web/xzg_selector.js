@@ -187,7 +187,7 @@ app.registerExtension({
                         // 文字
                         const label = getDisplayLabel(value, settings.labels);
                         ctx.fillStyle = settings.fontColor || "#aaa";
-                        ctx.font = `bold ${settings.fontSize}px Arial, sans-serif`;
+                        ctx.font = `bold ${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.textAlign = "center";
                         ctx.textBaseline = "middle";
                         ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);

@@ -871,7 +871,7 @@ function setupSlider(node) {
 
             /* ── 数值标签 ── */
             ctx.save();
-            const valFont = `${p.fontSize || 18}px 'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif`;
+            const valFont = `${p.fontSize || 18}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", "Segoe UI", Arial, sans-serif`;
             ctx.font = valFont;
             const valText = fmt(v, isInt);
             const valTextW = ctx.measureText(valText).width;

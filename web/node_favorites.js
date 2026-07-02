@@ -3768,6 +3768,7 @@ app.registerExtension({
                 bgColor: "#2a2a2a",
                 borderRadius: 8,
                 textAlign: "center",
+                letterSpacing: 0,
                 lineHeight: 1.4,
                 glowEnabled: false,
                 glowSize: 15,
@@ -4005,14 +4006,15 @@ app.registerExtension({
                 const ctx = cv ? cv.getContext("2d") : null;
                 let maxWidth = 0;
                 if (ctx) {
-                    ctx.font = `normal ${fontSize}px Arial, sans-serif`;
+                    ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                    ctx.letterSpacing = `${p.letterSpacing || 0}px`;
                     lines.forEach(line => {
                         const w = ctx.measureText(line).width;
                         if (w > maxWidth) maxWidth = w;
                     });
                 } else {
                     lines.forEach(line => {
-                        const w = fontSize * line.length * 0.6;
+                        const w = fontSize * line.length * 0.6 + (line.length - 1) * (p.letterSpacing || 0);
                         if (w > maxWidth) maxWidth = w;
                     });
                 }
@@ -4054,7 +4056,8 @@ app.registerExtension({
 
                 let maxWidth = 0;
                 if (ctx) {
-                    ctx.font = `normal ${fontSize}px Arial, sans-serif`;
+                    ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                    ctx.letterSpacing = `${p.letterSpacing || 0}px`;
                     lines.forEach(line => {
                         const w = ctx.measureText(line).width;
                         if (w > maxWidth) maxWidth = w;
@@ -4105,7 +4108,8 @@ app.registerExtension({
                     ctx.setLineDash([]);
                 }
 
-                ctx.font = `normal ${fontSize}px Arial, sans-serif`;
+                ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                ctx.letterSpacing = `${p.letterSpacing || 0}px`;
                 ctx.textBaseline = "top";
                 const align = p.textAlign || "center";
                 ctx.textAlign = align;
@@ -4122,70 +4126,104 @@ app.registerExtension({
                     this._titleAnimFrame = null;
                 }
 
-                const getCharColor = (charX, totalWidth, lineIndex) => {
+                const getLineFillStyle = (lineWidth, lineIndex, lineStartX) => {
                     if (!rainbowEnabled) return fontColor;
                     const style = p.rainbowStyle || "波浪";
                     const time = Date.now() * 0.002 * (rainbowSpeed / 30);
-                    if (style === "透明渐变") {
-                        const alpha = ((Math.sin(time + lineIndex * 0.5 + charX / Math.max(totalWidth, 1) * 3) + 1) / 2);
-                        const rgb = hexToRgb(fontColor);
-                        return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha.toFixed(2)})`;
-                    }
                     if (style === "整体透明") {
                         const alpha = ((Math.sin(time) + 1) / 2);
                         const rgb = hexToRgb(fontColor);
                         return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha.toFixed(2)})`;
                     }
-                    const hue = style === "呼吸"
-                        ? ((Math.sin(time) + 1) / 2 * 360) % 360
-                        : (time * 60 + lineIndex * 30 + charX * 360 / Math.max(totalWidth, 1)) % 360;
-                    const rgb = hslToRgb(hue, 100, 60);
-                    return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+                    if (style === "呼吸") {
+                        const hue = ((Math.sin(time) + 1) / 2 * 360) % 360;
+                        const rgb = hslToRgb(hue, 100, 60);
+                        return `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+                    }
+                    const grad = ctx.createLinearGradient(lineStartX, 0, lineStartX + lineWidth, 0);
+                    if (style === "透明渐变") {
+                        const rgb = hexToRgb(fontColor);
+                        for (let s = 0; s <= 1; s += 0.02) {
+                            const alpha = ((Math.sin(time + lineIndex * 0.5 + s * 3) + 1) / 2);
+                            grad.addColorStop(s, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha.toFixed(2)})`);
+                        }
+                    } else {
+                        for (let s = 0; s <= 1; s += 0.02) {
+                            const hue = (time * 60 + lineIndex * 30 + s * 360) % 360;
+                            const rgb = hslToRgb(hue, 100, 60);
+                            grad.addColorStop(s, `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
+                        }
+                    }
+                    return grad;
                 };
 
                 lines.forEach((line, i) => {
                     const y = startY + i * lineHeight;
                     if (y + fontSize > h) return;
+                    const textWidth = ctx.measureText(line).width;
+                    const lineX = xPos;
+                    const lineStartX = align === "center" ? xPos - textWidth / 2 : (align === "right" ? xPos - textWidth : xPos);
+
                     if (!rainbowEnabled && !glowEnabled) {
                         ctx.fillStyle = fontColor;
-                        ctx.fillText(line, xPos, y);
+                        ctx.fillText(line, lineX, y);
+                    } else if (!rainbowEnabled && glowEnabled) {
+                        const g = glowColor;
+                        ctx.save();
+                        ctx.shadowColor = g;
+                        ctx.shadowBlur = glowSize * glowIntensity * 2;
+                        ctx.globalAlpha = 0.15 * glowIntensity;
+                        ctx.fillStyle = fontColor;
+                        ctx.fillText(line, lineX, y);
+                        ctx.restore();
+                        ctx.save();
+                        ctx.shadowColor = g;
+                        ctx.shadowBlur = glowSize * glowIntensity;
+                        ctx.globalAlpha = 0.3 * glowIntensity;
+                        ctx.fillStyle = fontColor;
+                        ctx.fillText(line, lineX, y);
+                        ctx.restore();
+                        ctx.save();
+                        ctx.shadowColor = g;
+                        ctx.shadowBlur = glowSize * glowIntensity * 0.5;
+                        ctx.globalAlpha = 0.6 * glowIntensity;
+                        ctx.fillStyle = fontColor;
+                        ctx.fillText(line, lineX, y);
+                        ctx.restore();
+                        ctx.fillStyle = fontColor;
+                        ctx.fillText(line, lineX, y);
                     } else {
-                        const textWidth = ctx.measureText(line).width;
-                        const chars = line.split("");
-                        let cx = xPos + (align === "center" ? -textWidth / 2 : align === "right" ? -textWidth : 0);
-                        let pixOff = 0;
-                        for (let ci = 0; ci < chars.length; ci++) {
-                            const color = getCharColor(pixOff, textWidth, i);
-                            if (glowEnabled) {
-                                const g = rainbowEnabled ? color : glowColor;
-                                ctx.save();
-                                ctx.shadowColor = g;
-                                ctx.shadowBlur = glowSize * glowIntensity * 2;
-                                ctx.globalAlpha = 0.15 * glowIntensity;
-                                ctx.fillStyle = color;
-                                ctx.fillText(chars[ci], cx, y);
-                                ctx.restore();
-                                ctx.save();
-                                ctx.shadowColor = g;
-                                ctx.shadowBlur = glowSize * glowIntensity;
-                                ctx.globalAlpha = 0.3 * glowIntensity;
-                                ctx.fillStyle = color;
-                                ctx.fillText(chars[ci], cx, y);
-                                ctx.restore();
-                                ctx.save();
-                                ctx.shadowColor = g;
-                                ctx.shadowBlur = glowSize * glowIntensity * 0.5;
-                                ctx.globalAlpha = 0.6 * glowIntensity;
-                                ctx.fillStyle = color;
-                                ctx.fillText(chars[ci], cx, y);
-                                ctx.restore();
-                            }
-                            ctx.fillStyle = color;
-                            ctx.fillText(chars[ci], cx, y);
-                            const cw = ctx.measureText(chars[ci]).width;
-                            cx += cw;
-                            pixOff += cw;
+                        const fillStyle = getLineFillStyle(textWidth, i, lineStartX);
+                        const glowHue = (Date.now() * 0.002 * (rainbowSpeed / 30) * 60 + i * 30) % 360;
+                        const glowRgb = hslToRgb(glowHue, 100, 60);
+                        const glowCol = `rgb(${glowRgb.r}, ${glowRgb.g}, ${glowRgb.b})`;
+                        const g = glowEnabled ? glowCol : null;
+
+                        if (glowEnabled) {
+                            ctx.save();
+                            ctx.shadowColor = g;
+                            ctx.shadowBlur = glowSize * glowIntensity * 2;
+                            ctx.globalAlpha = 0.15 * glowIntensity;
+                            ctx.fillStyle = fillStyle;
+                            ctx.fillText(line, lineX, y);
+                            ctx.restore();
+                            ctx.save();
+                            ctx.shadowColor = g;
+                            ctx.shadowBlur = glowSize * glowIntensity;
+                            ctx.globalAlpha = 0.3 * glowIntensity;
+                            ctx.fillStyle = fillStyle;
+                            ctx.fillText(line, lineX, y);
+                            ctx.restore();
+                            ctx.save();
+                            ctx.shadowColor = g;
+                            ctx.shadowBlur = glowSize * glowIntensity * 0.5;
+                            ctx.globalAlpha = 0.6 * glowIntensity;
+                            ctx.fillStyle = fillStyle;
+                            ctx.fillText(line, lineX, y);
+                            ctx.restore();
                         }
+                        ctx.fillStyle = fillStyle;
+                        ctx.fillText(line, lineX, y);
                     }
                 });
 
@@ -4300,7 +4338,7 @@ app.registerExtension({
                 const editFontSize = p.fontSize * sc;
                 const editHeight = Math.max(90, node.size[1] * sc);
                 const glowShadow = p.glowEnabled ? `box-shadow:inset 0 0 ${(p.glowSize || 15) * (p.glowIntensity || 1)}px ${(p.glowSize || 15) * (p.glowIntensity || 1) / 2}px ${p.glowColor || "#4CAF50"};` : "";
-                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;border:1px dashed #4CAF50;outline:none;resize:none;padding:16px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:transparent;color:${p.fontColor};font: normal ${editFontSize}px Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;border-radius:${(p.borderRadius || 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
+                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;border:1px dashed #4CAF50;outline:none;resize:none;padding:16px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:transparent;color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${p.letterSpacing || 0}px;border-radius:${(p.borderRadius || 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
                 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = `position:absolute;left:0;right:0;bottom:100%;display:flex;align-items:stretch;margin-bottom:6px;`;
@@ -4336,6 +4374,29 @@ app.registerExtension({
                 row1.appendChild(sliderLabel);
                 row1.appendChild(slider);
                 row1.appendChild(sliderValue);
+                
+                const rowLetterSpacing = document.createElement("div");
+                rowLetterSpacing.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;`;
+                
+                const letterSpacingLabel = document.createElement("span");
+                letterSpacingLabel.textContent = "字距";
+                letterSpacingLabel.style.cssText = `color:#aaa;font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;`;
+                
+                const letterSpacingSlider = document.createElement("input");
+                letterSpacingSlider.type = "range";
+                letterSpacingSlider.min = "-5";
+                letterSpacingSlider.max = "20";
+                letterSpacingSlider.step = "0.5";
+                letterSpacingSlider.value = p.letterSpacing || 0;
+                letterSpacingSlider.style.cssText = `flex:1;height:4px;cursor:pointer;`;
+                
+                const letterSpacingValue = document.createElement("span");
+                letterSpacingValue.textContent = (p.letterSpacing || 0).toFixed(1) + "px";
+                letterSpacingValue.style.cssText = `color:#4CAF50;font-size:13px;white-space:nowrap;min-width:40px;text-align:right;font-family:Arial,sans-serif;`;
+                
+                rowLetterSpacing.appendChild(letterSpacingLabel);
+                rowLetterSpacing.appendChild(letterSpacingSlider);
+                rowLetterSpacing.appendChild(letterSpacingValue);
                 
                 const row2 = document.createElement("div");
                 row2.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;`;
@@ -4412,7 +4473,7 @@ app.registerExtension({
                 row3.appendChild(rightGroup);
                 
                 const colorPanel = document.createElement("div");
-                colorPanel.style.cssText = `background:rgba(42,42,42,0.95);border:1px solid #444;border-left:none;border-radius:0 6px 6px 0;padding:8px;user-select:none;display:flex;flex-direction:column;justify-content:center;`;
+                colorPanel.style.cssText = `background:rgba(42,42,42,0.95);border:1px solid #444;border-left:none;border-radius:0 6px 6px 0;padding:8px;user-select:none;display:flex;flex-direction:column;`;
                 
                 const svCanvas = document.createElement("canvas");
                 svCanvas.width = 140;
@@ -4747,6 +4808,8 @@ app.registerExtension({
 
                 leftPanel.appendChild(row1);
                 leftPanel.appendChild(rowSeparator());
+                leftPanel.appendChild(rowLetterSpacing);
+                leftPanel.appendChild(rowSeparator());
                 leftPanel.appendChild(row2);
                 leftPanel.appendChild(rowSeparator());
                 leftPanel.appendChild(row3);
@@ -4777,7 +4840,7 @@ app.registerExtension({
                     const ae = document.activeElement;
                     if (colorPanel.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
                     if (row4.contains(ae) || row5.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
-                    if (ae !== ta && ae !== slider && ae !== lineHeightSlider && ae !== alignLeft && ae !== alignCenter && ae !== alignRight && ae !== glowToggle && ae !== glowSizeSlider && ae !== glowIntensitySlider && ae !== glowColorBtn && ae !== fontColorSwatch && ae !== rainbowToggle && ae !== rainbowSpeedSlider) { ta.focus({ preventScroll: true }); }
+                    if (ae !== ta && ae !== slider && ae !== letterSpacingSlider && ae !== lineHeightSlider && ae !== alignLeft && ae !== alignCenter && ae !== alignRight && ae !== glowToggle && ae !== glowSizeSlider && ae !== glowIntensitySlider && ae !== glowColorBtn && ae !== fontColorSwatch && ae !== rainbowToggle && ae !== rainbowSpeedSlider) { ta.focus({ preventScroll: true }); }
                     node._focusGuard = requestAnimationFrame(_focusTick);
                 };
                 node._focusGuard = requestAnimationFrame(_focusTick);
@@ -4815,6 +4878,15 @@ app.registerExtension({
                     const scale = nr ? nr.scale : 1;
                     ta.style.lineHeight = p.fontSize * scale * v + "px";
                     lineHeightValue.textContent = v.toFixed(1);
+                    node.adjustHeightToContent();
+                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                };
+
+                const updateLetterSpacing = (value) => {
+                    const v = parseFloat(value) || 0;
+                    p.letterSpacing = v;
+                    ta.style.letterSpacing = v + "px";
+                    letterSpacingValue.textContent = v.toFixed(1) + "px";
                     node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
@@ -4881,6 +4953,12 @@ app.registerExtension({
                 });
                 lineHeightSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
                 lineHeightSlider.addEventListener("click", (e) => { e.stopPropagation(); });
+
+                letterSpacingSlider.addEventListener("input", (e) => {
+                    updateLetterSpacing(e.target.value);
+                });
+                letterSpacingSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+                letterSpacingSlider.addEventListener("click", (e) => { e.stopPropagation(); });
 
                 fontSizeInput.addEventListener("input", (e) => {
                     const val = parseFloat(e.target.value);
@@ -5021,6 +5099,11 @@ app.registerExtension({
                     e.stopPropagation();
                 });
                 
+                letterSpacingSlider.addEventListener("keydown", e => {
+                    if (e.key === "Escape") removeTitleEditor(node);
+                    e.stopPropagation();
+                });
+                
                 fontSizeInput.addEventListener("keydown", e => {
                     if (e.key === "Escape") removeTitleEditor(node);
                     e.stopPropagation();
@@ -5071,7 +5154,7 @@ app.registerExtension({
                     const ae = document.activeElement;
                     if (colorPanel.contains(ae)) return true;
                     if (row4.contains(ae) || row5.contains(ae)) return true;
-                    return ae === ta || ae === slider || ae === lineHeightSlider || ae === fontSizeInput || ae === alignLeft || ae === alignCenter || ae === alignRight || ae === glowToggle || ae === glowSizeSlider || ae === glowIntensitySlider || ae === glowColorBtn || ae === fontColorSwatch || ae === rainbowToggle || ae === rainbowSpeedSlider;
+                    return ae === ta || ae === slider || ae === letterSpacingSlider || ae === lineHeightSlider || ae === fontSizeInput || ae === alignLeft || ae === alignCenter || ae === alignRight || ae === glowToggle || ae === glowSizeSlider || ae === glowIntensitySlider || ae === glowColorBtn || ae === fontColorSwatch || ae === rainbowToggle || ae === rainbowSpeedSlider;
                 };
 
                 ta.addEventListener("blur", () => { setTimeout(() => {
@@ -5094,6 +5177,15 @@ app.registerExtension({
                 }, 150); });
                 
                 lineHeightSlider.addEventListener("blur", () => { setTimeout(() => {
+                    if (!node.isEditing || isFocusInside()) return;
+                    const ae = document.activeElement;
+                    if (ae && vueSels(node.id).some(sel => ae.closest?.(sel))) {
+                        return;
+                    }
+                    saveClose();
+                }, 150); });
+
+                letterSpacingSlider.addEventListener("blur", () => { setTimeout(() => {
                     if (!node.isEditing || isFocusInside()) return;
                     const ae = document.activeElement;
                     if (ae && vueSels(node.id).some(sel => ae.closest?.(sel))) {

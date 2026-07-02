@@ -2,6 +2,14 @@
 
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
+## 🎬 视频教程
+
+[![B站视频教程](https://img.shields.io/badge/B站-视频教程-FF69B4?style=for-the-badge&logo=bilibili)](https://www.bilibili.com/video/BV13FT76QEBp/?share_source=copy_web&vd_source=250d70570d87e8baafae534d07d6066b)
+
+点击上方图片或 [这里](https://www.bilibili.com/video/BV13FT76QEBp/?share_source=copy_web&vd_source=250d70570d87e8baafae534d07d6066b) 观看详细使用教程。
+
+---
+
 ComfyUI 美化增强插件，提供节点收藏管理、主题美化、编组管理等功能。
 
 ---
