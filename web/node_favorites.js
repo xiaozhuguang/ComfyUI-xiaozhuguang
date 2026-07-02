@@ -1678,7 +1678,7 @@ class Xiaozhuguang {
                 const wfOption = {
                     content: wfId
                         ? `<span style="color:#FFD700;">⭐ 取消收藏工作流 (${count}个节点)</span>`
-                        : `<span style="color:#FFD700;">🔗 收藏工作流片段 (${count}个节点)</span>`,
+                        : `<span style="color:#FFD700;">🔗 收藏多节点 (${count}个节点)</span>`,
                     callback: () => {
                         if (wfId) {
                             self.removeFavoriteWorkflow(wfId);
@@ -1844,7 +1844,7 @@ class Xiaozhuguang {
         dialog.className = "nf-dialog-overlay";
         dialog.innerHTML = `
             <div class="nf-dialog">
-                <div class="nf-dialog-title">收藏工作流片段</div>
+                <div class="nf-dialog-title">收藏多节点</div>
                 <div class="nf-dialog-body">
                     <label>分类：</label>
                     <select id="nf-cat-select" style="margin-bottom:10px;">${optionsHTML}</select>
