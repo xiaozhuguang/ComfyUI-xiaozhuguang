@@ -12,12 +12,13 @@
     "web/xzg_group.js",
     "web/xzg_number_switch.js",
     "web/xzg_universal_slider.js",
-    "web/xzg_selector.js"
+    "web/xzg_selector.js",
+    "web/xzg_points_editor.js"
   ],
   "css": [
     "web/node_favorites.css",
     "web/xzg_theme.css",
     "web/xzg_group.css"
   ],
-  "tags": ["theme", "favorites", "xiaozhuguang", "group"]
+  "tags": ["theme", "favorites", "xiaozhuguang", "group", "points-editor", "sam"]
 }

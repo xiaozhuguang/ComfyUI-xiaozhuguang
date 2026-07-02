@@ -249,7 +249,7 @@ const XZGGroup = {
             }
             const delBtn = el.querySelector('.xzg-delete-btn');
             if (delBtn) {
-                delBtn.style.fontSize = (12 * scale) + 'px';
+                delBtn.style.fontSize = (18 * scale) + 'px';
                 delBtn.style.marginLeft = (4 * scale) + 'px';
             }
             ['xzg-border-left', 'xzg-border-right'].forEach(cls => {
@@ -412,6 +412,8 @@ const XZGGroup = {
         if (!graph?._nodes) return;
         if (!bounds) return;
 
+        const groupArea = bounds.w * bounds.h;
+
         const childGroupIds = new Set();
         for (const [otherGid, otherG] of Object.entries(this.groups)) {
             if (otherGid === group.id) continue;
@@ -431,7 +433,17 @@ const XZGGroup = {
             if (typeof nw !== 'number' || typeof nh !== 'number') return;
             const cx = n.pos[0] + nw / 2, cy = n.pos[1] + nh / 2;
             if (cx >= bounds.x && cx <= bounds.x + bounds.w && cy >= bounds.y && cy <= bounds.y + bounds.h) {
+                // 子编组的节点由子编组管理，不归入当前编组
                 if (n._xzgGroupId && this._idInSet(childGroupIds, n._xzgGroupId)) return;
+
+                // 节点已属于面积更小的编组 → 不抢走，优先级：小编组 > 大编组
+                if (n._xzgGroupId && !this._idEq(n._xzgGroupId, group.id)) {
+                    const oldGroup = this.groups[n._xzgGroupId];
+                    if (oldGroup?.bounds) {
+                        const oldArea = oldGroup.bounds.w * oldGroup.bounds.h;
+                        if (oldArea < groupArea) return;
+                    }
+                }
 
                 inBounds.add(n.id);
                 inBoundsNodes.push(n);
@@ -450,6 +462,11 @@ const XZGGroup = {
         const newCount = inBounds.size;
 
         if (prevCount > 0 && newCount === 0) {
+            group.nodeIds.forEach(nid => {
+                const n = graph._nodes.find(x => this._idEq(x.id, nid));
+                if (n) this._clearNodeGroupData(n);
+            });
+            group.nodeIds = [];
             return;
         }
 
@@ -565,7 +582,14 @@ const XZGGroup = {
         // 只有直接节点才标记为新编组，保留子编组节点的原归属
         directNodeIds.forEach(nid => {
             const n = sel.find(x => x.id === nid || x.id == nid);
-            if (n) n._xzgGroupId = gid;
+            if (n) {
+                // 从旧编组中移除
+                if (n._xzgGroupId && this.groups[n._xzgGroupId] && !this._idEq(n._xzgGroupId, gid)) {
+                    const old = this.groups[n._xzgGroupId];
+                    old.nodeIds = old.nodeIds.filter(id => !this._idEq(id, n.id));
+                }
+                n._xzgGroupId = gid;
+            }
         });
 
         this.renderGroup(gid);
@@ -614,7 +638,7 @@ const XZGGroup = {
                 <div style="flex:1 1 auto;min-width:0;overflow:hidden;">
                     <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:1;${showTitle ? '' : 'display:none;'}">${showTitle ? group.title : ''}</span>
                 </div>
-                <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0;flex-shrink:0;font-size:12px;color:hsla(48,100%,55%,0.5);line-height:1;margin-left:4px;">×</button>
+                <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0;flex-shrink:0;font-size:18px;color:hsla(48,100%,55%,0.5);line-height:1;margin-left:4px;">×</button>
             </div>
             <div class="xzg-border-left" style="position:absolute;left:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
             <div class="xzg-border-right" style="position:absolute;right:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
@@ -1204,6 +1228,7 @@ const XZGGroup = {
             }
         }
         const childGroupIds = new Set(childGroups.map(g => g.id));
+        const groupArea = b.w * b.h;
 
         // 当前编组：收集在框体内且不属于子编组的节点
         const nodeStarts = [];
@@ -1216,6 +1241,15 @@ const XZGGroup = {
             if (cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h) {
                 // 子编组节点由子编组自行管理，不归入当前编组
                 if (n._xzgGroupId && self._idInSet(childGroupIds, n._xzgGroupId)) return;
+
+                // 节点已属于面积更小的编组 → 不抢走，优先级：小编组 > 大编组
+                if (n._xzgGroupId && !self._idEq(n._xzgGroupId, gid)) {
+                    const oldGroup = self.groups[n._xzgGroupId];
+                    if (oldGroup?.bounds) {
+                        const oldArea = oldGroup.bounds.w * oldGroup.bounds.h;
+                        if (oldArea < groupArea) return;
+                    }
+                }
 
                 nodeStarts.push({ node: n, x: n.pos[0], y: n.pos[1] });
                 idsInBounds.add(n.id);
@@ -1242,6 +1276,30 @@ const XZGGroup = {
             }).filter(Boolean)
         }));
 
+        // 部分重叠编组（≤50% 覆盖但有重叠）：不移动编组框，只移动完全落在当前编组内的节点
+        // 只对面积比当前编组小的编组生效（大控制小，小不控制大）
+        const partialOverlapNodes = [];
+        const childSet = new Set(childGroupIds);
+        for (const [otherGid, otherG] of Object.entries(this.groups)) {
+            if (childSet.has(otherGid)) continue;
+            const ob = otherG.bounds;
+            if (!ob) continue;
+            const otherArea = ob.w * ob.h;
+            if (otherArea >= groupArea) continue;
+            if (this._getOverlapRatio(b, ob) > 0 && this._getOverlapRatio(b, ob) <= 0.5) {
+                otherG.nodeIds.forEach(nid => {
+                    const n = graph._nodes.find(x => x.id === nid || x.id == nid);
+                    if (!n?.pos) return;
+                    const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
+                    // 节点完全落在当前编组内
+                    if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
+                        n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                        partialOverlapNodes.push({ node: n, x: n.pos[0], y: n.pos[1] });
+                    }
+                });
+            }
+        }
+
         const onMove = e => {
             const dx = (e.clientX - startX) / scale;
             const dy = (e.clientY - startY) / scale;
@@ -1254,6 +1312,8 @@ const XZGGroup = {
                 cg.group.bounds.y = cg.startY + dy;
                 cg.nodeStarts.forEach(s => { s.node.pos[0] = s.x + dx; s.node.pos[1] = s.y + dy; });
             });
+            // 部分重叠编组中完全落在大边框内的节点也跟随移动
+            partialOverlapNodes.forEach(s => { s.node.pos[0] = s.x + dx; s.node.pos[1] = s.y + dy; });
             graph.setDirtyCanvas?.(true, true);
         };
         const onUp = () => {
@@ -1359,25 +1419,47 @@ const XZGGroup = {
         const graph = app?.graph;
         if (!graph) return;
 
-        // 收集当前编组及其所有嵌套子编组，统一切换 bypass
-        const groupIds = this._collectChildGroups(gid);
         const willBypass = !g.bypassed;
-
-        groupIds.forEach(id => {
-            const grp = this.groups[id];
-            if (grp) grp.bypassed = willBypass;
-        });
-
         const mode = willBypass ? MODE_BYPASS : MODE_ALWAYS;
-        groupIds.forEach(id => {
+        const b = g.bounds;
+
+        // 1. 完全子编组（>50% 覆盖）：切换编组状态 + 所有节点
+        const fullChildGroupIds = this._collectChildGroups(gid);
+        fullChildGroupIds.forEach(id => {
             const grp = this.groups[id];
             if (!grp) return;
+            grp.bypassed = willBypass;
             grp.nodeIds.forEach(nid => {
                 const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                 if (n) n.mode = mode;
             });
             this.updateGroupStyle(id);
         });
+
+        // 2. 部分重叠编组（≤50% 覆盖但有重叠）：不切换编组状态，只切换完全落在当前编组内的节点
+        // 只对面积比当前编组小的编组生效（大控制小，小不控制大）
+        const fullSet = new Set(fullChildGroupIds);
+        const groupArea = b.w * b.h;
+        for (const [otherGid, otherG] of Object.entries(this.groups)) {
+            if (fullSet.has(otherGid)) continue;
+            const ob = otherG.bounds;
+            if (!ob) continue;
+            const otherArea = ob.w * ob.h;
+            if (otherArea >= groupArea) continue;
+            // 有重叠但覆盖 ≤50%
+            if (this._getOverlapRatio(b, ob) > 0 && this._getOverlapRatio(b, ob) <= 0.5) {
+                otherG.nodeIds.forEach(nid => {
+                    const n = graph._nodes.find(x => x.id === nid || x.id == nid);
+                    if (!n?.pos) return;
+                    const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
+                    // 节点完全落在当前编组内
+                    if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
+                        n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                        n.mode = mode;
+                    }
+                });
+            }
+        }
 
         graph.setDirtyCanvas?.(true, true); graph.change?.();
         this.syncGroupsToExtra();
@@ -1423,6 +1505,32 @@ const XZGGroup = {
             if (!ob) continue;
             if (this._getOverlapRatio(group.bounds, ob) > 0.5) {
                 result.push(...this._collectChildGroups(otherGid, visited));
+            }
+        }
+        return result;
+    },
+
+    /* 收集所有被当前编组包含或有重叠且面积更小的编组（递归传递）
+     * 用于绕过/开启的联动控制：大编组切换绕过时，所有有重叠的小编组都跟着切换
+     * 注意：小编组切换绕过时不影响大编组（单向控制）
+     * 注意：移动编组时仍使用 _collectChildGroups（>50% 覆盖才一起移动）
+     */
+    _collectLinkedGroups(gid, visited = new Set()) {
+        if (visited.has(gid)) return [];
+        visited.add(gid);
+        const result = [gid];
+        const group = this.groups[gid];
+        if (!group?.bounds) return result;
+        const groupArea = group.bounds.w * group.bounds.h;
+
+        for (const [otherGid, otherG] of Object.entries(this.groups)) {
+            if (otherGid === gid) continue;
+            const ob = otherG.bounds;
+            if (!ob) continue;
+            const otherArea = ob.w * ob.h;
+            // 只收集面积比当前编组小且有重叠的编组（大控制小，小不控制大）
+            if (otherArea < groupArea && this._getOverlapRatio(group.bounds, ob) > 0) {
+                result.push(...this._collectLinkedGroups(otherGid, visited));
             }
         }
         return result;

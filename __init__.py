@@ -1,3 +1,152 @@
+import torch
+import numpy as np
+from PIL import Image
+import hashlib
+import json
+import os
+import random
+import folder_paths
+
+
+def tensor_to_pil(tensor):
+    result = []
+    for i in range(tensor.shape[0]):
+        img = tensor[i].cpu().numpy()
+        img = (img * 255).clip(0, 255).astype(np.uint8)
+        result.append(Image.fromarray(img))
+    return result
+
+
+def save_images_for_preview(images, prefix="xzg_points_"):
+    output_dir = folder_paths.get_temp_directory()
+    os.makedirs(output_dir, exist_ok=True)
+    results = []
+    pil_images = tensor_to_pil(images)
+    for i, img in enumerate(pil_images):
+        filename = f"{prefix}{''.join(random.choice('abcdefghijklmnopqrstuvwxyz') for _ in range(6))}_{i}.png"
+        filepath = os.path.join(output_dir, filename)
+        img.save(filepath, compress_level=4)
+        results.append({
+            "filename": filename,
+            "subfolder": "",
+            "type": "temp"
+        })
+    return results
+
+
+class XiaozhuguangPointsEditor:
+    """
+    小珠光点编辑器
+    在图像上标注正面点、负面点和边界框
+    """
+
+    state = {
+        "last_images_hash": None,
+        "cached_preview": None,
+    }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "info": ("STRING", {"default": "", "multiline": True}),
+            },
+            "optional": {
+                "预览清晰度": ("FLOAT", {"default": 1.0, "min": 0.05, "max": 1.0, "step": 0.05}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT")
+    RETURN_NAMES = ("正面点坐标", "负面点坐标", "边界框", "帧索引")
+    FUNCTION = "execute"
+    CATEGORY = "小珠光"
+    OUTPUT_NODE = True
+
+    def execute(self, image, info, 预览清晰度=1.0):
+        positive_coords = None
+        negative_coords = None
+        bboxes_str = None
+        frame_index = 0
+
+        needs_scaling = 预览清晰度 > 0 and 预览清晰度 < 1.0
+        scale_factor = 1.0 / 预览清晰度 if needs_scaling else 1.0
+
+        if info != '':
+            try:
+                info_data = json.loads(info)
+            except json.JSONDecodeError:
+                info_data = None
+
+            if info_data is not None:
+                positive_coords = info_data.get("positive_coords", None)
+                negative_coords = info_data.get("negative_coords", None)
+                box = info_data.get("bbox", None)
+                frame_index = info_data.get("frame_index", 0)
+
+                if needs_scaling:
+                    if positive_coords is not None:
+                        positive_coords = [{"x": coord["x"] * scale_factor, "y": coord["y"] * scale_factor} for coord in positive_coords]
+                    if negative_coords is not None:
+                        negative_coords = [{"x": coord["x"] * scale_factor, "y": coord["y"] * scale_factor} for coord in negative_coords]
+
+                bbox_list = []
+                if box is not None and len(box) > 0:
+                    for i in box:
+                        if needs_scaling:
+                            x = i['x'] * scale_factor
+                            y = i['y'] * scale_factor
+                            w = i['w'] * scale_factor
+                            h = i['h'] * scale_factor
+                        else:
+                            x = i['x']
+                            y = i['y']
+                            w = i['w']
+                            h = i['h']
+                        bbox_list.append([x, y, x + w, y + h])
+
+                bboxes_str = json.dumps(bbox_list, ensure_ascii=False)
+
+                if positive_coords is not None:
+                    positive_coords = json.dumps(positive_coords, ensure_ascii=False)
+                if negative_coords is not None:
+                    negative_coords = json.dumps(negative_coords, ensure_ascii=False)
+
+        preview_images = image
+        if needs_scaling:
+            _, height, width, _ = image.shape
+            new_height = int(height * 预览清晰度)
+            new_width = int(width * 预览清晰度)
+            pil_images = tensor_to_pil(image)
+            resized_pil = [img.resize((new_width, new_height), Image.LANCZOS) for img in pil_images]
+            preview_images = torch.from_numpy(np.stack([np.array(img).astype(np.float32) / 255.0 for img in resized_pil]))
+
+        images_hash = hashlib.md5(preview_images.cpu().numpy().tobytes()).hexdigest()
+        rescale_hash = f"{images_hash}_{预览清晰度}"
+
+        if 'last_images_hash' in self.state and self.state['last_images_hash'] == rescale_hash:
+            preview_str = self.state['cached_preview']
+            is_init = False
+        else:
+            preview = save_images_for_preview(preview_images)
+            preview_str = json.dumps(preview, ensure_ascii=False)
+            self.state['last_images_hash'] = rescale_hash
+            self.state['cached_preview'] = preview_str
+            is_init = True
+
+        return {
+            "ui": {
+                "preview": [{"preview_str": preview_str, "is_init": is_init}]
+            },
+            "result": (
+                positive_coords if positive_coords is not None else "[]",
+                negative_coords if negative_coords is not None else "[]",
+                bboxes_str if bboxes_str is not None else "[]",
+                frame_index,
+            )
+        }
+
+
 class XiaozhuguangSelector:
     """
     小珠光标签选择器
@@ -129,6 +278,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangTitle": XiaozhuguangTitle,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
+    "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -136,6 +286,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangTitle": "小珠光标题",
     "XiaozhuguangNumberSwitch": "小珠光编号切换",
     "XiaozhuguangUniversalSlider": "小珠光万能滑条",
+    "XiaozhuguangPointsEditor": "小珠光点编辑器",
 }
 
 WEB_DIRECTORY = "./web"

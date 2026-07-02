@@ -1530,6 +1530,7 @@ class Xiaozhuguang {
 
         if (this.searchInput) {
             this.searchInput.value = "";
+            setTimeout(() => this.searchInput.focus(), 50);
         }
         this.currentSearch = "";
         this.currentCategory = "all";
