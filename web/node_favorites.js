@@ -78,6 +78,8 @@ class Xiaozhuguang {
 
         document.querySelectorAll(".xzg-panel-resizer").forEach(el => el.remove());
 
+        this._loadPinyinLib();
+
         try {
             this.injectCSS();
             this.setupKeyboardListener();
@@ -91,6 +93,19 @@ class Xiaozhuguang {
         } catch (e) {
             console.error("Xiaozhuguang 初始化失败:", e);
         }
+    }
+
+    /* ── 加载 pinyin-pro 拼音转换库 ── */
+    _loadPinyinLib() {
+        if (window.pinyinPro) return;
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/pinyin-pro@3.26.0/dist/pinyin-pro.min.js';
+        script.onload = () => {
+            if (this.currentSearch) {
+                this.renderFavorites();
+            }
+        };
+        document.head.appendChild(script);
     }
 
     setupDragDrop() {
@@ -1734,7 +1749,7 @@ class Xiaozhuguang {
         }
 
         const nodeDef = LiteGraph.registered_node_types[node.type];
-        const displayName = nodeDef ? (nodeDef.title || node.type) : node.type;
+        const displayName = node.title || nodeDef?.title || node.type;
         const category = nodeDef ? (nodeDef.category || "Unknown") : "Unknown";
 
         const maxOrder = this.favorites.nodes
@@ -2187,10 +2202,10 @@ class Xiaozhuguang {
         this.renderCategories();
     }
 
-    showRenameNodeDialog(nodeType, currentName) {
+    showRenameNodeDialog(nodeType) {
         const node = this.favorites.nodes.find(n => n.type === nodeType);
         if (!node) return;
-        const oldName = currentName || node.displayName || node.type;
+        const oldName = node.displayName || node.type;
 
         const dialog = document.createElement("div");
         dialog.className = "nf-dialog-overlay";
@@ -2229,119 +2244,109 @@ class Xiaozhuguang {
         dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) dialog.remove(); });
     }
 
-    // ====== 拼音搜索支持 ======
+    // ====== 拼音搜索支持（优先使用 pinyin-pro 库，未加载时回退到基础映射） ======
 
-    // 汉字 -> 拼音 映射（覆盖常见节点名称用字）
-    getPinyinMap() {
-        if (!this._pinyinMap) {
-            this._pinyinMap = {
-                '一':'yi','不':'bu','与':'yu','且':'qie','个':'ge','中':'zhong','串':'chuan','临':'lin',
-                '为':'wei','主':'zhu','之':'zhi','乘':'cheng','也':'ye','了':'le','事':'shi','于':'yu',
-                '些':'xie','交':'jiao','产':'chan','亮':'liang','人':'ren','什':'shen','么':'me','介':'jie',
-                '从':'cong','代':'dai','件':'jian','任':'ren','份':'fen','仿':'fang','位':'wei','低':'di',
-                '住':'zhu','体':'ti','何':'he','作':'zuo','使':'shi','例':'li','依':'yi','保':'bao',
-                '信':'xin','修':'xiu','值':'zhi','假':'jia','偏':'pian','做':'zuo','停':'ting','备':'bei',
-                '像':'xiang','光':'guang','全':'quan','公':'gong','关':'guan','其':'qi','内':'nei','再':'zai',
-                '写':'xie','决':'jue','准':'zhun','冰':'bing','冲':'chong','冷':'leng','减':'jian','凝':'ning',
-                '几':'ji','出':'chu','分':'fen','切':'qie','列':'lie','初':'chu','到':'dao','制':'zhi',
-                '刷':'shua','前':'qian','剪':'jian','副':'fu','割':'ge','功':'gong','加':'jia','办':'ban',
-                '动':'dong','助':'zhu','包':'bao','化':'hua','匹':'pi','区':'qu','十':'shi','千':'qian',
-                '协':'xie','卡':'ka','压':'ya','参':'can','双':'shuang','反':'fan','发':'fa','变':'bian',
-                '口':'kou','古':'gu','另':'ling','只':'zhi','叫':'jiao','可':'ke','台':'tai','各':'ge',
-                '合':'he','同':'tong','名':'ming','后':'hou','向':'xiang','否':'fou','含':'han','吸':'xi',
-                '听':'ting','启':'qi','呈':'cheng','命':'ming','和':'he','品':'pin','哈':'ha','响':'xiang',
-                '问':'wen','因':'yin','团':'tuan','在':'zai','均':'jun','块':'kuai','场':'chang','地':'di',
-                '型':'xing','域':'yu','增':'zeng','处':'chu','复':'fu','外':'wai','多':'duo','大':'da',
-                '天':'tian','太':'tai','失':'shi','头':'tou','夹':'jia','奇':'qi','套':'tao','好':'hao',
-                '如':'ru','字':'zi','它':'ta','安':'an','完':'wan','定':'ding','实':'shi','容':'rong',
-                '宽':'kuan','密':'mi','对':'dui','导':'dao','小':'xiao','少':'shao','就':'jiu','层':'ceng',
-                '属':'shu','展':'zhan','工':'gong','左':'zuo','差':'cha','已':'yi','布':'bu','希':'xi',
-                '干':'gan','并':'bing','广':'guang','应':'ying','底':'di','度':'du','建':'jian','开':'kai',
-                '式':'shi','引':'yin','张':'zhang','强':'qiang','弹':'dan','归':'gui','当':'dang','形':'xing',
-                '影':'ying','待':'dai','很':'hen','从':'cong','微':'wei','得':'de','心':'xin','必':'bi',
-                '快':'kuai','忽':'hu','态':'tai','总':'zong','恢':'hui','恒':'heng','性':'xing','恩':'en',
-                '情':'qing','意':'yi','感':'gan','成':'cheng','我':'wo','或':'huo','截':'jie','所':'suo',
-                '手':'shou','打':'da','执':'zhi','扩':'kuo','扫':'sao','扭':'niu','批':'pi','找':'zhao',
-                '承':'cheng','投':'tou','抽':'chou','拆':'chai','拖':'tuo','拍':'pai','拉':'la','拦':'lan',
-                '招':'zhao','拼':'pin','按':'an','挡':'dang','括':'kuo','指':'zhi','换':'huan','排':'pai',
-                '控':'kong','推':'tui','提':'ti','插':'cha','搜':'sou','搭':'da','搬':'ban','摇':'yao',
-                '支':'zhi','收':'shou','改':'gai','放':'fang','效':'xiao','教':'jiao','散':'san','数':'shu',
-                '整':'zheng','文':'wen','断':'duan','方':'fang','旋':'xuan','日':'ri','时':'shi','明':'ming',
-                '易':'yi','星':'xing','映':'ying','是':'shi','显':'xian','暗':'an','曝':'pu','曲':'qu',
-                '更':'geng','最':'zui','会':'hui','月':'yue','有':'you','服':'fu','朗':'lang','期':'qi',
-                '未':'wei','本':'ben','机':'ji','权':'quan','材':'cai','条':'tiao','来':'lai','板':'ban',
-                '构':'gou','标':'biao','格':'ge','案':'an','根':'gen','框':'kuang','档':'dang','桥':'qiao',
-                '样':'yang','核':'he','桶':'tong','梯':'ti','棒':'bang','检':'jian','次':'ci','欢':'huan',
-                '止':'zhi','正':'zheng','此':'ci','步':'bu','武':'wu','历':'li','死':'si','段':'duan',
-                '杀':'sha','母':'mu','每':'mei','比':'bi','毛':'mao','气':'qi','水':'shui','氩':'ya',
-                '求':'qiu','汉':'han','污':'wu','池':'chi','汤':'tang','状':'zhuang','环':'huan','现':'xian',
-                '理':'li','球':'qiu','生':'sheng','用':'yong','申':'shen','电':'dian','界':'jie','画':'hua',
-                '畅':'chang','异':'yi','疑':'yi','疏':'shu','病':'bing','白':'bai','百':'bai','的':'de',
-                '皮':'pi','监':'jian','盘':'pan','目':'mu','直':'zhi','相':'xiang','看':'kan','真':'zhen',
-                '矩':'ju','短':'duan','确':'que','硬':'ying','码':'ma','磁':'ci','示':'shi','社':'she',
-                '视':'shi','祈':'qi','票':'piao','离':'li','种':'zhong','移':'yi','程':'cheng','空':'kong',
-                '窗':'chuang','立':'li','端':'duan','第':'di','等':'deng','算':'suan','管':'guan','箱':'xiang',
-                '简':'jian','范':'fan','节':'jie','粉':'fen','类':'lei','精':'jing','系':'xi','约':'yue',
-                '纹':'wen','组':'zu','细':'xi','线':'xian','练':'lian','经':'jing','结':'jie','绘':'hui',
-                '给':'gei','络':'luo','绝':'jue','统':'tong','维':'wei','网':'wang','颜':'yan','风':'feng',
-                '飞':'fei','食':'shi','首':'shou','香':'xiang','马':'ma','骨':'gu','高':'gao','鲁':'lu',
-                '麻':'ma','黄':'huang','默':'mo','点':'dian','黑':'hei','齐':'qi','龙':'long','密':'mi',
-                '解':'jie','色':'se','草':'cao','蓝':'lan','数':'shu','据':'ju','收':'shou','藏':'cang',
-                '夹':'jia','选':'xuan','择':'ze','滑':'hua','条':'tiao','编':'bian','号':'hao','切':'qie',
-                '换':'huan','变':'bian','量':'liang','小':'xiao','珠':'zhu','光':'guang','标':'biao','题':'ti',
-                '输':'shu','入':'ru','出':'chu','值':'zhi','节':'jie','点':'dian','连':'lian','接':'jie',
-                '载':'zai','图':'tu','片':'pian','文':'wen','本':'ben','提':'ti','示':'shi','词':'ci',
-                '调':'tiao','件':'jian','控':'kong','制':'zhi','网':'wang','络':'luo','潜':'qian','在':'zai',
-                '空':'kong','间':'jian','噪':'zao','声':'sheng','放':'fang','缩':'suo','合':'he','并':'bing',
-                '分':'fen','割':'ge','遮':'zhe','罩':'zhao','填':'tian','充':'chong','重':'chong','绘':'hui',
+    _getPinyinFallbackMap() {
+        if (!this._pinyinFallback) {
+            this._pinyinFallback = {
+                '一':'yi','不':'bu','中':'zhong','为':'wei','之':'zhi','乘':'cheng','亮':'liang',
+                '介':'jie','从':'cong','代':'dai','仿':'fang','位':'wei','体':'ti','何':'he','作':'zuo',
+                '信':'xin','修':'xiu','值':'zhi','偏':'pian','像':'xiang','光':'guang','关':'guan',
+                '内':'nei','冲':'chong','凝':'ning','出':'chu','分':'fen','切':'qie','列':'lie','制':'zhi',
+                '前':'qian','剪':'jian','副':'fu','割':'ge','功':'gong','加':'jia','动':'dong','包':'bao',
+                '化':'hua','匹':'pi','十':'shi','千':'qian','协':'xie','卡':'ka','压':'ya','参':'can',
+                '双':'shuang','反':'fan','发':'fa','变':'bian','口':'kou','可':'ke','台':'tai','合':'he',
+                '同':'tong','名':'ming','后':'hou','向':'xiang','含':'han','吸':'xi','听':'ting','启':'qi',
+                '呈':'cheng','命':'ming','和':'he','品':'pin','响':'xiang','问':'wen','因':'yin','团':'tuan',
+                '在':'zai','均':'jun','块':'kuai','场':'chang','地':'di','型':'xing','域':'yu','增':'zeng',
+                '处':'chu','复':'fu','外':'wai','多':'duo','大':'da','天':'tian','太':'tai','头':'tou',
+                '夹':'jia','奇':'qi','套':'tao','如':'ru','字':'zi','安':'an','完':'wan','定':'ding',
+                '实':'shi','容':'rong','宽':'kuan','密':'mi','对':'dui','导':'dao','小':'xiao','少':'shao',
+                '就':'jiu','层':'ceng','展':'zhan','工':'gong','左':'zuo','差':'cha','布':'bu','干':'gan',
+                '并':'bing','广':'guang','应':'ying','度':'du','建':'jian','开':'kai','式':'shi','强':'qiang',
+                '弹':'dan','归':'gui','当':'dang','形':'xing','影':'ying','微':'wei','心':'xin','态':'tai',
+                '总':'zong','恢':'hui','恒':'heng','性':'xing','情':'qing','意':'yi','感':'gan','成':'cheng',
+                '截':'jie','手':'shou','打':'da','执':'zhi','扩':'kuo','扫':'sao','扭':'niu','批':'pi',
+                '找':'zhao','承':'cheng','投':'tou','抽':'chou','拆':'chai','拖':'tuo','拍':'pai','拉':'la',
+                '拦':'lan','招':'zhao','拼':'pin','按':'an','挡':'dang','括':'kuo','指':'zhi','换':'huan',
+                '排':'pai','控':'kong','推':'tui','提':'ti','插':'cha','搜':'sou','搭':'da','搬':'ban',
+                '摇':'yao','支':'zhi','收':'shou','改':'gai','放':'fang','效':'xiao','数':'shu','整':'zheng',
+                '文':'wen','断':'duan','方':'fang','旋':'xuan','日':'ri','时':'shi','明':'ming','易':'yi',
+                '星':'xing','映':'ying','显':'xian','暗':'an','曝':'pu','曲':'qu','更':'geng','最':'zui',
+                '会':'hui','月':'yue','有':'you','服':'fu','朗':'lang','期':'qi','未':'wei','本':'ben',
+                '机':'ji','权':'quan','材':'cai','条':'tiao','来':'lai','板':'ban','构':'gou','标':'biao',
+                '格':'ge','案':'an','根':'gen','框':'kuang','档':'dang','桥':'qiao','样':'yang','核':'he',
+                '检':'jian','次':'ci','止':'zhi','正':'zheng','步':'bu','比':'bi','气':'qi','水':'shui',
+                '求':'qiu','污':'wu','池':'chi','状':'zhuang','环':'huan','现':'xian','理':'li','球':'qiu',
+                '生':'sheng','用':'yong','电':'dian','界':'jie','画':'hua','畅':'chang','异':'yi','疏':'shu',
+                '白':'bai','百':'bai','直':'zhi','相':'xiang','看':'kan','真':'zhen','矩':'ju','短':'duan',
+                '确':'que','硬':'ying','码':'ma','磁':'ci','示':'shi','视':'shi','离':'li','种':'zhong',
+                '移':'yi','程':'cheng','空':'kong','窗':'chuang','立':'li','端':'duan','第':'di','等':'deng',
+                '算':'suan','管':'guan','箱':'xiang','简':'jian','范':'fan','节':'jie','粉':'fen','类':'lei',
+                '精':'jing','系':'xi','约':'yue','纹':'wen','组':'zu','细':'xi','线':'xian','练':'lian',
+                '经':'jing','结':'jie','绘':'hui','络':'luo','绝':'jue','统':'tong','维':'wei','网':'wang',
+                '颜':'yan','飞':'fei','食':'shi','首':'shou','香':'xiang','高':'gao','黄':'huang','默':'mo',
+                '点':'dian','黑':'hei','齐':'qi','龙':'long','解':'jie','色':'se','数':'shu','据':'ju',
+                '收':'shou','藏':'cang','选':'xuan','择':'ze','滑':'hua','编':'bian','号':'hao','换':'huan',
+                '量':'liang','珠':'zhu','光':'guang','标':'biao','题':'ti','输':'shu','入':'ru','出':'chu',
+                '值':'zhi','节':'jie','点':'dian','连':'lian','接':'jie','载':'zai','图':'tu','片':'pian',
+                '文':'wen','本':'ben','提':'ti','示':'shi','词':'ci','调':'tiao','件':'jian','控':'kong',
+                '制':'zhi','潜':'qian','在':'zai','噪':'zao','声':'sheng','放':'fang','缩':'suo','合':'he',
+                '并':'bing','分':'fen','割':'ge','遮':'zhe','罩':'zhao','填':'tian','充':'chong','重':'chong',
                 '修':'xiu','复':'fu','高':'gao','清':'qing','映':'ying','射':'she','克':'ke','莱':'lai',
-                '斯':'si','采':'cai','样':'yang','计':'ji','算':'suan','节':'jie','奏':'zou','增':'zeng',
-                '益':'yi','强':'qiang','扩':'kuo','损':'sun','失':'shi','格':'ge','式':'shi','模':'mo',
-                '型':'xing','预':'yu','训':'xun','练':'lian','优':'you','化':'hua','校':'jiao','构':'gou',
-                '造':'zao','蒸':'zheng','馏':'liu','嵌':'qian','套':'tao','堆':'dui','叠':'die','循':'xun',
-                '环':'huan','镜':'jing','像':'xiang','扭':'niu','翻':'fan','旋':'xuan','对':'dui','齐':'qi',
-                '左':'zuo','右':'you','上':'shang','下':'xia','居':'ju','弹':'dan','性':'xing','布':'bu',
-                '局':'ju','考':'kao','批':'pi','量':'liang','生':'sheng','成':'cheng','队':'dui','列':'lie',
-                '随':'sui','音':'yin','视':'shi','语':'yu','义':'yi','繁':'fan','体':'ti','粗':'cu',
-                '画':'hua','颜':'yan','通':'tong','道':'dao','宽':'kuan','掩':'yan','膜':'mo','蔽':'bi',
-                '阈':'yu','增':'zeng','调':'tiao','度':'du','图':'tu','层':'ceng','转':'zhuan','融':'rong',
-                '擦':'ca','除':'chu','监':'jian','督':'du','非':'fei','完':'wan','整':'zheng','边':'bian',
-                '缘':'yuan','轮':'lun','廓':'kuo','检':'jian','测':'ce','跟':'gen','踪':'zong','识':'shi',
-                '别':'bie','析':'xi','配':'pei','弥':'mi','补':'bu','幅':'fu','超':'chao','辨':'bian',
-                '钟':'zhong','颜':'yan','闪':'shan','曝':'pu','缺':'que','雾':'wu','雨':'yu','阴':'yin',
-                '饱':'bao','彩':'cai','虹':'hong','渐':'jian','蒙':'meng','版':'ban','涂':'tu','差':'cha',
-                '异':'yi','弹':'dan','设':'she','置':'zhi','参':'can','数':'shu','属':'shu','试':'shi',
-                '错':'cuo','误':'wu','验':'yan','证':'zheng','览':'lan','跨':'kua','常':'chang','图':'tu',
-                '注':'zhu','释':'shi','添':'tian','除':'chu','删':'shan','逻':'luo','辑':'ji','判':'pan',
-                '循':'xun','终':'zhong','静':'jing','颜':'yan','背':'bei','景':'jing','隐':'yin','藏':'cang',
-                '锁':'suo','优':'you','先':'xian','级':'ji','权':'quan','引':'yin','帮':'bang','助':'zhu',
-                '素':'su','链':'lian','嵌':'qian','常':'chang','铃':'ling','旋':'xuan','窗':'chuang','符':'fu',
+                '斯':'si','采':'cai','样':'yang','计':'ji','奏':'zou','益':'yi','扩':'kuo','损':'sun',
+                '失':'shi','模':'mo','型':'xing','预':'yu','训':'xun','练':'lian','优':'you','化':'hua',
+                '造':'zao','蒸':'zheng','馏':'liu','嵌':'qian','堆':'dui','叠':'die','循':'xun','镜':'jing',
+                '扭':'niu','翻':'fan','旋':'xuan','对':'dui','齐':'qi','上':'shang','下':'xia','居':'ju',
+                '布':'bu','局':'ju','考':'kao','批':'pi','生':'sheng','队':'dui','列':'lie','随':'sui',
+                '音':'yin','语':'yu','义':'yi','繁':'fan','体':'ti','粗':'cu','画':'hua','通':'tong','道':'dao',
+                '掩':'yan','膜':'mo','蔽':'bi','阈':'yu','增':'zeng','调':'tiao','度':'du','图':'tu','层':'ceng',
+                '转':'zhuan','融':'rong','擦':'ca','除':'chu','监':'jian','督':'du','非':'fei','完':'wan',
+                '边':'bian','缘':'yuan','轮':'lun','廓':'kuo','检':'jian','测':'ce','跟':'gen','踪':'zong',
+                '识':'shi','别':'bie','析':'xi','配':'pei','弥':'mi','补':'bu','帧':'zhen','幅':'fu','超':'chao',
+                '辨':'bian','钟':'zhong','闪':'shan','缺':'que','雾':'wu','雨':'yu','阴':'yin','饱':'bao',
+                '彩':'cai','虹':'hong','渐':'jian','蒙':'meng','版':'ban','涂':'tu','差':'cha','弹':'dan',
+                '设':'she','置':'zhi','参':'can','数':'shu','属':'shu','试':'shi','错':'cuo','误':'wu',
+                '验':'yan','证':'zheng','览':'lan','跨':'kua','常':'chang','注':'zhu','释':'shi','添':'tian',
+                '删':'shan','逻':'luo','辑':'ji','判':'pan','循':'xun','终':'zhong','静':'jing','背':'bei',
+                '景':'jing','隐':'yin','藏':'cang','锁':'suo','优':'you','先':'xian','级':'ji','引':'yin',
+                '帮':'bang','助':'zhu','素':'su','链':'lian','铃':'ling','符':'fu',
             };
         }
-        return this._pinyinMap;
+        return this._pinyinFallback;
     }
 
-    // 获取文本的拼音首字母串（如"小珠光" -> "xzg"）
+    /* ── 拼音首字母（如"补帧" → "bz"） ── */
     toPinyinInitials(text) {
         if (!text || typeof text !== 'string') return '';
-        const py = this.getPinyinMap();
+        if (window.pinyinPro) {
+            try {
+                return window.pinyinPro.pinyin(text, { pattern: 'first', toneType: 'none', type: 'string' }).replace(/\s/g, '');
+            } catch(e) { /* fall through */ }
+        }
+        const py = this._getPinyinFallbackMap();
         let result = '';
         for (const ch of text) {
             const code = ch.charCodeAt(0);
             if (code >= 0x4E00 && code <= 0x9FFF) {
                 const p = py[ch];
                 result += p ? p[0] : '';
-            } else if ((code >= 0x61 && code <= 0x7A) || (code >= 0x41 && code <= 0x5A) || (code >= 0x30 && code <= 0x39)) {
+            } else if (/[a-zA-Z0-9]/.test(ch)) {
                 result += ch.toLowerCase();
             }
         }
         return result;
     }
 
-    // 获取文本的完整拼音串（如"小珠光" -> "xiaozhuguang"）
+    /* ── 完整拼音（如"补帧" → "buzhen"） ── */
     toPinyinFull(text) {
         if (!text || typeof text !== 'string') return '';
-        const py = this.getPinyinMap();
+        if (window.pinyinPro) {
+            try {
+                return window.pinyinPro.pinyin(text, { toneType: 'none', type: 'string' }).replace(/\s/g, '');
+            } catch(e) { /* fall through */ }
+        }
+        const py = this._getPinyinFallbackMap();
         let result = '';
         for (const ch of text) {
             const code = ch.charCodeAt(0);
@@ -2617,7 +2622,7 @@ class Xiaozhuguang {
                 e.stopPropagation();
                 menu.remove();
                 if (el.dataset.action === "rename") {
-                    this.showRenameNodeDialog(nodeType, nodeName);
+                    this.showRenameNodeDialog(nodeType);
                 } else if (el.dataset.action === "move") {
                     this.showMoveNodeCategoryDialog(nodeType);
                 } else if (el.dataset.action === "clear") {
