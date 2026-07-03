@@ -1,0 +1,370 @@
+{
+  "id": "f605c33b-d436-4ad7-be98-048683ffcba7",
+  "revision": 0,
+  "last_node_id": 36,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 33,
+      "type": "XiaozhuguangBooleanSelector",
+      "pos": [
+        6240,
+        7360
+      ],
+      "size": [
+        400,
+        66
+      ],
+      "flags": {
+        "resizable": true
+      },
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "输出",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "2243f88372c58b484b192c8ecbfa993fbf9c95c7",
+        "Node name for S&R": "XiaozhuguangBooleanSelector"
+      },
+      "widgets_values": [
+        false,
+        null,
+        ""
+      ],
+      "_xzgGroupId": "g_mr4m7rbxbvpykx",
+      "_xzgGroup": {
+        "id": "g_mr4m7rbxbvpykx",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          33,
+          34,
+          35,
+          36
+        ],
+        "bypassed": false,
+        "bounds": {
+          "x": 6220,
+          "y": 7302,
+          "w": 805.7978966620915,
+          "h": 949.0324922752847
+        },
+        "fontSize": 14,
+        "colorHue": 48,
+        "colorSat": 100,
+        "colorLit": 55,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.65,
+        "headerBgColor": "rgba(0,0,0,0.4)",
+        "titleColor": "#FFD700"
+      }
+    },
+    {
+      "id": 34,
+      "type": "XiaozhuguangTitle",
+      "pos": [
+        6300,
+        7500
+      ],
+      "size": [
+        166,
+        51.199999999999996
+      ],
+      "flags": {
+        "resizable": false
+      },
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": "双击编辑字体大小和颜色\n单击拖动右下角调整大小",
+        "fontSize": 14,
+        "fontColor": "#ffffff",
+        "bgColor": "#2a2a2a",
+        "borderRadius": 8,
+        "textAlign": "center",
+        "letterSpacing": 0,
+        "lineHeight": 1.4,
+        "glowEnabled": false,
+        "glowSize": 15,
+        "glowColor": "#4CAF50",
+        "glowIntensity": 1,
+        "rainbowEnabled": false,
+        "rainbowSpeed": 30,
+        "rainbowStyle": "波浪"
+      },
+      "color": "#fff0",
+      "bgcolor": "transparent",
+      "_xzgGroupId": "g_mr4m7rbxbvpykx",
+      "_xzgGroup": {
+        "id": "g_mr4m7rbxbvpykx",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          33,
+          34,
+          35,
+          36
+        ],
+        "bypassed": false,
+        "bounds": {
+          "x": 6220,
+          "y": 7302,
+          "w": 805.7978966620915,
+          "h": 949.0324922752847
+        },
+        "fontSize": 14,
+        "colorHue": 48,
+        "colorSat": 100,
+        "colorLit": 55,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.65,
+        "headerBgColor": "rgba(0,0,0,0.4)",
+        "titleColor": "#FFD700"
+      }
+    },
+    {
+      "id": 36,
+      "type": "XiaozhuguangUniversalSlider",
+      "pos": [
+        6260,
+        7780
+      ],
+      "size": [
+        270,
+        65
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "*",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "2243f88372c58b484b192c8ecbfa993fbf9c95c7",
+        "Node name for S&R": "XiaozhuguangUniversalSlider",
+        "sliderColor": "#e8c547",
+        "trackColor": "#e8c547",
+        "sliderType": "int",
+        "sliderMin": 0,
+        "sliderMax": 100,
+        "sliderStep": 1,
+        "sliderLabel": "值",
+        "valueOffset": -30,
+        "valueOffsetXPct": 50,
+        "fontSize": 18,
+        "valueColor": "#ffffff",
+        "trackHeight": 4,
+        "thumbSize": 20,
+        "thumbColor": "#f5f0e8",
+        "snaps": [],
+        "useSnaps": false,
+        "snapTickColor": "#555",
+        "snapTickSize": 5
+      },
+      "widgets_values": [
+        1,
+        "int",
+        null
+      ],
+      "_xzgGroupId": "g_mr4m7rbxbvpykx",
+      "_xzgGroup": {
+        "id": "g_mr4m7rbxbvpykx",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          33,
+          34,
+          35,
+          36
+        ],
+        "bypassed": false,
+        "bounds": {
+          "x": 6220,
+          "y": 7302,
+          "w": 805.7978966620915,
+          "h": 949.0324922752847
+        },
+        "fontSize": 14,
+        "colorHue": 48,
+        "colorSat": 100,
+        "colorLit": 55,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.65,
+        "headerBgColor": "rgba(0,0,0,0.4)",
+        "titleColor": "#FFD700"
+      }
+    },
+    {
+      "id": 35,
+      "type": "XiaozhuguangSelector",
+      "pos": [
+        6290,
+        7630
+      ],
+      "size": [
+        180,
+        85
+      ],
+      "flags": {
+        "resizable": false
+      },
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "数值",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "2243f88372c58b484b192c8ecbfa993fbf9c95c7",
+        "Node name for S&R": "XiaozhuguangSelector"
+      },
+      "widgets_values": [
+        "0",
+        null,
+        ""
+      ],
+      "_xzgGroupId": "g_mr4m7rbxbvpykx",
+      "_xzgGroup": {
+        "id": "g_mr4m7rbxbvpykx",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          33,
+          34,
+          35,
+          36
+        ],
+        "bypassed": false,
+        "bounds": {
+          "x": 6220,
+          "y": 7302,
+          "w": 805.7978966620915,
+          "h": 949.0324922752847
+        },
+        "fontSize": 14,
+        "colorHue": 48,
+        "colorSat": 100,
+        "colorLit": 55,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.65,
+        "headerBgColor": "rgba(0,0,0,0.4)",
+        "titleColor": "#FFD700"
+      }
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "workflowRendererVersion": "LG",
+    "ds": {
+      "scale": 0.7217100000000056,
+      "offset": [
+        -5563.502587158084,
+        -7083.512670245065
+      ]
+    },
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "xzgGroups": {
+      "g_mr4m7rbxbvpykx": {
+        "id": "g_mr4m7rbxbvpykx",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          33,
+          34,
+          35,
+          36
+        ],
+        "bypassed": false,
+        "bounds": {
+          "x": 6220,
+          "y": 7302,
+          "w": 805.7978966620915,
+          "h": 949.0324922752847
+        },
+        "fontSize": 14,
+        "colorHue": 48,
+        "colorSat": 100,
+        "colorLit": 55,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.65,
+        "headerBgColor": "rgba(0,0,0,0.4)",
+        "titleColor": "#FFD700"
+      }
+    },
+    "frontendVersion": "1.45.20",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4,
+  "_xzgGroups": {
+    "g_mr4m7rbxbvpykx": {
+      "id": "g_mr4m7rbxbvpykx",
+      "title": "右键标题栏设置",
+      "nodeIds": [
+        33,
+        34,
+        35,
+        36
+      ],
+      "bypassed": false,
+      "bounds": {
+        "x": 6220,
+        "y": 7302,
+        "w": 805.7978966620915,
+        "h": 949.0324922752847
+      },
+      "fontSize": 14,
+      "colorHue": 48,
+      "colorSat": 100,
+      "colorLit": 55,
+      "effect": "none",
+      "effectSpeed": 3,
+      "borderWidth": 2,
+      "borderOpacity": 0.65,
+      "headerBgColor": "rgba(0,0,0,0.4)",
+      "titleColor": "#FFD700"
+    }
+  }
+}

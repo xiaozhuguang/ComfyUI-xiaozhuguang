@@ -600,7 +600,7 @@ function showSettings(node) {
     // 滑块数值联动
     offsetXCtrl.inp.addEventListener("input", () => {
         offsetXCtrl.val.textContent = offsetXCtrl.inp.value;
-        p.valueOffsetXPct = clamp(parseInt(offsetXCtrl.inp.value) || 48, 0, 100);
+        p.valueOffsetXPct = clamp(parseInt(offsetXCtrl.inp.value) || 50, 0, 100);
         updateVis(node);
     });
     trackHCtrl.inp.addEventListener("input", () => {
@@ -676,7 +676,7 @@ function showSettings(node) {
         p.sliderStep  = step;
 
         // 颜色值在颜色选择器拖动时已同步到 p，这里直接采用
-        p.valueOffsetXPct = clamp(parseInt(offsetXCtrl.inp.value) || 48, 0, 100);
+        p.valueOffsetXPct = clamp(parseInt(offsetXCtrl.inp.value) || 50, 0, 100);
         p.trackHeight     = clamp(parseInt(trackHCtrl.inp.value) || 4, 1, 20);
         p.thumbSize       = clamp(parseInt(thumbSizeCtrl.inp.value) || 20, 6, 30);
 
@@ -728,7 +728,7 @@ function setupSlider(node) {
     const D = {
         sliderType: "int", sliderMin: 0, sliderMax: 100,
         sliderStep: 1, sliderLabel: "值", sliderColor: "#e8c547",
-        valueOffset: -30, valueOffsetXPct: 50, fontSize: 18, valueColor: "#ffffff",
+        valueOffset: -10, valueOffsetXPct: 50, fontSize: 14, valueColor: "#ffffff",
         trackHeight: 4, trackColor: "#e8c547", thumbSize: 20, thumbColor: "#f5f0e8",
         snaps: [], useSnaps: false, snapTickColor: "#555", snapTickSize: 5
     };
@@ -796,13 +796,13 @@ function setupSlider(node) {
             const isInt = p.sliderType === "int";
             const color = p.trackColor;
 
-            const ml = 8;
-            const mr = 12;
+            const ml = 6;
+            const mr = 8;
             ds.trackLeft = ml;
             ds.trackW    = W - ml - mr;
 
             /* ── 轨道 ── */
-            const trackY = y + 20;
+            const trackY = y + 15;
             const trackH = p.trackHeight || 4;
             const trackR = trackH / 2;
 
@@ -871,13 +871,13 @@ function setupSlider(node) {
 
             /* ── 数值标签 ── */
             ctx.save();
-            const valFont = `${p.fontSize || 18}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", "Segoe UI", Arial, sans-serif`;
+            const valFont = `${p.fontSize || 14}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", "Segoe UI", Arial, sans-serif`;
             ctx.font = valFont;
             const valText = fmt(v, isInt);
             const valTextW = ctx.measureText(valText).width;
             const maxValX = Math.max(0, ds.trackW - valTextW);
-            const valX = ml + Math.max(0, Math.min(maxValX, maxValX * (p.valueOffsetXPct ?? 48) / 100));
-            const valY = trackY + (p.valueOffset ?? -20);
+            const valX = ml + Math.max(0, Math.min(maxValX, maxValX * (p.valueOffsetXPct ?? 50) / 100));
+            const valY = trackY + (p.valueOffset ?? -10);
 
             ctx.textBaseline = "middle";
             ctx.textAlign    = "left";
@@ -1021,7 +1021,7 @@ function setupSlider(node) {
         },
 
         computeSize(width) {
-            return [width, 35];
+            return [width, 28];
         },
     });
 
@@ -1032,8 +1032,9 @@ function setupSlider(node) {
         if (name === "值") updateVis(this);
     };
 
-    /* 节点宽度 */
-    node.size[0] = Math.max(node.size[0], 150);
+    /* 节点宽度：更窄更紧凑 */
+    node.size[0] = Math.max(node.size[0], 120);
+    node.size[1] = 28;
 }
 
 // ── 注册扩展 ────────────────────────────────
@@ -1085,9 +1086,9 @@ app.registerExtension({
             if (p.sliderMax === undefined) p.sliderMax = 100;
             if (p.sliderStep === undefined) p.sliderStep = 1;
             if (p.valueColor === undefined) p.valueColor = "#ffffff";
-            if (p.valueOffset === undefined) p.valueOffset = -20;
-            if (p.valueOffsetXPct === undefined) p.valueOffsetXPct = 48;
-            if (p.fontSize === undefined) p.fontSize = 15;
+            if (p.valueOffset === undefined) p.valueOffset = -10;
+            if (p.valueOffsetXPct === undefined) p.valueOffsetXPct = 50;
+            if (p.fontSize === undefined) p.fontSize = 14;
             if (p.trackHeight === undefined) p.trackHeight = 4;
             if (p.trackColor === undefined) p.trackColor = p.sliderColor || "#e8c547";
             if (p.thumbSize === undefined) p.thumbSize = 20;
