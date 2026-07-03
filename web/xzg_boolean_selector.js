@@ -63,6 +63,40 @@ function setNodeSettings(node, settings) {
     if (sw) sw.value = JSON.stringify(settings);
 }
 
+// 动态测量标签文字所需的最小节点宽度
+let _measureCanvas = null;
+function getMeasureCtx() {
+    if (!_measureCanvas) {
+        _measureCanvas = document.createElement("canvas");
+        _measureCanvas.width = 1;
+        _measureCanvas.height = 1;
+    }
+    return _measureCanvas.getContext("2d");
+}
+
+function calcMinNodeWidth(settings) {
+    const ctx = getMeasureCtx();
+    const scale = settings.toggleSize || 1.0;
+    const fontSize = clamp(settings.fontSize || 14, 10, 24);
+    const toggleW = 56 * scale;
+
+    let maxLabelW = 0;
+    ctx.font = `${fontSize}px "Microsoft YaHei", "PingFang SC", Arial, sans-serif`;
+    if (settings.trueLabel) {
+        maxLabelW = Math.max(maxLabelW, ctx.measureText(settings.trueLabel).width);
+    }
+    if (settings.falseLabel) {
+        maxLabelW = Math.max(maxLabelW, ctx.measureText(settings.falseLabel).width);
+    }
+
+    // 布局: [左侧标签] + 间距8px + [开关] + 间距8px + [右侧标签]
+    // 加上左右内边距各 16px
+    if (maxLabelW > 0) {
+        return Math.ceil(16 + maxLabelW + 8 + toggleW + 8 + maxLabelW + 16);
+    }
+    return Math.ceil(toggleW + 40);  // 无标签时的最小宽度
+}
+
 // ═══════════════════════════════════════════════
 //  设置控制面板
 // ═════════════════════════════════════════════
@@ -402,8 +436,7 @@ app.registerExtension({
 
                 computeSize(width) {
                     const s = getNodeSettings(node);
-                    const hasLabel = s.trueLabel || s.falseLabel;
-                    const minWidth = hasLabel ? 260 : 160;
+                    const minWidth = calcMinNodeWidth(s);
                     const h = Math.round(28 * s.toggleSize + 8);
                     return [Math.max(width, minWidth), h];
                 },
@@ -424,8 +457,7 @@ app.registerExtension({
 
             // 设置节点尺寸（自适应高度）
             const s0 = getNodeSettings(node);
-            const hasLb = s0.trueLabel || s0.falseLabel;
-            this.size[0] = Math.max(hasLb ? 260 : 160, this.size[0]);
+            this.size[0] = Math.max(calcMinNodeWidth(s0), this.size[0]);
             this.size[1] = Math.round(28 * s0.toggleSize + 8);
         };
     },
