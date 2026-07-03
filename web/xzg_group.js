@@ -292,6 +292,11 @@ const XZGGroup = {
 
             const e = g.effect;
             if (!e || e === 'none') {
+                // 每帧重新强制应用自定义颜色，防止拖动后颜色丢失
+                const h = g.colorHue ?? 48;
+                const s = g.colorSat ?? 100;
+                const l = g.colorLit ?? 55;
+                el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${bo})`;
                 el.style.boxShadow = 'none';
                 el.style.borderImage = 'none';
                 el.style.background = 'transparent';
@@ -395,10 +400,19 @@ const XZGGroup = {
                 if (refs.title) refs.title.style.color = `hsla(${h},${s}%,${l}%,0.85)`;
                 break;
             }
-            default:
+            default: {
+                // 每帧重新应用自定义边框颜色，防止拖动/缩放时颜色丢失
+                const h = g.colorHue ?? 48;
+                const s = g.colorSat ?? 100;
+                const l = g.colorLit ?? 55;
+                el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${bo})`;
                 el.style.boxShadow = 'none';
                 el.style.borderImage = 'none';
                 el.style.background = 'transparent';
+                if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
+                if (refs.title && !hasEffect) refs.title.style.color = g.titleColor || '#FFD700';
+                break;
+            }
             }
         }
     },
