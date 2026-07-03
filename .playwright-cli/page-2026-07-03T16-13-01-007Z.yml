@@ -1,0 +1,4 @@
+- generic [active] [ref=e1]:
+  - status "Loading ComfyUI" [ref=e2]:
+    - img [ref=e3]
+  - text: .. .. ..

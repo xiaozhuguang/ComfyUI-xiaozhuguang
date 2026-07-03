@@ -292,11 +292,6 @@ const XZGGroup = {
 
             const e = g.effect;
             if (!e || e === 'none') {
-                // 每帧重新强制应用自定义颜色，防止拖动后颜色丢失
-                const h = g.colorHue ?? 48;
-                const s = g.colorSat ?? 100;
-                const l = g.colorLit ?? 55;
-                el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${bo})`;
                 el.style.boxShadow = 'none';
                 el.style.borderImage = 'none';
                 el.style.background = 'transparent';
@@ -400,19 +395,10 @@ const XZGGroup = {
                 if (refs.title) refs.title.style.color = `hsla(${h},${s}%,${l}%,0.85)`;
                 break;
             }
-            default: {
-                // 每帧重新应用自定义边框颜色，防止拖动/缩放时颜色丢失
-                const h = g.colorHue ?? 48;
-                const s = g.colorSat ?? 100;
-                const l = g.colorLit ?? 55;
-                el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${bo})`;
+            default:
                 el.style.boxShadow = 'none';
                 el.style.borderImage = 'none';
                 el.style.background = 'transparent';
-                if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
-                if (refs.title && !hasEffect) refs.title.style.color = g.titleColor || '#FFD700';
-                break;
-            }
             }
         }
     },
@@ -1187,7 +1173,18 @@ const XZGGroup = {
             this.syncGroupsToExtra();
         };
 
-        const cleanupModal = () => { if (hiddenPicker && hiddenPicker.parentNode) hiddenPicker.remove(); if (titleColorPicker && titleColorPicker.parentNode) titleColorPicker.remove(); if (modal.parentNode) modal.remove(); };
+        // 点击外部关闭（定义在按钮处理之前，确保 cleanupModal 捕获最新版本）
+        modal.addEventListener('mousedown', e => e.stopPropagation());
+        let closeOutFn = null;
+        const cleanupModal = () => {
+            if (closeOutFn) document.removeEventListener('mousedown', closeOutFn);
+            if (hiddenPicker && hiddenPicker.parentNode) hiddenPicker.remove();
+            if (titleColorPicker && titleColorPicker.parentNode) titleColorPicker.remove();
+            if (modal.parentNode) modal.remove();
+        };
+        closeOutFn = e => { if (!modal.contains(e.target)) { revertSnapshot(); cleanupModal(); } };
+        setTimeout(() => document.addEventListener('mousedown', closeOutFn), 50);
+
         modal.querySelector('.xzg-set-cancel').addEventListener('click', () => {
             revertSnapshot();
             cleanupModal();
@@ -1234,10 +1231,7 @@ const XZGGroup = {
             cleanupModal();
         });
 
-        // 点击外部关闭
-        modal.addEventListener('mousedown', e => e.stopPropagation());
-        const closeOut = e => { if (!modal.contains(e.target)) { revertSnapshot(); cleanupModal(); document.removeEventListener('mousedown', closeOut); } };
-        setTimeout(() => document.addEventListener('mousedown', closeOut), 50);
+        // （closeOut 监听已在上面 cleanupModal 中统一管理）
 
         // 聚焦标题输入
         setTimeout(() => modal.querySelector('.xzg-set-title').focus(), 100);
@@ -1372,10 +1366,10 @@ const XZGGroup = {
             graph.setDirtyCanvas?.(true, true);
         };
         const onUp = () => {
-            graph.change?.();
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
             self.syncGroupsToExtra();
+            graph.change?.();
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
@@ -1406,8 +1400,8 @@ const XZGGroup = {
         const onUp = () => {
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
-            app.graph?.change?.();
             self.syncGroupsToExtra();
+            app.graph?.change?.();
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
@@ -1522,8 +1516,9 @@ const XZGGroup = {
             }
         }
 
-        graph.setDirtyCanvas?.(true, true); graph.change?.();
+        // 先保存当前状态到 extra，再触发 graph.change（防止 configure 钩子读取旧数据）
         this.syncGroupsToExtra();
+        graph.setDirtyCanvas?.(true, true); graph.change?.();
     },
 
     /* 计算子编组被父编组覆盖的面积比例 (0~1) */
@@ -1736,6 +1731,34 @@ const XZGGroup = {
                         if (pendingFromTop) console.log('[小珠光编组] LGraph.configure检测到编组数据:', Object.keys(pendingFromTop).length, '个');
                         c.apply(this, arguments);
                         if (app?.graph !== this) return;
+
+                        // 保存当前用户自定义属性（颜色、标题、效果等）
+                        const savedCustomProps = {};
+                        for (const [gid, g] of Object.entries(self.groups)) {
+                            savedCustomProps[gid] = {
+                                title: g.title,
+                                fontSize: g.fontSize,
+                                colorHue: g.colorHue,
+                                colorSat: g.colorSat,
+                                colorLit: g.colorLit,
+                                effect: g.effect,
+                                effectSpeed: g.effectSpeed,
+                                borderWidth: g.borderWidth,
+                                borderOpacity: g.borderOpacity,
+                                headerBgColor: g.headerBgColor,
+                                titleColor: g.titleColor,
+                            };
+                        }
+
+                        // 将自定义属性合并到序列化数据中，确保 restoreGroups 读取正确值
+                        if (pendingFromTop) {
+                            for (const [gid, props] of Object.entries(savedCustomProps)) {
+                                if (pendingFromTop[gid]) {
+                                    Object.assign(pendingFromTop[gid], props);
+                                }
+                            }
+                        }
+
                         for (const gid of Object.keys(self.groups)) self.killGroup(gid);
                         self.groups = {};
                         self._needRestore = true;
@@ -1921,8 +1944,16 @@ const XZGGroup = {
         app.graph._nodes.forEach(n => { if (n._xzgGroupId) (map[n._xzgGroupId] ??= []).push(n.id); });
         for (const [gid, nids] of Object.entries(map)) {
             if (!this.groups[gid]) {
+                // 优先从 extra 恢复完整数据（含用户自定义颜色等），仅作兜底才用默认值
+                const fromExtra = app?.graph?.extra?.xzgGroups?.[gid];
                 const bounds = this.calcBounds(nids) || { x: 0, y: 0, w: 300, h: 200 };
-                this.groups[gid] = { id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, bounds, fontSize: 14, colorHue: 48, colorSat: 100, colorLit: 55, effect: 'none', effectSpeed: 3, borderWidth: 2, borderOpacity: 0.65, headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700' };
+                this.groups[gid] = fromExtra ? { ...fromExtra } : {
+                    id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, bounds,
+                    fontSize: 14, colorHue: 48, colorSat: 100, colorLit: 55,
+                    effect: 'none', effectSpeed: 3,
+                    borderWidth: 2, borderOpacity: 0.65,
+                    headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700'
+                };
             } else {
                 this.groups[gid].nodeIds = nids;
                 // 确保bounds存在
