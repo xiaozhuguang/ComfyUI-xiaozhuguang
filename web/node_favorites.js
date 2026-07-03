@@ -3755,7 +3755,7 @@ app.registerExtension({
 
         if (nodeData.name === "XiaozhuguangTitle") {
             const DEFAULT_PROPS = {
-                text: "双击编辑字体大小和颜色\n单击拖动右下角调整大小",
+                text: "双击编辑",
                 fontSize: 14,
                 fontColor: "#ffffff",
                 bgColor: "#2a2a2a",
