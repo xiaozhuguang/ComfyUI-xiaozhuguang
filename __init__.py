@@ -177,6 +177,31 @@ class XiaozhuguangSelector:
 
 
 
+class XiaozhuguangBooleanSelector:
+    """
+    小珠光布尔选择器
+    开关切换 True/False，输出布尔值
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "布尔值": ("BOOLEAN", {"default": False}),
+                "_xz_settings": ("STRING", {"default": "", "multiline": True}),
+            },
+        }
+
+    RETURN_TYPES = ("BOOLEAN",)
+    RETURN_NAMES = ("布尔输出",)
+    FUNCTION = "execute"
+    CATEGORY = "小珠光"
+    OUTPUT_NODE = False
+
+    def execute(self, 布尔值, _xz_settings=""):
+        return (bool(布尔值),)
+
+
 class XiaozhuguangTitle:
     @classmethod
     def INPUT_TYPES(cls):
@@ -275,6 +300,7 @@ class XiaozhuguangUniversalSlider:
 
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangSelector": XiaozhuguangSelector,
+    "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
     "XiaozhuguangTitle": XiaozhuguangTitle,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
@@ -283,6 +309,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangSelector": "小珠光选择器",
+    "XiaozhuguangBooleanSelector": "小珠光布尔",
     "XiaozhuguangTitle": "小珠光标题",
     "XiaozhuguangNumberSwitch": "小珠光编号切换",
     "XiaozhuguangUniversalSlider": "小珠光万能滑条",
