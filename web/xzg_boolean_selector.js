@@ -259,7 +259,7 @@ function openBoolSettingsPanel(node) {
         // 同步更新节点宽度以适配标签文字
         const newW = calcMinNodeWidth(ns);
         if (node.size[0] < newW) node.size[0] = newW;
-        node.size[1] = Math.round(28 * ns.toggleSize + 8);
+        node.size[1] = Math.round(20 * ns.toggleSize + 4);
         node.setDirtyCanvas(true, true);
     }
 
@@ -336,10 +336,10 @@ app.registerExtension({
                     const scale = s.toggleSize;
 
                     const toggleW = 56 * scale;
-                    const toggleH = 28 * scale;
+                    const toggleH = 20 * scale;
                     const toggleR = toggleH / 2;
                     const knobR = toggleH * 0.38;
-                    const pad = 4;
+                    const pad = 2;
                     const cx = W / 2;
                     const cy = y + pad + toggleH / 2;
                     const tx = cx - toggleW / 2;
@@ -431,8 +431,8 @@ app.registerExtension({
                     const W = node.size[0];
                     const scale = s.toggleSize;
                     const toggleW = 56 * scale;
-                    const toggleH = 28 * scale;
-                    const pad = 4;
+                    const toggleH = 20 * scale;
+                    const pad = 2;
                     const widgetH = toggleH + pad * 2;
                     const cx = W / 2;
                     const cy = (this.y || 0) + widgetH / 2;
@@ -462,7 +462,7 @@ app.registerExtension({
                 computeSize(width) {
                     const s = getNodeSettings(node);
                     const minWidth = calcMinNodeWidth(s);
-                    const h = Math.round(28 * s.toggleSize + 8);
+                    const h = Math.round(20 * s.toggleSize + 4);
                     return [Math.max(width, minWidth), h];
                 },
             });
@@ -482,7 +482,7 @@ app.registerExtension({
             // 设置节点尺寸（自适应高度）
             const s0 = getNodeSettings(node);
             this.size[0] = Math.max(calcMinNodeWidth(s0), this.size[0]);
-            this.size[1] = Math.round(28 * s0.toggleSize + 8);
+            this.size[1] = Math.round(20 * s0.toggleSize + 4);
         };
     },
 });

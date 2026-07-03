@@ -728,7 +728,7 @@ function setupSlider(node) {
     const D = {
         sliderType: "int", sliderMin: 0, sliderMax: 100,
         sliderStep: 1, sliderLabel: "值", sliderColor: "#e8c547",
-        valueOffset: -10, valueOffsetXPct: 50, fontSize: 14, valueColor: "#ffffff",
+        valueOffset: -20, valueOffsetXPct: 50, fontSize: 14, valueColor: "#ffffff",
         trackHeight: 4, trackColor: "#e8c547", thumbSize: 20, thumbColor: "#f5f0e8",
         snaps: [], useSnaps: false, snapTickColor: "#555", snapTickSize: 5
     };
@@ -802,7 +802,7 @@ function setupSlider(node) {
             ds.trackW    = W - ml - mr;
 
             /* ── 轨道 ── */
-            const trackY = y + 15;
+            const trackY = y + 12;
             const trackH = p.trackHeight || 4;
             const trackR = trackH / 2;
 
@@ -877,7 +877,7 @@ function setupSlider(node) {
             const valTextW = ctx.measureText(valText).width;
             const maxValX = Math.max(0, ds.trackW - valTextW);
             const valX = ml + Math.max(0, Math.min(maxValX, maxValX * (p.valueOffsetXPct ?? 50) / 100));
-            const valY = trackY + (p.valueOffset ?? -10);
+            const valY = trackY + (p.valueOffset ?? -20);
 
             ctx.textBaseline = "middle";
             ctx.textAlign    = "left";
@@ -1021,7 +1021,7 @@ function setupSlider(node) {
         },
 
         computeSize(width) {
-            return [width, 28];
+            return [width, 22];
         },
     });
 
@@ -1034,7 +1034,7 @@ function setupSlider(node) {
 
     /* 节点宽度：更窄更紧凑 */
     node.size[0] = Math.max(node.size[0], 120);
-    node.size[1] = 28;
+    node.size[1] = 22;
 }
 
 // ── 注册扩展 ────────────────────────────────
@@ -1086,7 +1086,7 @@ app.registerExtension({
             if (p.sliderMax === undefined) p.sliderMax = 100;
             if (p.sliderStep === undefined) p.sliderStep = 1;
             if (p.valueColor === undefined) p.valueColor = "#ffffff";
-            if (p.valueOffset === undefined) p.valueOffset = -10;
+            if (p.valueOffset === undefined) p.valueOffset = -20;
             if (p.valueOffsetXPct === undefined) p.valueOffsetXPct = 50;
             if (p.fontSize === undefined) p.fontSize = 14;
             if (p.trackHeight === undefined) p.trackHeight = 4;
