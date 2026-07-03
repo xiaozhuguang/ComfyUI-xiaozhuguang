@@ -4004,12 +4004,14 @@ app.registerExtension({
                 const ctx = cv ? cv.getContext("2d") : null;
                 let maxWidth = 0;
                 if (ctx) {
+                    ctx.save();
                     ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                     ctx.letterSpacing = `${p.letterSpacing || 0}px`;
                     lines.forEach(line => {
                         const w = ctx.measureText(line).width;
                         if (w > maxWidth) maxWidth = w;
                     });
+                    ctx.restore();
                 } else {
                     lines.forEach(line => {
                         const w = fontSize * line.length * 0.6 + (line.length - 1) * (p.letterSpacing || 0);
@@ -4054,12 +4056,14 @@ app.registerExtension({
 
                 let maxWidth = 0;
                 if (ctx) {
+                    ctx.save();
                     ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                     ctx.letterSpacing = `${p.letterSpacing || 0}px`;
                     lines.forEach(line => {
                         const w = ctx.measureText(line).width;
                         if (w > maxWidth) maxWidth = w;
                     });
+                    ctx.restore();
                 }
                 const autoW = Math.max(50, maxWidth + 12);
                 const autoH = Math.max(30, lines.length * lineHeight + 12);

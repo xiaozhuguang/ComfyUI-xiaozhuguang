@@ -178,7 +178,7 @@ app.registerExtension({
 
                 const infoWidget = this.widgets.find(w => w.name == 'info')
                 if (infoWidget) {
-                    infoWidget.computeSize = _ => [0, -1];
+                    infoWidget.computeSize = _ => [0, 0];
                     infoWidget.hidden = true;
                     this._infoWidget = infoWidget;
                     setTimeout(() => {
