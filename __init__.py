@@ -192,14 +192,14 @@ class XiaozhuguangBooleanSelector:
             },
         }
 
-    RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("布尔输出",)
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("输出",)
     FUNCTION = "execute"
     CATEGORY = "小珠光"
     OUTPUT_NODE = False
 
     def execute(self, 布尔值, _xz_settings=""):
-        return (bool(布尔值),)
+        return (int(bool(布尔值)),)
 
 
 class XiaozhuguangTitle:

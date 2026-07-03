@@ -1625,9 +1625,9 @@ class Xiaozhuguang {
                         }
                     }
                 };
-                const sepIndex = options.findIndex(o => o === null);
-                if (sepIndex >= 0) {
-                    options.splice(sepIndex, 0, wfOption);
+                // 固定插入到第7行（下标6）
+                if (options.length > 6) {
+                    options.splice(6, 0, wfOption);
                 } else {
                     options.push(null, wfOption);
                 }
@@ -1644,9 +1644,9 @@ class Xiaozhuguang {
                         }
                     }
                 };
-                const sepIndex = options.findIndex(o => o === null);
-                if (sepIndex >= 0) {
-                    options.splice(sepIndex, 0, favOption);
+                // 固定插入到第7行（下标6）
+                if (options.length > 6) {
+                    options.splice(6, 0, favOption);
                 } else {
                     options.push(null, favOption);
                 }
@@ -3737,25 +3737,17 @@ app.registerExtension({
                 }
             }
 
-            if (!window._xz_selector_menu_extended) {
-                window._xz_selector_menu_extended = true;
-                const origGetNodeMenu = LGraphCanvas.prototype.getNodeMenuOptions;
-                LGraphCanvas.prototype.getNodeMenuOptions = function(node) {
-                    const options = origGetNodeMenu.apply(this, arguments);
-                    if (!options || !Array.isArray(options)) return options;
-                    if (node.type !== "XiaozhuguangSelector") return options;
-
-                    options.unshift({
-                        content: `<span style="color:#FFD700;">小珠光选择器设置</span>`,
-                        callback: () => {
-                            showLabelsSettingsDialog(node, (newLabels, newColors, newCount) => {
-                                rebuildSelectorNode(node);
-                            });
-                        }
-                    });
-                    return options;
-                };
-            }
+            // 通过 getExtraMenuOptions 添加右键菜单（永远第一行）
+            const origGetExtra = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+                if (origGetExtra) origGetExtra.apply(this, arguments);
+                options.splice(0, 0, null, {
+                    content: `<span style="color:#FFD700;">小珠光选择器设置</span>`,
+                    callback: () => {
+                        showLabelsSettingsDialog(this, () => { rebuildSelectorNode(this); });
+                    }
+                });
+            };
 
             // 注：DOM widget 创建逻辑已移除，选择器 Canvas 绘制版在 xzg_selector.js 中实现
             // 此处保留设置对话框和右键菜单即可
@@ -4230,6 +4222,18 @@ app.registerExtension({
                 });
 
                 ctx.restore();
+            };
+
+            // 右键菜单：小珠光主题永远第13行（下标12）
+            const origTitleExtra = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+                if (origTitleExtra) origTitleExtra.apply(this, arguments);
+                options.splice(12, 0, null, {
+                    content: `<span style="color:#FFD700;">小珠光主题</span>`,
+                    callback: () => {
+                        if (this.onDblClick) this.onDblClick();
+                    }
+                });
             };
 
             nodeType.prototype.onDblClick = function () {

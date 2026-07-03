@@ -53,7 +53,7 @@ function getNodeSettings(node) {
         onColor: parsed.onColor || "#4CAF50",
         offColor: parsed.offColor || "#E53935",
         knobColor: parsed.knobColor || "#ffffff",
-        fontSize: clamp(parsed.fontSize || 14, 10, 24),
+        fontSize: clamp(parsed.fontSize || 14, 10, 50),
         toggleSize: clamp(parsed.toggleSize || 1.0, 0.5, 2.5),
     };
 }
@@ -77,7 +77,7 @@ function getMeasureCtx() {
 function calcMinNodeWidth(settings) {
     const ctx = getMeasureCtx();
     const scale = settings.toggleSize || 1.0;
-    const fontSize = clamp(settings.fontSize || 14, 10, 24);
+    const fontSize = clamp(settings.fontSize || 14, 10, 50);
     const toggleW = 56 * scale;
 
     let maxLabelW = 0;
@@ -115,9 +115,6 @@ function openBoolSettingsPanel(node) {
     panel.className = "xzg-bool-settings-panel";
     Object.assign(panel.style, {
         position: "fixed",
-        top: "50%",
-        left: "50%",
-        transform: "translate(-50%, -50%)",
         width: "340px",
         background: "#1e1e1e",
         borderRadius: "12px",
@@ -127,6 +124,28 @@ function openBoolSettingsPanel(node) {
         color: "#ddd",
         overflow: "hidden",
     });
+
+    // 定位：参考小珠光滑条规则，与节点对齐不遮挡
+    const rect = app.canvas.canvas.getBoundingClientRect();
+    const nodeScale = app.canvas.ds.scale;
+    const nodeLeft = (node.pos[0] + app.canvas.ds.offset[0]) * nodeScale + rect.left;
+    const nodeTop = (node.pos[1] + app.canvas.ds.offset[1]) * nodeScale + rect.top;
+    const nodeWidth = (node.size?.[0] || 200) * nodeScale;
+
+    const dlgWidth = 340;
+    const dlgHeight = 520;
+    const gap = 15;
+
+    let dlgLeft = nodeLeft + nodeWidth + gap;
+    let dlgTop = nodeTop - 10;
+
+    if (dlgLeft + dlgWidth > rect.right - 10) dlgLeft = nodeLeft - dlgWidth - gap;
+    if (dlgLeft < rect.left + 10) dlgLeft = rect.left + 10;
+    if (dlgTop < rect.top + 10) dlgTop = rect.top + 10;
+    if (dlgTop + dlgHeight > rect.bottom - 10) dlgTop = rect.bottom - dlgHeight - 10;
+
+    panel.style.left = dlgLeft + "px";
+    panel.style.top = dlgTop + "px";
 
     panel.innerHTML = `
         <div id="xzg-bool-header" style="padding:16px 20px;background:#2a2a2a;border-bottom:1px solid #3a3a3a;display:flex;align-items:center;justify-content:space-between;cursor:move">
@@ -168,7 +187,7 @@ function openBoolSettingsPanel(node) {
             <!-- 标签字号 -->
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <label style="font-size:12px;color:#aaa;white-space:nowrap">标签字号</label>
-                <input type="range" id="xzg-font-size" min="10" max="24" value="${s.fontSize}" style="flex:1;accent-color:#4CAF50" />
+                <input type="range" id="xzg-font-size" min="10" max="50" value="${s.fontSize}" style="flex:1;accent-color:#4CAF50" />
                 <span id="xzg-font-val" style="font-size:12px;color:#888;width:28px;text-align:right">${s.fontSize}</span>
             </div>
         </div>
@@ -235,7 +254,7 @@ function openBoolSettingsPanel(node) {
         ns.knobColor = panel.querySelector("#xzg-knob-color").value;
         ns.trueLabel = panel.querySelector("#xzg-true-label").value;
         ns.falseLabel = panel.querySelector("#xzg-false-label").value;
-        ns.fontSize = clamp(parseInt(panel.querySelector("#xzg-font-size").value), 10, 24);
+        ns.fontSize = clamp(parseInt(panel.querySelector("#xzg-font-size").value), 10, 50);
         setNodeSettings(node, ns);
         // 同步更新节点宽度以适配标签文字
         const newW = calcMinNodeWidth(ns);
@@ -288,9 +307,10 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
-            this.resizable = false;
+            // 允许拖拽调整节点大小
+            this.resizable = true;
             this.flags = this.flags || {};
-            this.flags.resizable = false;
+            this.flags.resizable = true;
 
             const settingsWidget = this.widgets?.find(w => w.name === "_xz_settings");
             if (settingsWidget) settingsWidget.hidden = true;
@@ -379,7 +399,7 @@ app.registerExtension({
 
                         // 关闭标签在左侧
                         if (offLabel) {
-                            ctx.fillStyle = currentValue ? "#555" : s.offColor;
+                            ctx.fillStyle = currentValue ? "#aaa" : s.offColor;
                             ctx.font = `${s.fontSize}px "Microsoft YaHei", "PingFang SC", Arial, sans-serif`;
                             ctx.textAlign = "right";
                             ctx.textBaseline = "middle";
@@ -388,7 +408,7 @@ app.registerExtension({
 
                         // 开启标签在右侧
                         if (onLabel) {
-                            ctx.fillStyle = currentValue ? s.onColor : "#555";
+                            ctx.fillStyle = currentValue ? s.onColor : "#aaa";
                             ctx.font = `${s.fontSize}px "Microsoft YaHei", "PingFang SC", Arial, sans-serif`;
                             ctx.textAlign = "left";
                             ctx.textBaseline = "middle";
@@ -451,10 +471,9 @@ app.registerExtension({
             const custom = this.widgets.pop();
             this.widgets.splice(widgetIndex + 1, 0, custom);
 
-            // 右键菜单：打开设置面板
+            // 右键菜单：打开设置面板（永远第一行）
             chainCallback(this, "getExtraMenuOptions", function(_, options) {
-                options.push(null); // 分隔线
-                options.push({
+                options.splice(0, 0, null, {
                     content: "⚙ <span style='color:#FFD700'>小珠光布尔设置</span>",
                     callback: () => openBoolSettingsPanel(node),
                 });

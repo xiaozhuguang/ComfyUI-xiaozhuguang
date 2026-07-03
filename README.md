@@ -19,9 +19,12 @@ ComfyUI 美化增强插件，提供节点收藏管理、主题美化、编组管
 | 节点名称 | 说明 |
 |---------|------|
 | **小珠光选择器** | 点击按钮选择标签，输出对应整数值 |
+| **小珠光布尔** | 开关切换 True/False，输出 0/1 整数值 |
 | **小珠光标题** | 标题装饰节点，无实际输出 |
 | **小珠光滑条** | 通过滑块调整浮点数值 |
+| **小珠光万能滑条** | 功能丰富的滑条节点，支持自定义样式 |
 | **小珠光编号切换** | 0–49 路输入选择器，在多种数据类型间切换 |
+| **小珠光点编辑器** | SAM 点坐标可视化编辑器 |
 
 ---
 
@@ -209,16 +212,50 @@ ComfyUI-xiaozhuguang/
 ├── README.md                    # 本文档
 ├── requirements.txt             # 依赖声明（无外部依赖）
 ├── .gitignore                   # Git 忽略规则
+├── docs/
+│   └── skill-panel-alignment.txt # 设置面板弹出对齐 Skill 文档
 └── web/
     ├── node_favorites.js        # 收藏管理核心逻辑
     ├── node_favorites.css       # 收藏面板样式
+    ├── xzg_boolean_selector.js  # 布尔选择器前端
     ├── xzg_group.js             # 编组功能
     ├── xzg_group.css            # 编组样式
     ├── xzg_number_switch.js     # 编号切换节点前端
+    ├── xzg_points_editor.js     # 点编辑器前端
+    ├── xzg_selector.js          # 选择器前端
+    ├── xzg_slider.js            # 滑条前端
     ├── xzg_theme.js             # 主题核心
     ├── xzg_theme_presets.js     # 主题预设
-    └── xzg_theme_panel.js       # 主题面板
+    ├── xzg_theme_panel.js       # 主题面板
+    └── xzg_universal_slider.js  # 万能滑条前端
 ```
+
+---
+
+## 📋 更新日志
+
+### v1.2.0 (2026-07-03)
+
+**新增：**
+- 新增「小珠光布尔」节点，开关切换输出 0/1 整数值
+- 设置面板弹出定位 Skill 文档 (`docs/skill-panel-alignment.txt`)
+
+**修复：**
+- 点编辑器大下巴问题：统一 `computeSize` 与 container 高度控制逻辑
+- 布尔选择器标签文字长度自适应节点宽度
+- 布尔选择器设置面板实时预览时同步更新节点边框尺寸
+- 未选中标签颜色过暗 (#555 → #aaa)
+- 标签字号上限提升 (24 → 50)
+
+**优化：**
+- 右键菜单位置排序统一规范：
+  - 滑条/布尔/选择器设置：永远第 1 行 (`splice(0,0)`)
+  - 收藏/取消收藏：永远第 7 行 (`splice(6,0)`)
+  - 小珠光主题设置：永远第 13 行 (`splice(12,0)`)
+- 设置面板弹出对齐节点（参考滑条规则），避免遮挡
+- 布尔节点支持拖拽调整大小
+- 布尔输出类型从 BOOLEAN 改为 INT（兼容性更好）
+- 选择器右键菜单改用标准 `getExtraMenuOptions`，不再覆盖原型
 
 ---
 

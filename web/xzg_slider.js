@@ -455,7 +455,7 @@ import { app } from "../../scripts/app.js";
                             XzgSliderSettings.show(node);
                         }
                     };
-                    options.unshift(null, sliderItem);
+                    options.push(null, sliderItem);
                     return options;
                 };
             } catch(e) {}
