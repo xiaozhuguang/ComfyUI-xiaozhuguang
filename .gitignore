@@ -15,3 +15,5 @@ Thumbs.db
 .idea/
 .vscode/
 *.sublime-*
+".playwright-cli/"  
+"comfyui-state.png"  
