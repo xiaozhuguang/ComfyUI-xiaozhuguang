@@ -217,6 +217,7 @@ function openBoolSettingsPanel(node) {
         let ns = getNodeSettings(node);
         ns.toggleSize = clamp(parseInt(toggleSlider.value) / 100, 0.5, 2.5);
         setNodeSettings(node, ns);
+        node.size[0] = Math.max(calcMinNodeWidth(ns), node.size[0]);
         node.setDirtyCanvas(true, true);
     });
 
@@ -236,6 +237,10 @@ function openBoolSettingsPanel(node) {
         ns.falseLabel = panel.querySelector("#xzg-false-label").value;
         ns.fontSize = clamp(parseInt(panel.querySelector("#xzg-font-size").value), 10, 24);
         setNodeSettings(node, ns);
+        // 同步更新节点宽度以适配标签文字
+        const newW = calcMinNodeWidth(ns);
+        if (node.size[0] < newW) node.size[0] = newW;
+        node.size[1] = Math.round(28 * ns.toggleSize + 8);
         node.setDirtyCanvas(true, true);
     }
 
