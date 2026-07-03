@@ -29,7 +29,8 @@ app.registerExtension({
         if (nodeName === "XiaozhuguangPointsEditor") {
             chainCallback(nodeType.prototype, "onNodeCreated", function() {
                 const container = document.createElement("div");
-                container.style.cssText = "position: relative; width: 100%; height: 100%; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
+                // 注意：高度由 onResize/onDrawForeground 通过 JS 精确控制，与 computeSize 保持一致
+                container.style.cssText = "position: relative; width: 100%; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = "flex: 0 0 32px; width: 100%; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 4px; box-sizing: border-box; border-bottom: 1px solid #333; z-index: 10;";
@@ -209,22 +210,23 @@ app.registerExtension({
                     }
                 }, 1)
 
-                widget.computeSize = (width) => {
-                    const nodeHeight = this.size ? this.size[1] : 500;
-                    const widgetHeight = Math.max(245, nodeHeight - 135);
-                    return [width, widgetHeight];
+                // 统一偏移量：节点高度 → widget高度的转换
+                // 覆盖标题栏(~30px) + 输入/输出连接区 + 间距等非widget区域
+                const WIDGET_HEIGHT_OFFSET = 130;
+
+                const calcWidgetHeight = (nodeH) => Math.max(50, nodeH - WIDGET_HEIGHT_OFFSET);
+
+                // 返回 height = -1 告诉 ComfyUI："给我多少空间我都填满"
+                widget.computeSize = (width) => [width, -1];
+
+                // 同步更新 container 高度——根据实际节点尺寸计算
+                const syncContainerHeight = (size) => {
+                    const h = calcWidgetHeight(size[1]);
+                    container.style.height = h + 'px';
                 };
-
-                chainCallback(this, "onResize", function(size) {
-                    const containerHeight = Math.max(245, size[1] - 150);
-                    container.style.height = containerHeight + "px";
-                });
-
+                chainCallback(this, "onResize", syncContainerHeight);
                 chainCallback(this, "onDrawForeground", function(ctx) {
-                    const containerHeight = Math.max(245, this.size[1] - 150);
-                    if (container.style.height !== containerHeight + "px") {
-                        container.style.height = containerHeight + "px";
-                    }
+                    syncContainerHeight(this.size);
                 });
 
                 chainCallback(this, "onExecuted", function(message) {
@@ -608,9 +610,16 @@ app.registerExtension({
 
                 this.redrawCanvas();
 
+                // 只设置宽度限制初始大小，高度由 computeSize 动态决定
                 const nodeWidth = Math.max(420, this.size[0] || 420);
-                const nodeHeight = 540;
-                this.setSize([nodeWidth, nodeHeight]);
+                if (!this.size || this.size[1] < 300) {
+                    this.setSize([nodeWidth, 400]);
+                } else {
+                    this.setSize([nodeWidth, this.size[1]]);
+                }
+
+                // 允许自由缩放：清除可能的尺寸约束
+                if (this.minimumSize) this.minimumSize = undefined;
 
                 this.updateUndoRedoUI();
             });
