@@ -29,6 +29,28 @@ const XZGGroup = {
         this.waitForGraph();
     },
 
+    /* ── 鼠标中键事件转发：设置 pointer-events: none 后向画布派发事件 ── */
+    _dispatchMiddleDown(clientX, clientY) {
+        const targets = [];
+        // 1) elementFromPoint 找到的实际下方元素（跳过已设 pointer-events: none 的编组元素）
+        const under = document.elementFromPoint(clientX, clientY);
+        if (under) targets.push(under);
+        // 2) app.canvas.canvas（画布 DOM 元素）
+        const cvs = app?.canvas?.canvas;
+        if (cvs && !targets.includes(cvs)) targets.push(cvs);
+        // 3) app.canvas 的 container/父元素
+        const container = app?.canvas?.graphcanvas?.parentElement || app?.canvas?.canvas?.parentElement;
+        if (container && !targets.includes(container)) targets.push(container);
+
+        const opts = { clientX, clientY, button: 1, buttons: 4, bubbles: true, cancelable: true };
+        for (const t of targets) {
+            t.dispatchEvent(new MouseEvent('mousedown', opts));
+            t.dispatchEvent(new PointerEvent('pointerdown', {
+                ...opts, pointerId: 1, pointerType: 'mouse', isPrimary: true
+            }));
+        }
+    },
+
     /* ── 覆盖层 ── */
     createOverlay() {
         const o = document.createElement('div');
@@ -412,18 +434,6 @@ const XZGGroup = {
         if (!graph?._nodes) return;
         if (!bounds) return;
 
-        const groupArea = bounds.w * bounds.h;
-
-        const childGroupIds = new Set();
-        for (const [otherGid, otherG] of Object.entries(this.groups)) {
-            if (otherGid === group.id) continue;
-            const ob = otherG.bounds;
-            if (!ob) continue;
-            if (this._getOverlapRatio(bounds, ob) > 0.5) {
-                childGroupIds.add(otherGid);
-            }
-        }
-
         const inBounds = new Set();
         const inBoundsNodes = [];
 
@@ -431,29 +441,13 @@ const XZGGroup = {
             if (!n?.pos || typeof n.pos[0] !== 'number' || typeof n.pos[1] !== 'number') return;
             const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
             if (typeof nw !== 'number' || typeof nh !== 'number') return;
-            const cx = n.pos[0] + nw / 2, cy = n.pos[1] + nh / 2;
-            if (cx >= bounds.x && cx <= bounds.x + bounds.w && cy >= bounds.y && cy <= bounds.y + bounds.h) {
-                // 子编组的节点由子编组管理，不归入当前编组
-                if (n._xzgGroupId && this._idInSet(childGroupIds, n._xzgGroupId)) return;
-
-                // 节点已属于面积更小的编组 → 不抢走，优先级：小编组 > 大编组
-                if (n._xzgGroupId && !this._idEq(n._xzgGroupId, group.id)) {
-                    const oldGroup = this.groups[n._xzgGroupId];
-                    if (oldGroup?.bounds) {
-                        const oldArea = oldGroup.bounds.w * oldGroup.bounds.h;
-                        if (oldArea < groupArea) return;
-                    }
-                }
-
+            // 完全位于框体边界内才归入编组
+            if (n.pos[0] >= bounds.x && n.pos[0] + nw <= bounds.x + bounds.w &&
+                n.pos[1] >= bounds.y && n.pos[1] + nh <= bounds.y + bounds.h) {
                 inBounds.add(n.id);
                 inBoundsNodes.push(n);
                 if (!this._idInArray(group.nodeIds, n.id)) {
-                    if (n._xzgGroupId && this.groups[n._xzgGroupId] && !this._idEq(n._xzgGroupId, group.id)) {
-                        const old = this.groups[n._xzgGroupId];
-                        old.nodeIds = old.nodeIds.filter(id => !this._idEq(id, n.id));
-                    }
                     group.nodeIds.push(n.id);
-                    n._xzgGroupId = group.id;
                 }
             }
         });
@@ -462,10 +456,6 @@ const XZGGroup = {
         const newCount = inBounds.size;
 
         if (prevCount > 0 && newCount === 0) {
-            group.nodeIds.forEach(nid => {
-                const n = graph._nodes.find(x => this._idEq(x.id, nid));
-                if (n) this._clearNodeGroupData(n);
-            });
             group.nodeIds = [];
             return;
         }
@@ -474,14 +464,7 @@ const XZGGroup = {
             return;
         }
 
-        group.nodeIds = group.nodeIds.filter(nid => {
-            if (!this._idInSet(inBounds, nid)) {
-                const n = graph._nodes.find(x => this._idEq(x.id, nid));
-                if (n) this._clearNodeGroupData(n);
-                return false;
-            }
-            return true;
-        });
+        group.nodeIds = group.nodeIds.filter(nid => this._idInSet(inBounds, nid));
     },
 
     /* ── 计算包围盒 ── */
@@ -513,12 +496,15 @@ const XZGGroup = {
         const nids = sel.map(n => n.id);
         const bounds = this.calcBounds(nids) || { x: 0, y: 0, w: 300, h: 200 };
 
-        // 找出会被新编组超过一半面积覆盖的旧编组（它们将成为子编组）
+        // 找出完全位于新编组内部的旧编组（它们将成为子编组，大控制小）
         const childGroupIds = new Set();
+        const newGroupArea = bounds.w * bounds.h;
         for (const [otherGid, otherG] of Object.entries(this.groups)) {
             const ob = otherG.bounds;
             if (!ob) continue;
-            if (this._getOverlapRatio(bounds, ob) > 0.5) {
+            const otherArea = ob.w * ob.h;
+            if (otherArea >= newGroupArea) continue; // 小不控制大
+            if (this._isFullyContained(bounds, ob)) {
                 childGroupIds.add(otherGid);
             }
         }
@@ -539,14 +525,18 @@ const XZGGroup = {
             return;
         }
 
-        // 收集某个编组控制的所有节点（自身 + 子编组）
+        // 收集某个编组控制的所有节点（自身 + 完全位于内部的子编组，仅限面积更小的编组）
         const collectControlled = (gid) => {
             const g = this.groups[gid];
             if (!g) return new Set();
             const ids = new Set(g.nodeIds);
+            const gArea = g.bounds.w * g.bounds.h;
             for (const [otherGid, otherG] of Object.entries(this.groups)) {
                 if (otherGid === gid) continue;
-                if (this._getOverlapRatio(g.bounds, otherG.bounds) > 0.5) otherG.nodeIds.forEach(id => ids.add(id));
+                if (!otherG.bounds) continue;
+                const otherArea = otherG.bounds.w * otherG.bounds.h;
+                if (otherArea >= gArea) continue; // 小不控制大
+                if (this._isFullyContained(g.bounds, otherG.bounds)) otherG.nodeIds.forEach(id => ids.add(id));
             }
             return ids;
         };
@@ -579,15 +569,10 @@ const XZGGroup = {
             titleColor: '#FFD700'
         };
 
-        // 只有直接节点才标记为新编组，保留子编组节点的原归属
+        // 标记节点归入新编组（同时保留节点在其他编组中的归属）
         directNodeIds.forEach(nid => {
             const n = sel.find(x => x.id === nid || x.id == nid);
             if (n) {
-                // 从旧编组中移除
-                if (n._xzgGroupId && this.groups[n._xzgGroupId] && !this._idEq(n._xzgGroupId, gid)) {
-                    const old = this.groups[n._xzgGroupId];
-                    old.nodeIds = old.nodeIds.filter(id => !this._idEq(id, n.id));
-                }
                 n._xzgGroupId = gid;
             }
         });
@@ -660,6 +645,20 @@ const XZGGroup = {
             const borderEl = el.querySelector('.' + cls);
             if (!borderEl) return;
             borderEl.addEventListener('mousedown', e => {
+                // 鼠标中键 → 透传到画布以支持画布平移
+                if (e.button === 1) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const el2 = e.currentTarget;
+                    el2.style.pointerEvents = 'none';
+                    self._dispatchMiddleDown(e.clientX, e.clientY);
+                    const restore = () => {
+                        el2.style.pointerEvents = 'auto';
+                        document.removeEventListener('mouseup', restore);
+                    };
+                    document.addEventListener('mouseup', restore);
+                    return;
+                }
                 if (e.button !== 0) return;
                 e.preventDefault(); e.stopPropagation();
                 bringToFront();
@@ -683,6 +682,20 @@ const XZGGroup = {
         const headerEl = el.querySelector('.xzg-group-header');
         let startX, startY, dragged;
         headerEl.addEventListener('mousedown', e => {
+            // 鼠标中键 → 透传到画布以支持画布平移
+            if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                const el2 = e.currentTarget;
+                el2.style.pointerEvents = 'none';
+                self._dispatchMiddleDown(e.clientX, e.clientY);
+                const restore = () => {
+                    el2.style.pointerEvents = 'auto';
+                    document.removeEventListener('mouseup', restore);
+                };
+                document.addEventListener('mouseup', restore);
+                return;
+            }
             if (e.target.tagName === 'BUTTON') return;
             if (e.button === 2) return; // 右键不处理绕过
             if (e.target === el.querySelector('.xzg-group-title-text') && e.detail !== 1) return;
@@ -728,6 +741,20 @@ const XZGGroup = {
         // 调整大小手柄
         const resizeHandle = el.querySelector('.xzg-resize-handle');
         resizeHandle.addEventListener('mousedown', e => {
+            // 鼠标中键 → 透传到画布以支持画布平移
+            if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                const el2 = e.currentTarget;
+                el2.style.pointerEvents = 'none';
+                self._dispatchMiddleDown(e.clientX, e.clientY);
+                const restore = () => {
+                    el2.style.pointerEvents = 'auto';
+                    document.removeEventListener('mouseup', restore);
+                };
+                document.addEventListener('mouseup', restore);
+                return;
+            }
             e.stopPropagation(); e.preventDefault();
             self.startResize(group.id, e);
         });
@@ -771,6 +798,31 @@ const XZGGroup = {
     /* ── 设置弹窗 ── */
     openSettings(group) {
         const gid = group.id;
+
+        // 保存快照，防止取消后仍未还原
+        const _snapshot = {
+            title: group.title,
+            fontSize: group.fontSize,
+            titleColor: group.titleColor,
+            headerBgColor: group.headerBgColor,
+            colorHue: group.colorHue, colorSat: group.colorSat, colorLit: group.colorLit,
+            effect: group.effect, effectSpeed: group.effectSpeed,
+            borderWidth: group.borderWidth, borderOpacity: group.borderOpacity
+        };
+        const revertSnapshot = () => {
+            Object.assign(group, {
+                title: _snapshot.title,
+                fontSize: _snapshot.fontSize,
+                titleColor: _snapshot.titleColor,
+                headerBgColor: _snapshot.headerBgColor,
+                colorHue: _snapshot.colorHue, colorSat: _snapshot.colorSat, colorLit: _snapshot.colorLit,
+                effect: _snapshot.effect, effectSpeed: _snapshot.effectSpeed,
+                borderWidth: _snapshot.borderWidth, borderOpacity: _snapshot.borderOpacity
+            });
+            // 重建 DOM 恢复视觉状态
+            this.rebuildGroupEl(group);
+            app.graph?.setDirtyCanvas?.(true, true);
+        };
 
         // 移除已有弹窗
         const old = document.querySelector('.xzg-settings-modal');
@@ -1122,7 +1174,10 @@ const XZGGroup = {
         };
 
         const cleanupModal = () => { if (hiddenPicker && hiddenPicker.parentNode) hiddenPicker.remove(); if (titleColorPicker && titleColorPicker.parentNode) titleColorPicker.remove(); if (modal.parentNode) modal.remove(); };
-        modal.querySelector('.xzg-set-cancel').addEventListener('click', cleanupModal);
+        modal.querySelector('.xzg-set-cancel').addEventListener('click', () => {
+            revertSnapshot();
+            cleanupModal();
+        });
         modal.querySelector('.xzg-set-apply').addEventListener('click', () => {
             applySettings(group);
             cleanupModal();
@@ -1167,7 +1222,7 @@ const XZGGroup = {
 
         // 点击外部关闭
         modal.addEventListener('mousedown', e => e.stopPropagation());
-        const closeOut = e => { if (!modal.contains(e.target)) { cleanupModal(); document.removeEventListener('mousedown', closeOut); } };
+        const closeOut = e => { if (!modal.contains(e.target)) { revertSnapshot(); cleanupModal(); document.removeEventListener('mousedown', closeOut); } };
         setTimeout(() => document.addEventListener('mousedown', closeOut), 50);
 
         // 聚焦标题输入
@@ -1217,66 +1272,52 @@ const XZGGroup = {
         const startBY = group.bounds.y;
         const b = group.bounds;
 
-        // 找到超过一半面积被当前框体覆盖的子编组
+        // 找到完全位于当前框体内部的子编组（仅限面积更小的编组，大控制小）
         const childGroups = [];
+        const groupArea = b.w * b.h;
         for (const [otherGid, otherG] of Object.entries(this.groups)) {
             if (otherGid === gid) continue;
             const ob = otherG.bounds;
             if (!ob) continue;
-            if (this._getOverlapRatio(b, ob) > 0.5) {
+            const otherArea = ob.w * ob.h;
+            if (otherArea >= groupArea) continue; // 小不控制大
+            if (this._isFullyContained(b, ob)) {
                 childGroups.push(otherG);
             }
         }
         const childGroupIds = new Set(childGroups.map(g => g.id));
-        const groupArea = b.w * b.h;
 
-        // 当前编组：收集在框体内且不属于子编组的节点
+        // 收集所有完全位于当前框体内的节点（多个框体能同时控制同一节点）
         const nodeStarts = [];
-        const idsInBounds = new Set();
         const self = this;
         graph._nodes.forEach(n => {
             if (!n?.pos) return;
             const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-            const cx = n.pos[0] + nw / 2, cy = n.pos[1] + nh / 2;
-            if (cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h) {
-                // 子编组节点由子编组自行管理，不归入当前编组
-                if (n._xzgGroupId && self._idInSet(childGroupIds, n._xzgGroupId)) return;
-
-                // 节点已属于面积更小的编组 → 不抢走，优先级：小编组 > 大编组
-                if (n._xzgGroupId && !self._idEq(n._xzgGroupId, gid)) {
-                    const oldGroup = self.groups[n._xzgGroupId];
-                    if (oldGroup?.bounds) {
-                        const oldArea = oldGroup.bounds.w * oldGroup.bounds.h;
-                        if (oldArea < groupArea) return;
-                    }
-                }
-
+            if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
+                n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
                 nodeStarts.push({ node: n, x: n.pos[0], y: n.pos[1] });
-                idsInBounds.add(n.id);
-                // 自动加入当前编组
-                if (!n._xzgGroupId || !self._idEq(n._xzgGroupId, gid)) {
-                    if (n._xzgGroupId && self.groups[n._xzgGroupId]) {
-                        const old = self.groups[n._xzgGroupId];
-                        old.nodeIds = old.nodeIds.filter(id => !self._idEq(id, n.id));
-                    }
-                    n._xzgGroupId = gid;
-                }
             }
         });
-        group.nodeIds = [...idsInBounds];
 
-        // 子编组：收集所有子编组内的节点，确保子编组整体移动
+        // 子编组：收集完全落在当前框体内的节点（大框体外部的节点不受大框体控制）
         const childGroupData = childGroups.map(cg => ({
             group: cg,
             startX: cg.bounds.x,
             startY: cg.bounds.y,
             nodeStarts: cg.nodeIds.map(nid => {
                 const n = graph._nodes.find(x => x.id === nid || x.id == nid);
-                return n ? { node: n, x: n.pos[0], y: n.pos[1] } : null;
+                if (!n?.pos) return null;
+                const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
+                // 只移动完全落在大框体内的节点
+                if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
+                    n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                    return { node: n, x: n.pos[0], y: n.pos[1] };
+                }
+                return null;
             }).filter(Boolean)
         }));
 
-        // 部分重叠编组（≤50% 覆盖但有重叠）：不移动编组框，只移动完全落在当前编组内的节点
+        // 部分重叠编组（有重叠但未完全位于内部）：不移动编组框，只移动完全落在当前编组内的节点
         // 只对面积比当前编组小的编组生效（大控制小，小不控制大）
         const partialOverlapNodes = [];
         const childSet = new Set(childGroupIds);
@@ -1286,7 +1327,7 @@ const XZGGroup = {
             if (!ob) continue;
             const otherArea = ob.w * ob.h;
             if (otherArea >= groupArea) continue;
-            if (this._getOverlapRatio(b, ob) > 0 && this._getOverlapRatio(b, ob) <= 0.5) {
+            if (this._getOverlapRatio(b, ob) > 0 && !this._isFullyContained(b, ob)) {
                 otherG.nodeIds.forEach(nid => {
                     const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                     if (!n?.pos) return;
@@ -1423,7 +1464,7 @@ const XZGGroup = {
         const mode = willBypass ? MODE_BYPASS : MODE_ALWAYS;
         const b = g.bounds;
 
-        // 1. 完全子编组（>50% 覆盖）：切换编组状态 + 所有节点
+        // 1. 完全子编组（完全位于内部）：切换编组状态，只切换完全落在当前框体内的节点
         const fullChildGroupIds = this._collectChildGroups(gid);
         fullChildGroupIds.forEach(id => {
             const grp = this.groups[id];
@@ -1431,12 +1472,18 @@ const XZGGroup = {
             grp.bypassed = willBypass;
             grp.nodeIds.forEach(nid => {
                 const n = graph._nodes.find(x => x.id === nid || x.id == nid);
-                if (n) n.mode = mode;
+                if (!n?.pos) return;
+                const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
+                // 只切换完全落在大框体内的节点（大框体外部的节点不受大框体控制）
+                if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
+                    n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                    n.mode = mode;
+                }
             });
             this.updateGroupStyle(id);
         });
 
-        // 2. 部分重叠编组（≤50% 覆盖但有重叠）：不切换编组状态，只切换完全落在当前编组内的节点
+        // 2. 部分重叠编组（有重叠但未完全位于内部）：不切换编组状态，只切换完全落在当前编组内的节点
         // 只对面积比当前编组小的编组生效（大控制小，小不控制大）
         const fullSet = new Set(fullChildGroupIds);
         const groupArea = b.w * b.h;
@@ -1446,8 +1493,8 @@ const XZGGroup = {
             if (!ob) continue;
             const otherArea = ob.w * ob.h;
             if (otherArea >= groupArea) continue;
-            // 有重叠但覆盖 ≤50%
-            if (this._getOverlapRatio(b, ob) > 0 && this._getOverlapRatio(b, ob) <= 0.5) {
+            // 有重叠但未完全位于内部
+            if (this._getOverlapRatio(b, ob) > 0 && !this._isFullyContained(b, ob)) {
                 otherG.nodeIds.forEach(nid => {
                     const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                     if (!n?.pos) return;
@@ -1477,6 +1524,14 @@ const XZGGroup = {
         return childArea > 0 ? overlap / childArea : 0;
     },
 
+    /* 判断 childBounds 是否完全位于 parentBounds 内部 */
+    _isFullyContained(parentBounds, childBounds) {
+        return childBounds.x >= parentBounds.x &&
+               childBounds.y >= parentBounds.y &&
+               childBounds.x + childBounds.w <= parentBounds.x + parentBounds.w &&
+               childBounds.y + childBounds.h <= parentBounds.y + parentBounds.h;
+    },
+
     /* 计算两个编组框的 IoU（交并比） */
     _getIoU(a, b) {
         const x1 = Math.max(a.x, b.x);
@@ -1491,19 +1546,22 @@ const XZGGroup = {
         return union > 0 ? inter / union : 0;
     },
 
-    /* 收集指定编组及其所有嵌套子编组（超过一半面积被覆盖即视为子编组） */
+    /* 收集指定编组及其所有完全位于内部的子编组（仅限面积更小的编组，大控制小） */
     _collectChildGroups(gid, visited = new Set()) {
         if (visited.has(gid)) return [];
         visited.add(gid);
         const result = [gid];
         const group = this.groups[gid];
         if (!group?.bounds) return result;
+        const groupArea = group.bounds.w * group.bounds.h;
 
         for (const [otherGid, otherG] of Object.entries(this.groups)) {
             if (otherGid === gid) continue;
             const ob = otherG.bounds;
             if (!ob) continue;
-            if (this._getOverlapRatio(group.bounds, ob) > 0.5) {
+            const otherArea = ob.w * ob.h;
+            if (otherArea >= groupArea) continue; // 小不控制大
+            if (this._isFullyContained(group.bounds, ob)) {
                 result.push(...this._collectChildGroups(otherGid, visited));
             }
         }
@@ -1542,7 +1600,6 @@ const XZGGroup = {
         if (!g) return;
         const graph = app?.graph;
         if (graph && g.bypassed) g.nodeIds.forEach(nid => { const n = graph._nodes.find(x => x.id === nid || x.id == nid); if (n) n.mode = MODE_ALWAYS; });
-        g.nodeIds.forEach(nid => { const n = graph?._nodes?.find(x => x.id === nid || x.id == nid); this._clearNodeGroupData(n); });
         this.killGroup(gid);
         graph?.setDirtyCanvas?.(true, true); graph?.change?.();
         this.syncGroupsToExtra();
