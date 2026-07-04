@@ -309,7 +309,7 @@ class Xiaozhuguang {
                 position: fixed;
                 top: 100px;
                 right: 10px;
-                width: 520px;
+                width: 460px;
                 height: 70vh;
                 background: rgba(30, 30, 30, 0.95);
                 border: 1px solid #444;
@@ -3230,7 +3230,7 @@ app.registerExtension({
             const DEFAULT_BTN_HEIGHT = 30;
             const DEFAULT_FONT_SIZE = 12;
             const DEFAULT_BTN_GAP = 4;
-            const DEFAULT_FONT_COLOR = "#aaa";
+            const DEFAULT_FONT_COLOR = "#FFFFFF";
             const DEFAULT_COLORS = {
                 color1: "#000000",
                 color2: "#FF0000",
@@ -3246,7 +3246,8 @@ app.registerExtension({
                 btnHeight: DEFAULT_BTN_HEIGHT,
                 fontSize: DEFAULT_FONT_SIZE,
                 btnGap: DEFAULT_BTN_GAP,
-                fontColor: DEFAULT_FONT_COLOR
+                fontColor: DEFAULT_FONT_COLOR,
+                inactiveColor: "#2a2a2a"
             };
 
             function getNodeSettings(node) {
@@ -3314,6 +3315,8 @@ app.registerExtension({
                 return 55;
             }
 
+
+
             function showLabelsSettingsDialog(node, onSaved) {
                 const settings = getNodeSettings(node);
                 const labels = settings.labels;
@@ -3332,70 +3335,74 @@ app.registerExtension({
                     pointer-events: none;
                 `;
                 dialog.innerHTML = `
-                    <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 520px; margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
+                    <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 460px; margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
                         <div class="nf-dialog-title nf-dialog-drag-handle" style="cursor: move;">设置标签</div>
                         <div class="nf-dialog-body" style="overflow-y: auto; padding: 12px 16px; max-height: 520px;">
                             <div class="nf-form-item" style="margin-bottom: 10px;">
-                                <label>颜色与方向：</label>
-                                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                                    <input type="color" id="nf-color-1" value="${colors.color1}" style="width: 50px; height: 30px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 1" />
-                                    <input type="color" id="nf-color-2" value="${colors.color2}" style="width: 50px; height: 30px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 2" />
-                                    <input type="color" id="nf-color-3" value="${colors.color3}" style="width: 50px; height: 30px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 3" />
-                                    <select id="nf-color-direction" style="width: 120px; height: 28px; padding: 2px 6px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #ddd; font-size: 13px;">
-                                        <option value="90deg" ${colors.direction === '90deg' ? 'selected' : ''}>从左到右</option>
-                                        <option value="180deg" ${colors.direction === '180deg' ? 'selected' : ''}>从上到下</option>
-                                        <option value="radial" ${colors.direction === 'radial' ? 'selected' : ''}>从中心到四周</option>
+                                <label>标签颜色与方向：</label>
+                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+                                    <input type="color" id="nf-color-1" value="${colors.color1}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 1" />
+                                    <input type="color" id="nf-color-2" value="${colors.color2}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 2" />
+                                    <input type="color" id="nf-color-3" value="${colors.color3}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 3" />
+                                    <select id="nf-color-direction" style="width: 60px; height: 28px; padding: 2px 6px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #ddd; font-size: 16px; text-align: center;" title="渐变方向">
+                                        <option value="90deg" ${colors.direction === '90deg' ? 'selected' : ''}>→</option>
+                                        <option value="180deg" ${colors.direction === '180deg' ? 'selected' : ''}>↓</option>
+                                        <option value="radial" ${colors.direction === 'radial' ? 'selected' : ''}>●</option>
                                     </select>
-                                    <label style="margin-left: 4px; font-size: 13px; color: #aaa;">字体颜色：</label>
-                                    <input type="color" id="nf-font-color" value="${settings.fontColor || DEFAULT_FONT_COLOR}" style="width: 50px; height: 30px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="字体颜色" />
+                                    <span style="display: flex; align-items: center; gap: 6px;">
+                                        <label style="font-size: 12px; color: #aaa;">标签底色：</label>
+                                        <input type="color" id="nf-inactive-color" value="${settings.inactiveColor || '#2a2a2a'}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="标签底色" />
+                                        <label style="font-size: 12px; color: #aaa;">文字颜色：</label>
+                                        <input type="color" id="nf-font-color" value="${settings.fontColor || DEFAULT_FONT_COLOR}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="文字颜色" />
+                                    </span>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 12px; margin-bottom: 10px;">
+                            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
                                 <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
                                         <label style="margin-bottom: 0;">标签数量：</label>
-                                        <input type="range" id="nf-label-count" min="2" max="10" value="${count}" style="flex: 1; height: 20px;" />
+                                        <input type="range" id="nf-label-count" min="2" max="10" value="${count}" style="flex: 1; height: 14px; max-width: 120px;" />
                                     </div>
-                                    <span id="nf-count-value" style="display: block; font-size: 13px; color: #ddd; text-align: center;">${count}个</span>
+                                    <span id="nf-count-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${count}个</span>
                                 </div>
                                 <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
                                         <label style="margin-bottom: 0;">每行列数：</label>
-                                        <input type="range" id="nf-columns" min="1" max="${count}" value="${loadColumns(node)}" style="flex: 1; height: 20px;" />
+                                        <input type="range" id="nf-columns" min="1" max="${count}" value="${loadColumns(node)}" style="flex: 1; height: 14px; max-width: 120px;" />
                                     </div>
-                                    <span id="nf-columns-value" style="display: block; font-size: 13px; color: #ddd; text-align: center;">${loadColumns(node)}（范围 1~${count}）</span>
+                                    <span id="nf-columns-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${loadColumns(node)}（范围 1~${count}）</span>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 12px; margin-bottom: 10px;">
+                            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
                                 <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
                                         <label style="margin-bottom: 0;">标签宽度：</label>
-                                        <input type="range" id="nf-btn-width" min="55" max="200" value="${settings.btnWidth || DEFAULT_BTN_WIDTH}" style="flex: 1; height: 20px;" />
+                                        <input type="range" id="nf-btn-width" min="55" max="200" value="${settings.btnWidth || DEFAULT_BTN_WIDTH}" style="flex: 1; height: 14px; max-width: 120px;" />
                                     </div>
-                                    <span id="nf-btn-width-value" style="display: block; font-size: 13px; color: #ddd; text-align: center;">${settings.btnWidth || DEFAULT_BTN_WIDTH}px</span>
+                                    <span id="nf-btn-width-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.btnWidth || DEFAULT_BTN_WIDTH}px</span>
                                 </div>
                                 <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
                                         <label style="margin-bottom: 0;">标签高度：</label>
-                                        <input type="range" id="nf-btn-height" min="30" max="80" value="${settings.btnHeight || DEFAULT_BTN_HEIGHT}" style="flex: 1; height: 20px;" />
+                                        <input type="range" id="nf-btn-height" min="30" max="80" value="${settings.btnHeight || DEFAULT_BTN_HEIGHT}" style="flex: 1; height: 14px; max-width: 120px;" />
                                     </div>
-                                    <span id="nf-btn-height-value" style="display: block; font-size: 13px; color: #ddd; text-align: center;">${settings.btnHeight || DEFAULT_BTN_HEIGHT}px</span>
+                                    <span id="nf-btn-height-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.btnHeight || DEFAULT_BTN_HEIGHT}px</span>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 12px; margin-bottom: 10px;">
+                            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
                                 <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
                                         <label style="margin-bottom: 0;">字体大小：</label>
-                                        <input type="range" id="nf-font-size" min="10" max="24" value="${settings.fontSize || DEFAULT_FONT_SIZE}" style="flex: 1; height: 20px;" />
+                                        <input type="range" id="nf-font-size" min="10" max="24" value="${settings.fontSize || DEFAULT_FONT_SIZE}" style="flex: 1; height: 14px; max-width: 120px;" />
                                     </div>
-                                    <span id="nf-font-size-value" style="display: block; font-size: 13px; color: #ddd; text-align: center;">${settings.fontSize || DEFAULT_FONT_SIZE}px</span>
+                                    <span id="nf-font-size-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.fontSize || DEFAULT_FONT_SIZE}px</span>
                                 </div>
                                 <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
                                         <label style="margin-bottom: 0;">标签间距：</label>
-                                        <input type="range" id="nf-btn-gap" min="0" max="20" value="${settings.btnGap || DEFAULT_BTN_GAP}" style="flex: 1; height: 20px;" />
+                                        <input type="range" id="nf-btn-gap" min="0" max="20" value="${settings.btnGap || DEFAULT_BTN_GAP}" style="flex: 1; height: 14px; max-width: 120px;" />
                                     </div>
-                                    <span id="nf-btn-gap-value" style="display: block; font-size: 13px; color: #ddd; text-align: center;">${settings.btnGap || DEFAULT_BTN_GAP}px</span>
+                                    <span id="nf-btn-gap-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.btnGap || DEFAULT_BTN_GAP}px</span>
                                 </div>
                             </div>
                             <div id="nf-labels-container">
@@ -3422,6 +3429,7 @@ app.registerExtension({
                 const color2Input = dialog.querySelector("#nf-color-2");
                 const color3Input = dialog.querySelector("#nf-color-3");
                 const fontColorInput = dialog.querySelector("#nf-font-color");
+                const inactiveColorInput = dialog.querySelector("#nf-inactive-color");
                 const btnWidthInput = dialog.querySelector("#nf-btn-width");
                 const btnHeightInput = dialog.querySelector("#nf-btn-height");
                 const fontSizeInput = dialog.querySelector("#nf-font-size");
@@ -3472,6 +3480,7 @@ app.registerExtension({
                     if (isNaN(newBtnGap) || newBtnGap < 0) newBtnGap = 0;
                     if (newBtnGap > 20) newBtnGap = 20;
                     const newFontColor = fontColorInput?.value || DEFAULT_FONT_COLOR;
+                    const newInactiveColor = inactiveColorInput?.value || "#2a2a2a";
                     setNodeSettings(node, {
                         labels: newLabels,
                         colors: newColors,
@@ -3481,28 +3490,32 @@ app.registerExtension({
                         btnHeight: newBtnHeight,
                         fontSize: newFontSize,
                         btnGap: newBtnGap,
-                        fontColor: newFontColor
+                        fontColor: newFontColor,
+                        inactiveColor: newInactiveColor
                     });
                     rebuildSelectorNode(node);
                 };
 
-                const applyPreviewColors = () => {
+                // 轻量级即时更新：只更新widget值和触发重绘，不重建节点
+                const applyColorPreview = () => {
                     const curColors = getCurrentColors();
                     const curFontColor = fontColorInput?.value || DEFAULT_FONT_COLOR;
-                    const nodeInfo = allSelectorNodes.find(info => info.node === node);
-                    if (nodeInfo && nodeInfo.buttons && nodeInfo.currentValue) {
-                        const activeBtn = nodeInfo.buttons.find(b => b.dataset.value === String(nodeInfo.currentValue));
-                        if (activeBtn) {
-                            applyButtonActiveStyle(activeBtn, curColors, curFontColor);
-                        }
-                    }
+                    const curInactiveColor = inactiveColorInput?.value || "#2a2a2a";
+                    const curSettings = getNodeSettings(node);
+                    curSettings.colors = curColors;
+                    curSettings.fontColor = curFontColor;
+                    curSettings.inactiveColor = curInactiveColor;
+                    setNodeSettings(node, curSettings);
+                    // 与 xzg_selector.js 中鼠标点击刷新方式一致
+                    node.setDirtyCanvas(true, true);
                 };
 
-                color1Input.addEventListener("input", () => { applyPreviewColors(); applyCurrentSettings(); });
-                color2Input.addEventListener("input", () => { applyPreviewColors(); applyCurrentSettings(); });
-                color3Input.addEventListener("input", () => { applyPreviewColors(); applyCurrentSettings(); });
-                colorDirectionInput.addEventListener("change", () => { applyPreviewColors(); applyCurrentSettings(); });
-                fontColorInput?.addEventListener("input", () => { applyCurrentSettings(); });
+                color1Input.addEventListener("input", () => { applyColorPreview(); });
+                color2Input.addEventListener("input", () => { applyColorPreview(); });
+                color3Input.addEventListener("input", () => { applyColorPreview(); });
+                colorDirectionInput.addEventListener("change", () => { applyColorPreview(); });
+                fontColorInput?.addEventListener("input", () => { applyColorPreview(); });
+                inactiveColorInput?.addEventListener("input", () => { applyColorPreview(); });
 
                 const updateColumnsState = () => {
                     const curCount = parseInt(countSelect.value, 10);
@@ -3630,7 +3643,7 @@ app.registerExtension({
                     if (fontColorInput) fontColorInput.value = DEFAULT_FONT_COLOR;
                     updateColumnsState();
                     updateWidthSliderMin();
-                    applyPreviewColors();
+                    applyColorPreview();
                     applyCurrentSettings();
                 });
                 const dialogEl = dialog.querySelector(".nf-selector-settings-dialog");

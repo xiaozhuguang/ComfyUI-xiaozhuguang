@@ -119,7 +119,8 @@ const DEFAULT_SETTINGS = {
     btnHeight: 30,
     fontSize: 12,
     btnGap: 4,
-    fontColor: "#aaa"
+    fontColor: "#aaa",
+    inactiveColor: "#2a2a2a"
 };
 
 app.registerExtension({
@@ -174,7 +175,7 @@ app.registerExtension({
                                 ctx.fillStyle = drawLinearGradient(ctx, r.x, r.y, r.w, r.h, settings.colors.direction, settings.colors);
                             }
                         } else {
-                            ctx.fillStyle = "#2a2a2a";
+                            ctx.fillStyle = settings.inactiveColor || "#2a2a2a";
                         }
                         rrect(ctx, r.x, r.y, r.w, r.h, 5);
                         ctx.fill();
@@ -187,7 +188,7 @@ app.registerExtension({
                         // 文字
                         const label = getDisplayLabel(value, settings.labels);
                         ctx.fillStyle = settings.fontColor || "#aaa";
-                        ctx.font = `bold ${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                        ctx.font = `${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.textAlign = "center";
                         ctx.textBaseline = "middle";
                         ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);

@@ -798,7 +798,7 @@ window.XZGThemeManager = {
                         const color = cfg.titleText || '#ffffff';
                         const align = cfg.textAlign || 'left';
                         ctx.save();
-                        ctx.font = `bold ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                        ctx.font = `${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.fillStyle = color;
                         ctx.textBaseline = 'middle';
                         
