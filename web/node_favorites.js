@@ -4024,9 +4024,11 @@ app.registerExtension({
                         if (w > maxWidth) maxWidth = w;
                     });
                 }
-                const padW = 16;
-                const w = this._customWidth || Math.max(50, maxWidth + padW);
-                const h = this._customHeight || Math.max(30, lines.length * lineHeight + 16);
+                const trailing = Math.abs(p.letterSpacing || 0);
+                const adjustedMax = maxWidth > trailing ? maxWidth - trailing : 0;
+                const padW = 4;
+                const w = this._customWidth || Math.max(50, adjustedMax + padW);
+                const h = this._customHeight || Math.max(30, lines.length * lineHeight + 4);
                 return [w, h];
             };
 
@@ -4072,8 +4074,10 @@ app.registerExtension({
                     });
                     ctx.restore();
                 }
+                const trailing = Math.abs(p.letterSpacing || 0);
+                const adjustedMax = maxWidth > trailing ? maxWidth - trailing : 0;
                 const padW = 4;
-                const autoW = Math.max(50, maxWidth + padW);
+                const autoW = Math.max(50, adjustedMax + padW);
                 const autoH = Math.max(30, lines.length * lineHeight + 4);
 
                 let changed = false;
@@ -4128,12 +4132,23 @@ app.registerExtension({
 
                 ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                 ctx.letterSpacing = `${p.letterSpacing || 0}px`;
-                ctx.textBaseline = "middle";
+                ctx.textBaseline = "alphabetic";
                 const align = p.textAlign || "center";
                 ctx.textAlign = align;
-                const xPos = align === "left" ? 2 : (align === "right" ? w - 2 : w / 2);
-                const totalTextH = lines.length > 1 ? (lines.length - 1) * lineHeight + fontSize : fontSize;
-                const startY = Math.max(0, (h - totalTextH) / 2);
+                // trailing = letterSpacing 在尾字符后添加的多余空间，需在宽度和定位中补偿
+                const trailing = Math.abs(p.letterSpacing || 0);
+                const xPos = align === "left" ? 2 :
+                    (align === "right" ? w - 2 + trailing :
+                    (w / 2 + trailing / 2));
+                // 测量每行实际字形高度，计算可视化居中位置
+                const lineMetrics = lines.map(line => ctx.measureText(line));
+                const firstAscent = lineMetrics[0]?.actualBoundingBoxAscent || fontSize;
+                const lastDescent = lineMetrics[lines.length - 1]?.actualBoundingBoxDescent || fontSize * 0.15;
+                // 整体字形块高度 = 首行上沿 + 行间距*(行数-1) + 末行下沿
+                const totalBlockH = lines.length > 1
+                    ? firstAscent + (lines.length - 1) * lineHeight + lastDescent
+                    : firstAscent + lastDescent;
+                const startY = Math.max(0, (h - totalBlockH) / 2 + firstAscent);
 
                 if (rainbowEnabled) {
                     this._titleAnimFrame = requestAnimationFrame(() => {
@@ -4176,8 +4191,8 @@ app.registerExtension({
                 };
 
                 lines.forEach((line, i) => {
-                    const y = startY + i * lineHeight + fontSize / 2;
-                    if (y + fontSize / 2 > h) return;
+                    const y = startY + i * lineHeight;
+                    if (y - firstAscent > h) return;
                     const textWidth = ctx.measureText(line).width;
                     const lineX = xPos;
                     const lineStartX = align === "center" ? xPos - textWidth / 2 : (align === "right" ? xPos - textWidth : xPos);
