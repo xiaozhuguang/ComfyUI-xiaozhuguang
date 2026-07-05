@@ -19,6 +19,11 @@ class Xiaozhuguang {
         this.currentSearch = "";
         this.initialized = false;
         this.draggingNodeType = null;
+        this._previewEl = null;
+        this._previewCanvasCache = new Map();
+        this._previewHideTimer = null;
+        this._previewToken = 0;
+
         this.init();
     }
 
@@ -373,16 +378,18 @@ class Xiaozhuguang {
                 background: transparent;
                 border: 1px solid #666;
                 color: #ddd;
-                width: 24px;
+                width: auto;
+                min-width: 24px;
                 height: 24px;
                 border-radius: 4px;
                 cursor: pointer;
-                font-size: 14px;
+                font-size: 12px;
                 line-height: 1;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                padding: 0;
+                padding: 0 6px;
+                white-space: nowrap;
             }
 
             .nf-header-btn:hover {
@@ -1081,8 +1088,11 @@ class Xiaozhuguang {
             <div class="nf-header" title="拖拽标题栏可移动窗口">
                 <span class="nf-title">⭐ 小珠光收藏 · 拖动标题栏改变位置</span>
                 <div class="nf-header-btns">
+                    <button class="nf-header-btn" id="nf-export-btn" title="导出收藏">导出</button>
+                    <button class="nf-header-btn" id="nf-import-btn" title="导入收藏">导入</button>
                     <button class="nf-header-btn nf-shortcut-display" id="nf-shortcut-btn"></button>
                     <button class="nf-toggle-btn" id="nf-toggle-btn">−</button>
+                    <input type="file" id="nf-import-file" accept=".json,application/json" style="display:none" />
                 </div>
             </div>
             <div class="nf-content" id="nf-content" style="display: none;">
@@ -1188,6 +1198,23 @@ class Xiaozhuguang {
                 this.showShortcutDialog();
             });
         }
+
+        // 导入/导出收藏与截图
+        const exportBtn = this.panel.querySelector("#nf-export-btn");
+        if (exportBtn) {
+            exportBtn.addEventListener("click", () => this._exportData());
+        }
+        const importBtn = this.panel.querySelector("#nf-import-btn");
+        const importFile = this.panel.querySelector("#nf-import-file");
+        if (importBtn && importFile) {
+            importBtn.addEventListener("click", () => importFile.click());
+            importFile.addEventListener("change", (e) => {
+                const file = e.target.files?.[0];
+                if (file) this._importData(file);
+                e.target.value = "";
+            });
+        }
+
 
         const sortDefaultBtn = this.panel.querySelector("#nf-sort-default");
         const sortRatingBtn = this.panel.querySelector("#nf-sort-rating");
@@ -1731,7 +1758,7 @@ class Xiaozhuguang {
         return this.favorites.nodes.some(n => n.type === nodeType);
     }
 
-    addFavorite(node, categoryId = "default") {
+    async addFavorite(node, categoryId = "default") {
         if (this.isNodeFavorited(node.type)) {
             return;
         }
@@ -1759,13 +1786,23 @@ class Xiaozhuguang {
         this.saveFavorites();
         this.renderFavorites();
         this.renderCategories();
+
+        // 收藏时截图保存真实节点预览
+        const dataUrl = this._captureNodeImage(node);
+        if (dataUrl) {
+            await this._savePreviewImage(node.type, dataUrl);
+            // 清理旧 canvas 绘制缓存，确保悬浮时优先使用新截图
+            this._previewCanvasCache.delete(node.type);
+        }
     }
 
-    removeFavorite(nodeType) {
+    async removeFavorite(nodeType) {
         this.favorites.nodes = this.favorites.nodes.filter(n => n.type !== nodeType);
         this.saveFavorites();
         this.renderFavorites();
         this.renderCategories();
+        this._previewCanvasCache.delete(nodeType);
+        await this._deletePreviewImage(nodeType);
     }
 
     // ====== 工作流片段收藏 ======
@@ -2607,6 +2644,8 @@ class Xiaozhuguang {
                 : `${node.type}`;
             const dragAttr = isValid ? 'draggable="true"' : 'draggable="false"';
 
+            // 预览仅使用截图，不再生成 HTML 回退
+
             html += `
                 <div class="${itemClass}" data-type="${node.type}" data-order="${node.order || 0}" data-kind="node" ${dragAttr} title="${titleText}">
                     <div class="nf-fav-color" style="background: ${isValid ? catColor : '#555'};"></div>
@@ -2741,7 +2780,36 @@ class Xiaozhuguang {
                     this.showNodeContextMenu(e.clientX, e.clientY, nodeType, nodeName);
                 }
             });
+
         });
+
+        // 预览容器（body 下，跳过面板裁剪）
+        if (!this._previewEl) {
+            this._previewEl = document.createElement("div");
+            this._previewEl.id = "nf-hover-preview";
+            this._previewEl.style.cssText = "display:none;position:fixed;z-index:99999;background:transparent;border:none;border-radius:0;overflow:visible;pointer-events:auto;";
+            document.body.appendChild(this._previewEl);
+        }
+        // 预览容器自身鼠标事件
+        this._previewEl.onmouseenter = () => {
+            if (this._previewHideTimer) { clearTimeout(this._previewHideTimer); this._previewHideTimer = null; }
+        };
+        this._previewEl.onmouseleave = () => {
+            this._hidePreview(300);
+        };
+
+        // 使用 mouseover/mouseout 事件委托，避免子元素边界导致闪烁
+        this.favoritesList.onmouseover = (e) => {
+            const item = e.target.closest(".nf-fav-item[data-kind='node']");
+            if (!item) return;
+            this._showPreview(item);
+        };
+        this.favoritesList.onmouseout = (e) => {
+            const item = e.target.closest(".nf-fav-item[data-kind='node']");
+            if (!item) return;
+            if (item.contains(e.relatedTarget)) return; // 仍在当前 item 内部
+            this._hidePreview(250);
+        };
 
         // 工作流片段点击添加到画布
         this.favoritesList.querySelectorAll(".nf-wf-item").forEach(item => {
@@ -2770,6 +2838,289 @@ class Xiaozhuguang {
                 e.preventDefault();
             });
         });
+    }
+
+    // ===== IndexedDB 节点预览截图存储 =====
+    _openPreviewDB() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open("XiaozhuguangFavorites", 1);
+            req.onerror = () => reject(req.error);
+            req.onsuccess = () => resolve(req.result);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains("nodePreviews")) {
+                    db.createObjectStore("nodePreviews", { keyPath: "type" });
+                }
+            };
+        });
+    }
+
+    async _savePreviewImage(nodeType, dataUrl) {
+        try {
+            const db = await this._openPreviewDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction("nodePreviews", "readwrite");
+                const store = tx.objectStore("nodePreviews");
+                const req = store.put({ type: nodeType, dataUrl, updatedAt: Date.now() });
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
+        } catch (e) {
+            console.warn("[小珠光] 保存预览截图失败:", e);
+        }
+    }
+
+    async _getPreviewImage(nodeType) {
+        try {
+            const db = await this._openPreviewDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction("nodePreviews", "readonly");
+                const store = tx.objectStore("nodePreviews");
+                const req = store.get(nodeType);
+                req.onsuccess = () => resolve(req.result?.dataUrl || null);
+                req.onerror = () => reject(req.error);
+            });
+        } catch (e) {
+            console.warn("[小珠光] 读取预览截图失败:", e);
+            return null;
+        }
+    }
+
+    async _deletePreviewImage(nodeType) {
+        try {
+            const db = await this._openPreviewDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction("nodePreviews", "readwrite");
+                const store = tx.objectStore("nodePreviews");
+                const req = store.delete(nodeType);
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
+        } catch (e) {
+            console.warn("[小珠光] 删除预览截图失败:", e);
+        }
+    }
+
+    async _getAllPreviewImages() {
+        try {
+            const db = await this._openPreviewDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction("nodePreviews", "readonly");
+                const store = tx.objectStore("nodePreviews");
+                const req = store.getAll();
+                req.onsuccess = () => {
+                    const map = {};
+                    for (const item of req.result || []) {
+                        if (item.type && item.dataUrl) map[item.type] = item.dataUrl;
+                    }
+                    resolve(map);
+                };
+                req.onerror = () => reject(req.error);
+            });
+        } catch (e) {
+            console.warn("[小珠光] 读取所有预览截图失败:", e);
+            return {};
+        }
+    }
+
+    async _saveAllPreviewImages(previews) {
+        try {
+            const db = await this._openPreviewDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction("nodePreviews", "readwrite");
+                const store = tx.objectStore("nodePreviews");
+                const now = Date.now();
+                for (const [type, dataUrl] of Object.entries(previews)) {
+                    if (type && dataUrl) store.put({ type, dataUrl, updatedAt: now });
+                }
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        } catch (e) {
+            console.warn("[小珠光] 批量保存预览截图失败:", e);
+        }
+    }
+
+    async _exportData() {
+        try {
+            const previews = await this._getAllPreviewImages();
+            const payload = {
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                favorites: this.favorites,
+                previews: previews
+            };
+            const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `xiaozhuguang-backup-${Date.now()}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            console.error("[小珠光] 导出收藏失败:", e);
+            alert("导出失败: " + e.message);
+        }
+    }
+
+    async _importData(file) {
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            if (!data || !data.favorites || typeof data.favorites !== "object") {
+                alert("文件格式不正确，缺少 favorites 数据");
+                return;
+            }
+            if (!confirm("导入将覆盖当前收藏和截图，确定继续？")) return;
+
+            this.favorites = data.favorites;
+            this.saveFavorites();
+
+            if (data.previews && typeof data.previews === "object") {
+                await this._saveAllPreviewImages(data.previews);
+            }
+
+            this._previewCanvasCache.clear();
+
+
+            this.renderCategories();
+            this.renderFavorites();
+            alert("导入成功");
+        } catch (e) {
+            console.error("[小珠光] 导入收藏失败:", e);
+            alert("导入失败: " + e.message);
+        }
+    }
+
+
+    _captureNodeImage(node) {
+        try {
+            const gc = (typeof app !== "undefined" && app?.canvas) ? app.canvas : null;
+            if (!gc || !gc.canvas || !node || !node.pos) return null;
+            const scale = gc.ds?.scale || 1;
+            const offset = gc.ds?.offset || [0, 0];
+            const size = node.size || (typeof node.computeSize === "function" ? node.computeSize() : [200, 80]);
+            // node.pos 是节点主体(body)左上角，标题栏在主体上方
+            const titleHeight = (node.title_height != null ? node.title_height : (LiteGraph.NODE_TITLE_HEIGHT || 30));
+            const srcX = Math.floor((node.pos[0] + offset[0]) * scale);
+            const srcY = Math.floor((node.pos[1] + offset[1] - titleHeight) * scale);
+            const srcW = Math.ceil(size[0] * scale);
+            const srcH = Math.ceil((size[1] + titleHeight) * scale);
+            const sourceCanvas = gc.canvas;
+            if (srcX < 0 || srcY < 0 || srcW <= 0 || srcH <= 0 || srcX + srcW > sourceCanvas.width || srcY + srcH > sourceCanvas.height) return null;
+
+            const canvas = document.createElement("canvas");
+            canvas.width = srcW;
+            canvas.height = srcH;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(sourceCanvas, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+            return canvas.toDataURL("image/png");
+        } catch (e) {
+            console.warn("[小珠光] 截图节点失败:", e);
+            return null;
+        }
+    }
+
+
+
+
+
+    async _showPreview(item) {
+        if (!this._previewEl || !item) return;
+        if (this._previewHideTimer) { clearTimeout(this._previewHideTimer); this._previewHideTimer = null; }
+        const nodeType = item.dataset.type;
+        if (this._previewEl.dataset.currentType === nodeType) return;
+
+        const token = ++this._previewToken;
+        const rect = item.getBoundingClientRect();
+        let dataUrl = this._previewCanvasCache.get(nodeType);
+
+        // 优先使用 IndexedDB 中收藏时保存的真实截图
+        if (!dataUrl) {
+            dataUrl = await this._getPreviewImage(nodeType);
+            if (dataUrl) this._previewCanvasCache.set(nodeType, dataUrl);
+        }
+
+        // 鼠标已经移到其他项，取消旧预览渲染
+        if (token !== this._previewToken) return;
+
+        if (dataUrl) {
+            const img = document.createElement("img");
+            img.src = dataUrl;
+            img.style.cssText = "display:block;max-width:320px;border-radius:6px;border:2px solid #4CAF50;box-shadow:0 4px 16px rgba(0,0,0,0.6);";
+            img.draggable = false;
+            this._previewEl.innerHTML = "";
+            this._previewEl.appendChild(img);
+            img.onload = () => this._positionPreview(rect);
+            img.onerror = () => this._positionPreview(rect);
+        } else {
+            // 没有截图时显示占位提示
+            this._previewEl.innerHTML = `<div style="padding:10px 14px;background:#1a1a1a;border:2px solid #4CAF50;border-radius:6px;color:#888;font-size:12px;white-space:nowrap;">暂无预览截图，取消收藏，重新收藏即可解决</div>`;
+        }
+        this._previewEl.dataset.currentType = nodeType;
+        this._positionPreview(rect);
+    }
+
+    _positionPreview(rect) {
+        if (!this._previewEl) return;
+        this._previewEl.style.display = "block";
+        this._previewEl.style.visibility = "hidden";
+
+        const pw = this._previewEl.offsetWidth || 320;
+        const ph = this._previewEl.offsetHeight || 200;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const margin = 8;
+
+        let left, top;
+        if (this.panel) {
+            const pr = this.panel.getBoundingClientRect();
+            const panelCenter = (pr.left + pr.right) / 2;
+
+            // 判断收藏栏在左侧还是右侧，预览放到其相反侧并贴紧
+            if (panelCenter < vw / 2) {
+                // 收藏栏在左，预览放右边
+                left = pr.right + margin;
+                if (left + pw > vw) {
+                    left = Math.max(margin, pr.left - margin - pw);
+                }
+            } else {
+                // 收藏栏在右，预览放左边
+                left = pr.left - margin - pw;
+                if (left < margin) {
+                    left = Math.max(margin, pr.right + margin);
+                }
+            }
+
+            // 高度方向与收藏栏上边缘对齐
+            top = pr.top;
+        } else {
+            left = Math.round((vw - pw) / 2);
+            top = Math.round((vh - ph) / 2);
+        }
+
+        if (left + pw > vw) left = vw - pw - margin;
+        if (left < margin) left = margin;
+        if (top + ph > vh) top = vh - ph - margin;
+        if (top < margin) top = margin;
+
+        this._previewEl.style.left = left + "px";
+        this._previewEl.style.top = top + "px";
+        this._previewEl.style.visibility = "visible";
+    }
+
+
+
+
+    _hidePreview(delay = 250) {
+        if (!this._previewEl) return;
+        if (this._previewHideTimer) clearTimeout(this._previewHideTimer);
+        this._previewHideTimer = setTimeout(() => {
+            this._previewEl.style.display = "none";
+            this._previewEl.dataset.currentType = "";
+        }, delay);
     }
 
     moveFavorite(nodeType, offset) {
@@ -3200,6 +3551,7 @@ app.registerExtension({
         if (nodeFavoritesInstance) return;
 
         nodeFavoritesInstance = new Xiaozhuguang();
+        window.xiaozhuguangFavorites = nodeFavoritesInstance;
 
         const origDrawNode = LGraphCanvas.prototype.drawNode;
         LGraphCanvas.prototype.drawNode = function(node, ctx) {
@@ -5523,6 +5875,90 @@ app.registerExtension({
                 delete node._userText;
                 node.isEditing = false;
             }
+        }
+    },
+
+    /* ── 节点悬浮预览 ── */
+    _showNodePreview(item, nodeType) {
+        if (!nodeType) return;
+        this._hideNodePreview();
+        try {
+            const nodeData = this.favorites.nodes.find(n => n.type === nodeType);
+            const nodeName = nodeData?.displayName || nodeType;
+            const cat = nodeData?.category || "";
+
+            // 获取节点注册信息
+            const nodeDef = LiteGraph.registered_node_types[nodeType];
+            const inputs = nodeDef?.prototype?.inputs || [];
+            const outputs = nodeDef?.prototype?.outputs || [];
+            const nodeColor = nodeDef?.color || "#555";
+
+            const previewEl = document.createElement("div");
+            this._previewEl = previewEl;
+            previewEl.style.cssText = `position:fixed;z-index:99999;left:${item.getBoundingClientRect().right + 12}px;top:${item.getBoundingClientRect().top}px;pointer-events:none;background:#1a1a1a;border:1px solid #444;border-radius:8px;padding:0;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.6);color:#ccc;font-family:Arial,sans-serif;font-size:11px;min-width:180px;`;
+
+            // 顶部标题
+            const header = document.createElement("div");
+            header.style.cssText = `padding:6px 10px;background:${nodeColor};color:#fff;font-weight:bold;font-size:12px;white-space:nowrap;`;
+            const title = nodeName.length > 20 ? nodeName.substring(0, 19) + "…" : nodeName;
+            header.textContent = title;
+            previewEl.appendChild(header);
+
+            // 端口信息
+            const body = document.createElement("div");
+            body.style.cssText = "padding:6px 10px;display:flex;gap:16px;";
+            const inList = document.createElement("div");
+            inList.style.cssText = "flex:1;min-width:0;";
+            const outList = document.createElement("div");
+            outList.style.cssText = "flex:1;min-width:0;text-align:right;";
+
+            const maxShow = 8;
+            for (let i = 0; i < Math.min(inputs.length, maxShow); i++) {
+                const row = document.createElement("div");
+                row.style.cssText = "padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+                row.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-right:4px;vertical-align:middle;"></span>${(inputs[i].label || inputs[i].name || "input").substring(0, 14)}`;
+                inList.appendChild(row);
+            }
+            if (inputs.length > maxShow) {
+                const more = document.createElement("div");
+                more.style.cssText = "color:#888;padding:1px 0;";
+                more.textContent = `…+${inputs.length - maxShow} 个输入`;
+                inList.appendChild(more);
+            }
+
+            for (let i = 0; i < Math.min(outputs.length, maxShow); i++) {
+                const row = document.createElement("div");
+                row.style.cssText = "padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+                row.innerHTML = `${(outputs[i].label || outputs[i].name || "output").substring(0, 14)}<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-left:4px;vertical-align:middle;"></span>`;
+                outList.appendChild(row);
+            }
+            if (outputs.length > maxShow) {
+                const more = document.createElement("div");
+                more.style.cssText = "color:#888;padding:1px 0;";
+                more.textContent = `…+${outputs.length - maxShow} 个输出`;
+                outList.appendChild(more);
+            }
+
+            body.appendChild(inList);
+            body.appendChild(outList);
+            previewEl.appendChild(body);
+
+            // 底栏
+            const footer = document.createElement("div");
+            footer.style.cssText = "padding:4px 10px;border-top:1px solid #333;display:flex;justify-content:space-between;color:#777;font-size:10px;";
+            footer.innerHTML = `<span>${cat}</span>${(nodeData?.useCount || 0) > 0 ? `<span>使用 ${nodeData.useCount} 次</span>` : ""}`;
+            previewEl.appendChild(footer);
+
+            document.body.appendChild(previewEl);
+        } catch(e) {
+            console.warn("[小珠光] 预览渲染失败:", e);
+        }
+    },
+
+    _hideNodePreview() {
+        if (this._previewEl) {
+            this._previewEl.remove();
+            this._previewEl = null;
         }
     },
 
