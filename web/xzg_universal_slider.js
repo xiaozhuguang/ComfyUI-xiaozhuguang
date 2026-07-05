@@ -35,7 +35,8 @@ import { app } from "../../scripts/app.js";
 .xzg-us-radio-label input[type="radio"]{display:none}
 .xzg-us-radio-label.xzg-us-radio-checked{background:#555;font-weight:700}
 .xzg-us-snap-grid{display:flex;flex-wrap:wrap;gap:4px;flex:1}
-.xzg-us-snap-inp{width:40px;padding:4px 2px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:11px;outline:none;text-align:center}
+.xzg-us-snap-inp{width:40px;padding:4px 2px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:11px;outline:none;text-align:center;-moz-appearance:textfield}
+.xzg-us-snap-inp::-webkit-outer-spin-button,.xzg-us-snap-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .xzg-us-color-picker{position:fixed;z-index:10001;background:#2a2a2a;border:1px solid #444;border-radius:8px;padding:10px;width:200px;box-shadow:0 4px 20px rgba(0,0,0,.5);user-select:none}
     `;
     document.head.appendChild(s);

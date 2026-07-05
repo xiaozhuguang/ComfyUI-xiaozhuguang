@@ -1,6 +1,6 @@
 /**
  * 小珠光编组功能 - DOM 覆盖层版（固定框体 + 可拖拽调整大小）
- * 选中节点 → Ctrl+Q → 创建固定大小编组框
+ * 选中节点 → Ctrl+G → 创建固定大小编组框
  */
 
 import { app } from "../../scripts/app.js";
@@ -24,7 +24,6 @@ const XZGGroup = {
         this.setupKeyboardShortcut();
         this.setupCanvasMenu();
         this.setupSerializationHooks();
-        this.setupBodyBypass();
         this.startSyncLoop();
         this.waitForGraph();
     },
@@ -113,14 +112,21 @@ const XZGGroup = {
         document.addEventListener('mousedown', e => {
             if (!e.ctrlKey || e.button !== 0) return;
             const cx = e.clientX, cy = e.clientY;
-            for (const gid of Object.keys(this.groups)) {
+            // 按面积从小到大排序，确保小框优先检测（大框内的小框先被识别）
+            const sortedGids = Object.keys(this.groups).sort((a, b) => {
+                const ga = this.groups[a]?.bounds, gb = this.groups[b]?.bounds;
+                if (!ga || !gb) return 0;
+                return (ga.w * ga.h) - (gb.w * gb.h);
+            });
+            for (const gid of sortedGids) {
                 const el = this.groupEls[gid];
                 if (!el) continue;
                 const r = el.getBoundingClientRect();
                 if (r.width === 0) continue;
                 if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
                     e.preventDefault(); e.stopPropagation();
-                    this.toggleBypass(gid);
+                    e.stopImmediatePropagation();
+                    this.toggleBypassUnified(gid);
                     return;
                 }
             }
@@ -207,7 +213,11 @@ const XZGGroup = {
             el._xzgRefs = {
                 title: el.querySelector('.xzg-group-title-text'),
                 delBtn: el.querySelector('.xzg-delete-btn'),
-                rpath: el.querySelector('.xzg-resize-handle svg path')
+                rpath: el.querySelector('.xzg-resize-handle svg path'),
+                leftFifth: el.querySelector('.xzg-left-fifth'),
+                leftFifthIcon: el.querySelector('.xzg-left-fifth-icon'),
+                rightFifth: el.querySelector('.xzg-right-fifth'),
+                rightFifthIcon: el.querySelector('.xzg-right-fifth-icon')
             };
         }
         return el._xzgRefs;
@@ -266,6 +276,7 @@ const XZGGroup = {
             const span = el.querySelector('.xzg-group-title-text');
             if (span) {
                 span.style.fontSize = fs + 'px';
+                span.style.lineHeight = (headerHeight * 0.9) + 'px';
                 span.style.color = g.titleColor || '#FFD700';
                 span.style.display = showTitle ? '' : 'none';
             }
@@ -274,6 +285,10 @@ const XZGGroup = {
                 delBtn.style.fontSize = (18 * scale) + 'px';
                 delBtn.style.marginLeft = (4 * scale) + 'px';
             }
+            ['xzg-left-fifth-icon', 'xzg-right-fifth-icon'].forEach(cls => {
+                const icon = el.querySelector('.' + cls);
+                if (icon) icon.style.fontSize = (12 * scale) + 'px';
+            });
             ['xzg-border-left', 'xzg-border-right'].forEach(cls => {
                 const be = el.querySelector('.' + cls);
                 if (be) be.style.top = headerHeight + 'px';
@@ -299,7 +314,7 @@ const XZGGroup = {
             }
 
             const refs = this._ensureRefs(el);
-            const spd = (g.effectSpeed || 3) / 3;
+            const spd = (g.effectSpeed || 3) * 5 / 9;
             const bw = (g.borderWidth || 2) * scale;
             const bo = g.borderOpacity ?? 0.65;
 
@@ -315,6 +330,14 @@ const XZGGroup = {
                 }
             }
 
+            // 给效果帧更新左/右箭头和竖线颜色的辅助函数
+            const updateIndicators = (hue, sat, lit, op) => {
+                if (refs.leftFifth) refs.leftFifth.style.borderRightColor = `hsla(${hue},${sat}%,${lit}%,${op*0.3})`;
+                if (refs.leftFifthIcon) refs.leftFifthIcon.style.color = `hsla(${hue},${sat}%,${lit}%,${op*0.55})`;
+                if (refs.rightFifth) refs.rightFifth.style.borderLeftColor = `hsla(${hue},${sat}%,${lit}%,${op*0.3})`;
+                if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = `hsla(${hue},${sat}%,${lit}%,${op*0.55})`;
+            };
+
             switch (e) {
             case 'rainbow': {
                 const t = (Date.now() / 4500) * spd;
@@ -325,6 +348,7 @@ const XZGGroup = {
                 if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},80%,55%,${Math.min(bo + 0.1, 1)})`;
                 if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},80%,55%,${bo})`);
                 if (refs.title) refs.title.style.color = `hsla(${h},80%,55%,0.85)`;
+                updateIndicators(h, 80, 55, bo);
                 break;
             }
             case 'pulse': {
@@ -337,6 +361,7 @@ const XZGGroup = {
                 if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${g.colorSat||100}%,${g.colorLit||55}%,${a.toFixed(2)})`;
                 if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${g.colorSat||100}%,${g.colorLit||55}%,${(0.3+a*0.7).toFixed(2)})`);
                 if (refs.title) refs.title.style.color = `hsla(${h},${g.colorSat||100}%,${g.colorLit||55}%,${a.toFixed(2)})`;
+                updateIndicators(h, g.colorSat||100, g.colorLit||55, a);
                 break;
             }
             case 'marquee': {
@@ -357,6 +382,7 @@ const XZGGroup = {
                     refs.title.style.backgroundClip = 'text';
                     refs.title.style.color = 'transparent';
                 }
+                updateIndicators(h0, 100, 65, 1);
                 break;
             }
             case 'marqueebreathe': {
@@ -379,10 +405,11 @@ const XZGGroup = {
                     refs.title.style.backgroundClip = 'text';
                     refs.title.style.color = 'transparent';
                 }
+                updateIndicators(h0, 100, lv, 1);
                 break;
             }
             case 'glow': {
-                const t = (Date.now() / 2500) * spd;
+                const t = (Date.now() / 1250) * spd;
                 const a = 0.4 + Math.abs(Math.sin(t)) * 0.6;
                 const h = g.colorHue ?? 48;
                 const s = g.colorSat ?? 100;
@@ -393,6 +420,7 @@ const XZGGroup = {
                 if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
                 if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${s}%,${l}%,${bo})`);
                 if (refs.title) refs.title.style.color = `hsla(${h},${s}%,${l}%,0.85)`;
+                updateIndicators(h, s, l, bo);
                 break;
             }
             default:
@@ -619,11 +647,17 @@ const XZGGroup = {
         const showTitle = (group.title || '').trim() !== '';
         const headerHeight = Math.max(18, fs + 4);
         el.innerHTML = `
-            <div class="xzg-group-header" style="display:flex;align-items:center;justify-content:space-between;padding:0 6px;background:${showTitle ? (group.headerBgColor || 'rgba(0,0,0,0.4)') : 'transparent'};border-radius:7px 7px 0 0;cursor:pointer;user-select:none;pointer-events:auto;height:${headerHeight}px;box-sizing:border-box;overflow:hidden;z-index:4;">
-                <div style="flex:1 1 auto;min-width:0;overflow:hidden;">
-                    <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:1;${showTitle ? '' : 'display:none;'}">${showTitle ? group.title : ''}</span>
+            <div class="xzg-group-header" style="display:flex;align-items:center;padding:0;background:${showTitle ? (group.headerBgColor || 'rgba(0,0,0,0.4)') : 'transparent'};border-radius:7px 7px 0 0;cursor:pointer;user-select:none;pointer-events:auto;height:${headerHeight}px;box-sizing:border-box;overflow:visible;z-index:4;">
+                <div class="xzg-left-fifth" title="点击此区域：该编组开启，同级其他全部绕过" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-right:1px solid rgba(255,255,255,0.1);position:relative;">
+                    <span class="xzg-left-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">◀</span>
                 </div>
-                <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0;flex-shrink:0;font-size:18px;color:hsla(48,100%,55%,0.5);line-height:1;margin-left:4px;">×</button>
+                <div style="flex:1 1 auto;min-width:0;overflow:hidden;padding:0;display:flex;align-items:center;justify-content:center;height:100%;">
+                    <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:${headerHeight * 0.9}px;overflow:hidden;text-overflow:ellipsis;${showTitle ? '' : 'display:none;'}">${showTitle ? group.title : ''}</span>
+                </div>
+                <div class="xzg-right-fifth" title="点击此区域：该编组绕过，同级其他全部开启" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-left:1px solid rgba(255,255,255,0.1);position:relative;">
+                    <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">▶</span>
+                </div>
+                <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;font-size:${headerHeight * 0.7}px;color:hsla(48,100%,55%,0.5);line-height:1;display:flex;align-items:center;">×</button>
             </div>
             <div class="xzg-border-left" style="position:absolute;left:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
             <div class="xzg-border-right" style="position:absolute;right:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
@@ -703,6 +737,11 @@ const XZGGroup = {
             bringToFront();
             startX = e.clientX; startY = e.clientY; dragged = false;
             const downE = e;
+            // 判断点击区域：左1/5=聚焦开启，右1/5=绕过静音，中间=简单切换
+            const headerRect = headerEl.getBoundingClientRect();
+            const relX = e.clientX - headerRect.left;
+            const isLeftFifth = relX < (headerRect.width / 5);
+            const isRightFifth = relX > (headerRect.width * 4 / 5);
             const onMove = ev => {
                 if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) {
                     dragged = true;
@@ -714,7 +753,15 @@ const XZGGroup = {
             const onUp = () => {
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
-                if (!dragged) self.toggleBypass(group.id);
+                if (!dragged) {
+                    if (isLeftFifth) {
+                        self.toggleBypassUnified(group.id);
+                    } else if (isRightFifth) {
+                        self.toggleBypassMute(group.id);
+                    } else {
+                        self.toggleBypass(group.id);
+                    }
+                }
             };
             document.addEventListener('mouseup', onUp, { once: true });
         });
@@ -925,7 +972,10 @@ const XZGGroup = {
                 </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:space-between;padding-top:4px;">
-                <button class="xzg-set-apply-all" type="button" style="height:28px;padding:0 12px;background:#665500;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#FFD700;cursor:pointer;font-size:12px;" title="将颜色和动画应用到所有编组">应用到全部</button>
+                <div style="display:flex;gap:8px;">
+                    <button class="xzg-set-help" type="button" style="height:28px;padding:0 12px;background:transparent;border:none;color:#FFD700;cursor:pointer;font-size:12px;font-weight:bold;">使用说明</button>
+                    <button class="xzg-set-apply-all" type="button" style="height:28px;padding:0 12px;background:#665500;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#FFD700;cursor:pointer;font-size:12px;" title="将颜色和动画应用到所有编组">应用到全部</button>
+                </div>
                 <div style="display:flex;gap:8px;">
                     <button class="xzg-set-cancel" type="button" style="height:28px;padding:0 16px;background:#333;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">取消</button>
                     <button class="xzg-set-apply" type="button" style="height:28px;padding:0 16px;background:#444;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">应用</button>
@@ -1231,6 +1281,28 @@ const XZGGroup = {
             cleanupModal();
         });
 
+        // 使用说明
+        modal.querySelector('.xzg-set-help').addEventListener('click', (e) => {
+            e.stopPropagation();
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:100001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#2a2a2a;border:1px solid #555;border-radius:10px;padding:24px 32px;max-width:1000px;box-shadow:0 8px 32px rgba(0,0,0,0.6);color:#ddd;font-size:14px;line-height:2;font-family:Arial,sans-serif;';
+            box.innerHTML = `<div style="font-size:16px;font-weight:bold;color:#FFD700;margin-bottom:12px;">小珠光编组功能使用说明</div>
+<div style="color:#FFD700;font-weight:bold;">1、基本操作</div>
+选中节点 → Ctrl+G：创建编组框，包含所选节点<br>
+拖拽编组标题栏：移动编组位置<br>
+拖拽边框右下角：调整编组大小<br>
+编组可嵌套：编组框可以包含其他更小的编组框<br>
+<div style="color:#FFD700;font-weight:bold;margin-top:8px;">2、同级别反选模式</div>
+2.1 点击标题栏左侧 1/5 区域，被点击的编组 开启，同一级别的其他编组全部 绕过<br>
+2.2 点击标题栏右侧 1/5 区域，被点击的编组 绕过，同一级别的其他编组全部 开启`;
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+            overlay.addEventListener('click', () => overlay.remove());
+            box.addEventListener('click', (ev) => ev.stopPropagation());
+        });
+
         // （closeOut 监听已在上面 cleanupModal 中统一管理）
 
         // 聚焦标题输入
@@ -1426,6 +1498,10 @@ const XZGGroup = {
             if (refs.title) refs.title.style.color = 'hsla(280,60%,65%,0.85)';
             if (refs.delBtn) refs.delBtn.style.color = `hsla(280,60%,65%,${bo * 0.8})`;
             if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(280,60%,55%,${bo})`);
+            if (refs.leftFifth) refs.leftFifth.style.borderRightColor = 'hsla(280,60%,65%,0.2)';
+            if (refs.leftFifthIcon) refs.leftFifthIcon.style.color = 'hsla(280,60%,65%,0.35)';
+            if (refs.rightFifth) refs.rightFifth.style.borderLeftColor = 'hsla(280,60%,65%,0.2)';
+            if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = 'hsla(280,60%,65%,0.35)';
         } else {
             const h = g.colorHue ?? 48;
             const s = g.colorSat ?? 100;
@@ -1437,6 +1513,10 @@ const XZGGroup = {
                     refs.title.style.color = g.titleColor || '#FFD700';
                 }
             }
+            if (refs.leftFifth) refs.leftFifth.style.borderRightColor = `hsla(${h},${s}%,${l}%,0.2)`;
+            if (refs.leftFifthIcon) refs.leftFifthIcon.style.color = `hsla(${h},${s}%,${l}%,0.45)`;
+            if (refs.rightFifth) refs.rightFifth.style.borderLeftColor = `hsla(${h},${s}%,${l}%,0.2)`;
+            if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = `hsla(${h},${s}%,${l}%,0.45)`;
             if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
             if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${s}%,${l}%,${bo})`);
         }
@@ -1519,6 +1599,93 @@ const XZGGroup = {
         // 先保存当前状态到 extra，再触发 graph.change（防止 configure 钩子读取旧数据）
         this.syncGroupsToExtra();
         graph.setDirtyCanvas?.(true, true); graph.change?.();
+    },
+
+    /* ── 查找指定编组的直接父编组（面积最小且完全包含它的编组） ── */
+    _findParentGroup(gid) {
+        const g = this.groups[gid];
+        if (!g?.bounds) return null;
+        const childArea = g.bounds.w * g.bounds.h;
+
+        let parentId = null;
+        let parentArea = Infinity;
+
+        for (const [otherGid, otherG] of Object.entries(this.groups)) {
+            if (otherGid === gid || !otherG.bounds) continue;
+            const otherArea = otherG.bounds.w * otherG.bounds.h;
+            if (otherArea <= childArea) continue; // 只找面积更大的
+            if (this._isFullyContained(otherG.bounds, g.bounds)) {
+                if (otherArea < parentArea) {
+                    parentArea = otherArea;
+                    parentId = otherGid;
+                }
+            }
+        }
+        return parentId;
+    },
+
+    /* ── 聚焦模式：点击编组开启，同级其他全部绕过 ── */
+    toggleBypassUnified(gid) {
+        const graph = app?.graph;
+        if (!graph || !this.groups[gid]) return;
+
+        // 被点击的决定开启，同级的全部绕过
+        const parentId = this._findParentGroup(gid);
+
+        for (const [otherGid] of Object.entries(this.groups)) {
+            // 跳过非同级编组（父编组不同就不是同级）
+            if (otherGid !== gid) {
+                const otherParent = this._findParentGroup(otherGid);
+                if (otherParent !== parentId) continue;
+            }
+
+            const isSelf = otherGid === gid;
+            const willBypass = !isSelf; // 自身开启，其他绕过
+            this._applyBypassRecursive(otherGid, willBypass, graph);
+        }
+
+        this.syncGroupsToExtra();
+        graph.setDirtyCanvas?.(true, true); graph.change?.();
+    },
+
+    /* ── 静音模式：点击编组绕过，同级其他全部开启 ── */
+    toggleBypassMute(gid) {
+        const graph = app?.graph;
+        if (!graph || !this.groups[gid]) return;
+
+        // 被点击的绕过，同级的全部开启
+        const parentId = this._findParentGroup(gid);
+
+        for (const [otherGid] of Object.entries(this.groups)) {
+            if (otherGid !== gid) {
+                const otherParent = this._findParentGroup(otherGid);
+                if (otherParent !== parentId) continue;
+            }
+
+            const isSelf = otherGid === gid;
+            const willBypass = isSelf; // 自身绕过，其他开启
+            this._applyBypassRecursive(otherGid, willBypass, graph);
+        }
+
+        this.syncGroupsToExtra();
+        graph.setDirtyCanvas?.(true, true); graph.change?.();
+    },
+
+    /* 递归应用绕过状态到编组及所有子编组 */
+    _applyBypassRecursive(gid, willBypass, graph) {
+        // _collectChildGroups 返回编组自身 + 所有完全包含的子编组
+        const allIds = this._collectChildGroups(gid);
+        const mode = willBypass ? MODE_BYPASS : MODE_ALWAYS;
+        allIds.forEach(id => {
+            const grp = this.groups[id];
+            if (!grp) return;
+            grp.bypassed = willBypass;
+            grp.nodeIds.forEach(nid => {
+                const n = graph._nodes.find(x => x.id === nid || x.id == nid);
+                if (n) n.mode = mode;
+            });
+            this.updateGroupStyle(id);
+        });
     },
 
     /* 计算子编组被父编组覆盖的面积比例 (0~1) */

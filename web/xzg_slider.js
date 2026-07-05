@@ -28,6 +28,7 @@ import { app } from "../../scripts/app.js";
             `;
 
             dialog.innerHTML = `
+                <style>.xzg-snap-input::-webkit-outer-spin-button,.xzg-snap-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}</style>
                 <div id="xzg-slider-drag-handle" style="display:flex;align-items:center;gap:8px;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #3a3a3a;cursor:move;user-select:none;">
                     <div style="width:12px;height:12px;border-radius:50%;background:transparent;"></div>
                     <span style="font-weight:bold;font-size:14px;">小珠光滑条设置</span>
@@ -72,7 +73,7 @@ import { app } from "../../scripts/app.js";
                             ${[0,1,2,3,4].map(i => {
                                 const v = (cfg.snaps && cfg.snaps[i] !== undefined) ? cfg.snaps[i] : '';
                                 return `<input type="number" class="xzg-snap-input" data-index="${i}" value="${v}" placeholder="值${i+1}"
-                                    style="width:40px;padding:4px 2px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:11px;outline:none;text-align:center;">`;
+                                    style="width:40px;padding:4px 2px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:11px;outline:none;text-align:center;-moz-appearance:textfield;">`;
                             }).join('')}
                         </div>
                         <div id="xzg-slider-snap-style" style="display:${cfg.useSnaps ? 'flex' : 'none'};align-items:center;gap:10px;margin-top:6px;">

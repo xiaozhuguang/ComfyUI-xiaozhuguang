@@ -3036,10 +3036,10 @@ class Xiaozhuguang {
         if (idx < 0) return;
         const newIdx = idx + offset;
         if (newIdx < 0 || newIdx >= cats.length) return;
-        // 交换 order 值
-        const tmp = cats[idx].order;
-        cats[idx].order = cats[newIdx].order;
-        cats[newIdx].order = tmp;
+        // 交换数组元素位置
+        [cats[idx], cats[newIdx]] = [cats[newIdx], cats[idx]];
+        // 重新赋予连续的 order 值，使排序顺序与数组顺序一致
+        cats.forEach((cat, i) => cat.order = (i + 1) * 1000);
         this.saveFavorites();
         this.renderCategories();
     }
@@ -3780,6 +3780,7 @@ app.registerExtension({
                 glowSize: 15,
                 glowColor: "#4CAF50",
                 glowIntensity: 1,
+                bgEnabled: false,
                 rainbowEnabled: false,
                 rainbowSpeed: 30,
                 rainbowStyle: "波浪",
@@ -4023,8 +4024,9 @@ app.registerExtension({
                         if (w > maxWidth) maxWidth = w;
                     });
                 }
-                const w = this._customWidth || Math.max(50, maxWidth + 12);
-                const h = this._customHeight || Math.max(30, lines.length * lineHeight + 12);
+                const padW = 16;
+                const w = this._customWidth || Math.max(50, maxWidth + padW);
+                const h = this._customHeight || Math.max(30, lines.length * lineHeight + 16);
                 return [w, h];
             };
 
@@ -4070,8 +4072,9 @@ app.registerExtension({
                     });
                     ctx.restore();
                 }
-                const autoW = Math.max(50, maxWidth + 12);
-                const autoH = Math.max(30, lines.length * lineHeight + 12);
+                const padW = 4;
+                const autoW = Math.max(50, maxWidth + padW);
+                const autoH = Math.max(30, lines.length * lineHeight + 4);
 
                 let changed = false;
                 if (!this._customWidth && this.size[0] !== autoW) {
@@ -4105,6 +4108,14 @@ app.registerExtension({
                 const lineHeight = fontSize * (p.lineHeight || 1.4);
                 ctx.save();
 
+                if (p.bgEnabled && p.bgColor && p.bgColor !== "transparent") {
+                    ctx.fillStyle = p.bgColor;
+                    const br = p.borderRadius ?? 8;
+                    ctx.beginPath();
+                    ctx.roundRect(0, 0, w, h, br);
+                    ctx.fill();
+                }
+
                 if (this.selected) {
                     ctx.fillStyle = "rgba(76, 175, 80, 0.06)";
                     ctx.fillRect(0, 0, w, h);
@@ -4117,11 +4128,11 @@ app.registerExtension({
 
                 ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                 ctx.letterSpacing = `${p.letterSpacing || 0}px`;
-                ctx.textBaseline = "top";
+                ctx.textBaseline = "middle";
                 const align = p.textAlign || "center";
                 ctx.textAlign = align;
-                const xPos = align === "left" ? 16 : (align === "right" ? w - 16 : w / 2);
-                const totalTextH = lines.length * lineHeight;
+                const xPos = align === "left" ? 2 : (align === "right" ? w - 2 : w / 2);
+                const totalTextH = lines.length > 1 ? (lines.length - 1) * lineHeight + fontSize : fontSize;
                 const startY = Math.max(0, (h - totalTextH) / 2);
 
                 if (rainbowEnabled) {
@@ -4165,8 +4176,8 @@ app.registerExtension({
                 };
 
                 lines.forEach((line, i) => {
-                    const y = startY + i * lineHeight;
-                    if (y + fontSize > h) return;
+                    const y = startY + i * lineHeight + fontSize / 2;
+                    if (y + fontSize / 2 > h) return;
                     const textWidth = ctx.measureText(line).width;
                     const lineX = xPos;
                     const lineStartX = align === "center" ? xPos - textWidth / 2 : (align === "right" ? xPos - textWidth : xPos);
@@ -4336,6 +4347,9 @@ app.registerExtension({
                 container.style.cssText = `position:fixed;left:${vr.left}px;top:${vr.top}px;width:${Math.max(260, node.size[0] * sc)}px;z-index:100000;`;
                 container.dataset.xzTitleEdit = node.id;
                 
+                // 整个编辑面板拦截浏览器右键菜单
+                container.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); }, false);
+                
                 container.addEventListener("wheel", (e) => {
                     if (e.target === ta) return; // let textarea handle its own wheel
                     const cv = app.canvas?.canvas;
@@ -4357,7 +4371,7 @@ app.registerExtension({
                 const editFontSize = p.fontSize * sc;
                 const editHeight = Math.max(90, node.size[1] * sc);
                 const glowShadow = p.glowEnabled ? `box-shadow:inset 0 0 ${(p.glowSize || 15) * (p.glowIntensity || 1)}px ${(p.glowSize || 15) * (p.glowIntensity || 1) / 2}px ${p.glowColor || "#4CAF50"};` : "";
-                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;border:1px dashed #4CAF50;outline:none;resize:none;padding:16px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:transparent;color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${p.letterSpacing || 0}px;border-radius:${(p.borderRadius || 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
+                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;outline:1px dashed #4CAF50;border:none;resize:none;padding:3px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:${p.bgEnabled ? (p.bgColor || "#2a2a2a") : "transparent"};color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${p.letterSpacing || 0}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
                 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = `position:absolute;left:0;right:0;bottom:100%;display:flex;align-items:stretch;margin-bottom:6px;`;
@@ -4492,17 +4506,17 @@ app.registerExtension({
                 row3.appendChild(rightGroup);
                 
                 const colorPanel = document.createElement("div");
-                colorPanel.style.cssText = `background:rgba(42,42,42,0.95);border:1px solid #444;border-left:none;border-radius:0 6px 6px 0;padding:8px;user-select:none;display:flex;flex-direction:column;`;
+                colorPanel.style.cssText = `background:rgba(42,42,42,0.95);border:1px solid #444;border-left:none;border-radius:0 6px 6px 0;padding:8px;user-select:none;display:flex;flex-direction:column;align-items:stretch;`;
                 
                 const svCanvas = document.createElement("canvas");
                 svCanvas.width = 140;
                 svCanvas.height = 110;
-                svCanvas.style.cssText = `width:140px;height:110px;border-radius:4px;cursor:crosshair;display:block;margin-bottom:6px;`;
+                svCanvas.style.cssText = `width:140px;flex:1;min-height:80px;border-radius:4px;cursor:crosshair;display:block;margin-bottom:6px;`;
                 
                 const hueCanvas = document.createElement("canvas");
                 hueCanvas.width = 140;
-                hueCanvas.height = 10;
-                hueCanvas.style.cssText = `width:140px;height:10px;border-radius:4px;cursor:pointer;display:block;`;
+                hueCanvas.height = 20;
+                hueCanvas.style.cssText = `width:140px;height:20px;border-radius:4px;cursor:pointer;display:block;`;
                 
                 colorPanel.appendChild(svCanvas);
                 colorPanel.appendChild(hueCanvas);
@@ -4584,6 +4598,10 @@ app.registerExtension({
                 };
                 
                 const drawSV = () => {
+                    // 同步画布缓冲尺寸与CSS尺寸（适配flex:1高度变化）
+                    let cssH = svCanvas.clientHeight;
+                    if (cssH < 50) cssH = 110; // 布局未完成时使用默认高度
+                    if (svCanvas.height !== cssH) svCanvas.height = cssH;
                     const ctx = svCanvas.getContext("2d");
                     const w = svCanvas.width, h = svCanvas.height;
                     const hueColor = hsvToHex(currentHue, 1, 1);
@@ -4616,6 +4634,12 @@ app.registerExtension({
                         p.glowColor = hex;
                         glowColorBtn.style.background = hex;
                         updateTextareaGlow();
+                    } else if (activeColorTarget === "bg") {
+                        p.bgColor = hex;  // 始终保存颜色值
+                        if (p.bgEnabled) {  // 仅在开启时预览
+                            ta.style.background = hex;
+                        }
+                        if (node.graph) node.graph.setDirtyCanvas(true, true);
                     } else {
                         p.fontColor = hex;
                         ta.style.color = hex;
@@ -4636,6 +4660,8 @@ app.registerExtension({
                 
                 drawHue();
                 initFromColor(p.fontColor);
+                // 布局完成后重绘SV画布，修正初始椭圆圆点
+                requestAnimationFrame(() => { drawSV(); });
                 
                 let svDragging = false;
                 let hueDragging = false;
@@ -4651,12 +4677,29 @@ app.registerExtension({
                     updateColorFromHSV();
                 };
                 
+                // 左键拖拽调文字颜色，右键拖拽调背景颜色
+                const startHsvDrag = (e) => {
+                    if (e.button === 2) {
+                        activeColorTarget = "bg";
+                        fontColorSwatch.style.borderColor = "#444";
+                        glowColorBtn.style.borderColor = "#444";
+                        initFromColor(p.bgColor || "#2a2a2a");
+                    } else {
+                        activeColorTarget = "font";
+                        fontColorSwatch.style.borderColor = "#fff";
+                        glowColorBtn.style.borderColor = "#444";
+                        initFromColor(p.fontColor);
+                    }
+                };
+
                 svCanvas.addEventListener("mousedown", (e) => {
                     e.stopPropagation();
                     e.preventDefault();
+                    startHsvDrag(e);
                     svDragging = true;
                     updateSVFromEvent(e);
                 });
+                svCanvas.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); });
                 
                 document.addEventListener("mousemove", (e) => {
                     if (svDragging) updateSVFromEvent(e);
@@ -4678,9 +4721,11 @@ app.registerExtension({
                 hueCanvas.addEventListener("mousedown", (e) => {
                     e.stopPropagation();
                     e.preventDefault();
+                    startHsvDrag(e);
                     hueDragging = true;
                     updateHueFromEvent(e);
                 });
+                hueCanvas.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); });
                 
                 document.addEventListener("mousemove", (e) => {
                     if (hueDragging) updateHueFromEvent(e);
@@ -4704,7 +4749,7 @@ app.registerExtension({
                                 <span style="font-size:${12 * s}px;color:${isOn ? activeColor : '#777'};font-weight:bold;min-width:${16 * s}px;pointer-events:none;">${isOn ? '开' : '关'}</span>
                             </span>
                         `;
-                        btn.style.cssText = `padding:${4 * s}px ${8 * s}px;border:1px solid ${isOn ? activeColor : '#555'};border-radius:${4 * s}px;background:${isOn ? activeColor + '22' : '#333'};color:${isOn ? activeColor : '#aaa'};cursor:pointer;font-family:Arial,sans-serif;transition:all 0.2s;display:flex;align-items:center;flex-shrink:0;white-space:nowrap;`;
+                        btn.style.cssText = `padding:${4 * s}px ${8 * s}px;border:none;border-radius:${4 * s}px;background:${isOn ? activeColor + '22' : '#333'};color:${isOn ? activeColor : '#aaa'};cursor:pointer;font-family:Arial,sans-serif;transition:all 0.2s;display:flex;align-items:center;flex-shrink:0;white-space:nowrap;`;
                     };
                     updateBtn(enabled);
                     btn._update = updateBtn;
@@ -4767,6 +4812,63 @@ app.registerExtension({
                     initFromColor(p.glowColor || "#4CAF50");
                 });
 
+                const bgRow = document.createElement("div");
+                bgRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;flex-wrap:nowrap;`;
+
+                const bgToggle = createToggleBtn("背景", p.bgEnabled, "#FF9800");
+                bgToggle.title = "左键拖动调色框和色相条改变文字颜色，右键拖动改变背景色";
+                bgRow.appendChild(bgToggle);
+
+                const bgOpacityLabel = document.createElement("span");
+                bgOpacityLabel.textContent = "透明度";
+                bgOpacityLabel.style.cssText = `color:#888;font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;min-width:36px;`;
+
+                const bgOpacitySlider = document.createElement("input");
+                bgOpacitySlider.type = "range";
+                bgOpacitySlider.min = "5";
+                bgOpacitySlider.max = "100";
+                bgOpacitySlider.step = "1";
+                bgOpacitySlider.value = Math.round((p.bgOpacity ?? 1) * 100);
+                bgOpacitySlider.style.cssText = `width:80px;height:4px;cursor:pointer;`;
+
+                const bgOpacityValue = document.createElement("span");
+                bgOpacityValue.textContent = Math.round((p.bgOpacity ?? 1) * 100) + "%";
+                bgOpacityValue.style.cssText = `color:#ccc;font-size:12px;min-width:30px;text-align:center;font-family:Arial,sans-serif;`;
+
+                const bgRadiusLabel = document.createElement("span");
+                bgRadiusLabel.textContent = "圆角";
+                bgRadiusLabel.style.cssText = `color:#888;font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;min-width:36px;`;
+
+                const bgRadiusSlider = document.createElement("input");
+                bgRadiusSlider.type = "range";
+                bgRadiusSlider.min = "0";
+                bgRadiusSlider.max = "30";
+                bgRadiusSlider.step = "1";
+                bgRadiusSlider.value = p.borderRadius ?? 8;
+                bgRadiusSlider.style.cssText = `width:80px;height:4px;cursor:pointer;`;
+
+                const bgRadiusValue = document.createElement("span");
+                bgRadiusValue.textContent = (p.borderRadius ?? 8) + "px";
+                bgRadiusValue.style.cssText = `color:#ccc;font-size:12px;min-width:30px;text-align:center;font-family:Arial,sans-serif;`;
+
+                const bgOpacityRow = document.createElement("div");
+                bgOpacityRow.style.cssText = `display:flex;align-items:center;gap:8px;flex-wrap:nowrap;`;
+                bgOpacityRow.appendChild(bgOpacityLabel);
+                bgOpacityRow.appendChild(bgOpacitySlider);
+                bgOpacityRow.appendChild(bgOpacityValue);
+
+                const bgRadiusRow = document.createElement("div");
+                bgRadiusRow.style.cssText = `display:flex;align-items:center;gap:8px;flex-wrap:nowrap;`;
+                bgRadiusRow.appendChild(bgRadiusLabel);
+                bgRadiusRow.appendChild(bgRadiusSlider);
+                bgRadiusRow.appendChild(bgRadiusValue);
+
+                const bgControlsWrap = document.createElement("div");
+                bgControlsWrap.style.cssText = `display:${p.bgEnabled ? 'flex' : 'none'};flex-direction:column;gap:4px;`;
+                bgControlsWrap.appendChild(bgOpacityRow);
+                bgControlsWrap.appendChild(bgRadiusRow);
+
+                bgRow.appendChild(bgControlsWrap);
 
                 const glowControlsWrap = document.createElement("div");
                 glowControlsWrap.style.cssText = `display:${p.glowEnabled ? 'flex' : 'none'};align-items:center;gap:8px;flex-wrap:nowrap;`;
@@ -4825,6 +4927,47 @@ app.registerExtension({
                 row5.appendChild(rainbowToggle);
                 row5.appendChild(rainbowControlsWrap);
 
+                // 高级选项（背景、辉光、炫彩）折叠区域
+                const advancedToggle = createToggleBtn("高级", false, "#FFD700");
+                advancedToggle.style.background = 'transparent';
+                const origUpdate = advancedToggle._update;
+                advancedToggle._update = (isOn) => { origUpdate(isOn); advancedToggle.style.background = 'transparent'; };
+                const advancedRow = document.createElement("div");
+                advancedRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;flex-wrap:nowrap;`;
+                advancedRow.appendChild(advancedToggle);
+
+                const helpBtn = document.createElement("button");
+                helpBtn.textContent = "使用说明";
+                helpBtn.style.cssText = `background:none;border:none;color:#FFD700;cursor:pointer;font-size:12px;font-family:Arial,sans-serif;padding:4px 6px;border-radius:4px;transition:color 0.2s;white-space:nowrap;`;
+                helpBtn.addEventListener("mouseenter", () => { helpBtn.style.color = '#FFA500'; });
+                helpBtn.addEventListener("mouseleave", () => { helpBtn.style.color = '#FFD700'; });
+                helpBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const overlay = document.createElement("div");
+                    overlay.style.cssText = `position:fixed;left:0;top:0;width:100%;height:100%;z-index:100001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);`;
+                    const box = document.createElement("div");
+                    box.style.cssText = `background:#2a2a2a;border:1px solid #555;border-radius:10px;padding:28px 36px;max-width:700px;box-shadow:0 8px 32px rgba(0,0,0,0.6);color:#ddd;font-size:15px;line-height:2;font-family:Arial,sans-serif;display:flex;flex-direction:column;justify-content:center;`;
+                    box.innerHTML = `点击"背景"按钮开启<br>开启后弹出两个滑条：透明度（5%-100%）、圆角（0-30px，0为直角）<br>左键拖动调色框和色相条 → 改变文字颜色<br><span style="white-space:nowrap;"><span style="color:#FFD700;">右键</span>拖动调色框和色相条 → 改变背景色</span>`;
+                    overlay.appendChild(box);
+                    document.body.appendChild(overlay);
+                    overlay.addEventListener("click", () => overlay.remove());
+                });
+                advancedRow.appendChild(helpBtn);
+
+                const advancedWrap = document.createElement("div");
+                const anyAdvancedOn = p.bgEnabled || p.glowEnabled || p.rainbowEnabled;
+                advancedWrap.style.cssText = `display:${anyAdvancedOn ? 'flex' : 'none'};flex-direction:column;`;
+                advancedRow.style.display = anyAdvancedOn ? 'none' : 'flex';
+                if (anyAdvancedOn) advancedToggle._update(true);
+                advancedWrap.appendChild(bgRow);
+                advancedWrap.appendChild(rowSeparator());
+                advancedWrap.appendChild(row4);
+                advancedWrap.appendChild(rowSeparator());
+                advancedWrap.appendChild(row5);
+                advancedWrap.appendChild(rowSeparator());
+
+                leftPanel.appendChild(advancedRow);
+                leftPanel.appendChild(advancedWrap);
                 leftPanel.appendChild(row1);
                 leftPanel.appendChild(rowSeparator());
                 leftPanel.appendChild(rowLetterSpacing);
@@ -4832,10 +4975,6 @@ app.registerExtension({
                 leftPanel.appendChild(row2);
                 leftPanel.appendChild(rowSeparator());
                 leftPanel.appendChild(row3);
-                leftPanel.appendChild(rowSeparator());
-                leftPanel.appendChild(row4);
-                leftPanel.appendChild(rowSeparator());
-                leftPanel.appendChild(row5);
                 toolbar.appendChild(leftPanel);
                 toolbar.appendChild(colorPanel);
                 container.appendChild(toolbar);
@@ -4858,8 +4997,8 @@ app.registerExtension({
                     if (node._composing) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
                     const ae = document.activeElement;
                     if (colorPanel.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
-                    if (row4.contains(ae) || row5.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
-                    if (ae !== ta && ae !== slider && ae !== letterSpacingSlider && ae !== lineHeightSlider && ae !== alignLeft && ae !== alignCenter && ae !== alignRight && ae !== glowToggle && ae !== glowSizeSlider && ae !== glowIntensitySlider && ae !== glowColorBtn && ae !== fontColorSwatch && ae !== rainbowToggle && ae !== rainbowSpeedSlider) { ta.focus({ preventScroll: true }); }
+                    if (advancedWrap.contains(ae) || bgRow.contains(ae) || row4.contains(ae) || row5.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
+                    if (ae !== ta && ae !== slider && ae !== letterSpacingSlider && ae !== lineHeightSlider && ae !== alignLeft && ae !== alignCenter && ae !== alignRight && ae !== glowToggle && ae !== glowSizeSlider && ae !== glowIntensitySlider && ae !== glowColorBtn && ae !== fontColorSwatch && ae !== rainbowToggle && ae !== rainbowSpeedSlider && ae !== bgToggle && ae !== bgOpacitySlider && ae !== bgRadiusSlider && ae !== advancedToggle) { ta.focus({ preventScroll: true }); }
                     node._focusGuard = requestAnimationFrame(_focusTick);
                 };
                 node._focusGuard = requestAnimationFrame(_focusTick);
@@ -4932,7 +5071,7 @@ app.registerExtension({
                         ta.style.height = node.size[1] * s + "px";
                         ta.style.fontSize = p.fontSize * s + "px";
                         ta.style.lineHeight = p.fontSize * s * (p.lineHeight || 1.4) + "px";
-                        ta.style.borderRadius = (p.borderRadius || 8) * s + "px";
+                        ta.style.borderRadius = (p.borderRadius ?? 8) * s + "px";
                     }
                     node._posRaf = requestAnimationFrame(_posTick);
                 };
@@ -5000,11 +5139,20 @@ app.registerExtension({
                     }
                 };
 
+                const checkAutoCollapseAdvanced = () => {
+                    if (!p.bgEnabled && !p.glowEnabled && !p.rainbowEnabled) {
+                        advancedWrap.style.display = 'none';
+                        advancedRow.style.display = 'flex';
+                        advancedToggle._update(false);
+                    }
+                };
+
                 const updateGlowEnabled = (enabled) => {
                     p.glowEnabled = enabled;
                     glowToggle._update(enabled);
                     glowControlsWrap.style.display = enabled ? 'flex' : 'none';
                     updateTextareaGlow();
+                    if (!enabled) checkAutoCollapseAdvanced();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
@@ -5032,12 +5180,45 @@ app.registerExtension({
                     p.rainbowEnabled = enabled;
                     rainbowToggle._update(enabled);
                     rainbowControlsWrap.style.display = enabled ? 'flex' : 'none';
+                    if (!enabled) checkAutoCollapseAdvanced();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
                 const updateRainbowSpeed = (speed) => {
                     const s = parseFloat(speed) ?? 30;
                     p.rainbowSpeed = s;
+                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                };
+
+                const updateBgEnabled = (enabled) => {
+                    p.bgEnabled = enabled;
+                    bgToggle._update(enabled);
+                    bgControlsWrap.style.display = enabled ? 'flex' : 'none';
+                    if (enabled && p.bgColor) {
+                        const rgb = hexToRgb(p.bgColor);
+                        ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`;
+                    } else {
+                        ta.style.background = 'transparent';
+                    }
+                    if (!enabled) checkAutoCollapseAdvanced();
+                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                };
+
+                const updateBgOpacity = (opacity) => {
+                    p.bgOpacity = opacity;
+                    bgOpacityValue.textContent = Math.round(opacity * 100) + "%";
+                    if (p.bgEnabled && p.bgColor) {
+                        const rgb = hexToRgb(p.bgColor);
+                        ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${opacity})`;
+                    }
+                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                };
+
+                const updateBgRadius = (radius) => {
+                    p.borderRadius = parseInt(radius);
+                    bgRadiusValue.textContent = radius + "px";
+                    const sc = getNodeViewportRect(node)?.scale || 1;
+                    ta.style.borderRadius = (parseInt(radius) * sc) + "px";
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
@@ -5071,6 +5252,33 @@ app.registerExtension({
                 rainbowSpeedSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
                 rainbowSpeedSlider.addEventListener("click", (e) => { e.stopPropagation(); });
 
+                bgToggle.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    updateBgEnabled(!p.bgEnabled);
+                });
+                bgToggle.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+
+                bgOpacitySlider.addEventListener("input", (e) => {
+                    updateBgOpacity(e.target.value / 100);
+                });
+                bgOpacitySlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+                bgOpacitySlider.addEventListener("click", (e) => { e.stopPropagation(); });
+
+                bgRadiusSlider.addEventListener("input", (e) => {
+                    updateBgRadius(e.target.value);
+                });
+                bgRadiusSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+                bgRadiusSlider.addEventListener("click", (e) => { e.stopPropagation(); });
+
+                advancedToggle.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    node._skipBlurClose = true;
+                    advancedWrap.style.display = 'flex';
+                    advancedRow.style.display = 'none';
+                    advancedToggle._update(true);
+                });
+                advancedToggle.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+
                 ta.addEventListener("input", () => {
                     node._userText = ta.value;
                     p.text = ta.value;
@@ -5090,6 +5298,7 @@ app.registerExtension({
                 ta.addEventListener("compositionstart", () => { node._composing = true; });
                 ta.addEventListener("compositionend", () => { node._composing = false; });
 
+                ta.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); }, false);
                 ta.addEventListener("keydown", e => {
                     if (e.key === "Escape") removeTitleEditor(node);
                     else if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); saveClose(); }
@@ -5161,23 +5370,58 @@ app.registerExtension({
                     if (e.key === "Escape") removeTitleEditor(node);
                     e.stopPropagation();
                 });
-
+                bgToggle.addEventListener("keydown", e => {
+                    if (e.key === "Escape") removeTitleEditor(node);
+                    e.stopPropagation();
+                });
+                bgOpacitySlider.addEventListener("keydown", e => {
+                    if (e.key === "Escape") removeTitleEditor(node);
+                    e.stopPropagation();
+                });
+                bgRadiusSlider.addEventListener("keydown", e => {
+                    if (e.key === "Escape") removeTitleEditor(node);
+                    e.stopPropagation();
+                });
+                advancedToggle.addEventListener("keydown", e => {
+                    if (e.key === "Escape") removeTitleEditor(node);
+                    e.stopPropagation();
+                });
+                // 追踪鼠标按下是否在面板内（拖拽超出面板不关闭）
+                node._mouseDownInEditor = false;
+                node._docMouseDown = e => {
+                    if (!node.isEditing || !node.editTextarea) return;
+                    let el = e.target;
+                    node._mouseDownInEditor = false;
+                    while (el) {
+                        if (el === container || el === toolbar) { node._mouseDownInEditor = true; break; }
+                        el = el.parentElement;
+                    }
+                };
+                // 点击画布空白处关闭面板
                 node._docClickHandler = e => {
                     if (!node.isEditing || !node.editTextarea) return;
-                    if (container.contains(e.target)) return;
+                    if (node._mouseDownInEditor) { node._mouseDownInEditor = false; return; }
+                    let el = e.target;
+                    while (el) {
+                        if (el === container || el === toolbar) return;
+                        el = el.parentElement;
+                    }
+                    if (node._blurTimer) { clearTimeout(node._blurTimer); node._blurTimer = null; }
                     saveClose();
                 };
                 setTimeout(() => { if (node.isEditing) document.addEventListener("click", node._docClickHandler, true); }, 200);
+                setTimeout(() => { if (node.isEditing) document.addEventListener("mousedown", node._docMouseDown, true); }, 200);
 
                 const isFocusInside = () => {
                     const ae = document.activeElement;
                     if (colorPanel.contains(ae)) return true;
-                    if (row4.contains(ae) || row5.contains(ae)) return true;
-                    return ae === ta || ae === slider || ae === letterSpacingSlider || ae === lineHeightSlider || ae === fontSizeInput || ae === alignLeft || ae === alignCenter || ae === alignRight || ae === glowToggle || ae === glowSizeSlider || ae === glowIntensitySlider || ae === glowColorBtn || ae === fontColorSwatch || ae === rainbowToggle || ae === rainbowSpeedSlider;
+                    if (advancedWrap.contains(ae) || bgRow.contains(ae) || row4.contains(ae) || row5.contains(ae)) return true;
+                    return ae === ta || ae === slider || ae === letterSpacingSlider || ae === lineHeightSlider || ae === fontSizeInput || ae === alignLeft || ae === alignCenter || ae === alignRight || ae === glowToggle || ae === glowSizeSlider || ae === glowIntensitySlider || ae === glowColorBtn || ae === fontColorSwatch || ae === rainbowToggle || ae === rainbowSpeedSlider || ae === bgToggle || ae === bgOpacitySlider || ae === bgRadiusSlider || ae === advancedToggle;
                 };
 
                 ta.addEventListener("blur", () => { setTimeout(() => {
                     if (!node.isEditing || isFocusInside()) return;
+                    if (node._skipBlurClose) { node._skipBlurClose = false; return; }
                     const ae = document.activeElement;
                     if (ae && vueSels(node.id).some(sel => ae.closest?.(sel))) {
                         if ((node._blurRetries = (node._blurRetries || 0) + 1) <= 4) { ta.focus({ preventScroll: true }); }
@@ -5235,6 +5479,7 @@ app.registerExtension({
                 if (node._focusGuard) { cancelAnimationFrame(node._focusGuard); node._focusGuard = null; }
                 if (node._posRaf) { cancelAnimationFrame(node._posRaf); node._posRaf = null; }
                 if (node._docClickHandler) { document.removeEventListener("click", node._docClickHandler, true); node._docClickHandler = null; }
+                if (node._docMouseDown) { document.removeEventListener("mousedown", node._docMouseDown, true); node._docMouseDown = null; }
                 if (node.editTextarea) { node.editTextarea.remove(); node.editTextarea = null; }
                 delete node._userText;
                 node.isEditing = false;
