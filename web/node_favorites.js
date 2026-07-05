@@ -4371,7 +4371,7 @@ app.registerExtension({
                 const editFontSize = p.fontSize * sc;
                 const editHeight = Math.max(90, node.size[1] * sc);
                 const glowShadow = p.glowEnabled ? `box-shadow:inset 0 0 ${(p.glowSize || 15) * (p.glowIntensity || 1)}px ${(p.glowSize || 15) * (p.glowIntensity || 1) / 2}px ${p.glowColor || "#4CAF50"};` : "";
-                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;outline:1px dashed #4CAF50;border:none;resize:none;padding:3px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:${p.bgEnabled ? (p.bgColor || "#2a2a2a") : "transparent"};color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${p.letterSpacing || 0}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
+                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;outline:1px dashed #4CAF50;border:none;resize:none;padding:3px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:${p.bgEnabled ? (p.bgColor || "#2a2a2a") : "transparent"};color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
                 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = `position:absolute;left:0;right:0;bottom:100%;display:flex;align-items:stretch;margin-bottom:6px;`;
@@ -5043,7 +5043,8 @@ app.registerExtension({
                 const updateLetterSpacing = (value) => {
                     const v = parseFloat(value) || 0;
                     p.letterSpacing = v;
-                    ta.style.letterSpacing = v + "px";
+                    const currentScale = getNodeViewportRect(node)?.scale || 1;
+                    ta.style.letterSpacing = (v * Math.max(1, currentScale)) + "px";
                     letterSpacingValue.textContent = v.toFixed(1) + "px";
                     node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
@@ -5065,12 +5066,14 @@ app.registerExtension({
                     const nr = getNodeViewportRect(node);
                     if (nr) {
                         const s = nr.scale;
+                        const es = Math.max(1, s);
                         container.style.left = nr.left + "px";
                         container.style.top = nr.top + "px";
                         container.style.width = node.size[0] * s + "px";
                         ta.style.height = node.size[1] * s + "px";
                         ta.style.fontSize = p.fontSize * s + "px";
                         ta.style.lineHeight = p.fontSize * s * (p.lineHeight || 1.4) + "px";
+                        ta.style.letterSpacing = (p.letterSpacing || 0) * es + "px";
                         ta.style.borderRadius = (p.borderRadius ?? 8) * s + "px";
                     }
                     node._posRaf = requestAnimationFrame(_posTick);
