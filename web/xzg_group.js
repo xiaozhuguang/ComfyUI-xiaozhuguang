@@ -1776,8 +1776,22 @@ const XZGGroup = {
         if (!g) return;
         const graph = app?.graph;
         if (graph && g.bypassed) g.nodeIds.forEach(nid => { const n = graph._nodes.find(x => x.id === nid || x.id == nid); if (n) n.mode = MODE_ALWAYS; });
+        // 清除节点上的编组残留数据，防止自动恢复
+        g.nodeIds.forEach(nid => {
+            const n = graph?._nodes?.find(x => x.id === nid || x.id == nid);
+            if (n) this._clearNodeGroupData(n);
+        });
+        // 从 extra 中移除该编组
+        if (graph?.extra?.xzgGroups) delete graph.extra.xzgGroups[gid];
         this.killGroup(gid);
-        graph?.setDirtyCanvas?.(true, true); graph?.change?.();
+        // 记录已删除的编组 ID 到 localStorage，防止自动保存未触发时刷新恢复
+        try {
+            const deleted = JSON.parse(localStorage.getItem('xzg_deleted_groups') || '[]');
+            if (!deleted.includes(gid)) deleted.push(gid);
+            localStorage.setItem('xzg_deleted_groups', JSON.stringify(deleted));
+        } catch(e) {}
+        graph?.setDirtyCanvas?.(true, true);
+        graph?.change?.();
         this.syncGroupsToExtra();
     },
 
@@ -2051,11 +2065,21 @@ const XZGGroup = {
         if (!app?.graph) return;
         this._needRestore = false;
 
-        console.log('[小珠光编组] 恢复编组...', this._pendingGroups ? Object.keys(this._pendingGroups).length + '个编组数据待恢复' : '无待恢复数据');
+        // 读取已删除的编组 ID 列表（防止 auto-save 未触发时刷新恢复）
+        let _deletedGids = [];
+        try { _deletedGids = JSON.parse(localStorage.getItem('xzg_deleted_groups') || '[]'); } catch(e) {}
+        // 保存此次恢复中所有数据源里的编组 ID（用于后续清理：auto-save 生效后移除）
+        const _allDataGids = new Set([
+            ...Object.keys(this._pendingGroups || {}),
+            ...Object.keys(app?.graph?.extra?.xzgGroups || {})
+        ]);
+
+        console.log('[小珠光编组] 恢复编组...', this._pendingGroups ? Object.keys(this._pendingGroups).length + '个编组数据待恢复' : '无待恢复数据', '已删除:', _deletedGids.length);
 
         // 优先从工作流保存的完整编组数据恢复（包含动画、颜色、标题等）
         if (this._pendingGroups) {
             for (const [id, g] of Object.entries(this._pendingGroups)) {
+                if (_deletedGids.includes(id)) continue;
                 this.groups[id] = { ...g };
             }
             this._pendingGroups = null;
@@ -2064,6 +2088,7 @@ const XZGGroup = {
         // 额外：从 app.graph.extra 恢复（兼容新版 ComfyUI 前端）
         if (app?.graph?.extra?.xzgGroups && Object.keys(app.graph.extra.xzgGroups).length) {
             for (const [id, g] of Object.entries(app.graph.extra.xzgGroups)) {
+                if (_deletedGids.includes(id)) continue;
                 if (!this.groups[id]) {
                     this.groups[id] = { ...g };
                 }
@@ -2094,6 +2119,7 @@ const XZGGroup = {
 
         // 将从节点收集到的编组数据合并到groups
         for (const [gid, gd] of Object.entries(groupDataMap)) {
+            if (_deletedGids.includes(gid)) continue;
             if (!this.groups[gid]) {
                 this.groups[gid] = { ...gd };
             } else {
@@ -2110,6 +2136,7 @@ const XZGGroup = {
         const map = {};
         app.graph._nodes.forEach(n => { if (n._xzgGroupId) (map[n._xzgGroupId] ??= []).push(n.id); });
         for (const [gid, nids] of Object.entries(map)) {
+            if (_deletedGids.includes(gid)) continue;
             if (!this.groups[gid]) {
                 // 优先从 extra 恢复完整数据（含用户自定义颜色等），仅作兜底才用默认值
                 const fromExtra = app?.graph?.extra?.xzgGroups?.[gid];
@@ -2130,6 +2157,17 @@ const XZGGroup = {
             }
         }
         for (const gid of Object.keys(this.groups)) if (!this.groups[gid].nodeIds || !this.groups[gid].nodeIds.length) delete this.groups[gid];
+        // 清理已持久化的删除标记：只保留此次恢复中仍然出现在任意数据源里的 ID
+        // （如果 auto-save 已生效，group 不再出现于数据中，就可以从列表移除）
+        const allDataGids = new Set([..._allDataGids, ...Object.keys(groupDataMap), ...Object.keys(map)]);
+        const stillDeleted = _deletedGids.filter(id => allDataGids.has(id));
+        try {
+            if (stillDeleted.length) {
+                localStorage.setItem('xzg_deleted_groups', JSON.stringify(stillDeleted));
+            } else {
+                localStorage.removeItem('xzg_deleted_groups');
+            }
+        } catch(e) {}
         this.rebuildAllEls();
         this.applyBypassStates();
         console.log('[小珠光编组] 恢复完成，编组数量:', Object.keys(this.groups).length);
