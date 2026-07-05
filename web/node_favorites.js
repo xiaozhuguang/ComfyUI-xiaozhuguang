@@ -4123,9 +4123,12 @@ app.registerExtension({
                 if (p.bgEnabled && p.bgColor && p.bgColor !== "transparent") {
                     ctx.fillStyle = p.bgColor;
                     const br = p.borderRadius ?? 8;
+                    ctx.save();
+                    ctx.globalAlpha = p.bgOpacity ?? 1;
                     ctx.beginPath();
                     ctx.roundRect(0, 0, w, h, br);
                     ctx.fill();
+                    ctx.restore();
                 }
 
                 if (this.selected) {
@@ -4394,7 +4397,8 @@ app.registerExtension({
                 const editFontSize = p.fontSize * sc;
                 const editHeight = Math.max(90, node.size[1] * sc);
                 const glowShadow = p.glowEnabled ? `box-shadow:inset 0 0 ${(p.glowSize || 15) * (p.glowIntensity || 1)}px ${(p.glowSize || 15) * (p.glowIntensity || 1) / 2}px ${p.glowColor || "#4CAF50"};` : "";
-                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;outline:1px dashed #4CAF50;border:none;resize:none;padding:3px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:${p.bgEnabled ? (p.bgColor || "#2a2a2a") : "transparent"};color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
+                const initBgStyle = p.bgEnabled && p.bgColor ? (() => { const rgb = hexToRgb(p.bgColor); return `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`; })() : "transparent";
+                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;outline:1px dashed #4CAF50;border:none;resize:none;padding:3px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:${initBgStyle};color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
                 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = `position:absolute;left:0;right:0;bottom:100%;display:flex;align-items:stretch;margin-bottom:6px;`;
@@ -4440,8 +4444,8 @@ app.registerExtension({
                 
                 const letterSpacingSlider = document.createElement("input");
                 letterSpacingSlider.type = "range";
-                letterSpacingSlider.min = "-5";
-                letterSpacingSlider.max = "20";
+                letterSpacingSlider.min = "0";
+                letterSpacingSlider.max = "5";
                 letterSpacingSlider.step = "0.5";
                 letterSpacingSlider.value = p.letterSpacing || 0;
                 letterSpacingSlider.style.cssText = `flex:1;height:4px;cursor:pointer;`;
@@ -4463,8 +4467,8 @@ app.registerExtension({
                 
                 const lineHeightSlider = document.createElement("input");
                 lineHeightSlider.type = "range";
-                lineHeightSlider.min = "1";
-                lineHeightSlider.max = "3";
+                lineHeightSlider.min = "1.2";
+                lineHeightSlider.max = "2";
                 lineHeightSlider.step = "0.1";
                 lineHeightSlider.value = p.lineHeight || 1.4;
                 lineHeightSlider.style.cssText = `flex:1;height:4px;cursor:pointer;`;
@@ -4865,7 +4869,7 @@ app.registerExtension({
                 const bgRadiusSlider = document.createElement("input");
                 bgRadiusSlider.type = "range";
                 bgRadiusSlider.min = "0";
-                bgRadiusSlider.max = "30";
+                bgRadiusSlider.max = "8";
                 bgRadiusSlider.step = "1";
                 bgRadiusSlider.value = p.borderRadius ?? 8;
                 bgRadiusSlider.style.cssText = `width:80px;height:4px;cursor:pointer;`;
@@ -5058,6 +5062,10 @@ app.registerExtension({
                     const nr = getNodeViewportRect(node);
                     const scale = nr ? nr.scale : 1;
                     ta.style.lineHeight = p.fontSize * scale * v + "px";
+                    // 确保textarea高度能容纳新行距
+                    const lines = (p.text || "").split("\n");
+                    const neededH = lines.length * p.fontSize * scale * v + 10;
+                    ta.style.height = Math.max(parseFloat(ta.style.height) || 90, neededH) + "px";
                     lineHeightValue.textContent = v.toFixed(1);
                     node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
@@ -5093,7 +5101,10 @@ app.registerExtension({
                         container.style.left = nr.left + "px";
                         container.style.top = nr.top + "px";
                         container.style.width = node.size[0] * s + "px";
-                        ta.style.height = node.size[1] * s + "px";
+                        // textarea 高度按 CSS 行距计算，避免行距加大时文字被裁剪
+                        const textLines = (ta.value || "").split("\n");
+                        const taContentH = textLines.length * p.fontSize * es * (p.lineHeight || 1.4) + 10;
+                        ta.style.height = Math.max(node.size[1] * s, taContentH) + "px";
                         ta.style.fontSize = p.fontSize * s + "px";
                         ta.style.lineHeight = p.fontSize * s * (p.lineHeight || 1.4) + "px";
                         ta.style.letterSpacing = (p.letterSpacing || 0) * es + "px";
@@ -5316,7 +5327,9 @@ app.registerExtension({
                         container.style.left = vr2.left + "px";
                         container.style.top = vr2.top + "px";
                         container.style.width = Math.max(260, node.size[0] * vr2.scale) + "px";
-                        ta.style.height = Math.max(90, node.size[1] * vr2.scale) + "px";
+                        const textLines2 = (ta.value || "").split("\n");
+                        const taContentH2 = textLines2.length * p.fontSize * Math.max(1, vr2.scale) * (p.lineHeight || 1.4) + 10;
+                        ta.style.height = Math.max(90, node.size[1] * vr2.scale, taContentH2) + "px";
                     }
                     node.setDirtyCanvas?.(true, true);
                     window.app?.graph?.setDirtyCanvas(true);
