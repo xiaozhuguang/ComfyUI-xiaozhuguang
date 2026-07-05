@@ -3772,7 +3772,7 @@ app.registerExtension({
                 fontSize: 14,
                 fontColor: "#ffffff",
                 bgColor: "#2a2a2a",
-                borderRadius: 8,
+                borderRadius: 3,
                 textAlign: "center",
                 letterSpacing: 0,
                 lineHeight: 1.4,
@@ -4009,13 +4009,16 @@ app.registerExtension({
                 const cv = (window.app?.canvas || LGraphCanvas.active_canvas)?.canvas;
                 const ctx = cv ? cv.getContext("2d") : null;
                 let maxWidth = 0;
+                let firstAscent = fontSize, lastDescent = fontSize * 0.15;
                 if (ctx) {
                     ctx.save();
                     ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                     ctx.letterSpacing = `${p.letterSpacing || 0}px`;
-                    lines.forEach(line => {
-                        const w = ctx.measureText(line).width;
-                        if (w > maxWidth) maxWidth = w;
+                    lines.forEach((line, i) => {
+                        const m = ctx.measureText(line);
+                        if (m.width > maxWidth) maxWidth = m.width;
+                        if (i === 0) firstAscent = m.actualBoundingBoxAscent || fontSize;
+                        if (i === lines.length - 1) lastDescent = m.actualBoundingBoxDescent || fontSize * 0.15;
                     });
                     ctx.restore();
                 } else {
@@ -4026,9 +4029,10 @@ app.registerExtension({
                 }
                 const trailing = Math.abs(p.letterSpacing || 0);
                 const adjustedMax = maxWidth > trailing ? maxWidth - trailing : 0;
+                const totalBlockH = lines.length > 1 ? firstAscent + (lines.length - 1) * lineHeight + lastDescent : firstAscent + lastDescent;
                 const padW = 4;
                 const w = this._customWidth || Math.max(50, adjustedMax + padW);
-                const h = this._customHeight || Math.max(30, lines.length * lineHeight + 4);
+                const h = this._customHeight || Math.max(18, totalBlockH + padW);
                 return [w, h];
             };
 
@@ -4064,21 +4068,25 @@ app.registerExtension({
                 const ctx = cv ? cv.getContext("2d") : null;
 
                 let maxWidth = 0;
+                let firstAscent = fontSize, lastDescent = fontSize * 0.15;
                 if (ctx) {
                     ctx.save();
                     ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                     ctx.letterSpacing = `${p.letterSpacing || 0}px`;
-                    lines.forEach(line => {
-                        const w = ctx.measureText(line).width;
-                        if (w > maxWidth) maxWidth = w;
+                    lines.forEach((line, i) => {
+                        const m = ctx.measureText(line);
+                        if (m.width > maxWidth) maxWidth = m.width;
+                        if (i === 0) firstAscent = m.actualBoundingBoxAscent || fontSize;
+                        if (i === lines.length - 1) lastDescent = m.actualBoundingBoxDescent || fontSize * 0.15;
                     });
                     ctx.restore();
                 }
                 const trailing = Math.abs(p.letterSpacing || 0);
                 const adjustedMax = maxWidth > trailing ? maxWidth - trailing : 0;
+                const totalBlockH = lines.length > 1 ? firstAscent + (lines.length - 1) * lineHeight + lastDescent : firstAscent + lastDescent;
                 const padW = 4;
                 const autoW = Math.max(50, adjustedMax + padW);
-                const autoH = Math.max(30, lines.length * lineHeight + 4);
+                const autoH = Math.max(18, totalBlockH + padW);
 
                 let changed = false;
                 if (!this._customWidth && this.size[0] !== autoW) {
