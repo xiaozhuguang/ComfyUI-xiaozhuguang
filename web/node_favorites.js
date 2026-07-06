@@ -19,6 +19,7 @@ class Xiaozhuguang {
         this.currentSearch = "";
         this.initialized = false;
         this.draggingNodeType = null;
+        this.draggingWorkflowId = null;
         this._previewEl = null;
         this._previewCanvasCache = new Map();
         this._previewHideTimer = null;
@@ -104,7 +105,7 @@ class Xiaozhuguang {
         const self = this;
 
         document.addEventListener("mousemove", (e) => {
-            if (self.draggingNodeType) {
+            if (self.draggingNodeType || self.draggingWorkflowId) {
                 self.updateDragPreview(e.clientX, e.clientY);
             }
         });
@@ -128,6 +129,24 @@ class Xiaozhuguang {
                 }
                 self.removeDragPreview();
                 self.draggingNodeType = null;
+            } else if (self.draggingWorkflowId) {
+                const canvas = app.canvas;
+                if (canvas && canvas.canvas) {
+                    const rect = canvas.canvas.getBoundingClientRect();
+                    if (e.clientX >= rect.left && e.clientX <= rect.right &&
+                        e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                        const offsetX = e.clientX - rect.left;
+                        const offsetY = e.clientY - rect.top;
+                        const pos = canvas.convertCanvasToOffset([offsetX, offsetY]);
+                        if (pos) {
+                            self.addWorkflowToCanvasAt(self.draggingWorkflowId, pos[0], pos[1]);
+                        } else {
+                            self.addWorkflowToCanvasAt(self.draggingWorkflowId, offsetX, offsetY);
+                        }
+                    }
+                }
+                self.removeDragPreview();
+                self.draggingWorkflowId = null;
             }
         });
     }
@@ -1805,7 +1824,7 @@ class Xiaozhuguang {
         await this._deletePreviewImage(nodeType);
     }
 
-    // ====== 工作流片段收藏 ======
+    // ====== 多节点收藏 ======
 
     getWorkflowIdByNodes(selectedNodes) {
         if (!selectedNodes || selectedNodes.length < 2) return null;
@@ -1814,68 +1833,105 @@ class Xiaozhuguang {
     }
 
     saveSelectedAsWorkflow(selectedNodes) {
-        const graph = app.graph;
-        const nodeIds = new Set(selectedNodes.map(n => n.id));
+        try {
+            const graph = app.graph;
+            if (!graph) {
+                console.warn("[小珠光] 工作流收藏失败：graph 不可用");
+                return;
+            }
+            const nodeIds = new Set(selectedNodes.map(n => n.id));
 
-        // 序列化节点数据
-        const nodesData = selectedNodes.map(n => {
-            const ser = {};
-            ser.id = n.id;
-            ser.type = n.type;
-            ser.pos = [...n.pos];
-            ser.size = [...n.size];
-            ser.flags = { ...n.flags };
-            ser.order = n.order;
-            ser.mode = n.mode;
-            ser.properties = { ...n.properties };
-            ser.widgets_values = n.widgets_values ? [...n.widgets_values] : null;
-            // 保存 inputs/outputs 结构用于恢复连线
-            ser.inputs = n.inputs ? n.inputs.map(inp => ({ name: inp.name, type: inp.type })) : [];
-            ser.outputs = n.outputs ? n.outputs.map(out => ({ name: out.name, type: out.type })) : [];
-            return ser;
-        });
+            // 序列化节点数据（安全深拷贝，避免循环引用或非序列化对象）
+            const safeClone = (obj) => {
+                try {
+                    return JSON.parse(JSON.stringify(obj));
+                } catch (e) {
+                    return null;
+                }
+            };
 
-        // 提取选中节点之间的连线
-        const linksData = [];
-        if (graph.links) {
-            for (const link of graph.links) {
-                if (!link) continue;
-                if (nodeIds.has(link.origin_id) && nodeIds.has(link.target_id)) {
-                    linksData.push({
-                        origin_id: link.origin_id,
-                        origin_slot: link.origin_slot,
-                        target_id: link.target_id,
-                        target_slot: link.target_slot,
-                        type: link.type
-                    });
+            const nodesData = selectedNodes.map(n => {
+                const ser = {};
+                ser.id = n.id;
+                ser.type = n.type;
+                ser.pos = n.pos ? [...n.pos] : [0, 0];
+                ser.size = n.size ? [...n.size] : [200, 80];
+                ser.flags = n.flags ? { ...n.flags } : {};
+                ser.order = n.order || 0;
+                ser.mode = n.mode != null ? n.mode : 0;
+                ser.properties = n.properties ? safeClone(n.properties) || {} : {};
+                ser.widgets_values = n.widgets_values ? safeClone(n.widgets_values) || [] : [];
+                // 保存 inputs/outputs 结构用于恢复连线
+                ser.inputs = n.inputs ? n.inputs.map(inp => ({
+                    name: inp.name,
+                    type: inp.type
+                })) : [];
+                ser.outputs = n.outputs ? n.outputs.map(out => ({
+                    name: out.name,
+                    type: out.type
+                })) : [];
+                return ser;
+            });
+
+            // 提取选中节点之间的连线
+            const linksData = [];
+            if (graph.links) {
+                for (const link of graph.links) {
+                    if (!link) continue;
+                    if (nodeIds.has(link.origin_id) && nodeIds.has(link.target_id)) {
+                        linksData.push({
+                            origin_id: link.origin_id,
+                            origin_slot: link.origin_slot,
+                            target_id: link.target_id,
+                            target_slot: link.target_slot,
+                            type: link.type
+                        });
+                    }
                 }
             }
+
+            // 计算中心偏移
+            let minX = Infinity, minY = Infinity;
+            for (const n of nodesData) {
+                if (n.pos[0] < minX) minX = n.pos[0];
+                if (n.pos[1] < minY) minY = n.pos[1];
+            }
+
+            // 生成名称
+            const typeNames = selectedNodes.map(n => {
+                const def = LiteGraph.registered_node_types[n.type];
+                return def ? (def.title || n.type) : n.type;
+            });
+            const rawName = typeNames.slice(0, 3).join(" + ") + (typeNames.length > 3 ? `...` : ``);
+            // 转义 HTML 特殊字符，避免破坏对话框结构
+            const escapeHtml = (s) => String(s)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+            const name = escapeHtml(rawName);
+
+            const typeSignature = selectedNodes.map(n => n.type).sort().join(",");
+
+            this.showWorkflowCategoryDialog({ nodesData, linksData, name, typeSignature, minX, minY, rawName, selectedNodes });
+        } catch (e) {
+            console.error("[小珠光] 收藏多节点失败:", e);
+            alert("收藏多节点失败：" + e.message);
         }
-
-        // 计算中心偏移
-        let minX = Infinity, minY = Infinity;
-        for (const n of nodesData) {
-            if (n.pos[0] < minX) minX = n.pos[0];
-            if (n.pos[1] < minY) minY = n.pos[1];
-        }
-
-        // 生成名称
-        const typeNames = selectedNodes.map(n => {
-            const def = LiteGraph.registered_node_types[n.type];
-            return def ? (def.title || n.type) : n.type;
-        });
-        const name = typeNames.slice(0, 3).join(" + ") + (typeNames.length > 3 ? `...` : ``);
-        const typeSignature = selectedNodes.map(n => n.type).sort().join(",");
-
-        const cats = this.favorites.categories;
-        this.showWorkflowCategoryDialog({ nodesData, linksData, name, typeSignature, minX, minY });
     }
 
     showWorkflowCategoryDialog(data) {
         const cats = this.favorites.categories;
+        const escapeHtml = (s) => String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
         let optionsHTML = "";
         for (const cat of cats) {
-            optionsHTML += `<option value="${cat.id}">${cat.name}</option>`;
+            optionsHTML += `<option value="${escapeHtml(cat.id)}">${escapeHtml(cat.name)}</option>`;
         }
 
         const dialog = document.createElement("div");
@@ -1898,28 +1954,45 @@ class Xiaozhuguang {
 
         document.body.appendChild(dialog);
 
+        const self = this;
         dialog.querySelector("#nf-dlg-cancel").addEventListener("click", () => dialog.remove());
         dialog.querySelector("#nf-dlg-ok").addEventListener("click", () => {
-            const name = dialog.querySelector("#nf-wf-name").value.trim() || data.name;
-            const catId = dialog.querySelector("#nf-cat-select").value;
-            const id = "wf_" + Date.now();
+            try {
+                const nameInput = dialog.querySelector("#nf-wf-name");
+                const name = nameInput.value.trim() || (data.rawName || data.name);
+                const catId = dialog.querySelector("#nf-cat-select").value;
+                const id = "wf_" + Date.now();
 
-            this.favorites.workflows.push({
-                id: id,
-                name: name,
-                categoryId: catId,
-                nodesData: data.nodesData,
-                linksData: data.linksData,
-                _typeSignature: data.typeSignature,
-                addedAt: Date.now(),
-                useCount: 0,
-                lastUsed: 0
-            });
+                self.favorites.workflows.push({
+                    id: id,
+                    name: name,
+                    categoryId: catId,
+                    nodesData: data.nodesData,
+                    linksData: data.linksData,
+                    _typeSignature: data.typeSignature,
+                    addedAt: Date.now(),
+                    useCount: 0,
+                    lastUsed: 0
+                });
 
-            this.saveFavorites();
-            this.renderFavorites();
-            this.renderCategories();
-            dialog.remove();
+                self.saveFavorites();
+                self.renderFavorites();
+                self.renderCategories();
+                dialog.remove();
+
+                // 异步保存截图预览
+                if (data.selectedNodes && data.selectedNodes.length > 0) {
+                    try {
+                        const dataUrl = self._captureWorkflowImage(data.selectedNodes);
+                        if (dataUrl) {
+                            self._savePreviewImage("wf_" + id, dataUrl);
+                        }
+                    } catch (_) {}
+                }
+            } catch (e) {
+                console.error("[小珠光] 保存多节点收藏失败:", e);
+                alert("保存失败：" + e.message);
+            }
         });
 
         dialog.addEventListener("mousedown", (e) => {
@@ -1937,9 +2010,10 @@ class Xiaozhuguang {
         this.saveFavorites();
         this.renderFavorites();
         this.renderCategories();
+        this._deletePreviewImage("wf_" + id);
     }
 
-    addWorkflowToCanvas(workflow) {
+    addWorkflowToCanvas(workflow, targetX = null, targetY = null) {
         try {
             const graph = app.graph;
             const canvas = app.canvas;
@@ -1950,30 +2024,36 @@ class Xiaozhuguang {
 
             console.log("[小珠光] 恢复工作流:", workflow.name, "节点数:", workflow.nodesData?.length);
 
-            // 计算画布中心
-            let cx = 0, cy = 0;
-            try {
-                const rect = canvas.canvas?.getBoundingClientRect?.();
-                if (rect) {
-                    cx = rect.width / 2;
-                    cy = rect.height / 2;
-                }
-                const scale = canvas.ds?.scale || 1;
-                const ox = canvas.ds?.offset?.[0] || 0;
-                const oy = canvas.ds?.offset?.[1] || 0;
-                cx = cx / scale - ox;
-                cy = cy / scale - oy;
-            } catch (e) {
-                // 以画布上现有节点的中心为参照
-                const gNodes = graph._nodes?.filter?.(n => n.type) || [];
-                if (gNodes.length > 0) {
-                    let sx = 0, sy = 0;
-                    for (const n of gNodes) { sx += n.pos[0]; sy += n.pos[1]; }
-                    cx = sx / gNodes.length + 100;
-                    cy = sy / gNodes.length + 100;
-                } else {
-                    cx = 200;
-                    cy = 200;
+            // 计算放置中心
+            let cx, cy;
+            if (targetX != null && targetY != null) {
+                // 使用指定位置（拖拽释放时的鼠标位置）
+                cx = targetX;
+                cy = targetY;
+            } else {
+                // 默认为画布中心
+                try {
+                    const rect = canvas.canvas?.getBoundingClientRect?.();
+                    if (rect) {
+                        cx = rect.width / 2;
+                        cy = rect.height / 2;
+                    }
+                    const scale = canvas.ds?.scale || 1;
+                    const ox = canvas.ds?.offset?.[0] || 0;
+                    const oy = canvas.ds?.offset?.[1] || 0;
+                    cx = cx / scale - ox;
+                    cy = cy / scale - oy;
+                } catch (e) {
+                    const gNodes = graph._nodes?.filter?.(n => n.type) || [];
+                    if (gNodes.length > 0) {
+                        let sx = 0, sy = 0;
+                        for (const n of gNodes) { sx += n.pos[0]; sy += n.pos[1]; }
+                        cx = sx / gNodes.length + 100;
+                        cy = sy / gNodes.length + 100;
+                    } else {
+                        cx = 200;
+                        cy = 200;
+                    }
                 }
             }
 
@@ -2071,6 +2151,42 @@ class Xiaozhuguang {
         }
     }
 
+    addWorkflowToCanvasAt(wfId, canvasX, canvasY) {
+        const workflow = this.favorites.workflows.find(w => w.id === wfId);
+        if (!workflow) {
+            console.warn("[小珠光] 找不到工作流:", wfId);
+            return;
+        }
+        this.addWorkflowToCanvas(workflow, canvasX, canvasY);
+    }
+
+    addWorkflowToCanvasById(wfId) {
+        const workflow = this.favorites.workflows.find(w => w.id === wfId);
+        if (!workflow) {
+            console.warn("[小珠光] 找不到工作流:", wfId);
+            return;
+        }
+        this.addWorkflowToCanvas(workflow);
+    }
+
+    _adjustContextMenuPosition(menu) {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const rect = menu.getBoundingClientRect();
+        let left = rect.left;
+        let top = rect.top;
+        if (rect.right > vw - 4) {
+            left = vw - rect.width - 4;
+        }
+        if (rect.bottom > vh - 4) {
+            top = vh - rect.height - 4;
+        }
+        if (left < 4) left = 4;
+        if (top < 4) top = 4;
+        menu.style.left = left + "px";
+        menu.style.top = top + "px";
+    }
+
     showWorkflowContextMenu(x, y, wfId, wfName) {
         document.querySelectorAll(".nf-cat-context-menu").forEach(el => el.remove());
 
@@ -2119,6 +2235,7 @@ class Xiaozhuguang {
         });
 
         document.body.appendChild(menu);
+        this._adjustContextMenuPosition(menu);
 
         const closeMenu = (e) => {
             if (!menu.contains(e.target)) {
@@ -2503,6 +2620,7 @@ class Xiaozhuguang {
         });
 
         document.body.appendChild(menu);
+        this._adjustContextMenuPosition(menu);
 
         // 点击菜单外关闭
         const closeMenu = (e) => {
@@ -2571,6 +2689,7 @@ class Xiaozhuguang {
         });
 
         document.body.appendChild(menu);
+        this._adjustContextMenuPosition(menu);
 
         const closeMenu = (e) => {
             if (!menu.contains(e.target)) {
@@ -2661,15 +2780,15 @@ class Xiaozhuguang {
             `;
         }
 
-        // 渲染工作流片段
+        // 渲染多节点收藏
         if (workflows.length > 0) {
-            html += `<div style="font-size:11px;color:#aaa;padding:8px 4px 4px;border-top:1px solid #3a3a3a;margin-top:4px;">🔗 工作流片段</div>`;
+            html += `<div style="font-size:11px;color:#aaa;padding:8px 4px 4px;border-top:1px solid #3a3a3a;margin-top:4px;">🔗 多节点收藏</div>`;
             for (const wf of workflows) {
                 const cat = this.getCategoryById(wf.categoryId);
                 const catColor = cat ? cat.color : "#888";
                 const useCount = wf.useCount || 0;
                 html += `
-                    <div class="nf-fav-item nf-wf-item" data-wf-id="${wf.id}" data-kind="workflow" draggable="false">
+                    <div class="nf-fav-item nf-wf-item" data-wf-id="${wf.id}" data-kind="workflow" draggable="true">
                         <div class="nf-fav-color" style="background: ${catColor};"></div>
                         <div class="nf-fav-info">
                             <div class="nf-fav-name">🔗 ${wf.name}</div>
@@ -2685,7 +2804,11 @@ class Xiaozhuguang {
         const self = this;
         this.favoritesList.querySelectorAll(".nf-fav-item").forEach(item => {
             item.addEventListener("dragstart", (e) => {
-                e.dataTransfer.setData("text/xzg-node-type", item.dataset.type);
+                if (item.dataset.kind === "workflow") {
+                    e.dataTransfer.setData("text/xzg-workflow-id", item.dataset.wfId);
+                } else {
+                    e.dataTransfer.setData("text/xzg-node-type", item.dataset.type);
+                }
                 e.dataTransfer.effectAllowed = "move";
                 item.style.opacity = "0.5";
             });
@@ -2697,6 +2820,7 @@ class Xiaozhuguang {
             let isDrag = false;
             let dragInfo = null;
             let isReorderDrag = false;
+            let isWorkflowDrag = false;
 
             const onMouseMove = (e) => {
                 if (e.buttons !== 1 || !dragInfo || isDrag) return;
@@ -2706,6 +2830,9 @@ class Xiaozhuguang {
                     isDrag = true;
                     if (isReorderDrag) {
                         self.startReorderDrag(item, e.clientY);
+                    } else if (isWorkflowDrag) {
+                        self.draggingWorkflowId = dragInfo.id;
+                        self.updateDragPreview(e.clientX, e.clientY, "🔗 " + dragInfo.name);
                     } else {
                         self.draggingNodeType = dragInfo.type;
                         self.updateDragPreview(e.clientX, e.clientY, dragInfo.name);
@@ -2719,30 +2846,52 @@ class Xiaozhuguang {
                 } else if (self.draggingNodeType) {
                     self.draggingNodeType = null;
                     self.removeDragPreview();
+                } else if (self.draggingWorkflowId) {
+                    self.draggingWorkflowId = null;
+                    self.removeDragPreview();
                 } else if (!isDrag && dragInfo) {
-                    self.addNodeToCanvas(dragInfo.type);
+                    if (isWorkflowDrag) {
+                        // 点击工作流：添加到画布
+                        self.addWorkflowToCanvasById(dragInfo.id);
+                    } else {
+                        self.addNodeToCanvas(dragInfo.type);
+                    }
                 }
 
                 dragInfo = null;
                 isDrag = false;
                 isReorderDrag = false;
+                isWorkflowDrag = false;
                 document.removeEventListener("mousemove", onMouseMove);
                 document.removeEventListener("mouseup", onMouseUp);
             };
 
             item.addEventListener("mousedown", (e) => {
-                if (e.button !== 0) return; // 仅左键
+                if (e.button !== 0) return;
                 if (e.target.closest(".nf-fav-rating")) return;
-                if (item.dataset.kind === "workflow") return; // 工作流由独立点击处理
 
+                const kind = item.dataset.kind;
                 startX = e.clientX;
                 startY = e.clientY;
                 isDrag = false;
-                dragInfo = {
-                    type: item.dataset.type,
-                    name: item.querySelector(".nf-fav-name")?.textContent || item.dataset.type,
-                    color: item.dataset.categoryColor || "#f44336"
-                };
+                isWorkflowDrag = kind === "workflow";
+                isReorderDrag = false;
+
+                if (kind === "workflow") {
+                    const wfId = item.dataset.wfId;
+                    const wf = self.favorites.workflows.find(w => w.id === wfId);
+                    dragInfo = {
+                        id: wfId,
+                        name: wf ? wf.name : "工作流",
+                        color: "#2196F3"
+                    };
+                } else {
+                    dragInfo = {
+                        type: item.dataset.type,
+                        name: item.querySelector(".nf-fav-name")?.textContent || item.dataset.type,
+                        color: item.dataset.categoryColor || "#f44336"
+                    };
+                }
                 e.preventDefault();
                 document.addEventListener("mousemove", onMouseMove);
                 document.addEventListener("mouseup", onMouseUp);
@@ -2800,29 +2949,18 @@ class Xiaozhuguang {
 
         // 使用 mouseover/mouseout 事件委托，避免子元素边界导致闪烁
         this.favoritesList.onmouseover = (e) => {
-            const item = e.target.closest(".nf-fav-item[data-kind='node']");
+            const item = e.target.closest(".nf-fav-item");
             if (!item) return;
+            if (!item.dataset.kind || (item.dataset.kind !== "node" && item.dataset.kind !== "workflow")) return;
             this._showPreview(item);
         };
         this.favoritesList.onmouseout = (e) => {
-            const item = e.target.closest(".nf-fav-item[data-kind='node']");
+            const item = e.target.closest(".nf-fav-item");
             if (!item) return;
-            if (item.contains(e.relatedTarget)) return; // 仍在当前 item 内部
+            if (!item.dataset.kind || (item.dataset.kind !== "node" && item.dataset.kind !== "workflow")) return;
+            if (item.contains(e.relatedTarget)) return;
             this._hidePreview(250);
         };
-
-        // 工作流片段点击添加到画布
-        this.favoritesList.querySelectorAll(".nf-wf-item").forEach(item => {
-            item.addEventListener("click", (e) => {
-                if (e.button !== 0) return;
-                const wfId = item.dataset.wfId;
-                const wf = this.favorites.workflows.find(w => w.id === wfId);
-                if (wf) {
-                    console.log("[小珠光] 恢复工作流:", wf.name);
-                    this.addWorkflowToCanvas(wf);
-                }
-            });
-        });
 
         // 失效节点删除按钮
         this.favoritesList.querySelectorAll(".nf-del-invalid-btn").forEach(btn => {
@@ -3002,12 +3140,47 @@ class Xiaozhuguang {
             const scale = gc.ds?.scale || 1;
             const offset = gc.ds?.offset || [0, 0];
             const size = node.size || (typeof node.computeSize === "function" ? node.computeSize() : [200, 80]);
-            // node.pos 是节点主体(body)左上角，标题栏在主体上方
-            const titleHeight = (node.title_height != null ? node.title_height : (LiteGraph.NODE_TITLE_HEIGHT || 30));
+            // 判断节点是否有标题栏：
+            // 1. title_height 显式设置为 0 或负数 → 无标题栏
+            // 2. 节点类型为小珠光标题（XiaozhuguangTitle）→ 无标题栏（自定义绘制）
+            // 3. bgcolor 为 transparent 且 color 为透明色 → 可能是无标题栏的自定义节点
+            // 4. 节点已折叠 → 只截取标题栏
+            // 5. 其他情况 → 有标题栏（使用默认值）
+            const isCollapsed = node.flags?.collapsed || node.collapsed;
+            const rawTitleHeight = node.title_height;
+            const defaultTitleHeight = LiteGraph.NODE_TITLE_HEIGHT || 30;
+            const hasExplicitNoTitle = rawTitleHeight != null && rawTitleHeight <= 0;
+
+            // 判断是否为无标题栏的自定义节点（如小珠光标题）
+            const isNoTitleCustomNode =
+                node.type === "XiaozhuguangTitle" ||
+                (node.bgcolor === "transparent" && (node.color === "#fff0" || node.color === "transparent"));
+
+            let titleHeight;
+            let captureHeight;
+            let captureTop; // 相对于 node.pos[1] 的偏移（像素，未缩放）
+
+            if (isCollapsed) {
+                // 折叠状态：只截取标题栏
+                titleHeight = (rawTitleHeight != null && rawTitleHeight > 0) ? rawTitleHeight : defaultTitleHeight;
+                captureHeight = titleHeight;
+                captureTop = -titleHeight;
+            } else if (hasExplicitNoTitle || isNoTitleCustomNode) {
+                // 无标题栏：从 body 顶部开始，高度就是 size[1]
+                titleHeight = 0;
+                captureHeight = size[1];
+                captureTop = 0;
+            } else {
+                // 正常节点：标题栏 + body
+                titleHeight = (rawTitleHeight != null && rawTitleHeight > 0) ? rawTitleHeight : defaultTitleHeight;
+                captureHeight = titleHeight + size[1];
+                captureTop = -titleHeight;
+            }
+
             const srcX = Math.floor((node.pos[0] + offset[0]) * scale);
-            const srcY = Math.floor((node.pos[1] + offset[1] - titleHeight) * scale);
+            const srcY = Math.floor((node.pos[1] + captureTop + offset[1]) * scale);
             const srcW = Math.ceil(size[0] * scale);
-            const srcH = Math.ceil((size[1] + titleHeight) * scale);
+            const srcH = Math.ceil(captureHeight * scale);
             const sourceCanvas = gc.canvas;
             if (srcX < 0 || srcY < 0 || srcW <= 0 || srcH <= 0 || srcX + srcW > sourceCanvas.width || srcY + srcH > sourceCanvas.height) return null;
 
@@ -3015,7 +3188,155 @@ class Xiaozhuguang {
             canvas.width = srcW;
             canvas.height = srcH;
             const ctx = canvas.getContext("2d");
+
+            // 步骤1：绘制主 canvas 区域（包含所有 LiteGraph 渲染的内容）
             ctx.drawImage(sourceCanvas, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+
+            // 步骤2：绘制该节点的 DOM widget 内容（背景色 + 内部 img/canvas/video）
+            const canvasRect = sourceCanvas.getBoundingClientRect();
+            const pxToCssX = canvasRect.width / sourceCanvas.width;
+            const pxToCssY = canvasRect.height / sourceCanvas.height;
+            const cssToPxX = sourceCanvas.width / canvasRect.width;
+            const cssToPxY = sourceCanvas.height / canvasRect.height;
+
+            const nodeScreenLeft = canvasRect.left + srcX * pxToCssX;
+            const nodeScreenTop = canvasRect.top + srcY * pxToCssY;
+            const nodeScreenW = srcW * pxToCssX;
+            const nodeScreenH = srcH * pxToCssY;
+            const nodeScreenRight = nodeScreenLeft + nodeScreenW;
+            const nodeScreenBottom = nodeScreenTop + nodeScreenH;
+
+            // 从 node.widgets 中收集所有 DOM widget 的 element（最准确的方式）
+            const domWidgetEls = [];
+            if (node.widgets && node.widgets.length) {
+                for (const w of node.widgets) {
+                    if (w && w.element && w.element instanceof HTMLElement) {
+                        const r = w.element.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0) {
+                            domWidgetEls.push(w.element);
+                        }
+                    }
+                }
+            }
+
+            // 辅助：将屏幕矩形转换为截图像素坐标
+            const toScreenshotRect = (rect) => ({
+                x: (rect.left - nodeScreenLeft) * cssToPxX,
+                y: (rect.top - nodeScreenTop) * cssToPxY,
+                w: rect.width * cssToPxX,
+                h: rect.height * cssToPxY
+            });
+
+            // 辅助：递归收集元素及其后代的背景绘制信息（按 DOM 顺序，先父后子）
+            const collectBgDraws = (el, draws) => {
+                if (!el || !(el instanceof HTMLElement)) return;
+                const rect = el.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return;
+                if (rect.right <= nodeScreenLeft || rect.left >= nodeScreenRight) return;
+                if (rect.bottom <= nodeScreenTop || rect.top >= nodeScreenBottom) return;
+
+                // 获取背景色
+                const style = window.getComputedStyle(el);
+                const bg = style.backgroundColor;
+                const hasBg = bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)';
+
+                // 获取背景图（如 background-image: url(...)）
+                const bgImage = style.backgroundImage;
+                const hasBgImage = bgImage && bgImage !== 'none';
+
+                if (hasBg || hasBgImage) {
+                    const sr = toScreenshotRect(rect);
+                    draws.push({
+                        type: 'bg',
+                        x: sr.x,
+                        y: sr.y,
+                        w: sr.w,
+                        h: sr.h,
+                        color: hasBg ? bg : null,
+                        bgImage: hasBgImage ? bgImage : null,
+                        borderRadius: style.borderRadius || '0'
+                    });
+                }
+
+                // 递归子元素
+                for (let i = 0; i < el.children.length; i++) {
+                    collectBgDraws(el.children[i], draws);
+                }
+            };
+
+            // 辅助：收集所有 img/canvas/video 元素（按 DOM 顺序）
+            const collectImageDraws = (el, draws) => {
+                if (!el) return;
+                const innerEls = el.querySelectorAll('img, canvas, video');
+                innerEls.forEach(el => {
+                    try {
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return;
+                        if (r.right <= nodeScreenLeft || r.left >= nodeScreenRight) return;
+                        if (r.bottom <= nodeScreenTop || r.top >= nodeScreenBottom) return;
+                        const sr = toScreenshotRect(r);
+                        draws.push({
+                            type: 'image',
+                            el: el,
+                            x: sr.x,
+                            y: sr.y,
+                            w: sr.w,
+                            h: sr.h
+                        });
+                    } catch (_) {}
+                });
+            };
+
+            // 收集所有绘制任务
+            const bgDraws = [];
+            const imageDraws = [];
+
+            for (const widgetEl of domWidgetEls) {
+                collectBgDraws(widgetEl, bgDraws);
+                collectImageDraws(widgetEl, imageDraws);
+            }
+
+            // 先绘制所有背景（按 DOM 顺序，从外到内）
+            for (const d of bgDraws) {
+                try {
+                    ctx.fillStyle = d.color;
+                    if (d.borderRadius && d.borderRadius !== '0px' && d.borderRadius !== '0') {
+                        // 简单处理圆角：用矩形近似（不做复杂圆角裁剪）
+                        ctx.fillRect(d.x, d.y, d.w, d.h);
+                    } else {
+                        ctx.fillRect(d.x, d.y, d.w, d.h);
+                    }
+                } catch (_) {}
+            }
+
+            // 再绘制所有图片/画布/视频
+            for (const d of imageDraws) {
+                try {
+                    ctx.drawImage(d.el, d.x, d.y, d.w, d.h);
+                } catch (_) {}
+            }
+
+            // 补充：全局查找预览图片（如 Save Image 默认预览，可能不在 widgets 中）
+            // 注意：这些元素可能来自 ComfyUI 核心的预览系统，不通过 widget 管理
+            const globalImgs = document.querySelectorAll('img, canvas');
+            for (const el of globalImgs) {
+                if (el === sourceCanvas || el.id === 'graph-canvas') continue;
+                // 跳过已经通过 widget 方式处理过的元素（避免重复绘制）
+                let alreadyHandled = false;
+                for (const widgetEl of domWidgetEls) {
+                    if (widgetEl.contains(el)) { alreadyHandled = true; break; }
+                }
+                if (alreadyHandled) continue;
+                try {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    if (rect.right <= nodeScreenLeft || rect.left >= nodeScreenRight) continue;
+                    if (rect.bottom <= nodeScreenTop || rect.top >= nodeScreenBottom) continue;
+                    const sr = toScreenshotRect(rect);
+                    ctx.drawImage(el, sr.x, sr.y, sr.w, sr.h);
+                } catch (_) {}
+            }
+
             return canvas.toDataURL("image/png");
         } catch (e) {
             console.warn("[小珠光] 截图节点失败:", e);
@@ -3023,27 +3344,180 @@ class Xiaozhuguang {
         }
     }
 
+    _captureWorkflowImage(selectedNodes) {
+        try {
+            const gc = (typeof app !== "undefined" && app?.canvas) ? app.canvas : null;
+            if (!gc || !gc.canvas || !selectedNodes || selectedNodes.length < 1) return null;
+            const scale = gc.ds?.scale || 1;
+            const offset = gc.ds?.offset || [0, 0];
 
+            // 计算所有节点的包围盒
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const node of selectedNodes) {
+                const pos = node.pos || [0, 0];
+                const size = node.size || (typeof node.computeSize === "function" ? node.computeSize() : [200, 80]);
+                const titleH = (node.title_height != null && node.title_height > 0)
+                    ? node.title_height
+                    : (LiteGraph.NODE_TITLE_HEIGHT || 30);
+                const hasTitle = !(
+                    (node.title_height != null && node.title_height <= 0) ||
+                    node.type === "XiaozhuguangTitle" ||
+                    (node.bgcolor === "transparent" && (node.color === "#fff0" || node.color === "transparent"))
+                );
+                const nodeTop = hasTitle ? (pos[1] - titleH) : pos[1];
+                const nodeBottom = pos[1] + size[1];
+                const nodeLeft = pos[0];
+                const nodeRight = pos[0] + size[0];
+                if (nodeLeft < minX) minX = nodeLeft;
+                if (nodeTop < minY) minY = nodeTop;
+                if (nodeRight > maxX) maxX = nodeRight;
+                if (nodeBottom > maxY) maxY = nodeBottom;
+            }
 
+            // 加一点边距，让连线也能截到
+            const padding = 40;
+            minX -= padding;
+            minY -= padding;
+            maxX += padding;
+            maxY += padding;
 
+            const srcX = Math.floor((minX + offset[0]) * scale);
+            const srcY = Math.floor((minY + offset[1]) * scale);
+            const srcW = Math.ceil((maxX - minX) * scale);
+            const srcH = Math.ceil((maxY - minY) * scale);
+            const sourceCanvas = gc.canvas;
+
+            if (srcW <= 0 || srcH <= 0) return null;
+
+            const canvas = document.createElement("canvas");
+            canvas.width = srcW;
+            canvas.height = srcH;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(sourceCanvas, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+
+            // 绘制 DOM widget 内容（所有选中节点的）
+            const canvasRect = sourceCanvas.getBoundingClientRect();
+            const pxToCssX = canvasRect.width / sourceCanvas.width;
+            const pxToCssY = canvasRect.height / sourceCanvas.height;
+            const cssToPxX = sourceCanvas.width / canvasRect.width;
+            const cssToPxY = sourceCanvas.height / canvasRect.height;
+
+            const nodeScreenLeft = canvasRect.left + srcX * pxToCssX;
+            const nodeScreenTop = canvasRect.top + srcY * pxToCssY;
+            const nodeScreenW = srcW * pxToCssX;
+            const nodeScreenH = srcH * pxToCssY;
+            const nodeScreenRight = nodeScreenLeft + nodeScreenW;
+            const nodeScreenBottom = nodeScreenTop + nodeScreenH;
+
+            const toScreenshotRect = (rect) => ({
+                x: (rect.left - nodeScreenLeft) * cssToPxX,
+                y: (rect.top - nodeScreenTop) * cssToPxY,
+                w: rect.width * cssToPxX,
+                h: rect.height * cssToPxY
+            });
+
+            const collectBgDraws = (el, draws) => {
+                if (!el || !(el instanceof HTMLElement)) return;
+                const rect = el.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return;
+                if (rect.right <= nodeScreenLeft || rect.left >= nodeScreenRight) return;
+                if (rect.bottom <= nodeScreenTop || rect.top >= nodeScreenBottom) return;
+                const style = window.getComputedStyle(el);
+                const bg = style.backgroundColor;
+                const hasBg = bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)';
+                if (hasBg) {
+                    const sr = toScreenshotRect(rect);
+                    draws.push({ type: 'bg', x: sr.x, y: sr.y, w: sr.w, h: sr.h, color: bg });
+                }
+                for (let i = 0; i < el.children.length; i++) {
+                    collectBgDraws(el.children[i], draws);
+                }
+            };
+
+            const collectImageDraws = (el, draws) => {
+                if (!el) return;
+                const innerEls = el.querySelectorAll('img, canvas, video');
+                innerEls.forEach(el => {
+                    try {
+                        const r = el.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) return;
+                        if (r.right <= nodeScreenLeft || r.left >= nodeScreenRight) return;
+                        if (r.bottom <= nodeScreenTop || r.top >= nodeScreenBottom) return;
+                        const sr = toScreenshotRect(r);
+                        draws.push({ type: 'image', el: el, x: sr.x, y: sr.y, w: sr.w, h: sr.h });
+                    } catch (_) {}
+                });
+            };
+
+            const bgDraws = [];
+            const imageDraws = [];
+            const handledWidgets = new Set();
+
+            for (const node of selectedNodes) {
+                if (node.widgets && node.widgets.length) {
+                    for (const w of node.widgets) {
+                        if (w && w.element && w.element instanceof HTMLElement) {
+                            if (handledWidgets.has(w.element)) continue;
+                            handledWidgets.add(w.element);
+                            const r = w.element.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0) {
+                                collectBgDraws(w.element, bgDraws);
+                                collectImageDraws(w.element, imageDraws);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (const d of bgDraws) {
+                try { ctx.fillStyle = d.color; ctx.fillRect(d.x, d.y, d.w, d.h); } catch (_) {}
+            }
+            for (const d of imageDraws) {
+                try { ctx.drawImage(d.el, d.x, d.y, d.w, d.h); } catch (_) {}
+            }
+
+            // 全局补充查找
+            const globalImgs = document.querySelectorAll('img, canvas');
+            for (const el of globalImgs) {
+                if (el === sourceCanvas || el.id === 'graph-canvas') continue;
+                let alreadyHandled = false;
+                for (const wEl of handledWidgets) {
+                    if (wEl.contains(el)) { alreadyHandled = true; break; }
+                }
+                if (alreadyHandled) continue;
+                try {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    if (rect.right <= nodeScreenLeft || rect.left >= nodeScreenRight) continue;
+                    if (rect.bottom <= nodeScreenTop || rect.top >= nodeScreenBottom) continue;
+                    const sr = toScreenshotRect(rect);
+                    ctx.drawImage(el, sr.x, sr.y, sr.w, sr.h);
+                } catch (_) {}
+            }
+
+            return canvas.toDataURL("image/png");
+        } catch (e) {
+            console.warn("[小珠光] 截图多节点失败:", e);
+            return null;
+        }
+    }
 
     async _showPreview(item) {
         if (!this._previewEl || !item) return;
         if (this._previewHideTimer) { clearTimeout(this._previewHideTimer); this._previewHideTimer = null; }
-        const nodeType = item.dataset.type;
-        if (this._previewEl.dataset.currentType === nodeType) return;
+        const isWorkflow = item.dataset.kind === "workflow";
+        const previewKey = isWorkflow ? ("wf_" + item.dataset.wfId) : item.dataset.type;
+        if (this._previewEl.dataset.currentType === previewKey) return;
 
         const token = ++this._previewToken;
         const rect = item.getBoundingClientRect();
-        let dataUrl = this._previewCanvasCache.get(nodeType);
+        let dataUrl = this._previewCanvasCache.get(previewKey);
 
-        // 优先使用 IndexedDB 中收藏时保存的真实截图
         if (!dataUrl) {
-            dataUrl = await this._getPreviewImage(nodeType);
-            if (dataUrl) this._previewCanvasCache.set(nodeType, dataUrl);
+            dataUrl = await this._getPreviewImage(previewKey);
+            if (dataUrl) this._previewCanvasCache.set(previewKey, dataUrl);
         }
 
-        // 鼠标已经移到其他项，取消旧预览渲染
         if (token !== this._previewToken) return;
 
         if (dataUrl) {
@@ -3056,10 +3530,10 @@ class Xiaozhuguang {
             img.onload = () => this._positionPreview(rect);
             img.onerror = () => this._positionPreview(rect);
         } else {
-            // 没有截图时显示占位提示
-            this._previewEl.innerHTML = `<div style="padding:10px 14px;background:#1a1a1a;border:2px solid #4CAF50;border-radius:6px;color:#888;font-size:12px;white-space:nowrap;">暂无预览截图，取消收藏，重新收藏即可解决</div>`;
+            const tip = isWorkflow ? "暂无预览截图，取消收藏，重新收藏即可解决" : "暂无预览截图，取消收藏，重新收藏即可解决";
+            this._previewEl.innerHTML = `<div style="padding:10px 14px;background:#1a1a1a;border:2px solid #4CAF50;border-radius:6px;color:#888;font-size:12px;white-space:nowrap;">${tip}</div>`;
         }
-        this._previewEl.dataset.currentType = nodeType;
+        this._previewEl.dataset.currentType = previewKey;
         this._positionPreview(rect);
     }
 
