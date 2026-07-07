@@ -84,8 +84,6 @@ class Xiaozhuguang {
         if (this.initialized) return;
         this.initialized = true;
 
-        document.querySelectorAll(".xzg-panel-resizer").forEach(el => el.remove());
-
         try {
             this.injectCSS();
             this.setupKeyboardListener();
@@ -346,6 +344,22 @@ class Xiaozhuguang {
                 user-select: none;
                 display: flex;
                 flex-direction: column;
+            }
+
+            .nf-panel-resizer {
+                position: absolute;
+                top: 0;
+                right: -4px;
+                bottom: 0;
+                width: 8px;
+                cursor: ew-resize;
+                z-index: 10;
+                border-radius: 0 4px 4px 0;
+                transition: background 0.2s;
+            }
+            .nf-panel-resizer:hover,
+            .nf-panel-resizer.dragging {
+                background: rgba(76, 175, 80, 0.4);
             }
 
             #node-favorites-panel.collapsed {
@@ -1104,6 +1118,7 @@ class Xiaozhuguang {
         panel.style.userSelect = "none";
 
         panel.innerHTML = `
+            <div class="nf-panel-resizer" title="拖动调节宽度"></div>
             <div class="nf-header" title="拖拽标题栏可移动窗口">
                 <span class="nf-title">⭐ 小珠光收藏 · 拖动标题栏改变位置</span>
                 <div class="nf-header-btns">
@@ -1176,6 +1191,7 @@ class Xiaozhuguang {
 
         this.setupDragging();
         this.setupSplitResizing();
+        this.setupResizing();
 
         const toggleBtn = this.panel.querySelector("#nf-toggle-btn");
 
@@ -1330,67 +1346,47 @@ class Xiaozhuguang {
     }
 
     setupResizing() {
+        if (!this.panel) return;
+        const handle = this.panel.querySelector(".nf-panel-resizer");
+        if (!handle) return;
         if (this._resizingSetup) return;
         this._resizingSetup = true;
-        const pan = this.panel;
-        let isResizing = false;
-        let startX, startWidth;
-        let handle = document.body.querySelector(".xzg-panel-resizer");
-        
-        if (!handle) {
-            handle = document.createElement("div");
-            handle.className = "xzg-panel-resizer";
-            handle.style.cssText = "position:fixed;width:8px;cursor:ew-resize;z-index:1001;border-radius:0 4px 4px 0;pointer-events:auto;";
-            handle.addEventListener("mouseenter", () => handle.style.background = "rgba(76,175,80,0.3)");
-            handle.addEventListener("mouseleave", () => handle.style.background = "transparent");
-            document.body.appendChild(handle);
-        }
 
-        const updateHandlePos = () => {
-            if (pan.classList.contains("collapsed")) {
-                handle.style.display = "none";
-                return;
-            }
-            const r = pan.getBoundingClientRect();
-            handle.style.display = "block";
-            handle.style.left = (r.right - 4) + "px";
-            handle.style.top = r.top + "px";
-            handle.style.height = r.height + "px";
-        };
-        updateHandlePos();
-        const observer = new ResizeObserver(updateHandlePos);
-        observer.observe(pan);
+        let isResizing = false;
+        let startX = 0, startWidth = 0;
 
         handle.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             isResizing = true;
             startX = e.clientX;
-            startWidth = pan.offsetWidth;
-            e.preventDefault();
+            startWidth = this.panel.offsetWidth;
+            handle.classList.add("dragging");
+            // 固定左边缘位置，使右边缘跟随鼠标
+            const rect = this.panel.getBoundingClientRect();
+            this.panel.style.left = rect.left + "px";
+            this.panel.style.right = "auto";
+            document.body.style.cursor = "ew-resize";
+            document.body.style.userSelect = "none";
         });
 
-        const onMove = (e) => {
+        document.addEventListener("mousemove", (e) => {
             if (!isResizing) return;
             const dx = e.clientX - startX;
-            const newWidth = Math.max(260, Math.min(800, startWidth + dx));
-            pan.style.width = newWidth + "px";
-            updateHandlePos();
-        };
+            const newWidth = Math.max(280, Math.min(800, startWidth + dx));
+            this.panel.style.width = newWidth + "px";
+        });
 
-        const onUp = () => {
+        document.addEventListener("mouseup", () => {
             if (isResizing) {
                 isResizing = false;
-                localStorage.setItem("xiaozhuguang.PanelWidth", pan.offsetWidth);
+                handle.classList.remove("dragging");
+                document.body.style.cursor = "";
+                document.body.style.userSelect = "";
+                localStorage.setItem("xiaozhuguang.PanelWidth", this.panel.offsetWidth);
+                this.savePanelPosition();
             }
-        };
-
-        document.addEventListener("mousemove", onMove);
-        document.addEventListener("mouseup", onUp);
-
-        this._resizeCleanup = () => {
-            document.removeEventListener("mousemove", onMove);
-            document.removeEventListener("mouseup", onUp);
-            observer.disconnect();
-        };
+        });
     }
 
     setupSplitResizing() {
