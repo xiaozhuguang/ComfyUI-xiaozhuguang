@@ -24,6 +24,7 @@ const XZGGroup = {
         this.setupKeyboardShortcut();
         this.setupCanvasMenu();
         this.setupSerializationHooks();
+        this.setupClipboardHook();
         this.startSyncLoop();
         this.waitForGraph();
     },
@@ -213,6 +214,7 @@ const XZGGroup = {
             el._xzgRefs = {
                 title: el.querySelector('.xzg-group-title-text'),
                 delBtn: el.querySelector('.xzg-delete-btn'),
+                lockBtn: el.querySelector('.xzg-lock-btn'),
                 rpath: el.querySelector('.xzg-resize-handle svg path'),
                 leftFifth: el.querySelector('.xzg-left-fifth'),
                 leftFifthIcon: el.querySelector('.xzg-left-fifth-icon'),
@@ -284,6 +286,16 @@ const XZGGroup = {
             if (delBtn) {
                 delBtn.style.fontSize = (18 * scale) + 'px';
                 delBtn.style.marginLeft = (4 * scale) + 'px';
+            }
+            const lockBtn = el.querySelector('.xzg-lock-btn');
+            if (lockBtn) {
+                const lockSvg = lockBtn.querySelector('svg');
+                if (lockSvg) {
+                    const sz = Math.round(headerHeight * 0.55);
+                    lockSvg.style.width = sz + 'px';
+                    lockSvg.style.height = sz + 'px';
+                }
+                lockBtn.style.marginLeft = (4 * scale) + 'px';
             }
             ['xzg-left-fifth-icon', 'xzg-right-fifth-icon'].forEach(cls => {
                 const icon = el.querySelector('.' + cls);
@@ -588,6 +600,7 @@ const XZGGroup = {
             title: '右键标题栏设置',
             nodeIds: directNodeIds,
             bypassed: false,
+            locked: false,
             bounds: bounds,
             fontSize: 14,
             colorHue: 48, colorSat: 100, colorLit: 55,
@@ -657,6 +670,7 @@ const XZGGroup = {
                 <div class="xzg-right-fifth" title="点击此区域：该编组绕过，同级其他全部开启" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-left:1px solid rgba(255,255,255,0.1);position:relative;">
                     <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">▶</span>
                 </div>
+                <button class="xzg-lock-btn" title="锁定/解锁编组，Ctrl+鼠标左键锁定/解锁所有编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;line-height:1;display:flex;align-items:center;"><svg viewBox="0 0 16 16" width="${Math.round(headerHeight * 0.55)}" height="${Math.round(headerHeight * 0.55)}"><path d="M4 7V5a4 4 0 018 0v2h1v7H3V7h1zm2 0h4V5a2 2 0 00-4 0v2z" fill="currentColor"/></svg></button>
                 <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;font-size:${headerHeight * 0.7}px;color:hsla(48,100%,55%,0.5);line-height:1;display:flex;align-items:center;">×</button>
             </div>
             <div class="xzg-border-left" style="position:absolute;left:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
@@ -670,6 +684,9 @@ const XZGGroup = {
         // 删除按钮
         el.querySelector('.xzg-delete-btn').addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
         el.querySelector('.xzg-delete-btn').addEventListener('click', e => { e.stopPropagation(); e.preventDefault(); self.removeGroup(group.id); });
+        // 锁定按钮
+        el.querySelector('.xzg-lock-btn').addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
+        el.querySelector('.xzg-lock-btn').addEventListener('click', e => { e.stopPropagation(); e.preventDefault(); if (e.ctrlKey) { self.toggleLockAll(group.id); } else { self.toggleLock(group.id); } });
 
         // 将当前编组框提升到 overlay 最前面
         const bringToFront = () => { el.parentElement?.appendChild(el); };
@@ -744,6 +761,7 @@ const XZGGroup = {
             const isRightFifth = relX > (headerRect.width * 4 / 5);
             const onMove = ev => {
                 if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3) {
+                    if (group.locked) return;
                     dragged = true;
                     document.removeEventListener('mousemove', onMove);
                     self.startDrag(group.id, downE);
@@ -768,7 +786,7 @@ const XZGGroup = {
 
         // 右键标题栏任意位置 → 设置（排除删除按钮）
         headerEl.addEventListener('contextmenu', e => {
-            if (e.target.closest('.xzg-delete-btn')) return;
+            if (e.target.closest('.xzg-delete-btn') || e.target.closest('.xzg-lock-btn')) return;
             e.preventDefault(); e.stopPropagation();
             self.openSettings(group);
         });
@@ -1341,6 +1359,7 @@ const XZGGroup = {
     startDrag(gid, downEv) {
         const group = this.groups[gid];
         if (!group?.bounds) return;
+        if (group.locked) return;
         const canvas = app?.canvas;
         const graph = app?.graph;
         if (!canvas?.ds || !graph?._nodes) return;
@@ -1451,6 +1470,7 @@ const XZGGroup = {
     startResize(gid, downEv) {
         const group = this.groups[gid];
         if (!group?.bounds) return;
+        if (group.locked) return;
 
         const canvas = app?.canvas;
         if (!canvas?.ds) return;
@@ -1479,6 +1499,27 @@ const XZGGroup = {
         document.addEventListener('mouseup', onUp);
     },
 
+    /* ── 锁定/解锁 ── */
+    toggleLock(gid) {
+        const g = this.groups[gid];
+        if (!g) return;
+        g.locked = !g.locked;
+        this.updateGroupStyle(gid);
+        this.syncGroupsToExtra();
+    },
+
+    /* ── 全部锁定/解锁（Ctrl+点击锁图标）── */
+    toggleLockAll(gid) {
+        const g = this.groups[gid];
+        if (!g) return;
+        const targetLocked = !g.locked; // 以当前编组状态的反值作为目标
+        for (const id of Object.keys(this.groups)) {
+            this.groups[id].locked = targetLocked;
+            this.updateGroupStyle(id);
+        }
+        this.syncGroupsToExtra();
+    },
+
     /* ── 样式更新 ── */
     updateGroupStyle(gid) {
         const el = this.groupEls[gid];
@@ -1502,6 +1543,7 @@ const XZGGroup = {
             if (refs.leftFifthIcon) refs.leftFifthIcon.style.color = 'hsla(280,60%,65%,0.35)';
             if (refs.rightFifth) refs.rightFifth.style.borderLeftColor = 'hsla(280,60%,65%,0.2)';
             if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = 'hsla(280,60%,65%,0.35)';
+            if (refs.lockBtn) refs.lockBtn.style.color = g.locked ? '#f44336' : 'hsla(280,60%,65%,0.35)';
         } else {
             const h = g.colorHue ?? 48;
             const s = g.colorSat ?? 100;
@@ -1519,7 +1561,13 @@ const XZGGroup = {
             if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = `hsla(${h},${s}%,${l}%,0.45)`;
             if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
             if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${s}%,${l}%,${bo})`);
+            if (refs.lockBtn) refs.lockBtn.style.color = g.locked ? '#f44336' : `hsla(${h},${s}%,${l}%,0.35)`;
         }
+        // 锁定状态：边框和调整手柄光标变化
+        const cursorVal = g.locked ? 'default' : 'move';
+        el.querySelectorAll('.xzg-border-left, .xzg-border-right, .xzg-border-bottom').forEach(b => b.style.cursor = cursorVal);
+        const rh = el.querySelector('.xzg-resize-handle');
+        if (rh) { rh.style.cursor = g.locked ? 'default' : 'nwse-resize'; rh.style.opacity = g.locked ? '0.2' : '0.6'; }
     },
 
     rebuildAllEls() {
@@ -1800,7 +1848,7 @@ const XZGGroup = {
         if (!app?.graph) return;
         const gd = {};
         for (const [id, g] of Object.entries(this.groups)) {
-            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
         }
         app.graph.extra = app.graph.extra || {};
         app.graph.extra.xzgGroups = gd;
@@ -1874,7 +1922,7 @@ const XZGGroup = {
                         const d = s.apply(this, arguments);
                         const gd = {};
                         for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
                         }
                         if (Object.keys(gd).length) {
                             console.log('[小珠光编组] LGraph.serialize写入编组数据:', Object.keys(gd).length, '个');
@@ -1957,6 +2005,112 @@ const XZGGroup = {
         this._setupExtraBasedPersistence();
     },
 
+    /* ── 复制/粘贴编组钩子 ── */
+    setupClipboardHook() {
+        if (this._clipboardHooked) return;
+        this._clipboardHooked = true;
+        const self = this;
+        const LG = window.LiteGraph || (app.canvas?.constructor);
+        if (!LG?.LGraphCanvas?.prototype) return;
+
+        // 钩住 copyToClipboard：保存被复制节点所属的编组定义
+        const origCopy = LG.LGraphCanvas.prototype.copyToClipboard;
+        if (origCopy) {
+            LG.LGraphCanvas.prototype.copyToClipboard = function(nodes) {
+                origCopy.apply(this, arguments);
+                const nodeArr = nodes || (this.selected_nodes ? Object.values(this.selected_nodes) : []);
+                if (!nodeArr?.length) { self._clipboardGroups = null; return; }
+                const copiedNodeIds = new Set(nodeArr.map(n => n.id));
+                const groupsToCopy = {};
+                for (const [gid, g] of Object.entries(self.groups)) {
+                    const hasCopiedNode = g.nodeIds.some(nid =>
+                        copiedNodeIds.has(nid) || copiedNodeIds.has(String(nid)) ||
+                        [...copiedNodeIds].some(id => id == nid)
+                    );
+                    if (hasCopiedNode) {
+                        groupsToCopy[gid] = JSON.parse(JSON.stringify(g));
+                    }
+                }
+                self._clipboardGroups = Object.keys(groupsToCopy).length ? groupsToCopy : null;
+            };
+        }
+
+        // 钩住 pasteFromClipboard：为粘贴的节点创建新编组
+        const origPaste = LG.LGraphCanvas.prototype.pasteFromClipboard;
+        if (origPaste) {
+            LG.LGraphCanvas.prototype.pasteFromClipboard = function() {
+                // 记录粘贴前已有的节点ID
+                const existingIds = new Set();
+                if (app.graph?._nodes) {
+                    app.graph._nodes.forEach(n => existingIds.add(n.id));
+                }
+
+                origPaste.apply(this, arguments);
+
+                if (!self._clipboardGroups) return;
+
+                // 找出粘贴后新增的、带有旧编组ID的节点
+                const newGroupedNodes = [];
+                if (app.graph?._nodes) {
+                    app.graph._nodes.forEach(n => {
+                        if (!existingIds.has(n.id) && n._xzgGroupId) {
+                            newGroupedNodes.push(n);
+                        }
+                    });
+                }
+                if (!newGroupedNodes.length) return;
+
+                // 按旧编组ID分组
+                const groupsMap = {};
+                newGroupedNodes.forEach(n => {
+                    const oldGid = n._xzgGroupId;
+                    if (!groupsMap[oldGid]) groupsMap[oldGid] = [];
+                    groupsMap[oldGid].push(n);
+                });
+
+                // 为每个旧编组创建新编组
+                for (const [oldGid, nodes] of Object.entries(groupsMap)) {
+                    const oldGroup = self._clipboardGroups[oldGid];
+                    const newNodeIds = nodes.map(n => n.id);
+                    const newBounds = self.calcBounds(newNodeIds);
+                    if (!newBounds) continue;
+
+                    const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+                    self.groups[newGid] = {
+                        id: newGid,
+                        title: oldGroup ? oldGroup.title : '右键标题栏设置',
+                        nodeIds: newNodeIds,
+                        bypassed: false,
+                        locked: oldGroup?.locked || false,
+                        bounds: newBounds,
+                        fontSize: oldGroup?.fontSize || 14,
+                        colorHue: oldGroup?.colorHue ?? 48,
+                        colorSat: oldGroup?.colorSat ?? 100,
+                        colorLit: oldGroup?.colorLit ?? 55,
+                        effect: oldGroup?.effect || 'none',
+                        effectSpeed: oldGroup?.effectSpeed || 3,
+                        borderWidth: oldGroup?.borderWidth || 2,
+                        borderOpacity: oldGroup?.borderOpacity ?? 0.65,
+                        headerBgColor: oldGroup?.headerBgColor || 'rgba(0,0,0,0.4)',
+                        titleColor: oldGroup?.titleColor || '#FFD700'
+                    };
+
+                    // 将粘贴的节点重新指向新编组
+                    nodes.forEach(n => {
+                        n._xzgGroupId = newGid;
+                        n._xzgGroupData = null;
+                    });
+
+                    self.renderGroup(newGid);
+                }
+
+                self.syncGroupsToExtra();
+                app.graph?.setDirtyCanvas?.(true, true);
+                app.graph?.change?.();
+            };
+        }
+    },
+
     /* ── 基于 extra 的持久化（兼容新版 ComfyUI 前端） ── */
     _setupExtraBasedPersistence() {
         if (this._extraPersistenceReady) return;
@@ -1967,7 +2121,7 @@ const XZGGroup = {
         const serializeGroups = () => {
             const gd = {};
             for (const [id, g] of Object.entries(self.groups)) {
-                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
             }
             return gd;
         };
@@ -2142,7 +2296,7 @@ const XZGGroup = {
                 const fromExtra = app?.graph?.extra?.xzgGroups?.[gid];
                 const bounds = this.calcBounds(nids) || { x: 0, y: 0, w: 300, h: 200 };
                 this.groups[gid] = fromExtra ? { ...fromExtra } : {
-                    id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, bounds,
+                    id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, locked: false, bounds,
                     fontSize: 14, colorHue: 48, colorSat: 100, colorLit: 55,
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 0.65,
