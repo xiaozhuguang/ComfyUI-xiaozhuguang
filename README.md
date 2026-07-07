@@ -207,7 +207,7 @@ git clone https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang.git
 ```
 ComfyUI-xiaozhuguang/
 ├── __init__.py                  # 节点定义
-├── extension.json               # 扩展配置（版本 1.4）
+├── extension.json               # 扩展配置（版本 1.5）
 ├── LICENSE                      # MIT 许可证
 ├── README.md                    # 本文档
 ├── requirements.txt             # 依赖声明（无外部依赖）
@@ -233,6 +233,15 @@ ComfyUI-xiaozhuguang/
 ---
 
 ## 📋 更新日志
+
+### v1.5.2 (2026-07-07)
+
+**新增：**
+- 收藏栏右侧增加拖动调节宽度功能：
+  - 面板右边缘新增拖拽手柄，鼠标拖动即可调整收藏栏宽度
+  - 宽度范围限制 280px ~ 800px，防止过窄或过宽
+  - 宽度自动持久化保存，下次打开恢复上次宽度
+  - 修复原有浮动式 resizer 手柄不随面板移动的 bug，改用面板子元素方式实现
 
 ### v1.4.0 (2026-07-05)
 
