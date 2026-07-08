@@ -1871,8 +1871,12 @@ class Xiaozhuguang {
 
             // 提取选中节点之间的连线
             const linksData = [];
-            if (graph.links) {
-                for (const link of graph.links) {
+            // 兼容 Map（新版）和 Array（旧版）
+            const linksIterable = graph._links instanceof Map
+                ? graph._links.values()
+                : (graph.links instanceof Map ? graph.links.values() : graph.links);
+            if (linksIterable) {
+                for (const link of linksIterable) {
                     if (!link) continue;
                     if (nodeIds.has(link.origin_id) && nodeIds.has(link.target_id)) {
                         linksData.push({
@@ -2070,6 +2074,7 @@ class Xiaozhuguang {
 
             // 创建节点
             const idMap = {};
+            const nodeMap = {};
             for (const nd of workflow.nodesData) {
                 const node = LiteGraph.createNode(nd.type);
                 if (!node) {
@@ -2086,6 +2091,7 @@ class Xiaozhuguang {
                     graph._nodeIdCounter = newId + 1;
                 }
                 idMap[nd.id] = newId;
+                nodeMap[nd.id] = node;
                 node.id = newId;
 
                 // 设置位置（相对偏移）
@@ -2115,12 +2121,12 @@ class Xiaozhuguang {
             // 恢复连线
             let linkCount = 0;
             for (const ld of workflow.linksData) {
-                const srcId = idMap[ld.origin_id];
-                const tgtId = idMap[ld.target_id];
-                if (srcId == null || tgtId == null) continue;
+                const srcNode = nodeMap[ld.origin_id];
+                const tgtNode = nodeMap[ld.target_id];
+                if (!srcNode || !tgtNode) continue;
 
                 try {
-                    const result = graph.connect(srcId, ld.origin_slot, tgtId, ld.target_slot, ld.type);
+                    const result = srcNode.connect(ld.origin_slot, tgtNode, ld.target_slot);
                     if (result != null && result !== -1) linkCount++;
                 } catch (e) {
                     console.warn("[小珠光] 连线恢复失败:", e);

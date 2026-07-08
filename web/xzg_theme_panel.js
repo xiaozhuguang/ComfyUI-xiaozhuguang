@@ -36,7 +36,8 @@ window.XZGThemePanel = {
         textColor: "#ffffff",
         useGradient: true,
         fontSize: 14,
-        textAlign: "left"
+        textAlign: "left",
+        linkColor: "#888888"
     },
 
     defaultPresets: [
@@ -186,16 +187,92 @@ window.XZGThemePanel = {
                     <div class="xzg-theme-separator"></div>
                     
                     <div class="xzg-presets-section">
-                        <span class="xzg-swatch-label">预设主题</span>
-                        <div class="xzg-presets-row">
-                            <div class="xzg-preset-item" data-preset="0"></div>
-                            <div class="xzg-preset-item" data-preset="1"></div>
-                            <div class="xzg-preset-item" data-preset="2"></div>
-                            <div class="xzg-preset-item" data-preset="3"></div>
-                            <div class="xzg-preset-item" data-preset="4"></div>
+                        <div class="xzg-presets-header">
+                            <span class="xzg-swatch-label">预设主题</span>
+                            <div class="xzg-presets-row">
+                                <div class="xzg-preset-item" data-preset="0"></div>
+                                <div class="xzg-preset-item" data-preset="1"></div>
+                                <div class="xzg-preset-item" data-preset="2"></div>
+                                <div class="xzg-preset-item" data-preset="3"></div>
+                                <div class="xzg-preset-item" data-preset="4"></div>
+                            </div>
                         </div>
                         <p class="xzg-presets-tip">左键应用，右键保存当前设置</p>
                     </div>
+
+                    <div class="xzg-theme-separator"></div>
+
+                    <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">连线高亮</span>
+                        <button type="button" id="xzg-link-highlight-btn" class="xzg-toggle-switch xzg-link-highlight-toggle" data-checked="false" title="开启后，选中节点的连线高亮，其他变暗">
+                            <span class="xzg-toggle-slider"></span>
+                            <span class="xzg-toggle-label">关</span>
+                        </button>
+                    </div>
+
+                    <div class="xzg-theme-separator"></div>
+
+                    <div class="xzg-wallpaper-section">
+                        <div class="xzg-wallpaper-header">
+                            <span class="xzg-swatch-label">画布壁纸</span>
+                            <button type="button" id="xzg-wallpaper-btn" class="xzg-toggle-switch xzg-wallpaper-toggle" data-checked="false" title="开启画布壁纸背景">
+                                <span class="xzg-toggle-slider"></span>
+                                <span class="xzg-toggle-label">关</span>
+                            </button>
+                        </div>
+
+                        <div class="xzg-wallpaper-controls" id="xzg-wallpaper-controls" style="display:none;">
+                            <div class="xzg-wallpaper-upload-row">
+                                <input type="file" id="xzg-wallpaper-file-input" accept="image/*,video/*" style="display:none;">
+                                <button type="button" id="xzg-wallpaper-upload-btn" class="xzg-wallpaper-btn">选择图片</button>
+                                <button type="button" id="xzg-wallpaper-clear-btn" class="xzg-wallpaper-btn xzg-wallpaper-clear">清除</button>
+                            </div>
+
+                            <div class="xzg-wallpaper-row">
+                                <span class="xzg-swatch-label" style="font-size:12px;">透明度</span>
+                                <input type="range" id="xzg-wallpaper-opacity" min="0" max="1" step="0.05" value="0.5" style="flex:1;">
+                                <span class="xzg-wallpaper-value" id="xzg-wallpaper-opacity-val">50%</span>
+                            </div>
+
+                            <div class="xzg-wallpaper-row">
+                                <span class="xzg-swatch-label" style="font-size:12px;">填充方式</span>
+                                <div class="xzg-wallpaper-fit-btns">
+                                    <button type="button" class="xzg-wallpaper-fit-btn active" data-fit="cover">覆盖</button>
+                                    <button type="button" class="xzg-wallpaper-fit-btn" data-fit="contain">包含</button>
+                                    <button type="button" class="xzg-wallpaper-fit-btn" data-fit="fill">拉伸</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">连线颜色</span>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <button type="button" class="xzg-color-swatch xzg-linkcolor-swatch" data-color="linkColor" style="background-color: ${this.defaults.linkColor};width:18px;height:18px;min-width:18px;border-radius:3px;" title="连线颜色"></button>
+                            <button type="button" id="xzg-link-color-btn" class="xzg-toggle-switch xzg-link-color-toggle" data-checked="false" title="开启后，所有连线使用自定义颜色">
+                                <span class="xzg-toggle-slider"></span>
+                                <span class="xzg-toggle-label">关</span>
+                            </button>
+                        </div>
+                    </div> -->
+
+                    <!-- <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">连线动画</span>
+                        <button type="button" id="xzg-link-laser-btn" class="xzg-toggle-switch xzg-link-laser-toggle" data-checked="false" title="开启后，连线显示动画效果">
+                            <span class="xzg-toggle-slider"></span>
+                            <span class="xzg-toggle-label">关</span>
+                        </button>
+                    </div>
+
+                    <div class="xzg-link-highlight-section" id="xzg-anim-type-section" style="display:none;">
+                        <span class="xzg-swatch-label" style="font-size:11px;color:#888;">动画风格</span>
+                        <div style="display:flex;gap:3px;">
+                            <button type="button" class="xzg-anim-type-btn active" data-anim="flow" title="流光溢彩">✦</button>
+                            <button type="button" class="xzg-anim-type-btn" data-anim="gradient" title="颜色渐变">◆</button>
+                            <button type="button" class="xzg-anim-type-btn" data-anim="breath" title="亮度呼吸">●</button>
+                            <button type="button" class="xzg-anim-type-btn" data-anim="glow" title="辉光">☀</button>
+                        </div>
+                    </div> -->
 
                 </div>
             </div>
@@ -387,6 +464,212 @@ window.XZGThemePanel = {
                 self.saveCurrentToPreset(index);
             });
         });
+
+        const linkHighlightBtn = panel.querySelector("#xzg-link-highlight-btn");
+        if (linkHighlightBtn) {
+            linkHighlightBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    const active = window.XZGThemeManager.toggleLinkHighlight();
+                    linkHighlightBtn.setAttribute("data-checked", active ? "true" : "false");
+                    const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
+                    if (label) label.textContent = active ? "开" : "关";
+                }
+            });
+
+            // 同步初始状态
+            if (window.XZGThemeManager && window.XZGThemeManager.linkHighlightActive) {
+                linkHighlightBtn.setAttribute("data-checked", "true");
+                const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
+                if (label) label.textContent = "开";
+            }
+        }
+
+        // 壁纸开关
+        const wallpaperBtn = panel.querySelector("#xzg-wallpaper-btn");
+        const wallpaperControls = panel.querySelector("#xzg-wallpaper-controls");
+        const wallpaperFileInput = panel.querySelector("#xzg-wallpaper-file-input");
+        const wallpaperUploadBtn = panel.querySelector("#xzg-wallpaper-upload-btn");
+        const wallpaperClearBtn = panel.querySelector("#xzg-wallpaper-clear-btn");
+        const wallpaperOpacity = panel.querySelector("#xzg-wallpaper-opacity");
+        const wallpaperOpacityVal = panel.querySelector("#xzg-wallpaper-opacity-val");
+        const wallpaperFitBtns = panel.querySelectorAll(".xzg-wallpaper-fit-btn");
+
+        if (wallpaperBtn) {
+            wallpaperBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    const current = window.XZGThemeManager.wallpaperActive;
+                    const next = !current;
+                    window.XZGThemeManager.setWallpaperActive(next);
+                    wallpaperBtn.setAttribute("data-checked", next ? "true" : "false");
+                    const label = wallpaperBtn.querySelector(".xzg-toggle-label");
+                    if (label) label.textContent = next ? "开" : "关";
+                    if (wallpaperControls) {
+                        wallpaperControls.style.display = next ? "block" : "none";
+                    }
+                }
+            });
+
+            if (window.XZGThemeManager && window.XZGThemeManager.wallpaperActive) {
+                wallpaperBtn.setAttribute("data-checked", "true");
+                const label = wallpaperBtn.querySelector(".xzg-toggle-label");
+                if (label) label.textContent = "开";
+                if (wallpaperControls) {
+                    wallpaperControls.style.display = "block";
+                }
+            }
+        }
+
+        // 壁纸文件上传
+        if (wallpaperUploadBtn && wallpaperFileInput) {
+            wallpaperUploadBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                wallpaperFileInput.click();
+            });
+
+            wallpaperFileInput.addEventListener("change", (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const dataUrl = ev.target.result;
+                    const isVideo = file.type.startsWith('video/');
+                    const type = isVideo ? 'video' : 'image';
+                    if (window.XZGThemeManager) {
+                        window.XZGThemeManager.setWallpaperData(type, dataUrl);
+                    }
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // 清除壁纸
+        if (wallpaperClearBtn) {
+            wallpaperClearBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.clearWallpaper();
+                    if (wallpaperBtn) {
+                        wallpaperBtn.setAttribute("data-checked", "false");
+                        const label = wallpaperBtn.querySelector(".xzg-toggle-label");
+                        if (label) label.textContent = "关";
+                    }
+                    if (wallpaperControls) {
+                        wallpaperControls.style.display = "none";
+                    }
+                }
+            });
+        }
+
+        // 壁纸透明度
+        if (wallpaperOpacity && wallpaperOpacityVal) {
+            wallpaperOpacity.addEventListener("input", (e) => {
+                const val = parseFloat(e.target.value);
+                wallpaperOpacityVal.textContent = Math.round(val * 100) + "%";
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setWallpaperOpacity(val);
+                }
+            });
+
+            if (window.XZGThemeManager) {
+                const op = window.XZGThemeManager.wallpaperOpacity ?? 0.5;
+                wallpaperOpacity.value = op;
+                wallpaperOpacityVal.textContent = Math.round(op * 100) + "%";
+            }
+        }
+
+        // 填充方式
+        if (wallpaperFitBtns.length > 0) {
+            wallpaperFitBtns.forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const fit = btn.dataset.fit;
+                    if (window.XZGThemeManager) {
+                        window.XZGThemeManager.setWallpaperFit(fit);
+                    }
+                    wallpaperFitBtns.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                });
+            });
+
+            if (window.XZGThemeManager) {
+                const currentFit = window.XZGThemeManager.wallpaperFit || 'cover';
+                wallpaperFitBtns.forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.fit === currentFit);
+                });
+            }
+        }
+
+        // 连线动画功能已取消
+        // const linkLaserBtn = panel.querySelector("#xzg-link-laser-btn");
+        // const animTypeSection = panel.querySelector("#xzg-anim-type-section");
+        // if (linkLaserBtn) {
+        //     linkLaserBtn.addEventListener("click", (e) => {
+        //         e.stopPropagation();
+        //         if (window.XZGThemeManager) {
+        //             const active = window.XZGThemeManager.toggleLinkLaser();
+        //             linkLaserBtn.setAttribute("data-checked", active ? "true" : "false");
+        //             const label = linkLaserBtn.querySelector(".xzg-toggle-label");
+        //             if (label) label.textContent = active ? "开" : "关";
+        //             // 显示/隐藏动画风格选择
+        //             if (animTypeSection) animTypeSection.style.display = active ? 'flex' : 'none';
+        //         }
+        //     });
+        //
+        //     // 同步初始状态
+        //     if (window.XZGThemeManager && window.XZGThemeManager.linkLaserActive) {
+        //         linkLaserBtn.setAttribute("data-checked", "true");
+        //         const label = linkLaserBtn.querySelector(".xzg-toggle-label");
+        //         if (label) label.textContent = "开";
+        //         if (animTypeSection) animTypeSection.style.display = 'flex';
+        //     }
+        // }
+
+        // // 动画风格按钮事件
+        // const animTypeBtns = panel.querySelectorAll('.xzg-anim-type-btn');
+        // animTypeBtns.forEach(btn => {
+        //     btn.addEventListener('click', (e) => {
+        //         e.stopPropagation();
+        //         const type = btn.dataset.anim;
+        //         if (window.XZGThemeManager) {
+        //             window.XZGThemeManager.laserAnimType = type;
+        //             try { localStorage.setItem('xzg-laser-anim-type', type); } catch(e) {}
+        //             if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+        //         }
+        //         animTypeBtns.forEach(b => b.classList.remove('active'));
+        //         btn.classList.add('active');
+        //     });
+        // });
+        // // 同步初始动画风格
+        // if (window.XZGThemeManager) {
+        //     const currentType = window.XZGThemeManager.laserAnimType || 'flow';
+        //     animTypeBtns.forEach(btn => {
+        //         btn.classList.toggle('active', btn.dataset.anim === currentType);
+        //     });
+        // }
+
+        // 连线颜色功能已取消
+        // const linkColorBtn = panel.querySelector("#xzg-link-color-btn");
+        // if (linkColorBtn) {
+        //     linkColorBtn.addEventListener("click", (e) => {
+        //         e.stopPropagation();
+        //         if (window.XZGThemeManager) {
+        //             const active = window.XZGThemeManager.toggleLinkColor();
+        //             linkColorBtn.setAttribute("data-checked", active ? "true" : "false");
+        //             const label = linkColorBtn.querySelector(".xzg-toggle-label");
+        //             if (label) label.textContent = active ? "开" : "关";
+        //         }
+        //     });
+        //
+        //     // 同步初始状态
+        //     if (window.XZGThemeManager && window.XZGThemeManager.linkColorActive) {
+        //         linkColorBtn.setAttribute("data-checked", "true");
+        //         const label = linkColorBtn.querySelector(".xzg-toggle-label");
+        //         if (label) label.textContent = "开";
+        //     }
+        // }
 
         panel.addEventListener("pointerdown", (e) => e.stopPropagation());
         panel.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -588,6 +871,21 @@ window.XZGThemePanel = {
             swatch.style.backgroundColor = color;
         }
         
+        // 连线颜色功能已取消
+        // 连线颜色特殊处理：同步到 XZGThemeManager 并保存
+        // if (this.activeColorInput === 'linkColor') {
+        //     if (window.XZGThemeManager) {
+        //         window.XZGThemeManager.linkColor = color;
+        //     }
+        //     try {
+        //         localStorage.setItem('xzg-link-color', color);
+        //     } catch(e) {}
+        //     // 触发重绘以更新连线颜色
+        //     if (window.app?.canvas?.setDirty) {
+        //         app.canvas.setDirty(true, true);
+        //     }
+        // }
+        
         // Update hex input
         this.updateHexInput();
         // Update gradient preview
@@ -596,6 +894,8 @@ window.XZGThemePanel = {
         if (this.isVisible) this.addRecentColor(color);
         
         if (this.isUpdatingFromNode) return;
+        // 连线颜色不需要触发节点主题变更（功能已取消）
+        // if (this.activeColorInput === 'linkColor') return;
         this.notifyChange();
     },
 
@@ -814,6 +1114,7 @@ window.XZGThemePanel = {
         const tc2 = panel.querySelector('[data-color="titleColor2"]');
         const tc3 = panel.querySelector('[data-color="titleColor3"]');
         const ct = panel.querySelector('[data-color="textColor"]');
+        // const lkc = panel.querySelector('[data-color="linkColor"]');
         if (c1) c1.style.backgroundColor = this.defaults.color1;
         if (c2) c2.style.backgroundColor = this.defaults.color2;
         if (c3) c3.style.backgroundColor = this.defaults.color3;
@@ -821,6 +1122,14 @@ window.XZGThemePanel = {
         if (tc2) tc2.style.backgroundColor = this.defaults.titleColor2;
         if (tc3) tc3.style.backgroundColor = this.defaults.titleColor3;
         if (ct) ct.style.backgroundColor = this.defaults.textColor;
+        // if (lkc) lkc.style.backgroundColor = this.defaults.linkColor;
+        // 连线颜色功能已取消
+        // if (window.XZGThemeManager) {
+        //     window.XZGThemeManager.linkColor = this.defaults.linkColor;
+        // }
+        // try {
+        //     localStorage.setItem('xzg-link-color', this.defaults.linkColor);
+        // } catch(e) {}
 
         panel.querySelectorAll(".xzg-direction-buttons:not(.xzg-title-dir-buttons) .xzg-dir-btn").forEach(b => b.classList.remove("active"));
         const defaultDir = panel.querySelector(`[data-dir="${this.defaults.direction}"]`);

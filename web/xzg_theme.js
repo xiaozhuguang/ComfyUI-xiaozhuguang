@@ -5,12 +5,86 @@ window.XZGThemeManager = {
     panelStyleElement: null,
     canvasHooked: false,
     protoRefs: {},
+    linkHighlightActive: false,
+    linkHighlightHooked: false,
+    linkLaserActive: false,
+    laserAnimType: 'flow',
+    linkColorActive: false,
+    linkColor: '#888888',
+    linkAnimRunning: false,
+    linkAnimFrameId: null,
+    wallpaperActive: false,
+    wallpaperType: 'image',
+    wallpaperData: null,
+    wallpaperOpacity: 0.5,
+    wallpaperFit: 'cover',
+    _wallpaperEl: null,
+    _wallpaperVideoEl: null,
 
     init() {
+        // 从 localStorage 恢复连线高亮和激光动画状态
+        try {
+            const saved = localStorage.getItem('xzg-link-highlight');
+            if (saved === 'true') {
+                this.linkHighlightActive = true;
+            }
+            // 连线动画功能已取消，强制关闭
+            // const laserSaved = localStorage.getItem('xzg-link-laser');
+            // if (laserSaved === 'true') {
+            //     this.linkLaserActive = true;
+            // }
+            this.linkLaserActive = false;
+            const laserColorSaved = localStorage.getItem('xzg-laser-color');
+            if (laserColorSaved) {
+                // 兼容旧数据：将旧的 laserColor 迁移到 linkColor
+                try { localStorage.setItem('xzg-link-color', laserColorSaved); } catch(e) {}
+                localStorage.removeItem('xzg-laser-color');
+            }
+            // const animTypeSaved = localStorage.getItem('xzg-laser-anim-type');
+            // if (animTypeSaved) {
+            //     this.laserAnimType = animTypeSaved;
+            // }
+            const lcSaved = localStorage.getItem('xzg-link-color');
+            if (lcSaved) {
+                this.linkColor = lcSaved;
+            }
+            // 连线颜色功能已取消，强制关闭
+            // const lcActiveSaved = localStorage.getItem('xzg-link-color-active');
+            // if (lcActiveSaved === 'true') {
+            //     this.linkColorActive = true;
+            // }
+            this.linkColorActive = false;
+        } catch(e) {}
+
+        // 从 localStorage 恢复壁纸设置
+        try {
+            const wpActive = localStorage.getItem('xzg-wallpaper-active');
+            if (wpActive === 'true') {
+                this.wallpaperActive = true;
+            }
+            const wpType = localStorage.getItem('xzg-wallpaper-type');
+            if (wpType) {
+                this.wallpaperType = wpType;
+            }
+            const wpData = localStorage.getItem('xzg-wallpaper-data');
+            if (wpData) {
+                this.wallpaperData = wpData;
+            }
+            const wpOpacity = localStorage.getItem('xzg-wallpaper-opacity');
+            if (wpOpacity) {
+                this.wallpaperOpacity = parseFloat(wpOpacity);
+            }
+            const wpFit = localStorage.getItem('xzg-wallpaper-fit');
+            if (wpFit) {
+                this.wallpaperFit = wpFit;
+            }
+        } catch(e) {}
+
         this.injectPanelStyles();
         this.setupContextMenu();
         this.ensureCanvasHook();
         this.hookSerialize();
+        this.initWallpaper();
     },
 
     injectPanelStyles() {
@@ -158,8 +232,8 @@ window.XZGThemeManager = {
     align-items: center;
     justify-content: space-between;
     gap: 7px;
-    margin-bottom: 7px;
-    margin-top: 7px;
+    margin-bottom: 6px;
+    margin-top: 0;
 }
 
 .xzg-direction-buttons {
@@ -197,7 +271,7 @@ window.XZGThemeManager = {
 .xzg-theme-separator {
     height: 1px;
     background: #444;
-    margin: 9px 0;
+    margin: 6px 0;
 }
 
 .xzg-theme-font-row {
@@ -205,8 +279,8 @@ window.XZGThemeManager = {
     align-items: center;
     justify-content: space-between;
     gap: 7px;
-    margin-top: 7px;
-    margin-bottom: 7px;
+    margin-top: 0;
+    margin-bottom: 6px;
 }
 
 .xzg-font-size-control {
@@ -291,7 +365,8 @@ window.XZGThemeManager = {
     font-weight: bold;
     text-shadow: 0 0 8px rgba(255, 215, 0, 0.6);
     transition: all 0.2s;
-    margin-top: 7px;
+    margin-top: 0;
+    margin-bottom: 6px;
 }
 
 .xzg-apply-btn:hover {
@@ -312,7 +387,8 @@ window.XZGThemeManager = {
     cursor: pointer;
     font-size: 12px;
     transition: all 0.2s;
-    margin-top: 3px;
+    margin-top: 0;
+    margin-bottom: 6px;
 }
 
 .xzg-reset-btn:hover {
@@ -341,7 +417,7 @@ window.XZGThemeManager = {
     display: flex;
     flex-direction: column;
     gap: 5px;
-    margin-bottom: 9px;
+    margin-bottom: 6px;
 }
 
 .xzg-swatch-group {
@@ -349,6 +425,14 @@ window.XZGThemeManager = {
     align-items: center;
     justify-content: space-between;
     gap: 7px;
+}
+
+.xzg-theme-section > .xzg-swatch-group {
+    margin-bottom: 6px;
+}
+
+.xzg-theme-section > *:last-child {
+    margin-bottom: 0;
 }
 
 .xzg-swatch-label {
@@ -399,7 +483,7 @@ window.XZGThemeManager = {
 .xzg-sv-area {
     position: relative;
     width: 100%;
-    aspect-ratio: 16 / 10;
+    height: 120px;
     border-radius: 6px;
     margin-bottom: 7px;
     cursor: crosshair;
@@ -481,10 +565,10 @@ window.XZGThemeManager = {
 
 .xzg-toggle-switch {
     position: relative;
-    width: 52px;
-    height: 26px;
+    width: 48px;
+    height: 20px;
     border: none;
-    border-radius: 13px;
+    border-radius: 10px;
     background: #555;
     cursor: pointer;
     padding: 0;
@@ -498,10 +582,10 @@ window.XZGThemeManager = {
 
 .xzg-toggle-switch .xzg-toggle-slider {
     position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 20px;
-    height: 20px;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
     background: #fff;
     border-radius: 50%;
     transition: left 0.2s;
@@ -509,7 +593,7 @@ window.XZGThemeManager = {
 }
 
 .xzg-toggle-switch[data-checked="true"] .xzg-toggle-slider {
-    left: 29px;
+    left: 30px;
 }
 
 .xzg-toggle-switch .xzg-toggle-label {
@@ -597,21 +681,30 @@ window.XZGThemeManager = {
 }
 
 .xzg-presets-section {
-    margin-top: 4px;
+    margin-top: 0;
+    margin-bottom: 6px;
+}
+
+.xzg-presets-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
 }
 
 .xzg-presets-row {
     display: flex;
-    gap: 5px;
-    margin-top: 5px;
+    gap: 4px;
+    flex: 1;
+    max-width: 180px;
 }
 
 .xzg-preset-item {
     flex: 1;
-    height: 36px;
-    border-radius: 4px;
+    height: 20px;
+    border-radius: 3px;
     cursor: pointer;
-    border: 2px solid #444;
+    border: 1.5px solid #444;
     transition: all 0.2s;
     position: relative;
     overflow: hidden;
@@ -619,8 +712,8 @@ window.XZGThemeManager = {
 
 .xzg-preset-item:hover {
     border-color: #667eea;
-    transform: translateY(-2px);
-    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    transform: translateY(-1px);
+    box-shadow: 0 1px 4px rgba(102, 126, 234, 0.3);
 }
 
 .xzg-preset-item:active {
@@ -629,10 +722,178 @@ window.XZGThemeManager = {
 
 .xzg-presets-tip {
     text-align: center;
-    color: #fff;
+    color: #ffffff;
     font-size: 10px;
-    margin-top: 3px;
+    margin-top: 5px;
     margin-bottom: 0;
+}
+
+.xzg-link-highlight-section {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    margin-top: 0;
+    margin-bottom: 6px;
+}
+
+.xzg-anim-type-btn {
+    width: 26px;
+    height: 22px;
+    border: 1px solid #444;
+    border-radius: 3px;
+    background: #2a2a2a;
+    color: #777;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.xzg-anim-type-btn:hover {
+    background: #3a3a3a;
+    color: #ccc;
+    border-color: #666;
+}
+.xzg-anim-type-btn.active {
+    background: #1a3a2a;
+    border-color: #4caf50;
+    color: #4caf50;
+}
+
+.xzg-wallpaper-section {
+    margin-top: 0;
+    margin-bottom: 6px;
+}
+
+.xzg-wallpaper-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+}
+
+.xzg-wallpaper-controls {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #444;
+}
+
+.xzg-wallpaper-upload-row {
+    display: flex;
+    gap: 6px;
+}
+
+.xzg-wallpaper-btn {
+    flex: 1;
+    height: 28px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #333;
+    color: #ddd;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 10px;
+    transition: all 0.15s;
+}
+.xzg-wallpaper-btn:hover {
+    background: #444;
+    border-color: #666;
+}
+.xzg-wallpaper-clear {
+    flex: none;
+    width: 60px;
+    background: #3a1a1a;
+    border-color: #773333;
+    color: #e07070;
+}
+.xzg-wallpaper-clear:hover {
+    background: #4a1a1a;
+    border-color: #aa4444;
+}
+
+.xzg-wallpaper-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 28px;
+}
+
+.xzg-wallpaper-row .xzg-swatch-label {
+    min-width: 60px;
+    flex-shrink: 0;
+}
+
+.xzg-wallpaper-value {
+    font-size: 11px;
+    color: #aaa;
+    min-width: 48px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.xzg-wallpaper-fit-btns {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+}
+
+.xzg-wallpaper-fit-btn {
+    flex: 1;
+    height: 24px;
+    border: 1px solid #444;
+    border-radius: 3px;
+    background: #2a2a2a;
+    color: #888;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0;
+    transition: all 0.15s;
+}
+.xzg-wallpaper-fit-btn:hover {
+    background: #3a3a3a;
+    color: #ccc;
+    border-color: #666;
+}
+.xzg-wallpaper-fit-btn.active {
+    background: #1a2a3a;
+    border-color: #4a90e2;
+    color: #6ab0ff;
+}
+
+#xzg-wallpaper-opacity {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #444;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+#xzg-wallpaper-opacity::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #6ab0ff;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+#xzg-wallpaper-opacity::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: #6ab0ff;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
         `;
         
@@ -701,7 +962,712 @@ window.XZGThemeManager = {
             return;
         }
         this.hookDrawNodeShape();
+        this.setupLinkHighlight();
         this.canvasHooked = true;
+    },
+
+    setupLinkHighlight() {
+        if (this.linkHighlightHooked) return;
+        if (!window.app || !app.canvas) {
+            setTimeout(() => this.setupLinkHighlight(), 100);
+            return;
+        }
+
+        const canvas = app.canvas;
+        const self = this;
+
+        // 新版 ComfyUI 前端使用 CanvasPathRenderer.drawLink 逐条绘制连线
+        // 通过 canvas.linkRenderer.pathRenderer 访问该实例
+        if (!canvas.linkRenderer || !canvas.linkRenderer.pathRenderer) {
+            setTimeout(() => this.setupLinkHighlight(), 100);
+            return;
+        }
+
+        // 在原型上钩住 drawLink，对所有实例生效
+        const proto = Object.getPrototypeOf(canvas.linkRenderer.pathRenderer);
+        if (!proto || typeof proto.drawLink !== 'function') {
+            setTimeout(() => this.setupLinkHighlight(), 100);
+            return;
+        }
+        if (proto.drawLink._xzgLinkHighlightWrapped) {
+            this.linkHighlightHooked = true;
+            return;
+        }
+
+        const origDrawLink = proto.drawLink;
+        proto.drawLink = function(ctx, link, renderCtx) {
+            // 三个功能都关闭时，正常绘制
+            if (!self.linkHighlightActive && !self.linkLaserActive && !self.linkColorActive) {
+                return origDrawLink.call(this, ctx, link, renderCtx);
+            }
+
+            const nodeIds = self.getHighlightNodeIds();
+            const hasSelectedNodes = nodeIds.length > 0;
+
+            // 查找原始 LLink 的 origin_id/target_id
+            const graph = self.canvas?.graph || (window.app && app.graph);
+            const linksMap = graph?._links;
+            let originId = null, targetId = null, linkId = null;
+
+            if (link.origin_id != null) {
+                originId = link.origin_id;
+                targetId = link.target_id;
+                linkId = link.id;
+            } else if (linksMap && link.id != null) {
+                const origLink = linksMap.get(Number(link.id)) || linksMap.get(link.id) || linksMap.get(String(link.id));
+                if (origLink) {
+                    originId = origLink.origin_id;
+                    targetId = origLink.target_id;
+                    linkId = origLink.id;
+                }
+            }
+
+            if (originId == null) {
+                // 找不到 originId 时，仍可应用连线颜色
+                if (self.linkColorActive) {
+                    const origColor = link.color;
+                    link.color = self.linkColor;
+                    origDrawLink.call(this, ctx, link, renderCtx);
+                    link.color = origColor;
+                } else {
+                    origDrawLink.call(this, ctx, link, renderCtx);
+                }
+                // 激光动画仍可尝试绘制（使用 link 的 startPoint/endPoint）
+                if (self.linkLaserActive) {
+                    self._drawLaserOverlay(ctx, link, null, null);
+                    self._ensureAnimLoop();
+                }
+                return;
+            }
+
+            // 判断连线是否与选中节点相连（高亮/动画需要）
+            let isConnected = false;
+            if (hasSelectedNodes) {
+                const idSet = new Set(nodeIds.map(String));
+                isConnected = idSet.has(String(originId)) || idSet.has(String(targetId));
+            }
+
+            // 连线颜色：覆盖所有连线颜色
+            if (self.linkColorActive) {
+                const origColor = link.color;
+                if (self.linkHighlightActive && hasSelectedNodes) {
+                    if (isConnected) {
+                        link.color = self._saturateColor(self.linkColor, 0.3);
+                        origDrawLink.call(this, ctx, link, renderCtx);
+                    } else {
+                        link.color = self.linkColor;
+                        const origAlpha = ctx.globalAlpha;
+                        ctx.globalAlpha = origAlpha * 0.08;
+                        self._drawThinBaseLine(ctx, link);
+                        ctx.globalAlpha = origAlpha;
+                    }
+                } else {
+                    link.color = self.linkColor;
+                    origDrawLink.call(this, ctx, link, renderCtx);
+                }
+                link.color = origColor;
+            } else if (self.linkHighlightActive && hasSelectedNodes) {
+                // 仅高亮：相关连线绘制细原始线 + 1px白色流动虚线 + 七彩星芒，不相关变暗
+                if (isConnected) {
+                    self._drawThinBaseLine(ctx, link);
+                    self._drawWhiteDashLine(ctx, link);
+                    // 七彩星芒
+                    self._drawRainbowSparkles(ctx, link);
+                    self._ensureHighlightAnimLoop();
+                } else {
+                    const origAlpha = ctx.globalAlpha;
+                    ctx.globalAlpha = origAlpha * 0.08;
+                    self._drawThinBaseLine(ctx, link);
+                    ctx.globalAlpha = origAlpha;
+                }
+            } else {
+                origDrawLink.call(this, ctx, link, renderCtx);
+            }
+
+            // 激光动画：独立作用于所有连线
+            if (self.linkLaserActive) {
+                self._drawLaserOverlay(ctx, link, originId, targetId);
+                self._ensureAnimLoop();
+            }
+        };
+        proto.drawLink._xzgLinkHighlightWrapped = true;
+
+        this.linkHighlightHooked = true;
+        console.log('[小珠光主题] 连线高亮 Hook 已安装 ✓');
+    },
+
+    getHighlightNodeIds() {
+        if (!window.app || !app.canvas) return [];
+        const canvas = app.canvas;
+        const ids = [];
+
+        // 仅使用选中的节点（点击选中）
+        if (canvas.selected_nodes) {
+            const nodes = Object.values(canvas.selected_nodes);
+            for (const n of nodes) {
+                if (n && n.id != null) ids.push(n.id);
+            }
+        }
+
+        return ids;
+    },
+
+    _saturateColor(color, saturateIncrease) {
+        if (!color) return color;
+        let r, g, b;
+        if (typeof color === 'string') {
+            const c = color.replace('#', '');
+            if (c.length === 3) {
+                r = parseInt(c[0] + c[0], 16);
+                g = parseInt(c[1] + c[1], 16);
+                b = parseInt(c[2] + c[2], 16);
+            } else if (c.length >= 6) {
+                r = parseInt(c.substring(0, 2), 16);
+                g = parseInt(c.substring(2, 4), 16);
+                b = parseInt(c.substring(4, 6), 16);
+            } else {
+                return color;
+            }
+        } else if (Array.isArray(color)) {
+            r = color[0]; g = color[1]; b = color[2];
+        } else {
+            return color;
+        }
+
+        const rn = r / 255, gn = g / 255, bn = b / 255;
+        const max = Math.max(rn, gn, bn);
+        const min = Math.min(rn, gn, bn);
+        let h, s, l = (max + min) / 2;
+
+        if (max === min) {
+            h = s = 0;
+        } else {
+            const d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            switch (max) {
+                case rn: h = (gn - bn) / d + (gn < bn ? 6 : 0); break;
+                case gn: h = (bn - rn) / d + 2; break;
+                case bn: h = (rn - gn) / d + 4; break;
+            }
+            h /= 6;
+        }
+
+        s = Math.min(1, s + saturateIncrease);
+
+        let r2, g2, b2;
+        if (s === 0) {
+            r2 = g2 = b2 = l;
+        } else {
+            const hue2rgb = (p, q, t) => {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1/6) return p + (q - p) * 6 * t;
+                if (t < 1/2) return q;
+                if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                return p;
+            };
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            r2 = hue2rgb(p, q, h + 1/3);
+            g2 = hue2rgb(p, q, h);
+            b2 = hue2rgb(p, q, h - 1/3);
+        }
+
+        return `rgb(${Math.round(r2 * 255)}, ${Math.round(g2 * 255)}, ${Math.round(b2 * 255)})`;
+    },
+
+    toggleLinkHighlight() {
+        this.linkHighlightActive = !this.linkHighlightActive;
+        try {
+            localStorage.setItem('xzg-link-highlight', this.linkHighlightActive ? 'true' : 'false');
+        } catch(e) {}
+        if (!this.linkHighlightActive) {
+            this._stopHighlightAnimLoop();
+        }
+        if (!this.linkHighlightActive && !this.linkLaserActive && !this.linkColorActive) {
+            this._stopAnimLoop();
+        }
+        if (window.app) {
+            if (app.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            } else if (app.graph?.setDirtyCanvas) {
+                app.graph.setDirtyCanvas(true, true);
+            }
+        }
+        return this.linkHighlightActive;
+    },
+
+    toggleLinkLaser() {
+        this.linkLaserActive = !this.linkLaserActive;
+        try {
+            localStorage.setItem('xzg-link-laser', this.linkLaserActive ? 'true' : 'false');
+        } catch(e) {}
+        if (!this.linkLaserActive && !this.linkHighlightActive && !this.linkColorActive) {
+            this._stopAnimLoop();
+        }
+        if (window.app) {
+            if (app.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            } else if (app.graph?.setDirtyCanvas) {
+                app.graph.setDirtyCanvas(true, true);
+            }
+        }
+        return this.linkLaserActive;
+    },
+
+    toggleLinkColor() {
+        this.linkColorActive = !this.linkColorActive;
+        try {
+            localStorage.setItem('xzg-link-color-active', this.linkColorActive ? 'true' : 'false');
+        } catch(e) {}
+        if (window.app) {
+            if (app.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            } else if (app.graph?.setDirtyCanvas) {
+                app.graph.setDirtyCanvas(true, true);
+            }
+        }
+        return this.linkColorActive;
+    },
+
+    _drawThinBaseLine(ctx, link) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+        const color = link.color || '#888888';
+
+        ctx.save();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        if (cp.length >= 2) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+            const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+            ctx.bezierCurveTo(c0x, c0y, c1x, c1y, ex, ey);
+        } else if (cp.length === 1) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            ctx.quadraticCurveTo(c0x, c0y, ex, ey);
+        } else {
+            ctx.lineTo(ex, ey);
+        }
+        ctx.stroke();
+        ctx.restore();
+    },
+
+    _drawWhiteDashLine(ctx, link) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+        const t = performance.now();
+
+        ctx.save();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#ffffff';
+        ctx.setLineDash([8, 5]);
+        ctx.lineDashOffset = -(t * 0.03);
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        if (cp.length >= 2) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+            const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+            ctx.bezierCurveTo(c0x, c0y, c1x, c1y, ex, ey);
+        } else if (cp.length === 1) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            ctx.quadraticCurveTo(c0x, c0y, ex, ey);
+        } else {
+            ctx.lineTo(ex, ey);
+        }
+        ctx.stroke();
+        ctx.restore();
+    },
+
+    _drawRainbowSparkles(ctx, link) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+        const t = performance.now();
+
+        const getPointAtT = (tVal) => {
+            if (cp.length >= 2) {
+                const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+                const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+                const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+                const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+                const mt = 1 - tVal;
+                const x = mt * mt * mt * sx + 3 * mt * mt * tVal * c0x + 3 * mt * tVal * tVal * c1x + tVal * tVal * tVal * ex;
+                const y = mt * mt * mt * sy + 3 * mt * mt * tVal * c0y + 3 * mt * tVal * tVal * c1y + tVal * tVal * tVal * ey;
+                return { x, y };
+            } else if (cp.length === 1) {
+                const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+                const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+                const mt = 1 - tVal;
+                const x = mt * mt * sx + 2 * mt * tVal * c0x + tVal * tVal * ex;
+                const y = mt * mt * sy + 2 * mt * tVal * c0y + tVal * tVal * ey;
+                return { x, y };
+            } else {
+                return {
+                    x: sx + (ex - sx) * tVal,
+                    y: sy + (ey - sy) * tVal
+                };
+            }
+        };
+
+        const drawStarburst = (cx, cy, color, size, rotation) => {
+            const rayCount = 8;
+            const rayLength = size;
+            const rayHalfWidth = size * 0.06;
+            const coreRadius = size * 0.18;
+            const glowRadius = size * 0.6;
+
+            ctx.save();
+            ctx.translate(cx, cy);
+
+            const glowGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, glowRadius);
+            glowGrad.addColorStop(0, color + 'CC');
+            glowGrad.addColorStop(0.5, color + '66');
+            glowGrad.addColorStop(1, color + '00');
+            ctx.fillStyle = glowGrad;
+            ctx.beginPath();
+            ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.rotate(rotation);
+
+            ctx.shadowColor = color;
+            ctx.shadowBlur = size * 0.8;
+
+            for (let i = 0; i < rayCount; i++) {
+                const angle = (i * Math.PI * 2) / rayCount;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+
+                const tipX = cos * rayLength;
+                const tipY = sin * rayLength;
+
+                const perpX = -sin;
+                const perpY = cos;
+
+                const baseInnerX = cos * coreRadius;
+                const baseInnerY = sin * coreRadius;
+
+                ctx.beginPath();
+                ctx.moveTo(baseInnerX - perpX * rayHalfWidth, baseInnerY - perpY * rayHalfWidth);
+                ctx.lineTo(tipX, tipY);
+                ctx.lineTo(baseInnerX + perpX * rayHalfWidth, baseInnerY + perpY * rayHalfWidth);
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+            }
+
+            ctx.shadowBlur = size * 0.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, coreRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            ctx.restore();
+        };
+
+        const rainbowColors = [
+            '#FF6B6B',
+            '#FFA94D',
+            '#FFE066',
+            '#69DB7C',
+            '#339AF0',
+            '#9775FA',
+            '#F06595'
+        ];
+
+        const sparkleCount = 5;
+        const speed = 0.00025;
+        const baseOffset = (t * speed) % 1;
+
+        ctx.save();
+
+        for (let i = 0; i < sparkleCount; i++) {
+            const tVal = (baseOffset + i / sparkleCount) % 1;
+            const pos = getPointAtT(tVal);
+            const color = rainbowColors[i % rainbowColors.length];
+            const pulse = 0.7 + 0.3 * Math.sin(t * 0.004 + i * 1.2);
+            const size = 11 * pulse;
+            const rotation = t * 0.001 + i * 0.5;
+
+            drawStarburst(pos.x, pos.y, color, size, rotation);
+        }
+
+        ctx.restore();
+    },
+
+    _drawLaserOverlay(ctx, link, originId, targetId) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+        const laserColor = this.linkColor || '#888888';
+        const t = Date.now();
+
+        // 构建路径辅助函数
+        const buildPath = () => {
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            if (cp.length >= 2) {
+                const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+                const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+                const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+                const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+                ctx.bezierCurveTo(c0x, c0y, c1x, c1y, ex, ey);
+            } else if (cp.length === 1) {
+                const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+                const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+                ctx.quadraticCurveTo(c0x, c0y, ex, ey);
+            } else {
+                ctx.lineTo(ex, ey);
+            }
+        };
+
+        const type = this.laserAnimType || 'flow';
+
+        switch (type) {
+            case 'flow':   this._animFlow(ctx, buildPath, sx, sy, ex, ey, laserColor, t); break;
+            case 'gradient': this._animGradient(ctx, buildPath, sx, sy, ex, ey, laserColor, t); break;
+            case 'breath': this._animBreath(ctx, buildPath, laserColor, t); break;
+            case 'glow':   this._animGlow(ctx, buildPath, laserColor, t); break;
+            default:       this._animFlow(ctx, buildPath, sx, sy, ex, ey, laserColor, t);
+        }
+    },
+
+    // 流光溢彩：彩虹渐变沿连线流动
+    _animFlow(ctx, buildPath, sx, sy, ex, ey, laserColor, t) {
+        const speed = 0.15;
+        const dashLen = 14;
+        const gapLen = 16;
+        const offset = (t * speed) % (dashLen + gapLen);
+        const hueShift = (t * 0.05) % 360;
+
+        // 解析基础颜色
+        const rgb = this._hexToRgb(laserColor);
+
+        ctx.save();
+
+        // 彩虹发光底层
+        const grad = ctx.createLinearGradient(sx, sy, ex, ey);
+        for (let i = 0; i <= 4; i++) {
+            const hue = (hueShift + i * 90) % 360;
+            grad.addColorStop(i / 4, `hsla(${hue}, 100%, 60%, 0.5)`);
+        }
+        buildPath();
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 6;
+        ctx.shadowColor = laserColor;
+        ctx.shadowBlur = 18;
+        ctx.setLineDash([dashLen, gapLen]);
+        ctx.lineDashOffset = -offset;
+        ctx.stroke();
+
+        // 白色核心
+        buildPath();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.6;
+        ctx.shadowBlur = 6;
+        ctx.setLineDash([dashLen, gapLen]);
+        ctx.lineDashOffset = -offset;
+        ctx.stroke();
+
+        ctx.restore();
+    },
+
+    // 颜色渐变：沿连线静态渐变
+    _animGradient(ctx, buildPath, sx, sy, ex, ey, laserColor, t) {
+        const rgb = this._hexToRgb(laserColor);
+        const pulse = 0.5 + 0.3 * Math.sin(t * 0.003);
+
+        ctx.save();
+
+        // 渐变底层
+        const grad = ctx.createLinearGradient(sx, sy, ex, ey);
+        grad.addColorStop(0, laserColor);
+        grad.addColorStop(0.5, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${pulse})`);
+        grad.addColorStop(1, '#ffffff');
+        buildPath();
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 4;
+        ctx.shadowColor = laserColor;
+        ctx.shadowBlur = 12;
+        ctx.stroke();
+
+        // 明亮核心
+        const grad2 = ctx.createLinearGradient(sx, sy, ex, ey);
+        grad2.addColorStop(0, `rgba(255,255,255,${pulse * 0.5})`);
+        grad2.addColorStop(1, '#ffffff');
+        buildPath();
+        ctx.strokeStyle = grad2;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.8;
+        ctx.stroke();
+
+        ctx.restore();
+    },
+
+    // 亮度呼吸：整体亮度正弦波动
+    _animBreath(ctx, buildPath, laserColor, t) {
+        const breath = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * 0.004));
+        const rgb = this._hexToRgb(laserColor);
+
+        ctx.save();
+
+        // 呼吸发光层
+        buildPath();
+        ctx.strokeStyle = laserColor;
+        ctx.lineWidth = 4;
+        ctx.globalAlpha = breath;
+        ctx.shadowColor = laserColor;
+        ctx.shadowBlur = 10 + breath * 16;
+        ctx.stroke();
+
+        // 核心亮线
+        buildPath();
+        ctx.strokeStyle = `rgba(${Math.min(255, rgb.r + 100)}, ${Math.min(255, rgb.g + 100)}, ${Math.min(255, rgb.b + 100)}, ${breath})`;
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 4;
+        ctx.stroke();
+
+        ctx.restore();
+    },
+
+    // 辉光：强烈光晕向外扩散
+    _animGlow(ctx, buildPath, laserColor, t) {
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.003);
+        const rgb = this._hexToRgb(laserColor);
+
+        ctx.save();
+
+        // 外层大光晕
+        buildPath();
+        ctx.strokeStyle = laserColor;
+        ctx.lineWidth = 8;
+        ctx.globalAlpha = 0.15 + pulse * 0.15;
+        ctx.shadowColor = laserColor;
+        ctx.shadowBlur = 25 + pulse * 15;
+        ctx.stroke();
+
+        // 中层光晕
+        buildPath();
+        ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.6)`;
+        ctx.lineWidth = 4;
+        ctx.globalAlpha = 0.4 + pulse * 0.3;
+        ctx.shadowBlur = 12 + pulse * 8;
+        ctx.stroke();
+
+        // 内层亮核心
+        buildPath();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.5 + pulse * 0.4;
+        ctx.shadowBlur = 6;
+        ctx.stroke();
+
+        ctx.restore();
+    },
+
+    _hexToRgb(hex) {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : { r: 0, g: 255, b: 255 };
+    },
+
+    _ensureAnimLoop() {
+        if (this.linkAnimRunning) return;
+        this.linkAnimRunning = true;
+        const self = this;
+        function loop() {
+            // 仅当激光动画关闭时停止循环
+            if (!self.linkLaserActive) {
+                self.linkAnimRunning = false;
+                self.linkAnimFrameId = null;
+                return;
+            }
+            if (window.app?.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            }
+            self.linkAnimFrameId = requestAnimationFrame(loop);
+        }
+        self.linkAnimFrameId = requestAnimationFrame(loop);
+    },
+
+    _ensureHighlightAnimLoop() {
+        if (this.linkHighlightAnimRunning) return;
+        this.linkHighlightAnimRunning = true;
+        const self = this;
+        function loop() {
+            if (!self.linkHighlightActive || !self._hasSelectedNodes()) {
+                self.linkHighlightAnimRunning = false;
+                self.linkHighlightAnimFrameId = null;
+                return;
+            }
+            if (window.app?.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            }
+            self.linkHighlightAnimFrameId = requestAnimationFrame(loop);
+        }
+        self.linkHighlightAnimFrameId = requestAnimationFrame(loop);
+    },
+
+    _hasSelectedNodes() {
+        if (!window.app || !app.canvas) return false;
+        if (app.canvas.selected_nodes) {
+            return Object.keys(app.canvas.selected_nodes).length > 0;
+        }
+        return false;
+    },
+
+    _stopAnimLoop() {
+        this.linkAnimRunning = false;
+        if (this.linkAnimFrameId) {
+            cancelAnimationFrame(this.linkAnimFrameId);
+            this.linkAnimFrameId = null;
+        }
+    },
+
+    _stopHighlightAnimLoop() {
+        this.linkHighlightAnimRunning = false;
+        if (this.linkHighlightAnimFrameId) {
+            cancelAnimationFrame(this.linkHighlightAnimFrameId);
+            this.linkHighlightAnimFrameId = null;
+        }
     },
 
     hookDrawNodeShape() {
@@ -1236,6 +2202,7 @@ window.XZGThemeManager = {
         }
 
         this.setupSelectionListener();
+        this.setupCanvasContextMenu();
 
         const observer = new MutationObserver(() => {
             self.refreshDOMGradients();
@@ -1248,6 +2215,46 @@ window.XZGThemeManager = {
                 subtree: true 
             });
         }
+    },
+
+    setupCanvasContextMenu() {
+        const self = this;
+
+        if (!window.LGraphCanvas || !LGraphCanvas.prototype) return;
+
+        const origGetCanvasMenuOptions = LGraphCanvas.prototype.getCanvasMenuOptions;
+        LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+            const options = origGetCanvasMenuOptions.apply(this, arguments);
+
+            let shortcutText = "";
+            try {
+                const stored = localStorage.getItem("xzg_theme_shortcut");
+                if (stored) {
+                    const sc = JSON.parse(stored);
+                    const parts = [];
+                    if (sc.ctrl) parts.push("Ctrl");
+                    if (sc.alt) parts.push("Alt");
+                    if (sc.shift) parts.push("Shift");
+                    parts.push(sc.key.toUpperCase());
+                    shortcutText = ` <span style="color:#888;font-size:10px;">快捷键${parts.join("+")}</span>`;
+                }
+            } catch (e) {}
+
+            options.push(null, {
+                content: `<span style="color:#FFD700;">🎨 小珠光主题${shortcutText}</span>`,
+                callback: (value, options, event) => {
+                    const nodes = self.getSelectedNodes();
+                    if (nodes.length > 0) {
+                        self.currentNodes = nodes;
+                        self.showPanelForNodes(nodes);
+                    } else {
+                        self.showPanel();
+                    }
+                }
+            });
+
+            return options;
+        };
     },
 
     setupSelectionListener() {
@@ -1344,6 +2351,234 @@ window.XZGThemeManager = {
 
     showPanel(x, y) {
         this.showPanelForNodes(this.currentNodes);
+    },
+
+    initWallpaper() {
+        const self = this;
+        const tryInit = () => {
+            if (!window.app || !app.canvas) {
+                setTimeout(tryInit, 100);
+                return;
+            }
+            self._hookRenderBackground();
+            if (self.wallpaperActive && self.wallpaperData) {
+                self._applyWallpaper();
+            }
+        };
+        tryInit();
+    },
+
+    _hookRenderBackground() {
+        if (this._wpHooked) return;
+        if (!app.canvas) return;
+
+        const canvas = app.canvas;
+        const self = this;
+        const origCallback = canvas.onRenderBackground;
+
+        canvas.onRenderBackground = function(cvs, ctx) {
+            if (origCallback) {
+                const result = origCallback.call(this, cvs, ctx);
+                if (result) return true;
+            }
+
+            if (self.wallpaperActive && self.wallpaperData) {
+                if (self.wallpaperType === 'image' && self._wpImg && self._wpImgLoaded) {
+                    self._drawMediaBackground(cvs, ctx, self._wpImg);
+                    return true;
+                } else if (self.wallpaperType === 'video' && self._wpVideo && self._wpVideo.readyState >= 2) {
+                    self._drawMediaBackground(cvs, ctx, self._wpVideo);
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        this._wpOrigOnRenderBackground = origCallback;
+        this._wpHooked = true;
+        console.log('[小珠光主题] 壁纸背景 Hook 已安装 ✓');
+    },
+
+    _drawMediaBackground(cvs, ctx, media) {
+        const w = cvs.width;
+        const h = cvs.height;
+        const mediaW = media.naturalWidth || media.videoWidth || 0;
+        const mediaH = media.naturalHeight || media.videoHeight || 0;
+        if (!mediaW || !mediaH) return;
+
+        const fit = this.wallpaperFit || 'cover';
+        let dx = 0, dy = 0, dw = w, dh = h;
+
+        if (fit === 'cover') {
+            const scale = Math.max(w / mediaW, h / mediaH);
+            dw = mediaW * scale;
+            dh = mediaH * scale;
+            dx = (w - dw) / 2;
+            dy = (h - dh) / 2;
+        } else if (fit === 'contain') {
+            const scale = Math.min(w / mediaW, h / mediaH);
+            dw = mediaW * scale;
+            dh = mediaH * scale;
+            dx = (w - dw) / 2;
+            dy = (h - dh) / 2;
+        } else if (fit === 'fill') {
+            dw = w;
+            dh = h;
+        }
+
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, w, h);
+        ctx.save();
+        ctx.globalAlpha = this.wallpaperOpacity;
+        ctx.drawImage(media, dx, dy, dw, dh);
+        ctx.restore();
+        ctx.restore();
+    },
+
+    _applyWallpaper() {
+        if (!this.wallpaperActive || !this.wallpaperData) return;
+        if (!this._wpHooked) {
+            this._hookRenderBackground();
+        }
+
+        if (this.wallpaperType === 'image') {
+            if (!this._wpImg) {
+                this._wpImg = new Image();
+                const self = this;
+                this._wpImg.onload = function() {
+                    self._wpImgLoaded = true;
+                    if (app.canvas?.setDirty) {
+                        app.canvas.setDirty(true, true);
+                    }
+                };
+            }
+            this._wpImg.src = this.wallpaperData;
+            this._wpImgLoaded = false;
+        } else if (this.wallpaperType === 'video') {
+            this._startVideoWallpaper();
+        }
+
+        if (app.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
+    },
+
+    _startVideoWallpaper() {
+        if (!app.canvas) return;
+        const self = this;
+
+        if (!this._wpVideo) {
+            this._wpVideo = document.createElement('video');
+            this._wpVideo.muted = true;
+            this._wpVideo.loop = true;
+            this._wpVideo.playsInline = true;
+            this._wpVideo.style.display = 'none';
+            document.body.appendChild(this._wpVideo);
+        }
+
+        if (this._wpVideoSrc === this.wallpaperData && this._wpVideoPlaying) {
+            return;
+        }
+
+        this._wpVideoSrc = this.wallpaperData;
+        this._wpVideo.src = this.wallpaperData;
+        this._wpVideo.play().then(() => {
+            self._wpVideoPlaying = true;
+            self._wpVideoFrame();
+        }).catch(() => {
+            self._wpVideoPlaying = false;
+        });
+    },
+
+    _wpVideoFrame() {
+        if (!this.wallpaperActive || !this._wpVideoPlaying || !this._wpVideo) return;
+        if (this.wallpaperType !== 'video') return;
+
+        if (app.canvas?.setDirty) {
+            app.canvas.setDirty(true, false);
+        }
+
+        requestAnimationFrame(() => this._wpVideoFrame());
+    },
+
+    setWallpaperActive(active) {
+        this.wallpaperActive = active;
+        try {
+            localStorage.setItem('xzg-wallpaper-active', active ? 'true' : 'false');
+        } catch(e) {}
+
+        if (active && this.wallpaperData) {
+            this._applyWallpaper();
+        } else if (!active) {
+            if (this._wpVideo) {
+                this._wpVideo.pause();
+                this._wpVideoPlaying = false;
+            }
+            this._wpImgLoaded = false;
+        }
+
+        if (app.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
+    },
+
+    setWallpaperData(type, data) {
+        this.wallpaperType = type;
+        this.wallpaperData = data;
+        try {
+            localStorage.setItem('xzg-wallpaper-type', type);
+            localStorage.setItem('xzg-wallpaper-data', data);
+        } catch(e) {
+            console.warn('[小珠光主题] 壁纸数据过大，无法保存到 localStorage', e);
+        }
+        if (this.wallpaperActive) {
+            this._applyWallpaper();
+        }
+    },
+
+    setWallpaperOpacity(opacity) {
+        this.wallpaperOpacity = opacity;
+        try {
+            localStorage.setItem('xzg-wallpaper-opacity', String(opacity));
+        } catch(e) {}
+        if (app.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
+    },
+
+    setWallpaperFit(fit) {
+        this.wallpaperFit = fit;
+        try {
+            localStorage.setItem('xzg-wallpaper-fit', fit);
+        } catch(e) {}
+        if (app.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
+    },
+
+    clearWallpaper() {
+        this.wallpaperData = null;
+        this.wallpaperActive = false;
+        try {
+            localStorage.removeItem('xzg-wallpaper-data');
+            localStorage.setItem('xzg-wallpaper-active', 'false');
+        } catch(e) {}
+        if (this._wpImg) {
+            this._wpImg.src = '';
+            this._wpImgLoaded = false;
+        }
+        if (this._wpVideo) {
+            this._wpVideo.pause();
+            this._wpVideo.src = '';
+            this._wpVideoPlaying = false;
+            this._wpVideoSrc = '';
+        }
+        if (app.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
     },
 
     waitForComfyUI() {

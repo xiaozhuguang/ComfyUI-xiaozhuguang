@@ -13,18 +13,40 @@ const XZGGroup = {
     groups: {},       // groupId → {id, title, nodeIds, bypassed, bounds, fontSize}
     groupEls: {},
     overlay: null,
+    canvasMoveHideActive: false,
+    fadeOutDuration: 0,
+    fadeInDuration: 3000,
+    _lastOffsetX: null,
+    _lastOffsetY: null,
+    _lastScale: null,
+    _canvasMoving: false,
+    _moveStopTimer: null,
 
     init() {
         if (this.initialized) return;
         this.initialized = true;
         this.shortcutKey = localStorage.getItem('xzg_shortcut') || 'g';
+        // 加载画布移动隐藏设置
+        try {
+            if (localStorage.getItem('xzg_group_move_hide') === 'true') {
+                this.canvasMoveHideActive = true;
+            }
+            const fadeIn = localStorage.getItem('xzg_group_fade_in');
+            if (fadeIn !== null) {
+                const v = parseInt(fadeIn);
+                if (!isNaN(v)) {
+                    this.fadeInDuration = Math.max(1000, Math.min(10000, v));
+                }
+            }
+        } catch(e) {}
         console.log('[小珠光编组] 初始化 ✓');
 
+        this.injectStyles();
         this.createOverlay();
         this.setupKeyboardShortcut();
         this.setupCanvasMenu();
         this.setupSerializationHooks();
-        this.setupClipboardHook();
+        // this.setupClipboardHook();
         this.startSyncLoop();
         this.waitForGraph();
     },
@@ -51,13 +73,75 @@ const XZGGroup = {
         }
     },
 
+    /* ── 注入样式 ── */
+    injectStyles() {
+        if (document.getElementById('xzg-group-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'xzg-group-styles';
+        style.textContent = `
+.xzg-group-toggle-switch {
+    position: relative;
+    width: 52px;
+    height: 26px;
+    border: none;
+    border-radius: 13px;
+    background: #555;
+    cursor: pointer;
+    padding: 0;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+.xzg-group-toggle-switch[data-checked="true"] {
+    background: #353535;
+}
+.xzg-group-toggle-switch .xzg-group-toggle-slider {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    background: #fff;
+    border-radius: 50%;
+    transition: left 0.2s;
+    pointer-events: none;
+}
+.xzg-group-toggle-switch[data-checked="true"] .xzg-group-toggle-slider {
+    left: 29px;
+}
+.xzg-group-toggle-switch .xzg-group-toggle-label {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    color: #fff;
+    pointer-events: none;
+    font-weight: bold;
+    user-select: none;
+}
+.xzg-group-toggle-switch[data-checked="false"] .xzg-group-toggle-label {
+    right: 8px;
+}
+.xzg-group-toggle-switch[data-checked="true"] .xzg-group-toggle-label {
+    left: 8px;
+}
+`;
+        document.head.appendChild(style);
+    },
+
     /* ── 覆盖层 ── */
     createOverlay() {
         const o = document.createElement('div');
         o.id = 'xzg-group-overlay';
-        o.style.cssText = 'position:fixed;pointer-events:none;z-index:10;overflow:visible;';
+        const fadeDur = this.fadeOutDuration / 1000;
+        o.style.cssText = `position:fixed;pointer-events:none;z-index:10;overflow:visible;transition:opacity ${fadeDur}s ease;clip-path:inset(0 0 0 0);`;
         document.body.appendChild(o);
         this.overlay = o;
+    },
+
+    _updateOverlayTransition(type) {
+        if (!this.overlay) return;
+        const fadeDur = type === 'in' ? this.fadeInDuration : this.fadeOutDuration;
+        this.overlay.style.transition = `opacity ${fadeDur / 1000}s ease`;
     },
 
     syncOverlayPosition() {
@@ -144,6 +228,8 @@ const XZGGroup = {
                 self.restoreGroups();
             }
             self.updatePositions();
+            // 画布移动隐藏/渐入检测
+            self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
         };
         this._raf = requestAnimationFrame(loop);
@@ -443,6 +529,57 @@ const XZGGroup = {
         }
     },
 
+    /* ── 画布移动检测：移动时隐藏编组，停止后渐入（按编组独立控制） ── */
+    _checkCanvasMovement() {
+        if (!this.overlay) return;
+        const c = app?.canvas;
+        if (!c?.ds) return;
+        const scale = c.ds.scale || 1;
+        const ox = c.ds.offset[0] || 0;
+        const oy = c.ds.offset[1] || 0;
+
+        const moved = this._lastOffsetX !== null && (
+            Math.abs(ox - this._lastOffsetX) > 0.5 ||
+            Math.abs(oy - this._lastOffsetY) > 0.5 ||
+            Math.abs(scale - this._lastScale) > 0.001
+        );
+
+        this._lastOffsetX = ox;
+        this._lastOffsetY = oy;
+        this._lastScale = scale;
+
+        const hasAnyEnabled = Object.values(this.groups).some(g => g.fadeEnabled);
+        if (!hasAnyEnabled) return;
+
+        if (moved) {
+            if (!this._canvasMoving) {
+                this._canvasMoving = true;
+                for (const [gid, g] of Object.entries(this.groups)) {
+                    if (!g.fadeEnabled) continue;
+                    const el = this.groupEls[gid];
+                    if (!el) continue;
+                    const fadeDur = (g.fadeOutDuration || 0) / 1000;
+                    el.style.transition = `opacity ${fadeDur}s ease`;
+                    el.style.opacity = '0';
+                }
+            }
+            if (this._moveStopTimer) {
+                clearTimeout(this._moveStopTimer);
+                this._moveStopTimer = null;
+            }
+        } else if (this._canvasMoving) {
+            this._canvasMoving = false;
+            for (const [gid, g] of Object.entries(this.groups)) {
+                if (!g.fadeEnabled) continue;
+                const el = this.groupEls[gid];
+                if (!el) continue;
+                const fadeDur = (g.fadeInDuration || 3000) / 1000;
+                el.style.transition = `opacity ${fadeDur}s ease`;
+                el.style.opacity = '1';
+            }
+        }
+    },
+
     /* ── 清理节点上的冗余编组数据 ── */
     _clearNodeGroupData(n) {
         if (!n) return;
@@ -607,7 +744,10 @@ const XZGGroup = {
             effect: 'none', effectSpeed: 3,
             borderWidth: 2, borderOpacity: 0.65,
             headerBgColor: 'rgba(0,0,0,0.4)',
-            titleColor: '#FFD700'
+            titleColor: '#FFD700',
+            fadeEnabled: false,
+            fadeOutDuration: 0,
+            fadeInDuration: 3000
         };
 
         // 标记节点归入新编组（同时保留节点在其他编组中的归属）
@@ -862,6 +1002,7 @@ const XZGGroup = {
 
     /* ── 设置弹窗 ── */
     openSettings(group) {
+        const self = this;
         const gid = group.id;
 
         // 保存快照，防止取消后仍未还原
@@ -986,6 +1127,21 @@ const XZGGroup = {
                     <input class="xzg-set-speed" type="range" min="1" max="10" value="${group.effectSpeed||3}" style="flex:1;height:28px;margin:0;">
                     <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
                         <span class="xzg-set-spd-val" style="color:#fff;font-size:12px;text-align:left;">${group.effectSpeed||3}</span>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-top:8px;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;margin-bottom:8px;">
+                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">渐隐渐入</label>
+                    <button type="button" class="xzg-set-move-hide xzg-group-toggle-switch" data-checked="${group.fadeEnabled ? 'true' : 'false'}" style="flex:0 0 52px;">
+                        <span class="xzg-group-toggle-slider"></span>
+                        <span class="xzg-group-toggle-label">${group.fadeEnabled ? '开' : '关'}</span>
+                    </button>
+                    <div style="width:72px;flex-shrink:0;"></div>
+                </div>
+                <div class="xzg-fade-slider-row" style="display:flex;align-items:center;gap:8px;height:28px;">
+                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">渐入时间</label>
+                    <input class="xzg-set-fade-in" type="range" min="1" max="10" step="0.5" value="${(group.fadeInDuration || 3000) / 1000}" style="flex:1;height:28px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                        <span class="xzg-set-fade-in-val" style="color:#fff;font-size:12px;text-align:left;">${(group.fadeInDuration || 3000) / 1000}秒</span>
                     </div>
                 </div>
             </div>
@@ -1204,6 +1360,15 @@ const XZGGroup = {
                 return `rgba(${r},${g},${b},${headerAlpha})`;
             })();
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
+            // 渐隐设置
+            const fadeBtn = modal.querySelector('.xzg-set-move-hide');
+            targetGroup.fadeEnabled = fadeBtn ? fadeBtn.getAttribute('data-checked') === 'true' : (targetGroup.fadeEnabled || false);
+            const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
+            if (fadeInSlider) {
+                const valSec = parseFloat(fadeInSlider.value);
+                targetGroup.fadeInDuration = isNaN(valSec) ? 3000 : Math.round(valSec * 1000);
+            }
+            if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
 
             // 快捷键自定义
             const sk = modal.querySelector('.xzg-set-shortcut').value.trim().toLowerCase();
@@ -1269,6 +1434,10 @@ const XZGGroup = {
             const fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 14;
             const bw = parseInt(modal.querySelector('.xzg-set-borderwidth').value) || 2;
             const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 65) / 100;
+            const fadeBtn = modal.querySelector('.xzg-set-move-hide');
+            const fadeEnabled = fadeBtn ? fadeBtn.getAttribute('data-checked') === 'true' : (group.fadeEnabled || false);
+            const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
+            const fadeInDur = fadeInSlider ? Math.round(parseFloat(fadeInSlider.value) * 1000) : (group.fadeInDuration || 3000);
             const headerBgColor = (() => {
                 const hex = headerColorPicker.value;
                 const r = parseInt(hex.slice(1,3),16);
@@ -1283,6 +1452,8 @@ const XZGGroup = {
                 g2.borderWidth = bw; g2.borderOpacity = bo;
                 g2.headerBgColor = headerBgColor;
                 g2.titleColor = titleColorPicker.value || '#FFD700';
+                g2.fadeEnabled = fadeEnabled;
+                g2.fadeInDuration = fadeInDur;
                 this.updateGroupStyle(g2.id);
                 const span = this.groupEls[g2.id]?.querySelector('.xzg-group-title-text');
                 if (span) {
@@ -1291,6 +1462,14 @@ const XZGGroup = {
                 }
                 const header = this.groupEls[g2.id]?.querySelector('.xzg-group-header');
                 if (header) header.style.background = headerBgColor;
+                // 同步渐隐状态：如果关闭了，确保编组可见
+                if (!fadeEnabled) {
+                    const el = self.groupEls[g2.id];
+                    if (el) {
+                        el.style.transition = 'none';
+                        el.style.opacity = '1';
+                    }
+                }
             }
             // 标记工作流已修改
             app.graph?.setDirtyCanvas?.(true, true);
@@ -1314,12 +1493,64 @@ const XZGGroup = {
 编组可嵌套：编组框可以包含其他更小的编组框<br>
 <div style="color:#FFD700;font-weight:bold;margin-top:8px;">2、同级别反选模式</div>
 2.1 点击标题栏左侧 1/5 区域，被点击的编组 开启，同一级别的其他编组全部 绕过<br>
-2.2 点击标题栏右侧 1/5 区域，被点击的编组 绕过，同一级别的其他编组全部 开启`;
+2.2 点击标题栏右侧 1/5 区域，被点击的编组 绕过，同一级别的其他编组全部 开启<br>
+<div style="color:#FFD700;font-weight:bold;margin-top:8px;">3、锁定/解锁编组</div>
+点击标题栏 🔒 锁图标：锁定/解锁当前编组（锁定后无法拖动和调整大小）<br>
+Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组`;
             overlay.appendChild(box);
             document.body.appendChild(overlay);
             overlay.addEventListener('click', () => overlay.remove());
             box.addEventListener('click', (ev) => ev.stopPropagation());
         });
+
+        // 渐隐渐入开关
+        const moveHideBtn = modal.querySelector('.xzg-set-move-hide');
+        const fadeSliderRows = modal.querySelectorAll('.xzg-fade-slider-row');
+        const targetGroup = this.groups[gid];
+        if (moveHideBtn && targetGroup) {
+            // 初始化时同步滑条显示状态
+            const initActive = targetGroup.fadeEnabled;
+            fadeSliderRows.forEach(row => {
+                row.style.display = initActive ? 'flex' : 'none';
+            });
+
+            moveHideBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                targetGroup.fadeEnabled = !targetGroup.fadeEnabled;
+                // 更新按钮状态
+                const active = targetGroup.fadeEnabled;
+                moveHideBtn.setAttribute('data-checked', active ? 'true' : 'false');
+                const label = moveHideBtn.querySelector('.xzg-group-toggle-label');
+                if (label) label.textContent = active ? '开' : '关';
+                // 显示/隐藏滑条
+                fadeSliderRows.forEach(row => {
+                    row.style.display = active ? 'flex' : 'none';
+                });
+                // 如果关闭，确保当前编组可见
+                if (!active) {
+                    const el = self.groupEls[gid];
+                    if (el) {
+                        el.style.transition = 'none';
+                        el.style.opacity = '1';
+                    }
+                }
+                self.syncGroupsToExtra();
+            });
+        }
+
+        // 渐入时间滑条
+        const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
+        const fadeInVal = modal.querySelector('.xzg-set-fade-in-val');
+        if (fadeInSlider && targetGroup) {
+            fadeInSlider.addEventListener('input', (e) => {
+                e.stopPropagation();
+                const valSec = parseFloat(fadeInSlider.value);
+                const valMs = isNaN(valSec) ? 3000 : Math.round(valSec * 1000);
+                targetGroup.fadeInDuration = valMs;
+                if (fadeInVal) fadeInVal.textContent = valSec + '秒';
+                self.syncGroupsToExtra();
+            });
+        }
 
         // （closeOut 监听已在上面 cleanupModal 中统一管理）
 
@@ -1848,7 +2079,7 @@ const XZGGroup = {
         if (!app?.graph) return;
         const gd = {};
         for (const [id, g] of Object.entries(this.groups)) {
-            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 3000 };
         }
         app.graph.extra = app.graph.extra || {};
         app.graph.extra.xzgGroups = gd;
@@ -1922,7 +2153,7 @@ const XZGGroup = {
                         const d = s.apply(this, arguments);
                         const gd = {};
                         for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 3000 };
                         }
                         if (Object.keys(gd).length) {
                             console.log('[小珠光编组] LGraph.serialize写入编组数据:', Object.keys(gd).length, '个');
@@ -1960,6 +2191,12 @@ const XZGGroup = {
                         if (pendingFromTop) console.log('[小珠光编组] LGraph.configure检测到编组数据:', Object.keys(pendingFromTop).length, '个');
                         c.apply(this, arguments);
                         if (app?.graph !== this) return;
+
+                        // 粘贴期间跳过编组恢复，避免破坏粘贴钩子的处理
+                        if (self._isPasting) {
+                            console.log('[小珠光编组] 粘贴期间跳过configure编组恢复');
+                            return;
+                        }
 
                         // 保存当前用户自定义属性（颜色、标题、效果等）
                         const savedCustomProps = {};
@@ -2045,7 +2282,10 @@ const XZGGroup = {
                     app.graph._nodes.forEach(n => existingIds.add(n.id));
                 }
 
+                // 粘贴期间禁止 configure 钩子破坏编组
+                self._isPasting = true;
                 origPaste.apply(this, arguments);
+                self._isPasting = false;
 
                 if (!self._clipboardGroups) return;
 
@@ -2068,7 +2308,9 @@ const XZGGroup = {
                     groupsMap[oldGid].push(n);
                 });
 
-                // 为每个旧编组创建新编组
+                // 旧编组ID -> 新编组ID 的映射（用于恢复嵌套关系）
+                const gidMap = {};
+                // 第一遍：根据节点 _xzgGroupId 创建直接的新编组
                 for (const [oldGid, nodes] of Object.entries(groupsMap)) {
                     const oldGroup = self._clipboardGroups[oldGid];
                     const newNodeIds = nodes.map(n => n.id);
@@ -2076,6 +2318,7 @@ const XZGGroup = {
                     if (!newBounds) continue;
 
                     const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+                    gidMap[oldGid] = newGid;
                     self.groups[newGid] = {
                         id: newGid,
                         title: oldGroup ? oldGroup.title : '右键标题栏设置',
@@ -2092,7 +2335,10 @@ const XZGGroup = {
                         borderWidth: oldGroup?.borderWidth || 2,
                         borderOpacity: oldGroup?.borderOpacity ?? 0.65,
                         headerBgColor: oldGroup?.headerBgColor || 'rgba(0,0,0,0.4)',
-                        titleColor: oldGroup?.titleColor || '#FFD700'
+                        titleColor: oldGroup?.titleColor || '#FFD700',
+                        fadeEnabled: oldGroup?.fadeEnabled || false,
+                        fadeOutDuration: oldGroup?.fadeOutDuration ?? 0,
+                        fadeInDuration: oldGroup?.fadeInDuration ?? 3000
                     };
 
                     // 将粘贴的节点重新指向新编组
@@ -2100,9 +2346,121 @@ const XZGGroup = {
                         n._xzgGroupId = newGid;
                         n._xzgGroupData = null;
                     });
+                }
 
+                // 补充创建没有直接节点的父编组（通过子编组推导）
+                // 循环处理，直到没有新的编组被创建（支持多层嵌套）
+                let changed = true;
+                while (changed) {
+                    changed = false;
+                    for (const [oldGid, oldGroup] of Object.entries(self._clipboardGroups)) {
+                        if (gidMap[oldGid]) continue; // 已创建，跳过
+                        if (!oldGroup?.bounds) continue;
+
+                        // 找出这个旧编组包含哪些已创建的子编组（旧编组ID）
+                        const childOldGids = [];
+                        for (const [childOldGid, childNewGid] of Object.entries(gidMap)) {
+                            const childOld = self._clipboardGroups[childOldGid];
+                            if (!childOld?.bounds) continue;
+                            const cb = childOld.bounds;
+                            const pb = oldGroup.bounds;
+                            const childArea = cb.w * cb.h;
+                            const parentArea = pb.w * pb.h;
+                            if (childArea < parentArea &&
+                                cb.x >= pb.x && cb.y >= pb.y &&
+                                cb.x + cb.w <= pb.x + pb.w &&
+                                cb.y + cb.h <= pb.y + pb.h) {
+                                childOldGids.push(childOldGid);
+                            }
+                        }
+
+                        if (childOldGids.length === 0) continue; // 没有子编组，无法创建
+
+                        // 收集所有子编组的节点
+                        const allNodeIds = [];
+                        childOldGids.forEach(childOldGid => {
+                            const childNewGid = gidMap[childOldGid];
+                            const childGroup = self.groups[childNewGid];
+                            if (childGroup) {
+                                childGroup.nodeIds.forEach(nid => {
+                                    if (!allNodeIds.includes(nid)) allNodeIds.push(nid);
+                                });
+                            }
+                        });
+
+                        if (allNodeIds.length === 0) continue;
+
+                        const newBounds = self.calcBounds(allNodeIds);
+                        if (!newBounds) continue;
+
+                        const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+                        gidMap[oldGid] = newGid;
+                        self.groups[newGid] = {
+                            id: newGid,
+                            title: oldGroup.title || '右键标题栏设置',
+                            nodeIds: allNodeIds,
+                            bypassed: false,
+                            locked: oldGroup.locked || false,
+                            bounds: newBounds,
+                            fontSize: oldGroup.fontSize || 14,
+                            colorHue: oldGroup.colorHue ?? 48,
+                            colorSat: oldGroup.colorSat ?? 100,
+                            colorLit: oldGroup.colorLit ?? 55,
+                            effect: oldGroup.effect || 'none',
+                            effectSpeed: oldGroup.effectSpeed || 3,
+                            borderWidth: oldGroup.borderWidth || 2,
+                            borderOpacity: oldGroup.borderOpacity ?? 0.65,
+                            headerBgColor: oldGroup.headerBgColor || 'rgba(0,0,0,0.4)',
+                            titleColor: oldGroup.titleColor || '#FFD700',
+                            fadeEnabled: oldGroup.fadeEnabled || false,
+                            fadeOutDuration: oldGroup.fadeOutDuration ?? 0,
+                            fadeInDuration: oldGroup.fadeInDuration ?? 3000
+                        };
+
+                        changed = true;
+                    }
+                }
+
+                // 最后一遍：确保所有父编组的 nodeIds 包含所有子编组的节点，并重新计算 bounds
+                for (const [oldGid, newGid] of Object.entries(gidMap)) {
+                    const newGroup = self.groups[newGid];
+                    if (!newGroup) continue;
+                    const oldGroupOrig = self._clipboardGroups[oldGid];
+                    if (!oldGroupOrig?.bounds) continue;
+
+                    let hasChild = false;
+                    for (const [otherOldGid, otherNewGid] of Object.entries(gidMap)) {
+                        if (otherOldGid === oldGid) continue;
+                        const otherGroup = self.groups[otherNewGid];
+                        const otherGroupOrig = self._clipboardGroups[otherOldGid];
+                        if (!otherGroup || !otherGroupOrig?.bounds) continue;
+
+                        const ob = otherGroupOrig.bounds;
+                        const pb = oldGroupOrig.bounds;
+                        const otherArea = ob.w * ob.h;
+                        const parentArea = pb.w * pb.h;
+                        if (otherArea < parentArea &&
+                            ob.x >= pb.x && ob.y >= pb.y &&
+                            ob.x + ob.w <= pb.x + pb.w &&
+                            ob.y + ob.h <= pb.y + pb.h) {
+                            // 子编组节点加入父编组
+                            otherGroup.nodeIds.forEach(nid => {
+                                if (!newGroup.nodeIds.includes(nid)) {
+                                    newGroup.nodeIds.push(nid);
+                                }
+                            });
+                            hasChild = true;
+                        }
+                    }
+                    if (hasChild) {
+                        newGroup.bounds = self.calcBounds(newGroup.nodeIds) || newGroup.bounds;
+                    }
                     self.renderGroup(newGid);
                 }
+
+                // 阻止 restoreGroups 用旧ID覆盖新创建的编组
+                self._needRestore = false;
+                self._pendingGroups = null;
 
                 self.syncGroupsToExtra();
                 app.graph?.setDirtyCanvas?.(true, true);
@@ -2300,7 +2658,8 @@ const XZGGroup = {
                     fontSize: 14, colorHue: 48, colorSat: 100, colorLit: 55,
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 0.65,
-                    headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700'
+                    headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700',
+                    fadeEnabled: false, fadeOutDuration: 0, fadeInDuration: 3000
                 };
             } else {
                 this.groups[gid].nodeIds = nids;
@@ -2311,6 +2670,12 @@ const XZGGroup = {
             }
         }
         for (const gid of Object.keys(this.groups)) if (!this.groups[gid].nodeIds || !this.groups[gid].nodeIds.length) delete this.groups[gid];
+        // 补全渐隐相关默认值（兼容旧工作流）
+        for (const g of Object.values(this.groups)) {
+            if (g.fadeEnabled === undefined) g.fadeEnabled = false;
+            if (g.fadeOutDuration === undefined) g.fadeOutDuration = 0;
+            if (g.fadeInDuration === undefined) g.fadeInDuration = 3000;
+        }
         // 清理已持久化的删除标记：只保留此次恢复中仍然出现在任意数据源里的 ID
         // （如果 auto-save 已生效，group 不再出现于数据中，就可以从列表移除）
         const allDataGids = new Set([..._allDataGids, ...Object.keys(groupDataMap), ...Object.keys(map)]);
