@@ -414,7 +414,7 @@ const XZGGroup = {
             const refs = this._ensureRefs(el);
             const spd = (g.effectSpeed || 3) * 5 / 9;
             const bw = (g.borderWidth || 2) * scale;
-            const bo = g.borderOpacity ?? 0.65;
+            const bo = g.borderOpacity ?? 1;
 
             // 非marquee效果重置文字样式
             if (e !== 'marquee' && e !== 'marqueebreathe') {
@@ -742,7 +742,7 @@ const XZGGroup = {
             fontSize: 14,
             colorHue: 48, colorSat: 100, colorLit: 55,
             effect: 'none', effectSpeed: 3,
-            borderWidth: 2, borderOpacity: 0.65,
+            borderWidth: 2, borderOpacity: 1,
             headerBgColor: 'rgba(0,0,0,0.4)',
             titleColor: '#FFD700',
             fadeEnabled: false,
@@ -794,7 +794,7 @@ const XZGGroup = {
         el.className = 'xzg-group-box';
         el.dataset.groupId = group.id;
         const bw = group.borderWidth || 2;
-        const bo = group.borderOpacity ?? 0.65;
+        const bo = group.borderOpacity ?? 1;
         el.style.cssText = `position:absolute;pointer-events:none;border:${bw}px solid hsla(48,100%,55%,${bo});border-radius:8px;background:transparent;box-sizing:border-box;z-index:5;`;
         const fs = group.fontSize || 14;
         const showTitle = (group.title || '').trim() !== '';
@@ -1105,9 +1105,9 @@ const XZGGroup = {
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框透明度</label>
-                    <input class="xzg-set-borderopacity" type="range" min="5" max="100" value="${Math.round((group.borderOpacity??0.65)*100)}" style="flex:1;height:28px;margin:0;">
+                    <input class="xzg-set-borderopacity" type="range" min="5" max="100" value="${Math.round((group.borderOpacity??1)*100)}" style="flex:1;height:28px;margin:0;">
                     <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
-                        <span class="xzg-set-bo-val" style="color:#fff;font-size:12px;text-align:left;">${Math.round((group.borderOpacity??0.65)*100)}%</span>
+                        <span class="xzg-set-bo-val" style="color:#fff;font-size:12px;text-align:left;">${Math.round((group.borderOpacity??1)*100)}%</span>
                     </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
@@ -1237,7 +1237,7 @@ const XZGGroup = {
         const boV = modal.querySelector('.xzg-set-bo-val');
         boR.addEventListener('input', () => {
             boV.textContent = boR.value;
-            group.borderOpacity = (parseInt(boR.value) || 65) / 100;
+            group.borderOpacity = (parseInt(boR.value) || 100) / 100;
             self.updateGroupStyle(group.id);
         });
 
@@ -1351,7 +1351,7 @@ const XZGGroup = {
             targetGroup.effect = modal.querySelector('.xzg-set-effect').value;
             targetGroup.effectSpeed = parseInt(modal.querySelector('.xzg-set-speed').value) || 3;
             targetGroup.borderWidth = parseInt(modal.querySelector('.xzg-set-borderwidth').value) || 2;
-            targetGroup.borderOpacity = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 65) / 100;
+            targetGroup.borderOpacity = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 100) / 100;
             targetGroup.headerBgColor = (() => {
                 const hex = headerColorPicker.value;
                 const r = parseInt(hex.slice(1,3),16);
@@ -1433,7 +1433,7 @@ const XZGGroup = {
             const speed = parseInt(modal.querySelector('.xzg-set-speed').value) || 3;
             const fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 14;
             const bw = parseInt(modal.querySelector('.xzg-set-borderwidth').value) || 2;
-            const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 65) / 100;
+            const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 100) / 100;
             const fadeBtn = modal.querySelector('.xzg-set-move-hide');
             const fadeEnabled = fadeBtn ? fadeBtn.getAttribute('data-checked') === 'true' : (group.fadeEnabled || false);
             const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
@@ -1760,7 +1760,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组`;
         const hasEffect = g.effect && g.effect !== 'none';
         const refs = this._ensureRefs(el);
         const bw = (g.borderWidth || 2) * scale;
-        const bo = g.borderOpacity ?? 0.65;
+        const bo = g.borderOpacity ?? 1;
 
         if (g.bypassed) {
             el.style.border = `${bw}px solid hsla(280,60%,55%,${bo})`;
@@ -2333,7 +2333,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组`;
                         effect: oldGroup?.effect || 'none',
                         effectSpeed: oldGroup?.effectSpeed || 3,
                         borderWidth: oldGroup?.borderWidth || 2,
-                        borderOpacity: oldGroup?.borderOpacity ?? 0.65,
+                        borderOpacity: oldGroup?.borderOpacity ?? 1,
                         headerBgColor: oldGroup?.headerBgColor || 'rgba(0,0,0,0.4)',
                         titleColor: oldGroup?.titleColor || '#FFD700',
                         fadeEnabled: oldGroup?.fadeEnabled || false,
@@ -2409,7 +2409,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组`;
                             effect: oldGroup.effect || 'none',
                             effectSpeed: oldGroup.effectSpeed || 3,
                             borderWidth: oldGroup.borderWidth || 2,
-                            borderOpacity: oldGroup.borderOpacity ?? 0.65,
+                            borderOpacity: oldGroup.borderOpacity ?? 1,
                             headerBgColor: oldGroup.headerBgColor || 'rgba(0,0,0,0.4)',
                             titleColor: oldGroup.titleColor || '#FFD700',
                             fadeEnabled: oldGroup.fadeEnabled || false,
@@ -2657,7 +2657,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组`;
                     id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, locked: false, bounds,
                     fontSize: 14, colorHue: 48, colorSat: 100, colorLit: 55,
                     effect: 'none', effectSpeed: 3,
-                    borderWidth: 2, borderOpacity: 0.65,
+                    borderWidth: 2, borderOpacity: 1,
                     headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700',
                     fadeEnabled: false, fadeOutDuration: 0, fadeInDuration: 3000
                 };
