@@ -2386,8 +2386,6 @@ window.XZGThemeManager = {
         const parent = canvasEl.parentElement;
         if (parent) {
             parent.insertBefore(bgCanvas, canvasEl);
-            canvasEl.style.position = 'relative';
-            canvasEl.style.zIndex = '1';
         }
 
         this._wpBgCanvas = bgCanvas;
