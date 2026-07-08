@@ -2360,12 +2360,56 @@ window.XZGThemeManager = {
                 setTimeout(tryInit, 100);
                 return;
             }
+            self._createBgCanvas();
             self._hookRenderBackground();
             if (self.wallpaperActive && self.wallpaperData) {
+                self._setCanvasTransparent(true);
                 self._applyWallpaper();
             }
         };
         tryInit();
+    },
+
+    _createBgCanvas() {
+        if (this._wpBgCanvas) return;
+        const canvasEl = app.canvas.canvas;
+        if (!canvasEl) return;
+
+        const bgCanvas = document.createElement('canvas');
+        bgCanvas.id = 'xzg-wallpaper-canvas';
+        bgCanvas.style.position = 'absolute';
+        bgCanvas.style.left = '0';
+        bgCanvas.style.top = '0';
+        bgCanvas.style.zIndex = '0';
+        bgCanvas.style.pointerEvents = 'none';
+
+        const parent = canvasEl.parentElement;
+        if (parent) {
+            parent.insertBefore(bgCanvas, canvasEl);
+            canvasEl.style.position = 'relative';
+            canvasEl.style.zIndex = '1';
+        }
+
+        this._wpBgCanvas = bgCanvas;
+        this._wpBgCtx = bgCanvas.getContext('2d');
+
+        const resizeBgCanvas = () => {
+            if (!this._wpBgCanvas) return;
+            const rect = canvasEl.getBoundingClientRect();
+            this._wpBgCanvas.width = canvasEl.width;
+            this._wpBgCanvas.height = canvasEl.height;
+            this._wpBgCanvas.style.width = canvasEl.style.width || rect.width + 'px';
+            this._wpBgCanvas.style.height = canvasEl.style.height || rect.height + 'px';
+            this._wpDrawCache = null;
+            if (this.wallpaperActive && this.wallpaperData) {
+                this._renderWallpaperToBgCanvas();
+            }
+        };
+
+        resizeBgCanvas();
+        const ro = new ResizeObserver(resizeBgCanvas);
+        ro.observe(canvasEl);
+        this._wpResizeObserver = ro;
     },
 
     _hookRenderBackground() {
@@ -2383,13 +2427,7 @@ window.XZGThemeManager = {
             }
 
             if (self.wallpaperActive && self.wallpaperData) {
-                if (self.wallpaperType === 'image' && self._wpImg && self._wpImgLoaded) {
-                    self._drawMediaBackground(cvs, ctx, self._wpImg);
-                    return true;
-                } else if (self.wallpaperType === 'video' && self._wpVideo && self._wpVideo.readyState >= 2) {
-                    self._drawMediaBackground(cvs, ctx, self._wpVideo);
-                    return true;
-                }
+                return true;
             }
 
             return false;
@@ -2406,6 +2444,20 @@ window.XZGThemeManager = {
         const mediaW = media.naturalWidth || media.videoWidth || 0;
         const mediaH = media.naturalHeight || media.videoHeight || 0;
         if (!mediaW || !mediaH) return;
+
+        const cacheKey = w + '_' + h + '_' + mediaW + '_' + mediaH + '_' + this.wallpaperFit + '_' + this.wallpaperOpacity;
+        if (this._wpDrawCache && this._wpDrawCache.key === cacheKey) {
+            const c = this._wpDrawCache;
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.drawImage(c.bgCanvas, 0, 0);
+            ctx.save();
+            ctx.globalAlpha = this.wallpaperOpacity;
+            ctx.drawImage(media, c.dx, c.dy, c.dw, c.dh);
+            ctx.restore();
+            ctx.restore();
+            return;
+        }
 
         const fit = this.wallpaperFit || 'cover';
         let dx = 0, dy = 0, dw = w, dh = h;
@@ -2427,10 +2479,27 @@ window.XZGThemeManager = {
             dh = h;
         }
 
+        if (!this._wpDrawCache) {
+            this._wpDrawCache = {};
+        }
+        this._wpDrawCache.key = cacheKey;
+        this._wpDrawCache.dx = dx;
+        this._wpDrawCache.dy = dy;
+        this._wpDrawCache.dw = dw;
+        this._wpDrawCache.dh = dh;
+        if (!this._wpDrawCache.bgCanvas) {
+            this._wpDrawCache.bgCanvas = document.createElement('canvas');
+        }
+        const bgCanvas = this._wpDrawCache.bgCanvas;
+        bgCanvas.width = w;
+        bgCanvas.height = h;
+        const bgCtx = bgCanvas.getContext('2d');
+        bgCtx.fillStyle = '#000000';
+        bgCtx.fillRect(0, 0, w, h);
+
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(bgCanvas, 0, 0);
         ctx.save();
         ctx.globalAlpha = this.wallpaperOpacity;
         ctx.drawImage(media, dx, dy, dw, dh);
@@ -2438,10 +2507,93 @@ window.XZGThemeManager = {
         ctx.restore();
     },
 
+    _renderWallpaperToBgCanvas() {
+        if (!this._wpBgCanvas || !this._wpBgCtx) return;
+        if (!this.wallpaperActive || !this.wallpaperData) return;
+
+        const bgCanvas = this._wpBgCanvas;
+        const bgCtx = this._wpBgCtx;
+        const w = bgCanvas.width;
+        const h = bgCanvas.height;
+
+        if (this.wallpaperType === 'image' && this._wpImg && this._wpImgLoaded) {
+            this._drawMediaToCtx(bgCanvas, bgCtx, this._wpImg);
+        } else if (this.wallpaperType === 'video' && this._wpVideo && this._wpVideo.readyState >= 2) {
+            this._drawMediaToCtx(bgCanvas, bgCtx, this._wpVideo);
+        } else {
+            bgCtx.fillStyle = '#000000';
+            bgCtx.fillRect(0, 0, w, h);
+        }
+    },
+
+    _drawMediaToCtx(cvs, ctx, media) {
+        const w = cvs.width;
+        const h = cvs.height;
+        const mediaW = media.naturalWidth || media.videoWidth || 0;
+        const mediaH = media.naturalHeight || media.videoHeight || 0;
+        if (!mediaW || !mediaH) return;
+
+        const cacheKey = 'bg_' + w + '_' + h + '_' + mediaW + '_' + mediaH + '_' + this.wallpaperFit + '_' + this.wallpaperOpacity;
+        if (this._wpBgDrawCache && this._wpBgDrawCache.key === cacheKey) {
+            const c = this._wpBgDrawCache;
+            ctx.drawImage(c.bgCanvas, 0, 0);
+            ctx.globalAlpha = this.wallpaperOpacity;
+            ctx.drawImage(media, c.dx, c.dy, c.dw, c.dh);
+            ctx.globalAlpha = 1;
+            return;
+        }
+
+        const fit = this.wallpaperFit || 'cover';
+        let dx = 0, dy = 0, dw = w, dh = h;
+
+        if (fit === 'cover') {
+            const scale = Math.max(w / mediaW, h / mediaH);
+            dw = mediaW * scale;
+            dh = mediaH * scale;
+            dx = (w - dw) / 2;
+            dy = (h - dh) / 2;
+        } else if (fit === 'contain') {
+            const scale = Math.min(w / mediaW, h / mediaH);
+            dw = mediaW * scale;
+            dh = mediaH * scale;
+            dx = (w - dw) / 2;
+            dy = (h - dh) / 2;
+        } else if (fit === 'fill') {
+            dw = w;
+            dh = h;
+        }
+
+        if (!this._wpBgDrawCache) {
+            this._wpBgDrawCache = {};
+        }
+        this._wpBgDrawCache.key = cacheKey;
+        this._wpBgDrawCache.dx = dx;
+        this._wpBgDrawCache.dy = dy;
+        this._wpBgDrawCache.dw = dw;
+        this._wpBgDrawCache.dh = dh;
+        if (!this._wpBgDrawCache.bgCanvas) {
+            this._wpBgDrawCache.bgCanvas = document.createElement('canvas');
+        }
+        const blackCanvas = this._wpBgDrawCache.bgCanvas;
+        blackCanvas.width = w;
+        blackCanvas.height = h;
+        const blackCtx = blackCanvas.getContext('2d');
+        blackCtx.fillStyle = '#000000';
+        blackCtx.fillRect(0, 0, w, h);
+
+        ctx.drawImage(blackCanvas, 0, 0);
+        ctx.globalAlpha = this.wallpaperOpacity;
+        ctx.drawImage(media, dx, dy, dw, dh);
+        ctx.globalAlpha = 1;
+    },
+
     _applyWallpaper() {
         if (!this.wallpaperActive || !this.wallpaperData) return;
         if (!this._wpHooked) {
             this._hookRenderBackground();
+        }
+        if (!this._wpBgCanvas) {
+            this._createBgCanvas();
         }
 
         if (this.wallpaperType === 'image') {
@@ -2450,6 +2602,7 @@ window.XZGThemeManager = {
                 const self = this;
                 this._wpImg.onload = function() {
                     self._wpImgLoaded = true;
+                    self._renderWallpaperToBgCanvas();
                     if (app.canvas?.setDirty) {
                         app.canvas.setDirty(true, true);
                     }
@@ -2477,6 +2630,15 @@ window.XZGThemeManager = {
             this._wpVideo.playsInline = true;
             this._wpVideo.style.display = 'none';
             document.body.appendChild(this._wpVideo);
+
+            document.addEventListener('visibilitychange', () => {
+                if (!self._wpVideoPlaying) return;
+                if (document.hidden) {
+                    self._wpVideo.pause();
+                } else {
+                    self._wpVideo.play().catch(() => {});
+                }
+            });
         }
 
         if (this._wpVideoSrc === this.wallpaperData && this._wpVideoPlaying) {
@@ -2497,11 +2659,23 @@ window.XZGThemeManager = {
         if (!this.wallpaperActive || !this._wpVideoPlaying || !this._wpVideo) return;
         if (this.wallpaperType !== 'video') return;
 
-        if (app.canvas?.setDirty) {
-            app.canvas.setDirty(true, false);
+        const now = performance.now();
+        const minInterval = 1000 / 30;
+        if (this._wpLastFrameTime && (now - this._wpLastFrameTime) < minInterval) {
+            const self = this;
+            requestAnimationFrame(() => self._wpVideoFrame());
+            return;
         }
+        this._wpLastFrameTime = now;
 
-        requestAnimationFrame(() => this._wpVideoFrame());
+        this._renderWallpaperToBgCanvas();
+
+        const video = this._wpVideo;
+        if (video.requestVideoFrameCallback) {
+            video.requestVideoFrameCallback(() => this._wpVideoFrame());
+        } else {
+            requestAnimationFrame(() => this._wpVideoFrame());
+        }
     },
 
     setWallpaperActive(active) {
@@ -2512,12 +2686,14 @@ window.XZGThemeManager = {
 
         if (active && this.wallpaperData) {
             this._applyWallpaper();
+            this._setCanvasTransparent(true);
         } else if (!active) {
             if (this._wpVideo) {
                 this._wpVideo.pause();
                 this._wpVideoPlaying = false;
             }
             this._wpImgLoaded = false;
+            this._setCanvasTransparent(false);
         }
 
         if (app.canvas?.setDirty) {
@@ -2525,9 +2701,36 @@ window.XZGThemeManager = {
         }
     },
 
+    _setCanvasTransparent(transparent) {
+        if (!app.canvas) return;
+        const canvasEl = app.canvas.canvas;
+        if (!canvasEl) return;
+
+        if (transparent) {
+            if (app.canvas.clear_color) {
+                this._wpOrigClearColor = app.canvas.clear_color;
+            }
+            app.canvas.clear_color = 'transparent';
+            if (app.canvas.bg_color) {
+                this._wpOrigBgColor = app.canvas.bg_color;
+            }
+            app.canvas.bg_color = 'transparent';
+            canvasEl.style.backgroundColor = 'transparent';
+        } else {
+            if (this._wpOrigClearColor !== undefined) {
+                app.canvas.clear_color = this._wpOrigClearColor;
+            }
+            if (this._wpOrigBgColor !== undefined) {
+                app.canvas.bg_color = this._wpOrigBgColor;
+            }
+            canvasEl.style.backgroundColor = '';
+        }
+    },
+
     setWallpaperData(type, data) {
         this.wallpaperType = type;
         this.wallpaperData = data;
+        this._wpBgDrawCache = null;
         try {
             localStorage.setItem('xzg-wallpaper-type', type);
             localStorage.setItem('xzg-wallpaper-data', data);
@@ -2541,9 +2744,11 @@ window.XZGThemeManager = {
 
     setWallpaperOpacity(opacity) {
         this.wallpaperOpacity = opacity;
+        this._wpBgDrawCache = null;
         try {
             localStorage.setItem('xzg-wallpaper-opacity', String(opacity));
         } catch(e) {}
+        this._renderWallpaperToBgCanvas();
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
@@ -2551,9 +2756,11 @@ window.XZGThemeManager = {
 
     setWallpaperFit(fit) {
         this.wallpaperFit = fit;
+        this._wpBgDrawCache = null;
         try {
             localStorage.setItem('xzg-wallpaper-fit', fit);
         } catch(e) {}
+        this._renderWallpaperToBgCanvas();
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
@@ -2562,6 +2769,7 @@ window.XZGThemeManager = {
     clearWallpaper() {
         this.wallpaperData = null;
         this.wallpaperActive = false;
+        this._setCanvasTransparent(false);
         try {
             localStorage.removeItem('xzg-wallpaper-data');
             localStorage.setItem('xzg-wallpaper-active', 'false');
@@ -2575,6 +2783,10 @@ window.XZGThemeManager = {
             this._wpVideo.src = '';
             this._wpVideoPlaying = false;
             this._wpVideoSrc = '';
+        }
+        this._wpBgDrawCache = null;
+        if (this._wpBgCanvas && this._wpBgCtx) {
+            this._wpBgCtx.clearRect(0, 0, this._wpBgCanvas.width, this._wpBgCanvas.height);
         }
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
