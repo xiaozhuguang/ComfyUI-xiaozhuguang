@@ -362,6 +362,22 @@ class Xiaozhuguang {
                 background: rgba(76, 175, 80, 0.4);
             }
 
+            .nf-panel-bottom-resizer {
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: -4px;
+                height: 8px;
+                cursor: ns-resize;
+                z-index: 10;
+                border-radius: 0 0 4px 4px;
+                transition: background 0.2s;
+            }
+            .nf-panel-bottom-resizer:hover,
+            .nf-panel-bottom-resizer.dragging {
+                background: rgba(76, 175, 80, 0.4);
+            }
+
             #node-favorites-panel.collapsed {
                 display: none;
             }
@@ -1119,6 +1135,7 @@ class Xiaozhuguang {
 
         panel.innerHTML = `
             <div class="nf-panel-resizer" title="拖动调节宽度"></div>
+            <div class="nf-panel-bottom-resizer" title="拖动调节高度"></div>
             <div class="nf-header" title="拖拽标题栏可移动窗口">
                 <span class="nf-title">⭐ 小珠光收藏 · 拖动标题栏改变位置</span>
                 <div class="nf-header-btns">
@@ -1192,6 +1209,7 @@ class Xiaozhuguang {
         this.setupDragging();
         this.setupSplitResizing();
         this.setupResizing();
+        this.setupBottomResizing();
 
         const toggleBtn = this.panel.querySelector("#nf-toggle-btn");
 
@@ -1384,6 +1402,52 @@ class Xiaozhuguang {
                 document.body.style.cursor = "";
                 document.body.style.userSelect = "";
                 localStorage.setItem("xiaozhuguang.PanelWidth", this.panel.offsetWidth);
+                this.savePanelPosition();
+            }
+        });
+    }
+
+    setupBottomResizing() {
+        if (!this.panel) return;
+        const handle = this.panel.querySelector(".nf-panel-bottom-resizer");
+        if (!handle) return;
+        if (this._bottomResizingSetup) return;
+        this._bottomResizingSetup = true;
+
+        const savedHeight = localStorage.getItem("xiaozhuguang.PanelHeight");
+        if (savedHeight) this.panel.style.height = savedHeight + "px";
+
+        let isResizing = false;
+        let startY = 0, startHeight = 0;
+
+        handle.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            isResizing = true;
+            startY = e.clientY;
+            startHeight = this.panel.offsetHeight;
+            handle.classList.add("dragging");
+            const rect = this.panel.getBoundingClientRect();
+            this.panel.style.top = rect.top + "px";
+            this.panel.style.bottom = "auto";
+            document.body.style.cursor = "ns-resize";
+            document.body.style.userSelect = "none";
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (!isResizing) return;
+            const dy = e.clientY - startY;
+            const newHeight = Math.max(200, Math.min(window.innerHeight - 50, startHeight + dy));
+            this.panel.style.height = newHeight + "px";
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (isResizing) {
+                isResizing = false;
+                handle.classList.remove("dragging");
+                document.body.style.cursor = "";
+                document.body.style.userSelect = "";
+                localStorage.setItem("xiaozhuguang.PanelHeight", this.panel.offsetHeight);
                 this.savePanelPosition();
             }
         });
