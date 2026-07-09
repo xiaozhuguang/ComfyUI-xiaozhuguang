@@ -6,6 +6,7 @@ import json
 import os
 import random
 import folder_paths
+from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
 
 
 def tensor_to_pil(tensor):
@@ -303,6 +304,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
+    "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -312,6 +314,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangNumberSwitch": "小珠光编号切换",
     "XiaozhuguangUniversalSlider": "小珠光万能滑条",
     "XiaozhuguangPointsEditor": "小珠光点编辑器",
+    "XiaozhuguangQwenVLInstruct": "小珠光 qwenVL",
 }
 
 WEB_DIRECTORY = "./web"

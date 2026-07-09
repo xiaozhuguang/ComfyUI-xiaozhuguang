@@ -18,3 +18,6 @@ Thumbs.db
 .qoder/
 ".playwright-cli/"  
 "comfyui-state.png"  
+
+# Local config
+python_paths.json

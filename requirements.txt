@@ -1,2 +1,5 @@
-# No external Python dependencies required.
-# ComfyUI core provides all necessary APIs.
+torchvision
+huggingface_hub
+transformers>=4.57.1
+qwen-vl-utils
+bitsandbytes
