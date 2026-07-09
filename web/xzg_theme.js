@@ -13,6 +13,7 @@ window.XZGThemeManager = {
     linkColor: '#888888',
     linkAnimRunning: false,
     linkAnimFrameId: null,
+    linkHighlightDimAlpha: 0.3,
     wallpaperActive: false,
     wallpaperType: 'image',
     wallpaperData: null,
@@ -1057,7 +1058,7 @@ window.XZGThemeManager = {
                     } else {
                         link.color = self.linkColor;
                         const origAlpha = ctx.globalAlpha;
-                        ctx.globalAlpha = origAlpha * 0.08;
+                        ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
                         self._drawThinBaseLine(ctx, link);
                         ctx.globalAlpha = origAlpha;
                     }
@@ -1076,7 +1077,7 @@ window.XZGThemeManager = {
                     self._ensureHighlightAnimLoop();
                 } else {
                     const origAlpha = ctx.globalAlpha;
-                    ctx.globalAlpha = origAlpha * 0.08;
+                    ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
                     self._drawThinBaseLine(ctx, link);
                     ctx.globalAlpha = origAlpha;
                 }
