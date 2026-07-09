@@ -489,6 +489,84 @@ class Xiaozhuguang {
                 overflow: hidden;
             }
 
+            .nf-tab-bar {
+                display: flex;
+                gap: 4px;
+                margin-bottom: 10px;
+                flex-shrink: 0;
+                background: #1a1a1a;
+                padding: 3px;
+                border-radius: 6px;
+            }
+
+            .nf-tab-btn {
+                flex: 1;
+                text-align: center;
+                padding: 6px 0;
+                font-size: 12px;
+                color: #999;
+                cursor: pointer;
+                border-radius: 4px;
+                transition: all 0.2s;
+            }
+
+            .nf-tab-btn:hover {
+                color: #ddd;
+                background: #2a2a2a;
+            }
+
+            .nf-tab-btn.active {
+                color: #fff;
+                background: #3a3a3a;
+                font-weight: 600;
+            }
+
+            .nf-tab-content {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+            }
+
+            .nf-notes-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 8px;
+                flex-shrink: 0;
+                font-size: 13px;
+                color: #ccc;
+            }
+
+            .nf-notes-count {
+                font-size: 11px;
+                color: #888;
+            }
+
+            .nf-notes-textarea {
+                flex: 1;
+                width: 100%;
+                resize: none;
+                background: #1a1a1a;
+                border: 1px solid #333;
+                border-radius: 4px;
+                color: #ddd;
+                font-size: 13px;
+                line-height: 1.6;
+                padding: 10px;
+                font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+                outline: none;
+                box-sizing: border-box;
+            }
+
+            .nf-notes-textarea:focus {
+                border-color: #4CAF50;
+            }
+
+            .nf-notes-textarea::placeholder {
+                color: #555;
+            }
+
             .nf-search-box {
                 position: relative;
                 margin-bottom: 10px;
@@ -1120,7 +1198,13 @@ class Xiaozhuguang {
             this.searchInput = this.panel.querySelector("#nf-search-input");
             this.favoritesList = this.panel.querySelector("#nf-favorites-list");
             this.categoryList = this.panel.querySelector("#nf-category-list");
+            this.notesTextarea = this.panel.querySelector("#nf-notes-textarea");
+            this.notesCount = this.panel.querySelector("#nf-notes-count");
+            this.currentTab = "favorites";
             this.bindPanelEvents();
+            this.bindTabEvents();
+            this.bindNotesEvents();
+            this.loadNotes();
             this.renderCategories();
             this.renderFavorites();
             return;
@@ -1147,35 +1231,48 @@ class Xiaozhuguang {
                 </div>
             </div>
             <div class="nf-content" id="nf-content" style="display: none;">
-                <div class="nf-search-box">
-                    <input type="text" id="nf-search-input" placeholder="🔍 搜索收藏的节点..." />
-                    <button class="nf-clear-btn" id="nf-clear-btn" title="清除搜索" style="display: none;">✕</button>
+                <div class="nf-tab-bar">
+                    <div class="nf-tab-btn active" data-tab="favorites">⭐ 收藏</div>
+                    <div class="nf-tab-btn" data-tab="notes">📝 备注</div>
                 </div>
-                <div class="nf-split-container">
-                    <div class="nf-left-col">
-                        <div class="nf-categories-header">
-                            <span>分类</span>
-                            <button class="nf-add-cat-btn" id="nf-add-cat-btn" title="新建分类">+</button>
-                        </div>
-                        <div class="nf-category-list" id="nf-category-list"></div>
+                <div class="nf-tab-content" id="nf-tab-favorites">
+                    <div class="nf-search-box">
+                        <input type="text" id="nf-search-input" placeholder="🔍 搜索收藏的节点..." />
+                        <button class="nf-clear-btn" id="nf-clear-btn" title="清除搜索" style="display: none;">✕</button>
                     </div>
-                    <div class="nf-split-handle" id="nf-split-handle"></div>
-                    <div class="nf-right-col">
-                        <div class="nf-favorites-header">
-                            <div class="nf-fav-header-left">
-                                <span>收藏节点</span>
-                                <span class="nf-count" id="nf-count">0</span>
-                                <button class="nf-clear-invalid-btn" id="nf-clear-invalid-btn" style="display:none;" title="清理所有失效节点">🧹 清理失效</button>
+                    <div class="nf-split-container">
+                        <div class="nf-left-col">
+                            <div class="nf-categories-header">
+                                <span>分类</span>
+                                <button class="nf-add-cat-btn" id="nf-add-cat-btn" title="新建分类">+</button>
                             </div>
-                            <div class="nf-sort-btns">
-                                <button class="nf-sort-btn active" id="nf-sort-default" title="按使用频率排序">🔥</button>
-                                <button class="nf-sort-btn" id="nf-sort-rating" title="按星标排序">★</button>
-                            </div>
+                            <div class="nf-category-list" id="nf-category-list"></div>
                         </div>
-                        <div class="nf-favorites-list" id="nf-favorites-list">
-                            <div class="nf-empty-tip">暂无收藏节点<br/>右键节点选择"收藏节点"</div>
+                        <div class="nf-split-handle" id="nf-split-handle"></div>
+                        <div class="nf-right-col">
+                            <div class="nf-favorites-header">
+                                <div class="nf-fav-header-left">
+                                    <span>收藏节点</span>
+                                    <span class="nf-count" id="nf-count">0</span>
+                                    <button class="nf-clear-invalid-btn" id="nf-clear-invalid-btn" style="display:none;" title="清理所有失效节点">🧹 清理失效</button>
+                                </div>
+                                <div class="nf-sort-btns">
+                                    <button class="nf-sort-btn active" id="nf-sort-default" title="按使用频率排序">🔥</button>
+                                    <button class="nf-sort-btn" id="nf-sort-rating" title="按星标排序">★</button>
+                                </div>
+                            </div>
+                            <div class="nf-favorites-list" id="nf-favorites-list">
+                                <div class="nf-empty-tip">暂无收藏节点<br/>右键节点选择"收藏节点"</div>
+                            </div>
                         </div>
                     </div>
+                </div>
+                <div class="nf-tab-content" id="nf-tab-notes" style="display: none;">
+                    <div class="nf-notes-header">
+                        <span>📝 记事本</span>
+                        <span class="nf-notes-count" id="nf-notes-count">0 字</span>
+                    </div>
+                    <textarea class="nf-notes-textarea" id="nf-notes-textarea" placeholder="在这里记录笔记...&#10;&#10;内容会自动保存，刷新不丢失。"></textarea>
                 </div>
             </div>
         `;
@@ -1196,8 +1293,15 @@ class Xiaozhuguang {
         this.searchInput = panel.querySelector("#nf-search-input");
         this.favoritesList = panel.querySelector("#nf-favorites-list");
         this.categoryList = panel.querySelector("#nf-category-list");
+        this.notesTextarea = panel.querySelector("#nf-notes-textarea");
+        this.notesCount = panel.querySelector("#nf-notes-count");
+        this.currentTab = "favorites";
+        this._notesSaveTimer = null;
 
         this.bindPanelEvents();
+        this.bindTabEvents();
+        this.bindNotesEvents();
+        this.loadNotes();
         this.renderCategories();
         this.renderFavorites();
         this.loadPanelPosition();
@@ -1307,6 +1411,77 @@ class Xiaozhuguang {
 
         this.updateShortcutDisplay();
         this.updateSortButtons();
+    }
+
+    bindTabEvents() {
+        if (!this.panel) return;
+        const self = this;
+        const tabBtns = this.panel.querySelectorAll(".nf-tab-btn");
+        tabBtns.forEach(btn => {
+            btn.addEventListener("click", () => {
+                const tab = btn.dataset.tab;
+                self.switchTab(tab);
+            });
+        });
+    }
+
+    switchTab(tab) {
+        if (!this.panel) return;
+        this.currentTab = tab;
+        const tabBtns = this.panel.querySelectorAll(".nf-tab-btn");
+        tabBtns.forEach(btn => {
+            btn.classList.toggle("active", btn.dataset.tab === tab);
+        });
+        const favTab = this.panel.querySelector("#nf-tab-favorites");
+        const notesTab = this.panel.querySelector("#nf-tab-notes");
+        if (favTab) favTab.style.display = tab === "favorites" ? "" : "none";
+        if (notesTab) notesTab.style.display = tab === "notes" ? "" : "none";
+    }
+
+    bindNotesEvents() {
+        if (!this.notesTextarea) return;
+        const self = this;
+        this.notesTextarea.addEventListener("input", () => {
+            self.updateNotesCount();
+            self.scheduleSaveNotes();
+        });
+    }
+
+    updateNotesCount() {
+        if (!this.notesTextarea || !this.notesCount) return;
+        const text = this.notesTextarea.value;
+        const count = text.length;
+        this.notesCount.textContent = count + " 字";
+    }
+
+    scheduleSaveNotes() {
+        if (this._notesSaveTimer) clearTimeout(this._notesSaveTimer);
+        const self = this;
+        this._notesSaveTimer = setTimeout(() => {
+            self.saveNotes();
+        }, 500);
+    }
+
+    loadNotes() {
+        if (!this.notesTextarea) return;
+        try {
+            const content = localStorage.getItem("xiaozhuguang.notes");
+            if (content !== null) {
+                this.notesTextarea.value = content;
+                this.updateNotesCount();
+            }
+        } catch (e) {
+            console.error("加载备注失败:", e);
+        }
+    }
+
+    saveNotes() {
+        if (!this.notesTextarea) return;
+        try {
+            localStorage.setItem("xiaozhuguang.notes", this.notesTextarea.value);
+        } catch (e) {
+            console.error("保存备注失败:", e);
+        }
     }
 
     setupDragging() {
@@ -3148,10 +3323,12 @@ class Xiaozhuguang {
     async _exportData() {
         try {
             const previews = await this._getAllPreviewImages();
+            const notes = this.notesTextarea ? this.notesTextarea.value : "";
             const payload = {
                 version: 1,
                 exportedAt: new Date().toISOString(),
                 favorites: this.favorites,
+                notes: notes,
                 previews: previews
             };
             const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
@@ -3177,10 +3354,16 @@ class Xiaozhuguang {
                 alert("文件格式不正确，缺少 favorites 数据");
                 return;
             }
-            if (!confirm("导入将覆盖当前收藏和截图，确定继续？")) return;
+            if (!confirm("导入将覆盖当前收藏、备注和截图，确定继续？")) return;
 
             this.favorites = data.favorites;
             this.saveFavorites();
+
+            if (data.notes !== undefined && this.notesTextarea) {
+                this.notesTextarea.value = data.notes;
+                this.updateNotesCount();
+                this.saveNotes();
+            }
 
             if (data.previews && typeof data.previews === "object") {
                 await this._saveAllPreviewImages(data.previews);
