@@ -66,10 +66,13 @@ function getNodeSettings(node, defaults) {
     const s = { ...defaults, ...parsed };
     const max = Math.max(1, s.count);
     s.columns = Math.max(1, Math.min(s.columns, max));
-    s.btnWidth = clamp(s.btnWidth, 55, 200);
+    s.btnWidth = clamp(s.btnWidth, 55, 300);
     s.btnHeight = clamp(s.btnHeight, 30, 80);
     s.fontSize = clamp(s.fontSize, 10, 24);
     s.btnGap = clamp(s.btnGap, 0, 20);
+    if (!s.widths || typeof s.widths !== "object") {
+        s.widths = {};
+    }
     return s;
 }
 
@@ -83,30 +86,61 @@ function getDisplayLabel(value, labels) {
     return value;
 }
 
-// 计算每个按钮的矩形（基于 widget 绘制区域）
+function getButtonWidth(index, settings) {
+    const key = String(index);
+    if (settings.widths && settings.widths[key] !== undefined) {
+        return clamp(settings.widths[key], 55, 300);
+    }
+    return clamp(settings.btnWidth, 55, 300);
+}
+
 function getButtonRects(y, W, settings) {
     const count = settings.count;
     const cols = settings.columns;
-    const rows = Math.ceil(count / cols);
     const gap = settings.btnGap;
-    const minW = cols === 1 ? 130 : (cols === 2 ? 65 : 55);
-    const btnW = Math.max(minW, settings.btnWidth);
     const btnH = settings.btnHeight;
-    const contentW = cols * btnW + (cols - 1) * gap;
-    const contentH = rows * btnH + (rows - 1) * gap;
-    const startX = Math.max(10, (W - contentW) / 2);
-    const startY = y + 10;
+    const rows = Math.ceil(count / cols);
     const rects = [];
-    for (let i = 0; i < count; i++) {
-        const row = Math.floor(i / cols);
-        const col = i % cols;
-        rects.push({
-            x: startX + col * (btnW + gap),
-            y: startY + row * (btnH + gap),
-            w: btnW,
-            h: btnH,
-        });
+    const startY = y + 10;
+
+    for (let r = 0; r < rows; r++) {
+        const rowStartIdx = r * cols;
+        const rowEndIdx = Math.min(rowStartIdx + cols, count);
+        const rowCount = rowEndIdx - rowStartIdx;
+        let rowWidth = 0;
+        for (let i = rowStartIdx; i < rowEndIdx; i++) {
+            rowWidth += getButtonWidth(i, settings);
+        }
+        rowWidth += (rowCount - 1) * gap;
+        const rowStartX = Math.max(10, (W - rowWidth) / 2);
+        let curX = rowStartX;
+        for (let i = rowStartIdx; i < rowEndIdx; i++) {
+            const w = getButtonWidth(i, settings);
+            rects[i] = {
+                x: curX,
+                y: startY + r * (btnH + gap),
+                w: w,
+                h: btnH,
+            };
+            curX += w + gap;
+        }
     }
+
+    let maxRowWidth = 0;
+    for (let r = 0; r < rows; r++) {
+        const rowStartIdx = r * cols;
+        const rowEndIdx = Math.min(rowStartIdx + cols, count);
+        const rowCount = rowEndIdx - rowStartIdx;
+        let rowWidth = 0;
+        for (let i = rowStartIdx; i < rowEndIdx; i++) {
+            rowWidth += getButtonWidth(i, settings);
+        }
+        rowWidth += (rowCount - 1) * gap;
+        maxRowWidth = Math.max(maxRowWidth, rowWidth);
+    }
+
+    const contentW = maxRowWidth;
+    const contentH = rows * btnH + (rows - 1) * gap;
     return { rects, contentW, contentH };
 }
 
@@ -120,7 +154,8 @@ const DEFAULT_SETTINGS = {
     fontSize: 12,
     btnGap: 4,
     fontColor: "#aaa",
-    inactiveColor: "#2a2a2a"
+    inactiveColor: "#2a2a2a",
+    widths: {}
 };
 
 app.registerExtension({
@@ -150,7 +185,6 @@ app.registerExtension({
 
             const node = this;
 
-            // 隐藏默认标签 widget，用自定义 Canvas widget 替代
             node.addCustomWidget({
                 name: "xzg_selector_ui",
                 type: "xzg_selector",
@@ -163,11 +197,11 @@ app.registerExtension({
 
                     for (let i = 0; i < count; i++) {
                         const r = rects[i];
+                        if (!r) continue;
                         const value = String(i);
                         const isActive = currentValue === value;
 
                         ctx.save();
-                        // 背景
                         if (isActive) {
                             if (settings.colors.direction === "radial") {
                                 ctx.fillStyle = drawRadialGradient(ctx, r.x, r.y, r.w, r.h, settings.colors);
@@ -180,12 +214,10 @@ app.registerExtension({
                         rrect(ctx, r.x, r.y, r.w, r.h, 5);
                         ctx.fill();
 
-                        // 边框
                         ctx.strokeStyle = isActive ? settings.colors.color1 : "#444";
                         ctx.lineWidth = 1;
                         ctx.stroke();
 
-                        // 文字
                         const label = getDisplayLabel(value, settings.labels);
                         ctx.fillStyle = settings.fontColor || "#aaa";
                         ctx.font = `${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
@@ -195,7 +227,6 @@ app.registerExtension({
                         ctx.restore();
                     }
 
-                    // 存储计算出的高度，供 computeSize 使用
                     node._xzgSelH = contentH + 20;
                 },
 
@@ -210,6 +241,7 @@ app.registerExtension({
 
                     for (let i = 0; i < rects.length; i++) {
                         const r = rects[i];
+                        if (!r) continue;
                         if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
                             pos[1] >= r.y && pos[1] <= r.y + r.h) {
                             const value = String(i);
@@ -231,11 +263,9 @@ app.registerExtension({
                 },
             });
 
-            // 重新排列 widget：隐藏的标签 widget 保留在原位，Canvas widget 在其后
             const custom = this.widgets.pop();
             this.widgets.splice(widgetIndex + 1, 0, custom);
 
-            // 设置节点尺寸
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
             const { contentW, contentH } = getButtonRects(0, this.size[0], settings);
             this.size[0] = Math.max(180, contentW + 40);

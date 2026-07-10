@@ -8,6 +8,7 @@ import random
 import folder_paths
 from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
 from .nodes.xzg_get_widget import XiaozhuguangGetWidget
+from .nodes.xzg_first_last_frame import XiaozhuguangFirstLastFrame
 
 
 def tensor_to_pil(tensor):
@@ -357,6 +358,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
     "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
     "XiaozhuguangGetWidget": XiaozhuguangGetWidget,
+    "XiaozhuguangFirstLastFrame": XiaozhuguangFirstLastFrame,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -370,6 +372,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangPointsEditor": "小珠光点编辑器",
     "XiaozhuguangQwenVLInstruct": "小珠光 qwenVL",
     "XiaozhuguangGetWidget": "小珠光获取控件值",
+    "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
 }
 
 WEB_DIRECTORY = "./web"
