@@ -7,6 +7,7 @@ import os
 import random
 import folder_paths
 from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
+from .nodes.xzg_get_widget import XiaozhuguangGetWidget
 
 
 def tensor_to_pil(tensor):
@@ -305,6 +306,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
     "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
+    "XiaozhuguangGetWidget": XiaozhuguangGetWidget,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -315,6 +317,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangUniversalSlider": "小珠光万能滑条",
     "XiaozhuguangPointsEditor": "小珠光点编辑器",
     "XiaozhuguangQwenVLInstruct": "小珠光 qwenVL",
+    "XiaozhuguangGetWidget": "小珠光获取控件值",
 }
 
 WEB_DIRECTORY = "./web"
