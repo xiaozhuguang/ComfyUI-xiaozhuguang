@@ -179,6 +179,54 @@ class XiaozhuguangSelector:
 
 
 
+class XiaozhuguangBooleanSelector:
+    """
+    小珠光布尔选择器
+    开关切换 True/False，支持自定义外观
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "布尔值": ("BOOLEAN", {"default": False}),
+                "_xz_settings": ("STRING", {"default": "", "multiline": True}),
+            },
+        }
+
+    RETURN_TYPES = ("BOOLEAN",)
+    RETURN_NAMES = ("布尔",)
+    FUNCTION = "execute"
+    CATEGORY = "小珠光"
+
+    def execute(self, 布尔值, _xz_settings=""):
+        return (布尔值,)
+
+
+class XiaozhuguangBoolNot:
+    """
+    小珠光反向布尔
+    输入 0/1，输出 true/false（反向）
+    值为 0 时输出 true，值为 1 时输出 false
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "整数": ("INT", {"default": 0, "min": 0, "max": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("BOOLEAN",)
+    RETURN_NAMES = ("反向布尔",)
+    FUNCTION = "execute"
+    CATEGORY = "小珠光"
+
+    def execute(self, 整数):
+        return (整数 == 0,)
+
+
 class XiaozhuguangTitle:
     @classmethod
     def INPUT_TYPES(cls):
@@ -300,6 +348,8 @@ class XiaozhuguangUniversalSlider:
 
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangSelector": XiaozhuguangSelector,
+    "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
+    "XiaozhuguangBoolNot": XiaozhuguangBoolNot,
     "XiaozhuguangTitle": XiaozhuguangTitle,
     "XiaozhuguangIntToBool": XiaozhuguangIntToBool,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
@@ -311,6 +361,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangSelector": "小珠光选择器",
+    "XiaozhuguangBooleanSelector": "小珠光布尔",
+    "XiaozhuguangBoolNot": "小珠光反向布尔",
     "XiaozhuguangTitle": "小珠光标题",
     "XiaozhuguangIntToBool": "小珠光整数转布尔",
     "XiaozhuguangNumberSwitch": "小珠光编号切换",

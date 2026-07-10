@@ -148,7 +148,6 @@ app.registerExtension({
             tagWidget.hidden = true;
             tagWidget.computeSize = () => [0, 0];
 
-            let currentValue = tagWidget.value || "0";
             const node = this;
 
             // 隐藏默认标签 widget，用自定义 Canvas widget 替代
@@ -160,6 +159,7 @@ app.registerExtension({
                     const settings = getNodeSettings(node, DEFAULT_SETTINGS);
                     const count = settings.count;
                     const { rects, contentH } = getButtonRects(y, W, settings);
+                    const currentValue = String(tagWidget.value ?? "0");
 
                     for (let i = 0; i < count; i++) {
                         const r = rects[i];
@@ -213,7 +213,6 @@ app.registerExtension({
                         if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
                             pos[1] >= r.y && pos[1] <= r.y + r.h) {
                             const value = String(i);
-                            currentValue = value;
                             tagWidget.value = value;
                             if (tagWidget.callback) {
                                 try { tagWidget.callback(value); } catch (e) {}

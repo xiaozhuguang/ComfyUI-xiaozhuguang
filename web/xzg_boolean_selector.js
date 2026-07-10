@@ -323,7 +323,6 @@ app.registerExtension({
             boolWidget.hidden = true;
             boolWidget.computeSize = () => [0, 0];
 
-            let currentValue = !!boolWidget.value;
             const node = this;
 
             // 自定义 Canvas 绘制的开关 UI
@@ -334,6 +333,7 @@ app.registerExtension({
                 draw(ctx, node, W, y, H) {
                     const s = getNodeSettings(node);
                     const scale = s.toggleSize;
+                    const currentValue = !!boolWidget.value;
 
                     const toggleW = 56 * scale;
                     const toggleH = 20 * scale;
@@ -448,10 +448,9 @@ app.registerExtension({
 
                     if (pos[0] >= hitArea.x && pos[0] <= hitArea.x + hitArea.w &&
                         pos[1] >= hitArea.y && pos[1] <= hitArea.y + hitArea.h) {
-                        currentValue = !currentValue;
-                        boolWidget.value = currentValue;
+                        boolWidget.value = !boolWidget.value;
                         if (boolWidget.callback) {
-                            try { boolWidget.callback(currentValue); } catch (e) {}
+                            try { boolWidget.callback(boolWidget.value); } catch (e) {}
                         }
                         node.setDirtyCanvas(true, true);
                         return true;
