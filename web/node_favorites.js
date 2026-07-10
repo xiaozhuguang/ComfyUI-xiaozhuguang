@@ -263,11 +263,80 @@ class Xiaozhuguang {
         localStorage.setItem(SETTING_TOGGLE_SHORTCUT, JSON.stringify(shortcut));
     }
 
+    getOutputNodes(nodes) {
+        if (!nodes || !nodes.length) return [];
+        return nodes.filter((n) => {
+            return n.mode != LiteGraph.NEVER && n.constructor?.nodeData?.output_node;
+        });
+    }
+
+    recursiveAddQueueNodes(nodeId, oldOutput, newOutput) {
+        let currentId = String(nodeId);
+        let currentNode = oldOutput[currentId];
+        if (newOutput[currentId] == null && currentNode) {
+            newOutput[currentId] = currentNode;
+            for (const inputValue of Object.values(currentNode.inputs || [])) {
+                if (Array.isArray(inputValue)) {
+                    this.recursiveAddQueueNodes(inputValue[0], oldOutput, newOutput);
+                }
+            }
+        }
+        return newOutput;
+    }
+
+    async queueSelectedOutputNodes() {
+        const selectedNodes = Object.values(app.canvas.selected_nodes || {});
+        const outputNodes = this.getOutputNodes(selectedNodes);
+        if (!outputNodes.length) return;
+
+        const rgthree = window.rgthree;
+        if (rgthree && typeof rgthree.queueOutputNodes === "function") {
+            rgthree.queueOutputNodes(outputNodes);
+            return;
+        }
+
+        const nodeIds = outputNodes.map((n) => n.id);
+        const origApiQueuePrompt = api.queuePrompt;
+        let hookInstalled = false;
+
+        const hook = async function (index, prompt, ...args) {
+            if (prompt.output) {
+                const oldOutput = prompt.output;
+                let newOutput = {};
+                for (const queueNodeId of nodeIds) {
+                    nodeFavoritesInstance.recursiveAddQueueNodes(queueNodeId, oldOutput, newOutput);
+                }
+                prompt.output = newOutput;
+            }
+            api.queuePrompt = origApiQueuePrompt;
+            return origApiQueuePrompt.call(api, index, prompt, ...args);
+        };
+
+        try {
+            api.queuePrompt = hook;
+            hookInstalled = true;
+            await app.queuePrompt(0);
+        } catch (e) {
+            console.error("[小珠光] 排队选中输出节点失败:", e);
+        } finally {
+            if (hookInstalled) {
+                api.queuePrompt = origApiQueuePrompt;
+            }
+        }
+    }
+
     setupKeyboardListener() {
         const self = this;
 
         document.addEventListener("keydown", function handler(e) {
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) {
+                return;
+            }
+
+            if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === "d") {
+                e.preventDefault();
+                e.stopPropagation();
+                self.queueSelectedOutputNodes();
                 return;
             }
 

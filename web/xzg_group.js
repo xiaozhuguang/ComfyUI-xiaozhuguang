@@ -4,6 +4,7 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const MODE_ALWAYS = 0;
 const MODE_BYPASS = 4;
@@ -154,11 +155,155 @@ const XZGGroup = {
         this.overlay.style.height = r.height + 'px';
     },
 
+    _lastMouseX: 0,
+    _lastMouseY: 0,
+
+    _setupMouseTracker() {
+        const self = this;
+        document.addEventListener('mousemove', e => {
+            self._lastMouseX = e.clientX;
+            self._lastMouseY = e.clientY;
+        }, true);
+    },
+
+    getGroupAtMouse() {
+        const cx = this._lastMouseX, cy = this._lastMouseY;
+        const sortedGids = Object.keys(this.groups).sort((a, b) => {
+            const ga = this.groups[a]?.bounds, gb = this.groups[b]?.bounds;
+            if (!ga || !gb) return 0;
+            return (ga.w * ga.h) - (gb.w * gb.h);
+        });
+        for (const gid of sortedGids) {
+            const el = this.groupEls[gid];
+            if (!el) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0) continue;
+            if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
+                return gid;
+            }
+        }
+        return null;
+    },
+
+    _collectChildGroupIds(gid) {
+        const result = new Set([gid]);
+        const group = this.groups[gid];
+        if (!group?.bounds) return result;
+        const bounds = group.bounds;
+        for (const [otherGid, otherGroup] of Object.entries(this.groups)) {
+            if (otherGid === gid) continue;
+            const ob = otherGroup.bounds;
+            if (!ob) continue;
+            if (ob.x >= bounds.x && ob.x + ob.w <= bounds.x + bounds.w &&
+                ob.y >= bounds.y && ob.y + ob.h <= bounds.y + bounds.h) {
+                result.add(otherGid);
+            }
+        }
+        return result;
+    },
+
+    getGroupNodes(gid) {
+        const allGroupIds = this._collectChildGroupIds(gid);
+        const nodes = [];
+        const graph = app?.graph;
+        if (!graph?._nodes) return nodes;
+        for (const gId of allGroupIds) {
+            const g = this.groups[gId];
+            if (!g?.nodeIds) continue;
+            for (const nid of g.nodeIds) {
+                const node = graph._nodes.find(n => this._idEq(n.id, nid));
+                if (node && !nodes.includes(node)) {
+                    nodes.push(node);
+                }
+            }
+        }
+        return nodes;
+    },
+
+    getOutputNodes(nodes) {
+        if (!nodes || !nodes.length) return [];
+        return nodes.filter((n) => {
+            return n.mode != LiteGraph.NEVER && n.constructor?.nodeData?.output_node;
+        });
+    },
+
+    _recursiveAddQueueNodes(nodeId, oldOutput, newOutput) {
+        let currentId = String(nodeId);
+        let currentNode = oldOutput[currentId];
+        if (newOutput[currentId] == null && currentNode) {
+            newOutput[currentId] = currentNode;
+            for (const inputValue of Object.values(currentNode.inputs || [])) {
+                if (Array.isArray(inputValue)) {
+                    this._recursiveAddQueueNodes(inputValue[0], oldOutput, newOutput);
+                }
+            }
+        }
+        return newOutput;
+    },
+
+    async queueGroupOutputNodes(gid) {
+        const nodes = this.getGroupNodes(gid);
+        const outputNodes = this.getOutputNodes(nodes);
+        if (!outputNodes.length) return false;
+
+        const rgthree = window.rgthree;
+        if (rgthree && typeof rgthree.queueOutputNodes === "function") {
+            rgthree.queueOutputNodes(outputNodes);
+            return true;
+        }
+
+        const nodeIds = outputNodes.map((n) => n.id);
+        const origApiQueuePrompt = api.queuePrompt;
+        let hookInstalled = false;
+
+        const self = this;
+        const hook = async function (index, prompt, ...args) {
+            if (prompt.output) {
+                const oldOutput = prompt.output;
+                let newOutput = {};
+                for (const queueNodeId of nodeIds) {
+                    self._recursiveAddQueueNodes(queueNodeId, oldOutput, newOutput);
+                }
+                prompt.output = newOutput;
+            }
+            api.queuePrompt = origApiQueuePrompt;
+            return origApiQueuePrompt.call(api, index, prompt, ...args);
+        };
+
+        try {
+            api.queuePrompt = hook;
+            hookInstalled = true;
+            await app.queuePrompt(0);
+            return true;
+        } catch (e) {
+            console.error("[小珠光编组] 执行编组内节点失败:", e);
+            return false;
+        } finally {
+            if (hookInstalled) {
+                api.queuePrompt = origApiQueuePrompt;
+            }
+        }
+    },
+
     /* ── 快捷键 ── */
     setupKeyboardShortcut() {
         const self = this;
+        this._setupMouseTracker();
+
         document.addEventListener('keydown', function h(e) {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+            // F 键：执行鼠标所在编组的输出节点
+            if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'f') {
+                const gid = self.getGroupAtMouse();
+                if (gid) {
+                    e.preventDefault();
+                    e.stopPropagation(); e.stopImmediatePropagation();
+                    self.queueGroupOutputNodes(gid);
+                    return;
+                }
+            }
+
             // Ctrl+? 新建编组
             const k = self.shortcutKey || 'g';
             if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === k.toLowerCase()) {
@@ -1496,7 +1641,9 @@ const XZGGroup = {
 2.2 点击标题栏右侧 1/5 区域，被点击的编组 绕过，同一级别的其他编组全部 开启<br>
 <div style="color:#FFD700;font-weight:bold;margin-top:8px;">3、锁定/解锁编组</div>
 点击标题栏 🔒 锁图标：锁定/解锁当前编组（锁定后无法拖动和调整大小）<br>
-Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组`;
+Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
+<div style="color:#FFD700;font-weight:bold;margin-top:8px;">4、执行框内节点</div>
+按键盘 F 键：执行当前编组框内的所有节点`;
             overlay.appendChild(box);
             document.body.appendChild(overlay);
             overlay.addEventListener('click', () => overlay.remove());
