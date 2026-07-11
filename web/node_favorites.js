@@ -4482,7 +4482,7 @@ app.registerExtension({
                     pointer-events: none;
                 `;
                 dialog.innerHTML = `
-                    <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 460px; margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
+                    <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 380px; margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
                         <div class="nf-dialog-title nf-dialog-drag-handle" style="cursor: move;">设置标签</div>
                         <div class="nf-dialog-body" style="overflow-y: auto; padding: 12px 16px; max-height: 520px;">
                             <div class="nf-form-item" style="margin-bottom: 10px;">
@@ -4504,44 +4504,42 @@ app.registerExtension({
                                     </span>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
-                                <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
-                                        <label style="margin-bottom: 0;">标签数量：</label>
-                                        <input type="range" id="nf-label-count" min="2" max="10" value="${count}" style="flex: 1; height: 14px; max-width: 120px;" />
-                                    </div>
-                                    <span id="nf-count-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${count}个</span>
-                                </div>
-                                <div class="nf-form-item" style="flex: 1;">
-                                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
-                                        <label style="margin-bottom: 0;">每行列数：</label>
-                                        <input type="range" id="nf-columns" min="1" max="${count}" value="${loadColumns(node)}" style="flex: 1; height: 14px; max-width: 120px;" />
-                                    </div>
-                                    <span id="nf-columns-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${loadColumns(node)}（范围 1~${count}）</span>
+                            <div class="nf-form-item" style="margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">标签数量：</label>
+                                    <input type="range" id="nf-label-count" min="2" max="10" value="${count}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-count-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${count}</span>
                                 </div>
                             </div>
-                            <div class="nf-form-item" style="margin-bottom: 4px;">
-                                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
-                                    <label style="margin-bottom: 0;">标签高度：</label>
-                                    <input type="range" id="nf-btn-height" min="30" max="80" value="${settings.btnHeight || DEFAULT_BTN_HEIGHT}" style="flex: 1; height: 14px; max-width: 180px;" />
+                            <div class="nf-form-item" style="margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">每行列数：</label>
+                                    <input type="range" id="nf-columns" min="1" max="${count}" value="${loadColumns(node)}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-columns-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${loadColumns(node)}</span>
                                 </div>
-                                <span id="nf-btn-height-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.btnHeight || DEFAULT_BTN_HEIGHT}px</span>
                             </div>
-                            <div class="nf-form-item" style="margin-bottom: 4px;">
-                                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
-                                    <label style="margin-bottom: 0;">字体大小：</label>
-                                    <input type="range" id="nf-font-size" min="10" max="24" value="${settings.fontSize || DEFAULT_FONT_SIZE}" style="flex: 1; height: 14px; max-width: 180px;" />
+                            <div class="nf-form-item" style="margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">标签高度：</label>
+                                    <input type="range" id="nf-btn-height" min="30" max="80" value="${settings.btnHeight || DEFAULT_BTN_HEIGHT}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-btn-height-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.btnHeight || DEFAULT_BTN_HEIGHT}</span>
                                 </div>
-                                <span id="nf-font-size-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.fontSize || DEFAULT_FONT_SIZE}px</span>
                             </div>
-                            <div class="nf-form-item" style="margin-bottom: 8px;">
-                                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
-                                    <label style="margin-bottom: 0;">标签间距：</label>
-                                    <input type="range" id="nf-btn-gap" min="0" max="20" value="${settings.btnGap || DEFAULT_BTN_GAP}" style="flex: 1; height: 14px; max-width: 180px;" />
+                            <div class="nf-form-item" style="margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">字体大小：</label>
+                                    <input type="range" id="nf-font-size" min="10" max="24" value="${settings.fontSize || DEFAULT_FONT_SIZE}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-font-size-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.fontSize || DEFAULT_FONT_SIZE}</span>
                                 </div>
-                                <span id="nf-btn-gap-value" style="display: block; font-size: 11px; color: #ddd; text-align: center; white-space: nowrap;">${settings.btnGap || DEFAULT_BTN_GAP}px</span>
                             </div>
-                            <div id="nf-labels-container">
+                            <div class="nf-form-item" style="margin-bottom: 10px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">标签间距：</label>
+                                    <input type="range" id="nf-btn-gap" min="0" max="20" value="${settings.btnGap || DEFAULT_BTN_GAP}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-btn-gap-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.btnGap || DEFAULT_BTN_GAP}</span>
+                                </div>
+                            </div>
+                            <div id="nf-labels-container" style="padding-top: 4px;">
                                 ${buildLabelsHTML(labels, settings.widths || {}, count, settings.btnWidth || DEFAULT_BTN_WIDTH)}
                             </div>
                         </div>
@@ -4664,7 +4662,7 @@ app.registerExtension({
                         if (isNaN(curColumns) || curColumns < 1) curColumns = 1;
                         if (curColumns > curCount) curColumns = curCount;
                         columnsInput.value = String(curColumns);
-                        if (columnsValueEl) columnsValueEl.textContent = String(curColumns) + `（范围 1~${curCount}）`;
+                        if (columnsValueEl) columnsValueEl.textContent = String(curColumns);
                     }
                 };
 
@@ -4675,7 +4673,7 @@ app.registerExtension({
                     const { newLabels: oldLabels, newWidths: oldWidths } = getCurrentLabels();
                     labelsContainer.innerHTML = buildLabelsHTML(oldLabels, oldWidths, newCount, DEFAULT_BTN_WIDTH);
                     if (body) body.scrollTop = scrollTop;
-                    if (countValueEl) countValueEl.textContent = String(newCount) + "个";
+                    if (countValueEl) countValueEl.textContent = String(newCount);
                     updateColumnsState();
                     applyCurrentSettings();
                 });
@@ -4710,7 +4708,7 @@ app.registerExtension({
                     if (isNaN(v) || v < 30) v = 30;
                     if (v > 80) v = 80;
                     btnHeightInput.value = String(v);
-                    if (btnHeightValueEl) btnHeightValueEl.textContent = String(v) + "px";
+                    if (btnHeightValueEl) btnHeightValueEl.textContent = String(v);
                     applyCurrentSettings();
                 });
 
@@ -4719,7 +4717,7 @@ app.registerExtension({
                     if (isNaN(v) || v < 10) v = 10;
                     if (v > 24) v = 24;
                     fontSizeInput.value = String(v);
-                    if (fontSizeValueEl) fontSizeValueEl.textContent = String(v) + "px";
+                    if (fontSizeValueEl) fontSizeValueEl.textContent = String(v);
                     applyCurrentSettings();
                 });
 
@@ -4728,7 +4726,7 @@ app.registerExtension({
                     if (isNaN(v) || v < 0) v = 0;
                     if (v > 20) v = 20;
                     btnGapInput.value = String(v);
-                    if (btnGapValueEl) btnGapValueEl.textContent = String(v) + "px";
+                    if (btnGapValueEl) btnGapValueEl.textContent = String(v);
                     applyCurrentSettings();
                 });
 
