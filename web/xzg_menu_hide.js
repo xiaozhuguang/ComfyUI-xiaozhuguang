@@ -1,0 +1,530 @@
+
+window.XZGMenuHide = {
+    config: {
+        canvas: {},
+        node: {}
+    },
+
+    _collectedItems: {
+        canvas: [],
+        node: []
+    },
+
+    _inited: false,
+    _enabled: false,
+    _canvasOrig: null,
+    _nodeOrig: null,
+    _contextMenuOrig: null,
+
+    init() {
+        if (this._inited) return;
+        this._inited = true;
+        this.loadConfig();
+        this.loadEnabled();
+        this.hookMenus();
+    },
+
+    loadEnabled() {
+        try {
+            this._enabled = localStorage.getItem('xzg-menu-hide-enabled') === 'true';
+        } catch(e) {}
+    },
+
+    setEnabled(enabled) {
+        this._enabled = enabled;
+        try { localStorage.setItem('xzg-menu-hide-enabled', enabled ? 'true' : 'false'); } catch(e) {}
+        this._applyHideToOpenMenus();
+    },
+
+    isEnabled() {
+        return this._enabled;
+    },
+
+    loadConfig() {
+        try {
+            const saved = localStorage.getItem('xzg-menu-hide');
+            if (saved) {
+                const data = JSON.parse(saved);
+                this.config = Object.assign({ canvas: {}, node: {} }, data);
+            }
+        } catch(e) {}
+    },
+
+    saveConfig() {
+        try {
+            localStorage.setItem('xzg-menu-hide', JSON.stringify(this.config));
+        } catch(e) {}
+    },
+
+    isHidden(menuType, content) {
+        if (!this._enabled) return false;
+        const map = this.config[menuType];
+        if (!map) return false;
+        const key = this._normalizeKey(content);
+        return !!map[key];
+    },
+
+    setHidden(menuType, content, hidden) {
+        if (!this.config[menuType]) {
+            this.config[menuType] = {};
+        }
+        const key = this._normalizeKey(content);
+        if (hidden) {
+            this.config[menuType][key] = true;
+        } else {
+            delete this.config[menuType][key];
+        }
+        this.saveConfig();
+        this._applyHideToOpenMenus();
+    },
+
+    resetAll() {
+        this.config = { canvas: {}, node: {} };
+        this.saveConfig();
+        this._applyHideToOpenMenus();
+    },
+
+    _applyHideToOpenMenus() {
+        const menus = document.querySelectorAll('.litecontextmenu, .context-menu, .litegraph-contextmenu');
+        menus.forEach(menu => {
+            if (this._enabled) {
+                this._hideFromDOM(menu);
+            } else {
+                const items = menu.querySelectorAll('.litemenu-entry, .context-menu-item, .menu-item, .lite-menu-item');
+                items.forEach(item => {
+                    item.style.display = '';
+                });
+                const separators = menu.querySelectorAll('.separator, .litemenu-separator, hr');
+                separators.forEach(sep => {
+                    sep.style.display = '';
+                });
+            }
+        });
+    },
+
+    _normalizeKey(content) {
+        if (!content) return '';
+        if (typeof content === 'string') {
+            return content.replace(/<[^>]*>/g, '').trim();
+        }
+        const candidates = ['content', 'title', 'value', 'label', 'text', 'name'];
+        for (const prop of candidates) {
+            if (content[prop]) {
+                return String(content[prop]).replace(/<[^>]*>/g, '').trim();
+            }
+        }
+        return String(content).replace(/<[^>]*>/g, '').trim();
+    },
+
+    _collectItems(options, menuType) {
+        if (!options || !Array.isArray(options)) return;
+        const list = this._collectedItems[menuType];
+        if (!list) return;
+
+        const existing = new Set(list);
+        let changed = false;
+
+        const addItem = (opt) => {
+            if (!opt || opt === null) return;
+            const key = this._normalizeKey(opt);
+            if (!key || existing.has(key)) return;
+            existing.add(key);
+            list.push(key);
+            changed = true;
+
+            let subOptions = null;
+            if (opt.submenu) {
+                if (opt.submenu.options) {
+                    subOptions = opt.submenu.options;
+                } else if (typeof opt.submenu === 'function') {
+                    try {
+                        const result = opt.submenu();
+                        if (Array.isArray(result)) subOptions = result;
+                        else if (result?.options) subOptions = result.options;
+                    } catch(e) {}
+                } else if (Array.isArray(opt.submenu)) {
+                    subOptions = opt.submenu;
+                }
+            }
+            if (opt.options && Array.isArray(opt.options)) {
+                subOptions = opt.options;
+            }
+            if (opt.items && Array.isArray(opt.items)) {
+                subOptions = opt.items;
+            }
+            if (subOptions) {
+                subOptions.forEach(sub => addItem(sub));
+            }
+        };
+
+        options.forEach(o => addItem(o));
+
+        if (changed) {
+            list.sort();
+        }
+    },
+
+    _filterOptions(options, menuType) {
+        if (!options || !Array.isArray(options)) return options;
+
+        this._collectItems(options, menuType);
+
+        if (!this._enabled) return options;
+
+        const self = this;
+
+        const filterOpt = (opt) => {
+            if (opt === null || opt === undefined) return true;
+            const key = self._normalizeKey(opt);
+            if (!key) return true;
+            if (self.isHidden(menuType, key)) return false;
+
+            if (opt.submenu) {
+                if (opt.submenu.options && Array.isArray(opt.submenu.options)) {
+                    opt.submenu.options = opt.submenu.options.filter(o => filterOpt(o));
+                } else if (typeof opt.submenu === 'function') {
+                    const origSubmenu = opt.submenu;
+                    opt.submenu = function() {
+                        const result = origSubmenu.apply(this, arguments);
+                        if (Array.isArray(result)) {
+                            return result.filter(o => filterOpt(o));
+                        } else if (result?.options) {
+                            result.options = result.options.filter(o => filterOpt(o));
+                            return result;
+                        }
+                        return result;
+                    };
+                } else if (Array.isArray(opt.submenu)) {
+                    opt.submenu = opt.submenu.filter(o => filterOpt(o));
+                }
+            }
+            if (opt.options && Array.isArray(opt.options)) {
+                opt.options = opt.options.filter(o => filterOpt(o));
+            }
+            if (opt.items && Array.isArray(opt.items)) {
+                opt.items = opt.items.filter(o => filterOpt(o));
+            }
+            return true;
+        };
+
+        return options.filter(opt => filterOpt(opt));
+    },
+
+    collectCurrentMenu(menuType) {
+        if (!this._canvasOrig && !this._nodeOrig) {
+            this.hookMenus();
+        }
+
+        if (menuType === 'canvas' && this._canvasOrig && app?.canvas) {
+            try {
+                const opts = this._canvasOrig.call(app.canvas);
+                this._collectItems(opts, 'canvas');
+            } catch(e) {}
+        }
+
+        if (menuType === 'node' && this._nodeOrig && app?.canvas) {
+            try {
+                const nodes = app.canvas.selected_nodes;
+                const firstNode = nodes ? Object.values(nodes)[0] : null;
+                if (firstNode) {
+                    const opts = this._nodeOrig.call(app.canvas, firstNode);
+                    this._collectItems(opts, 'node');
+                }
+            } catch(e) {}
+        }
+    },
+
+    hookMenus() {
+        const self = this;
+
+        const waitForLiteGraph = () => {
+            if (typeof LiteGraph === 'undefined' || !LiteGraph?.LGraphCanvas?.prototype) {
+                setTimeout(waitForLiteGraph, 100);
+                return;
+            }
+
+            if (!self._canvasOrig) {
+                self._canvasOrig = LiteGraph.LGraphCanvas.prototype.getCanvasMenuOptions;
+                LiteGraph.LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+                    let options = self._canvasOrig.apply(this, arguments);
+                    options = self._filterOptions(options, 'canvas');
+                    return options;
+                };
+            }
+
+            if (!self._nodeOrig) {
+                self._nodeOrig = LiteGraph.LGraphCanvas.prototype.getNodeMenuOptions;
+                LiteGraph.LGraphCanvas.prototype.getNodeMenuOptions = function(node) {
+                    let options = self._nodeOrig.apply(this, arguments);
+                    options = self._filterOptions(options, 'node');
+                    return options;
+                };
+            }
+
+            if (!self._contextMenuOrig && LiteGraph.ContextMenu) {
+                self._contextMenuOrig = LiteGraph.ContextMenu;
+                const origContextMenu = LiteGraph.ContextMenu;
+
+                function XZGContextMenu(options, opts) {
+                    let filteredOptions = options;
+                    try {
+                        let menuType = null;
+
+                        if (opts && opts.event) {
+                            const e = opts.event;
+                            const target = e.target;
+                            if (target) {
+                                const canvasEl = app?.canvas?.canvas;
+                                const graphCanvasEl = document.getElementById('graphCanvas');
+                                const isCanvasClick = 
+                                    target === canvasEl ||
+                                    (graphCanvasEl && (target === graphCanvasEl || target.closest('#graphCanvas'))) ||
+                                    target.classList?.contains('graphcanvas') ||
+                                    target.closest?.('.graphcanvas');
+
+                                if (isCanvasClick) {
+                                    let node = null;
+                                    if (app?.canvas?.getNodeAtPosition) {
+                                        const canvasX = e.canvasX ?? e._canvas_x;
+                                        const canvasY = e.canvasY ?? e._canvas_y;
+                                        if (canvasX !== undefined && canvasY !== undefined) {
+                                            node = app.canvas.getNodeAtPosition(canvasX, canvasY);
+                                        }
+                                    }
+                                    if (!node && app?.canvas?.selected_nodes && Object.keys(app.canvas.selected_nodes).length > 0) {
+                                        node = Object.values(app.canvas.selected_nodes)[0];
+                                    }
+                                    menuType = node ? 'node' : 'canvas';
+                                }
+                            }
+                        }
+
+                        if (!menuType) {
+                            if (opts && opts.parentMenu) {
+                                menuType = self._lastMenuType || 'canvas';
+                            }
+                        }
+
+                        if (!menuType) {
+                            if (options && options.length > 0) {
+                                const firstOpt = options.find(o => o && typeof o !== 'string');
+                                if (firstOpt) {
+                                    const hasNodeProps = firstOpt.hasOwnProperty?.('properties') || 
+                                        firstOpt.hasOwnProperty?.('mode') ||
+                                        firstOpt.hasOwnProperty?.('inputs');
+                                    if (hasNodeProps) {
+                                        menuType = 'node';
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!menuType) {
+                            menuType = self._lastMenuType || 'canvas';
+                        }
+
+                        if (menuType) {
+                            self._lastMenuType = menuType;
+                            self._collectItems(options, menuType);
+                            filteredOptions = self._filterOptions(options, menuType);
+                        }
+                    } catch(e) {
+                        console.warn('[小珠光] ContextMenu filter error:', e);
+                    }
+
+                    const instance = new origContextMenu(filteredOptions, opts);
+                    return instance;
+                }
+
+                XZGContextMenu.prototype = origContextMenu.prototype;
+                Object.setPrototypeOf(XZGContextMenu, origContextMenu);
+
+                for (const key in origContextMenu) {
+                    if (Object.prototype.hasOwnProperty.call(origContextMenu, key)) {
+                        XZGContextMenu[key] = origContextMenu[key];
+                    }
+                }
+
+                LiteGraph.ContextMenu = XZGContextMenu;
+            }
+
+            self._startDOMObserver();
+        };
+
+        waitForLiteGraph();
+    },
+
+    _domObserver: null,
+    _lastMenuType: 'canvas',
+
+    _startDOMObserver() {
+        if (this._domObserver) return;
+        const self = this;
+
+        this._domObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType === 1) {
+                        const el = node;
+                        let menuEl = null;
+                        if (el.classList && (
+                            el.classList.contains('litecontextmenu') ||
+                            el.classList.contains('context-menu') ||
+                            el.classList.contains('litegraph-contextmenu') ||
+                            (el.tagName === 'DIV' && el.querySelector?.('.litemenu-title'))
+                        )) {
+                            menuEl = el;
+                        }
+                        if (!menuEl) {
+                            const inner = el.querySelector?.('.litecontextmenu, .context-menu, .litegraph-contextmenu');
+                            if (inner) menuEl = inner;
+                        }
+
+                        if (menuEl) {
+                            self._collectFromDOM(menuEl);
+                            setTimeout(() => {
+                                self._hideFromDOM(menuEl);
+                            }, 10);
+                            setTimeout(() => {
+                                self._hideFromDOM(menuEl);
+                            }, 50);
+                        }
+                    }
+                }
+            }
+        });
+
+        this._domObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    },
+
+    _collectFromDOM(menuEl) {
+        if (!menuEl) return;
+        const self = this;
+        let menuType = this._lastMenuType || 'canvas';
+
+        const items = menuEl.querySelectorAll('.litemenu-entry, .context-menu-item, .menu-item, .lite-menu-item');
+        const collected = [];
+
+        items.forEach(item => {
+            const text = item.textContent?.trim() || item.innerText?.trim();
+            if (text && text.length < 50 && !text.match(/^[\d\s\-\.]+$/)) {
+                collected.push(text);
+            }
+        });
+
+        if (collected.length > 0 && this._collectedItems[menuType]) {
+            const list = this._collectedItems[menuType];
+            const existing = new Set(list);
+            let changed = false;
+            collected.forEach(text => {
+                const key = text.replace(/<[^>]*>/g, '').trim();
+                if (key && !existing.has(key)) {
+                    existing.add(key);
+                    list.push(key);
+                    changed = true;
+                }
+            });
+            if (changed) {
+                list.sort();
+                if (window.xzgThemePanel && window.xzgThemePanel._menuListVisible) {
+                    window.xzgThemePanel._refreshMenuListUI?.();
+                }
+            }
+        }
+    },
+
+    _hideFromDOM(menuEl) {
+        if (!menuEl || !this._enabled) return;
+        const self = this;
+
+        const allHiddenKeys = new Set();
+        for (const menuType of ['canvas', 'node']) {
+            const hiddenMap = this.config[menuType] || {};
+            Object.keys(hiddenMap).forEach(key => allHiddenKeys.add(key));
+        }
+        if (allHiddenKeys.size === 0) return;
+
+        const hideItem = (item) => {
+            const text = item.textContent?.trim() || item.innerText?.trim();
+            if (!text) return;
+            const key = text.replace(/<[^>]*>/g, '').trim();
+            if (!key) return;
+
+            for (const hiddenKey of allHiddenKeys) {
+                if (key === hiddenKey || key.includes(hiddenKey) || hiddenKey.includes(key)) {
+                    item.style.display = 'none';
+                    break;
+                }
+            }
+        };
+
+        const items = menuEl.querySelectorAll('.litemenu-entry, .context-menu-item, .menu-item, .lite-menu-item, [class*="menu-entry"], [class*="menu-item"]');
+        items.forEach(item => hideItem(item));
+
+        const allItems = menuEl.querySelectorAll('*');
+        allItems.forEach(el => {
+            if (el.children && el.children.length === 0) {
+                const text = el.textContent?.trim();
+                if (text && text.length > 0 && text.length < 50) {
+                    for (const hiddenKey of allHiddenKeys) {
+                        if (text === hiddenKey || text.includes(hiddenKey) || hiddenKey.includes(text)) {
+                            let parent = el.parentElement;
+                            for (let i = 0; i < 5 && parent; i++) {
+                                if (parent.tagName === 'LI' || 
+                                    parent.classList?.contains('litemenu-entry') ||
+                                    parent.classList?.contains('context-menu-item') ||
+                                    parent.classList?.contains('menu-item')) {
+                                    parent.style.display = 'none';
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        const checkSeparator = (item) => {
+            if (!item.previousElementSibling) return;
+            const prev = item.previousElementSibling;
+            const isSeparator = prev.classList?.contains('separator') ||
+                prev.classList?.contains('litemenu-separator') ||
+                prev.tagName === 'HR' ||
+                prev.style?.borderTop;
+            if (!isSeparator && prev.tagName !== 'HR') {
+                const cls = prev.className;
+                if (typeof cls === 'string' && (cls.includes('separator') || cls.includes('divider'))) {
+                    // 可能是分隔符
+                } else {
+                    return;
+                }
+            }
+
+            let nextVisible = item.nextElementSibling;
+            while (nextVisible && nextVisible.style.display === 'none') {
+                nextVisible = nextVisible.nextElementSibling;
+            }
+            if (!nextVisible) {
+                prev.style.display = 'none';
+            }
+        };
+
+        items.forEach(item => checkSeparator(item));
+    }
+};
+
+(function() {
+    function tryInit() {
+        if (typeof LiteGraph !== 'undefined' && LiteGraph?.LGraphCanvas?.prototype) {
+            window.XZGMenuHide.init();
+        } else {
+            setTimeout(tryInit, 200);
+        }
+    }
+    tryInit();
+})();

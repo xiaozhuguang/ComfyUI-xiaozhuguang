@@ -1,9 +1,39 @@
+import os
+import sys
+import subprocess
+
+_ffmpeg_bin = r"E:\ComfyUI-aki-XZG\ffmpeg\bin"
+if os.path.isdir(_ffmpeg_bin) and _ffmpeg_bin not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = _ffmpeg_bin + os.pathsep + os.environ.get('PATH', '')
+
+
+def _patch_subprocess_encoding():
+    if getattr(subprocess, '_xzg_patched', False):
+        return
+    _orig_Popen_init = subprocess.Popen.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        has_text = (
+            kwargs.get('text', False)
+            or kwargs.get('universal_newlines', False)
+            or kwargs.get('encoding') is not None
+            or kwargs.get('errors') is not None
+        )
+        if has_text and kwargs.get('errors') is None:
+            kwargs['errors'] = 'replace'
+        _orig_Popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _patched_init
+    subprocess._xzg_patched = True
+
+
+_patch_subprocess_encoding()
+
 import torch
 import numpy as np
 from PIL import Image
 import hashlib
 import json
-import os
 import random
 import folder_paths
 from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct

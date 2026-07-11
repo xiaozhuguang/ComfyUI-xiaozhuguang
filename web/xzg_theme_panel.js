@@ -89,12 +89,17 @@ window.XZGThemePanel = {
 
         panel.innerHTML = `
             <div class="xzg-theme-header">
-                <span class="xzg-theme-title">小珠光主题</span>
+                <span class="xzg-theme-title">小珠光</span>
                 <div class="xzg-theme-header-btns">
                     <button type="button" class="xzg-theme-shortcut-btn" id="xzg-theme-shortcut-btn"></button>
                     <button type="button" class="xzg-theme-close">×</button>
                 </div>
             </div>
+            <div class="xzg-top-tabs">
+                <button type="button" class="xzg-top-tab active" data-top-tab="theme">主题</button>
+                <button type="button" class="xzg-top-tab" data-top-tab="menuhide">菜单隐藏</button>
+            </div>
+            <div class="xzg-tab-content" data-tab-content="theme">
             <div class="xzg-picker-section">
                 <div class="xzg-sv-area" id="xzg-sv-area">
                     <div class="xzg-sv-white"></div>
@@ -274,6 +279,24 @@ window.XZGThemePanel = {
                         </div>
                     </div> -->
 
+                </div>
+            </div>
+            </div>
+            <div class="xzg-tab-content" data-tab-content="menuhide" style="display:none;">
+                <div class="xzg-menu-hide-full">
+                    <div class="xzg-menu-hide-tabs">
+                        <button type="button" class="xzg-menu-tab active" data-menu-tab="canvas">画布菜单</button>
+                        <button type="button" class="xzg-menu-tab" data-menu-tab="node">节点菜单</button>
+                    </div>
+                    <div class="xzg-menu-hide-toolbar">
+                        <button type="button" id="xzg-menu-refresh-btn" class="xzg-menu-tool-btn">刷新列表</button>
+                        <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">隐藏全部</button>
+                        <button type="button" id="xzg-menu-unselectall-btn" class="xzg-menu-tool-btn">显示全部</button>
+                    </div>
+                    <div class="xzg-menu-hide-list" id="xzg-menu-hide-list">
+                        <div class="xzg-menu-empty-tip">点击「刷新列表」加载菜单项<br><span style="font-size:11px;color:#888;">提示：先在画布上右键一次再刷新</span></div>
+                    </div>
+                    <button type="button" id="xzg-menu-reset-btn" class="xzg-menu-reset-btn">恢复所有隐藏菜单</button>
                 </div>
             </div>
         `;
@@ -670,6 +693,189 @@ window.XZGThemePanel = {
         //         if (label) label.textContent = "开";
         //     }
         // }
+
+        // 菜单隐藏功能
+        const menuHideBtn = panel.querySelector("#xzg-menu-hide-btn");
+        const menuHideControls = panel.querySelector("#xzg-menu-hide-controls");
+        const menuHideList = panel.querySelector("#xzg-menu-hide-list");
+        const menuTabs = panel.querySelectorAll(".xzg-menu-tab");
+        const menuRefreshBtn = panel.querySelector("#xzg-menu-refresh-btn");
+        const menuSelectAllBtn = panel.querySelector("#xzg-menu-selectall-btn");
+        const menuUnselectAllBtn = panel.querySelector("#xzg-menu-unselectall-btn");
+        const menuResetBtn = panel.querySelector("#xzg-menu-reset-btn");
+
+        let currentMenuTab = 'canvas';
+
+        const renderMenuList = () => {
+            if (!window.XZGMenuHide || !menuHideList) return;
+            const mh = window.XZGMenuHide;
+            const hiddenMap = mh.config[currentMenuTab] || {};
+            const items = mh._collectedItems?.[currentMenuTab] || [];
+
+            if (items.length === 0) {
+                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">点击「刷新列表」加载菜单项<br><span style="font-size:11px;color:#888;">提示：先在画布上右键一次再刷新</span></div>';
+                return;
+            }
+
+            let html = '';
+            items.forEach(item => {
+                const isHidden = !!hiddenMap[item];
+                const displayName = item.length > 28 ? item.substring(0, 28) + '...' : item;
+                html += `
+                    <label class="xzg-menu-item" title="${item.replace(/"/g, '&quot;')}">
+                        <input type="checkbox" data-menu-item="${item.replace(/"/g, '&quot;')}" ${isHidden ? 'checked' : ''}>
+                        <span>${displayName}</span>
+                    </label>
+                `;
+            });
+            menuHideList.innerHTML = html;
+
+            menuHideList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const item = cb.dataset.menuItem;
+                    const checked = cb.checked;
+                    if (window.XZGMenuHide) {
+                        window.XZGMenuHide.setHidden(currentMenuTab, item, checked);
+                    }
+                });
+            });
+        };
+
+        if (menuHideBtn && menuHideBtn.parentNode) {
+            menuHideBtn.parentNode.removeChild(menuHideBtn);
+        }
+
+        const topTabs = panel.querySelectorAll(".xzg-top-tab");
+        const tabContents = panel.querySelectorAll(".xzg-tab-content");
+        let themeTabHeight = 0;
+
+        const switchTopTab = (tabName) => {
+            if (tabName === 'menuhide') {
+                const themeTab = panel.querySelector('.xzg-tab-content[data-tab-content="theme"]');
+                if (themeTab && themeTab.offsetHeight > 0) {
+                    themeTabHeight = themeTab.offsetHeight;
+                }
+                const menuTab = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
+                if (menuTab && themeTabHeight > 0) {
+                    menuTab.style.height = themeTabHeight + 'px';
+                }
+            }
+            topTabs.forEach(t => t.classList.toggle('active', t.dataset.topTab === tabName));
+            tabContents.forEach(c => {
+                c.style.display = c.dataset.tabContent === tabName ? '' : 'none';
+            });
+
+            try { localStorage.setItem('xzg-theme-panel-tab', tabName); } catch(e) {}
+
+            if (tabName === 'menuhide') {
+                if (window.XZGMenuHide) {
+                    window.XZGMenuHide.setEnabled(true);
+                    window.XZGMenuHide.init();
+                }
+                setTimeout(renderMenuList, 100);
+            }
+        };
+
+        topTabs.forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                e.stopPropagation();
+                switchTopTab(tab.dataset.topTab);
+            });
+        });
+
+        let savedTab = 'theme';
+        try {
+            const t = localStorage.getItem('xzg-theme-panel-tab');
+            if (t === 'menuhide' || t === 'theme') savedTab = t;
+        } catch(e) {}
+
+        if (savedTab === 'menuhide') {
+            const themeTab = panel.querySelector('.xzg-tab-content[data-tab-content="theme"]');
+            const menuTab = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
+            if (themeTab && menuTab) {
+                themeTab.style.display = '';
+                menuTab.style.display = 'none';
+                requestAnimationFrame(() => {
+                    if (themeTab.offsetHeight > 0) {
+                        menuTab.style.height = themeTab.offsetHeight + 'px';
+                    }
+                    switchTopTab(savedTab);
+                });
+            } else {
+                switchTopTab(savedTab);
+            }
+        } else {
+            switchTopTab(savedTab);
+        }
+
+        if (menuTabs && menuTabs.length > 0) {
+            menuTabs.forEach(tab => {
+                tab.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    currentMenuTab = tab.dataset.menuTab;
+                    menuTabs.forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    renderMenuList();
+                });
+            });
+        }
+
+        if (menuRefreshBtn) {
+            menuRefreshBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (window.XZGMenuHide) {
+                    window.XZGMenuHide.collectCurrentMenu(currentMenuTab);
+                    renderMenuList();
+                }
+            });
+        }
+
+        if (menuSelectAllBtn) {
+            menuSelectAllBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!window.XZGMenuHide) return;
+                const mh = window.XZGMenuHide;
+                const items = mh._collectedItems?.[currentMenuTab] || [];
+                items.forEach(item => mh.setHidden(currentMenuTab, item, true));
+                renderMenuList();
+            });
+        }
+
+        if (menuUnselectAllBtn) {
+            menuUnselectAllBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!window.XZGMenuHide) return;
+                const mh = window.XZGMenuHide;
+                const items = mh._collectedItems?.[currentMenuTab] || [];
+                items.forEach(item => mh.setHidden(currentMenuTab, item, false));
+                renderMenuList();
+            });
+        }
+
+        if (menuResetBtn) {
+            menuResetBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!window.XZGMenuHide) return;
+                if (confirm('确定要恢复所有被隐藏的菜单项吗？')) {
+                    window.XZGMenuHide.resetAll();
+                    renderMenuList();
+                }
+            });
+        }
+
+        if (window.XZGMenuHide) {
+            setTimeout(renderMenuList, 200);
+        }
+
+        this._menuListVisible = true;
+        this._refreshMenuListUI = () => {
+            if (this._menuListVisible && panel.style.display !== 'none') {
+                const menuContent = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
+                if (menuContent && menuContent.style.display !== 'none') {
+                    renderMenuList();
+                }
+            }
+        };
 
         panel.addEventListener("pointerdown", (e) => e.stopPropagation());
         panel.addEventListener("mousedown", (e) => e.stopPropagation());

@@ -29,6 +29,40 @@
     font-size: 13px;
 }
 
+.xzg-top-tabs {
+    display: flex;
+    background: #222;
+    border-bottom: 1px solid #444;
+}
+
+.xzg-top-tab {
+    flex: 1;
+    padding: 8px 12px;
+    background: transparent;
+    color: #888;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+    border-bottom: 2px solid transparent;
+}
+
+.xzg-top-tab:hover {
+    color: #ddd;
+    background: #2a2a2a;
+}
+
+.xzg-top-tab.active {
+    color: #222;
+    background: #FFD700;
+    border-bottom-color: #FFD700;
+    font-weight: bold;
+}
+
+.xzg-tab-content {
+    width: 100%;
+}
+
 .xzg-theme-close {
     background: none;
     border: none;
@@ -341,4 +375,151 @@
 
 .xzg-theme-content::-webkit-scrollbar-thumb:hover {
     background: #666;
+}
+
+.xzg-menu-hide-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.xzg-menu-hide-controls {
+    margin-top: 8px;
+}
+
+.xzg-menu-hide-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 6px;
+}
+
+.xzg-menu-tab {
+    flex: 1;
+    padding: 5px 4px;
+    background: #333;
+    color: #aaa;
+    border: 1px solid #444;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: all 0.2s;
+}
+
+.xzg-menu-tab:hover {
+    background: #3a3a3a;
+    color: #ddd;
+}
+
+.xzg-menu-tab.active {
+    background: #4a4a4a;
+    color: #FFD700;
+    border-color: #FFD700;
+}
+
+.xzg-menu-hide-toolbar {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.xzg-menu-tool-btn {
+    flex: 1;
+    padding: 4px 6px;
+    background: #333;
+    color: #aaa;
+    border: 1px solid #444;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: all 0.2s;
+}
+
+.xzg-menu-tool-btn:hover {
+    background: #3a3a3a;
+    color: #fff;
+}
+
+.xzg-menu-hide-list {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px;
+    background: #1a1a1a;
+}
+
+.xzg-menu-hide-full {
+    padding: 10px 12px;
+}
+
+.xzg-menu-empty-tip {
+    text-align: center;
+    color: #888;
+    font-size: 11px;
+    padding: 20px 8px;
+    line-height: 1.6;
+}
+
+.xzg-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    cursor: pointer;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #ccc;
+    transition: background 0.15s;
+}
+
+.xzg-menu-item:hover {
+    background: #2a2a2a;
+}
+
+.xzg-menu-item input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: #FFD700;
+}
+
+.xzg-menu-item span {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.xzg-menu-reset-btn {
+    width: 100%;
+    padding: 6px 12px;
+    background: #444;
+    color: #aaa;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: all 0.2s;
+    margin-top: 8px;
+}
+
+.xzg-menu-reset-btn:hover {
+    background: #555;
+    color: #fff;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar {
+    width: 5px;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 2px;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar-thumb:hover {
+    background: #555;
 }

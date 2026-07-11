@@ -21,6 +21,9 @@ window.XZGThemeManager = {
     wallpaperFit: 'cover',
     _wallpaperEl: null,
     _wallpaperVideoEl: null,
+    _wpDB: null,
+    _wpDBReady: false,
+    _wpPendingSave: null,
 
     init() {
         // 从 localStorage 恢复连线高亮和激光动画状态
@@ -57,7 +60,7 @@ window.XZGThemeManager = {
             this.linkColorActive = false;
         } catch(e) {}
 
-        // 从 localStorage 恢复壁纸设置
+        // 从 localStorage 恢复壁纸设置（小数据）
         try {
             const wpActive = localStorage.getItem('xzg-wallpaper-active');
             if (wpActive === 'true') {
@@ -85,6 +88,7 @@ window.XZGThemeManager = {
         this.setupContextMenu();
         this.ensureCanvasHook();
         this.hookSerialize();
+        this._initWallpaperDB();
         this.initWallpaper();
     },
 
@@ -161,6 +165,60 @@ window.XZGThemeManager = {
 
 .xzg-theme-close:hover {
     opacity: 1;
+}
+
+.xzg-top-tabs {
+    display: flex;
+    background: #1e1e1e;
+    border-bottom: 2px solid #333;
+    position: relative;
+}
+
+.xzg-top-tab {
+    flex: 1;
+    padding: 8px 0;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    position: relative;
+    letter-spacing: 1px;
+}
+
+.xzg-top-tab:hover {
+    color: #ccc;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.xzg-top-tab.active {
+    color: #FFD700;
+    font-weight: bold;
+    text-shadow: 0 0 8px rgba(255, 215, 0, 0.4);
+}
+
+.xzg-top-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 15%;
+    width: 70%;
+    height: 2px;
+    background: #FFD700;
+    box-shadow: 0 0 6px rgba(255, 215, 0, 0.6);
+    border-radius: 2px 2px 0 0;
+}
+
+.xzg-tab-content {
+    box-sizing: border-box;
+}
+
+.xzg-tab-content[data-tab-content="menuhide"] {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .xzg-theme-content {
@@ -895,6 +953,153 @@ window.XZGThemeManager = {
     cursor: pointer;
     border: 2px solid #fff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.xzg-menu-hide-full {
+    flex: 1;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.xzg-menu-hide-tabs {
+    display: flex;
+    gap: 2px;
+    background: #1e1e1e;
+    padding: 3px;
+    border-radius: 4px;
+}
+
+.xzg-menu-tab {
+    flex: 1;
+    padding: 5px 0;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.15s;
+}
+
+.xzg-menu-tab:hover {
+    color: #ccc;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.xzg-menu-tab.active {
+    background: #3a3a3a;
+    color: #FFD700;
+    font-weight: bold;
+}
+
+.xzg-menu-hide-toolbar {
+    display: flex;
+    gap: 4px;
+}
+
+.xzg-menu-tool-btn {
+    flex: 1;
+    height: 26px;
+    border: 1px solid #444;
+    border-radius: 3px;
+    background: #333;
+    color: #bbb;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 6px;
+    transition: all 0.15s;
+}
+
+.xzg-menu-tool-btn:hover {
+    background: #444;
+    border-color: #666;
+    color: #fff;
+}
+
+.xzg-menu-hide-list {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    background: #1a1a1a;
+    padding: 4px;
+    min-height: 0;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.xzg-menu-hide-list::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+.xzg-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: background 0.1s;
+    font-size: 12px;
+    color: #ccc;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.xzg-menu-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.xzg-menu-item input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+    accent-color: #FFD700;
+}
+
+.xzg-menu-item span {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.xzg-menu-empty-tip {
+    text-align: center;
+    color: #666;
+    font-size: 12px;
+    padding: 30px 10px;
+    line-height: 1.6;
+}
+
+.xzg-menu-reset-btn {
+    width: 100%;
+    height: 28px;
+    border: 1px solid #773333;
+    border-radius: 4px;
+    background: #3a1a1a;
+    color: #e07070;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s;
+}
+
+.xzg-menu-reset-btn:hover {
+    background: #4a1a1a;
+    border-color: #aa4444;
+    color: #ff8080;
 }
         `;
         
@@ -2354,6 +2559,150 @@ window.XZGThemeManager = {
         this.showPanelForNodes(this.currentNodes);
     },
 
+    _initWallpaperDB() {
+        const self = this;
+        try {
+            if (!window.indexedDB) {
+                this._wpDBReady = true;
+                return;
+            }
+            const request = indexedDB.open('XzgThemeWallpaper', 1);
+            request.onupgradeneeded = function(e) {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('wallpapers')) {
+                    db.createObjectStore('wallpapers', { keyPath: 'id' });
+                }
+            };
+            request.onsuccess = function(e) {
+                self._wpDB = e.target.result;
+                self._wpDBReady = true;
+                self._loadWallpaperFromDB();
+                if (self._wpPendingSave) {
+                    const pending = self._wpPendingSave;
+                    self._wpPendingSave = null;
+                    self._doSaveWallpaperToDB(pending.type, pending.data);
+                }
+            };
+            request.onerror = function() {
+                self._wpDBReady = true;
+                console.warn('[小珠光主题] IndexedDB 打开失败，将使用 localStorage');
+                if (self._wpPendingSave) {
+                    const pending = self._wpPendingSave;
+                    self._wpPendingSave = null;
+                    try {
+                        localStorage.setItem('xzg-wallpaper-data', pending.data);
+                        localStorage.setItem('xzg-wallpaper-type', pending.type);
+                    } catch(e) {
+                        console.warn('[小珠光主题] 壁纸数据过大，无法保存到 localStorage', e);
+                    }
+                }
+            };
+        } catch(e) {
+            this._wpDBReady = true;
+            console.warn('[小珠光主题] IndexedDB 初始化失败', e);
+        }
+    },
+
+    _loadWallpaperFromDB() {
+        const self = this;
+        if (!this._wpDB) return;
+
+        try {
+            const oldData = localStorage.getItem('xzg-wallpaper-data');
+            if (oldData && oldData.length > 1000) {
+                this._saveWallpaperToDB(this.wallpaperType, oldData);
+                try { localStorage.removeItem('xzg-wallpaper-data'); } catch(e) {}
+                if (this.wallpaperActive && app.canvas) {
+                    this._setCanvasTransparent(true);
+                    this._applyWallpaper();
+                }
+                return;
+            }
+        } catch(e) {}
+
+        try {
+            const transaction = this._wpDB.transaction(['wallpapers'], 'readonly');
+            const store = transaction.objectStore('wallpapers');
+            const request = store.get('current');
+            request.onsuccess = function(e) {
+                const result = e.target.result;
+                if (result && result.data) {
+                    self.wallpaperData = result.data;
+                    if (result.type) {
+                        self.wallpaperType = result.type;
+                        try { localStorage.setItem('xzg-wallpaper-type', result.type); } catch(e) {}
+                    }
+                    const applyWhenReady = () => {
+                        if (!app.canvas) {
+                            setTimeout(applyWhenReady, 50);
+                            return;
+                        }
+                        if (self.wallpaperActive && self.wallpaperData) {
+                            if (!self._wpBgCanvas) {
+                                self._createBgCanvas();
+                            }
+                            if (!self._wpHooked) {
+                                self._hookRenderBackground();
+                            }
+                            self._setCanvasTransparent(true);
+                            self._applyWallpaper();
+                        }
+                    };
+                    applyWhenReady();
+                }
+            };
+        } catch(e) {
+            console.warn('[小珠光主题] 从 IndexedDB 读取壁纸失败', e);
+        }
+    },
+
+    _saveWallpaperToDB(type, data) {
+        if (!this._wpDBReady) {
+            this._wpPendingSave = { type: type, data: data };
+            return true;
+        }
+        if (!this._wpDB) return false;
+        return this._doSaveWallpaperToDB(type, data);
+    },
+
+    _doSaveWallpaperToDB(type, data) {
+        if (!this._wpDB) return false;
+        const self = this;
+        try {
+            const transaction = this._wpDB.transaction(['wallpapers'], 'readwrite');
+            const store = transaction.objectStore('wallpapers');
+            const request = store.put({ id: 'current', type: type, data: data });
+            transaction.oncomplete = function() {
+                try { localStorage.removeItem('xzg-wallpaper-data'); } catch(e) {}
+            };
+            transaction.onerror = function(e) {
+                console.warn('[小珠光主题] 保存壁纸到 IndexedDB 失败', e);
+                try {
+                    localStorage.setItem('xzg-wallpaper-data', data);
+                    localStorage.setItem('xzg-wallpaper-type', type);
+                } catch(e2) {
+                    console.warn('[小珠光主题] 壁纸数据过大，无法保存', e2);
+                }
+            };
+            return true;
+        } catch(e) {
+            console.warn('[小珠光主题] 保存壁纸到 IndexedDB 异常', e);
+            return false;
+        }
+    },
+
+    _deleteWallpaperFromDB() {
+        if (!this._wpDB) {
+            this._wpPendingSave = null;
+            return;
+        }
+        try {
+            const transaction = this._wpDB.transaction(['wallpapers'], 'readwrite');
+            const store = transaction.objectStore('wallpapers');
+            store.delete('current');
+        } catch(e) {}
+    },
+
     initWallpaper() {
         const self = this;
         const tryInit = () => {
@@ -2630,6 +2979,15 @@ window.XZGThemeManager = {
             this._wpVideo.style.display = 'none';
             document.body.appendChild(this._wpVideo);
 
+            this._wpVideo.addEventListener('loadeddata', function() {
+                if (self.wallpaperActive && self.wallpaperType === 'video') {
+                    self._renderWallpaperToBgCanvas();
+                    if (app.canvas?.setDirty) {
+                        app.canvas.setDirty(true, true);
+                    }
+                }
+            });
+
             document.addEventListener('visibilitychange', () => {
                 if (!self._wpVideoPlaying) return;
                 if (document.hidden) {
@@ -2646,6 +3004,7 @@ window.XZGThemeManager = {
 
         this._wpVideoSrc = this.wallpaperData;
         this._wpVideo.src = this.wallpaperData;
+        this._wpVideo.load();
         this._wpVideo.play().then(() => {
             self._wpVideoPlaying = true;
             self._wpVideoFrame();
@@ -2732,11 +3091,18 @@ window.XZGThemeManager = {
         this._wpBgDrawCache = null;
         try {
             localStorage.setItem('xzg-wallpaper-type', type);
-            localStorage.setItem('xzg-wallpaper-data', data);
-        } catch(e) {
-            console.warn('[小珠光主题] 壁纸数据过大，无法保存到 localStorage', e);
+        } catch(e) {}
+        const savedToDB = this._saveWallpaperToDB(type, data);
+        if (!savedToDB) {
+            try {
+                localStorage.setItem('xzg-wallpaper-data', data);
+            } catch(e) {
+                console.warn('[小珠光主题] 壁纸数据过大，无法保存', e);
+            }
         }
-        if (this.wallpaperActive) {
+        if (!this.wallpaperActive) {
+            this.setWallpaperActive(true);
+        } else {
             this._applyWallpaper();
         }
     },
@@ -2769,6 +3135,7 @@ window.XZGThemeManager = {
         this.wallpaperData = null;
         this.wallpaperActive = false;
         this._setCanvasTransparent(false);
+        this._deleteWallpaperFromDB();
         try {
             localStorage.removeItem('xzg-wallpaper-data');
             localStorage.setItem('xzg-wallpaper-active', 'false');
