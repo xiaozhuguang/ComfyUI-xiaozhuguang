@@ -120,11 +120,13 @@ app.registerExtension({
         }
 
         // --- 6个线对齐功能 ---
+        // 左对齐、水平居中、右对齐：以最上面的节点为锚（不动）
+        // 上对齐、垂直居中、下对齐：以最左侧的节点为锚（不动）
         function alignLeft() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getLeftmost(nodes);
+            const anchor = getTopmost(nodes);
             nodes.forEach(n => { n.pos[0] = anchor.pos[0]; });
             endChange();
         }
@@ -132,7 +134,7 @@ app.registerExtension({
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getRightmost(nodes);
+            const anchor = getTopmost(nodes);
             const tx = anchor.pos[0] + anchor.size[0];
             nodes.forEach(n => { n.pos[0] = tx - n.size[0]; });
             endChange();
@@ -141,7 +143,7 @@ app.registerExtension({
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getTopmost(nodes);
+            const anchor = getLeftmost(nodes);
             nodes.forEach(n => { n.pos[1] = anchor.pos[1]; });
             endChange();
         }
@@ -149,7 +151,7 @@ app.registerExtension({
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getBottommost(nodes);
+            const anchor = getLeftmost(nodes);
             const ty = anchor.pos[1] + anchor.size[1];
             nodes.forEach(n => { n.pos[1] = ty - n.size[1]; });
             endChange();
@@ -158,7 +160,7 @@ app.registerExtension({
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getClosestToCenterH(nodes);
+            const anchor = getTopmost(nodes);
             const cx = anchor.pos[0] + anchor.size[0] / 2;
             nodes.forEach(n => { n.pos[0] = cx - n.size[0] / 2; });
             endChange();
@@ -167,19 +169,21 @@ app.registerExtension({
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getClosestToCenterV(nodes);
+            const anchor = getLeftmost(nodes);
             const cy = anchor.pos[1] + anchor.size[1] / 2;
             nodes.forEach(n => { n.pos[1] = cy - n.size[1] / 2; });
             endChange();
         }
 
         // --- 4个区域分布功能 ---
-        // 左侧区域：水平居中(以最接近中间的节点为锚) + 垂直等距分布(两端不动)
+        // 上下分布（左侧/右侧区域）：以最上面节点为锚点
+        // 左右分布（上侧/下侧区域）：以最左侧节点为锚点
+        // 左侧区域：水平居中(以最上面节点为锚) + 垂直等距分布(两端不动)
         function distVLeftAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getClosestToCenterH(nodes);
+            const anchor = getTopmost(nodes);
             const targetCX = anchor.pos[0] + anchor.size[0] / 2;
             nodes.forEach(n => { n.pos[0] = targetCX - n.size[0] / 2; });
 
@@ -192,7 +196,7 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[1] = y; y += n.size[1] + gap; });
             endChange();
         }
-        // 右侧区域：水平居中(以最上面节点为锚) + 垂直固定间距25px堆叠(最上节点不动)
+        // 右侧区域：水平居中(以最上面节点为锚) + 垂直固定间距50px堆叠(最上节点不动)
         function distVRightAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
@@ -208,12 +212,12 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[1] = y; y += n.size[1] + GAP; });
             endChange();
         }
-        // 上侧区域：垂直居中(以最接近中间的节点为锚) + 水平等距分布(两端不动)
+        // 上侧区域：垂直居中(以最左侧节点为锚) + 水平等距分布(两端不动)
         function distHTopAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getClosestToCenterV(nodes);
+            const anchor = getLeftmost(nodes);
             const targetCY = anchor.pos[1] + anchor.size[1] / 2;
             nodes.forEach(n => { n.pos[1] = targetCY - n.size[1] / 2; });
 
@@ -226,17 +230,18 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[0] = x; x += n.size[0] + gap; });
             endChange();
         }
-        // 下侧区域：垂直居中 + 水平固定间距50px
+        // 下侧区域：垂直居中(以最左侧节点为锚) + 水平固定间距50px(最左节点不动)
         function distHBottomAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const avgCY = nodes.reduce((a, n) => a + n.pos[1] + n.size[1] / 2, 0) / nodes.length;
+            const anchor = getLeftmost(nodes);
+            const targetCY = anchor.pos[1] + anchor.size[1] / 2;
             const GAP = 50;
-            nodes.forEach(n => { n.pos[1] = avgCY - n.size[1] / 2; });
+            nodes.forEach(n => { n.pos[1] = targetCY - n.size[1] / 2; });
 
             const sorted = [...nodes].sort((a, b) => a.pos[0] - b.pos[0]);
-            const startX = sorted[0].pos[0];
+            const startX = anchor.pos[0];
             let x = startX;
             sorted.forEach(n => { n.pos[0] = x; x += n.size[0] + GAP; });
             endChange();
