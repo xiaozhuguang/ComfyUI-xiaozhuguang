@@ -7,6 +7,11 @@ app.registerExtension({
         const DEFAULT_THEME = "#FFD700";
         let THEME_COLOR = localStorage.getItem("xiaozhuguang.tian.themeColor") || DEFAULT_THEME;
 
+        const DEFAULT_V_GAP = 50;
+        const DEFAULT_H_GAP = 100;
+        let V_GAP = parseInt(localStorage.getItem("xiaozhuguang.tian.vGap")) || DEFAULT_V_GAP;
+        let H_GAP = parseInt(localStorage.getItem("xiaozhuguang.tian.hGap")) || DEFAULT_H_GAP;
+
         function hexToRgba(hex, alpha) {
             const h = hex.replace("#", "");
             const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
@@ -196,7 +201,7 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[1] = y; y += n.size[1] + gap; });
             endChange();
         }
-        // 右侧区域：水平居中(以最上面节点为锚) + 垂直固定间距50px堆叠(最上节点不动)
+        // 右侧区域：水平居中(以最上面节点为锚) + 垂直固定间距堆叠(最上节点不动)
         function distVRightAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
@@ -204,12 +209,11 @@ app.registerExtension({
             const anchor = getTopmost(nodes);
             const targetCX = anchor.pos[0] + anchor.size[0] / 2;
             const startY = anchor.pos[1];
-            const GAP = 50;
             nodes.forEach(n => { n.pos[0] = targetCX - n.size[0] / 2; });
 
             const sorted = [...nodes].sort((a, b) => a.pos[1] - b.pos[1]);
             let y = startY;
-            sorted.forEach(n => { n.pos[1] = y; y += n.size[1] + GAP; });
+            sorted.forEach(n => { n.pos[1] = y; y += n.size[1] + V_GAP; });
             endChange();
         }
         // 上侧区域：垂直居中(以最左侧节点为锚) + 水平等距分布(两端不动)
@@ -230,20 +234,19 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[0] = x; x += n.size[0] + gap; });
             endChange();
         }
-        // 下侧区域：垂直居中(以最左侧节点为锚) + 水平固定间距50px(最左节点不动)
+        // 下侧区域：垂直居中(以最左侧节点为锚) + 水平固定间距(最左节点不动)
         function distHBottomAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
             const anchor = getLeftmost(nodes);
             const targetCY = anchor.pos[1] + anchor.size[1] / 2;
-            const GAP = 50;
             nodes.forEach(n => { n.pos[1] = targetCY - n.size[1] / 2; });
 
             const sorted = [...nodes].sort((a, b) => a.pos[0] - b.pos[0]);
             const startX = anchor.pos[0];
             let x = startX;
-            sorted.forEach(n => { n.pos[0] = x; x += n.size[0] + GAP; });
+            sorted.forEach(n => { n.pos[0] = x; x += n.size[0] + H_GAP; });
             endChange();
         }
 
@@ -496,6 +499,11 @@ app.registerExtension({
                     l.setAttribute("stroke", GOLD);
                 });
             }
+            // 长按进度环
+            if (pressRing) {
+                pressRing.setAttribute("stroke", GOLD);
+                pressRing.style.filter = `drop-shadow(0 0 6px ${hexToRgba(THEME_COLOR, 0.7)})`;
+            }
 
             // 如果当前有悬停状态，重新应用
             if (hoveredType || hoveredKey) {
@@ -514,6 +522,22 @@ app.registerExtension({
         // --- 颜色设置菜单 ---
         function buildColorMenu() {
             if (colorMenu) return;
+            // 注入样式隐藏number输入框箭头
+            if (!document.getElementById("xzg-tian-color-menu-style")) {
+                const style = document.createElement("style");
+                style.id = "xzg-tian-color-menu-style";
+                style.textContent = `
+                    #xzg-tian-color-menu input[type="number"]::-webkit-outer-spin-button,
+                    #xzg-tian-color-menu input[type="number"]::-webkit-inner-spin-button {
+                        -webkit-appearance: none;
+                        margin: 0;
+                    }
+                    #xzg-tian-color-menu input[type="number"] {
+                        -moz-appearance: textfield;
+                    }
+                `;
+                document.head.appendChild(style);
+            }
             colorMenu = document.createElement("div");
             colorMenu.id = "xzg-tian-color-menu";
             colorMenu.style.cssText = `
@@ -562,6 +586,7 @@ app.registerExtension({
                     e.stopPropagation();
                     setThemeColor(color);
                     updateSwatchSelection();
+                    hideColorMenu();
                 });
                 swatch.dataset.color = color;
                 grid.appendChild(swatch);
@@ -584,10 +609,160 @@ app.registerExtension({
             customInput.addEventListener("input", (e) => {
                 setThemeColor(e.target.value);
                 updateSwatchSelection();
+                hideColorMenu();
             });
             customRow.appendChild(customLabel);
             customRow.appendChild(customInput);
             colorMenu.appendChild(customRow);
+
+            // 分隔线
+            const divider1 = document.createElement("div");
+            divider1.style.cssText = "height:1px; background:rgba(255,255,255,0.1); margin:10px 0;";
+            colorMenu.appendChild(divider1);
+
+            // 上下等距标题
+            const vGapTitle = document.createElement("div");
+            vGapTitle.textContent = "上下等距间距";
+            vGapTitle.style.cssText = "color:#fff; font-size:12px; margin-bottom:8px;";
+            colorMenu.appendChild(vGapTitle);
+
+            // 上下等距设置行
+            const vGapRow = document.createElement("div");
+            vGapRow.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:12px;";
+            const vGapSlider = document.createElement("input");
+            vGapSlider.type = "range";
+            vGapSlider.min = "10";
+            vGapSlider.max = "200";
+            vGapSlider.value = V_GAP;
+            vGapSlider.style.cssText = "flex:1; accent-color:#FFD700;";
+            const vGapNum = document.createElement("input");
+            vGapNum.type = "number";
+            vGapNum.min = "10";
+            vGapNum.max = "500";
+            vGapNum.value = V_GAP;
+            vGapNum.style.cssText = `
+                width: 56px; height: 26px; background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+                color: #fff; font-size: 12px; text-align: center;
+                outline: none; cursor: text;
+                transition: border-color 0.15s, box-shadow 0.15s;
+            `;
+            vGapNum.addEventListener("focus", () => {
+                vGapNum.style.borderColor = "#FFD700";
+                vGapNum.style.boxShadow = "0 0 0 2px rgba(255,215,0,0.2)";
+            });
+            vGapNum.addEventListener("blur", () => {
+                vGapNum.style.borderColor = "rgba(255,255,255,0.25)";
+                vGapNum.style.boxShadow = "none";
+            });
+            vGapNum.addEventListener("click", (e) => e.stopPropagation());
+            vGapNum.addEventListener("pointerdown", (e) => e.stopPropagation());
+            vGapNum.addEventListener("mousedown", (e) => e.stopPropagation());
+            const vGapUnit = document.createElement("span");
+            vGapUnit.textContent = "px";
+            vGapUnit.style.cssText = "color:#bbb; font-size:12px;";
+            function applyVGap(val) {
+                val = parseInt(val);
+                if (isNaN(val) || val < 10) val = 10;
+                if (val > 500) val = 500;
+                V_GAP = val;
+                localStorage.setItem("xiaozhuguang.tian.vGap", val);
+                vGapSlider.value = val;
+                vGapNum.value = val;
+            }
+            vGapSlider.addEventListener("input", (e) => applyVGap(e.target.value));
+            vGapNum.addEventListener("input", (e) => {
+                const numVal = parseInt(e.target.value);
+                if (!isNaN(numVal) && numVal >= 10 && numVal <= 500) {
+                    vGapSlider.value = numVal;
+                    V_GAP = numVal;
+                    localStorage.setItem("xiaozhuguang.tian.vGap", numVal);
+                }
+            });
+            vGapNum.addEventListener("blur", () => applyVGap(vGapNum.value));
+            vGapNum.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyVGap(vGapNum.value);
+                    vGapNum.blur();
+                }
+            });
+            vGapRow.appendChild(vGapSlider);
+            vGapRow.appendChild(vGapNum);
+            vGapRow.appendChild(vGapUnit);
+            colorMenu.appendChild(vGapRow);
+
+            // 左右等距标题
+            const hGapTitle = document.createElement("div");
+            hGapTitle.textContent = "左右等距间距";
+            hGapTitle.style.cssText = "color:#fff; font-size:12px; margin-bottom:8px;";
+            colorMenu.appendChild(hGapTitle);
+
+            // 左右等距设置行
+            const hGapRow = document.createElement("div");
+            hGapRow.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:10px;";
+            const hGapSlider = document.createElement("input");
+            hGapSlider.type = "range";
+            hGapSlider.min = "10";
+            hGapSlider.max = "200";
+            hGapSlider.value = H_GAP;
+            hGapSlider.style.cssText = "flex:1; accent-color:#FFD700;";
+            const hGapNum = document.createElement("input");
+            hGapNum.type = "number";
+            hGapNum.min = "10";
+            hGapNum.max = "500";
+            hGapNum.value = H_GAP;
+            hGapNum.style.cssText = `
+                width: 56px; height: 26px; background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+                color: #fff; font-size: 12px; text-align: center;
+                outline: none; cursor: text;
+                transition: border-color 0.15s, box-shadow 0.15s;
+            `;
+            hGapNum.addEventListener("focus", () => {
+                hGapNum.style.borderColor = "#FFD700";
+                hGapNum.style.boxShadow = "0 0 0 2px rgba(255,215,0,0.2)";
+            });
+            hGapNum.addEventListener("blur", () => {
+                hGapNum.style.borderColor = "rgba(255,255,255,0.25)";
+                hGapNum.style.boxShadow = "none";
+            });
+            hGapNum.addEventListener("click", (e) => e.stopPropagation());
+            hGapNum.addEventListener("pointerdown", (e) => e.stopPropagation());
+            hGapNum.addEventListener("mousedown", (e) => e.stopPropagation());
+            const hGapUnit = document.createElement("span");
+            hGapUnit.textContent = "px";
+            hGapUnit.style.cssText = "color:#bbb; font-size:12px;";
+            function applyHGap(val) {
+                val = parseInt(val);
+                if (isNaN(val) || val < 10) val = 10;
+                if (val > 500) val = 500;
+                H_GAP = val;
+                localStorage.setItem("xiaozhuguang.tian.hGap", val);
+                hGapSlider.value = val;
+                hGapNum.value = val;
+            }
+            hGapSlider.addEventListener("input", (e) => applyHGap(e.target.value));
+            hGapNum.addEventListener("input", (e) => {
+                const numVal = parseInt(e.target.value);
+                if (!isNaN(numVal) && numVal >= 10 && numVal <= 500) {
+                    hGapSlider.value = numVal;
+                    H_GAP = numVal;
+                    localStorage.setItem("xiaozhuguang.tian.hGap", numVal);
+                }
+            });
+            hGapNum.addEventListener("blur", () => applyHGap(hGapNum.value));
+            hGapNum.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyHGap(hGapNum.value);
+                    hGapNum.blur();
+                }
+            });
+            hGapRow.appendChild(hGapSlider);
+            hGapRow.appendChild(hGapNum);
+            hGapRow.appendChild(hGapUnit);
+            colorMenu.appendChild(hGapRow);
 
             // 重置按钮
             const resetBtn = document.createElement("div");
@@ -609,7 +784,10 @@ app.registerExtension({
                 e.stopPropagation();
                 setThemeColor(DEFAULT_THEME);
                 customInput.value = DEFAULT_THEME;
+                applyVGap(DEFAULT_V_GAP);
+                applyHGap(DEFAULT_H_GAP);
                 updateSwatchSelection();
+                hideColorMenu();
             });
             colorMenu.appendChild(resetBtn);
 
@@ -737,6 +915,15 @@ app.registerExtension({
                 pressRing.setAttribute("opacity", "0");
             }
             if (overlay) overlay.style.cursor = "default";
+            const tipEl = document.getElementById("xzg-tian-tip");
+            if (tipEl) {
+                tipEl.style.opacity = "0";
+                tipEl.style.left = "50%";
+                tipEl.style.top = "50%";
+                tipEl.style.transform = "translate(-50%,-50%)";
+                tipEl.style.writingMode = "horizontal-tb";
+                tipEl.style.textOrientation = "initial";
+            }
         }
 
         function dimAllLines() {
@@ -755,7 +942,12 @@ app.registerExtension({
 
             resetVisuals();
 
-            if (!htype) return;
+            const tipEl = document.getElementById("xzg-tian-tip");
+
+            if (!htype) {
+                if (tipEl) tipEl.style.opacity = "0";
+                return;
+            }
 
             if (htype === "line") {
                 // 线对齐模式：对应线变亮，其他线变暗，格子不亮
@@ -766,6 +958,7 @@ app.registerExtension({
                 el.style.filter = `drop-shadow(0 0 6px ${GOLD}aa)`;
                 centerDot.setAttribute("fill", GOLD);
                 overlay.style.cursor = "pointer";
+                if (tipEl) tipEl.style.opacity = "0";
             } else if (htype === "zone") {
                 // 区域分布模式：对应两个格子亮起，线条变暗
                 dimAllLines();
@@ -779,6 +972,44 @@ app.registerExtension({
                 centerDot.setAttribute("fill", GOLD);
                 if (centerGlow) centerGlow.setAttribute("opacity", "0");
                 overlay.style.cursor = "pointer";
+                // 显示提示文字
+                if (tipEl) {
+                    const tips = {
+                        z_left: "上下等分",
+                        z_right: "上下等距",
+                        z_top: "左右等分",
+                        z_bottom: "左右等距"
+                    };
+                    tipEl.textContent = tips[hkey] || "";
+                    tipEl.style.color = GOLD;
+                    tipEl.style.textShadow = `0 0 6px rgba(0,0,0,0.9), 0 0 12px ${hexToRgba(THEME_COLOR, 0.5)}`;
+                    // 重置transform
+                    tipEl.style.left = "50%";
+                    tipEl.style.top = "50%";
+                    tipEl.style.transform = "translate(-50%,-50%)";
+                    if (hkey === "z_left" || hkey === "z_right") {
+                        tipEl.style.writingMode = "vertical-rl";
+                        tipEl.style.textOrientation = "upright";
+                        // 竖排：左右区域的文字放在对应半边，避开中心线
+                        if (hkey === "z_left") {
+                            tipEl.style.left = (PAD + (CX - PAD) / 2) + "px";
+                        } else {
+                            tipEl.style.left = (CX + (CX - PAD) / 2) + "px";
+                        }
+                        tipEl.style.transform = "translate(-50%, calc(-50% + 6px))";
+                    } else {
+                        tipEl.style.writingMode = "horizontal-tb";
+                        tipEl.style.textOrientation = "initial";
+                        // 横排：上下区域的文字放在对应半边，避开中心线
+                        if (hkey === "z_top") {
+                            tipEl.style.top = (PAD + (CY - PAD) / 2) + "px";
+                        } else {
+                            tipEl.style.top = (CY + (CY - PAD) / 2) + "px";
+                        }
+                        tipEl.style.transform = "translate(calc(-50% + 6px),-50%)";
+                    }
+                    tipEl.style.opacity = "1";
+                }
             } else if (htype === "center") {
                 // 中心模式：中心发光 + 所有线和格子变暗
                 dimAllLines();
@@ -789,6 +1020,7 @@ app.registerExtension({
                 centerDot.setAttribute("fill", GOLD);
                 if (centerGlow) centerGlow.setAttribute("opacity", "1");
                 overlay.style.cursor = "pointer";
+                if (tipEl) tipEl.style.opacity = "0";
             }
         }
 
@@ -964,6 +1196,22 @@ app.registerExtension({
 
             tianPanel.appendChild(svg);
 
+            // 提示文字
+            const tipEl = document.createElement("div");
+            tipEl.id = "xzg-tian-tip";
+            tipEl.style.cssText = `
+                position:absolute; left:50%; top:50%;
+                transform:translate(-50%,-50%);
+                color:#fff; font-size:18px; font-family:"Microsoft YaHei",sans-serif;
+                pointer-events:none;
+                text-shadow:0 0 6px rgba(0,0,0,0.9), 0 0 10px rgba(255,215,0,0.3);
+                opacity:0; transition:opacity 0.2s ease;
+                font-weight:500;
+                letter-spacing:12px;
+                white-space:nowrap;
+            `;
+            tianPanel.appendChild(tipEl);
+
             // 交互覆盖层
             overlay = document.createElement("div");
             overlay.style.cssText = `
@@ -1070,6 +1318,7 @@ app.registerExtension({
                 if (!pressRing) return;
                 const r = CENTER_RADIUS + 6;
                 pressRing.setAttribute("r", r);
+                pressRing.setAttribute("stroke", GOLD);
                 pressRing.setAttribute("opacity", 0.5 + progress * 0.5);
                 const circumference = 2 * Math.PI * r;
                 pressRing.setAttribute("stroke-dasharray", circumference);
@@ -1299,9 +1548,8 @@ app.registerExtension({
         // 点击外部关闭
         document.addEventListener("pointerdown", (e) => {
             if (colorMenuOpen) {
-                if (!e.target.closest("#xzg-tian-color-menu")) {
-                    hideColorMenu();
-                }
+                if (e.target.closest("#xzg-tian-color-menu")) return;
+                hideColorMenu();
                 return;
             }
             if (!tianIsOpen) return;
