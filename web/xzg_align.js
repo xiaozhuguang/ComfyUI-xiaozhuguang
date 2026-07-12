@@ -12,6 +12,19 @@ app.registerExtension({
         let V_GAP = parseInt(localStorage.getItem("xiaozhuguang.tian.vGap")) || DEFAULT_V_GAP;
         let H_GAP = parseInt(localStorage.getItem("xiaozhuguang.tian.hGap")) || DEFAULT_H_GAP;
 
+        const DEFAULT_SHORTCUT = { key: "a", alt: true, ctrl: false, shift: false, meta: false };
+        let SHORTCUT = JSON.parse(localStorage.getItem("xiaozhuguang.tian.shortcut") || "null") || { ...DEFAULT_SHORTCUT };
+
+        function formatShortcut(sc) {
+            const parts = [];
+            if (sc.ctrl) parts.push("Ctrl");
+            if (sc.alt) parts.push("Alt");
+            if (sc.shift) parts.push("Shift");
+            if (sc.meta) parts.push("Meta");
+            if (sc.key) parts.push(sc.key.toUpperCase());
+            return parts.join(" + ");
+        }
+
         function hexToRgba(hex, alpha) {
             const h = hex.replace("#", "");
             const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
@@ -756,6 +769,81 @@ app.registerExtension({
             hGapRow.appendChild(hGapNum);
             colorMenu.appendChild(hGapRow);
 
+            // 分隔线
+            const divider2 = document.createElement("div");
+            divider2.style.cssText = "height:1px; background:rgba(255,255,255,0.1); margin:10px 0;";
+            colorMenu.appendChild(divider2);
+
+            // 快捷键标题
+            const shortcutTitle = document.createElement("div");
+            shortcutTitle.textContent = "面板快捷键";
+            shortcutTitle.style.cssText = "color:#fff; font-size:12px; margin-bottom:8px;";
+            colorMenu.appendChild(shortcutTitle);
+
+            // 快捷键设置行
+            const shortcutRow = document.createElement("div");
+            shortcutRow.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:10px;";
+
+            const shortcutDisplay = document.createElement("div");
+            shortcutDisplay.style.cssText = `
+                flex:1; height: 26px; background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+                color: #fff; font-size: 12px; text-align: center;
+                display: flex; align-items: center; justify-content: center;
+                cursor: pointer; user-select: none;
+                transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+            `;
+            shortcutDisplay.textContent = formatShortcut(SHORTCUT);
+            shortcutDisplay.title = "点击修改快捷键";
+
+            let recording = false;
+            let tempShortcut = null;
+
+            function startRecording() {
+                recording = true;
+                tempShortcut = { key: "", alt: false, ctrl: false, shift: false, meta: false };
+                shortcutDisplay.textContent = "按下快捷键...";
+                shortcutDisplay.style.borderColor = "#FFD700";
+                shortcutDisplay.style.boxShadow = "0 0 0 2px rgba(255,215,0,0.2)";
+                shortcutDisplay.style.background = "rgba(255,215,0,0.1)";
+            }
+
+            function stopRecording(save) {
+                recording = false;
+                shortcutDisplay.style.borderColor = "rgba(255,255,255,0.25)";
+                shortcutDisplay.style.boxShadow = "none";
+                shortcutDisplay.style.background = "rgba(255,255,255,0.08)";
+                if (save && tempShortcut && tempShortcut.key) {
+                    SHORTCUT = { ...tempShortcut };
+                    localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(SHORTCUT));
+                }
+                shortcutDisplay.textContent = formatShortcut(SHORTCUT);
+                tempShortcut = null;
+            }
+
+            shortcutDisplay.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (recording) {
+                    stopRecording(false);
+                } else {
+                    startRecording();
+                }
+            });
+
+            shortcutDisplay.addEventListener("mouseenter", () => {
+                if (!recording) {
+                    shortcutDisplay.style.borderColor = "rgba(255,215,0,0.5)";
+                }
+            });
+            shortcutDisplay.addEventListener("mouseleave", () => {
+                if (!recording) {
+                    shortcutDisplay.style.borderColor = "rgba(255,255,255,0.25)";
+                }
+            });
+
+            shortcutRow.appendChild(shortcutDisplay);
+            colorMenu.appendChild(shortcutRow);
+
             // 重置按钮
             const resetBtn = document.createElement("div");
             resetBtn.textContent = "恢复默认";
@@ -778,6 +866,9 @@ app.registerExtension({
                 customInput.value = DEFAULT_THEME;
                 applyVGap(DEFAULT_V_GAP);
                 applyHGap(DEFAULT_H_GAP);
+                SHORTCUT = { ...DEFAULT_SHORTCUT };
+                localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(SHORTCUT));
+                shortcutDisplay.textContent = formatShortcut(SHORTCUT);
                 updateSwatchSelection();
                 hideColorMenu();
             });
@@ -796,7 +887,41 @@ app.registerExtension({
             // 初始选中状态
             updateSwatchSelection();
 
+            function handleRecordKey(e) {
+                if (!recording) return;
+                e.preventDefault();
+                e.stopPropagation();
+
+                if (e.key === "Escape") {
+                    stopRecording(false);
+                    return;
+                }
+
+                const key = e.key.toLowerCase();
+                const isModifier = ["control", "alt", "shift", "meta"].includes(key);
+
+                tempShortcut.ctrl = e.ctrlKey;
+                tempShortcut.alt = e.altKey;
+                tempShortcut.shift = e.shiftKey;
+                tempShortcut.meta = e.metaKey;
+
+                if (!isModifier && key.length === 1) {
+                    tempShortcut.key = key;
+                    stopRecording(true);
+                } else if (!isModifier && e.key.startsWith("F") && e.key.length <= 3) {
+                    tempShortcut.key = e.key.toLowerCase();
+                    stopRecording(true);
+                } else {
+                    shortcutDisplay.textContent = formatShortcut(tempShortcut) + " + ...";
+                }
+            }
+            document.addEventListener("keydown", handleRecordKey, true);
+
             colorMenu._customInput = customInput;
+            colorMenu._shortcutDisplay = shortcutDisplay;
+            colorMenu._updateShortcutDisplay = function() {
+                shortcutDisplay.textContent = formatShortcut(SHORTCUT);
+            };
             document.body.appendChild(colorMenu);
         }
 
@@ -818,6 +943,8 @@ app.registerExtension({
 
             // 更新自定义颜色输入值
             if (colorMenu._customInput) colorMenu._customInput.value = THEME_COLOR;
+            // 更新快捷键显示
+            if (colorMenu._updateShortcutDisplay) colorMenu._updateShortcutDisplay();
         }
 
         function hideColorMenu() {
@@ -1525,7 +1652,12 @@ app.registerExtension({
         // --- 键盘 ---
         document.addEventListener("keydown", (e) => {
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
-            if (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === "a") {
+            const keyMatch = e.key.toLowerCase() === SHORTCUT.key;
+            const altMatch = e.altKey === SHORTCUT.alt;
+            const ctrlMatch = e.ctrlKey === SHORTCUT.ctrl;
+            const shiftMatch = e.shiftKey === SHORTCUT.shift;
+            const metaMatch = e.metaKey === SHORTCUT.meta;
+            if (keyMatch && altMatch && ctrlMatch && shiftMatch && metaMatch && SHORTCUT.key) {
                 e.preventDefault();
                 toggleTianPanel();
                 return;
@@ -1549,6 +1681,6 @@ app.registerExtension({
             closeTianPanel();
         }, true);
 
-        console.log("[小珠光] 田字格对齐面板已加载 (Alt+A)");
+        console.log(`[小珠光] 田字格对齐面板已加载 (${formatShortcut(SHORTCUT)})`);
     }
 });
