@@ -996,6 +996,55 @@ window.XZGThemeManager = {
     font-weight: bold;
 }
 
+.xzg-menu-search-box {
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+#xzg-menu-search-input {
+    width: 100%;
+    height: 28px;
+    padding: 0 28px 0 10px;
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #ddd;
+    font-size: 12px;
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color 0.15s;
+    display: block;
+}
+
+#xzg-menu-search-input:focus {
+    border-color: #FFD700;
+    box-shadow: 0 0 4px rgba(255, 215, 0, 0.3);
+}
+
+.xzg-menu-search-clear {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.xzg-menu-search-clear:hover {
+    background: #444;
+    color: #fff;
+}
+
 .xzg-menu-hide-toolbar {
     display: flex;
     gap: 4px;

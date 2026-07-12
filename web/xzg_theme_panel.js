@@ -288,6 +288,10 @@ window.XZGThemePanel = {
                         <button type="button" class="xzg-menu-tab active" data-menu-tab="canvas">画布菜单</button>
                         <button type="button" class="xzg-menu-tab" data-menu-tab="node">节点菜单</button>
                     </div>
+                    <div class="xzg-menu-search-box">
+                        <input type="text" id="xzg-menu-search-input" placeholder="🔍 搜索菜单项..." />
+                        <button type="button" class="xzg-menu-search-clear" id="xzg-menu-search-clear" title="清除搜索" style="display: none;">✕</button>
+                    </div>
                     <div class="xzg-menu-hide-toolbar">
                         <button type="button" id="xzg-menu-refresh-btn" class="xzg-menu-tool-btn">刷新列表</button>
                         <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">隐藏全部</button>
@@ -703,8 +707,17 @@ window.XZGThemePanel = {
         const menuSelectAllBtn = panel.querySelector("#xzg-menu-selectall-btn");
         const menuUnselectAllBtn = panel.querySelector("#xzg-menu-unselectall-btn");
         const menuResetBtn = panel.querySelector("#xzg-menu-reset-btn");
+        const menuSearchInput = panel.querySelector("#xzg-menu-search-input");
+        const menuSearchClear = panel.querySelector("#xzg-menu-search-clear");
 
         let currentMenuTab = 'canvas';
+        let currentMenuSearch = '';
+
+        const updateMenuSearchClearVisibility = () => {
+            if (menuSearchClear && menuSearchInput) {
+                menuSearchClear.style.display = menuSearchInput.value ? '' : 'none';
+            }
+        };
 
         const renderMenuList = () => {
             if (!window.XZGMenuHide || !menuHideList) return;
@@ -717,8 +730,19 @@ window.XZGThemePanel = {
                 return;
             }
 
+            let filteredItems = items;
+            if (currentMenuSearch) {
+                const searchLower = currentMenuSearch.toLowerCase();
+                filteredItems = items.filter(item => item.toLowerCase().includes(searchLower));
+            }
+
+            if (filteredItems.length === 0) {
+                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">没有匹配的菜单项</div>';
+                return;
+            }
+
             let html = '';
-            items.forEach(item => {
+            filteredItems.forEach(item => {
                 const isHidden = !!hiddenMap[item];
                 const displayName = item.length > 28 ? item.substring(0, 28) + '...' : item;
                 html += `
@@ -859,6 +883,31 @@ window.XZGThemePanel = {
                 if (confirm('确定要恢复所有被隐藏的菜单项吗？')) {
                     window.XZGMenuHide.resetAll();
                     renderMenuList();
+                }
+            });
+        }
+
+        if (menuSearchInput) {
+            menuSearchInput.addEventListener('input', (e) => {
+                e.stopPropagation();
+                currentMenuSearch = e.target.value;
+                renderMenuList();
+                updateMenuSearchClearVisibility();
+            });
+            menuSearchInput.addEventListener('click', (e) => e.stopPropagation());
+            menuSearchInput.addEventListener('pointerdown', (e) => e.stopPropagation());
+            menuSearchInput.addEventListener('mousedown', (e) => e.stopPropagation());
+        }
+
+        if (menuSearchClear) {
+            menuSearchClear.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (menuSearchInput) {
+                    menuSearchInput.value = '';
+                    currentMenuSearch = '';
+                    renderMenuList();
+                    updateMenuSearchClearVisibility();
+                    menuSearchInput.focus();
                 }
             });
         }

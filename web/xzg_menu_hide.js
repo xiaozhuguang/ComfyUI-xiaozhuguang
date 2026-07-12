@@ -382,12 +382,14 @@ window.XZGMenuHide = {
 
                         if (menuEl) {
                             self._collectFromDOM(menuEl);
-                            setTimeout(() => {
+                            // 同步立即隐藏：MutationObserver 回调以微任务执行，
+                            // 发生在浏览器首次绘制之前，因此可以彻底消除 setTimeout 延迟导致的闪屏
+                            self._hideFromDOM(menuEl);
+                            // 使用 requestAnimationFrame 在下一帧前再次检查，
+                            // 捕获 LiteGraph 在同一帧内后续动态插入的菜单项
+                            requestAnimationFrame(() => {
                                 self._hideFromDOM(menuEl);
-                            }, 10);
-                            setTimeout(() => {
-                                self._hideFromDOM(menuEl);
-                            }, 50);
+                            });
                         }
                     }
                 }
