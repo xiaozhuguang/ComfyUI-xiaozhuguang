@@ -658,9 +658,6 @@ app.registerExtension({
             vGapNum.addEventListener("click", (e) => e.stopPropagation());
             vGapNum.addEventListener("pointerdown", (e) => e.stopPropagation());
             vGapNum.addEventListener("mousedown", (e) => e.stopPropagation());
-            const vGapUnit = document.createElement("span");
-            vGapUnit.textContent = "px";
-            vGapUnit.style.cssText = "color:#bbb; font-size:12px;";
             function applyVGap(val) {
                 val = parseInt(val);
                 if (isNaN(val) || val < 10) val = 10;
@@ -689,7 +686,6 @@ app.registerExtension({
             });
             vGapRow.appendChild(vGapSlider);
             vGapRow.appendChild(vGapNum);
-            vGapRow.appendChild(vGapUnit);
             colorMenu.appendChild(vGapRow);
 
             // 左右等距标题
@@ -730,9 +726,6 @@ app.registerExtension({
             hGapNum.addEventListener("click", (e) => e.stopPropagation());
             hGapNum.addEventListener("pointerdown", (e) => e.stopPropagation());
             hGapNum.addEventListener("mousedown", (e) => e.stopPropagation());
-            const hGapUnit = document.createElement("span");
-            hGapUnit.textContent = "px";
-            hGapUnit.style.cssText = "color:#bbb; font-size:12px;";
             function applyHGap(val) {
                 val = parseInt(val);
                 if (isNaN(val) || val < 10) val = 10;
@@ -761,7 +754,6 @@ app.registerExtension({
             });
             hGapRow.appendChild(hGapSlider);
             hGapRow.appendChild(hGapNum);
-            hGapRow.appendChild(hGapUnit);
             colorMenu.appendChild(hGapRow);
 
             // 重置按钮
