@@ -39,8 +39,6 @@ import folder_paths
 from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
 from .nodes.xzg_get_widget import XiaozhuguangGetWidget
 from .nodes.xzg_first_last_frame import XiaozhuguangFirstLastFrame
-from .nodes.xzg_atbc import XiaozhuguangATBC
-from .nodes.xzg_atr import XiaozhuguangATR
 
 
 def tensor_to_pil(tensor):
@@ -391,8 +389,6 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
     "XiaozhuguangGetWidget": XiaozhuguangGetWidget,
     "XiaozhuguangFirstLastFrame": XiaozhuguangFirstLastFrame,
-    "XiaozhuguangATBC": XiaozhuguangATBC,
-    "XiaozhuguangATR": XiaozhuguangATR,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -407,8 +403,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangQwenVLInstruct": "小珠光 qwenVL",
     "XiaozhuguangGetWidget": "小珠光获取控件值",
     "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
-    "XiaozhuguangATBC": "ATBC",
-    "XiaozhuguangATR": "ATR",
 }
 
 WEB_DIRECTORY = "./web"
