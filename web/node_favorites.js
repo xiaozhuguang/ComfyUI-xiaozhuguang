@@ -3121,6 +3121,9 @@ class Xiaozhuguang {
                 }
                 e.dataTransfer.effectAllowed = "move";
                 item.style.opacity = "0.5";
+                if (self.searchInput && self.searchInput === document.activeElement) {
+                    self.searchInput.blur();
+                }
             });
             item.addEventListener("dragend", () => {
                 item.style.opacity = "";
@@ -3138,6 +3141,9 @@ class Xiaozhuguang {
                 const dy = Math.abs(e.clientY - startY);
                 if (dx > 3 || dy > 3) {
                     isDrag = true;
+                    if (self.searchInput && self.searchInput === document.activeElement) {
+                        self.searchInput.blur();
+                    }
                     if (isReorderDrag) {
                         self.startReorderDrag(item, e.clientY);
                     } else if (isWorkflowDrag) {
