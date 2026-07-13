@@ -24,9 +24,8 @@ class XiaozhuguangGetWidget:
                 "显示文件扩展名": ("BOOLEAN", {"default": True, "tooltip": "开启则显示文件扩展名（如 .PNG、.jpg 等），关闭则去掉扩展名"}),
             },
             "hidden": {
-                "extra_pnginfo": "EXTRA_PNGINFO",
-                "prompt": "PROMPT",
                 "unique_id": "UNIQUE_ID",
+                "dynprompt": "DYNPROMPT",
             },
         }
 
@@ -58,87 +57,32 @@ class XiaozhuguangGetWidget:
 
         return result
 
-    def get_widget(self, extra_pnginfo, prompt, unique_id, 目标节点输出=None, 控件名="", 显示控件名前缀=True, 显示文件扩展名=True):
-        workflow = extra_pnginfo.get("workflow", {})
-        all_nodes = workflow.get("nodes", [])
+    def _is_link(self, val):
+        if not isinstance(val, list) or len(val) < 2:
+            return False
+        if not isinstance(val[0], (int, str)):
+            return False
+        if not isinstance(val[1], int):
+            return False
+        return True
 
-        definitions = workflow.get("definitions", {})
-        subgraphs = definitions.get("subgraphs", [])
+    def get_widget(self, unique_id, dynprompt, 目标节点输出=None, 控件名="", 显示控件名前缀=True, 显示文件扩展名=True):
+        current_node = dynprompt.get_node(unique_id)
+        current_inputs = current_node.get("inputs", {})
 
-        subgraph_id_to_parent = {}
-        for node in all_nodes:
-            node_type = node.get("type", "")
-            if "-" in node_type and len(node_type) == 36:
-                subgraph_id_to_parent[node_type] = node["id"]
-
-        node_to_subgraph_map = {}
-        link_to_node_map = {}
-        extended_nodes = list(all_nodes)
-
-        for subgraph in subgraphs:
-            subgraph_id = subgraph.get("id", "")
-            parent_node_id = subgraph_id_to_parent.get(subgraph_id)
-            subgraph_nodes = subgraph.get("nodes", [])
-            for node in subgraph_nodes:
-                if parent_node_id is not None:
-                    node_to_subgraph_map[node["id"]] = parent_node_id
-            extended_nodes.extend(subgraph_nodes)
-
-            subgraph_links = subgraph.get("links", [])
-            for link in subgraph_links:
-                if isinstance(link, dict):
-                    link_to_node_map[link["id"]] = link["origin_id"]
-                elif isinstance(link, list) and len(link) >= 2:
-                    link_to_node_map[link[0]] = link[1]
-
-        if isinstance(unique_id, str) and ":" in unique_id:
-            unique_id_int = int(unique_id.split(":")[-1])
-            subgraph_prefix = ":".join(unique_id.split(":")[:-1])
-        else:
-            unique_id_int = int(unique_id)
-            subgraph_prefix = None
-
-        target_link_id = None
-        for node in extended_nodes:
-            if node["type"] == "XiaozhuguangGetWidget" and node["id"] == unique_id_int:
-                node_inputs = node.get("inputs", [])
-                for inp in node_inputs:
-                    if inp["name"] == "目标节点输出":
-                        target_link_id = inp.get("link")
-                        break
-
-            node_outputs = node.get("outputs", [])
-            if not node_outputs:
-                continue
-            for output in node_outputs:
-                node_links = output.get("links", [])
-                if not node_links:
-                    continue
-                for link in node_links:
-                    link_to_node_map[link] = node["id"]
-
-        if target_link_id is None:
+        target_link = current_inputs.get("目标节点输出")
+        if target_link is None:
             raise ValueError("请连接目标节点的任意输出到「目标节点输出」输入口")
 
-        target_node_id = link_to_node_map.get(target_link_id)
-        if target_node_id is None:
-            raise ValueError("无法找到目标节点，请确保连线正确")
+        if not self._is_link(target_link):
+            raise ValueError("请连接目标节点的任意输出到「目标节点输出」输入口")
 
-        target_subgraph_parent = node_to_subgraph_map.get(target_node_id)
-        if target_subgraph_parent is not None:
-            prompt_key = f"{target_subgraph_parent}:{target_node_id}"
-        elif subgraph_prefix is not None:
-            prompt_key = f"{subgraph_prefix}:{target_node_id}"
-        else:
-            prompt_key = str(target_node_id)
+        target_node_id = target_link[0]
 
-        if prompt_key not in prompt:
-            prompt_key = str(target_node_id)
+        if not dynprompt.has_node(target_node_id):
+            raise KeyError(f"在prompt中找不到节点: {target_node_id}")
 
-        if prompt_key not in prompt:
-            raise KeyError(f"在prompt中找不到节点: {prompt_key}")
-
-        node_data = prompt[prompt_key]
+        node_data = dynprompt.get_node(target_node_id)
         inputs = node_data.get("inputs", {})
 
         if 控件名 and 控件名.strip():
