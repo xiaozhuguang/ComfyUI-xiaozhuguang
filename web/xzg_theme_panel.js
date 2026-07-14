@@ -98,6 +98,7 @@ window.XZGThemePanel = {
             <div class="xzg-top-tabs">
                 <button type="button" class="xzg-top-tab active" data-top-tab="theme">主题</button>
                 <button type="button" class="xzg-top-tab" data-top-tab="menuhide">菜单隐藏</button>
+                <button type="button" class="xzg-top-tab" data-top-tab="quicknodes">快速节点</button>
             </div>
             <div class="xzg-tab-content" data-tab-content="theme">
             <div class="xzg-picker-section">
@@ -306,6 +307,28 @@ window.XZGThemePanel = {
                         <div class="xzg-menu-empty-tip">点击「刷新列表」加载菜单项<br><span style="font-size:11px;color:#888;">提示：先在画布上右键一次再刷新</span></div>
                     </div>
                     <button type="button" id="xzg-menu-reset-btn" class="xzg-menu-reset-btn">恢复所有隐藏菜单</button>
+                </div>
+            </div>
+            <div class="xzg-tab-content" data-tab-content="quicknodes" style="display:none;">
+                <div class="xzg-menu-hide-full">
+                    <div class="xzg-quick-nodes-count">已添加 <span id="xzg-quick-count">0</span> / 20 个快速节点</div>
+                    <div class="xzg-quick-setting-row">
+                        <span>隐藏默认连线菜单</span>
+                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="开启后，连线菜单只显示快速节点">
+                            <span class="xzg-toggle-slider"></span>
+                            <span class="xzg-toggle-label">关</span>
+                        </button>
+                    </div>
+                    <div class="xzg-menu-hide-toolbar" style="margin-bottom:6px;">
+                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-export-btn">导出配置</button>
+                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-import-btn">导入配置</button>
+                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-clear-btn">清空全部</button>
+                    </div>
+                    <input type="file" id="xzg-quick-import-file" accept=".json" style="display:none;" />
+                    <div class="xzg-menu-hide-list" id="xzg-quick-nodes-list">
+                        <div class="xzg-menu-empty-tip">暂无快速节点<br><span style="font-size:11px;">右键节点可添加到快速节点</span></div>
+                    </div>
+                    <p style="margin-top:8px;font-size:11px;color:#888;text-align:center;">拖拽可调整顺序，从节点拉出连线时搜索框顶部显示</p>
                 </div>
             </div>
         `;
@@ -782,14 +805,14 @@ window.XZGThemePanel = {
         let themeTabHeight = 0;
 
         const switchTopTab = (tabName) => {
-            if (tabName === 'menuhide') {
+            if (tabName === 'menuhide' || tabName === 'quicknodes') {
                 const themeTab = panel.querySelector('.xzg-tab-content[data-tab-content="theme"]');
                 if (themeTab && themeTab.offsetHeight > 0) {
                     themeTabHeight = themeTab.offsetHeight;
                 }
-                const menuTab = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
-                if (menuTab && themeTabHeight > 0) {
-                    menuTab.style.height = themeTabHeight + 'px';
+                const targetTab = panel.querySelector(`.xzg-tab-content[data-tab-content="${tabName}"]`);
+                if (targetTab && themeTabHeight > 0) {
+                    targetTab.style.height = themeTabHeight + 'px';
                 }
             }
             topTabs.forEach(t => t.classList.toggle('active', t.dataset.topTab === tabName));
@@ -805,6 +828,8 @@ window.XZGThemePanel = {
                     window.XZGMenuHide.init();
                 }
                 setTimeout(renderMenuList, 100);
+            } else if (tabName === 'quicknodes') {
+                setTimeout(renderQuickNodesList, 50);
             }
         };
 
@@ -818,18 +843,18 @@ window.XZGThemePanel = {
         let savedTab = 'theme';
         try {
             const t = localStorage.getItem('xzg-theme-panel-tab');
-            if (t === 'menuhide' || t === 'theme') savedTab = t;
+            if (t === 'menuhide' || t === 'theme' || t === 'quicknodes') savedTab = t;
         } catch(e) {}
 
-        if (savedTab === 'menuhide') {
+        if (savedTab === 'menuhide' || savedTab === 'quicknodes') {
             const themeTab = panel.querySelector('.xzg-tab-content[data-tab-content="theme"]');
-            const menuTab = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
-            if (themeTab && menuTab) {
+            const targetTab = panel.querySelector(`.xzg-tab-content[data-tab-content="${savedTab}"]`);
+            if (themeTab && targetTab) {
                 themeTab.style.display = '';
-                menuTab.style.display = 'none';
+                targetTab.style.display = 'none';
                 requestAnimationFrame(() => {
                     if (themeTab.offsetHeight > 0) {
-                        menuTab.style.height = themeTab.offsetHeight + 'px';
+                        targetTab.style.height = themeTab.offsetHeight + 'px';
                     }
                     switchTopTab(savedTab);
                 });
@@ -995,6 +1020,225 @@ window.XZGThemePanel = {
                 const menuContent = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
                 if (menuContent && menuContent.style.display !== 'none') {
                     renderMenuList();
+                }
+            }
+        };
+
+        function renderQuickNodesList() {
+            const listEl = panel.querySelector('#xzg-quick-nodes-list');
+            const countEl = panel.querySelector('#xzg-quick-count');
+            if (!listEl || !countEl) return;
+
+            const quickNodes = window.XZGQuickNodes?.getQuickNodeList() || [];
+            countEl.textContent = quickNodes.length;
+
+            if (quickNodes.length === 0) {
+                listEl.innerHTML = '<div class="xzg-menu-empty-tip">暂无快速节点<br><span style="font-size:11px;">右键节点可添加到快速节点</span></div>';
+                return;
+            }
+
+            listEl.innerHTML = '';
+            quickNodes.forEach((node, index) => {
+                const item = document.createElement('div');
+                item.className = 'xzg-quick-node-manage-item';
+                item.draggable = true;
+                item.dataset.index = index;
+                item.dataset.type = node.type;
+
+                const dragHandle = document.createElement('span');
+                dragHandle.className = 'xzg-quick-drag-handle';
+                dragHandle.textContent = '⠿';
+                item.appendChild(dragHandle);
+
+                const info = document.createElement('div');
+                info.className = 'xzg-quick-node-info';
+                
+                const name = document.createElement('div');
+                name.className = 'xzg-quick-node-name';
+                name.textContent = node.title;
+                info.appendChild(name);
+
+                const type = document.createElement('div');
+                type.className = 'xzg-quick-node-type';
+                type.textContent = node.type;
+                info.appendChild(type);
+
+                item.appendChild(info);
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'xzg-quick-node-remove-btn';
+                removeBtn.textContent = '移除';
+                removeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (window.XZGQuickNodes) {
+                        window.XZGQuickNodes.removeQuickNode(node.type);
+                        renderQuickNodesList();
+                    }
+                });
+                item.appendChild(removeBtn);
+
+                item.addEventListener('dragstart', (e) => {
+                    item.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', index.toString());
+                });
+
+                item.addEventListener('dragend', () => {
+                    item.classList.remove('dragging');
+                    document.querySelectorAll('.xzg-quick-node-manage-item').forEach(i => {
+                        i.classList.remove('drag-over');
+                    });
+                });
+
+                item.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    item.classList.add('drag-over');
+                });
+
+                item.addEventListener('dragleave', () => {
+                    item.classList.remove('drag-over');
+                });
+
+                item.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    item.classList.remove('drag-over');
+                    const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                    const toIndex = parseInt(item.dataset.index);
+                    if (!isNaN(fromIndex) && !isNaN(toIndex) && fromIndex !== toIndex) {
+                        if (window.XZGQuickNodes) {
+                            window.XZGQuickNodes.moveQuickNode(fromIndex, toIndex);
+                            renderQuickNodesList();
+                        }
+                    }
+                });
+
+                listEl.appendChild(item);
+            });
+        }
+
+        const quickClearBtn = panel.querySelector('#xzg-quick-clear-btn');
+        if (quickClearBtn) {
+            quickClearBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (window.XZGQuickNodes && confirm('确定要清空所有快速节点吗？')) {
+                    const nodes = window.XZGQuickNodes.getQuickNodeList();
+                    nodes.forEach(n => window.XZGQuickNodes.removeQuickNode(n.type));
+                    renderQuickNodesList();
+                }
+            });
+        }
+
+        const quickHideDefaultBtn = panel.querySelector('#xzg-quick-hide-default-btn');
+
+        const quickExportBtn = panel.querySelector('#xzg-quick-export-btn');
+        const quickImportBtn = panel.querySelector('#xzg-quick-import-btn');
+        const quickImportFile = panel.querySelector('#xzg-quick-import-file');
+
+        if (quickExportBtn) {
+            quickExportBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!window.XZGQuickNodes) return;
+                const qn = window.XZGQuickNodes;
+                const exportData = {
+                    version: 1,
+                    type: 'xzg-quick-nodes-config',
+                    quickNodes: JSON.parse(JSON.stringify(qn.getQuickNodeList())),
+                    config: JSON.parse(JSON.stringify(qn.config)),
+                    exportedAt: new Date().toISOString()
+                };
+                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const dateStr = new Date().toISOString().slice(0, 10);
+                a.download = `xzg-quick-nodes-config-${dateStr}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+        }
+
+        if (quickImportBtn && quickImportFile) {
+            quickImportBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                quickImportFile.click();
+            });
+            quickImportFile.addEventListener('change', (e) => {
+                e.stopPropagation();
+                if (!window.XZGQuickNodes) return;
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.target.result);
+                        const quickNodes = data.quickNodes || data;
+                        if (!Array.isArray(quickNodes)) {
+                            alert('配置文件格式不正确');
+                            return;
+                        }
+                        if (!confirm('导入配置将覆盖当前的快速节点设置，确定继续吗？')) {
+                            return;
+                        }
+                        const qn = window.XZGQuickNodes;
+                        qn.quickNodes = quickNodes.slice(0, 20);
+                        qn.saveQuickNodes();
+                        if (data.config && typeof data.config === 'object') {
+                            qn.config = Object.assign({}, qn.config, data.config);
+                            qn.saveConfig();
+                        }
+                        renderQuickNodesList();
+                        if (quickHideDefaultBtn) {
+                            const checked = qn.isHideDefaultMenu();
+                            quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
+                            const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
+                            if (label) label.textContent = checked ? "开" : "关";
+                        }
+                        alert('导入成功');
+                    } catch (err) {
+                        alert('导入失败：文件格式不正确');
+                        console.warn('[小珠光] 快速节点配置导入失败:', err);
+                    }
+                };
+                reader.readAsText(file);
+                quickImportFile.value = '';
+            });
+        }
+
+        if (quickHideDefaultBtn) {
+            if (window.XZGQuickNodes) {
+                const checked = window.XZGQuickNodes.isHideDefaultMenu();
+                quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
+                const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
+                if (label) label.textContent = checked ? "开" : "关";
+            }
+            quickHideDefaultBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (window.XZGQuickNodes) {
+                    const checked = window.XZGQuickNodes.isHideDefaultMenu();
+                    const newChecked = !checked;
+                    window.XZGQuickNodes.setHideDefaultMenu(newChecked);
+                    quickHideDefaultBtn.setAttribute("data-checked", newChecked ? "true" : "false");
+                    const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
+                    if (label) label.textContent = newChecked ? "开" : "关";
+                }
+            });
+        }
+
+        window.XZGThemePanel = window.XZGThemePanel || {};
+        window.XZGThemePanel.refreshQuickNodesTab = () => {
+            if (panel.style.display !== 'none') {
+                const quickTab = panel.querySelector('.xzg-tab-content[data-tab-content="quicknodes"]');
+                if (quickTab && quickTab.style.display !== 'none') {
+                    renderQuickNodesList();
+                    if (quickHideDefaultBtn && window.XZGQuickNodes) {
+                        const checked = window.XZGQuickNodes.isHideDefaultMenu();
+                        quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
+                        const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
+                        if (label) label.textContent = checked ? "开" : "关";
+                    }
                 }
             }
         };
@@ -1672,7 +1916,7 @@ window.XZGThemePanel = {
                 return JSON.parse(stored);
             }
         } catch (e) {}
-        return { key: "f2", ctrl: false, alt: false, shift: false, meta: false };
+        return { key: "c", ctrl: false, alt: false, shift: false, meta: false };
     },
 
     saveShortcut(shortcut) {

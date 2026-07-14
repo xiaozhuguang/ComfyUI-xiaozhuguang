@@ -19,7 +19,10 @@ import { app } from "../../scripts/app.js";
 .xzg-bs-rlbl{width:70px;font-size:12px;color:#aaa;flex-shrink:0;white-space:nowrap}
 .xzg-bs-inp{flex:1;background:#1a1a1a;border:1px solid #444;border-radius:4px;padding:6px 8px;color:#fff;font-size:12px;outline:none;font-family:inherit}
 .xzg-bs-inp:focus{border-color:#666}
-.xzg-bs-clrbtn{width:28px;height:24px;border-radius:4px;border:1px solid #555;background:#2a2a2c;cursor:pointer;flex-shrink:0}
+.xzg-bs-clrbtn{width:28px;height:24px;border-radius:4px;border:1px solid #555;background:#2a2a2c;cursor:pointer;flex-shrink:0;padding:0;overflow:hidden}
+.xzg-bs-clrbtn input[type=color]{width:150%;height:150%;border:none;cursor:pointer;background:transparent;transform:translate(-25%,-25%);padding:0;margin:0;appearance:none}
+.xzg-bs-clrbtn input[type=color]::-webkit-color-swatch-wrapper{padding:0}
+.xzg-bs-clrbtn input[type=color]::-webkit-color-swatch{border:none;border-radius:4px}
 .xzg-bs-range{flex:1;accent-color:#4CAF50;cursor:pointer;height:4px;border-radius:2px;outline:none;appearance:none;background:#444}
 .xzg-bs-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#4CAF50;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .xzg-bs-range::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#4CAF50;cursor:pointer;border:none;box-shadow:0 1px 3px rgba(0,0,0,.4)}
@@ -267,10 +270,13 @@ function openBoolSettingsPanel(node) {
     }
 
     function mkClrBtn(color) {
-        const btn = document.createElement("button");
+        const btn = document.createElement("div");
         btn.className = "xzg-bs-clrbtn";
-        btn.type = "button";
-        btn.style.background = color;
+        const inp = document.createElement("input");
+        inp.type = "color";
+        inp.value = rgbToHex(color);
+        btn.appendChild(inp);
+        btn._input = inp;
         return btn;
     }
 
@@ -440,8 +446,8 @@ function openBoolSettingsPanel(node) {
             false: falseLabelInp.value,
             true: trueLabelInp.value,
         };
-        ns.fontColor = fontColorBtn.style.background;
-        ns.inactiveColor = inactiveColorBtn.style.background;
+        ns.fontColor = fontColorBtn._input.value;
+        ns.inactiveColor = inactiveColorBtn._input.value;
         ns.colors = {
             color1: color1Inp.value,
             color2: color2Inp.value,
@@ -466,15 +472,14 @@ function openBoolSettingsPanel(node) {
     });
 
     [fontColorBtn, inactiveColorBtn].forEach(btn => {
-        btn.addEventListener("click", () => {
-            const inp = document.createElement("input");
-            inp.type = "color";
-            inp.value = rgbToHex(btn.style.background);
-            inp.addEventListener("input", () => {
-                btn.style.background = inp.value;
-                applyPreview();
-            });
-            inp.click();
+        const inp = btn._input;
+        inp.addEventListener("input", () => {
+            btn.style.background = inp.value;
+            applyPreview();
+        });
+        inp.addEventListener("change", () => {
+            btn.style.background = inp.value;
+            applyPreview();
         });
     });
 

@@ -1150,6 +1150,106 @@ window.XZGThemeManager = {
     border-color: #aa4444;
     color: #ff8080;
 }
+
+.xzg-quick-nodes-count {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 8px;
+}
+
+.xzg-quick-nodes-count span {
+    color: #FFD700;
+    font-weight: bold;
+}
+
+.xzg-quick-node-manage-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-bottom: 1px solid #333;
+    cursor: move;
+    transition: background 0.15s;
+    font-size: 12px;
+}
+
+.xzg-quick-node-manage-item:last-child {
+    border-bottom: none;
+}
+
+.xzg-quick-node-manage-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.xzg-quick-node-manage-item.dragging {
+    opacity: 0.5;
+    background: #333;
+}
+
+.xzg-quick-node-manage-item.drag-over {
+    border-top: 2px solid #FFD700;
+}
+
+.xzg-quick-drag-handle {
+    color: #666;
+    font-size: 12px;
+    cursor: move;
+    flex-shrink: 0;
+    line-height: 1;
+    user-select: none;
+}
+
+.xzg-quick-node-info {
+    flex: 1;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.xzg-quick-node-name {
+    font-size: 12px;
+    color: #ddd;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.3;
+}
+
+.xzg-quick-node-type {
+    font-size: 10px;
+    color: #888;
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.xzg-quick-node-remove-btn {
+    background: none;
+    border: 1px solid #773333;
+    color: #e07070;
+    padding: 2px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.xzg-quick-node-remove-btn:hover {
+    background: #4a1a1a;
+    border-color: #aa4444;
+    color: #ff8080;
+}
+
+.xzg-quick-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: #ddd;
+}
         `;
         
         this.panelStyleElement = document.createElement("style");
