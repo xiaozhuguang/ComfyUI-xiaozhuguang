@@ -529,34 +529,50 @@ window.XZGMenuHide = {
         const self = this;
 
         this._domObserver = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                    if (node.nodeType === 1) {
-                        const el = node;
-                        let menuEl = null;
-                        if (el.classList && (
-                            el.classList.contains('litecontextmenu') ||
-                            el.classList.contains('context-menu') ||
-                            el.classList.contains('litegraph-contextmenu') ||
-                            (el.tagName === 'DIV' && el.querySelector?.('.litemenu-title'))
-                        )) {
-                            menuEl = el;
-                        }
-                        if (!menuEl) {
-                            const inner = el.querySelector?.('.litecontextmenu, .context-menu, .litegraph-contextmenu');
-                            if (inner) menuEl = inner;
-                        }
+            const seenMenus = new WeakSet();
+            const processMenu = (menuEl) => {
+                if (!menuEl || seenMenus.has(menuEl)) return;
+                seenMenus.add(menuEl);
+                self._collectFromDOM(menuEl);
+                self._hideFromDOM(menuEl);
+                requestAnimationFrame(() => {
+                    self._collectFromDOM(menuEl);
+                    self._hideFromDOM(menuEl);
+                });
+                setTimeout(() => {
+                    self._collectFromDOM(menuEl);
+                    self._hideFromDOM(menuEl);
+                }, 50);
+            };
 
+            const findMenu = (el) => {
+                if (!el || el.nodeType !== 1) return null;
+                if (el.classList && (
+                    el.classList.contains('litecontextmenu') ||
+                    el.classList.contains('context-menu') ||
+                    el.classList.contains('litegraph-contextmenu') ||
+                    (el.tagName === 'DIV' && el.querySelector?.('.litemenu-title'))
+                )) {
+                    return el;
+                }
+                const inner = el.querySelector?.('.litecontextmenu, .context-menu, .litegraph-contextmenu');
+                return inner || null;
+            };
+
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    for (const node of mutation.addedNodes) {
+                        const menuEl = findMenu(node);
+                        if (menuEl) processMenu(menuEl);
+                    }
+                }
+                if (mutation.type === 'characterData' || mutation.type === 'childList') {
+                    let target = mutation.target;
+                    if (target.nodeType === 3) target = target.parentElement;
+                    if (target) {
+                        const menuEl = target.closest?.('.litecontextmenu, .context-menu, .litegraph-contextmenu');
                         if (menuEl) {
                             self._collectFromDOM(menuEl);
-                            // 同步立即隐藏：MutationObserver 回调以微任务执行，
-                            // 发生在浏览器首次绘制之前，因此可以彻底消除 setTimeout 延迟导致的闪屏
-                            self._hideFromDOM(menuEl);
-                            // 使用 requestAnimationFrame 在下一帧前再次检查，
-                            // 捕获 LiteGraph 在同一帧内后续动态插入的菜单项
-                            requestAnimationFrame(() => {
-                                self._hideFromDOM(menuEl);
-                            });
                         }
                     }
                 }
@@ -565,7 +581,9 @@ window.XZGMenuHide = {
 
         this._domObserver.observe(document.body, {
             childList: true,
-            subtree: true
+            subtree: true,
+            characterData: true,
+            characterDataOldValue: false
         });
     },
 
