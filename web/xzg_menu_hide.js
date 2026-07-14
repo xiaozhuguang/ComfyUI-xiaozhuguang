@@ -208,37 +208,66 @@ window.XZGMenuHide = {
         if (!searchLower) return true;
         if (!itemText) return false;
 
-        const itemLower = itemText.toLowerCase();
-        if (itemLower.includes(searchLower)) {
+        const itemStr = String(itemText);
+        const itemLower = itemStr.toLowerCase();
+        const searchNorm = String(searchLower).toLowerCase();
+
+        // 1. 直接匹配
+        if (itemLower.includes(searchNorm)) {
             return true;
         }
 
+        // 2. 尝试 Unicode 归一化后匹配（处理全角/半角等差异）
+        try {
+            const itemNFKC = itemLower.normalize('NFKC');
+            const searchNFKC = searchNorm.normalize('NFKC');
+            if (itemNFKC.includes(searchNFKC)) {
+                return true;
+            }
+        } catch(e) {}
+
+        // 3. 翻译匹配
         try {
             const dict = this._getTranslationDict();
-            const itemTrim = itemText.trim();
+            const itemTrim = itemStr.trim();
 
             const cn = dict.enToCn[itemTrim];
-            if (cn && cn.toLowerCase().includes(searchLower)) {
-                return true;
+            if (cn) {
+                const cnLower = cn.toLowerCase();
+                if (cnLower.includes(searchNorm)) return true;
+                try { if (cnLower.normalize('NFKC').includes(searchNorm.normalize('NFKC'))) return true; } catch(e) {}
             }
 
             const en = dict.cnToEn[itemTrim];
-            if (en && en.toLowerCase().includes(searchLower)) {
-                return true;
+            if (en) {
+                const enLower = en.toLowerCase();
+                if (enLower.includes(searchNorm)) return true;
+                try { if (enLower.normalize('NFKC').includes(searchNorm.normalize('NFKC'))) return true; } catch(e) {}
             }
 
+            // 翻译字典中部分匹配
             for (const enKey in dict.enToCn) {
+                const enKeyLower = enKey.toLowerCase();
                 const cnVal = dict.enToCn[enKey];
-                if (enKey.toLowerCase().includes(searchLower) && 
-                    (itemLower.includes(enKey.toLowerCase()) || enKey.toLowerCase().includes(itemLower))) {
-                    return true;
+                const cnValLower = cnVal.toLowerCase();
+
+                if (itemLower.includes(enKeyLower) || enKeyLower.includes(itemLower)) {
+                    if (enKeyLower.includes(searchNorm)) return true;
+                    if (cnValLower.includes(searchNorm)) return true;
                 }
-                if (cnVal && cnVal.toLowerCase().includes(searchLower) && 
-                    (itemLower.includes(cnVal.toLowerCase()) || cnVal.toLowerCase().includes(itemLower))) {
-                    return true;
+                if (itemLower.includes(cnValLower) || cnValLower.includes(itemLower)) {
+                    if (enKeyLower.includes(searchNorm)) return true;
+                    if (cnValLower.includes(searchNorm)) return true;
                 }
             }
         } catch(e) {}
+
+        // 4. debug: 匹配失败时输出日志
+        console.warn('[小珠光] 搜索匹配失败:', {
+            item: itemStr,
+            itemLower: itemLower,
+            search: searchNorm
+        });
 
         return false;
     },
