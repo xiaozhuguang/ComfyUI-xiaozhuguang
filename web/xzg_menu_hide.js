@@ -116,6 +116,101 @@ window.XZGMenuHide = {
         return String(content).replace(/<[^>]*>/g, '').trim();
     },
 
+    _translationCache: null,
+    _translationCacheTime: 0,
+
+    _getTranslationDict() {
+        const now = Date.now();
+        if (this._translationCache && (now - this._translationCacheTime) < 5000) {
+            return this._translationCache;
+        }
+
+        const dict = {
+            enToCn: {},
+            cnToEn: {}
+        };
+
+        try {
+            if (window.TUtils && window.TUtils.T && window.TUtils.T.Menu) {
+                const menuT = window.TUtils.T.Menu;
+                for (const en in menuT) {
+                    const cn = menuT[en];
+                    if (en && cn && typeof en === 'string' && typeof cn === 'string') {
+                        dict.enToCn[en.trim()] = cn.trim();
+                        dict.cnToEn[cn.trim()] = en.trim();
+                    }
+                }
+            }
+        } catch(e) {}
+
+        try {
+            if (window.comfyAPI && window.comfyAPI.i18n) {
+                const i18n = window.comfyAPI.i18n;
+                const translations = i18n.translations || i18n._translations || {};
+                const zhCn = translations['zh-CN'] || translations['zh-cn'] || translations['zh'] || {};
+                const menuDict = zhCn.Menu || zhCn.menus || zhCn;
+                if (menuDict && typeof menuDict === 'object') {
+                    for (const en in menuDict) {
+                        const cn = menuDict[en];
+                        if (en && cn && typeof en === 'string' && typeof cn === 'string') {
+                            const enTrim = en.trim();
+                            const cnTrim = cn.trim();
+                            if (!dict.enToCn[enTrim]) {
+                                dict.enToCn[enTrim] = cnTrim;
+                            }
+                            if (!dict.cnToEn[cnTrim]) {
+                                dict.cnToEn[cnTrim] = enTrim;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch(e) {}
+
+        this._translationCache = dict;
+        this._translationCacheTime = now;
+        return dict;
+    },
+
+    _getAllAliases(text) {
+        if (!text) return [text];
+        const trimmed = text.trim();
+        const dict = this._getTranslationDict();
+        const aliases = new Set([trimmed]);
+
+        const cn = dict.enToCn[trimmed];
+        if (cn) aliases.add(cn);
+
+        const en = dict.cnToEn[trimmed];
+        if (en) aliases.add(en);
+
+        for (const enKey of Object.keys(dict.enToCn)) {
+            if (trimmed.includes(enKey) || enKey.includes(trimmed)) {
+                aliases.add(enKey);
+                aliases.add(dict.enToCn[enKey]);
+            }
+        }
+        for (const cnKey of Object.keys(dict.cnToEn)) {
+            if (trimmed.includes(cnKey) || cnKey.includes(trimmed)) {
+                aliases.add(cnKey);
+                aliases.add(dict.cnToEn[cnKey]);
+            }
+        }
+
+        return Array.from(aliases);
+    },
+
+    _searchMatch(itemText, searchLower) {
+        if (!searchLower) return true;
+        const aliases = this._getAllAliases(itemText);
+        for (const alias of aliases) {
+            if (alias.toLowerCase().includes(searchLower)) {
+                return true;
+            }
+        }
+        return false;
+    },
+
     _collectItems(options, menuType) {
         if (!options || !Array.isArray(options)) return;
         const list = this._collectedItems[menuType];

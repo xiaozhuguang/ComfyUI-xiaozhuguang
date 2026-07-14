@@ -741,7 +741,7 @@ window.XZGThemePanel = {
             let filteredItems = items;
             if (currentMenuSearch) {
                 const searchLower = currentMenuSearch.toLowerCase();
-                filteredItems = items.filter(item => item.toLowerCase().includes(searchLower));
+                filteredItems = items.filter(item => mh._searchMatch(item, searchLower));
             }
 
             if (filteredItems.length === 0) {
