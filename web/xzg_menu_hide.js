@@ -105,15 +105,24 @@ window.XZGMenuHide = {
     _normalizeKey(content) {
         if (!content) return '';
         if (typeof content === 'string') {
-            return content.replace(/<[^>]*>/g, '').trim();
+            return this._cleanText(content).replace(/<[^>]*>/g, '').trim();
         }
         const candidates = ['content', 'title', 'value', 'label', 'text', 'name'];
         for (const prop of candidates) {
             if (content[prop]) {
-                return String(content[prop]).replace(/<[^>]*>/g, '').trim();
+                return this._cleanText(String(content[prop])).replace(/<[^>]*>/g, '').trim();
             }
         }
-        return String(content).replace(/<[^>]*>/g, '').trim();
+        return this._cleanText(String(content)).replace(/<[^>]*>/g, '').trim();
+    },
+
+    _cleanText(text) {
+        if (!text) return '';
+        return String(text)
+            .replace(/[\u200B-\u200F\u2028-\u202F\u2060-\u2064\uFEFF]/g, '')
+            .replace(/\u00A0/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
     },
 
     _translationCache: null,
@@ -217,7 +226,16 @@ window.XZGMenuHide = {
             return true;
         }
 
-        // 2. 尝试 Unicode 归一化后匹配（处理全角/半角等差异）
+        // 2. 清理不可见字符后匹配
+        try {
+            const cleanItem = this._cleanText(itemLower).toLowerCase();
+            const cleanSearch = this._cleanText(searchNorm).toLowerCase();
+            if (cleanItem.includes(cleanSearch)) {
+                return true;
+            }
+        } catch(e) {}
+
+        // 3. 尝试 Unicode 归一化后匹配（处理全角/半角等差异）
         try {
             const itemNFKC = itemLower.normalize('NFKC');
             const searchNFKC = searchNorm.normalize('NFKC');
@@ -226,7 +244,7 @@ window.XZGMenuHide = {
             }
         } catch(e) {}
 
-        // 3. 翻译匹配
+        // 4. 翻译匹配
         try {
             const dict = this._getTranslationDict();
             const itemTrim = itemStr.trim();
@@ -261,13 +279,6 @@ window.XZGMenuHide = {
                 }
             }
         } catch(e) {}
-
-        // 4. debug: 匹配失败时输出日志
-        console.warn('[小珠光] 搜索匹配失败:', {
-            item: itemStr,
-            itemLower: itemLower,
-            search: searchNorm
-        });
 
         return false;
     },
@@ -569,7 +580,7 @@ window.XZGMenuHide = {
         items.forEach(item => {
             const text = item.textContent?.trim() || item.innerText?.trim();
             if (text && text.length < 50 && !text.match(/^[\d\s\-\.]+$/)) {
-                collected.push(text);
+                collected.push(this._cleanText(text));
             }
         });
 
@@ -578,7 +589,7 @@ window.XZGMenuHide = {
             const existing = new Set(list);
             let changed = false;
             collected.forEach(text => {
-                const key = text.replace(/<[^>]*>/g, '').trim();
+                const key = this._cleanText(text.replace(/<[^>]*>/g, '')).trim();
                 if (key && !existing.has(key)) {
                     existing.add(key);
                     list.push(key);
@@ -608,7 +619,7 @@ window.XZGMenuHide = {
         const hideItem = (item) => {
             const text = item.textContent?.trim() || item.innerText?.trim();
             if (!text) return;
-            const key = text.replace(/<[^>]*>/g, '').trim();
+            const key = this._cleanText(text.replace(/<[^>]*>/g, '')).trim();
             if (!key) return;
 
             for (const hiddenKey of allHiddenKeys) {
