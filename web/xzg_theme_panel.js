@@ -297,6 +297,11 @@ window.XZGThemePanel = {
                         <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">隐藏全部</button>
                         <button type="button" id="xzg-menu-unselectall-btn" class="xzg-menu-tool-btn">显示全部</button>
                     </div>
+                    <div class="xzg-menu-hide-toolbar">
+                        <button type="button" id="xzg-menu-export-btn" class="xzg-menu-tool-btn">导出配置</button>
+                        <button type="button" id="xzg-menu-import-btn" class="xzg-menu-tool-btn">导入配置</button>
+                        <input type="file" id="xzg-menu-import-file" accept=".json" style="display:none;" />
+                    </div>
                     <div class="xzg-menu-hide-list" id="xzg-menu-hide-list">
                         <div class="xzg-menu-empty-tip">点击「刷新列表」加载菜单项<br><span style="font-size:11px;color:#888;">提示：先在画布上右键一次再刷新</span></div>
                     </div>
@@ -707,6 +712,9 @@ window.XZGThemePanel = {
         const menuSelectAllBtn = panel.querySelector("#xzg-menu-selectall-btn");
         const menuUnselectAllBtn = panel.querySelector("#xzg-menu-unselectall-btn");
         const menuResetBtn = panel.querySelector("#xzg-menu-reset-btn");
+        const menuExportBtn = panel.querySelector("#xzg-menu-export-btn");
+        const menuImportBtn = panel.querySelector("#xzg-menu-import-btn");
+        const menuImportFile = panel.querySelector("#xzg-menu-import-file");
         const menuSearchInput = panel.querySelector("#xzg-menu-search-input");
         const menuSearchClear = panel.querySelector("#xzg-menu-search-clear");
 
@@ -884,6 +892,71 @@ window.XZGThemePanel = {
                     window.XZGMenuHide.resetAll();
                     renderMenuList();
                 }
+            });
+        }
+
+        if (menuExportBtn) {
+            menuExportBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (!window.XZGMenuHide) return;
+                const mh = window.XZGMenuHide;
+                const exportData = {
+                    version: 1,
+                    type: 'xzg-menu-hide-config',
+                    config: JSON.parse(JSON.stringify(mh.config)),
+                    exportedAt: new Date().toISOString()
+                };
+                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const dateStr = new Date().toISOString().slice(0, 10);
+                a.download = `xzg-menu-hide-config-${dateStr}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+        }
+
+        if (menuImportBtn && menuImportFile) {
+            menuImportBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                menuImportFile.click();
+            });
+            menuImportFile.addEventListener('change', (e) => {
+                e.stopPropagation();
+                if (!window.XZGMenuHide) return;
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.target.result);
+                        const config = data.config || data;
+                        if (!config.canvas && !config.node) {
+                            alert('配置文件格式不正确');
+                            return;
+                        }
+                        if (!confirm('导入配置将覆盖当前的菜单隐藏设置，确定继续吗？')) {
+                            return;
+                        }
+                        const mh = window.XZGMenuHide;
+                        mh.config = {
+                            canvas: config.canvas || {},
+                            node: config.node || {}
+                        };
+                        mh.saveConfig();
+                        mh._applyHideToOpenMenus();
+                        renderMenuList();
+                        alert('导入成功');
+                    } catch (err) {
+                        alert('导入失败：文件格式不正确');
+                        console.warn('[小珠光] 菜单配置导入失败:', err);
+                    }
+                };
+                reader.readAsText(file);
+                menuImportFile.value = '';
             });
         }
 
