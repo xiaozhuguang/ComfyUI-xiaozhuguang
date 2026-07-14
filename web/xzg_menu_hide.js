@@ -121,7 +121,7 @@ window.XZGMenuHide = {
 
     _getTranslationDict() {
         const now = Date.now();
-        if (this._translationCache && (now - this._translationCacheTime) < 5000) {
+        if (this._translationCache && (now - this._translationCacheTime) < 10000) {
             return this._translationCache;
         }
 
@@ -136,8 +136,12 @@ window.XZGMenuHide = {
                 for (const en in menuT) {
                     const cn = menuT[en];
                     if (en && cn && typeof en === 'string' && typeof cn === 'string') {
-                        dict.enToCn[en.trim()] = cn.trim();
-                        dict.cnToEn[cn.trim()] = en.trim();
+                        const enTrim = en.trim();
+                        const cnTrim = cn.trim();
+                        if (enTrim && cnTrim) {
+                            dict.enToCn[enTrim] = cnTrim;
+                            dict.cnToEn[cnTrim] = enTrim;
+                        }
                     }
                 }
             }
@@ -146,20 +150,48 @@ window.XZGMenuHide = {
         try {
             if (window.comfyAPI && window.comfyAPI.i18n) {
                 const i18n = window.comfyAPI.i18n;
-                const translations = i18n.translations || i18n._translations || {};
-                const zhCn = translations['zh-CN'] || translations['zh-cn'] || translations['zh'] || {};
-                const menuDict = zhCn.Menu || zhCn.menus || zhCn;
+                let zhCn = null;
+                try {
+                    if (typeof i18n.getTranslation === 'function') {
+                        zhCn = i18n.getTranslation('zh-CN') || i18n.getTranslation('zh') || {};
+                    }
+                } catch(e) {}
+                if (!zhCn) {
+                    const translations = i18n.translations || i18n._translations || {};
+                    zhCn = translations['zh-CN'] || translations['zh-cn'] || translations['zh'] || {};
+                }
+                const menuDict = zhCn.Menu || zhCn.menus || (zhCn.nodeDefs ? null : zhCn);
                 if (menuDict && typeof menuDict === 'object') {
                     for (const en in menuDict) {
                         const cn = menuDict[en];
                         if (en && cn && typeof en === 'string' && typeof cn === 'string') {
                             const enTrim = en.trim();
                             const cnTrim = cn.trim();
-                            if (!dict.enToCn[enTrim]) {
-                                dict.enToCn[enTrim] = cnTrim;
+                            if (enTrim && cnTrim) {
+                                if (!dict.enToCn[enTrim]) {
+                                    dict.enToCn[enTrim] = cnTrim;
+                                }
+                                if (!dict.cnToEn[cnTrim]) {
+                                    dict.cnToEn[cnTrim] = enTrim;
+                                }
                             }
-                            if (!dict.cnToEn[cnTrim]) {
-                                dict.cnToEn[cnTrim] = enTrim;
+                        }
+                    }
+                }
+                const nodeDefs = zhCn.nodeDefs || zhCn.NodeDefs || {};
+                if (nodeDefs && typeof nodeDefs === 'object') {
+                    for (const cls in nodeDefs) {
+                        const nodeInfo = nodeDefs[cls];
+                        if (nodeInfo && nodeInfo.display_name) {
+                            const enTrim = cls.trim();
+                            const cnTrim = nodeInfo.display_name.trim();
+                            if (enTrim && cnTrim) {
+                                if (!dict.enToCn[enTrim]) {
+                                    dict.enToCn[enTrim] = cnTrim;
+                                }
+                                if (!dict.cnToEn[cnTrim]) {
+                                    dict.cnToEn[cnTrim] = enTrim;
+                                }
                             }
                         }
                     }
@@ -172,42 +204,42 @@ window.XZGMenuHide = {
         return dict;
     },
 
-    _getAllAliases(text) {
-        if (!text) return [text];
-        const trimmed = text.trim();
-        const dict = this._getTranslationDict();
-        const aliases = new Set([trimmed]);
-
-        const cn = dict.enToCn[trimmed];
-        if (cn) aliases.add(cn);
-
-        const en = dict.cnToEn[trimmed];
-        if (en) aliases.add(en);
-
-        for (const enKey of Object.keys(dict.enToCn)) {
-            if (trimmed.includes(enKey) || enKey.includes(trimmed)) {
-                aliases.add(enKey);
-                aliases.add(dict.enToCn[enKey]);
-            }
-        }
-        for (const cnKey of Object.keys(dict.cnToEn)) {
-            if (trimmed.includes(cnKey) || cnKey.includes(trimmed)) {
-                aliases.add(cnKey);
-                aliases.add(dict.cnToEn[cnKey]);
-            }
-        }
-
-        return Array.from(aliases);
-    },
-
     _searchMatch(itemText, searchLower) {
         if (!searchLower) return true;
-        const aliases = this._getAllAliases(itemText);
-        for (const alias of aliases) {
-            if (alias.toLowerCase().includes(searchLower)) {
+        if (!itemText) return false;
+
+        const itemLower = itemText.toLowerCase();
+        if (itemLower.includes(searchLower)) {
+            return true;
+        }
+
+        try {
+            const dict = this._getTranslationDict();
+            const itemTrim = itemText.trim();
+
+            const cn = dict.enToCn[itemTrim];
+            if (cn && cn.toLowerCase().includes(searchLower)) {
                 return true;
             }
-        }
+
+            const en = dict.cnToEn[itemTrim];
+            if (en && en.toLowerCase().includes(searchLower)) {
+                return true;
+            }
+
+            for (const enKey in dict.enToCn) {
+                const cnVal = dict.enToCn[enKey];
+                if (enKey.toLowerCase().includes(searchLower) && 
+                    (itemLower.includes(enKey.toLowerCase()) || enKey.toLowerCase().includes(itemLower))) {
+                    return true;
+                }
+                if (cnVal && cnVal.toLowerCase().includes(searchLower) && 
+                    (itemLower.includes(cnVal.toLowerCase()) || cnVal.toLowerCase().includes(itemLower))) {
+                    return true;
+                }
+            }
+        } catch(e) {}
+
         return false;
     },
 
