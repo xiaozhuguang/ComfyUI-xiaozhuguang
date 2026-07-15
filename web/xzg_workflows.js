@@ -182,15 +182,6 @@ class XZGWorkflowsManager {
     }
 
     // ====== 分类工具方法 ======
-    /** 去除文件夹名称的数字前缀 (如 "01_AAA" → "AAA") */
-    stripNumberPrefix(name) {
-        return name.replace(/^\d+[_\s]?/, '');
-    }
-    /** 获取路径的父级路径 */
-    getParentPath(path) {
-        if (!path || !path.includes('/')) return '';
-        return path.substring(0, path.lastIndexOf('/'));
-    }
 
     getShortcut() {
         try {
@@ -318,6 +309,61 @@ class XZGWorkflowsManager {
             if (e.target === dialog) {
                 closeDialog();
             }
+        });
+    }
+
+    /** 自定义输入对话框，替代浏览器原生 prompt。返回输入字符串；取消 / ESC / 点遮罩返回 null */
+    showInputDialog(title, defaultValue = "", opts = {}) {
+        return new Promise((resolve) => {
+            const escapeAttr = (v) => String(v == null ? "" : v)
+                .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+                .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const dialog = document.createElement("div");
+            dialog.className = "xzg-wf-dialog-overlay";
+            dialog.innerHTML = this._applyAccent(`
+                <div class="xzg-wf-dialog">
+                    <div class="xzg-wf-dialog-title">${escapeAttr(title)}</div>
+                    <div class="xzg-wf-dialog-body">
+                        <input type="text" class="xzg-wf-dialog-input" id="xzg-wf-dialog-input"
+                            value="${escapeAttr(defaultValue)}" placeholder="${escapeAttr(opts.placeholder || "")}" />
+                    </div>
+                    <div class="xzg-wf-dialog-footer">
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">取消</button>
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm">确认</button>
+                    </div>
+                </div>
+            `);
+            document.body.appendChild(dialog);
+
+            const input = dialog.querySelector("#xzg-wf-dialog-input");
+            const confirmBtn = dialog.querySelector("#xzg-wf-dialog-confirm");
+            const cancelBtn = dialog.querySelector("#xzg-wf-dialog-cancel");
+
+            const finish = (val) => {
+                document.removeEventListener("keydown", onKey, true);
+                dialog.remove();
+                resolve(val);
+            };
+            const onKey = (e) => {
+                if (e.key === "Escape") {
+                    e.preventDefault(); e.stopPropagation();
+                    finish(null);
+                } else if (e.key === "Enter") {
+                    e.preventDefault(); e.stopPropagation();
+                    finish(input.value);
+                }
+            };
+            document.addEventListener("keydown", onKey, true);
+
+            cancelBtn.addEventListener("click", () => finish(null));
+            confirmBtn.addEventListener("click", () => finish(input.value));
+            dialog.addEventListener("click", (e) => {
+                if (e.target === dialog) finish(null);
+            });
+
+            // 自动聚焦并全选，方便直接修改原名称
+            input.focus();
+            input.select();
         });
     }
 
@@ -471,7 +517,7 @@ class XZGWorkflowsManager {
             let bars = "";
             for (let i = 0; i < depth + 1; i++) bars += `<span class="xzg-wf-cat-bar"></span>`;
             const toggle = hasChildren
-                ? `<span class="xzg-wf-cat-toggle" data-path="${folderPath}"><svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg></span>`
+                ? `<span class="xzg-wf-cat-toggle" data-path="${folderPath}"><svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg></span>`
                 : `<span class="xzg-wf-cat-toggle xzg-wf-cat-toggle-empty"></span>`;
             return `<div class="xzg-wf-submenu-item${selected}" data-folder="${folderPath}" style="padding-left:${8 + depth * 16}px">
                 ${toggle}
@@ -1088,6 +1134,7 @@ class XZGWorkflowsManager {
                 <div class="xzg-wf-header">
                     <span class="xzg-wf-title">工作流</span>
                     <div class="xzg-wf-header-btns">
+                                    <button class="xzg-wf-header-btn" id="xzg-wf-help-btn" title="使用说明">📖 说明</button>
                                     <div class="xzg-wf-header-btn xzg-wf-trash-btn" id="xzg-wf-trash-btn" title="回收站（误删可恢复）">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <polyline points="3 6 5 6 21 6"/>
@@ -1125,7 +1172,7 @@ class XZGWorkflowsManager {
                             </div>
                             <div class="xzg-wf-sort-btns">
                                 <button class="xzg-wf-sort-btn active" data-sort="default" title="按使用频率排序">🔥</button>
-                                <button class="xzg-wf-sort-btn" data-sort="time" title="按最近使用排序">🕐</button>
+                                <button class="xzg-wf-sort-btn xzg-wf-sort-btn-name" data-sort="name" title="按名称排序">A</button>
                             </div>
                         </div>
                         <div class="xzg-wf-list"></div>
@@ -1414,8 +1461,8 @@ class XZGWorkflowsManager {
                 overflow: hidden;
             }
             .xzg-wf-cat-toggle {
-                width: 16px;
-                height: 16px;
+                width: 20px;
+                height: 20px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -1425,8 +1472,8 @@ class XZGWorkflowsManager {
                 transition: transform 0.15s, color 0.15s;
             }
             .xzg-wf-cat-toggle-svg {
-                width: 14px;
-                height: 14px;
+                width: 18px;
+                height: 18px;
                 transition: transform 0.15s;
             }
             .xzg-wf-cat-toggle-svg.expanded {
@@ -1471,6 +1518,13 @@ class XZGWorkflowsManager {
                 background: rgba(255, 215, 0, 0.25) !important;
                 border: 2px dashed #FFD700;
                 border-left: none;
+            }
+            .xzg-wf-cat-item.xzg-wf-cat-flash {
+                animation: xzg-wf-cat-flash-anim 1s ease;
+            }
+            @keyframes xzg-wf-cat-flash-anim {
+                0% { background: rgba(255, 215, 0, 0.55); }
+                100% { background: transparent; }
             }
             .xzg-wf-split-handle {
                 width: 3px;
@@ -1527,6 +1581,10 @@ class XZGWorkflowsManager {
                 background: rgba(255, 215, 0, 0.15);
                 color: #FFD700;
                 border-color: #FFD700;
+            }
+            .xzg-wf-sort-btn-name {
+                font-weight: bold;
+                font-size: 15px;
             }
             .xzg-wf-list {
                 flex: 1;
@@ -1631,15 +1689,15 @@ class XZGWorkflowsManager {
                 background: var(--comfy-menu-bg, #2a2a2a);
                 border: 1px solid var(--border-color, #444);
                 border-radius: 6px;
-                padding: 4px 0;
-                min-width: 140px;
-                max-height: 300px;
+                padding: 6px 0;
+                min-width: 160px;
+                max-height: 70vh;
                 overflow-y: auto;
                 box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-                font-size: 13px;
+                font-size: 14px;
             }
             .xzg-wf-submenu-item {
-                padding: 8px 16px;
+                padding: 14px 18px;
                 cursor: pointer;
                 color: var(--fg, #ddd);
                 transition: background 0.15s;
@@ -1753,6 +1811,51 @@ class XZGWorkflowsManager {
                 color: #ddd !important;
                 border-color: #666 !important;
             }
+            .xzg-wf-dialog-input {
+                width: 100%;
+                box-sizing: border-box;
+                padding: 8px 10px;
+                font-size: 14px;
+                background: var(--comfy-input-bg, #3a3a3a);
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;
+                outline: none;
+            }
+            .xzg-wf-dialog-input:focus {
+                border-color: #FFD700;
+            }
+            .xzg-wf-help-dialog {
+                min-width: 440px;
+                max-width: 560px;
+                max-height: 86vh;
+            }
+            .xzg-wf-help-body {
+                max-height: 64vh;
+                overflow-y: auto;
+                text-align: left;
+                font-size: 13px;
+                line-height: 1.7;
+                color: var(--fg, #ddd);
+                padding: 16px 18px;
+            }
+            .xzg-wf-help-body h4 {
+                margin: 16px 0 6px;
+                font-size: 14px;
+                color: var(--xzg-wf-accent, #FFD700);
+                border-bottom: 1px solid var(--border-color, #444);
+                padding-bottom: 4px;
+            }
+            .xzg-wf-help-body h4:first-child { margin-top: 0; }
+            .xzg-wf-help-body ul { margin: 4px 0; padding-left: 20px; }
+            .xzg-wf-help-body li { margin: 3px 0; }
+            .xzg-wf-help-body b { color: var(--xzg-wf-accent, #FFD700); }
+            .xzg-wf-help-body code {
+                background: rgba(255, 255, 255, 0.1);
+                padding: 1px 5px;
+                border-radius: 3px;
+                font-size: 12px;
+            }
             .xzg-wf-shortcut-btn:hover {
                 background: #555 !important;
                 border-color: #888 !important;
@@ -1842,9 +1945,97 @@ class XZGWorkflowsManager {
             possessBtn.addEventListener("click", () => this.togglePossessMode());
         }
 
+        const helpBtn = container.querySelector("#xzg-wf-help-btn");
+        if (helpBtn) {
+            helpBtn.addEventListener("click", () => this.showWorkflowHelp());
+        }
+
         this.updateShortcutDisplay();
         this.initPossessMode();
 
+    }
+
+    /** 工作流管理使用说明弹窗 */
+    showWorkflowHelp() {
+        const dialog = document.createElement("div");
+        dialog.className = "xzg-wf-dialog-overlay";
+        const html = `
+            <div class="xzg-wf-dialog xzg-wf-help-dialog">
+                <div class="xzg-wf-dialog-title">工作流管理 · 使用说明</div>
+                <div class="xzg-wf-dialog-body xzg-wf-help-body">
+                    <h4>打开面板</h4>
+                    <ul>
+                        <li>快捷键：默认 <code>\`</code>（反引号），可点顶部「快捷键」按钮自定义</li>
+                        <li>侧边栏：点击左侧工作流图标（四个圆点）</li>
+                    </ul>
+                    <h4>工作流操作</h4>
+                    <ul>
+                        <li><b>打开</b>：单击工作流项，加载到当前画布并激活对应官方工作流（已打开的仅切换、不重复加载）</li>
+                        <li><b>导入到画布</b>：直接拖拽工作流项到画布空白处，节点即被导入</li>
+                        <li><b>定位分类</b>：单击工作流项左侧的四个圆点图标，左侧分类树会自动展开并高亮其所属分类</li>
+                        <li><b>右键菜单</b>：
+                            <ul>
+                                <li>📁 移动到分类：在子菜单中选择目标文件夹或「未分类」</li>
+                                <li>✏️ 重命名：修改显示名称，保留你手工加的编号前缀</li>
+                                <li>🗑️ 删除：移入回收站，可恢复</li>
+                            </ul>
+                        </li>
+                    </ul>
+                    <h4>分类管理（左侧）</h4>
+                    <ul>
+                        <li><b>全部</b> / <b>根目录未分类</b>：分别显示所有、及未归入文件夹的工作流</li>
+                        <li><b>新建分类</b>：右键「全部」→ 新建分类；右键文件夹可新建子分类（支持多级嵌套）</li>
+                        <li><b>重命名 / 删除分类</b>：右键文件夹操作；删除分类会将其下工作流一并移入回收站</li>
+                        <li><b>筛选</b>：单击分类项，右侧只显示该分类的工作流</li>
+                        <li><b>移动</b>：拖拽工作流项到目标文件夹即可</li>
+                    </ul>
+                    <h4>搜索</h4>
+                    <ul>
+                        <li>顶部搜索框实时过滤；支持拼音（首字母 + 完整拼音），自动忽略空格</li>
+                        <li>例如输入 <code>txlj</code> 匹配「图像连接」；<code>tuxiang</code> 同样匹配</li>
+                    </ul>
+                    <h4>排序</h4>
+                    <ul>
+                        <li>🔥 使用频率：使用次数 → 上次使用时间</li>
+                        <li>A 名称：按名称字母 / 拼音顺序</li>
+                        <li>拖拽工作流到画布不增加使用频率，仅单击打开会计数</li>
+                    </ul>
+                    <h4>回收站</h4>
+                    <ul>
+                        <li>误删的工作流会进入回收站，可在此恢复</li>
+                        <li>回收站保留 3 个月，过期自动清理（不可手动清空）</li>
+                    </ul>
+                    <h4>其它设置</h4>
+                    <ul>
+                        <li><b>主题设置</b>：自定义面板强调色</li>
+                        <li><b>夺舍模式</b>：开启后隐藏 ComfyUI 官方工作流管理按钮，由本面板接管</li>
+                        <li><b>保存工作流</b>：使用 ComfyUI 官方保存（Ctrl+S / 顶栏），保存后本面板会自动同步显示</li>
+                    </ul>
+                </div>
+                <div class="xzg-wf-dialog-footer">
+                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-help-close">明白了</button>
+                </div>
+            </div>
+        `;
+        dialog.innerHTML = this._applyAccent(html);
+        document.body.appendChild(dialog);
+
+        const close = () => {
+            document.removeEventListener("keydown", onKey, true);
+            dialog.remove();
+        };
+        dialog.querySelector("#xzg-wf-help-close").addEventListener("click", close);
+        dialog.addEventListener("click", (e) => {
+            if (e.target === dialog) close();
+        });
+        const onKey = (e) => {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                close();
+            }
+        };
+        document.addEventListener("keydown", onKey, true);
     }
 
     // ====== 夺舍模式：隐藏官方工作流管理按钮 ======
@@ -2197,7 +2388,7 @@ class XZGWorkflowsManager {
         let html = '<span class="xzg-wf-cat-name">';
         if (hasChildren) {
             html += `<span class="xzg-wf-cat-toggle" data-path="${folderPath}">
-                <svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="9 18 15 12 9 6"></polyline>
                 </svg>
             </span>`;
@@ -2343,6 +2534,34 @@ class XZGWorkflowsManager {
         return this.getFilteredWorkflows(catId, "").length;
     }
 
+    /** 点击工作流图标，在左侧分类树中定位并高亮其所属分类 */
+    locateWorkflowCategory(wf) {
+        const folder = (wf.folder && wf.folder !== "未分类") ? wf.folder : "";
+        const catId = folder ? "folder:" + folder : "uncategorized";
+
+        // 展开所有父级文件夹，确保目标分类可见
+        if (folder) {
+            const parts = folder.split('/');
+            let acc = '';
+            for (let i = 0; i < parts.length - 1; i++) {
+                acc = acc ? acc + '/' + parts[i] : parts[i];
+                this.expandedFolders.add(acc);
+            }
+        }
+
+        this.currentCategory = catId;
+        this.renderCategories();
+        this.renderWorkflowList();
+
+        // 滚动到目标分类并闪动高亮
+        const el = this.categoryList.querySelector(`[data-cat-id="${catId}"]`);
+        if (el) {
+            el.scrollIntoView({ block: 'nearest' });
+            el.classList.add('xzg-wf-cat-flash');
+            setTimeout(() => el.classList.remove('xzg-wf-cat-flash'), 1000);
+        }
+    }
+
     renderWorkflowList() {
         if (!this.workflowList) return;
         const countEl = this.container.querySelector(".xzg-wf-count");
@@ -2394,6 +2613,14 @@ class XZGWorkflowsManager {
         `;
 
         item.querySelector(".xzg-wf-item-name").textContent = wf.name;
+
+        const wfIcon = item.querySelector(".xzg-wf-item-icon");
+        wfIcon.title = "定位到所属分类";
+        wfIcon.style.cursor = "pointer";
+        wfIcon.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.locateWorkflowCategory(wf);
+        });
 
         item.addEventListener("click", (e) => {
             this.loadWorkflow(wf.path);
@@ -2475,7 +2702,11 @@ class XZGWorkflowsManager {
             });
         }
 
-        if (this.sortMode === "time") {
+        if (this.sortMode === "name") {
+            items.sort((a, b) => {
+                return (a.name || "").localeCompare(b.name || "", 'zh-CN');
+            });
+        } else if (this.sortMode === "time") {
             items.sort((a, b) => {
                 return (b.lastUsed || 0) - (a.lastUsed || 0);
             });
@@ -2700,41 +2931,8 @@ class XZGWorkflowsManager {
         }
     }
 
-    async saveCurrentWorkflow() {
-        const name = prompt("请输入工作流名称：", "新工作流");
-        if (!name) return;
-
-        try {
-            const data = app.graph.serialize();
-            const res = await api.fetchApi("/xzg/workflows", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name, workflow: data, overwrite: false })
-            });
-
-            if (res.status === 409) {
-                if (!confirm("工作流已存在，是否覆盖？")) return;
-                const res2 = await api.fetchApi("/xzg/workflows", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name, workflow: data, overwrite: true })
-                });
-                if (!res2.ok) throw new Error("保存失败");
-            } else if (!res.ok) {
-                throw new Error("保存失败");
-            }
-
-            this.getWorkflowMeta(name);
-            await this.loadWorkflows();
-            const wfStore = app.extensionManager?.workflow;
-            if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
-        } catch (e) {
-            alert("保存工作流失败: " + e.message);
-        }
-    }
-
     async renameWorkflow(wf) {
-        const newName = prompt("请输入新名称：", wf.name);
+        const newName = await this.showInputDialog("重命名工作流", wf.name);
         if (!newName || newName === wf.name) return;
 
         const oldPath = wf.path;
@@ -2801,8 +2999,8 @@ class XZGWorkflowsManager {
     }
 
     async createNewCategory(parentFolder = "") {
-        const promptText = parentFolder ? `请输入子分类名称（父分类：${parentFolder}）：` : "请输入分类名称：";
-        const name = prompt(promptText);
+        const promptText = parentFolder ? `新建子分类（父分类：${parentFolder}）` : "新建分类";
+        const name = await this.showInputDialog(promptText, "");
         if (!name || !name.trim()) return;
         const folderName = name.trim();
 
@@ -2845,18 +3043,17 @@ class XZGWorkflowsManager {
         }
     }
 
-    /** 重命名分类：文件夹整体重命名（含其下所有子分类与工作流），不自动添加编号前缀 */
+    /** 重命名分类：文件夹整体重命名（含其下所有子分类与工作流）。保留用户自定义名称（含手工编号前缀），不做任何剥离 */
     async renameCategory(cat) {
         if (!cat || cat.type !== "folder") return;
 
-        const defaultName = this.stripNumberPrefix(cat.name);
-        const input = prompt("请输入分类名称：", defaultName);
+        const input = await this.showInputDialog("重命名分类", cat.name);
         if (input === null) return; // 用户取消
 
         const newName = input.trim();
         if (!newName) { alert("分类名称不能为空！"); return; }
         if (newName.includes("/") || newName.includes("\\")) { alert("分类名称不能包含 / 或 \\"); return; }
-        if (newName === defaultName) return; // 未修改，无需操作
+        if (newName === cat.name) return; // 未修改，无需操作
 
         try {
             await this.renameFolder(cat.path, newName);
