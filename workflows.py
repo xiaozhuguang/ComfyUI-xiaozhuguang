@@ -2,6 +2,8 @@ from server import PromptServer
 from aiohttp import web
 import os
 import json
+import shutil
+import time
 import folder_paths
 
 
@@ -31,6 +33,9 @@ def build_tree(base_dir, current_dir=""):
     entries = sorted(os.listdir(full_dir), key=lambda x: (not os.path.isdir(os.path.join(full_dir, x)), x))
 
     for entry in entries:
+        # 跳过回收站系统目录（__trash）
+        if entry.startswith("__"):
+            continue
         entry_path = os.path.join(current_dir, entry) if current_dir else entry
         full_entry_path = os.path.join(full_dir, entry)
 
@@ -52,6 +57,52 @@ def build_tree(base_dir, current_dir=""):
             })
 
     return tree
+
+
+def get_trash_directory():
+    """回收站目录，删除的分类/工作流先移入此处，可恢复"""
+    d = os.path.join(get_workflows_directory(), "__trash")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+# 回收站保留时长（天）。超过该时长的项目会在打开回收站时自动清理，不允许手动清空。
+TRASH_RETENTION_DAYS = 90
+
+
+def cleanup_expired_trash():
+    """删除回收站中超过保留期（默认 90 天）的项目，避免无限增长。"""
+    try:
+        trash_dir = get_trash_directory()
+        now = time.time()
+        for entry in os.listdir(trash_dir):
+            item_dir = os.path.join(trash_dir, entry)
+            if not os.path.isdir(item_dir):
+                continue
+            deleted_at = None
+            meta_path = os.path.join(item_dir, ".xzg_trash_meta.json")
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path, encoding="utf-8") as mf:
+                        deleted_at = json.load(mf).get("deleted_at")
+                except Exception:
+                    pass
+            expire_ts = None
+            if deleted_at:
+                try:
+                    expire_ts = time.mktime(time.strptime(deleted_at, "%Y%m%d_%H%M%S"))
+                except Exception:
+                    expire_ts = None
+            if expire_ts is None:
+                # 无元数据时以目录修改时间兜底
+                try:
+                    expire_ts = os.path.getmtime(item_dir)
+                except Exception:
+                    expire_ts = now
+            if now - expire_ts > TRASH_RETENTION_DAYS * 86400:
+                shutil.rmtree(item_dir, ignore_errors=True)
+    except Exception:
+        pass
 
 
 @PromptServer.instance.routes.get("/xzg/workflows")
@@ -96,11 +147,20 @@ async def save_workflow(request):
     if not os.path.exists(sub_path):
         os.makedirs(sub_path, exist_ok=True)
 
+    tmp_path = file_path + ".tmp"
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(workflow, f, ensure_ascii=False, indent=2)
+        # 原子替换：先写临时文件再 rename，避免写入中途崩溃导致原文件损坏
+        os.replace(tmp_path, file_path)
         return web.json_response({"success": True, "path": name}, status=201)
     except Exception as e:
+        # 清理可能残留的临时文件，避免下次误读半截内容
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -177,8 +237,18 @@ async def delete_workflow(request):
         return web.json_response({"error": "Workflow not found"}, status=404)
 
     try:
-        os.remove(file_path)
-        return web.json_response({"success": True})
+        # 删除改回收站：先移入 __trash，可恢复，避免永久丢失
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        base = os.path.basename(file_path)
+        trash_item = os.path.join(get_trash_directory(), f"{ts}__{base}")
+        while os.path.exists(trash_item):
+            ts += "_"
+            trash_item = os.path.join(get_trash_directory(), f"{ts}__{base}")
+        os.makedirs(trash_item, exist_ok=True)
+        shutil.move(file_path, os.path.join(trash_item, base))
+        with open(os.path.join(trash_item, ".xzg_trash_meta.json"), "w", encoding="utf-8") as mf:
+            json.dump({"original_path": name + ".json", "deleted_at": ts, "type": "workflow"}, mf, ensure_ascii=False)
+        return web.json_response({"success": True, "trashed": True})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -235,9 +305,57 @@ async def delete_folder(request):
         return web.json_response({"error": "Not a folder"}, status=400)
 
     try:
-        import shutil
-        shutil.rmtree(folder_path)
-        return web.json_response({"success": True})
+        # 删除改回收站：整层（含子分类与所有工作流）先移入 __trash，可恢复
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        base = os.path.basename(folder_path.rstrip(os.sep))
+        trash_item = os.path.join(get_trash_directory(), f"{ts}__{base}")
+        while os.path.exists(trash_item):
+            ts += "_"
+            trash_item = os.path.join(get_trash_directory(), f"{ts}__{base}")
+        os.makedirs(trash_item, exist_ok=True)
+        shutil.move(folder_path, os.path.join(trash_item, base))
+        with open(os.path.join(trash_item, ".xzg_trash_meta.json"), "w", encoding="utf-8") as mf:
+            json.dump({"original_path": name, "deleted_at": ts, "type": "folder"}, mf, ensure_ascii=False)
+        return web.json_response({"success": True, "trashed": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/xzg/wf-manage/rename-folder")
+async def rename_folder(request):
+    workflows_dir = get_workflows_directory()
+    try:
+        json_data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    old_path = json_data.get("oldPath", "")
+    new_name = json_data.get("newName", "")
+
+    if not old_path or not new_name:
+        return web.json_response({"error": "oldPath and newName are required"}, status=400)
+
+    parent = os.path.dirname(old_path)
+    if parent:
+        new_path = parent + "/" + new_name
+    else:
+        new_path = new_name
+
+    old_full_path = os.path.abspath(os.path.join(workflows_dir, old_path))
+    new_full_path = os.path.abspath(os.path.join(workflows_dir, new_path))
+
+    if not is_safe_path(workflows_dir, old_full_path) or not is_safe_path(workflows_dir, new_full_path):
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    if not os.path.exists(old_full_path):
+        return web.json_response({"error": "Folder not found"}, status=404)
+
+    if os.path.exists(new_full_path):
+        return web.json_response({"error": "Target folder already exists"}, status=409)
+
+    try:
+        os.rename(old_full_path, new_full_path)
+        return web.json_response({"success": True, "oldPath": old_path, "newPath": new_path.replace("\\", "/")})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -291,3 +409,105 @@ async def move_workflow(request):
         return web.json_response({"success": True, "oldPath": old_path, "newPath": new_path})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/xzg/wf-manage/trash")
+async def list_trash(request):
+    trash_dir = get_trash_directory()
+    # 打开回收站时先惰性清理过期（超过保留期）的项目
+    cleanup_expired_trash()
+    items = []
+    try:
+        for entry in os.listdir(trash_dir):
+            item_dir = os.path.join(trash_dir, entry)
+            if not os.path.isdir(item_dir):
+                continue
+            meta = {}
+            meta_path = os.path.join(item_dir, ".xzg_trash_meta.json")
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path, encoding="utf-8") as mf:
+                        meta = json.load(mf)
+                except Exception:
+                    pass
+            deleted_at = meta.get("deleted_at", "")
+            days_left = None
+            if deleted_at:
+                try:
+                    dt = time.mktime(time.strptime(deleted_at, "%Y%m%d_%H%M%S"))
+                    days_left = max(0, int((dt + TRASH_RETENTION_DAYS * 86400 - time.time()) // 86400))
+                except Exception:
+                    days_left = None
+            items.append({
+                "id": entry,
+                "original_path": meta.get("original_path", ""),
+                "deleted_at": deleted_at,
+                "type": meta.get("type", "unknown"),
+                "name": os.path.basename(meta.get("original_path", entry)),
+                "days_left": days_left,
+            })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    items.sort(key=lambda x: x.get("deleted_at", ""), reverse=True)
+    return web.json_response({"items": items})
+
+
+@PromptServer.instance.routes.post("/xzg/wf-manage/restore")
+async def restore_trash(request):
+    workflows_dir = get_workflows_directory()
+    try:
+        json_data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    item_id = json_data.get("id", "")
+    if not item_id:
+        return web.json_response({"error": "id is required"}, status=400)
+
+    item_dir = os.path.abspath(os.path.join(get_trash_directory(), item_id))
+    if not is_safe_path(get_trash_directory(), item_dir) or not os.path.isdir(item_dir):
+        return web.json_response({"error": "Trash item not found"}, status=404)
+
+    original_path = ""
+    meta_path = os.path.join(item_dir, ".xzg_trash_meta.json")
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as mf:
+                original_path = json.load(mf).get("original_path", "")
+        except Exception:
+            pass
+    if not original_path:
+        return web.json_response({"error": "Missing original path in trash meta"}, status=400)
+
+    dest = os.path.abspath(os.path.join(workflows_dir, original_path))
+    if not is_safe_path(workflows_dir, dest):
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    src = os.path.abspath(os.path.join(item_dir, os.path.basename(original_path)))
+    if not os.path.exists(src):
+        return web.json_response({"error": "Trash content missing"}, status=404)
+
+    if os.path.exists(dest):
+        return web.json_response({"error": "目标已存在，无法覆盖恢复", "conflict": True}, status=409)
+
+    try:
+        parent = os.path.dirname(dest)
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent, exist_ok=True)
+        shutil.move(src, dest)
+        shutil.rmtree(item_dir)
+        return web.json_response({"success": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/xzg/wf-manage/trash-clear")
+async def clear_trash(request):
+    # 回收站不允许手动清空：超过保留期（默认 90 天）的项目会在打开回收站时自动清理。
+    return web.json_response(
+        {"error": "回收站不允许手动清空，超过保留期（默认3个月）的项目会自动清理"},
+        status=403,
+    )
+
+
+

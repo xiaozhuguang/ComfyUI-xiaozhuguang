@@ -406,7 +406,7 @@ class Xiaozhuguang {
                 border-radius: 8px;
                 color: #ddd;
                 font-family: Arial, sans-serif;
-                font-size: 13px;
+                font-size: 14px;
                 z-index: 1000;
                 box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
                 user-select: none;
@@ -482,7 +482,7 @@ class Xiaozhuguang {
 
             .nf-title {
                 font-weight: bold;
-                font-size: 14px;
+                font-size: 16px;
             }
 
             .nf-header-btns {
@@ -535,18 +535,19 @@ class Xiaozhuguang {
             }
 
             .nf-shortcut-display {
-                background: linear-gradient(135deg, #4CAF50, #45a049);
-                border: 1px solid #4CAF50;
-                color: #fff;
+                background: transparent;
+                border: 1px solid #666;
+                color: #ddd;
                 font-weight: bold;
                 font-size: 10px;
-                min-width: 80px;
-                padding: 0 8px;
+                height: 24px;
+                min-width: 24px;
+                padding: 0 6px;
             }
 
             .nf-shortcut-display:hover {
-                background: linear-gradient(135deg, #45a049, #3d8b40);
-                transform: scale(1.05);
+                background: #555;
+                border-color: #888;
             }
 
             .nf-content {
@@ -721,7 +722,7 @@ class Xiaozhuguang {
                 padding: 4px 0 8px 0;
                 font-weight: bold;
                 color: #aaa;
-                font-size: 12px;
+                font-size: 14px;
                 text-transform: uppercase;
                 flex-shrink: 0;
             }
@@ -778,6 +779,34 @@ class Xiaozhuguang {
                 border-color: #4CAF50;
             }
 
+            .nf-cat-drag-handle {
+                flex: none;
+                cursor: grab;
+                color: #666;
+                font-size: 14px;
+                line-height: 1;
+                user-select: none;
+                transition: color 0.15s;
+            }
+            .nf-cat-drag-handle:hover {
+                color: #4CAF50;
+            }
+            .nf-cat-drag-handle:active {
+                cursor: grabbing;
+            }
+            .nf-category-item.nf-cat-dragging {
+                opacity: 0.5;
+                border-style: dashed;
+                border-color: #4CAF50;
+            }
+            .nf-cat-insert-indicator {
+                height: 3px;
+                flex: none;
+                border-radius: 2px;
+                background: #4CAF50;
+                box-shadow: 0 0 6px rgba(76, 175, 80, 0.8);
+                margin: 0;
+            }
             .nf-cat-color {
                 width: 10px;
                 height: 10px;
@@ -814,7 +843,7 @@ class Xiaozhuguang {
                 padding: 4px 0 8px 0;
                 font-weight: bold;
                 color: #aaa;
-                font-size: 12px;
+                font-size: 14px;
                 text-transform: uppercase;
                 flex-shrink: 0;
             }
@@ -948,8 +977,8 @@ class Xiaozhuguang {
             }
 
             .nf-fav-name {
-                font-weight: bold;
-                font-size: 13px;
+                font-weight: 500;
+                font-size: 14px;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -1355,6 +1384,7 @@ class Xiaozhuguang {
     bindPanelEvents() {
         if (!this.panel) return;
 
+        this.setupCanvasAutoCollapse();   // 点击空白画布自动折叠收藏面板
         this.setupDragging();
         this.setupSplitResizing();
         this.setupResizing();
@@ -1916,6 +1946,55 @@ class Xiaozhuguang {
             this.savePanelPosition();
             this._savedCollapsedPosition = null;
         }
+    }
+
+    /** 判断点击位置是否落在某个节点上（区分「空白画布」与「节点」） */
+    _isPointerOnNode(e) {
+        try {
+            const canvas = app.canvas;
+            if (!canvas || !canvas.getNodeAtPosition) return false;
+            let cx = e.canvasX ?? e._canvas_x;
+            let cy = e.canvasY ?? e._canvas_y;
+            if ((cx === undefined || cy === undefined) && canvas.convertEventToCanvasCoordinates) {
+                const p = canvas.convertEventToCanvasCoordinates(e);
+                if (p) { cx = p[0]; cy = p[1]; }
+            }
+            if (cx === undefined || cy === undefined) return false;
+            return !!canvas.getNodeAtPosition(cx, cy);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * 收藏面板（⭐小珠光收藏）展开时，若点击「空白画布」（非节点、非面板内部），
+     * 则自动折叠收藏面板，与工作流管理面板行为一致。
+     * 点击节点或面板内部时放行。
+     */
+    setupCanvasAutoCollapse() {
+        if (this._canvasAutoCollapseInstalled) return;
+        this._canvasAutoCollapseInstalled = true;
+
+        const install = () => {
+            const canvasEl = app.canvas && app.canvas.canvas;
+            if (!canvasEl) {
+                setTimeout(install, 200);
+                return;
+            }
+
+            const onPointer = (e) => {
+                try {
+                    if (!this.panel || this.panel.classList.contains("collapsed")) return; // 已折叠不处理
+                    if (this.panel.contains(e.target)) return;        // 点击面板内部：放行（避免拖动/操作被误关）
+                    if (this._isPointerOnNode(e)) return;             // 点击节点：放行
+                    this.collapsePanel();                             // 空白画布：自动折叠
+                } catch (_) {}
+            };
+
+            canvasEl.addEventListener("pointerdown", onPointer, true);
+        };
+
+        install();
     }
 
     extendNodeMenu() {
@@ -2801,6 +2880,7 @@ class Xiaozhuguang {
             const invalidInCat = catNodes.filter(n => !this.isNodeTypeValid(n.type)).length;
             html += `
                 <div class="nf-category-item ${this.currentCategory === cat.id ? 'active' : ''}" data-cat="${cat.id}">
+                    <span class="nf-cat-drag-handle" draggable="true" data-cat="${cat.id}" title="拖动调整顺序">⠿</span>
                     <span class="nf-cat-color" style="background: ${cat.color};"></span>
                     <span class="nf-cat-name" title="${cat.name}">${cat.name}</span>
                     ${invalidInCat > 0 ? `<span class="nf-cat-invalid-count" title="${invalidInCat}个失效节点">${invalidInCat}</span>` : ''}
@@ -2818,6 +2898,21 @@ class Xiaozhuguang {
             });
             item.addEventListener("dragover", (e) => {
                 e.preventDefault();
+                const isCatDrag = e.dataTransfer && Array.from(e.dataTransfer.types).includes("text/xzg-cat-id");
+                if (isCatDrag) {
+                    // 分类拖动：在两项之间的间隙高亮插入位置
+                    const catId = item.dataset.cat;
+                    if (catId === "all") { this._removeCatInsertIndicator(); return; }
+                    const rect = item.getBoundingClientRect();
+                    const before = (e.clientY - rect.top) < rect.height / 2;
+                    const cats = this.favorites.categories;
+                    const idx = cats.findIndex(c => c.id === catId);
+                    if (idx < 0) return;
+                    this._catInsertIndex = before ? idx : idx + 1;
+                    this._showCatInsertIndicator(this._catInsertIndex);
+                    return;
+                }
+                // 节点拖入：高亮目标分类项
                 item.style.background = "rgba(76,175,80,0.3)";
                 item.style.borderColor = "#4CAF50";
             });
@@ -2829,6 +2924,18 @@ class Xiaozhuguang {
                 e.preventDefault();
                 item.style.background = "";
                 item.style.borderColor = "";
+                // 拖动分类项重新排序（插入到间隙位置）
+                const dragCatId = e.dataTransfer.getData("text/xzg-cat-id");
+                if (dragCatId) {
+                    const insertIndex = this._catInsertIndex;
+                    this._removeCatInsertIndicator();
+                    this._catInsertIndex = null;
+                    if (insertIndex !== null && insertIndex !== undefined) {
+                        this.reorderCategoryToIndex(dragCatId, insertIndex);
+                    }
+                    return;
+                }
+                // 原有：把节点拖入分类
                 const nodeType = e.dataTransfer.getData("text/xzg-node-type");
                 if (!nodeType) return;
                 const targetCat = item.dataset.cat === "all" ? "default" : item.dataset.cat;
@@ -2841,6 +2948,24 @@ class Xiaozhuguang {
                 if (catId === "all") return;
                 this.showCategoryContextMenu(e.clientX, e.clientY, catId);
             });
+
+            // 排序手柄：拖动分类项调整顺序
+            const handle = item.querySelector(".nf-cat-drag-handle");
+            if (handle) {
+                handle.addEventListener("dragstart", (e) => {
+                    e.stopPropagation();
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/xzg-cat-id", handle.dataset.cat);
+                    item.classList.add("nf-cat-dragging");
+                });
+                handle.addEventListener("dragend", () => {
+                    item.classList.remove("nf-cat-dragging");
+                    this._removeCatInsertIndicator();
+                    this._catInsertIndex = null;
+                });
+                // 阻止点击手柄时触发分类选中
+                handle.addEventListener("click", (e) => e.stopPropagation());
+            }
         });
     }
 
@@ -4130,6 +4255,52 @@ class Xiaozhuguang {
         cats.forEach((cat, i) => cat.order = (i + 1) * 1000);
         this.saveFavorites();
         this.renderCategories();
+    }
+
+    reorderCategory(dragCatId, targetCatId) {
+        const cats = this.favorites.categories;
+        const fromIdx = cats.findIndex(c => c.id === dragCatId);
+        const toIdx = cats.findIndex(c => c.id === targetCatId);
+        if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+        // 将拖动的分类插入到目标分类之前
+        const [moved] = cats.splice(fromIdx, 1);
+        cats.splice(toIdx, 0, moved);
+        // 重新赋予连续的 order 值
+        cats.forEach((cat, i) => cat.order = (i + 1) * 1000);
+        this.saveFavorites();
+        this.renderCategories();
+    }
+
+    reorderCategoryToIndex(dragCatId, insertIndex) {
+        const cats = this.favorites.categories;
+        const fromIdx = cats.findIndex(c => c.id === dragCatId);
+        if (fromIdx < 0) return;
+        // 将 insertIndex 由“原数组位置”换算为“移除后的目标位置”
+        let to = fromIdx < insertIndex ? insertIndex - 1 : insertIndex;
+        if (to === fromIdx) { this.renderCategories(); return; }
+        const [moved] = cats.splice(fromIdx, 1);
+        cats.splice(to, 0, moved);
+        cats.forEach((cat, i) => cat.order = (i + 1) * 1000);
+        this.saveFavorites();
+        this.renderCategories();
+    }
+
+    _showCatInsertIndicator(insertIndex) {
+        this._removeCatInsertIndicator();
+        if (!this.categoryList) return;
+        const indicator = document.createElement("div");
+        indicator.className = "nf-cat-insert-indicator";
+        // DOM 中首个子项是“全部”，真实分类从索引 1 开始
+        const domIndex = insertIndex + 1;
+        const refNode = this.categoryList.children[domIndex] || null;
+        this.categoryList.insertBefore(indicator, refNode);
+    }
+
+    _removeCatInsertIndicator() {
+        if (this.categoryList) {
+            const el = this.categoryList.querySelector(".nf-cat-insert-indicator");
+            if (el) el.remove();
+        }
     }
 
     showAddToCategoryDialog(node) {

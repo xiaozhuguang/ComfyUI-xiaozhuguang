@@ -5,6 +5,7 @@ import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
 const STORAGE_KEY = "xzg_workflows_meta";
 const PLUGIN_NAME = "工作流";
 const SETTING_TOGGLE_SHORTCUT = "xzg_wf_toggle_shortcut";
+const ACCENT_KEY = "xzg_wf_accent";
 
 let workflowsInstance = null;
 
@@ -24,6 +25,8 @@ class XZGWorkflowsManager {
         this.sortMode = "default";
         this.initialized = false;
         this.draggedWorkflow = null;
+        this._loading = false;
+        this._loadQueue = [];
 
         this.init();
     }
@@ -71,8 +74,11 @@ class XZGWorkflowsManager {
             this.loadMeta();
             this.setupKeyboardListener();
             this.setupDragDrop();
+            this.setupSidebarAutoClose();
             this.waitForExtensionManager().then(() => {
                 this.registerSidebarTab();
+                // 提前初始化夺舍模式：刷新后即使面板未打开，也能立即隐藏官方按钮并建立 Observer
+                this.initPossessMode();
             });
         } catch (e) {
             console.error("[小珠光] 工作流初始化失败:", e);
@@ -97,7 +103,7 @@ class XZGWorkflowsManager {
         if (!btn) return false;
         const icon = btn.querySelector('.side-bar-button-icon');
         if (!icon) return false;
-        icon.style.color = '#FFD700';
+        icon.style.color = 'var(--xzg-wf-accent, #FFD700)';
         if (!icon.querySelector('svg')) {
             icon.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="6" cy="6" r="2.5"/>
@@ -122,6 +128,7 @@ class XZGWorkflowsManager {
                 tooltip: "工作流",
                 type: "custom",
                 render: (el) => {
+                    this._panelEl = el;
                     el.style.height = '100%';
                     el.style.width = '100%';
                     el.style.display = 'flex';
@@ -174,6 +181,30 @@ class XZGWorkflowsManager {
         return true;
     }
 
+    // ====== 分类编号工具方法 ======
+    /** 去除文件夹名称的数字前缀 (如 "01_AAA" → "AAA") */
+    stripNumberPrefix(name) {
+        return name.replace(/^\d+[_\s]?/, '');
+    }
+    /** 判断文件夹名称是否已有数字前缀 */
+    hasNumberPrefix(name) {
+        return /^\d+_/.test(name);
+    }
+    /** 构建数字前缀 (如 1 → "01_") */
+    buildNumberPrefix(num) {
+        return String(num).padStart(2, '0') + '_';
+    }
+    /** 获取路径的父级路径 */
+    getParentPath(path) {
+        if (!path || !path.includes('/')) return '';
+        return path.substring(0, path.lastIndexOf('/'));
+    }
+    /** 获取文件夹名称中的数字序号，没有则返回 -1 */
+    getFolderNumber(name) {
+        const m = name.match(/^(\d+)_/);
+        return m ? parseInt(m[1], 10) : -1;
+    }
+
     getShortcut() {
         try {
             const stored = localStorage.getItem(SETTING_TOGGLE_SHORTCUT);
@@ -204,7 +235,7 @@ class XZGWorkflowsManager {
     showShortcutDialog() {
         const dialog = document.createElement("div");
         dialog.className = "xzg-wf-dialog-overlay";
-        dialog.innerHTML = `
+        dialog.innerHTML = this._applyAccent(`
             <div class="xzg-wf-dialog">
                 <div class="xzg-wf-dialog-title">设置快捷键</div>
                 <div class="xzg-wf-dialog-body">
@@ -212,10 +243,10 @@ class XZGWorkflowsManager {
                     <div style="text-align: center; margin-bottom: 16px;">
                         <div id="xzg-wf-listen-display" style="
                             padding: 16px 24px;
-                            background: #FFD700;
-                            border: 2px solid #FFD700;
+                            background: #555;
+                            border: 2px solid #888;
                             border-radius: 6px;
-                            color: #1a1a1a;
+                            color: #ddd;
                             font-size: 16px;
                             font-weight: bold;
                             min-width: 180px;
@@ -228,7 +259,7 @@ class XZGWorkflowsManager {
                     <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm" disabled>确认</button>
                 </div>
             </div>
-        `;
+        `);
 
         document.body.appendChild(dialog);
 
@@ -275,7 +306,7 @@ class XZGWorkflowsManager {
 
             display.textContent = parts.join(" + ");
             display.style.background = "#2a2a2a";
-            display.style.color = "#FFD700";
+            display.style.color = "var(--xzg-wf-accent, #FFD700)";
             stopListening();
         };
 
@@ -329,9 +360,11 @@ class XZGWorkflowsManager {
     }
 
     toggleSidebarTab() {
+        const wasOpen = this.isPanelOpen();   // 记录切换前状态，避免依赖自维护标志
         try {
             if (app.extensionManager?.sidebarTab?.toggleSidebarTab) {
                 app.extensionManager.sidebarTab.toggleSidebarTab('xiaozhuguang-workflows');
+                if (wasOpen) this.hideAllFloatingMenus();   // 关闭面板时一并清理浮层菜单（含嵌套子菜单）
                 return;
             }
         } catch (e) {
@@ -343,6 +376,7 @@ class XZGWorkflowsManager {
         if (tabBtn) {
             tabBtn.click();
         }
+        if (wasOpen) this.hideAllFloatingMenus();
     }
 
     showContextMenu(e, wf) {
@@ -407,8 +441,7 @@ class XZGWorkflowsManager {
         
         const closeHandler = (ev) => {
             if (!menu.contains(ev.target) && !this._moveSubmenu?.contains(ev.target)) {
-                this.hideContextMenu();
-                this.hideMoveSubmenu();
+                this.hideAllFloatingMenus();
                 document.removeEventListener("mousedown", closeHandler);
                 document.removeEventListener("keydown", keyHandler);
             }
@@ -416,8 +449,7 @@ class XZGWorkflowsManager {
         
         const keyHandler = (ev) => {
             if (ev.key === "Escape") {
-                this.hideContextMenu();
-                this.hideMoveSubmenu();
+                this.hideAllFloatingMenus();
                 document.removeEventListener("mousedown", closeHandler);
                 document.removeEventListener("keydown", keyHandler);
             }
@@ -430,10 +462,8 @@ class XZGWorkflowsManager {
     }
 
     hideMoveSubmenu() {
-        if (this._moveSubmenu) {
-            this._moveSubmenu.remove();
-            this._moveSubmenu = null;
-        }
+        document.querySelectorAll(".xzg-wf-submenu").forEach(el => el.remove());
+        this._moveSubmenu = null;
     }
 
     showMoveSubmenu(e, wf, parentItem) {
@@ -442,171 +472,85 @@ class XZGWorkflowsManager {
         const submenu = document.createElement("div");
         submenu.className = "xzg-wf-submenu";
 
+        // 独立的展开状态：默认全部折叠，与左侧分类树一致（需点击三角才展开）
+        if (!this._moveExpanded) this._moveExpanded = new Set();
+        const expanded = this._moveExpanded;
         const currentFolder = wf.folder === "未分类" ? "" : wf.folder;
 
-        const buildFolderItems = (folders, parentPath = "") => {
-            let html = '';
-            for (const folder of folders) {
-                if (folder.type !== "folder") continue;
-                const fullPath = parentPath ? parentPath + "/" + folder.name : folder.name;
-                const selected = fullPath === currentFolder ? ' selected' : '';
-                const hasSubFolders = folder.children && folder.children.some(c => c.type === "folder");
-                html += `<div class="xzg-wf-submenu-item${selected}${hasSubFolders ? ' has-children' : ''}" data-folder="${fullPath}">
-                    <span>${folder.name}</span>
-                    ${hasSubFolders ? '<span class="xzg-wf-submenu-arrow">▶</span>' : ''}
-                </div>`;
-            }
+        const buildItemHtml = (folder, folderPath, depth) => {
+            const hasChildren = folder.children && folder.children.some(c => c.type === "folder");
+            const isExpanded = expanded.has(folderPath);
+            const selected = folderPath === currentFolder ? " selected" : "";
+            let bars = "";
+            for (let i = 0; i < depth + 1; i++) bars += `<span class="xzg-wf-cat-bar"></span>`;
+            const toggle = hasChildren
+                ? `<span class="xzg-wf-cat-toggle" data-path="${folderPath}"><svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg></span>`
+                : `<span class="xzg-wf-cat-toggle xzg-wf-cat-toggle-empty"></span>`;
+            return `<div class="xzg-wf-submenu-item${selected}" data-folder="${folderPath}" style="padding-left:${8 + depth * 16}px">
+                ${toggle}
+                <span class="xzg-wf-cat-icon xzg-wf-cat-bars">${bars}</span>
+                <span class="xzg-wf-cat-label">${folder.name}</span>
+            </div>`;
+        };
+
+        const buildHtml = () => {
+            let html = `<div class="xzg-wf-submenu-item${currentFolder === "" ? ' selected' : ''}" data-folder="">
+                <span class="xzg-wf-cat-toggle xzg-wf-cat-toggle-empty"></span>
+                <span class="xzg-wf-cat-label">未分类</span>
+            </div>`;
+            const walk = (folders, parentPath, depth) => {
+                for (const folder of folders) {
+                    if (folder.type !== "folder") continue;
+                    const fullPath = folder.path || folder.name;
+                    html += buildItemHtml(folder, fullPath, depth);
+                    const hasChildren = folder.children && folder.children.some(c => c.type === "folder");
+                    if (hasChildren && expanded.has(fullPath)) {
+                        walk(folder.children, fullPath, depth + 1);
+                    }
+                }
+            };
+            if (this.tree && this.tree.length > 0) walk(this.tree, "", 0);
             return html;
         };
 
-        let html = '';
-        const isUncategorized = currentFolder === "";
-        html += `<div class="xzg-wf-submenu-item${isUncategorized ? ' selected' : ''}" data-folder="">
-            <span>未分类</span>
-        </div>`;
+        const position = () => {
+            const parentRect = parentItem.getBoundingClientRect();
+            const subRect = submenu.getBoundingClientRect();
+            const vw = window.innerWidth, vh = window.innerHeight;
+            let subLeft = parentRect.right + 2;
+            let subTop = parentRect.top;
+            if (subLeft + subRect.width > vw) subLeft = parentRect.left - subRect.width - 2;
+            if (subTop + subRect.height > vh) subTop = Math.max(5, vh - subRect.height - 5);
+            submenu.style.left = subLeft + "px";
+            submenu.style.top = subTop + "px";
+        };
 
-        if (this.tree && this.tree.length > 0) {
-            html += buildFolderItems(this.tree);
-        }
+        const bind = () => {
+            submenu.querySelectorAll(".xzg-wf-submenu-item").forEach(item => {
+                item.addEventListener("click", (ev) => {
+                    const toggleEl = ev.target.closest(".xzg-wf-cat-toggle");
+                    if (toggleEl && !toggleEl.classList.contains("xzg-wf-cat-toggle-empty")) {
+                        ev.stopPropagation();
+                        const path = toggleEl.dataset.path;
+                        if (expanded.has(path)) expanded.delete(path);
+                        else expanded.add(path);
+                        submenu.innerHTML = buildHtml();
+                        bind();
+                        return;
+                    }
+                    ev.stopPropagation();
+                    this.hideContextMenu();
+                    this.hideMoveSubmenu();
+                    this.moveWorkflowToFolder(wf, item.dataset.folder);
+                });
+            });
+        };
 
-        submenu.innerHTML = html;
+        submenu.innerHTML = buildHtml();
         document.body.appendChild(submenu);
-
-        const parentRect = parentItem.getBoundingClientRect();
-        const subRect = submenu.getBoundingClientRect();
-        const vw = window.innerWidth;
-
-        let subLeft = parentRect.right + 2;
-        let subTop = parentRect.top;
-
-        if (subLeft + subRect.width > vw) {
-            subLeft = parentRect.left - subRect.width - 2;
-        }
-
-        submenu.style.left = subLeft + "px";
-        submenu.style.top = subTop + "px";
-
+        position();
+        bind();
         this._moveSubmenu = submenu;
-
-        const self = this;
-
-        submenu.querySelectorAll(".xzg-wf-submenu-item").forEach(item => {
-            const folderPath = item.dataset.folder;
-            const hasChildren = item.classList.contains("has-children");
-            let childSubmenu = null;
-
-            const removeChildSubmenu = () => {
-                if (childSubmenu) {
-                    childSubmenu.remove();
-                    childSubmenu = null;
-                }
-            };
-
-            item.addEventListener("mouseenter", (ev) => {
-                if (hasChildren) {
-                    removeChildSubmenu();
-                    childSubmenu = self.buildFolderSubmenu(folderPath, wf, item);
-                }
-            });
-
-            item.addEventListener("mouseleave", (ev) => {
-                if (childSubmenu && !childSubmenu.contains(ev.relatedTarget)) {
-                    setTimeout(() => {
-                        if (!item.matches(":hover") && !childSubmenu.matches(":hover")) {
-                            removeChildSubmenu();
-                        }
-                    }, 100);
-                }
-            });
-
-            item.addEventListener("click", (ev) => {
-                ev.stopPropagation();
-                this.hideContextMenu();
-                this.hideMoveSubmenu();
-                this.moveWorkflowToFolder(wf, folderPath);
-            });
-        });
-    }
-
-    buildFolderSubmenu(folderPath, wf, parentItem) {
-        const folderData = this.findFolderByPath(folderPath);
-        if (!folderData || !folderData.children) return null;
-
-        const submenu = document.createElement("div");
-        submenu.className = "xzg-wf-submenu xzg-wf-submenu-child";
-
-        const currentFolder = wf.folder === "未分类" ? "" : wf.folder;
-        const subFolders = folderData.children.filter(c => c.type === "folder");
-
-        let html = '';
-        for (const folder of subFolders) {
-            const fullPath = folderPath + "/" + folder.name;
-            const selected = fullPath === currentFolder ? ' selected' : '';
-            const hasSubFolders = folder.children && folder.children.some(c => c.type === "folder");
-            html += `<div class="xzg-wf-submenu-item${selected}${hasSubFolders ? ' has-children' : ''}" data-folder="${fullPath}">
-                <span>${folder.name}</span>
-                ${hasSubFolders ? '<span class="xzg-wf-submenu-arrow">▶</span>' : ''}
-            </div>`;
-        }
-
-        if (!html) return null;
-
-        submenu.innerHTML = html;
-        document.body.appendChild(submenu);
-
-        const parentRect = parentItem.getBoundingClientRect();
-        const subRect = submenu.getBoundingClientRect();
-        const vw = window.innerWidth;
-
-        let subLeft = parentRect.right + 2;
-        let subTop = parentRect.top;
-
-        if (subLeft + subRect.width > vw) {
-            subLeft = parentRect.left - subRect.width - 2;
-        }
-
-        submenu.style.left = subLeft + "px";
-        submenu.style.top = subTop + "px";
-
-        const self = this;
-        submenu.querySelectorAll(".xzg-wf-submenu-item").forEach(item => {
-            const fp = item.dataset.folder;
-            const hasChildren = item.classList.contains("has-children");
-            let childSubmenu = null;
-
-            const removeChildSubmenu = () => {
-                if (childSubmenu) {
-                    childSubmenu.remove();
-                    childSubmenu = null;
-                }
-            };
-
-            item.addEventListener("mouseenter", () => {
-                if (hasChildren) {
-                    removeChildSubmenu();
-                    childSubmenu = self.buildFolderSubmenu(fp, wf, item);
-                }
-            });
-
-            item.addEventListener("mouseleave", (ev) => {
-                if (childSubmenu && !childSubmenu.contains(ev.relatedTarget)) {
-                    setTimeout(() => {
-                        if (!item.matches(":hover") && !childSubmenu.matches(":hover")) {
-                            removeChildSubmenu();
-                        }
-                    }, 100);
-                }
-            });
-
-            item.addEventListener("click", (ev) => {
-                ev.stopPropagation();
-                this.hideContextMenu();
-                this.hideMoveSubmenu();
-                this.moveWorkflowToFolder(wf, fp);
-            });
-        });
-
-        return submenu;
     }
 
     findFolderByPath(path, tree = this.tree, parentPath = "") {
@@ -714,51 +658,65 @@ class XZGWorkflowsManager {
 
     showCategoryContextMenu(e, cat) {
         this.hideContextMenu();
-        
+
+        // 判断是文件夹类型（非系统分类）才显示排序选项
+        const isFolder = cat && cat.type === "folder";
+
+        let html = '';
+        if (isFolder) {
+            html += `<div class="xzg-wf-ctx-item" data-action="move-up">⬆️ 上移</div>
+            <div class="xzg-wf-ctx-item" data-action="move-down">⬇️ 下移</div>
+            <div class="xzg-wf-ctx-separator"></div>`;
+        }
+        html += `<div class="xzg-wf-ctx-item" data-action="new-subfolder">📁 新建子分类</div>
+            <div class="xzg-wf-ctx-separator"></div>
+            <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ 删除分类</div>`;
+
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
-        menu.innerHTML = `
-            <div class="xzg-wf-ctx-item" data-action="new-subfolder">📁 新建子分类</div>
-            <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ 删除分类</div>
-        `;
-        
+        menu.innerHTML = html;
+
         document.body.appendChild(menu);
-        
+
         const x = e.clientX;
         const y = e.clientY;
         const rect = menu.getBoundingClientRect();
         const vw = window.innerWidth;
         const vh = window.innerHeight;
-        
+
         let left = x;
         let top = y;
-        
+
         if (x + rect.width > vw) {
             left = vw - rect.width - 5;
         }
         if (y + rect.height > vh) {
             top = vh - rect.height - 5;
         }
-        
+
         menu.style.left = left + "px";
         menu.style.top = top + "px";
-        
+
         this._contextMenu = menu;
-        
+
         menu.querySelectorAll(".xzg-wf-ctx-item").forEach(item => {
             item.addEventListener("click", (ev) => {
                 ev.stopPropagation();
                 const action = item.dataset.action;
                 this.hideContextMenu();
-                
+
                 if (action === "delete") {
                     this.deleteCategory(cat);
                 } else if (action === "new-subfolder") {
                     this.createNewCategory(cat.path || cat.name);
+                } else if (action === "move-up") {
+                    this.moveCategoryUp(cat).catch(e => alert("上移失败: " + e.message));
+                } else if (action === "move-down") {
+                    this.moveCategoryDown(cat).catch(e => alert("下移失败: " + e.message));
                 }
             });
         });
-        
+
         const closeHandler = (ev) => {
             if (!menu.contains(ev.target)) {
                 this.hideContextMenu();
@@ -766,7 +724,7 @@ class XZGWorkflowsManager {
                 document.removeEventListener("keydown", keyHandler);
             }
         };
-        
+
         const keyHandler = (ev) => {
             if (ev.key === "Escape") {
                 this.hideContextMenu();
@@ -774,7 +732,7 @@ class XZGWorkflowsManager {
                 document.removeEventListener("keydown", keyHandler);
             }
         };
-        
+
         setTimeout(() => {
             document.addEventListener("mousedown", closeHandler);
             document.addEventListener("keydown", keyHandler);
@@ -782,11 +740,15 @@ class XZGWorkflowsManager {
     }
 
     hideContextMenu() {
-        if (this._contextMenu) {
-            this._contextMenu.remove();
-            this._contextMenu = null;
-            this._contextMenuWf = null;
-        }
+        document.querySelectorAll(".xzg-wf-context-menu").forEach(el => el.remove());
+        this._contextMenu = null;
+        this._contextMenuWf = null;
+    }
+
+    /** 清除所有浮层菜单（右键菜单、移动分类子菜单及其嵌套子菜单） */
+    hideAllFloatingMenus() {
+        this.hideContextMenu();
+        this.hideMoveSubmenu();
     }
 
     setupDragDrop() {
@@ -823,6 +785,92 @@ class XZGWorkflowsManager {
         document.addEventListener("dragend", () => {
             self.removeDragPreview();
         }, true);
+    }
+
+    /** 判断点击位置是否落在某个节点上（用于区分「空白画布」与「节点」） */
+    _isPointerOnNode(e) {
+        try {
+            const canvas = app.canvas;
+            if (!canvas || !canvas.getNodeAtPosition) return false;
+            let cx = e.canvasX ?? e._canvas_x;
+            let cy = e.canvasY ?? e._canvas_y;
+            if ((cx === undefined || cy === undefined) && canvas.convertEventToCanvasCoordinates) {
+                const p = canvas.convertEventToCanvasCoordinates(e);
+                if (p) { cx = p[0]; cy = p[1]; }
+            }
+            if (cx === undefined || cy === undefined) return false;
+            return !!canvas.getNodeAtPosition(cx, cy);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
+     * 判断工作流管理面板当前是否真正处于「打开（激活）」状态。
+     * 优先读取 ComfyUI 官方的激活标签状态（兼容 Vue ref 解包），
+     * 读取不到时再用 DOM 可见性兜底。
+     */
+    isPanelOpen() {
+        try {
+            const st = app.extensionManager?.sidebarTab;
+            if (st && st.activeSidebarTabId !== undefined) {
+                let id = st.activeSidebarTabId;
+                if (id && typeof id === "object") {
+                    id = ("value" in id) ? id.value : id;
+                }
+                return id === "xiaozhuguang-workflows";
+            }
+        } catch (_) {}
+        // DOM 兜底：面板容器可见即认为打开
+        try {
+            if (this._panelEl && this._panelEl.offsetParent !== null) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    /**
+     * 面板打开时，若点击「空白画布」（非节点），则自动收起工作流管理面板，
+     * 并清理所有浮层菜单（含嵌套子菜单）。
+     * 点击节点时放行，保证节点可正常拖拽/选中。
+     * 使用真实激活状态判断，避免与 ComfyUI 原生「点击画布关闭侧边栏」冲突导致二次 toggle 反向打开。
+     */
+    setupSidebarAutoClose() {
+        if (this._sidebarAutoCloseInstalled) return;
+        this._sidebarAutoCloseInstalled = true;
+
+        const install = () => {
+            const canvasEl = app.canvas && app.canvas.canvas;
+            if (!canvasEl) {
+                setTimeout(install, 200);
+                return;
+            }
+
+            const onPointer = (e) => {
+                try {
+                    if (this._isPointerOnNode(e)) return;        // 点击节点：放行
+                    this.hideAllFloatingMenus();                // 空白画布：先清理浮层
+                    if (this.isPanelOpen()) {                   // 仅在面板确实打开时关闭，避免反向打开
+                        this.closePanel();
+                    }
+                } catch (_) {}
+            };
+
+            canvasEl.addEventListener("pointerdown", onPointer, true);
+        };
+
+        install();
+    }
+
+    /** 关闭工作流管理侧边栏标签 */
+    closePanel() {
+        this.hideAllFloatingMenus();
+        try {
+            if (this.isPanelOpen() && app.extensionManager?.sidebarTab?.toggleSidebarTab) {
+                app.extensionManager.sidebarTab.toggleSidebarTab("xiaozhuguang-workflows");
+            }
+        } catch (_) {}
     }
 
     async importWorkflowToCanvas(path, clientX, clientY) {
@@ -1020,7 +1068,7 @@ class XZGWorkflowsManager {
         if (!preview) {
             preview = document.createElement("div");
             preview.id = "xzg-wf-drag-preview";
-            preview.style.cssText = `
+            preview.style.cssText = this._applyAccent(`
                 position: fixed;
                 padding: 10px 18px;
                 background: linear-gradient(135deg, #FFD700, #FFA500);
@@ -1035,7 +1083,7 @@ class XZGWorkflowsManager {
                 border: 2px solid rgba(255,255,255,0.2);
                 transform: translate(-50%, -50%);
                 opacity: 0.95;
-            `;
+            `);
             document.body.appendChild(preview);
         }
         preview.textContent = name || "拖动中...";
@@ -1056,13 +1104,21 @@ class XZGWorkflowsManager {
                 <div class="xzg-wf-header">
                     <span class="xzg-wf-title">工作流</span>
                     <div class="xzg-wf-header-btns">
-                            <div class="xzg-wf-header-btn xzg-wf-refresh-btn" id="xzg-wf-refresh-btn" title="刷新">
+                                    <div class="xzg-wf-header-btn xzg-wf-trash-btn" id="xzg-wf-trash-btn" title="回收站（误删可恢复）">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
-                                    <polyline points="21 3 21 8 16 8"/>
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                                 </svg>
                             </div>
+                            <label class="xzg-wf-header-btn xzg-wf-accent-btn" id="xzg-wf-accent-btn" title="主题设置（点击选择工作流面板强调色）">
+                                <span class="xzg-wf-accent-text">主题设置</span>
+                                <input type="color" id="xzg-wf-accent-input" />
+                            </label>
                             <button class="xzg-wf-header-btn xzg-wf-shortcut-btn" id="xzg-wf-shortcut-btn" title="设置快捷键">快捷键: \`</button>
+                            <div class="xzg-wf-header-btn xzg-wf-possess" id="xzg-wf-possess-btn" title="夺舍模式：开启后隐藏 ComfyUI 官方工作流管理按钮">
+                                <span class="xzg-wf-possess-text">夺舍模式</span>
+                                <span class="xzg-wf-toggle"><i></i></span>
+                            </div>
                         </div>
                 </div>
                 <div class="xzg-wf-search-box">
@@ -1106,7 +1162,7 @@ class XZGWorkflowsManager {
 
     injectStyles() {
         const style = document.createElement("style");
-        style.textContent = `
+        const css = `
             .xiaozhuguang-workflows-tab-button .side-bar-button-icon {
                 color: #FFD700 !important;
                 display: flex;
@@ -1151,7 +1207,12 @@ class XZGWorkflowsManager {
                 gap: 6px;
             }
             .xzg-wf-header-btn {
-                padding: 5px 12px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 26px;
+                box-sizing: border-box;
+                padding: 0 12px;
                 font-size: 12px;
                 background: var(--comfy-input-bg, #3a3a3a);
                 color: var(--fg, #ddd);
@@ -1164,6 +1225,84 @@ class XZGWorkflowsManager {
                 background: #444;
                 border-color: #FFD700;
                 color: #FFD700;
+            }
+            .xzg-wf-accent-btn,
+            .xzg-wf-shortcut-btn {
+                position: relative;
+                flex: 1 1 0;
+                min-width: 0;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 26px;
+                padding: 0 12px !important;
+                box-sizing: border-box;
+                background: rgba(255, 255, 255, 0.06) !important;
+                border: 1px solid rgba(255, 255, 255, 0.2) !important;
+                border-radius: 4px;
+                overflow: hidden;
+                cursor: pointer;
+                font-size: 12px;
+                line-height: 1;
+                color: var(--xzg-wf-text);
+                white-space: nowrap;
+            }
+            .xzg-wf-accent-btn:hover,
+            .xzg-wf-shortcut-btn:hover {
+                background: rgba(255, 255, 255, 0.12) !important;
+            }
+            .xzg-wf-accent-text {
+                line-height: 1;
+            }
+            .xzg-wf-possess {
+                gap: 6px;
+                user-select: none;
+            }
+            .xzg-wf-possess-text {
+                line-height: 1;
+                white-space: nowrap;
+            }
+            .xzg-wf-toggle {
+                position: relative;
+                display: inline-block;
+                width: 30px;
+                height: 16px;
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.2);
+                transition: background 0.2s;
+                flex-shrink: 0;
+            }
+            .xzg-wf-toggle i {
+                position: absolute;
+                top: 2px;
+                left: 2px;
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                background: #ddd;
+                transition: all 0.2s;
+            }
+            .xzg-wf-possess.active {
+                border-color: #e5484d;
+                color: #e5484d;
+            }
+            .xzg-wf-possess.active .xzg-wf-toggle {
+                background: #e5484d;
+            }
+            .xzg-wf-possess.active .xzg-wf-toggle i {
+                left: 16px;
+                background: #fff;
+            }
+            #xzg-wf-accent-input {
+                position: absolute;
+                inset: 0;
+                width: 100%;
+                height: 100%;
+                border: none;
+                margin: 0;
+                padding: 0;
+                opacity: 0;
+                cursor: pointer;
             }
             .xzg-wf-search-box {
                 padding: 10px 12px;
@@ -1261,7 +1400,8 @@ class XZGWorkflowsManager {
                 gap: 6px;
             }
             .xzg-wf-cat-item:hover {
-                background: var(--comfy-input-bg, #333);
+                background: rgba(255, 215, 0, 0.15);
+                color: #FFD700;
             }
             .xzg-wf-cat-item.active {
                 background: rgba(255, 255, 255, 0.1);
@@ -1280,6 +1420,34 @@ class XZGWorkflowsManager {
             .xzg-wf-cat-item.active .xzg-wf-cat-count {
                 background: rgba(255, 255, 255, 0.15);
                 color: #FFD700;
+            }
+            .xzg-wf-cat-drag-handle {
+                flex: none;
+                cursor: grab;
+                color: #888;
+                font-size: 14px;
+                line-height: 1;
+                user-select: none;
+                margin-right: 2px;
+                transition: color 0.15s;
+            }
+            .xzg-wf-cat-drag-handle:hover {
+                color: #FFD700;
+            }
+            .xzg-wf-cat-drag-handle:active {
+                cursor: grabbing;
+            }
+            .xzg-wf-cat-item.xzg-wf-cat-dragging {
+                opacity: 0.5;
+            }
+            .xzg-wf-cat-insert-indicator {
+                height: 3px;
+                flex: none;
+                border-radius: 2px;
+                background: #FFD700;
+                box-shadow: 0 0 6px rgba(255, 215, 0, 0.8);
+                margin: 1px 0;
+                pointer-events: none;
             }
             .xzg-wf-cat-name {
                 display: flex;
@@ -1430,7 +1598,8 @@ class XZGWorkflowsManager {
                 height: 16px;
             }
             .xzg-wf-item:hover {
-                background: var(--comfy-input-bg, #333);
+                background: rgba(255, 215, 0, 0.15);
+                color: #FFD700;
             }
             .xzg-wf-item-info {
                 flex: 1;
@@ -1479,6 +1648,11 @@ class XZGWorkflowsManager {
             .xzg-wf-ctx-item.danger:hover {
                 background: rgba(244, 67, 54, 0.15);
                 color: #f44336;
+            }
+            .xzg-wf-ctx-separator {
+                height: 1px;
+                background: var(--border-color, #444);
+                margin: 4px 8px;
             }
             .xzg-wf-ctx-submenu {
                 position: relative;
@@ -1620,38 +1794,35 @@ class XZGWorkflowsManager {
                 cursor: not-allowed;
             }
             .xzg-wf-shortcut-btn {
-                color: #FFD700 !important;
-                border-color: #FFD700 !important;
+                color: #ddd !important;
+                border-color: #666 !important;
             }
             .xzg-wf-shortcut-btn:hover {
-                background: rgba(255, 215, 0, 0.1) !important;
-            }
-            .xzg-wf-refresh-btn {
-                padding: 5px 8px;
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
-                cursor: pointer;
-                user-select: none;
-                transition: all 0.15s;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .xzg-wf-refresh-btn:hover {
-                color: #FFD700;
-                background: rgba(255, 215, 0, 0.1);
-                border-color: rgba(255, 215, 0, 0.3);
-            }
-            .xzg-wf-refresh-btn.xzg-wf-spinning svg {
-                animation: xzg-wf-spin 0.6s linear infinite;
-            }
-            @keyframes xzg-wf-spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
+                background: #555 !important;
+                border-color: #888 !important;
             }
         `;
+        style.textContent = this._applyAccent(css);
+
         document.head.appendChild(style);
+    }
+
+    _applyAccent(css) {
+        return css
+            .replaceAll('#FFD700', 'var(--xzg-wf-accent, #FFD700)')
+            .replaceAll('#ffed4e', 'color-mix(in srgb, var(--xzg-wf-accent) 80%, #fff)')
+            .replaceAll('#FFA500', 'color-mix(in srgb, var(--xzg-wf-accent) 70%, #000)')
+            .replaceAll('rgba(255, 215, 0, 0.15)', 'color-mix(in srgb, var(--xzg-wf-accent) 15%, transparent)')
+            .replaceAll('rgba(255, 215, 0, 0.25)', 'color-mix(in srgb, var(--xzg-wf-accent) 25%, transparent)')
+            .replaceAll('rgba(255, 215, 0, 0.4)', 'color-mix(in srgb, var(--xzg-wf-accent) 40%, transparent)')
+            .replaceAll('rgba(255, 215, 0, 0.1)', 'color-mix(in srgb, var(--xzg-wf-accent) 10%, transparent)')
+            .replaceAll('rgba(255, 215, 0, 0.3)', 'color-mix(in srgb, var(--xzg-wf-accent) 30%, transparent)');
+    }
+
+    applyAccentColor(color) {
+        if (!color) color = "#FFD700";
+        document.documentElement.style.setProperty("--xzg-wf-accent", color);
+        try { localStorage.setItem(ACCENT_KEY, color); } catch (e) {}
     }
 
     bindPanelEvents() {
@@ -1686,10 +1857,20 @@ class XZGWorkflowsManager {
             });
         });
 
-        const refreshBtn = container.querySelector("#xzg-wf-refresh-btn");
-        if (refreshBtn) {
-            refreshBtn.addEventListener("click", () => {
-                this.refreshWorkflows();
+        const accentInput = container.querySelector("#xzg-wf-accent-input");
+        if (accentInput) {
+            const savedAccent = localStorage.getItem(ACCENT_KEY) || "#FFD700";
+            accentInput.value = savedAccent;
+            this.applyAccentColor(savedAccent);
+            accentInput.addEventListener("input", (e) => {
+                this.applyAccentColor(e.target.value);
+            });
+        }
+
+        const trashBtn = container.querySelector("#xzg-wf-trash-btn");
+        if (trashBtn) {
+            trashBtn.addEventListener("click", () => {
+                this.openTrashModal();
             });
         }
 
@@ -1699,30 +1880,195 @@ class XZGWorkflowsManager {
                 this.showShortcutDialog();
             });
         }
+
+        const possessBtn = container.querySelector("#xzg-wf-possess-btn");
+        if (possessBtn) {
+            possessBtn.addEventListener("click", () => this.togglePossessMode());
+        }
+
         this.updateShortcutDisplay();
+        this.initPossessMode();
 
     }
 
-    async refreshWorkflows() {
-        const refreshBtn = this.container?.querySelector("#xzg-wf-refresh-btn");
-        if (refreshBtn) {
-            refreshBtn.classList.add("xzg-wf-spinning");
+    // ====== 夺舍模式：隐藏官方工作流管理按钮 ======
+    initPossessMode() {
+        const on = localStorage.getItem("xzg_possess_mode") === "1";
+        const btn = this.container?.querySelector("#xzg-wf-possess-btn");
+        if (btn) btn.classList.toggle("active", on);
+        this._applyPossessMode(on);
+    }
+
+    togglePossessMode() {
+        const on = localStorage.getItem("xzg_possess_mode") !== "1";
+        localStorage.setItem("xzg_possess_mode", on ? "1" : "0");
+        const btn = this.container?.querySelector("#xzg-wf-possess-btn");
+        if (btn) btn.classList.toggle("active", on);
+        this._applyPossessMode(on);
+    }
+
+    _applyPossessMode(on) {
+        this._setOfficialWorkflowButtonsHidden(on);
+        // 官方 UI 可能晚于本扩展渲染，用防抖的 MutationObserver 兜底持续隐藏，
+        // 并在 DOM 变动停止后做一次最终隐藏，避免按钮残留可见
+        if (!this._possessObserver) {
+            this._possessObserver = new MutationObserver(() => {
+                const cur = localStorage.getItem("xzg_possess_mode") === "1";
+                if (this._possessTimer) clearTimeout(this._possessTimer);
+                this._possessTimer = setTimeout(() => {
+                    this._setOfficialWorkflowButtonsHidden(cur);
+                }, 120);
+            });
+            if (document.body) {
+                this._possessObserver.observe(document.body, { childList: true, subtree: true });
+            }
         }
+    }
+
+    _setOfficialWorkflowButtonsHidden(hidden) {
+        const targets = this._findOfficialWorkflowButtons();
+        targets.forEach(el => {
+            if (hidden) {
+                if (el.style.display !== "none") {
+                    el.dataset.xzgHidden = el.style.display || "";
+                    el.style.display = "none";
+                }
+            } else if (el.dataset.xzgHidden !== undefined) {
+                el.style.display = el.dataset.xzgHidden;
+                delete el.dataset.xzgHidden;
+            }
+        });
+    }
+
+    _findOfficialWorkflowButtons() {
+        const out = [];
+        const keywords = ["workflow", "工作流"];
+        const xzgContainer = this.container;
+        const xzgPanel = this._panelEl;
+        const isXzg = (el) => {
+            if (!el) return false;
+            if (el.classList && (
+                el.classList.contains("xiaozhuguang-workflows-tab-button") ||
+                el.classList.contains("xiaozhuguang-workflows")
+            )) return true;
+            if (xzgContainer && xzgContainer.contains(el)) return true;
+            if (xzgPanel && xzgPanel.contains(el)) return true;
+            return false;
+        };
+        const candidates = new Set();
+        // 确定性目标：官方「工作流」侧边栏标签按钮（位于小珠光标签正下方）
+        const wfTab = document.querySelector(".workflows-tab-button");
+        if (wfTab) candidates.add(wfTab);
+        // 仅在侧边栏区域内扫描，避免误伤画布上方的工作流切换标签
+        document.querySelectorAll(
+            "#comfyui-sidebar, .comfyui-sidebar, .sidebar, .sidebar-item-group"
+        ).forEach(sb => {
+            sb.querySelectorAll(
+                "button, [role='button'], .p-chip, .comfyui-button, .menu-item, .cm-item, " +
+                ".comfy-menu-btn, .top-menu-item, .chip, .litegraph-button, .side-bar-button"
+            ).forEach(el => candidates.add(el));
+        });
+        candidates.forEach(el => {
+            if (isXzg(el)) return;
+            const t = (el.textContent || "").trim().toLowerCase();
+            if (keywords.some(k => t.includes(k))) out.push(el);
+        });
+        return out;
+    }
+
+    // ====== 回收站 (A) ======
+    async openTrashModal() {
         try {
+            const res = await api.fetchApi("/xzg/wf-manage/trash", { cache: "no-store" });
+            if (!res.ok) throw new Error("获取回收站失败");
+            const data = await res.json();
+            const items = data.items || [];
+
+            let modal = document.getElementById("xzg-wf-trash-modal");
+            if (!modal) {
+                modal = document.createElement("div");
+                modal.id = "xzg-wf-trash-modal";
+                modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;z-index:99999;";
+                document.body.appendChild(modal);
+            }
+            modal.innerHTML = `
+                <div style="background:var(--comfy-menu-bg,#2a2a2a);color:var(--fg,#ddd);width:480px;max-width:90vw;max-height:80vh;overflow:auto;border:1px solid var(--border-color,#555);border-radius:8px;padding:16px;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border-color,#444);">
+                        <strong style="font-size:15px;">回收站</strong>
+                        <span id="xzg-wf-trash-close" style="cursor:pointer;font-size:20px;line-height:1;padding:0 4px;">✕</span>
+                    </div>
+                    <div id="xzg-wf-trash-body"></div>
+                    <div style="margin-top:12px;font-size:11px;color:#999;text-align:center;">回收站保留 3 个月，过期项目自动清理（不可手动清空）</div>
+                </div>
+            `;
+            modal.style.display = "flex";
+
+            const body = modal.querySelector("#xzg-wf-trash-body");
+            if (items.length === 0) {
+                body.innerHTML = `<div style="color:#999;padding:12px 0;text-align:center;">回收站为空</div>`;
+            } else {
+                body.innerHTML = items.map(it => {
+                    const daysLeft = (it.days_left == null) ? "" : ` · 剩 ${it.days_left} 天`;
+                    return `
+                    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+                        <div style="flex:1;min-width:0;">
+                            <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📄 ${this.escapeHtml(it.name)}</div>
+                            <div style="font-size:11px;color:#999;">原路径: ${this.escapeHtml(it.original_path)} · ${this.escapeHtml(it.deleted_at)}${daysLeft}</div>
+                        </div>
+                        <button data-restore="${this.escapeHtml(it.id)}" style="background:#3a6;color:#fff;border:none;border-radius:4px;padding:5px 10px;cursor:pointer;">恢复</button>
+                    </div>
+                `;}).join("");
+                body.querySelectorAll("[data-restore]").forEach(btn => {
+                    btn.addEventListener("click", async () => {
+                        await this.restoreTrashItem(btn.dataset.restore);
+                    });
+                });
+            }
+
+            modal.querySelector("#xzg-wf-trash-close").addEventListener("click", () => this.closeTrashModal());
+            modal.addEventListener("click", (e) => {
+                if (e.target === modal) this.closeTrashModal();
+            });
+        } catch (e) {
+            console.warn("[小珠光] 打开回收站失败:", e);
+            alert("打开回收站失败: " + e.message);
+        }
+    }
+
+    closeTrashModal() {
+        const modal = document.getElementById("xzg-wf-trash-modal");
+        if (modal) modal.style.display = "none";
+    }
+
+    async restoreTrashItem(id) {
+        try {
+            const res = await api.fetchApi("/xzg/wf-manage/restore", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                if (data.conflict) {
+                    alert("恢复失败：目标位置已存在同名文件，请先手动处理。");
+                } else {
+                    alert("恢复失败: " + (data.error || res.status));
+                }
+                return;
+            }
+            this.closeTrashModal();
             await this.loadWorkflows();
             const wfStore = app.extensionManager?.workflow;
-            if (wfStore?.loadWorkflows) {
-                try { await wfStore.loadWorkflows(); } catch (e) {}
-            }
+            if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
         } catch (e) {
-            console.warn("[小珠光] 刷新工作流失败:", e);
-        } finally {
-            if (refreshBtn) {
-                setTimeout(() => {
-                    refreshBtn.classList.remove("xzg-wf-spinning");
-                }, 300);
-            }
+            alert("恢复失败: " + e.message);
         }
+    }
+
+    escapeHtml(s) {
+        return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        }[c]));
     }
 
     setupSplitResizing() {
@@ -1757,7 +2103,35 @@ class XZGWorkflowsManager {
         });
     }
 
+    /** 同步刷新 ComfyUI 官方 workflow store，保证拖拽/重命名后官方工作流路径与实际磁盘一致 */
+    async _refreshOfficialStore() {
+        try {
+            const wfStore = app.extensionManager?.workflow;
+            if (wfStore?.loadWorkflows) await wfStore.loadWorkflows();
+        } catch (e) {
+            console.warn("[小珠光] 刷新官方工作流列表失败:", e);
+        }
+    }
+
     async loadWorkflows() {
+        // 自动编号过程中由 renameFolder 触发的内部刷新：仅加载数据，避免无限递归
+        if (this._autoNumbering) {
+            try {
+                const res = await api.fetchApi("/xzg/wf-manage/list", { cache: "no-store" });
+                const tree = await res.json();
+                this.tree = tree;
+                this.workflows = this.flattenTree(tree);
+                this.syncCategories();
+                this.renderCategories();
+                this.renderWorkflowList();
+            } catch (e) {
+                console.warn("[小珠光] 加载工作流列表失败:", e);
+                this.workflows = [];
+            }
+            // 同步官方 store，避免拖动分类排序后官方工作流 path 陈旧导致 404
+            await this._refreshOfficialStore();
+            return;
+        }
         try {
             const res = await api.fetchApi("/xzg/wf-manage/list", { cache: "no-store" });
             const tree = await res.json();
@@ -1769,6 +2143,23 @@ class XZGWorkflowsManager {
         } catch (e) {
             console.warn("[小珠光] 加载工作流列表失败:", e);
             this.workflows = [];
+            return;
+        }
+        // 同步官方 store，保证本扩展面板与官方面板的工作流路径一致
+        await this._refreshOfficialStore();
+
+        // 自动为文件夹添加/修正顺序编号前缀（已连续编号的层会被跳过，不覆盖手动排序）
+        this._autoNumbering = true;
+        try {
+            await this.autoNumberCategories();
+        } catch (e) {
+            console.warn("[小珠光] 自动编号失败:", e);
+            if (!this._autoNumberErrorShown) {
+                this._autoNumberErrorShown = true;
+                alert("分类自动编号失败: " + e.message);
+            }
+        } finally {
+            this._autoNumbering = false;
         }
     }
 
@@ -1879,6 +2270,7 @@ class XZGWorkflowsManager {
         item.style.paddingLeft = (12 + depth * 16) + "px";
 
         let html = '<span class="xzg-wf-cat-name">';
+        html += `<span class="xzg-wf-cat-drag-handle" draggable="true" data-path="${folderPath}" title="拖动调整顺序">⠿</span>`;
         if (hasChildren) {
             html += `<span class="xzg-wf-cat-toggle" data-path="${folderPath}">
                 <svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1899,6 +2291,26 @@ class XZGWorkflowsManager {
         html += `<span class="xzg-wf-cat-count">${count}</span>`;
 
         item.innerHTML = html;
+
+        const handle = item.querySelector(".xzg-wf-cat-drag-handle");
+        if (handle) {
+            handle.addEventListener("dragstart", (e) => {
+                e.stopPropagation();
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/xzg-wf-cat", folderPath);
+                this._wfCatDrag = { path: folderPath };
+                this._wfCatInsertIndex = null;
+                item.classList.add("xzg-wf-cat-dragging");
+            });
+            handle.addEventListener("dragend", () => {
+                item.classList.remove("xzg-wf-cat-dragging");
+                this._removeWfCatInsertIndicator();
+                this._wfCatInsertIndex = null;
+                this._wfCatDrag = null;
+            });
+            // 阻止点击手柄时触发分类选中/展开
+            handle.addEventListener("click", (e) => e.stopPropagation());
+        }
 
         item.addEventListener("click", (e) => {
             if (e.target.classList.contains("xzg-wf-cat-toggle")) {
@@ -1939,6 +2351,11 @@ class XZGWorkflowsManager {
         item.addEventListener("dragover", (e) => {
             e.preventDefault();
             e.stopPropagation();
+            const isCatDrag = e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("text/xzg-wf-cat");
+            if (isCatDrag) {
+                this._handleCatDragOver(e, item, folderPath);
+                return;
+            }
             if (!this.draggedWorkflow) return;
             item.classList.add("drag-over");
         });
@@ -1953,6 +2370,11 @@ class XZGWorkflowsManager {
             e.preventDefault();
             e.stopPropagation();
             item.classList.remove("drag-over");
+            const isCatDrag = e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("text/xzg-wf-cat");
+            if (isCatDrag) {
+                this._handleCatDrop(e, item, folderPath);
+                return;
+            }
             if (!this.draggedWorkflow) return;
             this.moveWorkflowToFolder(this.draggedWorkflow, folderPath);
         });
@@ -2204,98 +2626,138 @@ class XZGWorkflowsManager {
     }
 
     async loadWorkflow(path) {
+        // 串行加载：快速连点时若多个加载并发交错，画布图与官方标签会不一致，
+        // 此时保存会把当前画布误写进错误的官方工作流，造成严重数据损坏（两个工作流被覆盖成一样）。
+        // 这里用队列保证同一时刻只有一个加载在跑，且连点时只加载「最后一次点击」的目标，丢弃中间连点。
+        if (this._loading) {
+            this._loadQueue = [path];
+            return;
+        }
+        this._loading = true;
         try {
+            let target = path;
+            while (target != null) {
+                const gen = (this._loadGen = (this._loadGen || 0) + 1);
+                await this._loadWorkflowCore(target, gen);
+                target = this._loadQueue.length ? this._loadQueue.pop() : null;
+                this._loadQueue.length = 0;
+            }
+        } finally {
+            this._loading = false;
+            this._loadQueue.length = 0;
+        }
+    }
+
+    async _loadWorkflowCore(path, gen) {
+        try {
+            this._lastLoadWasOpen = false;
             const wfStore = app.extensionManager?.workflow;
             const officialPath = 'workflows/' + path + '.json';
 
             let data = null;
             let persistedWf = null;
-            let isAlreadyOpen = false;
-            let isAlreadyActive = false;
 
             if (wfStore?.openWorkflow && wfStore?.getWorkflowByPath) {
                 persistedWf = wfStore.getWorkflowByPath(officialPath);
                 if (!persistedWf && typeof wfStore.loadWorkflows === 'function') {
-                    await wfStore.loadWorkflows();
+                    try { await wfStore.loadWorkflows(); } catch (_) {}
+                    // 等待 store 注册表刷新后再查一次
+                    await new Promise(r => setTimeout(r, 50));
                     persistedWf = wfStore.getWorkflowByPath(officialPath);
+                }
+                // 兜底：store 可能未索引到磁盘上的该文件，遍历已加载列表按路径/名称匹配
+                if (!persistedWf) {
+                    const list = wfStore.workflows || (typeof wfStore.getWorkflows === 'function' ? wfStore.getWorkflows() : null);
+                    if (Array.isArray(list)) {
+                        const name = path.split('/').pop();
+                        persistedWf = list.find(w => w && (
+                            w.path === officialPath ||
+                            (w.path && w.path.endsWith(path + '.json')) ||
+                            w.filename === name ||
+                            w.name === name
+                        )) || null;
+                    }
                 }
 
                 if (persistedWf) {
-                    isAlreadyActive = wfStore.isActive ? wfStore.isActive(persistedWf) : false;
-                    isAlreadyOpen = wfStore.isOpen ? wfStore.isOpen(persistedWf) : false;
+                    // 记录点击前的状态：已激活则连画布都不必动；已打开（非激活）则需切画布但「不增加频率」
+                    const wasActive = wfStore.isActive ? wfStore.isActive(persistedWf) : false;
+                    const wasOpen = wfStore.isOpen ? wfStore.isOpen(persistedWf) : false;
+                    this._lastLoadWasOpen = wasActive || wasOpen;
 
-                    if (isAlreadyActive) {
+                    // 已经是当前激活工作流：画布已是其图，无需重复加载，直接结束
+                    if (wasActive) {
                         return;
                     }
-
-                    if (isAlreadyOpen) {
-                        await wfStore.openWorkflow(persistedWf);
-                        return;
-                    }
-
+                    // 确保内容已加载到本地，供我们精确掌控画布图
                     if (!persistedWf.isLoaded) {
-                        await persistedWf.load();
+                        try { await persistedWf.load(); } catch (_) {}
                     }
                     data = JSON.parse(persistedWf.content);
                 }
             }
 
+            // 兜底：store 中无对应条目时从后端直接取
             if (!data) {
                 const res = await api.fetchApi(`/xzg/workflows/${encodeURIComponent(path)}`, { cache: "no-store" });
                 if (!res.ok) throw new Error("加载失败");
                 data = await res.json();
             }
 
-            if (persistedWf && wfStore) {
-                await wfStore.openWorkflow(persistedWf);
-                await new Promise(r => setTimeout(r, 50));
+            const graph = app.graph;
+            const canvas = app.canvas;
 
-                const graph = app.graph;
-                const canvas = app.canvas;
-                graph.beforeChange();
-                graph.clear();
-                graph.configure(data);
-                graph.afterChange();
+            // 1) 通过官方 store 切换「激活工作流」：决定顶部标签与保存目标路径
+            if (persistedWf && wfStore?.openWorkflow) {
+                try { await wfStore.openWorkflow(persistedWf); } catch (_) {}
+            }
 
-                await new Promise(r => setTimeout(r, 50));
+            // 2) 等待官方异步图加载先行完成（通常 < 300ms），避免其随后覆盖我们下面的加载
+            await new Promise(r => setTimeout(r, 300));
 
-                const savedDs = data.extra?.ds;
-                if (savedDs && canvas?.ds) {
-                    if (savedDs.scale != null) canvas.ds.scale = savedDs.scale;
-                    if (savedDs.offset) {
-                        canvas.ds.offset[0] = savedDs.offset[0] || 0;
-                        canvas.ds.offset[1] = savedDs.offset[1] || 0;
-                    }
-                } else {
-                    this.centerCanvasOnNodes();
-                }
+            // 3) 由本扩展完全掌控画布图：清图并配置为「本次点击」的工作流数据，作为最终画布写入者
+            graph.beforeChange();
+            graph.clear();
+            graph.configure(data);
+            graph.afterChange();
 
-                if (canvas?.setDirty) {
-                    canvas.setDirty(true, true);
-                }
-
-                if (data.id) {
-                    location.hash = data.id;
+            // 4) 视图恢复（缩放/偏移）
+            const savedDs = data.extra?.ds;
+            if (savedDs && canvas?.ds) {
+                if (savedDs.scale != null) canvas.ds.scale = savedDs.scale;
+                if (savedDs.offset) {
+                    canvas.ds.offset[0] = savedDs.offset[0] || 0;
+                    canvas.ds.offset[1] = savedDs.offset[1] || 0;
                 }
             } else {
-                app.loadGraphData(data);
+                this.centerCanvasOnNodes();
             }
 
-            await new Promise(r => setTimeout(r, 100));
+            if (canvas?.setDirty) canvas.setDirty(true, true);
+            if (data.id) location.hash = data.id;
+
+            await new Promise(r => setTimeout(r, 120));
             app.canvas?.draw(true, true);
 
-            const meta = this.getWorkflowMeta(path);
-            meta.useCount = (meta.useCount || 0) + 1;
-            meta.lastUsed = Date.now();
-            this.saveMeta();
+            // 5) 代际校验：若期间有更新的点击（gen 已变），不再写元信息，交由最新代次负责
+            if (gen === this._loadGen) {
+                // 仅当该工作流「本次点击前未打开」时才增加使用频率；
+                // 已打开/已激活的反复点击只切画布，不刷频率，避免重复点击虚增计数
+                if (!this._lastLoadWasOpen) {
+                    const meta = this.getWorkflowMeta(path);
+                    meta.useCount = (meta.useCount || 0) + 1;
+                    meta.lastUsed = Date.now();
+                    this.saveMeta();
 
-            const wf = this.workflows.find(w => w.path === path);
-            if (wf) {
-                wf.useCount = meta.useCount;
-                wf.lastUsed = meta.lastUsed;
+                    const wf = this.workflows.find(w => w.path === path);
+                    if (wf) {
+                        wf.useCount = meta.useCount;
+                        wf.lastUsed = meta.lastUsed;
+                    }
+
+                    this.renderWorkflowList();
+                }
             }
-
-            this.renderWorkflowList();
         } catch (e) {
             console.warn("[小珠光] 加载工作流失败:", e);
             alert("加载工作流失败: " + e.message);
@@ -2592,6 +3054,259 @@ class XZGWorkflowsManager {
         }
     }
 
+    // ====== 文件夹自动编号逻辑 ======
+
+    /** 调用后端重命名文件夹 */
+    async renameFolder(oldPath, newName) {
+        let res;
+        try {
+            res = await api.fetchApi("/xzg/wf-manage/rename-folder", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ oldPath, newName })
+            });
+        } catch (netErr) {
+            throw new Error("无法连接后端: " + netErr.message);
+        }
+        if (res.status === 404) {
+            throw new Error("后端接口不存在(404)，请重启 ComfyUI 后再试");
+        }
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        return res.json();
+    }
+
+    /** 取某一层（同父路径）下的所有文件夹节点（始终基于最新 this.tree） */
+    getCurrentLayerFolders(parentPath) {
+        if (!parentPath) {
+            return (this.tree || []).filter(item => item.type === "folder");
+        }
+        const node = this.findFolderByPath(parentPath);
+        return (node && node.children) ? node.children.filter(c => c.type === "folder") : [];
+    }
+
+    /** 判断一层文件夹是否已连续编号（序号 1..n 递增无跳号） */
+    isLayerNumbered(siblings) {
+        if (siblings.length === 0) return true;
+        const nums = siblings.map(s => this.getFolderNumber(s.name)).sort((a, b) => a - b);
+        for (let i = 0; i < nums.length; i++) {
+            if (nums[i] !== i + 1) return false;
+        }
+        return true;
+    }
+
+    /** 把一层文件夹（按传入顺序）重命名为连续递增编号前缀，如 01_、02_ */
+    async renumberLayer(siblings) {
+        if (siblings.length === 0) return;
+        const parentPath = this.getParentPath(siblings[0].path);
+        const tmpParent = parentPath ? parentPath + "/" : "";
+        // 每次调用使用「唯一」临时前缀：避免上一次编号中断后残留的 __xzg_tmp 造成冲突，
+        // 否则 renameFolder 会因「目标已存在」返回 409 而中断，导致文件夹卡在 __xzg_tmp 状态。
+        const uniq = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        const tmpPrefix = "__xzg_tmp_" + uniq + "_";
+        const targets = siblings.map((s, i) =>
+            this.buildNumberPrefix(i + 1) + this.stripNumberPrefix(s.name));
+        try {
+            // 1) 全部改名到唯一临时名（即使存在历史残留的 __xzg_tmp 也不会冲突）
+            //    单步失败不中断整体，避免后续步骤错乱
+            for (let i = 0; i < siblings.length; i++) {
+                try {
+                    await this.renameFolder(siblings[i].path, tmpPrefix + i);
+                } catch (e) {
+                    console.warn("[小珠光] 重命名到临时名失败（已跳过）:", siblings[i].path, e);
+                }
+            }
+            // 2) 临时名 → 目标连续编号名；对残留目标冲突做兜底，避免整体中断卡在 __xzg_tmp
+            for (let i = 0; i < targets.length; i++) {
+                const tmpFull = tmpParent + tmpPrefix + i;
+                const targetName = targets[i];
+                try {
+                    await this.renameFolder(tmpFull, targetName);
+                } catch (e) {
+                    // 目标已存在（上一次中断残留）：先把残留目标移走，再重试一次
+                    const targetFull = tmpParent + targetName;
+                    try {
+                        await this.renameFolder(targetFull, targetName + "__bak_" + uniq);
+                    } catch (_) {}
+                    try {
+                        await this.renameFolder(tmpFull, targetName);
+                    } catch (e2) {
+                        console.warn("[小珠光] 重命名分类失败，已跳过:", tmpFull, e2);
+                    }
+                }
+            }
+        } finally {
+            // 关键：无论重命名是否完全成功，都重新读取磁盘真实状态并刷新面板与官方 store。
+            // 否则一旦 renameFolder 中途抛错，面板路径会与磁盘脱节，点击旧路径即 404。
+            await this.loadWorkflows();
+        }
+    }
+
+    /** 自动为所有文件夹添加/修正顺序编号前缀（已连续编号的层会被跳过） */
+    /** 判断整棵树是否存在「未连续编号」的层（含递归子层） */
+    needsAutoNumbering(tree, parentPath = "") {
+        const folders = tree.filter(item => item.type === "folder");
+        for (const f of folders) {
+            if (f.children && f.children.length > 0) {
+                if (this.needsAutoNumbering(f.children, f.path)) return true;
+            }
+        }
+        const layer = this.getCurrentLayerFolders(parentPath);
+        if (layer.length > 0 && !this.isLayerNumbered(layer)) return true;
+        return false;
+    }
+
+    async autoNumberCategories() {
+        if (!this.tree || this.tree.length === 0) {
+            localStorage.setItem("xzg_wf_auto_numbered", "1");
+            return;
+        }
+        try {
+            await this.autoNumberLayer(this.tree, "");
+            localStorage.setItem("xzg_wf_auto_numbered", "1");
+        } catch (e) {
+            console.warn("[小珠光] 自动编号失败:", e);
+        } finally {
+            await this.loadWorkflows();
+        }
+    }
+
+    /** 递归自动编号：最深层级优先，避免父目录改名导致子路径失效 */
+    async autoNumberLayer(tree, parentPath) {
+        const folders = tree.filter(item => item.type === "folder");
+        for (const f of folders) {
+            if (f.children && f.children.length > 0) {
+                await this.autoNumberLayer(f.children, f.path);
+            }
+        }
+        const layer = this.getCurrentLayerFolders(parentPath);
+        if (layer.length > 0 && !this.isLayerNumbered(layer)) {
+            await this.renumberLayer(layer);
+        }
+    }
+
+    // ====== 分类排序调整 ======
+
+    /** 获取同一层级的所有同级文件夹信息 */
+    getSiblingFolders(cat) {
+        const parentPath = this.getParentPath(cat.path);
+        let siblings = [];
+
+        if (!parentPath) {
+            // 根层级
+            siblings = this.tree.filter(item => item.type === "folder");
+        } else {
+            // 子层级：找到父节点
+            const parentNode = this.findFolderByPath(parentPath);
+            if (parentNode && parentNode.children) {
+                siblings = parentNode.children.filter(c => c.type === "folder");
+            }
+        }
+
+        // 按数字序或名称排序
+        siblings.sort((a, b) => {
+            const na = this.getFolderNumber(a.name);
+            const nb = this.getFolderNumber(b.name);
+            if (na !== -1 && nb !== -1) return na - nb;
+            if (na !== -1) return -1;
+            if (nb !== -1) return 1;
+            return a.name.localeCompare(b.name);
+        });
+
+        return siblings;
+    }
+
+    /** 上移分类 */
+    async moveCategoryUp(cat) {
+        await this.reorderCategory(cat, -1);
+    }
+
+    /** 下移分类 */
+    async moveCategoryDown(cat) {
+        await this.reorderCategory(cat, +1);
+    }
+
+    /** 调整分类顺序：dir 为 -1（上移）或 +1（下移） */
+    async reorderCategory(cat, dir) {
+        const siblings = this.getSiblingFolders(cat);
+        const idx = siblings.findIndex(s => s.path === cat.path);
+        if (idx === -1) return;
+        const newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= siblings.length) return; // 已在最前/最后
+
+        // 构造移动后的新顺序，再整体重编号为连续递增序号
+        const ordered = siblings.slice();
+        const [moved] = ordered.splice(idx, 1);
+        ordered.splice(newIdx, 0, moved);
+        await this.renumberLayer(ordered);
+    }
+
+    /** 拖拽分类到指定间隙位置（insertIndex 为同级层中的目标序号） */
+    async reorderCategoryToIndex(cat, insertIndex) {
+        const siblings = this.getSiblingFolders(cat);
+        const idx = siblings.findIndex(s => s.path === cat.path);
+        if (idx === -1) return;
+        // 将 insertIndex 由“原数组位置”换算为“移除后的目标位置”
+        let to = idx < insertIndex ? insertIndex - 1 : insertIndex;
+        if (to === idx) return;
+        const ordered = siblings.slice();
+        const [moved] = ordered.splice(idx, 1);
+        ordered.splice(to, 0, moved);
+        await this.renumberLayer(ordered);
+    }
+
+    _handleCatDragOver(e, item, folderPath) {
+        const drag = this._wfCatDrag;
+        if (!drag) return;
+        // 仅允许在同一层级（同父目录）内排序
+        if (this.getParentPath(drag.path) !== this.getParentPath(folderPath)) {
+            this._removeWfCatInsertIndicator();
+            return;
+        }
+        const rect = item.getBoundingClientRect();
+        const before = (e.clientY - rect.top) < rect.height / 2;
+        const siblings = this.getSiblingFolders({ path: drag.path });
+        const idx = siblings.findIndex(s => s.path === folderPath);
+        if (idx < 0) { this._removeWfCatInsertIndicator(); return; }
+        this._wfCatInsertIndex = before ? idx : idx + 1;
+        const wrapper = item.closest(".xzg-wf-folder-wrapper");
+        if (!wrapper) return;
+        this._showWfCatInsertIndicator(wrapper, before);
+    }
+
+    async _handleCatDrop(e, item, folderPath) {
+        const drag = this._wfCatDrag;
+        this._removeWfCatInsertIndicator();
+        if (!drag) return;
+        if (this.getParentPath(drag.path) !== this.getParentPath(folderPath)) return;
+        const insertIndex = this._wfCatInsertIndex;
+        this._wfCatInsertIndex = null;
+        this._wfCatDrag = null;
+        if (insertIndex === null || insertIndex === undefined) return;
+        await this.reorderCategoryToIndex({ path: drag.path }, insertIndex);
+    }
+
+    _showWfCatInsertIndicator(wrapper, before) {
+        this._removeWfCatInsertIndicator();
+        const indicator = document.createElement("div");
+        indicator.className = "xzg-wf-cat-insert-indicator";
+        if (before) {
+            wrapper.parentNode.insertBefore(indicator, wrapper);
+        } else {
+            const next = wrapper.nextElementSibling;
+            wrapper.parentNode.insertBefore(indicator, next);
+        }
+    }
+
+    _removeWfCatInsertIndicator() {
+        if (this.categoryList) {
+            const el = this.categoryList.querySelector(".xzg-wf-cat-insert-indicator");
+            if (el) el.remove();
+        }
+    }
+
     exportWorkflows() {
         const exportData = {
             version: 1,
@@ -2660,5 +3375,26 @@ window.XZGWorkflows = workflowsInstance;
 app.registerExtension({
     name: "xiaozhuguang.workflows",
     setup() {
+        // 监听官方 workflow store 变化（含原生 Save / 新建 / 删除工作流），
+        // 一旦官方列表变动（磁盘新增了工作流），自动刷新本扩展面板，避免"新工作流不显示"。
+        const refresh = () => {
+            try { workflowsInstance.loadWorkflows(); } catch (e) {}
+        };
+        try {
+            const wfStore = app.extensionManager?.workflow;
+            if (wfStore?.subscribe) {
+                wfStore.subscribe(refresh);
+            } else {
+                // 老版本 ComfyUI 无 subscribe：退化为轮询官方 store
+                setInterval(() => {
+                    try {
+                        const s = app.extensionManager?.workflow;
+                        if (s?.loadWorkflows) s.loadWorkflows().then(refresh).catch(() => {});
+                    } catch (e) {}
+                }, 3000);
+            }
+        } catch (e) {
+            console.warn("[小珠光] 注册官方工作流监听失败:", e);
+        }
     }
 });
