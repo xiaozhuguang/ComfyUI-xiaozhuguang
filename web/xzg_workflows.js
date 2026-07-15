@@ -181,28 +181,15 @@ class XZGWorkflowsManager {
         return true;
     }
 
-    // ====== 分类编号工具方法 ======
+    // ====== 分类工具方法 ======
     /** 去除文件夹名称的数字前缀 (如 "01_AAA" → "AAA") */
     stripNumberPrefix(name) {
         return name.replace(/^\d+[_\s]?/, '');
-    }
-    /** 判断文件夹名称是否已有数字前缀 */
-    hasNumberPrefix(name) {
-        return /^\d+_/.test(name);
-    }
-    /** 构建数字前缀 (如 1 → "01_") */
-    buildNumberPrefix(num) {
-        return String(num).padStart(2, '0') + '_';
     }
     /** 获取路径的父级路径 */
     getParentPath(path) {
         if (!path || !path.includes('/')) return '';
         return path.substring(0, path.lastIndexOf('/'));
-    }
-    /** 获取文件夹名称中的数字序号，没有则返回 -1 */
-    getFolderNumber(name) {
-        const m = name.match(/^(\d+)_/);
-        return m ? parseInt(m[1], 10) : -1;
     }
 
     getShortcut() {
@@ -665,8 +652,6 @@ class XZGWorkflowsManager {
         let html = '';
         if (isFolder) {
             html += `<div class="xzg-wf-ctx-item" data-action="rename">✏️ 重命名</div>
-            <div class="xzg-wf-ctx-item" data-action="move-up">⬆️ 上移</div>
-            <div class="xzg-wf-ctx-item" data-action="move-down">⬇️ 下移</div>
             <div class="xzg-wf-ctx-separator"></div>`;
         }
         html += `<div class="xzg-wf-ctx-item" data-action="new-subfolder">📁 新建子分类</div>
@@ -712,10 +697,6 @@ class XZGWorkflowsManager {
                     this.renameCategory(cat);
                 } else if (action === "new-subfolder") {
                     this.createNewCategory(cat.path || cat.name);
-                } else if (action === "move-up") {
-                    this.moveCategoryUp(cat).catch(e => alert("上移失败: " + e.message));
-                } else if (action === "move-down") {
-                    this.moveCategoryDown(cat).catch(e => alert("下移失败: " + e.message));
                 }
             });
         });
@@ -1424,34 +1405,6 @@ class XZGWorkflowsManager {
                 background: rgba(255, 255, 255, 0.15);
                 color: #FFD700;
             }
-            .xzg-wf-cat-drag-handle {
-                flex: none;
-                cursor: grab;
-                color: #888;
-                font-size: 14px;
-                line-height: 1;
-                user-select: none;
-                margin-right: 2px;
-                transition: color 0.15s;
-            }
-            .xzg-wf-cat-drag-handle:hover {
-                color: #FFD700;
-            }
-            .xzg-wf-cat-drag-handle:active {
-                cursor: grabbing;
-            }
-            .xzg-wf-cat-item.xzg-wf-cat-dragging {
-                opacity: 0.5;
-            }
-            .xzg-wf-cat-insert-indicator {
-                height: 3px;
-                flex: none;
-                border-radius: 2px;
-                background: #FFD700;
-                box-shadow: 0 0 6px rgba(255, 215, 0, 0.8);
-                margin: 1px 0;
-                pointer-events: none;
-            }
             .xzg-wf-cat-name {
                 display: flex;
                 align-items: center;
@@ -2117,24 +2070,6 @@ class XZGWorkflowsManager {
     }
 
     async loadWorkflows() {
-        // 自动编号过程中由 renameFolder 触发的内部刷新：仅加载数据，避免无限递归
-        if (this._autoNumbering) {
-            try {
-                const res = await api.fetchApi("/xzg/wf-manage/list", { cache: "no-store" });
-                const tree = await res.json();
-                this.tree = tree;
-                this.workflows = this.flattenTree(tree);
-                this.syncCategories();
-                this.renderCategories();
-                this.renderWorkflowList();
-            } catch (e) {
-                console.warn("[小珠光] 加载工作流列表失败:", e);
-                this.workflows = [];
-            }
-            // 同步官方 store，避免拖动分类排序后官方工作流 path 陈旧导致 404
-            await this._refreshOfficialStore();
-            return;
-        }
         try {
             const res = await api.fetchApi("/xzg/wf-manage/list", { cache: "no-store" });
             const tree = await res.json();
@@ -2150,8 +2085,7 @@ class XZGWorkflowsManager {
         }
         // 同步官方 store，保证本扩展面板与官方面板的工作流路径一致
         await this._refreshOfficialStore();
-        // 说明：已取消「自动重命名编号排序」。分类顺序仅在用户主动拖拽/上下移时通过
-        // renumberLayer 重命名调整，避免每次加载都自动改名磁盘文件夹（更安全、可控）。
+        // 说明：已彻底移除分类自动/手动排序重命名。分类按名称自然排列，永不改动磁盘文件夹名。
     }
 
     flattenTree(tree, parentPath = "") {
@@ -2261,7 +2195,6 @@ class XZGWorkflowsManager {
         item.style.paddingLeft = (12 + depth * 16) + "px";
 
         let html = '<span class="xzg-wf-cat-name">';
-        html += `<span class="xzg-wf-cat-drag-handle" draggable="true" data-path="${folderPath}" title="拖动调整顺序">⠿</span>`;
         if (hasChildren) {
             html += `<span class="xzg-wf-cat-toggle" data-path="${folderPath}">
                 <svg class="xzg-wf-cat-toggle-svg ${isExpanded ? 'expanded' : ''}" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2282,26 +2215,6 @@ class XZGWorkflowsManager {
         html += `<span class="xzg-wf-cat-count">${count}</span>`;
 
         item.innerHTML = html;
-
-        const handle = item.querySelector(".xzg-wf-cat-drag-handle");
-        if (handle) {
-            handle.addEventListener("dragstart", (e) => {
-                e.stopPropagation();
-                e.dataTransfer.effectAllowed = "move";
-                e.dataTransfer.setData("text/xzg-wf-cat", folderPath);
-                this._wfCatDrag = { path: folderPath };
-                this._wfCatInsertIndex = null;
-                item.classList.add("xzg-wf-cat-dragging");
-            });
-            handle.addEventListener("dragend", () => {
-                item.classList.remove("xzg-wf-cat-dragging");
-                this._removeWfCatInsertIndicator();
-                this._wfCatInsertIndex = null;
-                this._wfCatDrag = null;
-            });
-            // 阻止点击手柄时触发分类选中/展开
-            handle.addEventListener("click", (e) => e.stopPropagation());
-        }
 
         item.addEventListener("click", (e) => {
             if (e.target.classList.contains("xzg-wf-cat-toggle")) {
@@ -2342,11 +2255,6 @@ class XZGWorkflowsManager {
         item.addEventListener("dragover", (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const isCatDrag = e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("text/xzg-wf-cat");
-            if (isCatDrag) {
-                this._handleCatDragOver(e, item, folderPath);
-                return;
-            }
             if (!this.draggedWorkflow) return;
             item.classList.add("drag-over");
         });
@@ -2361,11 +2269,6 @@ class XZGWorkflowsManager {
             e.preventDefault();
             e.stopPropagation();
             item.classList.remove("drag-over");
-            const isCatDrag = e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("text/xzg-wf-cat");
-            if (isCatDrag) {
-                this._handleCatDrop(e, item, folderPath);
-                return;
-            }
             if (!this.draggedWorkflow) return;
             this.moveWorkflowToFolder(this.draggedWorkflow, folderPath);
         });
@@ -3096,192 +2999,6 @@ class XZGWorkflowsManager {
             throw new Error(err.error || `HTTP ${res.status}`);
         }
         return res.json();
-    }
-
-    /** 取某一层（同父路径）下的所有文件夹节点（始终基于最新 this.tree） */
-    getCurrentLayerFolders(parentPath) {
-        if (!parentPath) {
-            return (this.tree || []).filter(item => item.type === "folder");
-        }
-        const node = this.findFolderByPath(parentPath);
-        return (node && node.children) ? node.children.filter(c => c.type === "folder") : [];
-    }
-
-    /** 判断一层文件夹是否已连续编号（序号 1..n 递增无跳号） */
-    isLayerNumbered(siblings) {
-        if (siblings.length === 0) return true;
-        const nums = siblings.map(s => this.getFolderNumber(s.name)).sort((a, b) => a - b);
-        for (let i = 0; i < nums.length; i++) {
-            if (nums[i] !== i + 1) return false;
-        }
-        return true;
-    }
-
-    /** 把一层文件夹（按传入顺序）重命名为连续递增编号前缀，如 01_、02_ */
-    async renumberLayer(siblings) {
-        if (siblings.length === 0) return;
-        // 置位：本方法内（含 finally 的 loadWorkflows）一律走「仅刷新数据」短路分支，
-        // 不再触发自动编号，彻底断开「编号→刷新→再编号」的递归链路，避免反复重命名/复制文件夹。
-        this._autoNumbering = true;
-        const parentPath = this.getParentPath(siblings[0].path);
-        const tmpParent = parentPath ? parentPath + "/" : "";
-        // 每次调用使用「唯一」临时前缀：避免上一次编号中断后残留的 __xzg_tmp 造成冲突，
-        // 否则 renameFolder 会因「目标已存在」返回 409 而中断，导致文件夹卡在 __xzg_tmp 状态。
-        const uniq = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        const tmpPrefix = "__xzg_tmp_" + uniq + "_";
-        const targets = siblings.map((s, i) =>
-            this.buildNumberPrefix(i + 1) + this.stripNumberPrefix(s.name));
-        try {
-            // 1) 全部改名到唯一临时名（即使存在历史残留的 __xzg_tmp 也不会冲突）
-            //    单步失败不中断整体，避免后续步骤错乱
-            for (let i = 0; i < siblings.length; i++) {
-                try {
-                    await this.renameFolder(siblings[i].path, tmpPrefix + i);
-                } catch (e) {
-                    console.warn("[小珠光] 重命名到临时名失败（已跳过）:", siblings[i].path, e);
-                }
-            }
-            // 2) 临时名 → 目标连续编号名
-            for (let i = 0; i < targets.length; i++) {
-                const tmpFull = tmpParent + tmpPrefix + i;
-                const targetName = targets[i];
-                try {
-                    await this.renameFolder(tmpFull, targetName);
-                } catch (e) {
-                    // 目标已存在（上一次中断残留）：说明编号名已被正确占用，直接复用，
-                    // 切勿再复制出 __bak_ 副本（那会造成磁盘上重复文件夹）。
-                    console.warn("[小珠光] 目标已存在，直接复用，跳过复制:", targetName, e && e.message);
-                }
-            }
-        } finally {
-            // 复位：本次编号（含其内部的 loadWorkflows 刷新）已结束，恢复自动编号能力
-            this._autoNumbering = false;
-            // 清理编号过程中可能残留的临时文件夹（__xzg_tmp_* / *__bak_*），杜绝重复文件夹
-            try { await api.fetchApi("/xzg/wf-manage/cleanup-tmp", { method: "POST" }); } catch (_) {}
-            // 关键：无论重命名是否完全成功，都重新读取磁盘真实状态并刷新面板与官方 store。
-            // 否则一旦 renameFolder 中途抛错，面板路径会与磁盘脱节，点击旧路径即 404。
-            await this.loadWorkflows();
-        }
-    }
-
-    // ====== 分类排序调整 ======
-
-    /** 获取同一层级的所有同级文件夹信息 */
-    getSiblingFolders(cat) {
-        const parentPath = this.getParentPath(cat.path);
-        let siblings = [];
-
-        if (!parentPath) {
-            // 根层级
-            siblings = this.tree.filter(item => item.type === "folder");
-        } else {
-            // 子层级：找到父节点
-            const parentNode = this.findFolderByPath(parentPath);
-            if (parentNode && parentNode.children) {
-                siblings = parentNode.children.filter(c => c.type === "folder");
-            }
-        }
-
-        // 按数字序或名称排序
-        siblings.sort((a, b) => {
-            const na = this.getFolderNumber(a.name);
-            const nb = this.getFolderNumber(b.name);
-            if (na !== -1 && nb !== -1) return na - nb;
-            if (na !== -1) return -1;
-            if (nb !== -1) return 1;
-            return a.name.localeCompare(b.name);
-        });
-
-        return siblings;
-    }
-
-    /** 上移分类 */
-    async moveCategoryUp(cat) {
-        await this.reorderCategory(cat, -1);
-    }
-
-    /** 下移分类 */
-    async moveCategoryDown(cat) {
-        await this.reorderCategory(cat, +1);
-    }
-
-    /** 调整分类顺序：dir 为 -1（上移）或 +1（下移） */
-    async reorderCategory(cat, dir) {
-        const siblings = this.getSiblingFolders(cat);
-        const idx = siblings.findIndex(s => s.path === cat.path);
-        if (idx === -1) return;
-        const newIdx = idx + dir;
-        if (newIdx < 0 || newIdx >= siblings.length) return; // 已在最前/最后
-
-        // 构造移动后的新顺序，再整体重编号为连续递增序号
-        const ordered = siblings.slice();
-        const [moved] = ordered.splice(idx, 1);
-        ordered.splice(newIdx, 0, moved);
-        await this.renumberLayer(ordered);
-    }
-
-    /** 拖拽分类到指定间隙位置（insertIndex 为同级层中的目标序号） */
-    async reorderCategoryToIndex(cat, insertIndex) {
-        const siblings = this.getSiblingFolders(cat);
-        const idx = siblings.findIndex(s => s.path === cat.path);
-        if (idx === -1) return;
-        // 将 insertIndex 由“原数组位置”换算为“移除后的目标位置”
-        let to = idx < insertIndex ? insertIndex - 1 : insertIndex;
-        if (to === idx) return;
-        const ordered = siblings.slice();
-        const [moved] = ordered.splice(idx, 1);
-        ordered.splice(to, 0, moved);
-        await this.renumberLayer(ordered);
-    }
-
-    _handleCatDragOver(e, item, folderPath) {
-        const drag = this._wfCatDrag;
-        if (!drag) return;
-        // 仅允许在同一层级（同父目录）内排序
-        if (this.getParentPath(drag.path) !== this.getParentPath(folderPath)) {
-            this._removeWfCatInsertIndicator();
-            return;
-        }
-        const rect = item.getBoundingClientRect();
-        const before = (e.clientY - rect.top) < rect.height / 2;
-        const siblings = this.getSiblingFolders({ path: drag.path });
-        const idx = siblings.findIndex(s => s.path === folderPath);
-        if (idx < 0) { this._removeWfCatInsertIndicator(); return; }
-        this._wfCatInsertIndex = before ? idx : idx + 1;
-        const wrapper = item.closest(".xzg-wf-folder-wrapper");
-        if (!wrapper) return;
-        this._showWfCatInsertIndicator(wrapper, before);
-    }
-
-    async _handleCatDrop(e, item, folderPath) {
-        const drag = this._wfCatDrag;
-        this._removeWfCatInsertIndicator();
-        if (!drag) return;
-        if (this.getParentPath(drag.path) !== this.getParentPath(folderPath)) return;
-        const insertIndex = this._wfCatInsertIndex;
-        this._wfCatInsertIndex = null;
-        this._wfCatDrag = null;
-        if (insertIndex === null || insertIndex === undefined) return;
-        await this.reorderCategoryToIndex({ path: drag.path }, insertIndex);
-    }
-
-    _showWfCatInsertIndicator(wrapper, before) {
-        this._removeWfCatInsertIndicator();
-        const indicator = document.createElement("div");
-        indicator.className = "xzg-wf-cat-insert-indicator";
-        if (before) {
-            wrapper.parentNode.insertBefore(indicator, wrapper);
-        } else {
-            const next = wrapper.nextElementSibling;
-            wrapper.parentNode.insertBefore(indicator, next);
-        }
-    }
-
-    _removeWfCatInsertIndicator() {
-        if (this.categoryList) {
-            const el = this.categoryList.querySelector(".xzg-wf-cat-insert-indicator");
-            if (el) el.remove();
-        }
     }
 
     exportWorkflows() {
