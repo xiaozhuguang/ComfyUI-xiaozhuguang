@@ -313,8 +313,8 @@ window.XZGThemePanel = {
                 <div class="xzg-menu-hide-full">
                     <div class="xzg-quick-nodes-count">已添加 <span id="xzg-quick-count">0</span> / 20 个快速节点</div>
                     <div class="xzg-quick-setting-row">
-                        <span>隐藏默认连线菜单</span>
-                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="开启后，连线菜单只显示快速节点">
+                        <span>夺舍模式</span>
+                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="夺舍模式：开启后，连线菜单只显示快速节点">
                             <span class="xzg-toggle-slider"></span>
                             <span class="xzg-toggle-label">关</span>
                         </button>
