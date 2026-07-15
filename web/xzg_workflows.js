@@ -3100,6 +3100,9 @@ class XZGWorkflowsManager {
     /** 把一层文件夹（按传入顺序）重命名为连续递增编号前缀，如 01_、02_ */
     async renumberLayer(siblings) {
         if (siblings.length === 0) return;
+        // 置位：本方法内（含 finally 的 loadWorkflows）一律走「仅刷新数据」短路分支，
+        // 不再触发自动编号，彻底断开「编号→刷新→再编号」的递归链路，避免反复重命名/复制文件夹。
+        this._autoNumbering = true;
         const parentPath = this.getParentPath(siblings[0].path);
         const tmpParent = parentPath ? parentPath + "/" : "";
         // 每次调用使用「唯一」临时前缀：避免上一次编号中断后残留的 __xzg_tmp 造成冲突，
@@ -3118,26 +3121,23 @@ class XZGWorkflowsManager {
                     console.warn("[小珠光] 重命名到临时名失败（已跳过）:", siblings[i].path, e);
                 }
             }
-            // 2) 临时名 → 目标连续编号名；对残留目标冲突做兜底，避免整体中断卡在 __xzg_tmp
+            // 2) 临时名 → 目标连续编号名
             for (let i = 0; i < targets.length; i++) {
                 const tmpFull = tmpParent + tmpPrefix + i;
                 const targetName = targets[i];
                 try {
                     await this.renameFolder(tmpFull, targetName);
                 } catch (e) {
-                    // 目标已存在（上一次中断残留）：先把残留目标移走，再重试一次
-                    const targetFull = tmpParent + targetName;
-                    try {
-                        await this.renameFolder(targetFull, targetName + "__bak_" + uniq);
-                    } catch (_) {}
-                    try {
-                        await this.renameFolder(tmpFull, targetName);
-                    } catch (e2) {
-                        console.warn("[小珠光] 重命名分类失败，已跳过:", tmpFull, e2);
-                    }
+                    // 目标已存在（上一次中断残留）：说明编号名已被正确占用，直接复用，
+                    // 切勿再复制出 __bak_ 副本（那会造成磁盘上重复文件夹）。
+                    console.warn("[小珠光] 目标已存在，直接复用，跳过复制:", targetName, e && e.message);
                 }
             }
         } finally {
+            // 复位：本次编号（含其内部的 loadWorkflows 刷新）已结束，恢复自动编号能力
+            this._autoNumbering = false;
+            // 清理编号过程中可能残留的临时文件夹（__xzg_tmp_* / *__bak_*），杜绝重复文件夹
+            try { await api.fetchApi("/xzg/wf-manage/cleanup-tmp", { method: "POST" }); } catch (_) {}
             // 关键：无论重命名是否完全成功，都重新读取磁盘真实状态并刷新面板与官方 store。
             // 否则一旦 renameFolder 中途抛错，面板路径会与磁盘脱节，点击旧路径即 404。
             await this.loadWorkflows();

@@ -360,6 +360,30 @@ async def rename_folder(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+@PromptServer.instance.routes.post("/xzg/wf-manage/cleanup-tmp")
+async def cleanup_tmp_folders(request):
+    """清理编号/重命名过程中残留的临时文件夹（__xzg_tmp_*、*__bak_*），避免重复文件夹堆积。"""
+    workflows_dir = get_workflows_directory()
+    removed = []
+    try:
+        for root, dirs, _ in os.walk(workflows_dir):
+            # 不在 __trash 内部清理
+            if "__trash" in root.split(os.sep):
+                continue
+            for d in list(dirs):
+                if d.startswith("__xzg_tmp_") or d.endswith("__bak_"):
+                    full = os.path.join(root, d)
+                    if is_safe_path(workflows_dir, full):
+                        try:
+                            shutil.rmtree(full)
+                            removed.append(os.path.relpath(full, workflows_dir).replace("\\", "/"))
+                        except Exception:
+                            pass
+        return web.json_response({"success": True, "removed": removed})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 @PromptServer.instance.routes.post("/xzg/wf-manage/move")
 async def move_workflow(request):
     workflows_dir = get_workflows_directory()
