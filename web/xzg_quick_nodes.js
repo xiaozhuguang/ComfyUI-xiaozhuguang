@@ -23,7 +23,8 @@ class XZGQuickNodes {
             console.warn("[小珠光] 加载快速节点配置失败:", e);
         }
         return {
-            hideDefaultMenu: false
+            hideDefaultMenu: false,
+            textColor: "#FFD700"
         };
     }
 
@@ -42,6 +43,15 @@ class XZGQuickNodes {
 
     isHideDefaultMenu() {
         return !!this.config.hideDefaultMenu;
+    }
+
+    setTextColor(color) {
+        this.config.textColor = color;
+        this.saveConfig();
+    }
+
+    getTextColor() {
+        return this.config.textColor || "#FFD700";
     }
 
     loadQuickNodes() {
@@ -392,11 +402,11 @@ class XZGQuickNodes {
                 if (menu?.root) {
                     const entries = menu.root.querySelectorAll('.litemenu-entry');
                     const quickTitles = quickNodes.map(n => n.title);
+                    const textColor = self.getTextColor();
                     entries.forEach(entry => {
                         const text = entry.textContent?.trim();
                         if (quickTitles.includes(text)) {
-                            entry.style.color = '#FFD700';
-                            entry.style.textShadow = '0 0 5px rgba(255, 215, 0, 0.5)';
+                            entry.style.color = textColor;
                         }
                     });
                 }

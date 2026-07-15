@@ -49,7 +49,6 @@ class Xiaozhuguang {
                     parsed.sortMode = "default";
                 }
                 parsed.nodes.forEach((n, i) => {
-                    if (n.rating === undefined) n.rating = 0;
                     if (n.order === undefined) n.order = Date.now() + i;
                     if (n.useCount === undefined) n.useCount = 0;
                     if (n.lastUsed === undefined) n.lastUsed = 0;
@@ -969,29 +968,6 @@ class Xiaozhuguang {
                 gap: 4px;
             }
 
-            .nf-fav-rating {
-                display: flex;
-                gap: 1px;
-                padding: 0 4px;
-            }
-
-            .nf-star {
-                font-size: 13px;
-                color: #444;
-                cursor: pointer;
-                transition: color 0.15s;
-                user-select: none;
-            }
-
-            .nf-star:hover {
-                color: #FFC107;
-                transform: scale(1.2);
-            }
-
-            .nf-star.filled {
-                color: #FFC107;
-            }
-
             .nf-fav-item.nf-invalid {
                 opacity: 0.55;
                 cursor: default;
@@ -1327,7 +1303,7 @@ class Xiaozhuguang {
                                 </div>
                                 <div class="nf-sort-btns">
                                     <button class="nf-sort-btn active" id="nf-sort-default" title="按使用频率排序">🔥</button>
-                                    <button class="nf-sort-btn" id="nf-sort-rating" title="按星标排序">★</button>
+                                    <button class="nf-sort-btn" id="nf-sort-time" title="按最近使用排序">🕐</button>
                                 </div>
                             </div>
                             <div class="nf-favorites-list" id="nf-favorites-list">
@@ -1394,7 +1370,7 @@ class Xiaozhuguang {
 
         if (this.searchInput) {
             this.searchInput.addEventListener("input", (e) => {
-                this.currentSearch = e.target.value.toLowerCase();
+                this.currentSearch = e.target.value.replace(/\s/g, '').toLowerCase();
                 this.renderFavorites();
                 this.updateClearButtonVisibility();
             });
@@ -1443,7 +1419,7 @@ class Xiaozhuguang {
 
 
         const sortDefaultBtn = this.panel.querySelector("#nf-sort-default");
-        const sortRatingBtn = this.panel.querySelector("#nf-sort-rating");
+        const sortTimeBtn = this.panel.querySelector("#nf-sort-time");
         if (sortDefaultBtn) {
             sortDefaultBtn.addEventListener("click", () => {
                 this.setSortMode("default");
@@ -1459,9 +1435,9 @@ class Xiaozhuguang {
                 }
             });
         }
-        if (sortRatingBtn) {
-            sortRatingBtn.addEventListener("click", () => {
-                this.setSortMode("rating");
+        if (sortTimeBtn) {
+            sortTimeBtn.addEventListener("click", () => {
+                this.setSortMode("time");
             });
         }
 
@@ -2100,7 +2076,6 @@ class Xiaozhuguang {
             category: category,
             categoryId: categoryId,
             addedAt: Date.now(),
-            rating: 0,
             useCount: 0,
             lastUsed: 0,
             order: maxOrder + 1000
@@ -2750,10 +2725,8 @@ class Xiaozhuguang {
         }
 
         const sortMode = this.favorites.sortMode || "default";
-        if (sortMode === "rating") {
+        if (sortMode === "time") {
             return nodes.sort((a, b) => {
-                if (b.rating !== a.rating) return b.rating - a.rating;
-                if ((b.useCount || 0) !== (a.useCount || 0)) return (b.useCount || 0) - (a.useCount || 0);
                 return (b.lastUsed || 0) - (a.lastUsed || 0);
             });
         } else {
@@ -2786,15 +2759,6 @@ class Xiaozhuguang {
         return this.favorites.categories.find(c => c.id === id);
     }
 
-    setNodeRating(nodeType, rating) {
-        const node = this.favorites.nodes.find(n => n.type === nodeType);
-        if (node) {
-            node.rating = rating;
-            this.saveFavorites();
-            this.renderFavorites();
-        }
-    }
-
     setSortMode(mode) {
         this.favorites.sortMode = mode;
         this.saveFavorites();
@@ -2804,12 +2768,12 @@ class Xiaozhuguang {
 
     updateSortButtons() {
         const defaultBtn = this.panel?.querySelector("#nf-sort-default");
-        const ratingBtn = this.panel?.querySelector("#nf-sort-rating");
-        if (!defaultBtn || !ratingBtn) return;
+        const timeBtn = this.panel?.querySelector("#nf-sort-time");
+        if (!defaultBtn || !timeBtn) return;
 
         const mode = this.favorites.sortMode || "default";
         defaultBtn.classList.toggle("active", mode === "default");
-        ratingBtn.classList.toggle("active", mode === "rating");
+        timeBtn.classList.toggle("active", mode === "time");
     }
 
     updateClearButtonVisibility() {
@@ -3051,14 +3015,8 @@ class Xiaozhuguang {
             const cat = this.getCategoryById(node.categoryId);
             const catColor = cat ? cat.color : "#888";
             const catName = cat ? cat.name : "未知";
-            const rating = node.rating || 0;
             const isValid = this.isNodeTypeValid(node.type);
             if (!isValid) listInvalidCount++;
-
-            let starsHtml = "";
-            for (let i = 1; i <= 5; i++) {
-                starsHtml += `<span class="nf-star ${i <= rating ? 'filled' : ''}" data-star="${i}">★</span>`;
-            }
 
             const useCount = node.useCount || 0;
             const itemClass = `nf-fav-item${isValid ? '' : ' nf-invalid'}`;
@@ -3081,9 +3039,6 @@ class Xiaozhuguang {
                     <div class="nf-fav-info">
                         <div class="nf-fav-name">${nameText}</div>
                         <div class="nf-fav-type">${typeText}</div>
-                    </div>
-                    <div class="nf-fav-rating" data-type="${node.type}">
-                        ${isValid ? starsHtml : ''}
                     </div>
                     ${isValid ? '' : `<button class="nf-del-invalid-btn" data-type="${node.type}" title="移除此失效收藏">✕</button>`}
                 </div>
@@ -3166,8 +3121,10 @@ class Xiaozhuguang {
                     self.draggingWorkflowId = null;
                     self.removeDragPreview();
                 } else if (!isDrag && dragInfo) {
+                    if (self.searchInput && self.searchInput === document.activeElement) {
+                        self.searchInput.blur();
+                    }
                     if (isWorkflowDrag) {
-                        // 点击工作流：添加到画布
                         self.addWorkflowToCanvasById(dragInfo.id);
                     } else {
                         self.addNodeToCanvas(dragInfo.type);
@@ -3184,7 +3141,6 @@ class Xiaozhuguang {
 
             item.addEventListener("mousedown", (e) => {
                 if (e.button !== 0) return;
-                if (e.target.closest(".nf-fav-rating")) return;
 
                 const kind = item.dataset.kind;
                 startX = e.clientX;
@@ -3211,23 +3167,6 @@ class Xiaozhuguang {
                 e.preventDefault();
                 document.addEventListener("mousemove", onMouseMove);
                 document.addEventListener("mouseup", onMouseUp);
-            });
-        });
-
-        this.favoritesList.querySelectorAll(".nf-fav-rating").forEach(ratingEl => {
-            const nodeType = ratingEl.dataset.type;
-            ratingEl.querySelectorAll(".nf-star").forEach(star => {
-                star.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    const starNum = parseInt(star.dataset.star);
-                    const currentRating = ratingEl.querySelectorAll(".nf-star.filled").length;
-                    const newRating = currentRating === starNum ? 0 : starNum;
-                    self.setNodeRating(nodeType, newRating);
-                });
-                star.addEventListener("mousedown", (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                });
             });
         });
 
@@ -3986,7 +3925,7 @@ class Xiaozhuguang {
             catNodes.sort((a, b) => (a.order || 0) - (b.order || 0));
         } else {
             catNodes.sort((a, b) => {
-                if (b.rating !== a.rating) return b.rating - a.rating;
+                if ((b.lastUsed || 0) !== (a.lastUsed || 0)) return (b.lastUsed || 0) - (a.lastUsed || 0);
                 return (a.order || 0) - (b.order || 0);
             });
         }

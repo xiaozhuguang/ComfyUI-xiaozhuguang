@@ -319,6 +319,13 @@ window.XZGThemePanel = {
                             <span class="xzg-toggle-label">关</span>
                         </button>
                     </div>
+                    <div class="xzg-quick-setting-row">
+                        <span>文字颜色</span>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="color" id="xzg-quick-text-color" value="#FFD700" style="width:24px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
+                            <span id="xzg-quick-text-color-value" style="font-size:12px;color:#888;">#FFD700</span>
+                        </div>
+                    </div>
                     <div class="xzg-menu-hide-toolbar" style="margin-bottom:6px;">
                         <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-export-btn">导出配置</button>
                         <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-import-btn">导入配置</button>
@@ -1196,6 +1203,11 @@ window.XZGThemePanel = {
                             const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
                             if (label) label.textContent = checked ? "开" : "关";
                         }
+                        if (quickTextColorInput && quickTextColorValue) {
+                            const color = qn.getTextColor();
+                            quickTextColorInput.value = color;
+                            quickTextColorValue.textContent = color.toUpperCase();
+                        }
                         alert('导入成功');
                     } catch (err) {
                         alert('导入失败：文件格式不正确');
@@ -1227,6 +1239,23 @@ window.XZGThemePanel = {
             });
         }
 
+        const quickTextColorInput = panel.querySelector('#xzg-quick-text-color');
+        const quickTextColorValue = panel.querySelector('#xzg-quick-text-color-value');
+        if (quickTextColorInput && quickTextColorValue) {
+            if (window.XZGQuickNodes) {
+                const color = window.XZGQuickNodes.getTextColor();
+                quickTextColorInput.value = color;
+                quickTextColorValue.textContent = color.toUpperCase();
+            }
+            quickTextColorInput.addEventListener('input', (e) => {
+                const color = e.target.value;
+                quickTextColorValue.textContent = color.toUpperCase();
+                if (window.XZGQuickNodes) {
+                    window.XZGQuickNodes.setTextColor(color);
+                }
+            });
+        }
+
         window.XZGThemePanel = window.XZGThemePanel || {};
         window.XZGThemePanel.refreshQuickNodesTab = () => {
             if (panel.style.display !== 'none') {
@@ -1238,6 +1267,11 @@ window.XZGThemePanel = {
                         quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
                         const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
                         if (label) label.textContent = checked ? "开" : "关";
+                    }
+                    if (quickTextColorInput && quickTextColorValue && window.XZGQuickNodes) {
+                        const color = window.XZGQuickNodes.getTextColor();
+                        quickTextColorInput.value = color;
+                        quickTextColorValue.textContent = color.toUpperCase();
                     }
                 }
             }
