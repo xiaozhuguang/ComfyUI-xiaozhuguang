@@ -664,7 +664,8 @@ class XZGWorkflowsManager {
 
         let html = '';
         if (isFolder) {
-            html += `<div class="xzg-wf-ctx-item" data-action="move-up">⬆️ 上移</div>
+            html += `<div class="xzg-wf-ctx-item" data-action="rename">✏️ 重命名</div>
+            <div class="xzg-wf-ctx-item" data-action="move-up">⬆️ 上移</div>
             <div class="xzg-wf-ctx-item" data-action="move-down">⬇️ 下移</div>
             <div class="xzg-wf-ctx-separator"></div>`;
         }
@@ -707,6 +708,8 @@ class XZGWorkflowsManager {
 
                 if (action === "delete") {
                     this.deleteCategory(cat);
+                } else if (action === "rename") {
+                    this.renameCategory(cat);
                 } else if (action === "new-subfolder") {
                     this.createNewCategory(cat.path || cat.name);
                 } else if (action === "move-up") {
@@ -2936,6 +2939,35 @@ class XZGWorkflowsManager {
         } catch (e) {
             console.warn("[小珠光] 创建分类失败:", e);
             alert("创建分类失败: " + e.message);
+        }
+    }
+
+    /** 重命名分类：文件夹整体重命名（含其下所有子分类与工作流），不自动添加编号前缀 */
+    async renameCategory(cat) {
+        if (!cat || cat.type !== "folder") return;
+
+        const defaultName = this.stripNumberPrefix(cat.name);
+        const input = prompt("请输入分类名称：", defaultName);
+        if (input === null) return; // 用户取消
+
+        const newName = input.trim();
+        if (!newName) { alert("分类名称不能为空！"); return; }
+        if (newName.includes("/") || newName.includes("\\")) { alert("分类名称不能包含 / 或 \\"); return; }
+        if (newName === defaultName) return; // 未修改，无需操作
+
+        try {
+            await this.renameFolder(cat.path, newName);
+            // 重命名后刷新整棵树与官方 store，保证工作流路径同步、点击不再 404
+            if (this.currentCategory === cat.id) {
+                this.currentCategory = "all";
+            }
+            await this.loadWorkflows();
+            const wfStore = app.extensionManager?.workflow;
+            if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
+        } catch (e) {
+            let msg = e.message || String(e);
+            if (msg.includes("already exists") || msg.includes("409")) msg = "已存在同名分类，请换一个名称";
+            alert("重命名分类失败: " + msg);
         }
     }
 
