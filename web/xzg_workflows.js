@@ -2147,20 +2147,8 @@ class XZGWorkflowsManager {
         }
         // 同步官方 store，保证本扩展面板与官方面板的工作流路径一致
         await this._refreshOfficialStore();
-
-        // 自动为文件夹添加/修正顺序编号前缀（已连续编号的层会被跳过，不覆盖手动排序）
-        this._autoNumbering = true;
-        try {
-            await this.autoNumberCategories();
-        } catch (e) {
-            console.warn("[小珠光] 自动编号失败:", e);
-            if (!this._autoNumberErrorShown) {
-                this._autoNumberErrorShown = true;
-                alert("分类自动编号失败: " + e.message);
-            }
-        } finally {
-            this._autoNumbering = false;
-        }
+        // 说明：已取消「自动重命名编号排序」。分类顺序仅在用户主动拖拽/上下移时通过
+        // renumberLayer 重命名调整，避免每次加载都自动改名磁盘文件夹（更安全、可控）。
     }
 
     flattenTree(tree, parentPath = "") {
@@ -3141,49 +3129,6 @@ class XZGWorkflowsManager {
             // 关键：无论重命名是否完全成功，都重新读取磁盘真实状态并刷新面板与官方 store。
             // 否则一旦 renameFolder 中途抛错，面板路径会与磁盘脱节，点击旧路径即 404。
             await this.loadWorkflows();
-        }
-    }
-
-    /** 自动为所有文件夹添加/修正顺序编号前缀（已连续编号的层会被跳过） */
-    /** 判断整棵树是否存在「未连续编号」的层（含递归子层） */
-    needsAutoNumbering(tree, parentPath = "") {
-        const folders = tree.filter(item => item.type === "folder");
-        for (const f of folders) {
-            if (f.children && f.children.length > 0) {
-                if (this.needsAutoNumbering(f.children, f.path)) return true;
-            }
-        }
-        const layer = this.getCurrentLayerFolders(parentPath);
-        if (layer.length > 0 && !this.isLayerNumbered(layer)) return true;
-        return false;
-    }
-
-    async autoNumberCategories() {
-        if (!this.tree || this.tree.length === 0) {
-            localStorage.setItem("xzg_wf_auto_numbered", "1");
-            return;
-        }
-        try {
-            await this.autoNumberLayer(this.tree, "");
-            localStorage.setItem("xzg_wf_auto_numbered", "1");
-        } catch (e) {
-            console.warn("[小珠光] 自动编号失败:", e);
-        } finally {
-            await this.loadWorkflows();
-        }
-    }
-
-    /** 递归自动编号：最深层级优先，避免父目录改名导致子路径失效 */
-    async autoNumberLayer(tree, parentPath) {
-        const folders = tree.filter(item => item.type === "folder");
-        for (const f of folders) {
-            if (f.children && f.children.length > 0) {
-                await this.autoNumberLayer(f.children, f.path);
-            }
-        }
-        const layer = this.getCurrentLayerFolders(parentPath);
-        if (layer.length > 0 && !this.isLayerNumbered(layer)) {
-            await this.renumberLayer(layer);
         }
     }
 
