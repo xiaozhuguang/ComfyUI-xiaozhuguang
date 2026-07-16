@@ -26,16 +26,16 @@ import { xzgT } from "./xzg_i18n.js";
 .xzg-us-range{flex:1;accent-color:#555;cursor:pointer}
 .xzg-us-val{min-width:24px;text-align:right;font-size:11px;color:#ccc;font-family:monospace}
 .xzg-us-btns{display:flex;gap:8px;margin-top:16px}
-.xzg-us-btn{flex:1;padding:8px;border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-family:inherit}
-.xzg-us-bx{background:#444}
-.xzg-us-bx:hover{background:#555}
-.xzg-us-bok{background:#444;font-weight:700}
-.xzg-us-bok:hover{background:#555}
+.xzg-us-btn{flex:1;padding:8px;border:1px solid #555;border-radius:4px;background:transparent;color:#ddd;font-size:12px;cursor:pointer;font-family:inherit}
+.xzg-us-bx{background:transparent;color:#ddd}
+.xzg-us-bx:hover{background:rgba(255,255,255,0.1)}
+.xzg-us-bok{background:transparent;color:#ddd;font-weight:700}
+.xzg-us-bok:hover{background:rgba(255,255,255,0.1)}
 .xzg-us-radio-wrap{flex:1;display:flex;gap:4px;align-items:center}
 .xzg-us-radio-label{flex:1;display:flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;color:#fff;font-size:12px;padding:6px;border-radius:4px;background:#3a3a3a;border:none;transition:background .15s}
 .xzg-us-radio-label:hover{background:#444}
 .xzg-us-radio-label input[type="radio"]{display:none}
-.xzg-us-radio-label.xzg-us-radio-checked{background:#555;font-weight:700}
+.xzg-us-radio-label.xzg-us-radio-checked{background:#e8c547;color:#222;font-weight:700}
 .xzg-us-snap-grid{display:flex;flex-wrap:wrap;gap:4px;flex:1}
 .xzg-us-snap-inp{width:40px;padding:4px 2px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:11px;outline:none;text-align:center;-moz-appearance:textfield}
 .xzg-us-snap-inp::-webkit-outer-spin-button,.xzg-us-snap-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
@@ -345,7 +345,7 @@ function showSettings(node) {
     const snapLbl = document.createElement("label");
     snapLbl.className = "xzg-us-rlbl";
     snapLbl.textContent = xzgT("多值定格","Snap Values");
-    snapLbl.style.marginTop = "4px";
+    snapLbl.style.marginTop = "0";
     const snapWrap = document.createElement("div");
     snapWrap.style.cssText = "flex:1;display:flex;flex-direction:column;gap:8px;";
     const snapHeader = document.createElement("div");

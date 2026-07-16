@@ -93,6 +93,9 @@ window.XZGThemePanel = {
             <div class="xzg-theme-header">
                 <span class="xzg-theme-title">${xzgT('小珠光','Xiaozhuguang')}</span>
                 <div class="xzg-theme-header-btns">
+                    <button type="button" class="xzg-theme-config-btn" id="xzg-theme-export-btn">${xzgT('导出','Export')}</button>
+                    <button type="button" class="xzg-theme-config-btn" id="xzg-theme-import-btn">${xzgT('导入','Import')}</button>
+                    <input type="file" id="xzg-theme-import-file" accept=".json,application/json" style="display:none;" />
                     <button type="button" class="xzg-theme-shortcut-btn" id="xzg-theme-shortcut-btn"></button>
                     <button type="button" class="xzg-theme-close">×</button>
                 </div>
@@ -300,11 +303,6 @@ window.XZGThemePanel = {
                         <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">${xzgT('隐藏全部','Hide All')}</button>
                         <button type="button" id="xzg-menu-unselectall-btn" class="xzg-menu-tool-btn">${xzgT('显示全部','Show All')}</button>
                     </div>
-                    <div class="xzg-menu-hide-toolbar">
-                        <button type="button" id="xzg-menu-export-btn" class="xzg-menu-tool-btn">${xzgT('导出配置','Export Config')}</button>
-                        <button type="button" id="xzg-menu-import-btn" class="xzg-menu-tool-btn">${xzgT('导入配置','Import Config')}</button>
-                        <input type="file" id="xzg-menu-import-file" accept=".json" style="display:none;" />
-                    </div>
                     <div class="xzg-menu-hide-list" id="xzg-menu-hide-list">
                         <div class="xzg-menu-empty-tip">${xzgT('点击「刷新列表」加载菜单项','Click "Refresh List" to load menu items')}<br><span style="font-size:11px;color:#888;">${xzgT('提示：先在画布上右键一次再刷新','Tip: right-click on canvas once before refreshing')}</span></div>
                     </div>
@@ -329,11 +327,8 @@ window.XZGThemePanel = {
                         </div>
                     </div>
                     <div class="xzg-menu-hide-toolbar" style="margin-bottom:6px;">
-                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-export-btn">${xzgT('导出配置','Export Config')}</button>
-                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-import-btn">${xzgT('导入配置','Import Config')}</button>
                         <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-clear-btn">${xzgT('清空全部','Clear All')}</button>
                     </div>
-                    <input type="file" id="xzg-quick-import-file" accept=".json" style="display:none;" />
                     <div class="xzg-menu-hide-list" id="xzg-quick-nodes-list">
                         <div class="xzg-menu-empty-tip">${xzgT('暂无快速节点','No quick nodes yet')}<br><span style="font-size:11px;">${xzgT('右键节点可添加到快速节点','Right-click a node to add to quick nodes')}</span></div>
                     </div>
@@ -390,6 +385,45 @@ window.XZGThemePanel = {
         panel.querySelector(".xzg-theme-close").addEventListener("click", () => {
             self.hide();
         });
+
+        // 统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题等所有模块）
+        const configExportBtn = panel.querySelector("#xzg-theme-export-btn");
+        const configImportBtn = panel.querySelector("#xzg-theme-import-btn");
+        const configImportFile = panel.querySelector("#xzg-theme-import-file");
+
+        if (configExportBtn) {
+            configExportBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                self.exportAllConfig();
+            });
+        }
+        if (configImportBtn && configImportFile) {
+            configImportBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                configImportFile.click();
+            });
+            configImportFile.addEventListener("change", (e) => {
+                e.stopPropagation();
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const obj = JSON.parse(ev.target.result);
+                        self.importAllConfig(obj).then(() => {
+                            alert(xzgT('导入成功，正在刷新以应用全部配置…', 'Import succeeded. Refreshing to apply all settings…'));
+                            setTimeout(() => location.reload(), 300);
+                        }).catch((err) => {
+                            alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
+                        });
+                    } catch (err) {
+                        alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
+                    }
+                };
+                reader.readAsText(file);
+                configImportFile.value = '';
+            });
+        }
 
         const shortcutBtn = panel.querySelector("#xzg-theme-shortcut-btn");
         if (shortcutBtn) {
@@ -761,9 +795,6 @@ window.XZGThemePanel = {
         const menuSelectAllBtn = panel.querySelector("#xzg-menu-selectall-btn");
         const menuUnselectAllBtn = panel.querySelector("#xzg-menu-unselectall-btn");
         const menuResetBtn = panel.querySelector("#xzg-menu-reset-btn");
-        const menuExportBtn = panel.querySelector("#xzg-menu-export-btn");
-        const menuImportBtn = panel.querySelector("#xzg-menu-import-btn");
-        const menuImportFile = panel.querySelector("#xzg-menu-import-file");
         const menuSearchInput = panel.querySelector("#xzg-menu-search-input");
         const menuSearchClear = panel.querySelector("#xzg-menu-search-clear");
 
@@ -946,71 +977,6 @@ window.XZGThemePanel = {
             });
         }
 
-        if (menuExportBtn) {
-            menuExportBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!window.XZGMenuHide) return;
-                const mh = window.XZGMenuHide;
-                const exportData = {
-                    version: 1,
-                    type: 'xzg-menu-hide-config',
-                    config: JSON.parse(JSON.stringify(mh.config)),
-                    exportedAt: new Date().toISOString()
-                };
-                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                const dateStr = new Date().toISOString().slice(0, 10);
-                a.download = `xzg-menu-hide-config-${dateStr}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            });
-        }
-
-        if (menuImportBtn && menuImportFile) {
-            menuImportBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                menuImportFile.click();
-            });
-            menuImportFile.addEventListener('change', (e) => {
-                e.stopPropagation();
-                if (!window.XZGMenuHide) return;
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        const data = JSON.parse(ev.target.result);
-                        const config = data.config || data;
-                        if (!config.canvas && !config.node) {
-                            alert(xzgT('配置文件格式不正确','Invalid config file format'));
-                            return;
-                        }
-                        if (!confirm(xzgT('导入配置将覆盖当前的菜单隐藏设置，确定继续吗？','Import will overwrite current menu-hide settings. Continue?'))) {
-                            return;
-                        }
-                        const mh = window.XZGMenuHide;
-                        mh.config = {
-                            canvas: config.canvas || {},
-                            node: config.node || {}
-                        };
-                        mh.saveConfig();
-                        mh._applyHideToOpenMenus();
-                        renderMenuList();
-                        alert(xzgT('导入成功','Import succeeded'));
-                    } catch (err) {
-                        alert(xzgT('导入失败：文件格式不正确','Import failed: invalid file format'));
-                        console.warn('[小珠光] 菜单配置导入失败:', err);
-                    }
-                };
-                reader.readAsText(file);
-                menuImportFile.value = '';
-            });
-        }
-
         if (menuSearchInput) {
             menuSearchInput.addEventListener('input', (e) => {
                 e.stopPropagation();
@@ -1156,87 +1122,6 @@ window.XZGThemePanel = {
         }
 
         const quickHideDefaultBtn = panel.querySelector('#xzg-quick-hide-default-btn');
-
-        const quickExportBtn = panel.querySelector('#xzg-quick-export-btn');
-        const quickImportBtn = panel.querySelector('#xzg-quick-import-btn');
-        const quickImportFile = panel.querySelector('#xzg-quick-import-file');
-
-        if (quickExportBtn) {
-            quickExportBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!window.XZGQuickNodes) return;
-                const qn = window.XZGQuickNodes;
-                const exportData = {
-                    version: 1,
-                    type: 'xzg-quick-nodes-config',
-                    quickNodes: JSON.parse(JSON.stringify(qn.getQuickNodeList())),
-                    config: JSON.parse(JSON.stringify(qn.config)),
-                    exportedAt: new Date().toISOString()
-                };
-                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                const dateStr = new Date().toISOString().slice(0, 10);
-                a.download = `xzg-quick-nodes-config-${dateStr}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            });
-        }
-
-        if (quickImportBtn && quickImportFile) {
-            quickImportBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                quickImportFile.click();
-            });
-            quickImportFile.addEventListener('change', (e) => {
-                e.stopPropagation();
-                if (!window.XZGQuickNodes) return;
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        const data = JSON.parse(ev.target.result);
-                        const quickNodes = data.quickNodes || data;
-                        if (!Array.isArray(quickNodes)) {
-                            alert(xzgT('配置文件格式不正确','Invalid config file format'));
-                            return;
-                        }
-                        if (!confirm(xzgT('导入配置将覆盖当前的快速节点设置，确定继续吗？','Import will overwrite current quick-node settings. Continue?'))) {
-                            return;
-                        }
-                        const qn = window.XZGQuickNodes;
-                        qn.quickNodes = quickNodes.slice(0, 20);
-                        qn.saveQuickNodes();
-                        if (data.config && typeof data.config === 'object') {
-                            qn.config = Object.assign({}, qn.config, data.config);
-                            qn.saveConfig();
-                        }
-                        renderQuickNodesList();
-                        if (quickHideDefaultBtn) {
-                            const checked = qn.isHideDefaultMenu();
-                            quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
-                            const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
-                            if (label) label.textContent = checked ? xzgT("开","On") : xzgT("关","Off");
-                        }
-                        if (quickTextColorInput && quickTextColorValue) {
-                            const color = qn.getTextColor();
-                            quickTextColorInput.value = color;
-                            quickTextColorValue.textContent = color.toUpperCase();
-                        }
-                        alert(xzgT('导入成功','Import succeeded'));
-                    } catch (err) {
-                        alert(xzgT('导入失败：文件格式不正确','Import failed: invalid file format'));
-                        console.warn('[小珠光] 快速节点配置导入失败:', err);
-                    }
-                };
-                reader.readAsText(file);
-                quickImportFile.value = '';
-            });
-        }
 
         if (quickHideDefaultBtn) {
             if (window.XZGQuickNodes) {
@@ -2106,6 +1991,78 @@ window.XZGThemePanel = {
 
     savePresets(presets) {
         localStorage.setItem("xzg_theme_presets", JSON.stringify(presets));
+    },
+
+    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题等所有模块） ======
+    async exportAllConfig() {
+        const prefixes = ["xzg_", "xzg-", "xiaozhuguang.", "xz_"];
+        const extraKeys = ["comfyui_xiaozhuguang"];
+        const ls = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k) continue;
+            if (prefixes.some(p => k.startsWith(p)) || extraKeys.includes(k)) {
+                try { ls[k] = localStorage.getItem(k); } catch (e) {}
+            }
+        }
+        // 收藏截图存于 IndexedDB，单独收集
+        let favoritesPreviews = null;
+        try {
+            const fav = window.xiaozhuguangFavorites;
+            if (fav && typeof fav._getAllPreviewImages === "function") {
+                favoritesPreviews = await fav._getAllPreviewImages();
+            }
+        } catch (e) {}
+
+        const cfg = {
+            format: "xiaozhuguang-config",
+            version: 2,
+            exportedAt: new Date().toISOString(),
+            localStorage: ls,
+            favoritesPreviews: favoritesPreviews
+        };
+        const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+        a.href = url;
+        a.download = `xiaozhuguang-config-${stamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+
+    async importAllConfig(obj) {
+        if (!obj || typeof obj !== "object") throw new Error("not an object");
+        if (obj.format && obj.format !== "xiaozhuguang-config") {
+            throw new Error("unknown format: " + obj.format);
+        }
+        if (obj.localStorage && typeof obj.localStorage === "object") {
+            for (const k in obj.localStorage) {
+                try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
+            }
+        }
+        if (obj.favoritesPreviews && window.xiaozhuguangFavorites &&
+            typeof window.xiaozhuguangFavorites._saveAllPreviewImages === "function") {
+            try { await window.xiaozhuguangFavorites._saveAllPreviewImages(obj.favoritesPreviews); } catch (e) {}
+        }
+        // 兼容旧版（仅使用次数）配置
+        if (obj.workflowUsage && typeof obj.workflowUsage === "object") {
+            try {
+                const raw = localStorage.getItem("xzg_workflows_meta");
+                const meta = raw ? JSON.parse(raw) : { workflows: {} };
+                if (!meta.workflows) meta.workflows = {};
+                for (const path in obj.workflowUsage) {
+                    const cnt = parseInt(obj.workflowUsage[path], 10);
+                    if (!meta.workflows[path]) meta.workflows[path] = { useCount: 0, lastUsed: 0, categoryId: null, createdAt: Date.now() };
+                    meta.workflows[path].useCount = isNaN(cnt) ? 0 : cnt;
+                }
+                localStorage.setItem("xzg_workflows_meta", JSON.stringify(meta));
+            } catch (e) {}
+        }
     },
 
     renderPresets() {

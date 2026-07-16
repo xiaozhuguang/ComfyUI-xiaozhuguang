@@ -1,6 +1,6 @@
 """
-小珠光万能滑条
-支持浮点 / 整数双模式切换，超大范围原生滑条
+Xiaozhuguang Universal Slider
+Supports float/int dual mode switching, ultra-wide range native slider
 """
 
 class AnyType(str):
@@ -16,7 +16,7 @@ class XiaozhuguangUniversalSlider:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "值": ("FLOAT", {
+                "value": ("FLOAT", {
                     "default": 0.50,
                     "min": -999999,
                     "max": 999999,
@@ -30,30 +30,29 @@ class XiaozhuguangUniversalSlider:
         }
 
     RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("*",)
+    RETURN_NAMES = ("output",)
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def execute(self, 值, output_type="float"):
-        processed_value = round(float(值), 10)
+    def execute(self, value, output_type="float"):
+        processed_value = round(float(value), 10)
         if output_type == "int":
             return (int(round(processed_value)),)
         else:
             return (processed_value,)
 
     @classmethod
-    def IS_CHANGED(cls, 值, output_type="float"):
-        processed_value = round(float(值), 10)
+    def IS_CHANGED(cls, value, output_type="float"):
+        processed_value = round(float(value), 10)
         if output_type == "int":
             return int(round(processed_value))
         return processed_value
 
 
-# ── 节点注册映射 ─────────────────────────────────
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangUniversalSlider": "小珠光万能滑条",
+    "XiaozhuguangUniversalSlider": "Xiaozhuguang Universal Slider",
 }

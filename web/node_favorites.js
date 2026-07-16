@@ -6,6 +6,14 @@ window.pinyinPro = { pinyin: pinyinPro };
 
 const STORAGE_KEY = "comfyui_xiaozhuguang";
 const SETTING_TOGGLE_SHORTCUT = "xiaozhuguang.ToggleShortcut";
+// 使用频率配色默认值（按阈值升序）：超过 N 次时，节点名称显示对应颜色
+const DEFAULT_USE_COLORS = [
+    { threshold: 10,  color: "#60ce7f" },
+    { threshold: 20,  color: "#3b6cdc" },
+    { threshold: 30,  color: "#9c00ff" },
+    { threshold: 50,  color: "#fffc00" },
+    { threshold: 100, color: "#cda56d" },
+];
 
 let nodeFavoritesInstance = null;
 
@@ -35,7 +43,7 @@ class Xiaozhuguang {
             if (data) {
                 const parsed = JSON.parse(data);
                 if (!parsed.categories) {
-                    parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#4CAF50" }];
+                    parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#FFD700" }];
                 }
                 parsed.categories.forEach((c, i) => {
                     if (c.order === undefined) c.order = i;
@@ -59,17 +67,31 @@ class Xiaozhuguang {
                     if (w.lastUsed === undefined) w.lastUsed = 0;
                     if (w.addedAt === undefined) w.addedAt = Date.now() + i;
                 });
+                if (!parsed.useColors || !Array.isArray(parsed.useColors) || parsed.useColors.length === 0) {
+                    parsed.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
+                }
+                if (typeof parsed.useColorsEnabled !== "boolean") parsed.useColorsEnabled = true;
+                if (!parsed.activeBarColor) parsed.activeBarColor = "#FFD700";
                 return parsed;
             }
         } catch (e) {
             console.error("加载收藏失败:", e);
         }
         return {
-            categories: [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#F44336" }],
+            categories: [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#FFD700" }],
             nodes: [],
             workflows: [],
-            sortMode: "default"
+            sortMode: "default",
+            useColors: DEFAULT_USE_COLORS.map(x => ({ ...x })),
+            useColorsEnabled: true,
+            activeBarColor: "#FFD700"
         };
+    }
+
+    /** 应用选中分类左侧色条颜色（通过 CSS 变量 --nf-active-bar） */
+    applyActiveBarColor(color) {
+        if (!color) color = "#FFD700";
+        document.documentElement.style.setProperty("--nf-active-bar", color);
     }
 
     saveFavorites() {
@@ -79,6 +101,163 @@ class Xiaozhuguang {
             console.error("保存收藏失败:", e);
         }
     }
+
+    /** 根据使用次数返回着色等级与颜色（阈值/颜色均可在设置面板自定义） */
+    getUseLevel(count) {
+        const c = count || 0;
+        const cfg = (this.favorites && this.favorites.useColors) || DEFAULT_USE_COLORS;
+        let best = { level: 0, color: "", threshold: -1 };
+        for (let i = 0; i < cfg.length; i++) {
+            const t = cfg[i].threshold;
+            if (c > t && t > best.threshold) {
+                best = { level: i + 1, color: cfg[i].color, threshold: t };
+            }
+        }
+        delete best.threshold;
+        return best;
+    }
+
+    /** 频率配色设置对话框（与工作流一致：开关 + 阈值/颜色自定义 + 重置） */
+    showSettingsDialog() {
+        const dialog = document.createElement("div");
+        dialog.className = "nf-dialog-overlay nf-use-settings-overlay";
+        dialog.dataset.xzgRole = "settings";
+        const cfg = this.favorites.useColors || DEFAULT_USE_COLORS;
+        const rows = cfg.map((item, i) => `
+            <div class="nf-use-row">
+                <span class="nf-use-rank">${i + 1}</span>
+                <input type="color" class="nf-use-color" data-idx="${i}" value="${item.color}" />
+                <span class="nf-use-label">${xzgT('超过', 'over')}</span>
+                <input type="number" class="nf-use-threshold" data-idx="${i}" value="${item.threshold}" min="0" step="1" />
+                <span class="nf-use-label">${xzgT('次', 'times')}</span>
+            </div>
+        `).join("");
+
+        dialog.innerHTML = `
+            <div class="nf-dialog nf-use-settings-dialog">
+                <div class="nf-dialog-title">${xzgT('设置', 'Settings')}</div>
+                <div class="nf-dialog-body">
+                    <div class="nf-use-settings-section">
+                        <div class="nf-active-bar-row">
+                            <span>${xzgT('选中色条颜色', 'Selected bar color')}</span>
+                            <input type="color" id="nf-active-bar-input" value="" />
+                        </div>
+                    </div>
+                    <div class="nf-use-settings-section">
+                        <div class="nf-use-switch ${this.favorites.useColorsEnabled !== false ? 'active' : ''}" id="nf-use-toggle">
+                            <span>${xzgT('根据使用频率变色', 'Color by usage frequency')}</span>
+                            <span class="nf-use-toggle"><i></i></span>
+                        </div>
+                        ${rows}
+                    </div>
+                </div>
+                <div class="nf-use-settings-footer">
+                    <div class="nf-use-settings-actions">
+                        <button class="nf-use-dialog-btn nf-use-dialog-btn-cancel" id="nf-settings-reset">${xzgT('恢复默认', 'Reset')}</button>
+                        <button class="nf-use-dialog-btn nf-use-dialog-btn-confirm" id="nf-settings-close">${xzgT('完成', 'Done')}</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(dialog);
+
+        const useToggle = dialog.querySelector("#nf-use-toggle");
+        if (useToggle) {
+            useToggle.addEventListener("click", () => {
+                const on = this.favorites.useColorsEnabled === false;
+                this.favorites.useColorsEnabled = on;
+                useToggle.classList.toggle("active", on);
+                this.saveFavorites();
+                this.renderFavorites();
+            });
+        }
+
+        // 允许拖动设置面板（按住标题栏）
+        const dragPanel = dialog.querySelector(".nf-dialog");
+        const dragHandle = dialog.querySelector(".nf-dialog-title");
+        if (dragPanel && dragHandle) {
+            let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
+            dragHandle.style.cursor = "move";
+            dragHandle.addEventListener("mousedown", (e) => {
+                dragging = true;
+                const r = dragPanel.getBoundingClientRect();
+                dragPanel.style.position = "fixed";
+                dragPanel.style.margin = "0";
+                dragPanel.style.left = r.left + "px";
+                dragPanel.style.top = r.top + "px";
+                startX = e.clientX;
+                startY = e.clientY;
+                origX = r.left;
+                origY = r.top;
+                e.preventDefault();
+            });
+            window.addEventListener("mousemove", (e) => {
+                if (!dragging) return;
+                dragPanel.style.left = (origX + e.clientX - startX) + "px";
+                dragPanel.style.top = (origY + e.clientY - startY) + "px";
+            });
+            window.addEventListener("mouseup", () => { dragging = false; });
+        }
+
+        let renderTimer = null;
+        const scheduleCommit = () => {
+            if (renderTimer) clearTimeout(renderTimer);
+            renderTimer = setTimeout(() => {
+                renderTimer = null;
+                this.saveFavorites();
+                this.renderFavorites();
+            }, 120);
+        };
+
+        dialog.querySelectorAll(".nf-use-color").forEach(inp => {
+            inp.addEventListener("input", (e) => {
+                const idx = +e.target.dataset.idx;
+                if (this.favorites.useColors[idx]) {
+                    this.favorites.useColors[idx].color = e.target.value;
+                    scheduleCommit();
+                }
+            });
+        });
+        dialog.querySelectorAll(".nf-use-threshold").forEach(inp => {
+            inp.addEventListener("input", (e) => {
+                const idx = +e.target.dataset.idx;
+                if (this.favorites.useColors[idx]) {
+                    const v = parseInt(e.target.value, 10);
+                    this.favorites.useColors[idx].threshold = isNaN(v) ? 0 : v;
+                    scheduleCommit();
+                }
+            });
+        });
+        const barInput = dialog.querySelector("#nf-active-bar-input");
+        if (barInput) {
+            barInput.value = this.favorites.activeBarColor || "#FFD700";
+            barInput.addEventListener("input", (e) => {
+                this.favorites.activeBarColor = e.target.value;
+                this.applyActiveBarColor(e.target.value);
+                scheduleCommit();
+            });
+        }
+
+        dialog.querySelector("#nf-settings-reset").addEventListener("click", () => {
+            this.favorites.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
+            this.favorites.useColorsEnabled = true;
+            this.favorites.activeBarColor = "#FFD700";
+            this.applyActiveBarColor("#FFD700");
+            this.saveFavorites();
+            dialog.remove();
+            this.showSettingsDialog();
+        });
+
+        const close = () => {
+            if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+            this.saveFavorites();
+            this.renderFavorites();
+            dialog.remove();
+        };
+        dialog.querySelector("#nf-settings-close").addEventListener("click", close);
+        dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) close(); });
+    }
+
 
     init() {
         if (this.initialized) return;
@@ -483,7 +662,7 @@ class Xiaozhuguang {
 
             .nf-title {
                 font-weight: bold;
-                font-size: 16px;
+                font-size: 14px;
             }
 
             .nf-header-btns {
@@ -572,6 +751,7 @@ class Xiaozhuguang {
             .nf-tab-btn {
                 flex: 1;
                 text-align: center;
+                font-size: 14px;
                 padding: 6px 0;
                 font-size: 12px;
                 color: #999;
@@ -687,7 +867,6 @@ class Xiaozhuguang {
 
             #nf-search-input:focus {
                 outline: none;
-                border-color: #4CAF50;
             }
 
             .nf-clear-btn {
@@ -711,7 +890,7 @@ class Xiaozhuguang {
                 background: #555;
                 color: #fff;
             }
-        ` + this.getCategoryCSS() + this.getFavoritesCSS() + this.getDialogCSS();
+        ` + this.getCategoryCSS() + this.getFavoritesCSS() + this.getUseColorsCSS() + this.getDialogCSS();
     }
 
     getCategoryCSS() {
@@ -744,9 +923,7 @@ class Xiaozhuguang {
             }
 
             .nf-add-cat-btn:hover {
-                background: #4CAF50;
-                color: #fff;
-                border-color: #4CAF50;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-category-list {
@@ -771,13 +948,12 @@ class Xiaozhuguang {
             }
 
             .nf-category-item:hover {
-                background: #333;
-                border-color: #555;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-category-item.active {
-                background: rgba(76, 175, 80, 0.2);
-                border-color: #4CAF50;
+                border-left: 2px solid var(--nf-active-bar, #FFD700);
+                padding-left: 6px;
             }
 
             .nf-cat-drag-handle {
@@ -790,7 +966,7 @@ class Xiaozhuguang {
                 transition: color 0.15s;
             }
             .nf-cat-drag-handle:hover {
-                color: #4CAF50;
+                background: rgba(255, 255, 255, 0.1);
             }
             .nf-cat-drag-handle:active {
                 cursor: grabbing;
@@ -809,8 +985,8 @@ class Xiaozhuguang {
                 margin: 0;
             }
             .nf-cat-color {
-                width: 10px;
-                height: 10px;
+                display: none;
+            }
                 border-radius: 50%;
                 flex-shrink: 0;
             }
@@ -908,8 +1084,7 @@ class Xiaozhuguang {
                 transition: all 0.2s;
             }
             .nf-clear-invalid-btn:hover {
-                background: rgba(255,107,107,0.3);
-                border-color: #ff6b6b;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-favorites-list {
@@ -939,9 +1114,7 @@ class Xiaozhuguang {
             }
 
             .nf-fav-item:hover {
-                background: #333;
-                border-color: #4CAF50;
-                transform: translateX(-2px);
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-fav-item.nf-reorder-dragging {
@@ -961,13 +1134,12 @@ class Xiaozhuguang {
             }
 
             .nf-fav-drag-handle:hover {
-                color: #4CAF50;
-                background: #333;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-fav-color {
-                width: 4px;
-                height: 32px;
+                display: none;
+            }
                 border-radius: 2px;
                 flex-shrink: 0;
             }
@@ -980,13 +1152,14 @@ class Xiaozhuguang {
             .nf-fav-name {
                 font-weight: 500;
                 font-size: 14px;
+                color: #ddd;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
 
             .nf-fav-type {
-                font-size: 11px;
+                font-size: 12px;
                 color: #888;
                 white-space: nowrap;
                 overflow: hidden;
@@ -1005,7 +1178,7 @@ class Xiaozhuguang {
             }
             .nf-fav-item.nf-invalid:hover {
                 transform: none;
-                border-color: rgba(255,107,107,0.4);
+                background: rgba(255, 107, 107, 0.12);
             }
 
             .nf-del-invalid-btn {
@@ -1026,8 +1199,7 @@ class Xiaozhuguang {
                 transition: all 0.2s;
             }
             .nf-del-invalid-btn:hover {
-                background: rgba(255,107,107,0.15);
-                border-color: #ff6b6b;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-empty-tip {
@@ -1069,8 +1241,7 @@ class Xiaozhuguang {
             }
 
             .nf-shortcut-bar:hover {
-                background: rgba(76, 175, 80, 0.2);
-                border-color: #4CAF50;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-shortcut-label {
@@ -1091,6 +1262,168 @@ class Xiaozhuguang {
             .nf-shortcut-hint {
                 font-size: 10px;
                 color: #666;
+            }
+        `;
+    }
+
+    getUseColorsCSS() {
+        return `
+            /* 按使用频率变化收藏节点名称颜色 */
+            .nf-fav-item.nf-fav-use-l1 .nf-fav-name,
+            .nf-fav-item.nf-fav-use-l2 .nf-fav-name,
+            .nf-fav-item.nf-fav-use-l3 .nf-fav-name,
+            .nf-fav-item.nf-fav-use-l4 .nf-fav-name,
+            .nf-fav-item.nf-fav-use-l5 .nf-fav-name {
+                color: var(--nf-use-color, #ddd);
+            }
+
+            /* 频率配色设置对话框 */
+            .nf-use-settings-overlay {
+                background: transparent;
+            }
+            .nf-dialog.nf-use-settings-dialog {
+                min-width: 0;
+                max-width: 210px;
+                width: 210px;
+            }
+            .nf-use-settings-dialog .nf-dialog-body {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 16px;
+                padding: 12px;
+            }
+            .nf-use-settings-section { margin: 0; }
+            .nf-active-bar-row {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 8px;
+                font-size: 13px;
+                color: var(--fg, #ddd);
+            }
+            .nf-active-bar-row input[type="color"] {
+                width: 40px;
+                height: 24px;
+                padding: 0;
+                border: 1px solid #555;
+                border-radius: 4px;
+                background: #2a2a2a;
+                cursor: pointer;
+            }
+            .nf-use-switch {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 8px;
+                font-size: 13px;
+                color: var(--fg, #ddd);
+                cursor: pointer;
+                user-select: none;
+                width: auto;
+                flex-wrap: nowrap;
+            }
+            .nf-use-toggle {
+                position: relative;
+                width: 40px;
+                height: 22px;
+                border-radius: 11px;
+                background: #555;
+                transition: background 0.2s;
+                flex-shrink: 0;
+            }
+            .nf-use-toggle i {
+                position: absolute;
+                top: 2px;
+                left: 2px;
+                width: 18px;
+                height: 18px;
+                border-radius: 50%;
+                background: #fff;
+                transition: left 0.2s;
+            }
+            .nf-use-switch.active .nf-use-toggle { background: #4CAF50; }
+            .nf-use-switch.active .nf-use-toggle i { left: 20px; }
+
+            .nf-use-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-top: 12px;
+            }
+            .nf-use-rank {
+                width: 18px;
+                height: 18px;
+                border-radius: 50%;
+                background: #444;
+                color: #ddd;
+                font-size: 11px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex-shrink: 0;
+            }
+            .nf-use-row input[type="color"] {
+                width: 41px;
+                height: 28px;
+                padding: 0;
+                border: 1px solid #555;
+                border-radius: 4px;
+                background: #3a3a3a;
+                cursor: pointer;
+            }
+            .nf-use-threshold {
+                width: 48px;
+                padding: 5px 6px;
+                font-size: 13px;
+                text-align: center;
+                background: var(--comfy-input-bg, #3a3a3a);
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;
+                outline: none;
+            }
+            .nf-use-threshold::-webkit-outer-spin-button,
+            .nf-use-threshold::-webkit-inner-spin-button {
+                -webkit-appearance: none;
+                margin: 0;
+            }
+            .nf-use-threshold { -moz-appearance: textfield; }
+            .nf-use-label {
+                font-size: 13px;
+                color: var(--fg, #ddd);
+                white-space: nowrap;
+            }
+            .nf-use-settings-footer {
+                display: flex;
+                justify-content: center;
+                padding: 10px 16px 14px;
+            }
+            .nf-use-settings-actions {
+                display: flex;
+                gap: 10px;
+            }
+            .nf-use-dialog-btn {
+                padding: 6px 12px;
+                font-size: 13px;
+                font-weight: normal;
+                background: transparent;
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;
+                cursor: pointer;
+                transition: all 0.15s;
+            }
+            .nf-use-dialog-btn-cancel,
+            .nf-use-dialog-btn-confirm {
+                background: transparent;
+                font-weight: normal;
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+            }
+            .nf-use-dialog-btn-cancel:hover,
+            .nf-use-dialog-btn-confirm:hover {
+                background: rgba(255, 255, 255, 0.1);
             }
         `;
     }
@@ -1162,29 +1495,32 @@ class Xiaozhuguang {
 
             .nf-btn {
                 padding: 6px 16px;
-                border: none;
+                border: 1px solid #555;
                 border-radius: 4px;
+                background: transparent;
+                color: #ddd;
                 cursor: pointer;
                 font-size: 13px;
                 transition: all 0.2s;
             }
 
             .nf-btn-cancel {
-                background: #444;
+                background: transparent;
                 color: #ddd;
             }
 
             .nf-btn-cancel:hover {
-                background: #555;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-btn-ok {
-                background: #4CAF50;
-                color: #fff;
+                background: transparent;
+                color: #ddd;
+                font-weight: bold;
             }
 
             .nf-btn-ok:hover {
-                background: #45a049;
+                background: rgba(255, 255, 255, 0.1);
             }
 
             .nf-form-item {
@@ -1296,13 +1632,11 @@ class Xiaozhuguang {
             <div class="nf-panel-resizer" title="${xzgT('拖动调节宽度','Drag to resize width')}"></div>
             <div class="nf-panel-bottom-resizer" title="${xzgT('拖动调节高度','Drag to resize height')}"></div>
             <div class="nf-header" title="${xzgT('拖拽标题栏可移动窗口','Drag the title bar to move window')}">
-                <span class="nf-title">⭐ ${xzgT('小珠光收藏 · 拖动标题栏改变位置','Xiaozhuguang Favorites · drag title bar to reposition')}</span>
+                <span class="nf-title">⭐ ${xzgT('小珠光收藏','Xiaozhuguang Favorites')}</span>
                 <div class="nf-header-btns">
-                    <button class="nf-header-btn" id="nf-export-btn" title="${xzgT('导出收藏','Export favorites')}">${xzgT('导出','Export')}</button>
-                    <button class="nf-header-btn" id="nf-import-btn" title="${xzgT('导入收藏','Import favorites')}">${xzgT('导入','Import')}</button>
+                    <button class="nf-header-btn nf-settings-btn" id="nf-settings-btn" title="${xzgT('设置（使用频率配色）','Settings (usage frequency colors)')}">${xzgT('设置','Settings')}</button>
                     <button class="nf-header-btn nf-shortcut-display" id="nf-shortcut-btn"></button>
                     <button class="nf-toggle-btn" id="nf-toggle-btn">−</button>
-                    <input type="file" id="nf-import-file" accept=".json,application/json" style="display:none" />
                 </div>
             </div>
             <div class="nf-content" id="nf-content" style="display: none;">
@@ -1378,6 +1712,7 @@ class Xiaozhuguang {
         this.bindNotesEvents();
         this.loadNotes();
         this.renderCategories();
+        this.applyActiveBarColor(this.favorites.activeBarColor);
         this.renderFavorites();
         this.loadPanelPosition();
     }
@@ -1432,22 +1767,10 @@ class Xiaozhuguang {
             });
         }
 
-        // 导入/导出收藏与截图
-        const exportBtn = this.panel.querySelector("#nf-export-btn");
-        if (exportBtn) {
-            exportBtn.addEventListener("click", () => this._exportData());
+        const settingsBtn = this.panel.querySelector("#nf-settings-btn");
+        if (settingsBtn) {
+            settingsBtn.addEventListener("click", () => this.showSettingsDialog());
         }
-        const importBtn = this.panel.querySelector("#nf-import-btn");
-        const importFile = this.panel.querySelector("#nf-import-file");
-        if (importBtn && importFile) {
-            importBtn.addEventListener("click", () => importFile.click());
-            importFile.addEventListener("change", (e) => {
-                const file = e.target.files?.[0];
-                if (file) this._importData(file);
-                e.target.value = "";
-            });
-        }
-
 
         const sortDefaultBtn = this.panel.querySelector("#nf-sort-default");
         const sortTimeBtn = this.panel.querySelector("#nf-sort-time");
@@ -2181,6 +2504,32 @@ class Xiaozhuguang {
         this.renderCategories();
         this._previewCanvasCache.delete(nodeType);
         await this._deletePreviewImage(nodeType);
+        // 取消收藏时，一并关闭该类型节点在画布上的辉光/彩虹装饰
+        this._clearNodeGlow(nodeType);
+    }
+
+    /** 关闭画布上指定类型节点的辉光(glow)/彩虹(rainbow)装饰，仅保留标题文字本身 */
+    _clearNodeGlow(nodeType) {
+        try {
+            const graph = app?.graph;
+            if (!graph || !graph._nodes) return;
+            let changed = false;
+            for (const node of graph._nodes) {
+                if (node.type === nodeType && node.properties) {
+                    if (node.properties.glowEnabled) {
+                        node.properties.glowEnabled = false;
+                        changed = true;
+                    }
+                    if (node.properties.rainbowEnabled) {
+                        node.properties.rainbowEnabled = false;
+                        changed = true;
+                    }
+                }
+            }
+            if (changed && app?.canvas) app.canvas.setDirtyCanvas(true, true);
+        } catch (e) {
+            console.warn("[小珠光] 清除辉光失败:", e);
+        }
     }
 
     // ====== 多节点收藏 ======
@@ -2870,7 +3219,6 @@ class Xiaozhuguang {
         const allInvalid = this.getInvalidFavorites().length;
         let html = `
             <div class="nf-category-item ${this.currentCategory === 'all' ? 'active' : ''}" data-cat="all">
-                <span class="nf-cat-color" style="background: #888;"></span>
                 <span class="nf-cat-name">全部</span>
                 ${allInvalid > 0 ? `<span class="nf-cat-invalid-count" title="${allInvalid}个失效节点">${allInvalid}</span>` : ''}
             </div>
@@ -2882,7 +3230,6 @@ class Xiaozhuguang {
             html += `
                 <div class="nf-category-item ${this.currentCategory === cat.id ? 'active' : ''}" data-cat="${cat.id}">
                     <span class="nf-cat-drag-handle" draggable="true" data-cat="${cat.id}" title="拖动调整顺序">⠿</span>
-                    <span class="nf-cat-color" style="background: ${cat.color};"></span>
                     <span class="nf-cat-name" title="${cat.name}">${cat.name}</span>
                     ${invalidInCat > 0 ? `<span class="nf-cat-invalid-count" title="${invalidInCat}个失效节点">${invalidInCat}</span>` : ''}
                 </div>
@@ -3109,11 +3456,7 @@ class Xiaozhuguang {
         const c = this.panel;
         if (!c) return;
         const title = c.querySelector(".nf-title");
-        if (title) title.textContent = "⭐ " + xzgT('小珠光收藏 · 拖动标题栏改变位置','Xiaozhuguang Favorites · drag title bar to reposition');
-        const exp = c.querySelector("#nf-export-btn");
-        if (exp) exp.textContent = xzgT('导出','Export');
-        const imp = c.querySelector("#nf-import-btn");
-        if (imp) imp.textContent = xzgT('导入','Import');
+        if (title) title.textContent = "⭐ " + xzgT('小珠光收藏','Xiaozhuguang Favorites');
         const tabFav = c.querySelector('.nf-tab-btn[data-tab="favorites"]');
         if (tabFav) tabFav.textContent = "⭐ " + xzgT('收藏','Favorites');
         const tabNotes = c.querySelector('.nf-tab-btn[data-tab="notes"]');
@@ -3169,7 +3512,8 @@ class Xiaozhuguang {
             if (!isValid) listInvalidCount++;
 
             const useCount = node.useCount || 0;
-            const itemClass = `nf-fav-item${isValid ? '' : ' nf-invalid'}`;
+            const useInfo = this.getUseLevel(useCount);
+            const itemClass = `nf-fav-item${isValid ? '' : ' nf-invalid'}${this.favorites.useColorsEnabled !== false && useInfo.level > 0 ? ' nf-fav-use-l' + useInfo.level : ''}`;
             const titleText = isValid
                 ? ""
                 : "节点已失效（插件可能已卸载）· 右键可删除";
@@ -3177,15 +3521,14 @@ class Xiaozhuguang {
                 ? node.displayName
                 : `${node.displayName} <span style="color:#ff6b6b;font-size:11px;">[已失效]</span>`;
             const typeText = isValid
-                ? `${node.category}${useCount > 0 ? ` · 使用${useCount}次` : ''}`
+                ? `${useCount > 0 ? `使用${useCount}次` : ''}`
                 : `${node.type}`;
             const dragAttr = isValid ? 'draggable="true"' : 'draggable="false"';
 
             // 预览仅使用截图，不再生成 HTML 回退
 
             html += `
-                <div class="${itemClass}" data-type="${node.type}" data-order="${node.order || 0}" data-kind="node" ${dragAttr} title="${titleText}">
-                    <div class="nf-fav-color" style="background: ${isValid ? catColor : '#555'};"></div>
+                <div class="${itemClass}"${this.favorites.useColorsEnabled !== false && useInfo.level > 0 ? ` style="--nf-use-color:${useInfo.color};"` : ''} data-type="${node.type}" data-order="${node.order || 0}" data-kind="node" ${dragAttr} title="${titleText}">
                     <div class="nf-fav-info">
                         <div class="nf-fav-name">${nameText}</div>
                         <div class="nf-fav-type">${typeText}</div>
@@ -3202,11 +3545,13 @@ class Xiaozhuguang {
                 const cat = this.getCategoryById(wf.categoryId);
                 const catColor = cat ? cat.color : "#888";
                 const useCount = wf.useCount || 0;
+                const useInfo = this.getUseLevel(useCount);
+                const useClass = this.favorites.useColorsEnabled !== false && useInfo.level > 0 ? ` nf-fav-use-l${useInfo.level}` : '';
+                const useStyle = this.favorites.useColorsEnabled !== false && useInfo.level > 0 ? ` style="--nf-use-color:${useInfo.color};"` : '';
                 html += `
-                    <div class="nf-fav-item nf-wf-item" data-wf-id="${wf.id}" data-kind="workflow" draggable="true">
-                        <div class="nf-fav-color" style="background: ${catColor};"></div>
-                        <div class="nf-fav-info">
-                            <div class="nf-fav-name">🔗 ${wf.name}</div>
+                    <div class="nf-fav-item nf-wf-item${useClass}"${useStyle} data-wf-id="${wf.id}" data-kind="workflow" draggable="true">
+                    <div class="nf-fav-info">
+                        <div class="nf-fav-name">🔗 ${wf.name}</div>
                             <div class="nf-fav-type">${wf.nodesData ? wf.nodesData.length + '个节点' : ''}${useCount > 0 ? ` · 使用${useCount}次` : ''}</div>
                         </div>
                     </div>
@@ -3483,68 +3828,6 @@ class Xiaozhuguang {
             console.warn("[小珠光] 批量保存预览截图失败:", e);
         }
     }
-
-    async _exportData() {
-        try {
-            const previews = await this._getAllPreviewImages();
-            const notes = this.notesTextarea ? this.notesTextarea.value : "";
-            const payload = {
-                version: 1,
-                exportedAt: new Date().toISOString(),
-                favorites: this.favorites,
-                notes: notes,
-                previews: previews
-            };
-            const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `xiaozhuguang-backup-${Date.now()}.json`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-        } catch (e) {
-            console.error("[小珠光] 导出收藏失败:", e);
-            alert(xzgT('导出失败: ','Export failed: ') + e.message);
-        }
-    }
-
-    async _importData(file) {
-        try {
-            const text = await file.text();
-            const data = JSON.parse(text);
-            if (!data || !data.favorites || typeof data.favorites !== "object") {
-                alert(xzgT('文件格式不正确，缺少 favorites 数据','Invalid file format, missing favorites data'));
-                return;
-            }
-            if (!confirm(xzgT('导入将覆盖当前收藏、备注和截图，确定继续？','Import will overwrite current favorites, notes and screenshots. Continue?'))){return;}
-
-            this.favorites = data.favorites;
-            this.saveFavorites();
-
-            if (data.notes !== undefined && this.notesTextarea) {
-                this.notesTextarea.value = data.notes;
-                this.updateNotesCount();
-                this.saveNotes();
-            }
-
-            if (data.previews && typeof data.previews === "object") {
-                await this._saveAllPreviewImages(data.previews);
-            }
-
-            this._previewCanvasCache.clear();
-
-
-            this.renderCategories();
-            this.renderFavorites();
-            alert(xzgT('导入成功','Import succeeded'));
-        } catch (e) {
-            console.error("[小珠光] 导入收藏失败:", e);
-            alert(xzgT('导入失败: ','Import failed: ') + e.message);
-        }
-    }
-
 
     _captureNodeImage(node) {
         try {
@@ -6828,7 +7111,6 @@ app.registerExtension({
         try {
             const nodeData = this.favorites.nodes.find(n => n.type === nodeType);
             const nodeName = nodeData?.displayName || nodeType;
-            const cat = nodeData?.category || "";
 
             // 获取节点注册信息
             const nodeDef = LiteGraph.registered_node_types[nodeType];
@@ -6889,7 +7171,7 @@ app.registerExtension({
             // 底栏
             const footer = document.createElement("div");
             footer.style.cssText = "padding:4px 10px;border-top:1px solid #333;display:flex;justify-content:space-between;color:#777;font-size:10px;";
-            footer.innerHTML = `<span>${cat}</span>${(nodeData?.useCount || 0) > 0 ? `<span>使用 ${nodeData.useCount} 次</span>` : ""}`;
+            footer.innerHTML = (nodeData?.useCount || 0) > 0 ? `<span>使用 ${nodeData.useCount} 次</span>` : "";
             previewEl.appendChild(footer);
 
             document.body.appendChild(previewEl);

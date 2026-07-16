@@ -40,11 +40,11 @@ import { xzgT } from "./xzg_i18n.js";
                         <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('数值类型','Value Type')}</label>
                         <div style="flex:1;display:flex;gap:4px;">
                             <button id="xzg-slider-type-int" type="button"
-                                style="flex:1;padding:6px;background:${isInt ? '#555' : '#3a3a3a'};border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-weight:${isInt ? 'bold' : 'normal'};">
+                                style="flex:1;padding:6px;background:${isInt ? '#e8c547' : '#3a3a3a'};border:none;border-radius:4px;color:${isInt ? '#222' : '#fff'};font-size:12px;cursor:pointer;font-weight:${isInt ? 'bold' : 'normal'};">
                                 ${xzgT('整数','Integer')}
                             </button>
                             <button id="xzg-slider-type-float" type="button"
-                                style="flex:1;padding:6px;background:${!isInt ? '#555' : '#3a3a3a'};border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-weight:${!isInt ? 'bold' : 'normal'};">
+                                style="flex:1;padding:6px;background:${!isInt ? '#e8c547' : '#3a3a3a'};border:none;border-radius:4px;color:${!isInt ? '#222' : '#fff'};font-size:12px;cursor:pointer;font-weight:${!isInt ? 'bold' : 'normal'};">
                                 ${xzgT('浮点','Float')}
                             </button>
                         </div>
@@ -68,7 +68,7 @@ import { xzgT } from "./xzg_i18n.js";
                         <div style="display:flex;align-items:center;gap:10px;">
                             <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('多值定格','Snap Values')}</label>
                             <input type="checkbox" id="xzg-slider-use-snaps" ${cfg.useSnaps ? 'checked' : ''}
-                                style="accent-color:#555;cursor:pointer;">
+                                style="accent-color:#555;cursor:pointer;vertical-align:middle;margin:0;">
                             <span style="font-size:11px;color:#666;">${xzgT('最多5个','Max 5')}</span>
                         </div>
                         <div id="xzg-slider-snaps-list" style="display:${cfg.useSnaps ? 'flex' : 'none'};flex-wrap:wrap;gap:4px;margin-top:6px;">
@@ -167,12 +167,12 @@ import { xzgT } from "./xzg_i18n.js";
             function updateTypeUI(type) {
                 currentType = type;
                 if (type === 'INT') {
-                    intBtn.style.background = '#555'; intBtn.style.fontWeight = 'bold';
-                    floatBtn.style.background = '#3a3a3a'; floatBtn.style.fontWeight = 'normal';
+                    intBtn.style.background = '#e8c547'; intBtn.style.fontWeight = 'bold'; intBtn.style.color = '#222';
+                    floatBtn.style.background = '#3a3a3a'; floatBtn.style.fontWeight = 'normal'; floatBtn.style.color = '#fff';
                     minInput.step = '1'; maxInput.step = '1'; stepInput.step = '1';
                 } else {
-                    floatBtn.style.background = '#555'; floatBtn.style.fontWeight = 'bold';
-                    intBtn.style.background = '#3a3a3a'; intBtn.style.fontWeight = 'normal';
+                    floatBtn.style.background = '#e8c547'; floatBtn.style.fontWeight = 'bold'; floatBtn.style.color = '#222';
+                    intBtn.style.background = '#3a3a3a'; intBtn.style.fontWeight = 'normal'; intBtn.style.color = '#fff';
                     minInput.step = '0.01'; maxInput.step = '0.01'; stepInput.step = '0.01';
                 }
             }

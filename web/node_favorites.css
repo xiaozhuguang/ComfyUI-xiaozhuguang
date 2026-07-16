@@ -143,10 +143,7 @@
 }
 
 .nf-cat-color {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
+    display: none;
 }
 
 .nf-cat-name {
@@ -235,10 +232,7 @@
 }
 
 .nf-fav-color {
-    width: 4px;
-    height: 32px;
-    border-radius: 2px;
-    flex-shrink: 0;
+    display: none;
 }
 
 .nf-fav-info {
@@ -247,15 +241,16 @@
 }
 
 .nf-fav-name {
-    font-weight: bold;
-    font-size: 13px;
+    font-weight: 500;
+    font-size: 14px;
+    color: #ddd;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .nf-fav-type {
-    font-size: 11px;
+    font-size: 12px;
     color: #888;
     white-space: nowrap;
     overflow: hidden;
@@ -377,29 +372,32 @@
 
 .nf-btn {
     padding: 6px 16px;
-    border: none;
+    border: 1px solid #555;
     border-radius: 4px;
+    background: transparent;
+    color: #ddd;
     cursor: pointer;
     font-size: 13px;
     transition: all 0.2s;
 }
 
 .nf-btn-cancel {
-    background: #444;
+    background: transparent;
     color: #ddd;
 }
 
 .nf-btn-cancel:hover {
-    background: #555;
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .nf-btn-ok {
-    background: #4CAF50;
-    color: #fff;
+    background: transparent;
+    color: #ddd;
+    font-weight: bold;
 }
 
 .nf-btn-ok:hover {
-    background: #45a049;
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .litemenu-entry[data-content="收藏节点"],

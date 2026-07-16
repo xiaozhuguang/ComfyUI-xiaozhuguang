@@ -7,6 +7,14 @@ const STORAGE_KEY = "xzg_workflows_meta";
 const PLUGIN_NAME = xzgT('工作流','Workflow');
 const SETTING_TOGGLE_SHORTCUT = "xzg_wf_toggle_shortcut";
 const ACCENT_KEY = "xzg_wf_accent";
+// 使用频率配色默认值（按阈值升序）：超过 N 次时，工作流名称与图标显示对应颜色
+const DEFAULT_USE_COLORS = [
+    { threshold: 10,  color: "#60ce7f" },
+    { threshold: 20,  color: "#3b6cdc" },
+    { threshold: 30,  color: "#9c00ff" },
+    { threshold: 50,  color: "#fffc00" },
+    { threshold: 100, color: "#cda56d" }
+];
 
 let workflowsInstance = null;
 
@@ -44,6 +52,10 @@ class XZGWorkflowsManager {
         if (!this.meta.workflows) this.meta.workflows = {};
         if (!this.meta.categories) this.meta.categories = [];
         if (!this.meta.sortMode) this.meta.sortMode = "default";
+        if (!Array.isArray(this.meta.useColors) || this.meta.useColors.length === 0) {
+            this.meta.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
+        }
+        if (typeof this.meta.useColorsEnabled !== "boolean") this.meta.useColorsEnabled = true;
         this.sortMode = this.meta.sortMode || "default";
     }
 
@@ -201,7 +213,7 @@ class XZGWorkflowsManager {
     }
 
     updateShortcutDisplay() {
-        const display = this.container?.querySelector("#xzg-wf-shortcut-btn");
+        const display = document.querySelector("#xzg-wf-shortcut-btn");
         if (!display) return;
 
         const shortcut = this.getShortcut();
@@ -220,7 +232,7 @@ class XZGWorkflowsManager {
         const title = c.querySelector(".xzg-wf-title");
         if (title) title.textContent = xzgT('工作流','Workflow');
         const sc = c.querySelector("#xzg-wf-shortcut-btn");
-        if (sc) sc.textContent = xzgT('快捷键','Shortcut') + ": `";
+        if (sc) sc.textContent = xzgT('快捷键','Shortcut') + ": " + (this.getShortcut().key || "`");
         const catHeader = c.querySelector(".xzg-wf-cat-header span");
         if (catHeader) catHeader.textContent = xzgT('分类','Categories');
         const listTitle = c.querySelector(".xzg-wf-list-title span");
@@ -346,7 +358,7 @@ class XZGWorkflowsManager {
                     </div>
                     <div class="xzg-wf-dialog-footer">
                         <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">${xzgT('取消','Cancel')}</button>
-                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm">确认</button>
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm">${xzgT('确认','Confirm')}</button>
                     </div>
                 </div>
             `);
@@ -437,6 +449,7 @@ class XZGWorkflowsManager {
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
             <div class="xzg-wf-ctx-item" data-action="rename">✏️ ${xzgT('重命名','Rename')}</div>
+            <div class="xzg-wf-ctx-item danger" data-action="delete-usage">🧹 ${xzgT('删除使用频率','Delete Usage')}</div>
             <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ ${xzgT('删除','Delete')}</div>
             <div class="xzg-wf-ctx-item xzg-wf-ctx-submenu" data-action="move">📁 ${xzgT('移动到分类','Move to Category')}</div>
         `;
@@ -484,6 +497,8 @@ class XZGWorkflowsManager {
                 
                 if (action === "rename") {
                     this.renameWorkflow(wf);
+                } else if (action === "delete-usage") {
+                    this.deleteWorkflowUsage(wf);
                 } else if (action === "delete") {
                     this.deleteWorkflow(wf);
                 }
@@ -648,6 +663,7 @@ class XZGWorkflowsManager {
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
             <div class="xzg-wf-ctx-item" data-action="new-folder">📁 ${xzgT('新建分类','New Category')}</div>
+            <div class="xzg-wf-ctx-item danger" data-action="clear-usage">🧹 ${xzgT('清空使用频率','Clear Usage Frequency')}</div>
         `;
         
         document.body.appendChild(menu);
@@ -681,6 +697,8 @@ class XZGWorkflowsManager {
                 
                 if (action === "new-folder") {
                     this.createNewCategory("");
+                } else if (action === "clear-usage") {
+                    this.clearUsageFrequency();
                 }
             });
         });
@@ -1193,15 +1211,8 @@ class XZGWorkflowsManager {
                                     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                                 </svg>
                             </div>
-                            <label class="xzg-wf-header-btn xzg-wf-accent-btn" id="xzg-wf-accent-btn" title="${xzgT('主题设置（点击选择工作流面板强调色）','Theme settings (click to pick panel accent color)')}">
-                                <span class="xzg-wf-accent-text">${xzgT('主题设置','Theme')}</span>
-                                <input type="color" id="xzg-wf-accent-input" />
-                            </label>
-                            <button class="xzg-wf-header-btn xzg-wf-shortcut-btn" id="xzg-wf-shortcut-btn" title="${xzgT('设置快捷键','Set shortcut')}">${xzgT('快捷键','Shortcut')}: \`</button>
-                            <div class="xzg-wf-header-btn xzg-wf-possess" id="xzg-wf-possess-btn" title="${xzgT('夺舍模式：开启后隐藏 ComfyUI 官方工作流管理按钮','Possess mode: hide ComfyUI official workflow button and take over')}">
-                                <span class="xzg-wf-possess-text">${xzgT('夺舍模式','Possess Mode')}</span>
-                                <span class="xzg-wf-toggle"><i></i></span>
-                            </div>
+                            <button class="xzg-wf-header-btn xzg-wf-accent-btn" id="xzg-wf-settings-btn" title="${xzgT('设置（强调色 / 使用频率配色 / 快捷键 / 夺舍模式）','Settings (accent color / usage frequency colors / shortcut / possess mode)')}">${xzgT('设置','Settings')}</button>
+
                         </div>
                 </div>
                 <div class="xzg-wf-search-box">
@@ -1305,9 +1316,7 @@ class XZGWorkflowsManager {
                 transition: all 0.15s;
             }
             .xzg-wf-header-btn:hover {
-                background: #444;
-                border-color: #FFD700;
-                color: #FFD700;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-accent-btn,
             .xzg-wf-shortcut-btn {
@@ -1376,17 +1385,6 @@ class XZGWorkflowsManager {
                 left: 16px;
                 background: #fff;
             }
-            #xzg-wf-accent-input {
-                position: absolute;
-                inset: 0;
-                width: 100%;
-                height: 100%;
-                border: none;
-                margin: 0;
-                padding: 0;
-                opacity: 0;
-                cursor: pointer;
-            }
             .xzg-wf-search-box {
                 padding: 10px 12px;
                 position: relative;
@@ -1402,9 +1400,6 @@ class XZGWorkflowsManager {
                 font-size: 14px;
                 box-sizing: border-box;
                 outline: none;
-            }
-            .xzg-wf-search-input:focus {
-                border-color: #FFD700;
             }
             .xzg-wf-clear-btn {
                 position: absolute;
@@ -1426,7 +1421,7 @@ class XZGWorkflowsManager {
                 overflow: hidden;
             }
             .xzg-wf-left-col {
-                width: 160px;
+                width: 100px;
                 border-right: 1px solid var(--border-color, #444);
                 overflow-y: auto;
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
@@ -1483,13 +1478,16 @@ class XZGWorkflowsManager {
                 gap: 6px;
             }
             .xzg-wf-cat-item:hover {
-                background: rgba(255, 215, 0, 0.15);
-                color: #FFD700;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-cat-item.active {
                 background: rgba(255, 255, 255, 0.1);
-                color: #FFD700;
-                border-left: 2px solid #FFD700;
+                border-left: 2px solid var(--xzg-wf-accent, #FFD700);
+                padding-left: 8px;
+            }
+            .xzg-wf-cat-item.xzg-wf-cat-hover {
+                background: rgba(255, 255, 255, 0.1);
+                border-left: 2px solid var(--xzg-wf-accent, #FFD700);
                 padding-left: 8px;
             }
             .xzg-wf-cat-count {
@@ -1502,7 +1500,6 @@ class XZGWorkflowsManager {
             }
             .xzg-wf-cat-item.active .xzg-wf-cat-count {
                 background: rgba(255, 255, 255, 0.15);
-                color: #FFD700;
             }
             .xzg-wf-cat-name {
                 display: flex;
@@ -1524,16 +1521,15 @@ class XZGWorkflowsManager {
                 transition: transform 0.15s, color 0.15s;
             }
             .xzg-wf-cat-toggle-svg {
-                width: 18px;
-                height: 18px;
+                width: 22px;
+                height: 22px;
+                stroke-width: 3px;
                 transition: transform 0.15s;
             }
             .xzg-wf-cat-toggle-svg.expanded {
                 transform: rotate(90deg);
             }
-            .xzg-wf-cat-toggle:hover {
-                color: #ffed4e;
-            }
+
             .xzg-wf-cat-toggle-empty {
                 visibility: hidden;
             }
@@ -1556,7 +1552,7 @@ class XZGWorkflowsManager {
                 height: 14px;
             }
             .xzg-wf-cat-bar {
-                width: 2px;
+                width: 4px;
                 height: 100%;
                 background: #FFD700;
                 border-radius: 1px;
@@ -1630,7 +1626,7 @@ class XZGWorkflowsManager {
                 transition: all 0.15s;
             }
             .xzg-wf-sort-btn.active {
-                background: rgba(255, 215, 0, 0.15);
+                background: var(--comfy-input-bg, #2a2a2a);
                 color: #FFD700;
                 border-color: #FFD700;
             }
@@ -1651,21 +1647,36 @@ class XZGWorkflowsManager {
                 gap: 10px;
                 transition: background 0.15s;
             }
+            /* 按使用频率变化工作流名字文字颜色 */
+            .xzg-wf-item.xzg-wf-use-l1 .xzg-wf-item-name,
+            .xzg-wf-item.xzg-wf-use-l2 .xzg-wf-item-name,
+            .xzg-wf-item.xzg-wf-use-l3 .xzg-wf-item-name,
+            .xzg-wf-item.xzg-wf-use-l4 .xzg-wf-item-name,
+            .xzg-wf-item.xzg-wf-use-l5 .xzg-wf-item-name {
+                color: var(--xzg-use-color, #ddd);
+            }
+            /* 左侧 4 格图标同样按使用频率着色 */
+            .xzg-wf-item.xzg-wf-use-l1 .xzg-wf-item-icon,
+            .xzg-wf-item.xzg-wf-use-l2 .xzg-wf-item-icon,
+            .xzg-wf-item.xzg-wf-use-l3 .xzg-wf-item-icon,
+            .xzg-wf-item.xzg-wf-use-l4 .xzg-wf-item-icon,
+            .xzg-wf-item.xzg-wf-use-l5 .xzg-wf-item-icon {
+                color: var(--xzg-use-color, #d0d0d0);
+            }
             .xzg-wf-item-icon {
                 font-size: 16px;
                 flex-shrink: 0;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                color: #FFD700;
+                color: #d0d0d0;
             }
             .xzg-wf-item-icon svg {
                 width: 16px;
                 height: 16px;
             }
             .xzg-wf-item:hover {
-                background: rgba(255, 215, 0, 0.15);
-                color: #FFD700;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-item-info {
                 flex: 1;
@@ -1708,12 +1719,10 @@ class XZGWorkflowsManager {
                 transition: background 0.15s;
             }
             .xzg-wf-ctx-item:hover {
-                background: rgba(255, 215, 0, 0.15);
-                color: #FFD700;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-ctx-item.danger:hover {
-                background: rgba(244, 67, 54, 0.15);
-                color: #f44336;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-ctx-separator {
                 height: 1px;
@@ -1732,9 +1741,7 @@ class XZGWorkflowsManager {
                 color: var(--fg-muted, #888);
                 margin-left: 10px;
             }
-            .xzg-wf-ctx-submenu:hover::after {
-                color: #FFD700;
-            }
+
             .xzg-wf-submenu {
                 position: fixed;
                 z-index: 100001;
@@ -1758,8 +1765,7 @@ class XZGWorkflowsManager {
                 gap: 8px;
             }
             .xzg-wf-submenu-item:hover {
-                background: rgba(255, 215, 0, 0.15);
-                color: #FFD700;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-submenu-item.selected {
                 color: #FFD700;
@@ -1808,12 +1814,24 @@ class XZGWorkflowsManager {
                 box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
             }
             .xzg-wf-dialog-title {
+                position: relative;
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 padding: 14px 16px;
                 font-size: 15px;
                 font-weight: bold;
-                color: #FFD700;
+                color: #fff;
                 border-bottom: 1px solid var(--border-color, #444);
                 text-align: center;
+            }
+            /* 快捷键按钮置于标题栏最右侧 */
+            .xzg-wf-dialog-title .xzg-wf-settings-shortcut-btn {
+                position: absolute;
+                right: 12px;
+                top: 50%;
+                transform: translateY(-50%);
+                cursor: pointer;
             }
             .xzg-wf-dialog-body {
                 padding: 20px 16px;
@@ -1824,6 +1842,59 @@ class XZGWorkflowsManager {
                 display: flex;
                 justify-content: center;
                 gap: 10px;
+            }
+            .xzg-wf-settings-footer {
+                justify-content: space-between;
+            }
+            .xzg-wf-settings-footer .xzg-wf-settings-actions {
+                flex: 1;
+                justify-content: space-between;
+            }
+            .xzg-wf-settings-footer .xzg-wf-settings-actions .xzg-wf-dialog-btn-cancel,
+            .xzg-wf-settings-footer .xzg-wf-settings-actions .xzg-wf-dialog-btn-confirm {
+                background: transparent;
+                font-weight: normal;
+            }
+            .xzg-wf-settings-footer .xzg-wf-settings-actions .xzg-wf-dialog-btn-cancel:hover,
+            .xzg-wf-settings-footer .xzg-wf-settings-actions .xzg-wf-dialog-btn-confirm:hover:not(:disabled) {
+                background: rgba(255, 255, 255, 0.1);
+            }
+            .xzg-wf-settings-io,
+            .xzg-wf-settings-actions {
+                display: flex;
+                gap: 10px;
+                position: relative;
+            }
+            .xzg-wf-config-menu {
+                position: absolute;
+                bottom: calc(100% + 6px);
+                left: 0;
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                padding: 6px;
+                background: #2a2a2a;
+                border: 1px solid rgba(255, 215, 0, 0.4);
+                border-radius: 6px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+                z-index: 10;
+            }
+            .xzg-wf-config-menu[hidden] {
+                display: none;
+            }
+            .xzg-wf-config-menu-item {
+                white-space: nowrap;
+                height: 30px;
+                padding: 0 14px;
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 4px;
+                color: #eee;
+                cursor: pointer;
+                font-size: 13px;
+            }
+            .xzg-wf-config-menu-item:hover {
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-dialog-btn {
                 padding: 6px 16px;
@@ -1836,24 +1907,20 @@ class XZGWorkflowsManager {
                 transition: all 0.15s;
             }
             .xzg-wf-dialog-btn:hover {
-                background: #444;
-                border-color: #FFD700;
-                color: #FFD700;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-dialog-btn-cancel {
                 background: var(--comfy-input-bg, #3a3a3a);
                 color: var(--fg, #ddd);
             }
             .xzg-wf-dialog-btn-confirm {
-                background: #FFD700;
-                color: #1a1a1a;
-                border-color: #FFD700;
+                background: #4a4a4a;
+                color: #fff;
+                border-color: #666;
                 font-weight: bold;
             }
             .xzg-wf-dialog-btn-confirm:hover:not(:disabled) {
-                background: #ffed4e;
-                color: #1a1a1a;
-                border-color: #ffed4e;
+                background: rgba(255, 255, 255, 0.1);
             }
             .xzg-wf-dialog-btn-confirm:disabled {
                 opacity: 0.4;
@@ -1909,8 +1976,139 @@ class XZGWorkflowsManager {
                 font-size: 12px;
             }
             .xzg-wf-shortcut-btn:hover {
-                background: #555 !important;
-                border-color: #888 !important;
+                background: rgba(255, 255, 255, 0.1) !important;
+            }
+            /* 主题与频率设置面板 */
+            .xzg-wf-settings-overlay { background: transparent; }
+            .xzg-wf-settings-dialog { min-width: 240px; max-width: 280px; }
+            .xzg-wf-settings-dialog .xzg-wf-dialog-body {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 16px;
+            }
+            .xzg-wf-settings-section { margin-bottom: 0; }
+            .xzg-wf-settings-sec-title {
+                font-size: 13px;
+                color: var(--fg, #ddd);
+            }
+            .xzg-wf-settings-accent-row {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .xzg-wf-settings-accent-row input[type="color"] {
+                width: 45px;
+                height: 24px;
+                padding: 0;
+                border: 1px solid var(--border-color, #555);
+                border-radius: 6px;
+                background: var(--comfy-input-bg, #3a3a3a);
+                cursor: pointer;
+            }
+            .xzg-wf-use-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 8px;
+            }
+            .xzg-wf-use-row:last-child { margin-bottom: 0; }
+            .xzg-wf-use-rank {
+                width: 18px;
+                height: 18px;
+                line-height: 18px;
+                text-align: center;
+                border-radius: 50%;
+                background: rgba(255, 255, 255, 0.1);
+                font-size: 12px;
+                flex-shrink: 0;
+            }
+            .xzg-wf-use-row input[type="color"] {
+                width: 41px;
+                height: 28px;
+                padding: 0;
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;
+                background: var(--comfy-input-bg, #3a3a3a);
+                cursor: pointer;
+            }
+            .xzg-wf-use-threshold {
+                width: 64px;
+                padding: 5px 8px;
+                font-size: 13px;
+                text-align: center;
+                background: var(--comfy-input-bg, #3a3a3a);
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;
+                outline: none;
+            }
+            .xzg-wf-use-threshold::-webkit-outer-spin-button,
+            .xzg-wf-use-threshold::-webkit-inner-spin-button {
+                -webkit-appearance: none;
+                margin: 0;
+            }
+            .xzg-wf-use-threshold { -moz-appearance: textfield; }
+            .xzg-wf-use-label {
+                font-size: 13px;
+                color: var(--fg, #ddd);
+                white-space: nowrap;
+            }
+            .xzg-wf-use-switch {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 8px;
+                margin-bottom: 16px;
+                font-size: 13px;
+                color: var(--fg, #ddd);
+                cursor: pointer;
+                user-select: none;
+                width: auto;
+                flex-wrap: nowrap;
+            }
+            .xzg-wf-use-switch.xzg-wf-possess-flag.active .xzg-wf-toggle {
+                background: #4CAF50;
+            }
+            /* 夺舍模式是该节唯一内容，去掉自身底部外边距，避免与下一节间距翻倍 */
+            .xzg-wf-use-switch.xzg-wf-possess-flag { margin-bottom: 0; }
+            .xzg-wf-possess-flag .xzg-wf-possess-desc {
+                margin-left: auto;
+                font-size: 12px;
+                color: var(--fg-muted, #888);
+                white-space: nowrap;
+            }
+            .xzg-wf-settings-shortcut-row {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .xzg-wf-settings-shortcut-btn {
+                padding: 5px 12px;
+                font-size: 13px;
+                border-radius: 6px;
+                border: 1px solid var(--border-color, #555);
+                background: var(--comfy-input-bg, #3a3a3a);
+                color: var(--fg, #ddd);
+                cursor: pointer;
+            }
+            .xzg-wf-use-switch .xzg-wf-toggle {
+                width: 40px;
+                height: 22px;
+                border-radius: 11px;
+            }
+            .xzg-wf-use-switch .xzg-wf-toggle i {
+                width: 18px;
+                height: 18px;
+                top: 2px;
+                left: 2px;
+            }
+            .xzg-wf-use-switch.active .xzg-wf-toggle {
+                background: #4CAF50;
+            }
+            .xzg-wf-use-switch.active .xzg-wf-toggle i {
+                left: 20px;
+                background: #fff;
             }
         `;
         style.textContent = this._applyAccent(css);
@@ -1934,6 +2132,177 @@ class XZGWorkflowsManager {
         if (!color) color = "#FFD700";
         document.documentElement.style.setProperty("--xzg-wf-accent", color);
         try { localStorage.setItem(ACCENT_KEY, color); } catch (e) {}
+    }
+
+    showSettingsDialog() {
+        const dialog = document.createElement("div");
+        dialog.className = "xzg-wf-dialog-overlay xzg-wf-settings-overlay";
+        dialog.dataset.xzgRole = "settings";
+        const cfg = this.meta.useColors || DEFAULT_USE_COLORS;
+        const rows = cfg.map((item, i) => `
+            <div class="xzg-wf-use-row">
+                <span class="xzg-wf-use-rank">${i + 1}</span>
+                <input type="color" class="xzg-wf-use-color" data-idx="${i}" value="${item.color}" />
+                <span class="xzg-wf-use-label">${xzgT('超过', 'over')}</span>
+                <input type="number" class="xzg-wf-use-threshold" data-idx="${i}" value="${item.threshold}" min="0" step="1" />
+                <span class="xzg-wf-use-label">${xzgT('次', 'times')}</span>
+            </div>
+        `).join("");
+
+        const possessOn = localStorage.getItem("xzg_possess_mode") === "1";
+        const sc = this.getShortcut();
+        const scParts = [];
+        if (sc.ctrl) scParts.push("Ctrl");
+        if (sc.alt) scParts.push("Alt");
+        if (sc.shift) scParts.push("Shift");
+        if (sc.meta) scParts.push("Meta");
+        scParts.push((sc.key || "`").toUpperCase());
+        const shortcutText = xzgT('快捷键','Shortcut') + ": " + scParts.join("+");
+
+        dialog.innerHTML = this._applyAccent(`
+            <div class="xzg-wf-dialog xzg-wf-settings-dialog">
+                <div class="xzg-wf-dialog-title">
+                    <span>${xzgT('设置', 'Settings')}</span>
+                    <button class="xzg-wf-settings-shortcut-btn" id="xzg-wf-shortcut-btn">${shortcutText}</button>
+                </div>
+                <div class="xzg-wf-dialog-body">
+                    <div class="xzg-wf-settings-section">
+                        <div class="xzg-wf-use-switch xzg-wf-possess-flag ${possessOn ? 'active' : ''}" id="xzg-wf-possess-btn">
+                            <span>${xzgT('夺舍模式','Possess Mode')}</span>
+                            <span class="xzg-wf-toggle"><i></i></span>
+                            <span class="xzg-wf-possess-desc">${xzgT('关闭左侧默认工作流按钮','Hides the default workflow button on the left')}</span>
+                        </div>
+                    </div>
+                    <div class="xzg-wf-settings-section">
+                        <div class="xzg-wf-settings-accent-row xzg-wf-settings-sec-title">
+                            <span>${xzgT('面板主题色', 'Panel Accent Color')}</span>
+                            <input type="color" id="xzg-wf-accent-input" value="" />
+                        </div>
+                    </div>
+                    <div class="xzg-wf-settings-section">
+                        <div class="xzg-wf-use-switch ${this.meta.useColorsEnabled !== false ? 'active' : ''}" id="xzg-wf-use-toggle">
+                            <span>${xzgT('根据使用频率变色', 'Color by usage frequency')}</span>
+                            <span class="xzg-wf-toggle"><i></i></span>
+                        </div>
+                        ${rows}
+                    </div>
+                </div>
+                <div class="xzg-wf-dialog-footer xzg-wf-settings-footer">
+                    <div class="xzg-wf-settings-actions">
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-settings-reset">${xzgT('恢复默认', 'Reset')}</button>
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-settings-close">${xzgT('完成', 'Done')}</button>
+                    </div>
+                </div>
+            </div>
+        `);
+        document.body.appendChild(dialog);
+
+        const accentInput = dialog.querySelector("#xzg-wf-accent-input");
+        if (accentInput) {
+            accentInput.value = localStorage.getItem(ACCENT_KEY) || "#FFD700";
+            accentInput.addEventListener("input", (e) => this.applyAccentColor(e.target.value));
+        }
+
+        const useToggle = dialog.querySelector("#xzg-wf-use-toggle");
+        if (useToggle) {
+            useToggle.addEventListener("click", () => {
+                const on = this.meta.useColorsEnabled === false; // 切换：当前关 -> 开
+                this.meta.useColorsEnabled = on;
+                useToggle.classList.toggle("active", on);
+                this.saveMeta();
+                this.renderWorkflowList();
+            });
+        }
+
+        const possessBtn = dialog.querySelector("#xzg-wf-possess-btn");
+        if (possessBtn) {
+            possessBtn.addEventListener("click", () => this.togglePossessMode());
+        }
+        const shortcutBtn = dialog.querySelector("#xzg-wf-shortcut-btn");
+        if (shortcutBtn) {
+            shortcutBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+            shortcutBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this.showShortcutDialog();
+            });
+        }
+
+        // 允许拖动设置面板（按住标题栏）
+        const dragPanel = dialog.querySelector(".xzg-wf-dialog");
+        const dragHandle = dialog.querySelector(".xzg-wf-dialog-title");
+        if (dragPanel && dragHandle) {
+            let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
+            dragHandle.style.cursor = "move";
+            dragHandle.addEventListener("mousedown", (e) => {
+                dragging = true;
+                const r = dragPanel.getBoundingClientRect();
+                dragPanel.style.position = "fixed";
+                dragPanel.style.margin = "0";
+                dragPanel.style.left = r.left + "px";
+                dragPanel.style.top = r.top + "px";
+                startX = e.clientX;
+                startY = e.clientY;
+                origX = r.left;
+                origY = r.top;
+                e.preventDefault();
+            });
+            window.addEventListener("mousemove", (e) => {
+                if (!dragging) return;
+                dragPanel.style.left = (origX + e.clientX - startX) + "px";
+                dragPanel.style.top = (origY + e.clientY - startY) + "px";
+            });
+            window.addEventListener("mouseup", () => { dragging = false; });
+        }
+
+        // 调色/调阈值时整列表重建 + 写盘很重；拖动取色器会高频触发 input，故防抖批处理。
+        // 预览块即时更新（很轻量），真正的列表重渲染与存储延迟到停顿后执行。
+        let renderTimer = null;
+        const scheduleCommit = () => {
+            if (renderTimer) clearTimeout(renderTimer);
+            renderTimer = setTimeout(() => {
+                renderTimer = null;
+                this.saveMeta();
+                this.renderWorkflowList();
+            }, 120);
+        };
+
+        dialog.querySelectorAll(".xzg-wf-use-color").forEach(inp => {
+            inp.addEventListener("input", (e) => {
+                const idx = +e.target.dataset.idx;
+                if (this.meta.useColors[idx]) {
+                    this.meta.useColors[idx].color = e.target.value;
+                    scheduleCommit();
+                }
+            });
+        });
+        dialog.querySelectorAll(".xzg-wf-use-threshold").forEach(inp => {
+            inp.addEventListener("input", (e) => {
+                const idx = +e.target.dataset.idx;
+                if (this.meta.useColors[idx]) {
+                    const v = parseInt(e.target.value, 10);
+                    this.meta.useColors[idx].threshold = isNaN(v) ? 0 : v;
+                    scheduleCommit();
+                }
+            });
+        });
+
+        dialog.querySelector("#xzg-wf-settings-reset").addEventListener("click", () => {
+            this.meta.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
+            this.meta.useColorsEnabled = true;
+            this.applyAccentColor("#FFD700");
+            this.saveMeta();
+            dialog.remove();
+            this.showSettingsDialog();
+        });
+
+        const close = () => {
+            if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+            this.saveMeta();
+            this.renderWorkflowList();
+            dialog.remove();
+        };
+        dialog.querySelector("#xzg-wf-settings-close").addEventListener("click", close);
+        dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) close(); });
     }
 
     bindPanelEvents() {
@@ -1976,14 +2345,12 @@ class XZGWorkflowsManager {
             });
         });
 
-        const accentInput = container.querySelector("#xzg-wf-accent-input");
-        if (accentInput) {
-            const savedAccent = localStorage.getItem(ACCENT_KEY) || "#FFD700";
-            accentInput.value = savedAccent;
-            this.applyAccentColor(savedAccent);
-            accentInput.addEventListener("input", (e) => {
-                this.applyAccentColor(e.target.value);
-            });
+        // 启动时应用已保存的主题强调色
+        this.applyAccentColor(localStorage.getItem(ACCENT_KEY) || "#FFD700");
+
+        const settingsBtn = container.querySelector("#xzg-wf-settings-btn");
+        if (settingsBtn) {
+            settingsBtn.addEventListener("click", () => this.showSettingsDialog());
         }
 
         const trashBtn = container.querySelector("#xzg-wf-trash-btn");
@@ -1991,18 +2358,6 @@ class XZGWorkflowsManager {
             trashBtn.addEventListener("click", () => {
                 this.openTrashModal();
             });
-        }
-
-        const shortcutBtn = container.querySelector("#xzg-wf-shortcut-btn");
-        if (shortcutBtn) {
-            shortcutBtn.addEventListener("click", () => {
-                this.showShortcutDialog();
-            });
-        }
-
-        const possessBtn = container.querySelector("#xzg-wf-possess-btn");
-        if (possessBtn) {
-            possessBtn.addEventListener("click", () => this.togglePossessMode());
         }
 
         const helpBtn = container.querySelector("#xzg-wf-help-btn");
@@ -2019,59 +2374,60 @@ class XZGWorkflowsManager {
     showWorkflowHelp() {
         const dialog = document.createElement("div");
         dialog.className = "xzg-wf-dialog-overlay";
+        dialog.dataset.xzgRole = "help";
         const html = `
             <div class="xzg-wf-dialog xzg-wf-help-dialog">
-                <div class="xzg-wf-dialog-title">工作流管理 · 使用说明</div>
+                <div class="xzg-wf-dialog-title">${xzgT('工作流管理 · 使用说明', 'Workflow Manager · Help')}</div>
                 <div class="xzg-wf-dialog-body xzg-wf-help-body">
-                    <h4>打开面板</h4>
+                    <h4>${xzgT('打开面板', 'Open Panel')}</h4>
                     <ul>
-                        <li>快捷键：默认 <code>\`</code>（反引号），可点顶部「快捷键」按钮自定义</li>
+                        <li>${xzgT('快捷键：默认 ` （反引号），可点顶部「快捷键」按钮自定义', 'Shortcut: default ` (backtick); click the top "Shortcut" button to customize')}</li>
                     </ul>
-                    <h4>工作流操作</h4>
+                    <h4>${xzgT('工作流操作', 'Workflow Operations')}</h4>
                     <ul>
-                        <li><b>打开</b>：单击工作流项，加载到当前画布并激活对应官方工作流（已打开的仅切换、不重复加载）</li>
-                        <li><b>导入到画布</b>：直接拖拽工作流项到画布空白处，节点即被导入当前工作流，点击工作流，则为新建标签打开工作流，跟官方完全一致。</li>
-                        <li><b>定位分类</b>：单击工作流项左侧的四个圆点图标，左侧分类树会自动展开并高亮其所属分类</li>
-                        <li><b>右键菜单</b>：
+                        <li><b>${xzgT('打开', 'Open')}</b>：${xzgT('单击工作流项，加载到当前画布并激活对应官方工作流（已打开的仅切换、不重复加载）', 'Click a workflow to load it onto the current canvas and activate the corresponding official workflow (already-open ones just switch, without reloading)')}</li>
+                        <li><b>${xzgT('导入到画布', 'Import to Canvas')}</b>：${xzgT('直接拖拽工作流项到画布空白处，节点即被导入当前工作流；点击工作流则是新建标签打开，与官方一致。', 'Drag a workflow item onto an empty canvas area to import its nodes into the current workflow; clicking a workflow opens it in a new tab, same as official behavior.')}</li>
+                        <li><b>${xzgT('定位分类', 'Locate Category')}</b>：${xzgT('单击工作流项左侧的四个圆点图标，左侧分类树会自动展开并高亮其所属分类', 'Click the four-dot icon on the left of a workflow; the category tree auto-expands and highlights its category')}</li>
+                        <li><b>${xzgT('右键菜单', 'Right-click Menu')}</b>：
                             <ul>
-                                <li>✏️ 重命名：修改显示名称，保留你手工加的编号前缀</li>
-                                <li>🗑️ 删除：移入回收站，可恢复</li>
-                                <li>📁 移动到分类：在子菜单中选择目标文件夹或「未分类」</li>
+                                <li>✏️ ${xzgT('重命名：修改显示名称，保留你手工加的编号前缀', 'Rename: change the display name, keeping any manual numbering prefix')}</li>
+                                <li>🗑️ ${xzgT('删除：移入回收站，可恢复', 'Delete: moved to recycle bin, recoverable')}</li>
+                                <li>📁 ${xzgT('移动到分类：在子菜单中选择目标文件夹或「未分类」', 'Move to Category: choose a target folder or "Uncategorized" in the submenu')}</li>
                             </ul>
                         </li>
                     </ul>
-                    <h4>分类管理（左侧）</h4>
+                    <h4>${xzgT('分类管理（左侧）', 'Category Management (Left)')}</h4>
                     <ul>
-                        <li><b>全部</b> / <b>根目录未分类</b>：分别显示所有、及未归入文件夹的工作流</li>
-                        <li><b>新建分类</b>：右键「全部」→ 新建分类；右键文件夹可新建子分类（支持多级嵌套），改动会直接应用到本地文件夹</li>
-                        <li><b>重命名 / 删除分类</b>：右键文件夹操作；删除分类会将其下工作流一并移入回收站</li>
-                        <li><b>筛选</b>：单击分类项，右侧只显示该分类的工作流</li>
+                        <li><b>${xzgT('全部', 'All')}</b> / <b>${xzgT('根目录未分类', 'Root / Uncategorized')}</b>：${xzgT('分别显示所有、及未归入文件夹的工作流', 'Show all, or only workflows not assigned to a folder')}</li>
+                        <li><b>${xzgT('新建分类', 'New Category')}</b>：${xzgT('右键「全部」→ 新建分类；右键文件夹可新建子分类（支持多级嵌套），改动会直接应用到本地文件夹', 'Right-click "All" → New Category; right-click a folder to create a subcategory (multi-level nesting supported); changes apply directly to local folders')}</li>
+                        <li><b>${xzgT('重命名 / 删除分类', 'Rename / Delete Category')}</b>：${xzgT('右键文件夹操作；删除分类会将其下工作流一并移入回收站', 'Right-click a folder; deleting a category moves all its workflows to the recycle bin')}</li>
+                        <li><b>${xzgT('筛选', 'Filter')}</b>：${xzgT('单击分类项，右侧只显示该分类的工作流', 'Click a category to show only its workflows on the right')}</li>
                     </ul>
-                    <h4>搜索</h4>
+                    <h4>${xzgT('搜索', 'Search')}</h4>
                     <ul>
-                        <li>顶部搜索框实时过滤；支持拼音（首字母 + 完整拼音），自动忽略空格</li>
-                        <li>例如输入 <code>txlj</code> 匹配「图像连接」；<code>tuxiang</code> 同样匹配</li>
+                        <li>${xzgT('顶部搜索框实时过滤；支持拼音（首字母 + 完整拼音），自动忽略空格', 'The top search box filters in real time; supports pinyin (initials + full pinyin) and ignores spaces automatically')}</li>
+                        <li>${xzgT('例如输入 txlj 匹配「图像连接」；tuxiang 同样匹配', 'e.g. t.x.l.j matches "图像连接"; t.u.x.i.a.n.g matches too')}</li>
                     </ul>
-                    <h4>排序</h4>
+                    <h4>${xzgT('排序', 'Sort')}</h4>
                     <ul>
-                        <li>🔥 使用频率：使用次数</li>
-                        <li>A 名称：按名称字母 / 拼音顺序</li>
-                        <li>拖拽工作流到画布不增加使用频率，仅单击打开会计数</li>
+                        <li>🔥 ${xzgT('使用频率：使用次数', 'Usage frequency: by usage count')}</li>
+                        <li>A ${xzgT('名称：按名称字母 / 拼音顺序', 'Name: alphabetical / pinyin order')}</li>
+                        <li>${xzgT('拖拽工作流到画布不增加使用频率，仅单击打开会计数', 'Dragging a workflow to the canvas does not increase usage; only opening by click counts')}</li>
                     </ul>
-                    <h4>回收站</h4>
+                    <h4>${xzgT('回收站', 'Recycle Bin')}</h4>
                     <ul>
-                        <li>误删的工作流会进入回收站，可在此恢复</li>
-                        <li>回收站保留 3 个月，过期自动清理（不可手动清空）</li>
+                        <li>${xzgT('误删的工作流会进入回收站，可在此恢复', 'Accidentally deleted workflows go to the recycle bin and can be restored here')}</li>
+                        <li>${xzgT('回收站保留 3 个月，过期自动清理（不可手动清空）', 'The recycle bin keeps items for 3 months, then auto-cleans (cannot be manually emptied)')}</li>
                     </ul>
-                    <h4>其它设置</h4>
+                    <h4>${xzgT('其它设置', 'Other Settings')}</h4>
                     <ul>
-                        <li><b>主题设置</b>：自定义面板强调色</li>
-                        <li><b>夺舍模式</b>：开启后隐藏 ComfyUI 官方工作流管理按钮，由本面板接管</li>
-                        <li><b>保存工作流</b>：使用 ComfyUI 官方保存（Ctrl+S / 顶栏），保存后本面板会自动同步显示</li>
+                        <li><b>${xzgT('设置', 'Settings')}</b>：${xzgT('自定义面板强调色、使用频率配色、快捷键与夺舍模式', 'Customize panel accent color, usage-frequency colors, shortcut and possess mode')}</li>
+                        <li><b>${xzgT('夺舍模式', 'Possess Mode')}</b>：${xzgT('开启后隐藏 ComfyUI 官方工作流管理按钮，由本面板接管', 'Once enabled, hides ComfyUI official workflow buttons and takes over')}</li>
+                        <li><b>${xzgT('保存工作流', 'Save Workflow')}</b>：${xzgT('使用 ComfyUI 官方保存（Ctrl+S / 顶栏），保存后本面板会自动同步显示', 'Use ComfyUI official save (Ctrl+S / top bar); the panel auto-syncs after saving')}</li>
                     </ul>
                 </div>
                 <div class="xzg-wf-dialog-footer">
-                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-help-close">明白了</button>
+                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-help-close">${xzgT('明白了','Got it')}</button>
                 </div>
             </div>
         `;
@@ -2099,16 +2455,14 @@ class XZGWorkflowsManager {
     // ====== 夺舍模式：隐藏官方工作流管理按钮 ======
     initPossessMode() {
         const on = localStorage.getItem("xzg_possess_mode") === "1";
-        const btn = this.container?.querySelector("#xzg-wf-possess-btn");
-        if (btn) btn.classList.toggle("active", on);
+        document.querySelectorAll(".xzg-wf-possess-flag").forEach(el => el.classList.toggle("active", on));
         this._applyPossessMode(on);
     }
 
     togglePossessMode() {
         const on = localStorage.getItem("xzg_possess_mode") !== "1";
         localStorage.setItem("xzg_possess_mode", on ? "1" : "0");
-        const btn = this.container?.querySelector("#xzg-wf-possess-btn");
-        if (btn) btn.classList.toggle("active", on);
+        document.querySelectorAll(".xzg-wf-possess-flag").forEach(el => el.classList.toggle("active", on));
         this._applyPossessMode(on);
     }
 
@@ -2199,18 +2553,18 @@ class XZGWorkflowsManager {
             modal.innerHTML = `
                 <div style="background:var(--comfy-menu-bg,#2a2a2a);color:var(--fg,#ddd);width:480px;max-width:90vw;max-height:80vh;overflow:auto;border:1px solid var(--border-color,#555);border-radius:8px;padding:16px;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border-color,#444);">
-                        <strong style="font-size:15px;">回收站</strong>
+                        <strong style="font-size:15px;">${xzgT('回收站', 'Recycle Bin')}</strong>
                         <span id="xzg-wf-trash-close" style="cursor:pointer;font-size:20px;line-height:1;padding:0 4px;">✕</span>
                     </div>
                     <div id="xzg-wf-trash-body"></div>
-                    <div style="margin-top:12px;font-size:11px;color:#999;text-align:center;">回收站保留 3 个月，过期项目自动清理（不可手动清空）</div>
+                    <div style="margin-top:12px;font-size:11px;color:#999;text-align:center;">${xzgT('回收站保留 3 个月，过期项目自动清理（不可手动清空）', 'The recycle bin keeps items for 3 months, then auto-cleans expired items (cannot be manually emptied)')}</div>
                 </div>
             `;
             modal.style.display = "flex";
 
             const body = modal.querySelector("#xzg-wf-trash-body");
             if (items.length === 0) {
-                body.innerHTML = `<div style="color:#999;padding:12px 0;text-align:center;">回收站为空</div>`;
+                body.innerHTML = `<div style="color:#999;padding:12px 0;text-align:center;">${xzgT('回收站为空','Recycle bin is empty')}</div>`;
             } else {
                 body.innerHTML = items.map(it => {
                     const daysLeft = (it.days_left == null) ? "" : ` · 剩 ${it.days_left} 天`;
@@ -2220,7 +2574,7 @@ class XZGWorkflowsManager {
                             <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📄 ${this.escapeHtml(it.name)}</div>
                             <div style="font-size:11px;color:#999;">原路径: ${this.escapeHtml(it.original_path)} · ${this.escapeHtml(it.deleted_at)}${daysLeft}</div>
                         </div>
-                        <button data-restore="${this.escapeHtml(it.id)}" style="background:#3a6;color:#fff;border:none;border-radius:4px;padding:5px 10px;cursor:pointer;">恢复</button>
+                        <button data-restore="${this.escapeHtml(it.id)}" style="background:#3a6;color:#fff;border:none;border-radius:4px;padding:5px 10px;cursor:pointer;">${xzgT('恢复','Restore')}</button>
                     </div>
                 `;}).join("");
                 body.querySelectorAll("[data-restore]").forEach(btn => {
@@ -2236,7 +2590,7 @@ class XZGWorkflowsManager {
             });
         } catch (e) {
             console.warn("[小珠光] 打开回收站失败:", e);
-            alert("打开回收站失败: " + e.message);
+            alert(xzgT('打开回收站失败: ','Failed to open recycle bin: ') + e.message);
         }
     }
 
@@ -2255,9 +2609,9 @@ class XZGWorkflowsManager {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 if (data.conflict) {
-                    alert("恢复失败：目标位置已存在同名文件，请先手动处理。");
+                    alert(xzgT('恢复失败：目标位置已存在同名文件，请先手动处理。','Restore failed: a file with the same name already exists at the target location. Please handle it manually.'));
                 } else {
-                    alert("恢复失败: " + (data.error || res.status));
+                    alert(xzgT('恢复失败: ','Restore failed: ') + (data.error || res.status));
                 }
                 return;
             }
@@ -2266,7 +2620,7 @@ class XZGWorkflowsManager {
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
         } catch (e) {
-            alert("恢复失败: " + e.message);
+            alert(xzgT('恢复失败: ','Restore failed: ') + e.message);
         }
     }
 
@@ -2642,11 +2996,32 @@ class XZGWorkflowsManager {
         }
     }
 
+    /** 根据使用次数返回着色等级与颜色（阈值/颜色均可在设置面板自定义） */
+    getUseLevel(count) {
+        const c = count || 0;
+        const cfg = (this.meta && this.meta.useColors) || DEFAULT_USE_COLORS;
+        let best = { level: 0, color: "", threshold: -1 };
+        for (let i = 0; i < cfg.length; i++) {
+            const t = cfg[i].threshold;
+            if (c > t && t > best.threshold) {
+                best = { level: i + 1, color: cfg[i].color, threshold: t };
+            }
+        }
+        delete best.threshold;
+        return best;
+    }
+
     createWorkflowItem(wf) {
         const item = document.createElement("div");
         item.className = "xzg-wf-item";
         item.draggable = true;
         item.dataset.path = wf.path;
+
+        const useInfo = this.getUseLevel(wf.useCount || 0);
+        if (this.meta.useColorsEnabled !== false && useInfo.level > 0) {
+            item.classList.add("xzg-wf-use-l" + useInfo.level);
+            item.style.setProperty("--xzg-use-color", useInfo.color);
+        }
 
         const useCount = wf.useCount || 0;
         const useCountText = useCount > 0 ? `使用${useCount}次` : '';
@@ -2672,12 +3047,29 @@ class XZGWorkflowsManager {
 
         item.querySelector(".xzg-wf-item-name").textContent = wf.name;
 
-        const wfIcon = item.querySelector(".xzg-wf-item-icon");
-        wfIcon.title = "定位到所属分类";
-        wfIcon.style.cursor = "pointer";
-        wfIcon.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.locateWorkflowCategory(wf);
+        // 悬浮高亮：处于「全部」分类时，悬浮工作流 → 左侧对应分类高亮并展开
+        item.addEventListener("mouseenter", () => {
+            if (this.currentCategory !== "all") return;
+            const folder = (wf.folder && wf.folder !== "未分类") ? wf.folder : "";
+            const catId = folder ? "folder:" + folder : "uncategorized";
+            let needRender = false;
+            if (folder) {
+                const parts = folder.split('/');
+                let acc = '';
+                for (let i = 0; i < parts.length - 1; i++) {
+                    acc = acc ? acc + '/' + parts[i] : parts[i];
+                    if (!this.expandedFolders.has(acc)) { this.expandedFolders.add(acc); needRender = true; }
+                }
+            }
+            if (needRender) this.renderCategories();
+            const el = this.categoryList?.querySelector(`[data-cat-id="${catId}"]`);
+            if (el) {
+                el.classList.add("xzg-wf-cat-hover");
+                el.scrollIntoView({ block: "nearest" });
+            }
+        });
+        item.addEventListener("mouseleave", () => {
+            this.categoryList?.querySelectorAll(".xzg-wf-cat-hover").forEach(el => el.classList.remove("xzg-wf-cat-hover"));
         });
 
         item.addEventListener("click", (e) => {
@@ -2943,7 +3335,7 @@ class XZGWorkflowsManager {
             }
         } catch (e) {
             console.warn("[小珠光] 加载工作流失败:", e);
-            alert("加载工作流失败: " + e.message);
+            alert(xzgT('加载工作流失败: ','Failed to load workflow: ') + e.message);
         }
     }
 
@@ -3019,19 +3411,19 @@ class XZGWorkflowsManager {
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
         } catch (e) {
-            alert("重命名失败: " + e.message);
+            alert(xzgT('重命名失败: ','Rename failed: ') + e.message);
         }
     }
 
     async deleteWorkflow(wf) {
-        if (!confirm(`确定要删除工作流「${wf.name}」吗？`)) return;
+        if (!confirm(xzgT(`确定要删除工作流「${wf.name}」吗？`, `Delete workflow "${wf.name}"?`))) return;
 
         try {
             const res = await api.fetchApi(`/xzg/workflows/${encodeURIComponent(wf.path)}`, {
                 method: "DELETE"
             });
 
-            if (!res.ok) throw new Error("删除失败");
+            if (!res.ok) throw new Error(xzgT('删除失败','Delete failed'));
 
             if (this.meta.workflows[wf.path]) {
                 delete this.meta.workflows[wf.path];
@@ -3042,7 +3434,7 @@ class XZGWorkflowsManager {
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
         } catch (e) {
-            alert("删除失败: " + e.message);
+            alert(xzgT('删除失败: ','Delete failed: ') + e.message);
         }
     }
 
@@ -3057,7 +3449,7 @@ class XZGWorkflowsManager {
     }
 
     async createNewCategory(parentFolder = "") {
-        const promptText = parentFolder ? `新建子分类（父分类：${parentFolder}）` : "新建分类";
+        const promptText = parentFolder ? xzgT('新建子分类（父分类：','New subcategory (parent: ') + parentFolder + xzgT('）','') : xzgT('新建分类','New Category');
         const name = await this.showInputDialog(promptText, "");
         if (!name || !name.trim()) return;
         const folderName = name.trim();
@@ -3070,11 +3462,11 @@ class XZGWorkflowsManager {
             });
 
             if (res.status === 409) {
-                alert("分类已存在！");
+                alert(xzgT('分类已存在！','Category already exists!'));
                 return;
             }
             if (!res.ok) {
-                let errMsg = "创建失败";
+                let errMsg = xzgT('创建失败','Create failed');
                 try {
                     const text = await res.text();
                     try {
@@ -3097,7 +3489,7 @@ class XZGWorkflowsManager {
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
         } catch (e) {
             console.warn("[小珠光] 创建分类失败:", e);
-            alert("创建分类失败: " + e.message);
+            alert(xzgT('创建分类失败: ','Failed to create category: ') + e.message);
         }
     }
 
@@ -3109,8 +3501,8 @@ class XZGWorkflowsManager {
         if (input === null) return; // 用户取消
 
         const newName = input.trim();
-        if (!newName) { alert("分类名称不能为空！"); return; }
-        if (newName.includes("/") || newName.includes("\\")) { alert("分类名称不能包含 / 或 \\"); return; }
+        if (!newName) { alert(xzgT('分类名称不能为空！','Category name cannot be empty!')); return; }
+        if (newName.includes("/") || newName.includes("\\")) { alert(xzgT('分类名称不能包含 / 或 \\','Category name cannot contain / or \\')); return; }
         if (newName === cat.name) return; // 未修改，无需操作
 
         try {
@@ -3125,14 +3517,14 @@ class XZGWorkflowsManager {
         } catch (e) {
             let msg = e.message || String(e);
             if (msg.includes("already exists") || msg.includes("409")) msg = "已存在同名分类，请换一个名称";
-            alert("重命名分类失败: " + msg);
+            alert(xzgT('重命名分类失败: ','Failed to rename category: ') + msg);
         }
     }
 
     async deleteCategory(cat) {
         if (!cat || cat.type !== "folder") return;
         
-        if (!confirm(`确定要删除分类「${cat.name}」吗？\n分类内的所有工作流和子分类也将被删除！`)) return;
+        if (!confirm(xzgT(`确定要删除分类「${cat.name}」吗？\n分类内的所有工作流和子分类也将被删除！`, `Delete category "${cat.name}"?\nAll workflows and subcategories inside will also be deleted!`))) return;
 
         try {
             const res = await api.fetchApi(`/xzg/wf-manage/folder/${encodeURIComponent(cat.path)}`, {
@@ -3141,7 +3533,7 @@ class XZGWorkflowsManager {
 
             if (!res.ok) {
                 const err = await res.json();
-                throw new Error(err.error || "删除失败");
+                throw new Error(err.error || xzgT('删除失败','Delete failed'));
             }
 
             const folderPath = cat.path;
@@ -3161,7 +3553,7 @@ class XZGWorkflowsManager {
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
         } catch (e) {
-            alert("删除分类失败: " + e.message);
+            alert(xzgT('删除分类失败: ','Failed to delete category: ') + e.message);
         }
     }
 
@@ -3210,7 +3602,7 @@ class XZGWorkflowsManager {
             }
         } catch (e) {
             console.warn("[小珠光] 移动工作流失败:", e);
-            alert("移动工作流失败: " + e.message);
+            alert(xzgT('移动工作流失败: ','Failed to move workflow: ') + e.message);
             return;
         }
 
@@ -3256,65 +3648,40 @@ class XZGWorkflowsManager {
         return res.json();
     }
 
-    exportWorkflows() {
-        const exportData = {
-            version: 1,
-            type: 'xzg-workflows-config',
-            meta: JSON.parse(JSON.stringify(this.meta)),
-            exportedAt: new Date().toISOString()
-        };
-
-        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `xzg-workflows-meta-${new Date().toISOString().slice(0,10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-            a.remove();
-            URL.revokeObjectURL(url);
-        }, 0);
-    }
-
-    async importWorkflows(e) {
-        const files = e.target.files;
-        if (!files || files.length === 0) return;
-
-        for (const file of files) {
-            try {
-                const text = await file.text();
-                const data = JSON.parse(text);
-
-                if (data.type === 'xzg-workflows-config' && data.meta) {
-                    if (!confirm("检测到工作流元数据配置，是否导入？")) continue;
-                    Object.assign(this.meta.workflows, data.meta.workflows || {});
-                    this.saveMeta();
-                    await this.loadWorkflows();
-                    alert("元数据导入成功！");
-                } else {
-                    const name = file.name.replace(/\.json$/, '');
-                    const res = await api.fetchApi("/xzg/workflows", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ name, workflow: data, overwrite: false })
-                    });
-                    if (res.status === 409) {
-                        if (!confirm(`工作流「${name}」已存在，是否覆盖？`)) continue;
-                        await api.fetchApi("/xzg/workflows", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ name, workflow: data, overwrite: true })
-                        });
-                    }
-                }
-            } catch (err) {
-                console.warn("[小珠光] 导入文件失败:", file.name, err);
+    /** 清空所有工作流的使用频率（使用次数与最近使用时间），不影响工作流本身与分类 */
+    clearUsageFrequency() {
+        if (!confirm(xzgT('确定清空所有工作流的使用频率（使用次数与最近使用时间）吗？此操作不可撤销。', 'Clear usage frequency (use count and last-used) for all workflows? This cannot be undone.'))) {
+            return;
+        }
+        for (const path in this.meta.workflows) {
+            const m = this.meta.workflows[path];
+            if (m) {
+                m.useCount = 0;
+                m.lastUsed = 0;
             }
         }
+        this.saveMeta();
+        for (const wf of this.workflows) {
+            wf.useCount = 0;
+            wf.lastUsed = 0;
+        }
+        this.renderWorkflowList();
+        if (this.renderCategories) this.renderCategories();
+    }
 
-        await this.loadWorkflows();
-        e.target.value = "";
+    /** 删除单个工作流的使用频率（使用次数与最近使用时间），不影响工作流本身与分类 */
+    deleteWorkflowUsage(wf) {
+        const path = wf && wf.path;
+        if (!path) return;
+        if (this.meta.workflows[path]) {
+            this.meta.workflows[path].useCount = 0;
+            this.meta.workflows[path].lastUsed = 0;
+        }
+        this.saveMeta();
+        wf.useCount = 0;
+        wf.lastUsed = 0;
+        this.renderWorkflowList();
+        if (this.renderCategories) this.renderCategories();
     }
 }
 
@@ -3357,6 +3724,11 @@ app.registerExtension({
                         workflowsInstance.renderWorkflowList();
                         workflowsInstance.renderCategories();
                         workflowsInstance.refreshStaticLabels();
+                        // 若设置面板 / 帮助弹窗当前打开，按新语言重建（其内部文案为一次性构建）
+                        const openSettings = document.querySelector(".xzg-wf-settings-overlay");
+                        if (openSettings) { openSettings.remove(); workflowsInstance.showSettingsDialog(); }
+                        const openHelp = document.querySelector('.xzg-wf-dialog-overlay[data-xzg-role="help"]');
+                        if (openHelp) { openHelp.remove(); workflowsInstance.showWorkflowHelp(); }
                     } catch (e) {}
                     return orig?.apply(this, arguments);
                 };

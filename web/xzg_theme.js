@@ -134,23 +134,23 @@ window.XZGThemeManager = {
     gap: 5px;
 }
 
+.xzg-theme-config-btn,
 .xzg-theme-shortcut-btn {
-    background: rgba(255, 255, 255, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    color: #fff;
+    background: transparent;
+    border: 1px solid #555;
+    color: #ddd;
     font-size: 10px;
     font-weight: bold;
     padding: 4px 8px;
     border-radius: 4px;
     cursor: pointer;
-    min-width: 70px;
     text-align: center;
     transition: all 0.2s;
 }
 
+.xzg-theme-config-btn:hover,
 .xzg-theme-shortcut-btn:hover {
-    background: rgba(255, 255, 255, 0.3);
-    transform: scale(1.05);
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .xzg-theme-close {
@@ -417,10 +417,10 @@ window.XZGThemeManager = {
 .xzg-apply-btn {
     width: 100%;
     padding: 7px 16px;
-    background: #333;
+    background: transparent;
     color: #FFD700;
     border: 1px solid #555;
-    border-radius: 6px;
+    border-radius: 4px;
     cursor: pointer;
     font-size: 13px;
     font-weight: bold;
@@ -431,7 +431,7 @@ window.XZGThemeManager = {
 }
 
 .xzg-apply-btn:hover {
-    background: #444;
+    background: rgba(255, 215, 0, 0.1);
 }
 
 .xzg-apply-btn:active {
@@ -441,10 +441,10 @@ window.XZGThemeManager = {
 .xzg-reset-btn {
     width: 100%;
     padding: 5px 16px;
-    background: #444;
-    color: #ccc;
+    background: transparent;
+    color: #ddd;
     border: 1px solid #555;
-    border-radius: 6px;
+    border-radius: 4px;
     cursor: pointer;
     font-size: 12px;
     transition: all 0.2s;
@@ -453,7 +453,7 @@ window.XZGThemeManager = {
 }
 
 .xzg-reset-btn:hover {
-    background: #555;
+    background: rgba(255, 255, 255, 0.1);
     color: #fff;
 }
 
@@ -626,10 +626,10 @@ window.XZGThemeManager = {
 
 .xzg-toggle-switch {
     position: relative;
-    width: 48px;
-    height: 20px;
+    width: 40px;
+    height: 22px;
     border: none;
-    border-radius: 10px;
+    border-radius: 11px;
     background: #555;
     cursor: pointer;
     padding: 0;
@@ -638,15 +638,15 @@ window.XZGThemeManager = {
 }
 
 .xzg-toggle-switch[data-checked="true"] {
-    background: #353535;
+    background: #4CAF50;
 }
 
 .xzg-toggle-switch .xzg-toggle-slider {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     background: #fff;
     border-radius: 50%;
     transition: left 0.2s;
@@ -654,7 +654,7 @@ window.XZGThemeManager = {
 }
 
 .xzg-toggle-switch[data-checked="true"] .xzg-toggle-slider {
-    left: 30px;
+    left: 20px;
 }
 
 .xzg-toggle-switch .xzg-toggle-label {
@@ -771,11 +771,9 @@ window.XZGThemeManager = {
     overflow: hidden;
 }
 
-.xzg-preset-item:hover {
-    border-color: #667eea;
-    transform: translateY(-1px);
-    box-shadow: 0 1px 4px rgba(102, 126, 234, 0.3);
-}
+            .xzg-preset-item:hover {
+                background: rgba(255, 255, 255, 0.1);
+            }
 
 .xzg-preset-item:active {
     transform: translateY(0);
@@ -873,10 +871,9 @@ window.XZGThemeManager = {
     border-color: #773333;
     color: #e07070;
 }
-.xzg-wallpaper-clear:hover {
-    background: #4a1a1a;
-    border-color: #aa4444;
-}
+            .xzg-wallpaper-clear:hover {
+                background: rgba(255, 255, 255, 0.1);
+            }
 
 .xzg-wallpaper-row {
     display: flex;
@@ -1237,11 +1234,9 @@ window.XZGThemeManager = {
     transition: all 0.15s;
 }
 
-.xzg-quick-node-remove-btn:hover {
-    background: #4a1a1a;
-    border-color: #aa4444;
-    color: #ff8080;
-}
+            .xzg-quick-node-remove-btn:hover {
+                background: rgba(255, 255, 255, 0.1);
+            }
 
 .xzg-quick-setting-row {
     display: flex;

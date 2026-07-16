@@ -80,6 +80,30 @@
     opacity: 1;
 }
 
+.xzg-theme-header-btns {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+}
+
+.xzg-theme-config-btn,
+.xzg-theme-shortcut-btn {
+    background: transparent !important;
+    color: #ddd !important;
+    border: 1px solid #555 !important;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+            .xzg-theme-config-btn:hover,
+            .xzg-theme-shortcut-btn:hover {
+                background: rgba(255, 255, 255, 0.1) !important;
+            }
+
 .xzg-theme-content {
     padding: 12px;
     max-height: 500px;
@@ -658,11 +682,9 @@
     transition: all 0.15s;
 }
 
-.xzg-quick-node-remove-btn:hover {
-    background: #c0392b;
-    border-color: #c0392b;
-    color: #fff;
-}
+    .xzg-quick-node-remove-btn:hover {
+        background: rgba(255, 255, 255, 0.1);
+    }
 
 .xzg-quick-setting-row {
     display: flex;

@@ -35,10 +35,8 @@ import { xzgT } from "./xzg_i18n.js";
 .xzg-bs-color-row input[type=color]{flex:1;height:28px;border:none;border-radius:4px;cursor:pointer;background:transparent}
 .xzg-bs-select{flex:1;padding:5px 8px;border-radius:4px;border:1px solid #444;background:#222;color:#ddd;font-size:12px;outline:none;font-family:inherit}
 .xzg-bs-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid #3a3a3a}
-.xzg-bs-btn{padding:7px 18px;border-radius:6px;border:1px solid #444;background:#222;color:#aaa;cursor:pointer;font-size:13px;font-family:inherit}
-.xzg-bs-btn:hover{background:#333}
-.xzg-bs-btn-primary{border-color:#e8c547;background:#e8c547;color:#222;font-weight:bold}
-.xzg-bs-btn-primary:hover{background:#f0d460}
+.xzg-bs-btn{padding:7px 18px;border-radius:6px;border:1px solid #555;background:transparent;color:#aaa;cursor:pointer;font-size:13px;font-family:inherit}
+.xzg-bs-btn:hover{background:rgba(255,255,255,0.08)}
 `;
     document.head.appendChild(s);
 })();
@@ -342,17 +340,17 @@ function openBoolSettingsPanel(node) {
     const invertWrap = document.createElement("div");
     invertWrap.style.cssText = "flex:1;display:flex;align-items:center;gap:10px;";
     const invertSwitch = document.createElement("div");
-    invertSwitch.style.cssText = "position:relative;width:40px;height:22px;border-radius:11px;background:" + (s.invert ? "#81C784" : "#555") + ";cursor:pointer;transition:background 0.2s;";
+    invertSwitch.style.cssText = "position:relative;width:40px;height:22px;border-radius:11px;background:" + (s.invert ? "#4CAF50" : "#555") + ";cursor:pointer;transition:background 0.2s;";
     const invertKnob = document.createElement("div");
-    invertKnob.style.cssText = "position:absolute;top:2px;left:" + (s.invert ? "22px" : "2px") + ";width:18px;height:18px;border-radius:50%;background:#fff;transition:left 0.2s;";
+    invertKnob.style.cssText = "position:absolute;top:2px;left:" + (s.invert ? "20px" : "2px") + ";width:18px;height:18px;border-radius:50%;background:#fff;transition:left 0.2s;";
     invertSwitch.appendChild(invertKnob);
     const invertTxt = document.createElement("span");
     invertTxt.style.cssText = "font-size:12px;color:#aaa;";
     invertTxt.textContent = s.invert ? xzgT('左真右假','Left True/Right False') : xzgT('左假右真','Left False/Right True');
     invertSwitch.addEventListener("click", () => {
         s.invert = !s.invert;
-        invertSwitch.style.background = s.invert ? "#81C784" : "#555";
-        invertKnob.style.left = s.invert ? "22px" : "2px";
+        invertSwitch.style.background = s.invert ? "#4CAF50" : "#555";
+        invertKnob.style.left = s.invert ? "20px" : "2px";
         invertTxt.textContent = s.invert ? xzgT('左真右假','Left True/Right False') : xzgT('左假右真','Left False/Right True');
         applyPreview();
     });
@@ -400,13 +398,16 @@ function openBoolSettingsPanel(node) {
 
     const btns = document.createElement("div");
     btns.className = "xzg-bs-btns";
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "xzg-bs-btn";
+    resetBtn.textContent = xzgT('恢复默认','Reset');
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "xzg-bs-btn";
     cancelBtn.textContent = xzgT('取消','Cancel');
     const applyBtn = document.createElement("button");
-    applyBtn.className = "xzg-bs-btn xzg-bs-btn-primary";
-    applyBtn.textContent = xzgT('应用','Apply');
-    btns.append(cancelBtn, applyBtn);
+    applyBtn.className = "xzg-bs-btn";
+    applyBtn.textContent = xzgT('确定','OK');
+    btns.append(resetBtn, cancelBtn, applyBtn);
     dialog.appendChild(btns);
 
     document.body.appendChild(dialog);
@@ -496,7 +497,12 @@ function openBoolSettingsPanel(node) {
     const closePanel = () => { dialog.remove(); _boolSettingsPanel = null; };
     title.querySelector(".xzg-bs-close").addEventListener("click", closePanel);
     cancelBtn.addEventListener("click", closePanel);
-    applyBtn.addEventListener("click", () => { closePanel(); });
+    applyBtn.addEventListener("click", closePanel);
+    resetBtn.addEventListener("click", () => {
+        setNodeSettings(node, JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
+        dialog.remove();
+        openBoolSettingsPanel(node);
+    });
 
     setTimeout(() => {
         const onDocClick = (e) => {

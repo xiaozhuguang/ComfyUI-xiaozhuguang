@@ -19,9 +19,9 @@ class XiaozhuguangGetWidget:
             "required": {},
             "optional": {
                 "target_output": ("*", {}),
-                "widget_name": ("STRING", {"default": "", "multiline": False, "tooltip": "留空输出全部控件值；指定widget_name则输出对应的值"}),
-                "show_widget_prefix": ("BOOLEAN", {"default": True, "tooltip": "开启则输出「widget_name: 值」格式，关闭则只输出值"}),
-                "show_extension": ("BOOLEAN", {"default": True, "tooltip": "开启则show_extension（如 .PNG、.jpg 等），关闭则去掉扩展名"}),
+                "widget_name": ("STRING", {"default": "", "multiline": False, "tooltip": "Leave empty to output all widget values; specify widget_name to output the corresponding value"}),
+                "show_widget_prefix": ("BOOLEAN", {"default": True, "tooltip": "Enable to output 'widget_name: value' format, disable to output only the value"}),
+                "show_extension": ("BOOLEAN", {"default": True, "tooltip": "Enable to show file extension (e.g., .PNG, .jpg, etc.), disable to remove the extension"}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
