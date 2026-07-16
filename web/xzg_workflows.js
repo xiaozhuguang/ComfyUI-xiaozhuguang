@@ -137,6 +137,8 @@ class XZGWorkflowsManager {
 
                     this.createPanel(el);
                     this.loadWorkflows();
+                    this.observePanelOpen();
+                    this.onPanelOpen();
                 }
             });
 
@@ -410,6 +412,7 @@ class XZGWorkflowsManager {
             tabBtn.click();
         }
         if (wasOpen) this.hideAllFloatingMenus();
+        else setTimeout(() => this.onPanelOpen(), 60);  // 打开瞬间重置为「全部」并聚焦搜索框
     }
 
     showContextMenu(e, wf) {
@@ -418,9 +421,9 @@ class XZGWorkflowsManager {
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
-            <div class="xzg-wf-ctx-item xzg-wf-ctx-submenu" data-action="move">📁 移动到分类</div>
             <div class="xzg-wf-ctx-item" data-action="rename">✏️ 重命名</div>
             <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ 删除</div>
+            <div class="xzg-wf-ctx-item xzg-wf-ctx-submenu" data-action="move">📁 移动到分类</div>
         `;
         
         document.body.appendChild(menu);
@@ -462,7 +465,7 @@ class XZGWorkflowsManager {
             item.addEventListener("click", (ev) => {
                 ev.stopPropagation();
                 const action = item.dataset.action;
-                this.hideContextMenu();
+                this.hideAllFloatingMenus();
                 
                 if (action === "rename") {
                     this.renameWorkflow(wf);
@@ -858,6 +861,40 @@ class XZGWorkflowsManager {
             }
         } catch (_) {}
         return false;
+    }
+
+    /** 每次面板打开时的默认状态：激活「全部」、清空并聚焦搜索框 */
+    onPanelOpen() {
+        this.currentCategory = "all";
+        if (this.searchInput) {
+            this.searchInput.value = "";
+            this.currentSearch = "";
+            const clearBtn = this.container?.querySelector(".xzg-wf-clear-btn");
+            if (clearBtn) clearBtn.style.display = "none";
+        }
+        this.renderCategories();
+        this.renderWorkflowList();
+        // 延迟聚焦，避免被官方侧边栏打开时的焦点抢走（rAF + 兜底定时器）
+        if (this.searchInput) {
+            const focusSearch = () => { try { this.searchInput.focus(); } catch (e) {} };
+            requestAnimationFrame(() => requestAnimationFrame(focusSearch));
+            setTimeout(focusSearch, 120);
+        }
+    }
+
+    /** 监听面板容器可见性，打开瞬间触发 onPanelOpen（覆盖所有打开入口） */
+    observePanelOpen() {
+        const el = this._panelEl;
+        if (!el || this._panelObserver) return;
+        let wasVisible = this.isPanelOpen();
+        this._panelObserver = new MutationObserver(() => {
+            const visible = this.isPanelOpen();
+            if (visible && !wasVisible) {
+                this.onPanelOpen();
+            }
+            wasVisible = visible;
+        });
+        this._panelObserver.observe(el, { attributes: true, attributeFilter: ["style", "class"] });
     }
 
     /**
@@ -1746,7 +1783,7 @@ class XZGWorkflowsManager {
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                z-index: 10000;
+                z-index: 100002;
             }
             .xzg-wf-dialog {
                 background: var(--comfy-menu-bg, #2a2a2a);
@@ -1905,6 +1942,14 @@ class XZGWorkflowsManager {
             searchInput.focus();
         });
 
+        // 一旦在面板内做任何操作（点击分类/工作流/排序等，且不在搜索框内），取消搜索框聚焦
+        container.addEventListener("mousedown", (e) => {
+            if (e.target.closest(".xzg-wf-search-box")) return;
+            if (this.searchInput && document.activeElement === this.searchInput) {
+                this.searchInput.blur();
+            }
+        });
+
         container.querySelectorAll(".xzg-wf-sort-btn").forEach(btn => {
             btn.addEventListener("click", () => {
                 container.querySelectorAll(".xzg-wf-sort-btn").forEach(b => b.classList.remove("active"));
@@ -1974,9 +2019,9 @@ class XZGWorkflowsManager {
                         <li><b>定位分类</b>：单击工作流项左侧的四个圆点图标，左侧分类树会自动展开并高亮其所属分类</li>
                         <li><b>右键菜单</b>：
                             <ul>
-                                <li>📁 移动到分类：在子菜单中选择目标文件夹或「未分类」</li>
                                 <li>✏️ 重命名：修改显示名称，保留你手工加的编号前缀</li>
                                 <li>🗑️ 删除：移入回收站，可恢复</li>
+                                <li>📁 移动到分类：在子菜单中选择目标文件夹或「未分类」</li>
                             </ul>
                         </li>
                     </ul>
