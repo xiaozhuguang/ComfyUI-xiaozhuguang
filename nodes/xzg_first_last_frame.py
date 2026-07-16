@@ -16,9 +16,9 @@ class XiaozhuguangFirstLastFrame:
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
-    RETURN_NAMES = ("首帧", "尾帧")
+    RETURN_NAMES = ("first_frame", "last_frame")
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
     def execute(self, image):
         if image.shape[0] == 0:

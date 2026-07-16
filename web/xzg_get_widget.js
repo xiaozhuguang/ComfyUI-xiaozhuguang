@@ -79,7 +79,7 @@ function getTargetNodeWidgets(node) {
 function getTargetLinkNodeId(node) {
     if (!node.inputs) return null;
 
-    const targetInput = node.inputs.find(inp => inp.name === "目标节点输出");
+    const targetInput = node.inputs.find(inp => inp.name === "target_output");
     if (!targetInput || !targetInput.link) return null;
 
     const graph = app.graph;
@@ -100,7 +100,7 @@ app.registerExtension({
             if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
             const node = this;
-            const widgetNameWidget = node.widgets?.find(w => w.name === "控件名");
+            const widgetNameWidget = node.widgets?.find(w => w.name === "widget_name");
             if (!widgetNameWidget) return;
 
             const widgetIndex = node.widgets.indexOf(widgetNameWidget);

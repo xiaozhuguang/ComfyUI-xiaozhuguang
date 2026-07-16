@@ -744,7 +744,7 @@ function setupSlider(node) {
     const isInt = p.sliderType === "int";
 
     /* 隐藏 PY 自带滑条 */
-    const dw = node.widgets ? node.widgets.find((w) => w.name === "值") : null;
+    const dw = node.widgets ? node.widgets.find((w) => w.name === "value") : null;
     if (dw) {
         dw.hidden = true;
         dw.computeSize = () => [0, 0];
@@ -1030,7 +1030,7 @@ function setupSlider(node) {
     const origCB = node.onWidgetChanged;
     node.onWidgetChanged = function (name, value, widget) {
         if (origCB) origCB.call(this, name, value, widget);
-        if (name === "值") updateVis(this);
+        if (name === "value") updateVis(this);
     };
 
     /* 节点宽度：更窄更紧凑 */

@@ -48,7 +48,7 @@ app.registerExtension({
             let lastConnected = -1;
             let valueCount = 0;
             for (const inp of this.inputs) {
-                if (!inp.name.startsWith("值")) continue;
+                if (!inp.name.startsWith("value")) continue;
                 if (inp.link != null) lastConnected = valueCount;
                 valueCount++;
             }
@@ -58,7 +58,7 @@ app.registerExtension({
 
             if (valueCount < desiredLen) {
                 for (let i = valueCount; i < desiredLen; i++) {
-                    this.addInput(`值${i}`, "*");
+                    this.addInput(`value${i}`, "*");
                 }
                 this.setSize(this.computeSize());
                 if (app.graph) app.graph.setDirtyCanvas(true, true);
@@ -66,7 +66,7 @@ app.registerExtension({
                 // 从末尾移除多余的无连接 值* 口
                 let removed = 0;
                 for (let i = this.inputs.length - 1; i >= 0 && removed < valueCount - desiredLen; i--) {
-                    if (this.inputs[i] && this.inputs[i].link == null && this.inputs[i].name.startsWith("值")) {
+                    if (this.inputs[i] && this.inputs[i].link == null && this.inputs[i].name.startsWith("value")) {
                         this.removeInput(i);
                         removed++;
                     }

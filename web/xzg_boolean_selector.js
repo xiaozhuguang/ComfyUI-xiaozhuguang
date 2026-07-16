@@ -540,7 +540,7 @@ app.registerExtension({
             const settingsWidget = this.widgets?.find(w => w.name === "_xz_settings");
             if (settingsWidget) settingsWidget.hidden = true;
 
-            const boolWidget = this.widgets?.find(w => w.name === "布尔值");
+            const boolWidget = this.widgets?.find(w => w.name === "boolean_value");
             if (!boolWidget) return;
             const widgetIndex = this.widgets.indexOf(boolWidget);
 

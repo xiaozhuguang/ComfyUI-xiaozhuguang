@@ -175,7 +175,7 @@ app.registerExtension({
             const settingsWidget = this.widgets?.find(w => w.name === "_xz_settings");
             if (settingsWidget) settingsWidget.hidden = true;
 
-            const tagWidget = this.widgets?.find(w => w.name === "标签");
+            const tagWidget = this.widgets?.find(w => w.name === "label");
             if (!tagWidget) return;
             const widgetIndex = this.widgets.indexOf(tagWidget);
 

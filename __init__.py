@@ -86,24 +86,24 @@ class XiaozhuguangPointsEditor:
                 "info": ("STRING", {"default": "", "multiline": True}),
             },
             "optional": {
-                "预览清晰度": ("FLOAT", {"default": 1.0, "min": 0.05, "max": 1.0, "step": 0.05}),
+                "preview_clarity": ("FLOAT", {"default": 1.0, "min": 0.05, "max": 1.0, "step": 0.05}),
             },
         }
 
     RETURN_TYPES = ("STRING", "STRING", "STRING", "INT")
-    RETURN_NAMES = ("正面点坐标", "负面点坐标", "边界框", "帧索引")
+    RETURN_NAMES = ("positive_coords", "negative_coords", "bbox", "frame_index")
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
 
-    def execute(self, image, info, 预览清晰度=1.0):
+    def execute(self, image, info, preview_clarity=1.0):
         positive_coords = None
         negative_coords = None
         bboxes_str = None
         frame_index = 0
 
-        needs_scaling = 预览清晰度 > 0 and 预览清晰度 < 1.0
-        scale_factor = 1.0 / 预览清晰度 if needs_scaling else 1.0
+        needs_scaling = preview_clarity > 0 and preview_clarity < 1.0
+        scale_factor = 1.0 / preview_clarity if needs_scaling else 1.0
 
         if info != '':
             try:
@@ -148,14 +148,14 @@ class XiaozhuguangPointsEditor:
         preview_images = image
         if needs_scaling:
             _, height, width, _ = image.shape
-            new_height = int(height * 预览清晰度)
-            new_width = int(width * 预览清晰度)
+            new_height = int(height * preview_clarity)
+            new_width = int(width * preview_clarity)
             pil_images = tensor_to_pil(image)
             resized_pil = [img.resize((new_width, new_height), Image.LANCZOS) for img in pil_images]
             preview_images = torch.from_numpy(np.stack([np.array(img).astype(np.float32) / 255.0 for img in resized_pil]))
 
         images_hash = hashlib.md5(preview_images.cpu().numpy().tobytes()).hexdigest()
-        rescale_hash = f"{images_hash}_{预览清晰度}"
+        rescale_hash = f"{images_hash}_{preview_clarity}"
 
         if 'last_images_hash' in self.state and self.state['last_images_hash'] == rescale_hash:
             preview_str = self.state['cached_preview']
@@ -190,19 +190,19 @@ class XiaozhuguangSelector:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "标签": ("STRING", {"default": "0"}),
+                "label": ("STRING", {"default": "0"}),
                 "_xz_settings": ("STRING", {"default": "", "multiline": True}),
             },
         }
 
     RETURN_TYPES = ("INT",)
-    RETURN_NAMES = ("数值",)
+    RETURN_NAMES = ("value",)
     FUNCTION = "select"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def select(self, 标签, _xz_settings=""):
+    def select(self, label, _xz_settings=""):
         try:
-            val = int(标签)
+            val = int(label)
             return (val,)
         except (ValueError, TypeError):
             return (0,)
@@ -220,18 +220,18 @@ class XiaozhuguangBooleanSelector:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "布尔值": ("BOOLEAN", {"default": False}),
+                "boolean_value": ("BOOLEAN", {"default": False}),
                 "_xz_settings": ("STRING", {"default": "", "multiline": True}),
             },
         }
 
     RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("布尔",)
+    RETURN_NAMES = ("boolean",)
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def execute(self, 布尔值, _xz_settings=""):
-        return (布尔值,)
+    def execute(self, boolean_value, _xz_settings=""):
+        return (boolean_value,)
 
 
 class XiaozhuguangBoolNot:
@@ -245,17 +245,17 @@ class XiaozhuguangBoolNot:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "整数": ("INT", {"default": 0, "min": 0, "max": 1}),
+                "integer": ("INT", {"default": 0, "min": 0, "max": 1}),
             },
         }
 
     RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("反向布尔",)
+    RETURN_NAMES = ("inverted_boolean",)
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def execute(self, 整数):
-        return (整数 == 0,)
+    def execute(self, integer):
+        return (integer == 0,)
 
 
 class XiaozhuguangTitle:
@@ -266,7 +266,7 @@ class XiaozhuguangTitle:
     RETURN_TYPES = ()
     OUTPUT_NODE = False
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
     def execute(self):
         return ()
@@ -282,17 +282,17 @@ class XiaozhuguangIntToBool:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "整数": ("INT", {"default": 0, "min": 0, "max": 1}),
+                "integer": ("INT", {"default": 0, "min": 0, "max": 1}),
             },
         }
 
     RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("布尔",)
+    RETURN_NAMES = ("boolean",)
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def execute(self, 整数):
-        return (整数 != 0,)
+    def execute(self, integer):
+        return (integer != 0,)
 
 
 class XiaozhuguangNumberSwitch:
@@ -306,22 +306,22 @@ class XiaozhuguangNumberSwitch:
     def INPUT_TYPES(cls):
         optional = {}
         for i in range(50):
-            optional[f"值{i}"] = ("*", {})
+            optional[f"value{i}"] = ("*", {})
         return {
             "required": {
-                "选择": ("INT", {"default": 0, "min": 0, "max": 49, "step": 1, "display": "number", "forceInput": True}),
+                "select": ("INT", {"default": 0, "min": 0, "max": 49, "step": 1, "display": "number", "forceInput": True}),
             },
             "optional": optional,
         }
 
     RETURN_TYPES = ("*",)
-    RETURN_NAMES = ("输出",)
+    RETURN_NAMES = ("output",)
     FUNCTION = "switch"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def switch(self, 选择, **kwargs):
-        选择 = min(max(选择, 0), 49)
-        val = kwargs.get(f"值{选择}")
+    def switch(self, select, **kwargs):
+        select = min(max(select, 0), 49)
+        val = kwargs.get(f"value{select}")
         return (val,)
 
 
@@ -344,7 +344,7 @@ class XiaozhuguangUniversalSlider:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "值": ("FLOAT", {
+                "value": ("FLOAT", {
                     "default": 0.50,
                     "min": -999999,
                     "max": 999999,
@@ -358,20 +358,20 @@ class XiaozhuguangUniversalSlider:
         }
 
     RETURN_TYPES = (any_type,)
-    RETURN_NAMES = ("*",)
+    RETURN_NAMES = ("output",)
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
-    def execute(self, 值, output_type="float"):
-        processed_value = round(float(值), 10)
+    def execute(self, value, output_type="float"):
+        processed_value = round(float(value), 10)
         if output_type == "int":
             return (int(round(processed_value)),)
         else:
             return (processed_value,)
 
     @classmethod
-    def IS_CHANGED(cls, 值, output_type="float"):
-        processed_value = round(float(值), 10)
+    def IS_CHANGED(cls, value, output_type="float"):
+        processed_value = round(float(value), 10)
         if output_type == "int":
             return int(round(processed_value))
         return processed_value
@@ -392,17 +392,17 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangSelector": "小珠光选择器",
-    "XiaozhuguangBooleanSelector": "小珠光布尔",
-    "XiaozhuguangBoolNot": "小珠光反向布尔",
-    "XiaozhuguangTitle": "小珠光标题",
-    "XiaozhuguangIntToBool": "小珠光整数转布尔",
-    "XiaozhuguangNumberSwitch": "小珠光编号切换",
-    "XiaozhuguangUniversalSlider": "小珠光万能滑条",
-    "XiaozhuguangPointsEditor": "小珠光点编辑器",
-    "XiaozhuguangQwenVLInstruct": "小珠光 qwenVL",
-    "XiaozhuguangGetWidget": "小珠光获取控件值",
-    "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
+    "XiaozhuguangSelector": "Xiaozhuguang Selector",
+    "XiaozhuguangBooleanSelector": "Xiaozhuguang Boolean Selector",
+    "XiaozhuguangBoolNot": "Xiaozhuguang Inverted Boolean",
+    "XiaozhuguangTitle": "Xiaozhuguang Title",
+    "XiaozhuguangIntToBool": "Xiaozhuguang Int to Boolean",
+    "XiaozhuguangNumberSwitch": "Xiaozhuguang Number Switch",
+    "XiaozhuguangUniversalSlider": "Xiaozhuguang Universal Slider",
+    "XiaozhuguangPointsEditor": "Xiaozhuguang Points Editor",
+    "XiaozhuguangQwenVLInstruct": "Xiaozhuguang Qwen-VL Instruct",
+    "XiaozhuguangGetWidget": "Xiaozhuguang Get Widget",
+    "XiaozhuguangFirstLastFrame": "Xiaozhuguang First/Last Frame",
 }
 
 WEB_DIRECTORY = "./web"

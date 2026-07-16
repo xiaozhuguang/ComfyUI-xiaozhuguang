@@ -1,0 +1,167 @@
+{
+  "XiaozhuguangPointsEditor": {
+    "display_name": "Xiaozhuguang Points Editor",
+    "inputs": {
+      "image": { "name": "image" },
+      "info": { "name": "info" },
+      "preview_clarity": { "name": "preview clarity" }
+    },
+    "outputs": {
+      "0": { "name": "positive coords" },
+      "1": { "name": "negative coords" },
+      "2": { "name": "bbox" },
+      "3": { "name": "frame index" }
+    }
+  },
+  "XiaozhuguangSelector": {
+    "display_name": "Xiaozhuguang Selector",
+    "inputs": {
+      "label": { "name": "label" },
+      "_xz_settings": { "name": "settings (JSON)" }
+    },
+    "outputs": {
+      "0": { "name": "value" }
+    }
+  },
+  "XiaozhuguangBooleanSelector": {
+    "display_name": "Xiaozhuguang Boolean Selector",
+    "inputs": {
+      "boolean_value": { "name": "boolean value" },
+      "_xz_settings": { "name": "settings (JSON)" }
+    },
+    "outputs": {
+      "0": { "name": "boolean" }
+    }
+  },
+  "XiaozhuguangBoolNot": {
+    "display_name": "Xiaozhuguang Inverted Boolean",
+    "inputs": {
+      "integer": { "name": "integer" }
+    },
+    "outputs": {
+      "0": { "name": "inverted boolean" }
+    }
+  },
+  "XiaozhuguangTitle": {
+    "display_name": "Xiaozhuguang Title"
+  },
+  "XiaozhuguangIntToBool": {
+    "display_name": "Xiaozhuguang Int to Boolean",
+    "inputs": {
+      "integer": { "name": "integer" }
+    },
+    "outputs": {
+      "0": { "name": "boolean" }
+    }
+  },
+  "XiaozhuguangNumberSwitch": {
+    "display_name": "Xiaozhuguang Number Switch",
+    "inputs": {
+      "select": { "name": "select" },
+      "value0": { "name": "value0" },
+      "value1": { "name": "value1" },
+      "value2": { "name": "value2" },
+      "value3": { "name": "value3" },
+      "value4": { "name": "value4" },
+      "value5": { "name": "value5" },
+      "value6": { "name": "value6" },
+      "value7": { "name": "value7" },
+      "value8": { "name": "value8" },
+      "value9": { "name": "value9" },
+      "value10": { "name": "value10" },
+      "value11": { "name": "value11" },
+      "value12": { "name": "value12" },
+      "value13": { "name": "value13" },
+      "value14": { "name": "value14" },
+      "value15": { "name": "value15" },
+      "value16": { "name": "value16" },
+      "value17": { "name": "value17" },
+      "value18": { "name": "value18" },
+      "value19": { "name": "value19" },
+      "value20": { "name": "value20" },
+      "value21": { "name": "value21" },
+      "value22": { "name": "value22" },
+      "value23": { "name": "value23" },
+      "value24": { "name": "value24" },
+      "value25": { "name": "value25" },
+      "value26": { "name": "value26" },
+      "value27": { "name": "value27" },
+      "value28": { "name": "value28" },
+      "value29": { "name": "value29" },
+      "value30": { "name": "value30" },
+      "value31": { "name": "value31" },
+      "value32": { "name": "value32" },
+      "value33": { "name": "value33" },
+      "value34": { "name": "value34" },
+      "value35": { "name": "value35" },
+      "value36": { "name": "value36" },
+      "value37": { "name": "value37" },
+      "value38": { "name": "value38" },
+      "value39": { "name": "value39" },
+      "value40": { "name": "value40" },
+      "value41": { "name": "value41" },
+      "value42": { "name": "value42" },
+      "value43": { "name": "value43" },
+      "value44": { "name": "value44" },
+      "value45": { "name": "value45" },
+      "value46": { "name": "value46" },
+      "value47": { "name": "value47" },
+      "value48": { "name": "value48" },
+      "value49": { "name": "value49" }
+    },
+    "outputs": {
+      "0": { "name": "output" }
+    }
+  },
+  "XiaozhuguangUniversalSlider": {
+    "display_name": "Xiaozhuguang Universal Slider",
+    "inputs": {
+      "value": { "name": "value" },
+      "output_type": { "name": "output type" }
+    },
+    "outputs": {
+      "0": { "name": "output" }
+    }
+  },
+  "XiaozhuguangQwenVLInstruct": {
+    "display_name": "Xiaozhuguang Qwen-VL Instruct",
+    "inputs": {
+      "text": { "name": "text" },
+      "model": { "name": "model" },
+      "quantization": { "name": "quantization" },
+      "keep_model_loaded": { "name": "keep model loaded" },
+      "temperature": { "name": "temperature" },
+      "max_tokens": { "name": "max tokens" },
+      "min_pixels": { "name": "min pixels (x10000)" },
+      "max_pixels": { "name": "max pixels (x10000)" },
+      "seed": { "name": "seed" },
+      "attention": { "name": "attention" },
+      "image": { "name": "image" }
+    },
+    "outputs": {
+      "0": { "name": "result" }
+    }
+  },
+  "XiaozhuguangGetWidget": {
+    "display_name": "Xiaozhuguang Get Widget",
+    "inputs": {
+      "target_output": { "name": "target output" },
+      "widget_name": { "name": "widget name" },
+      "show_widget_prefix": { "name": "show widget name prefix" },
+      "show_extension": { "name": "show file extension" }
+    },
+    "outputs": {
+      "0": { "name": "widget value" }
+    }
+  },
+  "XiaozhuguangFirstLastFrame": {
+    "display_name": "Xiaozhuguang First/Last Frame",
+    "inputs": {
+      "image": { "name": "image" }
+    },
+    "outputs": {
+      "0": { "name": "first frame" },
+      "1": { "name": "last frame" }
+    }
+  }
+}

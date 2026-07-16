@@ -1,0 +1,167 @@
+{
+  "XiaozhuguangPointsEditor": {
+    "display_name": "小珠光点编辑器",
+    "inputs": {
+      "image": { "name": "图像" },
+      "info": { "name": "信息" },
+      "preview_clarity": { "name": "预览清晰度" }
+    },
+    "outputs": {
+      "0": { "name": "正面点坐标" },
+      "1": { "name": "负面点坐标" },
+      "2": { "name": "边界框" },
+      "3": { "name": "帧索引" }
+    }
+  },
+  "XiaozhuguangSelector": {
+    "display_name": "小珠光选择器",
+    "inputs": {
+      "label": { "name": "标签" },
+      "_xz_settings": { "name": "设置(JSON)" }
+    },
+    "outputs": {
+      "0": { "name": "数值" }
+    }
+  },
+  "XiaozhuguangBooleanSelector": {
+    "display_name": "小珠光布尔",
+    "inputs": {
+      "boolean_value": { "name": "布尔值" },
+      "_xz_settings": { "name": "设置(JSON)" }
+    },
+    "outputs": {
+      "0": { "name": "布尔" }
+    }
+  },
+  "XiaozhuguangBoolNot": {
+    "display_name": "小珠光反向布尔",
+    "inputs": {
+      "integer": { "name": "整数" }
+    },
+    "outputs": {
+      "0": { "name": "反向布尔" }
+    }
+  },
+  "XiaozhuguangTitle": {
+    "display_name": "小珠光标题"
+  },
+  "XiaozhuguangIntToBool": {
+    "display_name": "小珠光整数转布尔",
+    "inputs": {
+      "integer": { "name": "整数" }
+    },
+    "outputs": {
+      "0": { "name": "布尔" }
+    }
+  },
+  "XiaozhuguangNumberSwitch": {
+    "display_name": "小珠光编号切换",
+    "inputs": {
+      "select": { "name": "选择" },
+      "value0": { "name": "值0" },
+      "value1": { "name": "值1" },
+      "value2": { "name": "值2" },
+      "value3": { "name": "值3" },
+      "value4": { "name": "值4" },
+      "value5": { "name": "值5" },
+      "value6": { "name": "值6" },
+      "value7": { "name": "值7" },
+      "value8": { "name": "值8" },
+      "value9": { "name": "值9" },
+      "value10": { "name": "值10" },
+      "value11": { "name": "值11" },
+      "value12": { "name": "值12" },
+      "value13": { "name": "值13" },
+      "value14": { "name": "值14" },
+      "value15": { "name": "值15" },
+      "value16": { "name": "值16" },
+      "value17": { "name": "值17" },
+      "value18": { "name": "值18" },
+      "value19": { "name": "值19" },
+      "value20": { "name": "值20" },
+      "value21": { "name": "值21" },
+      "value22": { "name": "值22" },
+      "value23": { "name": "值23" },
+      "value24": { "name": "值24" },
+      "value25": { "name": "值25" },
+      "value26": { "name": "值26" },
+      "value27": { "name": "值27" },
+      "value28": { "name": "值28" },
+      "value29": { "name": "值29" },
+      "value30": { "name": "值30" },
+      "value31": { "name": "值31" },
+      "value32": { "name": "值32" },
+      "value33": { "name": "值33" },
+      "value34": { "name": "值34" },
+      "value35": { "name": "值35" },
+      "value36": { "name": "值36" },
+      "value37": { "name": "值37" },
+      "value38": { "name": "值38" },
+      "value39": { "name": "值39" },
+      "value40": { "name": "值40" },
+      "value41": { "name": "值41" },
+      "value42": { "name": "值42" },
+      "value43": { "name": "值43" },
+      "value44": { "name": "值44" },
+      "value45": { "name": "值45" },
+      "value46": { "name": "值46" },
+      "value47": { "name": "值47" },
+      "value48": { "name": "值48" },
+      "value49": { "name": "值49" }
+    },
+    "outputs": {
+      "0": { "name": "输出" }
+    }
+  },
+  "XiaozhuguangUniversalSlider": {
+    "display_name": "小珠光万能滑条",
+    "inputs": {
+      "value": { "name": "值" },
+      "output_type": { "name": "输出类型" }
+    },
+    "outputs": {
+      "0": { "name": "输出" }
+    }
+  },
+  "XiaozhuguangQwenVLInstruct": {
+    "display_name": "小珠光 qwenVL",
+    "inputs": {
+      "text": { "name": "文本" },
+      "model": { "name": "模型" },
+      "quantization": { "name": "量化" },
+      "keep_model_loaded": { "name": "保持模型加载" },
+      "temperature": { "name": "温度" },
+      "max_tokens": { "name": "最大令牌数" },
+      "min_pixels": { "name": "最小像素(万)" },
+      "max_pixels": { "name": "最大像素(万)" },
+      "seed": { "name": "随机种子" },
+      "attention": { "name": "注意力实现" },
+      "image": { "name": "图像" }
+    },
+    "outputs": {
+      "0": { "name": "结果" }
+    }
+  },
+  "XiaozhuguangGetWidget": {
+    "display_name": "小珠光获取控件值",
+    "inputs": {
+      "target_output": { "name": "目标节点输出" },
+      "widget_name": { "name": "控件名" },
+      "show_widget_prefix": { "name": "显示控件名前缀" },
+      "show_extension": { "name": "显示文件扩展名" }
+    },
+    "outputs": {
+      "0": { "name": "控件值" }
+    }
+  },
+  "XiaozhuguangFirstLastFrame": {
+    "display_name": "小珠光首尾帧",
+    "inputs": {
+      "image": { "name": "图像" }
+    },
+    "outputs": {
+      "0": { "name": "首帧" },
+      "1": { "name": "尾帧" }
+    }
+  }
+}

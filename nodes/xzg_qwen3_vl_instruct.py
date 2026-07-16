@@ -105,8 +105,9 @@ class XiaozhuguangQwenVLInstruct:
         }
 
     RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("result",)
     FUNCTION = "inference"
-    CATEGORY = "小珠光"
+    CATEGORY = "xiaozhuguang"
 
     def inference(
         self,
