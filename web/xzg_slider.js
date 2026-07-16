@@ -1,4 +1,6 @@
 import { app } from "../../scripts/app.js";
+import { xzgT } from "./xzg_i18n.js";
+
 
 (function() {
     const XzgSliderSettings = {
@@ -31,56 +33,56 @@ import { app } from "../../scripts/app.js";
                 <style>.xzg-snap-input::-webkit-outer-spin-button,.xzg-snap-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}</style>
                 <div id="xzg-slider-drag-handle" style="display:flex;align-items:center;gap:8px;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #3a3a3a;cursor:move;user-select:none;">
                     <div style="width:12px;height:12px;border-radius:50%;background:transparent;"></div>
-                    <span style="font-weight:bold;font-size:14px;">小珠光滑条设置</span>
+                    <span style="font-weight:bold;font-size:14px;">${xzgT('小珠光滑条设置','Xiaozhuguang Slider Settings')}</span>
                 </div>
                 <div style="display:flex;flex-direction:column;gap:12px;">
                     <div style="display:flex;align-items:center;gap:10px;">
-                        <label style="width:60px;font-size:12px;color:#aaa;">数值类型</label>
+                        <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('数值类型','Value Type')}</label>
                         <div style="flex:1;display:flex;gap:4px;">
                             <button id="xzg-slider-type-int" type="button"
                                 style="flex:1;padding:6px;background:${isInt ? '#555' : '#3a3a3a'};border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-weight:${isInt ? 'bold' : 'normal'};">
-                                整数
+                                ${xzgT('整数','Integer')}
                             </button>
                             <button id="xzg-slider-type-float" type="button"
                                 style="flex:1;padding:6px;background:${!isInt ? '#555' : '#3a3a3a'};border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-weight:${!isInt ? 'bold' : 'normal'};">
-                                浮点
+                                ${xzgT('浮点','Float')}
                             </button>
                         </div>
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
-                        <label style="width:60px;font-size:12px;color:#aaa;">最小值</label>
+                        <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('最小值','Min')}</label>
                         <input type="number" id="xzg-slider-min" value="${cfg.min}" step="${isInt ? 1 : 0.01}"
                             style="flex:1;padding:6px 8px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:12px;outline:none;">
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
-                        <label style="width:60px;font-size:12px;color:#aaa;">最大值</label>
+                        <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('最大值','Max')}</label>
                         <input type="number" id="xzg-slider-max" value="${cfg.max}" step="${isInt ? 1 : 0.01}"
                             style="flex:1;padding:6px 8px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:12px;outline:none;">
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;">
-                        <label style="width:60px;font-size:12px;color:#aaa;">步长</label>
+                        <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('步长','Step')}</label>
                         <input type="number" id="xzg-slider-step" value="${cfg.step ?? 1}" step="${isInt ? 1 : 0.01}"
                             style="flex:1;padding:6px 8px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:12px;outline:none;">
                     </div>
                     <div id="xzg-slider-snaps-section">
                         <div style="display:flex;align-items:center;gap:10px;">
-                            <label style="width:60px;font-size:12px;color:#aaa;">多值定格</label>
+                            <label style="width:60px;font-size:12px;color:#aaa;">${xzgT('多值定格','Snap Values')}</label>
                             <input type="checkbox" id="xzg-slider-use-snaps" ${cfg.useSnaps ? 'checked' : ''}
                                 style="accent-color:#555;cursor:pointer;">
-                            <span style="font-size:11px;color:#666;">最多5个</span>
+                            <span style="font-size:11px;color:#666;">${xzgT('最多5个','Max 5')}</span>
                         </div>
                         <div id="xzg-slider-snaps-list" style="display:${cfg.useSnaps ? 'flex' : 'none'};flex-wrap:wrap;gap:4px;margin-top:6px;">
                             ${[0,1,2,3,4].map(i => {
                                 const v = (cfg.snaps && cfg.snaps[i] !== undefined) ? cfg.snaps[i] : '';
-                                return `<input type="number" class="xzg-snap-input" data-index="${i}" value="${v}" placeholder="值${i+1}"
+                                return `<input type="number" class="xzg-snap-input" data-index="${i}" value="${v}" placeholder="${xzgT('值','V')}${i+1}"
                                     style="width:40px;padding:4px 2px;background:#1a1a1a;border:1px solid #444;border-radius:4px;color:#fff;font-size:11px;outline:none;text-align:center;-moz-appearance:textfield;">`;
                             }).join('')}
                         </div>
                         <div id="xzg-slider-snap-style" style="display:${cfg.useSnaps ? 'flex' : 'none'};align-items:center;gap:10px;margin-top:6px;">
-                            <label style="font-size:11px;color:#aaa;white-space:nowrap;">圆点颜色</label>
+                            <label style="font-size:11px;color:#aaa;white-space:nowrap;">${xzgT('圆点颜色','Dot Color')}</label>
                             <input type="color" id="xzg-slider-snap-color" value="${cfg.snapTickColor ?? '#555'}"
                                 style="width:24px;height:24px;border:1px solid #555;border-radius:3px;background:transparent;cursor:pointer;padding:0;">
-                            <label style="font-size:11px;color:#aaa;white-space:nowrap;margin-left:4px;">大小</label>
+                            <label style="font-size:11px;color:#aaa;white-space:nowrap;margin-left:4px;">${xzgT('大小','Size')}</label>
                             <input type="range" id="xzg-slider-snap-size" min="3" max="14" value="${cfg.snapTickSize ?? 6}"
                                 style="flex:1;accent-color:#555;cursor:pointer;">
                             <span id="xzg-slider-snap-size-val" style="min-width:20px;font-size:11px;color:#ccc;">${cfg.snapTickSize ?? 6}</span>
@@ -89,17 +91,17 @@ import { app } from "../../scripts/app.js";
                     <div style="display:flex;gap:8px;margin-top:8px;">
                         <button id="xzg-slider-reset" type="button"
                             style="flex:1;padding:6px;background:#555;border:none;border-radius:4px;color:#ccc;font-size:11px;cursor:pointer;">
-                            恢复默认
+                            ${xzgT('恢复默认','Reset')}
                         </button>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:8px;">
                         <button id="xzg-slider-cancel" type="button"
                             style="flex:1;padding:8px;background:#444;border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;">
-                            取消
+                            ${xzgT('取消','Cancel')}
                         </button>
                         <button id="xzg-slider-ok" type="button"
                             style="flex:1;padding:8px;background:#555;border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-weight:bold;">
-                            确定
+                            ${xzgT('确定','OK')}
                         </button>
                     </div>
                 </div>
@@ -212,8 +214,8 @@ import { app } from "../../scripts/app.js";
                     newMax = parseFloat(maxInput.value) || 100;
                     newStep = parseFloat(stepInput.value) || 1;
                 }
-                if (newMin >= newMax) { alert("最小值必须小于最大值"); return; }
-                if (newStep <= 0) { alert("步长必须大于0"); return; }
+                if (newMin >= newMax) { alert(xzgT("最小值必须小于最大值","Min must be less than Max")); return; }
+                if (newStep <= 0) { alert(xzgT("步长必须大于0","Step must be greater than 0")); return; }
 
                 if (!node._xzgCfg) node._xzgCfg = {};
                 node._xzgCfg.min = newMin;
@@ -450,7 +452,7 @@ import { app } from "../../scripts/app.js";
                     const options = origGetNodeMenuOptions.call(this, node);
                     if (node.type !== "XiaozhuguangSlider" || !options) return options;
                     const sliderItem = {
-                        content: `<span style="color:#FFD700;">小珠光滑条设置</span>`,
+                        content: `<span style="color:#FFD700;">${xzgT('小珠光滑条设置','Xiaozhuguang Slider Settings')}</span>`,
                         callback: () => {
                             setupNodeSlider(node);
                             XzgSliderSettings.show(node);

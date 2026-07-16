@@ -5,6 +5,7 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { xzgT } from "./xzg_i18n.js";
 
 const MODE_ALWAYS = 0;
 const MODE_BYPASS = 4;
@@ -328,7 +329,7 @@ const XZGGroup = {
                 const opts = orig.apply(this, arguments);
                 if (!opts?.length) return opts;
                 opts.splice(0, 0, {
-                    content: '<span style="color:#FFD700;">📦 小珠光编组 <span style="color:#4CAF50;font-size:10px;">快捷键Ctrl+' + (self.shortcutKey || 'g').toUpperCase() + '</span></span>',
+                    content: '<span style="color:#FFD700;">📦 ' + xzgT('小珠光编组','Xiaozhuguang Group') + ' <span style="color:#4CAF50;font-size:10px;">' + xzgT('快捷键','Shortcut') + 'Ctrl+' + (self.shortcutKey || 'g').toUpperCase() + '</span></span>',
                     callback: () => self.createGroupFromSelection()
                 });
                 return opts;

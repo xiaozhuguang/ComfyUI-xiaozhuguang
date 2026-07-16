@@ -358,7 +358,7 @@ git clone https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang.git
 ```
 ComfyUI-xiaozhuguang/
 ├── __init__.py                  # 节点定义
-├── extension.json               # 扩展配置（版本 4.0）
+├── extension.json               # 扩展配置（版本 5.0.0）
 ├── LICENSE                      # MIT 许可证
 ├── README.md                    # 本文档
 ├── requirements.txt             # 依赖声明（无外部依赖）

@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { xzgT } from "./xzg_i18n.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
 window.pinyinPro = { pinyin: pinyinPro };
 
@@ -34,7 +35,7 @@ class Xiaozhuguang {
             if (data) {
                 const parsed = JSON.parse(data);
                 if (!parsed.categories) {
-                    parsed.categories = [{ id: "default", name: "默认收藏", color: "#4CAF50" }];
+                    parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#4CAF50" }];
                 }
                 parsed.categories.forEach((c, i) => {
                     if (c.order === undefined) c.order = i;
@@ -64,7 +65,7 @@ class Xiaozhuguang {
             console.error("加载收藏失败:", e);
         }
         return {
-            categories: [{ id: "default", name: "默认收藏", color: "#F44336" }],
+            categories: [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#F44336" }],
             nodes: [],
             workflows: [],
             sortMode: "default"
@@ -171,7 +172,7 @@ class Xiaozhuguang {
             `;
             document.body.appendChild(preview);
         }
-        preview.textContent = name || "拖动中...";
+        preview.textContent = name || xzgT('拖动中...','Dragging...');
         preview.style.left = x + "px";
         preview.style.top = y + "px";
     }
@@ -1292,13 +1293,13 @@ class Xiaozhuguang {
         panel.style.userSelect = "none";
 
         panel.innerHTML = `
-            <div class="nf-panel-resizer" title="拖动调节宽度"></div>
-            <div class="nf-panel-bottom-resizer" title="拖动调节高度"></div>
-            <div class="nf-header" title="拖拽标题栏可移动窗口">
-                <span class="nf-title">⭐ 小珠光收藏 · 拖动标题栏改变位置</span>
+            <div class="nf-panel-resizer" title="${xzgT('拖动调节宽度','Drag to resize width')}"></div>
+            <div class="nf-panel-bottom-resizer" title="${xzgT('拖动调节高度','Drag to resize height')}"></div>
+            <div class="nf-header" title="${xzgT('拖拽标题栏可移动窗口','Drag the title bar to move window')}">
+                <span class="nf-title">⭐ ${xzgT('小珠光收藏 · 拖动标题栏改变位置','Xiaozhuguang Favorites · drag title bar to reposition')}</span>
                 <div class="nf-header-btns">
-                    <button class="nf-header-btn" id="nf-export-btn" title="导出收藏">导出</button>
-                    <button class="nf-header-btn" id="nf-import-btn" title="导入收藏">导入</button>
+                    <button class="nf-header-btn" id="nf-export-btn" title="${xzgT('导出收藏','Export favorites')}">${xzgT('导出','Export')}</button>
+                    <button class="nf-header-btn" id="nf-import-btn" title="${xzgT('导入收藏','Import favorites')}">${xzgT('导入','Import')}</button>
                     <button class="nf-header-btn nf-shortcut-display" id="nf-shortcut-btn"></button>
                     <button class="nf-toggle-btn" id="nf-toggle-btn">−</button>
                     <input type="file" id="nf-import-file" accept=".json,application/json" style="display:none" />
@@ -1306,19 +1307,19 @@ class Xiaozhuguang {
             </div>
             <div class="nf-content" id="nf-content" style="display: none;">
                 <div class="nf-tab-bar">
-                    <div class="nf-tab-btn active" data-tab="favorites">⭐ 收藏</div>
-                    <div class="nf-tab-btn" data-tab="notes">📝 备注</div>
+                    <div class="nf-tab-btn active" data-tab="favorites">⭐ ${xzgT('收藏','Favorites')}</div>
+                    <div class="nf-tab-btn" data-tab="notes">📝 ${xzgT('备注','Notes')}</div>
                 </div>
                 <div class="nf-tab-content" id="nf-tab-favorites">
                     <div class="nf-search-box">
-                        <input type="text" id="nf-search-input" placeholder="🔍 搜索收藏的节点..." />
-                        <button class="nf-clear-btn" id="nf-clear-btn" title="清除搜索" style="display: none;">✕</button>
+                        <input type="text" id="nf-search-input" placeholder="🔍 ${xzgT('搜索收藏的节点...','Search favorited nodes...')}" />
+                        <button class="nf-clear-btn" id="nf-clear-btn" title="${xzgT('清除搜索','Clear search')}" style="display: none;">✕</button>
                     </div>
                     <div class="nf-split-container">
                         <div class="nf-left-col">
                             <div class="nf-categories-header">
-                                <span>分类</span>
-                                <button class="nf-add-cat-btn" id="nf-add-cat-btn" title="新建分类">+</button>
+                                <span>${xzgT('分类','Categories')}</span>
+                                <button class="nf-add-cat-btn" id="nf-add-cat-btn" title="${xzgT('新建分类','New category')}">+</button>
                             </div>
                             <div class="nf-category-list" id="nf-category-list"></div>
                         </div>
@@ -1326,27 +1327,27 @@ class Xiaozhuguang {
                         <div class="nf-right-col">
                             <div class="nf-favorites-header">
                                 <div class="nf-fav-header-left">
-                                    <span>收藏节点</span>
+                                    <span>${xzgT('收藏节点','Favorite Nodes')}</span>
                                     <span class="nf-count" id="nf-count">0</span>
-                                    <button class="nf-clear-invalid-btn" id="nf-clear-invalid-btn" style="display:none;" title="清理所有失效节点">🧹 清理失效</button>
+                                    <button class="nf-clear-invalid-btn" id="nf-clear-invalid-btn" style="display:none;" title="${xzgT('清理所有失效节点','Clear all invalid nodes')}">🧹 ${xzgT('清理失效','Clear invalid')}</button>
                                 </div>
                                 <div class="nf-sort-btns">
-                                    <button class="nf-sort-btn active" id="nf-sort-default" title="按使用频率排序">🔥</button>
-                                    <button class="nf-sort-btn" id="nf-sort-time" title="按最近使用排序">🕐</button>
+                                    <button class="nf-sort-btn active" id="nf-sort-default" title="${xzgT('按使用频率排序','Sort by usage frequency')}">🔥</button>
+                                    <button class="nf-sort-btn" id="nf-sort-time" title="${xzgT('按最近使用排序','Sort by recent use')}">🕐</button>
                                 </div>
                             </div>
                             <div class="nf-favorites-list" id="nf-favorites-list">
-                                <div class="nf-empty-tip">暂无收藏节点<br/>右键节点选择"收藏节点"</div>
+                                <div class="nf-empty-tip">${xzgT('暂无收藏节点','No favorited nodes yet')}<br/>${xzgT('右键节点选择"收藏节点"','Right-click a node and choose "Favorite Node"')}</div>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div class="nf-tab-content" id="nf-tab-notes" style="display: none;">
                     <div class="nf-notes-header">
-                        <span>📝 记事本</span>
-                        <span class="nf-notes-count" id="nf-notes-count">0 字</span>
+                        <span>📝 ${xzgT('记事本','Notepad')}</span>
+                        <span class="nf-notes-count" id="nf-notes-count">${xzgT('0 字','0 chars')}</span>
                     </div>
-                    <textarea class="nf-notes-textarea" id="nf-notes-textarea" placeholder="在这里记录笔记...&#10;&#10;内容会自动保存，刷新不丢失。"></textarea>
+                    <textarea class="nf-notes-textarea" id="nf-notes-textarea" placeholder="${xzgT('在这里记录笔记...&#10;&#10;内容会自动保存，刷新不丢失。','Record notes here...&#10;&#10;Auto-saved, persists after refresh.')}"></textarea>
                 </div>
             </div>
         `;
@@ -1458,7 +1459,7 @@ class Xiaozhuguang {
                 e.preventDefault();
                 const hasData = this.favorites.nodes.some(n => (n.useCount || 0) > 0);
                 if (!hasData) return;
-                if (confirm("确定清空所有收藏节点的使用频率记录吗？")) {
+                if (confirm(xzgT('确定清空所有收藏节点的使用频率记录吗？','Clear all favorite nodes usage frequency records?'))){
                     this.favorites.nodes.forEach(n => n.useCount = 0);
                     this.saveFavorites();
                     this.renderFavorites();
@@ -1477,9 +1478,9 @@ class Xiaozhuguang {
             clearInvalidBtn.addEventListener("click", () => {
                 const count = this.getInvalidFavorites().length;
                 if (count === 0) return;
-                if (confirm(`确定要清理 ${count} 个失效的收藏节点吗？\n（这些节点对应的插件可能已卸载）`)) {
+                if (confirm(xzgT('确定要清理 ','Sure to clean up ') + count + xzgT(' 个失效的收藏节点吗？\n（这些节点对应的插件可能已卸载）',' invalid favorite nodes?\n(The corresponding plugin may have been uninstalled)'))){
                     const removed = this.removeInvalidFavorites();
-                    alert(`已清理 ${removed} 个失效节点`);
+                    alert(xzgT('已清理 ','Cleaned ') + removed + xzgT(' 个失效节点',' invalid nodes'));
                 }
             });
         }
@@ -1526,7 +1527,7 @@ class Xiaozhuguang {
         if (!this.notesTextarea || !this.notesCount) return;
         const text = this.notesTextarea.value;
         const count = text.length;
-        this.notesCount.textContent = count + " 字";
+        this.notesCount.textContent = count + xzgT(' 字',' chars');
     }
 
     scheduleSaveNotes() {
@@ -1774,7 +1775,7 @@ class Xiaozhuguang {
         if (shortcut.alt) parts.push("Alt");
         if (shortcut.shift) parts.push("Shift");
         parts.push(shortcut.key.toUpperCase());
-        display.textContent = "快捷键: " + parts.join("+");
+        display.textContent = xzgT('快捷键','Shortcut') + ": " + parts.join("+");
     }
 
     showShortcutDialog() {
@@ -1782,9 +1783,9 @@ class Xiaozhuguang {
         dialog.className = "nf-dialog-overlay";
         dialog.innerHTML = `
             <div class="nf-dialog">
-                <div class="nf-dialog-title">设置快捷键</div>
+                <div class="nf-dialog-title">${xzgT('设置快捷键','Set Shortcut')}</div>
                 <div class="nf-dialog-body">
-                    <p style="margin-bottom: 16px; color: #888; font-size: 12px; text-align: center;">请按下你想要的快捷键</p>
+                    <p style="margin-bottom: 16px; color: #888; font-size: 12px; text-align: center;">${xzgT('请按下你想要的快捷键','Press the shortcut you want')}</p>
                     <div style="text-align: center; margin-bottom: 16px;">
                         <div id="nf-listen-display" style="
                             padding: 16px 24px;
@@ -1796,12 +1797,12 @@ class Xiaozhuguang {
                             font-weight: bold;
                             min-width: 180px;
                             display: inline-block;
-                        ">请按快捷键...</div>
+                        ">${xzgT('请按快捷键...','Press shortcut...')}</div>
                     </div>
-                    <p style="text-align: center; color: #666; font-size: 11px;">按 Esc 取消</p>
+                    <p style="text-align: center; color: #666; font-size: 11px;">${xzgT('按 Esc 取消','Press Esc to cancel')}</p>
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dialog-close">关闭</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dialog-close">${xzgT('关闭','Close')}</button>
                 </div>
             </div>
         `;
@@ -2020,8 +2021,8 @@ class Xiaozhuguang {
                 const count = nodes.length;
                 const wfOption = {
                     content: wfId
-                        ? `<span style="color:#FFD700;">⭐ 取消收藏多节点 (${count}个节点)</span>`
-                        : `<span style="color:#FFD700;">🔗 收藏多节点 (${count}个节点)</span>`,
+                        ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏多节点','Unfavorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})</span>`
+                        : `<span style="color:#FFD700;">🔗 ${xzgT('收藏多节点','Favorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})</span>`,
                     callback: () => {
                         if (wfId) {
                             self.removeFavoriteWorkflow(wfId);
@@ -2040,7 +2041,7 @@ class Xiaozhuguang {
                 // 单节点收藏
                 const isFavorited = self.isNodeFavorited(node.type);
                 let favOption = {
-                    content: isFavorited ? `<span style="color:#FFD700;">⭐ 取消收藏</span>` : `<span style="color:#FFD700;">☆ 收藏节点</span>`,
+                    content: isFavorited ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏','Unfavorite')}</span>` : `<span style="color:#FFD700;">☆ ${xzgT('收藏节点','Favorite Node')}</span>`,
                     callback: () => {
                         if (isFavorited) {
                             self.removeFavorite(node.type);
@@ -2083,8 +2084,8 @@ class Xiaozhuguang {
                 const count = nodes.length;
                 const wfOption = {
                     content: wfId
-                        ? `<span style="color:#FFD700;">⭐ 取消收藏工作流 (${count}个节点)</span>`
-                        : `<span style="color:#FFD700;">🔗 收藏多节点 (${count}个节点)</span>`,
+                        ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏工作流','Unfavorite workflow')} (${count}${xzgT('个节点',' nodes')})</span>`
+                        : `<span style="color:#FFD700;">🔗 ${xzgT('收藏多节点','Favorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})</span>`,
                     callback: () => {
                         if (wfId) {
                             self.removeFavoriteWorkflow(wfId);
@@ -2108,7 +2109,7 @@ class Xiaozhuguang {
             if (sc.shift) scParts.push("Shift");
             scParts.push(sc.key.toUpperCase());
             const xzgItem = {
-                content: `<span style="color:#FFD700;">⭐ 小珠光收藏</span> <span style="color:#4CAF50;font-size:10px;">快捷键${scParts.join("+")}</span>`,
+                content: `<span style="color:#FFD700;">⭐ ${xzgT('小珠光收藏','Xiaozhuguang Favorites')}</span> <span style="color:#4CAF50;font-size:10px;">${xzgT('快捷键','Shortcut')}${scParts.join("+")}</span>`,
                 callback: () => {
                     self.togglePanel();
                 }
@@ -2279,7 +2280,7 @@ class Xiaozhuguang {
             this.showWorkflowCategoryDialog({ nodesData, linksData, name, typeSignature, minX, minY, rawName, selectedNodes });
         } catch (e) {
             console.error("[小珠光] 收藏多节点失败:", e);
-            alert("收藏多节点失败：" + e.message);
+            alert(xzgT('收藏多节点失败：','Failed to favorite multiple nodes: ') + e.message);
         }
     }
 
@@ -2308,8 +2309,8 @@ class Xiaozhuguang {
                     <input type="text" id="nf-wf-name" value="${data.name}" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #555;border-radius:4px;color:#ddd;box-sizing:border-box;" />
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -2353,7 +2354,7 @@ class Xiaozhuguang {
                 }
             } catch (e) {
                 console.error("[小珠光] 保存多节点收藏失败:", e);
-                alert("保存失败：" + e.message);
+                alert(xzgT('保存失败：','Save failed: ') + e.message);
             }
         });
 
@@ -2587,11 +2588,11 @@ class Xiaozhuguang {
                 } else if (el.dataset.action === "move") {
                     this.showMoveWorkflowCategoryDialog(wfId);
                 } else if (el.dataset.action === "clear") {
-                    if (useCount > 0 && confirm(`确定清空工作流"${wfName}"的使用频率记录吗？`)) {
+                    if (useCount > 0 && confirm(xzgT('确定清空工作流','Clear workflow ') + `"${wfName}"` + xzgT('的使用频率记录吗？',' usage frequency records?'))){
                         if (wf) { wf.useCount = 0; this.saveFavorites(); this.renderFavorites(); }
                     }
                 } else if (el.dataset.action === "delete") {
-                    if (confirm(`确定要删除多节点收藏"${wfName}"吗？`)) {
+                    if (confirm(xzgT('确定要删除多节点收藏','Sure to delete multi-node favorite ') + `"${wfName}"` + xzgT('吗？','?'))){
                         this.removeFavoriteWorkflow(wfId);
                     }
                 }
@@ -2636,8 +2637,8 @@ class Xiaozhuguang {
                     <select id="nf-cat-select">${optionsHTML}</select>
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -2670,8 +2671,8 @@ class Xiaozhuguang {
                     <input type="text" id="nf-wf-rename-input" value="${oldName.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #555;border-radius:4px;color:#ddd;margin-bottom:10px;box-sizing:border-box;" />
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -2723,8 +2724,8 @@ class Xiaozhuguang {
                     <input type="text" id="nf-node-rename-input" value="${oldName.replace(/"/g, '&quot;')}" style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #555;border-radius:4px;color:#ddd;margin-bottom:10px;box-sizing:border-box;" />
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -3011,7 +3012,7 @@ class Xiaozhuguang {
                 } else if (el.dataset.action === "edit") {
                     this.showEditCategoryDialog(catId);
                 } else if (el.dataset.action === "delete") {
-                    if (confirm("确定删除该分类吗？")) {
+                    if (confirm(xzgT('确定删除该分类吗？','Sure to delete this category?'))){
                         this.deleteCategory(catId);
                     }
                 }
@@ -3056,7 +3057,7 @@ class Xiaozhuguang {
             </div>
             <div style="border-top:1px solid #444;margin:4px 0;"></div>
             <div class="nf-cat-menu-item" data-action="delete" style="padding:8px 16px;cursor:pointer;color:#ddd;font-size:13px;display:flex;align-items:center;gap:8px;transition:background:0.15s;">
-                <span style="color:#f44336;">×</span> 取消收藏
+                <span style="color:#f44336;">×</span> ${xzgT('取消收藏','Unfavorite')}
             </div>
         `;
 
@@ -3071,7 +3072,7 @@ class Xiaozhuguang {
                 } else if (el.dataset.action === "move") {
                     this.showMoveNodeCategoryDialog(nodeType);
                 } else if (el.dataset.action === "clear") {
-                    if (useCount > 0 && confirm(`确定清空"${nodeName}"的使用频率记录吗？`)) {
+                    if (useCount > 0 && confirm(xzgT('确定清空','Clear ') + `"${nodeName}"` + xzgT('的使用频率记录吗？',' usage frequency records?'))){
                         const n = this.favorites.nodes.find(x => x.type === nodeType);
                         if (n) {
                             n.useCount = 0;
@@ -3080,7 +3081,7 @@ class Xiaozhuguang {
                         }
                     }
                 } else if (el.dataset.action === "delete") {
-                    if (confirm(`确定要取消收藏"${nodeName}"吗？`)) {
+                    if (confirm(xzgT('确定要取消收藏','Sure to unfavorite ') + `"${nodeName}"` + xzgT('吗？','?'))){
                         this.removeFavorite(nodeType);
                     }
                 }
@@ -3101,6 +3102,30 @@ class Xiaozhuguang {
             document.addEventListener("click", closeMenu);
             document.addEventListener("contextmenu", closeMenu);
         });
+    }
+
+    // 语言切换时刷新面板内一次性构建的静态文案
+    refreshStaticLabels() {
+        const c = this.panel;
+        if (!c) return;
+        const title = c.querySelector(".nf-title");
+        if (title) title.textContent = "⭐ " + xzgT('小珠光收藏 · 拖动标题栏改变位置','Xiaozhuguang Favorites · drag title bar to reposition');
+        const exp = c.querySelector("#nf-export-btn");
+        if (exp) exp.textContent = xzgT('导出','Export');
+        const imp = c.querySelector("#nf-import-btn");
+        if (imp) imp.textContent = xzgT('导入','Import');
+        const tabFav = c.querySelector('.nf-tab-btn[data-tab="favorites"]');
+        if (tabFav) tabFav.textContent = "⭐ " + xzgT('收藏','Favorites');
+        const tabNotes = c.querySelector('.nf-tab-btn[data-tab="notes"]');
+        if (tabNotes) tabNotes.textContent = "📝 " + xzgT('备注','Notes');
+        const search = c.querySelector("#nf-search-input");
+        if (search) search.placeholder = "🔍 " + xzgT('搜索收藏的节点...','Search favorited nodes...');
+        const catHeader = c.querySelector(".nf-categories-header span");
+        if (catHeader) catHeader.textContent = xzgT('分类','Categories');
+        const favHeader = c.querySelector(".nf-fav-header-left span");
+        if (favHeader) favHeader.textContent = xzgT('收藏节点','Favorite Nodes');
+        const notesHeader = c.querySelector(".nf-notes-header span");
+        if (notesHeader) notesHeader.textContent = "📝 " + xzgT('记事本','Notepad');
     }
 
     renderFavorites() {
@@ -3347,7 +3372,7 @@ class Xiaozhuguang {
             btn.addEventListener("click", (e) => {
                 e.stopPropagation();
                 const nodeType = btn.dataset.type;
-                if (confirm("确定要移除这个失效的收藏节点吗？")) {
+                if (confirm(xzgT('确定要移除这个失效的收藏节点吗？','Sure to remove this invalid favorite node?'))){
                     self.removeFavorite(nodeType);
                 }
             });
@@ -3481,7 +3506,7 @@ class Xiaozhuguang {
             URL.revokeObjectURL(url);
         } catch (e) {
             console.error("[小珠光] 导出收藏失败:", e);
-            alert("导出失败: " + e.message);
+            alert(xzgT('导出失败: ','Export failed: ') + e.message);
         }
     }
 
@@ -3490,10 +3515,10 @@ class Xiaozhuguang {
             const text = await file.text();
             const data = JSON.parse(text);
             if (!data || !data.favorites || typeof data.favorites !== "object") {
-                alert("文件格式不正确，缺少 favorites 数据");
+                alert(xzgT('文件格式不正确，缺少 favorites 数据','Invalid file format, missing favorites data'));
                 return;
             }
-            if (!confirm("导入将覆盖当前收藏、备注和截图，确定继续？")) return;
+            if (!confirm(xzgT('导入将覆盖当前收藏、备注和截图，确定继续？','Import will overwrite current favorites, notes and screenshots. Continue?'))){return;}
 
             this.favorites = data.favorites;
             this.saveFavorites();
@@ -3513,10 +3538,10 @@ class Xiaozhuguang {
 
             this.renderCategories();
             this.renderFavorites();
-            alert("导入成功");
+            alert(xzgT('导入成功','Import succeeded'));
         } catch (e) {
             console.error("[小珠光] 导入收藏失败:", e);
-            alert("导入失败: " + e.message);
+            alert(xzgT('导入失败: ','Import failed: ') + e.message);
         }
     }
 
@@ -3918,7 +3943,7 @@ class Xiaozhuguang {
             img.onload = () => this._positionPreview(rect);
             img.onerror = () => this._positionPreview(rect);
         } else {
-            const tip = isWorkflow ? "暂无预览截图，取消收藏，重新收藏即可解决" : "暂无预览截图，取消收藏，重新收藏即可解决";
+            const tip = xzgT('暂无预览截图，取消收藏，重新收藏即可解决','No preview screenshot. Unfavorite then favorite again to fix.');
             this._previewEl.innerHTML = `<div style="padding:10px 14px;background:#1a1a1a;border:2px solid #4CAF50;border-radius:6px;color:#888;font-size:12px;white-space:nowrap;">${tip}</div>`;
         }
         this._previewEl.dataset.currentType = previewKey;
@@ -4176,8 +4201,8 @@ class Xiaozhuguang {
                     </div>
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -4207,7 +4232,7 @@ class Xiaozhuguang {
             const name = dialog.querySelector("#nf-cat-name-input").value.trim();
             const color = colorInput.value;
             if (!name) {
-                alert("请输入分类名称！");
+                alert(xzgT('请输入分类名称！','Please enter a category name!'));
                 return;
             }
             cat.name = name;
@@ -4320,8 +4345,8 @@ class Xiaozhuguang {
                     <select id="nf-cat-select">${optionsHTML}</select>
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -4365,8 +4390,8 @@ class Xiaozhuguang {
                     <select id="nf-cat-select">${optionsHTML}</select>
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -4422,8 +4447,8 @@ class Xiaozhuguang {
                     <select id="nf-cat-select">${optionsHTML}</select>
                 </div>
                 <div class="nf-dialog-footer">
-                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                    <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -4460,6 +4485,23 @@ app.registerExtension({
 
         nodeFavoritesInstance = new Xiaozhuguang();
         window.xiaozhuguangFavorites = nodeFavoritesInstance;
+
+        // 语言切换时刷新面板文案（双语支持）
+        try {
+            const lookup = app?.ui?.settings?.settingsLookup?.["Comfy.Locale"];
+            if (lookup && !lookup.__xzg_fav_hooked) {
+                lookup.__xzg_fav_hooked = true;
+                const orig = lookup.onChange;
+                lookup.onChange = function () {
+                    try {
+                        nodeFavoritesInstance.renderFavorites();
+                        nodeFavoritesInstance.renderCategories();
+                        nodeFavoritesInstance.refreshStaticLabels();
+                    } catch (e) {}
+                    return orig?.apply(this, arguments);
+                };
+            }
+        } catch (e) {}
 
         const origDrawNode = LGraphCanvas.prototype.drawNode;
         LGraphCanvas.prototype.drawNode = function(node, ctx) {
@@ -4559,11 +4601,11 @@ app.registerExtension({
                     html += `
                         <div class="nf-form-item" data-label-item="${i}" style="margin-bottom: 10px; padding: 8px; background: #1a1a1a; border-radius: 6px;">
                             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-                                <span style="font-size: 12px; color: #FFD700; width: 50px; white-space: nowrap;">标签${i + 1}</span>
-                                <input type="text" id="nf-label-${i}" value="${labels[String(i)] || ""}" placeholder="留空显示 ${i}" style="flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 13px;" />
+                                <span style="font-size: 12px; color: #FFD700; width: 50px; white-space: nowrap;">${xzgT('标签','Label')}${i + 1}</span>
+                                <input type="text" id="nf-label-${i}" value="${labels[String(i)] || ""}" placeholder="${xzgT('留空显示','Empty → shows')} ${i}" style="flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 13px;" />
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="font-size: 11px; color: #888; width: 50px; white-space: nowrap;">宽度</span>
+                                <span style="font-size: 11px; color: #888; width: 50px; white-space: nowrap;">${xzgT('宽度','Width')}</span>
                                 <input type="range" id="nf-label-width-${i}" min="55" max="300" value="${w}" style="flex: 1; height: 12px;" />
                                 <span id="nf-label-width-val-${i}" style="font-size: 11px; color: #888; width: 40px; text-align: right;">${w}px</span>
                             </div>
@@ -4599,58 +4641,58 @@ app.registerExtension({
                 `;
                 dialog.innerHTML = `
                     <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 380px; margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
-                        <div class="nf-dialog-title nf-dialog-drag-handle" style="cursor: move;">设置标签</div>
+                        <div class="nf-dialog-title nf-dialog-drag-handle" style="cursor: move;">${xzgT('设置标签','Label Settings')}</div>
                         <div class="nf-dialog-body" style="overflow-y: auto; padding: 12px 16px; max-height: 520px;">
                             <div class="nf-form-item" style="margin-bottom: 10px;">
-                                <label>标签颜色与方向：</label>
+                                <label>${xzgT('标签颜色与方向：','Label color & direction:')}</label>
                                 <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
-                                    <input type="color" id="nf-color-1" value="${colors.color1}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 1" />
-                                    <input type="color" id="nf-color-2" value="${colors.color2}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 2" />
-                                    <input type="color" id="nf-color-3" value="${colors.color3}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="颜色 3" />
-                                    <select id="nf-color-direction" style="width: 60px; height: 28px; padding: 2px 6px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #ddd; font-size: 16px; text-align: center;" title="渐变方向">
+                                    <input type="color" id="nf-color-1" value="${colors.color1}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('颜色','Color')} 1" />
+                                    <input type="color" id="nf-color-2" value="${colors.color2}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('颜色','Color')} 2" />
+                                    <input type="color" id="nf-color-3" value="${colors.color3}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('颜色','Color')} 3" />
+                                    <select id="nf-color-direction" style="width: 60px; height: 28px; padding: 2px 6px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; color: #ddd; font-size: 16px; text-align: center;" title="${xzgT('渐变方向','Gradient Direction')}">
                                         <option value="90deg" ${colors.direction === '90deg' ? 'selected' : ''}>→</option>
                                         <option value="180deg" ${colors.direction === '180deg' ? 'selected' : ''}>↓</option>
                                         <option value="radial" ${colors.direction === 'radial' ? 'selected' : ''}>●</option>
                                     </select>
                                     <span style="display: flex; align-items: center; gap: 6px;">
-                                        <label style="font-size: 12px; color: #aaa;">标签底色：</label>
-                                        <input type="color" id="nf-inactive-color" value="${settings.inactiveColor || '#2a2a2a'}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="标签底色" />
-                                        <label style="font-size: 12px; color: #aaa;">文字颜色：</label>
-                                        <input type="color" id="nf-font-color" value="${settings.fontColor || DEFAULT_FONT_COLOR}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="文字颜色" />
+                                        <label style="font-size: 12px; color: #aaa;">${xzgT('标签底色：','Label background:')}</label>
+                                        <input type="color" id="nf-inactive-color" value="${settings.inactiveColor || '#2a2a2a'}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('标签底色','Label Background')}" />
+                                        <label style="font-size: 12px; color: #aaa;">${xzgT('文字颜色：','Text color:')}</label>
+                                        <input type="color" id="nf-font-color" value="${settings.fontColor || DEFAULT_FONT_COLOR}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('文字颜色','Text Color')}" />
                                     </span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
-                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">标签数量：</label>
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('标签数量：','Label count:')}</label>
                                     <input type="range" id="nf-label-count" min="2" max="10" value="${count}" style="flex: 1; height: 14px;" />
                                     <span id="nf-count-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${count}</span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
-                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">每行列数：</label>
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('每行列数：','Columns per row:')}</label>
                                     <input type="range" id="nf-columns" min="1" max="${count}" value="${loadColumns(node)}" style="flex: 1; height: 14px;" />
                                     <span id="nf-columns-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${loadColumns(node)}</span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
-                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">标签高度：</label>
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('标签高度：','Label height:')}</label>
                                     <input type="range" id="nf-btn-height" min="30" max="80" value="${settings.btnHeight || DEFAULT_BTN_HEIGHT}" style="flex: 1; height: 14px;" />
                                     <span id="nf-btn-height-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.btnHeight || DEFAULT_BTN_HEIGHT}</span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
-                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">字体大小：</label>
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('字体大小：','Font size:')}</label>
                                     <input type="range" id="nf-font-size" min="10" max="24" value="${settings.fontSize || DEFAULT_FONT_SIZE}" style="flex: 1; height: 14px;" />
                                     <span id="nf-font-size-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.fontSize || DEFAULT_FONT_SIZE}</span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
-                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">标签间距：</label>
+                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('标签间距：','Label gap:')}</label>
                                     <input type="range" id="nf-btn-gap" min="0" max="20" value="${settings.btnGap || DEFAULT_BTN_GAP}" style="flex: 1; height: 14px;" />
                                     <span id="nf-btn-gap-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.btnGap || DEFAULT_BTN_GAP}</span>
                                 </div>
@@ -4660,9 +4702,9 @@ app.registerExtension({
                             </div>
                         </div>
                         <div class="nf-dialog-footer">
-                            <button class="nf-btn nf-btn-cancel" id="nf-dlg-reset">恢复默认</button>
-                            <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">取消</button>
-                            <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">确定</button>
+                            <button class="nf-btn nf-btn-cancel" id="nf-dlg-reset">${xzgT('恢复默认','Reset')}</button>
+                            <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
+                            <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
                         </div>
                     </div>
                 `;
@@ -5008,7 +5050,7 @@ app.registerExtension({
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origGetExtra) origGetExtra.apply(this, arguments);
                 options.splice(0, 0, null, {
-                    content: `<span style="color:#FFD700;">小珠光选择器设置</span>`,
+                    content: `<span style="color:#FFD700;">${xzgT('小珠光选择器设置','Xiaozhuguang Selector Settings')}</span>`,
                     callback: () => {
                         showLabelsSettingsDialog(this, () => { rebuildSelectorNode(this); });
                     }
@@ -5532,7 +5574,7 @@ app.registerExtension({
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origTitleExtra) origTitleExtra.apply(this, arguments);
                 options.splice(12, 0, null, {
-                    content: `<span style="color:#FFD700;">小珠光主题</span>`,
+                    content: `<span style="color:#FFD700;">${xzgT('小珠光主题','Xiaozhuguang Theme')}</span>`,
                     callback: () => {
                         if (this.onDblClick) this.onDblClick();
                     }

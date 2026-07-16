@@ -1,4 +1,6 @@
 
+import { xzgT } from "./xzg_i18n.js";
+
 window.XZGThemeManager = {
     currentNodes: [],
     styleElement: null,
@@ -2591,12 +2593,12 @@ window.XZGThemeManager = {
                     if (sc.alt) parts.push("Alt");
                     if (sc.shift) parts.push("Shift");
                     parts.push(sc.key.toUpperCase());
-                    shortcutText = ` <span style="color:#888;font-size:10px;">快捷键${parts.join("+")}</span>`;
+                    shortcutText = ` <span style="color:#888;font-size:10px;">${xzgT('快捷键','Shortcut')}${parts.join("+")}</span>`;
                 }
             } catch (e) {}
 
             options.push(null, {
-                content: `<span style="color:#FFD700;">🎨 小珠光主题${shortcutText}</span>`,
+                content: `<span style="color:#FFD700;">🎨 ${xzgT('小珠光主题','Xiaozhuguang Theme')}${shortcutText}</span>`,
                 callback: (value, options, event) => {
                     const nodes = self.getSelectedNodes();
                     if (nodes.length > 0) {
@@ -3366,15 +3368,15 @@ window.XZGThemeManager = {
                                 if (sc.alt) parts.push("Alt");
                                 if (sc.shift) parts.push("Shift");
                                 parts.push(sc.key.toUpperCase());
-                                shortcutText = ` <span style="color:#888;font-size:10px;">快捷键${parts.join("+")}</span>`;
+                                shortcutText = ` <span style="color:#888;font-size:10px;">${xzgT('快捷键','Shortcut')}${parts.join("+")}</span>`;
                             }
                         } catch (e) {}
                         return [
                             null,
                             {
                                 content: nodes.length > 1
-                                    ? `<span style="color:#FFD700;">🎨 小珠光主题 (${nodes.length})${shortcutText}</span>`
-                                    : `<span style="color:#FFD700;">🎨 小珠光主题${shortcutText}</span>`,
+                                    ? `<span style="color:#FFD700;">🎨 ${xzgT('小珠光主题','Xiaozhuguang Theme')} (${nodes.length})${shortcutText}</span>`
+                                    : `<span style="color:#FFD700;">🎨 ${xzgT('小珠光主题','Xiaozhuguang Theme')}${shortcutText}</span>`,
                                 callback: () => {
                                     if (window.XZGThemeManager) {
                                         window.XZGThemeManager.currentNodes = nodes;

@@ -1,4 +1,6 @@
 import { app } from "../../scripts/app.js";
+import { xzgT } from "./xzg_i18n.js";
+
 
 // ═══════════════════════════════════════════════
 //  小珠光万能滑条 · 复刻孤海万能滑条
@@ -224,7 +226,7 @@ function showSettings(node) {
 
     const title = document.createElement("div");
     title.className = "xzg-us-ptitle";
-    title.innerHTML = `<span>⚙️</span><span>小珠光万能滑条 设置</span>`;
+    title.innerHTML = `<span>⚙️</span><span>${xzgT('小珠光万能滑条 设置','Xiaozhuguang Universal Slider Settings')}</span>`;
     dialog.appendChild(title);
 
     function addRow(labelText, control) {
@@ -284,12 +286,12 @@ function showSettings(node) {
     ["int", "float"].forEach((opt) => {
         const label = document.createElement("label");
         label.className = "xzg-us-radio-label" + (p.sliderType === opt ? " xzg-us-radio-checked" : "");
-        label.textContent = opt === "int" ? "整数" : "浮点";
+        label.textContent = opt === "int" ? xzgT("整数","Integer") : xzgT("浮点","Float");
         label.addEventListener("click", () => updateTypeUI(opt));
         typeLabels.push({ opt, label });
         radioWrap.appendChild(label);
     });
-    addRow("类型", radioWrap);
+    addRow(xzgT("类型","Type"), radioWrap);
 
     // 基本参数（最小值、最大值、步长放一行）
     const paramWrap = document.createElement("div");
@@ -308,11 +310,11 @@ function showSettings(node) {
         cell.append(lbl, inp);
         return { cell, inp };
     }
-    const minCell = mkParamCell("最小", p.sliderMin, { step: "any" });
-    const maxCell = mkParamCell("最大", p.sliderMax, { step: "any" });
-    const stepCell = mkParamCell("步长", p.sliderStep, { step: "any", min: "0.0001" });
+    const minCell = mkParamCell(xzgT("最小","Min"), p.sliderMin, { step: "any" });
+    const maxCell = mkParamCell(xzgT("最大","Max"), p.sliderMax, { step: "any" });
+    const stepCell = mkParamCell(xzgT("步长","Step"), p.sliderStep, { step: "any", min: "0.0001" });
     paramWrap.append(minCell.cell, maxCell.cell, stepCell.cell);
-    addRow("参数", paramWrap);
+    addRow(xzgT("参数","Parameters"), paramWrap);
 
     // 数值水平位置 + 数值颜色
     const valueColorBtn = mkClrBtn(p.valueColor);
@@ -320,7 +322,7 @@ function showSettings(node) {
     offsetXRow.style.cssText = "flex:1;display:flex;align-items:center;gap:8px;";
     const offsetXCtrl = mkRange(0, 100, 1, p.valueOffsetXPct);
     offsetXRow.append(offsetXCtrl.wrap, valueColorBtn);
-    addRow("数值位置", offsetXRow);
+    addRow(xzgT("数值位置","Value Position"), offsetXRow);
 
     // 滑条/手柄样式
     const trackColorBtn = mkClrBtn(p.trackColor);
@@ -328,13 +330,13 @@ function showSettings(node) {
     trackHRow.style.cssText = "flex:1;display:flex;align-items:center;gap:8px;";
     const trackHCtrl = mkRange(1, 20, 1, p.trackHeight);
     trackHRow.append(trackHCtrl.wrap, trackColorBtn);
-    addRow("滑条高度", trackHRow);
+    addRow(xzgT("滑条高度","Track Height"), trackHRow);
     const thumbColorBtn = mkClrBtn(p.thumbColor);
     const thumbSizeRow = document.createElement("div");
     thumbSizeRow.style.cssText = "flex:1;display:flex;align-items:center;gap:8px;";
     const thumbSizeCtrl = mkRange(6, 30, 1, p.thumbSize);
     thumbSizeRow.append(thumbSizeCtrl.wrap, thumbColorBtn);
-    addRow("手柄大小", thumbSizeRow);
+    addRow(xzgT("手柄大小","Thumb Size"), thumbSizeRow);
 
     // 多值定格
     const snapRow = document.createElement("div");
@@ -342,7 +344,7 @@ function showSettings(node) {
     snapRow.style.alignItems = "flex-start";
     const snapLbl = document.createElement("label");
     snapLbl.className = "xzg-us-rlbl";
-    snapLbl.textContent = "多值定格";
+    snapLbl.textContent = xzgT("多值定格","Snap Values");
     snapLbl.style.marginTop = "4px";
     const snapWrap = document.createElement("div");
     snapWrap.style.cssText = "flex:1;display:flex;flex-direction:column;gap:8px;";
@@ -353,7 +355,7 @@ function showSettings(node) {
     useSnapsCb.checked = p.useSnaps;
     useSnapsCb.style.cssText = "accent-color:#e8c547;cursor:pointer;";
     const snapHint = document.createElement("span");
-    snapHint.textContent = "最多5个";
+    snapHint.textContent = xzgT("最多5个","Max 5");
     snapHint.style.cssText = "font-size:11px;color:#666;";
     snapHeader.append(useSnapsCb, snapHint);
     const snapList = document.createElement("div");
@@ -365,7 +367,7 @@ function showSettings(node) {
         inp.className = "xzg-us-snap-inp";
         inp.type = "number";
         inp.step = "any";
-        inp.placeholder = `值${i+1}`;
+        inp.placeholder = `${xzgT("值","V")}${i+1}`;
         inp.value = (p.snaps && p.snaps[i] !== undefined) ? p.snaps[i] : "";
         snapList.appendChild(inp);
         snapInputs.push(inp);
@@ -373,7 +375,7 @@ function showSettings(node) {
     const snapStyleRow = document.createElement("div");
     snapStyleRow.style.cssText = "display:" + (p.useSnaps ? "flex" : "none") + ";align-items:center;gap:10px;";
     const snapTickLbl = document.createElement("span");
-    snapTickLbl.textContent = "刻度";
+    snapTickLbl.textContent = xzgT("刻度","Tick");
     snapTickLbl.style.cssText = "font-size:11px;color:#999;white-space:nowrap;";
     const snapColorBtn = mkClrBtn(p.snapTickColor);
     const snapSizeCtrl = mkRange(3, 14, 1, p.snapTickSize);
@@ -410,11 +412,11 @@ function showSettings(node) {
     const bCancel = document.createElement("button");
     bCancel.className = "xzg-us-btn xzg-us-bx";
     bCancel.type = "button";
-    bCancel.textContent = "取消";
+    bCancel.textContent = xzgT("取消","Cancel");
     const bOk = document.createElement("button");
     bOk.className = "xzg-us-btn xzg-us-bok";
     bOk.type = "button";
-    bOk.textContent = "确定";
+    bOk.textContent = xzgT("确定","OK");
     btns.append(bCancel, bOk);
     dialog.appendChild(btns);
 
@@ -1127,7 +1129,7 @@ app.registerExtension({
             }
             if (Array.isArray(options)) {
                 options.splice(0, 0, null, {
-                    content: '<span style="color:#FFD700;">小珠光万能滑条 设置</span>',
+                    content: '<span style="color:#FFD700;">' + xzgT('小珠光万能滑条 设置','Xiaozhuguang Universal Slider Settings') + '</span>',
                     callback: () => showSettings(this),
                 });
             }

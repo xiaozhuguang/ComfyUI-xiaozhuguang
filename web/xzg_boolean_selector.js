@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { xzgT } from "./xzg_i18n.js";
 
 // ═══════════════════════════════════════════════
 //  小珠光布尔 · Canvas 绘制版
@@ -241,7 +242,7 @@ function openBoolSettingsPanel(node) {
 
     const title = document.createElement("div");
     title.className = "xzg-bs-ptitle";
-    title.innerHTML = `<span>⚙ 小珠光布尔设置</span><button class="xzg-bs-close">✕</button>`;
+    title.innerHTML = `<span>⚙ ${xzgT('小珠光布尔设置','Xiaozhuguang Boolean Settings')}</span><button class="xzg-bs-close">✕</button>`;
     dialog.appendChild(title);
 
     function addRow(labelText, control) {
@@ -284,51 +285,51 @@ function openBoolSettingsPanel(node) {
     const trueWidth = s.widths?.true !== undefined ? s.widths.true : s.btnWidth;
 
     const btnHeightCtrl = mkRange(30, 80, 1, s.btnHeight);
-    addRow("按钮高度", btnHeightCtrl.wrap);
+    addRow(xzgT('按钮高度','Button Height'), btnHeightCtrl.wrap);
 
     const falseWidthCtrl = mkRange(55, 300, 1, falseWidth);
-    addRow("左标签宽度", falseWidthCtrl.wrap);
+    addRow(xzgT('左标签宽度','Left Label Width'), falseWidthCtrl.wrap);
 
     const trueWidthCtrl = mkRange(55, 300, 1, trueWidth);
-    addRow("右标签宽度", trueWidthCtrl.wrap);
+    addRow(xzgT('右标签宽度','Right Label Width'), trueWidthCtrl.wrap);
 
     const gapCtrl = mkRange(0, 20, 1, s.btnGap);
-    addRow("按钮间距", gapCtrl.wrap);
+    addRow(xzgT('按钮间距','Button Gap'), gapCtrl.wrap);
 
     const fontSizeCtrl = mkRange(10, 24, 1, s.fontSize);
-    addRow("标签字号", fontSizeCtrl.wrap);
+    addRow(xzgT('标签字号','Label Font Size'), fontSizeCtrl.wrap);
 
     const falseLabelInp = document.createElement("input");
     falseLabelInp.className = "xzg-bs-inp";
     falseLabelInp.type = "text";
     falseLabelInp.value = s.labels?.false || "False";
-    addRow("左侧标签", falseLabelInp);
+    addRow(xzgT('左侧标签','Left Label'), falseLabelInp);
 
     const trueLabelInp = document.createElement("input");
     trueLabelInp.className = "xzg-bs-inp";
     trueLabelInp.type = "text";
     trueLabelInp.value = s.labels?.true || "True";
-    addRow("右侧标签", trueLabelInp);
+    addRow(xzgT('右侧标签','Right Label'), trueLabelInp);
 
     const colorRow = document.createElement("div");
     colorRow.className = "xzg-bs-row";
     const colorLbl = document.createElement("label");
     colorLbl.className = "xzg-bs-rlbl";
-    colorLbl.textContent = "颜色设置";
+    colorLbl.textContent = xzgT('颜色设置','Color Settings');
     const colorWrap = document.createElement("div");
     colorWrap.style.cssText = "flex:1;display:flex;align-items:center;gap:8px;";
     const fontColorBtn = mkClrBtn(s.fontColor || "#aaa");
-    fontColorBtn.title = "文字颜色";
+    fontColorBtn.title = xzgT('文字颜色','Text Color');
     fontColorBtn.style.flex = "1";
     const inactiveColorBtn = mkClrBtn(s.inactiveColor || "#2a2a2a");
-    inactiveColorBtn.title = "未选中色";
+    inactiveColorBtn.title = xzgT('未选中色','Inactive Color');
     inactiveColorBtn.style.flex = "1";
     const fcLabel = document.createElement("span");
     fcLabel.style.cssText = "font-size:11px;color:#888;white-space:nowrap;";
-    fcLabel.textContent = "文字";
+    fcLabel.textContent = xzgT('文字','Text');
     const icLabel = document.createElement("span");
     icLabel.style.cssText = "font-size:11px;color:#888;white-space:nowrap;";
-    icLabel.textContent = "未选";
+    icLabel.textContent = xzgT('未选','Inactive');
     colorWrap.append(fcLabel, fontColorBtn, icLabel, inactiveColorBtn);
     colorRow.append(colorLbl, colorWrap);
     dialog.appendChild(colorRow);
@@ -337,7 +338,7 @@ function openBoolSettingsPanel(node) {
     invertRow.className = "xzg-bs-row";
     const invertLbl = document.createElement("label");
     invertLbl.className = "xzg-bs-rlbl";
-    invertLbl.textContent = "反向输出";
+    invertLbl.textContent = xzgT('反向输出','Invert Output');
     const invertWrap = document.createElement("div");
     invertWrap.style.cssText = "flex:1;display:flex;align-items:center;gap:10px;";
     const invertSwitch = document.createElement("div");
@@ -347,12 +348,12 @@ function openBoolSettingsPanel(node) {
     invertSwitch.appendChild(invertKnob);
     const invertTxt = document.createElement("span");
     invertTxt.style.cssText = "font-size:12px;color:#aaa;";
-    invertTxt.textContent = s.invert ? "左真右假" : "左假右真";
+    invertTxt.textContent = s.invert ? xzgT('左真右假','Left True/Right False') : xzgT('左假右真','Left False/Right True');
     invertSwitch.addEventListener("click", () => {
         s.invert = !s.invert;
         invertSwitch.style.background = s.invert ? "#81C784" : "#555";
         invertKnob.style.left = s.invert ? "22px" : "2px";
-        invertTxt.textContent = s.invert ? "左真右假" : "左假右真";
+        invertTxt.textContent = s.invert ? xzgT('左真右假','Left True/Right False') : xzgT('左假右真','Left False/Right True');
         applyPreview();
     });
     invertWrap.append(invertSwitch, invertTxt);
@@ -363,27 +364,27 @@ function openBoolSettingsPanel(node) {
     section.className = "xzg-bs-section";
     const sectionTitle = document.createElement("div");
     sectionTitle.className = "xzg-bs-section-title";
-    sectionTitle.textContent = "选中渐变色";
+    sectionTitle.textContent = xzgT('选中渐变色','Selected Gradient');
     section.appendChild(sectionTitle);
 
     const color1Row = document.createElement("div");
     color1Row.className = "xzg-bs-color-row";
-    color1Row.innerHTML = `<label>色1</label><input type="color" value="${s.colors.color1}"><label>色2</label><input type="color" value="${s.colors.color2}"><label>色3</label><input type="color" value="${s.colors.color3}">`;
+    color1Row.innerHTML = `<label>${xzgT('色1','C1')}</label><input type="color" value="${s.colors.color1}"><label>${xzgT('色2','C2')}</label><input type="color" value="${s.colors.color2}"><label>${xzgT('色3','C3')}</label><input type="color" value="${s.colors.color3}">`;
     section.appendChild(color1Row);
 
     const dirRow = document.createElement("div");
     dirRow.className = "xzg-bs-row";
     const dirLbl = document.createElement("label");
     dirLbl.className = "xzg-bs-rlbl";
-    dirLbl.textContent = "方向";
+    dirLbl.textContent = xzgT('方向','Direction');
     const dirSel = document.createElement("select");
     dirSel.className = "xzg-bs-select";
     const dirs = [
-        ["0deg", "↑ 从上到下"],
-        ["90deg", "→ 从左到右"],
-        ["180deg", "↓ 从下到上"],
-        ["270deg", "← 从右到左"],
-        ["radial", "◉ 径向"],
+        ["0deg", "↑ " + xzgT('从上到下','Top to Bottom')],
+        ["90deg", "→ " + xzgT('从左到右','Left to Right')],
+        ["180deg", "↓ " + xzgT('从下到上','Bottom to Top')],
+        ["270deg", "← " + xzgT('从右到左','Right to Left')],
+        ["radial", "◉ " + xzgT('径向','Radial')],
     ];
     dirs.forEach(([val, txt]) => {
         const opt = document.createElement("option");
@@ -401,10 +402,10 @@ function openBoolSettingsPanel(node) {
     btns.className = "xzg-bs-btns";
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "xzg-bs-btn";
-    cancelBtn.textContent = "取消";
+    cancelBtn.textContent = xzgT('取消','Cancel');
     const applyBtn = document.createElement("button");
     applyBtn.className = "xzg-bs-btn xzg-bs-btn-primary";
-    applyBtn.textContent = "应用";
+    applyBtn.textContent = xzgT('应用','Apply');
     btns.append(cancelBtn, applyBtn);
     dialog.appendChild(btns);
 
@@ -630,7 +631,7 @@ app.registerExtension({
 
             chainCallback(this, "getExtraMenuOptions", function(_, options) {
                 options.splice(0, 0, null, {
-                    content: "⚙ <span style='color:#FFD700'>小珠光布尔设置</span>",
+                    content: "⚙ <span style='color:#FFD700'>" + xzgT('小珠光布尔设置','Xiaozhuguang Boolean Settings') + "</span>",
                     callback: () => openBoolSettingsPanel(node),
                 });
             });

@@ -1,10 +1,11 @@
 {
   "name": "ComfyUI-xiaozhuguang",
-  "version": "4.2.0",
+  "version": "5.0.0",
   "description": "小珠光 - ComfyUI节点美化增强插件",
   "author": "xiaozhuguang",
   "license": "MIT",
   "js": [
+    "web/xzg_i18n.js",
     "web/node_favorites.js",
     "web/xzg_theme_presets.js",
     "web/xzg_menu_hide.js",

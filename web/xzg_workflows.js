@@ -1,9 +1,10 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
+import { xzgT } from "./xzg_i18n.js";
 
 const STORAGE_KEY = "xzg_workflows_meta";
-const PLUGIN_NAME = "工作流";
+const PLUGIN_NAME = xzgT('工作流','Workflow');
 const SETTING_TOGGLE_SHORTCUT = "xzg_wf_toggle_shortcut";
 const ACCENT_KEY = "xzg_wf_accent";
 
@@ -124,8 +125,8 @@ class XZGWorkflowsManager {
             app.extensionManager.registerSidebarTab({
                 id: "xiaozhuguang-workflows",
                 icon: "icon-[comfy--workflow]",
-                title: "工作流",
-                tooltip: "工作流",
+            title: xzgT('工作流','Workflow'),
+            tooltip: xzgT('工作流','Workflow'),
                 type: "custom",
                 render: (el) => {
                     this._panelEl = el;
@@ -209,7 +210,21 @@ class XZGWorkflowsManager {
         if (shortcut.alt) parts.push("Alt");
         if (shortcut.shift) parts.push("Shift");
         parts.push(shortcut.key.toUpperCase());
-        display.textContent = "快捷键: " + parts.join("+");
+        display.textContent = xzgT('快捷键','Shortcut') + ": " + parts.join("+");
+    }
+
+    // 语言切换时刷新面板内一次性构建的静态文案（标题、分类、列表标题、快捷键按钮）
+    refreshStaticLabels() {
+        const c = this.container;
+        if (!c) return;
+        const title = c.querySelector(".xzg-wf-title");
+        if (title) title.textContent = xzgT('工作流','Workflow');
+        const sc = c.querySelector("#xzg-wf-shortcut-btn");
+        if (sc) sc.textContent = xzgT('快捷键','Shortcut') + ": `";
+        const catHeader = c.querySelector(".xzg-wf-cat-header span");
+        if (catHeader) catHeader.textContent = xzgT('分类','Categories');
+        const listTitle = c.querySelector(".xzg-wf-list-title span");
+        if (listTitle) listTitle.textContent = xzgT('工作流','Workflows');
     }
 
     showShortcutDialog() {
@@ -217,9 +232,9 @@ class XZGWorkflowsManager {
         dialog.className = "xzg-wf-dialog-overlay";
         dialog.innerHTML = this._applyAccent(`
             <div class="xzg-wf-dialog">
-                <div class="xzg-wf-dialog-title">设置快捷键</div>
+                <div class="xzg-wf-dialog-title">${xzgT('设置快捷键','Set Shortcut')}</div>
                 <div class="xzg-wf-dialog-body">
-                    <p style="margin-bottom: 16px; color: #888; font-size: 13px; text-align: center;">请按下你想要的快捷键</p>
+                    <p style="margin-bottom: 16px; color: #888; font-size: 13px; text-align: center;">${xzgT('请按下你想要的快捷键','Press the shortcut you want')}</p>
                     <div style="text-align: center; margin-bottom: 16px;">
                         <div id="xzg-wf-listen-display" style="
                             padding: 16px 24px;
@@ -231,12 +246,12 @@ class XZGWorkflowsManager {
                             font-weight: bold;
                             min-width: 180px;
                             display: inline-block;
-                        ">请按快捷键...</div>
+                        ">${xzgT('请按快捷键...','Press shortcut...')}</div>
                     </div>
                 </div>
                 <div class="xzg-wf-dialog-footer">
-                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">取消</button>
-                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm" disabled>确认</button>
+                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">${xzgT('取消','Cancel')}</button>
+                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm" disabled>${xzgT('确认','Confirm')}</button>
                 </div>
             </div>
         `);
@@ -330,7 +345,7 @@ class XZGWorkflowsManager {
                             value="${escapeAttr(defaultValue)}" placeholder="${escapeAttr(opts.placeholder || "")}" />
                     </div>
                     <div class="xzg-wf-dialog-footer">
-                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">取消</button>
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">${xzgT('取消','Cancel')}</button>
                         <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-wf-dialog-confirm">确认</button>
                     </div>
                 </div>
@@ -421,9 +436,9 @@ class XZGWorkflowsManager {
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
-            <div class="xzg-wf-ctx-item" data-action="rename">✏️ 重命名</div>
-            <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ 删除</div>
-            <div class="xzg-wf-ctx-item xzg-wf-ctx-submenu" data-action="move">📁 移动到分类</div>
+            <div class="xzg-wf-ctx-item" data-action="rename">✏️ ${xzgT('重命名','Rename')}</div>
+            <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ ${xzgT('删除','Delete')}</div>
+            <div class="xzg-wf-ctx-item xzg-wf-ctx-submenu" data-action="move">📁 ${xzgT('移动到分类','Move to Category')}</div>
         `;
         
         document.body.appendChild(menu);
@@ -532,7 +547,7 @@ class XZGWorkflowsManager {
         const buildHtml = () => {
             let html = `<div class="xzg-wf-submenu-item${currentFolder === "" ? ' selected' : ''}" data-folder="">
                 <span class="xzg-wf-cat-toggle xzg-wf-cat-toggle-empty"></span>
-                <span class="xzg-wf-cat-label">未分类</span>
+                <span class="xzg-wf-cat-label">${xzgT('未分类','Uncategorized')}</span>
             </div>`;
             const walk = (folders, parentPath, depth) => {
                 for (const folder of folders) {
@@ -632,7 +647,7 @@ class XZGWorkflowsManager {
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
-            <div class="xzg-wf-ctx-item" data-action="new-folder">📁 新建分类</div>
+            <div class="xzg-wf-ctx-item" data-action="new-folder">📁 ${xzgT('新建分类','New Category')}</div>
         `;
         
         document.body.appendChild(menu);
@@ -700,12 +715,12 @@ class XZGWorkflowsManager {
 
         let html = '';
         if (isFolder) {
-            html += `<div class="xzg-wf-ctx-item" data-action="rename">✏️ 重命名</div>
+            html += `<div class="xzg-wf-ctx-item" data-action="rename">✏️ ${xzgT('重命名','Rename')}</div>
             <div class="xzg-wf-ctx-separator"></div>`;
         }
-        html += `<div class="xzg-wf-ctx-item" data-action="new-subfolder">📁 新建子分类</div>
+        html += `<div class="xzg-wf-ctx-item" data-action="new-subfolder">📁 ${xzgT('新建子分类','New Subcategory')}</div>
             <div class="xzg-wf-ctx-separator"></div>
-            <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ 删除分类</div>`;
+            <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ ${xzgT('删除分类','Delete Category')}</div>`;
 
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
@@ -1126,7 +1141,7 @@ class XZGWorkflowsManager {
             this.renderWorkflowList();
         } catch (e) {
             console.warn("[小珠光] 导入工作流到画布失败:", e);
-            alert("导入工作流失败: " + e.message);
+            alert(xzgT('导入工作流失败: ','Failed to import workflow: ') + e.message);
         }
     }
 
@@ -1169,34 +1184,34 @@ class XZGWorkflowsManager {
         container.innerHTML = `
             <div class="xzg-wf-panel">
                 <div class="xzg-wf-header">
-                    <span class="xzg-wf-title">工作流</span>
+                    <span class="xzg-wf-title">${xzgT('工作流','Workflow')}</span>
                     <div class="xzg-wf-header-btns">
-                                    <button class="xzg-wf-header-btn" id="xzg-wf-help-btn" title="使用说明">📖 说明</button>
-                                    <div class="xzg-wf-header-btn xzg-wf-trash-btn" id="xzg-wf-trash-btn" title="回收站（误删可恢复）">
+                                    <button class="xzg-wf-header-btn" id="xzg-wf-help-btn" title="${xzgT('使用说明','Usage')}">📖 ${xzgT('说明','Help')}</button>
+                                    <div class="xzg-wf-header-btn xzg-wf-trash-btn" id="xzg-wf-trash-btn" title="${xzgT('回收站（误删可恢复）','Recycle bin (recoverable if deleted by mistake)')}">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <polyline points="3 6 5 6 21 6"/>
                                     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                                 </svg>
                             </div>
-                            <label class="xzg-wf-header-btn xzg-wf-accent-btn" id="xzg-wf-accent-btn" title="主题设置（点击选择工作流面板强调色）">
-                                <span class="xzg-wf-accent-text">主题设置</span>
+                            <label class="xzg-wf-header-btn xzg-wf-accent-btn" id="xzg-wf-accent-btn" title="${xzgT('主题设置（点击选择工作流面板强调色）','Theme settings (click to pick panel accent color)')}">
+                                <span class="xzg-wf-accent-text">${xzgT('主题设置','Theme')}</span>
                                 <input type="color" id="xzg-wf-accent-input" />
                             </label>
-                            <button class="xzg-wf-header-btn xzg-wf-shortcut-btn" id="xzg-wf-shortcut-btn" title="设置快捷键">快捷键: \`</button>
-                            <div class="xzg-wf-header-btn xzg-wf-possess" id="xzg-wf-possess-btn" title="夺舍模式：开启后隐藏 ComfyUI 官方工作流管理按钮">
-                                <span class="xzg-wf-possess-text">夺舍模式</span>
+                            <button class="xzg-wf-header-btn xzg-wf-shortcut-btn" id="xzg-wf-shortcut-btn" title="${xzgT('设置快捷键','Set shortcut')}">${xzgT('快捷键','Shortcut')}: \`</button>
+                            <div class="xzg-wf-header-btn xzg-wf-possess" id="xzg-wf-possess-btn" title="${xzgT('夺舍模式：开启后隐藏 ComfyUI 官方工作流管理按钮','Possess mode: hide ComfyUI official workflow button and take over')}">
+                                <span class="xzg-wf-possess-text">${xzgT('夺舍模式','Possess Mode')}</span>
                                 <span class="xzg-wf-toggle"><i></i></span>
                             </div>
                         </div>
                 </div>
                 <div class="xzg-wf-search-box">
-                    <input type="text" class="xzg-wf-search-input" placeholder="🔍 搜索工作流 (拼音/首字母/名称)..." />
+                    <input type="text" class="xzg-wf-search-input" placeholder="🔍 ${xzgT('搜索工作流 (拼音/首字母/名称)...','Search workflows (pinyin/initials/name)...')}" />
                     <button class="xzg-wf-clear-btn" style="display: none;">✕</button>
                 </div>
                 <div class="xzg-wf-split-container">
                     <div class="xzg-wf-left-col">
                         <div class="xzg-wf-cat-header">
-                            <span>分类</span>
+                            <span>${xzgT('分类','Categories')}</span>
                         </div>
                         <div class="xzg-wf-cat-list"></div>
                     </div>
@@ -1204,7 +1219,7 @@ class XZGWorkflowsManager {
                     <div class="xzg-wf-right-col">
                         <div class="xzg-wf-list-header">
                             <div class="xzg-wf-list-title">
-                                <span>工作流</span>
+                                <span>${xzgT('工作流','Workflows')}</span>
                                 <span class="xzg-wf-count">0</span>
                             </div>
                             <div class="xzg-wf-sort-btns">
@@ -2394,7 +2409,7 @@ class XZGWorkflowsManager {
 
         const uncategorizedItem = this.createCategoryItem({
             id: "uncategorized",
-            name: "根目录未分类",
+            name: xzgT('根目录未分类','Root / Uncategorized'),
             type: "uncategorized",
             path: ""
         }, 0);
@@ -2616,7 +2631,7 @@ class XZGWorkflowsManager {
         if (items.length === 0) {
             const empty = document.createElement("div");
             empty.className = "xzg-wf-empty";
-            empty.textContent = this.currentSearch ? "没有匹配的工作流" : "暂无工作流";
+            empty.textContent = this.currentSearch ? xzgT('没有匹配的工作流','No matching workflows') : xzgT('暂无工作流','No workflows yet');
             this.workflowList.appendChild(empty);
             return;
         }
@@ -3330,5 +3345,22 @@ app.registerExtension({
         } catch (e) {
             console.warn("[小珠光] 注册官方工作流监听失败:", e);
         }
+
+        // 语言切换时刷新面板文案（双语支持）
+        try {
+            const lookup = app?.ui?.settings?.settingsLookup?.["Comfy.Locale"];
+            if (lookup && !lookup.__xzg_wf_hooked) {
+                lookup.__xzg_wf_hooked = true;
+                const orig = lookup.onChange;
+                lookup.onChange = function () {
+                    try {
+                        workflowsInstance.renderWorkflowList();
+                        workflowsInstance.renderCategories();
+                        workflowsInstance.refreshStaticLabels();
+                    } catch (e) {}
+                    return orig?.apply(this, arguments);
+                };
+            }
+        } catch (e) {}
     }
 });

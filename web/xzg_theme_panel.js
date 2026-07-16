@@ -1,4 +1,6 @@
 
+import { xzgT } from "./xzg_i18n.js";
+
 window.XZGThemePanel = {
     panel: null,
     colorPicker: null,
@@ -89,16 +91,16 @@ window.XZGThemePanel = {
 
         panel.innerHTML = `
             <div class="xzg-theme-header">
-                <span class="xzg-theme-title">小珠光</span>
+                <span class="xzg-theme-title">${xzgT('小珠光','Xiaozhuguang')}</span>
                 <div class="xzg-theme-header-btns">
                     <button type="button" class="xzg-theme-shortcut-btn" id="xzg-theme-shortcut-btn"></button>
                     <button type="button" class="xzg-theme-close">×</button>
                 </div>
             </div>
             <div class="xzg-top-tabs">
-                <button type="button" class="xzg-top-tab active" data-top-tab="theme">主题</button>
-                <button type="button" class="xzg-top-tab" data-top-tab="menuhide">菜单隐藏</button>
-                <button type="button" class="xzg-top-tab" data-top-tab="quicknodes">快速节点</button>
+                <button type="button" class="xzg-top-tab active" data-top-tab="theme">${xzgT('主题','Theme')}</button>
+                <button type="button" class="xzg-top-tab" data-top-tab="menuhide">${xzgT('菜单隐藏','Menu Hide')}</button>
+                <button type="button" class="xzg-top-tab" data-top-tab="quicknodes">${xzgT('快速节点','Quick Nodes')}</button>
             </div>
             <div class="xzg-tab-content" data-tab-content="theme">
             <div class="xzg-picker-section">
@@ -118,10 +120,10 @@ window.XZGThemePanel = {
                 <div class="xzg-theme-section">
                     <div class="xzg-color-swatches">
                         <div class="xzg-swatch-group">
-                            <span class="xzg-swatch-label">标题栏</span>
+                            <span class="xzg-swatch-label">${xzgT('标题栏','Title Bar')}</span>
                             <button type="button" class="xzg-toggle-switch xzg-title-gradient-toggle" data-checked="false">
                                 <span class="xzg-toggle-slider"></span>
-                                <span class="xzg-toggle-label">关</span>
+                                <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                             </button>
                         </div>
                         <div class="xzg-swatch-group xzg-title-swatch-section" style="display: none;">
@@ -141,7 +143,7 @@ window.XZGThemePanel = {
                     
                     <div class="xzg-color-swatches">
                         <div class="xzg-swatch-group">
-                            <span class="xzg-swatch-label">主体</span>
+                            <span class="xzg-swatch-label">${xzgT('主体','Body')}</span>
                             <div class="xzg-swatch-row">
                                 <button type="button" class="xzg-color-swatch" data-color="color1" style="background-color: ${this.defaults.color1}"></button>
                                 <button type="button" class="xzg-color-swatch" data-color="color2" style="background-color: ${this.defaults.color2}"></button>
@@ -151,7 +153,7 @@ window.XZGThemePanel = {
                     </div>
                     
                     <div class="xzg-theme-direction-row">
-                        <span class="xzg-theme-label">主体方向</span>
+                        <span class="xzg-theme-label">${xzgT('主体方向','Body Direction')}</span>
                         <div class="xzg-direction-buttons">
                             <button type="button" class="xzg-dir-btn" data-dir="0">↓</button>
                             <button type="button" class="xzg-dir-btn" data-dir="90">→</button>
@@ -163,14 +165,14 @@ window.XZGThemePanel = {
                     <div class="xzg-theme-separator"></div>
                     
                     <div class="xzg-swatch-group">
-                        <span class="xzg-swatch-label">文字颜色</span>
+                        <span class="xzg-swatch-label">${xzgT('文字颜色','Text Color')}</span>
                         <div class="xzg-swatch-row">
                             <button type="button" class="xzg-color-swatch xzg-text-swatch" data-color="textColor" style="background-color: ${this.defaults.textColor}"></button>
                         </div>
                     </div>
                     
                     <div class="xzg-theme-font-row">
-                        <span class="xzg-theme-label">文字大小</span>
+                        <span class="xzg-theme-label">${xzgT('文字大小','Font Size')}</span>
                         <div class="xzg-font-size-control">
                             <button type="button" class="xzg-font-btn" data-size-action="decrease">A-</button>
                             <span class="xzg-font-size-value" id="xzg-font-size-value">${this.defaults.fontSize}</span>
@@ -179,22 +181,22 @@ window.XZGThemePanel = {
                     </div>
                     
                     <div class="xzg-theme-font-row">
-                        <span class="xzg-theme-label">文字位置</span>
+                        <span class="xzg-theme-label">${xzgT('文字位置','Text Align')}</span>
                         <div class="xzg-align-buttons">
-                            <button type="button" class="xzg-align-btn" data-align="left">左</button>
-                            <button type="button" class="xzg-align-btn active" data-align="center">中</button>
-                            <button type="button" class="xzg-align-btn" data-align="right">右</button>
+                            <button type="button" class="xzg-align-btn" data-align="left">${xzgT('左','L')}</button>
+                            <button type="button" class="xzg-align-btn active" data-align="center">${xzgT('中','C')}</button>
+                            <button type="button" class="xzg-align-btn" data-align="right">${xzgT('右','R')}</button>
                         </div>
                     </div>
                     
-                    <button type="button" id="xzg-apply-btn" class="xzg-apply-btn">应用主题并关闭</button>
-                    <button type="button" id="xzg-reset-btn" class="xzg-reset-btn">恢复默认颜色</button>
+                    <button type="button" id="xzg-apply-btn" class="xzg-apply-btn">${xzgT('应用主题并关闭','Apply Theme & Close')}</button>
+                    <button type="button" id="xzg-reset-btn" class="xzg-reset-btn">${xzgT('恢复默认颜色','Reset Colors')}</button>
                     
                     <div class="xzg-theme-separator"></div>
                     
                     <div class="xzg-presets-section">
                         <div class="xzg-presets-header">
-                            <span class="xzg-swatch-label">预设主题</span>
+                            <span class="xzg-swatch-label">${xzgT('预设主题','Preset Themes')}</span>
                             <div class="xzg-presets-row">
                                 <div class="xzg-preset-item" data-preset="0"></div>
                                 <div class="xzg-preset-item" data-preset="1"></div>
@@ -203,16 +205,16 @@ window.XZGThemePanel = {
                                 <div class="xzg-preset-item" data-preset="4"></div>
                             </div>
                         </div>
-                        <p class="xzg-presets-tip">左键应用，右键保存当前设置</p>
+                        <p class="xzg-presets-tip">${xzgT('左键应用，右键保存当前设置','Left-click apply, right-click save current')}</p>
                     </div>
 
                     <div class="xzg-theme-separator"></div>
 
                     <div class="xzg-link-highlight-section">
-                        <span class="xzg-swatch-label">连线高亮</span>
-                        <button type="button" id="xzg-link-highlight-btn" class="xzg-toggle-switch xzg-link-highlight-toggle" data-checked="false" title="开启后，选中节点的连线高亮，其他变暗">
+                        <span class="xzg-swatch-label">${xzgT('连线高亮','Link Highlight')}</span>
+                        <button type="button" id="xzg-link-highlight-btn" class="xzg-toggle-switch xzg-link-highlight-toggle" data-checked="false" title="${xzgT('开启后，选中节点的连线高亮，其他变暗','Highlight links of selected node, dim others')}">
                             <span class="xzg-toggle-slider"></span>
-                            <span class="xzg-toggle-label">关</span>
+                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                         </button>
                     </div>
 
@@ -220,32 +222,32 @@ window.XZGThemePanel = {
 
                     <div class="xzg-wallpaper-section">
                         <div class="xzg-wallpaper-header">
-                            <span class="xzg-swatch-label">画布壁纸</span>
-                            <button type="button" id="xzg-wallpaper-btn" class="xzg-toggle-switch xzg-wallpaper-toggle" data-checked="false" title="开启画布壁纸背景">
+                            <span class="xzg-swatch-label">${xzgT('画布壁纸','Canvas Wallpaper')}</span>
+                            <button type="button" id="xzg-wallpaper-btn" class="xzg-toggle-switch xzg-wallpaper-toggle" data-checked="false" title="${xzgT('开启画布壁纸背景','Enable canvas wallpaper background')}">
                                 <span class="xzg-toggle-slider"></span>
-                                <span class="xzg-toggle-label">关</span>
+                                <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                             </button>
                         </div>
 
                         <div class="xzg-wallpaper-controls" id="xzg-wallpaper-controls" style="display:none;">
                             <div class="xzg-wallpaper-upload-row">
                                 <input type="file" id="xzg-wallpaper-file-input" accept="image/*,video/*" style="display:none;">
-                                <button type="button" id="xzg-wallpaper-upload-btn" class="xzg-wallpaper-btn">选择图片</button>
-                                <button type="button" id="xzg-wallpaper-clear-btn" class="xzg-wallpaper-btn xzg-wallpaper-clear">清除</button>
+                                <button type="button" id="xzg-wallpaper-upload-btn" class="xzg-wallpaper-btn">${xzgT('选择图片','Choose Image')}</button>
+                                <button type="button" id="xzg-wallpaper-clear-btn" class="xzg-wallpaper-btn xzg-wallpaper-clear">${xzgT('清除','Clear')}</button>
                             </div>
 
                             <div class="xzg-wallpaper-row">
-                                <span class="xzg-swatch-label" style="font-size:12px;">透明度</span>
+                                <span class="xzg-swatch-label" style="font-size:12px;">${xzgT('透明度','Opacity')}</span>
                                 <input type="range" id="xzg-wallpaper-opacity" min="0" max="1" step="0.05" value="0.5" style="flex:1;">
                                 <span class="xzg-wallpaper-value" id="xzg-wallpaper-opacity-val">50%</span>
                             </div>
 
                             <div class="xzg-wallpaper-row">
-                                <span class="xzg-swatch-label" style="font-size:12px;">填充方式</span>
+                                <span class="xzg-swatch-label" style="font-size:12px;">${xzgT('填充方式','Fill Mode')}</span>
                                 <div class="xzg-wallpaper-fit-btns">
-                                    <button type="button" class="xzg-wallpaper-fit-btn active" data-fit="cover">覆盖</button>
-                                    <button type="button" class="xzg-wallpaper-fit-btn" data-fit="contain">包含</button>
-                                    <button type="button" class="xzg-wallpaper-fit-btn" data-fit="fill">拉伸</button>
+                                    <button type="button" class="xzg-wallpaper-fit-btn active" data-fit="cover">${xzgT('覆盖','Cover')}</button>
+                                    <button type="button" class="xzg-wallpaper-fit-btn" data-fit="contain">${xzgT('包含','Contain')}</button>
+                                    <button type="button" class="xzg-wallpaper-fit-btn" data-fit="fill">${xzgT('拉伸','Stretch')}</button>
                                 </div>
                             </div>
                         </div>
@@ -257,7 +259,7 @@ window.XZGThemePanel = {
                             <button type="button" class="xzg-color-swatch xzg-linkcolor-swatch" data-color="linkColor" style="background-color: ${this.defaults.linkColor};width:18px;height:18px;min-width:18px;border-radius:3px;" title="连线颜色"></button>
                             <button type="button" id="xzg-link-color-btn" class="xzg-toggle-switch xzg-link-color-toggle" data-checked="false" title="开启后，所有连线使用自定义颜色">
                                 <span class="xzg-toggle-slider"></span>
-                                <span class="xzg-toggle-label">关</span>
+                                <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                             </button>
                         </div>
                     </div> -->
@@ -266,7 +268,7 @@ window.XZGThemePanel = {
                         <span class="xzg-swatch-label">连线动画</span>
                         <button type="button" id="xzg-link-laser-btn" class="xzg-toggle-switch xzg-link-laser-toggle" data-checked="false" title="开启后，连线显示动画效果">
                             <span class="xzg-toggle-slider"></span>
-                            <span class="xzg-toggle-label">关</span>
+                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                         </button>
                     </div>
 
@@ -286,56 +288,56 @@ window.XZGThemePanel = {
             <div class="xzg-tab-content" data-tab-content="menuhide" style="display:none;">
                 <div class="xzg-menu-hide-full">
                     <div class="xzg-menu-hide-tabs">
-                        <button type="button" class="xzg-menu-tab active" data-menu-tab="canvas">画布菜单</button>
-                        <button type="button" class="xzg-menu-tab" data-menu-tab="node">节点菜单</button>
+                        <button type="button" class="xzg-menu-tab active" data-menu-tab="canvas">${xzgT('画布菜单','Canvas Menu')}</button>
+                        <button type="button" class="xzg-menu-tab" data-menu-tab="node">${xzgT('节点菜单','Node Menu')}</button>
                     </div>
                     <div class="xzg-menu-search-box">
-                        <input type="text" id="xzg-menu-search-input" placeholder="🔍 搜索菜单项..." />
-                        <button type="button" class="xzg-menu-search-clear" id="xzg-menu-search-clear" title="清除搜索" style="display: none;">✕</button>
+                        <input type="text" id="xzg-menu-search-input" placeholder="${xzgT('🔍 搜索菜单项...','🔍 Search menu items...')}" />
+                        <button type="button" class="xzg-menu-search-clear" id="xzg-menu-search-clear" title="${xzgT('清除搜索','Clear search')}" style="display: none;">✕</button>
                     </div>
                     <div class="xzg-menu-hide-toolbar">
-                        <button type="button" id="xzg-menu-refresh-btn" class="xzg-menu-tool-btn">刷新列表</button>
-                        <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">隐藏全部</button>
-                        <button type="button" id="xzg-menu-unselectall-btn" class="xzg-menu-tool-btn">显示全部</button>
+                        <button type="button" id="xzg-menu-refresh-btn" class="xzg-menu-tool-btn">${xzgT('刷新列表','Refresh List')}</button>
+                        <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">${xzgT('隐藏全部','Hide All')}</button>
+                        <button type="button" id="xzg-menu-unselectall-btn" class="xzg-menu-tool-btn">${xzgT('显示全部','Show All')}</button>
                     </div>
                     <div class="xzg-menu-hide-toolbar">
-                        <button type="button" id="xzg-menu-export-btn" class="xzg-menu-tool-btn">导出配置</button>
-                        <button type="button" id="xzg-menu-import-btn" class="xzg-menu-tool-btn">导入配置</button>
+                        <button type="button" id="xzg-menu-export-btn" class="xzg-menu-tool-btn">${xzgT('导出配置','Export Config')}</button>
+                        <button type="button" id="xzg-menu-import-btn" class="xzg-menu-tool-btn">${xzgT('导入配置','Import Config')}</button>
                         <input type="file" id="xzg-menu-import-file" accept=".json" style="display:none;" />
                     </div>
                     <div class="xzg-menu-hide-list" id="xzg-menu-hide-list">
-                        <div class="xzg-menu-empty-tip">点击「刷新列表」加载菜单项<br><span style="font-size:11px;color:#888;">提示：先在画布上右键一次再刷新</span></div>
+                        <div class="xzg-menu-empty-tip">${xzgT('点击「刷新列表」加载菜单项','Click "Refresh List" to load menu items')}<br><span style="font-size:11px;color:#888;">${xzgT('提示：先在画布上右键一次再刷新','Tip: right-click on canvas once before refreshing')}</span></div>
                     </div>
-                    <button type="button" id="xzg-menu-reset-btn" class="xzg-menu-reset-btn">恢复所有隐藏菜单</button>
+                    <button type="button" id="xzg-menu-reset-btn" class="xzg-menu-reset-btn">${xzgT('恢复所有隐藏菜单','Restore All Hidden Menus')}</button>
                 </div>
             </div>
             <div class="xzg-tab-content" data-tab-content="quicknodes" style="display:none;">
                 <div class="xzg-menu-hide-full">
-                    <div class="xzg-quick-nodes-count">已添加 <span id="xzg-quick-count">0</span> / 20 个快速节点</div>
+                    <div class="xzg-quick-nodes-count">${xzgT('已添加','Added')} <span id="xzg-quick-count">0</span> / 20 ${xzgT('个快速节点','quick nodes')}</div>
                     <div class="xzg-quick-setting-row">
-                        <span>夺舍模式</span>
-                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="夺舍模式：开启后，连线菜单只显示快速节点">
+                        <span>${xzgT('夺舍模式','Possession Mode')}</span>
+                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="${xzgT('夺舍模式：开启后，连线菜单只显示快速节点','Possession mode: when on, link menu shows only quick nodes')}">
                             <span class="xzg-toggle-slider"></span>
-                            <span class="xzg-toggle-label">关</span>
+                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                         </button>
                     </div>
                     <div class="xzg-quick-setting-row">
-                        <span>文字颜色</span>
+                        <span>${xzgT('文字颜色','Text Color')}</span>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <input type="color" id="xzg-quick-text-color" value="#FFD700" style="width:24px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
                             <span id="xzg-quick-text-color-value" style="font-size:12px;color:#888;">#FFD700</span>
                         </div>
                     </div>
                     <div class="xzg-menu-hide-toolbar" style="margin-bottom:6px;">
-                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-export-btn">导出配置</button>
-                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-import-btn">导入配置</button>
-                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-clear-btn">清空全部</button>
+                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-export-btn">${xzgT('导出配置','Export Config')}</button>
+                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-import-btn">${xzgT('导入配置','Import Config')}</button>
+                        <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-clear-btn">${xzgT('清空全部','Clear All')}</button>
                     </div>
                     <input type="file" id="xzg-quick-import-file" accept=".json" style="display:none;" />
                     <div class="xzg-menu-hide-list" id="xzg-quick-nodes-list">
-                        <div class="xzg-menu-empty-tip">暂无快速节点<br><span style="font-size:11px;">右键节点可添加到快速节点</span></div>
+                        <div class="xzg-menu-empty-tip">${xzgT('暂无快速节点','No quick nodes yet')}<br><span style="font-size:11px;">${xzgT('右键节点可添加到快速节点','Right-click a node to add to quick nodes')}</span></div>
                     </div>
-                    <p style="margin-top:8px;font-size:11px;color:#888;text-align:center;">拖拽可调整顺序，从节点拉出连线时搜索框顶部显示</p>
+                    <p style="margin-top:8px;font-size:11px;color:#888;text-align:center;">${xzgT('拖拽可调整顺序，从节点拉出连线时搜索框顶部显示','Drag to reorder; shown atop the search box when dragging a link from a node')}</p>
                 </div>
             </div>
         `;
@@ -360,6 +362,23 @@ window.XZGThemePanel = {
 
         this.updateShortcutDisplay();
         this.renderPresets();
+
+        // 语言切换时重建面板，刷新所有静态文案（双语支持）
+        try {
+            const appRef = (typeof app !== "undefined" && app) || window.app;
+            const lookup = appRef?.ui?.settings?.settingsLookup?.["Comfy.Locale"];
+            if (lookup && !this.__xzg_theme_lang_hooked) {
+                this.__xzg_theme_lang_hooked = true;
+                const origOnChange = lookup.onChange;
+                lookup.onChange = function () {
+                    try {
+                        const p = window.XZGThemePanel;
+                        if (p && p.panel) { p.hide(); p.panel.remove(); p.panel = null; p.create(); p.show(); }
+                    } catch (e) {}
+                    return origOnChange?.apply(this, arguments);
+                };
+            }
+        } catch (e) {}
 
         return panel;
     },
@@ -461,7 +480,7 @@ window.XZGThemePanel = {
                 const newChecked = !isChecked;
                 titleToggle.dataset.checked = String(newChecked);
                 const label = titleToggle.querySelector(".xzg-toggle-label");
-                if (label) label.textContent = newChecked ? "开" : "关";
+                if (label) label.textContent = newChecked ? xzgT("开","On") : xzgT("关","Off");
                 
                 const titleSections = panel.querySelectorAll(".xzg-title-swatch-section");
                 titleSections.forEach(sec => {
@@ -535,7 +554,7 @@ window.XZGThemePanel = {
                     const active = window.XZGThemeManager.toggleLinkHighlight();
                     linkHighlightBtn.setAttribute("data-checked", active ? "true" : "false");
                     const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
-                    if (label) label.textContent = active ? "开" : "关";
+                    if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
                 }
             });
 
@@ -543,7 +562,7 @@ window.XZGThemePanel = {
             if (window.XZGThemeManager && window.XZGThemeManager.linkHighlightActive) {
                 linkHighlightBtn.setAttribute("data-checked", "true");
                 const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
-                if (label) label.textContent = "开";
+                if (label) label.textContent = xzgT("开","On");
             }
         }
 
@@ -566,7 +585,7 @@ window.XZGThemePanel = {
                     window.XZGThemeManager.setWallpaperActive(next);
                     wallpaperBtn.setAttribute("data-checked", next ? "true" : "false");
                     const label = wallpaperBtn.querySelector(".xzg-toggle-label");
-                    if (label) label.textContent = next ? "开" : "关";
+                    if (label) label.textContent = next ? xzgT("开","On") : xzgT("关","Off");
                     if (wallpaperControls) {
                         wallpaperControls.style.display = next ? "block" : "none";
                     }
@@ -576,7 +595,7 @@ window.XZGThemePanel = {
             if (window.XZGThemeManager && window.XZGThemeManager.wallpaperActive) {
                 wallpaperBtn.setAttribute("data-checked", "true");
                 const label = wallpaperBtn.querySelector(".xzg-toggle-label");
-                if (label) label.textContent = "开";
+                if (label) label.textContent = xzgT("开","On");
                 if (wallpaperControls) {
                     wallpaperControls.style.display = "block";
                 }
@@ -616,7 +635,7 @@ window.XZGThemePanel = {
                     if (wallpaperBtn) {
                         wallpaperBtn.setAttribute("data-checked", "false");
                         const label = wallpaperBtn.querySelector(".xzg-toggle-label");
-                        if (label) label.textContent = "关";
+                        if (label) label.textContent = xzgT("关","Off");
                     }
                     if (wallpaperControls) {
                         wallpaperControls.style.display = "none";
@@ -674,7 +693,7 @@ window.XZGThemePanel = {
         //             const active = window.XZGThemeManager.toggleLinkLaser();
         //             linkLaserBtn.setAttribute("data-checked", active ? "true" : "false");
         //             const label = linkLaserBtn.querySelector(".xzg-toggle-label");
-        //             if (label) label.textContent = active ? "开" : "关";
+        //             if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
         //             // 显示/隐藏动画风格选择
         //             if (animTypeSection) animTypeSection.style.display = active ? 'flex' : 'none';
         //         }
@@ -684,7 +703,7 @@ window.XZGThemePanel = {
         //     if (window.XZGThemeManager && window.XZGThemeManager.linkLaserActive) {
         //         linkLaserBtn.setAttribute("data-checked", "true");
         //         const label = linkLaserBtn.querySelector(".xzg-toggle-label");
-        //         if (label) label.textContent = "开";
+        //         if (label) label.textContent = xzgT("开","On");
         //         if (animTypeSection) animTypeSection.style.display = 'flex';
         //     }
         // }
@@ -721,7 +740,7 @@ window.XZGThemePanel = {
         //             const active = window.XZGThemeManager.toggleLinkColor();
         //             linkColorBtn.setAttribute("data-checked", active ? "true" : "false");
         //             const label = linkColorBtn.querySelector(".xzg-toggle-label");
-        //             if (label) label.textContent = active ? "开" : "关";
+        //             if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
         //         }
         //     });
         //
@@ -729,7 +748,7 @@ window.XZGThemePanel = {
         //     if (window.XZGThemeManager && window.XZGThemeManager.linkColorActive) {
         //         linkColorBtn.setAttribute("data-checked", "true");
         //         const label = linkColorBtn.querySelector(".xzg-toggle-label");
-        //         if (label) label.textContent = "开";
+        //         if (label) label.textContent = xzgT("开","On");
         //     }
         // }
 
@@ -764,7 +783,7 @@ window.XZGThemePanel = {
             const items = mh._collectedItems?.[currentMenuTab] || [];
 
             if (items.length === 0) {
-                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">点击「刷新列表」加载菜单项<br><span style="font-size:11px;color:#888;">提示：先在画布上右键一次再刷新</span></div>';
+                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('点击「刷新列表」加载菜单项','Click "Refresh List" to load menu items') + '<br><span style="font-size:11px;color:#888;">' + xzgT('提示：先在画布上右键一次再刷新','Tip: right-click on canvas once before refreshing') + '</span></div>';
                 return;
             }
 
@@ -775,7 +794,7 @@ window.XZGThemePanel = {
             }
 
             if (filteredItems.length === 0) {
-                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">没有匹配的菜单项</div>';
+                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('没有匹配的菜单项','No matching menu items') + '</div>';
                 return;
             }
 
@@ -920,7 +939,7 @@ window.XZGThemePanel = {
             menuResetBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 if (!window.XZGMenuHide) return;
-                if (confirm('确定要恢复所有被隐藏的菜单项吗？')) {
+                if (confirm(xzgT('确定要恢复所有被隐藏的菜单项吗？','Sure to restore all hidden menu items?'))) {
                     window.XZGMenuHide.resetAll();
                     renderMenuList();
                 }
@@ -967,10 +986,10 @@ window.XZGThemePanel = {
                         const data = JSON.parse(ev.target.result);
                         const config = data.config || data;
                         if (!config.canvas && !config.node) {
-                            alert('配置文件格式不正确');
+                            alert(xzgT('配置文件格式不正确','Invalid config file format'));
                             return;
                         }
-                        if (!confirm('导入配置将覆盖当前的菜单隐藏设置，确定继续吗？')) {
+                        if (!confirm(xzgT('导入配置将覆盖当前的菜单隐藏设置，确定继续吗？','Import will overwrite current menu-hide settings. Continue?'))) {
                             return;
                         }
                         const mh = window.XZGMenuHide;
@@ -981,9 +1000,9 @@ window.XZGThemePanel = {
                         mh.saveConfig();
                         mh._applyHideToOpenMenus();
                         renderMenuList();
-                        alert('导入成功');
+                        alert(xzgT('导入成功','Import succeeded'));
                     } catch (err) {
-                        alert('导入失败：文件格式不正确');
+                        alert(xzgT('导入失败：文件格式不正确','Import failed: invalid file format'));
                         console.warn('[小珠光] 菜单配置导入失败:', err);
                     }
                 };
@@ -1040,7 +1059,7 @@ window.XZGThemePanel = {
             countEl.textContent = quickNodes.length;
 
             if (quickNodes.length === 0) {
-                listEl.innerHTML = '<div class="xzg-menu-empty-tip">暂无快速节点<br><span style="font-size:11px;">右键节点可添加到快速节点</span></div>';
+                listEl.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('暂无快速节点','No quick nodes yet') + '<br><span style="font-size:11px;">' + xzgT('右键节点可添加到快速节点','Right-click a node to add to quick nodes') + '</span></div>';
                 return;
             }
 
@@ -1074,7 +1093,7 @@ window.XZGThemePanel = {
 
                 const removeBtn = document.createElement('button');
                 removeBtn.className = 'xzg-quick-node-remove-btn';
-                removeBtn.textContent = '移除';
+                removeBtn.textContent = xzgT('移除','Remove');
                 removeBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     if (window.XZGQuickNodes) {
@@ -1128,7 +1147,7 @@ window.XZGThemePanel = {
         if (quickClearBtn) {
             quickClearBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                if (window.XZGQuickNodes && confirm('确定要清空所有快速节点吗？')) {
+                if (window.XZGQuickNodes && confirm(xzgT('确定要清空所有快速节点吗？','Sure to clear all quick nodes?'))) {
                     const nodes = window.XZGQuickNodes.getQuickNodeList();
                     nodes.forEach(n => window.XZGQuickNodes.removeQuickNode(n.type));
                     renderQuickNodesList();
@@ -1183,10 +1202,10 @@ window.XZGThemePanel = {
                         const data = JSON.parse(ev.target.result);
                         const quickNodes = data.quickNodes || data;
                         if (!Array.isArray(quickNodes)) {
-                            alert('配置文件格式不正确');
+                            alert(xzgT('配置文件格式不正确','Invalid config file format'));
                             return;
                         }
-                        if (!confirm('导入配置将覆盖当前的快速节点设置，确定继续吗？')) {
+                        if (!confirm(xzgT('导入配置将覆盖当前的快速节点设置，确定继续吗？','Import will overwrite current quick-node settings. Continue?'))) {
                             return;
                         }
                         const qn = window.XZGQuickNodes;
@@ -1201,16 +1220,16 @@ window.XZGThemePanel = {
                             const checked = qn.isHideDefaultMenu();
                             quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
                             const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
-                            if (label) label.textContent = checked ? "开" : "关";
+                            if (label) label.textContent = checked ? xzgT("开","On") : xzgT("关","Off");
                         }
                         if (quickTextColorInput && quickTextColorValue) {
                             const color = qn.getTextColor();
                             quickTextColorInput.value = color;
                             quickTextColorValue.textContent = color.toUpperCase();
                         }
-                        alert('导入成功');
+                        alert(xzgT('导入成功','Import succeeded'));
                     } catch (err) {
-                        alert('导入失败：文件格式不正确');
+                        alert(xzgT('导入失败：文件格式不正确','Import failed: invalid file format'));
                         console.warn('[小珠光] 快速节点配置导入失败:', err);
                     }
                 };
@@ -1224,7 +1243,7 @@ window.XZGThemePanel = {
                 const checked = window.XZGQuickNodes.isHideDefaultMenu();
                 quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
                 const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
-                if (label) label.textContent = checked ? "开" : "关";
+                if (label) label.textContent = checked ? xzgT("开","On") : xzgT("关","Off");
             }
             quickHideDefaultBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -1234,7 +1253,7 @@ window.XZGThemePanel = {
                     window.XZGQuickNodes.setHideDefaultMenu(newChecked);
                     quickHideDefaultBtn.setAttribute("data-checked", newChecked ? "true" : "false");
                     const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
-                    if (label) label.textContent = newChecked ? "开" : "关";
+                    if (label) label.textContent = newChecked ? xzgT("开","On") : xzgT("关","Off");
                 }
             });
         }
@@ -1266,7 +1285,7 @@ window.XZGThemePanel = {
                         const checked = window.XZGQuickNodes.isHideDefaultMenu();
                         quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
                         const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
-                        if (label) label.textContent = checked ? "开" : "关";
+                        if (label) label.textContent = checked ? xzgT("开","On") : xzgT("关","Off");
                     }
                     if (quickTextColorInput && quickTextColorValue && window.XZGQuickNodes) {
                         const color = window.XZGQuickNodes.getTextColor();
@@ -1749,7 +1768,7 @@ window.XZGThemePanel = {
         if (titleToggle) {
             titleToggle.dataset.checked = String(this.defaults.useTitleGradient);
             const label = titleToggle.querySelector(".xzg-toggle-label");
-            if (label) label.textContent = this.defaults.useTitleGradient ? "开" : "关";
+            if (label) label.textContent = this.defaults.useTitleGradient ? xzgT("开","On") : xzgT("关","Off");
         }
         const titleSections = panel.querySelectorAll(".xzg-title-swatch-section");
         titleSections.forEach(sec => {
@@ -1816,7 +1835,7 @@ window.XZGThemePanel = {
         if (titleToggle) {
             titleToggle.dataset.checked = String(useTitleGradient);
             const label = titleToggle.querySelector(".xzg-toggle-label");
-            if (label) label.textContent = useTitleGradient ? "开" : "关";
+            if (label) label.textContent = useTitleGradient ? xzgT("开","On") : xzgT("关","Off");
         }
         const titleSections = panel.querySelectorAll(".xzg-title-swatch-section");
         titleSections.forEach(sec => {
@@ -1967,7 +1986,7 @@ window.XZGThemePanel = {
         if (shortcut.alt) parts.push("Alt");
         if (shortcut.shift) parts.push("Shift");
         parts.push(shortcut.key.toUpperCase());
-        display.textContent = "快捷键: " + parts.join("+");
+        display.textContent = xzgT('快捷键','Shortcut') + ": " + parts.join("+");
     },
 
     showShortcutDialog() {
@@ -1978,9 +1997,9 @@ window.XZGThemePanel = {
         dialog.className = "xzg-dialog-overlay";
         dialog.innerHTML = `
             <div class="xzg-dialog">
-                <div class="xzg-dialog-title">设置快捷键</div>
+                <div class="xzg-dialog-title">${xzgT('设置快捷键','Set Shortcut')}</div>
                 <div class="xzg-dialog-body">
-                    <p style="margin-bottom: 16px; color: #888; font-size: 12px; text-align: center;">请按下你想要的快捷键</p>
+                    <p style="margin-bottom: 16px; color: #888; font-size: 12px; text-align: center;">${xzgT('请按下你想要的快捷键','Press the shortcut keys you want')}</p>
                     <div style="text-align: center; margin-bottom: 16px;">
                         <div id="xzg-listen-display" style="
                             padding: 16px 24px;
@@ -1992,12 +2011,12 @@ window.XZGThemePanel = {
                             font-weight: bold;
                             min-width: 180px;
                             display: inline-block;
-                        ">请按快捷键...</div>
+                        ">${xzgT('请按快捷键...','Press keys...')}</div>
                     </div>
                 </div>
                 <div class="xzg-dialog-footer">
-                    <button class="xzg-btn xzg-btn-cancel" id="xzg-dialog-cancel" type="button">取消</button>
-                    <button class="xzg-btn xzg-btn-ok" id="xzg-dialog-ok" type="button" disabled>确定</button>
+                    <button class="xzg-btn xzg-btn-cancel" id="xzg-dialog-cancel" type="button">${xzgT('取消','Cancel')}</button>
+                    <button class="xzg-btn xzg-btn-ok" id="xzg-dialog-ok" type="button" disabled>${xzgT('确定','OK')}</button>
                 </div>
             </div>
         `;
@@ -2148,7 +2167,7 @@ window.XZGThemePanel = {
         if (titleToggle) {
             titleToggle.dataset.checked = String(useTitleGradient);
             const label = titleToggle.querySelector(".xzg-toggle-label");
-            if (label) label.textContent = useTitleGradient ? "开" : "关";
+            if (label) label.textContent = useTitleGradient ? xzgT("开","On") : xzgT("关","Off");
         }
         const titleSections = panel.querySelectorAll(".xzg-title-swatch-section");
         titleSections.forEach(sec => {

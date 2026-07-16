@@ -1,4 +1,6 @@
 import { app } from "../../scripts/app.js";
+import { xzgT } from "./xzg_i18n.js";
+
 
 const STORAGE_KEY = "xzg_quick_nodes";
 const CONFIG_KEY = "xzg_quick_nodes_config";
@@ -230,7 +232,7 @@ class XZGQuickNodes {
                 
                 const header = document.createElement("div");
                 header.className = "xzg-quick-nodes-header";
-                header.textContent = "快速节点";
+                header.textContent = xzgT('快速节点','Quick Nodes');
                 section.appendChild(header);
 
                 const list = document.createElement("div");
@@ -436,7 +438,7 @@ class XZGQuickNodes {
             const isQuick = self.isQuickNode(nodeType);
             
             const quickNodeOption = {
-                content: isQuick ? '<span style="color:#FFD700;">⭐ 从快速节点移除</span>' : '<span style="color:#FFD700;">☆ 添加到快速节点</span>',
+                content: isQuick ? '<span style="color:#FFD700;">⭐ ' + xzgT('从快速节点移除','Remove from Quick Nodes') + '</span>' : '<span style="color:#FFD700;">☆ ' + xzgT('添加到快速节点','Add to Quick Nodes') + '</span>',
                 callback: () => {
                     if (isQuick) {
                         self.removeQuickNode(nodeType);
