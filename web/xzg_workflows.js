@@ -1420,22 +1420,25 @@ class XZGWorkflowsManager {
             .xzg-wf-left-col {
                 width: 100px;
                 border-right: 1px solid var(--border-color, #444);
-                overflow-y: auto;
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
                 flex-shrink: 0;
+                display: flex;
+                flex-direction: column;
+                min-height: 0;
             }
             .xzg-wf-cat-header {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 10px 12px;
+                padding: 0 12px;
                 font-size: 14px;
                 color: var(--xzg-wf-accent, #FFD700);
                 border-bottom: 1px solid var(--border-color, #444);
                 font-weight: bold;
                 text-transform: uppercase;
-                min-height: 40px;
+                height: 40px;
                 box-sizing: border-box;
+                flex-shrink: 0;
             }
             .xzg-wf-add-cat-btn {
                 width: 20px;
@@ -1459,6 +1462,9 @@ class XZGWorkflowsManager {
             }
             .xzg-wf-cat-list {
                 padding: 4px 0;
+                flex: 1;
+                overflow-y: auto;
+                min-height: 0;
             }
             .xzg-wf-folder-wrapper {
                 width: 100%;
@@ -1585,20 +1591,20 @@ class XZGWorkflowsManager {
             }
             .xzg-wf-right-col {
                 flex: 1;
-                overflow-y: auto;
                 display: flex;
                 flex-direction: column;
                 min-width: 0;
+                min-height: 0;
             }
             .xzg-wf-list-header {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 10px 14px;
+                padding: 0 14px;
                 border-bottom: 1px solid var(--border-color, #444);
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
                 flex-shrink: 0;
-                min-height: 40px;
+                height: 40px;
                 box-sizing: border-box;
             }
             .xzg-wf-list-title {
