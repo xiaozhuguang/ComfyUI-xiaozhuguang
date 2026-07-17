@@ -1434,6 +1434,8 @@ class XZGWorkflowsManager {
                 border-bottom: 1px solid var(--border-color, #444);
                 font-weight: bold;
                 text-transform: uppercase;
+                min-height: 40px;
+                box-sizing: border-box;
             }
             .xzg-wf-add-cat-btn {
                 width: 20px;
@@ -1596,6 +1598,8 @@ class XZGWorkflowsManager {
                 border-bottom: 1px solid var(--border-color, #444);
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
                 flex-shrink: 0;
+                min-height: 40px;
+                box-sizing: border-box;
             }
             .xzg-wf-list-title {
                 display: flex;
