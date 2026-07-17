@@ -1429,8 +1429,8 @@ class XZGWorkflowsManager {
                 justify-content: space-between;
                 align-items: center;
                 padding: 10px 12px;
-                font-size: 12px;
-                color: var(--fg-muted, #aaa);
+                font-size: 14px;
+                color: var(--xzg-wf-accent, #FFD700);
                 border-bottom: 1px solid var(--border-color, #444);
                 font-weight: bold;
                 text-transform: uppercase;
@@ -1603,6 +1603,7 @@ class XZGWorkflowsManager {
                 gap: 6px;
                 font-size: 14px;
                 font-weight: bold;
+                color: var(--xzg-wf-accent, #FFD700);
             }
             .xzg-wf-count {
                 font-size: 12px;
