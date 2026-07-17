@@ -3,10 +3,8 @@ name: Publish to Comfy Registry
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-    paths:
-      - "pyproject.toml"
+    tags:
+      - 'V*'
 
 jobs:
   publish-node:
@@ -15,6 +13,21 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#V}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Tag: $TAG, Version: $VERSION"
+
+      - name: Update version in pyproject.toml
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+          echo "Updated pyproject.toml version to $VERSION"
+          cat pyproject.toml | grep "^version ="
 
       - name: Publish Custom Node
         uses: Comfy-Org/publish-node-action@main
