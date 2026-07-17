@@ -663,7 +663,6 @@ class XZGWorkflowsManager {
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
             <div class="xzg-wf-ctx-item" data-action="new-folder">📁 ${xzgT('新建分类','New Category')}</div>
-            <div class="xzg-wf-ctx-item danger" data-action="clear-usage">🧹 ${xzgT('清空使用频率','Clear Usage Frequency')}</div>
         `;
         
         document.body.appendChild(menu);
@@ -697,8 +696,6 @@ class XZGWorkflowsManager {
                 
                 if (action === "new-folder") {
                     this.createNewCategory("");
-                } else if (action === "clear-usage") {
-                    this.clearUsageFrequency();
                 }
             });
         });
@@ -1234,7 +1231,7 @@ class XZGWorkflowsManager {
                                 <span class="xzg-wf-count">0</span>
                             </div>
                             <div class="xzg-wf-sort-btns">
-                                <button class="xzg-wf-sort-btn active" data-sort="default" title="按使用频率排序">🔥</button>
+                                <button class="xzg-wf-sort-btn active" data-sort="default" title="${xzgT('按使用频率排序（右键清空使用频率）','Sort by usage frequency (right-click to clear)')}">🔥</button>
                                 <button class="xzg-wf-sort-btn xzg-wf-sort-btn-name" data-sort="name" title="按名称排序">A</button>
                             </div>
                         </div>
@@ -2343,6 +2340,63 @@ class XZGWorkflowsManager {
                 this.saveMeta();
                 this.renderWorkflowList();
             });
+            if (btn.dataset.sort === "default") {
+                btn.addEventListener("contextmenu", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.hideContextMenu();
+                    const menu = document.createElement("div");
+                    menu.className = "xzg-wf-context-menu";
+                    menu.innerHTML = `
+                        <div class="xzg-wf-ctx-item danger" data-action="clear-usage">🧹 ${xzgT('清空使用频率','Clear Usage Frequency')}</div>
+                    `;
+                    document.body.appendChild(menu);
+                    const x = e.clientX;
+                    const y = e.clientY;
+                    const rect = menu.getBoundingClientRect();
+                    const vw = window.innerWidth;
+                    const vh = window.innerHeight;
+                    let left = x;
+                    let top = y;
+                    if (x + rect.width > vw) {
+                        left = vw - rect.width - 5;
+                    }
+                    if (y + rect.height > vh) {
+                        top = vh - rect.height - 5;
+                    }
+                    menu.style.left = left + "px";
+                    menu.style.top = top + "px";
+                    this._contextMenu = menu;
+                    menu.querySelectorAll(".xzg-wf-ctx-item").forEach(item => {
+                        item.addEventListener("click", (ev) => {
+                            ev.stopPropagation();
+                            const action = item.dataset.action;
+                            this.hideContextMenu();
+                            if (action === "clear-usage") {
+                                this.clearUsageFrequency();
+                            }
+                        });
+                    });
+                    const closeHandler = (ev) => {
+                        if (!menu.contains(ev.target)) {
+                            this.hideContextMenu();
+                            document.removeEventListener("mousedown", closeHandler);
+                            document.removeEventListener("keydown", keyHandler);
+                        }
+                    };
+                    const keyHandler = (ev) => {
+                        if (ev.key === "Escape") {
+                            this.hideContextMenu();
+                            document.removeEventListener("mousedown", closeHandler);
+                            document.removeEventListener("keydown", keyHandler);
+                        }
+                    };
+                    setTimeout(() => {
+                        document.addEventListener("mousedown", closeHandler);
+                        document.addEventListener("keydown", keyHandler);
+                    }, 0);
+                });
+            }
         });
 
         // 启动时应用已保存的主题强调色
@@ -3047,7 +3101,7 @@ class XZGWorkflowsManager {
 
         item.querySelector(".xzg-wf-item-name").textContent = wf.name;
 
-        // 悬浮高亮：处于「全部」分类时，悬浮工作流 → 左侧对应分类高亮并展开
+        // 悬浮高亮：处于「全部」分类时，悬浮工作流 → 左侧对应分类高亮并展开（手风琴模式）
         item.addEventListener("mouseenter", () => {
             if (this.currentCategory !== "all") return;
             const folder = (wf.folder && wf.folder !== "未分类") ? wf.folder : "";
@@ -3058,7 +3112,29 @@ class XZGWorkflowsManager {
                 let acc = '';
                 for (let i = 0; i < parts.length - 1; i++) {
                     acc = acc ? acc + '/' + parts[i] : parts[i];
-                    if (!this.expandedFolders.has(acc)) { this.expandedFolders.add(acc); needRender = true; }
+                    const wasExpanded = this.expandedFolders.has(acc);
+                    const beforeCount = this.expandedFolders.size;
+                    this.collapseSiblingFolders(acc);
+                    const afterCollapseCount = this.expandedFolders.size;
+                    if (beforeCount !== afterCollapseCount) {
+                        needRender = true;
+                    }
+                    if (!wasExpanded) {
+                        this.expandedFolders.add(acc);
+                        needRender = true;
+                    }
+                }
+            } else {
+                for (const p of [...this.expandedFolders]) {
+                    if (!p.includes("/")) {
+                        this.expandedFolders.delete(p);
+                        for (const sub of [...this.expandedFolders]) {
+                            if (sub.startsWith(p + "/")) {
+                                this.expandedFolders.delete(sub);
+                            }
+                        }
+                        needRender = true;
+                    }
                 }
             }
             if (needRender) this.renderCategories();
