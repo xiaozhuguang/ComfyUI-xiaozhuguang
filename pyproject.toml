@@ -1,0 +1,20 @@
+[project]
+name = "ComfyUI-xiaozhuguang"
+description = "小珠光 - ComfyUI节点美化增强插件，提供节点收藏、工作流管理、主题美化、田字格对齐、视觉编组等功能"
+version = "5.1.0"
+license = { file = "LICENSE" }
+dependencies = [
+    "torchvision",
+    "huggingface_hub",
+    "transformers>=4.57.1",
+    "qwen-vl-utils",
+    "bitsandbytes",
+]
+
+[project.urls]
+Repository = "https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang"
+
+[tool.comfy]
+PublisherId = "xiaozhuguang"
+DisplayName = "小珠光插件"
+Icon = ""

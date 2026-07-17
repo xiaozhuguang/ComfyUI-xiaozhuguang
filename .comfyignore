@@ -1,0 +1,33 @@
+# 开发与调试文件
+docs/
+.playwright-cli/
+*.log
+*.yml
+*.ps1
+create_release_*.ps1
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 测试文件
+tests/
+test_*.py
+*_test.py
+
+# 设计资源
+*.psd
+*.ai
+*.sketch
+*.fig
+
+# 临时文件
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# 示例工作流（体积大的可选排除）
+# example_workflows/
