@@ -16,8 +16,8 @@ Thumbs.db
 .vscode/
 *.sublime-*
 .qoder/
-".playwright-cli/"  
-"comfyui-state.png"  
+.playwright-cli/
+comfyui-state.png  
 
 # Local config
 python_paths.json

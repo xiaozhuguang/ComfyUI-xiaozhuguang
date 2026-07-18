@@ -15,7 +15,7 @@ window.XZGThemeManager = {
     linkColor: '#888888',
     linkAnimRunning: false,
     linkAnimFrameId: null,
-    linkHighlightDimAlpha: 0.3,
+    linkHighlightDimAlpha: 0.45,
     wallpaperActive: false,
     wallpaperType: 'image',
     wallpaperData: null,
@@ -1394,7 +1394,7 @@ window.XZGThemeManager = {
 
             // 判断连线是否与选中节点相连（高亮/动画需要）
             let isConnected = false;
-            if (hasSelectedNodes) {
+            if (self.linkHighlightActive) {
                 const idSet = new Set(nodeIds.map(String));
                 isConnected = idSet.has(String(originId)) || idSet.has(String(targetId));
             }
@@ -1402,14 +1402,13 @@ window.XZGThemeManager = {
             // 连线颜色：覆盖所有连线颜色
             if (self.linkColorActive) {
                 const origColor = link.color;
-                if (self.linkHighlightActive && hasSelectedNodes) {
+                if (self.linkHighlightActive) {
                     if (isConnected) {
-                        link.color = self._saturateColor(self.linkColor, 0.3);
-                        origDrawLink.call(this, ctx, link, renderCtx);
+                        self._drawHighlightGreenLine(ctx, link);
                     } else {
                         link.color = self.linkColor;
                         const origAlpha = ctx.globalAlpha;
-                        ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
+                        ctx.globalAlpha = origAlpha * 0.5;
                         self._drawThinBaseLine(ctx, link);
                         ctx.globalAlpha = origAlpha;
                     }
@@ -1418,19 +1417,11 @@ window.XZGThemeManager = {
                     origDrawLink.call(this, ctx, link, renderCtx);
                 }
                 link.color = origColor;
-            } else if (self.linkHighlightActive && hasSelectedNodes) {
-                // 仅高亮：相关连线绘制细原始线 + 1px白色流动虚线 + 七彩星芒，不相关变暗
+            } else if (self.linkHighlightActive) {
                 if (isConnected) {
-                    self._drawThinBaseLine(ctx, link);
-                    self._drawWhiteDashLine(ctx, link);
-                    // 七彩星芒
-                    self._drawRainbowSparkles(ctx, link);
-                    self._ensureHighlightAnimLoop();
+                    self._drawHighlightGreenLine(ctx, link);
                 } else {
-                    const origAlpha = ctx.globalAlpha;
-                    ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
-                    self._drawThinBaseLine(ctx, link);
-                    ctx.globalAlpha = origAlpha;
+                    self._drawDimWhiteLine(ctx, link);
                 }
             } else {
                 origDrawLink.call(this, ctx, link, renderCtx);
@@ -1597,6 +1588,74 @@ window.XZGThemeManager = {
         ctx.save();
         ctx.lineWidth = 1;
         ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        if (cp.length >= 2) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+            const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+            ctx.bezierCurveTo(c0x, c0y, c1x, c1y, ex, ey);
+        } else if (cp.length === 1) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            ctx.quadraticCurveTo(c0x, c0y, ex, ey);
+        } else {
+            ctx.lineTo(ex, ey);
+        }
+        ctx.stroke();
+        ctx.restore();
+    },
+
+    _drawHighlightGreenLine(ctx, link) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+
+        ctx.save();
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#FFD700';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        if (cp.length >= 2) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+            const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+            ctx.bezierCurveTo(c0x, c0y, c1x, c1y, ex, ey);
+        } else if (cp.length === 1) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            ctx.quadraticCurveTo(c0x, c0y, ex, ey);
+        } else {
+            ctx.lineTo(ex, ey);
+        }
+        ctx.stroke();
+        ctx.restore();
+    },
+
+    _drawDimWhiteLine(ctx, link) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+
+        ctx.save();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = 0.5;
         ctx.beginPath();
         ctx.moveTo(sx, sy);
         if (cp.length >= 2) {

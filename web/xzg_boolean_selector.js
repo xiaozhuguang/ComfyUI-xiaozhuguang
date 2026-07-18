@@ -141,12 +141,12 @@ function getButtonRects(y, W, settings) {
     const gap = settings.btnGap;
     const btnH = settings.btnHeight;
     const rects = [];
-    const startY = y + 10;
+    const startY = y + 5;
 
     const falseW = getButtonWidth(false, settings);
     const trueW = getButtonWidth(true, settings);
     const totalW = falseW + gap + trueW;
-    const startX = Math.max(10, (W - totalW) / 2);
+    const startX = Math.max(5, (W - totalW) / 2);
 
     const invert = !!settings.invert;
 
@@ -213,6 +213,8 @@ function openBoolSettingsPanel(node) {
     }
 
     const s = getNodeSettings(node, DEFAULT_SETTINGS);
+    const origSettings = JSON.parse(JSON.stringify(s));
+    const origSize = [node.size[0], node.size[1]];
 
     const rect = app.canvas.canvas.getBoundingClientRect();
     const nodeScale = app.canvas.ds.scale;
@@ -436,7 +438,10 @@ function openBoolSettingsPanel(node) {
     const color2Inp = colorInputs[1];
     const color3Inp = colorInputs[2];
 
+    let _initializing = true;
+
     function applyPreview() {
+        if (_initializing) return;
         let ns = getNodeSettings(node, DEFAULT_SETTINGS);
         ns.btnHeight = clamp(parseInt(btnHeightCtrl.inp.value), 30, 80);
         const falseW = clamp(parseInt(falseWidthCtrl.inp.value), 55, 300);
@@ -459,8 +464,8 @@ function openBoolSettingsPanel(node) {
         ns.invert = !!s.invert;
         setNodeSettings(node, ns);
         const { contentW, contentH } = getButtonRects(0, node.size[0], ns);
-        node.size[0] = Math.max(180, contentW + 40);
-        node.size[1] = Math.max(80, contentH + 50);
+        node.size[0] = Math.max(120, contentW + 20);
+        node.size[1] = Math.max(60, contentH + 30);
         node.setDirtyCanvas(true, true);
     }
 
@@ -494,10 +499,21 @@ function openBoolSettingsPanel(node) {
         el.addEventListener("input", applyPreview);
     });
 
-    const closePanel = () => { dialog.remove(); _boolSettingsPanel = null; };
-    title.querySelector(".xzg-bs-close").addEventListener("click", closePanel);
-    cancelBtn.addEventListener("click", closePanel);
-    applyBtn.addEventListener("click", closePanel);
+    _initializing = false;
+
+    const closePanel = (apply) => {
+        if (!apply) {
+            setNodeSettings(node, origSettings);
+            node.size[0] = origSize[0];
+            node.size[1] = origSize[1];
+            node.setDirtyCanvas(true, true);
+        }
+        dialog.remove();
+        _boolSettingsPanel = null;
+    };
+    title.querySelector(".xzg-bs-close").addEventListener("click", () => closePanel(true));
+    cancelBtn.addEventListener("click", () => closePanel(false));
+    applyBtn.addEventListener("click", () => closePanel(true));
     resetBtn.addEventListener("click", () => {
         setNodeSettings(node, JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
         dialog.remove();
@@ -508,7 +524,7 @@ function openBoolSettingsPanel(node) {
         const onDocClick = (e) => {
             if (!dialog.contains(e.target)) {
                 document.removeEventListener("mousedown", onDocClick);
-                closePanel();
+                closePanel(false);
             }
         };
         document.addEventListener("mousedown", onDocClick);
@@ -628,7 +644,7 @@ app.registerExtension({
                 computeSize(width) {
                     const settings = getNodeSettings(node, DEFAULT_SETTINGS);
                     const { contentH } = getButtonRects(0, width, settings);
-                    return [width, contentH + 25];
+                    return [width, Math.max(60, contentH + 30)];
                 },
             });
 
@@ -644,8 +660,8 @@ app.registerExtension({
 
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
             const { contentW, contentH } = getButtonRects(0, this.size[0], settings);
-            this.size[0] = Math.max(180, contentW + 40);
-            this.size[1] = Math.max(80, contentH + 50);
+            this.size[0] = Math.max(120, contentW + 20);
+            this.size[1] = Math.max(60, contentH + 30);
         };
     },
 });

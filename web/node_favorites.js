@@ -4806,6 +4806,149 @@ app.registerExtension({
     },
 
     beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.name === "XiaozhuguangDuplicateFirstFrame") {
+            const translatedName = xzgT("小珠光帧优化", "Xiaozhuguang Frame Optimization");
+            nodeType.title = translatedName;
+            nodeData.display_name = translatedName;
+
+            if (nodeData.inputs) {
+                if (nodeData.inputs.image) {
+                    nodeData.inputs.image.name = xzgT("图像", "image");
+                }
+                if (nodeData.inputs.multi_fill) {
+                    nodeData.inputs.multi_fill.name = xzgT("多参补帧", "multi fill");
+                }
+            }
+            if (nodeData.outputs) {
+                for (const out of nodeData.outputs) {
+                    if (out.name === "image") {
+                        out.name = xzgT("图像", "image");
+                    } else if (out.name === "frame_count") {
+                        out.name = xzgT("实际帧数", "frame count");
+                    } else if (out.name === "original_count") {
+                        out.name = xzgT("原始帧数", "original count");
+                    } else if (out.name === "front_fill") {
+                        out.name = xzgT("前补帧", "front fill");
+                    } else if (out.name === "back_fill") {
+                        out.name = xzgT("后补帧", "back fill");
+                    } else if (out.name === "first_frame") {
+                        out.name = xzgT("首帧", "first frame");
+                    } else if (out.name === "last_frame") {
+                        out.name = xzgT("尾帧", "last frame");
+                    }
+                }
+            }
+            if (nodeData.output_name) {
+                nodeData.output_name = nodeData.output_name.map(n => {
+                    if (n === "image") return xzgT("图像", "image");
+                    if (n === "frame_count") return xzgT("实际帧数", "frame count");
+                    if (n === "original_count") return xzgT("原始帧数", "original count");
+                    if (n === "front_fill") return xzgT("前补帧", "front fill");
+                    if (n === "back_fill") return xzgT("后补帧", "back fill");
+                    if (n === "first_frame") return xzgT("首帧", "first frame");
+                    if (n === "last_frame") return xzgT("尾帧", "last frame");
+                    return n;
+                });
+            }
+
+            const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+                const w = this.widgets?.find(w => w.name === "multi_fill");
+                if (w) {
+                    w.label = xzgT("多参补帧", "multi fill");
+                }
+                if (this.inputs) {
+                    for (const inp of this.inputs) {
+                        if (inp.name === "image") {
+                            inp.label = xzgT("图像", "image");
+                        }
+                    }
+                }
+                if (this.outputs) {
+                    for (const out of this.outputs) {
+                        if (out.name === "image") {
+                            out.label = xzgT("图像", "image");
+                        } else if (out.name === "frame_count") {
+                            out.label = xzgT("实际帧数", "frame count");
+                        } else if (out.name === "original_count") {
+                            out.label = xzgT("原始帧数", "original count");
+                        } else if (out.name === "front_fill") {
+                            out.label = xzgT("前补帧", "front fill");
+                        } else if (out.name === "back_fill") {
+                            out.label = xzgT("后补帧", "back fill");
+                        } else if (out.name === "first_frame") {
+                            out.label = xzgT("首帧", "first frame");
+                        } else if (out.name === "last_frame") {
+                            out.label = xzgT("尾帧", "last frame");
+                        }
+                    }
+                }
+            };
+        }
+        if (nodeData.name === "XiaozhuguangFrameExtract") {
+            const translatedName = xzgT("小珠光帧提取", "Xiaozhuguang Frame Extract");
+            nodeType.title = translatedName;
+            nodeData.display_name = translatedName;
+
+            if (nodeData.inputs) {
+                if (nodeData.inputs.image) {
+                    nodeData.inputs.image.name = xzgT("图像", "image");
+                }
+                if (nodeData.inputs.front_fill) {
+                    nodeData.inputs.front_fill.name = xzgT("前补帧", "front fill");
+                }
+                if (nodeData.inputs.back_fill) {
+                    nodeData.inputs.back_fill.name = xzgT("后补帧", "back fill");
+                }
+                if (nodeData.inputs.mask) {
+                    nodeData.inputs.mask.name = xzgT("遮罩", "mask");
+                }
+            }
+            if (nodeData.outputs) {
+                for (const out of nodeData.outputs) {
+                    if (out.name === "image") {
+                        out.name = xzgT("图像", "image");
+                    } else if (out.name === "mask") {
+                        out.name = xzgT("遮罩", "mask");
+                    }
+                }
+            }
+            if (nodeData.output_name) {
+                nodeData.output_name = nodeData.output_name.map(n => {
+                    if (n === "image") return xzgT("图像", "image");
+                    if (n === "mask") return xzgT("遮罩", "mask");
+                    return n;
+                });
+            }
+
+            const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+                if (this.inputs) {
+                    for (const inp of this.inputs) {
+                        if (inp.name === "image") {
+                            inp.label = xzgT("图像", "image");
+                        } else if (inp.name === "front_fill") {
+                            inp.label = xzgT("前补帧", "front fill");
+                        } else if (inp.name === "back_fill") {
+                            inp.label = xzgT("后补帧", "back fill");
+                        } else if (inp.name === "mask") {
+                            inp.label = xzgT("遮罩", "mask");
+                        }
+                    }
+                }
+                if (this.outputs) {
+                    for (const out of this.outputs) {
+                        if (out.name === "image") {
+                            out.label = xzgT("图像", "image");
+                        } else if (out.name === "mask") {
+                            out.label = xzgT("遮罩", "mask");
+                        }
+                    }
+                }
+            };
+        }
         if (nodeData.name === "XiaozhuguangSelector") {
             // 选择器 Canvas 绘制版已迁移到 xzg_selector.js
             // 这里仅保留设置对话框和右键菜单，DOM widget 创建逻辑已移除
@@ -7188,5 +7331,51 @@ app.registerExtension({
     },
 
     setCustomWidgets(app) {
+    },
+
+    nodeCreated(node) {
+        this._translateNodeParams(node);
+    },
+
+    loadedGraphNode(node) {
+        this._translateNodeParams(node);
+    },
+
+    _translateNodeParams(node) {
+        if (node.comfyClass !== "XiaozhuguangDuplicateFirstFrame" && node.type !== "XiaozhuguangDuplicateFirstFrame") {
+            return;
+        }
+        const inputMap = {
+            "image": xzgT("图像", "image"),
+            "copy_count": xzgT("复制数量", "copy count"),
+        };
+        const outputMap = {
+            "image": xzgT("图像", "image"),
+            "frame_count": xzgT("实际帧数", "frame count"),
+            "first_frame": xzgT("首帧", "first frame"),
+            "last_frame": xzgT("尾帧", "last frame"),
+        };
+
+        if (node.inputs) {
+            for (const input of node.inputs) {
+                if (inputMap[input.name]) {
+                    input.localized_name = inputMap[input.name];
+                }
+            }
+        }
+        if (node.outputs) {
+            for (const output of node.outputs) {
+                if (outputMap[output.name]) {
+                    output.localized_name = outputMap[output.name];
+                }
+            }
+        }
+        if (node.widgets) {
+            for (const w of node.widgets) {
+                if (inputMap[w.name]) {
+                    w.label = inputMap[w.name];
+                }
+            }
+        }
     }
 });

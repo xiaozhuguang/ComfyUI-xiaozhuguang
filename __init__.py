@@ -39,6 +39,8 @@ import folder_paths
 from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
 from .nodes.xzg_get_widget import XiaozhuguangGetWidget
 from .nodes.xzg_first_last_frame import XiaozhuguangFirstLastFrame
+from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
+from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 
 
 def tensor_to_pil(tensor):
@@ -378,6 +380,7 @@ class XiaozhuguangUniversalSlider:
 
 
 NODE_CLASS_MAPPINGS = {
+    "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
     "XiaozhuguangSelector": XiaozhuguangSelector,
     "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
     "XiaozhuguangBoolNot": XiaozhuguangBoolNot,
@@ -389,6 +392,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
     "XiaozhuguangGetWidget": XiaozhuguangGetWidget,
     "XiaozhuguangFirstLastFrame": XiaozhuguangFirstLastFrame,
+    "XiaozhuguangDuplicateFirstFrame": XiaozhuguangDuplicateFirstFrame,
+    "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -403,6 +408,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangQwenVLInstruct": "Xiaozhuguang Qwen-VL Instruct",
     "XiaozhuguangGetWidget": "Xiaozhuguang Get Widget",
     "XiaozhuguangFirstLastFrame": "Xiaozhuguang First/Last Frame",
+    "XiaozhuguangDuplicateFirstFrame": "Xiaozhuguang Frame Optimization",
+    "XiaozhuguangFrameExtract": "Xiaozhuguang Frame Extract",
 }
 
 WEB_DIRECTORY = "./web"

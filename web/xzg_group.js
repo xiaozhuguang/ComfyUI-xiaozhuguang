@@ -203,18 +203,21 @@ const XZGGroup = {
     },
 
     getGroupNodes(gid) {
-        const allGroupIds = this._collectChildGroupIds(gid);
-        const nodes = [];
+        const g = this.groups[gid];
+        if (!g?.bounds) return [];
+        const bounds = g.bounds;
         const graph = app?.graph;
-        if (!graph?._nodes) return nodes;
-        for (const gId of allGroupIds) {
-            const g = this.groups[gId];
-            if (!g?.nodeIds) continue;
-            for (const nid of g.nodeIds) {
-                const node = graph._nodes.find(n => this._idEq(n.id, nid));
-                if (node && !nodes.includes(node)) {
-                    nodes.push(node);
-                }
+        if (!graph?._nodes) return [];
+        const nodes = [];
+        for (const n of graph._nodes) {
+            if (!n?.pos || typeof n.pos[0] !== 'number' || typeof n.pos[1] !== 'number') continue;
+            const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
+            if (typeof nw !== 'number' || typeof nh !== 'number') continue;
+            const cx = n.pos[0] + nw / 2;
+            const cy = n.pos[1] + nh / 2;
+            if (cx >= bounds.x && cx <= bounds.x + bounds.w &&
+                cy >= bounds.y && cy <= bounds.y + bounds.h) {
+                nodes.push(n);
             }
         }
         return nodes;
@@ -763,9 +766,10 @@ const XZGGroup = {
             if (!n?.pos || typeof n.pos[0] !== 'number' || typeof n.pos[1] !== 'number') return;
             const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
             if (typeof nw !== 'number' || typeof nh !== 'number') return;
-            // 完全位于框体边界内才归入编组
-            if (n.pos[0] >= bounds.x && n.pos[0] + nw <= bounds.x + bounds.w &&
-                n.pos[1] >= bounds.y && n.pos[1] + nh <= bounds.y + bounds.h) {
+            const cx = n.pos[0] + nw / 2;
+            const cy = n.pos[1] + nh / 2;
+            if (cx >= bounds.x && cx <= bounds.x + bounds.w &&
+                cy >= bounds.y && cy <= bounds.y + bounds.h) {
                 inBounds.add(n.id);
                 inBoundsNodes.push(n);
                 if (!this._idInArray(group.nodeIds, n.id)) {
@@ -1764,19 +1768,17 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         }
         const childGroupIds = new Set(childGroups.map(g => g.id));
 
-        // 收集所有完全位于当前框体内的节点（多个框体能同时控制同一节点）
+        // 收集所有中心点位于当前框体内的节点（多个框体能同时控制同一节点）
         const nodeStarts = [];
         const self = this;
         graph._nodes.forEach(n => {
             if (!n?.pos) return;
-            const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-            if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
-                n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+            if (self._isNodeCenterInBounds(n, b)) {
                 nodeStarts.push({ node: n, x: n.pos[0], y: n.pos[1] });
             }
         });
 
-        // 子编组：收集完全落在当前框体内的节点（大框体外部的节点不受大框体控制）
+        // 子编组：收集中心点落在当前框体内的节点（大框体外部的节点不受大框体控制）
         const childGroupData = childGroups.map(cg => ({
             group: cg,
             startX: cg.bounds.x,
@@ -1784,17 +1786,14 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             nodeStarts: cg.nodeIds.map(nid => {
                 const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                 if (!n?.pos) return null;
-                const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-                // 只移动完全落在大框体内的节点
-                if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
-                    n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                if (self._isNodeCenterInBounds(n, b)) {
                     return { node: n, x: n.pos[0], y: n.pos[1] };
                 }
                 return null;
             }).filter(Boolean)
         }));
 
-        // 部分重叠编组（有重叠但未完全位于内部）：不移动编组框，只移动完全落在当前编组内的节点
+        // 部分重叠编组（有重叠但未完全位于内部）：不移动编组框，只移动中心点落在当前编组内的节点
         // 只对面积比当前编组小的编组生效（大控制小，小不控制大）
         const partialOverlapNodes = [];
         const childSet = new Set(childGroupIds);
@@ -1808,10 +1807,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 otherG.nodeIds.forEach(nid => {
                     const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                     if (!n?.pos) return;
-                    const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-                    // 节点完全落在当前编组内
-                    if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
-                        n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                    if (self._isNodeCenterInBounds(n, b)) {
                         partialOverlapNodes.push({ node: n, x: n.pos[0], y: n.pos[1] });
                     }
                 });
@@ -1977,8 +1973,9 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         const willBypass = !g.bypassed;
         const mode = willBypass ? MODE_BYPASS : MODE_ALWAYS;
         const b = g.bounds;
+        const self = this;
 
-        // 1. 完全子编组（完全位于内部）：切换编组状态，只切换完全落在当前框体内的节点
+        // 1. 完全子编组（完全位于内部）：切换编组状态，只切换中心点落在当前框体内的节点
         const fullChildGroupIds = this._collectChildGroups(gid);
         fullChildGroupIds.forEach(id => {
             const grp = this.groups[id];
@@ -1987,17 +1984,15 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             grp.nodeIds.forEach(nid => {
                 const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                 if (!n?.pos) return;
-                const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-                // 只切换完全落在大框体内的节点（大框体外部的节点不受大框体控制）
-                if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
-                    n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                // 只切换中心点落在大框体内的节点（大框体外部的节点不受大框体控制）
+                if (self._isNodeCenterInBounds(n, b)) {
                     n.mode = mode;
                 }
             });
             this.updateGroupStyle(id);
         });
 
-        // 2. 部分重叠编组（有重叠但未完全位于内部）：不切换编组状态，只切换完全落在当前编组内的节点
+        // 2. 部分重叠编组（有重叠但未完全位于内部）：不切换编组状态，只切换中心点落在当前编组内的节点
         // 只对面积比当前编组小的编组生效（大控制小，小不控制大）
         const fullSet = new Set(fullChildGroupIds);
         const groupArea = b.w * b.h;
@@ -2012,10 +2007,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 otherG.nodeIds.forEach(nid => {
                     const n = graph._nodes.find(x => x.id === nid || x.id == nid);
                     if (!n?.pos) return;
-                    const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-                    // 节点完全落在当前编组内
-                    if (n.pos[0] >= b.x && n.pos[0] + nw <= b.x + b.w &&
-                        n.pos[1] >= b.y && n.pos[1] + nh <= b.y + b.h) {
+                    if (self._isNodeCenterInBounds(n, b)) {
                         n.mode = mode;
                     }
                 });
@@ -2132,6 +2124,17 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                childBounds.y >= parentBounds.y &&
                childBounds.x + childBounds.w <= parentBounds.x + parentBounds.w &&
                childBounds.y + childBounds.h <= parentBounds.y + parentBounds.h;
+    },
+
+    _isNodeCenterInBounds(node, bounds) {
+        if (!node?.pos || typeof node.pos[0] !== 'number' || typeof node.pos[1] !== 'number') return false;
+        const nw = node.size?.[0] || 200;
+        const nh = node.size?.[1] || 100;
+        if (typeof nw !== 'number' || typeof nh !== 'number') return false;
+        const cx = node.pos[0] + nw / 2;
+        const cy = node.pos[1] + nh / 2;
+        return cx >= bounds.x && cx <= bounds.x + bounds.w &&
+               cy >= bounds.y && cy <= bounds.y + bounds.h;
     },
 
     /* 计算两个编组框的 IoU（交并比） */
@@ -2417,21 +2420,59 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         const origCopy = LGraphCanvas.prototype.copyToClipboard;
         if (origCopy) {
             LGraphCanvas.prototype.copyToClipboard = function(nodes) {
-                // ⚠️ 必须在 origCopy 之前获取节点列表，因为 origCopy 内部可能清空 selected_nodes
                 const nodeArr = nodes || (this.selected_nodes ? Object.values(this.selected_nodes) : []);
-                origCopy.apply(this, arguments);
-                if (!nodeArr?.length) { self._clipboardGroups = null; return; }
+                if (!nodeArr?.length) {
+                    origCopy.apply(this, arguments);
+                    self._clipboardGroups = null;
+                    return;
+                }
                 const copiedNodeIds = new Set(nodeArr.map(n => n.id));
+
                 const groupsToCopy = {};
+                const fullyCopiedGroupIds = new Set();
                 for (const [gid, g] of Object.entries(self.groups)) {
-                    const hasCopiedNode = g.nodeIds.some(nid =>
-                        copiedNodeIds.has(nid) || copiedNodeIds.has(String(nid)) ||
-                        [...copiedNodeIds].some(id => id == nid)
+                    const groupNodes = self.getGroupNodes(gid);
+                    if (groupNodes.length === 0) continue;
+                    const allNodesCopied = groupNodes.every(node =>
+                        copiedNodeIds.has(node.id) || copiedNodeIds.has(String(node.id)) ||
+                        [...copiedNodeIds].some(id => id == node.id)
                     );
-                    if (hasCopiedNode) {
+                    if (allNodesCopied) {
                         groupsToCopy[gid] = JSON.parse(JSON.stringify(g));
+                        fullyCopiedGroupIds.add(gid);
                     }
                 }
+
+                const savedData = [];
+                for (const node of nodeArr) {
+                    const gid = node._xzgGroupId;
+                    if (gid && !fullyCopiedGroupIds.has(gid)) {
+                        savedData.push({
+                            node: node,
+                            groupId: node._xzgGroupId,
+                            groupData: node._xzgGroupData,
+                            propsGroup: node.properties?._xzgGroup
+                        });
+                        node._xzgGroupId = null;
+                        node._xzgGroupData = null;
+                        if (node.properties) {
+                            delete node.properties._xzgGroup;
+                        }
+                    }
+                }
+
+                try {
+                    origCopy.apply(this, arguments);
+                } finally {
+                    for (const item of savedData) {
+                        item.node._xzgGroupId = item.groupId;
+                        item.node._xzgGroupData = item.groupData;
+                        if (item.propsGroup !== undefined && item.node.properties) {
+                            item.node.properties._xzgGroup = item.propsGroup;
+                        }
+                    }
+                }
+
                 self._clipboardGroups = Object.keys(groupsToCopy).length ? groupsToCopy : null;
                 console.log('[小珠光编组] copyToClipboard: 复制了', nodeArr.length, '个节点,', Object.keys(groupsToCopy).length, '个编组');
             };
@@ -2535,22 +2576,38 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 for (const [oldGid, nodes] of Object.entries(groupsMap)) {
                     const oldGroup = getOldGroup(oldGid);
                     const newNodeIds = nodes.map(n => n.id);
-                    // 先计算bounds，如果失败用兜底值，确保编组一定会被创建
-                    let newBounds = self.calcBounds(newNodeIds);
-                    if (!newBounds) {
-                        // 兜底：使用第一个节点的位置生成bounds
-                        const firstNode = nodes.find(n => n?.pos);
-                        if (firstNode) {
-                            const nw = firstNode.size?.[0] || 200, nh = firstNode.size?.[1] || 100;
-                            const p = 20, topPad = 58;
+                    let newBounds;
+
+                    if (oldGroup?.bounds) {
+                        const nodeBounds = self.calcBounds(newNodeIds);
+                        if (nodeBounds) {
+                            const centerX = nodeBounds.x + nodeBounds.w / 2;
+                            const centerY = nodeBounds.y + nodeBounds.h / 2;
                             newBounds = {
-                                x: firstNode.pos[0] - p,
-                                y: firstNode.pos[1] - topPad,
-                                w: nw + p * 2,
-                                h: nh + topPad + p
+                                x: centerX - oldGroup.bounds.w / 2,
+                                y: centerY - oldGroup.bounds.h / 2,
+                                w: oldGroup.bounds.w,
+                                h: oldGroup.bounds.h
                             };
                         } else {
-                            newBounds = { x: 0, y: 0, w: 300, h: 200 };
+                            newBounds = { ...oldGroup.bounds };
+                        }
+                    } else {
+                        newBounds = self.calcBounds(newNodeIds);
+                        if (!newBounds) {
+                            const firstNode = nodes.find(n => n?.pos);
+                            if (firstNode) {
+                                const nw = firstNode.size?.[0] || 200, nh = firstNode.size?.[1] || 100;
+                                const p = 20, topPad = 58;
+                                newBounds = {
+                                    x: firstNode.pos[0] - p,
+                                    y: firstNode.pos[1] - topPad,
+                                    w: nw + p * 2,
+                                    h: nh + topPad + p
+                                };
+                            } else {
+                                newBounds = { x: 0, y: 0, w: 300, h: 200 };
+                            }
                         }
                     }
 
@@ -2648,13 +2705,28 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     }
                 }
 
-                // 第四遍：统一根据节点当前实际位置重新计算所有新编组的bounds，然后更新节点引用并渲染
+                // 第四遍：更新编组bounds（有旧编组数据则保持原大小，仅调整位置；无旧数据则重新计算）
                 const newGidList = Object.values(gidMap);
                 for (const newGid of newGidList) {
                     const g = self.groups[newGid];
                     if (!g) continue;
-                    const newBounds = self.calcBounds(g.nodeIds);
-                    if (newBounds) g.bounds = newBounds;
+                    const nodeBounds = self.calcBounds(g.nodeIds);
+                    if (nodeBounds) {
+                        const oldGid = Object.keys(gidMap).find(k => gidMap[k] === newGid);
+                        const oldGroup = oldGid ? allOldGroups[oldGid] : null;
+                        if (oldGroup?.bounds) {
+                            const centerX = nodeBounds.x + nodeBounds.w / 2;
+                            const centerY = nodeBounds.y + nodeBounds.h / 2;
+                            g.bounds = {
+                                x: centerX - oldGroup.bounds.w / 2,
+                                y: centerY - oldGroup.bounds.h / 2,
+                                w: oldGroup.bounds.w,
+                                h: oldGroup.bounds.h
+                            };
+                        } else {
+                            g.bounds = nodeBounds;
+                        }
+                    }
                     self.renderGroup(newGid);
                 }
 

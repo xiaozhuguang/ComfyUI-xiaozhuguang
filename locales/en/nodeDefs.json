@@ -163,5 +163,34 @@
       "0": { "name": "first frame" },
       "1": { "name": "last frame" }
     }
+  },
+  "XiaozhuguangDuplicateFirstFrame": {
+    "display_name": "Xiaozhuguang Frame Optimization",
+    "inputs": {
+      "image": { "name": "image" },
+      "multi_fill": { "name": "multi fill" }
+    },
+    "outputs": {
+      "0": { "name": "image" },
+      "1": { "name": "frame count" },
+      "2": { "name": "original count" },
+      "3": { "name": "front fill" },
+      "4": { "name": "back fill" },
+      "5": { "name": "first frame" },
+      "6": { "name": "last frame" }
+    }
+  },
+  "XiaozhuguangFrameExtract": {
+    "display_name": "Xiaozhuguang Frame Extract",
+    "inputs": {
+      "image": { "name": "image" },
+      "front_fill": { "name": "front fill" },
+      "back_fill": { "name": "back fill" },
+      "mask": { "name": "mask" }
+    },
+    "outputs": {
+      "0": { "name": "image" },
+      "1": { "name": "mask" }
+    }
   }
 }

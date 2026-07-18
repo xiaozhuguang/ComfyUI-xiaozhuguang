@@ -163,5 +163,34 @@
       "0": { "name": "首帧" },
       "1": { "name": "尾帧" }
     }
+  },
+  "XiaozhuguangDuplicateFirstFrame": {
+    "display_name": "小珠光帧优化",
+    "inputs": {
+      "image": { "name": "图像" },
+      "multi_fill": { "name": "多参补帧" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "实际帧数" },
+      "2": { "name": "原始帧数" },
+      "3": { "name": "前补帧" },
+      "4": { "name": "后补帧" },
+      "5": { "name": "首帧" },
+      "6": { "name": "尾帧" }
+    }
+  },
+  "XiaozhuguangFrameExtract": {
+    "display_name": "小珠光帧提取",
+    "inputs": {
+      "image": { "name": "图像" },
+      "front_fill": { "name": "前补帧" },
+      "back_fill": { "name": "后补帧" },
+      "mask": { "name": "遮罩" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "遮罩" }
+    }
   }
 }
