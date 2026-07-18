@@ -1,6 +1,6 @@
 {
   "name": "ComfyUI-xiaozhuguang",
-  "version": "5.1.0",
+  "version": "6.0.1",
   "description": "小珠光 - ComfyUI节点美化增强插件",
   "author": "xiaozhuguang",
   "license": "MIT",
@@ -27,5 +27,5 @@
     "web/xzg_theme.css",
     "web/xzg_group.css"
   ],
-  "tags": ["theme", "favorites", "xiaozhuguang", "group", "points-editor", "sam"]
+  "tags": ["theme", "favorites", "xiaozhuguang", "comfyui-xiaozhuguang", "group", "points-editor", "sam"]
 }

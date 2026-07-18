@@ -16,5 +16,5 @@ Repository = "https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang"
 
 [tool.comfy]
 PublisherId = "xiaozhuguang"
-DisplayName = "小珠光插件"
+DisplayName = "ComfyUI-xiaozhuguang - 小珠光插件"
 Icon = ""
