@@ -108,6 +108,9 @@ function getNodeSettings(node, defaults) {
         try { parsed = JSON.parse(sw.value); } catch (e) {}
     }
     const s = { ...defaults, ...parsed };
+    s.colors = { ...defaults.colors, ...(parsed.colors || {}) };
+    s.labels = { ...defaults.labels, ...(parsed.labels || {}) };
+    s.widths = { ...defaults.widths, ...(parsed.widths || {}) };
     s.btnWidth = clamp(s.btnWidth, 55, 300);
     s.btnHeight = clamp(s.btnHeight, 30, 80);
     s.fontSize = clamp(s.fontSize, 10, 24);
@@ -141,12 +144,12 @@ function getButtonRects(y, W, settings) {
     const gap = settings.btnGap;
     const btnH = settings.btnHeight;
     const rects = [];
-    const startY = y + 5;
+    const startY = y + 4;
 
     const falseW = getButtonWidth(false, settings);
     const trueW = getButtonWidth(true, settings);
     const totalW = falseW + gap + trueW;
-    const startX = Math.max(5, (W - totalW) / 2);
+    const startX = Math.max(6, (W - totalW) / 2);
 
     const invert = !!settings.invert;
 
@@ -216,29 +219,16 @@ function openBoolSettingsPanel(node) {
     const origSettings = JSON.parse(JSON.stringify(s));
     const origSize = [node.size[0], node.size[1]];
 
-    const rect = app.canvas.canvas.getBoundingClientRect();
-    const nodeScale = app.canvas.ds.scale;
-    const nodeLeft = (node.pos[0] + app.canvas.ds.offset[0]) * nodeScale + rect.left;
-    const nodeTop = (node.pos[1] + app.canvas.ds.offset[1]) * nodeScale + rect.top;
-    const nodeWidth = (node.size?.[0] || 200) * nodeScale;
+    const dlgWidth = 340;
 
-    const dlgWidth = 320;
-    const dlgHeight = 560;
-    const gap = 15;
-
-    let dlgLeft = nodeLeft + nodeWidth + gap;
-    let dlgTop = nodeTop - 110;
-
-    if (dlgLeft + dlgWidth > rect.right - 10) dlgLeft = nodeLeft - dlgWidth - gap;
-    if (dlgLeft < rect.left + 10) dlgLeft = rect.left + 10;
-    if (dlgTop < rect.top + 10) dlgTop = rect.top + 10;
-    if (dlgTop + dlgHeight > rect.bottom - 10) dlgTop = rect.bottom - dlgHeight - 10;
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;background:transparent;pointer-events:none;";
 
     const dialog = document.createElement("div");
     dialog.className = "xzg-bs-dialog";
-    dialog.style.left = dlgLeft + "px";
-    dialog.style.top = dlgTop + "px";
+    dialog.style.cssText = "pointer-events:auto;position:absolute;top:50%;right:20px;transform:translateY(-50%);margin:0;";
     dialog.style.width = dlgWidth + "px";
+    overlay.appendChild(dialog);
 
     const title = document.createElement("div");
     title.className = "xzg-bs-ptitle";
@@ -412,24 +402,32 @@ function openBoolSettingsPanel(node) {
     btns.append(resetBtn, cancelBtn, applyBtn);
     dialog.appendChild(btns);
 
-    document.body.appendChild(dialog);
-    _boolSettingsPanel = dialog;
+    document.body.appendChild(overlay);
+    _boolSettingsPanel = overlay;
 
     let dragging = false, dragOffX = 0, dragOffY = 0;
     title.addEventListener("mousedown", (e) => {
         if (e.target.tagName === "BUTTON") return;
         dragging = true;
-        dragOffX = e.clientX - dialog.offsetLeft;
-        dragOffY = e.clientY - dialog.offsetTop;
+        const rect = dialog.getBoundingClientRect();
+        dragOffX = e.clientX - rect.left;
+        dragOffY = e.clientY - rect.top;
+        dialog.style.right = "auto";
+        dialog.style.transform = "none";
         e.preventDefault();
+        e.stopPropagation();
     });
     document.addEventListener("mousemove", (e) => {
         if (!dragging) return;
-        const nx = Math.max(0, Math.min(window.innerWidth - dialog.offsetWidth, e.clientX - dragOffX));
-        const ny = Math.max(0, Math.min(window.innerHeight - dialog.offsetHeight, e.clientY - dragOffY));
+        let nx = e.clientX - dragOffX;
+        let ny = e.clientY - dragOffY;
+        const rect = dialog.getBoundingClientRect();
+        if (nx + rect.width > window.innerWidth) nx = window.innerWidth - rect.width;
+        if (ny + rect.height > window.innerHeight) ny = window.innerHeight - rect.height;
+        if (nx < 0) nx = 0;
+        if (ny < 0) ny = 0;
         dialog.style.left = nx + "px";
         dialog.style.top = ny + "px";
-        e.preventDefault();
     });
     document.addEventListener("mouseup", () => { dragging = false; });
 
@@ -442,7 +440,7 @@ function openBoolSettingsPanel(node) {
 
     function applyPreview() {
         if (_initializing) return;
-        let ns = getNodeSettings(node, DEFAULT_SETTINGS);
+        const ns = JSON.parse(JSON.stringify(s));
         ns.btnHeight = clamp(parseInt(btnHeightCtrl.inp.value), 30, 80);
         const falseW = clamp(parseInt(falseWidthCtrl.inp.value), 55, 300);
         const trueW = clamp(parseInt(trueWidthCtrl.inp.value), 55, 300);
@@ -453,19 +451,20 @@ function openBoolSettingsPanel(node) {
             false: falseLabelInp.value,
             true: trueLabelInp.value,
         };
-        ns.fontColor = fontColorBtn._input.value;
-        ns.inactiveColor = inactiveColorBtn._input.value;
+        ns.fontColor = rgbToHex(fontColorBtn._input.value);
+        ns.inactiveColor = rgbToHex(inactiveColorBtn._input.value);
         ns.colors = {
-            color1: color1Inp.value,
-            color2: color2Inp.value,
-            color3: color3Inp.value,
+            color1: rgbToHex(color1Inp.value),
+            color2: rgbToHex(color2Inp.value),
+            color3: rgbToHex(color3Inp.value),
             direction: dirSel.value,
         };
         ns.invert = !!s.invert;
-        setNodeSettings(node, ns);
-        const { contentW, contentH } = getButtonRects(0, node.size[0], ns);
-        node.size[0] = Math.max(120, contentW + 20);
-        node.size[1] = Math.max(60, contentH + 30);
+        Object.assign(s, ns);
+        setNodeSettings(node, s);
+        const { contentW, contentH } = getButtonRects(0, node.size[0], s);
+        node.size[0] = Math.max(120, contentW + 12);
+        node.size[1] = Math.max(45, contentH + 28);
         node.setDirtyCanvas(true, true);
     }
 
@@ -499,7 +498,9 @@ function openBoolSettingsPanel(node) {
         el.addEventListener("input", applyPreview);
     });
 
-    _initializing = false;
+    setTimeout(() => {
+        _initializing = false;
+    }, 50);
 
     const closePanel = (apply) => {
         if (!apply) {
@@ -508,7 +509,7 @@ function openBoolSettingsPanel(node) {
             node.size[1] = origSize[1];
             node.setDirtyCanvas(true, true);
         }
-        dialog.remove();
+        overlay.remove();
         _boolSettingsPanel = null;
     };
     title.querySelector(".xzg-bs-close").addEventListener("click", () => closePanel(true));
@@ -516,19 +517,9 @@ function openBoolSettingsPanel(node) {
     applyBtn.addEventListener("click", () => closePanel(true));
     resetBtn.addEventListener("click", () => {
         setNodeSettings(node, JSON.parse(JSON.stringify(DEFAULT_SETTINGS)));
-        dialog.remove();
+        overlay.remove();
         openBoolSettingsPanel(node);
     });
-
-    setTimeout(() => {
-        const onDocClick = (e) => {
-            if (!dialog.contains(e.target)) {
-                document.removeEventListener("mousedown", onDocClick);
-                closePanel(false);
-            }
-        };
-        document.addEventListener("mousedown", onDocClick);
-    }, 0);
 }
 
 function rgbToHex(rgb) {
@@ -613,7 +604,7 @@ app.registerExtension({
                         ctx.restore();
                     }
 
-                    node._xzgBoolH = contentH + 20;
+                    node._xzgBoolH = contentH + 8;
                 },
 
                 mouse(event, pos, node) {
@@ -644,7 +635,7 @@ app.registerExtension({
                 computeSize(width) {
                     const settings = getNodeSettings(node, DEFAULT_SETTINGS);
                     const { contentH } = getButtonRects(0, width, settings);
-                    return [width, Math.max(60, contentH + 30)];
+                    return [width, contentH + 8];
                 },
             });
 
@@ -660,8 +651,8 @@ app.registerExtension({
 
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
             const { contentW, contentH } = getButtonRects(0, this.size[0], settings);
-            this.size[0] = Math.max(120, contentW + 20);
-            this.size[1] = Math.max(60, contentH + 30);
+            this.size[0] = Math.max(120, contentW + 12);
+            this.size[1] = Math.max(45, contentH + 28);
         };
     },
 });

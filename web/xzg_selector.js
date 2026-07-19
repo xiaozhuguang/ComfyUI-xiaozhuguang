@@ -101,7 +101,7 @@ function getButtonRects(y, W, settings) {
     const btnH = settings.btnHeight;
     const rows = Math.ceil(count / cols);
     const rects = [];
-    const startY = y + 10;
+    const startY = y + 4;
 
     for (let r = 0; r < rows; r++) {
         const rowStartIdx = r * cols;
@@ -112,7 +112,7 @@ function getButtonRects(y, W, settings) {
             rowWidth += getButtonWidth(i, settings);
         }
         rowWidth += (rowCount - 1) * gap;
-        const rowStartX = Math.max(10, (W - rowWidth) / 2);
+        const rowStartX = Math.max(6, (W - rowWidth) / 2);
         let curX = rowStartX;
         for (let i = rowStartIdx; i < rowEndIdx; i++) {
             const w = getButtonWidth(i, settings);
@@ -227,7 +227,7 @@ app.registerExtension({
                         ctx.restore();
                     }
 
-                    node._xzgSelH = contentH + 20;
+                    node._xzgSelH = contentH + 8;
                 },
 
                 mouse(event, pos, node) {
@@ -259,7 +259,7 @@ app.registerExtension({
                 computeSize(width) {
                     const settings = getNodeSettings(node, DEFAULT_SETTINGS);
                     const { contentH } = getButtonRects(0, width, settings);
-                    return [width, contentH + 25];
+                    return [width, contentH + 8];
                 },
             });
 
@@ -268,8 +268,8 @@ app.registerExtension({
 
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
             const { contentW, contentH } = getButtonRects(0, this.size[0], settings);
-            this.size[0] = Math.max(180, contentW + 40);
-            this.size[1] = Math.max(80, contentH + 50);
+            this.size[0] = Math.max(120, contentW + 12);
+            this.size[1] = Math.max(45, contentH + 28);
         };
     },
 });

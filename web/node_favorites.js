@@ -5456,8 +5456,8 @@ app.registerExtension({
                 const contentW = maxRowWidth;
 
                 const contentH = rows * btnHeight + (rows - 1) * gap;
-                const newW = Math.max(180, contentW + 40);
-                const newH = Math.max(80, contentH + 50);
+                const newW = Math.max(120, contentW + 12);
+                const newH = Math.max(45, contentH + 28);
                 if (!node.size || node.size[0] !== newW || node.size[1] !== newH) {
                     node.size = [newW, newH];
                 }
