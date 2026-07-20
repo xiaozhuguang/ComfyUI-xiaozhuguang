@@ -43,7 +43,7 @@ class Xiaozhuguang {
             if (data) {
                 const parsed = JSON.parse(data);
                 if (!parsed.categories) {
-                    parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#FFD700" }];
+                    parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), order: 0 }];
                 }
                 parsed.categories.forEach((c, i) => {
                     if (c.order === undefined) c.order = i;
@@ -78,7 +78,7 @@ class Xiaozhuguang {
             console.error("加载收藏失败:", e);
         }
         return {
-            categories: [{ id: "default", name: xzgT('默认收藏','Default Favorites'), color: "#FFD700" }],
+            categories: [{ id: "default", name: xzgT('默认收藏','Default Favorites'), order: 0 }],
             nodes: [],
             workflows: [],
             sortMode: "default",
@@ -984,13 +984,6 @@ class Xiaozhuguang {
                 box-shadow: 0 0 6px rgba(76, 175, 80, 0.8);
                 margin: 0;
             }
-            .nf-cat-color {
-                display: none;
-            }
-                border-radius: 50%;
-                flex-shrink: 0;
-            }
-
             .nf-cat-name {
                 flex: 1;
                 overflow: hidden;
@@ -1135,13 +1128,6 @@ class Xiaozhuguang {
 
             .nf-fav-drag-handle:hover {
                 background: rgba(255, 255, 255, 0.1);
-            }
-
-            .nf-fav-color {
-                display: none;
-            }
-                border-radius: 2px;
-                flex-shrink: 0;
             }
 
             .nf-fav-info {
@@ -1548,57 +1534,6 @@ class Xiaozhuguang {
             .nf-form-item input[type="text"]:focus {
                 outline: none;
                 border-color: transparent;
-            }
-
-            .nf-color-picker {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }
-
-            .nf-color-picker input[type="color"] {
-                width: 40px;
-                height: 32px;
-                border: 1px solid #555;
-                border-radius: 4px;
-                background: #1e1e1e;
-                cursor: pointer;
-                padding: 2px;
-            }
-
-            .nf-color-picker input[type="color"]::-webkit-color-swatch-wrapper {
-                padding: 0;
-            }
-
-            .nf-color-picker input[type="color"]::-webkit-color-swatch {
-                border: none;
-                border-radius: 2px;
-            }
-
-            .nf-color-hex {
-                font-family: monospace;
-                font-size: 13px;
-                color: #aaa;
-            }
-
-            .nf-color-presets {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-            }
-
-            .nf-preset-color {
-                width: 24px;
-                height: 24px;
-                border-radius: 4px;
-                cursor: pointer;
-                border: 2px solid transparent;
-                transition: all 0.2s;
-            }
-
-            .nf-preset-color:hover {
-                transform: scale(1.2);
-                border-color: #fff;
             }
         `;
     }
@@ -3506,7 +3441,6 @@ class Xiaozhuguang {
         // 渲染普通收藏节点
         for (const node of nodes) {
             const cat = this.getCategoryById(node.categoryId);
-            const catColor = cat ? cat.color : "#888";
             const catName = cat ? cat.name : "未知";
             const isValid = this.isNodeTypeValid(node.type);
             if (!isValid) listInvalidCount++;
@@ -3543,7 +3477,6 @@ class Xiaozhuguang {
             html += `<div style="font-size:11px;color:#aaa;padding:8px 4px 4px;border-top:1px solid #3a3a3a;margin-top:4px;">🔗 多节点收藏</div>`;
             for (const wf of workflows) {
                 const cat = this.getCategoryById(wf.categoryId);
-                const catColor = cat ? cat.color : "#888";
                 const useCount = wf.useCount || 0;
                 const useInfo = this.getUseLevel(useCount);
                 const useClass = this.favorites.useColorsEnabled !== false && useInfo.level > 0 ? ` nf-fav-use-l${useInfo.level}` : '';
@@ -3656,7 +3589,7 @@ class Xiaozhuguang {
                     dragInfo = {
                         type: item.dataset.type,
                         name: item.querySelector(".nf-fav-name")?.textContent || item.dataset.type,
-                        color: item.dataset.categoryColor || "#f44336"
+                        color: "#f44336"
                     };
                 }
                 e.preventDefault();
@@ -4433,15 +4366,11 @@ class Xiaozhuguang {
         const name = prompt("请输入分类名称：");
         if (!name || !name.trim()) return;
 
-        const colors = ["#4CAF50", "#2196F3", "#FF9800", "#E91E63", "#9C27B0", "#00BCD4", "#795548", "#607D8B"];
-        const color = colors[Math.floor(Math.random() * colors.length)];
-
         const id = "cat_" + Date.now();
         const maxOrder = this.favorites.categories.reduce((max, c) => Math.max(max, c.order || 0), 0);
         this.favorites.categories.push({
             id: id,
             name: name.trim(),
-            color: color,
             order: maxOrder + 1
         });
 
@@ -4463,25 +4392,6 @@ class Xiaozhuguang {
                         <label>分类名称：</label>
                         <input type="text" id="nf-cat-name-input" value="${cat.name}" />
                     </div>
-                    <div class="nf-form-item">
-                        <label>分类颜色：</label>
-                        <div class="nf-color-picker">
-                            <input type="color" id="nf-cat-color-input" value="${cat.color}" />
-                            <span class="nf-color-hex" id="nf-color-hex">${cat.color}</span>
-                        </div>
-                    </div>
-                    <div class="nf-form-item">
-                        <label>预设颜色：</label>
-                        <div class="nf-color-presets">
-                            <div class="nf-preset-color" data-color="#F44336" style="background: #F44336;"></div>
-                            <div class="nf-preset-color" data-color="#FF9800" style="background: #FF9800;"></div>
-                            <div class="nf-preset-color" data-color="#FFEB3B" style="background: #FFEB3B;"></div>
-                            <div class="nf-preset-color" data-color="#4CAF50" style="background: #4CAF50;"></div>
-                            <div class="nf-preset-color" data-color="#00BCD4" style="background: #00BCD4;"></div>
-                            <div class="nf-preset-color" data-color="#2196F3" style="background: #2196F3;"></div>
-                            <div class="nf-preset-color" data-color="#9C27B0" style="background: #9C27B0;"></div>
-                        </div>
-                    </div>
                 </div>
                 <div class="nf-dialog-footer">
                     <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
@@ -4492,34 +4402,17 @@ class Xiaozhuguang {
 
         document.body.appendChild(dialog);
 
-        const colorInput = dialog.querySelector("#nf-cat-color-input");
-        const colorHex = dialog.querySelector("#nf-color-hex");
-
-        colorInput.addEventListener("input", () => {
-            colorHex.textContent = colorInput.value;
-        });
-
-        dialog.querySelectorAll(".nf-preset-color").forEach(preset => {
-            preset.addEventListener("click", () => {
-                const color = preset.dataset.color;
-                colorInput.value = color;
-                colorHex.textContent = color;
-            });
-        });
-
         dialog.querySelector("#nf-dlg-cancel").addEventListener("click", () => {
             dialog.remove();
         });
 
         dialog.querySelector("#nf-dlg-ok").addEventListener("click", () => {
             const name = dialog.querySelector("#nf-cat-name-input").value.trim();
-            const color = colorInput.value;
             if (!name) {
                 alert(xzgT('请输入分类名称！','Please enter a category name!'));
                 return;
             }
             cat.name = name;
-            cat.color = color;
             this.saveFavorites();
             this.renderCategories();
             this.renderFavorites();

@@ -36,23 +36,24 @@
   "XiaozhuguangBoolNot": {
     "display_name": "小珠光反向布尔",
     "inputs": {
-      "integer": { "name": "整数" }
+      "boolean": { "name": "布尔值" }
     },
     "outputs": {
       "0": { "name": "反向布尔" }
     }
   },
-  "XiaozhuguangTitle": {
-    "display_name": "小珠光标题"
-  },
-  "XiaozhuguangIntToBool": {
-    "display_name": "小珠光整数转布尔",
+  "XiaozhuguangDataBlock": {
+    "display_name": "小珠光数据阻断",
     "inputs": {
-      "integer": { "name": "整数" }
+      "输入": { "name": "输入" },
+      "传输数据": { "name": "传输数据" }
     },
     "outputs": {
-      "0": { "name": "布尔" }
+      "0": { "name": "输出" }
     }
+  },
+  "XiaozhuguangTitle": {
+    "display_name": "小珠光标题"
   },
   "XiaozhuguangNumberSwitch": {
     "display_name": "小珠光编号切换",

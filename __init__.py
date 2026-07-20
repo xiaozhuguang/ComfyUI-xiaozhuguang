@@ -239,15 +239,15 @@ class XiaozhuguangBooleanSelector:
 class XiaozhuguangBoolNot:
     """
     小珠光反向布尔
-    输入 0/1，输出 true/false（反向）
-    值为 0 时输出 true，值为 1 时输出 false
+    输入布尔值，输出反向布尔值
+    输入 true 输出 false，输入 false 输出 true
     """
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "integer": ("INT", {"default": 0, "min": 0, "max": 1}),
+                "boolean": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -256,8 +256,39 @@ class XiaozhuguangBoolNot:
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
 
-    def execute(self, integer):
-        return (integer == 0,)
+    def execute(self, boolean):
+        return (not boolean,)
+
+
+class XiaozhuguangDataBlock:
+    """
+    小珠光数据阻断
+    开关开启时数据通过，关闭时阻断输出 None
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "输入": ("*", {}),
+                "传输数据": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    RETURN_TYPES = ("*",)
+    RETURN_NAMES = ("输出",)
+    FUNCTION = "execute"
+    CATEGORY = "xiaozhuguang"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types):
+        return True
+
+    def execute(self, 传输数据, 输入=None):
+        if 传输数据:
+            return (输入,)
+        else:
+            return (None,)
 
 
 class XiaozhuguangTitle:
@@ -272,29 +303,6 @@ class XiaozhuguangTitle:
 
     def execute(self):
         return ()
-
-
-class XiaozhuguangIntToBool:
-    """
-    整数转布尔
-    输入 0/1，输出 false/true
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "integer": ("INT", {"default": 0, "min": 0, "max": 1}),
-            },
-        }
-
-    RETURN_TYPES = ("BOOLEAN",)
-    RETURN_NAMES = ("boolean",)
-    FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
-
-    def execute(self, integer):
-        return (integer != 0,)
 
 
 class XiaozhuguangNumberSwitch:
@@ -384,8 +392,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangSelector": XiaozhuguangSelector,
     "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
     "XiaozhuguangBoolNot": XiaozhuguangBoolNot,
+    "XiaozhuguangDataBlock": XiaozhuguangDataBlock,
     "XiaozhuguangTitle": XiaozhuguangTitle,
-    "XiaozhuguangIntToBool": XiaozhuguangIntToBool,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
@@ -397,19 +405,19 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangSelector": "Xiaozhuguang Selector",
-    "XiaozhuguangBooleanSelector": "Xiaozhuguang Boolean Selector",
-    "XiaozhuguangBoolNot": "Xiaozhuguang Inverted Boolean",
-    "XiaozhuguangTitle": "Xiaozhuguang Title",
-    "XiaozhuguangIntToBool": "Xiaozhuguang Int to Boolean",
-    "XiaozhuguangNumberSwitch": "Xiaozhuguang Number Switch",
-    "XiaozhuguangUniversalSlider": "Xiaozhuguang Universal Slider",
-    "XiaozhuguangPointsEditor": "Xiaozhuguang Points Editor",
-    "XiaozhuguangQwenVLInstruct": "Xiaozhuguang Qwen-VL Instruct",
-    "XiaozhuguangGetWidget": "Xiaozhuguang Get Widget",
-    "XiaozhuguangFirstLastFrame": "Xiaozhuguang First/Last Frame",
-    "XiaozhuguangDuplicateFirstFrame": "Xiaozhuguang Frame Optimization",
-    "XiaozhuguangFrameExtract": "Xiaozhuguang Frame Extract",
+    "XiaozhuguangSelector": "小珠光选择器",
+    "XiaozhuguangBooleanSelector": "小珠光布尔",
+    "XiaozhuguangBoolNot": "小珠光反向布尔",
+    "XiaozhuguangDataBlock": "小珠光数据阻断",
+    "XiaozhuguangTitle": "小珠光标题",
+    "XiaozhuguangNumberSwitch": "小珠光编号切换",
+    "XiaozhuguangUniversalSlider": "小珠光万能滑条",
+    "XiaozhuguangPointsEditor": "小珠光点编辑器",
+    "XiaozhuguangQwenVLInstruct": "小珠光qwenVL",
+    "XiaozhuguangGetWidget": "小珠光获取控件值",
+    "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
+    "XiaozhuguangDuplicateFirstFrame": "小珠光帧优化",
+    "XiaozhuguangFrameExtract": "小珠光帧提取",
 }
 
 WEB_DIRECTORY = "./web"

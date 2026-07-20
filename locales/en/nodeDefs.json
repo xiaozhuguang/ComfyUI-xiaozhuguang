@@ -36,23 +36,24 @@
   "XiaozhuguangBoolNot": {
     "display_name": "Xiaozhuguang Inverted Boolean",
     "inputs": {
-      "integer": { "name": "integer" }
+      "boolean": { "name": "boolean" }
     },
     "outputs": {
       "0": { "name": "inverted boolean" }
     }
   },
-  "XiaozhuguangTitle": {
-    "display_name": "Xiaozhuguang Title"
-  },
-  "XiaozhuguangIntToBool": {
-    "display_name": "Xiaozhuguang Int to Boolean",
+  "XiaozhuguangDataBlock": {
+    "display_name": "Xiaozhuguang Data Block",
     "inputs": {
-      "integer": { "name": "integer" }
+      "输入": { "name": "input" },
+      "传输数据": { "name": "enabled" }
     },
     "outputs": {
-      "0": { "name": "boolean" }
+      "0": { "name": "output" }
     }
+  },
+  "XiaozhuguangTitle": {
+    "display_name": "Xiaozhuguang Title"
   },
   "XiaozhuguangNumberSwitch": {
     "display_name": "Xiaozhuguang Number Switch",
