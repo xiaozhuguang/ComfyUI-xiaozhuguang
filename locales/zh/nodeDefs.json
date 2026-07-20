@@ -193,5 +193,18 @@
       "0": { "name": "图像" },
       "1": { "name": "遮罩" }
     }
+  },
+  "XiaozhuguangImageLoader": {
+    "display_name": "小珠光图片加载器",
+    "inputs": {
+      "image_list": { "name": "图片列表" },
+      "card_size": { "name": "卡片尺寸" },
+      "index": { "name": "索引" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "图片数量" },
+      "2": { "name": "文件列表" }
+    }
   }
 }

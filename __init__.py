@@ -41,6 +41,7 @@ from .nodes.xzg_get_widget import XiaozhuguangGetWidget
 from .nodes.xzg_first_last_frame import XiaozhuguangFirstLastFrame
 from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
+from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 
 
 def tensor_to_pil(tensor):
@@ -402,6 +403,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangFirstLastFrame": XiaozhuguangFirstLastFrame,
     "XiaozhuguangDuplicateFirstFrame": XiaozhuguangDuplicateFirstFrame,
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
+    "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -418,6 +420,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
     "XiaozhuguangDuplicateFirstFrame": "小珠光帧优化",
     "XiaozhuguangFrameExtract": "小珠光帧提取",
+    "XiaozhuguangImageLoader": "小珠光图片加载器",
 }
 
 WEB_DIRECTORY = "./web"

@@ -193,5 +193,18 @@
       "0": { "name": "image" },
       "1": { "name": "mask" }
     }
+  },
+  "XiaozhuguangImageLoader": {
+    "display_name": "Xiaozhuguang Image Loader",
+    "inputs": {
+      "image_list": { "name": "image list" },
+      "card_size": { "name": "card size" },
+      "index": { "name": "index" }
+    },
+    "outputs": {
+      "0": { "name": "images" },
+      "1": { "name": "count" },
+      "2": { "name": "file list" }
+    }
   }
 }

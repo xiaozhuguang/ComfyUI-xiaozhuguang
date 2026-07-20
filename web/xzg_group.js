@@ -210,13 +210,10 @@ const XZGGroup = {
         if (!graph?._nodes) return [];
         const nodes = [];
         for (const n of graph._nodes) {
-            if (!n?.pos || typeof n.pos[0] !== 'number' || typeof n.pos[1] !== 'number') continue;
-            const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-            if (typeof nw !== 'number' || typeof nh !== 'number') continue;
-            const cx = n.pos[0] + nw / 2;
-            const cy = n.pos[1] + nh / 2;
-            if (cx >= bounds.x && cx <= bounds.x + bounds.w &&
-                cy >= bounds.y && cy <= bounds.y + bounds.h) {
+            const center = this._getNodeCenter(n);
+            if (!center) continue;
+            if (center.x >= bounds.x && center.x <= bounds.x + bounds.w &&
+                center.y >= bounds.y && center.y <= bounds.y + bounds.h) {
                 nodes.push(n);
             }
         }
@@ -763,13 +760,10 @@ const XZGGroup = {
         const inBoundsNodes = [];
 
         graph._nodes.forEach(n => {
-            if (!n?.pos || typeof n.pos[0] !== 'number' || typeof n.pos[1] !== 'number') return;
-            const nw = n.size?.[0] || 200, nh = n.size?.[1] || 100;
-            if (typeof nw !== 'number' || typeof nh !== 'number') return;
-            const cx = n.pos[0] + nw / 2;
-            const cy = n.pos[1] + nh / 2;
-            if (cx >= bounds.x && cx <= bounds.x + bounds.w &&
-                cy >= bounds.y && cy <= bounds.y + bounds.h) {
+            const center = this._getNodeCenter(n);
+            if (!center) return;
+            if (center.x >= bounds.x && center.x <= bounds.x + bounds.w &&
+                center.y >= bounds.y && center.y <= bounds.y + bounds.h) {
                 inBounds.add(n.id);
                 inBoundsNodes.push(n);
                 if (!this._idInArray(group.nodeIds, n.id)) {
@@ -2126,15 +2120,20 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                childBounds.y + childBounds.h <= parentBounds.y + parentBounds.h;
     },
 
+    /* 获取节点中心点坐标，直接使用 node.boundingRect 与官方 LiteGraph 逻辑一致 */
+    _getNodeCenter(node) {
+        if (!node) return null;
+        const br = node.boundingRect;
+        if (!br || typeof br[0] !== 'number' || typeof br[1] !== 'number' ||
+            typeof br[2] !== 'number' || typeof br[3] !== 'number') return null;
+        return { x: br[0] + br[2] / 2, y: br[1] + br[3] / 2 };
+    },
+
     _isNodeCenterInBounds(node, bounds) {
-        if (!node?.pos || typeof node.pos[0] !== 'number' || typeof node.pos[1] !== 'number') return false;
-        const nw = node.size?.[0] || 200;
-        const nh = node.size?.[1] || 100;
-        if (typeof nw !== 'number' || typeof nh !== 'number') return false;
-        const cx = node.pos[0] + nw / 2;
-        const cy = node.pos[1] + nh / 2;
-        return cx >= bounds.x && cx <= bounds.x + bounds.w &&
-               cy >= bounds.y && cy <= bounds.y + bounds.h;
+        const center = this._getNodeCenter(node);
+        if (!center) return false;
+        return center.x >= bounds.x && center.x <= bounds.x + bounds.w &&
+               center.y >= bounds.y && center.y <= bounds.y + bounds.h;
     },
 
     /* 计算两个编组框的 IoU（交并比） */
@@ -3004,4 +3003,4 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     }
 };
 
-app.registerExtension({ name: 'ComfyUI.xiaozhuguang.group', setup() { XZGGroup.init(); } });
+app.registerExtension({ name: 'ComfyUI.xiaozhuguang.group', setup() { XZGGroup.init(); window.XZGGroup = XZGGroup; } });
