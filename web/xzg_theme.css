@@ -695,3 +695,125 @@
     font-size: 12px;
     color: #ddd;
 }
+
+/* ====== 模态对话框（导出/导入选项） ====== */
+.xzg-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 99999;
+}
+
+.xzg-modal-dialog {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 8px;
+    min-width: 380px;
+    max-width: 500px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    color: #ddd;
+    font-size: 13px;
+}
+
+.xzg-modal-title {
+    padding: 14px 18px;
+    font-size: 15px;
+    font-weight: 600;
+    border-bottom: 1px solid #333;
+    color: #fff;
+}
+
+.xzg-modal-body {
+    padding: 18px;
+}
+
+.xzg-modal-checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+
+    .xzg-modal-checkbox input[type="checkbox"] {
+        margin-top: 2px;
+        flex-shrink: 0;
+        width: 14px;
+        height: 14px;
+        cursor: pointer;
+    }
+
+    .xzg-modal-checkbox span {
+        color: #ddd;
+    }
+
+.xzg-modal-hint {
+    font-size: 12px;
+    color: #888;
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+    line-height: 1.5;
+}
+
+.xzg-modal-warning {
+    font-size: 12px;
+    color: #ff9966;
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: rgba(255, 153, 102, 0.08);
+    border: 1px solid rgba(255, 153, 102, 0.2);
+    border-radius: 4px;
+    line-height: 1.5;
+}
+
+.xzg-modal-footer {
+    padding: 12px 18px;
+    border-top: 1px solid #333;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.xzg-modal-btn {
+    padding: 6px 16px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #2a2a2a;
+    color: #ddd;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s;
+}
+
+    .xzg-modal-btn:hover {
+        background: #3a3a3a;
+        border-color: #666;
+    }
+
+    .xzg-modal-btn.xzg-modal-confirm {
+        background: #4a6cf7;
+        border-color: #4a6cf7;
+        color: #fff;
+    }
+
+        .xzg-modal-btn.xzg-modal-confirm:hover {
+            background: #5a7cff;
+            border-color: #5a7cff;
+        }
+
+    .xzg-modal-btn.xzg-modal-cancel {
+        background: transparent;
+    }
+
+        .xzg-modal-btn.xzg-modal-cancel:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }

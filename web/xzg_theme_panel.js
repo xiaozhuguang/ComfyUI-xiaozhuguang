@@ -394,7 +394,10 @@ window.XZGThemePanel = {
         if (configExportBtn) {
             configExportBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
-                self.exportAllConfig();
+                self.exportAllConfig().catch(err => {
+                    console.error("[XZG] Export error:", err);
+                    alert(xzgT('导出失败：', 'Export failed: ') + err.message);
+                });
             });
         }
         if (configImportBtn && configImportFile) {
@@ -410,9 +413,16 @@ window.XZGThemePanel = {
                 reader.onload = (ev) => {
                     try {
                         const obj = JSON.parse(ev.target.result);
-                        self.importAllConfig(obj).then(() => {
-                            alert(xzgT('导入成功，正在刷新以应用全部配置…', 'Import succeeded. Refreshing to apply all settings…'));
-                            setTimeout(() => location.reload(), 300);
+                        self.importAllConfig(obj).then((result) => {
+                            if (result && result.applied) {
+                                const parts = [];
+                                if (result.appliedXzgConfig) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
+                                if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
+                                const imported = parts.join(' + ');
+                                alert(xzgT('导入成功（', 'Import succeeded (') + imported + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
+                                setTimeout(() => location.reload(), 300);
+                            }
+                            // 用户取消则不做任何操作
                         }).catch((err) => {
                             alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
                         });
@@ -1786,6 +1796,9 @@ window.XZGThemePanel = {
             this.updateRecentDisplay();
         });
 
+        // 点击空白画布关闭面板
+        this._setupCanvasBgClose();
+
         // Bind clear recent colors button (re-bind on each show for safety)
         const clearBtn = document.getElementById("xzg-clear-recent");
         if (clearBtn && !clearBtn._bound) {
@@ -1794,6 +1807,51 @@ window.XZGThemePanel = {
                 e.stopPropagation();
                 this.clearRecentColors();
             });
+        }
+    },
+
+    _setupCanvasBgClose() {
+        if (this._canvasBgCloseHandler) return;
+        const self = this;
+        this._canvasBgCloseHandler = (e) => {
+            if (!self.isVisible) return;
+            // 点击面板内部 → 不关闭
+            if (self.panel && self.panel.contains(e.target)) return;
+            // 点击面板的弹出层（取色器 / 对话框）→ 不关闭
+            if (e.target.closest(".xzg-dialog-overlay") || e.target.closest(".xzg-color-picker-popup")) return;
+            // 点击菜单 / 右键菜单 → 不关闭
+            if (e.target.closest(".comfy-menu") || e.target.closest(".litecontextmenu") || e.target.closest(".context-menu")) return;
+
+            // 判断点击位置是否在画布区域内
+            const graphCanvas = document.getElementById("graph-canvas");
+            if (!graphCanvas) return;
+            const canvasRect = graphCanvas.getBoundingClientRect();
+            if (e.clientX < canvasRect.left || e.clientX > canvasRect.right ||
+                e.clientY < canvasRect.top || e.clientY > canvasRect.bottom) {
+                return; // 不在画布区域
+            }
+
+            // 判断是否点击在节点上：优先使用 DOM 检测，再尝试 LiteGraph API
+            const nodeEl = e.target.closest(".comfy-node") || e.target.closest(".litegraph .node");
+            if (nodeEl) return;
+            if (app?.canvas?.graph) {
+                try {
+                    const pos = app.canvas.convertEventToCanvasOffset(e);
+                    const node = app.canvas.graph.getNodeOnPos(pos[0], pos[1]);
+                    if (node) return;
+                } catch (_) {}
+            }
+
+            // 点击在空白画布上 → 关闭面板
+            self.hide();
+        };
+        document.addEventListener("pointerdown", this._canvasBgCloseHandler, true);
+    },
+
+    _removeCanvasBgClose() {
+        if (this._canvasBgCloseHandler) {
+            document.removeEventListener("pointerdown", this._canvasBgCloseHandler, true);
+            this._canvasBgCloseHandler = null;
         }
     },
 
@@ -1842,6 +1900,7 @@ window.XZGThemePanel = {
         if (this.panel) {
             this.panel.style.display = "none";
         }
+        this._removeCanvasBgClose();
         if (this.onClose) {
             this.onClose();
         }
@@ -1993,7 +2052,213 @@ window.XZGThemePanel = {
         localStorage.setItem("xzg_theme_presets", JSON.stringify(presets));
     },
 
-    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题等所有模块） ======
+    // ====== ComfyUI 设置（含快捷键）导出导入辅助方法 ======
+    // 需要导出的 ComfyUI 设置键的前缀（匹配这些前缀的设置会被导出）
+    comfySettingsKeyPrefixes: [
+        "Comfy.Keybinding.",     // 快捷键设置（最核心）
+        "Comfy.Locale",          // 语言设置
+        "Comfy.ColorPalette",    // 颜色主题
+        "Comfy.CustomColor",     // 自定义颜色
+        "Comfy.LinkRenderMode",  // 连线渲染模式
+        "Comfy.Workflow.",       // 工作流相关设置
+        "Comfy.NodeLibrary.",    // 节点库收藏等
+        "Comfy.RightSidePanel.", // 右侧面板
+        "Comfy.Minimap.",        // 小地图
+        "Comfy.LinkRenderMode",  // 连线渲染模式
+        "Comfy.Validation.",     // 工作流校验
+        "Comfy.Tutorial",        // 教程完成状态
+        "Comfy.VueNodes.",       // Vue节点开关
+        "Comfy.MaskEditor.",     // 遮罩编辑器
+        "Comfy.Pointer.",        // 指针交互
+        "LiteGraph.",            // LiteGraph 画布设置
+        "AddNodeMenu.",          // 添加节点菜单
+        "AutoLayout.",           // 自动布局
+        "FastLink.",             // 快速连线
+        "AlignLayout.",          // 对齐布局
+        "pysssss.",              // pysssss 扩展设置
+        "HAIGC.",                // HAIGC 扩展设置
+        "PromptAssistant.",      // 提示词助手
+        "Crystools.",            // Crystools 扩展
+        "zml.",                  // 悬浮球等扩展
+        "WOSAI.",                // 万赛扩展
+    ],
+
+    /**
+     * 获取 API 基础路径（兼容不同版本的 ComfyUI）
+     */
+    getApiBaseUrl() {
+        // 优先使用全局 api 对象
+        if (typeof api !== "undefined" && api && api.apiURL) {
+            return "";
+        }
+        // 否则使用当前页面的相对路径
+        return "";
+    },
+
+    /**
+     * 从 ComfyUI 服务器获取全部设置
+     */
+    async getComfySettings() {
+        try {
+            // 优先使用全局 api 对象（如果存在）
+            if (typeof api !== "undefined" && api && typeof api.fetchApi === "function") {
+                const resp = await api.fetchApi("/settings", { method: "GET", cache: "no-store" });
+                if (!resp.ok) return null;
+                return await resp.json();
+            }
+            // 降级使用原生 fetch
+            const resp = await fetch("/settings", {
+                method: "GET",
+                cache: "no-store",
+                headers: { "Content-Type": "application/json" }
+            });
+            if (!resp.ok) return null;
+            return await resp.json();
+        } catch (e) {
+            console.warn("[XZG] Failed to fetch comfy settings:", e);
+            return null;
+        }
+    },
+
+    /**
+     * 筛选需要导出的 ComfyUI 设置（只导出匹配前缀的设置项）
+     */
+    filterComfySettingsForExport(allSettings) {
+        if (!allSettings || typeof allSettings !== "object") return {};
+        const filtered = {};
+        const prefixes = this.comfySettingsKeyPrefixes;
+        for (const key in allSettings) {
+            if (prefixes.some(p => key.startsWith(p))) {
+                filtered[key] = allSettings[key];
+            }
+        }
+        return filtered;
+    },
+
+    /**
+     * 将 ComfyUI 设置写回服务器
+     */
+    async applyComfySettings(settings) {
+        if (!settings || typeof settings !== "object") return false;
+        try {
+            // 优先使用全局 api 对象（如果存在）
+            if (typeof api !== "undefined" && api && typeof api.fetchApi === "function") {
+                const resp = await api.fetchApi("/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(settings)
+                });
+                return resp.ok;
+            }
+            // 降级使用原生 fetch
+            const resp = await fetch("/settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(settings)
+            });
+            return resp.ok;
+        } catch (e) {
+            console.warn("[XZG] Failed to apply comfy settings:", e);
+            return false;
+        }
+    },
+
+    /**
+     * 显示导出选项对话框
+     */
+    showExportDialog() {
+        return new Promise((resolve) => {
+            const self = this;
+            const overlay = document.createElement("div");
+            overlay.className = "xzg-modal-overlay";
+            overlay.innerHTML = `
+                <div class="xzg-modal-dialog">
+                    <div class="xzg-modal-title">${xzgT('导出配置', 'Export Config')}</div>
+                    <div class="xzg-modal-body">
+                        <label class="xzg-modal-checkbox">
+                            <input type="checkbox" id="xzg-export-include-comfy" checked />
+                            <span>${xzgT('包含 ComfyUI 设置（快捷键、主题等）', 'Include ComfyUI settings (keybindings, theme, etc.)')}</span>
+                        </label>
+                        <div class="xzg-modal-hint">${xzgT('提示：ComfyUI 设置包含您自定义的快捷键、颜色主题、界面布局偏好等。', 'Tip: ComfyUI settings include your custom keybindings, color theme, UI layout preferences, etc.')}</div>
+                    </div>
+                    <div class="xzg-modal-footer">
+                        <button type="button" class="xzg-modal-btn xzg-modal-cancel">${xzgT('取消', 'Cancel')}</button>
+                        <button type="button" class="xzg-modal-btn xzg-modal-confirm">${xzgT('导出', 'Export')}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            const close = (result) => {
+                overlay.remove();
+                resolve(result);
+            };
+
+            overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(null));
+            overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
+                const includeComfy = overlay.querySelector("#xzg-export-include-comfy").checked;
+                close({ includeComfySettings: includeComfy });
+            });
+            overlay.addEventListener("click", (e) => {
+                if (e.target === overlay) close(null);
+            });
+        });
+    },
+
+    /**
+     * 显示导入选项对话框
+     */
+    showImportDialog(hasComfySettings) {
+        return new Promise((resolve) => {
+            const self = this;
+            const overlay = document.createElement("div");
+            overlay.className = "xzg-modal-overlay";
+            const comfyCheckbox = hasComfySettings ? `
+                <label class="xzg-modal-checkbox">
+                    <input type="checkbox" id="xzg-import-include-comfy" checked />
+                    <span>${xzgT('导入 ComfyUI 设置（快捷键、主题等）', 'Import ComfyUI settings (keybindings, theme, etc.)')}</span>
+                </label>
+            ` : `
+                <div class="xzg-modal-hint">${xzgT('此配置文件不包含 ComfyUI 设置。', 'This config file does not contain ComfyUI settings.')}</div>
+            `;
+            overlay.innerHTML = `
+                <div class="xzg-modal-dialog">
+                    <div class="xzg-modal-title">${xzgT('导入配置', 'Import Config')}</div>
+                    <div class="xzg-modal-body">
+                        <label class="xzg-modal-checkbox">
+                            <input type="checkbox" id="xzg-import-include-xzg" checked />
+                            <span>${xzgT('导入小珠光配置（主题、收藏、工作流等）', 'Import Xiaozhuguang config (theme, favorites, workflows, etc.)')}</span>
+                        </label>
+                        ${comfyCheckbox}
+                        <div class="xzg-modal-warning">${xzgT('警告：导入将覆盖当前的对应设置，建议先导出备份。', 'Warning: Importing will overwrite current corresponding settings. Export a backup first is recommended.')}</div>
+                    </div>
+                    <div class="xzg-modal-footer">
+                        <button type="button" class="xzg-modal-btn xzg-modal-cancel">${xzgT('取消', 'Cancel')}</button>
+                        <button type="button" class="xzg-modal-btn xzg-modal-confirm">${xzgT('导入', 'Import')}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            const close = (result) => {
+                overlay.remove();
+                resolve(result);
+            };
+
+            overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(null));
+            overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
+                const includeXzg = overlay.querySelector("#xzg-import-include-xzg").checked;
+                const includeComfyEl = overlay.querySelector("#xzg-import-include-comfy");
+                const includeComfy = includeComfyEl ? includeComfyEl.checked : false;
+                close({ includeXzgConfig: includeXzg, includeComfySettings: includeComfy });
+            });
+            overlay.addEventListener("click", (e) => {
+                if (e.target === overlay) close(null);
+            });
+        });
+    },
+
+    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题 / ComfyUI设置 等所有模块） ======
     async exportAllConfig() {
         const prefixes = ["xzg_", "xzg-", "xiaozhuguang.", "xz_"];
         const extraKeys = ["comfyui_xiaozhuguang"];
@@ -2014,12 +2279,24 @@ window.XZGThemePanel = {
             }
         } catch (e) {}
 
+        // 导出 ComfyUI 设置（含快捷键）
+        let comfySettings = null;
+        try {
+            const allSettings = await this.getComfySettings();
+            if (allSettings) {
+                comfySettings = this.filterComfySettingsForExport(allSettings);
+            }
+        } catch (e) {
+            console.warn("[XZG] Failed to export comfy settings:", e);
+        }
+
         const cfg = {
             format: "xiaozhuguang-config",
-            version: 2,
+            version: 3,
             exportedAt: new Date().toISOString(),
             localStorage: ls,
-            favoritesPreviews: favoritesPreviews
+            favoritesPreviews: favoritesPreviews,
+            comfySettings: comfySettings
         };
         const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -2040,6 +2317,8 @@ window.XZGThemePanel = {
         if (obj.format && obj.format !== "xiaozhuguang-config") {
             throw new Error("unknown format: " + obj.format);
         }
+
+        // 导入小珠光配置
         if (obj.localStorage && typeof obj.localStorage === "object") {
             for (const k in obj.localStorage) {
                 try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
@@ -2063,6 +2342,23 @@ window.XZGThemePanel = {
                 localStorage.setItem("xzg_workflows_meta", JSON.stringify(meta));
             } catch (e) {}
         }
+
+        // 导入 ComfyUI 设置（含快捷键）
+        let importedComfy = false;
+        if (obj.comfySettings && typeof obj.comfySettings === "object" && Object.keys(obj.comfySettings).length > 0) {
+            try {
+                const ok = await this.applyComfySettings(obj.comfySettings);
+                importedComfy = ok;
+            } catch (e) {
+                console.warn("[XZG] Failed to import comfy settings:", e);
+            }
+        }
+
+        return {
+            applied: true,
+            appliedXzgConfig: true,
+            appliedComfySettings: importedComfy
+        };
     },
 
     renderPresets() {

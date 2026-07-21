@@ -487,15 +487,20 @@ const XZGGroup = {
             const b = g.bounds;
             if (!b) { el.style.display = 'none'; continue; }
             el.style.display = 'block';
-            el.style.left = ((b.x + ox) * scale) + 'px';
-            el.style.top = ((b.y + oy) * scale) + 'px';
-            el.style.width = (b.w * scale) + 'px';
-            el.style.height = (b.h * scale) + 'px';
-
             // 标题文字/栏高度跟随画布缩放（无标题时保留最小操作区域）
+            // 超出基准高度部分编组框整体向外（向上）扩展，避免向内遮挡节点
             const fs = (g.fontSize || 14) * scale;
             const showTitle = (g.title || '').trim() !== '';
-            const headerHeight = Math.max(18 * scale, fs + 4 * scale);
+            const baseHeaderHeight = 18 * scale;
+            const headerHeight = Math.max(baseHeaderHeight, fs + 4 * scale);
+            const extraTop = headerHeight - baseHeaderHeight;
+
+            // 编组框整体上移并增高，使 CSS 边框也跟随扩展
+            el.style.left = ((b.x + ox) * scale) + 'px';
+            el.style.top = ((b.y + oy) * scale - extraTop) + 'px';
+            el.style.width = (b.w * scale) + 'px';
+            el.style.height = (b.h * scale + extraTop) + 'px';
+
             const header = el.querySelector('.xzg-group-header');
             if (header) {
                 const padV = 2 * scale;
