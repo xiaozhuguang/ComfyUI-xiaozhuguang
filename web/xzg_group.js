@@ -2437,7 +2437,14 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         [...copiedNodeIds].some(id => id == node.id)
                     );
                     if (allNodesCopied) {
-                        groupsToCopy[gid] = JSON.parse(JSON.stringify(g));
+                        const gCopy = JSON.parse(JSON.stringify(g));
+                        const gNodeIds = groupNodes.map(n => n.id);
+                        const nb = self.calcBounds(gNodeIds);
+                        if (nb && gCopy.bounds) {
+                            gCopy._offsetX = gCopy.bounds.x - nb.x;
+                            gCopy._offsetY = gCopy.bounds.y - nb.y;
+                        }
+                        groupsToCopy[gid] = gCopy;
                         fullyCopiedGroupIds.add(gid);
                     }
                 }
@@ -2580,14 +2587,21 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     if (oldGroup?.bounds) {
                         const nodeBounds = self.calcBounds(newNodeIds);
                         if (nodeBounds) {
-                            const centerX = nodeBounds.x + nodeBounds.w / 2;
-                            const centerY = nodeBounds.y + nodeBounds.h / 2;
-                            newBounds = {
-                                x: centerX - oldGroup.bounds.w / 2,
-                                y: centerY - oldGroup.bounds.h / 2,
-                                w: oldGroup.bounds.w,
-                                h: oldGroup.bounds.h
-                            };
+                            if (typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number') {
+                                newBounds = {
+                                    x: nodeBounds.x + oldGroup._offsetX,
+                                    y: nodeBounds.y + oldGroup._offsetY,
+                                    w: oldGroup.bounds.w,
+                                    h: oldGroup.bounds.h
+                                };
+                            } else {
+                                newBounds = {
+                                    x: nodeBounds.x - 20,
+                                    y: nodeBounds.y - 58,
+                                    w: Math.max(oldGroup.bounds.w, nodeBounds.w + 40),
+                                    h: Math.max(oldGroup.bounds.h, nodeBounds.h + 78)
+                                };
+                            }
                         } else {
                             newBounds = { ...oldGroup.bounds };
                         }
@@ -2704,7 +2718,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     }
                 }
 
-                // 第四遍：更新编组bounds（有旧编组数据则保持原大小，仅调整位置；无旧数据则重新计算）
+                // 第四遍：更新编组bounds（有旧编组数据则保持相对偏移和原大小；无旧数据则重新计算）
                 const newGidList = Object.values(gidMap);
                 for (const newGid of newGidList) {
                     const g = self.groups[newGid];
@@ -2714,14 +2728,21 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         const oldGid = Object.keys(gidMap).find(k => gidMap[k] === newGid);
                         const oldGroup = oldGid ? allOldGroups[oldGid] : null;
                         if (oldGroup?.bounds) {
-                            const centerX = nodeBounds.x + nodeBounds.w / 2;
-                            const centerY = nodeBounds.y + nodeBounds.h / 2;
-                            g.bounds = {
-                                x: centerX - oldGroup.bounds.w / 2,
-                                y: centerY - oldGroup.bounds.h / 2,
-                                w: oldGroup.bounds.w,
-                                h: oldGroup.bounds.h
-                            };
+                            if (typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number') {
+                                g.bounds = {
+                                    x: nodeBounds.x + oldGroup._offsetX,
+                                    y: nodeBounds.y + oldGroup._offsetY,
+                                    w: oldGroup.bounds.w,
+                                    h: oldGroup.bounds.h
+                                };
+                            } else {
+                                g.bounds = {
+                                    x: nodeBounds.x - 20,
+                                    y: nodeBounds.y - 58,
+                                    w: Math.max(oldGroup.bounds.w, nodeBounds.w + 40),
+                                    h: Math.max(oldGroup.bounds.h, nodeBounds.h + 78)
+                                };
+                            }
                         } else {
                             g.bounds = nodeBounds;
                         }
