@@ -12,7 +12,7 @@ from server import PromptServer
 routes = PromptServer.instance.routes
 
 _thumb_cache_dir = None
-THUMB_BASE_SIZE = 256
+DEFAULT_THUMB_SIZE = 256
 
 
 def _get_thumb_cache_dir():
@@ -23,7 +23,7 @@ def _get_thumb_cache_dir():
     return _thumb_cache_dir
 
 
-def _get_thumb_cache_key(filename):
+def _get_thumb_cache_key(filename, size):
     try:
         filename = _normalize_annotated_filename(filename)
         fpath = folder_paths.get_annotated_filepath(filename)
@@ -31,7 +31,7 @@ def _get_thumb_cache_key(filename):
             return None
         mtime = str(os.path.getmtime(fpath))
         fsize = str(os.path.getsize(fpath))
-        raw = f"{filename}_{THUMB_BASE_SIZE}_{mtime}_{fsize}"
+        raw = f"{filename}_{size}_{mtime}_{fsize}"
         return hashlib.md5(raw.encode('utf-8')).hexdigest() + ".jpg"
     except Exception:
         return None
@@ -108,7 +108,7 @@ async def xzg_output_files(request):
 @routes.get("/xzg_image_loader_thumb")
 async def xzg_image_loader_thumb(request):
     filename = request.rel_url.query.get("filename", "")
-    size = int(request.rel_url.query.get("size", "128"))
+    size = int(request.rel_url.query.get("size", str(DEFAULT_THUMB_SIZE)))
 
     if not filename:
         return web.Response(status=400, text="filename required")
@@ -119,7 +119,7 @@ async def xzg_image_loader_thumb(request):
         return web.Response(status=404, text="image not found")
 
     cache_dir = _get_thumb_cache_dir()
-    cache_key = _get_thumb_cache_key(filename)
+    cache_key = _get_thumb_cache_key(filename, size)
     cache_path = os.path.join(cache_dir, cache_key) if cache_key else None
 
     etag = cache_key or None
@@ -148,10 +148,10 @@ async def xzg_image_loader_thumb(request):
         if img.mode != "RGB":
             img = img.convert("RGB")
 
-        img.thumbnail((THUMB_BASE_SIZE, THUMB_BASE_SIZE), Image.BILINEAR)
+        img.thumbnail((size, size), Image.LANCZOS)
 
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=82, optimize=False)
+        img.save(buf, format="JPEG", quality=90, optimize=False)
         buf.seek(0)
         data = buf.getvalue()
 

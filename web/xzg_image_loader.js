@@ -181,12 +181,142 @@ async function uploadFilesSequential(files) {
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
-        "width:100%;min-width:0;box-sizing:border-box;overflow:hidden;padding:6px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:6px;margin:4px 0;display:flex;flex-direction:row;gap:6px;z-index:10;";
+        "width:100%;min-width:0;min-height:200px;box-sizing:border-box;overflow:hidden;padding:6px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:4px 0;display:flex;flex-direction:row;gap:6px;z-index:10;";
     container.style.userSelect = "none";
     container.style.webkitUserSelect = "none";
+    const contextMenu = document.createElement("div");
+    contextMenu.style.cssText = `
+        position: fixed;
+        background: var(--comfy-menu-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        padding: 4px 0;
+        min-width: 140px;
+        z-index: 100000;
+        display: none;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        font-size: 12px;
+        color: var(--input-text);
+        user-select: none;
+    `;
+    document.body.appendChild(contextMenu);
+
+    const getSelectedNames = () => {
+        const names = parseNameList(getImageListWidget(node)?.value);
+        if (selectedIndexes.length > 0) {
+            return selectedIndexes.map(i => names[i]).filter(Boolean);
+        }
+        return [];
+    };
+
+    const isImageSelected = (imageName) => {
+        const names = parseNameList(getImageListWidget(node)?.value);
+        const idx = names.indexOf(imageName);
+        return selectedIndexes.includes(idx);
+    };
+
+    const showContextMenu = (x, y, imageName) => {
+        contextMenu.innerHTML = "";
+        const selectedNames = getSelectedNames();
+        const rightClickSelected = isImageSelected(imageName);
+        const multi = rightClickSelected && selectedNames.length > 1;
+        const targetNames = multi ? selectedNames : [imageName];
+
+        const saveItem = document.createElement("div");
+        saveItem.textContent = multi ? `保存选中图片 (${selectedNames.length}张)` : "保存图片";
+        saveItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
+        saveItem.addEventListener("mouseenter", () => { saveItem.style.background = "var(--comfy-input-bg)"; });
+        saveItem.addEventListener("mouseleave", () => { saveItem.style.background = ""; });
+        saveItem.addEventListener("click", () => {
+            targetNames.forEach((n, i) => {
+                setTimeout(() => {
+                    const a = document.createElement("a");
+                    a.href = getOriginalImageUrl(n);
+                    a.download = n;
+                    a.click();
+                }, i * 150);
+            });
+            hideContextMenu();
+        });
+        contextMenu.appendChild(saveItem);
+
+        const copyItem = document.createElement("div");
+        copyItem.textContent = multi ? `复制选中图片 (${selectedNames.length}张)` : "复制图片";
+        copyItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
+        copyItem.addEventListener("mouseenter", () => { copyItem.style.background = "var(--comfy-input-bg)"; });
+        copyItem.addEventListener("mouseleave", () => { copyItem.style.background = ""; });
+        copyItem.addEventListener("click", async () => {
+            try {
+                const blobs = [];
+                for (const n of targetNames) {
+                    const res = await fetch(getOriginalImageUrl(n));
+                    const blob = await res.blob();
+                    blobs.push(blob);
+                }
+                if (blobs.length === 1) {
+                    await navigator.clipboard.write([
+                        new ClipboardItem({ [blobs[0].type]: blobs[0] })
+                    ]);
+                } else {
+                    console.warn("[小珠光] 多选图片复制到剪贴板暂不支持，请使用保存功能");
+                }
+            } catch (err) {
+                console.warn("[小珠光] 复制图片失败:", err);
+            }
+            hideContextMenu();
+        });
+        contextMenu.appendChild(copyItem);
+
+        contextMenu.style.left = `${x}px`;
+        contextMenu.style.top = `${y}px`;
+        contextMenu.style.display = "block";
+
+        const rect = contextMenu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            contextMenu.style.left = `${window.innerWidth - rect.width - 4}px`;
+        }
+        if (rect.bottom > window.innerHeight) {
+            contextMenu.style.top = `${window.innerHeight - rect.height - 4}px`;
+        }
+    };
+
+    const hideContextMenu = () => {
+        contextMenu.style.display = "none";
+    };
+
+    const dismissContextMenu = (e) => {
+        if (contextMenu.style.display === "block" && !contextMenu.contains(e.target)) {
+            hideContextMenu();
+        }
+    };
+    // 在 window 捕获阶段监听，确保点击画布等任意位置都能关闭菜单
+    // 左键 / 触摸点击空白处，以及在画布任意位置右键，都能关闭菜单
+    window.addEventListener("mousedown", dismissContextMenu, true);
+    window.addEventListener("pointerdown", dismissContextMenu, true);
+    window.addEventListener("contextmenu", dismissContextMenu, true);
+
+    const getImgNameFromEvent = (e) => {
+        const cell = e.target.closest("[data-xzg-img-card]");
+        if (cell) {
+            const idx = parseInt(cell.dataset.xzgIndex, 10);
+            const names = parseNameList(getImageListWidget(node)?.value);
+            return names[idx];
+        }
+        if (e.target.closest("#xzg-single-img-container")) {
+            const names = parseNameList(getImageListWidget(node)?.value);
+            const idx = getIndex(node);
+            return names[idx >= 0 && idx < names.length ? idx : 0];
+        }
+        return null;
+    };
+
     container.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        const imgName = getImgNameFromEvent(e);
+        if (imgName) {
+            showContextMenu(e.clientX, e.clientY, imgName);
+        }
     });
 
     const sidebar = document.createElement("div");
@@ -317,13 +447,13 @@ function createImgBatchUI(node) {
     let viewMode = "grid";
 
     const mainContent = document.createElement("div");
-    mainContent.style.cssText = "flex:1;display:flex;flex-direction:column;pointer-events:auto;min-width:0;min-height:0;";
+    mainContent.style.cssText = "flex:1;display:flex;flex-direction:column;pointer-events:auto;min-width:0;min-height:120px;";
     mainContent.style.userSelect = "none";
     mainContent.style.webkitUserSelect = "none";
 
     const grid = document.createElement("div");
     grid.style.cssText =
-        "display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card-size,128px),1fr));gap:4px;flex:1;min-width:0;min-height:0;overflow-y:auto;background:transparent;padding:4px;border-radius:4px;align-content:start;";
+        "display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card-size,128px),1fr));gap:4px;flex:1;min-width:0;min-height:0;overflow-y:auto;background:transparent;padding:4px;border-radius:2px;align-content:start;";
     grid.style.userSelect = "none";
     grid.style.webkitUserSelect = "none";
     grid.classList.add("xzg-img-grid");
@@ -352,37 +482,37 @@ function createImgBatchUI(node) {
 
     const emptyTip = document.createElement("div");
     emptyTip.style.cssText =
-        "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:12px;opacity:0.6;min-height:60px;";
+        "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:10px;opacity:0.55;min-height:40px;";
     emptyTip.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px;font-size:11px;color:var(--input-text);line-height:1.5;">
-            <div style="text-align:center;font-size:13px;font-weight:bold;margin-bottom:4px;opacity:0.9;">小珠光图片加载器</div>
+        <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:10px;color:var(--input-text);line-height:1.35;">
+            <div style="text-align:center;font-size:11px;font-weight:bold;margin-bottom:1px;opacity:0.85;">小珠光图片加载器</div>
 
-            <div style="display:flex;flex-direction:column;gap:3px;">
-                <div style="font-weight:bold;opacity:0.85;">📁 添加图片</div>
-                <div style="opacity:0.6;padding-left:14px;">双击空白处 / 点击上传按钮</div>
-                <div style="opacity:0.6;padding-left:14px;">.input 从输入文件夹选择</div>
-                <div style="opacity:0.6;padding-left:14px;">.output 从输出文件夹选择</div>
+            <div style="display:flex;flex-direction:column;gap:1px;">
+                <div style="font-weight:bold;opacity:0.75;">📁 添加图片</div>
+                <div style="opacity:0.5;padding-left:12px;">双击空白处 / 点击上传按钮</div>
+                <div style="opacity:0.5;padding-left:12px;">.input 从输入文件夹选择</div>
+                <div style="opacity:0.5;padding-left:12px;">.output 从输出文件夹选择</div>
             </div>
 
-            <div style="display:flex;flex-direction:column;gap:3px;">
-                <div style="font-weight:bold;opacity:0.85;">🖱️ 鼠标操作</div>
-                <div style="opacity:0.6;padding-left:14px;">左键点击：选中 / Ctrl多选 / Shift范围选</div>
-                <div style="opacity:0.6;padding-left:14px;">左键拖动卡片：调整顺序</div>
-                <div style="opacity:0.6;padding-left:14px;">空白处拖动：框选多个图片</div>
-                <div style="opacity:0.6;padding-left:14px;">悬停卡片右上角：删除单张</div>
+            <div style="display:flex;flex-direction:column;gap:1px;">
+                <div style="font-weight:bold;opacity:0.75;">🖱️ 鼠标操作</div>
+                <div style="opacity:0.5;padding-left:12px;">左键点击：选中 / Ctrl多选 / Shift范围选</div>
+                <div style="opacity:0.5;padding-left:12px;">左键拖动卡片：调整顺序</div>
+                <div style="opacity:0.5;padding-left:12px;">空白处拖动：框选多个图片</div>
+                <div style="opacity:0.5;padding-left:12px;">悬停卡片右上角：删除单张</div>
             </div>
 
-            <div style="display:flex;flex-direction:column;gap:3px;">
-                <div style="font-weight:bold;opacity:0.85;">🎞️ 滚轮操作</div>
-                <div style="opacity:0.6;padding-left:14px;">Ctrl + 滚轮：调整缩略图大小</div>
-                <div style="opacity:0.6;padding-left:14px;">Alt / Shift + 滚轮：滚动列表</div>
+            <div style="display:flex;flex-direction:column;gap:1px;">
+                <div style="font-weight:bold;opacity:0.75;">🎞️ 滚轮操作</div>
+                <div style="opacity:0.5;padding-left:12px;">Ctrl + 滚轮：调整缩略图大小</div>
+                <div style="opacity:0.5;padding-left:12px;">Alt / Shift + 滚轮：滚动列表</div>
             </div>
 
-            <div style="display:flex;flex-direction:column;gap:3px;">
-                <div style="font-weight:bold;opacity:0.85;">🔄 模式切换</div>
-                <div style="opacity:0.6;padding-left:14px;">多图/单图：批量加载图片模式 / 单图加载模式</div>
-                <div style="opacity:0.6;padding-left:14px;">批次模式：统一分辨率，批量处理</div>
-                <div style="opacity:0.6;padding-left:14px;">列表模式：支持不同分辨率，逐张处理</div>
+            <div style="display:flex;flex-direction:column;gap:1px;">
+                <div style="font-weight:bold;opacity:0.75;">🔄 模式切换</div>
+                <div style="opacity:0.5;padding-left:12px;">多图/单图：批量加载图片模式 / 单图加载模式</div>
+                <div style="opacity:0.5;padding-left:12px;">批次模式：统一分辨率，批量处理</div>
+                <div style="opacity:0.5;padding-left:12px;">列表模式：支持不同分辨率，逐张处理</div>
             </div>
         </div>
     `;
@@ -397,19 +527,20 @@ function createImgBatchUI(node) {
     mainContent.appendChild(grid);
 
     const singleImgContainer = document.createElement("div");
-    singleImgContainer.style.cssText = "flex:1;display:none;align-items:center;justify-content:center;min-width:0;min-height:0;overflow:hidden;position:relative;width:100%;height:100%;";
-    const singleImg = document.createElement("img");
-    singleImg.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;";
-    singleImg.draggable = false;
-    singleImg.addEventListener("error", () => {
+    singleImgContainer.id = "xzg-single-img-container";
+    singleImgContainer.style.cssText = "flex:1;display:none;align-items:center;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;";
+    const singleImgEl = document.createElement("img");
+    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;background:#000;";
+    singleImgEl.draggable = false;
+    singleImgEl.onerror = () => {
         const names = parseNameList(getImageListWidget(node)?.value);
         if (names.length === 1) {
             const next = names.slice(1);
             setNameList(node, next);
             setIndex(node, 0);
         }
-    });
-    singleImgContainer.appendChild(singleImg);
+    };
+    singleImgContainer.appendChild(singleImgEl);
     mainContent.insertBefore(singleImgContainer, emptyTip);
 
 
@@ -471,9 +602,11 @@ function createImgBatchUI(node) {
     const DRAG_SORT_SCALE_MS = 200;
     const DRAG_SORT_SCALE = 1.08;
 
-    grid.addEventListener("mousedown", (e) => {
+    container.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
         if (e.target.closest(".del-btn")) return;
+        if (e.target.closest("button")) return;
+        if (e.target.closest("input")) return;
         e.stopPropagation();
 
         const cell = e.target.closest("[data-xzg-img-card]");
@@ -604,11 +737,7 @@ function createImgBatchUI(node) {
         };
 
         if (cell) {
-            readyTimer = setTimeout(() => {
-                if (!mode) {
-                    sortReady = true;
-                }
-            }, DRAG_SORT_SCALE_MS);
+            sortReady = true;
         } else {
             enterMarqueeMode();
         }
@@ -852,6 +981,8 @@ function createImgBatchUI(node) {
 
         viewMode = uploadMode === "append" ? "grid" : "single";
 
+        const effectiveSingle = viewMode === "single" || (viewMode === "grid" && names.length === 1);
+
         if (names.length === 0) {
             grid.style.display = "none";
             singleImgContainer.style.display = "none";
@@ -863,15 +994,15 @@ function createImgBatchUI(node) {
             return;
         }
 
-        if (viewMode === "single" && names.length >= 1) {
+        if (effectiveSingle && names.length >= 1) {
             grid.style.display = "none";
             emptyTip.style.display = "none";
             singleImgContainer.style.display = "flex";
             const curIdx = idx >= 0 && idx < names.length ? idx : 0;
             const name = names[curIdx];
-            if (singleImg.dataset.currentName !== name) {
-                singleImg.dataset.currentName = name;
-                singleImg.src = getOriginalImageUrl(name);
+            if (singleImgEl.dataset.currentName !== name) {
+                singleImgEl.dataset.currentName = name;
+                singleImgEl.src = getOriginalImageUrl(name);
             }
             if (selectedIndexes.length !== 1 || selectedIndexes[0] !== curIdx) {
                 selectedIndexes = [curIdx];
@@ -918,16 +1049,14 @@ function createImgBatchUI(node) {
             cell.dataset.xzgIndex = String(i);
 
             const card = document.createElement("div");
-            card.style.cssText = `position:relative;border-radius:4px;border:1px solid ${
+            card.style.cssText = `position:relative;border-radius:2px;border:1px solid ${
                 isSelected ? getSelColor() : "var(--border-color)"
-            };background:var(--comfy-menu-bg);width:100%;aspect-ratio:1/1;overflow:hidden;`;
+            };background:#000;width:100%;padding-top:100%;overflow:hidden;`;
 
-            const img = document.createElement("img");
-            img.src = getThumbUrl(name, cardSize);
-            img.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;background:transparent;border-radius:2px;";
-            img.draggable = false;
-            img.loading = "lazy";
-            img.addEventListener("error", () => {
+            const thumbEl = document.createElement("img");
+            thumbEl.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;";
+            thumbEl.draggable = false;
+            thumbEl.onerror = () => {
                 const names = parseNameList(getImageListWidget(node)?.value);
                 const idx = names.indexOf(name);
                 if (idx >= 0) {
@@ -938,7 +1067,8 @@ function createImgBatchUI(node) {
                         setIndex(node, Math.max(0, next.length - 1));
                     }
                 }
-            });
+            };
+            thumbEl.src = getThumbUrl(name, 512);
 
             const delBtn = document.createElement("div");
             delBtn.className = "del-btn";
@@ -970,7 +1100,7 @@ function createImgBatchUI(node) {
             label.style.cssText =
                 "position:absolute;left:2px;right:2px;bottom:2px;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;background:rgba(0,0,0,0.6);border-radius:3px;padding:2px 4px;z-index:1;";
 
-            card.appendChild(img);
+            card.appendChild(thumbEl);
             card.appendChild(delBtn);
             card.appendChild(label);
             cell.appendChild(card);
@@ -1129,12 +1259,12 @@ function createImgBatchUI(node) {
 
                     const thumb = document.createElement("div");
                     thumb.style.cssText =
-                        "width:100%;aspect-ratio:1/1;border-radius:4px;overflow:hidden;background:var(--comfy-input-bg);display:flex;align-items:center;justify-content:center;";
+                        "width:100%;padding-top:100%;position:relative;border-radius:2px;overflow:hidden;background:var(--comfy-input-bg);";
                     const img = document.createElement("img");
                     const fileInfo = fileData[name];
                     const v = fileInfo?.mtime ? `&v=${fileInfo.mtime}` : "";
-                    img.src = getThumbUrl(name + prefix, 96) + v;
-                    img.style.cssText = "width:100%;height:100%;object-fit:contain;";
+                    img.src = getThumbUrl(name + prefix, 128) + v;
+                    img.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;";
                     img.loading = "lazy";
                     img.addEventListener("error", () => {
                         fileNames = fileNames.filter(f => f !== name);
@@ -1502,13 +1632,22 @@ app.registerExtension({
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
 
-                const minW = 420;
-                const minH = 360;
-                if (!this.size || this.size[0] < minW || this.size[1] < minH) {
-                    this.setSize([Math.max(this.size?.[0] || 0, minW), Math.max(this.size?.[1] || 0, minH)]);
+                const MIN_W = 420;
+                const MIN_H = 360;
+
+                if (!this.size || this.size[0] < MIN_W || this.size[1] < MIN_H) {
+                    this.setSize([Math.max(this.size?.[0] || 0, MIN_W), Math.max(this.size?.[1] || 0, MIN_H)]);
                 }
-                this.minWidth = Math.max(this.minWidth || 0, 420);
-                this.minHeight = Math.max(this.minHeight || 0, 360);
+                this.minWidth = Math.max(this.minWidth || 0, MIN_W);
+                this.minHeight = Math.max(this.minHeight || 0, MIN_H);
+
+                // 强制最小尺寸，防止标签溢出节点边框
+                const origSetSize = this.setSize.bind(this);
+                this.setSize = function (size) {
+                    const w = Math.max(size[0], MIN_W);
+                    const h = Math.max(size[1], MIN_H);
+                    origSetSize([w, h]);
+                };
 
                 this.addDOMWidget("xzg_img_loader", "customwidget", ui.container);
 
