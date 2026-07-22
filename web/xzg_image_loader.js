@@ -960,7 +960,16 @@ function createImgBatchUI(node) {
                     selectedIndexes = [clickedIndex];
                     lastClickedIndex = clickedIndex;
                     setIndex(node, clickedIndex);
-                    redraw(true);
+                    // 仅更新边框，不重建 DOM（否则会破坏 dblclick 事件）
+                    const cards = grid.querySelectorAll("[data-xzg-img-card]");
+                    const color = getSelColor();
+                    cards.forEach((c, i) => {
+                        const card = c.querySelector(":scope > div");
+                        if (card) {
+                            card.style.borderColor = i === clickedIndex ? color : "var(--border-color)";
+                        }
+                    });
+                    if (app?.canvas) app.canvas.setDirty(true, true);
                 }
             }
         };
