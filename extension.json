@@ -21,7 +21,8 @@
     "web/xzg_align.js",
     "web/xzg_quick_nodes.js",
     "web/xzg_workflows.js",
-    "web/xzg_image_loader.js"
+    "web/xzg_image_loader.js",
+    "web/xzg_image_compare.js"
   ],
   "css": [
     "web/node_favorites.css",

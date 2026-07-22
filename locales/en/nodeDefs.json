@@ -206,5 +206,12 @@
       "1": { "name": "count" },
       "2": { "name": "file list" }
     }
+  },
+  "XiaozhuguangImageCompare": {
+    "display_name": "Xiaozhuguang Image Compare",
+    "inputs": {
+      "a": { "name": "A" },
+      "b": { "name": "B" }
+    }
   }
 }

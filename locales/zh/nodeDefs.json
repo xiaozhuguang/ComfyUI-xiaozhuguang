@@ -206,5 +206,12 @@
       "1": { "name": "图片数量" },
       "2": { "name": "文件列表" }
     }
+  },
+  "XiaozhuguangImageCompare": {
+    "display_name": "小珠光图像对比",
+    "inputs": {
+      "a": { "name": "A" },
+      "b": { "name": "B" }
+    }
   }
 }
