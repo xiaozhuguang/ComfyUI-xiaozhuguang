@@ -43,6 +43,50 @@ from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 from .nodes.xzg_image_compare import XiaozhuguangImageCompare
+from .nodes.xzg_image_preview import XiaozhuguangImagePreview
+from .nodes.xzg_image_save import XiaozhuguangImageSave
+
+
+# ============ 懒编码路由：右键保存真实分辨率图时，才临时编码全分辨率 PNG ============
+try:
+    from server import PromptServer
+    from aiohttp import web
+    from .nodes.xzg_image_preview import REAL_STORE
+
+    @PromptServer.instance.routes.post("/xzg_save_real")
+    async def xzg_save_real(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+
+        token = data.get("token")
+        try:
+            index = int(data.get("index", 0))
+        except Exception:
+            return web.json_response({"error": "bad index"}, status=400)
+
+        store = REAL_STORE.get(token)
+        if not store or index < 0 or index >= len(store):
+            return web.json_response({"error": "not found"}, status=404)
+
+        arr = store[index]
+        if arr is None:
+            return web.json_response({"error": "already served"}, status=404)
+
+        output_dir = folder_paths.get_temp_directory()
+        os.makedirs(output_dir, exist_ok=True)
+        fname = "xzg_real_" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12)) + ".png"
+        Image.fromarray(arr).save(os.path.join(output_dir, fname), "PNG")
+
+        # 释放内存
+        store[index] = None
+        if all(x is None for x in store):
+            REAL_STORE.pop(token, None)
+
+        return web.json_response({"filename": fname, "subfolder": "", "type": "temp"})
+except Exception as _e:
+    print("[xiaozhuguang] 注册 /xzg_save_real 路由失败:", _e)
 
 
 def tensor_to_pil(tensor):
@@ -406,6 +450,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
+    "XiaozhuguangImagePreview": XiaozhuguangImagePreview,
+    "XiaozhuguangImageSave": XiaozhuguangImageSave,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -424,6 +470,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFrameExtract": "小珠光帧提取",
     "XiaozhuguangImageLoader": "小珠光图片加载器",
     "XiaozhuguangImageCompare": "小珠光图像对比",
+    "XiaozhuguangImagePreview": "小珠光预览",
+    "XiaozhuguangImageSave": "小珠光保存",
 }
 
 WEB_DIRECTORY = "./web"

@@ -211,7 +211,26 @@
     "display_name": "Xiaozhuguang Image Compare",
     "inputs": {
       "a": { "name": "A" },
-      "b": { "name": "B" }
+      "b": { "name": "B" },
+      "reduce_lag": { "name": "Reduce Lag" },
+      "show_line": { "name": "Show Line" }
+    }
+  },
+  "XiaozhuguangImagePreview": {
+    "display_name": "Xiaozhuguang Preview",
+    "inputs": {
+      "images": { "name": "images" },
+      "reduce_lag": { "name": "Reduce Lag" }
+    }
+  },
+  "XiaozhuguangImageSave": {
+    "display_name": "Xiaozhuguang Save",
+    "inputs": {
+      "images": { "name": "images" },
+      "output_path": { "name": "output path" },
+      "filename_prefix": { "name": "filename prefix" },
+      "save_format": { "name": "save format" },
+      "reduce_lag": { "name": "Reduce Lag" }
     }
   }
 }

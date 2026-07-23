@@ -64,6 +64,32 @@ function setCardSize(node, size) {
     node._xzgCardSize = Number.isFinite(v) ? Math.floor(v) : 128;
 }
 
+// 自适应缩略图算法：确保所有缩略图在节点内完整显示，最大化利用空间
+// 考虑卡片 border(1px) 的影响
+// 返回 { size: 缩略图大小, cols: 最佳列数, totalWidth: 实际总宽, totalHeight: 实际总高 }
+// 完全复刻小珠光预览的自适应算法
+function computeAutoCardSize(containerWidth, containerHeight, imageCount, gap = 2) {
+    const effW = containerWidth;
+    const effH = containerHeight;
+
+    if (imageCount <= 0 || effW <= 20 || effH <= 20) {
+        return { size: 20, cols: 1 };
+    }
+
+    // 自动选最佳列数：缩略图在节点内完全可见，不低于 20px
+    let bestCell = 0, bestCols = 1;
+    const maxCols = Math.max(1, Math.floor(effW / 30));
+    for (let c = 1; c <= maxCols; c++) {
+        const rows = Math.ceil(imageCount / c);
+        const cellW = (effW - gap * (c - 1)) / c;
+        const cellH = (effH - gap * (rows - 1)) / rows;
+        const cell = Math.min(cellW, cellH);
+        if (cell > bestCell) { bestCell = cell; bestCols = c; }
+    }
+    const cell = Math.max(20, bestCell);
+    return { size: Math.floor(cell), cols: bestCols };
+}
+
 function getIndex(node) {
     const w = getIndexWidget(node);
     const v = Number(w?.value);
@@ -151,6 +177,11 @@ function getOriginalImageUrl(filename) {
         name = filename.slice(0, -" [temp]".length);
     }
     return api.apiURL(`/view?filename=${encodeURIComponent(name)}&type=${type}`);
+}
+
+// 压缩预览 URL：复用缩略图端点，按最长边缩放到 3840px 并输出 JPG（带缓存）
+function getPreviewUrl(filename) {
+    return getThumbUrl(filename, 3840);
 }
 
 async function uploadOneImage(file) {
@@ -353,10 +384,6 @@ function createImgBatchUI(node) {
     actionGroup.appendChild(clearBtn);
     sidebar.appendChild(actionGroup);
 
-    const MIN_CARD_SIZE = 64;
-    const MAX_CARD_SIZE = 256;
-    const CARD_SIZE_STEP = 8;
-
     let uploadMode = "append";
 
     const uploadModeBtn = document.createElement("button");
@@ -370,8 +397,17 @@ function createImgBatchUI(node) {
     });
     uploadModeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
+        const wasAppend = uploadMode === "append";
         uploadMode = uploadMode === "append" ? "replace" : "append";
         viewMode = uploadMode === "append" ? "grid" : "single";
+        // 切换到单图模式时，只保留第一张图片
+        if (wasAppend && uploadMode === "replace") {
+            const names = parseNameList(getImageListWidget(node)?.value);
+            if (names.length > 1) {
+                setNameList(node, [names[0]]);
+                setIndex(node, 0);
+            }
+        }
         updateUploadModeBtn();
         redraw(true);
     });
@@ -403,11 +439,28 @@ function createImgBatchUI(node) {
     const updateModeBtn = () => {
         const w = getBatchModeWidget(node);
         const isBatch = w?.value === true;
+        const names = parseNameList(getImageListWidget(node)?.value || "");
+        const singleImg = names.length <= 1;
+        // 单图加载模式时也禁用
+        const isSingleMode = uploadMode === "replace";
+        const disabled = singleImg || isSingleMode;
+        
         modeBtn.textContent = isBatch ? "批次" : "列表";
-        modeBtn.title = isBatch ? "切换为列表模式" : "切换为批次模式";
-        modeBtn.style.borderColor = isBatch ? "#66CC66" : "#6699FF";
-        modeBtn.style.borderWidth = "1px";
-        modeBtn.style.borderStyle = "solid";
+        if (disabled) {
+            modeBtn.title = isSingleMode ? "单图加载模式下不可用" : "";
+            modeBtn.style.borderColor = "#666";
+            modeBtn.style.borderWidth = "1px";
+            modeBtn.style.borderStyle = "solid";
+            modeBtn.style.cursor = "default";
+            modeBtn.style.opacity = "0.4";
+        } else {
+            modeBtn.title = isBatch ? "切换为列表模式" : "切换为批次模式";
+            modeBtn.style.borderColor = isBatch ? "#66CC66" : "#6699FF";
+            modeBtn.style.borderWidth = "1px";
+            modeBtn.style.borderStyle = "solid";
+            modeBtn.style.cursor = "pointer";
+            modeBtn.style.opacity = "1";
+        }
         const cards = grid.querySelectorAll("[data-xzg-img-card]");
         const color = getSelColor();
         cards.forEach((cell, i) => {
@@ -417,9 +470,12 @@ function createImgBatchUI(node) {
             }
         });
     };
-
+    
     modeBtn.onclick = (e) => {
         e.stopPropagation();
+        const names = parseNameList(getImageListWidget(node)?.value || "");
+        if (names.length <= 1) return; // 单图时禁止切换
+        if (uploadMode === "replace") return; // 单图加载模式时禁止切换
         const w = getBatchModeWidget(node);
         if (!w) return;
         w.value = !w.value;
@@ -453,7 +509,7 @@ function createImgBatchUI(node) {
 
     const grid = document.createElement("div");
     grid.style.cssText =
-        "display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card-size,128px),1fr));gap:4px;flex:1;min-width:0;min-height:0;overflow-y:auto;background:transparent;padding:4px;border-radius:2px;align-content:start;";
+        "display:grid;gap:2px;flex:1;min-width:0;min-height:0;overflow:hidden;background:transparent;padding:6px;border-radius:2px;align-content:center;justify-content:center;transition:opacity 0.3s ease;";
     grid.style.userSelect = "none";
     grid.style.webkitUserSelect = "none";
     grid.classList.add("xzg-img-grid");
@@ -503,16 +559,16 @@ function createImgBatchUI(node) {
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
-                <div style="font-weight:bold;opacity:0.75;">🎞️ 滚轮操作</div>
-                <div style="opacity:0.5;padding-left:12px;">Ctrl + 滚轮：调整缩略图大小</div>
-                <div style="opacity:0.5;padding-left:12px;">Alt / Shift + 滚轮：滚动列表</div>
-            </div>
-
-            <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">🔄 模式切换</div>
                 <div style="opacity:0.5;padding-left:12px;">多图/单图：批量加载图片模式 / 单图加载模式</div>
                 <div style="opacity:0.5;padding-left:12px;">批次模式：统一分辨率，批量处理</div>
                 <div style="opacity:0.5;padding-left:12px;">列表模式：支持不同分辨率，逐张处理</div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:1px;">
+                <div style="font-weight:bold;opacity:0.75;">💡 提示</div>
+                <div style="opacity:0.5;padding-left:12px;">缩略图大小根据节点大小自动调整</div>
+                <div style="opacity:0.5;padding-left:12px;">拖动节点边缘可改变节点大小</div>
             </div>
         </div>
     `;
@@ -564,23 +620,8 @@ function createImgBatchUI(node) {
     const onWheel = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (e.ctrlKey) {
-            const cur = getCardSize(node);
-            const delta = e.deltaY > 0 ? -CARD_SIZE_STEP : CARD_SIZE_STEP;
-            const next = Math.min(MAX_CARD_SIZE, Math.max(MIN_CARD_SIZE, cur + delta));
-            if (next !== cur) {
-                setCardSize(node, next);
-                redraw(true);
-            }
-            return;
-        }
-        if (e.altKey || e.shiftKey) {
-            grid.scrollTop += e.deltaY;
-            grid.scrollLeft += e.deltaX;
-            return;
-        }
+        // 普通滚轮事件传递给画布（用于缩放画布）
         const canvasEl = app.canvas.canvas;
-        const rect = canvasEl.getBoundingClientRect();
         const newEvent = new WheelEvent("wheel", {
             deltaX: e.deltaX,
             deltaY: e.deltaY,
@@ -595,6 +636,91 @@ function createImgBatchUI(node) {
     };
     container.addEventListener("wheel", onWheel, { passive: false });
     grid.addEventListener("wheel", onWheel, { passive: false });
+
+    // 监听容器尺寸变化，自动重新计算缩略图大小
+    let resizeRaf = null;
+    let lastCols = 0;
+    const resizeObserver = new ResizeObserver(() => {
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        resizeRaf = requestAnimationFrame(() => {
+            const names = parseNameList(getImageListWidget(node)?.value || "");
+            if (names.length > 0) {
+                let availW = grid.clientWidth - 12;
+                let availH = grid.clientHeight - 12;
+                if (availW < 50 || availH < 50) {
+                    availW = Math.max(50, node.size[0] - 78);
+                    availH = Math.max(50, node.size[1] - 56);
+                }
+                const { size: newSize, cols: newCols } = computeAutoCardSize(availW, availH, names.length);
+                const finalSize = Math.max(20, Math.floor(newSize));
+                const currentSize = getCardSize(node);
+                
+                if (finalSize !== currentSize) {
+                    // 列数变化时，渐隐重建 DOM
+                    if (newCols !== lastCols && lastCols > 0) {
+                        // FLIP 动画：记录旧位置 → 更新布局 → 移回旧位置 → 动画到新位置
+                        const cells = grid.querySelectorAll("[data-xzg-img-card]");
+                        const oldPositions = new Map();
+                        cells.forEach(cell => {
+                            const rect = cell.getBoundingClientRect();
+                            oldPositions.set(cell.dataset.xzgIndex, { x: rect.left, y: rect.top });
+                        });
+
+                        // 更新布局（不重建 DOM）
+                        setCardSize(node, finalSize);
+                        lastCardSize = finalSize;
+                        grid.style.setProperty("--card-size", `${finalSize}px`);
+                        grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
+                        cells.forEach(cell => {
+                            cell.style.width = `${finalSize}px`;
+                            cell.style.height = `${finalSize}px`;
+                            cell.style.transition = "none";
+                        });
+
+                        // 计算新旧位置差，用 transform 移回旧位置，同时渐隐
+                        requestAnimationFrame(() => {
+                            cells.forEach(cell => {
+                                const idx = cell.dataset.xzgIndex;
+                                const oldPos = oldPositions.get(idx);
+                                if (oldPos) {
+                                    const newRect = cell.getBoundingClientRect();
+                                    const dx = oldPos.x - newRect.left;
+                                    const dy = oldPos.y - newRect.top;
+                                    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                                        cell.style.transform = `translate(${dx}px, ${dy}px)`;
+                                    }
+                                }
+                                // 渐隐
+                                cell.style.opacity = "0.3";
+                            });
+
+                            // 下一帧移除 transform 并渐入，触发弹性动画
+                            requestAnimationFrame(() => {
+                                cells.forEach(cell => {
+                                    cell.style.transition = "transform 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), width 0.6s ease-out, height 0.6s ease-out, opacity 0.6s ease";
+                                    cell.style.transform = "";
+                                    cell.style.opacity = "1";
+                                });
+                            });
+                        });
+                    } else {
+                        // 只更新尺寸，transition 自动处理动画
+                        setCardSize(node, finalSize);
+                        lastCardSize = finalSize;
+                        grid.style.setProperty("--card-size", `${finalSize}px`);
+                        grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
+                        const cells = grid.querySelectorAll("[data-xzg-img-card]");
+                        cells.forEach(cell => {
+                            cell.style.width = `${finalSize}px`;
+                            cell.style.height = `${finalSize}px`;
+                        });
+                    }
+                    lastCols = newCols;
+                }
+            }
+        });
+    });
+    resizeObserver.observe(grid);
 
     let dragSortState = null;
     let marqueeState = null;
@@ -1009,9 +1135,11 @@ function createImgBatchUI(node) {
             singleImgContainer.style.display = "flex";
             const curIdx = idx >= 0 && idx < names.length ? idx : 0;
             const name = names[curIdx];
-            if (singleImgEl.dataset.currentName !== name) {
+            // 单图/1图模式使用压缩预览（最长边 3840px），避免大图卡顿
+            if (singleImgEl.dataset.previewKey !== name) {
+                singleImgEl.dataset.previewKey = name;
                 singleImgEl.dataset.currentName = name;
-                singleImgEl.src = getOriginalImageUrl(name);
+                singleImgEl.src = getPreviewUrl(name);
             }
             if (selectedIndexes.length !== 1 || selectedIndexes[0] !== curIdx) {
                 selectedIndexes = [curIdx];
@@ -1043,9 +1171,21 @@ function createImgBatchUI(node) {
         }
 
         lastNames = [...names];
-        lastCardSize = cardSize;
-        grid.style.setProperty("--card-size", `${cardSize}px`);
-        grid.style.gridTemplateColumns = `repeat(auto-fill, ${cardSize}px)`;
+        // 获取 grid 的实际可用空间（clientWidth 已包含 padding，减去后是可用空间）
+        let availW = grid.clientWidth - 12;
+        let availH = grid.clientHeight - 12;
+        if (availW < 50 || availH < 50) {
+            availW = Math.max(50, node.size[0] - 78);
+            availH = Math.max(50, node.size[1] - 56);
+        }
+
+        const { size: autoCardSize, cols: bestCols } = computeAutoCardSize(availW, availH, names.length);
+
+        const contentSize = Math.max(20, Math.floor(autoCardSize));
+        setCardSize(node, contentSize);
+        lastCardSize = contentSize;
+        grid.style.setProperty("--card-size", `${contentSize}px`);
+        grid.style.gridTemplateColumns = `repeat(${bestCols}, ${contentSize}px)`;
         grid.innerHTML = "";
 
         const frag = document.createDocumentFragment();
@@ -1053,17 +1193,17 @@ function createImgBatchUI(node) {
         names.forEach((name, i) => {
             const isSelected = selectedIndexes.includes(i);
             const cell = document.createElement("div");
-            cell.style.cssText = "display:flex;flex-direction:column;cursor:grab;";
+            cell.style.cssText = `display:flex;flex-direction:column;cursor:grab;width:${contentSize}px;height:${contentSize}px;overflow:hidden;transition:width 0.30s ease-out,height 0.30s ease-out;`;
             cell.dataset.xzgImgCard = "1";
             cell.dataset.xzgIndex = String(i);
 
             const card = document.createElement("div");
             card.style.cssText = `position:relative;border-radius:2px;border:1px solid ${
                 isSelected ? getSelColor() : "var(--border-color)"
-            };background:#000;width:100%;padding-top:100%;overflow:hidden;`;
+            };background:#000;width:100%;height:100%;overflow:hidden;box-sizing:border-box;`;
 
             const thumbEl = document.createElement("img");
-            thumbEl.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;";
+            thumbEl.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;transition:opacity 0.15s ease;";
             thumbEl.draggable = false;
             thumbEl.onerror = () => {
                 const names = parseNameList(getImageListWidget(node)?.value);
@@ -1602,6 +1742,7 @@ function createImgBatchUI(node) {
         container,
         redraw,
         updateModeBtn,
+        resizeObserver,
     };
 }
 
@@ -1641,8 +1782,8 @@ app.registerExtension({
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
 
-                const MIN_W = 420;
-                const MIN_H = 360;
+                const MIN_W = 250;
+                const MIN_H = 300;
 
                 if (!this.size || this.size[0] < MIN_W || this.size[1] < MIN_H) {
                     this.setSize([Math.max(this.size?.[0] || 0, MIN_W), Math.max(this.size?.[1] || 0, MIN_H)]);
@@ -1682,6 +1823,7 @@ app.registerExtension({
                         origCallback?.call(this, value);
                         if (value === wList._xzg_lastValue) return;
                         wList._xzg_lastValue = value;
+                        ui.updateModeBtn?.();
                         ui.redraw(true);
                     };
                 }
@@ -1762,6 +1904,23 @@ app.registerExtension({
                     if (!data.properties) data.properties = {};
                     data.properties.xzg_image_list = listWidget.value;
                 }
+                return r;
+            };
+
+            const origOnRemoved = nodeType.prototype.onRemoved;
+            nodeType.prototype.onRemoved = function () {
+                if (this._xzgImgLoaderUI?.resizeObserver) {
+                    this._xzgImgLoaderUI.resizeObserver.disconnect();
+                    this._xzgImgLoaderUI.resizeObserver = null;
+                }
+                return origOnRemoved?.apply(this, arguments);
+            };
+
+            // 节点大小改变时重新计算缩略图（与 ResizeObserver 协调）
+            const origOnResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                const r = origOnResize?.apply(this, arguments);
+                // ResizeObserver 会处理重绘，这里不需要额外操作
                 return r;
             };
         }

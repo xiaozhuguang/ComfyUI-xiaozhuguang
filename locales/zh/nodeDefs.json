@@ -211,7 +211,26 @@
     "display_name": "小珠光图像对比",
     "inputs": {
       "a": { "name": "A" },
-      "b": { "name": "B" }
+      "b": { "name": "B" },
+      "reduce_lag": { "name": "减少卡顿" },
+      "show_line": { "name": "划线" }
+    }
+  },
+  "XiaozhuguangImagePreview": {
+    "display_name": "小珠光预览",
+    "inputs": {
+      "images": { "name": "图像" },
+      "reduce_lag": { "name": "减少卡顿" }
+    }
+  },
+  "XiaozhuguangImageSave": {
+    "display_name": "小珠光保存",
+    "inputs": {
+      "images": { "name": "图像" },
+      "output_path": { "name": "输出路径" },
+      "filename_prefix": { "name": "文件名前缀" },
+      "save_format": { "name": "保存格式" },
+      "reduce_lag": { "name": "减少卡顿" }
     }
   }
 }

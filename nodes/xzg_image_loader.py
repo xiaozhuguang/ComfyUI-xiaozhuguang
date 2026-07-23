@@ -284,7 +284,7 @@ class XiaozhuguangImageLoader:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
-    OUTPUT_IS_LIST = (True,)
+    OUTPUT_IS_LIST = (True,)  # 驱动下游迭代；若版本不支持可改为 (False,)，列表模式同返回 [batch]
     FUNCTION = "load_images"
     CATEGORY = "xiaozhuguang"
 
@@ -346,6 +346,7 @@ class XiaozhuguangImageLoader:
             batch = torch.cat(resized, dim=0)
             return ([batch],)
         else:
+            # 列表模式：每张图独立放入列表，OUTPUT_IS_LIST 驱动下游 N 次执行
             return (images,)
 
 

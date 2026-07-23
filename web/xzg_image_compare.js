@@ -10,111 +10,6 @@ function imageUrl(data) {
     );
 }
 
-// ============ 鼠标 & 拖拽状态（capture phase，在 ComfyUI 阻止冒泡前捕获） ============
-let _isMouseDown = false;
-/** 当前正在拖拽的节点（依赖 graph_mouse 实时定位） */
-let _dragNode = null;
-let _dragStartClient = null;
-let _dragNodeStartPos = null;
-
-document.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    _isMouseDown = true;
-    _dragStartClient = { x: e.clientX, y: e.clientY };
-
-    const cvs = app?.canvas;
-    if (!cvs || !cvs.graph_mouse || !cvs.graph) return;
-    const [gx, gy] = cvs.graph_mouse;
-    // 遍历图节点，检测鼠标是否在本节点区域内
-    for (const node of cvs.graph._nodes) {
-        if (node.type !== XZG_IMAGE_COMPARE_TYPE) continue;
-        if (gx >= node.pos[0] && gx <= node.pos[0] + node.size[0] &&
-            gy >= node.pos[1] && gy <= node.pos[1] + node.size[1]) {
-            node.isPointerDown = true;
-            _dragNode = node;
-            _dragNodeStartPos = [...node.pos];
-            break;
-        }
-    }
-}, true);
-
-document.addEventListener('pointermove', (e) => {
-    if (!_isMouseDown || !_dragNode) return;
-    const cvs = app?.canvas;
-    if (!cvs?.ds || !_dragNode.graph) return;
-    const dx = (e.clientX - _dragStartClient.x) / cvs.ds.scale;
-    const dy = (e.clientY - _dragStartClient.y) / cvs.ds.scale;
-    _dragNode.pos[0] = _dragNodeStartPos[0] + dx;
-    _dragNode.pos[1] = _dragNodeStartPos[1] + dy;
-    _dragNode.graph.change();
-    cvs.setDirty(true, true);
-}, true);
-
-document.addEventListener('pointerup', (e) => {
-    if (e.button !== 0) return;
-    _isMouseDown = false;
-    if (_dragNode) {
-        _dragNode.isPointerDown = false;
-        _dragNode = null;
-    }
-    _dragStartClient = null;
-    _dragNodeStartPos = null;
-}, true);
-
-document.addEventListener('pointercancel', () => {
-    _isMouseDown = false;
-    if (_dragNode) {
-        _dragNode.isPointerDown = false;
-        _dragNode = null;
-    }
-    _dragStartClient = null;
-    _dragNodeStartPos = null;
-}, true);
-
-// ============ 画布移动追踪（只检测画布缩放/平移） ============
-let _canvasTracker = (function () {
-    let _lastScale = null;
-    let _lastOffset = null;
-    let _isMoving = false;
-    const listeners = [];
-
-    function check() {
-        const ds = app?.canvas?.ds;
-        if (!ds) return;
-        const scale = ds.scale;
-        const offsetX = ds.offset[0];
-        const offsetY = ds.offset[1];
-
-        const scaleChanged = _lastScale !== null && scale !== _lastScale;
-        const offsetChanged = _lastOffset !== null && (offsetX !== _lastOffset[0] || offsetY !== _lastOffset[1]);
-        const anythingChanged = scaleChanged || offsetChanged;
-
-        if (anythingChanged && !_isMoving) {
-            _isMoving = true;
-            listeners.forEach(fn => fn(true));
-        } else if (!anythingChanged && _isMoving) {
-            _isMoving = false;
-            listeners.forEach(fn => fn(false));
-        }
-
-        _lastScale = scale;
-        _lastOffset = [offsetX, offsetY];
-    }
-
-    setInterval(check, 100);
-
-    return {
-        get isMoving() { return _isMoving; },
-        onMoveChange(fn) {
-            listeners.push(fn);
-            return () => {
-                const idx = listeners.indexOf(fn);
-                if (idx >= 0) listeners.splice(idx, 1);
-            };
-        }
-    };
-})();
-
 
 // ============ 自定义 Widget ============
 class XzgImageCompareWidget {
@@ -125,13 +20,6 @@ class XzgImageCompareWidget {
         this.hitAreas = {};
         this.selected = [];        // [image_a_info, image_b_info]
         this._value = { images: [] };
-
-        // 缩放优化相关
-        this._isMoving = false;
-        this._unsubMove = null;
-        this._isShowingFullRes = false;
-        this._transitionStart = null;
-        this._transitionDuration = 1000;
     }
 
     set value(v) {
@@ -163,12 +51,6 @@ class XzgImageCompareWidget {
         this._value.images = cleaned;
         selected = cleaned.filter(d => d.selected);
         this._setSelected(selected);
-
-        // 统一初始化：加载原图、激活追踪（覆盖执行结果和序列化恢复两种场景）
-        this._startLoadingFullRes();
-        this.activateCanvasTracking();
-        // 无论 tracker 是否已激活，都确保触发淡入（防止二次 value 设置卡在缩略图）
-        this.showFullRes();
     }
 
     get value() {
@@ -179,113 +61,82 @@ class XzgImageCompareWidget {
         this._value.images.forEach(d => (d.selected = false));
 
         for (const sel of selected) {
-            if (!sel._thumbImg) {
-                sel._thumbImg = new Image();
-                sel._thumbImg.src = sel.url;
+            if (!sel.img) {
+                const img = new Image();
+                img.src = sel.url;
+                sel.img = img;
             }
-            sel.img = sel._thumbImg; // 默认用缩略图
             sel.selected = true;
         }
         this.selected = selected;
-        this._isShowingFullRes = false;
     }
 
-    /** 立即开始加载原图，加载完成后存入 _fullResImg（按图片个体标记，避免重复加载） */
-    _startLoadingFullRes() {
-        const self = this;
-        for (const item of this._value.images) {
-            if (!item._fullData || item._fullResImg) continue;
-            const fullUrl = imageUrl(item._fullData);
-            const fullImg = new Image();
-            fullImg.onload = () => {
-                item._fullResImg = fullImg;
-                // 非动画期间且需要显示原图时直接切换
-                if (self._isShowingFullRes && self._transitionStart === null) {
-                    item.img = fullImg;
-                }
-                self.node.setDirtyCanvas(true, true);
-            };
-            fullImg.src = fullUrl;
-        }
-    }
-
-    /** 返回当前原图叠加透明度 (0~1) */
-    _getFullAlpha() {
-        if (this._transitionStart === null) {
-            return this._isShowingFullRes ? 1 : 0;
-        }
-        const elapsed = performance.now() - this._transitionStart;
-        const t = Math.min(elapsed / this._transitionDuration, 1);
-        if (t >= 1) {
-            this._transitionStart = null;
-        } else {
-            this.node.setDirtyCanvas(true, true);
-        }
-        return this._isShowingFullRes ? t : (1 - t);
-    }
-
-    /** 显示高清原图（淡入动画） */
-    showFullRes() {
-        if (this._isShowingFullRes) return;
-        this._isShowingFullRes = true;
-        this._transitionStart = performance.now();
+    _swapAB() {
+        if (this.selected.length < 2) return;
+        // 交换 selected 数组中的两个元素
+        [this.selected[0], this.selected[1]] = [this.selected[1], this.selected[0]];
         this.node.setDirtyCanvas(true, true);
-    }
-
-    /** 显示缩略图（立即，无动画） */
-    showThumbnails() {
-        if (!this._isShowingFullRes) return;
-        for (const item of this._value.images) {
-            if (!item.selected) continue;
-            if (item._thumbImg) {
-                item.img = item._thumbImg;
-            }
-        }
-        this._isShowingFullRes = false;
-        this._transitionStart = null;
-        this.node.setDirtyCanvas(true, true);
-    }
-
-    /** 激活画布追踪（画布移动→缩略图，停止→高清） */
-    activateCanvasTracking() {
-        if (this._unsubMove) return;
-        const self = this;
-
-        this._unsubMove = _canvasTracker.onMoveChange((moving) => {
-            self._isMoving = moving;
-            if (moving) {
-                self._onInteraction();
-            } else {
-                self.showFullRes();
-            }
-            self.node.setDirtyCanvas(true, true);
-        });
-
-        // 初始状态：立即开始淡入高清
-        this.showFullRes();
-    }
-
-    /** 交互发生 → 立即切缩略图（淡出动画） */
-    _onInteraction() {
-        this.showThumbnails();
-    }
-
-    destroy() {
-        if (this._unsubMove) {
-            this._unsubMove();
-            this._unsubMove = null;
-        }
     }
 
     draw(ctx, node, width, y) {
         this.hitAreas = {};
 
-        // 鼠标按下 → 立即淡出缩略图
-        if ((_isMouseDown || node.isPointerDown) && this._isShowingFullRes) {
-            this._onInteraction();
-        } else if (!_isMouseDown && !node.isPointerDown && !this._isShowingFullRes && !_canvasTracker.isMoving && this._transitionStart === null) {
-            // tracker 未激活 & 鼠标已松开 & 画布静止 & 缩略图稳态 → 开始淡入高清
-            this.showFullRes();
+        // 绘制开关行：减少卡顿 + 划线 + 交换AB
+        const lagWidget = node.widgets?.find(w => w.name === "reduce_lag");
+        const lineWidget = node.widgets?.find(w => w.name === "show_line");
+        if (lagWidget && lineWidget) {
+            const btnH = 18;
+            const btnCount = 3;
+            // 延伸到节点最边界，按钮行不使用任何边距（边距仅作用于下方图像）
+            const btnW = node.size[0] / btnCount;
+            // 与「A -- B」交换按钮一致的颜色（统一 #aaaaaa）
+            const SWAP_COLOR = "#aaaaaa";
+            ctx.font = "11px Arial";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            // 底色与节点完全一致：不填充背景，直接透出节点背景色
+
+            // 减少卡顿开关：文字统一用 SWAP_COLOR，开启「极致流畅」/关闭「减小卡顿」
+            ctx.fillStyle = SWAP_COLOR;
+            ctx.fillText(lagWidget.value ? "极致流畅" : "减小卡顿", btnW / 2, y + btnH / 2);
+            this.hitAreas["reduce_lag"] = {
+                bounds: [0, y, btnW, btnH],
+                onDown: () => { lagWidget.value = !lagWidget.value; node.setDirtyCanvas(true); }
+            };
+
+            // 划线开关：文字统一用 SWAP_COLOR，激活「划线」/未激活「划像」
+            const x1 = btnW;
+            ctx.fillStyle = SWAP_COLOR;
+            ctx.fillText(lineWidget.value ? "划线" : "划像", x1 + btnW / 2, y + btnH / 2);
+            this.hitAreas["show_line"] = {
+                bounds: [x1, y, btnW, btnH],
+                onDown: () => { lineWidget.value = !lineWidget.value; node.setDirtyCanvas(true); }
+            };
+
+            // 交换AB按钮：根据当前状态显示方向（动作按钮，文字 SWAP_COLOR）
+            const x2 = x1 + btnW;
+            ctx.fillStyle = SWAP_COLOR;
+            // 判断当前 selected[0] 是 A 还是 B
+            const leftName = this.selected[0]?.name || "";
+            if (leftName.startsWith("A")) {
+                ctx.fillText("B -- A", x2 + btnW / 2, y + btnH / 2);
+            } else {
+                ctx.fillText("A -- B", x2 + btnW / 2, y + btnH / 2);
+            }
+            this.hitAreas["swap_ab"] = {
+                bounds: [x2, y, btnW, btnH],
+                onDown: () => { this._swapAB(); }
+            };
+
+            // 分隔线 1px，颜色与 A--B 一致
+            ctx.strokeStyle = SWAP_COLOR;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x1, y); ctx.lineTo(x1, y + btnH);
+            ctx.moveTo(x2, y); ctx.lineTo(x2, y + btnH);
+            ctx.stroke();
+
+            y += btnH + 4;
         }
 
         if (!this.selected.length || this.selected.length < 2) return;
@@ -307,17 +158,26 @@ class XzgImageCompareWidget {
                     data: img,
                     onDown: (e, pos, node, bounds) => {
                         const clicked = bounds.data;
-                        // 直接切换选中项，不重置动画状态（不经过 _setSelected）
+                        // 直接切换选中项
                         if (clicked.name.startsWith("A") && this.selected[0] !== clicked) {
                             this.selected[0].selected = false;
                             this.selected[0] = clicked;
                             clicked.selected = true;
-                            clicked.img = clicked._thumbImg;
+                            // 确保图片已加载
+                            if (!clicked.img) {
+                                const newImg = new Image();
+                                newImg.src = clicked.url;
+                                clicked.img = newImg;
+                            }
                         } else if (!clicked.name.startsWith("A") && this.selected[1] !== clicked) {
                             this.selected[1].selected = false;
                             this.selected[1] = clicked;
                             clicked.selected = true;
-                            clicked.img = clicked._thumbImg;
+                            if (!clicked.img) {
+                                const newImg = new Image();
+                                newImg.src = clicked.url;
+                                clicked.img = newImg;
+                            }
                         }
                         node.setDirtyCanvas(true, true);
                     }
@@ -340,29 +200,30 @@ class XzgImageCompareWidget {
         const nodeHeight = node.size[1] - y - IMAGE_MARGIN;
         if (nodeHeight <= 0) return;
 
-        // 统一原图叠加 alpha（淡入0→1 / 淡出1→0 / 稳态0或1）
-        const fullAlpha = this._getFullAlpha();
+        // 实时从节点 widgets 读取划线参数
+        const lineWidget = node.widgets?.find(w => w.name === "show_line");
+        const showLine = lineWidget ? lineWidget.value : true;
 
-        // 画 image_a：缩略图打底 + 原图按 alpha 叠加
-        this._drawImage(ctx, imgA._thumbImg || imgA.img, node.size[0], nodeHeight, y);
-        if (fullAlpha > 0 && imgA._fullResImg) {
-            ctx.save();
-            ctx.globalAlpha = fullAlpha;
-            this._drawImage(ctx, imgA._fullResImg, node.size[0], nodeHeight, y);
-            ctx.restore();
-        }
+        // 画 image_a
+        this._drawImage(ctx, imgA.img, node.size[0], nodeHeight, y);
 
         // 鼠标在节点上时，按鼠标 X 裁剪画 image_b
         if (node.isPointerOver) {
-            this._drawImage(ctx, imgB._thumbImg || imgB.img, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
-            if (fullAlpha > 0 && imgB._fullResImg) {
+            this._drawImage(ctx, imgB.img, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
+
+            // 画分割线：实线，#aaaaaa，1px
+            if (showLine) {
                 ctx.save();
-                ctx.globalAlpha = fullAlpha;
-                this._drawImage(ctx, imgB._fullResImg, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
+                ctx.strokeStyle = "#aaaaaa";
+                ctx.lineWidth = 1;
+                ctx.setLineDash([]);
+                ctx.beginPath();
+                ctx.moveTo(node.pointerOverPos[0], y);
+                ctx.lineTo(node.pointerOverPos[0], y + nodeHeight);
+                ctx.stroke();
                 ctx.restore();
             }
         }
-
     }
 
 
@@ -404,43 +265,34 @@ class XzgImageCompareWidget {
         }
         ctx.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, destX, destY, destWidth, destHeight);
 
-        // 画分割线
-        if (cropX != null && cropX >= destX && cropX <= destX + targetW) {
-            ctx.beginPath();
-            ctx.moveTo(cropX, destY);
-            ctx.lineTo(cropX, destY + destHeight);
-            ctx.strokeStyle = "rgba(255,255,255,0)";
-            ctx.lineWidth = 0;
-            ctx.stroke();
-        }
         ctx.restore();
     }
 
     computeSize(width) {
         const node = this.node;
-        const defaultH = 300;
-        // 如果已有选中的图像，根据图像宽高比调整高度
-        if (this.selected.length >= 2 && this.selected[0].img && this.selected[0].img.naturalWidth) {
-            const img = this.selected[0].img;
-            const imgAspect = img.naturalWidth / img.naturalHeight;
-            const nodeAspect = width / defaultH;
-            if (imgAspect > nodeAspect) {
-                return [width, width / imgAspect + IMAGE_MARGIN];
-            }
-        }
-        return [width, defaultH + IMAGE_MARGIN];
+        const ns = node.size;
+        const h = (Array.isArray(ns) && isFinite(ns[1])) ? ns[1] : 300 + IMAGE_MARGIN + 22;
+        return [width, h];
     }
 
     serializeValue(node, index) {
-        const v = [];
-        for (const d of this._value.images) {
-            const copy = { ...d };
-            delete copy.img;
-            delete copy._thumbImg;
-            delete copy._fullResImg;
-            v.push(copy);
+        // 不持久化图片，刷新后自动消失
+        return { images: [] };
+    }
+
+    mouse(event, pos, node) {
+        if (event.type === "pointerdown" && event.button === 0) {
+            for (const [key, area] of Object.entries(this.hitAreas)) {
+                const [bx, by, bw, bh] = area.bounds;
+                if (pos[0] >= bx && pos[0] <= bx + bw && pos[1] >= by && pos[1] <= by + bh) {
+                    area.onDown?.(event, pos, node, area);
+                    return true;
+                }
+            }
+            // 消费所有 body 点击，禁止拖拽
+            return true;
         }
-        return { images: v };
+        return false;
     }
 }
 
@@ -451,53 +303,35 @@ class XiaozhuguangImageCompareNode {
         this.imageIndex = 0;
         this.imgs = [];
         this.serialize_widgets = true;
-        this.isPointerDown = false;
-        this.isPointerOver = false;
         this.pointerOverPos = [0, 0];
         this.canvasWidget = null;
+        this.showLine = true;
     }
 
     onExecuted(output) {
-        // 优先用缩略图初始化
-        const aThumbs = output.a_thumbs || [];
-        const bThumbs = output.b_thumbs || [];
-        const aFull = output.a_images || [];
-        const bFull = output.b_images || [];
+        const aImages = output.a_images || [];
+        const bImages = output.b_images || [];
+
+        // 从节点 widgets 中读取划线参数
+        const lineWidget = this.widgets?.find(w => w.name === "show_line");
+        if (lineWidget !== undefined && lineWidget !== null) {
+            this.showLine = lineWidget.value;
+        }
 
         const imagesToShow = [];
-        for (const [i, d] of aThumbs.entries()) {
+        for (const [i, d] of aImages.entries()) {
             imagesToShow.push({
-                name: aThumbs.length > 1 ? `A${i + 1}` : "A",
+                name: aImages.length > 1 ? `A${i + 1}` : "A",
                 selected: i === 0,
                 url: imageUrl(d),
-                _fullData: aFull[i], // 原始全分辨率数据引用
             });
         }
-        for (const [i, d] of bThumbs.entries()) {
+        for (const [i, d] of bImages.entries()) {
             imagesToShow.push({
-                name: bThumbs.length > 1 ? `B${i + 1}` : "B",
+                name: bImages.length > 1 ? `B${i + 1}` : "B",
                 selected: i === 0,
                 url: imageUrl(d),
-                _fullData: bFull[i],
             });
-        }
-
-        if (imagesToShow.length === 0 && aFull.length > 0 && bFull.length > 0) {
-            // 没有缩略图时回退到全分辨率
-            for (const [i, d] of aFull.entries()) {
-                imagesToShow.push({
-                    name: aFull.length > 1 ? `A${i + 1}` : "A",
-                    selected: i === 0,
-                    url: imageUrl(d),
-                });
-            }
-            for (const [i, d] of bFull.entries()) {
-                imagesToShow.push({
-                    name: bFull.length > 1 ? `B${i + 1}` : "B",
-                    selected: i === 0,
-                    url: imageUrl(d),
-                });
-            }
         }
 
         this.canvasWidget.value = { images: imagesToShow };
@@ -509,38 +343,36 @@ class XiaozhuguangImageCompareNode {
         if (this.canvasWidget) {
             for (let [index, wv] of (serialised.widgets_values || []).entries()) {
                 if (this.widgets[index] && this.widgets[index].name === "xzg_image_compare") {
-                    serialised.widgets_values[index] = this.widgets[index].value.images.map(d => {
-                        const copy = { ...d };
-                        delete copy.img;
-                        delete copy._thumbImg;
-                        delete copy._fullResImg;
-                        return copy;
-                    });
+                    serialised.widgets_values[index] = [];
                 }
             }
         }
     }
 
     onNodeCreated() {
-        this.canvasWidget = this.addCustomWidget(new XzgImageCompareWidget("xzg_image_compare", this));
+        const node = this;
+        const w = this.addCustomWidget(new XzgImageCompareWidget("xzg_image_compare", this));
+        this.canvasWidget = w;
+        // 让图像区域（按钮/标签以外）被视为节点本体，从而可用左键拖动节点。
+        // body 全部区域（除右下缩放手柄）返回 widget，禁止拖拽
+        if (!node.getWidgetOnPos.__xzgPatched) {
+            node.getWidgetOnPos = function (x, y, includeDisabled, ...rest) {
+                const lx = x - node.pos[0];
+                const ly = y - node.pos[1];
+                const titleH = (typeof LiteGraph !== 'undefined' && LiteGraph.NODE_TITLE_HEIGHT) || 30;
+                if (lx >= 0 && lx <= node.size[0] - 12 && ly >= titleH && ly <= node.size[1] - 12) {
+                    if (node.canvasWidget) return node.canvasWidget;
+                }
+                return null;
+            };
+            node.getWidgetOnPos.__xzgPatched = true;
+        }
         this.setSize(this.computeSize());
         this.setDirtyCanvas(true, true);
     }
 
-    onMouseDown(event, pos, canvas) {
-        if (event.button !== 0) return; // 仅处理左键，让右键能触发上下文菜单
-        this.isPointerDown = true;
-        this.imgs = null;
-        // 拖拽初始化由全局 capture-phase 监听器完成
-    }
-
     onDrawForeground(ctx, canvas) {
         // 禁用默认 PreviewImage 的小图绘制
-    }
-
-    onMouseUp(event, pos, canvas) {
-        this.isPointerDown = false;
-        // 拖拽清理由全局 capture-phase 监听器完成
     }
 
     onMouseEnter(event) {
@@ -549,7 +381,6 @@ class XiaozhuguangImageCompareNode {
 
     onMouseLeave(event) {
         this.isPointerOver = false;
-        this.isPointerDown = false;
     }
 
     onMouseMove(event, pos, canvas) {
@@ -557,18 +388,12 @@ class XiaozhuguangImageCompareNode {
         this.imageIndex = this.pointerOverPos[0] > this.size[0] / 2 ? 1 : 0;
     }
 
-    onRemoved() {
-        if (this.canvasWidget && this.canvasWidget.destroy) {
-            this.canvasWidget.destroy();
-        }
-    }
-
     getHelp() {
         return `
             <p>小珠光图像对比节点，用于对比两张图像。</p>
             <ul>
-                <li><strong>Slide 模式</strong>：鼠标悬停时，B 图像按鼠标位置裁剪显示，A 图像为底层完整图像。白色分割线跟随鼠标。</li>
-                <li><strong>原图优化</strong>：画布滚动/拖动/缩放时立即切为缩略图，画布停止 1s 后自动恢复高清原图。</li>
+                <li><strong>Slide 模式</strong>：鼠标悬停时，B 图像按鼠标位置裁剪显示，A 图像为底层完整图像。</li>
+                <li><strong>减少卡顿</strong>：开启后图像将被压缩为最长边3840px的JPG（质量80），适合大图场景。</li>
             </ul>
             <p><strong>输入</strong>：<code>a</code>（可选）、<code>b</code>（可选）</p>
         `;
@@ -592,13 +417,10 @@ app.registerExtension({
             // 用自定义类替换默认节点行为
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             const origOnExecuted = nodeType.prototype.onExecuted;
-            const origOnMouseDown = nodeType.prototype.onMouseDown;
             const origOnDrawForeground = nodeType.prototype.onDrawForeground;
-            const origOnMouseUp = nodeType.prototype.onMouseUp;
             const origOnMouseEnter = nodeType.prototype.onMouseEnter;
             const origOnMouseLeave = nodeType.prototype.onMouseLeave;
             const origOnMouseMove = nodeType.prototype.onMouseMove;
-            const origOnRemoved = nodeType.prototype.onRemoved;
             const origOnSerialize = nodeType.prototype.onSerialize;
             const origGetHelp = nodeType.prototype.getHelp;
 
@@ -609,31 +431,37 @@ app.registerExtension({
                 this.imageIndex = 0;
                 this.imgs = [];
                 this.serialize_widgets = true;
-                this.isPointerDown = false;
                 this.isPointerOver = false;
                 this.pointerOverPos = [0, 0];
                 this.canvasWidget = null;
+                this.showLine = true;
+
                 proto.onNodeCreated.call(this);
+
+                // 彻底隐藏原始的布尔控件（本体 + "转换为输入"连接点），由 XzgImageCompareWidget 统一绘制
+                // type="hidden" 会同时隐藏控件及其连接点，且不影响值序列化传给后端
+                for (const w of this.widgets || []) {
+                    if (w.name === "reduce_lag" || w.name === "show_line") {
+                        w.type = "hidden";
+                        w.computeSize = () => [0, 0];
+                        w.draw = () => {};
+                    }
+                }
+                // 完全移除对应的左侧输入插槽
+                if (this.inputs) {
+                    this.inputs = this.inputs.filter(inp => inp.name !== "reduce_lag" && inp.name !== "show_line");
+                }
             };
 
             nodeType.prototype.onExecuted = function (output) {
                 proto.onExecuted.call(this, output);
             };
 
-            nodeType.prototype.onMouseDown = function (event, pos, canvas) {
-                if (event.button !== 0) {
-                    // 非左键（右键等）交给原始 handler 处理，确保上下文菜单等正常工作
-                    return origOnMouseDown?.call(this, event, pos, canvas);
-                }
-                return proto.onMouseDown.call(this, event, pos, canvas);
-            };
+            // 不覆盖 onMouseDown → ComfyUI 原生拖拽 + 右键菜单正常工作
+            // 开关点击由 widget.mouse() 在 draw 阶段的 hitAreas 处理
 
             nodeType.prototype.onDrawForeground = function (ctx, canvas) {
                 proto.onDrawForeground.call(this, ctx, canvas);
-            };
-
-            nodeType.prototype.onMouseUp = function (event, pos, canvas) {
-                proto.onMouseUp.call(this, event, pos, canvas);
             };
 
             nodeType.prototype.onMouseEnter = function (event) {
@@ -648,10 +476,6 @@ app.registerExtension({
                 proto.onMouseMove.call(this, event, pos, canvas);
             };
 
-            nodeType.prototype.onRemoved = function () {
-                proto.onRemoved.call(this);
-            };
-
             nodeType.prototype.onSerialize = function (o) {
                 proto.onSerialize.call(this, o);
             };
@@ -659,6 +483,21 @@ app.registerExtension({
             nodeType.prototype.getHelp = function () {
                 return proto.getHelp.call(this);
             };
+
+            // 最小尺寸限制
+            nodeType.prototype.onNodeCreated = (function(orig) {
+                return function () {
+                    orig.call(this);
+                    const MIN_H = 300;
+                    this.minHeight = Math.max(this.minHeight || 0, MIN_H);
+                    const origSetSize2 = this.setSize.bind(this);
+                    this.setSize = function (size) {
+                        const w = size?.[0] || this.size?.[0] || 400;
+                        const h = Math.max(size?.[1] || this.size?.[1] || 400, MIN_H);
+                        origSetSize2([w, h]);
+                    };
+                };
+            })(nodeType.prototype.onNodeCreated);
         }
     },
 });
