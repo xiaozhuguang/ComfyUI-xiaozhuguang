@@ -5,22 +5,25 @@ import torch
 from PIL import Image
 import folder_paths
 from nodes import PreviewImage
+from .xzg_image_preview import REAL_STORE
 
 
 class XiaozhuguangImageSave(PreviewImage):
-    """小珠光保存 - 保存图像为 JPG 95% 或 PNG，并支持减少卡顿(极速流畅)预览模式。
-    预览图为压缩图，下方显示真实分辨率；右键菜单可保存真实分辨率原图(即所保存的文件)。"""
+    """小珠光保存 - 保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)。
+    与小珠光预览完全相似的显示体验，但增加实际文件保存功能。
+    JPG保存使用与预览相同的压缩参数；PNG保存为全分辨率无损。
+    右键菜单可下载真实分辨率PNG(懒编码)或压缩JPG。
+    文件名固定为 xzg-save_序号，用户可通过 output_path 自定义输出文件夹。"""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "images": ("IMAGE",),
-                "output_path": ("STRING", {"default": "", "multiline": False}),
-                "filename_prefix": ("STRING", {"default": "xzg_save"}),
-                "save_format": (["JPG 95%", "PNG"], {"default": "JPG 95%"}),
             },
             "optional": {
+                "output_path": ("STRING", {"default": "", "multiline": False}),
+                "save_format": (["JPG", "PNG"], {"default": "JPG"}),
                 "reduce_lag": ("BOOLEAN", {"default": False, "label_on": "开启", "label_off": "关闭"}),
             },
             "hidden": {
@@ -33,101 +36,98 @@ class XiaozhuguangImageSave(PreviewImage):
     FUNCTION = "save_images"
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
-    DESCRIPTION = "保存图像：JPG 95% 或 PNG。预览为压缩图，下方显示真实分辨率；右键可保存真实分辨率原图"
+    DESCRIPTION = "保存图像：JPG(压缩)或PNG(无损)。画布预览始终为压缩JPG(流畅)。右键可下载真实分辨率PNG或压缩JPG。"
 
-    def save_images(self, images, output_path="", filename_prefix="xzg_save",
-                    save_format="JPG 95%", reduce_lag=False,
+    def save_images(self, images, output_path="", save_format="JPG", reduce_lag=False,
                     prompt=None, extra_pnginfo=None):
 
-        # 真实保存（全分辨率）：保存文件本身即为真实分辨率原图
-        saved = self._save_full(images, output_path, filename_prefix, save_format)
-
-        # 预览（压缩，用于前端画布显示）
         max_side = 3840 if reduce_lag else 6400
         quality = 85 if reduce_lag else 80
-        preview = self._save_compressed(images, "xzg.save.preview.", max_side, quality)
 
-        # 合并：预览图用于显示，real 指向保存的全分辨率文件，并附带真实宽高
-        entries = []
-        for i, (comp, real) in enumerate(zip(preview, saved)):
-            h, w = images[i].shape[0], images[i].shape[1]
-            entries.append({
-                "filename": comp["filename"],
-                "subfolder": comp["subfolder"],
-                "type": comp["type"],
-                "real": real,
-                "real_width": int(w),
-                "real_height": int(h),
-            })
-
-        result = {"ui": {"xzg_preview": entries, "saved": saved}}
-        return result
-
-    def _save_full(self, images, output_path, filename_prefix, save_format):
+        # 输出目录（用户可自定义子文件夹）
         if output_path and output_path.strip():
             base_dir = os.path.join(folder_paths.get_output_directory(), output_path.strip().strip("/\\"))
+            subfolder = output_path.strip()
         else:
             base_dir = folder_paths.get_output_directory()
+            subfolder = ""
         os.makedirs(base_dir, exist_ok=True)
 
-        saved = []
-        counter = 0
-        for tensor in images:
-            img = (tensor.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-            pil = Image.fromarray(img)
+        # 临时目录（预览图）
+        temp_dir = folder_paths.get_temp_directory()
+        os.makedirs(temp_dir, exist_ok=True)
 
-            # 避免覆盖：查找可用文件名
-            while True:
-                fname = f"{filename_prefix}_{counter:05d}"
-                if save_format == "PNG":
-                    full = os.path.join(base_dir, fname + ".png")
-                    if not os.path.exists(full):
-                        break
-                    counter += 1
-                    continue
-                else:
-                    full = os.path.join(base_dir, fname + ".jpg")
-                    if not os.path.exists(full):
-                        break
-                    counter += 1
-                    continue
-
-            if save_format == "PNG":
-                pil.save(full, "PNG", pnginfo=None)
-                saved.append({"filename": os.path.basename(full), "subfolder": output_path.strip() if output_path.strip() else "", "type": "output"})
-            else:
-                pil.save(full, "JPEG", quality=95, optimize=False, subsampling=0)
-                saved.append({"filename": os.path.basename(full), "subfolder": output_path.strip() if output_path.strip() else "", "type": "output"})
-            counter += 1
-
-        return saved
-
-    def _save_compressed(self, images, prefix="xzg.save.preview.", max_side=3840, quality=85):
-        """GPU 加速缩放 + JPG 快速保存（仅预览显示，非真实分辨率）"""
-        output_dir = folder_paths.get_temp_directory()
-        os.makedirs(output_dir, exist_ok=True)
         rand = lambda: "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(8))
-        results = []
+
+        # 文件名前缀：固定 xzg-save，后接5位序号避免重复
+        filename_prefix = "xzg-save"
+
+        # 懒编码令牌：用于右键保存真实分辨率 PNG
+        token = "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(16))
+        REAL_STORE[token] = []
+        if len(REAL_STORE) > 100:
+            old = next(iter(REAL_STORE))
+            REAL_STORE.pop(old, None)
+
+        saved = []
+        entries = []
+        counter = 0
 
         for i, tensor in enumerate(images):
-            img = tensor.unsqueeze(0).permute(0, 3, 1, 2)
-            h, w = img.shape[2], img.shape[3]
+            h, w = tensor.shape[0], tensor.shape[1]
 
+            # 存储原始像素（uint8，CPU），供右键时编码 PNG
+            real_np = (tensor.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+            REAL_STORE[token].append(real_np)
+
+            # GPU 加速压缩（仅做一次，用于预览和 JPG 保存）
+            img = tensor.unsqueeze(0).permute(0, 3, 1, 2)
             if max(w, h) > max_side:
                 ratio = max_side / max(w, h)
                 new_w = int(w * ratio)
                 new_h = int(h * ratio)
                 img = torch.nn.functional.interpolate(img, size=(new_h, new_w), mode='bicubic', align_corners=False)
-
             img = img.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            pil_img = Image.fromarray((img * 255).clip(0, 255).astype(np.uint8))
+            compressed_pil = Image.fromarray((img * 255).clip(0, 255).astype(np.uint8))
 
-            filename = f"{prefix}{rand()}_{i}.jpg"
-            pil_img.save(os.path.join(output_dir, filename), "JPEG", quality=quality, optimize=True)
-            results.append({
-                "filename": filename,
-                "subfolder": "",
-                "type": "temp",
+            # 保存压缩 JPG 预览到临时目录（画布显示，始终 JPG）
+            preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
+            compressed_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
+
+            # 保存到输出目录
+            while True:
+                fname = f"{filename_prefix}_{counter:05d}"
+                if save_format == "PNG":
+                    full_path = os.path.join(base_dir, fname + ".png")
+                else:
+                    full_path = os.path.join(base_dir, fname + ".jpg")
+                if not os.path.exists(full_path):
+                    break
+                counter += 1
+
+            if save_format == "PNG":
+                # 全分辨率 PNG（无损）
+                Image.fromarray(real_np).save(full_path, "PNG")
+            else:
+                # 压缩 JPG（与预览相同的压缩参数）
+                compressed_pil.save(full_path, "JPEG", quality=quality, optimize=True)
+
+            saved.append({
+                "filename": os.path.basename(full_path),
+                "subfolder": subfolder,
+                "type": "output"
             })
 
-        return results
+            entries.append({
+                "filename": preview_fname,
+                "subfolder": "",
+                "type": "temp",
+                "real_token": token,
+                "real_index": i,
+                "real_width": int(w),
+                "real_height": int(h),
+            })
+            counter += 1
+
+        result = {"ui": {"xzg_preview": entries, "saved": saved}}
+        return result

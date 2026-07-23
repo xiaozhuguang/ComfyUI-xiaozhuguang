@@ -2289,12 +2289,9 @@ class Xiaozhuguang {
                         }
                     }
                 };
-                // 固定插入到第7行（下标6）
-                if (options.length > 6) {
-                    options.splice(6, 0, wfOption);
-                } else {
-                    options.push(null, wfOption);
-                }
+                // 固定插入到倒数第三行
+                const insertPos = Math.max(0, options.length - 2);
+                options.splice(insertPos, 0, wfOption);
             } else {
                 // 单节点收藏
                 const isFavorited = self.isNodeFavorited(node.type);
@@ -2308,12 +2305,9 @@ class Xiaozhuguang {
                         }
                     }
                 };
-                // 固定插入到第7行（下标6）
-                if (options.length > 6) {
-                    options.splice(6, 0, favOption);
-                } else {
-                    options.push(null, favOption);
-                }
+                // 固定插入到倒数第三行
+                const insertPos = Math.max(0, options.length - 2);
+                options.splice(insertPos, 0, favOption);
             }
 
             return options;

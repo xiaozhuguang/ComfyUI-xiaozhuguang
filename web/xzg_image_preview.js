@@ -22,10 +22,35 @@ function xzgSafeSetSize(node) {
     node.setSize(size);
 }
 
+// 时间戳：格式 yyyyMMdd_HHmmss，用于保存文件名避免重复
+function xzgTimestamp() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// 通过 fetch 转 blob 下载，确保 download 文件名生效（跨域 URL 时浏览器会忽略 download 属性）
+async function xzgDownload(url, filename) {
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch (e) {
+        console.warn("[小珠光] 下载失败:", e);
+    }
+}
+
 async function downloadImage(imgData) {
     if (!imgData) return;
     let url = imgData.real_url;
-    let name = imgData.real_name || (imgData.name + ".png");
 
     if (!url && imgData.real_token) {
         // 懒编码：请求后端临时编码全分辨率 PNG（仅右键时触发，不拖慢执行）
@@ -39,7 +64,6 @@ async function downloadImage(imgData) {
             const info = await resp.json();
             if (info && info.filename) {
                 url = api.apiURL(`/view?filename=${encodeURIComponent(info.filename)}&type=${info.type}&subfolder=${encodeURIComponent(info.subfolder)}${app.getRandParam()}`);
-                name = info.filename;
             }
         } catch (e) {
             return;
@@ -47,12 +71,13 @@ async function downloadImage(imgData) {
     }
     if (!url) return;
 
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    await xzgDownload(url, `xzg-preview-${xzgTimestamp()}.png`);
+}
+
+// JPG保存：直接借用现有的压缩预览图（后端已生成的 JPG），无需后端再编码
+async function downloadJpgImage(imgData) {
+    if (!imgData || !imgData.url) return;
+    await xzgDownload(imgData.url, `xzg-preview-${xzgTimestamp()}.jpg`);
 }
 
 
@@ -218,7 +243,7 @@ class XzgImagePreviewWidget {
     }
 
     _drawGrid(ctx, node, width, y, imgs) {
-        const gap = 6;
+        const gap = 2;
         const effW = width - IMAGE_MARGIN * 2;
         const nodeH = node.size[1] - y - IMAGE_MARGIN;
         // 自动选最佳列数：缩略图在节点内完全可见，不低于 20px
@@ -245,7 +270,7 @@ class XzgImagePreviewWidget {
             this._ensureImg(imgData);
             const img = imgData.img;
 
-            ctx.fillStyle = (i === this.currentIndex) ? "rgba(120,170,255,0.25)" : "rgba(80,80,80,0.4)";
+            ctx.fillStyle = "rgba(128,128,128,0.4)";
             ctx.fillRect(cx, cy, cell, cell);
 
             if (img && img.naturalWidth) {
@@ -295,19 +320,14 @@ class XzgImagePreviewWidget {
         if (typeof w !== "number" || !isFinite(w)) {
             w = (Array.isArray(ns) ? ns[0] : (typeof ns === "number" ? ns : 270)) || 270;
         }
-        // 始终返回当前节点尺寸，网格模式由 _drawGrid 自适应缩略图大小
-        const h = (Array.isArray(ns) && isFinite(ns[1])) ? ns[1] : 300 + IMAGE_MARGIN + 22;
-        return [w, h];
+        // 返回固定最小高度，实际绘制高度由 draw 中的 node.size[1] - y 决定
+        // 避免返回 ns[1] 导致与上方控件高度叠加引发无限增长
+        return [w, 200];
     }
 
     serializeValue(node, index) {
-        const v = [];
-        for (const d of this._value.images) {
-            const copy = { ...d };
-            delete copy.img;
-            v.push(copy);
-        }
-        return { images: v };
+        // 不持久化图片，刷新后自动消失，确保重新执行
+        return { images: [] };
     }
 
     mouse(event, pos, node) {
@@ -413,7 +433,10 @@ class XiaozhuguangImagePreviewNode {
         // 避免刷新/重载工作流后节点被重置为默认大小。
         const s = this.size;
         if (!Array.isArray(s) || !isFinite(s[0]) || !isFinite(s[1])) {
-            xzgSafeSetSize(this);
+            let n = s;
+            if (Array.isArray(n)) n = n[0];
+            if (typeof n !== "number" || !isFinite(n)) n = 270;
+            this.setSize([n, 300]);
         }
         setTimeout(() => { this.setDirtyCanvas(true, true); }, 0);
     }
@@ -452,7 +475,6 @@ app.registerExtension({
             const origOnDrawForeground = nodeType.prototype.onDrawForeground;
             const origOnSerialize = nodeType.prototype.onSerialize;
             const origGetHelp = nodeType.prototype.getHelp;
-            const origGetMenuOptions = nodeType.prototype.getMenuOptions;
 
             const proto = XiaozhuguangImagePreviewNode.prototype;
 
@@ -526,19 +548,29 @@ app.registerExtension({
             })(nodeType.prototype.onNodeCreated);
 
             // 右键菜单：保存原图（预览为压缩图，但右键保存的是真实分辨率）
-            nodeType.prototype.getMenuOptions = function () {
-                const options = origGetMenuOptions ? origGetMenuOptions.call(this) : [];
+            // PNG保存(真实分辨率)与JPG保存(压缩预览)紧邻，置于菜单最上面两行
+            // 通过 getExtraMenuOptions 直接操作最终 options 数组，确保排在最前面
+            const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+                if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
+                if (!options || !Array.isArray(options)) return;
                 const w = this.canvasWidget;
                 // 网格模式下不提供保存功能
                 if (w && !w.gridMode && w.value && w.value.images && w.value.images.length) {
                     const cur = w.value.images[w.currentIndex] || w.value.images[0];
-                    options.push(null);
-                    options.push({
-                        content: "保存图片",
-                        callback: () => { downloadImage(cur); }
-                    });
+                    const saveOpts = [
+                        {
+                            content: `<span style="color:#4CAF50;">PNG保存</span>`,
+                            callback: () => { downloadImage(cur); }
+                        },
+                        {
+                            content: `<span style="color:#4CAF50;">JPG保存</span>`,
+                            callback: () => { downloadJpgImage(cur); }
+                        }
+                    ];
+                    // 插入到 options 数组最开头，紧跟一个分隔符
+                    options.splice(0, 0, ...saveOpts, null);
                 }
-                return options;
             };
         }
     },

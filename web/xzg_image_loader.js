@@ -532,6 +532,11 @@ function createImgBatchUI(node) {
             .xzg-img-grid::-webkit-scrollbar-thumb:hover {
                 background: rgba(255,255,255,0.2);
             }
+            @keyframes xzgCardFlipIn {
+                0% { transform: rotate3d(var(--fx,0), var(--fy,1), 0, var(--fdeg,90deg)) scale(0.8); opacity: 0; }
+                50% { opacity: 1; }
+                100% { transform: rotate3d(0, 0, 0, 0deg) scale(1); opacity: 1; }
+            }
         `;
         document.head.appendChild(style);
     }
@@ -586,7 +591,7 @@ function createImgBatchUI(node) {
     singleImgContainer.id = "xzg-single-img-container";
     singleImgContainer.style.cssText = "flex:1;display:none;align-items:center;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;";
     const singleImgEl = document.createElement("img");
-    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;background:#000;";
+    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;background:rgba(128,128,128,0.4);";
     singleImgEl.draggable = false;
     singleImgEl.onerror = () => {
         const names = parseNameList(getImageListWidget(node)?.value);
@@ -636,10 +641,31 @@ function createImgBatchUI(node) {
     };
     container.addEventListener("wheel", onWheel, { passive: false });
     grid.addEventListener("wheel", onWheel, { passive: false });
+    mainContent.addEventListener("wheel", onWheel, { passive: false });
+    singleImgContainer.addEventListener("wheel", onWheel, { passive: false });
+    emptyTip.addEventListener("wheel", onWheel, { passive: false });
 
     // 监听容器尺寸变化，自动重新计算缩略图大小
     let resizeRaf = null;
     let lastCols = 0;
+    let flipAnimTimer = null;
+
+    // 随机翻转动画：给每张卡片设置随机轴、角度、方向
+    const applyRandomFlip = (cells) => {
+        cells.forEach(cell => {
+            const axisType = Math.floor(Math.random() * 3);
+            let fx, fy;
+            if (axisType === 0) { fx = 1; fy = 0; }      // X轴
+            else if (axisType === 1) { fx = 0; fy = 1; }  // Y轴
+            else { fx = 1; fy = 1; }                       // 对角线
+            const deg = 60 + Math.floor(Math.random() * 121);
+            const sign = Math.random() < 0.5 ? -1 : 1;
+            cell.style.setProperty("--fx", fx);
+            cell.style.setProperty("--fy", fy);
+            cell.style.setProperty("--fdeg", `${sign * deg}deg`);
+        });
+    };
+
     const resizeObserver = new ResizeObserver(() => {
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         resizeRaf = requestAnimationFrame(() => {
@@ -656,64 +682,78 @@ function createImgBatchUI(node) {
                 const currentSize = getCardSize(node);
                 
                 if (finalSize !== currentSize) {
-                    // 列数变化时，渐隐重建 DOM
+                    // 列数变化时，卡片翻转动画
                     if (newCols !== lastCols && lastCols > 0) {
-                        // FLIP 动画：记录旧位置 → 更新布局 → 移回旧位置 → 动画到新位置
                         const cells = grid.querySelectorAll("[data-xzg-img-card]");
-                        const oldPositions = new Map();
-                        cells.forEach(cell => {
-                            const rect = cell.getBoundingClientRect();
-                            oldPositions.set(cell.dataset.xzgIndex, { x: rect.left, y: rect.top });
-                        });
 
-                        // 更新布局（不重建 DOM）
+                        // 更新布局
                         setCardSize(node, finalSize);
                         lastCardSize = finalSize;
                         grid.style.setProperty("--card-size", `${finalSize}px`);
                         grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
+                        grid.style.perspective = "600px";
+
+                        // 先清除旧动画状态
                         cells.forEach(cell => {
                             cell.style.width = `${finalSize}px`;
                             cell.style.height = `${finalSize}px`;
                             cell.style.transition = "none";
+                            cell.style.animation = "none";
+                        });
+                        // 统一强制 reflow 一次，确保所有 cell 的 animation:none 已提交
+                        void grid.offsetWidth;
+                        // 设置翻转动画，每张卡片随机角度和方向
+                        applyRandomFlip(cells);
+                        cells.forEach(cell => {
+                            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
                         });
 
-                        // 计算新旧位置差，用 transform 移回旧位置，同时渐隐
-                        requestAnimationFrame(() => {
+                        // 动画结束后恢复默认 transition（防重入：清除旧定时器）
+                        if (flipAnimTimer) clearTimeout(flipAnimTimer);
+                        flipAnimTimer = setTimeout(() => {
+                            flipAnimTimer = null;
                             cells.forEach(cell => {
-                                const idx = cell.dataset.xzgIndex;
-                                const oldPos = oldPositions.get(idx);
-                                if (oldPos) {
-                                    const newRect = cell.getBoundingClientRect();
-                                    const dx = oldPos.x - newRect.left;
-                                    const dy = oldPos.y - newRect.top;
-                                    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                                        cell.style.transform = `translate(${dx}px, ${dy}px)`;
-                                    }
-                                }
-                                // 渐隐
-                                cell.style.opacity = "0.3";
+                                cell.style.animation = "";
+                                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
+                                cell.style.transform = "";
                             });
-
-                            // 下一帧移除 transform 并渐入，触发弹性动画
-                            requestAnimationFrame(() => {
-                                cells.forEach(cell => {
-                                    cell.style.transition = "transform 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), width 0.6s ease-out, height 0.6s ease-out, opacity 0.6s ease";
-                                    cell.style.transform = "";
-                                    cell.style.opacity = "1";
-                                });
-                            });
-                        });
+                            grid.style.perspective = "";
+                        }, 1050);
                     } else {
-                        // 只更新尺寸，transition 自动处理动画
+                        // 只更新尺寸（列数不变），随机翻转动画
                         setCardSize(node, finalSize);
                         lastCardSize = finalSize;
                         grid.style.setProperty("--card-size", `${finalSize}px`);
                         grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
+                        grid.style.perspective = "600px";
                         const cells = grid.querySelectorAll("[data-xzg-img-card]");
+
+                        // 先清除旧动画状态
                         cells.forEach(cell => {
                             cell.style.width = `${finalSize}px`;
                             cell.style.height = `${finalSize}px`;
+                            cell.style.transition = "none";
+                            cell.style.animation = "none";
                         });
+                        // 统一强制 reflow
+                        void grid.offsetWidth;
+                        // 随机翻转动画
+                        applyRandomFlip(cells);
+                        cells.forEach(cell => {
+                            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
+                        });
+
+                        // 动画结束后恢复默认 transition（防重入：清除旧定时器）
+                        if (flipAnimTimer) clearTimeout(flipAnimTimer);
+                        flipAnimTimer = setTimeout(() => {
+                            flipAnimTimer = null;
+                            cells.forEach(cell => {
+                                cell.style.animation = "";
+                                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
+                                cell.style.transform = "";
+                            });
+                            grid.style.perspective = "";
+                        }, 1050);
                     }
                     lastCols = newCols;
                 }
@@ -725,8 +765,10 @@ function createImgBatchUI(node) {
     let dragSortState = null;
     let marqueeState = null;
     const DRAG_CLICK_THRESHOLD = 5;
-    const DRAG_SORT_SCALE_MS = 200;
-    const DRAG_SORT_SCALE = 1.08;
+    const DRAG_SORT_SCALE_MS = 1000;
+    const DRAG_SORT_SCALE = 1.15;
+    const LONG_PRESS_MS = 500;
+    const LONG_PRESS_ANIM_MS = 150;
 
     container.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
@@ -769,13 +811,30 @@ function createImgBatchUI(node) {
         document.body.appendChild(marquee);
 
         const cardInner = cell?.querySelector(":scope > div");
+
+        // 按下时立即金边高亮（无过渡，瞬间生效）
         if (cell && cardInner) {
-            cardInner.style.transition = `transform ${DRAG_SORT_SCALE_MS}ms ease-out, box-shadow ${DRAG_SORT_SCALE_MS}ms ease-out, border-color ${DRAG_SORT_SCALE_MS}ms ease-out`;
-            cardInner.style.transform = `scale(${DRAG_SORT_SCALE})`;
-            cardInner.style.boxShadow = `0 4px 16px rgba(0,0,0,0.4)`;
+            cardInner.style.transition = "none";
             cardInner.style.borderColor = getSelColor();
-            cell.style.zIndex = "10";
         }
+
+        // 长按 500ms 后放大卡片，进入排序模式
+        const startLongPress = () => {
+            if (!cell || !cardInner) return;
+            readyTimer = setTimeout(() => {
+                readyTimer = null;
+                if (moved) return; // 已拖动则取消
+                sortReady = true;
+                // 放大时取消 overflow 裁剪，让卡片悬浮遮挡相邻区域
+                cell.style.overflow = "visible";
+                cell.style.zIndex = "9999";
+                // 先设置过渡，强制 reflow 确保从 transition:none 平滑切换
+                cardInner.style.transition = `transform ${LONG_PRESS_ANIM_MS}ms ease-out, box-shadow ${LONG_PRESS_ANIM_MS}ms ease-out`;
+                void cardInner.offsetHeight;
+                cardInner.style.transform = `scale(${DRAG_SORT_SCALE})`;
+                cardInner.style.boxShadow = `0 8px 24px rgba(0,0,0,0.5)`;
+            }, LONG_PRESS_MS);
+        };
 
         const enterMarqueeMode = () => {
             mode = "marquee";
@@ -790,6 +849,7 @@ function createImgBatchUI(node) {
                 cardInner.style.borderColor = "";
                 cardInner.style.transition = "";
                 cell.style.zIndex = "";
+                cell.style.overflow = "hidden";
             }
             sortReady = false;
         };
@@ -835,6 +895,7 @@ function createImgBatchUI(node) {
                 cardInner.style.boxShadow = "";
                 cardInner.style.transition = "";
                 cell.style.zIndex = "";
+                cell.style.overflow = "hidden";
             }
 
             const allCards = grid.querySelectorAll("[data-xzg-img-card]");
@@ -862,8 +923,9 @@ function createImgBatchUI(node) {
             setIndex(node, clickedIndex);
         };
 
+        // 卡片上按下：启动长按定时器，拖动时进入框选；长按后进入排序
         if (cell) {
-            sortReady = true;
+            startLongPress();
         } else {
             enterMarqueeMode();
         }
@@ -981,14 +1043,16 @@ function createImgBatchUI(node) {
             document.removeEventListener("contextmenu", onContextMenu);
 
             if (cell && cardInner && mode !== "sort") {
-                cardInner.style.transition = "transform 120ms ease-out, box-shadow 120ms ease-out, border-color 120ms ease-out";
+                cardInner.style.transition = `transform ${LONG_PRESS_ANIM_MS}ms ease-out, box-shadow ${LONG_PRESS_ANIM_MS}ms ease-out, border-color ${LONG_PRESS_ANIM_MS}ms ease-out`;
+                void cardInner.offsetHeight;
                 cardInner.style.transform = "";
                 cardInner.style.boxShadow = "";
                 cardInner.style.borderColor = "";
                 cell.style.zIndex = "";
+                cell.style.overflow = "hidden";
                 setTimeout(() => {
                     if (cardInner) cardInner.style.transition = "";
-                }, 120);
+                }, LONG_PRESS_ANIM_MS);
             }
 
             if (mode === "sort" && dragSortState) {
@@ -1193,14 +1257,14 @@ function createImgBatchUI(node) {
         names.forEach((name, i) => {
             const isSelected = selectedIndexes.includes(i);
             const cell = document.createElement("div");
-            cell.style.cssText = `display:flex;flex-direction:column;cursor:grab;width:${contentSize}px;height:${contentSize}px;overflow:hidden;transition:width 0.30s ease-out,height 0.30s ease-out;`;
+            cell.style.cssText = `display:flex;flex-direction:column;cursor:grab;width:${contentSize}px;height:${contentSize}px;overflow:hidden;position:relative;transition:width 0.30s ease-out,height 0.30s ease-out;`;
             cell.dataset.xzgImgCard = "1";
             cell.dataset.xzgIndex = String(i);
 
             const card = document.createElement("div");
             card.style.cssText = `position:relative;border-radius:2px;border:1px solid ${
                 isSelected ? getSelColor() : "var(--border-color)"
-            };background:#000;width:100%;height:100%;overflow:hidden;box-sizing:border-box;`;
+            };background:rgba(128,128,128,0.4);width:100%;height:100%;overflow:hidden;box-sizing:border-box;`;
 
             const thumbEl = document.createElement("img");
             thumbEl.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;transition:opacity 0.15s ease;";
@@ -1246,8 +1310,9 @@ function createImgBatchUI(node) {
             const label = document.createElement("div");
             label.textContent = name;
             label.title = name;
+            label.className = "xzg-img-label";
             label.style.cssText =
-                "position:absolute;left:2px;right:2px;bottom:2px;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;background:rgba(0,0,0,0.6);border-radius:3px;padding:2px 4px;z-index:1;";
+                "position:absolute;left:2px;right:2px;bottom:2px;font-size:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;z-index:1;";
 
             card.appendChild(thumbEl);
             card.appendChild(delBtn);
@@ -1408,7 +1473,7 @@ function createImgBatchUI(node) {
 
                     const thumb = document.createElement("div");
                     thumb.style.cssText =
-                        "width:100%;padding-top:100%;position:relative;border-radius:2px;overflow:hidden;background:var(--comfy-input-bg);";
+                        "width:100%;padding-top:100%;position:relative;border-radius:2px;overflow:hidden;background:rgba(128,128,128,0.4);";
                     const img = document.createElement("img");
                     const fileInfo = fileData[name];
                     const v = fileInfo?.mtime ? `&v=${fileInfo.mtime}` : "";
@@ -1735,6 +1800,20 @@ function createImgBatchUI(node) {
         setIndex(node, 0);
     };
 
+    // 画布缩放时同步调整图片名称字体大小（随画布缩小而缩小）
+    // ComfyUI DOM widget 通过 CSS transform 缩放整个容器，字体也会随之缩放
+    // 但当画布缩小时字体可能过小看不清，这里在画布放大时适当增大字体
+    let _lastScale = -1;
+    const updateLabelScale = () => {
+        const scale = app?.canvas?.ds?.scale ?? 1;
+        if (Math.abs(scale - _lastScale) < 0.01) return;
+        _lastScale = scale;
+        // 画布放大时字体也放大（补偿 CSS transform 的缩放），画布缩小时字体自然缩小
+        const fontSize = Math.max(4, Math.round(4 * Math.min(scale, 1.5)));
+        const labels = container.querySelectorAll(".xzg-img-label");
+        labels.forEach(el => { el.style.fontSize = fontSize + "px"; });
+    };
+
     redraw(true);
     updateModeBtn();
 
@@ -1743,6 +1822,8 @@ function createImgBatchUI(node) {
         redraw,
         updateModeBtn,
         resizeObserver,
+        _updateLabelScale: updateLabelScale,
+        _onWheel: onWheel,
     };
 }
 
@@ -1800,6 +1881,15 @@ app.registerExtension({
                 };
 
                 this.addDOMWidget("xzg_img_loader", "customwidget", ui.container);
+
+                // 容器 margin 区域落在 dom-widget 包裹器内，包裹器无滚轮转发，
+                // 导致上传按钮上方约 4-10px 区域滚轮失效。给父元素也绑定滚轮转发。
+                requestAnimationFrame(() => {
+                    const parent = ui.container.parentElement;
+                    if (parent && ui._onWheel) {
+                        parent.addEventListener("wheel", ui._onWheel, { passive: false });
+                    }
+                });
 
                 const wIndex = getIndexWidget(this);
                 const wList = getImageListWidget(this);
@@ -1914,6 +2004,15 @@ app.registerExtension({
                     this._xzgImgLoaderUI.resizeObserver = null;
                 }
                 return origOnRemoved?.apply(this, arguments);
+            };
+
+            // 画布缩放时同步更新图片名称字体大小
+            const origOnDrawBackground = nodeType.prototype.onDrawBackground;
+            nodeType.prototype.onDrawBackground = function (ctx) {
+                if (this._xzgImgLoaderUI?._updateLabelScale) {
+                    this._xzgImgLoaderUI._updateLabelScale();
+                }
+                return origOnDrawBackground?.apply(this, arguments);
             };
 
             // 节点大小改变时重新计算缩略图（与 ResizeObserver 协调）

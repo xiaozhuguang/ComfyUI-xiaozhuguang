@@ -151,7 +151,7 @@ class XzgImageCompareWidget {
             for (const img of this._value.images) {
                 const tw = ctx.measureText(img.name).width + 12;
                 const selected = img.selected;
-                ctx.fillStyle = selected ? "rgba(180,180,180,1)" : "rgba(180,180,180,0.4)";
+                ctx.fillStyle = "rgba(128,128,128,0.4)";
                 ctx.fillText(img.name, x + 6, y + 3);
                 this.hitAreas[img.name] = {
                     bounds: [x, y, tw, 18],
@@ -271,8 +271,13 @@ class XzgImageCompareWidget {
     computeSize(width) {
         const node = this.node;
         const ns = node.size;
-        const h = (Array.isArray(ns) && isFinite(ns[1])) ? ns[1] : 300 + IMAGE_MARGIN + 22;
-        return [width, h];
+        let w = width;
+        if (typeof w !== "number" || !isFinite(w)) {
+            w = (Array.isArray(ns) ? ns[0] : (typeof ns === "number" ? ns : 270)) || 270;
+        }
+        // 返回固定最小高度，实际绘制高度由 draw 中的 node.size[1] - y 决定
+        // 避免返回 ns[1] 导致与上方控件高度叠加引发无限增长
+        return [w, 200];
     }
 
     serializeValue(node, index) {
@@ -367,7 +372,13 @@ class XiaozhuguangImageCompareNode {
             };
             node.getWidgetOnPos.__xzgPatched = true;
         }
-        this.setSize(this.computeSize());
+        const s = this.size;
+        if (!Array.isArray(s) || !isFinite(s[0]) || !isFinite(s[1])) {
+            let n = s;
+            if (Array.isArray(n)) n = n[0];
+            if (typeof n !== "number" || !isFinite(n)) n = 270;
+            this.setSize([n, 500]);
+        }
         this.setDirtyCanvas(true, true);
     }
 
@@ -492,8 +503,8 @@ app.registerExtension({
                     this.minHeight = Math.max(this.minHeight || 0, MIN_H);
                     const origSetSize2 = this.setSize.bind(this);
                     this.setSize = function (size) {
-                        const w = size?.[0] || this.size?.[0] || 400;
-                        const h = Math.max(size?.[1] || this.size?.[1] || 400, MIN_H);
+                        const w = size?.[0] || this.size?.[0] || 300;
+                        const h = Math.max(size?.[1] || this.size?.[1] || 500, MIN_H);
                         origSetSize2([w, h]);
                     };
                 };
