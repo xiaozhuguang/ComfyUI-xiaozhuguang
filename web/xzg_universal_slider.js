@@ -158,7 +158,12 @@ function syncWidgetType(node) {
     const isInt = p.sliderType === "int";
     g.widget.type = isInt ? "INT" : "FLOAT";
     let v = g.widget.value;
-    v = clamp(v, p.sliderMin, p.sliderMax);
+    // 多值定格模式：值吸附到 snaps，不 clamp 到 min/max（snaps 值可能超出 min/max 范围）
+    if (p.useSnaps && p.snaps && p.snaps.length > 0) {
+        v = snapToSnaps(v, p.snaps);
+    } else {
+        v = clamp(v, p.sliderMin, p.sliderMax);
+    }
     v = isInt ? Math.round(v) : parseFloat(v.toFixed(2));
     g.widget.value = v;
 }
@@ -709,6 +714,7 @@ function showSettings(node) {
         syncOutputType(node);
         updateVis(node);
         node.setDirtyCanvas(true, true);
+        if (node.graph && typeof node.graph.change === "function") node.graph.change();
         confirmed = true;
         closeDialog();
     };
@@ -926,6 +932,7 @@ function setupSlider(node) {
                     g._dragging = false;
                     if (g._docCleanup) { g._docCleanup(); g._docCleanup = null; }
                     node.setDirtyCanvas(true, true);
+                    if (node.graph && typeof node.graph.change === "function") node.graph.change();
                     return true;
                 }
                 return;
@@ -1011,6 +1018,7 @@ function setupSlider(node) {
                 document.removeEventListener("mousemove", onDocMove);
                 document.removeEventListener("mouseup", onDocUp);
                 node.setDirtyCanvas(true, true);
+                if (node.graph && typeof node.graph.change === "function") node.graph.change();
             }
 
             g._docCleanup = function () {

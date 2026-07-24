@@ -268,6 +268,7 @@ class Xiaozhuguang {
             this.setupKeyboardListener();
             this.setupDragDrop();
             this.waitForCanvasReady().then(() => {
+                this._patchXiaozhuguangTitleCreate();
                 this.createPanel();
                 this.extendNodeMenu();
                 this.extendCanvasMenu();
@@ -4641,6 +4642,31 @@ class Xiaozhuguang {
             }
         });
     }
+
+    /* ── 小珠光标题节点创建拦截 ── */
+    _patchXiaozhuguangTitleCreate() {
+        try {
+            if (typeof LiteGraph === 'undefined' || !LiteGraph.createNode) {
+                setTimeout(() => this._patchXiaozhuguangTitleCreate(), 100);
+                return;
+            }
+            const origCreate = LiteGraph.createNode;
+            LiteGraph.createNode = function(type, title) {
+                const node = origCreate.call(LiteGraph, type, title);
+                if (node && type === "XiaozhuguangTitle") {
+                    if (!node.properties) node.properties = {};
+                    const savedFs = parseInt(localStorage.getItem('xzg_last_title_font_size'));
+                    if (savedFs) node.properties.fontSize = savedFs;
+                    const savedFc = localStorage.getItem('xzg_last_title_color');
+                    if (savedFc) node.properties.fontColor = savedFc;
+                }
+                return node;
+            };
+        } catch (e) {
+            console.warn('[小珠光] createNode patch 失败，延迟重试:', e);
+            setTimeout(() => this._patchXiaozhuguangTitleCreate(), 100);
+        }
+    }
 }
 
 app.registerExtension({
@@ -5377,7 +5403,7 @@ app.registerExtension({
         if (nodeData.name === "XiaozhuguangTitle") {
             const DEFAULT_PROPS = {
                 text: "双击编辑",
-                fontSize: 14,
+                fontSize: 50,
                 fontColor: "#ffffff",
                 bgColor: "#2a2a2a",
                 borderRadius: 3,
@@ -5527,6 +5553,11 @@ app.registerExtension({
                 this.resizable = false;
                 this.size = [200, 120];
                 this.properties = { ...DEFAULT_PROPS };
+                // 从 localStorage 恢复上次使用的文字大小和颜色
+                const savedFs = parseInt(localStorage.getItem('xzg_last_title_font_size'));
+                if (savedFs) this.properties.fontSize = savedFs;
+                const savedFc = localStorage.getItem('xzg_last_title_color');
+                if (savedFc) this.properties.fontColor = savedFc;
                 this.color = "#fff0";
                 this.bgcolor = "transparent";
                 this.isEditing = false;
@@ -6030,7 +6061,7 @@ app.registerExtension({
                 const slider = document.createElement("input");
                 slider.type = "range";
                 slider.min = "8";
-                slider.max = "50";
+                slider.max = "100";
                 slider.step = "1";
                 slider.value = p.fontSize;
                 slider.style.cssText = `flex:1;height:4px;cursor:pointer;`;
@@ -6279,6 +6310,7 @@ app.registerExtension({
                         p.fontColor = hex;
                         ta.style.color = hex;
                         fontColorSwatch.style.background = hex;
+                        localStorage.setItem('xzg_last_title_color', hex);
                     }
                     drawSV();
                     drawHue();
@@ -6642,12 +6674,13 @@ app.registerExtension({
                 const updateFontSize = (size) => {
                     const s = parseFloat(size) || 16;
                     p.fontSize = s;
+                    localStorage.setItem('xzg_last_title_font_size', s);
                     const nr = getNodeViewportRect(node);
                     const scale = nr ? nr.scale : 1;
                     ta.style.fontSize = s * scale + "px";
                     ta.style.lineHeight = s * scale * 1.4 + "px";
                     sliderValue.textContent = s + "px";
-                    if (s <= 50) {
+                    if (s <= 100) {
                         slider.value = s;
                     }
                     fontSizeInput.value = s;
@@ -6767,7 +6800,7 @@ app.registerExtension({
                     const val = parseFloat(e.target.value);
                     if (!isNaN(val) && val >= 8 && val <= 200) {
                         updateFontSize(val);
-                        if (val <= 50) {
+                        if (val <= 100) {
                             slider.value = val;
                         }
                     }

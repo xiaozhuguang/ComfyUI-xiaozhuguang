@@ -17,7 +17,7 @@ const XZGGroup = {
     overlay: null,
     canvasMoveHideActive: false,
     fadeOutDuration: 0,
-    fadeInDuration: 3000,
+    fadeInDuration: 2000,
     _lastOffsetX: null,
     _lastOffsetY: null,
     _lastScale: null,
@@ -28,17 +28,12 @@ const XZGGroup = {
         if (this.initialized) return;
         this.initialized = true;
         this.shortcutKey = localStorage.getItem('xzg_shortcut') || 'g';
+        // 编组开关面板快捷键（默认 B）
+        this.toggleShortcut = this.getToggleShortcut();
         // 加载画布移动隐藏设置
         try {
             if (localStorage.getItem('xzg_group_move_hide') === 'true') {
                 this.canvasMoveHideActive = true;
-            }
-            const fadeIn = localStorage.getItem('xzg_group_fade_in');
-            if (fadeIn !== null) {
-                const v = parseInt(fadeIn);
-                if (!isNaN(v)) {
-                    this.fadeInDuration = Math.max(1000, Math.min(10000, v));
-                }
             }
         } catch(e) {}
         console.log('[小珠光编组] 初始化 ✓');
@@ -80,12 +75,13 @@ const XZGGroup = {
         const style = document.createElement('style');
         style.id = 'xzg-group-styles';
         style.textContent = `
+@keyframes xzgPanelFadeIn { from { opacity:0; transform:translateY(-8px) scale(0.97); } to { opacity:1; transform:translateY(0) scale(1); } }
 .xzg-group-toggle-switch {
     position: relative;
     width: 52px;
-    height: 26px;
+    height: 20px;
     border: none;
-    border-radius: 13px;
+    border-radius: 10px;
     background: #555;
     cursor: pointer;
     padding: 0;
@@ -99,15 +95,15 @@ const XZGGroup = {
     position: absolute;
     top: 3px;
     left: 3px;
-    width: 20px;
-    height: 20px;
+    width: 14px;
+    height: 14px;
     background: #fff;
     border-radius: 50%;
     transition: left 0.2s;
     pointer-events: none;
 }
 .xzg-group-toggle-switch[data-checked="true"] .xzg-group-toggle-slider {
-    left: 29px;
+    left: 35px;
 }
 .xzg-group-toggle-switch .xzg-group-toggle-label {
     position: absolute;
@@ -312,6 +308,17 @@ const XZGGroup = {
                 self.createGroupFromSelection();
                 return;
             }
+
+            // 编组开关面板快捷键（可自定义，默认 B）
+            const ts = self.toggleShortcut || { key: 'b', ctrl: false, alt: false, shift: false, meta: false };
+            if (e.key.toLowerCase() === ts.key.toLowerCase() &&
+                !!e.ctrlKey === !!ts.ctrl && !!e.altKey === !!ts.alt &&
+                !!e.shiftKey === !!ts.shift && !!e.metaKey === !!ts.meta) {
+                e.preventDefault();
+                e.stopPropagation(); e.stopImmediatePropagation();
+                self.showTogglePanel();
+                return;
+            }
         }, true);
     },
 
@@ -330,6 +337,18 @@ const XZGGroup = {
                 opts.splice(0, 0, {
                     content: '<span style="color:#FFD700;">📦 ' + xzgT('小珠光编组','Xiaozhuguang Group') + ' <span style="color:#4CAF50;font-size:10px;">' + xzgT('快捷键','Shortcut') + 'Ctrl+' + (self.shortcutKey || 'g').toUpperCase() + '</span></span>',
                     callback: () => self.createGroupFromSelection()
+                });
+                // 编组开关面板快捷键文本（动态读取自定义值）
+                const ts = self.toggleShortcut || { key: 'b', ctrl: false, alt: false, shift: false, meta: false };
+                const tsParts = [];
+                if (ts.ctrl) tsParts.push('Ctrl');
+                if (ts.alt) tsParts.push('Alt');
+                if (ts.shift) tsParts.push('Shift');
+                if (ts.meta) tsParts.push('Meta');
+                tsParts.push(ts.key.toUpperCase());
+                opts.splice(1, 0, {
+                    content: '<span style="color:#FFD700;">🔧 ' + xzgT('编组开关面板','Group Toggle Panel') + ' <span style="color:#4CAF50;font-size:10px;">' + xzgT('快捷键','Shortcut') + ' ' + tsParts.join('+') + '</span></span>',
+                    callback: () => self.showTogglePanel()
                 });
                 return opts;
             };
@@ -390,48 +409,43 @@ const XZGGroup = {
         this._immediateSyncReady = true;
         const self = this;
 
-        // 节流：避免短时间内重复更新
-        let _syncPending = false;
-        const scheduleSync = () => {
-            if (_syncPending) return;
-            _syncPending = true;
-            requestAnimationFrame(() => {
-                _syncPending = false;
-                self.updatePositions();
-            });
-        };
+        // 同步更新，不再用 RAF 延迟，避免拖拽时编组框滞后
+        const syncNow = () => self.updatePositions();
 
         const tryHook = () => {
-            const ds = app?.canvas?.ds;
+            const canvas = app?.canvas;
+            const ds = canvas?.ds;
             if (!ds) { setTimeout(tryHook, 100); return; }
 
             // Hook changeScale：缩放时立即更新位置
             const origCS = ds.changeScale;
             ds.changeScale = function() {
                 origCS.apply(this, arguments);
-                scheduleSync();
+                syncNow();
             };
 
             // Hook changeOffset：平移时立即更新位置
             const origCO = ds.changeOffset;
             ds.changeOffset = function() {
                 origCO.apply(this, arguments);
-                scheduleSync();
+                syncNow();
             };
 
-            // Hook 鼠标拖拽平移（中键/空格拖拽）
-            const origM = ds.onMouseMove;
-            if (origM) {
-                ds.onMouseMove = function() {
-                    origM.apply(this, arguments);
-                    scheduleSync();
+            // Hook processMouseMove：画布拖拽平移时同步更新
+            // LiteGraph 在 processMouseMove 中直接修改 ds.offset，不走 changeOffset
+            if (canvas && typeof canvas.processMouseMove === 'function') {
+                const origPMM = canvas.processMouseMove;
+                canvas.processMouseMove = function() {
+                    const r = origPMM.apply(this, arguments);
+                    if (this.dragging_canvas) syncNow();
+                    return r;
                 };
             }
 
             // 监听 canvas 上的 wheel 事件（缩放）
-            const cv = app?.canvas?.canvas;
+            const cv = canvas?.canvas;
             if (cv) {
-                cv.addEventListener('wheel', () => scheduleSync(), { passive: true });
+                cv.addEventListener('wheel', () => syncNow(), { passive: true });
             }
 
             console.log('[小珠光编组] 即时同步钩子已安装');
@@ -496,6 +510,9 @@ const XZGGroup = {
             const extraTop = headerHeight - baseHeaderHeight;
 
             // 编组框整体上移并增高，使 CSS 边框也跟随扩展
+            // 注意：canvas 坐标转屏幕坐标为 screenX = canvasRect.left + (canvasX + ds.offset[0]) * ds.scale
+            // ds.offset 的单位是画布逻辑坐标（与 node.pos 一致），不是屏幕像素
+            // 相对于 overlay（位于 canvasRect）的 CSS 位置为 (b.x + ox) * scale
             el.style.left = ((b.x + ox) * scale) + 'px';
             el.style.top = ((b.y + oy) * scale - extraTop) + 'px';
             el.style.width = (b.w * scale) + 'px';
@@ -723,7 +740,7 @@ const XZGGroup = {
                 if (!g.fadeEnabled) continue;
                 const el = this.groupEls[gid];
                 if (!el) continue;
-                const fadeDur = (g.fadeInDuration || 3000) / 1000;
+                const fadeDur = (g.fadeInDuration || 2000) / 1000;
                 el.style.transition = `opacity ${fadeDur}s ease`;
                 el.style.opacity = '1';
             }
@@ -894,9 +911,9 @@ const XZGGroup = {
             borderWidth: 2, borderOpacity: 1,
             headerBgColor: 'rgba(0,0,0,0.4)',
             titleColor: '#FFD700',
-            fadeEnabled: false,
+            fadeEnabled: true,
             fadeOutDuration: 0,
-            fadeInDuration: 3000
+            fadeInDuration: 2000
         };
 
         // 标记节点归入新编组（同时保留节点在其他编组中的归属）
@@ -1278,21 +1295,6 @@ const XZGGroup = {
                         <span class="xzg-set-spd-val" style="color:#fff;font-size:12px;text-align:left;">${group.effectSpeed||3}</span>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-top:8px;border-top:1px solid rgba(255,255,255,0.1);padding-top:8px;margin-bottom:8px;">
-                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">渐隐渐入</label>
-                    <button type="button" class="xzg-set-move-hide xzg-group-toggle-switch" data-checked="${group.fadeEnabled ? 'true' : 'false'}" style="flex:0 0 52px;">
-                        <span class="xzg-group-toggle-slider"></span>
-                        <span class="xzg-group-toggle-label">${group.fadeEnabled ? '开' : '关'}</span>
-                    </button>
-                    <div style="width:72px;flex-shrink:0;"></div>
-                </div>
-                <div class="xzg-fade-slider-row" style="display:flex;align-items:center;gap:8px;height:28px;">
-                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">渐入时间</label>
-                    <input class="xzg-set-fade-in" type="range" min="1" max="10" step="0.5" value="${(group.fadeInDuration || 3000) / 1000}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
-                        <span class="xzg-set-fade-in-val" style="color:#fff;font-size:12px;text-align:left;">${(group.fadeInDuration || 3000) / 1000}秒</span>
-                    </div>
-                </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:space-between;padding-top:4px;">
                 <div style="display:flex;gap:8px;">
@@ -1509,14 +1511,8 @@ const XZGGroup = {
                 return `rgba(${r},${g},${b},${headerAlpha})`;
             })();
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
-            // 渐隐设置
-            const fadeBtn = modal.querySelector('.xzg-set-move-hide');
-            targetGroup.fadeEnabled = fadeBtn ? fadeBtn.getAttribute('data-checked') === 'true' : (targetGroup.fadeEnabled || false);
-            const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
-            if (fadeInSlider) {
-                const valSec = parseFloat(fadeInSlider.value);
-                targetGroup.fadeInDuration = isNaN(valSec) ? 3000 : Math.round(valSec * 1000);
-            }
+            targetGroup.fadeEnabled = true;
+            targetGroup.fadeInDuration = 2000;
             if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
 
             // 快捷键自定义
@@ -1583,10 +1579,6 @@ const XZGGroup = {
             const fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 14;
             const bw = parseInt(modal.querySelector('.xzg-set-borderwidth').value) || 2;
             const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 100) / 100;
-            const fadeBtn = modal.querySelector('.xzg-set-move-hide');
-            const fadeEnabled = fadeBtn ? fadeBtn.getAttribute('data-checked') === 'true' : (group.fadeEnabled || false);
-            const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
-            const fadeInDur = fadeInSlider ? Math.round(parseFloat(fadeInSlider.value) * 1000) : (group.fadeInDuration || 3000);
             const headerBgColor = (() => {
                 const hex = headerColorPicker.value;
                 const r = parseInt(hex.slice(1,3),16);
@@ -1601,8 +1593,8 @@ const XZGGroup = {
                 g2.borderWidth = bw; g2.borderOpacity = bo;
                 g2.headerBgColor = headerBgColor;
                 g2.titleColor = titleColorPicker.value || '#FFD700';
-                g2.fadeEnabled = fadeEnabled;
-                g2.fadeInDuration = fadeInDur;
+                g2.fadeEnabled = true;
+                g2.fadeInDuration = 2000;
                 this.updateGroupStyle(g2.id);
                 const span = this.groupEls[g2.id]?.querySelector('.xzg-group-title-text');
                 if (span) {
@@ -1654,54 +1646,6 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             box.addEventListener('click', (ev) => ev.stopPropagation());
         });
 
-        // 渐隐渐入开关
-        const moveHideBtn = modal.querySelector('.xzg-set-move-hide');
-        const fadeSliderRows = modal.querySelectorAll('.xzg-fade-slider-row');
-        const targetGroup = this.groups[gid];
-        if (moveHideBtn && targetGroup) {
-            // 初始化时同步滑条显示状态
-            const initActive = targetGroup.fadeEnabled;
-            fadeSliderRows.forEach(row => {
-                row.style.display = initActive ? 'flex' : 'none';
-            });
-
-            moveHideBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                targetGroup.fadeEnabled = !targetGroup.fadeEnabled;
-                // 更新按钮状态
-                const active = targetGroup.fadeEnabled;
-                moveHideBtn.setAttribute('data-checked', active ? 'true' : 'false');
-                const label = moveHideBtn.querySelector('.xzg-group-toggle-label');
-                if (label) label.textContent = active ? '开' : '关';
-                // 显示/隐藏滑条
-                fadeSliderRows.forEach(row => {
-                    row.style.display = active ? 'flex' : 'none';
-                });
-                // 如果关闭，确保当前编组可见
-                if (!active) {
-                    const el = self.groupEls[gid];
-                    if (el) {
-                        el.style.transition = 'none';
-                        el.style.opacity = '1';
-                    }
-                }
-                self.syncGroupsToExtra();
-            });
-        }
-
-        // 渐入时间滑条
-        const fadeInSlider = modal.querySelector('.xzg-set-fade-in');
-        const fadeInVal = modal.querySelector('.xzg-set-fade-in-val');
-        if (fadeInSlider && targetGroup) {
-            fadeInSlider.addEventListener('input', (e) => {
-                e.stopPropagation();
-                const valSec = parseFloat(fadeInSlider.value);
-                const valMs = isNaN(valSec) ? 3000 : Math.round(valSec * 1000);
-                targetGroup.fadeInDuration = valMs;
-                if (fadeInVal) fadeInVal.textContent = valSec + '秒';
-                self.syncGroupsToExtra();
-            });
-        }
 
         // （closeOut 监听已在上面 cleanupModal 中统一管理）
 
@@ -1961,6 +1905,686 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             delete this.groupEls[group.id];
         }
         this.renderGroup(group.id);
+    },
+
+    /* ── 编组开关面板 ── */
+    showTogglePanel() {
+        const self = this;
+        // 已存在则关闭
+        if (this._togglePanel) {
+            this._closeTogglePanel();
+            return;
+        }
+
+        // 保存打开前的画布位置，用于关闭时恢复
+        const canvas = app?.canvas;
+        if (canvas?.ds) {
+            this._savedCanvasOffset = [canvas.ds.offset[0], canvas.ds.offset[1]];
+            this._savedCanvasScale = canvas.ds.scale;
+        } else {
+            this._savedCanvasOffset = null;
+        }
+
+        // 树形排序：父组紧跟其子组（DFS 顺序，父在前子在后）
+        const allEntries = Object.entries(this.groups)
+            .filter(([_, g]) => g.nodeIds && g.nodeIds.length > 0);
+        if (allEntries.length === 0) return;
+
+        // 缓存每个编组的子编组列表
+        const childrenMap = {};
+        const topLevelGids = [];
+        for (const [gid] of allEntries) {
+            const pid = this._findParentGroup(gid);
+            if (pid) {
+                if (!childrenMap[pid]) childrenMap[pid] = [];
+                childrenMap[pid].push(gid);
+            } else {
+                topLevelGids.push(gid);
+            }
+        }
+        // 顶层编组按标题排序
+        topLevelGids.sort((a, b) => (this.groups[a].title || '').localeCompare(this.groups[b].title || '', 'zh-CN'));
+        // 子编组也按标题排序
+        for (const k of Object.keys(childrenMap)) {
+            childrenMap[k].sort((a, b) => (this.groups[a].title || '').localeCompare(this.groups[b].title || '', 'zh-CN'));
+        }
+        // DFS 遍历，父组紧跟其子组
+        const orderedGids = [];
+        const visited = new Set();
+        const walk = (gid) => {
+            if (visited.has(gid)) return;
+            visited.add(gid);
+            orderedGids.push(gid);
+            const kids = childrenMap[gid] || [];
+            kids.forEach(walk);
+        };
+        topLevelGids.forEach(walk);
+        // 处理孤儿（理论上不会有，兜底）
+        for (const [gid] of allEntries) {
+            if (!visited.has(gid)) orderedGids.push(gid);
+        }
+        const groupList = orderedGids.map(gid => [gid, this.groups[gid]]);
+
+        const panel = document.createElement("div");
+        panel.id = "xzg-group-toggle-panel";
+        // 读取上次拖动位置，无记录则默认屏幕中间
+        let savedPos = null;
+        try { savedPos = JSON.parse(localStorage.getItem('xzg_toggle_panel_pos') || 'null'); } catch(e) {}
+        const PANEL_W = 285; // 面板预估宽度，用于居中计算
+        const PANEL_H = 420; // 面板预估高度，用于居中计算
+        const posLeft = savedPos?.left ?? Math.round(window.innerWidth / 2 - PANEL_W / 2);
+        const posTop = savedPos?.top ?? Math.round(window.innerHeight / 2 - PANEL_H / 2);
+        panel.style.cssText = `
+            position: fixed; left:${posLeft}px; top:${posTop}px; z-index: 100001;
+            background: var(--comfy-menu-bg, #1e1e1e);
+            border: 1px solid var(--border-color, #333);
+            border-radius: 10px; padding: 10px 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            font-size: 14px; color: var(--input-text, #ddd);
+            min-width: 240px; max-width: 375px; max-height: 80vh;
+            display: flex; flex-direction: column; gap: 8px;
+            user-select: none; -webkit-user-select: none;
+            animation: xzgPanelFadeIn 0.2s ease-out;
+        `;
+
+        // 标题栏 + 快捷按钮（合并为一行，更紧凑）
+        const header = document.createElement("div");
+        header.style.cssText = "display:flex;align-items:center;gap:10px;padding:2px 4px;";
+        header.innerHTML = `<span style="font-weight:bold;color:#dcc85b;font-size:15px;white-space:nowrap;">📦 ${xzgT('编组开关','Group Toggles')}</span>`;
+        // 快捷键显示与设置按钮（点击可自定义快捷键），放在标题栏最右侧
+        const shortcutTip = document.createElement("span");
+        shortcutTip.style.cssText = "font-size:11px;opacity:0.6;cursor:pointer;text-decoration:underline dotted;margin-left:auto;";
+        const updateShortcutTip = () => {
+            const ts = self.toggleShortcut || { key: 'b', ctrl: false, alt: false, shift: false, meta: false };
+            const parts = [];
+            if (ts.ctrl) parts.push('Ctrl');
+            if (ts.alt) parts.push('Alt');
+            if (ts.shift) parts.push('Shift');
+            if (ts.meta) parts.push('Meta');
+            parts.push(ts.key.toUpperCase());
+            shortcutTip.textContent = xzgT('快捷键','Shortcut') + ': ' + parts.join('+');
+        };
+        updateShortcutTip();
+        shortcutTip.title = xzgT('点击设置快捷键','Click to set shortcut');
+        shortcutTip.addEventListener('click', () => self.showToggleShortcutDialog());
+        header.appendChild(shortcutTip);
+
+        const btnStyle = "padding:4px 10px;border:1px solid var(--border-color,#333);border-radius:6px;cursor:pointer;font-size:12px;text-align:center;background:var(--comfy-input-bg,#2a2a2a);color:var(--input-text,#ddd);line-height:1.4;box-sizing:border-box;";
+        const allOnBtn = document.createElement("div");
+        allOnBtn.textContent = xzgT('全部开启','All Active');
+        allOnBtn.style.cssText = btnStyle;
+        const allOffBtn = document.createElement("div");
+        allOffBtn.textContent = xzgT('全部绕过','All Bypass');
+        allOffBtn.style.cssText = btnStyle;
+        // 按钮另起一行
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:0 4px;";
+        btnRow.appendChild(allOnBtn);
+        btnRow.appendChild(allOffBtn);
+        panel.appendChild(header);
+        panel.appendChild(btnRow);
+
+        // 编组列表
+        const listContainer = document.createElement("div");
+        listContainer.style.cssText = "display:flex;flex-direction:column;gap:4px;overflow-y:auto;max-height:50vh;";
+        panel.appendChild(listContainer);
+
+        const toggleItems = [];
+
+        groupList.forEach(([gid, g]) => {
+            const parentId = this._findParentGroup(gid);
+            const depth = this._getGroupDepth(gid);
+            const isBypassed = g.bypassed;
+            const h = g.colorHue ?? 48;
+            const s = g.colorSat ?? 100;
+            const l = g.colorLit ?? 55;
+            const color = isBypassed ? 'hsla(280,60%,55%,0.8)' : `hsla(${h},${s}%,${l}%,0.8)`;
+
+            const item = document.createElement("div");
+            item.style.cssText = `
+                display:flex;align-items:center;gap:10px;padding:8px 10px;
+                border-radius:6px;cursor:pointer;
+                padding-left:${10 + depth * 16}px;
+                transition: background 0.15s;
+            `;
+            item.addEventListener("mouseenter", () => {
+                item.style.background = 'rgba(255,255,255,0.06)';
+                self._flashGroup(gid, item);
+            });
+            item.addEventListener("mouseleave", () => { item.style.background = ''; self._stopFlashGroup(); });
+
+            // 竖杠组（层级指示，数量=depth+1）
+            const bars = document.createElement("div");
+            bars.style.cssText = "display:flex;align-items:center;gap:3px;height:14px;flex-shrink:0;";
+            const barCount = depth + 1;
+            for (let i = 0; i < barCount; i++) {
+                const bar = document.createElement("div");
+                bar.style.cssText = `width:4px;height:100%;border-radius:1px;background:#dcc85b;`;
+                bars.appendChild(bar);
+            }
+
+            // 标题
+            const label = document.createElement("div");
+            label.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;";
+            label.textContent = g.title || xzgT('未命名','Untitled');
+            label.title = g.title || '';
+
+            // 开关
+            const toggle = document.createElement("div");
+            const updateToggle = (bypassed) => {
+                const on = !bypassed;
+                toggle.style.cssText = `
+                    width:36px;height:20px;border-radius:10px;flex-shrink:0;
+                    background:#353535;
+                    position:relative;transition:background 0.2s;
+                `;
+                toggle.innerHTML = `<div style="
+                    position:absolute;top:3px;left:${on ? '19px' : '3px'};
+                    width:14px;height:14px;border-radius:50%;background:${bypassed ? '#a855f7' : '#dcc85b'};
+                    transition:left 0.2s;
+                "></div>`;
+                bars.querySelectorAll(':scope > div').forEach(b => b.style.background = '#dcc85b');
+                label.style.color = bypassed ? 'hsla(280,60%,65%,0.9)' : '';
+                label.style.textDecoration = bypassed ? 'line-through' : '';
+                label.style.textDecorationColor = bypassed ? '#FF4444' : '';
+                label.style.textDecorationThickness = bypassed ? '1px' : '';
+            };
+            updateToggle(isBypassed);
+
+            item.addEventListener("click", () => {
+                self.toggleBypass(gid);
+                // 更新所有子编组的开关状态（层级联动）
+                const childIds = self._collectChildGroups(gid).filter(id => id !== gid);
+                const allIds = [gid, ...childIds];
+                toggleItems.forEach(({ gid: tgid, updateToggle: ut }) => {
+                    if (allIds.includes(tgid)) {
+                        ut(self.groups[tgid]?.bypassed);
+                    }
+                });
+            });
+
+            item.appendChild(bars);
+            item.appendChild(label);
+            item.appendChild(toggle);
+            listContainer.appendChild(item);
+            toggleItems.push({ gid, updateToggle });
+        });
+
+        // 全部开启
+        allOnBtn.addEventListener("click", () => {
+            groupList.forEach(([gid]) => {
+                const g = self.groups[gid];
+                if (g && g.bypassed) self.toggleBypass(gid);
+            });
+            toggleItems.forEach(({ gid, updateToggle }) => {
+                updateToggle(self.groups[gid]?.bypassed);
+            });
+        });
+
+        // 全部绕过
+        allOffBtn.addEventListener("click", () => {
+            groupList.forEach(([gid]) => {
+                const g = self.groups[gid];
+                if (g && !g.bypassed) self.toggleBypass(gid);
+            });
+            toggleItems.forEach(({ gid, updateToggle }) => {
+                updateToggle(self.groups[gid]?.bypassed);
+            });
+        });
+
+        // 面板可拖拽（整个标题栏区域含面板顶部 padding 均可拖动）
+        let dragging = false, dragOX = 0, dragOY = 0;
+        header.style.cursor = 'move';
+        const onMove = (e) => {
+            if (!dragging) return;
+            let newLeft = e.clientX - dragOX;
+            let newTop = e.clientY - dragOY;
+            // 限制面板不被拖出屏幕
+            newLeft = Math.max(0, Math.min(window.innerWidth - 80, newLeft));
+            newTop = Math.max(0, Math.min(window.innerHeight - 40, newTop));
+            panel.style.left = `${newLeft}px`;
+            panel.style.top = `${newTop}px`;
+            panel.style.right = 'auto';
+        };
+        const onUp = () => {
+            if (!dragging) return;
+            dragging = false;
+            // 保存拖动位置到 localStorage，下次弹出时使用
+            try {
+                localStorage.setItem('xzg_toggle_panel_pos', JSON.stringify({
+                    left: parseInt(panel.style.left),
+                    top: parseInt(panel.style.top)
+                }));
+            } catch(e) {}
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+        // 拖动区域：面板本身（排除快捷按钮和编组列表区域）
+        panel.addEventListener("mousedown", (e) => {
+            if (allOnBtn.contains(e.target) || allOffBtn.contains(e.target) || listContainer.contains(e.target)) return;
+            dragging = true;
+            dragOX = e.clientX - panel.offsetLeft;
+            dragOY = e.clientY - panel.offsetTop;
+            e.preventDefault();
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        });
+
+        // 恢复上次保存的宽度
+        const savedWidth = localStorage.getItem('xzg_toggle_panel_width');
+        if (savedWidth) {
+            panel.style.width = `${savedWidth}px`;
+            panel.style.minWidth = 'unset';
+            panel.style.maxWidth = 'unset';
+        }
+
+        document.body.appendChild(panel);
+
+        // 添加宽度拖动手柄
+        const resizer = document.createElement("div");
+        resizer.style.cssText = "width:6px;height:100%;position:absolute;right:0;top:0;cursor:ew-resize;z-index:100002;";
+        panel.appendChild(resizer);
+
+        let isResizing = false;
+        resizer.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            isResizing = true;
+            const startX = e.clientX;
+            const startWidth = panel.offsetWidth;
+            const onMove = (e) => {
+                if (!isResizing) return;
+                const delta = e.clientX - startX;
+                const newWidth = Math.max(200, startWidth + delta);
+                panel.style.width = `${newWidth}px`;
+                panel.style.minWidth = "unset";
+                panel.style.maxWidth = "unset";
+            };
+            const onUp = () => {
+                isResizing = false;
+                document.removeEventListener("pointermove", onMove);
+                document.removeEventListener("pointerup", onUp);
+                localStorage.setItem('xzg_toggle_panel_width', panel.offsetWidth);
+            };
+            document.addEventListener("pointermove", onMove);
+            document.addEventListener("pointerup", onUp);
+        });
+
+        // 鼠标离开面板时恢复画布位置
+        panel.addEventListener("mouseleave", () => {
+            self._stopFlashGroup();
+            self._restoreCanvasPosition();
+        });
+
+        this._togglePanel = panel;
+
+        // 点击画布空白关闭面板
+        const closeHandler = (e) => {
+            if (panel.contains(e.target)) return;
+            if (e.target.closest(".comfy-node")) return;
+            if (e.target.closest(".xzg-menu")) return;
+            // 点击画布空白区域（包括 canvas、litegraph 背景等）关闭
+            self._closeTogglePanel();
+        };
+        this._togglePanelCloseHandler = closeHandler;
+        setTimeout(() => {
+            document.addEventListener("pointerdown", closeHandler, true);
+        }, 100);
+
+        // Escape 关闭
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                self._closeTogglePanel();
+            }
+        };
+        this._togglePanelEscHandler = escHandler;
+        document.addEventListener("keydown", escHandler);
+    },
+
+    _getGroupDepth(gid) {
+        let depth = 0;
+        let current = gid;
+        const visited = new Set();
+        while (current && !visited.has(current)) {
+            visited.add(current);
+            const parent = this._findParentGroup(current);
+            if (!parent) break;
+            depth++;
+            current = parent;
+        }
+        return depth;
+    },
+
+    _restoreCanvasPosition() {
+        if (!this._savedCanvasOffset) return;
+        const canvas = app?.canvas;
+        if (!canvas?.ds) return;
+        const targetOX = this._savedCanvasOffset[0];
+        const targetOY = this._savedCanvasOffset[1];
+        const startOX = canvas.ds.offset[0];
+        const startOY = canvas.ds.offset[1];
+        if (Math.abs(startOX - targetOX) > 0.5 || Math.abs(startOY - targetOY) > 0.5) {
+            if (this._canvasMoveAnim) { cancelAnimationFrame(this._canvasMoveAnim); this._canvasMoveAnim = null; }
+            const animDuration = 700;
+            const animStart = performance.now();
+            const animateMove = (now) => {
+                const t = Math.min((now - animStart) / animDuration, 1);
+                const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+                canvas.ds.offset[0] = startOX + (targetOX - startOX) * ease;
+                canvas.ds.offset[1] = startOY + (targetOY - startOY) * ease;
+                canvas.setDirty?.(true, true);
+                if (typeof canvas.draw === "function") canvas.draw();
+                if (t < 1) {
+                    this._canvasMoveAnim = requestAnimationFrame(animateMove);
+                } else {
+                    this._canvasMoveAnim = null;
+                }
+            };
+            this._canvasMoveAnim = requestAnimationFrame(animateMove);
+        }
+        },
+
+    _closeTogglePanel() {
+        if (this._togglePanel) {
+            this._togglePanel.remove();
+            this._togglePanel = null;
+        }
+        if (this._togglePanelCloseHandler) {
+            document.removeEventListener("pointerdown", this._togglePanelCloseHandler, true);
+            this._togglePanelCloseHandler = null;
+        }
+        if (this._togglePanelEscHandler) {
+            document.removeEventListener("keydown", this._togglePanelEscHandler);
+            this._togglePanelEscHandler = null;
+        }
+        this._stopFlashGroup();
+        this._restoreCanvasPosition();
+        this._savedCanvasOffset = null;
+    },
+
+    /* ── 编组开关面板快捷键 ── */
+    getToggleShortcut() {
+        try {
+            const stored = localStorage.getItem('xzg_toggle_shortcut');
+            if (stored) {
+                const sc = JSON.parse(stored);
+                if (sc && sc.key) return sc;
+            }
+        } catch (e) {}
+        return { key: 'b', ctrl: false, alt: false, shift: false, meta: false };
+    },
+
+    saveToggleShortcut(shortcut) {
+        localStorage.setItem('xzg_toggle_shortcut', JSON.stringify(shortcut));
+        this.toggleShortcut = shortcut;
+    },
+
+    showToggleShortcutDialog() {
+        const self = this;
+        let pendingShortcut = null;
+        const dialog = document.createElement("div");
+        dialog.className = "xzg-dialog-overlay";
+        // 无遮罩底色，与编组开关面板风格一致
+        dialog.style.cssText = "background:transparent;";
+        dialog.innerHTML = `
+            <div class="xzg-dialog" style="
+                background:var(--comfy-menu-bg,#1e1e1e);
+                border:1px solid var(--border-color,#333);
+                border-radius:10px;
+                box-shadow:0 8px 32px rgba(0,0,0,0.5);
+                animation:xzgPanelFadeIn 0.2s ease-out;
+                min-width:320px;
+            ">
+                <div class="xzg-dialog-title" style="
+                    background:transparent;
+                    border-bottom:1px solid rgba(255,255,255,0.1);
+                    color:#FFD700;
+                    font-size:15px;
+                    font-weight:bold;
+                    padding:12px 16px;
+                    border-radius:10px 10px 0 0;
+                ">${xzgT('设置快捷键','Set Shortcut')}</div>
+                <div class="xzg-dialog-body">
+                    <p style="margin-bottom: 16px; color: #888; font-size: 12px; text-align: center;">${xzgT('请按下你想要的快捷键','Press the shortcut keys you want')}</p>
+                    <div style="text-align: center; margin-bottom: 16px;">
+                        <div id="xzg-toggle-listen-display" style="
+                            padding: 16px 24px;
+                            background: #2a2a2a;
+                            border: 2px solid #555;
+                            border-radius: 6px;
+                            color: #FFD700;
+                            font-size: 16px;
+                            font-weight: bold;
+                            min-width: 180px;
+                            display: inline-block;
+                        ">${xzgT('请按快捷键...','Press keys...')}</div>
+                    </div>
+                </div>
+                <div class="xzg-dialog-footer">
+                    <button class="xzg-btn xzg-btn-cancel" id="xzg-toggle-dialog-cancel" type="button">${xzgT('取消','Cancel')}</button>
+                    <button class="xzg-btn xzg-btn-ok" id="xzg-toggle-dialog-ok" type="button" disabled>${xzgT('确定','OK')}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(dialog);
+
+        const display = dialog.querySelector("#xzg-toggle-listen-display");
+        const okBtn = dialog.querySelector("#xzg-toggle-dialog-ok");
+        let isListening = true;
+        let keydownHandler = null;
+
+        const cleanup = () => {
+            isListening = false;
+            document.removeEventListener("keydown", keydownHandler, true);
+            dialog.remove();
+        };
+
+        const showPreview = (shortcut) => {
+            const parts = [];
+            if (shortcut.ctrl) parts.push("Ctrl");
+            if (shortcut.alt) parts.push("Alt");
+            if (shortcut.shift) parts.push("Shift");
+            if (shortcut.meta) parts.push("Meta");
+            parts.push(shortcut.key.toUpperCase());
+            display.textContent = parts.join(" + ");
+            display.style.background = "#333";
+            display.style.color = "#FFD700";
+            display.style.borderColor = "#FFD700";
+            okBtn.disabled = false;
+        };
+
+        keydownHandler = (e) => {
+            if (!isListening) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.key === "Escape") return;
+            const key = e.key.toLowerCase();
+            if (key === "control" || key === "alt" || key === "shift" || key === "meta") return;
+            pendingShortcut = {
+                key: key,
+                ctrl: e.ctrlKey,
+                alt: e.altKey,
+                shift: e.shiftKey,
+                meta: e.metaKey
+            };
+            showPreview(pendingShortcut);
+        };
+
+        document.addEventListener("keydown", keydownHandler, true);
+
+        dialog.querySelector("#xzg-toggle-dialog-cancel").addEventListener("click", () => cleanup());
+        okBtn.addEventListener("click", () => {
+            if (!pendingShortcut) return;
+            self.saveToggleShortcut(pendingShortcut);
+            cleanup();
+        });
+    },
+
+    /* ── 悬停激光连线：从开关项指向画布中的编组 ── */
+    _flashGroup(gid, fromEl) {
+        this._stopFlashGroup();
+        const g = this.groups[gid];
+        if (!g?.bounds) return;
+        const canvas = app?.canvas;
+        if (!canvas) return;
+
+        // 检查编组是否在画布可见区域内，不在则平移画布使其居中
+        const b = g.bounds;
+        const scale = canvas.ds?.scale || 1;
+        const canvasEl = canvas.canvas;
+        const viewW = canvasEl?.clientWidth || window.innerWidth;
+        const viewH = canvasEl?.clientHeight || window.innerHeight;
+
+        // 计算标题栏中心（与 updatePositions 保持一致）
+        // 标题栏在编组顶部，中心水平居中
+        const fs = (g.fontSize || 14) * scale;
+        const headerHeight = Math.max(18 * scale, fs + 4 * scale);
+        const extraTop = headerHeight - 18 * scale;
+        const cx = b.x + b.w / 2;
+        // 标题栏中心Y：b.y + 标题栏可视高度的一半（考虑 extraTop 偏移）
+        // 标题栏顶部在屏幕：cRect.top + oy + b.y * scale - extraTop
+        // 标题栏中心在屏幕：cRect.top + oy + b.y * scale - extraTop + headerHeight / 2
+        // 转为画布坐标：b.y + 18 - headerHeight / (2 * scale)
+        const cy = b.y + 18 - headerHeight / (2 * scale);
+        // 编组在画布视口中的屏幕位置（用于可见性检测）
+        // screenX = (b.x + ds.offset[0]) * scale
+        const sx = (b.x + canvas.ds.offset[0]) * scale;
+        const sy = (b.y + canvas.ds.offset[1]) * scale;
+        const sw = b.w * scale;
+        const sh = b.h * scale;
+        const margin = 40;
+        const outOfView = (sx < margin || sy < margin || sx + sw > viewW - margin || sy + sh > viewH - margin || sw <= 0 || sh <= 0);
+        if (outOfView) {
+            // 平滑移动画布到目标位置（缓动动画，便于观察位置变化）
+            // 居中公式：screenCenter = (cx + ds.offset[0]) * scale = viewW / 2  →  ds.offset[0] = viewW / 2 / scale - cx
+            const targetOX = viewW / 2 / scale - cx;
+            const targetOY = viewH / 2 / scale - cy;
+            const startOX = canvas.ds.offset[0];
+            const startOY = canvas.ds.offset[1];
+            const animDuration = 700; // ms
+            const animStart = performance.now();
+            // 取消之前的移动动画
+            if (this._canvasMoveAnim) { cancelAnimationFrame(this._canvasMoveAnim); this._canvasMoveAnim = null; }
+            const animateMove = (now) => {
+                const t = Math.min((now - animStart) / animDuration, 1);
+                // ease-in-out cubic
+                const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+                canvas.ds.offset[0] = startOX + (targetOX - startOX) * ease;
+                canvas.ds.offset[1] = startOY + (targetOY - startOY) * ease;
+                canvas.setDirty?.(true, true);
+                if (typeof canvas.draw === "function") canvas.draw();
+                if (t < 1) {
+                    this._canvasMoveAnim = requestAnimationFrame(animateMove);
+                } else {
+                    this._canvasMoveAnim = null;
+                }
+            };
+            this._canvasMoveAnim = requestAnimationFrame(animateMove);
+        }
+
+        // 创建 SVG 覆盖层，绘制激光连线
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:100000;";
+        svg.id = "xzg-laser-guide";
+
+        const drawLine = () => {
+            // 计算当前编组颜色（与 updateGroupStyle 保持一致）
+            const spd = (g.effectSpeed || 3) * 5 / 9;
+            const effect = g.effect || 'none';
+            let hue, sat, lit;
+            if (effect === 'rainbow' || effect === 'marquee' || effect === 'marqueebreathe') {
+                const t = (Date.now() / (effect === 'rainbow' ? 4500 : 2500)) * spd;
+                hue = (t * 360) % 360;
+                sat = effect === 'rainbow' ? 80 : 100;
+                lit = effect === 'rainbow' ? 55 : 65;
+            } else {
+                hue = g.colorHue ?? 48;
+                sat = g.colorSat ?? 100;
+                lit = g.colorLit ?? 55;
+            }
+            const color = `hsl(${hue},${sat}%,${lit}%)`;
+            const glowFilter = `drop-shadow(0 0 4px hsla(${hue},${sat}%,${lit}%,0.8)) drop-shadow(0 0 12px hsla(${hue},${sat}%,${lit}%,0.4))`;
+
+            // 判断面板位置：左侧还是右侧
+            const panel = document.getElementById("xzg-group-toggle-panel");
+            const panelRect = panel?.getBoundingClientRect();
+            const isLeftSide = panelRect ? (panelRect.left + panelRect.width / 2 < window.innerWidth / 2) : true;
+
+            // 起点：根据面板位置决定
+            // 面板在左侧 → 从开关处（右侧）引出
+            // 面板在右侧 → 从竖杠处（左侧）引出
+            const fromRect = fromEl.getBoundingClientRect();
+            const x1 = isLeftSide ? fromRect.right : fromRect.left;
+            const y1 = fromRect.top + fromRect.height / 2;
+            // 终点：编组标题栏中心（屏幕坐标）
+            // screenX = cRect.left + (cx + ds.offset[0]) * scale
+            const cRect = canvasEl.getBoundingClientRect();
+            const tx = cRect.left + (cx + canvas.ds.offset[0]) * scale;
+            const ty = cRect.top + (cy + canvas.ds.offset[1]) * scale;
+            // 清空 svg
+            while (svg.firstChild) svg.removeChild(svg.firstChild);
+            // 激光主线
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", x1);
+            line.setAttribute("y1", y1);
+            line.setAttribute("x2", tx);
+            line.setAttribute("y2", ty);
+            line.setAttribute("stroke", color);
+            line.setAttribute("stroke-width", "2");
+            line.setAttribute("stroke-dasharray", "6 4");
+            line.style.filter = glowFilter;
+            // 脉冲动画
+            const anim = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+            anim.setAttribute("attributeName", "stroke-dashoffset");
+            anim.setAttribute("from", "0");
+            anim.setAttribute("to", "20");
+            anim.setAttribute("dur", "0.5s");
+            anim.setAttribute("repeatCount", "indefinite");
+            line.appendChild(anim);
+            svg.appendChild(line);
+            // 终点圆环（目标编组指示）
+            const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            ring.setAttribute("cx", tx);
+            ring.setAttribute("cy", ty);
+            ring.setAttribute("r", "8");
+            ring.setAttribute("fill", "none");
+            ring.setAttribute("stroke", color);
+            ring.setAttribute("stroke-width", "2");
+            ring.style.filter = glowFilter;
+            const ringAnim = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+            ringAnim.setAttribute("attributeName", "r");
+            ringAnim.setAttribute("values", "6;14;6");
+            ringAnim.setAttribute("dur", "1s");
+            ringAnim.setAttribute("repeatCount", "indefinite");
+            ring.appendChild(ringAnim);
+            const ringOpacity = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+            ringOpacity.setAttribute("attributeName", "opacity");
+            ringOpacity.setAttribute("values", "1;0.3;1");
+            ringOpacity.setAttribute("dur", "1s");
+            ringOpacity.setAttribute("repeatCount", "indefinite");
+            ring.appendChild(ringOpacity);
+            svg.appendChild(ring);
+            // 只保留终点圆环，无额外小圆点
+        };
+
+        drawLine();
+        document.body.appendChild(svg);
+        // 持续更新（画布可能滚动，连线需跟随）
+        this._laserRaf = () => { drawLine(); this._laserTimer = requestAnimationFrame(this._laserRaf); };
+        this._laserTimer = requestAnimationFrame(this._laserRaf);
+    },
+
+    _stopFlashGroup() {
+        if (this._laserTimer) {
+            cancelAnimationFrame(this._laserTimer);
+            this._laserTimer = null;
+        }
+        // 取消画布移动动画
+        if (this._canvasMoveAnim) {
+            cancelAnimationFrame(this._canvasMoveAnim);
+            this._canvasMoveAnim = null;
+        }
+        const svg = document.getElementById("xzg-laser-guide");
+        if (svg) svg.remove();
     },
 
     /* ── 旁路 ── */
@@ -2994,7 +3618,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 1,
                     headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700',
-                    fadeEnabled: false, fadeOutDuration: 0, fadeInDuration: 3000
+                    fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 2000
                 };
             } else {
                 this.groups[gid].nodeIds = nids;
@@ -3030,10 +3654,8 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     applyBypassStates() {
         const g = app?.graph;
         if (!g?._nodes) return;
-        for (const grp of Object.values(this.groups)) {
-            const m = grp.bypassed ? MODE_BYPASS : MODE_ALWAYS;
-            grp.nodeIds.forEach(nid => { const n = g._nodes.find(x => x.id === nid || x.id == nid); if (n) n.mode = m; });
-        }
+        // 不强制覆盖节点 mode：节点 mode 由 LiteGraph 原生序列化保存/恢复，
+        // 保留用户对组内节点的手工绕过/开启状态。编组 bypassed 字段仅用于视觉显示。
         g.setDirtyCanvas?.(true, true);
     }
 };
