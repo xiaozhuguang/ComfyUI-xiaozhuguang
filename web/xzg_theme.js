@@ -13,9 +13,17 @@ window.XZGThemeManager = {
     laserAnimType: 'flow',
     linkColorActive: false,
     linkColor: '#888888',
+    linkAnimActive: false,
+    linkAnimType: 'sparkle',
+    linkAnimSpeed: 1.0,
     linkAnimRunning: false,
     linkAnimFrameId: null,
     linkHighlightDimAlpha: 0.45,
+    // 吃豆人动画状态
+    _pacCurrentKey: null,
+    _pacProgress: 0,
+    _pacLastTime: 0,
+    _pacLinkSet: null,
     wallpaperActive: false,
     wallpaperType: 'image',
     wallpaperData: null,
@@ -28,11 +36,25 @@ window.XZGThemeManager = {
     _wpPendingSave: null,
 
     init() {
-        // 从 localStorage 恢复连线高亮和激光动画状态
+        // 从 localStorage 恢复连线高亮状态
         try {
             const saved = localStorage.getItem('xzg-link-highlight');
             if (saved === 'true') {
                 this.linkHighlightActive = true;
+            }
+            // 连线动画（星芒效果），默认关闭
+            const animSaved = localStorage.getItem('xzg-link-anim');
+            if (animSaved === 'true') {
+                this.linkAnimActive = true;
+            }
+            const animTypeSaved = localStorage.getItem('xzg-link-anim-type');
+            if (animTypeSaved) {
+                this.linkAnimType = animTypeSaved;
+            }
+            const animSpeedSaved = localStorage.getItem('xzg-link-anim-speed');
+            if (animSpeedSaved) {
+                const v = parseFloat(animSpeedSaved);
+                if (!isNaN(v) && v > 0) this.linkAnimSpeed = v;
             }
             // 连线动画功能已取消，强制关闭
             // const laserSaved = localStorage.getItem('xzg-link-laser');
@@ -1348,8 +1370,8 @@ window.XZGThemeManager = {
 
         const origDrawLink = proto.drawLink;
         proto.drawLink = function(ctx, link, renderCtx) {
-            // 三个功能都关闭时，正常绘制
-            if (!self.linkHighlightActive && !self.linkLaserActive && !self.linkColorActive) {
+            const hasFeature = self.linkHighlightActive || self.linkLaserActive || self.linkColorActive || self.linkAnimActive;
+            if (!hasFeature) {
                 return origDrawLink.call(this, ctx, link, renderCtx);
             }
 
@@ -1374,60 +1396,40 @@ window.XZGThemeManager = {
                 }
             }
 
-            if (originId == null) {
-                // 找不到 originId 时，仍可应用连线颜色
-                if (self.linkColorActive) {
-                    const origColor = link.color;
-                    link.color = self.linkColor;
-                    origDrawLink.call(this, ctx, link, renderCtx);
-                    link.color = origColor;
-                } else {
-                    origDrawLink.call(this, ctx, link, renderCtx);
-                }
-                // 激光动画仍可尝试绘制（使用 link 的 startPoint/endPoint）
-                if (self.linkLaserActive) {
-                    self._drawLaserOverlay(ctx, link, null, null);
-                    self._ensureAnimLoop();
-                }
-                return;
-            }
-
-            // 判断连线是否与选中节点相连（高亮/动画需要）
+            // 判断连线是否与选中节点相连
             let isConnected = false;
-            if (self.linkHighlightActive) {
+            if (self.linkHighlightActive && hasSelectedNodes) {
                 const idSet = new Set(nodeIds.map(String));
                 isConnected = idSet.has(String(originId)) || idSet.has(String(targetId));
             }
 
-            // 连线颜色：覆盖所有连线颜色
-            if (self.linkColorActive) {
-                const origColor = link.color;
-                if (self.linkHighlightActive) {
-                    if (isConnected) {
-                        self._drawHighlightGreenLine(ctx, link);
-                    } else {
-                        link.color = self.linkColor;
-                        const origAlpha = ctx.globalAlpha;
-                        ctx.globalAlpha = origAlpha * 0.5;
-                        self._drawThinBaseLine(ctx, link);
-                        ctx.globalAlpha = origAlpha;
-                    }
-                } else {
-                    link.color = self.linkColor;
-                    origDrawLink.call(this, ctx, link, renderCtx);
-                }
-                link.color = origColor;
-            } else if (self.linkHighlightActive) {
+            // 连线高亮：选中节点的连线高亮，其他变暗
+            if (self.linkHighlightActive && hasSelectedNodes) {
                 if (isConnected) {
                     self._drawHighlightGreenLine(ctx, link);
                 } else {
-                    self._drawDimWhiteLine(ctx, link);
+                    const origAlpha = ctx.globalAlpha;
+                    ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
+                    self._drawThinBaseLine(ctx, link);
+                    ctx.globalAlpha = origAlpha;
                 }
+            } else if (self.linkAnimActive) {
+                // 连线动画开启时，所有连线变细变暗，作为星芒的底
+                const origAlpha = ctx.globalAlpha;
+                ctx.globalAlpha = origAlpha * 0.5;
+                self._drawThinBaseLine(ctx, link);
+                ctx.globalAlpha = origAlpha;
             } else {
                 origDrawLink.call(this, ctx, link, renderCtx);
             }
 
-            // 激光动画：独立作用于所有连线
+            // 连线动画：根据类型作用于所有连线
+            if (self.linkAnimActive) {
+                self._drawLinkAnim(ctx, link);
+                self._ensureAnimLoop();
+            }
+
+            // 激光动画
             if (self.linkLaserActive) {
                 self._drawLaserOverlay(ctx, link, originId, targetId);
                 self._ensureAnimLoop();
@@ -1538,6 +1540,43 @@ window.XZGThemeManager = {
             }
         }
         return this.linkHighlightActive;
+    },
+
+    toggleLinkAnim() {
+        this.linkAnimActive = !this.linkAnimActive;
+        try {
+            localStorage.setItem('xzg-link-anim', this.linkAnimActive ? 'true' : 'false');
+        } catch(e) {}
+        if (!this.linkAnimActive && !this.linkLaserActive) {
+            this._stopAnimLoop();
+        }
+        if (window.app) {
+            if (app.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            } else if (app.graph?.setDirtyCanvas) {
+                app.graph.setDirtyCanvas(true, true);
+            }
+        }
+        return this.linkAnimActive;
+    },
+
+    setLinkAnimType(type) {
+        this.linkAnimType = type;
+        try {
+            localStorage.setItem('xzg-link-anim-type', type);
+        } catch(e) {}
+        if (window.app?.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
+    },
+
+    setLinkAnimSpeed(speed) {
+        const v = parseFloat(speed);
+        if (isNaN(v) || v <= 0) return;
+        this.linkAnimSpeed = v;
+        try {
+            localStorage.setItem('xzg-link-anim-speed', String(v));
+        } catch(e) {}
     },
 
     toggleLinkLaser() {
@@ -1711,6 +1750,475 @@ window.XZGThemeManager = {
         ctx.restore();
     },
 
+    _drawLinkAnim(ctx, link) {
+        const type = this.linkAnimType || 'sparkle';
+        switch (type) {
+            case 'sparkle':      this._drawRainbowSparkles(ctx, link); break;
+            case 'pulse':        this._drawPacMan(ctx, link); break;
+            case 'crystal':      this._drawCrystalStream(ctx, link); break;
+            case 'quantum':      this._drawQuantumField(ctx, link); break;
+            case 'energy':       this._drawEnergyPulse(ctx, link); break;
+            case 'lava':         this._drawLavaFlow(ctx, link); break;
+            case 'stellar':      this._drawStellarPlasma(ctx, link); break;
+            case 'transfer':     this._drawSimpleTransfer(ctx, link); break;
+            case 'randspark':    this._drawRandomSparkle(ctx, link); break;
+            case 'diy1':         this._drawCustomDIY1(ctx, link); break;
+            case 'diy2':         this._drawCustomDIY2(ctx, link); break;
+            default:             this._drawRainbowSparkles(ctx, link);
+        }
+    },
+
+    _getPointOnCurve(sx, sy, ex, ey, cp, tVal) {
+        let px, py, dx, dy;
+        const mt = 1 - tVal;
+        if (cp.length >= 2) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            const c1x = cp[1].x != null ? cp[1].x : cp[1][0];
+            const c1y = cp[1].y != null ? cp[1].y : cp[1][1];
+            const mt2 = mt * mt, mt3 = mt2 * mt;
+            const t2 = tVal * tVal, t3 = t2 * tVal;
+            px = mt3 * sx + 3 * mt2 * tVal * c0x + 3 * mt * t2 * c1x + t3 * ex;
+            py = mt3 * sy + 3 * mt2 * tVal * c0y + 3 * mt * t2 * c1y + t3 * ey;
+            dx = 3 * mt2 * (c0x - sx) + 6 * mt * tVal * (c1x - c0x) + 3 * t2 * (ex - c1x);
+            dy = 3 * mt2 * (c0y - sy) + 6 * mt * tVal * (c1y - c0y) + 3 * t2 * (ey - c1y);
+        } else if (cp.length === 1) {
+            const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
+            const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
+            const mt2 = mt * mt, t2 = tVal * tVal;
+            px = mt2 * sx + 2 * mt * tVal * c0x + t2 * ex;
+            py = mt2 * sy + 2 * mt * tVal * c0y + t2 * ey;
+            dx = 2 * mt * (c0x - sx) + 2 * tVal * (ex - c0x);
+            dy = 2 * mt * (c0y - sy) + 2 * tVal * (ey - c0y);
+        } else {
+            px = sx + (ex - sx) * tVal;
+            py = sy + (ey - sy) * tVal;
+            dx = ex - sx;
+            dy = ey - sy;
+        }
+        return { x: px, y: py, angle: Math.atan2(dy, dx) };
+    },
+
+    // 吃豆人：drawLink 中直接用 link 数据绘制，状态更新在 rAF 中
+    _drawPacMan(ctx, link) {
+        const sp = link.startPoint;
+        const ep = link.endPoint;
+        if (!sp || !ep) return;
+
+        const sx = sp.x != null ? sp.x : sp[0];
+        const sy = sp.y != null ? sp.y : sp[1];
+        const ex = ep.x != null ? ep.x : ep[0];
+        const ey = ep.y != null ? ep.y : ep[1];
+        const cp = link.controlPoints || [];
+        const key = `${link.origin_id}_${link.origin_slot}_${link.target_id}_${link.target_slot}`;
+        const t = performance.now();
+
+        // 收集当前帧所有连线 key（用于跳转）
+        this._pacLinkSet = this._pacLinkSet || new Set();
+        this._pacLinkSet.add(key);
+
+        const isCurrent = (key === this._pacCurrentKey);
+        const progress = isCurrent ? this._pacProgress : 0;
+
+        ctx.save();
+
+        // 所有线都绘制豆子；当前线隐藏已吃掉的豆子
+        const dotCount = 8;
+        for (let i = 0; i < dotCount; i++) {
+            const dotT = (i + 0.5) / dotCount;
+            if (isCurrent && dotT < progress) continue;
+            const dp = this._getPointOnCurve(sx, sy, ex, ey, cp, dotT);
+            ctx.beginPath();
+            ctx.arc(dp.x, dp.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFEE88';
+            ctx.shadowBlur = 0;
+            ctx.fill();
+        }
+
+        // 只有当前线绘制吃豆人
+        if (isCurrent) {
+            const pacPos = this._getPointOnCurve(sx, sy, ex, ey, cp, progress);
+            const pacAngle = pacPos.angle;
+            const pacRadius = 14;
+            const mouthOpen = (Math.sin(t * 0.012) * 0.5 + 0.5) * 0.6 + 0.1;
+
+            ctx.translate(pacPos.x, pacPos.y);
+            ctx.rotate(pacAngle);
+
+            ctx.beginPath();
+            ctx.arc(0, 0, pacRadius, mouthOpen, Math.PI * 2 - mouthOpen);
+            ctx.lineTo(0, 0);
+            ctx.closePath();
+            ctx.fillStyle = '#FFEE00';
+            ctx.shadowBlur = 0;
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(0, -pacRadius * 0.45, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#222';
+            ctx.fill();
+        }
+
+        ctx.restore();
+    },
+
+    // 辅助：获取连线基础数据
+    _getLinkData(link) {
+        const sp = link.startPoint, ep = link.endPoint;
+        if (!sp || !ep) return null;
+        return {
+            sx: sp.x != null ? sp.x : sp[0], sy: sp.y != null ? sp.y : sp[1],
+            ex: ep.x != null ? ep.x : ep[0], ey: ep.y != null ? ep.y : ep[1],
+            cp: link.controlPoints || []
+        };
+    },
+
+    // 3. Crystal Stream 水晶溪流：透明方块粒子、渐变发光质感
+    _drawCrystalStream(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.00025;
+        const count = 7;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            const size = 5;
+            const rot = t * 0.001 + i;
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(rot);
+            // 渐变方块
+            const grad = ctx.createLinearGradient(-size, -size, size, size);
+            grad.addColorStop(0, 'rgba(100, 200, 255, 0.8)');
+            grad.addColorStop(0.5, 'rgba(200, 240, 255, 0.4)');
+            grad.addColorStop(1, 'rgba(100, 200, 255, 0.8)');
+            ctx.fillStyle = grad;
+            ctx.shadowColor = '#74C0FC';
+            ctx.shadowBlur = 10;
+            ctx.fillRect(-size, -size, size * 2, size * 2);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 0.5;
+            ctx.shadowBlur = 0;
+            ctx.strokeRect(-size, -size, size * 2, size * 2);
+            ctx.restore();
+        }
+        ctx.restore();
+    },
+
+    // 4. Quantum Field 量子场：细碎光点随机穿梭
+    _drawQuantumField(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.0004;
+        const count = 14;
+        const seed = Math.floor(t / 80);
+        const rng = (i) => { const x = Math.sin(seed * 99.7 + i * 31.3) * 43758.5453; return x - Math.floor(x); };
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed * (0.5 + rng(i) * 0.8)) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            const jitter = 4;
+            const jx = (rng(i * 2 + 1) - 0.5) * jitter;
+            const jy = (rng(i * 2 + 2) - 0.5) * jitter;
+            const size = 1 + rng(i * 3 + 5) * 2;
+            const color = ['#74C0FC', '#A5D8FF', '#E7F5FF', '#4DABF7'][i % 4];
+            ctx.beginPath();
+            ctx.arc(p.x + jx, p.y + jy, size, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 6;
+            ctx.globalAlpha = 0.4 + rng(i * 7) * 0.6;
+            ctx.fill();
+        }
+        ctx.restore();
+    },
+
+    // 6. Energy Pulse 能量脉冲：七彩变色+明暗变化
+    _drawEnergyPulse(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.002;
+        const pulse = 0.5 + 0.5 * Math.sin(t * speed);
+        const hue = (t * 0.05) % 360;
+        ctx.save();
+        // 构建路径
+        const buildPath = () => {
+            ctx.beginPath();
+            ctx.moveTo(d.sx, d.sy);
+            if (d.cp.length >= 2) {
+                ctx.bezierCurveTo(
+                    d.cp[0].x != null ? d.cp[0].x : d.cp[0][0],
+                    d.cp[0].y != null ? d.cp[0].y : d.cp[0][1],
+                    d.cp[1].x != null ? d.cp[1].x : d.cp[1][0],
+                    d.cp[1].y != null ? d.cp[1].y : d.cp[1][1],
+                    d.ex, d.ey
+                );
+            } else if (d.cp.length === 1) {
+                ctx.quadraticCurveTo(
+                    d.cp[0].x != null ? d.cp[0].x : d.cp[0][0],
+                    d.cp[0].y != null ? d.cp[0].y : d.cp[0][1],
+                    d.ex, d.ey
+                );
+            } else {
+                ctx.lineTo(d.ex, d.ey);
+            }
+        };
+        // 外层：七彩变色
+        buildPath();
+        ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${0.2 + pulse * 0.3})`;
+        ctx.lineWidth = 6;
+        ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
+        ctx.shadowBlur = 15 + pulse * 10;
+        ctx.stroke();
+        // 核心：白色
+        buildPath();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.4 + pulse * 0.5})`;
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = `hsl(${hue}, 100%, 70%)`;
+        ctx.shadowBlur = 4;
+        ctx.stroke();
+        ctx.restore();
+    },
+
+    // 8. Lava Flow 熔岩流：橙红渐变块状粒子
+    _drawLavaFlow(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.0002;
+        const count = 6;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            const size = 4 + Math.sin(t * 0.003 + i) * 1.5;
+            const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2);
+            grad.addColorStop(0, 'rgba(255, 220, 100, 0.9)');
+            grad.addColorStop(0.4, 'rgba(255, 140, 50, 0.6)');
+            grad.addColorStop(1, 'rgba(200, 50, 0, 0)');
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, size * 2, 0, Math.PI * 2);
+            ctx.fillStyle = grad;
+            ctx.shadowColor = '#FF6B35';
+            ctx.shadowBlur = 12;
+            ctx.fill();
+        }
+        ctx.restore();
+    },
+
+    // 9. Stellar Plasma 恒星等离子：高亮星点拖尾
+    _drawStellarPlasma(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.00035;
+        const count = 5;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            // 拖尾
+            const trailLen = 5;
+            for (let j = 0; j < trailLen; j++) {
+                const tt = Math.max(0, tVal - j * 0.015);
+                const tp = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tt);
+                const alpha = (1 - j / trailLen) * 0.4;
+                const sz = (1 - j / trailLen) * 3 + 1;
+                ctx.beginPath();
+                ctx.arc(tp.x, tp.y, sz, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(180, 220, 255, ${alpha})`;
+                ctx.shadowColor = '#A5D8FF';
+                ctx.shadowBlur = 8;
+                ctx.fill();
+            }
+            // 头部星点
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.shadowColor = '#74C0FC';
+            ctx.shadowBlur = 15;
+            ctx.fill();
+        }
+        ctx.restore();
+    },
+
+    // A. Simple Transfer 高速穿梭光点
+    _drawSimpleTransfer(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.0012;
+        const count = 3;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            // 拖尾
+            for (let j = 0; j < 8; j++) {
+                const tt = Math.max(0, tVal - j * 0.02);
+                const tp = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tt);
+                const alpha = (1 - j / 8) * 0.5;
+                const sz = (1 - j / 8) * 4;
+                ctx.beginPath();
+                ctx.arc(tp.x, tp.y, Math.max(0.5, sz), 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(120, 220, 255, ${alpha})`;
+                ctx.shadowColor = '#74C0FC';
+                ctx.shadowBlur = 6;
+                ctx.fill();
+            }
+            // 头部
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.shadowColor = '#74C0FC';
+            ctx.shadowBlur = 20;
+            ctx.fill();
+        }
+        ctx.restore();
+    },
+
+    // F. Random Sparkle 随机闪烁星芒
+    _drawRandomSparkle(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.001;
+        const count = 10;
+        const seed = Math.floor(t * speed / 5);
+        const rng = (i) => { const x = Math.sin(seed * 78.3 + i * 52.7) * 43758.5453; return x - Math.floor(x); };
+        const colors = ['#FFD700', '#FF6B6B', '#4DABF7', '#69DB7C', '#FF922B', '#B197FC'];
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = rng(i * 3 + 1);
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            const lifePhase = (t * speed * 0.5 + i * 1.7) % 3;
+            const alpha = lifePhase < 1 ? lifePhase : (lifePhase < 2 ? 1 : Math.max(0, 2 - lifePhase));
+            if (alpha <= 0.01) continue;
+            const sz = 4 + rng(i * 5 + 3) * 5;
+            const color = colors[Math.floor(rng(i * 7 + 9) * colors.length)];
+            const rotation = rng(i * 11) * Math.PI * 2 + t * 0.001;
+
+            // 星芒：8束光芒 + 径向光晕 + 白色核心
+            const rayCount = 8;
+            const rayLength = sz;
+            const rayHalfWidth = sz * 0.06;
+            const coreRadius = sz * 0.18;
+            const glowRadius = sz * 0.6;
+
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.globalAlpha = alpha;
+
+            // 径向光晕
+            const glowGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, glowRadius);
+            glowGrad.addColorStop(0, color + 'CC');
+            glowGrad.addColorStop(0.5, color + '66');
+            glowGrad.addColorStop(1, color + '00');
+            ctx.fillStyle = glowGrad;
+            ctx.beginPath();
+            ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.rotate(rotation);
+            ctx.shadowColor = color;
+            ctx.shadowBlur = sz * 0.8;
+
+            // 8束三角光芒
+            for (let r = 0; r < rayCount; r++) {
+                const angle = (r * Math.PI * 2) / rayCount;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                const tipX = cos * rayLength;
+                const tipY = sin * rayLength;
+                const perpX = -sin;
+                const perpY = cos;
+                const baseInnerX = cos * coreRadius;
+                const baseInnerY = sin * coreRadius;
+                ctx.beginPath();
+                ctx.moveTo(baseInnerX - perpX * rayHalfWidth, baseInnerY - perpY * rayHalfWidth);
+                ctx.lineTo(tipX, tipY);
+                ctx.lineTo(baseInnerX + perpX * rayHalfWidth, baseInnerY + perpY * rayHalfWidth);
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+            }
+
+            // 白色核心
+            ctx.shadowBlur = sz * 0.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, coreRadius, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+            ctx.restore();
+        }
+        ctx.restore();
+    },
+
+    // G. Custom DIY 自定义粒子动画 模板1（金色圆形粒子+长拖尾）
+    _drawCustomDIY1(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.0003;
+        const count = 4;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            // 长拖尾
+            for (let j = 0; j < 12; j++) {
+                const tt = Math.max(0, tVal - j * 0.012);
+                const tp = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tt);
+                const alpha = (1 - j / 12) * 0.4;
+                const sz = (1 - j / 12) * 4 + 0.5;
+                ctx.beginPath();
+                ctx.arc(tp.x, tp.y, sz, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
+                ctx.shadowColor = '#FFD700';
+                ctx.shadowBlur = 8;
+                ctx.fill();
+            }
+            // 头部
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFF8DC';
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur = 18;
+            ctx.fill();
+        }
+        ctx.restore();
+    },
+
+    // H. Custom DIY 自定义粒子动画 模板2（紫色三角箭头粒子）
+    _drawCustomDIY2(ctx, link) {
+        const d = this._getLinkData(link); if (!d) return;
+        const t = performance.now();
+        const speed = (this.linkAnimSpeed || 1) * 0.00035;
+        const count = 6;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const tVal = ((t * speed) + i / count) % 1;
+            const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
+            const size = 4 + Math.sin(t * 0.004 + i) * 1;
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.angle);
+            // 三角箭头
+            ctx.beginPath();
+            ctx.moveTo(size, 0);
+            ctx.lineTo(-size * 0.6, -size * 0.6);
+            ctx.lineTo(-size * 0.3, 0);
+            ctx.lineTo(-size * 0.6, size * 0.6);
+            ctx.closePath();
+            ctx.fillStyle = '#B197FC';
+            ctx.shadowColor = '#9775FA';
+            ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.strokeStyle = '#E5DBFF';
+            ctx.lineWidth = 0.5;
+            ctx.shadowBlur = 0;
+            ctx.stroke();
+            ctx.restore();
+        }
+        ctx.restore();
+    },
+
     _drawRainbowSparkles(ctx, link) {
         const sp = link.startPoint;
         const ep = link.endPoint;
@@ -1815,7 +2323,7 @@ window.XZGThemeManager = {
         ];
 
         const sparkleCount = 5;
-        const speed = 0.00025;
+        const speed = 0.00025 * (this.linkAnimSpeed || 1);
         const baseOffset = (t * speed) % 1;
 
         ctx.save();
@@ -1879,7 +2387,7 @@ window.XZGThemeManager = {
 
     // 流光溢彩：彩虹渐变沿连线流动
     _animFlow(ctx, buildPath, sx, sy, ex, ey, laserColor, t) {
-        const speed = 0.15;
+        const speed = 0.045 * (this.linkAnimSpeed || 1);
         const dashLen = 14;
         const gapLen = 16;
         const offset = (t * speed) % (dashLen + gapLen);
@@ -1898,9 +2406,9 @@ window.XZGThemeManager = {
         }
         buildPath();
         ctx.strokeStyle = grad;
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 3;
         ctx.shadowColor = laserColor;
-        ctx.shadowBlur = 18;
+        ctx.shadowBlur = 12;
         ctx.setLineDash([dashLen, gapLen]);
         ctx.lineDashOffset = -offset;
         ctx.stroke();
@@ -1908,9 +2416,9 @@ window.XZGThemeManager = {
         // 白色核心
         buildPath();
         ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 1;
         ctx.globalAlpha = 0.6;
-        ctx.shadowBlur = 6;
+        ctx.shadowBlur = 4;
         ctx.setLineDash([dashLen, gapLen]);
         ctx.lineDashOffset = -offset;
         ctx.stroke();
@@ -2025,11 +2533,14 @@ window.XZGThemeManager = {
         this.linkAnimRunning = true;
         const self = this;
         function loop() {
-            // 仅当激光动画关闭时停止循环
-            if (!self.linkLaserActive) {
+            if (!self.linkLaserActive && !self.linkAnimActive) {
                 self.linkAnimRunning = false;
                 self.linkAnimFrameId = null;
                 return;
+            }
+            // 吃豆人状态更新（每帧只执行一次）
+            if (self.linkAnimActive && self.linkAnimType === 'pulse') {
+                self._updatePacManState();
             }
             if (window.app?.canvas?.setDirty) {
                 app.canvas.setDirty(true, true);
@@ -2037,6 +2548,35 @@ window.XZGThemeManager = {
             self.linkAnimFrameId = requestAnimationFrame(loop);
         }
         self.linkAnimFrameId = requestAnimationFrame(loop);
+    },
+
+    // 吃豆人状态更新（在 rAF 中调用，每帧一次）
+    _updatePacManState() {
+        const t = performance.now();
+        const dt = t - (this._pacLastTime || t);
+        this._pacLastTime = t;
+
+        const linkSet = this._pacLinkSet;
+        this._pacLinkSet = new Set(); // 清空，下一帧 drawLink 重新收集
+
+        if (!linkSet || linkSet.size === 0) return;
+
+        // 当前 key 无效（被删除等），重置为第一条
+        if (!this._pacCurrentKey || !linkSet.has(this._pacCurrentKey)) {
+            this._pacCurrentKey = linkSet.values().next().value;
+            this._pacProgress = 0;
+            return;
+        }
+
+        this._pacProgress += dt * 0.00025 * (this.linkAnimSpeed || 1);
+        if (this._pacProgress >= 1) {
+            // 吃完一根线，跳到下一根
+            const keys = Array.from(linkSet);
+            const idx = keys.indexOf(this._pacCurrentKey);
+            const nextIdx = (idx + 1) % keys.length;
+            this._pacCurrentKey = keys[nextIdx];
+            this._pacProgress = 0;
+        }
     },
 
     _ensureHighlightAnimLoop() {

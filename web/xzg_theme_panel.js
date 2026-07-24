@@ -221,6 +221,37 @@ window.XZGThemePanel = {
                         </button>
                     </div>
 
+                    <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">${xzgT('连线动画','Link Animation')}</span>
+                        <button type="button" id="xzg-link-anim-btn" class="xzg-toggle-switch xzg-link-anim-toggle" data-checked="false" title="${xzgT('开启后，所有连线显示动画效果','Show animation effect on all links')}">
+                            <span class="xzg-toggle-slider"></span>
+                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
+                        </button>
+                    </div>
+
+                    <div class="xzg-link-highlight-section" id="xzg-link-anim-type-row" style="display:none;">
+                        <span class="xzg-swatch-label">${xzgT('动画类型','Anim Type')}</span>
+                        <select id="xzg-link-anim-type" style="background:#2a2a2a;color:#ddd;border:1px solid #555;border-radius:4px;padding:2px 6px;font-size:11px;">
+                            <option value="sparkle">${xzgT('七彩星芒','Sparkle')}</option>
+                            <option value="pulse">${xzgT('吃豆人','Pac-Man')}</option>
+                            <option value="crystal">${xzgT('水晶溪流','Crystal Stream')}</option>
+                            <option value="quantum">${xzgT('量子场','Quantum Field')}</option>
+                            <option value="energy">${xzgT('能量脉冲','Energy Pulse')}</option>
+                            <option value="lava">${xzgT('熔岩流','Lava Flow')}</option>
+                            <option value="stellar">${xzgT('恒星等离子','Stellar Plasma')}</option>
+                            <option value="transfer">${xzgT('高速穿梭','Simple Transfer')}</option>
+                            <option value="randspark">${xzgT('随机闪烁','Random Sparkle')}</option>
+                            <option value="diy1">${xzgT('金星流动','Gold Star Flow')}</option>
+                            <option value="diy2">${xzgT('紫色箭头','Purple Arrow')}</option>
+                        </select>
+                    </div>
+
+                    <div class="xzg-link-highlight-section" id="xzg-link-anim-speed-row" style="display:none;">
+                        <span class="xzg-swatch-label">${xzgT('动画速度','Anim Speed')}</span>
+                        <input type="range" id="xzg-link-anim-speed" min="0.1" max="3" step="0.1" value="1" style="flex:1;accent-color:#FFD700;">
+                        <span id="xzg-link-anim-speed-val" style="min-width:32px;text-align:right;font-size:11px;color:#FFD700;">1.0x</span>
+                    </div>
+
                     <div class="xzg-theme-separator"></div>
 
                     <div class="xzg-wallpaper-section">
@@ -608,6 +639,65 @@ window.XZGThemePanel = {
                 const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
                 if (label) label.textContent = xzgT("开","On");
             }
+        }
+
+        const linkAnimBtn = panel.querySelector("#xzg-link-anim-btn");
+        const linkAnimTypeRow = panel.querySelector("#xzg-link-anim-type-row");
+        const linkAnimTypeSelect = panel.querySelector("#xzg-link-anim-type");
+        const linkAnimSpeedRow = panel.querySelector("#xzg-link-anim-speed-row");
+        const linkAnimSpeedSlider = panel.querySelector("#xzg-link-anim-speed");
+        const linkAnimSpeedVal = panel.querySelector("#xzg-link-anim-speed-val");
+        if (linkAnimBtn) {
+            linkAnimBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    const active = window.XZGThemeManager.toggleLinkAnim();
+                    linkAnimBtn.setAttribute("data-checked", active ? "true" : "false");
+                    const label = linkAnimBtn.querySelector(".xzg-toggle-label");
+                    if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
+                    if (linkAnimTypeRow) linkAnimTypeRow.style.display = active ? "" : "none";
+                    if (linkAnimSpeedRow) linkAnimSpeedRow.style.display = active ? "" : "none";
+                }
+            });
+
+            // 同步初始状态
+            if (window.XZGThemeManager && window.XZGThemeManager.linkAnimActive) {
+                linkAnimBtn.setAttribute("data-checked", "true");
+                const label = linkAnimBtn.querySelector(".xzg-toggle-label");
+                if (label) label.textContent = xzgT("开","On");
+                if (linkAnimTypeRow) linkAnimTypeRow.style.display = "";
+                if (linkAnimSpeedRow) linkAnimSpeedRow.style.display = "";
+            }
+        }
+
+        if (linkAnimTypeSelect) {
+            // 同步初始值
+            if (window.XZGThemeManager && window.XZGThemeManager.linkAnimType) {
+                linkAnimTypeSelect.value = window.XZGThemeManager.linkAnimType;
+            }
+            linkAnimTypeSelect.addEventListener("change", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setLinkAnimType(linkAnimTypeSelect.value);
+                }
+            });
+        }
+
+        if (linkAnimSpeedSlider) {
+            // 同步初始值
+            if (window.XZGThemeManager && window.XZGThemeManager.linkAnimSpeed) {
+                const v = window.XZGThemeManager.linkAnimSpeed;
+                linkAnimSpeedSlider.value = v;
+                if (linkAnimSpeedVal) linkAnimSpeedVal.textContent = v.toFixed(1) + "x";
+            }
+            linkAnimSpeedSlider.addEventListener("input", (e) => {
+                e.stopPropagation();
+                const v = parseFloat(linkAnimSpeedSlider.value);
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setLinkAnimSpeed(v);
+                }
+                if (linkAnimSpeedVal) linkAnimSpeedVal.textContent = v.toFixed(1) + "x";
+            });
         }
 
         // 壁纸开关

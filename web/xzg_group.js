@@ -1217,7 +1217,7 @@ const XZGGroup = {
             <div class="xzg-modal-drag-handle" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 8px 0;margin-bottom:12px;cursor:move;user-select:none;">
                 <span style="color:#fff;font-size:16px;font-weight:600;">编组设置</span>
                 <div style="display:flex;align-items:center;gap:6px;cursor:default;">
-                    <span style="color:#fff;font-size:12px;">新建快捷键</span>
+                    <span style="color:#fff;font-size:12px;">快捷键</span>
                     <span style="color:#aaa;font-size:12px;">Ctrl +</span>
                     <input class="xzg-set-shortcut" value="${curKey}" maxlength="1" style="width:40px;height:24px;padding:0 4px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;text-align:center;text-transform:uppercase;box-sizing:border-box;cursor:text;">
                 </div>
