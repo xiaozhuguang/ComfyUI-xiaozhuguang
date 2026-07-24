@@ -735,6 +735,7 @@ const XZGGroup = {
         if (!n) return;
         n._xzgGroupId = null;
         n._xzgGroupData = null;
+        delete n._xzgGroup; // 清除 configure 时从数据批量拷贝的残留字段
         if (n.properties) {
             delete n.properties._xzgGroup;
         }
@@ -2276,6 +2277,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         if (this._xzgGroupId) {
                             d._xzgGroupId = this._xzgGroupId;
                             if (this._xzgGroupData) d._xzgGroup = JSON.parse(JSON.stringify(this._xzgGroupData));
+                        } else {
+                            // 节点不在任何编组中，清除序列化数据中可能残留的编组字段
+                            delete d._xzgGroupId;
+                            delete d._xzgGroup;
                         }
                         return d;
                     };
@@ -2331,6 +2336,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                                 if (match) {
                                     nd._xzgGroupId = match.groupId;
                                     nd._xzgGroup = JSON.parse(JSON.stringify(match.groupData));
+                                } else {
+                                    // 节点不在任何编组中，清除残留的编组字段（防止已删除编组通过节点数据复活）
+                                    delete nd._xzgGroupId;
+                                    delete nd._xzgGroup;
                                 }
                             }
                         }
