@@ -52,6 +52,8 @@ class XZGWorkflowsManager {
         if (!this.meta.workflows) this.meta.workflows = {};
         if (!this.meta.categories) this.meta.categories = [];
         if (!this.meta.sortMode) this.meta.sortMode = "default";
+        // 兼容旧版：name 排序模式已移除，回退到 default
+        if (this.meta.sortMode === "name") this.meta.sortMode = "default";
         if (!Array.isArray(this.meta.useColors) || this.meta.useColors.length === 0) {
             this.meta.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
         }
@@ -71,7 +73,7 @@ class XZGWorkflowsManager {
         if (!this.meta.workflows[path]) {
             this.meta.workflows[path] = {
                 useCount: 0,
-                lastUsed: 0,
+                lastUsed: Date.now(), // 新工作流默认最近使用时间=创建时间，排在最近排序列表顶部
                 categoryId: null,
                 createdAt: Date.now()
             };
@@ -1232,7 +1234,7 @@ class XZGWorkflowsManager {
                             </div>
                             <div class="xzg-wf-sort-btns">
                                 <button class="xzg-wf-sort-btn active" data-sort="default" title="${xzgT('按使用频率排序（右键清空使用频率）','Sort by usage frequency (right-click to clear)')}">🔥</button>
-                                <button class="xzg-wf-sort-btn xzg-wf-sort-btn-name" data-sort="name" title="按名称排序">A</button>
+                                <button class="xzg-wf-sort-btn xzg-wf-sort-btn-name" data-sort="time" title="${xzgT('按最近使用排序','Sort by recently used')}">🕐</button>
                             </div>
                         </div>
                         <div class="xzg-wf-list"></div>
@@ -2476,7 +2478,7 @@ class XZGWorkflowsManager {
                     <h4>${xzgT('排序', 'Sort')}</h4>
                     <ul>
                         <li>🔥 ${xzgT('使用频率：使用次数', 'Usage frequency: by usage count')}</li>
-                        <li>A ${xzgT('名称：按名称字母 / 拼音顺序', 'Name: alphabetical / pinyin order')}</li>
+                        <li>🕐 ${xzgT('最近使用：按最近使用时间排序', 'Recently used: by last used time')}</li>
                         <li>${xzgT('拖拽工作流到画布不增加使用频率，仅单击打开会计数', 'Dragging a workflow to the canvas does not increase usage; only opening by click counts')}</li>
                     </ul>
                     <h4>${xzgT('回收站', 'Recycle Bin')}</h4>
