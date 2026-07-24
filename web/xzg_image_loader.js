@@ -543,10 +543,10 @@ function createImgBatchUI(node) {
 
     const emptyTip = document.createElement("div");
     emptyTip.style.cssText =
-        "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:10px;opacity:0.55;min-height:40px;";
+        "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;";
     emptyTip.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:10px;color:var(--input-text);line-height:1.35;">
-            <div style="text-align:center;font-size:11px;font-weight:bold;margin-bottom:1px;opacity:0.85;">小珠光图片加载器</div>
+        <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
+            <div style="text-align:center;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;">小珠光图片加载器</div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">📁 添加图片</div>
@@ -558,8 +558,8 @@ function createImgBatchUI(node) {
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">🖱️ 鼠标操作</div>
                 <div style="opacity:0.5;padding-left:12px;">左键点击：选中 / Ctrl多选 / Shift范围选</div>
-                <div style="opacity:0.5;padding-left:12px;">左键拖动卡片：调整顺序</div>
-                <div style="opacity:0.5;padding-left:12px;">空白处拖动：框选多个图片</div>
+                <div style="opacity:0.5;padding-left:12px;">长按卡片拖动：调整顺序</div>
+                <div style="opacity:0.5;padding-left:12px;">卡片上拖动：框选多个图片</div>
                 <div style="opacity:0.5;padding-left:12px;">悬停卡片右上角：删除单张</div>
             </div>
 
@@ -812,10 +812,20 @@ function createImgBatchUI(node) {
 
         const cardInner = cell?.querySelector(":scope > div");
 
-        // 按下时立即金边高亮（无过渡，瞬间生效）
+        // 按下时立即金边高亮（无过渡，瞬间生效），同时清除其他卡片的高亮
         if (cell && cardInner) {
             cardInner.style.transition = "none";
             cardInner.style.borderColor = getSelColor();
+            // 立即清除其他所有卡片的高亮边框
+            const allCards = grid.querySelectorAll("[data-xzg-img-card]");
+            allCards.forEach((c) => {
+                if (c === cell) return;
+                const card = c.querySelector(":scope > div");
+                if (card) {
+                    card.style.transition = "none";
+                    card.style.borderColor = "var(--border-color)";
+                }
+            });
         }
 
         // 长按 500ms 后放大卡片，进入排序模式
@@ -879,13 +889,16 @@ function createImgBatchUI(node) {
             `;
             const gCard = ghost.querySelector("div");
             if (gCard) {
-                gCard.style.borderColor = getSelColor();
+                const selColor = getSelColor();
+                gCard.style.borderColor = selColor;
+                gCard.style.borderWidth = "2px";
+                gCard.style.outline = `2px solid ${selColor}`;
                 gCard.style.width = "100%";
                 gCard.style.height = "100%";
                 gCard.style.boxSizing = "border-box";
                 gCard.style.transform = `scale(${DRAG_SORT_SCALE})`;
                 gCard.style.transformOrigin = "center center";
-                gCard.style.boxShadow = "0 4px 16px rgba(0,0,0,0.4)";
+                gCard.style.boxShadow = `0 4px 16px rgba(0,0,0,0.4), 0 0 8px ${selColor}`;
             }
             document.body.appendChild(ghost);
 
@@ -979,6 +992,15 @@ function createImgBatchUI(node) {
             } else if (mode === "sort" && dragSortState) {
                 dragSortState.ghost.style.left = `${moveE.clientX - dragSortState.offsetX}px`;
                 dragSortState.ghost.style.top = `${moveE.clientY - dragSortState.offsetY}px`;
+                // 持续确保 ghost 卡片高亮边框不丢失
+                const gCard = dragSortState.ghost.querySelector("div");
+                if (gCard) {
+                    const selColor = getSelColor();
+                    gCard.style.borderColor = selColor;
+                    gCard.style.borderWidth = "2px";
+                    gCard.style.outline = `2px solid ${selColor}`;
+                    gCard.style.boxShadow = `0 4px 16px rgba(0,0,0,0.4), 0 0 8px ${selColor}`;
+                }
 
                 const ghostRect = dragSortState.ghost.getBoundingClientRect();
                 const ghostCx = ghostRect.left + ghostRect.width / 2;
@@ -1096,6 +1118,31 @@ function createImgBatchUI(node) {
                 if (moved && namesChanged) {
                     lastNames = null;
                     redraw(true);
+                    // 顺序调整后触发随机翻转动画（与改变缩略图大小/行列数一致）
+                    requestAnimationFrame(() => {
+                        const cells = grid.querySelectorAll("[data-xzg-img-card]");
+                        if (!cells.length) return;
+                        grid.style.perspective = "600px";
+                        cells.forEach(cell => {
+                            cell.style.transition = "none";
+                            cell.style.animation = "none";
+                        });
+                        void grid.offsetWidth;
+                        applyRandomFlip(cells);
+                        cells.forEach(cell => {
+                            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
+                        });
+                        if (flipAnimTimer) clearTimeout(flipAnimTimer);
+                        flipAnimTimer = setTimeout(() => {
+                            flipAnimTimer = null;
+                            cells.forEach(cell => {
+                                cell.style.animation = "";
+                                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
+                                cell.style.transform = "";
+                            });
+                            grid.style.perspective = "";
+                        }, 1050);
+                    });
                 }
             } else if (mode === "marquee") {
                 if (moved) {
@@ -1819,6 +1866,7 @@ function createImgBatchUI(node) {
 
     return {
         container,
+        grid,
         redraw,
         updateModeBtn,
         resizeObserver,
@@ -2016,10 +2064,40 @@ app.registerExtension({
             };
 
             // 节点大小改变时重新计算缩略图（与 ResizeObserver 协调）
+            // 拖拽停止后自动收缩节点，消除多余留白（防抖：每次 onResize 重置定时器）
             const origOnResize = nodeType.prototype.onResize;
             nodeType.prototype.onResize = function (size) {
                 const r = origOnResize?.apply(this, arguments);
-                // ResizeObserver 会处理重绘，这里不需要额外操作
+                if (this._xzgAutoFitting) return r;
+                const self = this;
+                if (self._xzgResizeTimer) clearTimeout(self._xzgResizeTimer);
+                self._xzgResizeTimer = setTimeout(() => {
+                    self._xzgResizeTimer = null;
+                    const ui = self._xzgImgLoaderUI;
+                    if (!ui?.grid) return;
+                    const names = parseNameList(getImageListWidget(self)?.value || "");
+                    if (!names.length) return;
+                    const cardSize = getCardSize(self);
+                    const colsMatch = ui.grid.style.gridTemplateColumns?.match(/repeat\((\d+)/);
+                    const cols = colsMatch ? parseInt(colsMatch[1], 10) : 1;
+                    const rows = Math.ceil(names.length / cols);
+                    const gap = 2;
+                    const gridPad = 12; // grid padding 6px * 2
+                    const idealW = cols * cardSize + (cols - 1) * gap + gridPad;
+                    const idealH = rows * cardSize + (rows - 1) * gap + gridPad;
+                    const excessW = ui.grid.clientWidth - idealW;
+                    const excessH = ui.grid.clientHeight - idealH;
+                    // 只缩小不放大，且差值 >= 2px 才调整
+                    if (Math.max(0, excessW) < 2 && Math.max(0, excessH) < 2) return;
+                    const MIN_W = 250, MIN_H = 300;
+                    const newW = Math.max(MIN_W, Math.round(self.size[0] - Math.max(0, excessW)));
+                    const newH = Math.max(MIN_H, Math.round(self.size[1] - Math.max(0, excessH)));
+                    if (newW !== self.size[0] || newH !== self.size[1]) {
+                        self._xzgAutoFitting = true;
+                        self.setSize([newW, newH]);
+                        self._xzgAutoFitting = false;
+                    }
+                }, 300);
                 return r;
             };
         }
