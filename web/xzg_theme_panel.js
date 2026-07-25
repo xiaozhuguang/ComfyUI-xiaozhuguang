@@ -192,8 +192,10 @@ window.XZGThemePanel = {
                         </div>
                     </div>
                     
-                    <button type="button" id="xzg-apply-btn" class="xzg-apply-btn">${xzgT('应用主题并关闭','Apply Theme & Close')}</button>
-                    <button type="button" id="xzg-reset-btn" class="xzg-reset-btn">${xzgT('恢复默认颜色','Reset Colors')}</button>
+                    <div style="display:flex;gap:6px;margin-bottom:6px;">
+                        <button type="button" id="xzg-apply-btn" class="xzg-apply-btn" style="flex:1;margin:0;height:28px;padding:0 8px;line-height:28px;font-size:12px;">${xzgT('应用主题并关闭','Apply Theme & Close')}</button>
+                        <button type="button" id="xzg-reset-btn" class="xzg-reset-btn" style="flex:1;margin:0;height:28px;padding:0 8px;line-height:28px;">${xzgT('恢复默认颜色','Reset Colors')}</button>
+                    </div>
                     
                     <div class="xzg-theme-separator"></div>
                     

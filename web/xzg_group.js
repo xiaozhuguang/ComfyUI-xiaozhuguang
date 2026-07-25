@@ -17,7 +17,7 @@ const XZGGroup = {
     overlay: null,
     canvasMoveHideActive: false,
     fadeOutDuration: 0,
-    fadeInDuration: 2000,
+    fadeInDuration: 1000,
     _lastOffsetX: null,
     _lastOffsetY: null,
     _lastScale: null,
@@ -736,11 +736,13 @@ const XZGGroup = {
             }
         } else if (this._canvasMoving) {
             this._canvasMoving = false;
+            const useFastFade = !!this._flashGroupActive;
+            const fadeDurMs = useFastFade ? 100 : null;
             for (const [gid, g] of Object.entries(this.groups)) {
                 if (!g.fadeEnabled) continue;
                 const el = this.groupEls[gid];
                 if (!el) continue;
-                const fadeDur = (g.fadeInDuration || 2000) / 1000;
+                const fadeDur = (fadeDurMs ?? g.fadeInDuration ?? 1000) / 1000;
                 el.style.transition = `opacity ${fadeDur}s ease`;
                 el.style.opacity = '1';
             }
@@ -913,7 +915,7 @@ const XZGGroup = {
             titleColor: '#FFD700',
             fadeEnabled: true,
             fadeOutDuration: 0,
-            fadeInDuration: 2000
+            fadeInDuration: 1000
         };
 
         // 标记节点归入新编组（同时保留节点在其他编组中的归属）
@@ -1295,6 +1297,21 @@ const XZGGroup = {
                         <span class="xzg-set-spd-val" style="color:#fff;font-size:12px;text-align:left;">${group.effectSpeed||3}</span>
                     </div>
                 </div>
+                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-top:8px;">
+                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框渐入</label>
+                    <button type="button" class="xzg-set-fade-toggle" data-checked="${group.fadeEnabled !== false ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 8px;background:transparent;border:none;cursor:pointer;">
+                        <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${group.fadeEnabled !== false ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
+                            <span class="xzg-fade-toggle-thumb" style="position:absolute;left:${group.fadeEnabled !== false ? '14px' : '2px'};top:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.2s;"></span>
+                        </span>
+                        <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${group.fadeEnabled !== false ? '#FFD700' : '#777'};min-width:20px;">${group.fadeEnabled !== false ? '开' : '关'}</span>
+                    </button>
+                    <div class="xzg-fade-duration-row" style="display:${group.fadeEnabled !== false ? 'flex' : 'none'};flex:1;align-items:center;gap:8px;height:28px;">
+                        <input class="xzg-set-fade-duration" type="range" min="100" max="8000" step="100" value="${group.fadeInDuration ?? 1000}" style="flex:1;height:28px;margin:0;">
+                        <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                            <span class="xzg-set-fade-val" style="color:#fff;font-size:12px;text-align:left;">${(group.fadeInDuration ?? 1000) / 1000}s</span>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:space-between;padding-top:4px;">
                 <div style="display:flex;gap:8px;">
@@ -1390,6 +1407,37 @@ const XZGGroup = {
             boV.textContent = boR.value;
             group.borderOpacity = (parseInt(boR.value) || 100) / 100;
             self.updateGroupStyle(group.id);
+        });
+
+        // 边框渐入开关
+        const fadeToggle = modal.querySelector('.xzg-set-fade-toggle');
+        const fadeDurationRow = modal.querySelector('.xzg-fade-duration-row');
+        const updateFadeToggle = (enabled) => {
+            fadeToggle.dataset.checked = enabled ? 'true' : 'false';
+            const track = fadeToggle.querySelector('.xzg-fade-toggle-track');
+            const thumb = fadeToggle.querySelector('.xzg-fade-toggle-thumb');
+            const label = fadeToggle.querySelector('.xzg-fade-toggle-label');
+            if (track) track.style.background = enabled ? '#dcc85b' : '#a855f7';
+            if (thumb) thumb.style.left = enabled ? '14px' : '2px';
+            if (label) {
+                label.textContent = enabled ? '开' : '关';
+                label.style.color = enabled ? '#FFD700' : '#777';
+            }
+            if (fadeDurationRow) fadeDurationRow.style.display = enabled ? 'flex' : 'none';
+            group.fadeEnabled = enabled;
+        };
+        fadeToggle.addEventListener('click', () => {
+            const isOn = fadeToggle.dataset.checked === 'true';
+            updateFadeToggle(!isOn);
+        });
+
+        // 渐入时间滑块
+        const fadeDurR = modal.querySelector('.xzg-set-fade-duration');
+        const fadeDurV = modal.querySelector('.xzg-set-fade-val');
+        fadeDurR.addEventListener('input', () => {
+            const v = parseInt(fadeDurR.value) || 1000;
+            fadeDurV.textContent = (v / 1000).toFixed(1) + 's';
+            group.fadeInDuration = v;
         });
 
         // 标题大小滑块
@@ -1511,8 +1559,8 @@ const XZGGroup = {
                 return `rgba(${r},${g},${b},${headerAlpha})`;
             })();
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
-            targetGroup.fadeEnabled = true;
-            targetGroup.fadeInDuration = 2000;
+            targetGroup.fadeEnabled = fadeToggle.dataset.checked === 'true';
+            targetGroup.fadeInDuration = parseInt(fadeDurR.value) || 1000;
             if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
 
             // 快捷键自定义
@@ -1579,6 +1627,8 @@ const XZGGroup = {
             const fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 14;
             const bw = parseInt(modal.querySelector('.xzg-set-borderwidth').value) || 2;
             const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 100) / 100;
+            const fadeEnabled = fadeToggle.dataset.checked === 'true';
+            const fadeInDuration = parseInt(fadeDurR.value) || 1000;
             const headerBgColor = (() => {
                 const hex = headerColorPicker.value;
                 const r = parseInt(hex.slice(1,3),16);
@@ -1593,8 +1643,9 @@ const XZGGroup = {
                 g2.borderWidth = bw; g2.borderOpacity = bo;
                 g2.headerBgColor = headerBgColor;
                 g2.titleColor = titleColorPicker.value || '#FFD700';
-                g2.fadeEnabled = true;
-                g2.fadeInDuration = 2000;
+                g2.fadeEnabled = fadeEnabled;
+                g2.fadeInDuration = fadeInDuration;
+                if (g2.fadeOutDuration === undefined) g2.fadeOutDuration = 0;
                 this.updateGroupStyle(g2.id);
                 const span = this.groupEls[g2.id]?.querySelector('.xzg-group-title-text');
                 if (span) {
@@ -2422,6 +2473,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     /* ── 悬停激光连线：从开关项指向画布中的编组 ── */
     _flashGroup(gid, fromEl) {
         this._stopFlashGroup();
+        this._flashGroupActive = true;
         const g = this.groups[gid];
         if (!g?.bounds) return;
         const canvas = app?.canvas;
@@ -2574,6 +2626,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     },
 
     _stopFlashGroup() {
+        this._flashGroupActive = false;
         if (this._laserTimer) {
             cancelAnimationFrame(this._laserTimer);
             this._laserTimer = null;
@@ -2858,7 +2911,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (!app?.graph) return;
         const gd = {};
         for (const [id, g] of Object.entries(this.groups)) {
-            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 3000 };
+            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
         }
         app.graph.extra = app.graph.extra || {};
         app.graph.extra.xzgGroups = gd;
@@ -2937,7 +2990,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         const d = s.apply(this, arguments);
                         const gd = {};
                         for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 3000 };
+                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
                         }
                         if (Object.keys(gd).length) {
                             console.log('[小珠光编组] LGraph.serialize写入编组数据:', Object.keys(gd).length, '个');
@@ -3211,7 +3264,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     titleColor: oldGroup?.titleColor || '#FFD700',
                     fadeEnabled: oldGroup?.fadeEnabled || false,
                     fadeOutDuration: oldGroup?.fadeOutDuration ?? 0,
-                    fadeInDuration: oldGroup?.fadeInDuration ?? 3000
+                    fadeInDuration: oldGroup?.fadeInDuration ?? 1000
                 });
 
                 // 旧编组ID -> 新编组ID 的映射（用于恢复嵌套关系）
@@ -3401,7 +3454,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit,
                         effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth,
                         borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor,
-                        fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 3000
+                        fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000
                     };
                     newGroupSerialCache[gid] = data;
                     return data;
@@ -3618,7 +3671,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 1,
                     headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700',
-                    fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 2000
+                    fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 1000
                 };
             } else {
                 this.groups[gid].nodeIds = nids;
@@ -3633,7 +3686,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         for (const g of Object.values(this.groups)) {
             if (g.fadeEnabled === undefined) g.fadeEnabled = false;
             if (g.fadeOutDuration === undefined) g.fadeOutDuration = 0;
-            if (g.fadeInDuration === undefined) g.fadeInDuration = 3000;
+            if (g.fadeInDuration === undefined) g.fadeInDuration = 1000;
         }
         // 清理已持久化的删除标记：只保留此次恢复中仍然出现在任意数据源里的 ID
         // （如果 auto-save 已生效，group 不再出现于数据中，就可以从列表移除）

@@ -6642,6 +6642,235 @@ app.registerExtension({
                 leftPanel.appendChild(row2);
                 leftPanel.appendChild(rowSeparator());
                 leftPanel.appendChild(row3);
+                leftPanel.appendChild(rowSeparator());
+
+                const presetsRow = document.createElement("div");
+                presetsRow.style.cssText = `display:flex;align-items:center;gap:6px;padding:0 6px;`;
+
+                const presetsLabel = document.createElement("span");
+                presetsLabel.textContent = "预设";
+                presetsLabel.style.cssText = `color:#aaa;font-size:12px;white-space:nowrap;font-family:Arial,sans-serif;min-width:28px;`;
+
+                const presetsContainer = document.createElement("div");
+                presetsContainer.style.cssText = `display:flex;gap:3px;flex:1;`;
+
+                const getTitlePresets = () => {
+                    try {
+                        const stored = localStorage.getItem("xzg_title_presets");
+                        if (stored) {
+                            const presets = JSON.parse(stored);
+                            if (Array.isArray(presets) && presets.length === 5) {
+                                return presets;
+                            }
+                        }
+                    } catch (e) {}
+                    return [null, null, null, null, null];
+                };
+
+                const saveTitlePresets = (presets) => {
+                    try {
+                        localStorage.setItem("xzg_title_presets", JSON.stringify(presets));
+                    } catch (e) {}
+                };
+
+                const renderTitlePresets = () => {
+                    const presets = getTitlePresets();
+                    presetsContainer.querySelectorAll(".xz-title-preset-item").forEach((item, index) => {
+                        const preset = presets[index];
+                        const swatch = item.querySelector(".xz-title-preset-swatch");
+                        const sizeLabel = item.querySelector(".xz-title-preset-size");
+                        if (preset) {
+                            if (swatch) swatch.style.background = preset.fontColor || "#ffffff";
+                            if (sizeLabel) {
+                                sizeLabel.textContent = preset.fontSize || 14;
+                                sizeLabel.style.color = "#FFD700";
+                            }
+                            item.style.borderStyle = "solid";
+                            item.title = `预设${index + 1}：${preset.fontSize || 14}px`;
+                        } else {
+                            if (swatch) swatch.style.background = "#333";
+                            if (sizeLabel) {
+                                sizeLabel.textContent = "—";
+                                sizeLabel.style.color = "#666";
+                            }
+                            item.style.borderStyle = "dashed";
+                            item.title = `预设${index + 1}（右键保存）`;
+                        }
+                    });
+                };
+
+                const applyTitlePreset = (index) => {
+                    const presets = getTitlePresets();
+                    const preset = presets[index];
+                    if (!preset) return;
+
+                    if (preset.fontSize !== undefined) {
+                        updateFontSize(preset.fontSize);
+                    }
+                    if (preset.fontColor !== undefined) {
+                        p.fontColor = preset.fontColor;
+                        ta.style.color = preset.fontColor;
+                        fontColorSwatch.style.background = preset.fontColor;
+                        localStorage.setItem('xzg_last_title_color', preset.fontColor);
+                        if (activeColorTarget === "font") {
+                            initFromColor(preset.fontColor);
+                        }
+                    }
+                    if (preset.textAlign !== undefined) {
+                        updateTextAlign(preset.textAlign);
+                    }
+                    if (preset.letterSpacing !== undefined) {
+                        updateLetterSpacing(preset.letterSpacing);
+                    }
+                    if (preset.lineHeight !== undefined) {
+                        updateLineHeight(preset.lineHeight);
+                    }
+                    if (preset.bgEnabled !== undefined) {
+                        p.bgEnabled = preset.bgEnabled;
+                        bgToggle._update(p.bgEnabled);
+                        bgControlsWrap.style.display = p.bgEnabled ? 'flex' : 'none';
+                        if (p.bgEnabled && p.bgColor) {
+                            const rgb = hexToRgb(p.bgColor);
+                            ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`;
+                        } else {
+                            ta.style.background = "transparent";
+                        }
+                    }
+                    if (preset.bgColor !== undefined) {
+                        p.bgColor = preset.bgColor;
+                        if (p.bgEnabled) {
+                            const rgb = hexToRgb(p.bgColor);
+                            ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`;
+                        }
+                        if (activeColorTarget === "bg") {
+                            initFromColor(preset.bgColor);
+                        }
+                    }
+                    if (preset.bgOpacity !== undefined) {
+                        p.bgOpacity = preset.bgOpacity;
+                        bgOpacitySlider.value = Math.round(preset.bgOpacity * 100);
+                        bgOpacityValue.textContent = Math.round(preset.bgOpacity * 100) + "%";
+                        if (p.bgEnabled && p.bgColor) {
+                            const rgb = hexToRgb(p.bgColor);
+                            ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${preset.bgOpacity})`;
+                        }
+                    }
+                    if (preset.borderRadius !== undefined) {
+                        p.borderRadius = preset.borderRadius;
+                        bgRadiusSlider.value = preset.borderRadius;
+                        bgRadiusValue.textContent = preset.borderRadius + "px";
+                        ta.style.borderRadius = preset.borderRadius * (getNodeViewportRect(node)?.scale || 1) + "px";
+                    }
+                    if (preset.glowEnabled !== undefined) {
+                        p.glowEnabled = preset.glowEnabled;
+                        glowToggle._update(p.glowEnabled);
+                        glowControlsWrap.style.display = p.glowEnabled ? 'flex' : 'none';
+                        updateTextareaGlow();
+                    }
+                    if (preset.glowColor !== undefined) {
+                        p.glowColor = preset.glowColor;
+                        glowColorBtn.style.background = preset.glowColor;
+                        if (activeColorTarget === "glow") {
+                            initFromColor(preset.glowColor);
+                        }
+                        updateTextareaGlow();
+                    }
+                    if (preset.glowSize !== undefined) {
+                        p.glowSize = preset.glowSize;
+                        glowSizeSlider.value = preset.glowSize;
+                        updateTextareaGlow();
+                    }
+                    if (preset.glowIntensity !== undefined) {
+                        p.glowIntensity = preset.glowIntensity;
+                        glowIntensitySlider.value = preset.glowIntensity;
+                        updateTextareaGlow();
+                    }
+                    if (preset.rainbowEnabled !== undefined) {
+                        p.rainbowEnabled = preset.rainbowEnabled;
+                        rainbowToggle._update(p.rainbowEnabled);
+                        rainbowControlsWrap.style.display = p.rainbowEnabled ? 'flex' : 'none';
+                    }
+                    if (preset.rainbowStyle !== undefined) {
+                        p.rainbowStyle = preset.rainbowStyle;
+                        rainbowStyleSelect.value = preset.rainbowStyle;
+                    }
+                    if (preset.rainbowSpeed !== undefined) {
+                        p.rainbowSpeed = preset.rainbowSpeed;
+                        rainbowSpeedSlider.value = preset.rainbowSpeed;
+                    }
+
+                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                };
+
+                const saveCurrentToTitlePreset = (index) => {
+                    const presets = getTitlePresets();
+                    presets[index] = {
+                        fontSize: p.fontSize,
+                        fontColor: p.fontColor,
+                        textAlign: p.textAlign,
+                        letterSpacing: p.letterSpacing,
+                        lineHeight: p.lineHeight,
+                        bgEnabled: p.bgEnabled,
+                        bgColor: p.bgColor,
+                        bgOpacity: p.bgOpacity,
+                        borderRadius: p.borderRadius,
+                        glowEnabled: p.glowEnabled,
+                        glowColor: p.glowColor,
+                        glowSize: p.glowSize,
+                        glowIntensity: p.glowIntensity,
+                        rainbowEnabled: p.rainbowEnabled,
+                        rainbowStyle: p.rainbowStyle,
+                        rainbowSpeed: p.rainbowSpeed,
+                    };
+                    saveTitlePresets(presets);
+                    renderTitlePresets();
+                };
+
+                for (let i = 0; i < 5; i++) {
+                    const presetItem = document.createElement("div");
+                    presetItem.className = "xz-title-preset-item";
+                    presetItem.dataset.preset = i;
+                    presetItem.style.cssText = `flex:1;display:flex;height:20px;border-radius:3px;cursor:pointer;border:1.5px solid #444;transition:all 0.2s;position:relative;overflow:hidden;`;
+
+                    const sizeLabel = document.createElement("span");
+                    sizeLabel.className = "xz-title-preset-size";
+                    sizeLabel.style.cssText = `display:flex;align-items:center;justify-content:center;width:18px;flex-shrink:0;font-size:9px;font-weight:bold;font-family:Arial,sans-serif;color:#FFD700;background:#2a2a2a;border-right:1px solid #444;`;
+                    sizeLabel.textContent = "—";
+
+                    const swatch = document.createElement("div");
+                    swatch.className = "xz-title-preset-swatch";
+                    swatch.style.cssText = `flex:1;height:100%;background:#333;`;
+
+                    presetItem.appendChild(sizeLabel);
+                    presetItem.appendChild(swatch);
+
+                    presetItem.addEventListener("mousedown", (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    });
+                    presetItem.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        applyTitlePreset(i);
+                    });
+                    presetItem.addEventListener("contextmenu", (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        saveCurrentToTitlePreset(i);
+                    });
+                    presetsContainer.appendChild(presetItem);
+                }
+
+                presetsRow.appendChild(presetsLabel);
+                presetsRow.appendChild(presetsContainer);
+                leftPanel.appendChild(presetsRow);
+
+                const presetsTipRow = document.createElement("div");
+                presetsTipRow.style.cssText = `text-align:center;color:#888;font-size:10px;margin-top:2px;padding:0 6px;font-family:Arial,sans-serif;`;
+                presetsTipRow.textContent = "左键应用，右键保存当前设置";
+                leftPanel.appendChild(presetsTipRow);
+
+                renderTitlePresets();
+
                 toolbar.appendChild(leftPanel);
                 toolbar.appendChild(colorPanel);
                 container.appendChild(toolbar);
