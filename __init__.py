@@ -42,6 +42,9 @@ from .nodes.xzg_first_last_frame import XiaozhuguangFirstLastFrame
 from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
+from .nodes.xzg_video_loader import XiaozhuguangVideoLoader
+from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
+from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
 from .nodes.xzg_image_compare import XiaozhuguangImageCompare
 from .nodes.xzg_image_preview import XiaozhuguangImagePreview
 from .nodes.xzg_image_save import XiaozhuguangImageSave
@@ -450,6 +453,9 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangDuplicateFirstFrame": XiaozhuguangDuplicateFirstFrame,
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
+    "XiaozhuguangVideoLoader": XiaozhuguangVideoLoader,
+    "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
+    "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
     "XiaozhuguangImagePreview": XiaozhuguangImagePreview,
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
@@ -470,10 +476,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
     "XiaozhuguangDuplicateFirstFrame": "小珠光帧优化",
     "XiaozhuguangFrameExtract": "小珠光帧提取",
-    "XiaozhuguangImageLoader": "小珠光图片加载器",
+    "XiaozhuguangImageLoader": "小珠光图像加载器",
+    "XiaozhuguangVideoLoader": "小珠光视频加载器",
+    "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
+    "XiaozhuguangVideoCombine": "小珠光合并视频",
     "XiaozhuguangImageCompare": "小珠光图像对比",
-    "XiaozhuguangImagePreview": "小珠光预览",
-    "XiaozhuguangImageSave": "小珠光保存",
+    "XiaozhuguangImagePreview": "小珠光图像预览",
+    "XiaozhuguangImageSave": "小珠光图像保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
 }
 

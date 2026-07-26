@@ -4651,8 +4651,11 @@ class Xiaozhuguang {
                 return;
             }
             const origCreate = LiteGraph.createNode;
-            LiteGraph.createNode = function(type, title) {
-                const node = origCreate.call(LiteGraph, type, title);
+            LiteGraph.createNode = function(type, title, options) {
+                // 必须透传 options，否则刷新节点（reloadNode）等依赖
+                // LiteGraph.createNode(type, title, {pos, size, ...}) 的功能
+                // 会因 options 丢失而把节点重置到默认位置（画布原点）
+                const node = origCreate.call(LiteGraph, type, title, options);
                 if (node && type === "XiaozhuguangTitle") {
                     if (!node.properties) node.properties = {};
                     const savedFs = parseInt(localStorage.getItem('xzg_last_title_font_size'));
@@ -5583,9 +5586,8 @@ app.registerExtension({
                 _origConfigure?.apply(this, arguments);
                 this.properties = this.properties || { ...DEFAULT_PROPS };
                 if (info.properties) Object.assign(this.properties, info.properties);
-                if (info.pos) this.pos = info.pos;
-                if (info.size) this.size = info.size;
-                if (info.flags) this.flags = info.flags;
+                // pos / size / flags 已由 LiteGraph 原生 configure 处理，这里不再重复赋值
+                // （重复赋值会引用同一数组对象，并在后续异步 adjustHeightToContent 中触发位置漂移）
                 this.color = "#fff0";
                 this.bgcolor = "transparent";
                 let tries = 0;
@@ -6683,7 +6685,7 @@ app.registerExtension({
                             if (swatch) swatch.style.background = preset.fontColor || "#ffffff";
                             if (sizeLabel) {
                                 sizeLabel.textContent = preset.fontSize || 14;
-                                sizeLabel.style.color = "#FFD700";
+                                sizeLabel.style.color = "#4CAF50";
                             }
                             item.style.borderStyle = "solid";
                             item.title = `预设${index + 1}：${preset.fontSize || 14}px`;
@@ -6802,6 +6804,111 @@ app.registerExtension({
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
+                const showTitleConfirmDialog = (title, message) => {
+                    return new Promise((resolve) => {
+                        if (!document.getElementById("xzg-dialog-global-css")) {
+                            const s = document.createElement("style");
+                            s.id = "xzg-dialog-global-css";
+                            s.textContent = `
+                                .xzg-wf-dialog-overlay {
+                                    position: fixed;top: 0;left: 0;right: 0;bottom: 0;
+                                    background: rgba(0, 0, 0, 0.6);
+                                    display: flex;align-items: center;justify-content: center;
+                                    z-index: 100002;
+                                }
+                                .xzg-wf-dialog {
+                                    background: var(--comfy-menu-bg, #2a2a2a);
+                                    border: 1px solid var(--border-color, #555);
+                                    border-radius: 8px;min-width: 320px;
+                                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+                                }
+                                .xzg-wf-dialog-title {
+                                    position: relative;display: flex;align-items: center;justify-content: center;
+                                    padding: 14px 16px;font-size: 15px;font-weight: bold;color: #fff;
+                                    border-bottom: 1px solid var(--border-color, #444);text-align: center;
+                                }
+                                .xzg-wf-dialog-body { padding: 20px 16px; }
+                                .xzg-wf-dialog-footer {
+                                    padding: 12px 16px;border-top: 1px solid var(--border-color, #444);
+                                    display: flex;justify-content: center;gap: 10px;
+                                }
+                                .xzg-wf-dialog-btn {
+                                    padding: 6px 16px;font-size: 13px;
+                                    background: var(--comfy-input-bg, #3a3a3a);
+                                    color: var(--fg, #ddd);
+                                    border: 1px solid var(--border-color, #555);
+                                    border-radius: 4px;cursor: pointer;transition: all 0.15s;
+                                }
+                                .xzg-wf-dialog-btn:hover { background: rgba(255, 255, 255, 0.1); }
+                                .xzg-wf-dialog-btn-cancel {
+                                    background: var(--comfy-input-bg, #3a3a3a);color: var(--fg, #ddd);
+                                }
+                                .xzg-wf-dialog-btn-confirm {
+                                    background: #4a4a4a;color: #fff;border-color: #666;font-weight: bold;
+                                }
+                                .xzg-wf-dialog-btn-confirm:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+                                .xzg-wf-dialog-btn-confirm:disabled { opacity: 0.4;cursor: not-allowed; }
+                            `;
+                            document.head.appendChild(s);
+                        }
+                        const escapeAttr = (v) => String(v == null ? "" : v)
+                            .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+                            .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+                        const overlay = document.createElement("div");
+                        overlay.className = "xzg-wf-dialog-overlay";
+                        overlay.style.zIndex = "100003";
+                        overlay.innerHTML = `
+                            <div class="xzg-wf-dialog" style="min-width:320px;max-width:420px;">
+                                <div class="xzg-wf-dialog-title" style="color:#FFD700;">${escapeAttr(title)}</div>
+                                <div class="xzg-wf-dialog-body" style="padding:18px 20px;font-size:13px;color:#ddd;line-height:1.6;">
+                                    ${escapeAttr(message)}
+                                </div>
+                                <div class="xzg-wf-dialog-footer">
+                                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-title-confirm-cancel">取消</button>
+                                    <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-confirm" id="xzg-title-confirm-ok" style="background:#FFD700;color:#333;border-color:#FFD700;">确认</button>
+                                </div>
+                            </div>
+                        `;
+                        document.body.appendChild(overlay);
+
+                        const dialogEl = overlay.querySelector(".xzg-wf-dialog");
+
+                        const stopAll = (e) => { e.stopPropagation(); e.preventDefault(); };
+                        overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) { e.stopPropagation(); } });
+                        if (dialogEl) {
+                            dialogEl.addEventListener("mousedown", stopAll);
+                            dialogEl.addEventListener("pointerdown", stopAll);
+                            dialogEl.addEventListener("click", (e) => e.stopPropagation());
+                        }
+
+                        const finish = (result) => {
+                            document.removeEventListener("keydown", onKey, true);
+                            overlay.remove();
+                            resolve(result);
+                        };
+
+                        const onKey = (e) => {
+                            if (e.key === "Escape") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                finish(false);
+                            } else if (e.key === "Enter") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                finish(true);
+                            }
+                        };
+                        document.addEventListener("keydown", onKey, true);
+
+                        overlay.querySelector("#xzg-title-confirm-cancel").addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); finish(false); });
+                        overlay.querySelector("#xzg-title-confirm-ok").addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); finish(true); });
+                        overlay.addEventListener("click", (e) => {
+                            if (e.target === overlay) { e.stopPropagation(); e.preventDefault(); finish(false); }
+                        });
+                    });
+                };
+
                 const saveCurrentToTitlePreset = (index) => {
                     const presets = getTitlePresets();
                     presets[index] = {
@@ -6834,7 +6941,7 @@ app.registerExtension({
 
                     const sizeLabel = document.createElement("span");
                     sizeLabel.className = "xz-title-preset-size";
-                    sizeLabel.style.cssText = `display:flex;align-items:center;justify-content:center;width:18px;flex-shrink:0;font-size:9px;font-weight:bold;font-family:Arial,sans-serif;color:#FFD700;background:#2a2a2a;border-right:1px solid #444;`;
+                    sizeLabel.style.cssText = `display:flex;align-items:center;justify-content:center;width:22px;flex-shrink:0;font-size:11px;font-weight:bold;font-family:Arial,sans-serif;color:#4CAF50;background:#2a2a2a;border-right:1px solid #444;`;
                     sizeLabel.textContent = "—";
 
                     const swatch = document.createElement("div");
@@ -6852,10 +6959,16 @@ app.registerExtension({
                         e.stopPropagation();
                         applyTitlePreset(i);
                     });
-                    presetItem.addEventListener("contextmenu", (e) => {
+                    presetItem.addEventListener("contextmenu", async (e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        saveCurrentToTitlePreset(i);
+                        const confirmed = await showTitleConfirmDialog(
+                            "保存预设",
+                            `确定要将当前标题设置保存到预设${i + 1}吗？`
+                        );
+                        if (confirmed) {
+                            saveCurrentToTitlePreset(i);
+                        }
                     });
                     presetsContainer.appendChild(presetItem);
                 }
@@ -7303,6 +7416,7 @@ app.registerExtension({
                     node._mouseDownInEditor = false;
                     while (el) {
                         if (el === container || el === toolbar) { node._mouseDownInEditor = true; break; }
+                        if (el.classList && (el.classList.contains("xzg-wf-dialog-overlay") || el.classList.contains("xzg-dialog-overlay"))) { node._mouseDownInEditor = true; break; }
                         el = el.parentElement;
                     }
                 };
@@ -7313,6 +7427,7 @@ app.registerExtension({
                     let el = e.target;
                     while (el) {
                         if (el === container || el === toolbar) return;
+                        if (el.classList && (el.classList.contains("xzg-wf-dialog-overlay") || el.classList.contains("xzg-dialog-overlay"))) return;
                         el = el.parentElement;
                     }
                     if (node._blurTimer) { clearTimeout(node._blurTimer); node._blurTimer = null; }

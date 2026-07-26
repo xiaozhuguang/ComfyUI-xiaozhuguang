@@ -452,7 +452,7 @@ class XiaozhuguangImageSaveNode {
 
     getHelp() {
         return `
-            <p>小珠光保存节点，保存图像为 JPG(压缩) 或 PNG(无损)，并显示压缩预览。</p>
+            <p>小珠光图像保存节点，保存图像为 JPG(压缩) 或 PNG(无损)，并显示压缩预览。</p>
             <ul>
                 <li><strong>JPG/PNG</strong>：切换保存格式。JPG使用压缩参数(与预览一致)，PNG为全分辨率无损。</li>
                 <li><strong>减少卡顿</strong>：开启后预览压缩为最长边3840px的JPG（质量85）；关闭(极速流畅)：最长边6400px的JPG（质量80）。</li>
@@ -465,7 +465,7 @@ class XiaozhuguangImageSaveNode {
     }
 
     static category = "xiaozhuguang";
-    static title = "小珠光保存";
+    static title = "小珠光图像保存";
     static type = XZG_IMAGE_SAVE_TYPE;
 }
 
@@ -571,7 +571,7 @@ app.registerExtension({
                 };
             })(nodeType.prototype.onNodeCreated);
 
-            // 右键菜单：PNG保存 + JPG保存（与小珠光预览一致）
+            // 右键菜单：PNG保存 + JPG保存（与小珠光图像预览一致）
             const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);

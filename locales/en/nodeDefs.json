@@ -207,6 +207,52 @@
       "2": { "name": "file list" }
     }
   },
+  "XiaozhuguangVideoLoader": {
+    "display_name": "小珠光视频加载器",
+    "inputs": {
+      "视频": { "name": "视频" },
+      "强制帧率": { "name": "强制帧率" },
+      "自定义宽度": { "name": "自定义宽度" },
+      "自定义高度": { "name": "自定义高度" },
+      "跳过帧数": { "name": "跳过帧数" },
+      "帧数上限": { "name": "帧数上限" },
+      "VAE": { "name": "VAE" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "音频" },
+      "2": { "name": "视频信息" }
+    }
+  },
+  "XiaozhuguangVideoInfoReader": {
+    "display_name": "Xiaozhuguang Video Info Reader",
+    "inputs": {
+      "视频信息": { "name": "video info" }
+    },
+    "outputs": {
+      "0": { "name": "loaded_fps" },
+      "1": { "name": "loaded_frame_count" },
+      "2": { "name": "loaded_width" },
+      "3": { "name": "loaded_height" },
+      "4": { "name": "filename" }
+    }
+  },
+  "XiaozhuguangVideoCombine": {
+    "display_name": "Xiaozhuguang Video Combine",
+    "inputs": {
+      "图像": { "name": "images" },
+      "帧率": { "name": "frame_rate" },
+      "文件名前缀": { "name": "filename_prefix" },
+      "格式": { "name": "format" },
+      "循环次数": { "name": "loop_count" },
+      "正反播放": { "name": "pingpong" },
+      "保存到输出目录": { "name": "save_output" },
+      "音频": { "name": "audio" }
+    },
+    "outputs": {
+      "0": { "name": "file_path" }
+    }
+  },
   "XiaozhuguangImageCompare": {
     "display_name": "Xiaozhuguang Image Compare",
     "inputs": {
@@ -217,14 +263,14 @@
     }
   },
   "XiaozhuguangImagePreview": {
-    "display_name": "Xiaozhuguang Preview",
+    "display_name": "Xiaozhuguang Image Preview",
     "inputs": {
       "images": { "name": "images" },
       "reduce_lag": { "name": "Reduce Lag" }
     }
   },
   "XiaozhuguangImageSave": {
-    "display_name": "Xiaozhuguang Save",
+    "display_name": "Xiaozhuguang Image Save",
     "inputs": {
       "images": { "name": "images" },
       "output_path": { "name": "output path" },

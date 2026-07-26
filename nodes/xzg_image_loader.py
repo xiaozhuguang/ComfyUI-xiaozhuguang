@@ -355,5 +355,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangImageLoader": "小珠光图片加载器",
+    "XiaozhuguangImageLoader": "小珠光图像加载器",
 }

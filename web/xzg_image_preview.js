@@ -447,7 +447,7 @@ class XiaozhuguangImagePreviewNode {
 
     getHelp() {
         return `
-            <p>小珠光预览节点，用于预览图像（支持多图切换）。</p>
+            <p>小珠光图像预览节点，用于预览图像（支持多图切换）。</p>
             <ul>
                 <li><strong>减少卡顿</strong>：开启后预览压缩为最长边3840px的JPG（质量85），适合大图场景。</li>
                 <li><strong>极速流畅</strong>：关闭减少卡顿，预览为最长边6400px的JPG（质量80）。</li>
@@ -457,7 +457,7 @@ class XiaozhuguangImagePreviewNode {
     }
 
     static category = "xiaozhuguang";
-    static title = "小珠光预览";
+    static title = "小珠光图像预览";
     static type = XZG_IMAGE_PREVIEW_TYPE;
 }
 
@@ -510,6 +510,7 @@ app.registerExtension({
             nodeType.prototype.onMouseMove = function (e, pos) {
                 proto.onMouseMove.call(this, e, pos);
             };
+
             nodeType.prototype.onMouseLeave = function (e, pos) {
                 proto.onMouseLeave.call(this, e, pos);
             };

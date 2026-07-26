@@ -9,8 +9,8 @@ from .xzg_image_preview import REAL_STORE
 
 
 class XiaozhuguangImageSave(PreviewImage):
-    """小珠光保存 - 保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)。
-    与小珠光预览完全相似的显示体验，但增加实际文件保存功能。
+    """小珠光图像保存 - 保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)。
+    与小珠光图像预览完全相似的显示体验，但增加实际文件保存功能。
     JPG保存使用与预览相同的压缩参数；PNG保存为全分辨率无损。
     右键菜单可下载真实分辨率PNG(懒编码)或压缩JPG。
     文件名固定为 xzg-save_序号，用户可通过 output_path 自定义输出文件夹。"""

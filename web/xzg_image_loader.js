@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
 
 // ═══════════════════════════════════════════════
-//  小珠光图片加载器 · 前端
+//  小珠光图像加载器 · 前端
 //  可视化图片卡片网格（参考 Apt_Preset 实现方式）
 // ═══════════════════════════════════════════════
 
@@ -67,7 +67,7 @@ function setCardSize(node, size) {
 // 自适应缩略图算法：确保所有缩略图在节点内完整显示，最大化利用空间
 // 考虑卡片 border(1px) 的影响
 // 返回 { size: 缩略图大小, cols: 最佳列数, totalWidth: 实际总宽, totalHeight: 实际总高 }
-// 完全复刻小珠光预览的自适应算法
+// 完全复刻小珠光图像预览的自适应算法
 function computeAutoCardSize(containerWidth, containerHeight, imageCount, gap = 2) {
     const effW = containerWidth;
     const effH = containerHeight;
@@ -546,7 +546,7 @@ function createImgBatchUI(node) {
         "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;";
     emptyTip.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
-            <div style="text-align:center;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;">小珠光图片加载器</div>
+            <div style="text-align:center;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;">小珠光图像加载器</div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">📁 添加图片</div>

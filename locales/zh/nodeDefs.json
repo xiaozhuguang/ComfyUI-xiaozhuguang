@@ -195,7 +195,7 @@
     }
   },
   "XiaozhuguangImageLoader": {
-    "display_name": "小珠光图片加载器",
+    "display_name": "小珠光图像加载器",
     "inputs": {
       "image_list": { "name": "图片列表" },
       "card_size": { "name": "卡片尺寸" },
@@ -205,6 +205,52 @@
       "0": { "name": "图像" },
       "1": { "name": "图片数量" },
       "2": { "name": "文件列表" }
+    }
+  },
+  "XiaozhuguangVideoLoader": {
+    "display_name": "小珠光视频加载器",
+    "inputs": {
+      "视频": { "name": "视频" },
+      "强制帧率": { "name": "强制帧率" },
+      "自定义宽度": { "name": "自定义宽度" },
+      "自定义高度": { "name": "自定义高度" },
+      "跳过帧数": { "name": "跳过帧数" },
+      "帧数上限": { "name": "帧数上限" },
+      "VAE": { "name": "VAE" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "音频" },
+      "2": { "name": "视频信息" }
+    }
+  },
+  "XiaozhuguangVideoInfoReader": {
+    "display_name": "小珠光视频信息读取",
+    "inputs": {
+      "视频信息": { "name": "视频信息" }
+    },
+    "outputs": {
+      "0": { "name": "加载帧率" },
+      "1": { "name": "加载帧数" },
+      "2": { "name": "加载宽度" },
+      "3": { "name": "加载高度" },
+      "4": { "name": "文件名称" }
+    }
+  },
+  "XiaozhuguangVideoCombine": {
+    "display_name": "小珠光合并视频",
+    "inputs": {
+      "图像": { "name": "图像" },
+      "帧率": { "name": "帧率" },
+      "文件名前缀": { "name": "文件名前缀" },
+      "格式": { "name": "格式" },
+      "循环次数": { "name": "循环次数" },
+      "正反播放": { "name": "正反播放" },
+      "保存到输出目录": { "name": "保存到输出目录" },
+      "音频": { "name": "音频" }
+    },
+    "outputs": {
+      "0": { "name": "文件路径" }
     }
   },
   "XiaozhuguangImageCompare": {
@@ -217,14 +263,14 @@
     }
   },
   "XiaozhuguangImagePreview": {
-    "display_name": "小珠光预览",
+    "display_name": "小珠光图像预览",
     "inputs": {
       "images": { "name": "图像" },
       "reduce_lag": { "name": "减少卡顿" }
     }
   },
   "XiaozhuguangImageSave": {
-    "display_name": "小珠光保存",
+    "display_name": "小珠光图像保存",
     "inputs": {
       "images": { "name": "图像" },
       "output_path": { "name": "输出路径" },
