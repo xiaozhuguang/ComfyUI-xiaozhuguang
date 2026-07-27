@@ -446,7 +446,6 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangTitle": XiaozhuguangTitle,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
-    "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
     "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
     "XiaozhuguangGetWidget": XiaozhuguangGetWidget,
     "XiaozhuguangFirstLastFrame": XiaozhuguangFirstLastFrame,

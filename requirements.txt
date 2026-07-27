@@ -3,3 +3,4 @@ huggingface_hub
 transformers>=4.57.1
 qwen-vl-utils
 bitsandbytes
+imageio-ffmpeg

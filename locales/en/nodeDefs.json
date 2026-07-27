@@ -227,7 +227,7 @@
   "XiaozhuguangVideoInfoReader": {
     "display_name": "Xiaozhuguang Video Info Reader",
     "inputs": {
-      "视频信息": { "name": "video info" }
+      "video_info": { "name": "video info" }
     },
     "outputs": {
       "0": { "name": "loaded_fps" },
@@ -238,15 +238,15 @@
     }
   },
   "XiaozhuguangVideoCombine": {
-    "display_name": "Xiaozhuguang Video Combine",
+    "display_name": "Xiaozhuguang Video Save",
     "inputs": {
       "图像": { "name": "images" },
       "帧率": { "name": "frame_rate" },
       "文件名前缀": { "name": "filename_prefix" },
       "格式": { "name": "format" },
-      "循环次数": { "name": "loop_count" },
-      "正反播放": { "name": "pingpong" },
+      "CRF": { "name": "CRF" },
       "保存到输出目录": { "name": "save_output" },
+      "自定义保存目录": { "name": "custom_save_directory" },
       "音频": { "name": "audio" }
     },
     "outputs": {

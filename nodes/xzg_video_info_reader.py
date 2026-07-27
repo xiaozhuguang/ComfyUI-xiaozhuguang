@@ -18,7 +18,7 @@ class XiaozhuguangVideoInfoReader:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "视频信息": ("VHS_VIDEOINFO",),
+                "video_info": ("VHS_VIDEOINFO",),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -29,16 +29,16 @@ class XiaozhuguangVideoInfoReader:
 
     RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "STRING")
     RETURN_NAMES = (
-        "加载帧率",
-        "加载帧数",
-        "加载宽度",
-        "加载高度",
-        "文件名称",
+        "帧率",
+        "帧数",
+        "宽度",
+        "高度",
+        "名称",
     )
     FUNCTION = "get_video_info"
 
-    def get_video_info(self, 视频信息, unique_id=None):
-        info = 视频信息 or {}
+    def get_video_info(self, video_info, unique_id=None):
+        info = video_info or {}
         keys = ["fps", "frame_count", "width", "height"]
 
         loaded_info = []

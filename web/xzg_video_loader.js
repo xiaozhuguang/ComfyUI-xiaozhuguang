@@ -708,11 +708,6 @@ function bindVideoLoaderInteractions(node) {
             if (!url) return;
             XiaozhuguangVideoPlayer.downloadVideo(url, _extractFilename(url));
         },
-        onSaveAs: () => {
-            const url = player.getSrc();
-            if (!url) return;
-            XiaozhuguangVideoPlayer.saveAsVideo(url, _extractFilename(url));
-        },
     });
     node._xzgVideoPlayer = player;
 

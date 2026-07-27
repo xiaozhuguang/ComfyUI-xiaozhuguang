@@ -1,5 +1,5 @@
 """
-小珠光合并视频
+小珠光视频保存
 参考 VHS VideoCombine 节点，将图像序列合并为视频
 支持 mp4/webm/gif 格式，可选音频合并
 """
@@ -15,27 +15,79 @@ from PIL import Image
 import folder_paths
 from comfy.utils import ProgressBar
 
+# 添加 PromptServer 路由
+from server import PromptServer
+routes = PromptServer.instance.routes
+
 
 BIGMAX = int(1e9)
 ENCODE_ARGS = ['utf-8', 'replace']
 
 
-def _get_ffmpeg_path():
-    ffmpeg_bin = r"E:\ComfyUI-aki-XZG\ffmpeg\bin"
-    candidates = [
-        os.path.join(ffmpeg_bin, "ffmpeg.exe"),
-        os.path.join(ffmpeg_bin, "ffmpeg"),
-        "ffmpeg",
-    ]
-    for c in candidates:
+def ffmpeg_suitability(path):
+    """评估 ffmpeg 的适用性，参考 VHS 的实现"""
+    try:
+        version = subprocess.run([path, "-version"], check=True,
+                                 capture_output=True).stdout.decode(*ENCODE_ARGS)
+    except:
+        return 0
+    score = 0
+    simple_criterion = [("libvpx", 20), ("264", 10), ("265", 3),
+                        ("svtav1", 5), ("libopus", 1)]
+    for criterion in simple_criterion:
+        if version.find(criterion[0]) >= 0:
+            score += criterion[1]
+    copyright_index = version.find('2000-2')
+    if copyright_index >= 0:
         try:
-            res = subprocess.run([c, "-version"], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, check=False, timeout=5)
-            if res.returncode == 0:
-                return c
-        except Exception:
-            continue
-    return "ffmpeg"
+            score += int(version[copyright_index + 5:copyright_index + 9]) // 10
+        except:
+            pass
+    return score
+
+
+def _get_ffmpeg_path():
+    """参考 VHS 的 ffmpeg 路径检测逻辑"""
+    import shutil
+    
+    if "VHS_FORCE_FFMPEG_PATH" in os.environ:
+        return os.environ.get("VHS_FORCE_FFMPEG_PATH")
+    
+    ffmpeg_paths = []
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        imageio_ffmpeg_path = get_ffmpeg_exe()
+        ffmpeg_paths.append(imageio_ffmpeg_path)
+    except:
+        pass
+    
+    if "VHS_USE_IMAGEIO_FFMPEG" in os.environ:
+        return imageio_ffmpeg_path
+    
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg is not None:
+        ffmpeg_paths.append(system_ffmpeg)
+    
+    if os.path.isfile("ffmpeg"):
+        ffmpeg_paths.append(os.path.abspath("ffmpeg"))
+    if os.path.isfile("ffmpeg.exe"):
+        ffmpeg_paths.append(os.path.abspath("ffmpeg.exe"))
+    
+    comfyui_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    ffmpeg_bin = os.path.join(comfyui_dir, "ffmpeg", "bin")
+    if os.path.isdir(ffmpeg_bin):
+        if os.path.isfile(os.path.join(ffmpeg_bin, "ffmpeg.exe")):
+            ffmpeg_paths.append(os.path.join(ffmpeg_bin, "ffmpeg.exe"))
+        elif os.path.isfile(os.path.join(ffmpeg_bin, "ffmpeg")):
+            ffmpeg_paths.append(os.path.join(ffmpeg_bin, "ffmpeg"))
+    
+    if len(ffmpeg_paths) == 0:
+        print("[小珠光视频合并] No valid ffmpeg found.")
+        return None
+    elif len(ffmpeg_paths) == 1:
+        return ffmpeg_paths[0]
+    else:
+        return max(ffmpeg_paths, key=ffmpeg_suitability)
 
 
 ffmpeg_path = _get_ffmpeg_path()
@@ -255,7 +307,7 @@ def export_to_video(image_tensors, output_file, frame_rate, format="mp4",
 
 class XiaozhuguangVideoCombine:
     """
-    小珠光合并视频
+    小珠光视频保存
     将图像序列合并为视频文件，支持 mp4/webm/gif 格式，可选音频合并
     """
 
@@ -269,6 +321,7 @@ class XiaozhuguangVideoCombine:
                 "格式": (["mp4", "webm", "gif"], {"default": "mp4"}),
                 "CRF": ("INT", {"default": 19, "min": 0, "max": 51, "step": 1}),
                 "保存到输出目录": ("BOOLEAN", {"default": True}),
+                "自定义保存目录": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 "音频": ("AUDIO",),
@@ -287,16 +340,25 @@ class XiaozhuguangVideoCombine:
     OUTPUT_NODE = True
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,
-                      保存到输出目录, 音频=None,
+                      保存到输出目录, 自定义保存目录="", 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ("",)
 
-        output_dir = (folder_paths.get_output_directory() if 保存到输出目录
-                      else folder_paths.get_temp_directory())
+        base_dir = (folder_paths.get_output_directory() if 保存到输出目录
+                    else folder_paths.get_temp_directory())
+
+        # 输出目录（用户可自定义子文件夹）
+        if 自定义保存目录 and 自定义保存目录.strip():
+            output_dir = os.path.join(base_dir, 自定义保存目录.strip().strip("/\\"))
+            subfolder = 自定义保存目录.strip()
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            output_dir = base_dir
+            subfolder = ""
 
         # 获取可用的文件计数器
-        full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
+        full_output_folder, filename, _, _, _ = folder_paths.get_save_image_path(
             文件名前缀, output_dir
         )
 
@@ -339,6 +401,16 @@ class XiaozhuguangVideoCombine:
                     "type": "output" if 保存到输出目录 else "temp",
                     "format": 格式,
                     "frame_rate": 帧率,
-                }]
+                }],
+                "output_dir": output_dir,
             }
         }
+
+
+# 获取输出目录和临时目录路径的 API 端点
+@routes.get("/xzg/get_output_dir")
+async def xzg_get_output_dir():
+    return {
+        "output_dir": folder_paths.get_output_directory(),
+        "temp_dir": folder_paths.get_temp_directory(),
+    }

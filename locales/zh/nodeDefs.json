@@ -227,26 +227,26 @@
   "XiaozhuguangVideoInfoReader": {
     "display_name": "小珠光视频信息读取",
     "inputs": {
-      "视频信息": { "name": "视频信息" }
+      "video_info": { "name": "视频信息" }
     },
     "outputs": {
-      "0": { "name": "加载帧率" },
-      "1": { "name": "加载帧数" },
-      "2": { "name": "加载宽度" },
-      "3": { "name": "加载高度" },
-      "4": { "name": "文件名称" }
+      "0": { "name": "帧率" },
+      "1": { "name": "帧数" },
+      "2": { "name": "宽度" },
+      "3": { "name": "高度" },
+      "4": { "name": "名称" }
     }
   },
   "XiaozhuguangVideoCombine": {
-    "display_name": "小珠光合并视频",
+    "display_name": "小珠光视频保存",
     "inputs": {
       "图像": { "name": "图像" },
       "帧率": { "name": "帧率" },
       "文件名前缀": { "name": "文件名前缀" },
       "格式": { "name": "格式" },
-      "循环次数": { "name": "循环次数" },
-      "正反播放": { "name": "正反播放" },
+      "CRF": { "name": "CRF" },
       "保存到输出目录": { "name": "保存到输出目录" },
+      "自定义保存目录": { "name": "自定义保存目录" },
       "音频": { "name": "音频" }
     },
     "outputs": {

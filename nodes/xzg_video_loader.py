@@ -21,22 +21,68 @@ DIMMAX = 16384
 ENCODE_ARGS = ['utf-8', 'replace']
 
 
-def _get_ffmpeg_path():
-    ffmpeg_bin = r"E:\ComfyUI-aki-XZG\ffmpeg\bin"
-    candidates = [
-        os.path.join(ffmpeg_bin, "ffmpeg.exe"),
-        os.path.join(ffmpeg_bin, "ffmpeg"),
-        "ffmpeg",
-    ]
-    for c in candidates:
+def ffmpeg_suitability(path):
+    try:
+        version = subprocess.run([path, "-version"], check=True,
+                                 capture_output=True).stdout.decode(*ENCODE_ARGS)
+    except:
+        return 0
+    score = 0
+    simple_criterion = [("libvpx", 20), ("264", 10), ("265", 3),
+                        ("svtav1", 5), ("libopus", 1)]
+    for criterion in simple_criterion:
+        if version.find(criterion[0]) >= 0:
+            score += criterion[1]
+    copyright_index = version.find('2000-2')
+    if copyright_index >= 0:
         try:
-            res = subprocess.run([c, "-version"], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, check=False, timeout=5)
-            if res.returncode == 0:
-                return c
-        except Exception:
-            continue
-    return "ffmpeg"
+            score += int(version[copyright_index + 5:copyright_index + 9]) // 10
+        except:
+            pass
+    return score
+
+
+def _get_ffmpeg_path():
+    import shutil
+    
+    if "VHS_FORCE_FFMPEG_PATH" in os.environ:
+        return os.environ.get("VHS_FORCE_FFMPEG_PATH")
+    
+    ffmpeg_paths = []
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        imageio_ffmpeg_path = get_ffmpeg_exe()
+        ffmpeg_paths.append(imageio_ffmpeg_path)
+    except:
+        pass
+    
+    if "VHS_USE_IMAGEIO_FFMPEG" in os.environ:
+        return imageio_ffmpeg_path
+    
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg is not None:
+        ffmpeg_paths.append(system_ffmpeg)
+    
+    if os.path.isfile("ffmpeg"):
+        ffmpeg_paths.append(os.path.abspath("ffmpeg"))
+    if os.path.isfile("ffmpeg.exe"):
+        ffmpeg_paths.append(os.path.abspath("ffmpeg.exe"))
+    
+    comfyui_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    ffmpeg_bin = os.path.join(comfyui_dir, "ffmpeg", "bin")
+    if os.path.isdir(ffmpeg_bin):
+        if os.path.isfile(os.path.join(ffmpeg_bin, "ffmpeg.exe")):
+            ffmpeg_paths.append(os.path.join(ffmpeg_bin, "ffmpeg.exe"))
+        elif os.path.isfile(os.path.join(ffmpeg_bin, "ffmpeg")):
+            ffmpeg_paths.append(os.path.join(ffmpeg_bin, "ffmpeg"))
+    
+    if len(ffmpeg_paths) == 0:
+        print("[小珠光视频加载器] No valid ffmpeg found.")
+        return None
+    elif len(ffmpeg_paths) == 1:
+        return ffmpeg_paths[0]
+    else:
+        return max(ffmpeg_paths, key=ffmpeg_suitability)
 
 
 ffmpeg_path = _get_ffmpeg_path()

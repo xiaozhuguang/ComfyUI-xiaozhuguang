@@ -303,11 +303,6 @@ app.registerExtension({
                     if (!url) return;
                     XiaozhuguangVideoPlayer.downloadVideo(url, _extractFilename(url));
                 },
-                onSaveAs: () => {
-                    const url = player.getSrc();
-                    if (!url) return;
-                    XiaozhuguangVideoPlayer.saveAsVideo(url, _extractFilename(url));
-                },
             });
 
             node.resizable = true;
@@ -320,6 +315,31 @@ app.registerExtension({
                 return origSetSize?.apply(this, arguments);
             };
             node.setSize([300, 500]);
+            
+            // 获取目录路径
+            const customDirWidget = node.widgets.find(w => w.name === '自定义保存目录');
+            const saveToOutputDirWidget = node.widgets.find(w => w.name === '保存到输出目录');
+            
+            const updateOutputDirDisplay = async () => {
+                try {
+                    const response = await api.fetchApi('/xzg/get_output_dir');
+                    const data = await response.json();
+                    const saveToOutputDir = saveToOutputDirWidget?.value ?? true;
+                    const customDir = customDirWidget?.value ?? '';
+                    let baseDir = saveToOutputDir ? data.output_dir : data.temp_dir;
+                    if (customDir && customDir.trim()) {
+                        baseDir = baseDir + (baseDir.endsWith('\\') || baseDir.endsWith('/') ? '' : '\\') + customDir.trim();
+                    }
+                    // 将完整路径存储在自定义保存目录控件中
+                    if (customDirWidget) {
+                        customDirWidget._xzgFullOutputDir = baseDir;
+                    }
+                    node.setDirtyCanvas(true, true);
+                } catch (e) {
+                    console.error('[小珠光视频保存] 获取输出目录失败:', e);
+                }
+            };
+            updateOutputDirDisplay();
 
             const previewWidget = node.addDOMWidget(
                 VIDEO_PREVIEW_WIDGET_NAME,
@@ -388,6 +408,16 @@ app.registerExtension({
                 origOnExecuted?.apply(this, arguments);
                 if (!output || !player) return;
                 const ui = output.ui || output;
+                
+                // 更新输出目录显示（使用执行返回的路径）
+                if (ui?.output_dir) {
+                    const w = node.widgets.find(w => w.name === '自定义保存目录');
+                    if (w) {
+                        w._xzgFullOutputDir = ui.output_dir;
+                    }
+                    node.setDirtyCanvas(true, true);
+                }
+                
                 const videos = ui?.videos;
                 if (Array.isArray(videos) && videos.length > 0) {
                     const v = videos[0];
@@ -421,6 +451,61 @@ app.registerExtension({
                     // STRING 文本框：圆角矩形 + 标签 + 值
                     w.draw = _xzgDrawWidget;
                     if (!w._xzgValueColor) w._xzgValueColor = '#fff';
+                } else if (w.name === '自定义保存目录') {
+                    // 自定义保存目录：显示用户输入的值，超长时截断
+                    w.draw = function(ctx, node, width, y, H) {
+                        this._xzgDrawW = width;
+                        const pad = 16, r = 6;
+                        const wr = width - pad * 2;
+                        ctx.fillStyle = '#2a2a2a';
+                        ctx.beginPath();
+                        if (ctx.roundRect) { ctx.roundRect(pad, y + 1, wr, H - 2, r); } else { ctx.rect(pad, y + 1, wr, H - 2); }
+                        ctx.fill();
+                        ctx.strokeStyle = '#444';
+                        ctx.stroke();
+                        // 左侧标签：输出目录（4个中文字符）
+                        ctx.fillStyle = '#9ab';
+                        ctx.font = '12px sans-serif';
+                        ctx.textAlign = 'left';
+                        ctx.textBaseline = 'middle';
+                        const labelText = '输出目录';
+                        const labelWidth = ctx.measureText(labelText).width;
+                        ctx.fillText(labelText, pad + 6, y + H / 2);
+                        // 右侧用户输入的值（超长截断，考虑4个中文字符的宽度）
+                        const displayText = String(this.value || '');
+                        ctx.fillStyle = '#fff';
+                        ctx.font = '14px sans-serif';
+                        ctx.textAlign = 'right';
+                        const valMaxW = width - pad * 2 - labelWidth - 20;
+                        if (ctx.measureText(displayText).width > valMaxW) {
+                            let truncated = displayText;
+                            while (ctx.measureText(truncated + '…').width > valMaxW && truncated.length > 0) {
+                                truncated = truncated.slice(0, -1);
+                            }
+                            ctx.fillText(truncated + '…', width - pad - 6, y + H / 2);
+                        } else {
+                            ctx.fillText(displayText, width - pad - 6, y + H / 2);
+                        }
+                    };
+                    // 悬浮提示显示完整输出目录
+                    const origMouse = w.mouse;
+                    w.mouse = function(event, pos, node) {
+                        if (event.type === 'pointerenter') {
+                            const fullPath = this._xzgFullOutputDir;
+                            if (fullPath) {
+                                app.canvas.setTooltip(fullPath);
+                            }
+                        } else if (event.type === 'pointerleave') {
+                            app.canvas.setTooltip(null);
+                        }
+                        return origMouse ? origMouse.apply(this, arguments) : true;
+                    };
+                    // 值改变时更新输出目录
+                    const origCb = w.callback;
+                    w.callback = (v) => {
+                        origCb?.(v);
+                        updateOutputDirDisplay();
+                    };
                 } else if (w.name === 'CRF') {
                     w.draw = function(ctx, node, width, y, H) {
                         this._xzgDrawW = width;
@@ -453,6 +538,12 @@ app.registerExtension({
                     };
                 } else if (w.name === '保存到输出目录') {
                     // BOOLEAN 开关：圆角矩形 + 标签 + 保存/预览状态
+                    // 添加回调，当值改变时更新输出目录显示
+                    const origCb = w.callback;
+                    w.callback = (v) => {
+                        origCb?.(v);
+                        updateOutputDirDisplay();
+                    };
                     w.draw = function(ctx, node, width, y, H) {
                         this._xzgDrawW = width;
                         const pad = 16, r = 6;

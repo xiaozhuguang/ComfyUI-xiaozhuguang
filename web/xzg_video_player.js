@@ -35,7 +35,6 @@ export class XiaozhuguangVideoPlayer {
         this.onEnded = options.onEnded || null;
         this.onError = options.onError || null;
         this.onSaveToDesktop = options.onSaveToDesktop || null;
-        this.onSaveAs = options.onSaveAs || null;
         this.placeholderText = options.placeholderText ?? "🎬 双击加载视频";
 
         this._video = null;
@@ -106,6 +105,8 @@ export class XiaozhuguangVideoPlayer {
             "position:relative;width:100%;height:100%;display:flex;align-items:center;" +
             "justify-content:center;z-index:1;pointer-events:auto;";
         this._stage.addEventListener("wheel", this._forwardWheel, { passive: false });
+        this._stage.addEventListener("dblclick", this._onStageDblClick);
+        this._stage.addEventListener("contextmenu", this._onContextMenu);
 
         this._videoSurface = document.createElement("div");
         this._videoSurface.style.cssText =
@@ -278,7 +279,7 @@ export class XiaozhuguangVideoPlayer {
         this._contextMenuDesktop = document.createElement("div");
         this._contextMenuDesktop.style.cssText = menuItemStyle;
         this._contextMenuDesktop.innerHTML =
-            '<span style="display:inline-block;width:18px;">📥</span> 保存到桌面';
+            '<span style="display:inline-block;width:18px;">📥</span> 保存视频';
         this._contextMenuDesktop.addEventListener("click", (e) => {
             e.stopPropagation();
             this._hideContextMenu();
@@ -292,24 +293,7 @@ export class XiaozhuguangVideoPlayer {
             this._contextMenuDesktop.style.background = "";
         });
 
-        this._contextMenuSaveAs = document.createElement("div");
-        this._contextMenuSaveAs.style.cssText = menuItemStyle;
-        this._contextMenuSaveAs.innerHTML =
-            '<span style="display:inline-block;width:18px;">📁</span> 另存为...';
-        this._contextMenuSaveAs.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this._hideContextMenu();
-            this.onSaveAs?.();
-        });
-        this._contextMenuSaveAs.addEventListener("mouseenter", () => {
-            this._contextMenuSaveAs.style.background = "#3a3a3a";
-        });
-        this._contextMenuSaveAs.addEventListener("mouseleave", () => {
-            this._contextMenuSaveAs.style.background = "";
-        });
-
         this._contextMenu.appendChild(this._contextMenuDesktop);
-        this._contextMenu.appendChild(this._contextMenuSaveAs);
         document.body.appendChild(this._contextMenu);
 
         document.addEventListener("click", this._onDocClick);
@@ -510,6 +494,12 @@ export class XiaozhuguangVideoPlayer {
         this.onDblClick?.();
     };
 
+    _onStageDblClick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onDblClick?.();
+    };
+
     _forwardWheel = (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -631,10 +621,8 @@ export class XiaozhuguangVideoPlayer {
         const menu = this._contextMenu;
         if (!menu) return;
         const showDesktop = typeof this.onSaveToDesktop === "function";
-        const showSaveAs = typeof this.onSaveAs === "function";
-        if (!showDesktop && !showSaveAs) return;
+        if (!showDesktop) return;
         this._contextMenuDesktop.style.display = showDesktop ? "" : "none";
-        this._contextMenuSaveAs.style.display = showSaveAs ? "" : "none";
         menu.style.left = x + "px";
         menu.style.top = y + "px";
         menu.style.display = "block";
@@ -658,25 +646,51 @@ export class XiaozhuguangVideoPlayer {
         if (e.key === "Escape") this._hideContextMenu();
     };
 
-    /** 下载视频：fetch → blob → a 标签触发浏览器下载 */
-    static downloadVideo(url, filename) {
+    /** 下载视频到桌面：优先使用 File System Access API 指定保存到桌面，不支持则降级为普通下载 */
+    static async downloadVideo(url, filename) {
         if (!url) return;
-        fetch(url)
-            .then((res) => {
-                if (!res.ok) throw new Error("HTTP " + res.status);
-                return res.blob();
-            })
-            .then((blob) => {
-                const a = document.createElement("a");
-                const objectUrl = URL.createObjectURL(blob);
-                a.href = objectUrl;
-                a.download = filename || "video.mp4";
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
-            })
-            .catch((err) => console.error("[小珠光] 视频下载失败:", err));
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            const blob = await res.blob();
+            const ext = (filename || "").split(".").pop()?.toLowerCase() || "mp4";
+            const mimeType = blob.type || ("video/" + (ext === "webm" ? "webm" : ext === "mkv" ? "x-matroska" : ext === "mov" ? "quicktime" : ext === "avi" ? "x-msvideo" : ext === "gif" ? "gif" : "mp4"));
+            
+            // 优先使用 File System Access API，直接保存到桌面
+            if (typeof window.showSaveFilePicker === "function") {
+                try {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: filename || "video.mp4",
+                        startIn: "desktop",
+                        types: [{
+                            description: "视频文件",
+                            accept: { [mimeType]: ["." + ext] },
+                        }],
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    return;
+                } catch (e) {
+                    // 用户取消对话框，直接返回，不进行降级下载
+                    if (e?.name === "AbortError") return;
+                    // 其他错误（权限不足等），继续降级
+                }
+            }
+            
+            // 降级：普通下载（浏览器默认下载目录）
+            const a = document.createElement("a");
+            const objectUrl = URL.createObjectURL(blob);
+            a.href = objectUrl;
+            a.download = filename || "video.mp4";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
+        } catch (err) {
+            if (err?.name === "AbortError") return; // 用户取消
+            console.error("[小珠光] 视频下载失败:", err);
+        }
     }
 
     /** 另存为：优先使用 File System Access API 弹出保存对话框，不支持则降级为普通下载 */
@@ -1127,6 +1141,8 @@ export class XiaozhuguangVideoPlayer {
         if (this._frameDisplay) this._frameDisplay.remove();
         if (this._stage) {
             this._stage.removeEventListener("wheel", this._forwardWheel);
+            this._stage.removeEventListener("dblclick", this._onStageDblClick);
+            this._stage.removeEventListener("contextmenu", this._onContextMenu);
             this._stage.remove();
         }
         this._video = null;
@@ -1154,6 +1170,5 @@ export class XiaozhuguangVideoPlayer {
         }
         this._contextMenu = null;
         this._contextMenuDesktop = null;
-        this._contextMenuSaveAs = null;
     }
 }
