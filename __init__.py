@@ -43,11 +43,12 @@ from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 from .nodes.xzg_video_loader import XiaozhuguangVideoLoader
+from .nodes.xzg_audio_loader import XiaozhuguangAudioLoader
 from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
 from .nodes.xzg_image_compare import XiaozhuguangImageCompare
-from .nodes.xzg_image_preview import XiaozhuguangImagePreview
 from .nodes.xzg_image_save import XiaozhuguangImageSave
+from .nodes.xzg_audio_save import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 
 
@@ -55,7 +56,7 @@ from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 try:
     from server import PromptServer
     from aiohttp import web
-    from .nodes.xzg_image_preview import REAL_STORE
+    from .nodes.xzg_image_save import REAL_STORE
 
     @PromptServer.instance.routes.post("/xzg_save_real")
     async def xzg_save_real(request):
@@ -453,11 +454,12 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
     "XiaozhuguangVideoLoader": XiaozhuguangVideoLoader,
+    "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
-    "XiaozhuguangImagePreview": XiaozhuguangImagePreview,
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
+    "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
 }
 
@@ -477,11 +479,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFrameExtract": "小珠光帧提取",
     "XiaozhuguangImageLoader": "小珠光图像加载器",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
+    "XiaozhuguangAudioLoader": "小珠光音频加载器",
     "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
     "XiaozhuguangVideoCombine": "小珠光合并视频",
     "XiaozhuguangImageCompare": "小珠光图像对比",
-    "XiaozhuguangImagePreview": "小珠光图像预览",
     "XiaozhuguangImageSave": "小珠光图像保存",
+    "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
 }
 

@@ -1,6 +1,7 @@
+torch
 torchvision
-huggingface_hub
-transformers>=4.57.1
+numpy
+Pillow
+transformers
 qwen-vl-utils
-bitsandbytes
-imageio-ffmpeg
+imageio_ffmpeg

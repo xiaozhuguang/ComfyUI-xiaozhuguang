@@ -373,11 +373,8 @@ class XiaozhuguangImageCompareNode {
             node.getWidgetOnPos.__xzgPatched = true;
         }
         const s = this.size;
-        if (!Array.isArray(s) || !isFinite(s[0]) || !isFinite(s[1])) {
-            let n = s;
-            if (Array.isArray(n)) n = n[0];
-            if (typeof n !== "number" || !isFinite(n)) n = 270;
-            this.setSize([n, 500]);
+        if (!Array.isArray(s) || !isFinite(s[0]) || !isFinite(s[1]) || s[0] < 270 || s[1] < 300) {
+            this.setSize([270, 300]);
         }
         this.setDirtyCanvas(true, true);
     }
@@ -499,12 +496,14 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = (function(orig) {
                 return function () {
                     orig.call(this);
+                    const MIN_W = 270;
                     const MIN_H = 300;
+                    this.minWidth = Math.max(this.minWidth || 0, MIN_W);
                     this.minHeight = Math.max(this.minHeight || 0, MIN_H);
                     const origSetSize2 = this.setSize.bind(this);
                     this.setSize = function (size) {
-                        const w = size?.[0] || this.size?.[0] || 300;
-                        const h = Math.max(size?.[1] || this.size?.[1] || 500, MIN_H);
+                        const w = Math.max(size?.[0] || this.size?.[0] || MIN_W, MIN_W);
+                        const h = Math.max(size?.[1] || this.size?.[1] || MIN_H, MIN_H);
                         origSetSize2([w, h]);
                     };
                 };

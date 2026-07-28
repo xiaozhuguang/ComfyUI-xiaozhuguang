@@ -224,6 +224,17 @@
       "2": { "name": "视频信息" }
     }
   },
+  "XiaozhuguangAudioLoader": {
+    "display_name": "小珠光音频加载器",
+    "inputs": {
+      "音频": { "name": "音频" },
+      "起始时间(秒)": { "name": "起始时间(秒)" },
+      "时长(秒)": { "name": "时长(秒)" }
+    },
+    "outputs": {
+      "0": { "name": "音频" }
+    }
+  },
   "XiaozhuguangVideoInfoReader": {
     "display_name": "小珠光视频信息读取",
     "inputs": {
@@ -262,13 +273,6 @@
       "show_line": { "name": "划线" }
     }
   },
-  "XiaozhuguangImagePreview": {
-    "display_name": "小珠光图像预览",
-    "inputs": {
-      "images": { "name": "图像" },
-      "reduce_lag": { "name": "减少卡顿" }
-    }
-  },
   "XiaozhuguangImageSave": {
     "display_name": "小珠光图像保存",
     "inputs": {
@@ -276,7 +280,22 @@
       "output_path": { "name": "输出路径" },
       "filename_prefix": { "name": "文件名前缀" },
       "save_format": { "name": "保存格式" },
-      "reduce_lag": { "name": "减少卡顿" }
+      "reduce_lag": { "name": "减少卡顿" },
+      "mode": { "name": "模式" }
+    }
+  },
+  "XiaozhuguangAudioSave": {
+    "display_name": "小珠光音频保存",
+    "inputs": {
+      "音频": { "name": "音频" },
+      "格式": { "name": "格式" },
+      "质量": { "name": "质量" },
+      "文件名前缀": { "name": "文件名前缀" },
+      "模式": { "name": "模式" },
+      "自定义保存目录": { "name": "自定义保存目录" }
+    },
+    "outputs": {
+      "0": { "name": "文件路径" }
     }
   }
 }

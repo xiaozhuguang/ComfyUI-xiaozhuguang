@@ -611,15 +611,19 @@ app.registerExtension({
                 this.redrawCanvas();
 
                 // 只设置宽度限制初始大小，高度由 computeSize 动态决定
-                const nodeWidth = Math.max(420, this.size[0] || 420);
-                if (!this.size || this.size[1] < 300) {
-                    this.setSize([nodeWidth, 400]);
-                } else {
-                    this.setSize([nodeWidth, this.size[1]]);
-                }
+                const MIN_W = 270;
+                const MIN_H = 350;
+                const nodeWidth = Math.max(MIN_W, this.size[0] || MIN_W);
+                const nodeHeight = Math.max(MIN_H, this.size[1] || MIN_H);
+                this.setSize([nodeWidth, nodeHeight]);
 
-                // 允许自由缩放：清除可能的尺寸约束
-                if (this.minimumSize) this.minimumSize = undefined;
+                // 包装 setSize 强制最小尺寸约束，防止拖动过小
+                const origSetSize = this.setSize.bind(this);
+                this.setSize = function (size) {
+                    const w = Math.max(size?.[0] || this.size?.[0] || MIN_W, MIN_W);
+                    const h = Math.max(size?.[1] || this.size?.[1] || MIN_H, MIN_H);
+                    return origSetSize([w, h]);
+                };
 
                 this.updateUndoRedoUI();
             });
@@ -645,8 +649,6 @@ app.registerExtension({
                     const tips = [
                         "左键：加正面点 | 右键：加负面点",
                         "左键拖动：画框  | 右键：删点/框",
-                        "Shift+左键拖拽：移动 | Delete：删最后",
-                        "Ctrl+Z：撤销 | Ctrl+Shift+Z：重做",
                     ];
                     tips.forEach((t, i) => {
                         ctx.font = "14px sans-serif";

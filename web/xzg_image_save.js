@@ -1,8 +1,216 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import {
+    downloadLazyImage,
+    downloadLazyJpg,
+} from "./xzg_save_utils.js";
 
 const XZG_IMAGE_SAVE_TYPE = "XiaozhuguangImageSave";
 const IMAGE_MARGIN = 6;
+
+// ═══════════════════════════════════════════════════════════════════
+// 全局右键菜单 + 三层拦截（window contextmenu / processMouseDown / processContextMenu）
+// 不依赖 widget 类的内部方法，确保稳定可用
+// ═══════════════════════════════════════════════════════════════════
+
+// 全局共享的右键菜单 DOM
+let _xzgImgSaveCtxMenu = null;
+let _xzgImgSaveCtxCurrentWidget = null;
+
+function _xzgImgSaveEnsureCtxMenu() {
+    if (_xzgImgSaveCtxMenu) return _xzgImgSaveCtxMenu;
+    const menuItemStyle = "padding: 6px 16px; color: #ddd; cursor: pointer; font-size: 12px; white-space: nowrap;";
+    const menu = document.createElement("div");
+    menu.style.cssText =
+        "position: fixed; z-index: 99999; background: #2a2a2a; border: 1px solid #555; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); display: none; min-width: 120px; padding: 4px 0;";
+
+    // PNG 保存
+    const pngItem = document.createElement("div");
+    pngItem.style.cssText = menuItemStyle;
+    pngItem.innerHTML = `<span style="color:#4CAF50;">PNG保存</span>`;
+    pngItem.addEventListener("mouseenter", () => { pngItem.style.background = "#3a3a3a"; });
+    pngItem.addEventListener("mouseleave", () => { pngItem.style.background = ""; });
+    pngItem.addEventListener("click", () => {
+        _xzgImgSaveHideCtxMenu();
+        const w = _xzgImgSaveCtxCurrentWidget;
+        if (!w) return;
+        const imgs = w._value?.images || [];
+        const cur = imgs[w.currentIndex] || imgs[0];
+        if (cur) downloadImage(cur);
+    });
+    menu.appendChild(pngItem);
+
+    // JPG 保存
+    const jpgItem = document.createElement("div");
+    jpgItem.style.cssText = menuItemStyle;
+    jpgItem.innerHTML = `<span style="color:#4CAF50;">JPG保存</span>`;
+    jpgItem.addEventListener("mouseenter", () => { jpgItem.style.background = "#3a3a3a"; });
+    jpgItem.addEventListener("mouseleave", () => { jpgItem.style.background = ""; });
+    jpgItem.addEventListener("click", () => {
+        _xzgImgSaveHideCtxMenu();
+        const w = _xzgImgSaveCtxCurrentWidget;
+        if (!w) return;
+        const imgs = w._value?.images || [];
+        const cur = imgs[w.currentIndex] || imgs[0];
+        if (cur) downloadJpgImage(cur);
+    });
+    menu.appendChild(jpgItem);
+
+    document.body.appendChild(menu);
+
+    // 点击其他地方关闭菜单
+    const dismiss = (e) => {
+        if (menu.style.display === "block" && !menu.contains(e.target)) {
+            _xzgImgSaveHideCtxMenu();
+        }
+    };
+    window.addEventListener("mousedown", dismiss, true);
+    window.addEventListener("contextmenu", dismiss, true);
+
+    _xzgImgSaveCtxMenu = menu;
+    return menu;
+}
+
+function _xzgImgSaveShowCtxMenu(widget, x, y) {
+    _xzgImgSaveCtxCurrentWidget = widget;
+    const menu = _xzgImgSaveEnsureCtxMenu();
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    menu.style.display = "block";
+    requestAnimationFrame(() => {
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) menu.style.left = (x - rect.width) + "px";
+        if (rect.bottom > window.innerHeight) menu.style.top = (y - rect.height) + "px";
+    });
+}
+
+function _xzgImgSaveHideCtxMenu() {
+    if (_xzgImgSaveCtxMenu) _xzgImgSaveCtxMenu.style.display = "none";
+    _xzgImgSaveCtxCurrentWidget = null;
+}
+
+// 检查点击是否在图像保存节点的图像区域内
+function _xzgImgSaveIsInImageArea(canvasX, canvasY) {
+    let nd = null;
+    const canvas = app.canvas;
+    if (canvas.getNodeAtPosition) nd = canvas.getNodeAtPosition(canvasX, canvasY);
+    else if (canvas.getNodeAtPos) nd = canvas.getNodeAtPos(canvasX, canvasY);
+    else if (canvas.graph?.getNodeOnPos) nd = canvas.graph.getNodeOnPos(canvasX, canvasY);
+
+    if (nd?.type !== XZG_IMAGE_SAVE_TYPE) return null;
+    const w = nd.canvasWidget;
+    if (!w) return null;
+    const startY = w._startY ?? 0;
+    let imgDrawY = w._imageDrawY;
+    let imgDrawH = w._imageDrawH;
+
+    // 后备方案：如果图像区域未被正确设置（可能是首次绘制或旧代码），手动估算
+    if (imgDrawH === undefined || imgDrawH === null || imgDrawH <= 0) {
+        const hasBtnRow = nd._xzgFormatWidget || nd._xzgLagWidget || nd._xzgModeWidget;
+        const btnRowH = hasBtnRow ? 19 : 0;
+        imgDrawY = btnRowH; // 相对于 startY 的偏移
+        imgDrawH = nd.size[1] - startY - btnRowH - IMAGE_MARGIN;
+    }
+
+    if (!imgDrawH || imgDrawH <= 0) return null;
+    const localY = canvasY - nd.pos[1] - startY;
+    if (localY >= imgDrawY && localY <= imgDrawY + imgDrawH) {
+        return w;
+    }
+    return null;
+}
+
+// 安装三层拦截
+function _xzgImgSaveInstallHooks(retryCount = 0) {
+    const canvasEl = app.canvas?.canvas;
+    if (!canvasEl) {
+        if (retryCount < 60) {
+            setTimeout(() => _xzgImgSaveInstallHooks(retryCount + 1), 100);
+        }
+        return;
+    }
+    if (window._xzgImgSaveHooksInstalled) return;
+    window._xzgImgSaveHooksInstalled = true;
+
+    // 1. window 捕获阶段拦截 contextmenu（优先级最高）
+    window.addEventListener('contextmenu', (e) => {
+        const target = e.target;
+        if (target !== canvasEl && !canvasEl.contains?.(target)) return;
+
+        const canvas = app.canvas;
+        const rect = canvasEl.getBoundingClientRect();
+        let x, y;
+        if (canvas.convertEventToCanvasCoordinates) {
+            try {
+                const p = canvas.convertEventToCanvasCoordinates(e);
+                if (p) { x = p[0]; y = p[1]; }
+            } catch (_) {}
+        }
+        if (x === undefined || y === undefined) {
+            x = (e.clientX - rect.left) / canvas.ds.scale - canvas.ds.offset[0];
+            y = (e.clientY - rect.top) / canvas.ds.scale - canvas.ds.offset[1];
+        }
+
+        const widget = _xzgImgSaveIsInImageArea(x, y);
+        if (widget) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            _xzgImgSaveShowCtxMenu(widget, e.clientX, e.clientY);
+            return false;
+        }
+    }, true);
+
+    // 2. hook processMouseDown
+    let LGraphCanvas = null;
+    try { if (typeof LGraphCanvas !== 'undefined' && LGraphCanvas?.prototype) LGraphCanvas = LGraphCanvas; } catch (_) {}
+    if (!LGraphCanvas) LGraphCanvas = window.LGraphCanvas || null;
+    if (!LGraphCanvas && window.LiteGraph?.LGraphCanvas) LGraphCanvas = window.LiteGraph.LGraphCanvas;
+    if (!LGraphCanvas && app.canvas?.constructor) LGraphCanvas = app.canvas.constructor;
+
+    if (LGraphCanvas?.prototype?.processMouseDown && !LGraphCanvas.prototype._xzgImgSaveMouseDownPatched) {
+        LGraphCanvas.prototype._xzgImgSaveMouseDownPatched = true;
+        const origProcessMouseDown = LGraphCanvas.prototype.processMouseDown;
+        LGraphCanvas.prototype.processMouseDown = function (e) {
+            if (e.button === 2) {
+                const cx = e.canvasX ?? e.x ?? 0;
+                const cy = e.canvasY ?? e.y ?? 0;
+                const widget = _xzgImgSaveIsInImageArea(cx, cy);
+                if (widget) {
+                    e.preventDefault?.();
+                    e.stopPropagation?.();
+                    _xzgImgSaveShowCtxMenu(widget, e.clientX, e.clientY);
+                    return true;
+                }
+            }
+            return origProcessMouseDown.apply(this, arguments);
+        };
+    }
+
+    // 3. hook processContextMenu（新版 LiteGraph）
+    if (LGraphCanvas?.prototype?.processContextMenu && !LGraphCanvas.prototype._xzgImgSaveCtxMenuPatched) {
+        LGraphCanvas.prototype._xzgImgSaveCtxMenuPatched = true;
+        const origProcessContextMenu = LGraphCanvas.prototype.processContextMenu;
+        LGraphCanvas.prototype.processContextMenu = function (node, e) {
+            if (node?.type === XZG_IMAGE_SAVE_TYPE) {
+                const cx = e?.canvasX ?? e?.x ?? 0;
+                const cy = e?.canvasY ?? e?.y ?? 0;
+                const widget = _xzgImgSaveIsInImageArea(cx, cy);
+                if (widget) {
+                    _xzgImgSaveShowCtxMenu(widget, e?.clientX ?? 0, e?.clientY ?? 0);
+                    return;
+                }
+            }
+            return origProcessContextMenu.apply(this, arguments);
+        };
+    }
+
+    console.log("[小珠光图像保存] 右键菜单拦截已安装");
+}
+
+// 启动 hook 安装
+_xzgImgSaveInstallHooks();
+
 
 function imageUrl(data) {
     return api.apiURL(
@@ -10,63 +218,10 @@ function imageUrl(data) {
     );
 }
 
-// 时间戳：格式 yyyyMMdd_HHmmss，用于保存文件名避免重复
-function xzgTimestamp() {
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-}
-
-// 通过 fetch 转 blob 下载，确保 download 文件名生效（跨域 URL 时浏览器会忽略 download 属性）
-async function xzgDownload(url, filename) {
-    try {
-        const resp = await fetch(url);
-        if (!resp.ok) return;
-        const blob = await resp.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    } catch (e) {
-        console.warn("[小珠光] 下载失败:", e);
-    }
-}
-
-// PNG保存：请求后端临时编码全分辨率 PNG（懒编码）
-async function downloadImage(imgData) {
-    if (!imgData) return;
-    let url = imgData.real_url;
-
-    if (!url && imgData.real_token) {
-        try {
-            const resp = await api.fetchApi("/xzg_save_real", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index }),
-            });
-            if (!resp.ok) return;
-            const info = await resp.json();
-            if (info && info.filename) {
-                url = api.apiURL(`/view?filename=${encodeURIComponent(info.filename)}&type=${info.type}&subfolder=${encodeURIComponent(info.subfolder)}${app.getRandParam()}`);
-            }
-        } catch (e) {
-            return;
-        }
-    }
-    if (!url) return;
-
-    await xzgDownload(url, `xzg-save-${xzgTimestamp()}.png`);
-}
-
-// JPG保存：直接借用现有的压缩预览图（后端已生成的 JPG）
-async function downloadJpgImage(imgData) {
-    if (!imgData || !imgData.url) return;
-    await xzgDownload(imgData.url, `xzg-save-${xzgTimestamp()}.jpg`);
-}
+// PNG 保存 → 统一走懒编码 + File System Access API（首次桌面，二次上次路径）
+const downloadImage = downloadLazyImage;
+// JPG 保存 → 直接复用压缩预览图 + File System Access API
+const downloadJpgImage = downloadLazyJpg;
 
 
 // ============ 自定义 Widget ============
@@ -83,6 +238,8 @@ class XzgImageSaveWidget {
         this._btnFade = 0;
         this._lastClickT = 0;
         this._lastClickPos = null;
+        this._imageDrawY = 0;
+        this._imageDrawH = 0;
     }
 
     set value(v) {
@@ -124,51 +281,77 @@ class XzgImageSaveWidget {
         const btnH = 18;
         const imgs = this._value.images;
 
-        // 按钮行：save_format（左）+ reduce_lag（右），同一行
+        // 按钮行：mode（左）+ save_format（中）+ reduce_lag（右），三等分
+        const modeWidget = node._xzgModeWidget;
         const lagWidget = node._xzgLagWidget;
         const formatWidget = node._xzgFormatWidget;
 
-        if (formatWidget || lagWidget) {
-            const halfW = width / 2;
+        if (modeWidget || formatWidget || lagWidget) {
+            const thirdW = width / 3;
             ctx.font = "11px Arial";
             ctx.textBaseline = "middle";
 
-            // 左侧：JPG/PNG 切换
-            if (formatWidget) {
+            // 最左侧：保存/预览 切换
+            if (modeWidget) {
                 ctx.textAlign = "center";
-                ctx.fillStyle = "#aaaaaa";
-                ctx.fillText(formatWidget.value || "JPG", halfW / 2, y + btnH / 2);
-                this.hitAreas["save_format"] = {
-                    bounds: [0, y, halfW, btnH],
+                const isSave = modeWidget.value !== "预览";
+                ctx.fillStyle = isSave ? "#FFD700" : "#88ccff";
+                ctx.fillText(modeWidget.value || "保存", thirdW / 2, y + btnH / 2);
+                this.hitAreas["mode"] = {
+                    bounds: [0, y, thirdW, btnH],
                     onDown: () => {
-                        formatWidget.value = formatWidget.value === "JPG" ? "PNG" : "JPG";
+                        modeWidget.value = isSave ? "预览" : "保存";
                         node.setDirtyCanvas(true);
                     }
                 };
             }
 
-            // 右侧：减小卡顿 / 极速流畅
+            // 中间：JPG/PNG 切换（预览模式下灰显且不可点击）
+            if (formatWidget) {
+                ctx.textAlign = "center";
+                const isPreview = modeWidget && modeWidget.value === "预览";
+                ctx.fillStyle = isPreview ? "#555555" : "#aaaaaa";
+                ctx.fillText(formatWidget.value || "JPG", thirdW + thirdW / 2, y + btnH / 2);
+                if (!isPreview) {
+                    this.hitAreas["save_format"] = {
+                        bounds: [thirdW, y, thirdW, btnH],
+                        onDown: () => {
+                            formatWidget.value = formatWidget.value === "JPG" ? "PNG" : "JPG";
+                            node.setDirtyCanvas(true);
+                        }
+                    };
+                }
+            }
+
+            // 最右侧：减小卡顿 / 极速流畅
             if (lagWidget) {
                 ctx.textAlign = "center";
                 ctx.fillStyle = "#aaaaaa";
-                ctx.fillText(lagWidget.value ? "极致流畅" : "减小卡顿", halfW + halfW / 2, y + btnH / 2);
+                ctx.fillText(lagWidget.value ? "极致流畅" : "减小卡顿", thirdW * 2 + thirdW / 2, y + btnH / 2);
                 this.hitAreas["reduce_lag"] = {
-                    bounds: [halfW, y, halfW, btnH],
+                    bounds: [thirdW * 2, y, thirdW, btnH],
                     onDown: () => { lagWidget.value = !lagWidget.value; node.setDirtyCanvas(true); }
                 };
             }
 
-            // 分隔竖杠 1px，与小珠光图像对比一致
+            // 分隔竖杠 1px
             ctx.strokeStyle = "#aaaaaa";
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(halfW, y); ctx.lineTo(halfW, y + btnH);
+            ctx.moveTo(thirdW, y); ctx.lineTo(thirdW, y + btnH);
+            ctx.moveTo(thirdW * 2, y); ctx.lineTo(thirdW * 2, y + btnH);
             ctx.stroke();
 
             y += btnH + 1;
         }
 
-        if (!imgs.length) return;
+        // 记录图像区域位置（相对于节点内部的坐标）—— 即使没有图片也设置，用于右键检测
+        this._imageDrawY = y - this._startY;
+        this._imageDrawH = node.size[1] - y - IMAGE_MARGIN;
+
+        if (!imgs.length) {
+            return;
+        }
 
         // 图像区域
         if (this.gridMode) {
@@ -452,9 +635,10 @@ class XiaozhuguangImageSaveNode {
 
     getHelp() {
         return `
-            <p>小珠光图像保存节点，保存图像为 JPG(压缩) 或 PNG(无损)，并显示压缩预览。</p>
+            <p>小珠光图像保存节点，支持保存/预览模式切换，保存图像为 JPG(压缩) 或 PNG(无损)，并显示压缩预览。</p>
             <ul>
-                <li><strong>JPG/PNG</strong>：切换保存格式。JPG使用压缩参数(与预览一致)，PNG为全分辨率无损。</li>
+                <li><strong>保存/预览</strong>：切换模式。保存模式输出文件到output目录；预览模式仅显示不保存（可替代小珠光图像预览）。</li>
+                <li><strong>JPG/PNG</strong>：切换保存格式（仅保存模式有效）。JPG使用压缩参数(与预览一致)，PNG为全分辨率无损。</li>
                 <li><strong>减少卡顿</strong>：开启后预览压缩为最长边3840px的JPG（质量85）；关闭(极速流畅)：最长边6400px的JPG（质量80）。</li>
                 <li><strong>画布预览</strong>：始终为压缩JPG（流畅），与保存格式无关。</li>
                 <li><strong>输出路径</strong>：可自定义输出文件夹（相对于output目录），留空则保存到output根目录。</li>
@@ -492,11 +676,22 @@ app.registerExtension({
 
                 // 保存需要引用的 widget 引用，然后从 widgets 数组中完全移除
                 // 避免 LiteGraph 为每个隐藏 widget 添加默认间距
+                // mode widget 保留在 widgets 数组中（隐藏渲染），确保值能传递给后端
                 this._xzgFormatWidget = null;
                 this._xzgLagWidget = null;
+                this._xzgModeWidget = null;
                 if (this.widgets) {
                     this._xzgFormatWidget = this.widgets.find(w => w.name === "save_format") || null;
                     this._xzgLagWidget = this.widgets.find(w => w.name === "reduce_lag") || null;
+                    this._xzgModeWidget = this.widgets.find(w => w.name === "mode") || null;
+
+                    // mode widget 保留在数组中但隐藏默认渲染（值需要传递给后端）
+                    if (this._xzgModeWidget) {
+                        this._xzgModeWidget.draw = function () {};
+                        this._xzgModeWidget.computeSize = function () { return [0, 0]; };
+                        this._xzgModeWidget.mouse = function () { return false; };
+                    }
+
                     this.widgets = this.widgets.filter(w =>
                         w.name !== "reduce_lag" &&
                         w.name !== "save_format" &&

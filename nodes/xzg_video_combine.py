@@ -333,8 +333,8 @@ class XiaozhuguangVideoCombine:
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("文件路径",)
+    RETURN_TYPES = ()
+    RETURN_NAMES = ()
     FUNCTION = "combine_video"
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
@@ -343,7 +343,7 @@ class XiaozhuguangVideoCombine:
                       保存到输出目录, 自定义保存目录="", 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
-            return ("",)
+            return ()
 
         base_dir = (folder_paths.get_output_directory() if 保存到输出目录
                     else folder_paths.get_temp_directory())
@@ -393,7 +393,7 @@ class XiaozhuguangVideoCombine:
         relative_path = os.path.join(subfolder, file) if subfolder else file
 
         return {
-            "result": (relative_path,),
+            "result": (),
             "ui": {
                 "videos": [{
                     "filename": file,

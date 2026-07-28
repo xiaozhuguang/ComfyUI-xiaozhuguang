@@ -208,20 +208,31 @@
     }
   },
   "XiaozhuguangVideoLoader": {
-    "display_name": "小珠光视频加载器",
+    "display_name": "Xiaozhuguang Video Loader",
     "inputs": {
-      "视频": { "name": "视频" },
-      "强制帧率": { "name": "强制帧率" },
-      "自定义宽度": { "name": "自定义宽度" },
-      "自定义高度": { "name": "自定义高度" },
-      "跳过帧数": { "name": "跳过帧数" },
-      "帧数上限": { "name": "帧数上限" },
+      "视频": { "name": "video" },
+      "强制帧率": { "name": "force fps" },
+      "自定义宽度": { "name": "custom width" },
+      "自定义高度": { "name": "custom height" },
+      "跳过帧数": { "name": "skip frames" },
+      "帧数上限": { "name": "max frames" },
       "VAE": { "name": "VAE" }
     },
     "outputs": {
-      "0": { "name": "图像" },
-      "1": { "name": "音频" },
-      "2": { "name": "视频信息" }
+      "0": { "name": "image" },
+      "1": { "name": "audio" },
+      "2": { "name": "video info" }
+    }
+  },
+  "XiaozhuguangAudioLoader": {
+    "display_name": "Xiaozhuguang Audio Loader",
+    "inputs": {
+      "音频": { "name": "audio" },
+      "起始时间(秒)": { "name": "start time (s)" },
+      "时长(秒)": { "name": "duration (s)" }
+    },
+    "outputs": {
+      "0": { "name": "audio" }
     }
   },
   "XiaozhuguangVideoInfoReader": {
@@ -262,13 +273,6 @@
       "show_line": { "name": "Show Line" }
     }
   },
-  "XiaozhuguangImagePreview": {
-    "display_name": "Xiaozhuguang Image Preview",
-    "inputs": {
-      "images": { "name": "images" },
-      "reduce_lag": { "name": "Reduce Lag" }
-    }
-  },
   "XiaozhuguangImageSave": {
     "display_name": "Xiaozhuguang Image Save",
     "inputs": {
@@ -277,6 +281,20 @@
       "filename_prefix": { "name": "filename prefix" },
       "save_format": { "name": "save format" },
       "reduce_lag": { "name": "Reduce Lag" }
+    }
+  },
+  "XiaozhuguangAudioSave": {
+    "display_name": "Xiaozhuguang Audio Save",
+    "inputs": {
+      "音频": { "name": "audio" },
+      "格式": { "name": "format" },
+      "质量": { "name": "quality" },
+      "文件名前缀": { "name": "filename_prefix" },
+      "模式": { "name": "mode" },
+      "自定义保存目录": { "name": "custom_save_directory" }
+    },
+    "outputs": {
+      "0": { "name": "file_path" }
     }
   }
 }

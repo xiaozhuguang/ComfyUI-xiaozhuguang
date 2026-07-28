@@ -2410,7 +2410,7 @@ class Xiaozhuguang {
             categoryId: categoryId,
             addedAt: Date.now(),
             useCount: 0,
-            lastUsed: 0,
+            lastUsed: Date.now(),
             order: maxOrder + 1000
         });
 
@@ -2614,7 +2614,7 @@ class Xiaozhuguang {
                     _typeSignature: data.typeSignature,
                     addedAt: Date.now(),
                     useCount: 0,
-                    lastUsed: 0
+                    lastUsed: Date.now()
                 });
 
                 self.saveFavorites();
@@ -3888,10 +3888,10 @@ class Xiaozhuguang {
                 }
             };
 
-            // 辅助：收集所有 img/canvas/video 元素（按 DOM 顺序）
+            // 辅助：收集所有 img/canvas/video/svg 元素（按 DOM 顺序）
             const collectImageDraws = (el, draws) => {
                 if (!el) return;
-                const innerEls = el.querySelectorAll('img, canvas, video');
+                const innerEls = el.querySelectorAll('img, canvas, video, svg');
                 innerEls.forEach(el => {
                     try {
                         const r = el.getBoundingClientRect();
@@ -3899,8 +3899,9 @@ class Xiaozhuguang {
                         if (r.right <= nodeScreenLeft || r.left >= nodeScreenRight) return;
                         if (r.bottom <= nodeScreenTop || r.top >= nodeScreenBottom) return;
                         const sr = toScreenshotRect(r);
+                        const isSvg = el.tagName?.toLowerCase() === 'svg';
                         draws.push({
-                            type: 'image',
+                            type: isSvg ? 'svg' : 'image',
                             el: el,
                             x: sr.x,
                             y: sr.y,
@@ -3933,16 +3934,59 @@ class Xiaozhuguang {
                 } catch (_) {}
             }
 
-            // 再绘制所有图片/画布/视频
-            for (const d of imageDraws) {
+            // 辅助：将 SVG 元素转换为可绘制的 Image 对象（同步方式，使用 data URL）
+            const svgToImage = (svgEl) => {
                 try {
-                    ctx.drawImage(d.el, d.x, d.y, d.w, d.h);
+                    const clone = svgEl.cloneNode(true);
+                    // 确保 SVG 有明确的尺寸
+                    const rect = svgEl.getBoundingClientRect();
+                    if (!clone.getAttribute('width')) clone.setAttribute('width', rect.width);
+                    if (!clone.getAttribute('height')) clone.setAttribute('height', rect.height);
+                    if (!clone.getAttribute('viewBox') && rect.width && rect.height) {
+                        clone.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+                    }
+                    // 内联计算样式（简单处理：复制 fill 和 stroke）
+                    const style = window.getComputedStyle(svgEl);
+                    if (style.color && !clone.getAttribute('fill')) {
+                        // SVG 图标通常用 currentColor，需要替换为实际颜色
+                        const svgStr = new XMLSerializer().serializeToString(clone);
+                        const coloredSvg = svgStr.replace(/currentColor/g, style.color);
+                        const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(coloredSvg);
+                        return dataUrl;
+                    }
+                    const svgStr = new XMLSerializer().serializeToString(clone);
+                    const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+                    return dataUrl;
+                } catch (e) {
+                    return null;
+                }
+            };
+
+            // 再绘制所有图片/画布/视频/SVG
+            const drawSvgSync = (d) => {
+                const dataUrl = svgToImage(d.el);
+                if (!dataUrl) return;
+                // 用 Image 同步加载（SVG data URL 通常是同步的）
+                const img = new Image();
+                img.src = dataUrl;
+                try {
+                    ctx.drawImage(img, d.x, d.y, d.w, d.h);
                 } catch (_) {}
+            };
+
+            for (const d of imageDraws) {
+                if (d.type === 'svg') {
+                    drawSvgSync(d);
+                } else {
+                    try {
+                        ctx.drawImage(d.el, d.x, d.y, d.w, d.h);
+                    } catch (_) {}
+                }
             }
 
             // 补充：全局查找预览图片（如 Save Image 默认预览，可能不在 widgets 中）
             // 注意：这些元素可能来自 ComfyUI 核心的预览系统，不通过 widget 管理
-            const globalImgs = document.querySelectorAll('img, canvas');
+            const globalImgs = document.querySelectorAll('img, canvas, svg');
             for (const el of globalImgs) {
                 if (el === sourceCanvas || el.id === 'graph-canvas') continue;
                 // 跳过已经通过 widget 方式处理过的元素（避免重复绘制）
@@ -3957,7 +4001,17 @@ class Xiaozhuguang {
                     if (rect.right <= nodeScreenLeft || rect.left >= nodeScreenRight) continue;
                     if (rect.bottom <= nodeScreenTop || rect.top >= nodeScreenBottom) continue;
                     const sr = toScreenshotRect(rect);
-                    ctx.drawImage(el, sr.x, sr.y, sr.w, sr.h);
+                    const isSvg = el.tagName?.toLowerCase() === 'svg';
+                    if (isSvg) {
+                        const dataUrl = svgToImage(el);
+                        if (dataUrl) {
+                            const img = new Image();
+                            img.src = dataUrl;
+                            ctx.drawImage(img, sr.x, sr.y, sr.w, sr.h);
+                        }
+                    } else {
+                        ctx.drawImage(el, sr.x, sr.y, sr.w, sr.h);
+                    }
                 } catch (_) {}
             }
 
@@ -4060,7 +4114,7 @@ class Xiaozhuguang {
 
             const collectImageDraws = (el, draws) => {
                 if (!el) return;
-                const innerEls = el.querySelectorAll('img, canvas, video');
+                const innerEls = el.querySelectorAll('img, canvas, video, svg');
                 innerEls.forEach(el => {
                     try {
                         const r = el.getBoundingClientRect();
@@ -4068,7 +4122,8 @@ class Xiaozhuguang {
                         if (r.right <= nodeScreenLeft || r.left >= nodeScreenRight) return;
                         if (r.bottom <= nodeScreenTop || r.top >= nodeScreenBottom) return;
                         const sr = toScreenshotRect(r);
-                        draws.push({ type: 'image', el: el, x: sr.x, y: sr.y, w: sr.w, h: sr.h });
+                        const isSvg = el.tagName?.toLowerCase() === 'svg';
+                        draws.push({ type: isSvg ? 'svg' : 'image', el: el, x: sr.x, y: sr.y, w: sr.w, h: sr.h });
                     } catch (_) {}
                 });
             };
@@ -4096,12 +4151,41 @@ class Xiaozhuguang {
             for (const d of bgDraws) {
                 try { ctx.fillStyle = d.color; ctx.fillRect(d.x, d.y, d.w, d.h); } catch (_) {}
             }
+
+            // SVG 转图像辅助函数
+            const svgToImageWf = (svgEl) => {
+                try {
+                    const clone = svgEl.cloneNode(true);
+                    const rect = svgEl.getBoundingClientRect();
+                    if (!clone.getAttribute('width')) clone.setAttribute('width', rect.width);
+                    if (!clone.getAttribute('height')) clone.setAttribute('height', rect.height);
+                    if (!clone.getAttribute('viewBox') && rect.width && rect.height) {
+                        clone.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+                    }
+                    const style = window.getComputedStyle(svgEl);
+                    const svgStr = new XMLSerializer().serializeToString(clone);
+                    const coloredSvg = svgStr.replace(/currentColor/g, style.color || '#ccc');
+                    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(coloredSvg);
+                } catch (e) {
+                    return null;
+                }
+            };
+
             for (const d of imageDraws) {
-                try { ctx.drawImage(d.el, d.x, d.y, d.w, d.h); } catch (_) {}
+                if (d.type === 'svg') {
+                    const dataUrl = svgToImageWf(d.el);
+                    if (dataUrl) {
+                        const img = new Image();
+                        img.src = dataUrl;
+                        try { ctx.drawImage(img, d.x, d.y, d.w, d.h); } catch (_) {}
+                    }
+                } else {
+                    try { ctx.drawImage(d.el, d.x, d.y, d.w, d.h); } catch (_) {}
+                }
             }
 
             // 全局补充查找
-            const globalImgs = document.querySelectorAll('img, canvas');
+            const globalImgs = document.querySelectorAll('img, canvas, svg');
             for (const el of globalImgs) {
                 if (el === sourceCanvas || el.id === 'graph-canvas') continue;
                 let alreadyHandled = false;
@@ -4115,7 +4199,17 @@ class Xiaozhuguang {
                     if (rect.right <= nodeScreenLeft || rect.left >= nodeScreenRight) continue;
                     if (rect.bottom <= nodeScreenTop || rect.top >= nodeScreenBottom) continue;
                     const sr = toScreenshotRect(rect);
-                    ctx.drawImage(el, sr.x, sr.y, sr.w, sr.h);
+                    const isSvg = el.tagName?.toLowerCase() === 'svg';
+                    if (isSvg) {
+                        const dataUrl = svgToImageWf(el);
+                        if (dataUrl) {
+                            const img = new Image();
+                            img.src = dataUrl;
+                            ctx.drawImage(img, sr.x, sr.y, sr.w, sr.h);
+                        }
+                    } else {
+                        ctx.drawImage(el, sr.x, sr.y, sr.w, sr.h);
+                    }
                 } catch (_) {}
             }
 

@@ -5,7 +5,9 @@ import torch
 from PIL import Image
 import folder_paths
 from nodes import PreviewImage
-from .xzg_image_preview import REAL_STORE
+
+# 用于懒编码：执行时仅存原始像素(uint8)，右键保存真实分辨率图时才临时编码 PNG
+REAL_STORE = {}
 
 
 class XiaozhuguangImageSave(PreviewImage):
@@ -13,7 +15,8 @@ class XiaozhuguangImageSave(PreviewImage):
     与小珠光图像预览完全相似的显示体验，但增加实际文件保存功能。
     JPG保存使用与预览相同的压缩参数；PNG保存为全分辨率无损。
     右键菜单可下载真实分辨率PNG(懒编码)或压缩JPG。
-    文件名固定为 xzg-save_序号，用户可通过 output_path 自定义输出文件夹。"""
+    文件名固定为 xzg-save_序号，用户可通过 output_path 自定义输出文件夹。
+    支持保存/预览模式切换：保存模式输出文件到output目录，预览模式仅显示不保存。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -25,6 +28,7 @@ class XiaozhuguangImageSave(PreviewImage):
                 "output_path": ("STRING", {"default": "", "multiline": False}),
                 "save_format": (["JPG", "PNG"], {"default": "JPG"}),
                 "reduce_lag": ("BOOLEAN", {"default": False, "label_on": "开启", "label_off": "关闭"}),
+                "mode": (["保存", "预览"], {"default": "保存"}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -36,22 +40,25 @@ class XiaozhuguangImageSave(PreviewImage):
     FUNCTION = "save_images"
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
-    DESCRIPTION = "保存图像：JPG(压缩)或PNG(无损)。画布预览始终为压缩JPG(流畅)。右键可下载真实分辨率PNG或压缩JPG。"
+    DESCRIPTION = "保存/预览图像：保存模式输出JPG(压缩)或PNG(无损)到output目录；预览模式仅显示不保存。画布预览始终为压缩JPG(流畅)。右键可下载真实分辨率PNG或压缩JPG。"
 
-    def save_images(self, images, output_path="", save_format="JPG", reduce_lag=False,
+    def save_images(self, images, output_path="", save_format="JPG", reduce_lag=False, mode="保存",
                     prompt=None, extra_pnginfo=None):
 
         max_side = 3840 if reduce_lag else 6400
         quality = 85 if reduce_lag else 80
 
-        # 输出目录（用户可自定义子文件夹）
-        if output_path and output_path.strip():
-            base_dir = os.path.join(folder_paths.get_output_directory(), output_path.strip().strip("/\\"))
-            subfolder = output_path.strip()
-        else:
-            base_dir = folder_paths.get_output_directory()
-            subfolder = ""
-        os.makedirs(base_dir, exist_ok=True)
+        is_preview_mode = (mode == "预览")
+
+        # 输出目录（用户可自定义子文件夹）— 仅保存模式需要
+        if not is_preview_mode:
+            if output_path and output_path.strip():
+                base_dir = os.path.join(folder_paths.get_output_directory(), output_path.strip().strip("/\\"))
+                subfolder = output_path.strip()
+            else:
+                base_dir = folder_paths.get_output_directory()
+                subfolder = ""
+            os.makedirs(base_dir, exist_ok=True)
 
         # 临时目录（预览图）
         temp_dir = folder_paths.get_temp_directory()
@@ -94,29 +101,30 @@ class XiaozhuguangImageSave(PreviewImage):
             preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
             compressed_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
 
-            # 保存到输出目录
-            while True:
-                fname = f"{filename_prefix}_{counter:05d}"
+            # 保存到输出目录（仅保存模式）
+            if not is_preview_mode:
+                while True:
+                    fname = f"{filename_prefix}_{counter:05d}"
+                    if save_format == "PNG":
+                        full_path = os.path.join(base_dir, fname + ".png")
+                    else:
+                        full_path = os.path.join(base_dir, fname + ".jpg")
+                    if not os.path.exists(full_path):
+                        break
+                    counter += 1
+
                 if save_format == "PNG":
-                    full_path = os.path.join(base_dir, fname + ".png")
+                    # 全分辨率 PNG（无损）
+                    Image.fromarray(real_np).save(full_path, "PNG")
                 else:
-                    full_path = os.path.join(base_dir, fname + ".jpg")
-                if not os.path.exists(full_path):
-                    break
-                counter += 1
+                    # 压缩 JPG（与预览相同的压缩参数）
+                    compressed_pil.save(full_path, "JPEG", quality=quality, optimize=True)
 
-            if save_format == "PNG":
-                # 全分辨率 PNG（无损）
-                Image.fromarray(real_np).save(full_path, "PNG")
-            else:
-                # 压缩 JPG（与预览相同的压缩参数）
-                compressed_pil.save(full_path, "JPEG", quality=quality, optimize=True)
-
-            saved.append({
-                "filename": os.path.basename(full_path),
-                "subfolder": subfolder,
-                "type": "output"
-            })
+                saved.append({
+                    "filename": os.path.basename(full_path),
+                    "subfolder": subfolder,
+                    "type": "output"
+                })
 
             entries.append({
                 "filename": preview_fname,

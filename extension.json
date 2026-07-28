@@ -5,6 +5,7 @@
   "author": "xiaozhuguang",
   "license": "MIT",
   "js": [
+    "web/xzg_save_utils.js",
     "web/xzg_i18n.js",
     "web/node_favorites.js",
     "web/xzg_theme_presets.js",
@@ -25,8 +26,8 @@
     "web/xzg_video_loader.js",
     "web/xzg_video_combine.js",
     "web/xzg_image_compare.js",
-    "web/xzg_image_preview.js",
-    "web/xzg_image_save.js"
+    "web/xzg_image_save.js",
+    "web/xzg_audio_save.js"
   ],
   "css": [
     "web/node_favorites.css",

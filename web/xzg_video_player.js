@@ -20,6 +20,10 @@
  */
 
 import { app } from "../../scripts/app.js";
+import {
+    downloadVideo,
+    xzgTimestamp,
+} from "./xzg_save_utils.js";
 
 const DEFAULT_BG = "#1a1a1a";
 const SURFACE_BG = "#000";
@@ -646,89 +650,20 @@ export class XiaozhuguangVideoPlayer {
         if (e.key === "Escape") this._hideContextMenu();
     };
 
-    /** 下载视频到桌面：优先使用 File System Access API 指定保存到桌面，不支持则降级为普通下载 */
+    /**
+     * 下载视频：统一走 File System Access API（首次默认桌面，二次默认上次路径）。
+     * @param {string} url - 视频 URL
+     * @param {string} [filename] - 建议文件名（含扩展名），留空则自动生成带时间戳的文件名
+     */
     static async downloadVideo(url, filename) {
-        if (!url) return;
-        try {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error("HTTP " + res.status);
-            const blob = await res.blob();
-            const ext = (filename || "").split(".").pop()?.toLowerCase() || "mp4";
-            const mimeType = blob.type || ("video/" + (ext === "webm" ? "webm" : ext === "mkv" ? "x-matroska" : ext === "mov" ? "quicktime" : ext === "avi" ? "x-msvideo" : ext === "gif" ? "gif" : "mp4"));
-            
-            // 优先使用 File System Access API，直接保存到桌面
-            if (typeof window.showSaveFilePicker === "function") {
-                try {
-                    const handle = await window.showSaveFilePicker({
-                        suggestedName: filename || "video.mp4",
-                        startIn: "desktop",
-                        types: [{
-                            description: "视频文件",
-                            accept: { [mimeType]: ["." + ext] },
-                        }],
-                    });
-                    const writable = await handle.createWritable();
-                    await writable.write(blob);
-                    await writable.close();
-                    return;
-                } catch (e) {
-                    // 用户取消对话框，直接返回，不进行降级下载
-                    if (e?.name === "AbortError") return;
-                    // 其他错误（权限不足等），继续降级
-                }
-            }
-            
-            // 降级：普通下载（浏览器默认下载目录）
-            const a = document.createElement("a");
-            const objectUrl = URL.createObjectURL(blob);
-            a.href = objectUrl;
-            a.download = filename || "video.mp4";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
-        } catch (err) {
-            if (err?.name === "AbortError") return; // 用户取消
-            console.error("[小珠光] 视频下载失败:", err);
-        }
+        await downloadVideo(url, filename || `xzg-video-${xzgTimestamp()}.mp4`);
     }
 
-    /** 另存为：优先使用 File System Access API 弹出保存对话框，不支持则降级为普通下载 */
+    /**
+     * 另存为视频：与 downloadVideo 相同逻辑，首次默认桌面，二次默认上次路径。
+     */
     static async saveAsVideo(url, filename) {
-        if (!url) return;
-        try {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error("HTTP " + res.status);
-            const blob = await res.blob();
-            const ext = (filename || "").split(".").pop()?.toLowerCase() || "mp4";
-            const mimeType = blob.type || ("video/" + (ext === "webm" ? "webm" : ext === "mkv" ? "x-matroska" : ext === "mov" ? "quicktime" : ext === "avi" ? "x-msvideo" : ext === "gif" ? "gif" : "mp4"));
-            if (typeof window.showSaveFilePicker === "function") {
-                const handle = await window.showSaveFilePicker({
-                    suggestedName: filename || "video.mp4",
-                    types: [{
-                        description: "视频文件",
-                        accept: { [mimeType]: ["." + ext] },
-                    }],
-                });
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-            } else {
-                // 降级：普通下载
-                const a = document.createElement("a");
-                const objectUrl = URL.createObjectURL(blob);
-                a.href = objectUrl;
-                a.download = filename || "video.mp4";
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
-            }
-        } catch (err) {
-            if (err?.name === "AbortError") return; // 用户取消
-            console.error("[小珠光] 另存为失败, 降级下载:", err);
-            XiaozhuguangVideoPlayer.downloadVideo(url, filename);
-        }
+        await downloadVideo(url, filename || `xzg-video-${xzgTimestamp()}.mp4`);
     }
 
     resize() {

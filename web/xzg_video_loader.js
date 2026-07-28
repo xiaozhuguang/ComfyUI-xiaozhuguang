@@ -688,12 +688,15 @@ function bindVideoLoaderInteractions(node) {
         updateFrameLimitLabel();
     };
 
+    // 在 rAF 回调执行前，先声明引用，让 onLoadedMetadata 可安全调用
+    let _syncLoadRange = null;
+
     const player = new XiaozhuguangVideoPlayer({
         container: playerContainer,
         onDblClick: triggerUpload,
         onLoadedMetadata: () => {
             updateVideoInfoLabels();
-            syncLoadRange();
+            _syncLoadRange?.();
         },
         onSourceFpsDetected: (fps) => {
             if (typeof fps === "number" && fps > 0) {
@@ -710,6 +713,48 @@ function bindVideoLoaderInteractions(node) {
         },
     });
     node._xzgVideoPlayer = player;
+
+    // 阻止拖放视频到预览区时浏览器默认打开新窗口
+    const _onDragOver = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    };
+    playerContainer.addEventListener('dragover', _onDragOver, { capture: true });
+    playerContainer.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // 1. 文件拖入 → 上传 + 加载
+        const files = Array.from(e.dataTransfer?.files || []).filter(f => isVideoFilename(f.name));
+        if (files.length > 0) {
+            const dt = new DataTransfer();
+            files.forEach(f => dt.items.add(f));
+            fileInput.files = dt.files;
+            fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+            return;
+        }
+
+        // 2. ComfyUI 内部拖入
+        const textData = e.dataTransfer?.getData('text/plain');
+        if (textData) {
+            let rawName = textData;
+            for (const s of [' [output]', ' [input]', ' [temp]']) {
+                if (rawName.endsWith(s)) {
+                    rawName = rawName.slice(0, -s.length);
+                    break;
+                }
+            }
+            if (isVideoFilename(rawName)) {
+                player.load(getVideoUrl(textData));
+                if (textData.includes(' [input]') || !textData.includes(' [')) {
+                    const videoWidget = node.widgets?.find(w => w.name === "视频");
+                    if (videoWidget) {
+                        refreshVideoCombo(videoWidget, rawName);
+                    }
+                }
+            }
+        }
+    }, { capture: true });
 
     const uploadBtn = node.addWidget("button", "上传视频", "upload", triggerUpload);
     uploadBtn.options.serialize = false;
@@ -788,10 +833,6 @@ function bindVideoLoaderInteractions(node) {
         requestAnimationFrame(() => {
             _applyWidgetStyles(node);
             _updateRatioWidgets(node);
-            const w = node.widgets?.find(w => w.name === "视频");
-            if (w && w.value) {
-                player.load(getVideoUrl(w.value));
-            }
             player.resize();
         });
     };
@@ -829,7 +870,7 @@ function bindVideoLoaderInteractions(node) {
             // 用后端返回的原始宽高/帧数更新标签
             updateVideoInfoLabels();
             // 视频加载完成后更新控件边界约束（跳过帧数 max、帧数上限 min/max）
-            syncLoadRange();
+            _syncLoadRange?.();
         }
     };
 
@@ -850,6 +891,7 @@ function bindVideoLoaderInteractions(node) {
 
     const origProcessDrop = node.processDrop;
     node.processDrop = function (e) {
+        // 1. 操作系统文件拖入 → 上传 + 加载
         const files = Array.from(e.dataTransfer?.files || []).filter(f => isVideoFilename(f.name));
         if (files.length > 0) {
             e.preventDefault?.();
@@ -860,6 +902,34 @@ function bindVideoLoaderInteractions(node) {
             fileInput.dispatchEvent(new Event("change", { bubbles: true }));
             return true;
         }
+
+        // 2. ComfyUI 内部拖入（从预览面板/文件列表拖出视频文件名）
+        const textData = e.dataTransfer?.getData('text/plain');
+        if (textData) {
+            // 去掉 [output]/[input]/[temp] 后缀再判断扩展名
+            let rawName = textData;
+            for (const s of [' [output]', ' [input]', ' [temp]']) {
+                if (rawName.endsWith(s)) {
+                    rawName = rawName.slice(0, -s.length);
+                    break;
+                }
+            }
+            if (isVideoFilename(rawName)) {
+                e.preventDefault?.();
+                e.stopPropagation?.();
+                // 直接用 getVideoUrl 解析文件名 + 类型，加载视频
+                player.load(getVideoUrl(textData));
+                // 如果是 input 类型，同步下拉列表
+                if (textData.includes(' [input]') || !textData.includes(' [')) {
+                    const videoWidget = node.widgets?.find(w => w.name === "视频");
+                    if (videoWidget) {
+                        refreshVideoCombo(videoWidget, rawName);
+                    }
+                }
+                return true;
+            }
+        }
+
         return origProcessDrop?.apply(this, arguments);
     };
 
@@ -945,7 +1015,7 @@ function bindVideoLoaderInteractions(node) {
             }
         };
 
-        const syncLoadRange = () => {
+        _syncLoadRange = () => {
             updateWidgetBounds();
             const skip = Math.max(0, parseInt(skipWidget?.value) || 0);
             const limit = Math.max(0, parseInt(limitWidget?.value) || 0);
@@ -958,7 +1028,7 @@ function bindVideoLoaderInteractions(node) {
             limitWidget.callback = function (value) {
                 origLimitCb?.apply(this, arguments);
                 updateFrameLimitLabel();
-                syncLoadRange();
+                _syncLoadRange();
             };
         }
         if (skipWidget) {
@@ -966,11 +1036,11 @@ function bindVideoLoaderInteractions(node) {
             skipWidget.callback = function (value) {
                 origSkipCb?.apply(this, arguments);
                 // 跳过帧数变化时，帧数上限的 min 跟随变化
-                syncLoadRange();
+                _syncLoadRange();
             };
         }
         updateFrameLimitLabel();
-        syncLoadRange();
+        _syncLoadRange();
         // 视频比例变化时切换自定义宽度/高度的行为
         const ratioWidget = node.widgets?.find(w => w.name === "视频比例");
         if (ratioWidget) {

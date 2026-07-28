@@ -277,6 +277,11 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData?.name !== "XiaozhuguangVideoCombine") return;
 
+        // 格式：避免原生 combo 列表（双列表问题），参考视频加载器的视频比例实现
+        if (nodeData.input?.required?.["格式"]) {
+            nodeData.input.required["格式"][1].widgetType = "XZGINT";
+        }
+
         for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
             if (["INT", "FLOAT"].includes(inp[0]) && inp[1]) {
                 inp[1].widgetType ??= "XZG" + inp[0];
@@ -445,6 +450,9 @@ app.registerExtension({
                 if (w.name === '格式') {
                     w.draw = _xzgDrawComboWidget;
                     w.mouse = _xzgFpsComboMouse;
+                    w.value = String(w.value ?? "mp4");
+                    w.options = w.options || {};
+                    w.options.values = ["mp4", "webm", "gif"];
                 } else if (w.name === '帧率') {
                     w._xzgValueColor = '#fff';
                 } else if (w.name === '文件名前缀') {

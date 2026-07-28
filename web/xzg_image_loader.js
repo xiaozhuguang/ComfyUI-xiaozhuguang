@@ -209,6 +209,79 @@ async function uploadFilesSequential(files) {
     return uploaded;
 }
 
+// 记住上次保存图片的文件夹 handle，下次默认打开同一文件夹
+let _lastImgLoaderSaveFileHandle = null;
+
+// 图片扩展名 → MIME 类型映射
+const IMG_LOADER_MIME_MAP = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+};
+
+/**
+ * 保存图片：优先使用 File System Access API 弹出保存对话框，
+ * 默认使用上次保存的文件夹，首次默认桌面；不支持则降级为普通下载（浏览器下载目录）
+ */
+async function xzgSaveImage(url, filename) {
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const blob = await resp.blob();
+        const ext = (filename || "").split(".").pop()?.toLowerCase() || "png";
+        const mimeType = blob.type || IMG_LOADER_MIME_MAP[ext] || "image/png";
+
+        // 优先使用 File System Access API
+        if (typeof window.showSaveFilePicker === "function") {
+            try {
+                const pickerOpts = {
+                    suggestedName: filename || "image.png",
+                    types: [{
+                        description: "图片文件",
+                        accept: { [mimeType]: ["." + ext] },
+                    }],
+                };
+                // 有上次保存的 handle 则用它定位文件夹，否则默认桌面
+                if (_lastImgLoaderSaveFileHandle) {
+                    pickerOpts.startIn = _lastImgLoaderSaveFileHandle;
+                } else {
+                    pickerOpts.startIn = "desktop";
+                }
+                const handle = await window.showSaveFilePicker(pickerOpts);
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                // 记住本次保存的 handle，下次默认打开同一文件夹
+                _lastImgLoaderSaveFileHandle = handle;
+                return true;
+            } catch (e) {
+                // 用户取消对话框，直接返回，不进行降级下载
+                if (e?.name === "AbortError") return false;
+                // 其他错误（权限不足等），继续降级
+            }
+        }
+
+        // 降级：普通下载（浏览器默认下载目录）
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        return true;
+    } catch (e) {
+        if (e?.name === "AbortError") return false; // 用户取消
+        console.warn("[小珠光] 保存图片失败:", e);
+        return false;
+    }
+}
+
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
@@ -258,16 +331,21 @@ function createImgBatchUI(node) {
         saveItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
         saveItem.addEventListener("mouseenter", () => { saveItem.style.background = "var(--comfy-input-bg)"; });
         saveItem.addEventListener("mouseleave", () => { saveItem.style.background = ""; });
-        saveItem.addEventListener("click", () => {
-            targetNames.forEach((n, i) => {
-                setTimeout(() => {
-                    const a = document.createElement("a");
-                    a.href = getOriginalImageUrl(n);
-                    a.download = n;
-                    a.click();
-                }, i * 150);
-            });
+        saveItem.addEventListener("click", async () => {
             hideContextMenu();
+            for (let i = 0; i < targetNames.length; i++) {
+                const n = targetNames[i];
+                const url = getOriginalImageUrl(n);
+                // 从文件名中提取实际文件名（去掉 [output] [input] [temp] 后缀）
+                let realName = n;
+                for (const suffix of [" [output]", " [input]", " [temp]"]) {
+                    if (realName.endsWith(suffix)) {
+                        realName = realName.slice(0, -suffix.length);
+                        break;
+                    }
+                }
+                await xzgSaveImage(url, realName);
+            }
         });
         contextMenu.appendChild(saveItem);
 
@@ -1863,6 +1941,69 @@ function createImgBatchUI(node) {
 
     redraw(true);
     updateModeBtn();
+
+    // 拖放支持：阻止浏览器默认行为，处理图片拖入
+    const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'tif', 'svg', 'avif'];
+    container.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    }, { capture: true });
+    container.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // 1. 操作系统文件拖入 → 上传 + 添加到列表
+        const files = Array.from(e.dataTransfer?.files || []).filter(f => {
+            if (!f) return false;
+            const ext = f.name.split('.').pop()?.toLowerCase();
+            return IMAGE_EXTS.includes(ext);
+        });
+        if (files.length > 0) {
+            uploadFilesSequential(files).then(uploaded => {
+                if (uploaded.length === 0) return;
+                if (uploadMode === "replace") {
+                    setNameList(node, uploaded);
+                    setIndex(node, 0);
+                } else {
+                    const all = parseNameList(getImageListWidget(node)?.value);
+                    const existing = new Set(all);
+                    const newOnes = uploaded.filter(n => !existing.has(n));
+                    const merged = newOnes.concat(all);
+                    setNameList(node, merged);
+                    setIndex(node, 0);
+                }
+                redraw(true);
+            });
+            return;
+        }
+
+        // 2. ComfyUI 内部拖入（从预览面板/文件列表拖出图片文件名）
+        const textData = e.dataTransfer?.getData('text/plain');
+        if (textData) {
+            let rawName = textData;
+            for (const s of [' [output]', ' [input]', ' [temp]']) {
+                if (rawName.endsWith(s)) {
+                    rawName = rawName.slice(0, -s.length);
+                    break;
+                }
+            }
+            const ext = rawName.split('.').pop()?.toLowerCase();
+            if (IMAGE_EXTS.includes(ext)) {
+                const annotatedName = textData;
+                if (uploadMode === "replace") {
+                    setNameList(node, [annotatedName]);
+                    setIndex(node, 0);
+                } else {
+                    const all = parseNameList(getImageListWidget(node)?.value);
+                    if (!all.includes(annotatedName)) {
+                        setNameList(node, [annotatedName].concat(all));
+                        setIndex(node, 0);
+                    }
+                }
+                redraw(true);
+            }
+        }
+    }, { capture: true });
 
     return {
         container,
