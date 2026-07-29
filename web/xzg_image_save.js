@@ -31,8 +31,8 @@ function _xzgImgSaveEnsureCtxMenu() {
     pngItem.addEventListener("mouseenter", () => { pngItem.style.background = "#3a3a3a"; });
     pngItem.addEventListener("mouseleave", () => { pngItem.style.background = ""; });
     pngItem.addEventListener("click", () => {
-        _xzgImgSaveHideCtxMenu();
         const w = _xzgImgSaveCtxCurrentWidget;
+        _xzgImgSaveHideCtxMenu();
         if (!w) return;
         const imgs = w._value?.images || [];
         const cur = imgs[w.currentIndex] || imgs[0];
@@ -47,8 +47,8 @@ function _xzgImgSaveEnsureCtxMenu() {
     jpgItem.addEventListener("mouseenter", () => { jpgItem.style.background = "#3a3a3a"; });
     jpgItem.addEventListener("mouseleave", () => { jpgItem.style.background = ""; });
     jpgItem.addEventListener("click", () => {
-        _xzgImgSaveHideCtxMenu();
         const w = _xzgImgSaveCtxCurrentWidget;
+        _xzgImgSaveHideCtxMenu();
         if (!w) return;
         const imgs = w._value?.images || [];
         const cur = imgs[w.currentIndex] || imgs[0];
@@ -523,8 +523,8 @@ class XzgImageSaveWidget {
     }
 
     serializeValue(node, index) {
-        // 不持久化图片，刷新后自动消失，确保重新执行
-        return { images: [] };
+        // 持久化图片数据，刷新后从工作流恢复显示
+        return this._value;
     }
 
     mouse(event, pos, node) {
@@ -583,8 +583,46 @@ class XiaozhuguangImageSaveNode {
                     serialised.widgets_values[index] = this.canvasWidget.value.images.map(d => {
                         const copy = { ...d };
                         delete copy.img;
+                        delete copy._loading;
                         return copy;
                     });
+                }
+            }
+        }
+    }
+
+    onConfigure(o) {
+        // 刷新后从 widgets_values 恢复图片数据
+        if (this.canvasWidget && o.widgets_values) {
+            for (let [index, wv] of o.widgets_values.entries()) {
+                if (this.widgets[index] && this.widgets[index].name === "xzg_image_save") {
+                    if (wv && Array.isArray(wv) && wv.length > 0) {
+                        // wv 是图片数组
+                        this.canvasWidget.value = { images: wv };
+                        // 重新加载图片
+                        for (const imgData of this.canvasWidget._value.images) {
+                            if (imgData.url) {
+                                this.canvasWidget._ensureImg(imgData);
+                            }
+                        }
+                        if (this.canvasWidget._value.images.length > 1) {
+                            this.canvasWidget.gridMode = true;
+                        }
+                        this.setDirtyCanvas(true, true);
+                    } else if (wv && wv.images && Array.isArray(wv.images) && wv.images.length > 0) {
+                        // wv 是 { images: [...] } 格式
+                        this.canvasWidget.value = wv;
+                        for (const imgData of this.canvasWidget._value.images) {
+                            if (imgData.url) {
+                                this.canvasWidget._ensureImg(imgData);
+                            }
+                        }
+                        if (this.canvasWidget._value.images.length > 1) {
+                            this.canvasWidget.gridMode = true;
+                        }
+                        this.setDirtyCanvas(true, true);
+                    }
+                    break;
                 }
             }
         }
@@ -724,6 +762,10 @@ app.registerExtension({
 
             nodeType.prototype.onSerialize = function (o) {
                 proto.onSerialize.call(this, o);
+            };
+
+            nodeType.prototype.onConfigure = function (o) {
+                proto.onConfigure.call(this, o);
             };
 
             nodeType.prototype.onMouseMove = function (e, pos) {

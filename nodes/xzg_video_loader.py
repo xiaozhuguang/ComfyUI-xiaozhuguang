@@ -378,7 +378,7 @@ class XiaozhuguangVideoLoader:
         return {
             "required": {
                 "视频": (sorted(files),),
-                "强制帧率": (["0", "16", "24", "25", "30", "60"], {"default": "0"}),
+                "强制帧率": ("FLOAT", {"default": 0, "min": 0, "max": 240, "step": 0.001}),
                 "视频比例": (["自定义比例", "原始比例", "竖屏9:16", "竖屏3:4", "横屏16:9", "横屏4:3", "等比1:1"], {"default": "自定义比例"}),
                 "自定义宽度": ("INT", {"default": 0, "min": 0, "max": DIMMAX, "step": 8}),
                 "自定义高度": ("INT", {"default": 0, "min": 0, "max": DIMMAX, "step": 8}),

@@ -973,30 +973,28 @@ app.registerExtension({
                 if (Array.isArray(audioSaved) && audioSaved.length > 0) {
                     const info = audioSaved[0];
                     
-                    // 预览模式：不设置下载 URL，仅更新波形显示
-                    if (info.preview) {
-                        saveUrl = "";
-                        savedFilename = "";
-                    } else {
-                        // 保存模式：构建音频 URL（用于右键下载）
-                        saveUrl = api.apiURL(
-                            `/view?filename=${encodeURIComponent(info.filename)}&type=${info.type}&subfolder=${encodeURIComponent(info.subfolder || '')}${app.getRandParam()}`
-                        );
-                        savedFilename = info.filename;
-                    }
+                    // 保存模式 & 预览模式：统一构建 /view URL
+                    // - 保存模式：type=output + 持久化到 output 目录
+                    // - 预览模式：type=temp   + 编码到 temp 目录（不落盘 output，可播放/右键另存）
+                    saveUrl = api.apiURL(
+                        `/view?filename=${encodeURIComponent(info.filename)}&type=${info.type}&subfolder=${encodeURIComponent(info.subfolder || '')}${app.getRandParam()}`
+                    );
+                    savedFilename = info.filename;
 
-                    // 更新波形显示和保存信息
+                    // 更新波形显示和播放信息（setSaveInfo 内部会绑定 <audio> src = saveUrl）
                     waveformViewer.setData(info.peaks, info.duration, info.sample_rate);
                     waveformViewer.setSaveInfo(saveUrl, savedFilename);
 
-                    // 序列化到 widget value（刷新后可恢复）
+                    // 序列化到 widget value（刷新后可恢复波形）
                     if (waveformWidget && info.peaks && info.duration) {
                         const saveData = {
                             peaks: info.peaks,
                             duration: info.duration,
                             sampleRate: info.sample_rate,
-                            saveUrl: saveUrl,
-                            filename: savedFilename,
+                            // 预览模式不落盘 saveUrl：temp 文件可能已被 ComfyUI 清理，
+                            // 刷新后避免伪 404 链接，只保留波形可视化
+                            saveUrl: info.preview ? "" : saveUrl,
+                            filename: info.preview ? "" : savedFilename,
                         };
                         waveformWidget.value = JSON.stringify(saveData);
                     }

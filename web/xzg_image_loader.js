@@ -285,9 +285,26 @@ async function xzgSaveImage(url, filename) {
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
-        "width:100%;min-width:0;min-height:200px;box-sizing:border-box;overflow:hidden;padding:6px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:4px 0;display:flex;flex-direction:row;gap:6px;z-index:10;";
+        "width:100%;min-width:0;min-height:200px;box-sizing:border-box;overflow:hidden;padding:6px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:4px 0;display:flex;flex-direction:row;gap:6px;z-index:10;position:relative;";
     container.style.userSelect = "none";
     container.style.webkitUserSelect = "none";
+
+    // Bypass 紫色覆盖层
+    const bypassOverlay = document.createElement("div");
+    bypassOverlay.style.cssText =
+        "position:absolute;inset:0;background-color:rgba(106, 36, 106, 0.6);pointer-events:none;z-index:100;display:none;";
+    container.appendChild(bypassOverlay);
+
+    // 更新 bypass 状态
+    const updateBypassState = () => {
+        // NodeMode.BYPASS = 4
+        if (node.mode === 4) {
+            bypassOverlay.style.display = "block";
+        } else {
+            bypassOverlay.style.display = "none";
+        }
+    };
+    updateBypassState();
     const contextMenu = document.createElement("div");
     contextMenu.style.cssText = `
         position: fixed;
@@ -348,33 +365,6 @@ function createImgBatchUI(node) {
             }
         });
         contextMenu.appendChild(saveItem);
-
-        const copyItem = document.createElement("div");
-        copyItem.textContent = multi ? `复制选中图片 (${selectedNames.length}张)` : "复制图片";
-        copyItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
-        copyItem.addEventListener("mouseenter", () => { copyItem.style.background = "var(--comfy-input-bg)"; });
-        copyItem.addEventListener("mouseleave", () => { copyItem.style.background = ""; });
-        copyItem.addEventListener("click", async () => {
-            try {
-                const blobs = [];
-                for (const n of targetNames) {
-                    const res = await fetch(getOriginalImageUrl(n));
-                    const blob = await res.blob();
-                    blobs.push(blob);
-                }
-                if (blobs.length === 1) {
-                    await navigator.clipboard.write([
-                        new ClipboardItem({ [blobs[0].type]: blobs[0] })
-                    ]);
-                } else {
-                    console.warn("[小珠光] 多选图片复制到剪贴板暂不支持，请使用保存功能");
-                }
-            } catch (err) {
-                console.warn("[小珠光] 复制图片失败:", err);
-            }
-            hideContextMenu();
-        });
-        contextMenu.appendChild(copyItem);
 
         contextMenu.style.left = `${x}px`;
         contextMenu.style.top = `${y}px`;
@@ -2012,7 +2002,9 @@ function createImgBatchUI(node) {
         updateModeBtn,
         resizeObserver,
         _updateLabelScale: updateLabelScale,
+        _updateBypassState: updateBypassState,
         _onWheel: onWheel,
+        get isSingleMode() { return uploadMode === "replace"; },
     };
 }
 
@@ -2195,11 +2187,15 @@ app.registerExtension({
                 return origOnRemoved?.apply(this, arguments);
             };
 
-            // 画布缩放时同步更新图片名称字体大小
+            // 画布缩放时同步更新图片名称字体大小，以及 bypass 状态更新
             const origOnDrawBackground = nodeType.prototype.onDrawBackground;
             nodeType.prototype.onDrawBackground = function (ctx) {
                 if (this._xzgImgLoaderUI?._updateLabelScale) {
                     this._xzgImgLoaderUI._updateLabelScale();
+                }
+                // 更新 bypass 覆盖层状态
+                if (this._xzgImgLoaderUI?._updateBypassState) {
+                    this._xzgImgLoaderUI._updateBypassState();
                 }
                 return origOnDrawBackground?.apply(this, arguments);
             };
@@ -2216,6 +2212,8 @@ app.registerExtension({
                     self._xzgResizeTimer = null;
                     const ui = self._xzgImgLoaderUI;
                     if (!ui?.grid) return;
+                    // 多图模式下不自适应调整节点大小
+                    if (!ui.isSingleMode) return;
                     const names = parseNameList(getImageListWidget(self)?.value || "");
                     if (!names.length) return;
                     const cardSize = getCardSize(self);

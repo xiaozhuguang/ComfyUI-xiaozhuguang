@@ -533,5 +533,3 @@ async def clear_trash(request):
         status=403,
     )
 
-
-

@@ -25,11 +25,11 @@ class XiaozhuguangInputLazyCheck:
             }
         }
 
-    RETURN_TYPES = (any,)
-    RETURN_NAMES = ("输出",)
+    RETURN_TYPES = (any, "BOOLEAN")
+    RETURN_NAMES = ("输出", "判断")
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
-    DESCRIPTION = "输入A有内容则输出A（跳过B的计算），输入A无内容则输出B。B为惰性输入，仅当A为空时才计算B的上游工作流。"
+    DESCRIPTION = "输入A有内容则输出A（跳过B的计算），输入A无内容则输出B。B为惰性输入，仅当A为空时才计算B的上游工作流。判断输出：输出A时为false，输出B时为true。"
 
     def check_lazy_status(self, A=None, B=None):
         # A 为非惰性，始终已求值
@@ -42,6 +42,6 @@ class XiaozhuguangInputLazyCheck:
 
     def execute(self, A=None, B=None):
         if A is not None:
-            return (A,)
+            return (A, False)
         else:
-            return (B,)
+            return (B, True)

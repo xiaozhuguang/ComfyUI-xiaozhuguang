@@ -36,8 +36,52 @@ export const AUDIO_MIME_MAP = {
     voc: "audio/voc", w64: "audio/x-w64",
 };
 
-// ─── 按文件类型记忆文件夹 handle（仅内存，浏览器刷新后重置） ──────────
+// ─── 按文件类型记忆文件夹 handle（IndexedDB 持久化，刷新后仍有效） ─────
 const LAST_FOLDER = { image: null, video: null, audio: null };
+
+// IndexedDB 存取目录 handle（FileSystemDirectoryHandle 可结构化克隆）
+const _xzgDBName = "xzg_save_handles";
+const _xzgStoreName = "folder_handles";
+
+function _xzgOpenDB() {
+    return new Promise((resolve, reject) => {
+        try {
+            const req = indexedDB.open(_xzgDBName, 1);
+            req.onupgradeneeded = () => req.result.createObjectStore(_xzgStoreName);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        } catch (e) { reject(e); }
+    });
+}
+
+async function _xzgSaveDirHandle(fileType, handle) {
+    try {
+        const db = await _xzgOpenDB();
+        const tx = db.transaction(_xzgStoreName, "readwrite");
+        tx.objectStore(_xzgStoreName).put(handle, fileType);
+        await new Promise((resolve) => { tx.oncomplete = () => resolve(); tx.onerror = () => resolve(); });
+    } catch (_) {}
+}
+
+async function _xzgLoadDirHandle(fileType) {
+    try {
+        const db = await _xzgOpenDB();
+        const tx = db.transaction(_xzgStoreName, "readonly");
+        return await new Promise((resolve) => {
+            const req = tx.objectStore(_xzgStoreName).get(fileType);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+        });
+    } catch (_) { return null; }
+}
+
+// 启动时从 IndexedDB 恢复目录 handle
+(async () => {
+    for (const ft of ["image", "video", "audio"]) {
+        const h = await _xzgLoadDirHandle(ft);
+        if (h) LAST_FOLDER[ft] = h;
+    }
+})();
 
 /**
  * 通用下载函数：File System Access API + 降级方案
@@ -72,22 +116,27 @@ export async function xzgDownload(url, filename, fileType = "image") {
                     }],
                 };
 
-                // 路径记忆：有上次 handle → 用上次；首次 → 桌面
+                // 路径记忆策略：
+                // 1. id 属性 — 浏览器原生记忆同一 id 上次使用的目录（最可靠，跨刷新有效）
+                // 2. startIn + IndexedDB 存储的 directory handle — 补充记忆
+                pickerOpts.id = "xzg_" + fileType;
+
                 const lastHandle = LAST_FOLDER[fileType];
-                if (lastHandle) {
+                if (lastHandle && lastHandle.kind === "directory") {
                     pickerOpts.startIn = lastHandle;
                 } else {
                     pickerOpts.startIn = "desktop";
                 }
 
                 const handle = await window.showSaveFilePicker(pickerOpts);
-                // 记住文件夹（用于下次 startIn），从 file handle 获取 parent directory handle
+
+                // 保存文件后，尝试获取父目录 handle 持久化到 IndexedDB
+                // FileSystemFileHandle 没有标准的 .parent，但可通过 showDirectoryPicker + resolve 验证
+                // 这里用最简方案：保存 file handle 本身，下次作为 startIn 也能定位到同目录
                 try {
-                    LAST_FOLDER[fileType] = await handle.parent;
-                } catch (_) {
-                    // 某些浏览器不支持 .parent，直接存当前 handle 也可作为 startIn
                     LAST_FOLDER[fileType] = handle;
-                }
+                    _xzgSaveDirHandle(fileType, handle);
+                } catch (_) {}
 
                 const writable = await handle.createWritable();
                 await writable.write(blob);

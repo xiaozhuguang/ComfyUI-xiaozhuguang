@@ -15,30 +15,33 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
     const step = this._xzgStep || 1;
     const min = this._xzgMin;
     const max = this._xzgMax;
+    // 拖动时的上限（如果设置了 _xzgDragMax，则拖动时用它；输入框输入时用 _xzgMax）
+    const dragMax = this._xzgDragMax != null ? this._xzgDragMax : max;
 
-    const clamp = (v) => {
+    const clamp = (v, useMax) => {
+        const m = useMax != null ? useMax : max;
         if (min != null && v < min) v = min;
-        if (max != null && v > max) v = max;
+        if (m != null && v > m) v = m;
         return v;
     };
 
     if (event.type === 'pointermove') {
         if (event.deltaX) {
-            this.value = clamp(this.value + event.deltaX);
+            this.value = clamp(this.value + event.deltaX, dragMax);
             app.canvas._xzgValueDragged = true;
         }
     } else if (event.type === 'pointerup') {
         if (app.canvas._xzgValueDragged) {
-            // 松手吸附到 step 倍数
-            this.value = clamp(Math.round(this.value / step) * step);
+            // 松手吸附到 step 倍数（拖动时用 dragMax）
+            this.value = clamp(Math.round(this.value / step) * step, dragMax);
         } else {
-            // 点击 → 弹输入框
+            // 点击 → 弹输入框（输入时用 max）
             app.canvas._xzgAllowPrompt = true;
             app.canvas?.prompt?.(
                 this.label || this.name,
                 this.value,
                 (v) => {
-                    this.value = clamp(Number(v));
+                    this.value = clamp(Number(v), max);
                     if (this.callback) this.callback(this.value);
                     node.setDirtyCanvas?.(true, true);
                 },
@@ -474,11 +477,10 @@ function _applyWidgetStyles(node) {
     for (const w of node.widgets || []) {
         if (w.name === VIDEO_PREVIEW_WIDGET_NAME) continue;
         if (w.name === '强制帧率') {
-            w.options = w.options || {};
-            w.options.values = ["0", "16", "24", "25", "30", "60"];
-            w.value = String(w.value ?? "0");
-            w.mouse = _xzgFpsComboMouse;
-            w.draw = _xzgDrawComboWidget;
+            w._xzgValueColor = '#FFD700';
+            w._xzgShowReset = true;
+            w.draw = _xzgDrawWidget;
+            w.mouse = _xzgWidgetNumberWithResetMouse;
         } else if (w.name === '视频') {
             w.draw = _xzgDrawComboWidget;
         } else if (w.name === '视频比例') {
@@ -1002,16 +1004,16 @@ function bindVideoLoaderInteractions(node) {
             if (totalFrames > 0) {
                 // 跳过帧数最大值 = 原始帧数 - 1
                 if (skipWidget) skipWidget._xzgMax = totalFrames - 1;
-                // 帧数上限最大值 = 剩余帧数（原始帧数 - 跳过帧数），实时跟随跳过帧数变化
-                if (limitWidget) limitWidget._xzgMax = Math.max(0, totalFrames - skipVal);
+                // 帧数上限：拖动时限制为剩余帧数，输入时不限制（用 BIGMAX）
+                if (limitWidget) {
+                    limitWidget._xzgDragMax = Math.max(0, totalFrames - skipVal);
+                    // _xzgMax 保持为后端定义的最大值，不限制手动输入
+                }
             }
             // 帧数上限最小值保持 0（0 表示无限制/加载全部剩余帧），不跟随跳过帧数变动
-            // 约束当前值
+            // 约束当前值（跳过帧数严格限制，帧数上限只在拖动时限制，输入不限制）
             if (skipWidget && skipWidget._xzgMax != null && skipWidget.value > skipWidget._xzgMax) {
                 skipWidget.value = skipWidget._xzgMax;
-            }
-            if (limitWidget && limitWidget._xzgMax != null && limitWidget.value > limitWidget._xzgMax) {
-                limitWidget.value = limitWidget._xzgMax;
             }
         };
 
@@ -1067,7 +1069,7 @@ app.registerExtension({
         if (nodeData.name === "XiaozhuguangVideoLoader") {
             // 强制帧率：强制走自定义 number widget，从源头避免原生 combo 列表
             if (nodeData.input?.required?.["强制帧率"]) {
-                nodeData.input.required["强制帧率"][1].widgetType = "XZGINT";
+                nodeData.input.required["强制帧率"][1].widgetType = "XZGFLOAT";
             }
             // 视频比例：同样避免原生 combo 列表（双列表问题）
             if (nodeData.input?.required?.["视频比例"]) {

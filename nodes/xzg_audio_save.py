@@ -263,13 +263,24 @@ class XiaozhuguangAudioSave:
         peaks = generate_waveform_peaks(w_for_peaks)
         actual_duration = w_for_peaks.shape[-1] / sample_rate if w_for_peaks.numel() > 0 else 0.0
 
-        # 预览模式：不保存文件，仅返回波形数据供前端显示
+        # 扩展名（两种模式都要用）
+        ext = AUDIO_FORMATS[格式]["extension"]
+
+        # ── 预览模式：仍编码音频，但保存到 ComfyUI temp 目录（不落盘到 output） ──
         if is_preview:
+            import uuid
+            temp_dir = folder_paths.get_temp_directory()
+            os.makedirs(temp_dir, exist_ok=True)
+            random_tag = uuid.uuid4().hex[:12]
+            preview_filename = f"xzg_preview_{random_tag}.{ext}"
+            preview_filepath = os.path.join(temp_dir, preview_filename)
+            # 复用同一套 ffmpeg 编码逻辑，输出到 temp
+            save_audio_to_file(waveform, sample_rate, preview_filepath, format_name=格式, quality=quality_val)
             return {
                 "result": (),
                 "ui": {
                     "audio_saved": [{
-                        "filename": "",
+                        "filename": preview_filename,
                         "subfolder": "",
                         "type": "temp",
                         "format": 格式,
@@ -282,7 +293,7 @@ class XiaozhuguangAudioSave:
                 },
             }
 
-        # 保存模式：输出到文件
+        # 保存模式：输出到 output 目录
         base_dir = folder_paths.get_output_directory()
 
         if 自定义保存目录 and 自定义保存目录.strip():

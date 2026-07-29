@@ -84,10 +84,7 @@ try:
         fname = "xzg_real_" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12)) + ".png"
         Image.fromarray(arr).save(os.path.join(output_dir, fname), "PNG")
 
-        # 释放内存
-        store[index] = None
-        if all(x is None for x in store):
-            REAL_STORE.pop(token, None)
+        # 不销毁数据，允许重复保存（内存由 REAL_STORE 的 100 条上限自动清理）
 
         return web.json_response({"filename": fname, "subfolder": "", "type": "temp"})
 except Exception as _e:

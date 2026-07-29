@@ -449,7 +449,7 @@ window.XZGThemePanel = {
                         self.importAllConfig(obj).then((result) => {
                             if (result && result.applied) {
                                 const parts = [];
-                                if (result.appliedXzgConfig) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
+                                if (result.appliedXzgConfig || result.appliedNotes) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
                                 if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
                                 const imported = parts.join(' + ');
                                 alert(xzgT('导入成功（', 'Import succeeded (') + imported + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
@@ -2267,15 +2267,21 @@ window.XZGThemePanel = {
     showExportDialog() {
         return new Promise((resolve) => {
             const self = this;
+            self._ensureGlobalDialogCSS();
             const overlay = document.createElement("div");
             overlay.className = "xzg-modal-overlay";
+            overlay.style.zIndex = "2000001";
             overlay.innerHTML = `
                 <div class="xzg-modal-dialog">
                     <div class="xzg-modal-title">${xzgT('导出配置', 'Export Config')}</div>
                     <div class="xzg-modal-body">
                         <label class="xzg-modal-checkbox">
+                            <input type="checkbox" id="xzg-export-include-xzg" checked />
+                            <span>${xzgT('包含小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速节点 / 记事本）', 'Include Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick nodes / notepad)')}</span>
+                        </label>
+                        <label class="xzg-modal-checkbox">
                             <input type="checkbox" id="xzg-export-include-comfy" checked />
-                            <span>${xzgT('包含 ComfyUI 设置（快捷键、主题等）', 'Include ComfyUI settings (keybindings, theme, etc.)')}</span>
+                            <span>${xzgT('包含 ComfyUI 设置（快捷键、界面主题、布局偏好等）', 'Include ComfyUI settings (keybindings, UI theme, layout preferences, etc.)')}</span>
                         </label>
                         <div class="xzg-modal-hint">${xzgT('提示：ComfyUI 设置包含您自定义的快捷键、颜色主题、界面布局偏好等。', 'Tip: ComfyUI settings include your custom keybindings, color theme, UI layout preferences, etc.')}</div>
                     </div>
@@ -2294,8 +2300,10 @@ window.XZGThemePanel = {
 
             overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(null));
             overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
+                const includeXzg = overlay.querySelector("#xzg-export-include-xzg").checked;
                 const includeComfy = overlay.querySelector("#xzg-export-include-comfy").checked;
-                close({ includeComfySettings: includeComfy });
+                // 备注/记事本已合并到小珠光配置
+                close({ includeXzgConfig: includeXzg, includeNotes: includeXzg, includeComfySettings: includeComfy });
             });
             overlay.addEventListener("click", (e) => {
                 if (e.target === overlay) close(null);
@@ -2306,27 +2314,33 @@ window.XZGThemePanel = {
     /**
      * 显示导入选项对话框
      */
-    showImportDialog(hasComfySettings) {
+    showImportDialog(hasComfySettings, hasXzg) {
         return new Promise((resolve) => {
             const self = this;
+            self._ensureGlobalDialogCSS();
             const overlay = document.createElement("div");
             overlay.className = "xzg-modal-overlay";
+            overlay.style.zIndex = "2000001";
             const comfyCheckbox = hasComfySettings ? `
                 <label class="xzg-modal-checkbox">
                     <input type="checkbox" id="xzg-import-include-comfy" checked />
-                    <span>${xzgT('导入 ComfyUI 设置（快捷键、主题等）', 'Import ComfyUI settings (keybindings, theme, etc.)')}</span>
+                    <span>${xzgT('导入 ComfyUI 设置（快捷键、界面主题、布局偏好等）', 'Import ComfyUI settings (keybindings, UI theme, layout preferences, etc.)')}</span>
                 </label>
             ` : `
                 <div class="xzg-modal-hint">${xzgT('此配置文件不包含 ComfyUI 设置。', 'This config file does not contain ComfyUI settings.')}</div>
+            `;
+            const xzgHint = hasXzg ? `` : `
+                <div class="xzg-modal-hint">${xzgT('此配置文件不包含小珠光配置。', 'This config file does not contain Xiaozhuguang config.')}</div>
             `;
             overlay.innerHTML = `
                 <div class="xzg-modal-dialog">
                     <div class="xzg-modal-title">${xzgT('导入配置', 'Import Config')}</div>
                     <div class="xzg-modal-body">
-                        <label class="xzg-modal-checkbox">
-                            <input type="checkbox" id="xzg-import-include-xzg" checked />
-                            <span>${xzgT('导入小珠光配置（主题、收藏、工作流等）', 'Import Xiaozhuguang config (theme, favorites, workflows, etc.)')}</span>
+                        <label class="xzg-modal-checkbox" style="${hasXzg ? '' : 'opacity:0.5;pointer-events:none;'}">
+                            <input type="checkbox" id="xzg-import-include-xzg" ${hasXzg ? 'checked' : 'disabled'} />
+                            <span>${xzgT('导入小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速节点 / 记事本）', 'Import Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick nodes / notepad)')}</span>
                         </label>
+                        ${xzgHint}
                         ${comfyCheckbox}
                         <div class="xzg-modal-warning">${xzgT('警告：导入将覆盖当前的对应设置，建议先导出备份。', 'Warning: Importing will overwrite current corresponding settings. Export a backup first is recommended.')}</div>
                     </div>
@@ -2345,10 +2359,12 @@ window.XZGThemePanel = {
 
             overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(null));
             overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
-                const includeXzg = overlay.querySelector("#xzg-import-include-xzg").checked;
+                const includeXzgEl = overlay.querySelector("#xzg-import-include-xzg");
+                const includeXzg = includeXzgEl && !includeXzgEl.disabled ? includeXzgEl.checked : false;
                 const includeComfyEl = overlay.querySelector("#xzg-import-include-comfy");
                 const includeComfy = includeComfyEl ? includeComfyEl.checked : false;
-                close({ includeXzgConfig: includeXzg, includeComfySettings: includeComfy });
+                // 备注/记事本已合并到小珠光配置
+                close({ includeXzgConfig: includeXzg, includeNotes: includeXzg, includeComfySettings: includeComfy });
             });
             overlay.addEventListener("click", (e) => {
                 if (e.target === overlay) close(null);
@@ -2356,43 +2372,97 @@ window.XZGThemePanel = {
         });
     },
 
-    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题 / ComfyUI设置 等所有模块） ======
+    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题 / 备注 / ComfyUI设置 等所有模块） ======
     async exportAllConfig() {
+        // 1) 先弹导出选项，等用户确认各模块的勾选
+        const opt = await this.showExportDialog();
+        if (!opt) return; // 用户取消
+        const includeXzg = opt.includeXzgConfig !== false;    // 默认true
+        const includeNotes = opt.includeNotes !== false;      // 默认true
+        const includeComfy = opt.includeComfySettings !== false;
+
+        const NOTES_KEY = "xiaozhuguang.notes";
+
         const prefixes = ["xzg_", "xzg-", "xiaozhuguang.", "xz_"];
         const extraKeys = ["comfyui_xiaozhuguang"];
-        const ls = {};
-        for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (!k) continue;
-            if (prefixes.some(p => k.startsWith(p)) || extraKeys.includes(k)) {
-                try { ls[k] = localStorage.getItem(k); } catch (e) {}
+        let ls = {};
+        if (includeXzg) {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (!k) continue;
+                // 备注单独处理（根据 includeNotes 决定）
+                if (!includeNotes && k === NOTES_KEY) continue;
+                if (prefixes.some(p => k.startsWith(p)) || extraKeys.includes(k)) {
+                    try { ls[k] = localStorage.getItem(k); } catch (e) {}
+                }
             }
+        } else if (includeNotes) {
+            // 不导出小珠光配置，但导出备注时只带 notes 键
+            try {
+                const v = localStorage.getItem(NOTES_KEY);
+                if (v !== null) ls[NOTES_KEY] = v;
+            } catch (e) {}
         }
-        // 收藏截图存于 IndexedDB，单独收集
+
+        // 顶层 notes 字段（结构化，方便未来扩展和跨工具识别）
+        let notesTop = null;
+        if (includeNotes) {
+            try {
+                const raw = localStorage.getItem(NOTES_KEY);
+                if (raw !== null) {
+                    try {
+                        const parsed = JSON.parse(raw);
+                        if (parsed && Array.isArray(parsed.groups) && parsed.groups.length > 0) {
+                            notesTop = parsed;
+                        } else {
+                            // 旧版单字符串或空结构 → 包一层兼容
+                            notesTop = {
+                                groups: [{ id: "xzg_nt_migrated", name: xzgT("导入的笔记","Imported Notes"), content: (typeof raw === "string" ? raw : ""), color: "#FF5252", order: 0 }],
+                                activeId: "xzg_nt_migrated",
+                            };
+                        }
+                    } catch (_) {
+                        // parse失败，按纯字符串包装成一组
+                        notesTop = {
+                            groups: [{ id: "xzg_nt_imported", name: xzgT("导入的笔记","Imported Notes"), content: raw || "", color: "#FF5252", order: 0 }],
+                            activeId: "xzg_nt_imported",
+                        };
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // 收藏截图存于 IndexedDB，单独收集（仅当 includeXzg 时）
         let favoritesPreviews = null;
-        try {
-            const fav = window.xiaozhuguangFavorites;
-            if (fav && typeof fav._getAllPreviewImages === "function") {
-                favoritesPreviews = await fav._getAllPreviewImages();
-            }
-        } catch (e) {}
+        if (includeXzg) {
+            try {
+                const fav = window.xiaozhuguangFavorites;
+                if (fav && typeof fav._getAllPreviewImages === "function") {
+                    favoritesPreviews = await fav._getAllPreviewImages();
+                }
+            } catch (e) {}
+        }
 
         // 导出 ComfyUI 设置（含快捷键）
         let comfySettings = null;
-        try {
-            const allSettings = await this.getComfySettings();
-            if (allSettings) {
-                comfySettings = this.filterComfySettingsForExport(allSettings);
+        if (includeComfy) {
+            try {
+                const allSettings = await this.getComfySettings();
+                if (allSettings) {
+                    comfySettings = this.filterComfySettingsForExport(allSettings);
+                }
+            } catch (e) {
+                console.warn("[XZG] Failed to export comfy settings:", e);
             }
-        } catch (e) {
-            console.warn("[XZG] Failed to export comfy settings:", e);
         }
 
         const cfg = {
             format: "xiaozhuguang-config",
-            version: 3,
+            version: 4,
             exportedAt: new Date().toISOString(),
+            flags: { includeXzgConfig: includeXzg, includeNotes: includeNotes, includeComfySettings: includeComfy },
             localStorage: ls,
+            notes: notesTop,
             favoritesPreviews: favoritesPreviews,
             comfySettings: comfySettings
         };
@@ -2416,45 +2486,111 @@ window.XZGThemePanel = {
             throw new Error("unknown format: " + obj.format);
         }
 
-        // 导入小珠光配置
-        if (obj.localStorage && typeof obj.localStorage === "object") {
-            for (const k in obj.localStorage) {
-                try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
+        const NOTES_KEY = "xiaozhuguang.notes";
+
+        // 先检测此文件是否包含两类可选模块（用于弹窗显示复选框）
+        const hasComfy = !!(obj.comfySettings && typeof obj.comfySettings === "object" && Object.keys(obj.comfySettings).length > 0);
+        // hasXzg：只要文件包含 localStorage / notes / favoritesPreviews / workflowUsage 之一，就视为包含小珠光配置
+        const hasXzg = !!(
+            (obj.localStorage && typeof obj.localStorage === "object" && Object.keys(obj.localStorage).length > 0) ||
+            (obj.notes && typeof obj.notes === "object" && Array.isArray(obj.notes.groups)) ||
+            (obj.favoritesPreviews && Array.isArray(obj.favoritesPreviews) && obj.favoritesPreviews.length > 0) ||
+            (obj.workflowUsage && typeof obj.workflowUsage === "object" && Object.keys(obj.workflowUsage).length > 0)
+        );
+
+        // 弹导入选项（备注/记事本已合并进小珠光配置，不再单独复选）
+        const opt = await this.showImportDialog(hasComfy, hasXzg);
+        if (!opt) return { applied: false };
+        const includeXzg = opt.includeXzgConfig !== false;
+        const includeNotes = opt.includeNotes !== false;
+        const includeComfy = opt.includeComfySettings !== false;
+
+        // ============ 1) 导入备注（优先从顶层 notes，回退到 localStorage[NOTES_KEY]） ============
+        let importedNotes = false;
+        if (includeNotes && hasNotes) {
+            let notesObj = null;
+            if (obj.notes && typeof obj.notes === "object") {
+                notesObj = obj.notes;
+            } else if (obj.localStorage && obj.localStorage[NOTES_KEY]) {
+                try {
+                    const parsed = JSON.parse(obj.localStorage[NOTES_KEY]);
+                    if (parsed && (Array.isArray(parsed.groups) || typeof parsed === "string")) {
+                        notesObj = parsed;
+                    }
+                } catch (_) {
+                    // 旧版字符串格式
+                    notesObj = {
+                        groups: [{ id: "xzg_nt_imported", name: xzgT("导入的笔记","Imported Notes"), content: obj.localStorage[NOTES_KEY], color: "#FF5252", order: 0 }],
+                        activeId: "xzg_nt_imported",
+                    };
+                }
+            }
+            if (notesObj) {
+                try {
+                    if (typeof notesObj === "string") {
+                        // 单字符串兼容
+                        localStorage.setItem(NOTES_KEY, notesObj);
+                    } else {
+                        localStorage.setItem(NOTES_KEY, JSON.stringify(notesObj));
+                    }
+                    importedNotes = true;
+                } catch (e) {
+                    console.warn("[XZG] Failed to import notes:", e);
+                }
             }
         }
-        if (obj.favoritesPreviews && window.xiaozhuguangFavorites &&
-            typeof window.xiaozhuguangFavorites._saveAllPreviewImages === "function") {
-            try { await window.xiaozhuguangFavorites._saveAllPreviewImages(obj.favoritesPreviews); } catch (e) {}
-        }
-        // 兼容旧版（仅使用次数）配置
-        if (obj.workflowUsage && typeof obj.workflowUsage === "object") {
-            try {
-                const raw = localStorage.getItem("xzg_workflows_meta");
-                const meta = raw ? JSON.parse(raw) : { workflows: {} };
-                if (!meta.workflows) meta.workflows = {};
-                for (const path in obj.workflowUsage) {
-                    const cnt = parseInt(obj.workflowUsage[path], 10);
-                    if (!meta.workflows[path]) meta.workflows[path] = { useCount: 0, lastUsed: 0, categoryId: null, createdAt: Date.now() };
-                    meta.workflows[path].useCount = isNaN(cnt) ? 0 : cnt;
+
+        // ============ 2) 导入小珠光配置（除 notes 外的所有 localStorage，以及收藏预览） ============
+        let importedXzg = false;
+        if (includeXzg) {
+            if (obj.localStorage && typeof obj.localStorage === "object") {
+                for (const k in obj.localStorage) {
+                    // notes 已在上面单独按 includeNotes 决策导入，此处跳过避免强制覆盖
+                    if (k === NOTES_KEY) continue;
+                    try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
                 }
-                localStorage.setItem("xzg_workflows_meta", JSON.stringify(meta));
-            } catch (e) {}
+                importedXzg = true;
+            }
+            if (obj.favoritesPreviews && window.xiaozhuguangFavorites &&
+                typeof window.xiaozhuguangFavorites._saveAllPreviewImages === "function") {
+                try { await window.xiaozhuguangFavorites._saveAllPreviewImages(obj.favoritesPreviews); importedXzg = true; } catch (e) {}
+            }
+            // 兼容旧版（仅使用次数）配置
+            if (obj.workflowUsage && typeof obj.workflowUsage === "object") {
+                try {
+                    const raw = localStorage.getItem("xzg_workflows_meta");
+                    const meta = raw ? JSON.parse(raw) : { workflows: {} };
+                    if (!meta.workflows) meta.workflows = {};
+                    for (const path in obj.workflowUsage) {
+                        const cnt = parseInt(obj.workflowUsage[path], 10);
+                        if (!meta.workflows[path]) meta.workflows[path] = { useCount: 0, lastUsed: 0, categoryId: null, createdAt: Date.now() };
+                        meta.workflows[path].useCount = isNaN(cnt) ? 0 : cnt;
+                    }
+                    localStorage.setItem("xzg_workflows_meta", JSON.stringify(meta));
+                    importedXzg = true;
+                } catch (e) {}
+            }
         }
 
-        // 导入 ComfyUI 设置（含快捷键）
+        // ============ 3) 导入备注即使没勾选XZG也允许单独生效（因此 notes 独立）===========
+        // 最终 importedXzg 只反映非 notes 的模块；而 importedNotes 单独记录
+        const anyXzgApplied = importedXzg;
+
+        // ============ 4) 导入 ComfyUI 设置（含快捷键） ============
         let importedComfy = false;
-        if (obj.comfySettings && typeof obj.comfySettings === "object" && Object.keys(obj.comfySettings).length > 0) {
+        if (includeComfy && hasComfy) {
             try {
                 const ok = await this.applyComfySettings(obj.comfySettings);
-                importedComfy = ok;
+                importedComfy = !!ok;
             } catch (e) {
                 console.warn("[XZG] Failed to import comfy settings:", e);
             }
         }
 
         return {
-            applied: true,
-            appliedXzgConfig: true,
+            applied: anyXzgApplied || importedNotes || importedComfy,
+            appliedXzgConfig: anyXzgApplied,
+            appliedNotes: importedNotes,
             appliedComfySettings: importedComfy
         };
     },
@@ -2552,54 +2688,130 @@ window.XZGThemePanel = {
         }
     },
 
+    /** 一次性注入全局模态框样式：xzg-modal-*（导出/导入对话框）+ xzg-wf-dialog-* */
+    _ensureGlobalDialogCSS() {
+        if (document.getElementById("xzg-dialog-global-css")) return;
+        const s = document.createElement("style");
+        s.id = "xzg-dialog-global-css";
+        s.textContent = `
+            /* ========= xzg-modal：导出/导入配置对话框 ========= */
+            .xzg-modal-overlay {
+                position: fixed;top: 0;left: 0;right: 0;bottom: 0;
+                background: rgba(0, 0, 0, 0.65);
+                display: flex;align-items: center;justify-content: center;
+                z-index: 2000000;
+            }
+            .xzg-modal-dialog {
+                background: var(--comfy-menu-bg, #2a2a2a);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 10px;
+                min-width: 380px;
+                max-width: 520px;
+                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+                color: #ddd;
+                font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+                animation: xzgModalPop 0.35s cubic-bezier(0.25, 0.8, 0.3, 1);
+            }
+            @keyframes xzgModalPop {
+                from { opacity: 0; transform: scale(0.97); }
+                to   { opacity: 1; transform: scale(1); }
+            }
+            .xzg-modal-title {
+                display: flex;align-items: center;justify-content: center;
+                padding: 14px 16px;font-size: 15px;font-weight: bold;color: #FFD700;
+                border-bottom: 1px solid var(--border-color, #444);
+            }
+            .xzg-modal-body { padding: 16px 18px;display: flex;flex-direction: column;gap: 12px; }
+            .xzg-modal-footer {
+                padding: 12px 16px;border-top: 1px solid var(--border-color, #444);
+                display: flex;justify-content: center;gap: 10px;
+            }
+            .xzg-modal-btn {
+                padding: 6px 18px;font-size: 13px;
+                background: var(--comfy-input-bg, #3a3a3a);
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;cursor: pointer;transition: all 0.15s;
+            }
+            .xzg-modal-btn:hover { background: rgba(255,255,255,0.1); }
+            .xzg-modal-cancel {
+                background: #3a3a3a; color: #ccc;
+            }
+            .xzg-modal-confirm {
+                background: #FFD700;color: #333;border-color: #FFD700;font-weight: bold;
+            }
+            .xzg-modal-confirm:hover:not(:disabled) { background: #FFC700; }
+            .xzg-modal-confirm:disabled { opacity: 0.4;cursor: not-allowed; }
+            .xzg-modal-checkbox {
+                display: flex;align-items: flex-start;gap: 8px;cursor: pointer;
+                padding: 6px 4px;border-radius: 4px;
+                font-size: 13px;color: #ddd;line-height: 1.4;
+                user-select: none;
+            }
+            .xzg-modal-checkbox:hover { background: rgba(255,255,255,0.05); }
+            .xzg-modal-checkbox > input[type="checkbox"] {
+                margin-top: 3px;
+                width: 14px;height: 14px;
+                accent-color: #FFD700;
+                cursor: pointer;flex-shrink: 0;
+            }
+            .xzg-modal-hint {
+                font-size: 11px;color: #888;padding: 2px 4px;line-height: 1.5;
+            }
+            .xzg-modal-warning {
+                font-size: 11px;color: #FF6B6B;padding: 8px 10px;
+                background: rgba(255,82,82,0.08);
+                border: 1px dashed rgba(255,82,82,0.35);
+                border-radius: 4px;line-height: 1.5;
+            }
+
+            /* ========= xzg-wf-dialog：通用确认对话框 ========= */
+            .xzg-wf-dialog-overlay {
+                position: fixed;top: 0;left: 0;right: 0;bottom: 0;
+                background: rgba(0, 0, 0, 0.6);
+                display: flex;align-items: center;justify-content: center;
+                z-index: 100002;
+            }
+            .xzg-wf-dialog {
+                background: var(--comfy-menu-bg, #2a2a2a);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 8px;min-width: 320px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            }
+            .xzg-wf-dialog-title {
+                position: relative;display: flex;align-items: center;justify-content: center;
+                padding: 14px 16px;font-size: 15px;font-weight: bold;color: #fff;
+                border-bottom: 1px solid var(--border-color, #444);text-align: center;
+            }
+            .xzg-wf-dialog-body { padding: 20px 16px; }
+            .xzg-wf-dialog-footer {
+                padding: 12px 16px;border-top: 1px solid var(--border-color, #444);
+                display: flex;justify-content: center;gap: 10px;
+            }
+            .xzg-wf-dialog-btn {
+                padding: 6px 16px;font-size: 13px;
+                background: var(--comfy-input-bg, #3a3a3a);
+                color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);
+                border-radius: 4px;cursor: pointer;transition: all 0.15s;
+            }
+            .xzg-wf-dialog-btn:hover { background: rgba(255, 255, 255, 0.1); }
+            .xzg-wf-dialog-btn-cancel {
+                background: var(--comfy-input-bg, #3a3a3a);color: var(--fg, #ddd);
+            }
+            .xzg-wf-dialog-btn-confirm {
+                background: #4a4a4a;color: #fff;border-color: #666;font-weight: bold;
+            }
+            .xzg-wf-dialog-btn-confirm:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+            .xzg-wf-dialog-btn-confirm:disabled { opacity: 0.4;cursor: not-allowed; }
+        `;
+        document.head.appendChild(s);
+    },
+
     showConfirmDialog(title, message) {
         return new Promise((resolve) => {
             const self = this;
-            if (!document.getElementById("xzg-dialog-global-css")) {
-                const s = document.createElement("style");
-                s.id = "xzg-dialog-global-css";
-                s.textContent = `
-                    .xzg-wf-dialog-overlay {
-                        position: fixed;top: 0;left: 0;right: 0;bottom: 0;
-                        background: rgba(0, 0, 0, 0.6);
-                        display: flex;align-items: center;justify-content: center;
-                        z-index: 100002;
-                    }
-                    .xzg-wf-dialog {
-                        background: var(--comfy-menu-bg, #2a2a2a);
-                        border: 1px solid var(--border-color, #555);
-                        border-radius: 8px;min-width: 320px;
-                        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-                    }
-                    .xzg-wf-dialog-title {
-                        position: relative;display: flex;align-items: center;justify-content: center;
-                        padding: 14px 16px;font-size: 15px;font-weight: bold;color: #fff;
-                        border-bottom: 1px solid var(--border-color, #444);text-align: center;
-                    }
-                    .xzg-wf-dialog-body { padding: 20px 16px; }
-                    .xzg-wf-dialog-footer {
-                        padding: 12px 16px;border-top: 1px solid var(--border-color, #444);
-                        display: flex;justify-content: center;gap: 10px;
-                    }
-                    .xzg-wf-dialog-btn {
-                        padding: 6px 16px;font-size: 13px;
-                        background: var(--comfy-input-bg, #3a3a3a);
-                        color: var(--fg, #ddd);
-                        border: 1px solid var(--border-color, #555);
-                        border-radius: 4px;cursor: pointer;transition: all 0.15s;
-                    }
-                    .xzg-wf-dialog-btn:hover { background: rgba(255, 255, 255, 0.1); }
-                    .xzg-wf-dialog-btn-cancel {
-                        background: var(--comfy-input-bg, #3a3a3a);color: var(--fg, #ddd);
-                    }
-                    .xzg-wf-dialog-btn-confirm {
-                        background: #4a4a4a;color: #fff;border-color: #666;font-weight: bold;
-                    }
-                    .xzg-wf-dialog-btn-confirm:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
-                    .xzg-wf-dialog-btn-confirm:disabled { opacity: 0.4;cursor: not-allowed; }
-                `;
-                document.head.appendChild(s);
-            }
+            self._ensureGlobalDialogCSS();
             const escapeAttr = (v) => String(v == null ? "" : v)
                 .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
                 .replace(/</g, "&lt;").replace(/>/g, "&gt;");
