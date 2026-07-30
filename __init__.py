@@ -50,6 +50,7 @@ from .nodes.xzg_image_compare import XiaozhuguangImageCompare
 from .nodes.xzg_image_save import XiaozhuguangImageSave
 from .nodes.xzg_audio_save import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
+from .nodes.xzg_text_box import XiaozhuguangTextBox
 
 
 # ============ 懒编码路由：右键保存真实分辨率图时，才临时编码全分辨率 PNG ============
@@ -458,6 +459,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
+    "XiaozhuguangTextBox": XiaozhuguangTextBox,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -483,6 +485,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageSave": "小珠光图像保存",
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
+    "XiaozhuguangTextBox": "小珠光文本框",
 }
 
 WEB_DIRECTORY = "./web"
