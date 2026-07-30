@@ -409,7 +409,7 @@ class XiaozhuguangVideoCombine:
 
 # 获取输出目录和临时目录路径的 API 端点
 @routes.get("/xzg/get_output_dir")
-async def xzg_get_output_dir():
+async def xzg_get_output_dir(request):
     return {
         "output_dir": folder_paths.get_output_directory(),
         "temp_dir": folder_paths.get_temp_directory(),

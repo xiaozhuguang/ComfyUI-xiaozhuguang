@@ -10,6 +10,19 @@ import { xzgT } from "./xzg_i18n.js";
 const MODE_ALWAYS = 0;
 const MODE_BYPASS = 4;
 
+/** 节点拖动→编组跟随会话：一旦某编组开始跟随，本次鼠标按下到松开期间
+ *  不再因自动收纳新节点 / 碰到外部节点 而中途停止跟随。
+ *  会话在全局 mousedown 捕获（非编组按钮/锁按钮/面板）开始准备，
+ *  任一编组首次满足"完全选中+有位移增量"时锁定，全局 mouseup/touchend 释放。
+ */
+const _XZG_NODE_DRAG_SESSION = {
+    active: false,
+    lockedGids: new Set(),
+    startSelSnapshot: null, // Set<selIdStr>  锁定瞬间的选中集合快照
+    startTs: 0,
+    lastMovedTs: 0,
+};
+
 const XZGGroup = {
     initialized: false,
     groups: {},       // groupId → {id, title, nodeIds, bypassed, bounds, fontSize}
@@ -42,6 +55,26 @@ const XZGGroup = {
         this.createOverlay();
         this.setupKeyboardShortcut();
         this.setupCanvasMenu();
+
+        // 节点拖动→编组跟随会话：全局 mouseup/touchend 统一结束锁定
+        const resetDragSession = () => {
+            const s = _XZG_NODE_DRAG_SESSION;
+            if (s.active) {
+                s.active = false;
+                s.lockedGids.clear();
+                s.startSelSnapshot = null;
+                s.startTs = 0;
+                s.lastMovedTs = 0;
+            }
+        };
+        document.addEventListener('mouseup', resetDragSession, true);
+        document.addEventListener('touchend', resetDragSession, true);
+        document.addEventListener('touchcancel', resetDragSession, true);
+        // 键盘 Esc 也结束（用户可能按 Esc 取消拖动）
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') resetDragSession();
+        }, true);
+
         // ── 运行时注入补丁（优先执行，绕过 ES module 编译缓存导致方法丢失的问题）
         // 即便对象字面量里方法被正确加载，也安全（注入前检查 typeof === 'function'）
         this._ensureRuntimePatches();
@@ -93,7 +126,12 @@ const XZGGroup = {
                 for (const n of Object.values(selMap)) {
                     if (n && n.id != null) selIdSet.add(String(n.id));
                 }
-                if (selIdSet.size === 0) { self._nodePosCache = null; return; }
+                if (selIdSet.size === 0) {
+                    self._nodePosCache = null;
+                    const s = _XZG_NODE_DRAG_SESSION;
+                    if (s.active) { s.active=false; s.lockedGids.clear(); s.startSelSnapshot=null; s.startTs=0; s.lastMovedTs=0; }
+                    return;
+                }
 
                 const nowPos = new Map();
                 for (const idStr of selIdSet) {
@@ -105,17 +143,38 @@ const XZGGroup = {
                 const prev = self._nodePosCache;
                 if (!prev) { self._nodePosCache = nowPos; return; }
 
-                const fullySelectedGids = [];
-                for (const [gid, g] of Object.entries(self.groups)) {
-                    if (!g.bounds) continue;
-                    const allNodeIds = self._collectAllNodeIdsInGroup(gid);
-                    if (allNodeIds.length === 0) continue;
-                    if (allNodeIds.every(id => selIdSet.has(String(id)))) fullySelectedGids.push(gid);
+                // 跟随会话锁定（同主方法实现：首次移动→锁定，后续帧直接复用 lockedGids）
+                const session = _XZG_NODE_DRAG_SESSION;
+                let fullySelectedGids;
+                if (session.active && session.lockedGids.size > 0) {
+                    // 选中集合变更时兜底解除锁定
+                    let selChanged = false;
+                    if (session.startSelSnapshot) {
+                        if (session.startSelSnapshot.size !== selIdSet.size) selChanged = true;
+                        else for (const v of session.startSelSnapshot) { if (!selIdSet.has(v)) { selChanged = true; break; } }
+                    }
+                    if (selChanged) {
+                        session.active = false; session.lockedGids.clear();
+                        session.startSelSnapshot = null; session.startTs = 0; session.lastMovedTs = 0;
+                    } else {
+                        fullySelectedGids = [...session.lockedGids].filter(gid => self.groups[gid]?.bounds);
+                    }
+                }
+                if (!fullySelectedGids) {
+                    fullySelectedGids = [];
+                    for (const [gid, g] of Object.entries(self.groups)) {
+                        if (!g.bounds) continue;
+                        const allNodeIds = self._collectAllNodeIdsInGroup(gid);
+                        if (allNodeIds.length === 0) continue;
+                        const baseSel = session.startSelSnapshot || selIdSet;
+                        if (allNodeIds.every(id => baseSel.has(String(id)))) fullySelectedGids.push(gid);
+                    }
                 }
                 if (fullySelectedGids.length === 0) { self._nodePosCache = nowPos; return; }
 
                 const movedGids = new Set();
                 let anyChanged = false;
+                const nowTs = Date.now();
                 for (const gid of fullySelectedGids) {
                     const g = self.groups[gid];
                     if (movedGids.has(gid) || !g?.bounds) continue;
@@ -131,9 +190,16 @@ const XZGGroup = {
                         const dx = sumDx / count, dy = sumDy / count;
                         if (Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001) {
                             g.bounds.x += dx; g.bounds.y += dy; anyChanged = true;
+                            if (!session.active) { session.active = true; session.startTs = nowTs; session.startSelSnapshot = new Set(selIdSet); }
+                            if (!session.lockedGids.has(gid)) session.lockedGids.add(gid);
+                            session.lastMovedTs = nowTs;
                         }
                     }
                     movedGids.add(gid);
+                }
+                if (session.active && session.lastMovedTs > 0 && nowTs - session.lastMovedTs > 600) {
+                    session.active = false; session.lockedGids.clear();
+                    session.startSelSnapshot = null; session.startTs = 0; session.lastMovedTs = 0;
                 }
                 self._nodePosCache = anyChanged ? null : nowPos;
             };
@@ -3499,8 +3565,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             if (n && n.id != null) selIdSet.add(String(n.id));
         }
         if (selIdSet.size === 0) {
-            // 没有选中节点时，缓存重置
+            // 没有选中节点时，缓存+锁定会话一起重置
             this._nodePosCache = null;
+            const s = _XZG_NODE_DRAG_SESSION;
+            if (s.active) { s.active=false; s.lockedGids.clear(); s.startSelSnapshot=null; s.startTs=0; s.lastMovedTs=0; }
             return;
         }
 
@@ -3520,14 +3588,43 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             return;
         }
 
-        // 找出哪些编组的「所有节点」均被选中（含递归子编组节点完整性检查）
-        const fullySelectedGids = [];
-        for (const [gid, g] of Object.entries(this.groups)) {
-            if (!g.bounds) continue;
-            const allNodeIds = this._collectAllNodeIdsInGroup(gid);
-            if (allNodeIds.length === 0) continue;
-            const allSelected = allNodeIds.every(id => selIdSet.has(String(id)));
-            if (allSelected) fullySelectedGids.push(gid);
+        // ═══════════════════════════════════════════════════════════════
+        //  跟随会话锁定：解决"碰到其他节点编组框立即停止跟随"缺陷
+        // ═══════════════════════════════════════════════════════════════
+        // 1) 未锁定时，按原逻辑重新计算 fullySelectedGids
+        // 2) 一旦某个编组"确实发生了位移移动"，把它锁进 lockedGids
+        // 3) 后续帧只要会话 active，直接使用 lockedGids 作为 fullySelectedGids，
+        //    不再每帧重新判定（从而不受 syncNodeMembership 自动收纳的影响）
+        const session = _XZG_NODE_DRAG_SESSION;
+        let fullySelectedGids;
+        if (session.active && session.lockedGids.size > 0) {
+            // 安全兜底：如果选中集合发生了本质变化（用户中途点了别的），解除锁定
+            let selChanged = false;
+            if (session.startSelSnapshot) {
+                if (session.startSelSnapshot.size !== selIdSet.size) selChanged = true;
+                else for (const v of session.startSelSnapshot) { if (!selIdSet.has(v)) { selChanged = true; break; } }
+            }
+            if (selChanged) {
+                session.active = false;
+                session.lockedGids.clear();
+                session.startSelSnapshot = null;
+                session.startTs = 0;
+                session.lastMovedTs = 0;
+            } else {
+                fullySelectedGids = [...session.lockedGids].filter(gid => this.groups[gid]?.bounds);
+            }
+        }
+        if (!fullySelectedGids) {
+            fullySelectedGids = [];
+            for (const [gid, g] of Object.entries(this.groups)) {
+                if (!g.bounds) continue;
+                const allNodeIds = this._collectAllNodeIdsInGroup(gid);
+                if (allNodeIds.length === 0) continue;
+                // 完整性判定基准：使用锁定瞬间的选中快照（若存在），否则当前选中
+                const baseSel = session.startSelSnapshot || selIdSet;
+                const allSelected = allNodeIds.every(id => baseSel.has(String(id)));
+                if (allSelected) fullySelectedGids.push(gid);
+            }
         }
         if (fullySelectedGids.length === 0) {
             this._nodePosCache = nowPos;
@@ -3543,6 +3640,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         // 用 Map 避免同一个 gid 被多次平移
         const movedGids = new Set();
         let anyChanged = false;
+        const nowTs = Date.now();
         for (const [gid, g] of Object.entries(this.groups)) {
             if (!movedGids.has(gid) && fullySelectedGids.includes(gid) && g.bounds) {
                 // 计算该编组节点的平均位移
@@ -3566,10 +3664,26 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         g.bounds.x += dx;
                         g.bounds.y += dy;
                         anyChanged = true;
+                        // ── 首次移动 → 锁定会话跟随 ──
+                        if (!session.active) {
+                            session.active = true;
+                            session.startTs = nowTs;
+                            session.startSelSnapshot = new Set(selIdSet);
+                        }
+                        if (!session.lockedGids.has(gid)) session.lockedGids.add(gid);
+                        session.lastMovedTs = nowTs;
                     }
                 }
                 movedGids.add(gid);
             }
+        }
+        // 兜底：锁定会话后 600ms 没有任何位移更新，视为用户已停止拖动（即使 mouseup 没触发）
+        if (session.active && session.lastMovedTs > 0 && nowTs - session.lastMovedTs > 600) {
+            session.active = false;
+            session.lockedGids.clear();
+            session.startSelSnapshot = null;
+            session.startTs = 0;
+            session.lastMovedTs = 0;
         }
         if (anyChanged) {
             // 强制下一次迭代重新基准，防止浮点累积误差
@@ -3715,7 +3829,12 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 for (const n of Object.values(selMap)) {
                     if (n && n.id != null) selIdSet.add(String(n.id));
                 }
-                if (selIdSet.size === 0) { self._nodePosCache = null; return; }
+                if (selIdSet.size === 0) {
+                    self._nodePosCache = null;
+                    const s = _XZG_NODE_DRAG_SESSION;
+                    if (s.active) { s.active=false; s.lockedGids.clear(); s.startSelSnapshot=null; s.startTs=0; s.lastMovedTs=0; }
+                    return;
+                }
 
                 const nowPos = new Map();
                 for (const idStr of selIdSet) {
@@ -3727,17 +3846,38 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 const prev = self._nodePosCache;
                 if (!prev) { self._nodePosCache = nowPos; return; }
 
-                const fullySelectedGids = [];
-                for (const [gid, g] of Object.entries(self.groups)) {
-                    if (!g.bounds) continue;
-                    const allNodeIds = self._collectAllNodeIdsInGroup(gid);
-                    if (allNodeIds.length === 0) continue;
-                    if (allNodeIds.every(id => selIdSet.has(String(id)))) fullySelectedGids.push(gid);
+                // 跟随会话锁定（同主方法实现：首次移动→锁定，后续帧直接复用 lockedGids）
+                const session = _XZG_NODE_DRAG_SESSION;
+                let fullySelectedGids;
+                if (session.active && session.lockedGids.size > 0) {
+                    // 选中集合变更时兜底解除锁定
+                    let selChanged = false;
+                    if (session.startSelSnapshot) {
+                        if (session.startSelSnapshot.size !== selIdSet.size) selChanged = true;
+                        else for (const v of session.startSelSnapshot) { if (!selIdSet.has(v)) { selChanged = true; break; } }
+                    }
+                    if (selChanged) {
+                        session.active = false; session.lockedGids.clear();
+                        session.startSelSnapshot = null; session.startTs = 0; session.lastMovedTs = 0;
+                    } else {
+                        fullySelectedGids = [...session.lockedGids].filter(gid => self.groups[gid]?.bounds);
+                    }
+                }
+                if (!fullySelectedGids) {
+                    fullySelectedGids = [];
+                    for (const [gid, g] of Object.entries(self.groups)) {
+                        if (!g.bounds) continue;
+                        const allNodeIds = self._collectAllNodeIdsInGroup(gid);
+                        if (allNodeIds.length === 0) continue;
+                        const baseSel = session.startSelSnapshot || selIdSet;
+                        if (allNodeIds.every(id => baseSel.has(String(id)))) fullySelectedGids.push(gid);
+                    }
                 }
                 if (fullySelectedGids.length === 0) { self._nodePosCache = nowPos; return; }
 
                 const movedGids = new Set();
                 let anyChanged = false;
+                const nowTs = Date.now();
                 for (const gid of fullySelectedGids) {
                     const g = self.groups[gid];
                     if (movedGids.has(gid) || !g?.bounds) continue;
@@ -3753,9 +3893,16 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         const dx = sumDx / count, dy = sumDy / count;
                         if (Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001) {
                             g.bounds.x += dx; g.bounds.y += dy; anyChanged = true;
+                            if (!session.active) { session.active = true; session.startTs = nowTs; session.startSelSnapshot = new Set(selIdSet); }
+                            if (!session.lockedGids.has(gid)) session.lockedGids.add(gid);
+                            session.lastMovedTs = nowTs;
                         }
                     }
                     movedGids.add(gid);
+                }
+                if (session.active && session.lastMovedTs > 0 && nowTs - session.lastMovedTs > 600) {
+                    session.active = false; session.lockedGids.clear();
+                    session.startSelSnapshot = null; session.startTs = 0; session.lastMovedTs = 0;
                 }
                 self._nodePosCache = anyChanged ? null : nowPos;
             };

@@ -51,6 +51,7 @@ export class XiaozhuguangVideoPlayer {
         this._progressBar = null;
         this._progressFill = null;
         this._progressThumb = null;
+        this._progressShine = null; // 流星高亮流光
         this._loadRangeStart = null;
         this._loadRangeEnd = null;
         this._loadRangeFill = null;
@@ -204,29 +205,65 @@ export class XiaozhuguangVideoPlayer {
         this._progressContainer.style.cssText =
             "margin-bottom:12px;pointer-events:auto;";
 
-        // 半透明白色播放条轨道，渐变光泽感，直角两端，左右顶边
+        // 暗白色播放条轨道（默认状态，渐变光泽感，高度缩减50%）
         this._progressBar = document.createElement("div");
         this._progressBar.style.cssText =
-            "width:100%;height:6px;background:linear-gradient(to bottom,rgba(255,255,255,0.25),rgba(255,255,255,0.08));" +
+            "width:100%;height:3px;background:linear-gradient(to bottom,rgba(255,255,255,0.18),rgba(255,255,255,0.06));" +
             "pointer-events:none;position:relative;";
 
-        // 已播放填充（透明，不高亮）
+        // 已播放填充（始终亮白色，不随播放/暂停切换）
         this._progressFill = document.createElement("div");
         this._progressFill.style.cssText =
-            "height:100%;background:transparent;width:0%;" +
-            "pointer-events:none;will-change:width;";
+            "height:100%;background:rgba(255,255,255,0.95);width:0%;" +
+            "pointer-events:none;will-change:width;position:relative;overflow:visible;";
 
-        // 播放点圆点指示器（绿色小圆点，加粗）
+        // 激光小亮点（精确位于播放进度位置：一半在填充内，一半在填充外）
+        this._progressShine = document.createElement("div");
+        this._progressShine.style.cssText =
+            "position:absolute;top:50%;right:0;transform:translate(50%,-50%);" +
+            "width:3px;height:3px;border-radius:50%;" +
+            "background:rgba(255,255,255,0.92);" +
+            "pointer-events:none;z-index:5;" +
+            "display:none;will-change:opacity,box-shadow,transform,width,height;" +
+            "box-shadow:0 0 1.5px 0.6px rgba(255,255,255,0.6),0 0 3px 1.2px rgba(255,255,255,0.28);" +
+            "filter:drop-shadow(0 0 1px rgba(255,255,255,0.5));" +
+            "animation:xzgLaserPulse 0.9s ease-in-out infinite alternate;";
+        this._progressFill.appendChild(this._progressShine);
+
+        // 注入激光小亮点脉冲 keyframes（仅一次）
+        if (!document.getElementById("xzg-video-shine-style")) {
+            const styleEl = document.createElement("style");
+            styleEl.id = "xzg-video-shine-style";
+            styleEl.textContent = `
+@keyframes xzgLaserPulse {
+  0%   { opacity: 0.72; width:3px; height:3px;
+         box-shadow:0 0 1.2px 0.5px rgba(255,255,255,0.5),0 0 2.5px 1px rgba(255,255,255,0.22);
+         filter:drop-shadow(0 0 0.8px rgba(255,255,255,0.45));
+         transform:translate(50%,-50%) scale(1); }
+  50%  { opacity: 0.88; width:3.5px; height:3.5px;
+         box-shadow:0 0 2px 0.8px rgba(255,255,255,0.72),0 0 4.5px 1.8px rgba(255,255,255,0.38);
+         filter:drop-shadow(0 0 1.5px rgba(255,255,255,0.6));
+         transform:translate(50%,-50%) scale(1.03); }
+  100% { opacity: 0.78; width:3.1px; height:3.1px;
+         box-shadow:0 0 1.5px 0.6px rgba(255,255,255,0.62),0 0 3.5px 1.4px rgba(255,255,255,0.3);
+         filter:drop-shadow(0 0 1.1px rgba(255,255,255,0.52));
+         transform:translate(50%,-50%) scale(1.01); }
+}
+`;
+            document.head.appendChild(styleEl);
+        }
+
+        // 播放点圆点指示器（隐藏，不使用绿色圆形播放头）
         this._progressThumb = document.createElement("div");
         this._progressThumb.style.cssText =
-            "position:absolute;background:#22c55e;border-radius:50%;" +
+            "position:absolute;background:transparent;border-radius:50%;" +
             "pointer-events:none;display:none;transform:translateX(-50%);" +
-            "box-shadow:0 0 4px rgba(34,197,94,0.7);";
+            "box-shadow:none;";
 
-        // 加载区间填充（金色高亮，表示实际加载的帧范围）
+        // 加载区间填充（白色高亮，表示实际加载的帧范围）
         this._loadRangeFill = document.createElement("div");
         this._loadRangeFill.style.cssText =
-            "position:absolute;top:0;height:100%;background:rgba(255,215,0,0.45);" +
+            "position:absolute;top:0;height:100%;background:rgba(255,255,255,0.45);" +
             "pointer-events:none;display:none;";
 
         // 加载区间起始标记（红色竖线，表示跳过帧的分界）
@@ -329,11 +366,11 @@ export class XiaozhuguangVideoPlayer {
     }
 
     _updateProgressBarSize(surfaceH) {
-        // 播放条轨道高度 ≈ 视频高度的 1.2%，最小 6px，最大 16px
-        const barH = Math.max(6, Math.min(16, Math.round(surfaceH * 0.012)));
-        // 点击热区高度 ≈ 轨道的 8 倍，最小 30px，最大 80px
+        // 播放条轨道高度 ≈ 视频高度的 0.6%（原1.2%缩减50%），最小 3px，最大 8px
+        const barH = Math.max(3, Math.min(8, Math.round(surfaceH * 0.006)));
+        // 点击热区高度 ≈ 轨道的 8 倍，最小 30px，最大 80px（保持不变，方便交互）
         const hitH = Math.max(30, Math.min(80, Math.round(barH * 8)));
-        // 播放点圆点直径 = 轨道高度 + 6px（加粗，比轨道大一圈）
+        // 播放点圆点（已隐藏，无需调整尺寸）
         const thumbSize = barH + 6;
         const thumbTop = Math.round((barH - thumbSize) / 2);
 
@@ -365,16 +402,16 @@ export class XiaozhuguangVideoPlayer {
             const boundaries = totalFrames - 1;
             const spacing = boundaries > 0 ? barW / boundaries : barW;
             if (spacing >= 2) {
-                // 每个周期末尾画一条 1px 竖线作为帧边界，底色半透明渐变光泽
-                bar.style.background = `linear-gradient(to bottom,rgba(255,255,255,0.25),rgba(255,255,255,0.08)) repeating-linear-gradient(
+                // 每个周期末尾画一条 1px 竖线作为帧边界，底色为暗白色
+                bar.style.background = `linear-gradient(to bottom,rgba(255,255,255,0.18),rgba(255,255,255,0.06)) repeating-linear-gradient(
                     to right,
                     transparent 0px,
                     transparent ${spacing - 1}px,
-                    rgba(255,255,255,0.15) ${spacing - 1}px,
-                    rgba(255,255,255,0.15) ${spacing}px
+                    rgba(255,255,255,0.10) ${spacing - 1}px,
+                    rgba(255,255,255,0.10) ${spacing}px
                 )`;
             } else {
-                bar.style.background = 'linear-gradient(to bottom,rgba(255,255,255,0.25),rgba(255,255,255,0.08))';
+                bar.style.background = 'linear-gradient(to bottom,rgba(255,255,255,0.18),rgba(255,255,255,0.06))';
             }
         });
     }
@@ -400,17 +437,28 @@ export class XiaozhuguangVideoPlayer {
     _onPlayEvt = () => {
         this._startProgressRaf();
         this.autoDetectFps();
+        // 播放时激活流星高亮流光
+        if (this._progressShine) {
+            this._progressShine.style.display = "block";
+        }
         this.onPlay?.(this);
     };
 
     _onPauseEvt = () => {
         this._stopProgressRaf();
+        // 暂停时隐藏流星光流（拖动中除外，拖动结束会单独处理）
+        if (this._progressShine && !this._isDragging) {
+            this._progressShine.style.display = "none";
+        }
         this.onPause?.(this);
     };
 
     _onEndedEvt = () => {
         if (!this._isDragging) {
             this._stopProgressRaf();
+            if (this._progressShine) {
+                this._progressShine.style.display = "none";
+            }
             this.onEnded?.(this);
         }
     };
@@ -428,7 +476,7 @@ export class XiaozhuguangVideoPlayer {
             this._progressFill.style.width = pct + "%";
             if (this._progressThumb) {
                 this._progressThumb.style.left = pct + "%";
-                this._progressThumb.style.display = "block";
+                this._progressThumb.style.display = "none";
             }
             if (this._frameDisplay) {
                 if (!this._fpsDetected) {
@@ -534,11 +582,13 @@ export class XiaozhuguangVideoPlayer {
         const totalFrames = this._totalFrames || Math.max(1, Math.round(this._video.duration * fps));
         const frameIdx = Math.min(Math.floor(ratio * totalFrames), totalFrames - 1);
         const pct = totalFrames > 1 ? (frameIdx / (totalFrames - 1)) * 100 : 0;
-        // 视觉同步
-        this._progressFill.style.width = pct + "%";
+        // 视觉同步：填充宽度实时跟随位置（填充颜色默认就是亮白色）
+        if (this._progressFill) {
+            this._progressFill.style.width = pct + "%";
+        }
         if (this._progressThumb) {
             this._progressThumb.style.left = pct + "%";
-            this._progressThumb.style.display = "block";
+            this._progressThumb.style.display = "none";
         }
         // 更新帧数和时间
         const curTime = (frameIdx + 0.5) / fps;
@@ -555,12 +605,17 @@ export class XiaozhuguangVideoPlayer {
         if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
+        // 先标记拖动状态，再 pause 视频
+        this._isDragging = true;
+        // 拖动时也显示流星光流，跟随播放头
+        if (this._progressShine) {
+            this._progressShine.style.display = "block";
+        }
         this._video?.pause();
         if (this._video) {
             this._savedLoop = this._video.loop;
             this._video.loop = false;
         }
-        this._isDragging = true;
         this._seekByClientX(e.clientX);
         // 创建全屏遮罩，捕获拖动期间所有指针事件，防止穿透到画布
         if (!this._dragOverlay) {
@@ -586,6 +641,10 @@ export class XiaozhuguangVideoPlayer {
 
     _cleanupDrag = () => {
         this._isDragging = false;
+        // 拖动结束后：当前处于暂停状态，隐藏流星光流
+        if (this._progressShine) {
+            this._progressShine.style.display = "none";
+        }
         if (this._dragOverlay) {
             this._dragOverlay.removeEventListener("pointermove", this._onProgressMove);
             this._dragOverlay.removeEventListener("pointerup", this._onProgressUp);
@@ -672,6 +731,10 @@ export class XiaozhuguangVideoPlayer {
 
     _resetProgress() {
         if (this._progressFill) this._progressFill.style.width = "0%";
+        // 重置时隐藏流星光流
+        if (this._progressShine) {
+            this._progressShine.style.display = "none";
+        }
         if (this._progressThumb) {
             this._progressThumb.style.left = "0%";
             this._progressThumb.style.display = "none";
@@ -1091,6 +1154,7 @@ export class XiaozhuguangVideoPlayer {
         this._progressBar = null;
         this._progressFill = null;
         this._progressThumb = null;
+        this._progressShine = null;
         this._loadRangeStart = null;
         this._loadRangeEnd = null;
         this._loadRangeFill = null;
