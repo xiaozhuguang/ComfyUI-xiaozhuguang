@@ -162,7 +162,7 @@ def calculate_file_hash(filepath):
     try:
         mtime = os.path.getmtime(filepath)
         fsize = os.path.getsize(filepath)
-        h = hashlib.md5()
+        h = hashlib.sha256()
         h.update(f"{filepath}|{mtime}|{fsize}".encode("utf-8"))
         return h.hexdigest()
     except Exception:
@@ -435,6 +435,8 @@ class XiaozhuguangAudioLoader:
 
 # 注册 API 路由
 # 防御性：只有 PromptServer 已初始化 instance 时注册路由，避免直接 import 测试时炸
+_waveform_semaphore = _xzg_asyncio.Semaphore(3)
+
 if getattr(PromptServer, 'instance', None) is not None:
     @PromptServer.instance.routes.get("/xzg/audio_waveform")
     @xzg_safe_handler
@@ -452,16 +454,20 @@ if getattr(PromptServer, 'instance', None) is not None:
         if not audio_path or not os.path.isfile(audio_path):
             return web.json_response({"error": "file not found"}, status=404)
 
-        info = probe_audio_info(audio_path)
-        sr = info['sample_rate'] if info else 44100
+        if _waveform_semaphore.locked():
+            return web.json_response({"error": "too many requests"}, status=429)
 
-        waveform, _ = load_audio(audio_path, start_time=0.0, duration=None, sample_rate=sr)
-        peaks = generate_waveform_peaks(waveform, WAVEFORM_SAMPLES)
+        async with _waveform_semaphore:
+            info = probe_audio_info(audio_path)
+            sr = info['sample_rate'] if info else 44100
 
-        return web.json_response({
-            "filename": filename,
-            "duration": info['duration'] if info else 0.0,
-            "sample_rate": sr,
-            "channels": info['channels'] if info else 2,
-            "peaks": peaks,
-        })
+            waveform, _ = load_audio(audio_path, start_time=0.0, duration=None, sample_rate=sr)
+            peaks = generate_waveform_peaks(waveform, WAVEFORM_SAMPLES)
+
+            return web.json_response({
+                "filename": filename,
+                "duration": info['duration'] if info else 0.0,
+                "sample_rate": sr,
+                "channels": info['channels'] if info else 2,
+                "peaks": peaks,
+            })
