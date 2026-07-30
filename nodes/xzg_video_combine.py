@@ -17,7 +17,89 @@ from comfy.utils import ProgressBar
 
 # 添加 PromptServer 路由
 from server import PromptServer
-routes = PromptServer.instance.routes
+
+# ---------- 小珠光路由安全装饰器 ----------
+import asyncio as _xzg_asyncio
+import functools as _xzg_ft
+import traceback as _xzg_tb
+try:
+    from aiohttp import web as _xzg_web
+except Exception:
+    import types as _xzg_t
+    _xzg_web = _xzg_t.ModuleType('aiohttp.web')
+    class _R:
+        def __init__(self, *a, **kw): pass
+    _xzg_web.Response = _R
+    _xzg_web.json_response = lambda *a, **kw: {'_json': (a, kw)}
+    class _HTTPE(Exception): pass
+    _xzg_web.HTTPException = _HTTPE
+
+try:
+    from .. import xzg_safe_handler as _xsh, _safe_dir as _xsd
+    xzg_safe_handler = _xsh
+    _safe_dir = _xsd
+except Exception:
+    def xzg_safe_handler(fn):
+        def _fmt_resp(exc, status=500):
+            tb_s = ''.join(_xzg_tb.format_exception(type(exc), exc, exc.__traceback__))
+            try:
+                return _xzg_web.json_response(
+                    {'error': '%s: %s' % (type(exc).__name__, exc), 'traceback': tb_s},
+                    status=status,
+                )
+            except Exception:
+                return _xzg_web.Response(status=500, text='%s: %s\n\n%s' % (type(exc).__name__, exc, tb_s))
+        if _xzg_asyncio.iscoroutinefunction(fn):
+            @_xzg_ft.wraps(fn)
+            async def _aw(*a, **kw):
+                try:
+                    return await fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _aw
+        else:
+            @_xzg_ft.wraps(fn)
+            def _sw(*a, **kw):
+                try:
+                    return fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _sw
+
+    def _safe_dir(fn_name, fallback_subdir):
+        import folder_paths as _fp
+        d = getattr(_fp, fn_name)()
+        if d:
+            os.makedirs(d, exist_ok=True)
+            return d
+        fallback = os.path.join(getattr(_fp, 'models_dir', os.getcwd()), fallback_subdir)
+        os.makedirs(fallback, exist_ok=True)
+        print('[小珠光] folder_paths.%s() 返回 None，兜底使用: %s' % (fn_name, fallback))
+        return fallback
+# ---------------- END ----------------
+
+
+def _routes():
+    inst = getattr(PromptServer, 'instance', None)
+    if inst is not None:
+        return inst.routes
+    class _Fallback:
+        def _noop(self, path):
+            def deco(fn): return fn
+            return deco
+        post = put = delete = patch = get = _noop
+    return _Fallback()
+
+
+routes = _routes()
 
 
 BIGMAX = int(1e9)
@@ -345,8 +427,8 @@ class XiaozhuguangVideoCombine:
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
-        base_dir = (folder_paths.get_output_directory() if 保存到输出目录
-                    else folder_paths.get_temp_directory())
+        base_dir = (_safe_dir('get_output_directory', 'output') if 保存到输出目录
+                    else _safe_dir('get_temp_directory',   'temp'))
 
         # 输出目录（用户可自定义子文件夹）
         if 自定义保存目录 and 自定义保存目录.strip():
@@ -409,8 +491,9 @@ class XiaozhuguangVideoCombine:
 
 # 获取输出目录和临时目录路径的 API 端点
 @routes.get("/xzg/get_output_dir")
+@xzg_safe_handler
 async def xzg_get_output_dir(request):
-    return {
-        "output_dir": folder_paths.get_output_directory(),
-        "temp_dir": folder_paths.get_temp_directory(),
-    }
+    return web.json_response({
+        "output_dir": _safe_dir('get_output_directory', 'output'),
+        "temp_dir": _safe_dir('get_temp_directory',   'temp'),
+    })

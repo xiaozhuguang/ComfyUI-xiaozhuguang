@@ -29,6 +29,144 @@ def _patch_subprocess_encoding():
 
 _patch_subprocess_encoding()
 
+
+# ---------- 通用：小珠光 aiohttp 路由 handler 安全装饰器 ----------
+# 所有 @routes.get/post 注册的 async handler 都应加上 @xzg_safe_handler，
+# 这样即便内部抛异常，也会：
+#   1) 用 stderr print 完整 traceback（避免只截到 aiohttp.web_protocol.py）
+#   2) 返回 HTTP 500 + {error, traceback} JSON，前端能直接看到报错点
+import asyncio as _asyncio
+import functools as _ft
+import traceback as _tb
+from aiohttp import web as _xzg_web
+
+
+def _patch_comfyapi_first_real_override():
+    """comfy_api.internal.first_real_override 把普通函数误当绑定方法（读 .__func__），
+    导致 V3 节点只要 def execute(self, ...) 是"普通未绑定函数"形式就炸：
+      AttributeError: 'function' object has no attribute '__func__'
+    这里做一次全局兼容 patch，保证我们及其他 V3 节点均不受影响。
+    """
+    try:
+        from comfy_api import internal as _cai
+    except Exception:
+        return  # 无 comfy_api 无所谓
+
+    if not hasattr(_cai, "first_real_override"):
+        return
+    if getattr(_cai.first_real_override, "_xzg_patched", False):
+        return
+
+    import inspect as _insp
+    from typing import Callable as _C, Optional as _O
+
+    def _unbind(func):
+        """取一个 callable 的"底层真函数"。兼容 bound method / classmethod / staticmethod / 普通函数。"""
+        if hasattr(func, "__func__"):
+            return func.__func__          # bound method / classmethod descriptor
+        if isinstance(func, staticmethod):
+            return func.__func__
+        if isinstance(func, classmethod):
+            return func.__func__
+        if callable(func):
+            return func                   # 普通函数 / 任意 callable，本身就是真函数
+        return func
+
+    def _first_real_override_new(cls: type, name: str, *, base: type = None) -> _O[_C]:
+        if base is None:
+            if not hasattr(cls, "GET_BASE_CLASS"):
+                raise ValueError(
+                    "base is required if cls does not have a GET_BASE_CLASS; is this a valid ComfyNode subclass?"
+                )
+            base = cls.GET_BASE_CLASS()
+        base_attr = getattr(base, name, None)
+        if base_attr is None:
+            return None
+        base_func = _unbind(base_attr)
+        for c in cls.mro():
+            if c is base:
+                break
+            if name in c.__dict__:
+                raw = c.__dict__[name]       # 取类 __dict__ 里的"原始描述符"
+                func = _unbind(raw)
+                if func is not base_func:
+                    return getattr(cls, name)
+        return None
+
+    _first_real_override_new._xzg_patched = True
+    try:
+        _cai.first_real_override = _first_real_override_new
+        # 若有其它模块已经 from comfy_api.internal import first_real_override，需要顺手修
+        try:
+            import comfy_api.latest._io as _cio
+            if hasattr(_cio, "first_real_override"):
+                _cio.first_real_override = _first_real_override_new
+        except Exception:
+            pass
+    except Exception as _e:
+        print("[xiaozhuguang] 尝试 patch comfy_api.first_real_override 失败（无影响）：", _e)
+
+
+_patch_comfyapi_first_real_override()
+
+
+def xzg_safe_handler(fn):
+    """给小珠光自定义 aiohttp 路由 handler 统一兜底异常 + 打完整 traceback。"""
+
+    def _fmt_resp(exc: BaseException, status: int = 500):
+        tb_str = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
+        # 真实返回给前端（含完整 traceback，方便定位）
+        try:
+            return _xzg_web.json_response(
+                {"error": f"{type(exc).__name__}: {exc}", "traceback": tb_str},
+                status=status,
+            )
+        except Exception:
+            return _xzg_web.Response(status=500, text=f"{type(exc).__name__}: {exc}\n\n{tb_str}")
+
+    if _asyncio.iscoroutinefunction(fn):
+        @_ft.wraps(fn)
+        async def _async_wrap(*a, **kw):
+            try:
+                return await fn(*a, **kw)
+            except _xzg_web.HTTPException:
+                raise  # aiohttp 自带的 3xx/4xx 正常上抛
+            except BaseException as e:
+                print(f"[小珠光路由异常] {fn.__name__}: {type(e).__name__}: {e}")
+                _tb.print_exc()
+                return _fmt_resp(e)
+
+        return _async_wrap
+    else:
+        @_ft.wraps(fn)
+        def _sync_wrap(*a, **kw):
+            try:
+                return fn(*a, **kw)
+            except _xzg_web.HTTPException:
+                raise
+            except BaseException as e:
+                print(f"[小珠光路由异常] {fn.__name__}: {type(e).__name__}: {e}")
+                _tb.print_exc()
+                return _fmt_resp(e)
+
+        return _sync_wrap
+
+
+def _safe_dir(fn_name: str, fallback_subdir: str):
+    """folder_paths.*_directory() 可能返回 None → 兜底到 ComfyUI/models/<fallback_subdir>，os.path.join 不会炸。"""
+    import folder_paths as _fp
+
+    d = getattr(_fp, fn_name)()
+    if d:
+        os.makedirs(d, exist_ok=True)
+        return d
+    # 兜底到相对 ComfyUI 根的约定目录
+    fallback = os.path.join(getattr(_fp, "models_dir", os.getcwd()), fallback_subdir)
+    os.makedirs(fallback, exist_ok=True)
+    print(f"[小珠光] folder_paths.{fn_name}() 返回 None，兜底使用: {fallback}")
+    return fallback
+
+
 import torch
 import numpy as np
 from PIL import Image
@@ -36,7 +174,8 @@ import hashlib
 import json
 import random
 import folder_paths
-from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
+
+# —— 无额外大依赖的基础节点，直接强导入（炸了就直接暴露真实问题） ——
 from .nodes.xzg_get_widget import XiaozhuguangGetWidget
 from .nodes.xzg_first_last_frame import XiaozhuguangFirstLastFrame
 from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
@@ -52,6 +191,41 @@ from .nodes.xzg_audio_save import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
 
+# —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
+# (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
+XiaozhuguangQwenVLInstruct = None
+try:
+    from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
+except Exception as _qwen_err:
+    print(
+        "[小珠光] 跳过 qwenVL 节点（依赖缺失，如需使用请安装 transformers）：",
+        _qwen_err,
+    )
+
+
+# ============ 小珠光 LongCat 离线 TTS（建模库已移植到本插件内部，无需外部插件） ============
+# 原插件 ComfyUI-LongCat-AudioDIT-TTS 的 audiodit/ 建模包与 loader/model_cache 工具
+# 已移植到本插件内部（_xzg_audiodit/、nodes/xzg_longcat_loader.py、nodes/xzg_longcat_model_cache.py），
+# 本节点不再依赖外部插件，可独立运行。
+#
+# 核心特性：
+#   1) 严格离线扫描 ComfyUI/models/audiodit/ 下的本地模型目录（不显示 "xxx (auto download)" 虚项）
+#   2) 不会调用 huggingface_hub.snapshot_download；缺少模型/tokenizer 时给出清晰报错
+#   3) transformers / safetensors 等大依赖缺失时静默跳过，不影响其它节点
+_AUDIODIT_NODES: dict[str, tuple[type, str]] = {}
+try:
+    from .nodes.xzg_audiodit_tts import XzgAudioDiTVoiceCloneTTS
+    _AUDIODIT_NODES["XzgAudioDiTVoiceCloneTTS"] = (
+        XzgAudioDiTVoiceCloneTTS,
+        "小珠光 LongCat",
+    )
+except Exception as _audiodit_init_err:
+    print(
+        "[小珠光AudioDiT] 未启用 LongCat TTS 节点（可能缺少 transformers / safetensors 等依赖）：",
+        _audiodit_init_err,
+    )
+    _AUDIODIT_NODES = {}
+
 
 # ============ 懒编码路由：右键保存真实分辨率图时，才临时编码全分辨率 PNG ============
 try:
@@ -59,7 +233,19 @@ try:
     from aiohttp import web
     from .nodes.xzg_image_save import REAL_STORE
 
-    @PromptServer.instance.routes.post("/xzg_save_real")
+    _xzg_save_real_routes = getattr(PromptServer, 'instance', None)
+    if _xzg_save_real_routes is not None:
+        _xzg_save_real_routes = _xzg_save_real_routes.routes
+    else:
+        # 兜底：空 decorator，仅让后续代码不出错
+        class _Nop:
+            def post(self, p):
+                def deco(fn): return fn
+                return deco
+        _xzg_save_real_routes = _Nop()
+
+    @_xzg_save_real_routes.post("/xzg_save_real")
+    @xzg_safe_handler
     async def xzg_save_real(request):
         try:
             data = await request.json()
@@ -80,8 +266,7 @@ try:
         if arr is None:
             return web.json_response({"error": "already served"}, status=404)
 
-        output_dir = folder_paths.get_temp_directory()
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir = _safe_dir("get_temp_directory", "temp")
         fname = "xzg_real_" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12)) + ".png"
         Image.fromarray(arr).save(os.path.join(output_dir, fname), "PNG")
 
@@ -445,7 +630,6 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangTitle": XiaozhuguangTitle,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
-    "XiaozhuguangQwenVLInstruct": XiaozhuguangQwenVLInstruct,
     "XiaozhuguangGetWidget": XiaozhuguangGetWidget,
     "XiaozhuguangFirstLastFrame": XiaozhuguangFirstLastFrame,
     "XiaozhuguangDuplicateFirstFrame": XiaozhuguangDuplicateFirstFrame,
@@ -461,6 +645,10 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
 }
+# 可选大依赖节点：只有导入成功才加入映射
+if XiaozhuguangQwenVLInstruct is not None:
+    NODE_CLASS_MAPPINGS["XiaozhuguangQwenVLInstruct"] = XiaozhuguangQwenVLInstruct
+NODE_CLASS_MAPPINGS.update({k: v[0] for k, v in _AUDIODIT_NODES.items()})
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangSelector": "小珠光选择器",
@@ -471,7 +659,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangNumberSwitch": "小珠光编号切换",
     "XiaozhuguangUniversalSlider": "小珠光万能滑条",
     "XiaozhuguangPointsEditor": "小珠光点编辑器",
-    "XiaozhuguangQwenVLInstruct": "小珠光qwenVL",
     "XiaozhuguangGetWidget": "小珠光获取控件值",
     "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
     "XiaozhuguangDuplicateFirstFrame": "小珠光帧优化",
@@ -487,6 +674,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",
 }
+if XiaozhuguangQwenVLInstruct is not None:
+    NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"
+NODE_DISPLAY_NAME_MAPPINGS.update({k: v[1] for k, v in _AUDIODIT_NODES.items()})
 
 WEB_DIRECTORY = "./web"
 

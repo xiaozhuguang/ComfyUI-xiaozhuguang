@@ -9,7 +9,90 @@ import node_helpers
 from aiohttp import web
 from server import PromptServer
 
-routes = PromptServer.instance.routes
+# ---------- 小珠光路由安全装饰器 ----------
+import asyncio as _xzg_asyncio
+import functools as _xzg_ft
+import traceback as _xzg_tb
+try:
+    from aiohttp import web as _xzg_web
+except Exception:
+    import types as _xzg_t
+    _xzg_web = _xzg_t.ModuleType('aiohttp.web')
+    class _R:
+        def __init__(self, *a, **kw): pass
+    _xzg_web.Response = _R
+    _xzg_web.json_response = lambda *a, **kw: {'_json': (a, kw)}
+    class _HTTPE(Exception): pass
+    _xzg_web.HTTPException = _HTTPE
+
+try:
+    from .. import xzg_safe_handler as _xsh, _safe_dir as _xsd
+    xzg_safe_handler = _xsh
+    _safe_dir = _xsd
+except Exception:
+    def xzg_safe_handler(fn):
+        def _fmt_resp(exc, status=500):
+            tb_s = ''.join(_xzg_tb.format_exception(type(exc), exc, exc.__traceback__))
+            try:
+                return _xzg_web.json_response(
+                    {'error': '%s: %s' % (type(exc).__name__, exc), 'traceback': tb_s},
+                    status=status,
+                )
+            except Exception:
+                return _xzg_web.Response(status=500, text='%s: %s\n\n%s' % (type(exc).__name__, exc, tb_s))
+        if _xzg_asyncio.iscoroutinefunction(fn):
+            @_xzg_ft.wraps(fn)
+            async def _aw(*a, **kw):
+                try:
+                    return await fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _aw
+        else:
+            @_xzg_ft.wraps(fn)
+            def _sw(*a, **kw):
+                try:
+                    return fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _sw
+
+    def _safe_dir(fn_name, fallback_subdir):
+        import folder_paths as _fp
+        d = getattr(_fp, fn_name)()
+        if d:
+            os.makedirs(d, exist_ok=True)
+            return d
+        fallback = os.path.join(getattr(_fp, 'models_dir', os.getcwd()), fallback_subdir)
+        os.makedirs(fallback, exist_ok=True)
+        print('[小珠光] folder_paths.%s() 返回 None，兜底使用: %s' % (fn_name, fallback))
+        return fallback
+# ---------------- END ----------------
+
+
+def _routes():
+    """防御性取 routes：ComfyUI 正常启动时 PromptServer 已有 instance；导入测试阶段则返回临时兜底。"""
+    inst = getattr(PromptServer, 'instance', None)
+    if inst is not None:
+        return inst.routes
+    # 兜底：提供最小 duck-typed 路由对象，只保证装饰器语法不炸
+    class _Fallback:
+        def _noop(self, path):
+            def deco(fn): return fn
+            return deco
+        post = put = delete = patch = get = _noop
+    return _Fallback()
+
+
+routes = _routes()
 
 _thumb_cache_dir = None
 DEFAULT_THUMB_SIZE = 256
@@ -18,7 +101,7 @@ DEFAULT_THUMB_SIZE = 256
 def _get_thumb_cache_dir():
     global _thumb_cache_dir
     if _thumb_cache_dir is None:
-        _thumb_cache_dir = os.path.join(folder_paths.get_temp_directory(), "xzg_thumbs")
+        _thumb_cache_dir = os.path.join(_safe_dir('get_temp_directory',   'temp'), "xzg_thumbs")
         os.makedirs(_thumb_cache_dir, exist_ok=True)
     return _thumb_cache_dir
 
@@ -51,8 +134,9 @@ def _normalize_annotated_filename(name: str) -> str:
 
 
 @routes.get("/xzg_input_files")
+@xzg_safe_handler
 async def xzg_input_files(request):
-    input_dir = folder_paths.get_input_directory()
+    input_dir = _safe_dir('get_input_directory',  'input')
     if not os.path.isdir(input_dir):
         return web.json_response([])
 
@@ -78,8 +162,9 @@ async def xzg_input_files(request):
 
 
 @routes.get("/xzg_output_files")
+@xzg_safe_handler
 async def xzg_output_files(request):
-    output_dir = folder_paths.get_output_directory()
+    output_dir = _safe_dir('get_output_directory', 'output')
     if not os.path.isdir(output_dir):
         return web.json_response([])
 
@@ -106,6 +191,7 @@ async def xzg_output_files(request):
 
 
 @routes.get("/xzg_image_loader_thumb")
+@xzg_safe_handler
 async def xzg_image_loader_thumb(request):
     filename = request.rel_url.query.get("filename", "")
     size = int(request.rel_url.query.get("size", str(DEFAULT_THUMB_SIZE)))
@@ -175,6 +261,7 @@ async def xzg_image_loader_thumb(request):
 
 
 @routes.post("/xzg_delete_images")
+@xzg_safe_handler
 async def xzg_delete_images(request):
     try:
         data = await request.json()
@@ -188,9 +275,9 @@ async def xzg_delete_images(request):
         return web.Response(status=400, text="invalid source")
 
     if source == "input":
-        base_dir = folder_paths.get_input_directory()
+        base_dir = _safe_dir('get_input_directory',  'input')
     else:
-        base_dir = folder_paths.get_output_directory()
+        base_dir = _safe_dir('get_output_directory', 'output')
 
     deleted = []
     errors = []
@@ -221,6 +308,7 @@ async def xzg_delete_images(request):
 
 
 @routes.post("/xzg_copy_output_to_input")
+@xzg_safe_handler
 async def xzg_copy_output_to_input(request):
     try:
         try:
@@ -229,8 +317,8 @@ async def xzg_copy_output_to_input(request):
             return web.json_response({"copied": [], "errors": ["invalid json"]}, status=400)
 
         filenames = data.get("files", [])
-        output_dir = folder_paths.get_output_directory()
-        input_dir = folder_paths.get_input_directory()
+        output_dir = _safe_dir('get_output_directory', 'output')
+        input_dir = _safe_dir('get_input_directory',  'input')
 
         copied = []
         errors = []

@@ -1,4 +1,72 @@
 from server import PromptServer
+
+# ---------- 小珠光路由安全装饰器 ----------
+import asyncio as _xzg_asyncio
+import functools as _xzg_ft
+import traceback as _xzg_tb
+try:
+    from aiohttp import web as _xzg_web
+except Exception:
+    import types as _xzg_t
+    _xzg_web = _xzg_t.ModuleType('aiohttp.web')
+    class _R:
+        def __init__(self, *a, **kw): pass
+    _xzg_web.Response = _R
+    _xzg_web.json_response = lambda *a, **kw: {'_json': (a, kw)}
+    class _HTTPE(Exception): pass
+    _xzg_web.HTTPException = _HTTPE
+
+try:
+    from .. import xzg_safe_handler as _xsh, _safe_dir as _xsd
+    xzg_safe_handler = _xsh
+    _safe_dir = _xsd
+except Exception:
+    def xzg_safe_handler(fn):
+        def _fmt_resp(exc, status=500):
+            tb_s = ''.join(_xzg_tb.format_exception(type(exc), exc, exc.__traceback__))
+            try:
+                return _xzg_web.json_response(
+                    {'error': '%s: %s' % (type(exc).__name__, exc), 'traceback': tb_s},
+                    status=status,
+                )
+            except Exception:
+                return _xzg_web.Response(status=500, text='%s: %s\n\n%s' % (type(exc).__name__, exc, tb_s))
+        if _xzg_asyncio.iscoroutinefunction(fn):
+            @_xzg_ft.wraps(fn)
+            async def _aw(*a, **kw):
+                try:
+                    return await fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _aw
+        else:
+            @_xzg_ft.wraps(fn)
+            def _sw(*a, **kw):
+                try:
+                    return fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _sw
+
+    def _safe_dir(fn_name, fallback_subdir):
+        import folder_paths as _fp
+        d = getattr(_fp, fn_name)()
+        if d:
+            os.makedirs(d, exist_ok=True)
+            return d
+        fallback = os.path.join(getattr(_fp, 'models_dir', os.getcwd()), fallback_subdir)
+        os.makedirs(fallback, exist_ok=True)
+        print('[小珠光] folder_paths.%s() 返回 None，兜底使用: %s' % (fn_name, fallback))
+        return fallback
+# ---------------- END ----------------
 from aiohttp import web
 import os
 import json
@@ -7,8 +75,24 @@ import time
 import folder_paths
 
 
+def _xzg_routes():
+    """防御性取 PromptServer 路由表（实例未初始化时返回临时兜底，仅装饰器语法不炸）。"""
+    inst = getattr(PromptServer, 'instance', None)
+    if inst is not None:
+        return inst.routes
+    class _Fallback:
+        def _noop(self, path):
+            def deco(fn): return fn
+            return deco
+        post = put = delete = patch = get = _noop
+    return _Fallback()
+
+
+_xzg_routes_var = _xzg_routes()
+
+
 def get_workflows_directory():
-    user_dir = folder_paths.get_user_directory()
+    user_dir = _safe_dir('get_user_directory',   'user')
     if not user_dir:
         user_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user")
     default_dir = os.path.join(user_dir, "default")
@@ -105,21 +189,24 @@ def cleanup_expired_trash():
         pass
 
 
-@PromptServer.instance.routes.get("/xzg/workflows")
+@_xzg_routes_var.get("/xzg/workflows")
+@xzg_safe_handler
 async def get_workflows(request):
     workflows_dir = get_workflows_directory()
     tree = build_tree(workflows_dir)
     return web.json_response(tree)
 
 
-@PromptServer.instance.routes.get("/xzg/wf-manage/list")
+@_xzg_routes_var.get("/xzg/wf-manage/list")
+@xzg_safe_handler
 async def list_workflows(request):
     workflows_dir = get_workflows_directory()
     tree = build_tree(workflows_dir)
     return web.json_response(tree)
 
 
-@PromptServer.instance.routes.post("/xzg/workflows")
+@_xzg_routes_var.post("/xzg/workflows")
+@xzg_safe_handler
 async def save_workflow(request):
     workflows_dir = get_workflows_directory()
 
@@ -164,7 +251,8 @@ async def save_workflow(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/xzg/workflows/rename")
+@_xzg_routes_var.post("/xzg/workflows/rename")
+@xzg_safe_handler
 async def rename_workflow(request):
     workflows_dir = get_workflows_directory()
 
@@ -202,7 +290,8 @@ async def rename_workflow(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.get("/xzg/workflows/{name:.+}")
+@_xzg_routes_var.get("/xzg/workflows/{name:.+}")
+@xzg_safe_handler
 async def get_workflow(request):
     workflows_dir = get_workflows_directory()
     name = request.match_info["name"]
@@ -223,7 +312,8 @@ async def get_workflow(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.delete("/xzg/workflows/{name:.+}")
+@_xzg_routes_var.delete("/xzg/workflows/{name:.+}")
+@xzg_safe_handler
 async def delete_workflow(request):
     workflows_dir = get_workflows_directory()
     name = request.match_info["name"]
@@ -253,7 +343,8 @@ async def delete_workflow(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/xzg/wf-manage/folder")
+@_xzg_routes_var.post("/xzg/wf-manage/folder")
+@xzg_safe_handler
 async def create_folder(request):
     workflows_dir = get_workflows_directory()
 
@@ -288,7 +379,8 @@ async def create_folder(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.delete("/xzg/wf-manage/folder/{name:.+}")
+@_xzg_routes_var.delete("/xzg/wf-manage/folder/{name:.+}")
+@xzg_safe_handler
 async def delete_folder(request):
     workflows_dir = get_workflows_directory()
     name = request.match_info["name"]
@@ -321,7 +413,8 @@ async def delete_folder(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/xzg/wf-manage/rename-folder")
+@_xzg_routes_var.post("/xzg/wf-manage/rename-folder")
+@xzg_safe_handler
 async def rename_folder(request):
     workflows_dir = get_workflows_directory()
     try:
@@ -360,7 +453,8 @@ async def rename_folder(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/xzg/wf-manage/cleanup-tmp")
+@_xzg_routes_var.post("/xzg/wf-manage/cleanup-tmp")
+@xzg_safe_handler
 async def cleanup_tmp_folders(request):
     """清理编号/重命名过程中残留的临时文件夹（__xzg_tmp_*、*__bak_*），避免重复文件夹堆积。"""
     workflows_dir = get_workflows_directory()
@@ -384,7 +478,8 @@ async def cleanup_tmp_folders(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/xzg/wf-manage/move")
+@_xzg_routes_var.post("/xzg/wf-manage/move")
+@xzg_safe_handler
 async def move_workflow(request):
     workflows_dir = get_workflows_directory()
 
@@ -435,7 +530,8 @@ async def move_workflow(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.get("/xzg/wf-manage/trash")
+@_xzg_routes_var.get("/xzg/wf-manage/trash")
+@xzg_safe_handler
 async def list_trash(request):
     trash_dir = get_trash_directory()
     # 打开回收站时先惰性清理过期（超过保留期）的项目
@@ -476,7 +572,8 @@ async def list_trash(request):
     return web.json_response({"items": items})
 
 
-@PromptServer.instance.routes.post("/xzg/wf-manage/restore")
+@_xzg_routes_var.post("/xzg/wf-manage/restore")
+@xzg_safe_handler
 async def restore_trash(request):
     workflows_dir = get_workflows_directory()
     try:
@@ -525,7 +622,8 @@ async def restore_trash(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
-@PromptServer.instance.routes.post("/xzg/wf-manage/trash-clear")
+@_xzg_routes_var.post("/xzg/wf-manage/trash-clear")
+@xzg_safe_handler
 async def clear_trash(request):
     # 回收站不允许手动清空：超过保留期（默认 90 天）的项目会在打开回收站时自动清理。
     return web.json_response(

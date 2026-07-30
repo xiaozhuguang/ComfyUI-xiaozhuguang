@@ -22,7 +22,7 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | ⚡ **快速节点** | 连线即出常用节点、搜索框快速添加、夺舍模式、配置导入导出 |
 | 📐 **田字格对齐** | 6 种对齐 + 4 种分布、拖拽尺子等距分布、长按自动布局、可自定义间距 |
 | 📦 **视觉编组** | 半透明框体、彩虹 / 呼吸 / 辉光动画、同级别反选、锁定、组内执行、自动收纳 |
-| 🔧 **实用节点** | 选择器 / 布尔 / 标题 / 滑条 / 万能滑条 / 编号切换 / SAM 点编辑器 / **文本框（数字→中文）** 等 |
+| 🔧 **实用节点** | 选择器 / 布尔 / 标题 / 滑条 / 万能滑条 / 编号切换 / SAM 点编辑器 / **文本框（数字→中文）** / **AudioDiT 离线 TTS（音色克隆）** 等 |
 | 🌐 **国际化** | 遵循 ComfyUI 官方 i18n 规范，中英文界面自动切换 |
 
 > 💡 全部功能均可通过右键菜单、快捷键或面板一键调用，开箱即用、零外部依赖。
@@ -33,6 +33,7 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 - [🌐 国际化（i18n）](#-国际化i18n)
 - [📦 节点](#-节点)
 - [📝 小珠光文本框（数字转中文）](#-小珠光文本框数字转中文)
+- [🔊 小珠光 AudioDiT 离线 TTS（音色克隆）](#-小珠光-audiodit-离线-tts音色克隆)
 - [⭐ 节点收藏管理](#-节点收藏管理)
 - [🎨 主题美化](#-主题美化)
 - [⚡ 快速节点](#-快速节点)
@@ -66,6 +67,9 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | **小珠光编号切换** | 0–49 路输入选择器，在多种数据类型间切换 |
 | **小珠光点编辑器** | SAM 点坐标可视化编辑器 |
 | **小珠光文本框** | 双通道文本输出，默认将阿拉伯数字智能转换为中文（支持量词、单位、序数、分辨率乘积） |
+| **小珠光 AudioDiT 零样本TTS** | 严格离线版 LongCat-AudioDiT 零样本合成（与原插件共享模型目录，永不触发 HF 下载） |
+| **小珠光 AudioDiT 音色克隆TTS** | 严格离线版音色克隆：参考音频 3–15s + 转录文本 → 目标语音，最常用节点 |
+| **小珠光 AudioDiT 多人对话TTS** | 严格离线版多说话人对话：2–10 个克隆音色 + [speaker_N]: 台词标签驱动逐段合成 |
 
 ---
 
@@ -86,6 +90,52 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | **④ 其他（纯编号/代码/串号）**（按位读） | `型号1280`<br>`编号12和13` | 型号一二八零<br>编号一二和一三 |
 
 > 💡 **规则说明**：只有当数字紧跟白名单内的量词/单位时，才会按「完整读数」读出；其他场景默认按位读，避免将编号读错。支持的乘号：`x` `X` `×` `*`（前后可带空格）。支持的英文缩写：`cm → 厘米`、`kg → 千克`、`km → 千米`、`mm → 毫米`、`L/mL → 升/毫升`、`V → 伏`、`A → 安`、`W → 瓦`、`℃/℉ → 摄氏度/华氏度` 等。
+
+---
+
+## 🔊 小珠光 AudioDiT 离线 TTS（音色克隆）
+
+> 复用 **LongCat-AudioDiT** 原插件的建模库与推理流程，但 **100% 剥离「推理时自动从 HuggingFace 下载模型/tokenizer」** 的行为。
+> 解决原插件痛点：**即便本地已经下载了模型，只要 HuggingFace 不通，tokenizer 检查那一步仍会卡住 / 失败**。
+
+### 前置依赖（一次性准备）
+
+| 依赖 | 说明 |
+|------|------|
+| `ComfyUI-LongCat-AudioDIT-TTS` 原插件 | 放在 `ComfyUI/custom_nodes/ComfyUI-LongCat-AudioDIT-TTS/`，本节点复用其 `audiodit` 建模库代码（不必卸载原插件，双方节点可共存） |
+| LongCat-AudioDiT 模型目录 | 放在 `ComfyUI/models/audiodit/目录名/`，与原插件共享同一目录（**推荐先用原插件自动下载一次**，之后永远切到小珠光离线版用） |
+| UMT5 tokenizer | 放在 `ComfyUI/models/audiodit/umt5-base-tokenizer/`，至少含 `tokenizer_config.json` + `spiece.model`（或 `tokenizer.json`） |
+| comfy_api v3（可选） | 「多人对话 TTS」节点依赖 `comfy_api.latest.IO`（DynamicCombo），未安装则**仅跳过多人节点**，其它两个节点仍正常 |
+
+### 三个节点（双语显示名）
+
+| Python 类 | 显示名（中/英） | 输入 | 说明 |
+|-----------|----------------|------|------|
+| `XzgAudioDiTTTS` | 小珠光 AudioDiT 零样本TTS / Xiaozhuguang AudioDiT Zero-Shot TTS | text, steps, guidance, device, dtype, attention, seed, keep_model_loaded | 纯文本文字转语音，无参考音色 |
+| `XzgAudioDiTVoiceCloneTTS` | 小珠光 AudioDiT 音色克隆TTS / Xiaozhuguang AudioDiT Voice Clone TTS | text + prompt_audio + prompt_text + steps/guidance/device/dtype/… | **最常用**：参考音频（3–15s）和对应转录文本 → 克隆音色朗读目标文本 |
+| `XzgAudioDiTMultiSpeakerTTS` | 小珠光 AudioDiT 多人对话TTS / Xiaozhuguang AudioDiT Multi-Speaker TTS | num_speakers(2–10) + 对应 speaker_N_audio / ref_text + `[speaker_1]: 台词` 文本 | 逐轮克隆多音色合成；每轮后加 configurable 静音；ComfyUI v3 API 可用 |
+
+### 为什么本地已有模型但原插件会卡住？
+
+LongCat 原插件 `nodes/loader.py` 的三条联网路径：
+
+| 原函数 | 行为 | 小珠光离线版怎么替换 |
+|--------|------|--------------------|
+| `get_model_names()` | 把 `LongCat-AudioDiT-1B (auto download)` 这种**本地不存在**的"虚项"也列到下拉菜单，迷惑用户 | `scan_local_models()` **只列真实存在于磁盘**的目录，空则给占位项带警告 |
+| `resolve_model_path()` → `_auto_download_model()` | 本地没找到就 `snapshot_download`，网络不通直接卡 | `resolve_model_path_xzg()` 直接抛**清晰的 FileNotFoundError**，带本地目标路径 + HF 仓库 URL + 手动放置指引 |
+| `_ensure_tokenizer_downloaded()` | umt5 缺失 → `snapshot_download` → 网络不通就炸 | `_find_local_tokenizer()` **4 级本地回退**：① models/audiodit/umt5-base-tokenizer ② 同层 umt5-base 目录 ③ `~/.cache/huggingface/hub/...` snapshot ④ 原插件内兜底 → 都没有才报错并给出下载指引 |
+| `AudioDiTModel.from_pretrained(...)` | 没写 `local_files_only=True`，transformers 会联网补缺失文件 | 强制 `local_files_only=True`，且 `AutoTokenizer.from_pretrained(本地路径, local_files_only=True)` |
+
+### 推荐的落地流程
+
+```
+① 安装原插件 ComfyUI-LongCat-AudioDIT-TTS
+      ↓ 让它自动把 3.5B-bf16 模型和 tokenizer 下好
+② 从 ComfyUI 节点菜单切换到 「小珠光_音频 / Xiaozhuguang_Audio」分类
+      ↓ 使用三个离线节点：零样本 / 音色克隆 / 多人对话
+③ 之后即便 HuggingFace 完全无法访问，节点依然正常工作
+   （模型和 tokenizer 全走本地，完全不触网）
+```
 
 ---
 
@@ -484,7 +534,9 @@ ComfyUI-xiaozhuguang/
 │   ├── xzg_get_widget.py    # 获取控件值节点
 │   ├── xzg_qwen3_vl_instruct.py # qwenVL 节点
 │   ├── xzg_text_box.py      # 文本框节点（数字转中文）
-│   └── xzg_universal_slider.py  # 万能滑条节点
+│   ├── xzg_universal_slider.py  # 万能滑条节点
+│   ├── xzg_audiodit_loader.py   # AudioDiT 严格离线加载器（本地扫描 + 不联网）
+│   └── xzg_audiodit_tts.py      # AudioDiT 离线 TTS 三节点（零样本 / 音色克隆 / 多人对话）
 └── web/
     ├── node_favorites.js        # 收藏管理核心逻辑
     ├── node_favorites.css       # 收藏面板样式

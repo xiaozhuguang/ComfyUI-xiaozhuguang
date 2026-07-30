@@ -313,9 +313,9 @@ class XzgAudioWaveformViewer {
         this.peaks = peaks || [];
         this.duration = duration || 0;
         this.sampleRate = sampleRate || 44100;
-        // 播放头默认在中间
+        // 播放头默认在最开头
         if (this.duration > 0) {
-            this.playbackTime = this.duration / 2;
+            this.playbackTime = 0;
             // 同步音频元素的 currentTime（播放头位置始终统一）
             if (this._saveUrl && this._audio) {
                 const syncCurrentTime = () => {
@@ -343,7 +343,7 @@ class XzgAudioWaveformViewer {
         this._savedFilename = filename || "";
         if (url && this._audio.src !== url) {
             this._audio.src = url;
-            // 不重置 playbackTime，保持 setData 设置的默认位置（中间）
+            // 不重置 playbackTime，保持 setData 设置的默认位置（最开头）
             // 音频元数据加载后同步 currentTime
             const syncTime = () => {
                 if (this.duration > 0 && this.playbackTime > 0) {
@@ -769,9 +769,9 @@ app.registerExtension({
                                 if (data.saveUrl && data.filename) {
                                     waveformViewer.setSaveInfo(data.saveUrl, data.filename);
                                 }
-                                // 播放头默认在中间
+                                // 播放头默认在最开头
                                 if (data.duration > 0) {
-                                    waveformViewer.playbackTime = data.duration / 2;
+                                    waveformViewer.playbackTime = 0;
                                 }
                                 node.setDirtyCanvas?.(true, true);
                             }
@@ -1019,9 +1019,9 @@ app.registerExtension({
                                 if (data.saveUrl && data.filename) {
                                     waveformViewer.setSaveInfo(data.saveUrl, data.filename);
                                 }
-                                // 播放头默认在中间
+                                // 播放头默认在最开头
                                 if (data.duration > 0) {
-                                    waveformViewer.playbackTime = data.duration / 2;
+                                    waveformViewer.playbackTime = 0;
                                 }
                             }
                         } catch (e) {

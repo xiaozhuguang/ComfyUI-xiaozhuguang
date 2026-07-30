@@ -14,8 +14,90 @@ from comfy.utils import ProgressBar
 
 # 添加 PromptServer 路由
 from server import PromptServer
+
+# ---------- 小珠光路由安全装饰器 ----------
+import asyncio as _xzg_asyncio
+import functools as _xzg_ft
+import traceback as _xzg_tb
+try:
+    from aiohttp import web as _xzg_web
+except Exception:
+    import types as _xzg_t
+    _xzg_web = _xzg_t.ModuleType('aiohttp.web')
+    class _R:
+        def __init__(self, *a, **kw): pass
+    _xzg_web.Response = _R
+    _xzg_web.json_response = lambda *a, **kw: {'_json': (a, kw)}
+    class _HTTPE(Exception): pass
+    _xzg_web.HTTPException = _HTTPE
+
+try:
+    from .. import xzg_safe_handler as _xsh, _safe_dir as _xsd
+    xzg_safe_handler = _xsh
+    _safe_dir = _xsd
+except Exception:
+    def xzg_safe_handler(fn):
+        def _fmt_resp(exc, status=500):
+            tb_s = ''.join(_xzg_tb.format_exception(type(exc), exc, exc.__traceback__))
+            try:
+                return _xzg_web.json_response(
+                    {'error': '%s: %s' % (type(exc).__name__, exc), 'traceback': tb_s},
+                    status=status,
+                )
+            except Exception:
+                return _xzg_web.Response(status=500, text='%s: %s\n\n%s' % (type(exc).__name__, exc, tb_s))
+        if _xzg_asyncio.iscoroutinefunction(fn):
+            @_xzg_ft.wraps(fn)
+            async def _aw(*a, **kw):
+                try:
+                    return await fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _aw
+        else:
+            @_xzg_ft.wraps(fn)
+            def _sw(*a, **kw):
+                try:
+                    return fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _sw
+
+    def _safe_dir(fn_name, fallback_subdir):
+        import folder_paths as _fp
+        d = getattr(_fp, fn_name)()
+        if d:
+            os.makedirs(d, exist_ok=True)
+            return d
+        fallback = os.path.join(getattr(_fp, 'models_dir', os.getcwd()), fallback_subdir)
+        os.makedirs(fallback, exist_ok=True)
+        print('[小珠光] folder_paths.%s() 返回 None，兜底使用: %s' % (fn_name, fallback))
+        return fallback
+# ---------------- END ----------------
 from aiohttp import web
-routes = PromptServer.instance.routes
+
+
+def _routes():
+    inst = getattr(PromptServer, 'instance', None)
+    if inst is not None:
+        return inst.routes
+    class _Fallback:
+        def _noop(self, path):
+            def deco(fn): return fn
+            return deco
+        post = put = delete = patch = get = _noop
+    return _Fallback()
+
+
+routes = _routes()
 
 
 ENCODE_ARGS = ['utf-8', 'replace']
@@ -269,7 +351,7 @@ class XiaozhuguangAudioSave:
         # ── 预览模式：仍编码音频，但保存到 ComfyUI temp 目录（不落盘到 output） ──
         if is_preview:
             import uuid
-            temp_dir = folder_paths.get_temp_directory()
+            temp_dir = _safe_dir('get_temp_directory',   'temp')
             os.makedirs(temp_dir, exist_ok=True)
             random_tag = uuid.uuid4().hex[:12]
             preview_filename = f"xzg_preview_{random_tag}.{ext}"
@@ -294,7 +376,7 @@ class XiaozhuguangAudioSave:
             }
 
         # 保存模式：输出到 output 目录
-        base_dir = folder_paths.get_output_directory()
+        base_dir = _safe_dir('get_output_directory', 'output')
 
         if 自定义保存目录 and 自定义保存目录.strip():
             output_dir = os.path.join(base_dir, 自定义保存目录.strip().strip("/\\"))
@@ -350,6 +432,7 @@ class XiaozhuguangAudioSave:
 # ═══════════════════════════════════════════════════════════════════════
 
 @routes.get("/xzg/audio_saved_url")
+@xzg_safe_handler
 async def get_audio_saved_url(request):
     """根据文件名返回可访问的音频 URL"""
     filename = request.query.get("filename", "")
@@ -361,9 +444,9 @@ async def get_audio_saved_url(request):
 
     try:
         if file_type == "temp":
-            base_dir = folder_paths.get_temp_directory()
+            base_dir = _safe_dir('get_temp_directory',   'temp')
         else:
-            base_dir = folder_paths.get_output_directory()
+            base_dir = _safe_dir('get_output_directory', 'output')
 
         full_path = os.path.join(base_dir, subfolder, filename) if subfolder else os.path.join(base_dir, filename)
         

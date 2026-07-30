@@ -14,6 +14,74 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
+# ---------- 小珠光路由安全装饰器 ----------
+import asyncio as _xzg_asyncio
+import functools as _xzg_ft
+import traceback as _xzg_tb
+try:
+    from aiohttp import web as _xzg_web
+except Exception:
+    import types as _xzg_t
+    _xzg_web = _xzg_t.ModuleType('aiohttp.web')
+    class _R:
+        def __init__(self, *a, **kw): pass
+    _xzg_web.Response = _R
+    _xzg_web.json_response = lambda *a, **kw: {'_json': (a, kw)}
+    class _HTTPE(Exception): pass
+    _xzg_web.HTTPException = _HTTPE
+
+try:
+    from .. import xzg_safe_handler as _xsh, _safe_dir as _xsd
+    xzg_safe_handler = _xsh
+    _safe_dir = _xsd
+except Exception:
+    def xzg_safe_handler(fn):
+        def _fmt_resp(exc, status=500):
+            tb_s = ''.join(_xzg_tb.format_exception(type(exc), exc, exc.__traceback__))
+            try:
+                return _xzg_web.json_response(
+                    {'error': '%s: %s' % (type(exc).__name__, exc), 'traceback': tb_s},
+                    status=status,
+                )
+            except Exception:
+                return _xzg_web.Response(status=500, text='%s: %s\n\n%s' % (type(exc).__name__, exc, tb_s))
+        if _xzg_asyncio.iscoroutinefunction(fn):
+            @_xzg_ft.wraps(fn)
+            async def _aw(*a, **kw):
+                try:
+                    return await fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _aw
+        else:
+            @_xzg_ft.wraps(fn)
+            def _sw(*a, **kw):
+                try:
+                    return fn(*a, **kw)
+                except _xzg_web.HTTPException:
+                    raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb.print_exc()
+                    return _fmt_resp(e)
+            return _sw
+
+    def _safe_dir(fn_name, fallback_subdir):
+        import folder_paths as _fp
+        d = getattr(_fp, fn_name)()
+        if d:
+            os.makedirs(d, exist_ok=True)
+            return d
+        fallback = os.path.join(getattr(_fp, 'models_dir', os.getcwd()), fallback_subdir)
+        os.makedirs(fallback, exist_ok=True)
+        print('[小珠光] folder_paths.%s() 返回 None，兜底使用: %s' % (fn_name, fallback))
+        return fallback
+# ---------------- END ----------------
+
 AUDIO_EXTENSIONS = {
     'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma', 'opus',
     'amr', 'ac3', 'aiff', 'au', 'mka', 'mp2', 'ra', 'voc', 'w64'
@@ -236,7 +304,7 @@ class XiaozhuguangAudioLoader:
 
     @classmethod
     def INPUT_TYPES(cls):
-        input_dir = folder_paths.get_input_directory()
+        input_dir = _safe_dir('get_input_directory',  'input')
         files = []
         try:
             if os.path.isdir(input_dir):
@@ -366,8 +434,10 @@ class XiaozhuguangAudioLoader:
 
 
 # 注册 API 路由
-if PromptServer:
+# 防御性：只有 PromptServer 已初始化 instance 时注册路由，避免直接 import 测试时炸
+if getattr(PromptServer, 'instance', None) is not None:
     @PromptServer.instance.routes.get("/xzg/audio_waveform")
+    @xzg_safe_handler
     async def get_audio_waveform(request):
         """获取音频波形数据（前端预览用，无需完整执行节点）"""
         filename = request.query.get("filename", "")
