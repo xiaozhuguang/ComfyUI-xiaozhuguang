@@ -18,7 +18,6 @@ import { xzgT } from "./xzg_i18n.js";
 // 常量
 // ============================================================================
 
-const EXTENSION_KEY = "xiaozhuguang_arrows";
 const LOG_PREFIX = "[小珠光箭头]";
 const OVERLAY_ID = "xzg-arrow-overlay";
 const CANVAS_ID = "xzg-arrow-canvas";
@@ -27,6 +26,7 @@ const STORAGE_SETTINGS_KEY = "xiaozhuguang.arrow.settings";
 const STORAGE_SHORTCUT_KEY = "xiaozhuguang.arrow.shortcut";
 const STORAGE_POSITION_KEY = "xiaozhuguang.arrow.position";
 const STORAGE_SIZE_KEY = "xiaozhuguang.arrow.size";
+
 const DEFAULT_SHORTCUT = { key: "t", ctrl: false, alt: false, shift: false, meta: false };
 
 // ============================================================================
@@ -55,7 +55,10 @@ const arrowSettings = {
     dashGap: 2,         // 虚线/圆点间距倍数
     animType: "none",   // 特效动画类型
     animSpeed: 1,       // 动画速度
-    animCount: 5        // 动画数量（星芒/粒子/光点等个数）
+    animCount: 5,       // 动画数量（星芒/粒子/光点等个数）
+    animSize: 50,       // 动画元素大小（0-100，默认50为100%）
+    fadeInEnabled: false,  // 渐入开关
+    fadeInDuration: 1000   // 渐入时长（ms）
 };
 
 // 快捷键
@@ -226,6 +229,16 @@ function clearCanvas() {
     canvasContext.clearRect(0, 0, canvasElement.width, canvasElement.height);
 }
 
+// 使用 requestAnimationFrame 节流渲染，避免鼠标高频事件导致卡顿
+let _renderRafId = null;
+function scheduleRender() {
+    if (_renderRafId !== null) return;
+    _renderRafId = requestAnimationFrame(() => {
+        _renderRafId = null;
+        renderArrows();
+    });
+}
+
 // ============================================================================
 // 形状绘制
 // ============================================================================
@@ -317,15 +330,25 @@ function drawShape(ctx, shape, isSelected) {
     if (isSelected) {
         ctx.save();
         const bounds = getShapeBounds(shape);
-        const pad = 4;
+        const pad = 6;
         const x = bounds.minX - pad;
         const y = bounds.minY - pad;
         const w = bounds.maxX - bounds.minX + pad * 2;
         const h = bounds.maxY - bounds.minY + pad * 2;
-        ctx.strokeStyle = "#6699FF";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 3]);
-        ctx.globalAlpha = 0.8;
+        // 半透明填充背景
+        ctx.fillStyle = "rgba(0, 255, 0, 0.08)";
+        ctx.fillRect(x, y, w, h);
+        // 亮色虚线边框
+        ctx.strokeStyle = "rgba(0, 255, 0, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
+        ctx.globalAlpha = 1;
+        ctx.strokeRect(x, y, w, h);
+        // 外发光辅助线
+        ctx.strokeStyle = "rgba(0, 255, 0, 0.38)";
+        ctx.lineWidth = 4;
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.5;
         ctx.strokeRect(x, y, w, h);
         ctx.restore();
     }
@@ -643,7 +666,7 @@ function getShapeStrokePoints(shape) {
         const w = right - left, h = bottom - top;
         const br = Math.min(shape.borderRadius || 0, Math.min(w, h) / 2);
         const pts = [];
-        const N = 128; // total sample points
+        const N = 256; // total sample points
         // If no rounded corners, use simple 4-corner path
         if (br <= 0) {
             return [
@@ -984,6 +1007,91 @@ function remapAnimSpeed(s) {
     return s * 2 / 100;
 }
 
+// 使用 Canvas 矢量命令绘制形状路径（圆角处用 arcTo，避免 lineTo 采样导致的锯齿）
+// 内部使用 Path2D 缓存，形状不变时复用路径，避免重复构建
+function drawShapeVectorPath(ctx, shape) {
+    // 尝试使用缓存的 Path2D
+    const cacheKey = getShapePathCacheKey(shape);
+    if (shape._vectorPath2d && shape._vectorPathKey === cacheKey) {
+        ctx.stroke(shape._vectorPath2d);
+        return;
+    }
+    const path = new Path2D();
+    const type = shape.type || "arrow";
+    const sx = shape.start.x, sy = shape.start.y;
+    const ex = shape.end.x, ey = shape.end.y;
+    if (type === "arrow") {
+        const headLen = shape.arrowSize || 0;
+        if (headLen <= 0) { path.moveTo(sx, sy); path.lineTo(ex, ey); }
+        else {
+            const dx = ex - sx, dy = ey - sy;
+            const len = Math.hypot(dx, dy);
+            if (len < 1) { path.moveTo(sx, sy); path.lineTo(ex, ey); }
+            else {
+                const nx = dx / len, ny = dy / len;
+                path.moveTo(sx, sy);
+                path.lineTo(ex - nx * headLen, ey - ny * headLen);
+            }
+        }
+    } else if (type === "rectangle") {
+        const left = Math.min(sx, ex), right = Math.max(sx, ex);
+        const top = Math.min(sy, ey), bottom = Math.max(sy, ey);
+        const w = right - left, h = bottom - top;
+        const br = Math.min(shape.borderRadius || 0, Math.min(w, h) / 2);
+        if (br <= 0) {
+            path.moveTo(left, top); path.lineTo(right, top);
+            path.lineTo(right, bottom); path.lineTo(left, bottom);
+            path.closePath();
+        } else {
+            path.moveTo(left + br, top);
+            path.lineTo(right - br, top);
+            path.arcTo(right, top, right, top + br, br);
+            path.lineTo(right, bottom - br);
+            path.arcTo(right, bottom, right - br, bottom, br);
+            path.lineTo(left + br, bottom);
+            path.arcTo(left, bottom, left, bottom - br, br);
+            path.lineTo(left, top + br);
+            path.arcTo(left, top, left + br, top, br);
+            path.closePath();
+        }
+    } else if (type === "ellipse" || type === "circle") {
+        const cx = (sx + ex) / 2, cy = (sy + ey) / 2;
+        if (type === "circle") {
+            const r = Math.max(Math.abs(ex - sx), Math.abs(ey - sy)) / 2;
+            path.ellipse(cx, cy, r, r, 0, 0, Math.PI * 2);
+        } else {
+            const rx = Math.max(Math.abs(ex - sx) / 2, 0.1);
+            const ry = Math.max(Math.abs(ey - sy) / 2, 0.1);
+            path.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        }
+    } else if (type === "bezier") {
+        const pts = getBezierPoints(shape);
+        if (pts.length >= 2) {
+            const samples = getBezierSamplePoints(pts, 12);
+            path.moveTo(samples[0].x, samples[0].y);
+            for (let i = 1; i < samples.length; i++) path.lineTo(samples[i].x, samples[i].y);
+        }
+    } else {
+        // 兜底：使用采样点
+        const fallbackPts = getAnimPathPoints(shape);
+        path.moveTo(fallbackPts[0].x, fallbackPts[0].y);
+        for (let i = 1; i < fallbackPts.length; i++) path.lineTo(fallbackPts[i].x, fallbackPts[i].y);
+    }
+    // 缓存 Path2D
+    shape._vectorPath2d = path;
+    shape._vectorPathKey = cacheKey;
+    ctx.stroke(path);
+}
+
+function getShapePathCacheKey(shape) {
+    const type = shape.type || "arrow";
+    const sx = shape.start.x, sy = shape.start.y;
+    const ex = shape.end.x, ey = shape.end.y;
+    const br = shape.borderRadius || 0;
+    const headLen = shape.arrowSize || 0;
+    return `${type}|${sx.toFixed(1)}|${sy.toFixed(1)}|${ex.toFixed(1)}|${ey.toFixed(1)}|${br}|${headLen}`;
+}
+
 // 动画调度
 function drawArrowAnim(ctx, shape) {
     const animType = shape.animType || "none";
@@ -993,19 +1101,20 @@ function drawArrowAnim(ctx, shape) {
     const rawSpeed = shape.animSpeed || 1;
     const speed = remapAnimSpeed(rawSpeed);
     const count = Math.max(1, shape.animCount || 5);
+    const sizeRatio = shape.animSize !== undefined ? shape.animSize / 50 : 1;
     const t = performance.now();
     switch (animType) {
-        case "sparkle":   drawAnimSparkle(ctx, pts, speed, t, count); break;
-        case "energy":    drawAnimEnergy(ctx, pts, speed, t); break;
-        case "transfer":  drawAnimTransfer(ctx, pts, speed, t, count); break;
-        case "stellar":   drawAnimStellar(ctx, pts, speed, t, count); break;
-        case "diy1":      drawAnimGoldFlow(ctx, pts, speed, t, count); break;
-        case "crystal":   drawAnimCrystal(ctx, pts, speed, t, count); break;
-        case "quantum":   drawAnimQuantum(ctx, pts, speed, t, count); break;
-        case "lava":      drawAnimLava(ctx, pts, speed, t, count); break;
-        case "randspark": drawAnimRandSpark(ctx, pts, speed, t, count); break;
-        case "pulse":     drawAnimPulse(ctx, pts, speed, t); break;
-        case "comet":     drawAnimComet(ctx, pts, speed, t, count); break;
+        case "sparkle":   drawAnimSparkle(ctx, pts, speed, t, count, sizeRatio); break;
+        case "energy":    drawAnimEnergy(ctx, shape, speed, t, sizeRatio); break;
+        case "transfer":  drawAnimTransfer(ctx, pts, speed, t, count, sizeRatio); break;
+        case "stellar":   drawAnimStellar(ctx, pts, speed, t, count, sizeRatio); break;
+        case "diy1":      drawAnimGoldFlow(ctx, pts, speed, t, count, sizeRatio); break;
+        case "crystal":   drawAnimCrystal(ctx, pts, speed, t, count, sizeRatio); break;
+        case "quantum":   drawAnimQuantum(ctx, pts, speed, t, count, sizeRatio); break;
+        case "lava":      drawAnimLava(ctx, pts, speed, t, count, sizeRatio); break;
+        case "randspark": drawAnimRandSpark(ctx, pts, speed, t, count, sizeRatio); break;
+        case "pulse":     drawAnimPulse(ctx, pts, speed, t, sizeRatio); break;
+        case "comet":     drawAnimComet(ctx, pts, speed, t, count, sizeRatio); break;
     }
 }
 
@@ -1052,55 +1161,54 @@ function _drawStarburst(ctx, cx, cy, color, size, rotation) {
 }
 
 // 1. 七彩星芒
-function drawAnimSparkle(ctx, pts, speed, t, count) {
+function drawAnimSparkle(ctx, pts, speed, t, count, sizeRatio) {
     const rainbowColors = ['#FF6B6B', '#FFA94D', '#FFE066', '#69DB7C', '#339AF0', '#F06595'];
     count = Math.max(1, count || 5);
     const sp = 0.00025 * speed;
     const baseOffset = (t * sp) % 1;
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = (baseOffset + i / count) % 1;
         const p = getPointAlongPath(pts, tVal);
         const color = rainbowColors[i % rainbowColors.length];
         const pulse = 0.7 + 0.3 * Math.sin(t * 0.004 + i * 1.2);
-        const size = 11 * pulse;
+        const size = 11 * pulse * sizeRatio;
         const rotation = t * 0.001 + i * 0.5;
+        ctx.globalAlpha = 0.5 + brightPulse * 0.5;
         _drawStarburst(ctx, p.x, p.y, color, size, rotation);
+        ctx.globalAlpha = 1;
     }
     ctx.restore();
 }
 
-// 2. 能量脉冲（七彩变色 + 明暗变化，沿整体路径描边）
-function drawAnimEnergy(ctx, pts, speed, t) {
+// 2. 能量脉冲（七彩变色 + 明暗变化，沿整体路径描边，使用矢量绘制避免圆角锯齿）
+// drawShapeVectorPath 内部使用 Path2D 缓存，第二次调用直接复用缓存路径
+function drawAnimEnergy(ctx, shape, speed, t, sizeRatio) {
     const sp = 0.002 * speed;
     const pulse = 0.5 + 0.5 * Math.sin(t * sp);
     const hue = (t * 0.05) % 360;
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     // 外层七彩
     ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${0.2 + pulse * 0.3})`;
-    ctx.lineWidth = 6;
+    ctx.lineWidth = 6 * sizeRatio;
     ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
-    ctx.shadowBlur = 15 + pulse * 10;
-    ctx.stroke();
-    // 核心白色
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.shadowBlur = (15 + pulse * 10) * sizeRatio;
+    drawShapeVectorPath(ctx, shape);
+    // 核心白色（复用缓存的 Path2D）
     ctx.strokeStyle = `rgba(255, 255, 255, ${0.4 + pulse * 0.5})`;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 * sizeRatio;
     ctx.shadowColor = `hsl(${hue}, 100%, 70%)`;
-    ctx.shadowBlur = 4;
-    ctx.stroke();
+    ctx.shadowBlur = 4 * sizeRatio;
+    drawShapeVectorPath(ctx, shape);
     ctx.restore();
 }
 
 // 3. 高速穿梭光点（带拖尾）
-function drawAnimTransfer(ctx, pts, speed, t, count) {
+function drawAnimTransfer(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.0012 * speed;
     count = Math.max(1, count || 3);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = ((t * sp) + i / count) % 1;
@@ -1109,30 +1217,31 @@ function drawAnimTransfer(ctx, pts, speed, t, count) {
         for (let j = 0; j < 8; j++) {
             const tt = Math.max(0, tVal - j * 0.02);
             const tp = getPointAlongPath(pts, tt);
-            const alpha = (1 - j / 8) * 0.5;
-            const sz = (1 - j / 8) * 4;
+            const alpha = (1 - j / 8) * 0.5 * (0.5 + brightPulse * 0.5);
+            const sz = (1 - j / 8) * 4 * sizeRatio;
             ctx.beginPath();
             ctx.arc(tp.x, tp.y, Math.max(0.5, sz), 0, Math.PI * 2);
             ctx.fillStyle = `rgba(120, 220, 255, ${alpha})`;
             ctx.shadowColor = '#74C0FC';
-            ctx.shadowBlur = 6;
+            ctx.shadowBlur = 6 * sizeRatio;
             ctx.fill();
         }
         // 头部
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = '#FFFFFF';
+        ctx.arc(p.x, p.y, 5 * sizeRatio, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.5 + brightPulse * 0.5})`;
         ctx.shadowColor = '#74C0FC';
-        ctx.shadowBlur = 20;
+        ctx.shadowBlur = 20 * sizeRatio;
         ctx.fill();
     }
     ctx.restore();
 }
 
 // 4. 恒星等离子（高亮星点拖尾）
-function drawAnimStellar(ctx, pts, speed, t, count) {
+function drawAnimStellar(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.00035 * speed;
     count = Math.max(1, count || 5);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = ((t * sp) + i / count) % 1;
@@ -1141,29 +1250,30 @@ function drawAnimStellar(ctx, pts, speed, t, count) {
         for (let j = 0; j < trailLen; j++) {
             const tt = Math.max(0, tVal - j * 0.015);
             const tp = getPointAlongPath(pts, tt);
-            const alpha = (1 - j / trailLen) * 0.4;
-            const sz = (1 - j / trailLen) * 3 + 1;
+            const alpha = (1 - j / trailLen) * 0.4 * (0.5 + brightPulse * 0.5);
+            const sz = ((1 - j / trailLen) * 3 + 1) * sizeRatio;
             ctx.beginPath();
             ctx.arc(tp.x, tp.y, sz, 0, Math.PI * 2);
             ctx.fillStyle = `rgba(180, 220, 255, ${alpha})`;
             ctx.shadowColor = '#A5D8FF';
-            ctx.shadowBlur = 8;
+            ctx.shadowBlur = 8 * sizeRatio;
             ctx.fill();
         }
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = '#FFFFFF';
+        ctx.arc(p.x, p.y, 3 * sizeRatio, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.5 + brightPulse * 0.5})`;
         ctx.shadowColor = '#74C0FC';
-        ctx.shadowBlur = 15;
+        ctx.shadowBlur = 15 * sizeRatio;
         ctx.fill();
     }
     ctx.restore();
 }
 
 // 5. 金星流动（金色圆形粒子 + 长拖尾）
-function drawAnimGoldFlow(ctx, pts, speed, t, count) {
+function drawAnimGoldFlow(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.0003 * speed;
     count = Math.max(1, count || 4);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = ((t * sp) + i / count) % 1;
@@ -1171,45 +1281,46 @@ function drawAnimGoldFlow(ctx, pts, speed, t, count) {
         for (let j = 0; j < 12; j++) {
             const tt = Math.max(0, tVal - j * 0.012);
             const tp = getPointAlongPath(pts, tt);
-            const alpha = (1 - j / 12) * 0.4;
-            const sz = (1 - j / 12) * 4 + 0.5;
+            const alpha = (1 - j / 12) * 0.4 * (0.5 + brightPulse * 0.5);
+            const sz = ((1 - j / 12) * 4 + 0.5) * sizeRatio;
             ctx.beginPath();
             ctx.arc(tp.x, tp.y, sz, 0, Math.PI * 2);
             ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
             ctx.shadowColor = '#FFD700';
-            ctx.shadowBlur = 8;
+            ctx.shadowBlur = 8 * sizeRatio;
             ctx.fill();
         }
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = '#FFF8DC';
+        ctx.arc(p.x, p.y, 5 * sizeRatio, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 248, 220, ${0.5 + brightPulse * 0.5})`;
         ctx.shadowColor = '#FFD700';
-        ctx.shadowBlur = 18;
+        ctx.shadowBlur = 18 * sizeRatio;
         ctx.fill();
     }
     ctx.restore();
 }
 
 // 6. 水晶溪流（透明方块粒子、渐变发光质感）
-function drawAnimCrystal(ctx, pts, speed, t, count) {
+function drawAnimCrystal(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.00025 * speed;
     count = Math.max(1, count || 7);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = ((t * sp) + i / count) % 1;
         const p = getPointAlongPath(pts, tVal);
-        const size = 5;
+        const size = 5 * sizeRatio;
         const rot = t * 0.001 + i;
         ctx.save();
         ctx.translate(p.x, p.y);
         ctx.rotate(rot);
         const grad = ctx.createLinearGradient(-size, -size, size, size);
-        grad.addColorStop(0, 'rgba(100, 200, 255, 0.8)');
-        grad.addColorStop(0.5, 'rgba(200, 240, 255, 0.4)');
-        grad.addColorStop(1, 'rgba(100, 200, 255, 0.8)');
+        grad.addColorStop(0, `rgba(100, 200, 255, ${0.4 + brightPulse * 0.4})`);
+        grad.addColorStop(0.5, `rgba(200, 240, 255, ${0.2 + brightPulse * 0.2})`);
+        grad.addColorStop(1, `rgba(100, 200, 255, ${0.4 + brightPulse * 0.4})`);
         ctx.fillStyle = grad;
         ctx.shadowColor = '#74C0FC';
-        ctx.shadowBlur = 10;
+        ctx.shadowBlur = 10 * sizeRatio;
         ctx.fillRect(-size, -size, size * 2, size * 2);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
         ctx.lineWidth = 0.5;
@@ -1221,58 +1332,61 @@ function drawAnimCrystal(ctx, pts, speed, t, count) {
 }
 
 // 7. 量子场（细碎光点随机穿梭）
-function drawAnimQuantum(ctx, pts, speed, t, count) {
+function drawAnimQuantum(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.0004 * speed;
     count = Math.max(1, count || 14);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     const seed = Math.floor(t / 80);
     const rng = (i) => { const x = Math.sin(seed * 99.7 + i * 31.3) * 43758.5453; return x - Math.floor(x); };
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = ((t * sp * (0.5 + rng(i) * 0.8)) + i / count) % 1;
         const p = getPointAlongPath(pts, tVal);
-        const jitter = 4;
+        const jitter = 4 * sizeRatio;
         const jx = (rng(i * 2 + 1) - 0.5) * jitter;
         const jy = (rng(i * 2 + 2) - 0.5) * jitter;
-        const size = 1 + rng(i * 3 + 5) * 2;
+        const size = (1 + rng(i * 3 + 5) * 2) * sizeRatio;
         const color = ['#74C0FC', '#A5D8FF', '#E7F5FF', '#4DABF7'][i % 4];
         ctx.beginPath();
         ctx.arc(p.x + jx, p.y + jy, size, 0, Math.PI * 2);
         ctx.fillStyle = color;
         ctx.shadowColor = color;
-        ctx.shadowBlur = 6;
-        ctx.globalAlpha = 0.4 + rng(i * 7) * 0.6;
+        ctx.shadowBlur = 6 * sizeRatio;
+        ctx.globalAlpha = (0.4 + rng(i * 7) * 0.6) * (0.5 + brightPulse * 0.5);
         ctx.fill();
     }
     ctx.restore();
 }
 
 // 8. 熔岩流（橙红渐变块状粒子）
-function drawAnimLava(ctx, pts, speed, t, count) {
+function drawAnimLava(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.0002 * speed;
     count = Math.max(1, count || 6);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     ctx.save();
     for (let i = 0; i < count; i++) {
         const tVal = ((t * sp) + i / count) % 1;
         const p = getPointAlongPath(pts, tVal);
-        const size = 4 + Math.sin(t * 0.003 + i) * 1.5;
+        const size = (4 + Math.sin(t * 0.003 + i) * 1.5) * sizeRatio;
         const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2);
-        grad.addColorStop(0, 'rgba(255, 220, 100, 0.9)');
-        grad.addColorStop(0.4, 'rgba(255, 140, 50, 0.6)');
+        grad.addColorStop(0, `rgba(255, 220, 100, ${0.45 + brightPulse * 0.45})`);
+        grad.addColorStop(0.4, `rgba(255, 140, 50, ${0.3 + brightPulse * 0.3})`);
         grad.addColorStop(1, 'rgba(200, 50, 0, 0)');
         ctx.beginPath();
         ctx.arc(p.x, p.y, size * 2, 0, Math.PI * 2);
         ctx.fillStyle = grad;
         ctx.shadowColor = '#FF6B35';
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = 12 * sizeRatio;
         ctx.fill();
     }
     ctx.restore();
 }
 
 // 9. 随机闪烁星芒
-function drawAnimRandSpark(ctx, pts, speed, t, count) {
+function drawAnimRandSpark(ctx, pts, speed, t, count, sizeRatio) {
     const sp = 0.001 * speed;
     count = Math.max(1, count || 10);
+    const brightPulse = 0.5 + 0.5 * Math.sin(t * 0.0025 * speed);
     const seed = Math.floor(t * sp / 5);
     const rng = (i) => { const x = Math.sin(seed * 78.3 + i * 52.7) * 43758.5453; return x - Math.floor(x); };
     // 去除紫色，用粉/青替代
@@ -1284,17 +1398,18 @@ function drawAnimRandSpark(ctx, pts, speed, t, count) {
         const lifePhase = (t * sp * 0.5 + i * 1.7) % 3;
         const alpha = lifePhase < 1 ? lifePhase : (lifePhase < 2 ? 1 : Math.max(0, 2 - lifePhase));
         if (alpha <= 0.01) continue;
-        const sz = 4 + rng(i * 5 + 3) * 5;
+        const sz = (4 + rng(i * 5 + 3) * 5) * sizeRatio;
         const color = colors[Math.floor(rng(i * 7 + 9) * colors.length)];
         const rotation = rng(i * 11) * Math.PI * 2 + t * 0.001;
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = alpha * (0.5 + brightPulse * 0.5);
         _drawStarburst(ctx, p.x, p.y, color, sz, rotation);
+        ctx.globalAlpha = 1;
     }
     ctx.restore();
 }
 
 // 10. 脉冲（整体路径呼吸发光）
-function drawAnimPulse(ctx, pts, speed, t) {
+function drawAnimPulse(ctx, pts, speed, t, sizeRatio) {
     const sp = 0.003 * speed;
     const pulse = 0.5 + 0.5 * Math.sin(t * sp);
     const hue = (t * 0.05) % 360;
@@ -1306,23 +1421,23 @@ function drawAnimPulse(ctx, pts, speed, t) {
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.closePath();
     ctx.strokeStyle = `hsla(${hue}, 100%, 65%, ${0.15 + pulse * 0.15})`;
-    ctx.lineWidth = 8 + pulse * 6;
+    ctx.lineWidth = (8 + pulse * 6) * sizeRatio;
     ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
-    ctx.shadowBlur = 25 + pulse * 15;
+    ctx.shadowBlur = (25 + pulse * 15) * sizeRatio;
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
     ctx.closePath();
     ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + pulse * 0.4})`;
-    ctx.lineWidth = 2;
-    ctx.shadowBlur = 12 + pulse * 8;
+    ctx.lineWidth = 2 * sizeRatio;
+    ctx.shadowBlur = (12 + pulse * 8) * sizeRatio;
     ctx.stroke();
     ctx.restore();
 }
 
 // 11. 流星彗星（沿路径飞行的光点 + 拖尾 + 色变 + 粒子 + 大小脉动 + 明暗变化）
-function drawAnimComet(ctx, pts, speed, t, count) {
+function drawAnimComet(ctx, pts, speed, t, count, sizeRatio) {
     const moveSp = 0.00018 * speed;    // 光点沿路径移动速度
     const fastSp = 0.0033;             // 色变/脉动/明暗的快相位速度
     count = Math.max(1, count || 3);   // 同时飞行的彗星数量
@@ -1344,10 +1459,10 @@ function drawAnimComet(ctx, pts, speed, t, count) {
         // 大小脉动 + 明暗变化
         const pulse = 0.7 + 0.3 * Math.sin(t * fastSp * 2 + hueBase);
         const brightness = 0.55 + 0.45 * Math.sin(t * fastSp * 2 + hueBase + 0.6);
-        const coreSize = Math.max(1.2, 3.5 * pulse);
-        const haloSize = Math.max(3, 9 * pulse);
-        const tailLen = 30 * (0.6 + pulse * 0.4);
-        const tailWidth = 3.5;
+        const coreSize = Math.max(1.2, 3.5 * pulse) * sizeRatio;
+        const haloSize = Math.max(3, 9 * pulse) * sizeRatio;
+        const tailLen = 30 * (0.6 + pulse * 0.4) * sizeRatio;
+        const tailWidth = 3.5 * sizeRatio;
 
         // === 1. 拖尾（沿运动反方向锥形渐变，越靠近星头越亮越宽） ===
         const tailEndX = p.x - dx * tailLen;
@@ -1364,7 +1479,7 @@ function drawAnimComet(ctx, pts, speed, t, count) {
         tailGrad.addColorStop(1, `hsla(${hue}, 90%, 78%, ${0.65 * brightness})`);
         ctx.fillStyle = tailGrad;
         ctx.shadowColor = starColor;
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = 12 * sizeRatio;
         ctx.fill();
 
         // === 2. 光晕（径向渐变，随脉动大小变化） ===
@@ -1385,12 +1500,12 @@ function drawAnimComet(ctx, pts, speed, t, count) {
             const jitter = Math.sin(t * fastSp * 3 + j * 1.7 + hueBase) * tailWidth * 0.6;
             const ppx = p.x - dx * tailLen * tt + px * jitter;
             const ppy = p.y - dy * tailLen * tt + py * jitter;
-            const psize = (1 - tt) * 1.8 + 0.4;
+            const psize = ((1 - tt) * 1.8 + 0.4) * sizeRatio;
             const palpha = (1 - tt) * 0.65 * (0.4 + 0.6 * Math.sin(t * fastSp * 4 + j + hueBase));
             if (palpha <= 0.02) continue;
             ctx.fillStyle = `hsla(${hue}, 95%, 82%, ${palpha})`;
             ctx.shadowColor = starColor;
-            ctx.shadowBlur = 6;
+            ctx.shadowBlur = 6 * sizeRatio;
             ctx.beginPath();
             ctx.arc(ppx, ppy, psize, 0, Math.PI * 2);
             ctx.fill();
@@ -1400,7 +1515,7 @@ function drawAnimComet(ctx, pts, speed, t, count) {
         // === 4. 星核（白色亮点，大小+明暗脉动） ===
         ctx.fillStyle = '#FFFFFF';
         ctx.shadowColor = starColor;
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = 12 * sizeRatio;
         ctx.globalAlpha = brightness;
         ctx.beginPath();
         ctx.arc(p.x, p.y, coreSize, 0, Math.PI * 2);
@@ -1598,7 +1713,7 @@ function drawModeIndicator(ctx, width, height) {
     const text = `${shapeName}: ${stageText}`;
     const bgColor = "rgba(255, 85, 85, 0.9)";
 
-    ctx.font = "bold 13px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.font = "bold 14px -apple-system, BlinkMacSystemFont, sans-serif";
     const textWidth = ctx.measureText(text).width;
 
     const boxWidth = textWidth + padding * 2;
@@ -1618,11 +1733,14 @@ function drawModeIndicator(ctx, width, height) {
     ctx.fillStyle = "#FFFFFF";
     ctx.fillText(text, x + padding, y + 19);
 
-    ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.font = "14px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
     const hintText = xzgT("Esc: 退出", "Esc: Exit");
     const hintWidth = ctx.measureText(hintText).width;
     ctx.fillText(hintText, width - hintWidth - 10 - padding, y + 45);
+
+    // 每次渲染后将箭头数据同步到 graph.extra
+    syncArrowsToExtra();
 }
 
 // ============================================================================
@@ -1647,10 +1765,10 @@ function setupPointerEvents() {
         if (isArrowModeActive && isDrawing) e.preventDefault();
     }, { passive: false });
 
-    // 鼠标滚轮事件：转发给 LiteGraph 画布以支持缩放/平移
+    // 鼠标滚轮：直接转发到 LiteGraph 画布，确保缩放正常
     canvas.addEventListener("wheel", (e) => {
         if (isArrowModeActive && litegraphCanvas) {
-            litegraphCanvas.dispatchEvent(new WheelEvent("wheel", {
+            const newEvent = new WheelEvent("wheel", {
                 deltaX: e.deltaX,
                 deltaY: e.deltaY,
                 deltaZ: e.deltaZ,
@@ -1665,9 +1783,57 @@ function setupPointerEvents() {
                 metaKey: e.metaKey,
                 bubbles: true,
                 cancelable: true
-            }));
+            });
+            litegraphCanvas.dispatchEvent(newEvent);
         }
-    }, { passive: false });
+    }, { passive: true });
+
+    // 中键按下：穿透覆盖层，让画布平移手势到达 LiteGraph 画布
+    overlayElement.addEventListener("pointerdown", (e) => {
+        if (isArrowModeActive && e.button === 1) {
+            // 设置穿透，后续 pointermove/pointerup 直接到达 LiteGraph 画布
+            overlayElement.style.pointerEvents = "none";
+            // 手动转发当前 pointerdown 到 LiteGraph 画布（平移起始）
+            if (litegraphCanvas) {
+                const newEvent = new PointerEvent("pointerdown", {
+                    clientX: e.clientX,
+                    clientY: e.clientY,
+                    screenX: e.screenX,
+                    screenY: e.screenY,
+                    button: 1,
+                    buttons: 4,
+                    pointerId: e.pointerId,
+                    pointerType: e.pointerType || "mouse",
+                    isPrimary: true,
+                    width: e.width,
+                    height: e.height,
+                    pressure: e.pressure,
+                    tiltX: e.tiltX,
+                    tiltY: e.tiltY,
+                    ctrlKey: e.ctrlKey,
+                    shiftKey: e.shiftKey,
+                    altKey: e.altKey,
+                    metaKey: e.metaKey,
+                    bubbles: true,
+                    cancelable: true
+                });
+                litegraphCanvas.dispatchEvent(newEvent);
+            }
+            e.stopPropagation();
+            e.preventDefault();
+        }
+    }, true); // capture 阶段拦截
+
+    // 中键释放：恢复覆盖层事件捕获
+    document.addEventListener("pointerup", (e) => {
+        if (e.button === 1 && overlayElement) {
+            if (isArrowModeActive) {
+                overlayElement.style.pointerEvents = "auto";
+            } else {
+                overlayElement.style.pointerEvents = "none";
+            }
+        }
+    }, true);
 
     // 贝塞尔绘制中右键阻止默认菜单
     canvas.addEventListener("contextmenu", (e) => {
@@ -1788,9 +1954,6 @@ function handlePointerDown(e) {
     // 未命中箭头：仅在模式激活时开始绘制新箭头
     if (!isArrowModeActive) return;
 
-    // 取消选中
-    selectedArrowIndex = -1;
-
     // 贝塞尔曲线：顺序打点绘制（1, 2, 3, 4, 5...），双击或回车完成
     if (arrowSettings.shapeType === "bezier") {
         if (bezierDrawStage === 0) {
@@ -1812,7 +1975,8 @@ function handlePointerDown(e) {
                 lineStyle: arrowSettings.lineStyle,
                 animType: arrowSettings.animType,
                 animSpeed: arrowSettings.animSpeed,
-                animCount: arrowSettings.animCount
+                animCount: arrowSettings.animCount,
+                animSize: arrowSettings.animSize
             };
         } else {
             // 后续点击：添加新点
@@ -1842,7 +2006,8 @@ function handlePointerDown(e) {
         lineStyle: arrowSettings.lineStyle,
         animType: arrowSettings.animType,
         animSpeed: arrowSettings.animSpeed,
-        animCount: arrowSettings.animCount
+        animCount: arrowSettings.animCount,
+        animSize: arrowSettings.animSize
     };
     lastPoint = { x: canvasPos.x, y: canvasPos.y };
 
@@ -1871,7 +2036,7 @@ function handlePointerMove(e) {
     }
     lastPoint = { x: canvasPos.x, y: canvasPos.y };
 
-    renderArrows();
+    scheduleRender();
     e.preventDefault();
 }
 
@@ -2082,7 +2247,7 @@ function showArrowConfirmDialog(title, message) {
                     padding: 14px 16px 8px 16px;
                 }
                 .xzg-arrow-dialog-body {
-                    color: #aaa; font-size: 12px; line-height: 1.6;
+                    color: #fff; font-size: 14px; line-height: 1.6;
                     padding: 0 16px 16px 16px;
                 }
                 .xzg-arrow-dialog-footer {
@@ -2093,8 +2258,8 @@ function showArrowConfirmDialog(title, message) {
                 .xzg-arrow-dialog-btn {
                     height: 30px; padding: 0 16px;
                     border-radius: 6px; border: 1px solid rgba(255,255,255,0.15);
-                    background: #2a2a2a; color: #ddd;
-                    font-size: 12px; cursor: pointer;
+                    background: #2a2a2a; color: #fff;
+                    font-size: 14px; cursor: pointer;
                     transition: all 0.15s;
                 }
                 .xzg-arrow-dialog-btn:hover { background: #3a3a3a; color: #fff; }
@@ -2308,7 +2473,7 @@ function updateTransformSliders() {
         const angleDeg = ((angle * 180 / Math.PI) % 360 + 360) % 360;
 
         if (rotateSlider) rotateSlider.value = angleDeg;
-        if (rotateDisplay) rotateDisplay.textContent = `${Math.round(angleDeg)}°`;
+        if (rotateDisplay) rotateDisplay.textContent = `${Math.round(angleDeg)}`;
 
         // 重置位移滑条为相对偏移 0
         lastSliderX = 0;
@@ -2320,7 +2485,7 @@ function updateTransformSliders() {
     } else {
         // 无选中箭头时重置滑条
         if (rotateSlider) rotateSlider.value = 0;
-        if (rotateDisplay) rotateDisplay.textContent = `0°`;
+        if (rotateDisplay) rotateDisplay.textContent = `0`;
         if (xSlider) xSlider.value = 0;
         if (xDisplay) xDisplay.textContent = `0`;
         if (ySlider) ySlider.value = 0;
@@ -2359,7 +2524,7 @@ function updateStyleSliders() {
         if (headSlider) headSlider.value = arrow.arrowSize;
         if (headDisplay) headDisplay.textContent = arrow.arrowSize;
         if (opacitySlider) opacitySlider.value = Math.round(arrow.opacity * 100);
-        if (opacityDisplay) opacityDisplay.textContent = `${Math.round(arrow.opacity * 100)}%`;
+        if (opacityDisplay) opacityDisplay.textContent = `${Math.round(arrow.opacity * 100)}`;
         if (radiusSlider) radiusSlider.value = arrow.borderRadius || 0;
         if (radiusDisplay) radiusDisplay.textContent = arrow.borderRadius || 0;
         if (radiusRow) radiusRow.style.display = type === "rectangle" ? "" : "none";
@@ -2378,6 +2543,13 @@ function updateStyleSliders() {
         if (animCountSlider) animCountSlider.value = animCnt;
         if (animCountDisplay) animCountDisplay.textContent = animCnt;
         if (animCountRow) animCountRow.style.display = (animType === "none" || animType === "energy" || animType === "pulse") ? "none" : "flex";
+        const animSizeSlider = toolbarElement.querySelector(".xzg-arrow-anim-size-slider");
+        const animSizeDisplay = toolbarElement.querySelector(".xzg-arrow-anim-size-value");
+        const animSizeRow = toolbarElement.querySelector("#xzg-arrow-anim-size-row");
+        const animSz = arrow.animSize !== undefined ? arrow.animSize : 50;
+        if (animSizeSlider) animSizeSlider.value = animSz;
+        if (animSizeDisplay) animSizeDisplay.textContent = animSz;
+        if (animSizeRow) animSizeRow.style.display = (animType === "none") ? "none" : "flex";
 
         // 同步形状与线型下拉列表
         if (shapeSelect) shapeSelect.value = type;
@@ -2402,7 +2574,7 @@ function updateStyleSliders() {
         if (headSlider) headSlider.value = arrowSettings.arrowSize;
         if (headDisplay) headDisplay.textContent = arrowSettings.arrowSize;
         if (opacitySlider) opacitySlider.value = Math.round(arrowSettings.opacity * 100);
-        if (opacityDisplay) opacityDisplay.textContent = `${Math.round(arrowSettings.opacity * 100)}%`;
+        if (opacityDisplay) opacityDisplay.textContent = `${Math.round(arrowSettings.opacity * 100)}`;
         if (radiusSlider) radiusSlider.value = arrowSettings.borderRadius;
         if (radiusDisplay) radiusDisplay.textContent = arrowSettings.borderRadius;
         if (radiusRow) radiusRow.style.display = arrowSettings.shapeType === "rectangle" ? "" : "none";
@@ -2418,6 +2590,12 @@ function updateStyleSliders() {
         if (animCountSliderG) animCountSliderG.value = arrowSettings.animCount;
         if (animCountDisplayG) animCountDisplayG.textContent = arrowSettings.animCount;
         if (animCountRowG) animCountRowG.style.display = (arrowSettings.animType === "none" || arrowSettings.animType === "energy" || arrowSettings.animType === "pulse") ? "none" : "flex";
+        const animSizeSliderG = toolbarElement.querySelector(".xzg-arrow-anim-size-slider");
+        const animSizeDisplayG = toolbarElement.querySelector(".xzg-arrow-anim-size-value");
+        const animSizeRowG = toolbarElement.querySelector("#xzg-arrow-anim-size-row");
+        if (animSizeSliderG) animSizeSliderG.value = arrowSettings.animSize;
+        if (animSizeDisplayG) animSizeDisplayG.textContent = arrowSettings.animSize;
+        if (animSizeRowG) animSizeRowG.style.display = (arrowSettings.animType === "none") ? "none" : "flex";
 
         // 同步下拉列表为全局设置
         if (shapeSelect) shapeSelect.value = arrowSettings.shapeType;
@@ -2480,11 +2658,63 @@ function hideOverlay() {
 }
 
 // ============================================================================
-// 持久化
+// 持久化（按工作流保存箭头）
 // ============================================================================
 
+const EXTENSION_KEY = "xiaozhuguang_arrows";
+
+/** 将 arrows 数组同步到 app.graph.extra，确保序列化时包含箭头数据 */
+function syncArrowsToExtra() {
+    if (!app?.graph) return;
+    try {
+        if (!app.graph.extra) app.graph.extra = {};
+        if (arrows.length > 0) {
+            app.graph.extra[EXTENSION_KEY] = {
+                version: 3,
+                arrows: arrows.map(a => {
+                    const obj = {
+                        start: { x: a.start.x, y: a.start.y },
+                        end: { x: a.end.x, y: a.end.y },
+                        color: a.color,
+                        lineWidth: a.lineWidth,
+                        arrowSize: a.arrowSize,
+                        opacity: a.opacity,
+                        type: a.type || "arrow",
+                        mode: a.mode || "border",
+                        borderRadius: a.borderRadius || 0,
+                        lineStyle: a.lineStyle || "solid",
+                        animType: a.animType || "none",
+                        animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
+                        animCount: a.animCount !== undefined ? a.animCount : 5,
+                        animSize: a.animSize !== undefined ? a.animSize : 50
+                    };
+                    if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
+                    if (a.control) obj.control = { x: a.control.x, y: a.control.y };
+                    return obj;
+                })
+            };
+        } else if (app.graph.extra && app.graph.extra[EXTENSION_KEY]) {
+            delete app.graph.extra[EXTENSION_KEY];
+        }
+        // 缓存当前工作流引用到 graph 对象上
+        // 确保 configure 执行前能找到正确的工作流来保存箭头
+        try {
+            const wfStore = app?.extensionManager?.workflow;
+            if (wfStore?.workflows && Array.isArray(wfStore.workflows)) {
+                const currentWf = wfStore.workflows.find(w => typeof wfStore.isActive === 'function' && wfStore.isActive(w));
+                if (currentWf) {
+                    app.graph._arrowWorkflow = currentWf;
+                }
+            }
+        } catch (e) {}
+    } catch (e) {}
+}
+
+/** 设置持久化 */
 function setupPersistence() {
     const LGraph = window.LGraph;
+
+    // 1) serialize 补丁：将箭头写入序列化数据的 extra 中
     if (LGraph && LGraph.prototype.serialize) {
         const origSerialize = LGraph.prototype.serialize;
         LGraph.prototype.serialize = function () {
@@ -2507,16 +2737,11 @@ function setupPersistence() {
                             lineStyle: a.lineStyle || "solid",
                             animType: a.animType || "none",
                             animSpeed: a.animSpeed || 1,
-                            animCount: a.animCount || 5
+                            animCount: a.animCount || 5,
+                            animSize: a.animSize !== undefined ? a.animSize : 50
                         };
-                        // 新格式贝塞尔曲线：保存 points 数组
-                        if (a.points) {
-                            obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
-                        }
-                        // 旧格式贝塞尔曲线：保存 control 点
-                        if (a.control) {
-                            obj.control = { x: a.control.x, y: a.control.y };
-                        }
+                        if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
+                        if (a.control) obj.control = { x: a.control.x, y: a.control.y };
                         return obj;
                     })
                 };
@@ -2527,54 +2752,103 @@ function setupPersistence() {
         };
     }
 
+    // 2) loadGraphData 补丁：不做清除（由 configure 补丁负责保存旧箭头和恢复新箭头）
+    //    如果在这里清除 arrows，configure 的 BEFORE 逻辑就无法检测到 arrows.length > 0
+    //    导致旧工作流的箭头不会被保存
     if (app) {
         const origLoadGraphData = app.loadGraphData.bind(app);
         app.loadGraphData = async function (graphData, ...args) {
-            arrows = [];
-            history = [];
-            currentHistoryIndex = -1;
-
             const result = await origLoadGraphData(graphData, ...args);
+            return result;
+        };
+    }
 
-            setTimeout(() => {
-                if (graphData?.extra?.[EXTENSION_KEY]) {
-                    const data = graphData.extra[EXTENSION_KEY];
-                    if (data.arrows && Array.isArray(data.arrows)) {
-                        arrows = data.arrows.map(a => {
+    // 3) configure 补丁：
+    //    BEFORE origConfigure: 用 graph._arrowWorkflow 缓存的引用保存当前箭头到旧工作流
+    //    AFTER origConfigure: 从 data.extra 恢复箭头（新工作流的数据）
+    if (LGraph && LGraph.prototype.configure) {
+        const origConfigure = LGraph.prototype.configure;
+        LGraph.prototype.configure = function (data) {
+            // BEFORE: 保存当前箭头到旧工作流（用缓存的引用，此时 activeWorkflow 可能已切换）
+            try {
+                if (this._arrowWorkflow && arrows.length > 0) {
+                    // 确保箭头已写入 graph.extra
+                    if (!this.extra) this.extra = {};
+                    this.extra[EXTENSION_KEY] = {
+                        version: 3,
+                        arrows: arrows.map(a => {
                             const obj = {
                                 start: { x: a.start.x, y: a.start.y },
                                 end: { x: a.end.x, y: a.end.y },
-                                color: a.color || "#FF5555",
-                                lineWidth: a.lineWidth || 3,
-                                arrowSize: a.arrowSize || 10,
-                                opacity: a.opacity !== undefined ? a.opacity : 1.0,
+                                color: a.color,
+                                lineWidth: a.lineWidth,
+                                arrowSize: a.arrowSize,
+                                opacity: a.opacity,
                                 type: a.type || "arrow",
                                 mode: a.mode || "border",
                                 borderRadius: a.borderRadius || 0,
                                 lineStyle: a.lineStyle || "solid",
                                 animType: a.animType || "none",
                                 animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
-                                animCount: a.animCount !== undefined ? a.animCount : 5
+                                animCount: a.animCount !== undefined ? a.animCount : 5,
+                                animSize: a.animSize !== undefined ? a.animSize : 50
                             };
-                            // 新格式贝塞尔曲线：加载 points 数组
-                            if (a.points) {
-                                obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
-                            }
-                            // 旧格式贝塞尔曲线：加载 control 点
-                            if (a.control) {
-                                obj.control = { x: a.control.x, y: a.control.y };
-                            }
+                            if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
+                            if (a.control) obj.control = { x: a.control.x, y: a.control.y };
                             return obj;
-                        });
-                        recordInitialState();
-                        renderArrows();
-                        updateToolbarState();
+                        })
+                    };
+                    // 序列化当前图（含箭头）写入旧工作流的 content
+                    const serialized = this.serialize();
+                    if (serialized) {
+                        this._arrowWorkflow.content = JSON.stringify(serialized);
                     }
-                } else {
-                    recordInitialState();
-                    renderArrows();
                 }
-            }, 100);
+            } catch (e) {}
+
+            const result = origConfigure.apply(this, arguments);
+
+            // AFTER: 清除箭头，从新数据恢复
+            arrows = [];
+            history = [];
+            currentHistoryIndex = -1;
+
+            const savedArrows = data?.extra?.[EXTENSION_KEY]?.arrows;
+            if (savedArrows && Array.isArray(savedArrows) && savedArrows.length > 0) {
+                arrows = savedArrows.map(a => ({
+                    start: { x: a.start.x, y: a.start.y },
+                    end: { x: a.end.x, y: a.end.y },
+                    color: a.color || "#FF5555",
+                    lineWidth: a.lineWidth || 3,
+                    arrowSize: a.arrowSize || 10,
+                    opacity: a.opacity !== undefined ? a.opacity : 1.0,
+                    type: a.type || "arrow",
+                    mode: a.mode || "border",
+                    borderRadius: a.borderRadius || 0,
+                    lineStyle: a.lineStyle || "solid",
+                    animType: a.animType || "none",
+                    animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
+                    animCount: a.animCount !== undefined ? a.animCount : 5,
+                    animSize: a.animSize !== undefined ? a.animSize : 50,
+                    ...(a.points ? { points: a.points.map(p => ({ x: p.x, y: p.y })) } : {}),
+                    ...(a.control ? { control: { x: a.control.x, y: a.control.y } } : {})
+                }));
+            }
+
+            // 更新当前工作流引用为新的 active workflow
+            try {
+                const wfStore = app?.extensionManager?.workflow;
+                if (wfStore?.workflows && Array.isArray(wfStore.workflows)) {
+                    const currentWf = wfStore.workflows.find(w => typeof wfStore.isActive === 'function' && wfStore.isActive(w));
+                    if (currentWf) {
+                        this._arrowWorkflow = currentWf;
+                    }
+                }
+            } catch (e) {}
+
+            recordInitialState();
+            renderArrows();
+            updateToolbarState();
 
             return result;
         };
@@ -2602,6 +2876,9 @@ function loadSettings() {
             if (parsed.animType !== undefined) arrowSettings.animType = parsed.animType;
             if (parsed.animSpeed !== undefined) arrowSettings.animSpeed = parsed.animSpeed;
             if (parsed.animCount !== undefined) arrowSettings.animCount = parsed.animCount;
+            if (parsed.animSize !== undefined) arrowSettings.animSize = parsed.animSize;
+            if (parsed.fadeInEnabled !== undefined) arrowSettings.fadeInEnabled = parsed.fadeInEnabled;
+            if (parsed.fadeInDuration !== undefined) arrowSettings.fadeInDuration = parsed.fadeInDuration;
         }
     } catch (e) {}
 }
@@ -2690,7 +2967,7 @@ function showShortcutDialog() {
         <div class="xzg-dialog">
             <div class="xzg-dialog-title">${xzgT("设置快捷键","Set Shortcut")}</div>
             <div class="xzg-dialog-body">
-                <p style="margin-bottom: 16px; color: #888; font-size: 12px; text-align: center;">${xzgT("请按下你想要的快捷键","Press the shortcut keys you want")}</p>
+                <p style="margin-bottom: 16px; color: #fff; font-size: 14px; text-align: center;">${xzgT("请按下你想要的快捷键","Press the shortcut keys you want")}</p>
                 <div style="text-align: center; margin-bottom: 16px;">
                     <div id="xzg-arrow-listen-display" style="
                         padding: 16px 24px;
@@ -2799,13 +3076,13 @@ function createToolbar(container) {
     toolbarElement.style.cssText = `
         position: absolute;
         ${posStyle}
-        ${widthStyle}
-        min-width: 220px;
+        width: 320px;
+        min-width: 320px;
         background: rgba(30, 30, 30, 0.95);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 8px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        font-size: 12px;
+        font-size: 14px;
         color: #fff;
         z-index: 1000;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
@@ -2828,7 +3105,6 @@ function buildToolbarHTML() {
         <div class="xzg-arrow-header">
             <span class="xzg-arrow-title">${xzgT("小珠光箭头工具", "Xiaozhuguang Arrow Tool")}</span>
             <button class="xzg-arrow-shortcut-btn" id="xzg-arrow-shortcut-btn" title="${xzgT("点击修改快捷键", "Click to change shortcut")}"></button>
-            <button class="xzg-arrow-close-btn" id="xzg-arrow-close-btn" title="${xzgT("关闭", "Close")}">✕</button>
         </div>
         <div class="xzg-arrow-content">
             <div class="xzg-arrow-select-row">
@@ -2870,12 +3146,22 @@ function buildToolbarHTML() {
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-red-label">${xzgT("透明度", "Opacity")}</label>
                     <input type="range" class="xzg-arrow-opacity-slider xzg-arrow-red-slider" min="${arrowSettings.animType !== "none" ? 0 : 20}" max="100" value="${Math.round(arrowSettings.opacity * 100)}">
-                    <span class="xzg-arrow-opacity-value">${Math.round(arrowSettings.opacity * 100)}%</span>
+                    <span class="xzg-arrow-opacity-value">${Math.round(arrowSettings.opacity * 100)}</span>
+                </div>
+                <div class="xzg-arrow-setting-row" id="xzg-arrow-head-row">
+                    <label class="xzg-arrow-red-label">${xzgT("箭头", "Head")}</label>
+                    <input type="range" class="xzg-arrow-head-slider xzg-arrow-red-slider" min="0" max="50" value="${arrowSettings.arrowSize}">
+                    <span class="xzg-arrow-head-value">${arrowSettings.arrowSize}</span>
+                </div>
+                <div class="xzg-arrow-setting-row" id="xzg-arrow-radius-row" style="display:none;">
+                    <label class="xzg-arrow-red-label">${xzgT("圆角", "Radius")}</label>
+                    <input type="range" class="xzg-arrow-radius-slider xzg-arrow-red-slider" min="0" max="50" value="${arrowSettings.borderRadius}">
+                    <span class="xzg-arrow-radius-value">${arrowSettings.borderRadius}</span>
                 </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-green-label">${xzgT("旋转", "Rotate")}</label>
                     <input type="range" class="xzg-arrow-rotate-slider xzg-arrow-green-slider" min="0" max="360" value="0">
-                    <span class="xzg-arrow-rotate-value">0°</span>
+                    <span class="xzg-arrow-rotate-value">0</span>
                 </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-green-label">${xzgT("相对X", "Rel X")}</label>
@@ -2889,17 +3175,6 @@ function buildToolbarHTML() {
                 </div>
                 </div>
                 <div class="xzg-arrow-silver-group">
-                <div class="xzg-arrow-setting-row" id="xzg-arrow-head-row">
-                    <label class="xzg-arrow-blue-label">${xzgT("箭头", "Head")}</label>
-                    <input type="range" class="xzg-arrow-head-slider xzg-arrow-blue-slider" min="0" max="50" value="${arrowSettings.arrowSize}">
-                    <span class="xzg-arrow-head-value">${arrowSettings.arrowSize}</span>
-                </div>
-                <div class="xzg-arrow-setting-row" id="xzg-arrow-radius-row" style="display:none;">
-                    <label class="xzg-arrow-blue-label">${xzgT("圆角", "Radius")}</label>
-                    <input type="range" class="xzg-arrow-radius-slider xzg-arrow-blue-slider" min="0" max="50" value="${arrowSettings.borderRadius}">
-                    <span class="xzg-arrow-radius-value">${arrowSettings.borderRadius}</span>
-                </div>
-                
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-anim-row">
                     <label class="xzg-arrow-blue-label">${xzgT("特效", "FX")}</label>
                     <select class="xzg-arrow-anim-select" id="xzg-arrow-anim-select">
@@ -2927,10 +3202,29 @@ function buildToolbarHTML() {
                     <input type="range" class="xzg-arrow-anim-count-slider xzg-arrow-blue-slider" min="1" max="30" value="${arrowSettings.animCount}">
                     <span class="xzg-arrow-anim-count-value">${arrowSettings.animCount}</span>
                 </div>
+                <div class="xzg-arrow-setting-row" id="xzg-arrow-anim-size-row" style="display:none;">
+                    <label class="xzg-arrow-blue-label">${xzgT("大小", "Size")}</label>
+                    <input type="range" class="xzg-arrow-anim-size-slider xzg-arrow-blue-slider" min="0" max="100" value="${arrowSettings.animSize}">
+                    <span class="xzg-arrow-anim-size-value">${arrowSettings.animSize}</span>
+                </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-dashgap-row" style="display:${(arrowSettings.lineStyle === "solid") ? "none" : "flex"};">
                     <label class="xzg-arrow-blue-label">${xzgT("间距", "Gap")}</label>
                     <input type="range" class="xzg-arrow-dashgap-slider xzg-arrow-blue-slider" min="1" max="10" value="${arrowSettings.dashGap}">
                     <span class="xzg-arrow-dashgap-value">${arrowSettings.dashGap}</span>
+                </div>
+                </div>
+                <div class="xzg-arrow-copper-group">
+                <div class="xzg-arrow-setting-row" id="xzg-arrow-fadein-row">
+                    <label class="xzg-arrow-copper-label">${xzgT("渐入", "Fade")}</label>
+                    <button type="button" class="xzg-arrow-fadein-toggle" data-checked="${arrowSettings.fadeInEnabled ? 'true' : 'false'}" style="background:none;border:none;padding:0;cursor:pointer;display:inline-flex;align-items:center;">
+                        <span class="xzg-fadein-toggle-track" style="position:relative;display:inline-block;width:32px;height:20px;border-radius:10px;background:${arrowSettings.fadeInEnabled ? '#4CAF50' : '#666666'};transition:background 0.2s;">
+                            <span class="xzg-fadein-toggle-thumb" style="position:absolute;top:2px;left:${arrowSettings.fadeInEnabled ? '14px' : '2px'};width:16px;height:16px;border-radius:8px;background:#fff;transition:left 0.2s;"></span>
+                        </span>
+                    </button>
+                    <div class="xzg-fadein-duration-row" style="display:flex;flex:1;align-items:center;gap:8px;opacity:${arrowSettings.fadeInEnabled ? '1' : '0.4'};">
+                        <input type="range" class="xzg-arrow-fadein-slider xzg-arrow-copper-slider" min="100" max="8000" step="100" value="${arrowSettings.fadeInDuration}">
+                        <span class="xzg-arrow-fadein-value" style="min-width:36px;text-align:right;font-size:14px;padding-right:4px;box-sizing:content-box;">${(arrowSettings.fadeInDuration / 1000).toFixed(1)}s</span>
+                    </div>
                 </div>
                 </div>
             </div>
@@ -2943,14 +3237,16 @@ function buildToolbarHTML() {
                         </button>
                         <button class="xzg-arrow-action-btn xzg-arrow-clear-btn" disabled>
                             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
-                            ${xzgT("清除", "Clear")}
+                            ${xzgT("清除全部", "Clear All")}
                         </button>
                     </div>
                 </div>
             </div>
+            <div class="xzg-arrow-confirm-row">
+                <button class="xzg-arrow-confirm-btn" id="xzg-arrow-close-btn">${xzgT("确定", "OK")}</button>
+            </div>
         </div>
-        <div class="xzg-arrow-resize-handle"></div>
-    `;
+        `;
 }
 
 function applyToolbarStyles() {
@@ -2972,7 +3268,7 @@ function applyToolbarStyles() {
             flex: 1;
             font-weight: 600;
             color: #fff;
-            font-size: 12px;
+            font-size: 14px;
         }
         .xzg-arrow-shortcut-btn {
             background: rgba(255,255,255,0.08);
@@ -2981,7 +3277,7 @@ function applyToolbarStyles() {
             padding: 3px 8px;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 14px;
             font-weight: 600;
             transition: all 0.15s;
             white-space: nowrap;
@@ -2991,20 +3287,26 @@ function applyToolbarStyles() {
             border-color: rgba(255,255,255,0.35);
             color: #fff;
         }
-        .xzg-arrow-close-btn {
+        .xzg-arrow-confirm-row {
+            padding: 0 8px 4px;
+            display: flex;
+            justify-content: center;
+        }
+        .xzg-arrow-confirm-btn {
+            width: 100%;
             background: none;
-            border: none;
-            color: #FF5555;
+            border: 1px solid rgba(255, 215, 0, 0.4);
+            color: #FFD700;
             font-size: 14px;
-            line-height: 1;
-            padding: 2px 4px;
+            font-weight: 600;
+            padding: 8px 16px;
+            border-radius: 4px;
             cursor: pointer;
-            border-radius: 3px;
             transition: all 0.15s;
         }
-        .xzg-arrow-close-btn:hover {
-            color: #fff;
-            background: rgba(255,85,85,0.3);
+        .xzg-arrow-confirm-btn:hover {
+            background: rgba(255, 215, 0, 0.1);
+            border-color: #FFD700;
         }
         .xzg-arrow-content {
             padding: 8px;
@@ -3030,7 +3332,7 @@ function applyToolbarStyles() {
             width: 34px;
             flex-shrink: 0;
             color: #fff;
-            font-size: 12px;
+            font-size: 14px;
         }
         .xzg-arrow-select-cell select {
             flex: 1;
@@ -3041,7 +3343,7 @@ function applyToolbarStyles() {
             padding: 4px 4px;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 14px;
             outline: none;
             transition: border-color 0.15s;
         }
@@ -3068,7 +3370,7 @@ function applyToolbarStyles() {
             padding: 4px 2px;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 14px;
             transition: all 0.15s;
             text-align: center;
         }
@@ -3088,7 +3390,7 @@ function applyToolbarStyles() {
             margin-bottom: 0;
         }
         .xzg-arrow-section-label {
-            font-size: 12px;
+            font-size: 14px;
             color: #fff;
             text-transform: uppercase;
             letter-spacing: 0.5px;
@@ -3110,7 +3412,7 @@ function applyToolbarStyles() {
             margin-bottom: 8px;
         }
         .xzg-arrow-basic-group .xzg-arrow-setting-row label {
-            color: #E8E0D0;
+            color: #fff;
         }
         .xzg-arrow-silver-group {
             border: 1px solid #C0C0C0;
@@ -3119,7 +3421,24 @@ function applyToolbarStyles() {
             margin-bottom: 8px;
         }
         .xzg-arrow-silver-group .xzg-arrow-setting-row .xzg-arrow-blue-label {
-            color: #6699FF !important;
+            color: #fff !important;
+        }
+        .xzg-arrow-copper-group {
+            border: 1px solid #B87333;
+            border-radius: 4px;
+            padding: 6px 8px;
+            margin-bottom: 8px;
+        }
+        .xzg-arrow-copper-group .xzg-arrow-setting-row .xzg-arrow-copper-label {
+            color: #fff !important;
+            min-width: 36px;
+            font-size: 14px;
+        }
+        .xzg-arrow-copper-slider::-webkit-slider-thumb {
+            background: #B87333 !important;
+        }
+        .xzg-arrow-copper-slider::-moz-range-thumb {
+            background: #B87333 !important;
         }
         .xzg-arrow-blue-slider::-webkit-slider-thumb {
             background: #6699FF !important;
@@ -3128,22 +3447,22 @@ function applyToolbarStyles() {
             background: #6699FF !important;
         }
         .xzg-arrow-anim-select {
-            color: #6699FF !important;
-            font-size: 12px;
-            border: 1px solid #6699FF !important;
+            color: #fff !important;
+            font-size: 14px;
+            border: 1px solid rgba(255,255,255,0.2) !important;
             background: #000 !important;
         }
         .xzg-arrow-anim-select option {
             background: #000 !important;
-            color: #6699FF !important;
+            color: #fff !important;
         }
         .xzg-arrow-setting-row label {
             width: 50px;
             color: #fff;
-            font-size: 12px;
+            font-size: 14px;
         }
         .xzg-arrow-red-label {
-            color: #FF4444 !important;
+            color: #fff !important;
         }
         .xzg-arrow-red-slider::-webkit-slider-thumb {
             background: #FF4444 !important;
@@ -3152,7 +3471,7 @@ function applyToolbarStyles() {
             background: #FF4444 !important;
         }
         .xzg-arrow-green-label {
-            color: #44BB44 !important;
+            color: #fff !important;
         }
         .xzg-arrow-green-slider::-webkit-slider-thumb {
             background: #44BB44 !important;
@@ -3189,7 +3508,9 @@ function applyToolbarStyles() {
             width: 35px;
             text-align: right;
             color: #fff;
-            font-size: 12px;
+            font-size: 14px;
+            padding-right: 4px;
+            box-sizing: content-box;
         }
         .xzg-arrow-color-input {
             flex: 1;
@@ -3219,6 +3540,7 @@ function applyToolbarStyles() {
         .xzg-arrow-action-row {
             display: flex;
             gap: 4px;
+            justify-content: center;
         }
         .xzg-arrow-action-row .xzg-arrow-action-btn {
             flex: 1;
@@ -3226,6 +3548,7 @@ function applyToolbarStyles() {
         .xzg-arrow-action-btn {
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 6px;
             background: rgba(255, 255, 255, 0.05);
             border: 1px solid rgba(255, 255, 255, 0.1);
@@ -3234,7 +3557,7 @@ function applyToolbarStyles() {
             border-radius: 4px;
             cursor: pointer;
             transition: all 0.15s;
-            font-size: 12px;
+            font-size: 14px;
         }
         .xzg-arrow-action-btn:hover:not(:disabled) {
             background: rgba(255, 255, 255, 0.1);
@@ -3250,30 +3573,7 @@ function applyToolbarStyles() {
             border-color: rgba(255, 85, 85, 0.5);
             color: #FF5555;
         }
-        .xzg-arrow-resize-handle {
-            position: absolute;
-            bottom: 0;
-            right: 0;
-            width: 14px;
-            height: 14px;
-            cursor: nwse-resize;
-            background: transparent;
-            z-index: 1;
-        }
-        .xzg-arrow-resize-handle::after {
-            content: "";
-            position: absolute;
-            bottom: 3px;
-            right: 3px;
-            width: 6px;
-            height: 6px;
-            border-right: 2px solid rgba(255,255,255,0.3);
-            border-bottom: 2px solid rgba(255,255,255,0.3);
-        }
-        .xzg-arrow-resize-handle:hover::after {
-            border-color: rgba(255,255,255,0.6);
-        }
-    `;
+        `;
     document.head.appendChild(style);
 }
 
@@ -3443,7 +3743,7 @@ function setupToolbarEvents() {
     opacitySlider?.addEventListener("input", (e) => {
         arrowSettings.opacity = parseInt(e.target.value) / 100;
         const display = toolbarElement.querySelector(".xzg-arrow-opacity-value");
-        if (display) display.textContent = `${e.target.value}%`;
+        if (display) display.textContent = `${e.target.value}`;
         if (currentArrow) {
             currentArrow.opacity = arrowSettings.opacity;
         }
@@ -3484,12 +3784,17 @@ function setupToolbarEvents() {
     const animSelect = toolbarElement.querySelector(".xzg-arrow-anim-select");
     const animSpeedRow = toolbarElement.querySelector("#xzg-arrow-anim-speed-row");
     const animCountRow = toolbarElement.querySelector("#xzg-arrow-anim-count-row");
+    const animSizeRow = toolbarElement.querySelector("#xzg-arrow-anim-size-row");
+    const showAnimRows = (type) => {
+        const show = type !== "none";
+        if (animSpeedRow) animSpeedRow.style.display = show ? "flex" : "none";
+        const showCount = show && type !== "energy" && type !== "pulse";
+        if (animCountRow) animCountRow.style.display = showCount ? "flex" : "none";
+        if (animSizeRow) animSizeRow.style.display = show ? "flex" : "none";
+    };
     animSelect?.addEventListener("change", (e) => {
         arrowSettings.animType = e.target.value;
-        // 显示/隐藏速度滑块
-        if (animSpeedRow) animSpeedRow.style.display = (arrowSettings.animType === "none") ? "none" : "flex";
-        // 显示/隐藏数量滑块（energy/pulse 为整体路径效果，无需数量）
-        if (animCountRow) animCountRow.style.display = (arrowSettings.animType === "none" || arrowSettings.animType === "energy" || arrowSettings.animType === "pulse") ? "none" : "flex";
+        showAnimRows(arrowSettings.animType);
         // 开启特效时透明度最低可到0
         const opacitySlider = toolbarElement.querySelector(".xzg-arrow-opacity-slider");
         if (opacitySlider) opacitySlider.min = arrowSettings.animType !== "none" ? "0" : "20";
@@ -3539,12 +3844,70 @@ function setupToolbarEvents() {
         saveSettings();
     });
 
+    // 动画大小滑块
+    const animSizeSlider = toolbarElement.querySelector(".xzg-arrow-anim-size-slider");
+    animSizeSlider?.addEventListener("input", (e) => {
+        const val = parseInt(e.target.value);
+        arrowSettings.animSize = val;
+        const display = toolbarElement.querySelector(".xzg-arrow-anim-size-value");
+        if (display) display.textContent = val;
+        if (currentArrow) currentArrow.animSize = val;
+        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+            arrows[selectedArrowIndex].animSize = val;
+        }
+        renderArrows();
+    });
+    animSizeSlider?.addEventListener("change", () => {
+        saveSettings();
+    });
+
+    // 渐入开关
+    const fadeInToggle = toolbarElement.querySelector(".xzg-arrow-fadein-toggle");
+    const fadeInDurationRow = toolbarElement.querySelector(".xzg-fadein-duration-row");
+    const updateFadeInToggle = (enabled) => {
+        fadeInToggle.dataset.checked = enabled ? 'true' : 'false';
+        const track = fadeInToggle.querySelector('.xzg-fadein-toggle-track');
+        const thumb = fadeInToggle.querySelector('.xzg-fadein-toggle-thumb');
+        const label = fadeInToggle.querySelector('.xzg-fadein-toggle-label');
+        if (track) track.style.background = enabled ? '#4CAF50' : '#666666';
+        if (thumb) thumb.style.left = enabled ? '14px' : '2px';
+        if (label) {
+            label.textContent = enabled ? '开' : '关';
+            label.style.color = enabled ? '#FFD700' : '#777';
+        }
+        if (fadeInDurationRow) fadeInDurationRow.style.opacity = enabled ? '1' : '0.4';
+        arrowSettings.fadeInEnabled = enabled;
+        // 关闭渐入时立即恢复可见
+        if (!enabled && canvasElement) {
+            canvasElement.style.transition = 'none';
+            canvasElement.style.opacity = '1';
+        }
+    };
+    fadeInToggle?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isOn = fadeInToggle.dataset.checked === 'true';
+        updateFadeInToggle(!isOn);
+        saveSettings();
+    });
+
+    // 渐入时长滑块
+    const fadeInSlider = toolbarElement.querySelector(".xzg-arrow-fadein-slider");
+    fadeInSlider?.addEventListener("input", (e) => {
+        const v = parseInt(e.target.value) || 1000;
+        arrowSettings.fadeInDuration = v;
+        const display = toolbarElement.querySelector(".xzg-arrow-fadein-value");
+        if (display) display.textContent = (v / 1000).toFixed(1) + 's';
+    });
+    fadeInSlider?.addEventListener("change", () => {
+        saveSettings();
+    });
+
     // 旋转滑块
     const rotateSlider = toolbarElement.querySelector(".xzg-arrow-rotate-slider");
     rotateSlider?.addEventListener("input", (e) => {
         const angle = parseFloat(e.target.value);
         const display = toolbarElement.querySelector(".xzg-arrow-rotate-value");
-        if (display) display.textContent = `${Math.round(angle)}°`;
+        if (display) display.textContent = `${Math.round(angle)}`;
         if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
             applyArrowRotation(selectedArrowIndex, angle);
             renderArrows();
@@ -3608,9 +3971,6 @@ function setupToolbarEvents() {
     const deleteBtn = toolbarElement.querySelector(".xzg-arrow-delete-btn");
     deleteBtn?.addEventListener("click", deleteSelectedArrow);
 
-    // 缩放手柄
-    setupResizeHandle();
-
     // 拖动功能
     setupDrag();
 }
@@ -3662,8 +4022,8 @@ function setupDrag() {
     if (!header) return;
 
     header.addEventListener("mousedown", (e) => {
-        // 点击快捷键按钮或关闭按钮不触发拖动
-        if (e.target.closest("#xzg-arrow-shortcut-btn") || e.target.closest("#xzg-arrow-close-btn")) return;
+        // 点击快捷键按钮不触发拖动
+        if (e.target.closest("#xzg-arrow-shortcut-btn")) return;
 
         isDragging = true;
         const rect = toolbarElement.getBoundingClientRect();
@@ -3836,14 +4196,39 @@ function initializeArrowSystem(litegraphCanvas) {
     // 创建工具栏（默认隐藏）
     createToolbar(container);
 
-    // 设置变换追踪
+    // 设置变换追踪（含渐入检测）
     let lastTransformStr = "";
+    let _arrowCanvasMoving = false;
+    let _arrowMoveStopTimer = null;
     transformTrackerCleanup = createTransformTracker(() => {
         const transform = getTransform();
         const transformStr = `${transform.scale},${transform.offsetX},${transform.offsetY}`;
-        if (transformStr !== lastTransformStr) {
+        const moved = transformStr !== lastTransformStr;
+        if (moved) {
             lastTransformStr = transformStr;
             renderArrows();
+        }
+        // 渐入检测
+        if (arrowSettings.fadeInEnabled && canvasElement) {
+            if (moved) {
+                if (!_arrowCanvasMoving) {
+                    _arrowCanvasMoving = true;
+                    canvasElement.style.transition = 'opacity 0s';
+                    canvasElement.style.opacity = '0';
+                }
+                if (_arrowMoveStopTimer) {
+                    clearTimeout(_arrowMoveStopTimer);
+                    _arrowMoveStopTimer = null;
+                }
+                // 画布停止移动后延迟触发渐入
+                _arrowMoveStopTimer = setTimeout(() => {
+                    _arrowCanvasMoving = false;
+                    const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
+                    canvasElement.style.transition = `opacity ${fadeDur}s ease`;
+                    canvasElement.style.opacity = '1';
+                    _arrowMoveStopTimer = null;
+                }, 150);
+            }
         }
     });
 
@@ -3861,6 +4246,11 @@ function initializeArrowSystem(litegraphCanvas) {
 
     // 设置持久化
     setupPersistence();
+
+    // 页面关闭/刷新前确保箭头数据已同步到 graph.extra
+    window.addEventListener('beforeunload', function () {
+        syncArrowsToExtra();
+    });
 
     // 记录初始状态
     recordInitialState();

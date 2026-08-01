@@ -202,6 +202,11 @@ class XiaozhuguangWaveformViewer {
         this._clickTimer = null;
         this._dragThreshold = 5;
         this.volume = 1.0;
+        // 循环/单次播放：true=循环，false=单次
+        this._loopPlayback = true;
+        this._loopBtn = null;
+        // 播放头拖动结束时间（防止拖动到界面外后误触发播放）
+        this._lastPlayheadEnd = 0;
         // 显示模式：'full' 全览，'crop' 细节
         this._displayMode = 'full';
         // 左右留白：确保标记三角形完全可见
@@ -226,7 +231,10 @@ class XiaozhuguangWaveformViewer {
         this._audioGraphConnected = false;
 
         this._audio.addEventListener("ended", () => {
-            if (this.endTime >= this.duration - 0.05) {
+            // 播放头拖动中或刚结束(300ms内)时触发的 ended，不自动循环播放
+            const inPlayheadDrag = this.isDragging && this.dragType === 'playhead';
+            const recentlyDragged = this._lastPlayheadEnd && Date.now() - this._lastPlayheadEnd < 300;
+            if (this._loopPlayback && !inPlayheadDrag && !recentlyDragged && this.endTime >= this.duration - 0.05) {
                 this._audio.currentTime = this.startTime;
                 this._audio.play().catch(e => console.warn("[小珠光] 循环播放失败:", e));
             }
@@ -433,9 +441,21 @@ class XiaozhuguangWaveformViewer {
         const loop = () => {
             if (!this.isPlaying) return;
             this.playbackTime = this._audio.currentTime;
-            if (this._audio.currentTime >= this.endTime - 0.02) {
-                this._audio.currentTime = this.startTime;
-                this.playbackTime = this.startTime;
+            if (this._loopPlayback) {
+                // 循环模式：到达被裁切区间末尾立即跳回起点
+                if (this._audio.currentTime >= this.endTime - 0.02) {
+                    this._audio.currentTime = this.startTime;
+                    this.playbackTime = this.startTime;
+                }
+            } else {
+                // 单次模式：到达被裁切末端立即停止，不继续播放整个音频
+                if (this._audio.currentTime >= this.endTime - 0.02) {
+                    this.playbackTime = this.endTime;
+                    this._audio.pause();
+                    this._updateTimeDisplay();
+                    this.onRequestRedraw();
+                    return;
+                }
             }
             this._updateTimeDisplay();
             this.onRequestRedraw();
@@ -626,6 +646,17 @@ class XiaozhuguangWaveformViewer {
         ctx.lineTo(pad + volLineW, volY);
         ctx.stroke();
 
+        // 分区线：上1/3处半透明白线，以上=拖动跳转，以下=播放/暂停
+        const divY = widgetY + barPadY + waveH / 3;
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pad, divY);
+        ctx.lineTo(w - pad, divY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
         // 标记线
         if (this.duration > 0) {
             // 起始标记线（红色）
@@ -658,9 +689,9 @@ class XiaozhuguangWaveformViewer {
             ctx.closePath();
             ctx.fill();
 
-            // 播放进度线（亮绿色）
+            // 播放进度线（白色，与音频保存一致）
             if (playX >= 0) {
-                ctx.strokeStyle = '#36ff00';
+                ctx.strokeStyle = '#ffffff';
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 ctx.moveTo(playX, widgetY);
@@ -692,11 +723,21 @@ class XiaozhuguangWaveformViewer {
         ctx.textBaseline = 'top';
         const timeX = pad + 2 + volTextW + 6;
         ctx.fillText(timeText, timeX, widgetY + 3);
-        // 小字注释（时间码右侧）
         const timeTextW = ctx.measureText(timeText).width;
+        // 循环/单次播放图标（时间码后面，高度对齐，暗白色小符号）
+        const loopSym = this._loopPlayback ? '⇆' : '→';
+        const loopX = timeX + timeTextW + 8;
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = '7px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(loopSym, loopX, widgetY + 2);
+        const loopW = ctx.measureText(loopSym).width;
+        this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 10 };
+        // 小字注释（循环图标右侧）
         ctx.fillStyle = 'rgba(255,255,255,0.35)';
         ctx.font = '5px sans-serif';
-        ctx.fillText('上半播放/暂停 下半拖动跳转', timeX + timeTextW + 6, widgetY + 4);
+        ctx.fillText('线上拖动跳转 线下播放/暂停', loopX + loopW + 6, widgetY + 4);
 
         // 显示模式切换按钮（右上角）
         const btnW = 22;
@@ -770,6 +811,10 @@ class XiaozhuguangWaveformViewer {
         if (localY < widgetY || localY > widgetY + widgetH) return false;
 
         if (event.type === 'pointerdown' || event.type === 'mousedown') {
+            // 播放头拖动进行中或刚结束(200ms内)：忽略新的按下，防止拖到界面外后误触发播放
+            if (this.isDragging || (this._lastPlayheadEnd && Date.now() - this._lastPlayheadEnd < 200)) {
+                return true;
+            }
             // 右键：弹出保存菜单
             if (event.button === 2) {
                 if (this._audioUrl) {
@@ -796,6 +841,15 @@ class XiaozhuguangWaveformViewer {
                     return true;
                 }
             }
+            // 检测循环/单次播放切换按钮
+            if (this._loopBtn) {
+                const btn = this._loopBtn;
+                if (localX >= btn.x && localX <= btn.x + btn.w && localY >= btn.y && localY <= btn.y + btn.h) {
+                    this._loopPlayback = !this._loopPlayback;
+                    this.onRequestRedraw();
+                    return true;
+                }
+            }
 
             const now = Date.now();
             const isDoubleClick = (now - this._lastClickTime) < 300;
@@ -808,7 +862,7 @@ class XiaozhuguangWaveformViewer {
             const volY = this._getVolumeY(widgetY, widgetH);
             const barPadY = 2;
             const waveH = widgetH - barPadY * 2;
-            const waveMid = widgetY + barPadY + waveH / 2; // 波形中线，作为上下分区界限
+            const waveMid = widgetY + barPadY + waveH / 3; // 上1/3处作为分区界限，以上=拖动跳转，以下=播放/暂停
 
             const handleWidth = 14;
             const volHandleHeight = 5;
@@ -816,7 +870,7 @@ class XiaozhuguangWaveformViewer {
             const w = this._drawW;
             const pad = this._getPad();
             let hitHandle = false;
-            let isUpperHalf = localY < waveMid; // 是否在上半区
+            let isUpperHalf = localY < waveMid; // 是否在分区线上方
 
             // 优先判断音量线（仅左侧一小段范围）
             const volLineLeft = pad;
@@ -833,7 +887,11 @@ class XiaozhuguangWaveformViewer {
                 this.dragType = 'start';
                 hitHandle = true;
             } else if (isUpperHalf) {
-                // 上半区：双击上传文件，单击立即播放/暂停（按下即响应，无延迟）
+                // 上半区：拖动播放头模式
+                this.dragType = 'playhead';
+                hitHandle = true;
+            } else {
+                // 下半区：双击上传文件，单击立即播放/暂停（按下即响应，无延迟）
                 // 不进入拖动模式，允许节点正常拖动
                 if (isDoubleClick) {
                     if (this._clickTimer) {
@@ -847,10 +905,6 @@ class XiaozhuguangWaveformViewer {
                 this.togglePlay();
                 // 返回 false：不拦截事件，允许节点拖动
                 return false;
-            } else {
-                // 下半区：拖动播放头模式
-                this.dragType = 'playhead';
-                hitHandle = true;
             }
 
             // 双击处理（下半区、音量、start/end标记）
@@ -881,7 +935,7 @@ class XiaozhuguangWaveformViewer {
             this.dragPlayheadTime = this.playbackTime || 0;
             this._hitPlayheadHandle = hitHandle;
             if (this.dragType === 'playhead') {
-                // 下半区按下瞬间立即将播放头跳到点击位置
+                // 上半区按下瞬间立即将播放头跳到点击位置
                 this.dragPlayheadX = localX;
                 let t = this._getTimeFromX(localX);
                 t = Math.max(this.startTime, Math.min(this.endTime, t));
@@ -958,7 +1012,7 @@ class XiaozhuguangWaveformViewer {
             return;
         }
 
-        // 下半区播放头拖动：播放头立即跟随鼠标
+        // 上半区播放头拖动：播放头立即跟随鼠标
         if (this.dragType === 'playhead') {
             // 将屏幕坐标转换为widget本地坐标，需要考虑画布缩放
             // 由于无法直接获取鼠标在widget中的本地X坐标，使用增量方式计算
@@ -1011,8 +1065,11 @@ class XiaozhuguangWaveformViewer {
             clearTimeout(this._clickTimer);
             this._clickTimer = null;
         }
-        // 下半区（playhead）和音量拖动：无论是否拖动，都不改变播放状态
+        // 上半区（playhead）和音量拖动：无论是否拖动，都不改变播放状态
         // 松开时统一通知一次（仅针对范围调整）
+        if (wasDragging === 'playhead') {
+            this._lastPlayheadEnd = Date.now();
+        }
         if (wasDragging === 'start' || wasDragging === 'end') {
             this._notifyChange();
         }
@@ -1168,10 +1225,10 @@ function showAudioHelpDialog() {
             <div style="margin-bottom: 12px;">
                 <div style="font-weight: bold; color: #FFD700; margin-bottom: 4px;">▶️ 播放控制</div>
                 <ul style="margin: 0; padding-left: 18px;">
-                    <li>音轨上半部分点击：播放 / 暂停</li>
-                    <li>音轨下半部分点击：播放头立即跳到对应位置</li>
-                    <li>音轨下半部分拖动：播放头跟随鼠标移动，不改变播放/暂停状态</li>
-                    <li>左上角播放按钮：直接切换播放/暂停</li>
+                    <li>音轨上 1/3 处有半透明白色虚线分界</li>
+                    <li>分界线上方（上 1/3）：点击跳转、拖动调整播放头</li>
+                    <li>分界线下方（下 2/3）：单击播放 / 暂停</li>
+                    <li>循环/单次：时间码右侧小符号 ⇆ / → 点击切换</li>
                 </ul>
             </div>
             <div style="margin-bottom: 12px;">

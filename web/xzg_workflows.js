@@ -3371,6 +3371,23 @@ class XZGWorkflowsManager {
             const graph = app.graph;
             const canvas = app.canvas;
 
+            // 0) 保存当前工作流的箭头数据到 graph.extra，确保切换前已被持久化
+            try {
+                if (typeof syncArrowsToExtra === 'function') {
+                    syncArrowsToExtra();
+                }
+                // 额外兜底：手动将当前序列化数据（含箭头）写入 store 中当前工作流的 content
+                if (wfStore?.workflows && Array.isArray(wfStore.workflows)) {
+                    const currentWf = wfStore.workflows.find(w => typeof wfStore.isActive === 'function' && wfStore.isActive(w));
+                    if (currentWf && app?.graph) {
+                        const serialized = app.graph.serialize();
+                        if (serialized) {
+                            currentWf.content = JSON.stringify(serialized);
+                        }
+                    }
+                }
+            } catch (e) {}
+
             // 1) 通过官方 store 切换「激活工作流」：决定顶部标签与保存目标路径
             if (persistedWf && wfStore?.openWorkflow) {
                 try { await wfStore.openWorkflow(persistedWf); } catch (_) {}

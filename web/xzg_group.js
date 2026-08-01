@@ -2545,6 +2545,18 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             return;
         }
 
+        // 如果恢复动画正在运行，立即完成（防止快速重新打开导致保存中途位置）
+        if (this._canvasMoveAnim) {
+            cancelAnimationFrame(this._canvasMoveAnim);
+            this._canvasMoveAnim = null;
+            if (this._restoreTarget && canvas?.ds) {
+                canvas.ds.offset[0] = this._restoreTarget[0];
+                canvas.ds.offset[1] = this._restoreTarget[1];
+                canvas.setDirty?.(true, true);
+                if (typeof canvas.draw === "function") canvas.draw();
+            }
+        }
+
         // 保存打开前的画布位置，用于关闭时恢复
         const canvas = app?.canvas;
         if (canvas?.ds) {
@@ -3043,6 +3055,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (!canvas?.ds) return;
         const targetOX = this._savedCanvasOffset[0];
         const targetOY = this._savedCanvasOffset[1];
+        this._restoreTarget = [targetOX, targetOY];
         const startOX = canvas.ds.offset[0];
         const startOY = canvas.ds.offset[1];
         if (Math.abs(startOX - targetOX) > 0.5 || Math.abs(startOY - targetOY) > 0.5) {

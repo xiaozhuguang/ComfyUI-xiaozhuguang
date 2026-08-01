@@ -40,7 +40,6 @@ class XiaozhuguangImageSave(PreviewImage):
     FUNCTION = "save_images"
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
-    DESCRIPTION = "保存/预览图像：保存模式输出JPG(压缩)或PNG(无损)到output目录；预览模式仅显示不保存。画布预览始终为压缩JPG(流畅)。右键可下载真实分辨率PNG或压缩JPG。"
 
     def save_images(self, images, output_path="", save_format="JPG", reduce_lag=False, mode="保存",
                     prompt=None, extra_pnginfo=None):

@@ -397,14 +397,8 @@ class XiaozhuguangImageCompareNode {
     }
 
     getHelp() {
-        return `
-            <p>小珠光图像对比节点，用于对比两张图像。</p>
-            <ul>
-                <li><strong>Slide 模式</strong>：鼠标悬停时，B 图像按鼠标位置裁剪显示，A 图像为底层完整图像。</li>
-                <li><strong>减少卡顿</strong>：开启后图像将被压缩为最长边3840px的JPG（质量80），适合大图场景。</li>
-            </ul>
-            <p><strong>输入</strong>：<code>a</code>（可选）、<code>b</code>（可选）</p>
-        `;
+        // 移除鼠标悬浮标题栏时的使用说明
+        return "";
     }
 
     static category = "xiaozhuguang";

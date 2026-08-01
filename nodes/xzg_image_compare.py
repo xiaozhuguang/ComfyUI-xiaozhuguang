@@ -30,7 +30,6 @@ class XiaozhuguangImageCompare(PreviewImage):
     FUNCTION = "compare_images"
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
-    DESCRIPTION = "对比两张图像，鼠标拖拽分割线查看差异。开启减少卡顿：JPG+3840px+Q85；关闭：JPG+6400px+Q80"
 
     def compare_images(self, a=None, b=None, reduce_lag=False, show_line=True,
                        filename_prefix="xzg.compare.",

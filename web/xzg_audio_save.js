@@ -239,6 +239,15 @@ class XzgAudioWaveformViewer {
         this._audio = document.createElement("audio");
         this._audio.preload = "auto";
         this._audio.addEventListener("ended", () => {
+            // 播放头拖动中或刚结束(300ms内)时触发的 ended，不自动循环播放
+            const inPlayheadDrag = this.isDragging && this.dragType === 'playhead';
+            const recentlyDragged = this._lastPlayheadEnd && Date.now() - this._lastPlayheadEnd < 300;
+            if (this._loopPlayback && !inPlayheadDrag && !recentlyDragged) {
+                this.playbackTime = 0;
+                this._audio.currentTime = 0;
+                this._audio.play().catch(e => console.warn("[小珠光] 循环播放失败:", e));
+                return;
+            }
             this.isPlaying = false;
             this.playbackTime = 0;
             this._audio.currentTime = 0;
@@ -283,8 +292,12 @@ class XzgAudioWaveformViewer {
         this._drawW = 0;
         this._widgetH = 0; // widget 总高度（包括波形周围黑色区域）
 
-        // 播放按钮尺寸
-        this._playBtnSize = 16;
+        // 循环/单次播放：true=循环，false=单次
+        this._loopPlayback = true;
+        this._loopBtn = null;
+
+        // 播放头拖动结束时间（防止拖动到界面外后误触发播放）
+        this._lastPlayheadEnd = 0;
 
         // 播放动画帧
         this._rafId = null;
@@ -466,10 +479,20 @@ class XzgAudioWaveformViewer {
             ctx.fillRect(x, barTop, bw, Math.max(1, barBottom - barTop));
         }
 
-        // 时间码（左上角，播放按钮右侧）：播放时间/总时长，右侧附小字操作提示
-        const btnS = this._playBtnSize;
-        const timeStartX = pad + 4 + btnS + 6; // 播放按钮右侧
-        const hintText = '上半播放/暂停 下半拖动跳转';
+        // 分区线：上1/3处半透明白线，以上=拖动跳转，以下=播放/暂停
+        const divY = widgetY + barPadY + waveH / 3;
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pad, divY);
+        ctx.lineTo(w - pad, divY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 时间码（左上角）：播放时间/总时长，右侧附小字操作提示
+        const timeStartX = pad + 4;
+        const hintText = '线上拖动跳转 线下播放/暂停';
         if (this.duration > 0 && this._saveUrl) {
             const curStr = this._formatTime(this.playbackTime || 0);
             const durStr = this._formatTime(this.duration);
@@ -479,11 +502,21 @@ class XzgAudioWaveformViewer {
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
             ctx.fillText(timeStr, timeStartX, widgetY + 3);
-            // 小字注释（时间码右侧）
             const timeW = ctx.measureText(timeStr).width;
+            // 循环/单次播放图标（时间码后面，高度对齐，暗白色小符号）
+            const loopSym = this._loopPlayback ? '⇆' : '→';
+            const loopX = timeStartX + timeW + 8;
+            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.font = '7px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(loopSym, loopX, widgetY + 2);
+            const loopW = ctx.measureText(loopSym).width;
+            this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 10 };
+            // 小字注释（循环图标右侧）
             ctx.fillStyle = 'rgba(255,255,255,0.35)';
             ctx.font = '5px sans-serif';
-            ctx.fillText(hintText, timeStartX + timeW + 6, widgetY + 4);
+            ctx.fillText(hintText, loopX + loopW + 6, widgetY + 4);
         } else if (this.duration > 0) {
             // 无音频URL时只显示总时长，注释同样显示
             const timeStr = this._formatTime(this.duration);
@@ -521,39 +554,6 @@ class XzgAudioWaveformViewer {
             }
         }
 
-        // 播放按钮（左上角半透明）
-        if (this._saveUrl) {
-            const btnX = pad + 4;
-            const btnY = widgetY + 4;
-            const btnS = this._playBtnSize;
-
-            // 半透明圆底
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            ctx.beginPath();
-            ctx.arc(btnX + btnS / 2, btnY + btnS / 2, btnS / 2, 0, Math.PI * 2);
-            ctx.fill();
-
-            // 播放/暂停图标
-            ctx.fillStyle = '#ffffff';
-            if (this.isPlaying) {
-                // 暂停：两条竖线
-                const bw = 2;
-                const gap = 3;
-                const th = btnS * 0.45;
-                const ty = btnY + (btnS - th) / 2;
-                ctx.fillRect(btnX + btnS / 2 - gap - bw, ty, bw, th);
-                ctx.fillRect(btnX + btnS / 2 + gap / 2, ty, bw, th);
-            } else {
-                // 播放：三角形
-                const th = btnS * 0.5;
-                ctx.beginPath();
-                ctx.moveTo(btnX + btnS / 2 - th / 3, btnY + (btnS - th) / 2);
-                ctx.lineTo(btnX + btnS / 2 - th / 3, btnY + (btnS + th) / 2);
-                ctx.lineTo(btnX + btnS / 2 + th * 0.6, btnY + btnS / 2);
-                ctx.closePath();
-                ctx.fill();
-            }
-        }
     }
 
     _formatTime(seconds) {
@@ -583,17 +583,6 @@ class XzgAudioWaveformViewer {
         return ratio * this.duration;
     }
 
-    _isInPlayBtn(x, y) {
-        if (!this._saveUrl) return false;
-        const pad = this._getPad();
-        const btnX = pad + 4;
-        const btnY = this._drawY + 4;
-        const btnS = this._playBtnSize;
-        const dx = x - (btnX + btnS / 2);
-        const dy = y - (btnY + btnS / 2);
-        return (dx * dx + dy * dy) <= (btnS / 2) * (btnS / 2);
-    }
-
     handleMouse(event, x, y) {
         // 检查是否在可点击区域内（波形区域 + 下方黑色区域）
         // y 是相对于节点顶部的坐标，_drawY 是波形顶部 y（等于 widget 顶部）
@@ -609,27 +598,29 @@ class XzgAudioWaveformViewer {
 
         // 左键按下
         if (event.type === 'pointerdown' && event.button === 0 && this._saveUrl && this.duration > 0) {
-            // 点击播放按钮：直接切换播放/暂停
-            if (this._isInPlayBtn(x, y)) {
-                this.togglePlay();
-                return false; // 返回 false 避免指针捕获
+            // 播放头拖动进行中或刚结束(200ms内)：忽略新的按下，防止拖到界面外后误触发播放
+            if (this.isDragging || (this._lastPlayheadEnd && Date.now() - this._lastPlayheadEnd < 200)) {
+                return true;
             }
-
+            // 点击循环/单次播放切换按钮（右上角）
+            if (this._loopBtn) {
+                const btn = this._loopBtn;
+                if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+                    this._loopPlayback = !this._loopPlayback;
+                    this._node.setDirtyCanvas?.(true, true);
+                    return true;
+                }
+            }
             // 波形区域上下分区：以波形中线为界
             const widgetY = this._drawY;
             const widgetH = this._drawH;
             const barPadY = 2;
             const waveH = widgetH - barPadY * 2;
-            const waveMid = widgetY + barPadY + waveH / 2;
+            const waveMid = widgetY + barPadY + waveH / 3; // 上1/3处作为分区界限，以上=拖动跳转，以下=播放/暂停
             const isUpperHalf = y < waveMid;
 
             if (isUpperHalf) {
-                // 上半区：单击立即播放/暂停（按下即响应，无延迟）
-                // 不进入拖动模式，允许节点正常拖动
-                this.togglePlay();
-                return false;
-            } else {
-                // 下半区：播放头拖动模式
+                // 上半区：播放头拖动模式
                 this.dragType = 'playhead';
                 this.isDragging = true;
                 this._dragMoved = false;
@@ -648,6 +639,11 @@ class XzgAudioWaveformViewer {
                     // 音频未加载完成时设置可能失败，忽略
                 }
                 this._node.setDirtyCanvas?.(true, true);
+            } else {
+                // 下半区：单击立即播放/暂停（按下即响应，无延迟）
+                // 不进入拖动模式，允许节点正常拖动
+                this.togglePlay();
+                return false;
             }
 
             return true;
@@ -689,7 +685,7 @@ class XzgAudioWaveformViewer {
             }
         }
 
-        // 下半区播放头拖动：播放头立即跟随鼠标
+        // 上半区播放头拖动：播放头立即跟随鼠标
         // 增量方式：dx 是屏幕像素，需要除以画布缩放比得到 widget 逻辑像素增量
         const cv = app.canvas;
         const scale = cv?.ds?.scale || 1;
@@ -711,6 +707,7 @@ class XzgAudioWaveformViewer {
     _handleMouseUp(e) {
         if (!this.isDragging) return;
         this.isDragging = false;
+        const wasDragging = this.dragType;
         this.dragType = null;
         this._dragMoved = false;
         this._hitPlayhead = false;
@@ -718,7 +715,10 @@ class XzgAudioWaveformViewer {
             clearTimeout(this._clickTimer);
             this._clickTimer = null;
         }
-        // 下半区（playhead）拖动：无论是否拖动，都不改变播放状态
+        // 上半区（playhead）拖动：无论是否拖动，都不改变播放状态
+        if (wasDragging === 'playhead') {
+            this._lastPlayheadEnd = Date.now();
+        }
     }
 }
 
