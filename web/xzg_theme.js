@@ -1337,7 +1337,221 @@ window.XZGThemeManager = {
         }
         this.hookDrawNodeShape();
         this.setupLinkHighlight();
+        this.hookTitleEditDialog();
         this.canvasHooked = true;
+    },
+
+    /* ── 标题编辑框对齐修复 ── */
+    /* 小珠光自定义绘制标题（fontSize/字体/对齐/textBaseline）， */
+    /* 而 LiteGraph 原生 graphdialog 基于原生参数定位，导致对齐差异。 */
+    /* 参考小珠光Noto节点的方案：不修改 graphdialog，而是隐藏它， */
+    /* 创建独立的 input 元素，用 position:fixed 精确对齐到 canvas 标题位置。 */
+    hookTitleEditDialog() {
+        if (this._titleEditObserver) return;
+        const self = this;
+
+        const adjust = (dialog) => {
+            // 判断是否是标题编辑
+            const nameSpan = dialog.querySelector('.name');
+            const isTitle = !nameSpan || nameSpan.textContent === 'title' || nameSpan.textContent === 'Title';
+            if (!isTitle) return;
+
+            // 防止重复创建：已有编辑中的 input
+            if (document.querySelector('[data-xzg-title-edit]')) return;
+
+            // 获取当前节点
+            const canvas = window.app?.canvas;
+            if (!canvas) return;
+            let node = canvas.current_node || canvas.node_over;
+            if (!node) {
+                const sel = canvas.selected_nodes;
+                if (sel) {
+                    const ids = Object.keys(sel);
+                    if (ids.length === 1) node = sel[ids[0]];
+                }
+            }
+            if (!node || !node._xzgGradient) return;
+
+            const cfg = node._xzgGradient;
+            const fontFamily = '"Microsoft YaHei","微软雅黑","PingFang SC","Hiragino Sans GB","SimHei",Arial,sans-serif';
+            const align = cfg.textAlign || 'left';
+            const LG = typeof LiteGraph !== 'undefined' ? LiteGraph : null;
+            const th = LG?.NODE_TITLE_HEIGHT || 30;
+            const nodeW = node.size?.[0] || 200;
+
+            // 隐藏 graphdialog（参考Noto节点：不使用ComfyUI原生dialog，创建独立元素）
+            dialog.style.setProperty('display', 'none', 'important');
+
+            // 获取原始input的值，用于后续同步
+            const origInput = dialog.querySelector('input');
+            const origVal = origInput ? origInput.value : (node.getTitle ? node.getTitle() : (node.title || ''));
+
+            // ── 参考小珠光Noto节点：创建独立 input 元素 ──
+            const customInput = document.createElement('input');
+            customInput.type = 'text';
+            customInput.value = origVal;
+            customInput.spellcheck = false;
+            customInput.autocomplete = 'off';
+            customInput.dataset.xzgTitleEdit = String(node.id || '');
+
+            const inputTextAlign = align === 'center' ? 'center' : align === 'right' ? 'right' : 'left';
+
+            // 初始位置计算
+            const calcPos = () => {
+                const c = window.app?.canvas;
+                if (!c || !c.ds || !node.pos) return null;
+                const s = c.ds.scale || 1;
+                const ox = c.ds.offset?.[0] || 0;
+                const oy = c.ds.offset?.[1] || 0;
+                const ce = c.canvas;
+                if (!ce) return null;
+                const r = ce.getBoundingClientRect();
+                const left = r.left + (node.pos[0] + 10 + ox) * s;
+                const top = r.top + (node.pos[1] - th / 2 + oy) * s;
+                const fs = (cfg.fontSize || 14) * s;
+                const inpHeight = fs + 6;
+                let w;
+                if (align === 'center' || align === 'right') {
+                    w = Math.ceil((nodeW - 20) * s);
+                } else {
+                    const tt = node.getTitle ? node.getTitle() : (node.title || '');
+                    const mc = document.createElement('canvas').getContext('2d');
+                    mc.font = (cfg.fontSize || 14) * s + 'px ' + fontFamily;
+                    w = Math.max(60, Math.ceil(mc.measureText(tt).width + 8));
+                }
+                return { left, top, fs, inpHeight, w };
+            };
+
+            // 设置 input 样式（参考Noto节点：无padding/border，透明背景，box-sizing:border-box）
+            const applyStyle = (pos) => {
+                if (!pos) return;
+                customInput.style.cssText = [
+                    'position:fixed !important',
+                    'left:' + pos.left + 'px !important',
+                    'top:' + (pos.top - pos.inpHeight / 2) + 'px !important',
+                    'width:' + pos.w + 'px !important',
+                    'height:' + pos.inpHeight + 'px !important',
+                    'min-width:0 !important',
+                    'max-width:none !important',
+                    'padding:0 !important',
+                    'margin:0 !important',
+                    'border:none !important',
+                    'outline:none !important',
+                    'background:transparent !important',
+                    'box-sizing:border-box !important',
+                    'box-shadow:none !important',
+                    'font:' + pos.fs + 'px ' + fontFamily + ' !important',
+                    'color:' + (cfg.titleText || '#ffffff') + ' !important',
+                    'caret-color:' + (cfg.titleText || '#ffffff') + ' !important',
+                    'line-height:' + pos.inpHeight + 'px !important',
+                    'text-align:' + inputTextAlign + ' !important',
+                    'z-index:100001 !important',
+                    'pointer-events:auto !important'
+                ].join(';');
+            };
+
+            // 初始定位
+            const initPos = calcPos();
+            if (!initPos) return;
+            applyStyle(initPos);
+            document.body.appendChild(customInput);
+            customInput.focus();
+            customInput.select();
+
+            // 参考Noto节点：setInterval 连续更新位置
+            const posInterval = setInterval(() => {
+                const p = calcPos();
+                if (p && customInput.isConnected) {
+                    customInput.style.left = p.left + 'px';
+                    customInput.style.top = (p.top - p.inpHeight / 2) + 'px';
+                    customInput.style.width = p.w + 'px';
+                    customInput.style.height = p.inpHeight + 'px';
+                    customInput.style.lineHeight = p.inpHeight + 'px';
+                    customInput.style.font = p.fs + 'px ' + fontFamily;
+                }
+            }, 16);
+
+            // 清理函数
+            const cleanup = () => {
+                clearInterval(posInterval);
+                if (customInput.isConnected) customInput.remove();
+                // 移除 graphdialog 触发 ComfyUI 的后续处理
+                if (dialog.isConnected) dialog.remove();
+                if (removalObserver) removalObserver.disconnect();
+            };
+            let removalObserver = null;
+
+            // 保存标题（参考Noto节点：直接设置 node.title）
+            const saveTitle = () => {
+                const newTitle = customInput.value;
+                const oldTitle = node.getTitle ? node.getTitle() : (node.title || '');
+                if (newTitle !== oldTitle) {
+                    node.title = newTitle;
+                    // 同步到 graphdialog 的 input，让 ComfyUI 也能感知变化
+                    if (origInput) origInput.value = newTitle;
+                }
+                cleanup();
+                if (window.app?.canvas) window.app.canvas.setDirty(true);
+            };
+
+            // 取消编辑
+            const cancelEdit = () => {
+                cleanup();
+                if (window.app?.canvas) window.app.canvas.setDirty(true);
+            };
+
+            // Enter → 保存
+            customInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    saveTitle();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cancelEdit();
+                }
+            });
+
+            // blur → 保存（点击别处）
+            customInput.addEventListener('blur', () => {
+                // 延迟一下，让点击事件先处理
+                setTimeout(() => {
+                    if (customInput.isConnected) {
+                        saveTitle();
+                    }
+                }, 100);
+            }, { once: false });
+
+            // 阻止鼠标事件冒泡，防止触发 canvas
+            customInput.addEventListener('mousedown', (e) => e.stopPropagation());
+            customInput.addEventListener('mouseup', (e) => e.stopPropagation());
+
+            // 监听 dialog 移除，自动清理
+            removalObserver = new MutationObserver(() => {
+                if (!dialog.isConnected && customInput.isConnected) {
+                    clearInterval(posInterval);
+                    customInput.remove();
+                    removalObserver.disconnect();
+                }
+            });
+            removalObserver.observe(document.body, { childList: true, subtree: true });
+        };
+
+        this._titleEditObserver = new MutationObserver((mutations) => {
+            for (const mut of mutations) {
+                for (const node of mut.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    if (node.classList && node.classList.contains('graphdialog')) {
+                        adjust(node);
+                    } else if (node.querySelectorAll) {
+                        const dlg = node.querySelector('.graphdialog');
+                        if (dlg) adjust(dlg);
+                    }
+                }
+            }
+        });
+        this._titleEditObserver.observe(document.body, { childList: true, subtree: true });
     },
 
     setupLinkHighlight() {
@@ -2677,6 +2891,7 @@ window.XZGThemeManager = {
                 try {
                     const useTitleGradient = cfg.useTitleGradient && cfg.titleStops && cfg.titleStops.length > 0;
                     
+                    // 1. Draw custom background (title + body)
                     if (useTitleGradient) {
                         const [tx1, ty1, tx2, ty2] = titlePts[titleDirSym] || titlePts['↓'];
                         const titleGrad = ctx.createLinearGradient(tx1, ty1, tx2, ty2);
@@ -2709,6 +2924,26 @@ window.XZGThemeManager = {
                         ctx.fill();
                     }
 
+                    // 2. Call the original function with alpha=0 to hide original rendering
+                    // (original drawNodeShape may use save/restore internally and reset alpha to 1 for title text)
+                    ctx.globalAlpha = 0;
+                    origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
+                    
+                    // 3. Redraw title background to hide any original title text that was drawn with alpha=1
+                    ctx.globalAlpha = 1;
+                    if (useTitleGradient) {
+                        const [tx1, ty1, tx2, ty2] = titlePts[titleDirSym] || titlePts['↓'];
+                        const titleGrad = ctx.createLinearGradient(tx1, ty1, tx2, ty2);
+                        cfg.titleStops.forEach(s => titleGrad.addColorStop(s.p, s.color));
+                        
+                        ctx.beginPath();
+                        if (ctx.roundRect) ctx.roundRect(0, -th, w, th, [r, r, 0, 0]);
+                        else ctx.rect(0, -th, w, th);
+                        ctx.fillStyle = titleGrad;
+                        ctx.fill();
+                    }
+
+                    // 4. Draw custom title text on top (ensures correct position within title bar)
                     const title = node.getTitle ? node.getTitle() : (node.title || '');
                     if (title) {
                         const fontSize = cfg.fontSize || LG?.NODE_TEXT_SIZE || 14;
@@ -2734,9 +2969,6 @@ window.XZGThemeManager = {
                         ctx.fillText(title, textX, -th / 2);
                         ctx.restore();
                     }
-
-                    ctx.globalAlpha = 0;
-                    origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                 } catch(e) {
                     origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                 } finally {

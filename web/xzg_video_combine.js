@@ -1,4 +1,4 @@
-import { app } from "../../scripts/app.js";
+﻿import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
 
@@ -277,9 +277,12 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData?.name !== "XiaozhuguangVideoCombine") return;
 
-        // 格式：避免原生 combo 列表（双列表问题），参考视频加载器的视频比例实现
-        if (nodeData.input?.required?.["格式"]) {
-            nodeData.input.required["格式"][1].widgetType = "XZGINT";
+        // 给 combo widget（格式、模式）设置 XZGINT 类型，避免原生 combo 下拉列表
+        // 模式：仅需点击切换 保存/预览，不弹列表
+        for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
+            if (Array.isArray(inp[0]) && typeof inp[1] === 'object') {
+                inp[1].widgetType = "XZGINT";
+            }
         }
 
         for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
@@ -322,23 +325,15 @@ app.registerExtension({
             node.setSize([300, 500]);
             
             // 获取目录路径
-            const customDirWidget = node.widgets.find(w => w.name === '自定义保存目录');
-            const saveToOutputDirWidget = node.widgets.find(w => w.name === '保存到输出目录');
-            
+            const modeWidget = node.widgets.find(w => w.name === '模式');
+
             const updateOutputDirDisplay = async () => {
                 try {
                     const response = await api.fetchApi('/xzg/get_output_dir');
                     const data = await response.json();
-                    const saveToOutputDir = saveToOutputDirWidget?.value ?? true;
-                    const customDir = customDirWidget?.value ?? '';
-                    let baseDir = saveToOutputDir ? data.output_dir : data.temp_dir;
-                    if (customDir && customDir.trim()) {
-                        baseDir = baseDir + (baseDir.endsWith('\\') || baseDir.endsWith('/') ? '' : '\\') + customDir.trim();
-                    }
-                    // 将完整路径存储在自定义保存目录控件中
-                    if (customDirWidget) {
-                        customDirWidget._xzgFullOutputDir = baseDir;
-                    }
+                    const isSave = (modeWidget?.value ?? '保存') !== '预览';
+                    const baseDir = isSave ? data.output_dir : data.temp_dir;
+                    node._xzgFullOutputDir = baseDir;
                     node.setDirtyCanvas(true, true);
                 } catch (e) {
                     console.error('[小珠光视频保存] 获取输出目录失败:', e);
@@ -416,10 +411,7 @@ app.registerExtension({
                 
                 // 更新输出目录显示（使用执行返回的路径）
                 if (ui?.output_dir) {
-                    const w = node.widgets.find(w => w.name === '自定义保存目录');
-                    if (w) {
-                        w._xzgFullOutputDir = ui.output_dir;
-                    }
+                    node._xzgFullOutputDir = ui.output_dir;
                     node.setDirtyCanvas(true, true);
                 }
                 
@@ -459,61 +451,6 @@ app.registerExtension({
                     // STRING 文本框：圆角矩形 + 标签 + 值
                     w.draw = _xzgDrawWidget;
                     if (!w._xzgValueColor) w._xzgValueColor = '#fff';
-                } else if (w.name === '自定义保存目录') {
-                    // 自定义保存目录：显示用户输入的值，超长时截断
-                    w.draw = function(ctx, node, width, y, H) {
-                        this._xzgDrawW = width;
-                        const pad = 16, r = 6;
-                        const wr = width - pad * 2;
-                        ctx.fillStyle = '#2a2a2a';
-                        ctx.beginPath();
-                        if (ctx.roundRect) { ctx.roundRect(pad, y + 1, wr, H - 2, r); } else { ctx.rect(pad, y + 1, wr, H - 2); }
-                        ctx.fill();
-                        ctx.strokeStyle = '#444';
-                        ctx.stroke();
-                        // 左侧标签：输出目录（4个中文字符）
-                        ctx.fillStyle = '#9ab';
-                        ctx.font = '12px sans-serif';
-                        ctx.textAlign = 'left';
-                        ctx.textBaseline = 'middle';
-                        const labelText = '输出目录';
-                        const labelWidth = ctx.measureText(labelText).width;
-                        ctx.fillText(labelText, pad + 6, y + H / 2);
-                        // 右侧用户输入的值（超长截断，考虑4个中文字符的宽度）
-                        const displayText = String(this.value || '');
-                        ctx.fillStyle = '#fff';
-                        ctx.font = '14px sans-serif';
-                        ctx.textAlign = 'right';
-                        const valMaxW = width - pad * 2 - labelWidth - 20;
-                        if (ctx.measureText(displayText).width > valMaxW) {
-                            let truncated = displayText;
-                            while (ctx.measureText(truncated + '…').width > valMaxW && truncated.length > 0) {
-                                truncated = truncated.slice(0, -1);
-                            }
-                            ctx.fillText(truncated + '…', width - pad - 6, y + H / 2);
-                        } else {
-                            ctx.fillText(displayText, width - pad - 6, y + H / 2);
-                        }
-                    };
-                    // 悬浮提示显示完整输出目录
-                    const origMouse = w.mouse;
-                    w.mouse = function(event, pos, node) {
-                        if (event.type === 'pointerenter') {
-                            const fullPath = this._xzgFullOutputDir;
-                            if (fullPath) {
-                                app.canvas.setTooltip(fullPath);
-                            }
-                        } else if (event.type === 'pointerleave') {
-                            app.canvas.setTooltip(null);
-                        }
-                        return origMouse ? origMouse.apply(this, arguments) : true;
-                    };
-                    // 值改变时更新输出目录
-                    const origCb = w.callback;
-                    w.callback = (v) => {
-                        origCb?.(v);
-                        updateOutputDirDisplay();
-                    };
                 } else if (w.name === 'CRF') {
                     w.draw = function(ctx, node, width, y, H) {
                         this._xzgDrawW = width;
@@ -544,21 +481,17 @@ app.registerExtension({
                         ctx.textAlign = 'right';
                         ctx.fillText('数值越大质量越差 默认19', width - pad - 6 - vw - 10, y + H / 2);
                     };
-                } else if (w.name === '保存到输出目录') {
-                    // BOOLEAN 开关：圆角矩形 + 标签 + 保存/预览状态
-                    // 添加回调，当值改变时更新输出目录显示
-                    const origCb = w.callback;
-                    w.callback = (v) => {
-                        origCb?.(v);
-                        updateOutputDirDisplay();
-                    };
-                    w.draw = function(ctx, node, width, y, H) {
+                } else if (w.name === '模式') {
+                    // 模式：保存/预览 切换开关（与音频保存一致）
+                    w.value = String(w.value ?? "保存");
+                    w.options = w.options || {};
+                    w.options.values = ["保存", "预览"];
+                    w.draw = function(ctx, nd, width, y, H) {
                         this._xzgDrawW = width;
-                        const pad = 16, r = 6;
-                        const wr = width - pad * 2;
+                        const pad = 16, r = 6, wr = width - pad * 2;
                         ctx.fillStyle = '#2a2a2a';
                         ctx.beginPath();
-                        if (ctx.roundRect) { ctx.roundRect(pad, y + 1, wr, H - 2, r); } else { ctx.rect(pad, y + 1, wr, H - 2); }
+                        if (ctx.roundRect) ctx.roundRect(pad, y + 1, wr, H - 2, r); else ctx.rect(pad, y + 1, wr, H - 2);
                         ctx.fill();
                         ctx.strokeStyle = '#444';
                         ctx.stroke();
@@ -567,13 +500,23 @@ app.registerExtension({
                         ctx.font = '12px sans-serif';
                         ctx.textAlign = 'left';
                         ctx.textBaseline = 'middle';
-                        ctx.fillText(this.label || this.name || '', pad + 6, y + H / 2);
-                        // 右侧状态：保存/预览
-                        const stateText = this.value ? '保存' : '预览';
-                        ctx.fillStyle = this.value ? '#dcc85b' : '#a855f7';
+                        ctx.fillText('模式', pad + 6, y + H / 2);
+                        // 右侧状态：保存=金色，预览=蓝色
+                        const isSave = this.value !== '预览';
+                        ctx.fillStyle = isSave ? '#FFD700' : '#88ccff';
                         ctx.font = '13px sans-serif';
                         ctx.textAlign = 'right';
-                        ctx.fillText(stateText, width - pad - 6, y + H / 2);
+                        ctx.fillText(this.value || '保存', width - pad - 6, y + H / 2);
+                    };
+                    w.mouse = function(event, [x, y], node) {
+                        if (event.type === 'pointerdown') return false;
+                        if (event.type === 'pointerup') {
+                            this.value = (this.value === '预览') ? '保存' : '预览';
+                            node.setDirtyCanvas?.(true, true);
+                            updateOutputDirDisplay();
+                            return true;
+                        }
+                        return true;
                     };
                 }
             }

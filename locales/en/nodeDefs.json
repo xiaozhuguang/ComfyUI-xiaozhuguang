@@ -256,8 +256,7 @@
       "文件名前缀": { "name": "filename_prefix" },
       "格式": { "name": "format" },
       "CRF": { "name": "CRF" },
-      "保存到输出目录": { "name": "save_output" },
-      "自定义保存目录": { "name": "custom_save_directory" },
+      "模式": { "name": "mode" },
       "音频": { "name": "audio" }
     },
     "outputs": {

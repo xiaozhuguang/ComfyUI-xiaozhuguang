@@ -104,8 +104,9 @@ function _xzgDrawComboWidget(ctx, node, width, y, H) {
         ctx.fillText(labelText, pad + 6, y + H / 2);
     }
 
-    // 右侧当前值
-    const displayText = String(this.value ?? '');
+    // 右侧当前值（若有 _xzgDisplayVal 则用其转换，如质量 192→中 192kbps）
+    const rawVal = String(this.value ?? '');
+    const displayText = this._xzgDisplayVal ? this._xzgDisplayVal(rawVal) : rawVal;
     ctx.fillStyle = '#fff';
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'right';
@@ -174,7 +175,7 @@ function _xzgShowComboDropdown(widget, node, event) {
         }
         node.setDirtyCanvas?.(true, true);
         dropdown.remove();
-        document.removeEventListener('mousedown', close, true);
+        document.removeEventListener('pointerdown', close, true);
     };
 
     values.forEach(v => {
@@ -198,16 +199,17 @@ function _xzgShowComboDropdown(widget, node, event) {
         dropdown.appendChild(item);
     });
 
-    dropdown.addEventListener('mousedown', (e) => e.stopPropagation());
+    // 用 pointerdown 监听关闭：画布 pointerdown 可能 preventDefault 抑制 mousedown
+    dropdown.addEventListener('pointerdown', (e) => e.stopPropagation());
 
     const close = (e) => {
         if (!dropdown.isConnected) return;
         if (!dropdown.contains(e.target)) {
             dropdown.remove();
-            document.removeEventListener('mousedown', close, true);
+            document.removeEventListener('pointerdown', close, true);
         }
     };
-    document.addEventListener('mousedown', close, true);
+    document.addEventListener('pointerdown', close, true);
 
     document.body.appendChild(dropdown);
 }
@@ -254,6 +256,7 @@ class XzgAudioWaveformViewer {
 
         // 拖动状态
         this.isDragging = false;
+        this.dragType = null; // 'toggle_play' | 'playhead'
         this._dragMoved = false;
         this._dragThreshold = 3;
         this._dragStartX = 0;
@@ -341,30 +344,44 @@ class XzgAudioWaveformViewer {
     setSaveInfo(url, filename) {
         this._saveUrl = url || "";
         this._savedFilename = filename || "";
-        if (url && this._audio.src !== url) {
-            this._audio.src = url;
-            // 不重置 playbackTime，保持 setData 设置的默认位置（最开头）
-            // 音频元数据加载后同步 currentTime
-            const syncTime = () => {
-                if (this.duration > 0 && this.playbackTime > 0) {
-                    try {
-                        this._audio.currentTime = this.playbackTime;
-                    } catch (e) {
-                        // 某些浏览器在加载前设置 currentTime 会失败，忽略
-                    }
+        if (url) {
+            // 规范化 URL 比较：浏览器会把 audio.src 规范化为绝对 URL，
+            // 直接和相对路径比较会始终不等，导致每次都重设 src 打断加载。
+            // 这里用 new URL 规范化后再比较，避免重复设置相同 URL。
+            let needUpdate = true;
+            try {
+                const normalizedUrl = new URL(url, window.location.href).href;
+                if (this._audio.src === normalizedUrl) {
+                    needUpdate = false;
                 }
-            };
-            if (this._audio.readyState >= 1) {
-                syncTime();
-            } else {
-                const onLoaded = () => {
-                    syncTime();
-                    this._audio.removeEventListener("loadedmetadata", onLoaded);
-                };
-                this._audio.addEventListener("loadedmetadata", onLoaded);
+            } catch (e) {
+                // URL 解析失败时保守处理，允许更新
             }
-        }
-        if (!url) {
+
+            if (needUpdate) {
+                this._audio.src = url;
+                // 不重置 playbackTime，保持 setData 设置的默认位置（最开头）
+                // 音频元数据加载后同步 currentTime
+                const syncTime = () => {
+                    if (this.duration > 0 && this.playbackTime > 0) {
+                        try {
+                            this._audio.currentTime = this.playbackTime;
+                        } catch (e) {
+                            // 某些浏览器在加载前设置 currentTime 会失败，忽略
+                        }
+                    }
+                };
+                if (this._audio.readyState >= 1) {
+                    syncTime();
+                } else {
+                    const onLoaded = () => {
+                        syncTime();
+                        this._audio.removeEventListener("loadedmetadata", onLoaded);
+                    };
+                    this._audio.addEventListener("loadedmetadata", onLoaded);
+                }
+            }
+        } else {
             this._audio.pause();
             this._audio.removeAttribute("src");
             this.isPlaying = false;
@@ -374,21 +391,34 @@ class XzgAudioWaveformViewer {
 
     togglePlay() {
         if (!this._saveUrl || this.duration <= 0) return;
-        if (this.isPlaying) {
+        // 用 _audio.paused（同步属性）判断真实状态，避免 isPlaying 依赖异步 play/pause 事件产生时序错位
+        if (!this._audio.paused) {
             this._audio.pause();
         } else {
             // 播放前同步音频当前时间到 playbackTime（始终从播放头位置开始播放）
-            if (Math.abs(this._audio.currentTime - this.playbackTime) > 0.01) {
-                this._audio.currentTime = this.playbackTime;
+            try {
+                if (Math.abs(this._audio.currentTime - this.playbackTime) > 0.01) {
+                    this._audio.currentTime = this.playbackTime;
+                }
+            } catch (e) {
+                // src 刚设置、readyState 不足时设置 currentTime 可能抛 InvalidStateError，忽略以保证 play() 执行
+                console.warn("[小珠光] 同步播放位置失败:", e);
             }
-            this._audio.play().catch(e => console.warn("[小珠光] 音频播放失败:", e));
+            const p = this._audio.play();
+            if (p && p.catch) {
+                p.catch(e => console.warn("[小珠光] 音频播放失败:", e));
+            }
         }
     }
 
     seekTo(time) {
         if (!this._saveUrl || this.duration <= 0) return;
         const t = Math.max(0, Math.min(this.duration, time));
-        this._audio.currentTime = t;
+        try {
+            this._audio.currentTime = t;
+        } catch (e) {
+            console.warn("[小珠光] 设置播放位置失败:", e);
+        }
         this.playbackTime = t;
     }
 
@@ -436,24 +466,36 @@ class XzgAudioWaveformViewer {
             ctx.fillRect(x, barTop, bw, Math.max(1, barBottom - barTop));
         }
 
-        // 时间码（右上角）：播放时间/总时长
+        // 时间码（左上角，播放按钮右侧）：播放时间/总时长，右侧附小字操作提示
+        const btnS = this._playBtnSize;
+        const timeStartX = pad + 4 + btnS + 6; // 播放按钮右侧
+        const hintText = '上半播放/暂停 下半拖动跳转';
         if (this.duration > 0 && this._saveUrl) {
             const curStr = this._formatTime(this.playbackTime || 0);
             const durStr = this._formatTime(this.duration);
             const timeStr = `${curStr} / ${durStr}`;
             ctx.fillStyle = 'rgba(255,255,255,0.7)';
             ctx.font = '6px sans-serif';
-            ctx.textAlign = 'right';
+            ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
-            ctx.fillText(timeStr, w - pad - 2, widgetY + 3);
+            ctx.fillText(timeStr, timeStartX, widgetY + 3);
+            // 小字注释（时间码右侧）
+            const timeW = ctx.measureText(timeStr).width;
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.font = '5px sans-serif';
+            ctx.fillText(hintText, timeStartX + timeW + 6, widgetY + 4);
         } else if (this.duration > 0) {
-            // 无音频URL时只显示总时长
+            // 无音频URL时只显示总时长，注释同样显示
             const timeStr = this._formatTime(this.duration);
             ctx.fillStyle = 'rgba(255,255,255,0.6)';
             ctx.font = '6px sans-serif';
-            ctx.textAlign = 'right';
+            ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
-            ctx.fillText(timeStr, w - pad - 2, widgetY + 3);
+            ctx.fillText(timeStr, timeStartX, widgetY + 3);
+            const timeW = ctx.measureText(timeStr).width;
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.font = '5px sans-serif';
+            ctx.fillText(hintText, timeStartX + timeW + 6, widgetY + 4);
         }
 
         // 采样率文字（右下角）
@@ -573,24 +615,57 @@ class XzgAudioWaveformViewer {
                 return false; // 返回 false 避免指针捕获
             }
 
-            // 判断是否点中播放头（只有在波形区域内且点中白色竖线才能拖动）
-            const playX = this._getPlayX();
-            const hitPlayhead = y >= this._drawY && y <= this._drawY + this._drawH
-                && Math.abs(x - playX) <= this._handleWidth;
+            // 波形区域上下分区：以波形中线为界
+            const widgetY = this._drawY;
+            const widgetH = this._drawH;
+            const barPadY = 2;
+            const waveH = widgetH - barPadY * 2;
+            const waveMid = widgetY + barPadY + waveH / 2;
+            const isUpperHalf = y < waveMid;
 
-            this.isDragging = true;
-            this._dragMoved = false;
-            this._dragStartX = event.clientX;
-            this._dragStartY = event.clientY;
-            this._dragPlayheadX = playX; // 从当前播放头位置开始拖
-            this._hitPlayhead = hitPlayhead; // 记录是否点中了播放头
-
-            // 没点中播放头：立即切换播放/暂停（按下即响应，无延迟）
-            if (!hitPlayhead) {
+            if (isUpperHalf) {
+                // 上半区：单击立即播放/暂停（按下即响应，无延迟）
+                // 不进入拖动模式，允许节点正常拖动
                 this.togglePlay();
+                return false;
+            } else {
+                // 下半区：播放头拖动模式
+                this.dragType = 'playhead';
+                this.isDragging = true;
+                this._dragMoved = false;
+                this._dragStartX = event.clientX;
+                this._dragStartY = event.clientY;
+                this._dragPlayheadX = x;
+
+                // 按下瞬间立即将播放头跳到点击位置
+                let t = this._getTimeFromX(x);
+                t = Math.max(0, Math.min(this.duration, t));
+                t = Math.round(t * 100) / 100;
+                this.playbackTime = t;
+                try {
+                    this._audio.currentTime = t;
+                } catch (e) {
+                    // 音频未加载完成时设置可能失败，忽略
+                }
+                this._node.setDirtyCanvas?.(true, true);
             }
 
             return true;
+        }
+
+        // 松开鼠标时：由 window 上的 _handleMouseUp 统一处理清理和点击/拖动判定
+        if (event.type === 'pointerup' || event.type === 'mouseup' || event.type === 'pointercancel') {
+            if (this.isDragging) {
+                return true;
+            }
+            return false;
+        }
+
+        // 拖拽中：阻止节点拖动
+        if (event.type === 'pointermove' || event.type === 'mousemove') {
+            if (this.isDragging) {
+                return true;
+            }
         }
 
         return false;
@@ -605,10 +680,7 @@ class XzgAudioWaveformViewer {
             return;
         }
 
-        // 只有点中播放头时才能拖动
-        if (!this._hitPlayhead) return;
-
-        // 检测是否超过拖动阈值
+        // 检测是否超过拖动阈值（用于区分点击和拖动）
         if (!this._dragMoved) {
             const dx = e.clientX - this._dragStartX;
             const dy = e.clientY - this._dragStartY;
@@ -617,8 +689,7 @@ class XzgAudioWaveformViewer {
             }
         }
 
-        if (!this._dragMoved) return;
-
+        // 下半区播放头拖动：播放头立即跟随鼠标
         // 增量方式：dx 是屏幕像素，需要除以画布缩放比得到 widget 逻辑像素增量
         const cv = app.canvas;
         const scale = cv?.ds?.scale || 1;
@@ -629,19 +700,25 @@ class XzgAudioWaveformViewer {
         t = Math.max(0, Math.min(this.duration, t));
         t = Math.round(t * 100) / 100;
         this.playbackTime = t;
-        this._audio.currentTime = t;
+        try {
+            this._audio.currentTime = t;
+        } catch (e) {
+            // 音频未加载完成时可能失败，playbackTime 已更新，加载后会同步
+        }
         this._node.setDirtyCanvas?.(true, true);
     }
 
     _handleMouseUp(e) {
         if (!this.isDragging) return;
         this.isDragging = false;
+        this.dragType = null;
         this._dragMoved = false;
         this._hitPlayhead = false;
         if (this._clickTimer) {
             clearTimeout(this._clickTimer);
             this._clickTimer = null;
         }
+        // 下半区（playhead）拖动：无论是否拖动，都不改变播放状态
     }
 }
 
@@ -890,36 +967,6 @@ app.registerExtension({
                 } else if (w.name === '文件名前缀') {
                     w.draw = _xzgDrawWidget;
                     if (!w._xzgValueColor) w._xzgValueColor = '#fff';
-                } else if (w.name === '自定义保存目录') {
-                    w.draw = function(ctx, nd, width, y, H) {
-                        this._xzgDrawW = width;
-                        const pad = 16, r = 6, wr = width - pad * 2;
-                        ctx.fillStyle = '#2a2a2a';
-                        ctx.beginPath();
-                        if (ctx.roundRect) ctx.roundRect(pad, y + 1, wr, H - 2, r); else ctx.rect(pad, y + 1, wr, H - 2);
-                        ctx.fill();
-                        ctx.strokeStyle = '#444';
-                        ctx.stroke();
-                        // 左侧标签
-                        ctx.fillStyle = '#9ab';
-                        ctx.font = '12px sans-serif';
-                        ctx.textAlign = 'left';
-                        ctx.textBaseline = 'middle';
-                        ctx.fillText('输出目录', pad + 6, y + H / 2);
-                        // 右侧值（超长截断）
-                        const displayText = String(this.value || '');
-                        ctx.fillStyle = '#fff';
-                        ctx.font = '14px sans-serif';
-                        ctx.textAlign = 'right';
-                        const valMaxW = width - pad * 2 - 60;
-                        if (ctx.measureText(displayText).width > valMaxW) {
-                            let truncated = displayText;
-                            while (ctx.measureText(truncated + '…').width > valMaxW && truncated.length > 0) truncated = truncated.slice(0, -1);
-                            ctx.fillText(truncated + '…', width - pad - 6, y + H / 2);
-                        } else {
-                            ctx.fillText(displayText, width - pad - 6, y + H / 2);
-                        }
-                    };
                 }
             }
 

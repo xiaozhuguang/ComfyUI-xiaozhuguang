@@ -145,6 +145,61 @@ def scan_local_models() -> list[str]:
     return names
 
 
+# tokenizer 下拉项的「自动」选项名（沿用 4 级回退查找）
+TOKENIZER_AUTO_OPTION = "auto"
+
+
+def scan_local_tokenizers() -> list[str]:
+    """列出 ComfyUI/models/audiodit/ 下可作为 tokenizer 的目录。
+
+    判定规则与 _dir_has_tokenizer_files 一致：
+      - 至少含 tokenizer_config.json
+      - 且含 spiece.model / tokenizer.json / sentencepiece.bpe.model 之一
+    模型目录（含 config.json + 权重）也会被当作 tokenizer 候选
+    —— 因为用户可能直接把 HF 仓库（如 umt5-base）拷过来当 tokenizer 用。
+    """
+    base = _get_models_base()
+    names: list[str] = []
+    try:
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            if _dir_has_tokenizer_files(entry):
+                names.append(entry.name)
+    except OSError as e:
+        logger.warning(f"扫描 {base} 失败: {e}")
+    return names
+
+
+def tokenizer_names_or_default() -> list[str]:
+    """返回 tokenizer 下拉项。首项固定为 'auto'（保留 4 级回退），后接本地扫描结果。"""
+    names = [TOKENIZER_AUTO_OPTION]
+    names.extend(scan_local_tokenizers())
+    return names
+
+
+def resolve_tokenizer_path(name: str, text_encoder_hint: str = _KNOWN_TOKENIZER_REPO) -> Path:
+    """根据用户选择解析 tokenizer 目录。
+
+    - name == "auto"：走原有 4 级回退查找（_find_local_tokenizer）
+    - name 为具体目录名：先在 ComfyUI/models/audiodit/ 下找；
+      找到则直接用；找不到再回退到 4 级查找（容错）
+    """
+    if not name or name == TOKENIZER_AUTO_OPTION:
+        return _find_local_tokenizer(text_encoder_hint)
+
+    base = _get_models_base()
+    candidate = base / name
+    if candidate.is_dir() and _dir_has_tokenizer_files(candidate):
+        return candidate
+
+    # 容错：用户选择的名字找不到时，回退到自动查找
+    logger.warning(
+        f"选择的 tokenizer 目录不存在或不完整: {candidate}，回退到自动查找"
+    )
+    return _find_local_tokenizer(text_encoder_hint)
+
+
 def resolve_model_path_xzg(name: str) -> Path:
     """严格离线解析模型目录；不存在直接给出可操作的错误提示。"""
     if not name:
@@ -230,7 +285,13 @@ def _find_local_tokenizer(text_encoder_hint: str) -> Path:
 #  模型加载（核心：完全离线；from_pretrained / fp8 反量化 / dtype 等
 #  直接沿用移植到本插件内部的 LongCat 实现，保持兼容性）
 # ---------------------------------------------------------------- #
-def load_model_xzg(model_name: str, device: str, precision: str, attention: str):
+def load_model_xzg(
+    model_name: str,
+    device: str,
+    precision: str,
+    attention: str,
+    tokenizer_name: str = TOKENIZER_AUTO_OPTION,
+):
     # 1) 严格离线找目录
     model_path = resolve_model_path_xzg(model_name)
     device_str, _ = resolve_device(device)
@@ -280,7 +341,7 @@ def load_model_xzg(model_name: str, device: str, precision: str, attention: str)
         wn_keys = {k: v for k, v in sd.items() if "weight_g" in k or "weight_v" in k}
         if wn_keys:
             model.load_state_dict(wn_keys, strict=False)
-            logger.info(f"修复 {len(wn_keys)} 个 weight_norm 参数")
+            logger.debug(f"修复 {len(wn_keys)} 个 weight_norm 参数")
         if fp8:
             import json
             scales_file = model_path / "fp8_scales.json"
@@ -323,8 +384,11 @@ def load_model_xzg(model_name: str, device: str, precision: str, attention: str)
     model.to(torch_device)
     model.eval()
 
-    # 5) 严格离线加载 tokenizer（local_files_only=True + 本地路径）
-    tok_local = _find_local_tokenizer(getattr(model.config, "text_encoder_model", _KNOWN_TOKENIZER_REPO))
+    # 5) 严格离线加载 tokenizer（根据用户选择或自动回退）
+    tok_local = resolve_tokenizer_path(
+        tokenizer_name,
+        getattr(model.config, "text_encoder_model", _KNOWN_TOKENIZER_REPO),
+    )
     tokenizer = AutoTokenizer.from_pretrained(str(tok_local), local_files_only=True)
 
     # 6) Attention patch（复用移植过来的 flash/sdpa/sage 实现）

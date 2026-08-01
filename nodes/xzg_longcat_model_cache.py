@@ -18,9 +18,10 @@ cancel_event: threading.Event = threading.Event()
 
 
 def get_cache_key(
-    model_path: str, device: str, precision: str, attention: str
+    model_path: str, device: str, precision: str, attention: str,
+    tokenizer_name: str = "auto",
 ) -> tuple:
-    return (model_path, device, precision, attention)
+    return (model_path, device, precision, attention, tokenizer_name)
 
 
 def get_cached_model():

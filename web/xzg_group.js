@@ -1438,6 +1438,8 @@ const XZGGroup = {
         }
 
         const gid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+        // 继承上次使用的标题配置（颜色/大小/炫彩/背景/辉光等）
+        const last = this.getLastTitleConfig();
         this.groups[gid] = {
             id: gid,
             title: '右键标题栏设置',
@@ -1446,15 +1448,15 @@ const XZGGroup = {
             locked: false,
             hidden: false,
             bounds: bounds,
-            fontSize: 14,
-            colorHue: 48, colorSat: 100, colorLit: 55,
-            effect: 'none', effectSpeed: 3,
-            borderWidth: 2, borderOpacity: 1,
-            headerBgColor: 'rgba(0,0,0,0.4)',
-            titleColor: '#FFD700',
-            fadeEnabled: true,
+            fontSize: last.fontSize,
+            colorHue: last.colorHue, colorSat: last.colorSat, colorLit: last.colorLit,
+            effect: last.effect, effectSpeed: last.effectSpeed,
+            borderWidth: last.borderWidth, borderOpacity: last.borderOpacity,
+            headerBgColor: last.headerBgColor,
+            titleColor: last.titleColor,
+            fadeEnabled: last.fadeEnabled,
             fadeOutDuration: 0,
-            fadeInDuration: 1000
+            fadeInDuration: last.fadeInDuration
         };
 
         // 标记节点归入新编组（同时保留节点在其他编组中的归属）
@@ -1705,6 +1707,41 @@ const XZGGroup = {
             h = Math.round(h * 60);
         }
         return { h, s: Math.round(s * 100), l: Math.round(l * 100) };
+    },
+
+    /* ── 上次标题配置存取（颜色/大小/炫彩/背景/辉光等继承） ── */
+    getLastTitleConfig() {
+        const defaults = {
+            fontSize: 14,
+            colorHue: 48, colorSat: 100, colorLit: 55,
+            effect: 'none', effectSpeed: 3,
+            borderWidth: 2, borderOpacity: 1,
+            headerBgColor: 'rgba(0,0,0,0.4)',
+            titleColor: '#FFD700',
+            fadeEnabled: true,
+            fadeInDuration: 1000
+        };
+        try {
+            const saved = localStorage.getItem('xzg_last_title_config');
+            if (saved) return Object.assign({}, defaults, JSON.parse(saved));
+        } catch (e) {}
+        return defaults;
+    },
+
+    saveLastTitleConfig(group) {
+        try {
+            const cfg = {
+                fontSize: group.fontSize,
+                colorHue: group.colorHue, colorSat: group.colorSat, colorLit: group.colorLit,
+                effect: group.effect, effectSpeed: group.effectSpeed,
+                borderWidth: group.borderWidth, borderOpacity: group.borderOpacity,
+                headerBgColor: group.headerBgColor,
+                titleColor: group.titleColor,
+                fadeEnabled: group.fadeEnabled,
+                fadeInDuration: group.fadeInDuration
+            };
+            localStorage.setItem('xzg_last_title_config', JSON.stringify(cfg));
+        } catch (e) {}
     },
 
     /* ── 设置弹窗 ── */
@@ -2136,6 +2173,8 @@ const XZGGroup = {
             app.graph?.setDirtyCanvas?.(true, true);
             app.graph?.change?.();
             this.syncGroupsToExtra();
+            // 保存为上次使用的标题配置（供新建编组继承）
+            this.saveLastTitleConfig(targetGroup);
         };
 
         // 点击外部关闭（定义在按钮处理之前，确保 cleanupModal 捕获最新版本）

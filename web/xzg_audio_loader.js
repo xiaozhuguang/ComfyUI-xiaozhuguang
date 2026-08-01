@@ -690,7 +690,13 @@ class XiaozhuguangWaveformViewer {
         ctx.font = '6px sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillText(timeText, pad + 2 + volTextW + 6, widgetY + 3);
+        const timeX = pad + 2 + volTextW + 6;
+        ctx.fillText(timeText, timeX, widgetY + 3);
+        // 小字注释（时间码右侧）
+        const timeTextW = ctx.measureText(timeText).width;
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.font = '5px sans-serif';
+        ctx.fillText('上半播放/暂停 下半拖动跳转', timeX + timeTextW + 6, widgetY + 4);
 
         // 显示模式切换按钮（右上角）
         const btnW = 22;
@@ -752,17 +758,10 @@ class XiaozhuguangWaveformViewer {
         const widgetY = this._drawY;
         const widgetH = this._drawH;
 
-        // 松开鼠标时：即使鼠标在波形区域外，只要正在拖动音量，也要结束
+        // 松开鼠标时：即使鼠标在波形区域外，只要正在拖动，也返回true阻止默认行为
+        // 实际清理工作由 window 上的 _handleMouseUp 统一处理
         if (event.type === 'pointerup' || event.type === 'mouseup' || event.type === 'pointercancel') {
-            if (this.isDragging && this.dragType === 'volume') {
-                this.isDragging = false;
-                this.dragType = null;
-                this._dragMoved = false;
-                this._dragDirection = null;
-                if (this._clickTimer) {
-                    clearTimeout(this._clickTimer);
-                    this._clickTimer = null;
-                }
+            if (this.isDragging) {
                 return true;
             }
         }
@@ -807,6 +806,9 @@ class XiaozhuguangWaveformViewer {
             const playX = this._getXFromTime(this.playbackTime || 0);
 
             const volY = this._getVolumeY(widgetY, widgetH);
+            const barPadY = 2;
+            const waveH = widgetH - barPadY * 2;
+            const waveMid = widgetY + barPadY + waveH / 2; // 波形中线，作为上下分区界限
 
             const handleWidth = 14;
             const volHandleHeight = 5;
@@ -814,6 +816,7 @@ class XiaozhuguangWaveformViewer {
             const w = this._drawW;
             const pad = this._getPad();
             let hitHandle = false;
+            let isUpperHalf = localY < waveMid; // 是否在上半区
 
             // 优先判断音量线（仅左侧一小段范围）
             const volLineLeft = pad;
@@ -822,23 +825,35 @@ class XiaozhuguangWaveformViewer {
                 this.dragType = 'volume';
                 hitHandle = true;
             }
-            // 然后判断蓝色（结束）标记
+            // 然后判断蓝色（结束）标记（全高度范围可拖）
             else if (Math.abs(localX - endX) <= handleWidth) {
                 this.dragType = 'end';
                 hitHandle = true;
             } else if (Math.abs(localX - startX) <= handleWidth) {
                 this.dragType = 'start';
                 hitHandle = true;
-            } else if (Math.abs(localX - playX) <= handleWidth) {
-                // 拖动白色播放头
+            } else if (isUpperHalf) {
+                // 上半区：双击上传文件，单击立即播放/暂停（按下即响应，无延迟）
+                // 不进入拖动模式，允许节点正常拖动
+                if (isDoubleClick) {
+                    if (this._clickTimer) {
+                        clearTimeout(this._clickTimer);
+                        this._clickTimer = null;
+                    }
+                    this.onUpload();
+                    return true;
+                }
+                // 立即切换播放/暂停（按下即响应）
+                this.togglePlay();
+                // 返回 false：不拦截事件，允许节点拖动
+                return false;
+            } else {
+                // 下半区：拖动播放头模式
                 this.dragType = 'playhead';
                 hitHandle = true;
-            } else {
-                // 点击空白区域，默认拖动播放头（水平方向）
-                this.dragType = 'playhead';
             }
 
-            // 双击处理
+            // 双击处理（下半区、音量、start/end标记）
             if (isDoubleClick) {
                 if (this._clickTimer) {
                     clearTimeout(this._clickTimer);
@@ -864,32 +879,31 @@ class XiaozhuguangWaveformViewer {
             this.dragStartVolume = this.volume;
             this.dragStartVolY = this._getVolumeY(widgetY, widgetH);
             this.dragPlayheadTime = this.playbackTime || 0;
-            this._hitPlayheadHandle = hitHandle; // 记录是否点中了播放头手柄
+            this._hitPlayheadHandle = hitHandle;
             if (this.dragType === 'playhead') {
-                if (hitHandle) {
-                    this.dragPlayheadX = this._getXFromTime(this.playbackTime || 0);
-                } else {
-                    this.dragPlayheadX = localX;
+                // 下半区按下瞬间立即将播放头跳到点击位置
+                this.dragPlayheadX = localX;
+                let t = this._getTimeFromX(localX);
+                t = Math.max(this.startTime, Math.min(this.endTime, t));
+                t = Math.round(t * 100) / 100;
+                this.playbackTime = t;
+                try {
+                    this._audio.currentTime = t;
+                } catch (e) {
+                    // 音频未加载完成时设置可能失败，忽略
                 }
+                this._updateTimeDisplay();
+                this.onRequestRedraw();
             }
 
-            // 点中播放头手柄时才拖动，其他区域：按下立即播放/暂停（无延迟）
-            if (this.dragType === 'playhead' && !hitHandle) {
-                this.togglePlay();
-            }
-
+            // 下半区拖动始终不改变播放状态（仅调整播放头位置）
             return true;
         }
 
-        // 松开鼠标时清除拖拽状态
+        // 松开鼠标时：由 window 上的 _handleMouseUp 统一处理清理和点击/拖动判定
+        // 这里只返回 true 表示事件已被处理，阻止节点被拖动等默认行为
         if (event.type === 'pointerup' || event.type === 'mouseup' || event.type === 'pointercancel') {
             if (this.isDragging) {
-                this.isDragging = false;
-                const wasDragging = this.dragType;
-                this.dragType = null;
-                if (wasDragging === 'start' || wasDragging === 'end') {
-                    this._notifyChange();
-                }
                 return true;
             }
             return false;
@@ -914,38 +928,21 @@ class XiaozhuguangWaveformViewer {
             return;
         }
 
-        // 播放头拖动：只有点中手柄时才允许拖动
-        if (this.dragType === 'playhead' && !this._hitPlayheadHandle) return;
+        const cv = app.canvas;
+        const scale = cv?.ds?.scale || 1;
 
-        // 检测是否超过拖动阈值
+        // 检测是否超过拖动阈值（用于区分点击和拖动）
         if (!this._dragMoved) {
             const dx = e.clientX - this.dragStartX;
             const dy = e.clientY - this.dragStartY;
             if (Math.sqrt(dx * dx + dy * dy) > this._dragThreshold) {
                 this._dragMoved = true;
-                // 拖动开始时，如果是播放头拖动（点中手柄），立即更新到当前鼠标位置
-                if (this.dragType === 'playhead') {
-                    const cv = app.canvas;
-                    const scale = cv?.ds?.scale || 1;
-                    const newX = this.dragPlayheadX + (e.clientX - this.dragStartX) / scale;
-                    let t = this._getTimeFromX(newX);
-                    t = Math.max(this.startTime, Math.min(this.endTime, t));
-                    t = Math.round(t * 100) / 100;
-                    this.playbackTime = t;
-                    this._audio.currentTime = t;
-                    this._updateTimeDisplay();
-                    this.onRequestRedraw();
-                }
             }
         }
 
-        if (!this._dragMoved) return;
-
-        const cv = app.canvas;
-        const scale = cv?.ds?.scale || 1;
-
         // 音量拖动（垂直方向）
         if (this.dragType === 'volume') {
+            if (!this._dragMoved) return;
             const widgetY = this._drawY;
             const widgetH = this._drawH;
             const dy = (e.clientY - this.dragStartY) / scale;
@@ -953,6 +950,32 @@ class XiaozhuguangWaveformViewer {
             let newVol = this._getVolumeFromY(currentY, widgetY, widgetH);
             newVol = Math.round(newVol * 100) / 100;
             this.setVolume(newVol);
+            return;
+        }
+
+        // 起始/结束标记拖动需要超过阈值才响应
+        if ((this.dragType === 'start' || this.dragType === 'end') && !this._dragMoved) {
+            return;
+        }
+
+        // 下半区播放头拖动：播放头立即跟随鼠标
+        if (this.dragType === 'playhead') {
+            // 将屏幕坐标转换为widget本地坐标，需要考虑画布缩放
+            // 由于无法直接获取鼠标在widget中的本地X坐标，使用增量方式计算
+            // dragPlayheadX是按下时的本地X，加上鼠标位移（除以缩放比）得到当前本地X
+            const dx = (e.clientX - this.dragStartX) / scale;
+            const newX = this.dragPlayheadX + dx;
+            let t = this._getTimeFromX(newX);
+            t = Math.max(this.startTime, Math.min(this.endTime, t));
+            t = Math.round(t * 100) / 100;
+            this.playbackTime = t;
+            try {
+                this._audio.currentTime = t;
+            } catch (e) {
+                // 音频未加载完成时设置可能失败，忽略
+            }
+            this._updateTimeDisplay();
+            this.onRequestRedraw();
             return;
         }
 
@@ -970,14 +993,6 @@ class XiaozhuguangWaveformViewer {
         } else if (this.dragType === 'end') {
             this.endTime = Math.min(this.duration, Math.max(this.startTime + 0.01, this.dragEndTime + dt));
             this.endTime = Math.round(this.endTime * 100) / 100;
-        } else if (this.dragType === 'playhead') {
-            // 拖动白色播放头：直接根据鼠标位移计算新位置，限制在红蓝标记之间
-            const newX = this.dragPlayheadX + dx;
-            let t = this._getTimeFromX(newX);
-            t = Math.max(this.startTime, Math.min(this.endTime, t));
-            t = Math.round(t * 100) / 100;
-            this.playbackTime = t;
-            this._audio.currentTime = t;
         }
 
         this._updateTimeDisplay();
@@ -991,10 +1006,12 @@ class XiaozhuguangWaveformViewer {
         this.dragType = null;
         this._dragMoved = false;
         this._dragDirection = null;
+        this._hitPlayheadHandle = false;
         if (this._clickTimer) {
             clearTimeout(this._clickTimer);
             this._clickTimer = null;
         }
+        // 下半区（playhead）和音量拖动：无论是否拖动，都不改变播放状态
         // 松开时统一通知一次（仅针对范围调整）
         if (wasDragging === 'start' || wasDragging === 'end') {
             this._notifyChange();
@@ -1151,8 +1168,10 @@ function showAudioHelpDialog() {
             <div style="margin-bottom: 12px;">
                 <div style="font-weight: bold; color: #FFD700; margin-bottom: 4px;">▶️ 播放控制</div>
                 <ul style="margin: 0; padding-left: 18px;">
-                    <li>单击波形：播放 / 暂停</li>
-                    <li>白色竖线：当前播放进度，拖动波形轨道，调整播放位置</li>
+                    <li>音轨上半部分点击：播放 / 暂停</li>
+                    <li>音轨下半部分点击：播放头立即跳到对应位置</li>
+                    <li>音轨下半部分拖动：播放头跟随鼠标移动，不改变播放/暂停状态</li>
+                    <li>左上角播放按钮：直接切换播放/暂停</li>
                 </ul>
             </div>
             <div style="margin-bottom: 12px;">

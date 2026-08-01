@@ -26,6 +26,7 @@ import torch.nn.functional as F
 
 # —— 依赖我们自己的离线加载器 ——
 from .xzg_audiodit_loader import (
+    TOKENIZER_AUTO_OPTION,
     approx_duration_from_text,
     load_model_xzg,
     normalize_text,
@@ -33,6 +34,7 @@ from .xzg_audiodit_loader import (
     register_folder_xzg,
     resolve_device,
     scan_local_models,
+    tokenizer_names_or_default,
 )
 
 # —— 复用移植到本插件内部的 model_cache 工具（缓存、卸载、动态显存） ——
@@ -219,6 +221,7 @@ class XzgAudioDiTTTS:
     @classmethod
     def INPUT_TYPES(cls):
         model_names = _model_names_or_default()
+        tokenizer_names = tokenizer_names_or_default()
         return {
             "required": {
                 "model_path": (
@@ -227,6 +230,17 @@ class XzgAudioDiTTTS:
                         "tooltip": (
                             "【严格离线】仅列出已放置到 ComfyUI/models/audiodit/ 下的本地模型。\n"
                             "未下载时，请手动拷贝 LongCat-AudioDiT 模型目录到此路径，或先用原插件下载一次。"
+                        ),
+                    },
+                ),
+                "tokenizer": (
+                    tokenizer_names,
+                    {
+                        "default": TOKENIZER_AUTO_OPTION,
+                        "tooltip": (
+                            "文本分词器目录（UMT5 tokenizer）。\n"
+                            "auto = 自动按 4 级回退查找（umt5-base-tokenizer → umt5-base → HF 缓存 → 环境变量）。\n"
+                            "选择具体目录则直接使用该目录，缺失时回退到 auto。"
                         ),
                     },
                 ),
@@ -284,6 +298,7 @@ class XzgAudioDiTTTS:
     def generate(
         self,
         model_path: str,
+        tokenizer: str,
         text: str,
         steps: int,
         guidance_strength: float,
@@ -302,7 +317,7 @@ class XzgAudioDiTTTS:
             raise ValueError("[小珠光AudioDiT] 文本不能为空。")
 
         model, tokenizer = self._get_model(
-            model_path, device, dtype, attention, keep_model_loaded
+            model_path, tokenizer, device, dtype, attention, keep_model_loaded
         )
 
         sr = model.config.sampling_rate
@@ -370,8 +385,8 @@ class XzgAudioDiTTTS:
             pass
         return (result,)
 
-    def _get_model(self, model_path, device, dtype, attention, keep_loaded=False):
-        key = get_cache_key(model_path, device, dtype, attention)
+    def _get_model(self, model_path, tokenizer, device, dtype, attention, keep_loaded=False):
+        key = get_cache_key(model_path, device, dtype, attention, tokenizer)
         cached_model, cached_tokenizer, cached_key = get_cached_model()
         if cached_model is not None and cached_key != key:
             logger.info(f"参数变化 → 卸载旧缓存模型。旧: {cached_key}, 新: {key}")
@@ -385,7 +400,7 @@ class XzgAudioDiTTTS:
             else:
                 logger.info("复用缓存模型（严格离线）。")
             return cached_model, cached_tokenizer
-        model, tokenizer = load_model_xzg(model_path, device, dtype, attention)
+        model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
         set_cached_model(model, tokenizer, key, keep_loaded=keep_loaded)
         return model, tokenizer
 
@@ -399,6 +414,7 @@ class XzgAudioDiTVoiceCloneTTS:
     @classmethod
     def INPUT_TYPES(cls):
         model_names = _model_names_or_default()
+        tokenizer_names = tokenizer_names_or_default()
         return {
             "required": {
                 "model_path": (
@@ -406,6 +422,15 @@ class XzgAudioDiTVoiceCloneTTS:
                     {"tooltip": (
                         "【严格离线】仅列出 ComfyUI/models/audiodit/ 下的本地模型。"
                     )},
+                ),
+                "tokenizer": (
+                    tokenizer_names,
+                    {
+                        "default": TOKENIZER_AUTO_OPTION,
+                        "tooltip": (
+                            "文本分词器目录（UMT5 tokenizer）。auto = 自动回退查找。"
+                        ),
+                    },
                 ),
                 "text": (
                     "STRING", {
@@ -449,6 +474,7 @@ class XzgAudioDiTVoiceCloneTTS:
     def generate(
         self,
         model_path: str,
+        tokenizer: str,
         text: str,
         prompt_audio: dict,
         prompt_text: str,
@@ -479,7 +505,7 @@ class XzgAudioDiTVoiceCloneTTS:
             dtype = "bf16"
 
         model, tokenizer = self._get_model(
-            model_path, device, dtype, attention, keep_model_loaded
+            model_path, tokenizer, device, dtype, attention, keep_model_loaded
         )
 
         sr = model.config.sampling_rate
@@ -587,8 +613,8 @@ class XzgAudioDiTVoiceCloneTTS:
             pass
         return (result,)
 
-    def _get_model(self, model_path, device, dtype, attention, keep_loaded=False):
-        key = get_cache_key(model_path, device, dtype, attention)
+    def _get_model(self, model_path, tokenizer, device, dtype, attention, keep_loaded=False):
+        key = get_cache_key(model_path, device, dtype, attention, tokenizer)
         cached_model, cached_tokenizer, cached_key = get_cached_model()
         if cached_model is not None and cached_key != key:
             unload_model()
@@ -598,7 +624,7 @@ class XzgAudioDiTVoiceCloneTTS:
                 device_str, _ = resolve_device(device)
                 resume_model_to_cuda(device_str)
             return cached_model, cached_tokenizer
-        model, tokenizer = load_model_xzg(model_path, device, dtype, attention)
+        model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
         set_cached_model(model, tokenizer, key, keep_loaded=keep_loaded)
         return model, tokenizer
 
@@ -659,6 +685,7 @@ if _V3:
         @classmethod
         def define_schema(cls) -> Any:
             model_names = _model_names_or_default()
+            tokenizer_names = tokenizer_names_or_default()
             speaker_options = [
                 IO.DynamicCombo.Option(key=str(n), inputs=_speaker_inputs(n))
                 for n in range(2, MAX_SPEAKERS + 1)
@@ -674,6 +701,8 @@ if _V3:
                 inputs=[
                     IO.Combo.Input("model_path", options=model_names,
                                    tooltip="严格离线：仅列本地模型。未找到时放 ComfyUI/models/audiodit/"),
+                    IO.Combo.Input("tokenizer", options=tokenizer_names, default=TOKENIZER_AUTO_OPTION,
+                                   tooltip="文本分词器目录（UMT5 tokenizer）。auto = 自动回退查找。"),
                     IO.DynamicCombo.Input(
                         "num_speakers",
                         options=speaker_options,
@@ -704,6 +733,7 @@ if _V3:
 
         def execute(self, *_, **inputs):
             model_path = inputs["model_path"]
+            tokenizer = inputs.get("tokenizer", TOKENIZER_AUTO_OPTION)
             num_speakers = int(inputs.get("num_speakers", 2))
             text = inputs["text"]
             steps = int(inputs["steps"])
@@ -745,9 +775,9 @@ if _V3:
                 audios[i] = a
                 refs[i] = r
 
-            model, tokenizer = load_model_xzg(model_path, device, dtype, attention)
+            model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
             try:
-                set_cached_model(model, tokenizer, get_cache_key(model_path, device, dtype, attention),
+                set_cached_model(model, tokenizer, get_cache_key(model_path, device, dtype, attention, tokenizer),
                                  keep_loaded=keep_model_loaded)
             except Exception:
                 pass

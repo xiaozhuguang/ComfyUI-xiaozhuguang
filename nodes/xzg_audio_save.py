@@ -303,7 +303,6 @@ class XiaozhuguangAudioSave:
             },
             "optional": {
                 "模式": (["保存", "预览"], {"default": "保存"}),
-                "自定义保存目录": ("STRING", {"default": "", "multiline": False}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -319,7 +318,7 @@ class XiaozhuguangAudioSave:
     OUTPUT_NODE = True
 
     def save_audio(self, 音频, 格式, 质量, 文件名前缀,
-                   模式="保存", 自定义保存目录="", **kwargs):
+                   模式="保存", **kwargs):
         if ffmpeg_path is None:
             raise RuntimeError("FFmpeg not found. Please install FFmpeg.")
 
@@ -377,14 +376,8 @@ class XiaozhuguangAudioSave:
 
         # 保存模式：输出到 output 目录
         base_dir = _safe_dir('get_output_directory', 'output')
-
-        if 自定义保存目录 and 自定义保存目录.strip():
-            output_dir = os.path.join(base_dir, 自定义保存目录.strip().strip("/\\"))
-            subfolder = 自定义保存目录.strip()
-            os.makedirs(output_dir, exist_ok=True)
-        else:
-            output_dir = base_dir
-            subfolder = ""
+        output_dir = base_dir
+        subfolder = ""
 
         # 文件名：前缀_序号.扩展名（自动递增避免覆盖）
         ext = AUDIO_FORMATS[格式]["extension"]

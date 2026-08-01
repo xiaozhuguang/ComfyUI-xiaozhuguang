@@ -402,8 +402,7 @@ class XiaozhuguangVideoCombine:
                 "文件名前缀": ("STRING", {"default": "xzg_video"}),
                 "格式": (["mp4", "webm", "gif"], {"default": "mp4"}),
                 "CRF": ("INT", {"default": 19, "min": 0, "max": 51, "step": 1}),
-                "保存到输出目录": ("BOOLEAN", {"default": True}),
-                "自定义保存目录": ("STRING", {"default": "", "multiline": False}),
+                "模式": (["保存", "预览"], {"default": "保存"}),
             },
             "optional": {
                 "音频": ("AUDIO",),
@@ -422,22 +421,17 @@ class XiaozhuguangVideoCombine:
     OUTPUT_NODE = True
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,
-                      保存到输出目录, 自定义保存目录="", 音频=None,
+                      模式, 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
-        base_dir = (_safe_dir('get_output_directory', 'output') if 保存到输出目录
+        base_dir = (_safe_dir('get_output_directory', 'output') if 模式 == "保存"
                     else _safe_dir('get_temp_directory',   'temp'))
 
-        # 输出目录（用户可自定义子文件夹）
-        if 自定义保存目录 and 自定义保存目录.strip():
-            output_dir = os.path.join(base_dir, 自定义保存目录.strip().strip("/\\"))
-            subfolder = 自定义保存目录.strip()
-            os.makedirs(output_dir, exist_ok=True)
-        else:
-            output_dir = base_dir
-            subfolder = ""
+        # 输出目录固定为 base_dir（不再支持自定义子目录，避免 /view 路径解析问题）
+        output_dir = base_dir
+        subfolder = ""
 
         # 获取可用的文件计数器
         full_output_folder, filename, _, _, _ = folder_paths.get_save_image_path(
@@ -480,7 +474,7 @@ class XiaozhuguangVideoCombine:
                 "videos": [{
                     "filename": file,
                     "subfolder": subfolder,
-                    "type": "output" if 保存到输出目录 else "temp",
+                    "type": "output" if 模式 == "保存" else "temp",
                     "format": 格式,
                     "frame_rate": 帧率,
                 }],
@@ -493,7 +487,7 @@ class XiaozhuguangVideoCombine:
 @routes.get("/xzg/get_output_dir")
 @xzg_safe_handler
 async def xzg_get_output_dir(request):
-    return web.json_response({
+    return _xzg_web.json_response({
         "output_dir": _safe_dir('get_output_directory', 'output'),
         "temp_dir": _safe_dir('get_temp_directory',   'temp'),
     })

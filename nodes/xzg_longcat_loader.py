@@ -697,7 +697,7 @@ def _load_model_direct(model_path: Path, model_class, torch_dtype):
     if safetensors_path.exists():
         state_dict = load_file(str(safetensors_path))
         model.load_state_dict(state_dict, strict=False)
-        logger.info(f"Loaded model directly from safetensors (no metadata)")
+        logger.debug(f"Loaded model directly from safetensors (no metadata)")
     else:
         raise FileNotFoundError(f"No model.safetensors found in {model_path}")
 
@@ -755,7 +755,7 @@ def load_model(model_name: str, device: str, precision: str, attention: str):
         wn_keys = {k: v for k, v in sd.items() if "weight_g" in k or "weight_v" in k}
         if wn_keys:
             model.load_state_dict(wn_keys, strict=False)
-            logger.info(f"Fixed {len(wn_keys)} weight_norm params")
+            logger.debug(f"Fixed {len(wn_keys)} weight_norm params")
 
         # Dequantize FP8 weights using per-tensor scales
         # from_pretrained does NOT convert fp8→bf16, leaving fp8 params that

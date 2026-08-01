@@ -5201,10 +5201,16 @@ class Xiaozhuguang {
                 const node = origCreate.call(LiteGraph, type, title, options);
                 if (node && type === "XiaozhuguangTitle") {
                     if (!node.properties) node.properties = {};
-                    const savedFs = parseInt(localStorage.getItem('xzg_last_title_font_size'));
-                    if (savedFs) node.properties.fontSize = savedFs;
-                    const savedFc = localStorage.getItem('xzg_last_title_color');
-                    if (savedFc) node.properties.fontColor = savedFc;
+                    try {
+                        const stored = localStorage.getItem("xzg_last_title_config");
+                        if (stored) {
+                            const config = JSON.parse(stored);
+                            if (config && typeof config === 'object') {
+                                delete config.text;
+                                Object.assign(node.properties, config);
+                            }
+                        }
+                    } catch (e) {}
                 }
                 return node;
             };
@@ -5953,6 +5959,7 @@ app.registerExtension({
                 fontColor: "#ffffff",
                 bgColor: "#2a2a2a",
                 borderRadius: 3,
+                bgPadding: 4,
                 textAlign: "center",
                 letterSpacing: 0,
                 lineHeight: 1.4,
@@ -5964,13 +5971,30 @@ app.registerExtension({
                 rainbowEnabled: false,
                 rainbowSpeed: 30,
                 rainbowStyle: "波浪",
-                arrowEnabled: false,
-                arrowColor: "#FFD700",
-                arrowAngle: 0,
-                arrowCurvature: 0,
-                arrowThickness: 3,
-                arrowLength: 60,
             };
+            const TITLE_CONFIG_KEY = "xzg_last_title_config";
+
+            function saveLastTitleConfig(props) {
+                const config = { ...props };
+                delete config.text;
+                try {
+                    localStorage.setItem(TITLE_CONFIG_KEY, JSON.stringify(config));
+                } catch (e) {}
+            }
+
+            function loadLastTitleConfig(defaults) {
+                try {
+                    const stored = localStorage.getItem(TITLE_CONFIG_KEY);
+                    if (stored) {
+                        const config = JSON.parse(stored);
+                        if (config && typeof config === 'object') {
+                            return { ...defaults, ...config, text: defaults.text };
+                        }
+                    }
+                } catch (e) {}
+                return { ...defaults };
+            }
+
             const DOM_PREFIX = "xz-title";
 
             function hexToRgb(hex) {
@@ -6104,12 +6128,7 @@ app.registerExtension({
                 this.flags = this.flags || {};
                 this.resizable = false;
                 this.size = [200, 120];
-                this.properties = { ...DEFAULT_PROPS };
-                // 从 localStorage 恢复上次使用的文字大小和颜色
-                const savedFs = parseInt(localStorage.getItem('xzg_last_title_font_size'));
-                if (savedFs) this.properties.fontSize = savedFs;
-                const savedFc = localStorage.getItem('xzg_last_title_color');
-                if (savedFc) this.properties.fontColor = savedFc;
+                this.properties = loadLastTitleConfig(DEFAULT_PROPS);
                 this.color = "#fff0";
                 this.bgcolor = "transparent";
                 this.isEditing = false;
@@ -6220,9 +6239,9 @@ app.registerExtension({
                 const trailing = Math.abs(p.letterSpacing || 0);
                 const adjustedMax = maxWidth > trailing ? maxWidth - trailing : 0;
                 const totalBlockH = lines.length > 1 ? firstAscent + (lines.length - 1) * lineHeight + lastDescent : firstAscent + lastDescent;
-                const padW = 4;
-                const w = this._customWidth || Math.max(50, adjustedMax + padW);
-                const h = this._customHeight || Math.max(18, totalBlockH + padW);
+                const bp = p.bgPadding ?? 4;
+                const w = this._customWidth || Math.max(50, adjustedMax + bp * 2);
+                const h = this._customHeight || Math.max(18, totalBlockH + bp * 2);
                 return [w, h];
             };
 
@@ -6274,9 +6293,9 @@ app.registerExtension({
                 const trailing = Math.abs(p.letterSpacing || 0);
                 const adjustedMax = maxWidth > trailing ? maxWidth - trailing : 0;
                 const totalBlockH = lines.length > 1 ? firstAscent + (lines.length - 1) * lineHeight + lastDescent : firstAscent + lastDescent;
-                const padW = 4;
-                const autoW = Math.max(50, adjustedMax + padW);
-                const autoH = Math.max(18, totalBlockH + padW);
+                const bp = p.bgPadding ?? 4;
+                const autoW = Math.max(50, adjustedMax + bp * 2);
+                const autoH = Math.max(18, totalBlockH + bp * 2);
 
                 let changed = false;
                 if (!this._customWidth && this.size[0] !== autoW) {
@@ -6292,164 +6311,10 @@ app.registerExtension({
                 }
             };
 
-            // 箭头绘制函数（可绘制到任意 ctx，编辑/非编辑模式共用）
-            const drawArrowToCtx = (ctx, w, h, p) => {
-                if (!p.arrowEnabled) return;
-                const cx = w / 2;
-                const cy = h / 2;
-                const angleRad = (p.arrowAngle || 0) * Math.PI / 180;
-                const len = Math.max(10, p.arrowLength || 60);
-                const thickness = Math.max(1, p.arrowThickness || 3);
-                const curvature = p.arrowCurvature || 0;
-                const arrowColor = p.arrowColor || "#00BCD4";
-
-                // 计算文字边界框（用于让箭头起点绕开文字本体）
-                const fontSize = p.fontSize || 16;
-                const txt = p.text || "";
-                const lines = txt.split("\n");
-                const lineH = fontSize * (p.lineHeight || 1.4);
-                ctx.save();
-                ctx.font = `normal ${fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
-                let maxLineW = 0;
-                for (const ln of lines) {
-                    const m = ctx.measureText(ln || " ");
-                    if (m.width > maxLineW) maxLineW = m.width;
-                }
-                ctx.restore();
-                const textW = Math.max(0, maxLineW);
-                const textH = Math.max(0, lines.length * lineH);
-                // 文字边界框半宽/半高，加 2px 内边距避免贴边
-                const halfW = textW / 2 + 2;
-                const halfH = textH / 2 + 2;
-
-                // 起点：从节点中心沿 angleRad 方向射线与文字边界框的交点
-                const cosA = Math.cos(angleRad);
-                const sinA = Math.sin(angleRad);
-                let tStart = 0;
-                if (halfW > 0 && halfH > 0) {
-                    let tMax = Infinity;
-                    if (cosA > 1e-6) tMax = Math.min(tMax, halfW / cosA);
-                    else if (cosA < -1e-6) tMax = Math.min(tMax, -halfW / cosA);
-                    if (sinA > 1e-6) tMax = Math.min(tMax, halfH / sinA);
-                    else if (sinA < -1e-6) tMax = Math.min(tMax, -halfH / sinA);
-                    if (tMax !== Infinity && tMax > 0) tStart = tMax;
-                }
-                const sx = cx + tStart * cosA;
-                const sy = cy + tStart * sinA;
-
-                // 三角头参数
-                const headLen = Math.max(10, thickness * 3.5);
-                const headHalfAngle = Math.PI / 6; // 30度
-                // 三角头重心到顶点距离（等腰三角形重心位于顶点到底边中点的 2/3 处）
-                const centroidDist = 2 * headLen * Math.cos(headHalfAngle) / 3;
-
-                // 三角头尖端（距起点 len，沿 angleRad 方向）
-                const tipX = sx + len * cosA;
-                const tipY = sy + len * sinA;
-
-                // 垂直方向（用于弯曲偏移）
-                const perpX = -sinA;
-                const perpY = cosA;
-                const curveOffset = curvature * 0.6;
-
-                // 箭杆末端 = 三角头重心位置（先按 angleRad 估算）
-                let endX = tipX - centroidDist * cosA;
-                let endY = tipY - centroidDist * sinA;
-
-                // 控制点
-                let cpx = (sx + endX) / 2 + perpX * curveOffset;
-                let cpy = (sy + endY) / 2 + perpY * curveOffset;
-
-                // 用实际切线方向重新计算重心位置（尖端不动，重心沿切线反方向）
-                let tangentX = 2 * (endX - cpx);
-                let tangentY = 2 * (endY - cpy);
-                let tangentAngle = Math.atan2(tangentY, tangentX);
-                endX = tipX - centroidDist * Math.cos(tangentAngle);
-                endY = tipY - centroidDist * Math.sin(tangentAngle);
-                cpx = (sx + endX) / 2 + perpX * curveOffset;
-                cpy = (sy + endY) / 2 + perpY * curveOffset;
-                tangentX = 2 * (endX - cpx);
-                tangentY = 2 * (endY - cpy);
-                tangentAngle = Math.atan2(tangentY, tangentX);
-
-                ctx.save();
-                ctx.strokeStyle = arrowColor;
-                ctx.fillStyle = arrowColor;
-                ctx.lineWidth = thickness;
-                ctx.lineCap = "round";
-                ctx.lineJoin = "round";
-
-                // 绘制弯曲箭杆（起点 → 三角头重心）
-                ctx.beginPath();
-                ctx.moveTo(sx, sy);
-                ctx.quadraticCurveTo(cpx, cpy, endX, endY);
-                ctx.stroke();
-
-                // 绘制三角头（尖端在 tipX, tipY，方向沿末端切线）
-                ctx.beginPath();
-                ctx.moveTo(tipX, tipY);
-                ctx.lineTo(
-                    tipX - headLen * Math.cos(tangentAngle - headHalfAngle),
-                    tipY - headLen * Math.sin(tangentAngle - headHalfAngle)
-                );
-                ctx.lineTo(
-                    tipX - headLen * Math.cos(tangentAngle + headHalfAngle),
-                    tipY - headLen * Math.sin(tangentAngle + headHalfAngle)
-                );
-                ctx.closePath();
-                ctx.fill();
-
-                ctx.restore();
-            };
-
-            // 编辑模式下的箭头 overlay canvas（z-index 高于编辑面板，确保箭头悬浮在最上层）
-            const ensureArrowOverlay = (node) => {
-                if (!node.isEditing) return null;
-                let overlay = node._arrowOverlay;
-                const vr = getNodeViewportRect(node);
-                if (!vr) return null;
-                const sc = vr.scale;
-                const w = node.size[0] || 100;
-                const h = node.size[1] || 60;
-                const p = node.properties || DEFAULT_PROPS;
-                // padding 根据箭头最大可能延伸距离动态计算，避免被 canvas 边界截断
-                // 延伸 = 箭头长度 + 起点到文字边缘距离 + 三角头长度，再留 20px 余量
-                const arrowLen = Math.max(10, p.arrowLength || 60);
-                const headLen = Math.max(10, (p.arrowThickness || 3) * 3.5);
-                const halfDiag = Math.sqrt(w * w + h * h) / 2; // 节点对角线半长（起点最远情况）
-                const padLocal = arrowLen + headLen + halfDiag + 20;
-                const pad = padLocal * sc;
-                const canvasW = Math.ceil(w * sc + pad * 2);
-                const canvasH = Math.ceil(h * sc + pad * 2);
-                if (!overlay) {
-                    overlay = document.createElement("canvas");
-                    overlay.style.cssText = `position:fixed;left:${vr.left - pad}px;top:${vr.top - pad}px;width:${canvasW}px;height:${canvasH}px;z-index:100001;pointer-events:none;`;
-                    document.body.appendChild(overlay);
-                    node._arrowOverlay = overlay;
-                } else {
-                    overlay.style.left = (vr.left - pad) + "px";
-                    overlay.style.top = (vr.top - pad) + "px";
-                    overlay.style.width = canvasW + "px";
-                    overlay.style.height = canvasH + "px";
-                }
-                overlay.width = canvasW;
-                overlay.height = canvasH;
-                const ctx = overlay.getContext("2d");
-                ctx.setTransform(sc, 0, 0, sc, pad, pad);
-                ctx.clearRect(-padLocal - 10, -padLocal - 10, w + padLocal * 2 + 20, h + padLocal * 2 + 20);
-                drawArrowToCtx(ctx, w, h, p);
-                return overlay;
-            };
-
             nodeType.prototype.onDrawBackground = function (ctx) {
                 const p = this.properties || DEFAULT_PROPS;
                 const w = this.size[0] || 100;
                 const h = this.size[1] || 60;
-                // 编辑模式下箭头绘制到独立 overlay canvas（悬浮在编辑面板上方）
-                if (this.isEditing) {
-                    ensureArrowOverlay(this);
-                    return;
-                }
                 const text = p.text || "";
                 const fontSize = p.fontSize || 16;
                 const fontColor = p.fontColor || "#ffffff";
@@ -6491,8 +6356,9 @@ app.registerExtension({
                 ctx.textAlign = align;
                 // trailing = letterSpacing 在尾字符后添加的多余空间，需在宽度和定位中补偿
                 const trailing = Math.abs(p.letterSpacing || 0);
-                const xPos = align === "left" ? 2 :
-                    (align === "right" ? w - 2 + trailing :
+                const bp = p.bgPadding ?? 4;
+                const xPos = align === "left" ? bp :
+                    (align === "right" ? w - bp + trailing :
                     (w / 2 + trailing / 2));
                 // 测量每行实际字形高度，计算可视化居中位置
                 const lineMetrics = lines.map(line => ctx.measureText(line));
@@ -6502,7 +6368,10 @@ app.registerExtension({
                 const totalBlockH = lines.length > 1
                     ? firstAscent + (lines.length - 1) * lineHeight + lastDescent
                     : firstAscent + lastDescent;
-                const startY = Math.max(0, (h - totalBlockH) / 2 + firstAscent);
+                // 与 textarea 对齐：textarea 文字顶部 = bp
+                // canvas 文字顶部 = startY - firstAscent = bp
+                // => startY = bp + firstAscent
+                const startY = bp + firstAscent;
 
                 if (rainbowEnabled) {
                     this._titleAnimFrame = requestAnimationFrame(() => {
@@ -6551,71 +6420,80 @@ app.registerExtension({
                     const lineX = xPos;
                     const lineStartX = align === "center" ? xPos - textWidth / 2 : (align === "right" ? xPos - textWidth : xPos);
 
-                    if (!rainbowEnabled && !glowEnabled) {
-                        ctx.fillStyle = fontColor;
-                        ctx.fillText(line, lineX, y);
-                    } else if (!rainbowEnabled && glowEnabled) {
-                        const g = glowColor;
-                        ctx.save();
-                        ctx.shadowColor = g;
-                        ctx.shadowBlur = glowSize * glowIntensity * 2;
-                        ctx.globalAlpha = 0.15 * glowIntensity;
-                        ctx.fillStyle = fontColor;
-                        ctx.fillText(line, lineX, y);
-                        ctx.restore();
-                        ctx.save();
-                        ctx.shadowColor = g;
-                        ctx.shadowBlur = glowSize * glowIntensity;
-                        ctx.globalAlpha = 0.3 * glowIntensity;
-                        ctx.fillStyle = fontColor;
-                        ctx.fillText(line, lineX, y);
-                        ctx.restore();
-                        ctx.save();
-                        ctx.shadowColor = g;
-                        ctx.shadowBlur = glowSize * glowIntensity * 0.5;
-                        ctx.globalAlpha = 0.6 * glowIntensity;
-                        ctx.fillStyle = fontColor;
-                        ctx.fillText(line, lineX, y);
-                        ctx.restore();
-                        ctx.fillStyle = fontColor;
-                        ctx.fillText(line, lineX, y);
-                    } else {
-                        const fillStyle = getLineFillStyle(textWidth, i, lineStartX);
-                        const glowHue = (Date.now() * 0.002 * (rainbowSpeed / 30) * 60 + i * 30) % 360;
-                        const glowRgb = hslToRgb(glowHue, 100, 60);
-                        const glowCol = `rgb(${glowRgb.r}, ${glowRgb.g}, ${glowRgb.b})`;
-                        const g = glowEnabled ? glowCol : null;
+                    // 编辑模式下始终渲染整行文字
+                    const renderSegments = [{ text: line, offset: 0 }];
 
-                        if (glowEnabled) {
+                    renderSegments.forEach(({ text, offset }) => {
+                        if (!text) return;
+                        const segX = lineStartX + ctx.measureText(line.substring(0, offset)).width;
+                        const savedAlign = ctx.textAlign;
+                        ctx.textAlign = "left";
+
+                        if (!rainbowEnabled && !glowEnabled) {
+                            ctx.fillStyle = fontColor;
+                            ctx.fillText(text, segX, y);
+                        } else if (!rainbowEnabled && glowEnabled) {
+                            const g = glowColor;
                             ctx.save();
                             ctx.shadowColor = g;
                             ctx.shadowBlur = glowSize * glowIntensity * 2;
                             ctx.globalAlpha = 0.15 * glowIntensity;
-                            ctx.fillStyle = fillStyle;
-                            ctx.fillText(line, lineX, y);
+                            ctx.fillStyle = fontColor;
+                            ctx.fillText(text, segX, y);
                             ctx.restore();
                             ctx.save();
                             ctx.shadowColor = g;
                             ctx.shadowBlur = glowSize * glowIntensity;
                             ctx.globalAlpha = 0.3 * glowIntensity;
-                            ctx.fillStyle = fillStyle;
-                            ctx.fillText(line, lineX, y);
+                            ctx.fillStyle = fontColor;
+                            ctx.fillText(text, segX, y);
                             ctx.restore();
                             ctx.save();
                             ctx.shadowColor = g;
                             ctx.shadowBlur = glowSize * glowIntensity * 0.5;
                             ctx.globalAlpha = 0.6 * glowIntensity;
-                            ctx.fillStyle = fillStyle;
-                            ctx.fillText(line, lineX, y);
+                            ctx.fillStyle = fontColor;
+                            ctx.fillText(text, segX, y);
                             ctx.restore();
-                        }
-                        ctx.fillStyle = fillStyle;
-                        ctx.fillText(line, lineX, y);
-                    }
-                });
+                            ctx.fillStyle = fontColor;
+                            ctx.fillText(text, segX, y);
+                        } else {
+                            const fillStyle = getLineFillStyle(textWidth, i, lineStartX);
+                            const glowHue = (Date.now() * 0.002 * (rainbowSpeed / 30) * 60 + i * 30) % 360;
+                            const glowRgb = hslToRgb(glowHue, 100, 60);
+                            const glowCol = `rgb(${glowRgb.r}, ${glowRgb.g}, ${glowRgb.b})`;
+                            const g = glowEnabled ? glowCol : null;
 
-                // 绘制箭头（从节点中心向外延伸，支持360度角度、弯度、粗细）
-                drawArrowToCtx(ctx, w, h, p);
+                            if (glowEnabled) {
+                                ctx.save();
+                                ctx.shadowColor = g;
+                                ctx.shadowBlur = glowSize * glowIntensity * 2;
+                                ctx.globalAlpha = 0.15 * glowIntensity;
+                                ctx.fillStyle = fillStyle;
+                                ctx.fillText(text, segX, y);
+                                ctx.restore();
+                                ctx.save();
+                                ctx.shadowColor = g;
+                                ctx.shadowBlur = glowSize * glowIntensity;
+                                ctx.globalAlpha = 0.3 * glowIntensity;
+                                ctx.fillStyle = fillStyle;
+                                ctx.fillText(text, segX, y);
+                                ctx.restore();
+                                ctx.save();
+                                ctx.shadowColor = g;
+                                ctx.shadowBlur = glowSize * glowIntensity * 0.5;
+                                ctx.globalAlpha = 0.6 * glowIntensity;
+                                ctx.fillStyle = fillStyle;
+                                ctx.fillText(text, segX, y);
+                                ctx.restore();
+                            }
+                            ctx.fillStyle = fillStyle;
+                            ctx.fillText(text, segX, y);
+                        }
+
+                        ctx.textAlign = savedAlign;
+                    });
+                });
 
                 ctx.restore();
             };
@@ -6718,6 +6596,14 @@ app.registerExtension({
                 const container = document.createElement("div");
                 container.style.cssText = `position:fixed;left:${vr.left}px;top:${vr.top}px;width:${Math.max(260, node.size[0] * sc)}px;z-index:100000;`;
                 container.dataset.xzTitleEdit = node.id;
+
+                // textarea 文字默认透明，选中时可见
+                if (!document.getElementById("xzg-title-edit-selection-style")) {
+                    const style = document.createElement("style");
+                    style.id = "xzg-title-edit-selection-style";
+                    style.textContent = `[data-xz-title-edit] textarea::selection,[data-xz-title-edit] textarea::-moz-selection{color:#fff!important;background:#4CAF50!important;}`;
+                    document.head.appendChild(style);
+                }
                 
                 // 整个编辑面板拦截浏览器右键菜单
                 container.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); }, false);
@@ -6742,9 +6628,20 @@ app.registerExtension({
                 const editScale = Math.max(1, sc);
                 const editFontSize = p.fontSize * sc;
                 const editHeight = Math.max(90, node.size[1] * sc);
-                const glowShadow = p.glowEnabled ? `box-shadow:inset 0 0 ${(p.glowSize || 15) * (p.glowIntensity || 1)}px ${(p.glowSize || 15) * (p.glowIntensity || 1) / 2}px ${p.glowColor || "#FFD700"};` : "";
-                const initBgStyle = p.bgEnabled && p.bgColor ? (() => { const rgb = hexToRgb(p.bgColor); return `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`; })() : "transparent";
-                ta.style.cssText = `${glowShadow}width:100%;height:${editHeight}px;outline:1px dashed #4CAF50;border:none;resize:none;padding:3px;box-sizing:border-box;text-align:${p.textAlign || "center"};background:${initBgStyle};color:${p.fontColor};font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${editFontSize * (p.lineHeight || 1.4)}px;letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;caret-color:#00ff6a;overflow:hidden;white-space:pre;position:relative;`;
+                // canvas 文字基线位置: startY = fontSize * 0.75
+                // textarea 文字基线位置: padding-top + halfLeading + ascent
+                // halfLeading = (lineHeight - fontSize) / 2 = fontSize * (lineHeight - 1) / 2
+                // 对于 line-height: 1.4: halfLeading = fontSize * 0.2
+                // ascent ≈ fontSize * 0.8
+                // 所以 textarea 基线 = padding-top + fontSize * 0.2 + fontSize * 0.8 = padding-top + fontSize
+                // canvas 基线（屏幕空间）= p.fontSize * 0.75 * sc
+                // 对齐: padding-top + p.fontSize * sc = p.fontSize * 0.75 * sc
+                // => padding-top = -0.25 * p.fontSize * sc （负值，不设padding，让文字在顶部）
+                // 此时 textarea 文字顶部 = 0 + halfLeading = 0.2 * p.fontSize * sc
+                // canvas 文字顶部 = (0.75 - 0.8) * p.fontSize * sc = -0.05 * p.fontSize * sc
+                // 差异仅 0.25 * fontSize * sc，约 12.5px（fontSize=50时），远小于旧公式的 43.5px
+                const editPaddingTop = 0;
+                ta.style.cssText = `width:100%;height:${editHeight}px;outline:none;border:none;resize:none;padding:${editPaddingTop}px 0 0 0;box-sizing:border-box;text-align:left;background:transparent;color:transparent;caret-color:#00ff6a;-webkit-text-fill-color:transparent;font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${p.lineHeight || 1.4};letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;overflow:hidden;white-space:pre;position:relative;`;
                 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = `position:absolute;left:0;right:0;bottom:100%;display:flex;align-items:stretch;margin-bottom:6px;`;
@@ -6799,11 +6696,11 @@ app.registerExtension({
                 const letterSpacingValue = document.createElement("span");
                 letterSpacingValue.textContent = (p.letterSpacing || 0).toFixed(1) + "px";
                 letterSpacingValue.style.cssText = `color:#4CAF50;font-size:13px;white-space:nowrap;min-width:40px;text-align:right;font-family:Arial,sans-serif;`;
-                
+
                 rowLetterSpacing.appendChild(letterSpacingLabel);
                 rowLetterSpacing.appendChild(letterSpacingSlider);
                 rowLetterSpacing.appendChild(letterSpacingValue);
-                
+
                 const row2 = document.createElement("div");
                 row2.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;`;
                 
@@ -6822,13 +6719,13 @@ app.registerExtension({
                 const lineHeightValue = document.createElement("span");
                 lineHeightValue.textContent = (p.lineHeight || 1.4).toFixed(1);
                 lineHeightValue.style.cssText = `color:#4CAF50;font-size:13px;white-space:nowrap;min-width:30px;text-align:right;font-family:Arial,sans-serif;`;
-                
+
                 row2.appendChild(lineHeightLabel);
                 row2.appendChild(lineHeightSlider);
                 row2.appendChild(lineHeightValue);
                 
                 const row3 = document.createElement("div");
-                row3.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;justify-content:space-between;`;
+                row3.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;`;
                 
                 const fontSizeGroup = document.createElement("div");
                 fontSizeGroup.style.cssText = `display:flex;align-items:center;gap:4px;`;
@@ -6879,8 +6776,8 @@ app.registerExtension({
                 row3.appendChild(rightGroup);
                 
                 const colorPanel = document.createElement("div");
-                colorPanel.style.cssText = `background:rgba(42,42,42,0.95);border:1px solid #444;border-left:none;border-radius:0 6px 6px 0;padding:8px;user-select:none;display:flex;flex-direction:column;align-items:stretch;`;
-                
+                colorPanel.style.cssText = `width:157px;flex-shrink:0;background:rgba(42,42,42,0.95);border:1px solid #444;border-left:none;border-radius:0 6px 6px 0;padding:8px;user-select:none;display:flex;flex-direction:column;align-items:stretch;align-self:flex-end;`;
+
                 const svCanvas = document.createElement("canvas");
                 svCanvas.width = 140;
                 svCanvas.height = 110;
@@ -6889,7 +6786,7 @@ app.registerExtension({
                 const hueCanvas = document.createElement("canvas");
                 hueCanvas.width = 140;
                 hueCanvas.height = 20;
-                hueCanvas.style.cssText = `width:140px;height:20px;border-radius:4px;cursor:pointer;display:block;`;
+                hueCanvas.style.cssText = `width:140px;height:20px;border-radius:4px;cursor:pointer;display:block;margin-top:auto;`;
                 
                 colorPanel.appendChild(svCanvas);
                 colorPanel.appendChild(hueCanvas);
@@ -7008,15 +6905,12 @@ app.registerExtension({
                         glowColorBtn.style.background = hex;
                         updateTextareaGlow();
                     } else if (activeColorTarget === "bg") {
-                        p.bgColor = hex;  // 始终保存颜色值
-                        if (p.bgEnabled) {  // 仅在开启时预览
-                            ta.style.background = hex;
-                        }
-                        if (node.graph) node.graph.setDirtyCanvas(true, true);
+                        p.bgColor = hex;
+                        refreshTextareaVisuals();
                     } else {
                         p.fontColor = hex;
-                        ta.style.color = hex;
                         localStorage.setItem('xzg_last_title_color', hex);
+                        refreshTextareaVisuals();
                     }
                     drawSV();
                     drawHue();
@@ -7127,12 +7021,11 @@ app.registerExtension({
                     return btn;
                 };
                 
-                // 四类功能主题色：背景红 / 辉光黄 / 炫彩绿 / 箭头青
+                // 三类功能主题色：背景红 / 辉光黄 / 炫彩绿
                 const THEME_COLOR = {
                     bg:       "#FF5252", // 背景 → 红
                     glow:     "#FFD700", // 辉光 → 黄
                     rainbow:  "#4CAF50", // 炫彩 → 绿
-                    arrow:    "#00BCD4", // 箭头 → 青
                 };
 
                 const row4 = document.createElement("div");
@@ -7142,7 +7035,7 @@ app.registerExtension({
 
                 const glowSizeLabel = document.createElement("span");
                 glowSizeLabel.textContent = "大小";
-                glowSizeLabel.style.cssText = `color:${THEME_COLOR.glow};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;min-width:36px;`;
+                glowSizeLabel.style.cssText = `color:${THEME_COLOR.glow};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;`;
 
                 const glowSizeSlider = document.createElement("input");
                 glowSizeSlider.type = "range";
@@ -7154,7 +7047,7 @@ app.registerExtension({
 
                 const glowIntensityLabel = document.createElement("span");
                 glowIntensityLabel.textContent = "强度";
-                glowIntensityLabel.style.cssText = `color:${THEME_COLOR.glow};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;min-width:36px;`;
+                glowIntensityLabel.style.cssText = `color:${THEME_COLOR.glow};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;`;
 
                 const glowIntensitySlider = document.createElement("input");
                 glowIntensitySlider.type = "range";
@@ -7167,7 +7060,7 @@ app.registerExtension({
                 let activeColorTarget = "font";
 
                 const glowColorBtn = document.createElement("button");
-                glowColorBtn.style.cssText = `width:30px;height:24px;padding:0;border:2px solid #444;border-radius:3px;background:${p.glowColor || THEME_COLOR.glow};cursor:pointer;flex-shrink:0;`;
+                glowColorBtn.style.cssText = `width:30px;height:24px;padding:0;border:2px solid #444;border-radius:3px;background:${p.glowColor || THEME_COLOR.glow};cursor:pointer;flex-shrink:0;display:${p.glowEnabled ? '' : 'none'};`;
                 glowColorBtn.title = "辉光颜色（点击弹出独立调色面板）";
                 glowColorBtn.addEventListener("click", (e) => {
                     e.stopPropagation();
@@ -7183,14 +7076,9 @@ app.registerExtension({
                 bgToggle.title = "左键拖动调色框和色相条改变文字颜色，右键拖动改变背景色";
                 bgRow.appendChild(bgToggle);
 
-                // 与辉光行颜色按钮等宽占位，确保两个ControlsWrap起始位置对齐
-                const bgColorPlaceholder = document.createElement("span");
-                bgColorPlaceholder.style.cssText = `width:30px;flex-shrink:0;`;
-                bgRow.appendChild(bgColorPlaceholder);
-
                 const bgOpacityLabel = document.createElement("span");
                 bgOpacityLabel.textContent = "透明度";
-                bgOpacityLabel.style.cssText = `color:${THEME_COLOR.bg};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;min-width:36px;`;
+                bgOpacityLabel.style.cssText = `color:${THEME_COLOR.bg};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;display:inline-block;text-align:left;min-width:42px;`;
 
                 const bgOpacitySlider = document.createElement("input");
                 bgOpacitySlider.type = "range";
@@ -7200,72 +7088,71 @@ app.registerExtension({
                 bgOpacitySlider.value = Math.round((p.bgOpacity ?? 1) * 100);
                 bgOpacitySlider.style.cssText = `flex:1;height:4px;cursor:pointer;min-width:40px;accent-color:${THEME_COLOR.bg};`;
 
-                const bgOpacityValue = document.createElement("span");
-                bgOpacityValue.textContent = Math.round((p.bgOpacity ?? 1) * 100) + "%";
-                bgOpacityValue.style.cssText = `color:${THEME_COLOR.bg};font-size:12px;min-width:30px;text-align:center;font-family:Arial,sans-serif;`;
-
                 const bgRadiusLabel = document.createElement("span");
                 bgRadiusLabel.textContent = "圆角";
-                bgRadiusLabel.style.cssText = `color:${THEME_COLOR.bg};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;min-width:36px;`;
+                bgRadiusLabel.style.cssText = `color:${THEME_COLOR.bg};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;display:inline-block;text-align:left;min-width:42px;`;
 
                 const bgRadiusSlider = document.createElement("input");
                 bgRadiusSlider.type = "range";
                 bgRadiusSlider.min = "0";
-                bgRadiusSlider.max = "8";
+                bgRadiusSlider.max = "20";
                 bgRadiusSlider.step = "1";
                 bgRadiusSlider.value = p.borderRadius ?? 8;
                 bgRadiusSlider.style.cssText = `flex:1;height:4px;cursor:pointer;min-width:40px;accent-color:${THEME_COLOR.bg};`;
 
-                const bgRadiusValue = document.createElement("span");
-                bgRadiusValue.textContent = (p.borderRadius ?? 8) + "px";
-                bgRadiusValue.style.cssText = `color:${THEME_COLOR.bg};font-size:12px;min-width:30px;text-align:center;font-family:Arial,sans-serif;`;
-
-                // 透明度 Cell：标签 + 滑条 + 值
+                // 透明度 Cell：标签 + 滑条
                 const bgOpacityCell = document.createElement("div");
                 bgOpacityCell.style.cssText = `display:flex;align-items:center;gap:8px;flex:1;min-width:0;`;
                 bgOpacityCell.appendChild(bgOpacityLabel);
                 bgOpacityCell.appendChild(bgOpacitySlider);
-                bgOpacityCell.appendChild(bgOpacityValue);
 
-                // 圆角 Cell：标签 + 滑条 + 值
+                // 圆角 Cell：标签 + 滑条
                 const bgRadiusCell = document.createElement("div");
                 bgRadiusCell.style.cssText = `display:flex;align-items:center;gap:8px;flex:1;min-width:0;`;
                 bgRadiusCell.appendChild(bgRadiusLabel);
                 bgRadiusCell.appendChild(bgRadiusSlider);
-                bgRadiusCell.appendChild(bgRadiusValue);
 
-                // 透明度和圆角放在同一行，两个 Cell 各 flex:1 平分宽度，与辉光行对齐
+                // 边距 Cell：标签 + 滑条
+                const bgPaddingLabel = document.createElement("span");
+                bgPaddingLabel.textContent = "边距";
+                bgPaddingLabel.style.cssText = `color:${THEME_COLOR.bg};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;margin-left:4px;display:inline-block;text-align:left;min-width:42px;`;
+
+                const bgPaddingSlider = document.createElement("input");
+                bgPaddingSlider.type = "range";
+                bgPaddingSlider.min = "0";
+                bgPaddingSlider.max = "30";
+                bgPaddingSlider.step = "1";
+                bgPaddingSlider.value = p.bgPadding ?? 4;
+                bgPaddingSlider.style.cssText = `flex:1;height:4px;cursor:pointer;min-width:40px;accent-color:${THEME_COLOR.bg};`;
+
+                const bgPaddingCell = document.createElement("div");
+                bgPaddingCell.style.cssText = `display:flex;align-items:center;gap:8px;flex:1;min-width:0;`;
+                bgPaddingCell.appendChild(bgPaddingLabel);
+                bgPaddingCell.appendChild(bgPaddingSlider);
+
+                // 透明度和圆角分两行，避免界面太宽
                 const bgControlsWrap = document.createElement("div");
-                bgControlsWrap.style.cssText = `display:${p.bgEnabled ? 'flex' : 'none'};align-items:center;gap:8px;flex-wrap:nowrap;flex:1;min-width:0;`;
+                bgControlsWrap.style.cssText = `display:${p.bgEnabled ? 'flex' : 'none'};flex-direction:column;gap:4px;flex:1;min-width:0;`;
                 bgControlsWrap.appendChild(bgOpacityCell);
                 bgControlsWrap.appendChild(bgRadiusCell);
+                bgControlsWrap.appendChild(bgPaddingCell);
 
                 bgRow.appendChild(bgControlsWrap);
 
-                // 大小滑条后的占位，与背景行 opacityValue 宽度一致
-                const glowSizePlaceholder = document.createElement("span");
-                glowSizePlaceholder.style.cssText = `min-width:30px;flex-shrink:0;`;
-
-                // 强度滑条后的占位，与背景行 radiusValue 宽度一致
-                const glowIntensityPlaceholder = document.createElement("span");
-                glowIntensityPlaceholder.style.cssText = `min-width:30px;flex-shrink:0;`;
-
-                // 大小 Cell：与背景透明度 Cell 结构一致
+                // 大小 Cell：滑条尽力铺满
                 const glowSizeCell = document.createElement("div");
                 glowSizeCell.style.cssText = `display:flex;align-items:center;gap:8px;flex:1;min-width:0;`;
                 glowSizeCell.appendChild(glowSizeLabel);
                 glowSizeCell.appendChild(glowSizeSlider);
-                glowSizeCell.appendChild(glowSizePlaceholder);
 
-                // 强度 Cell：与背景圆角 Cell 结构一致
+                // 强度 Cell：滑条尽力铺满
                 const glowIntensityCell = document.createElement("div");
                 glowIntensityCell.style.cssText = `display:flex;align-items:center;gap:8px;flex:1;min-width:0;`;
                 glowIntensityCell.appendChild(glowIntensityLabel);
                 glowIntensityCell.appendChild(glowIntensitySlider);
-                glowIntensityCell.appendChild(glowIntensityPlaceholder);
 
                 const glowControlsWrap = document.createElement("div");
-                glowControlsWrap.style.cssText = `display:${p.glowEnabled ? 'flex' : 'none'};align-items:center;gap:8px;flex-wrap:nowrap;flex:1;min-width:0;`;
+                glowControlsWrap.style.cssText = `display:${p.glowEnabled ? 'flex' : 'none'};flex-direction:column;gap:4px;flex:1;min-width:0;`;
                 glowControlsWrap.appendChild(glowSizeCell);
                 glowControlsWrap.appendChild(glowIntensityCell);
 
@@ -7305,142 +7192,31 @@ app.registerExtension({
                 rainbowSpeedSlider.max = "60";
                 rainbowSpeedSlider.step = "0.1";
                 rainbowSpeedSlider.value = p.rainbowSpeed ?? 30;
-                rainbowSpeedSlider.style.cssText = `width:120px;height:4px;cursor:pointer;accent-color:${THEME_COLOR.rainbow};`;
+                rainbowSpeedSlider.style.cssText = `flex:1;height:4px;cursor:pointer;min-width:40px;accent-color:${THEME_COLOR.rainbow};`;
 
                 const rainbowControlsWrap = document.createElement("div");
-                rainbowControlsWrap.style.cssText = `display:${p.rainbowEnabled ? 'flex' : 'none'};align-items:center;gap:8px;`;
-                rainbowControlsWrap.appendChild(rainbowStyleLabel);
-                rainbowControlsWrap.appendChild(rainbowStyleSelect);
-                rainbowControlsWrap.appendChild(rainbowSpeedLabel);
-                rainbowControlsWrap.appendChild(rainbowSpeedSlider);
+                rainbowControlsWrap.style.cssText = `display:${p.rainbowEnabled ? 'flex' : 'none'};flex-direction:column;gap:4px;flex:1;min-width:0;`;
+                const rainbowStyleRow = document.createElement("div");
+                rainbowStyleRow.style.cssText = `display:flex;align-items:center;gap:8px;`;
+                rainbowStyleRow.appendChild(rainbowStyleLabel);
+                rainbowStyleRow.appendChild(rainbowStyleSelect);
+                rainbowControlsWrap.appendChild(rainbowStyleRow);
+                const rainbowSpeedRow = document.createElement("div");
+                rainbowSpeedRow.style.cssText = `display:flex;align-items:center;gap:8px;`;
+                rainbowSpeedRow.appendChild(rainbowSpeedLabel);
+                rainbowSpeedRow.appendChild(rainbowSpeedSlider);
+                rainbowControlsWrap.appendChild(rainbowSpeedRow);
 
                 row5.appendChild(rainbowToggle);
                 row5.appendChild(rainbowControlsWrap);
 
-                // ====== 箭头控制行 ======
-                const arrowRow = document.createElement("div");
-                arrowRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;flex-wrap:wrap;`;
-
-                const arrowToggle = createToggleBtn("箭头", p.arrowEnabled, THEME_COLOR.arrow);
-
-                // 箭头控件统一样式（4行布局，每行：标签 + 滑条 + 数值）
-                const arrowLabelStyle = `color:${THEME_COLOR.arrow};font-size:13px;white-space:nowrap;font-family:Arial,sans-serif;width:28px;text-align:right;flex-shrink:0;`;
-                const arrowSliderStyle = `flex:1;height:4px;cursor:pointer;min-width:60px;accent-color:${THEME_COLOR.arrow};`;
-                const arrowValueStyle = `color:${THEME_COLOR.arrow};font-size:12px;min-width:32px;text-align:center;font-family:Arial,sans-serif;flex-shrink:0;`;
-                const arrowLineStyle = `display:flex;align-items:center;gap:6px;`;
-
-                const arrowAngleLabel = document.createElement("span");
-                arrowAngleLabel.textContent = "角度";
-                arrowAngleLabel.style.cssText = arrowLabelStyle;
-
-                const arrowAngleSlider = document.createElement("input");
-                arrowAngleSlider.type = "range";
-                arrowAngleSlider.min = "0";
-                arrowAngleSlider.max = "360";
-                arrowAngleSlider.step = "1";
-                arrowAngleSlider.value = p.arrowAngle ?? 0;
-                arrowAngleSlider.style.cssText = arrowSliderStyle;
-
-                const arrowAngleValue = document.createElement("span");
-                arrowAngleValue.textContent = (p.arrowAngle ?? 0) + "°";
-                arrowAngleValue.style.cssText = arrowValueStyle;
-
-                const arrowCurveLabel = document.createElement("span");
-                arrowCurveLabel.textContent = "弯度";
-                arrowCurveLabel.style.cssText = arrowLabelStyle;
-
-                const arrowCurveSlider = document.createElement("input");
-                arrowCurveSlider.type = "range";
-                arrowCurveSlider.min = "-100";
-                arrowCurveSlider.max = "100";
-                arrowCurveSlider.step = "1";
-                arrowCurveSlider.value = p.arrowCurvature ?? 0;
-                arrowCurveSlider.style.cssText = arrowSliderStyle;
-
-                const arrowCurveValue = document.createElement("span");
-                arrowCurveValue.textContent = (p.arrowCurvature ?? 0).toString();
-                arrowCurveValue.style.cssText = arrowValueStyle;
-
-                const arrowThickLabel = document.createElement("span");
-                arrowThickLabel.textContent = "粗细";
-                arrowThickLabel.style.cssText = arrowLabelStyle;
-
-                const arrowThickSlider = document.createElement("input");
-                arrowThickSlider.type = "range";
-                arrowThickSlider.min = "1";
-                arrowThickSlider.max = "20";
-                arrowThickSlider.step = "1";
-                arrowThickSlider.value = p.arrowThickness ?? 3;
-                arrowThickSlider.style.cssText = arrowSliderStyle;
-
-                const arrowThickValue = document.createElement("span");
-                arrowThickValue.textContent = (p.arrowThickness ?? 3).toString();
-                arrowThickValue.style.cssText = arrowValueStyle;
-
-                const arrowLenLabel = document.createElement("span");
-                arrowLenLabel.textContent = "长度";
-                arrowLenLabel.style.cssText = arrowLabelStyle;
-
-                const arrowLenSlider = document.createElement("input");
-                arrowLenSlider.type = "range";
-                arrowLenSlider.min = "10";
-                arrowLenSlider.max = "300";
-                arrowLenSlider.step = "1";
-                arrowLenSlider.value = p.arrowLength ?? 60;
-                arrowLenSlider.style.cssText = arrowSliderStyle;
-
-                const arrowLenValue = document.createElement("span");
-                arrowLenValue.textContent = (p.arrowLength ?? 60).toString();
-                arrowLenValue.style.cssText = arrowValueStyle;
-
-                // 箭头颜色按钮（弹出独立调色面板，避免与文字颜色/背景颜色冲突）
-                const arrowColorBtn = document.createElement("button");
-                arrowColorBtn.style.cssText = `width:30px;height:24px;padding:0;border:2px solid #444;border-radius:3px;background:${p.arrowColor || THEME_COLOR.arrow};cursor:pointer;flex-shrink:0;display:${p.arrowEnabled ? 'inline-block' : 'none'};`;
-                arrowColorBtn.title = "箭头颜色（点击弹出独立调色面板）";
-
-                // 4 行布局：角度、弯度、粗细、长度
-                const arrowLine1 = document.createElement("div");
-                arrowLine1.style.cssText = arrowLineStyle;
-                arrowLine1.appendChild(arrowAngleLabel);
-                arrowLine1.appendChild(arrowAngleSlider);
-                arrowLine1.appendChild(arrowAngleValue);
-
-                const arrowLine2 = document.createElement("div");
-                arrowLine2.style.cssText = arrowLineStyle;
-                arrowLine2.appendChild(arrowCurveLabel);
-                arrowLine2.appendChild(arrowCurveSlider);
-                arrowLine2.appendChild(arrowCurveValue);
-
-                const arrowLine3 = document.createElement("div");
-                arrowLine3.style.cssText = arrowLineStyle;
-                arrowLine3.appendChild(arrowThickLabel);
-                arrowLine3.appendChild(arrowThickSlider);
-                arrowLine3.appendChild(arrowThickValue);
-
-                const arrowLine4 = document.createElement("div");
-                arrowLine4.style.cssText = arrowLineStyle;
-                arrowLine4.appendChild(arrowLenLabel);
-                arrowLine4.appendChild(arrowLenSlider);
-                arrowLine4.appendChild(arrowLenValue);
-
-                const arrowControlsWrap = document.createElement("div");
-                arrowControlsWrap.style.cssText = `display:${p.arrowEnabled ? 'flex' : 'none'};flex-direction:column;gap:4px;width:100%;`;
-                arrowControlsWrap.appendChild(arrowLine1);
-                arrowControlsWrap.appendChild(arrowLine2);
-                arrowControlsWrap.appendChild(arrowLine3);
-                arrowControlsWrap.appendChild(arrowLine4);
-
-                arrowRow.appendChild(arrowToggle);
-                arrowRow.appendChild(arrowColorBtn);
-                arrowRow.appendChild(arrowControlsWrap);
-
-                // 高级选项（背景、辉光、炫彩、箭头）折叠区域
+                // 高级选项（背景、辉光、炫彩）折叠区域
                 const advancedToggle = createToggleBtn("高级", false, "#FFD700");
                 advancedToggle.style.background = 'transparent';
                 const origUpdate = advancedToggle._update;
                 advancedToggle._update = (isOn) => { origUpdate(isOn); advancedToggle.style.background = 'transparent'; };
                 const advancedRow = document.createElement("div");
-                advancedRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;flex-wrap:nowrap;`;
+                advancedRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:0 6px;flex-wrap:nowrap;margin-left:-2px;`;
                 advancedRow.appendChild(advancedToggle);
 
                 const helpBtn = document.createElement("button");
@@ -7454,7 +7230,7 @@ app.registerExtension({
                     overlay.style.cssText = `position:fixed;left:0;top:0;width:100%;height:100%;z-index:100001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);`;
                     const box = document.createElement("div");
                     box.style.cssText = `background:#2a2a2a;border:1px solid #555;border-radius:10px;padding:28px 36px;max-width:700px;box-shadow:0 8px 32px rgba(0,0,0,0.6);color:#ddd;font-size:15px;line-height:2;font-family:Arial,sans-serif;display:flex;flex-direction:column;justify-content:center;`;
-                    box.innerHTML = `点击"背景"按钮开启<br>开启后弹出两个滑条：透明度（5%-100%）、圆角（0-30px，0为直角）<br>左键拖动调色框和色相条 → 改变文字颜色<br><span style="white-space:nowrap;"><span style="color:#FFD700;">右键</span>拖动调色框和色相条 → 改变背景色</span>`;
+                    box.innerHTML = `点击"背景"按钮开启<br>开启后弹出两个滑条：透明度（5%-100%）、圆角（0-20px，0为直角）<br>左键拖动调色框和色相条 → 改变文字颜色<br><span style="white-space:nowrap;"><span style="color:#FFD700;">右键</span>拖动调色框和色相条 → 改变背景色</span>`;
                     overlay.appendChild(box);
                     document.body.appendChild(overlay);
                     overlay.addEventListener("click", () => overlay.remove());
@@ -7462,7 +7238,7 @@ app.registerExtension({
                 advancedRow.appendChild(helpBtn);
 
                 const advancedWrap = document.createElement("div");
-                const anyAdvancedOn = p.bgEnabled || p.glowEnabled || p.rainbowEnabled || p.arrowEnabled;
+                const anyAdvancedOn = p.bgEnabled || p.glowEnabled || p.rainbowEnabled;
                 advancedWrap.style.cssText = `display:${anyAdvancedOn ? 'flex' : 'none'};flex-direction:column;`;
                 advancedRow.style.display = anyAdvancedOn ? 'none' : 'flex';
                 if (anyAdvancedOn) advancedToggle._update(true);
@@ -7471,9 +7247,6 @@ app.registerExtension({
                 advancedWrap.appendChild(row4);
                 advancedWrap.appendChild(rowSeparator());
                 advancedWrap.appendChild(row5);
-                advancedWrap.appendChild(rowSeparator());
-                advancedWrap.appendChild(arrowRow);
-                advancedWrap.appendChild(rowSeparator());
 
                 leftPanel.appendChild(advancedRow);
                 leftPanel.appendChild(advancedWrap);
@@ -7494,7 +7267,7 @@ app.registerExtension({
                 presetsLabel.style.cssText = `color:#aaa;font-size:12px;white-space:nowrap;font-family:Arial,sans-serif;min-width:28px;`;
 
                 const presetsContainer = document.createElement("div");
-                presetsContainer.style.cssText = `display:flex;gap:3px;flex:1;`;
+                presetsContainer.style.cssText = `display:flex;gap:3px;flex:1;min-width:0;`;
 
                 const getTitlePresets = () => {
                     try {
@@ -7517,18 +7290,26 @@ app.registerExtension({
 
                 const renderTitlePresets = () => {
                     const presets = getTitlePresets();
+                    const rainbowGradient = 'linear-gradient(90deg, #ff0000, #00ff00, #0000ff)';
                     presetsContainer.querySelectorAll(".xz-title-preset-item").forEach((item, index) => {
                         const preset = presets[index];
                         const swatch = item.querySelector(".xz-title-preset-swatch");
                         const sizeLabel = item.querySelector(".xz-title-preset-size");
                         if (preset) {
-                            if (swatch) swatch.style.background = preset.fontColor || "#ffffff";
+                            if (preset.rainbowEnabled) {
+                                // 炫彩开启时显示七彩虹渐变
+                                swatch.style.background = rainbowGradient;
+                            } else {
+                                swatch.style.background = preset.fontColor || "#ffffff";
+                            }
                             if (sizeLabel) {
                                 sizeLabel.textContent = preset.fontSize || 14;
-                                sizeLabel.style.color = "#4CAF50";
+                                sizeLabel.style.color = preset.rainbowEnabled ? "#ff4444" : "#4CAF50";
                             }
                             item.style.borderStyle = "solid";
-                            item.title = `预设${index + 1}：${preset.fontSize || 14}px`;
+                            item.title = preset.rainbowEnabled
+                                ? `预设${index + 1}：${preset.fontSize || 14}px（炫彩）`
+                                : `预设${index + 1}：${preset.fontSize || 14}px`;
                         } else {
                             if (swatch) swatch.style.background = "#333";
                             if (sizeLabel) {
@@ -7551,7 +7332,6 @@ app.registerExtension({
                     }
                     if (preset.fontColor !== undefined) {
                         p.fontColor = preset.fontColor;
-                        ta.style.color = preset.fontColor;
                         localStorage.setItem('xzg_last_title_color', preset.fontColor);
                         if (activeColorTarget === "font") {
                             initFromColor(preset.fontColor);
@@ -7570,19 +7350,9 @@ app.registerExtension({
                         p.bgEnabled = preset.bgEnabled;
                         bgToggle._update(p.bgEnabled);
                         bgControlsWrap.style.display = p.bgEnabled ? 'flex' : 'none';
-                        if (p.bgEnabled && p.bgColor) {
-                            const rgb = hexToRgb(p.bgColor);
-                            ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`;
-                        } else {
-                            ta.style.background = "transparent";
-                        }
                     }
                     if (preset.bgColor !== undefined) {
                         p.bgColor = preset.bgColor;
-                        if (p.bgEnabled) {
-                            const rgb = hexToRgb(p.bgColor);
-                            ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`;
-                        }
                         if (activeColorTarget === "bg") {
                             initFromColor(preset.bgColor);
                         }
@@ -7590,22 +7360,21 @@ app.registerExtension({
                     if (preset.bgOpacity !== undefined) {
                         p.bgOpacity = preset.bgOpacity;
                         bgOpacitySlider.value = Math.round(preset.bgOpacity * 100);
-                        bgOpacityValue.textContent = Math.round(preset.bgOpacity * 100) + "%";
-                        if (p.bgEnabled && p.bgColor) {
-                            const rgb = hexToRgb(p.bgColor);
-                            ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${preset.bgOpacity})`;
-                        }
                     }
                     if (preset.borderRadius !== undefined) {
                         p.borderRadius = preset.borderRadius;
                         bgRadiusSlider.value = preset.borderRadius;
-                        bgRadiusValue.textContent = preset.borderRadius + "px";
                         ta.style.borderRadius = preset.borderRadius * (getNodeViewportRect(node)?.scale || 1) + "px";
+                    }
+                    if (preset.bgPadding !== undefined) {
+                        p.bgPadding = preset.bgPadding;
+                        bgPaddingSlider.value = preset.bgPadding;
                     }
                     if (preset.glowEnabled !== undefined) {
                         p.glowEnabled = preset.glowEnabled;
                         glowToggle._update(p.glowEnabled);
                         glowControlsWrap.style.display = p.glowEnabled ? 'flex' : 'none';
+                        glowColorBtn.style.display = p.glowEnabled ? '' : 'none';
                         updateTextareaGlow();
                     }
                     if (preset.glowColor !== undefined) {
@@ -7639,37 +7408,8 @@ app.registerExtension({
                         p.rainbowSpeed = preset.rainbowSpeed;
                         rainbowSpeedSlider.value = preset.rainbowSpeed;
                     }
-                    if (preset.arrowEnabled !== undefined) {
-                        p.arrowEnabled = preset.arrowEnabled;
-                        arrowToggle._update(p.arrowEnabled);
-                        arrowControlsWrap.style.display = p.arrowEnabled ? 'flex' : 'none';
-                        arrowColorBtn.style.display = p.arrowEnabled ? 'inline-block' : 'none';
-                    }
-                    if (preset.arrowColor !== undefined) {
-                        p.arrowColor = preset.arrowColor;
-                        arrowColorBtn.style.background = preset.arrowColor;
-                    }
-                    if (preset.arrowAngle !== undefined) {
-                        p.arrowAngle = preset.arrowAngle;
-                        arrowAngleSlider.value = preset.arrowAngle;
-                        arrowAngleValue.textContent = preset.arrowAngle + "°";
-                    }
-                    if (preset.arrowCurvature !== undefined) {
-                        p.arrowCurvature = preset.arrowCurvature;
-                        arrowCurveSlider.value = preset.arrowCurvature;
-                        arrowCurveValue.textContent = preset.arrowCurvature.toString();
-                    }
-                    if (preset.arrowThickness !== undefined) {
-                        p.arrowThickness = preset.arrowThickness;
-                        arrowThickSlider.value = preset.arrowThickness;
-                        arrowThickValue.textContent = preset.arrowThickness.toString();
-                    }
-                    if (preset.arrowLength !== undefined) {
-                        p.arrowLength = preset.arrowLength;
-                        arrowLenSlider.value = preset.arrowLength;
-                        arrowLenValue.textContent = preset.arrowLength.toString();
-                    }
-
+                    refreshTextareaVisuals();
+                    saveLastTitleConfig(p);
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
@@ -7790,6 +7530,7 @@ app.registerExtension({
                         bgColor: p.bgColor,
                         bgOpacity: p.bgOpacity,
                         borderRadius: p.borderRadius,
+                        bgPadding: p.bgPadding,
                         glowEnabled: p.glowEnabled,
                         glowColor: p.glowColor,
                         glowSize: p.glowSize,
@@ -7797,13 +7538,8 @@ app.registerExtension({
                         rainbowEnabled: p.rainbowEnabled,
                         rainbowStyle: p.rainbowStyle,
                         rainbowSpeed: p.rainbowSpeed,
-                        arrowEnabled: p.arrowEnabled,
-                        arrowColor: p.arrowColor,
-                        arrowAngle: p.arrowAngle,
-                        arrowCurvature: p.arrowCurvature,
-                        arrowThickness: p.arrowThickness,
-                        arrowLength: p.arrowLength,
                     };
+                    saveLastTitleConfig(p);
                     saveTitlePresets(presets);
                     renderTitlePresets();
                 };
@@ -7812,7 +7548,7 @@ app.registerExtension({
                     const presetItem = document.createElement("div");
                     presetItem.className = "xz-title-preset-item";
                     presetItem.dataset.preset = i;
-                    presetItem.style.cssText = `flex:1;display:flex;height:20px;border-radius:3px;cursor:pointer;border:1.5px solid #444;transition:all 0.2s;position:relative;overflow:hidden;`;
+                    presetItem.style.cssText = `display:flex;height:20px;flex:1;min-width:0;border-radius:3px;cursor:pointer;border:1.5px solid #444;transition:all 0.2s;position:relative;overflow:hidden;`;
 
                     const sizeLabel = document.createElement("span");
                     sizeLabel.className = "xz-title-preset-size";
@@ -7881,8 +7617,8 @@ app.registerExtension({
                     if (node._composing) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
                     const ae = document.activeElement;
                     if (colorPanel.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
-                    if (advancedWrap.contains(ae) || bgRow.contains(ae) || row4.contains(ae) || row5.contains(ae) || arrowRow.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
-                    if (ae !== ta && ae !== slider && ae !== letterSpacingSlider && ae !== lineHeightSlider && ae !== alignLeft && ae !== alignCenter && ae !== alignRight && ae !== glowToggle && ae !== glowSizeSlider && ae !== glowIntensitySlider && ae !== glowColorBtn && ae !== rainbowToggle && ae !== rainbowSpeedSlider && ae !== bgToggle && ae !== bgOpacitySlider && ae !== bgRadiusSlider && ae !== advancedToggle && ae !== arrowToggle && ae !== arrowAngleSlider && ae !== arrowCurveSlider && ae !== arrowThickSlider && ae !== arrowLenSlider && ae !== arrowColorBtn) { ta.focus({ preventScroll: true }); }
+                    if (advancedWrap.contains(ae) || bgRow.contains(ae) || row4.contains(ae) || row5.contains(ae)) { node._focusGuard = requestAnimationFrame(_focusTick); return; }
+                    if (ae !== ta && ae !== slider && ae !== letterSpacingSlider && ae !== lineHeightSlider && ae !== alignLeft && ae !== alignCenter && ae !== alignRight && ae !== glowToggle && ae !== glowSizeSlider && ae !== glowIntensitySlider && ae !== glowColorBtn && ae !== rainbowToggle && ae !== rainbowSpeedSlider && ae !== bgToggle && ae !== bgOpacitySlider && ae !== bgRadiusSlider && ae !== advancedToggle) { ta.focus({ preventScroll: true }); }
                     node._focusGuard = requestAnimationFrame(_focusTick);
                 };
                 node._focusGuard = requestAnimationFrame(_focusTick);
@@ -7896,35 +7632,66 @@ app.registerExtension({
                     const scale = nr ? nr.scale : 1;
                     ta.style.fontSize = s * scale + "px";
                     ta.style.lineHeight = s * scale * 1.4 + "px";
-                    sliderValue.textContent = s + "px";
                     if (s <= 100) {
                         slider.value = s;
                     }
+                    sliderValue.textContent = s + "px";
                     fontSizeInput.value = s;
                     node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
-                const updateTextAlign = (align) => {
-                    p.textAlign = align;
-                    ta.style.textAlign = align;
-                    alignLeft.style.cssText = alignBtnStyle + (align === "left" ? "background:#4CAF50;color:#fff;border-color:#4CAF50;" : "");
-                    alignCenter.style.cssText = alignBtnStyle + (align === "center" ? "background:#4CAF50;color:#fff;border-color:#4CAF50;" : "");
-                    alignRight.style.cssText = alignBtnStyle + (align === "right" ? "background:#4CAF50;color:#fff;border-color:#4CAF50;" : "");
+                const showToast = (msg) => {
+                    const existing = document.getElementById("xzg-title-toast");
+                    if (existing) existing.remove();
+                    const toast = document.createElement("div");
+                    toast.id = "xzg-title-toast";
+                    toast.textContent = msg;
+                    toast.style.cssText = `position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100002;background:rgba(0,0,0,0.8);color:#FFD700;font-size:14px;padding:10px 20px;border-radius:8px;font-family:Arial,sans-serif;pointer-events:none;white-space:nowrap;`;
+                    document.body.appendChild(toast);
+                    setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 1500);
+                };
+
+                // 进入编辑模式时临时切换为左对齐，退出时恢复指定对齐方式
+                const _savedTextAlign = p.textAlign || "center";
+                if (p.textAlign !== "left") {
+                    p.textAlign = "left";
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
+                }
+                let _pendingTextAlign = _savedTextAlign;
+
+                const updateTextAlign = (align) => {
+                    if (align === "left") {
+                        _pendingTextAlign = null;
+                        p.textAlign = "left";
+                        ta.style.textAlign = "left";
+                        alignLeft.style.cssText = alignBtnStyle + "background:#4CAF50;color:#fff;border-color:#4CAF50;";
+                        alignCenter.style.cssText = alignBtnStyle;
+                        alignRight.style.cssText = alignBtnStyle;
+                        if (node.graph) node.graph.setDirtyCanvas(true, true);
+                    } else {
+                        _pendingTextAlign = align;
+                        alignLeft.style.cssText = alignBtnStyle;
+                        alignCenter.style.cssText = alignBtnStyle + (align === "center" ? "background:#4CAF50;color:#fff;border-color:#4CAF50;" : "");
+                        alignRight.style.cssText = alignBtnStyle + (align === "right" ? "background:#4CAF50;color:#fff;border-color:#4CAF50;" : "");
+                        // 清除选中
+                        ta.selectionStart = ta.selectionEnd;
+                        if (node.graph) node.graph.setDirtyCanvas(true, true);
+                    }
                 };
 
                 const updateLineHeight = (value) => {
                     const v = parseFloat(value) || 1.4;
                     p.lineHeight = v;
+                    lineHeightValue.textContent = v.toFixed(1);
                     const nr = getNodeViewportRect(node);
                     const scale = nr ? nr.scale : 1;
                     ta.style.lineHeight = p.fontSize * scale * v + "px";
                     // 确保textarea高度能容纳新行距
                     const lines = (p.text || "").split("\n");
-                    const neededH = lines.length * p.fontSize * scale * v + 10;
+                    const bp = p.bgPadding ?? 4;
+                    const neededH = lines.length * p.fontSize * scale * v + bp * 2 * scale;
                     ta.style.height = Math.max(parseFloat(ta.style.height) || 90, neededH) + "px";
-                    lineHeightValue.textContent = v.toFixed(1);
                     node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
@@ -7932,9 +7699,9 @@ app.registerExtension({
                 const updateLetterSpacing = (value) => {
                     const v = parseFloat(value) || 0;
                     p.letterSpacing = v;
+                    letterSpacingValue.textContent = v.toFixed(1) + "px";
                     const currentScale = getNodeViewportRect(node)?.scale || 1;
                     ta.style.letterSpacing = (v * Math.max(1, currentScale)) + "px";
-                    letterSpacingValue.textContent = v.toFixed(1) + "px";
                     node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
@@ -7942,6 +7709,10 @@ app.registerExtension({
                 const saveClose = () => {
                     if (!node.editTextarea) return;
                     p.text = ta.value;
+                    if (_pendingTextAlign && _pendingTextAlign !== p.textAlign) {
+                        p.textAlign = _pendingTextAlign;
+                    }
+                    saveLastTitleConfig(p);
                     removeTitleEditor(node);
                     node._customWidth = null;
                     node._customHeight = null;
@@ -7958,10 +7729,11 @@ app.registerExtension({
                         const es = Math.max(1, s);
                         container.style.left = nr.left + "px";
                         container.style.top = nr.top + "px";
-                        container.style.width = node.size[0] * s + "px";
+                        container.style.width = Math.max(260, node.size[0] * s) + "px";
                         // textarea 高度按 CSS 行距计算，避免行距加大时文字被裁剪
                         const textLines = (ta.value || "").split("\n");
-                        const taContentH = textLines.length * p.fontSize * es * (p.lineHeight || 1.4) + 10;
+                        const bp = p.bgPadding ?? 4;
+                        const taContentH = textLines.length * p.fontSize * es * (p.lineHeight || 1.4) + bp * 2 * es;
                         ta.style.height = Math.max(node.size[1] * s, taContentH) + "px";
                         ta.style.fontSize = p.fontSize * s + "px";
                         ta.style.lineHeight = p.fontSize * s * (p.lineHeight || 1.4) + "px";
@@ -7974,6 +7746,7 @@ app.registerExtension({
 
                 slider.addEventListener("input", (e) => {
                     updateFontSize(e.target.value);
+                    sliderValue.textContent = e.target.value + "px";
                 });
                 
                 slider.addEventListener("mousedown", (e) => {
@@ -8003,12 +7776,14 @@ app.registerExtension({
 
                 lineHeightSlider.addEventListener("input", (e) => {
                     updateLineHeight(e.target.value);
+                    lineHeightValue.textContent = parseFloat(e.target.value).toFixed(1);
                 });
                 lineHeightSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
                 lineHeightSlider.addEventListener("click", (e) => { e.stopPropagation(); });
 
                 letterSpacingSlider.addEventListener("input", (e) => {
                     updateLetterSpacing(e.target.value);
+                    letterSpacingValue.textContent = parseFloat(e.target.value).toFixed(1) + "px";
                 });
                 letterSpacingSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
                 letterSpacingSlider.addEventListener("click", (e) => { e.stopPropagation(); });
@@ -8034,8 +7809,22 @@ app.registerExtension({
                     }
                 };
 
+                // 刷新 textarea 视觉：文字颜色、背景色、彩虹效果
+                const refreshTextareaVisuals = () => {
+                    // textarea 仅负责输入和光标定位，视觉渲染全部由 canvas 处理
+                    ta.style.color = 'transparent';
+                    ta.style.caretColor = '#00ff6a';
+                    ta.style.background = 'transparent';
+                    ta.style.webkitTextFillColor = 'transparent';
+                    ta.style.backgroundImage = '';
+                    ta.style.backgroundColor = 'transparent';
+                };
+
+                // 初始化：根据当前 p 状态应用视觉（彩虹/背景/文字颜色）
+                refreshTextareaVisuals();
+
                 const checkAutoCollapseAdvanced = () => {
-                    if (!p.bgEnabled && !p.glowEnabled && !p.rainbowEnabled && !p.arrowEnabled) {
+                    if (!p.bgEnabled && !p.glowEnabled && !p.rainbowEnabled) {
                         advancedWrap.style.display = 'none';
                         advancedRow.style.display = 'flex';
                         advancedToggle._update(false);
@@ -8046,6 +7835,7 @@ app.registerExtension({
                     p.glowEnabled = enabled;
                     glowToggle._update(enabled);
                     glowControlsWrap.style.display = enabled ? 'flex' : 'none';
+                    glowColorBtn.style.display = enabled ? '' : 'none';
                     updateTextareaGlow();
                     if (!enabled) checkAutoCollapseAdvanced();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
@@ -8072,7 +7862,7 @@ app.registerExtension({
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
-                // ====== 辉光独立调色面板（参照箭头调色面板，避免与文字颜色/背景颜色冲突） ======
+                // ====== 辉光独立调色面板（避免与文字颜色/背景颜色冲突） ======
                 const showGlowColorPicker = () => {
                     const existing = document.getElementById("xzg-glow-color-picker");
                     if (existing) { existing.remove(); return; }
@@ -8290,6 +8080,7 @@ app.registerExtension({
                     p.rainbowEnabled = enabled;
                     rainbowToggle._update(enabled);
                     rainbowControlsWrap.style.display = enabled ? 'flex' : 'none';
+                    refreshTextareaVisuals();
                     if (!enabled) checkAutoCollapseAdvanced();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
@@ -8304,31 +8095,29 @@ app.registerExtension({
                     p.bgEnabled = enabled;
                     bgToggle._update(enabled);
                     bgControlsWrap.style.display = enabled ? 'flex' : 'none';
-                    if (enabled && p.bgColor) {
-                        const rgb = hexToRgb(p.bgColor);
-                        ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${p.bgOpacity ?? 1})`;
-                    } else {
-                        ta.style.background = 'transparent';
-                    }
+                    refreshTextareaVisuals();
                     if (!enabled) checkAutoCollapseAdvanced();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
                 const updateBgOpacity = (opacity) => {
                     p.bgOpacity = opacity;
-                    bgOpacityValue.textContent = Math.round(opacity * 100) + "%";
-                    if (p.bgEnabled && p.bgColor) {
-                        const rgb = hexToRgb(p.bgColor);
-                        ta.style.background = `rgba(${rgb.r},${rgb.g},${rgb.b},${opacity})`;
-                    }
+                    refreshTextareaVisuals();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
                 const updateBgRadius = (radius) => {
                     p.borderRadius = parseInt(radius);
-                    bgRadiusValue.textContent = radius + "px";
                     const sc = getNodeViewportRect(node)?.scale || 1;
                     ta.style.borderRadius = (parseInt(radius) * sc) + "px";
+                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                };
+
+                const updateBgPadding = (padding) => {
+                    p.bgPadding = parseInt(padding);
+                    node._customWidth = null;
+                    node._customHeight = null;
+                    node.adjustHeightToContent();
                     if (node.graph) node.graph.setDirtyCanvas(true, true);
                 };
 
@@ -8380,313 +8169,11 @@ app.registerExtension({
                 bgRadiusSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
                 bgRadiusSlider.addEventListener("click", (e) => { e.stopPropagation(); });
 
-                // ====== 箭头更新函数 ======
-                const updateArrowEnabled = (enabled) => {
-                    p.arrowEnabled = enabled;
-                    arrowToggle._update(enabled);
-                    arrowControlsWrap.style.display = enabled ? 'flex' : 'none';
-                    arrowColorBtn.style.display = enabled ? 'inline-block' : 'none';
-                    if (!enabled) checkAutoCollapseAdvanced();
-                    if (node.isEditing) ensureArrowOverlay(node);
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
-                };
-
-                const updateArrowAngle = (angle) => {
-                    const v = parseInt(angle) || 0;
-                    p.arrowAngle = v;
-                    arrowAngleValue.textContent = v + "°";
-                    if (node.isEditing) ensureArrowOverlay(node);
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
-                };
-
-                const updateArrowCurvature = (curvature) => {
-                    const v = parseInt(curvature) || 0;
-                    p.arrowCurvature = v;
-                    arrowCurveValue.textContent = v.toString();
-                    if (node.isEditing) ensureArrowOverlay(node);
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
-                };
-
-                const updateArrowThickness = (thickness) => {
-                    const v = parseInt(thickness) || 3;
-                    p.arrowThickness = v;
-                    arrowThickValue.textContent = v.toString();
-                    if (node.isEditing) ensureArrowOverlay(node);
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
-                };
-
-                const updateArrowLength = (length) => {
-                    const v = parseInt(length) || 60;
-                    p.arrowLength = v;
-                    arrowLenValue.textContent = v.toString();
-                    if (node.isEditing) ensureArrowOverlay(node);
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
-                };
-
-                const updateArrowColor = (color) => {
-                    p.arrowColor = color;
-                    arrowColorBtn.style.background = color;
-                    if (node.isEditing) ensureArrowOverlay(node);
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
-                };
-
-                // ====== 箭头独立调色面板（避免与文字颜色/背景颜色冲突） ======
-                const showArrowColorPicker = () => {
-                    const existing = document.getElementById("xzg-arrow-color-picker");
-                    if (existing) { existing.remove(); return; }
-
-                    const picker = document.createElement("div");
-                    picker.id = "xzg-arrow-color-picker";
-                    picker.style.cssText = `position:fixed;z-index:100001;background:#2a2a2a;border:1px solid #555;border-radius:6px;padding:8px;box-shadow:0 4px 16px rgba(0,0,0,0.5);user-select:none;`;
-
-                    const rect = arrowColorBtn.getBoundingClientRect();
-                    let left = rect.left;
-                    let top = rect.bottom + 4;
-                    picker.style.left = left + "px";
-                    picker.style.top = top + "px";
-
-                    const pickerTitle = document.createElement("div");
-                    pickerTitle.textContent = "箭头颜色";
-                    pickerTitle.style.cssText = `color:#FFD700;font-size:12px;text-align:center;margin-bottom:6px;font-family:Arial,sans-serif;`;
-                    picker.appendChild(pickerTitle);
-
-                    const aSvCanvas = document.createElement("canvas");
-                    aSvCanvas.width = 140;
-                    aSvCanvas.height = 105;
-                    aSvCanvas.style.cssText = `width:140px;height:105px;border-radius:4px;cursor:crosshair;display:block;margin-bottom:6px;`;
-
-                    const aHueCanvas = document.createElement("canvas");
-                    aHueCanvas.width = 140;
-                    aHueCanvas.height = 20;
-                    aHueCanvas.style.cssText = `width:140px;height:20px;border-radius:4px;cursor:pointer;display:block;`;
-
-                    picker.appendChild(aSvCanvas);
-                    picker.appendChild(aHueCanvas);
-                    document.body.appendChild(picker);
-
-                    // 防止点击面板内导致编辑器失焦
-                    picker.addEventListener("mousedown", e => { e.stopPropagation(); e.preventDefault(); });
-                    picker.addEventListener("click", e => { e.stopPropagation(); });
-
-                    let aHue = 0, aSat = 1, aVal = 1;
-
-                    const aHexToHsv = (hex) => {
-                        const r = parseInt(hex.slice(1, 3), 16) / 255;
-                        const g = parseInt(hex.slice(3, 5), 16) / 255;
-                        const b = parseInt(hex.slice(5, 7), 16) / 255;
-                        const max = Math.max(r, g, b), min = Math.min(r, g, b);
-                        let h, s, v = max;
-                        const d = max - min;
-                        s = max === 0 ? 0 : d / max;
-                        if (max === min) { h = 0; }
-                        else {
-                            switch (max) {
-                                case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-                                case g: h = (b - r) / d + 2; break;
-                                case b: h = (r - g) / d + 4; break;
-                            }
-                            h /= 6;
-                        }
-                        return { h: h * 360, s, v };
-                    };
-
-                    const aHsvToHex = (h, s, v) => {
-                        h /= 360;
-                        let r, g, b;
-                        const i = Math.floor(h * 6);
-                        const f = h * 6 - i;
-                        const p = v * (1 - s);
-                        const q = v * (1 - f * s);
-                        const t = v * (1 - (1 - f) * s);
-                        switch (i % 6) {
-                            case 0: r = v, g = t, b = p; break;
-                            case 1: r = q, g = v, b = p; break;
-                            case 2: r = p, g = v, b = t; break;
-                            case 3: r = p, g = q, b = v; break;
-                            case 4: r = t, g = p, b = v; break;
-                            case 5: r = v, g = p, b = q; break;
-                        }
-                        const toHex = x => { const hx = Math.round(x * 255).toString(16); return hx.length === 1 ? "0" + hx : hx; };
-                        return "#" + toHex(r) + toHex(g) + toHex(b);
-                    };
-
-                    const drawAHue = () => {
-                        const ctx = aHueCanvas.getContext("2d");
-                        const w = aHueCanvas.width, h = aHueCanvas.height;
-                        const grad = ctx.createLinearGradient(0, 0, w, 0);
-                        grad.addColorStop(0, "#ff0000");
-                        grad.addColorStop(1 / 6, "#ffff00");
-                        grad.addColorStop(2 / 6, "#00ff00");
-                        grad.addColorStop(3 / 6, "#00ffff");
-                        grad.addColorStop(4 / 6, "#0000ff");
-                        grad.addColorStop(5 / 6, "#ff00ff");
-                        grad.addColorStop(1, "#ff0000");
-                        ctx.fillStyle = grad;
-                        ctx.fillRect(0, 0, w, h);
-                        const x = (aHue / 360) * w;
-                        ctx.fillStyle = "#fff";
-                        ctx.beginPath();
-                        ctx.arc(x, h / 2, h / 2 - 1, 0, Math.PI * 2);
-                        ctx.fill();
-                        ctx.strokeStyle = "#000";
-                        ctx.lineWidth = 1;
-                        ctx.beginPath();
-                        ctx.arc(x, h / 2, h / 2 - 1, 0, Math.PI * 2);
-                        ctx.stroke();
-                    };
-
-                    const drawASV = () => {
-                        const ctx = aSvCanvas.getContext("2d");
-                        const w = aSvCanvas.width, h = aSvCanvas.height;
-                        const hueColor = aHsvToHex(aHue, 1, 1);
-                        const hGrad = ctx.createLinearGradient(0, 0, w, 0);
-                        hGrad.addColorStop(0, "#ffffff");
-                        hGrad.addColorStop(1, hueColor);
-                        ctx.fillStyle = hGrad;
-                        ctx.fillRect(0, 0, w, h);
-                        const vGrad = ctx.createLinearGradient(0, 0, 0, h);
-                        vGrad.addColorStop(0, "rgba(0,0,0,0)");
-                        vGrad.addColorStop(1, "#000000");
-                        ctx.fillStyle = vGrad;
-                        ctx.fillRect(0, 0, w, h);
-                        const x = aSat * w;
-                        const y = (1 - aVal) * h;
-                        ctx.fillStyle = "#fff";
-                        ctx.beginPath();
-                        ctx.arc(x, y, 5, 0, Math.PI * 2);
-                        ctx.fill();
-                        ctx.strokeStyle = "#000";
-                        ctx.lineWidth = 1;
-                        ctx.beginPath();
-                        ctx.arc(x, y, 5, 0, Math.PI * 2);
-                        ctx.stroke();
-                    };
-
-                    const updateAColor = () => {
-                        const hex = aHsvToHex(aHue, aSat, aVal);
-                        updateArrowColor(hex);
-                        drawASV();
-                        drawAHue();
-                    };
-
-                    const initAFromColor = (hex) => {
-                        const hsv = aHexToHsv(hex);
-                        aHue = hsv.h;
-                        aSat = hsv.s;
-                        aVal = hsv.v;
-                        drawASV();
-                    };
-
-                    drawAHue();
-                    initAFromColor(p.arrowColor || "#00BCD4");
-                    requestAnimationFrame(() => { drawASV(); });
-
-                    let aSvDragging = false, aHueDragging = false;
-
-                    const updateASVFromEvent = (e) => {
-                        const rect = aSvCanvas.getBoundingClientRect();
-                        let x = (e.clientX - rect.left) / rect.width;
-                        let y = (e.clientY - rect.top) / rect.height;
-                        x = Math.max(0, Math.min(1, x));
-                        y = Math.max(0, Math.min(1, y));
-                        aSat = x;
-                        aVal = 1 - y;
-                        updateAColor();
-                    };
-
-                    aSvCanvas.addEventListener("mousedown", (e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        aSvDragging = true;
-                        updateASVFromEvent(e);
-                    });
-
-                    const updateAHueFromEvent = (e) => {
-                        const rect = aHueCanvas.getBoundingClientRect();
-                        let x = (e.clientX - rect.left) / rect.width;
-                        x = Math.max(0, Math.min(1, x));
-                        aHue = x * 360;
-                        drawASV();
-                        updateAColor();
-                    };
-
-                    aHueCanvas.addEventListener("mousedown", (e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        aHueDragging = true;
-                        updateAHueFromEvent(e);
-                    });
-
-                    const aMoveHandler = (e) => {
-                        if (aSvDragging) updateASVFromEvent(e);
-                        if (aHueDragging) updateAHueFromEvent(e);
-                    };
-                    const aUpHandler = () => { aSvDragging = false; aHueDragging = false; };
-                    document.addEventListener("mousemove", aMoveHandler);
-                    document.addEventListener("mouseup", aUpHandler);
-
-                    // 边界调整防止超出屏幕
-                    requestAnimationFrame(() => {
-                        const r = picker.getBoundingClientRect();
-                        if (r.right > window.innerWidth) {
-                            picker.style.left = (window.innerWidth - r.width - 10) + "px";
-                        }
-                        if (r.bottom > window.innerHeight) {
-                            picker.style.top = (rect.top - r.height - 4) + "px";
-                        }
-                    });
-
-                    // 点击外部关闭
-                    const closeHandler = (e) => {
-                        if (picker.contains(e.target) || e.target === arrowColorBtn) return;
-                        picker.remove();
-                        document.removeEventListener("mousedown", closeHandler, true);
-                        document.removeEventListener("mousemove", aMoveHandler);
-                        document.removeEventListener("mouseup", aUpHandler);
-                    };
-                    setTimeout(() => { document.addEventListener("mousedown", closeHandler, true); }, 100);
-                };
-
-                // ====== 箭头事件绑定 ======
-                arrowToggle.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    updateArrowEnabled(!p.arrowEnabled);
+                bgPaddingSlider.addEventListener("input", (e) => {
+                    updateBgPadding(e.target.value);
                 });
-                arrowToggle.addEventListener("mousedown", (e) => { e.stopPropagation(); });
-
-                arrowAngleSlider.addEventListener("input", (e) => { updateArrowAngle(e.target.value); });
-                arrowAngleSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
-                arrowAngleSlider.addEventListener("click", (e) => { e.stopPropagation(); });
-                arrowAngleSlider.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); arrowAngleSlider.value = 0; updateArrowAngle(0); });
-
-                arrowCurveSlider.addEventListener("input", (e) => { updateArrowCurvature(e.target.value); });
-                arrowCurveSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
-                arrowCurveSlider.addEventListener("click", (e) => { e.stopPropagation(); });
-                arrowCurveSlider.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); arrowCurveSlider.value = 0; updateArrowCurvature(0); });
-
-                arrowThickSlider.addEventListener("input", (e) => { updateArrowThickness(e.target.value); });
-                arrowThickSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
-                arrowThickSlider.addEventListener("click", (e) => { e.stopPropagation(); });
-                arrowThickSlider.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); arrowThickSlider.value = 3; updateArrowThickness(3); });
-
-                arrowLenSlider.addEventListener("input", (e) => { updateArrowLength(e.target.value); });
-                arrowLenSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
-                arrowLenSlider.addEventListener("click", (e) => { e.stopPropagation(); });
-                arrowLenSlider.addEventListener("dblclick", (e) => { e.stopPropagation(); e.preventDefault(); arrowLenSlider.value = 60; updateArrowLength(60); });
-
-                arrowColorBtn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    node._skipBlurClose = true;
-                    showArrowColorPicker();
-                });
-                arrowColorBtn.addEventListener("mousedown", (e) => { e.stopPropagation(); });
-
-                [arrowToggle, arrowAngleSlider, arrowCurveSlider, arrowThickSlider, arrowLenSlider, arrowColorBtn].forEach(el => {
-                    el.addEventListener("keydown", e => {
-                        if (e.key === "Escape") { removeTitleEditor(node); }
-                        e.stopPropagation();
-                    });
-                });
+                bgPaddingSlider.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+                bgPaddingSlider.addEventListener("click", (e) => { e.stopPropagation(); });
 
                 advancedToggle.addEventListener("click", (e) => {
                     e.stopPropagation();
@@ -8707,9 +8194,9 @@ app.registerExtension({
                     if (vr2) {
                         container.style.left = vr2.left + "px";
                         container.style.top = vr2.top + "px";
-                        container.style.width = Math.max(260, node.size[0] * vr2.scale) + "px";
                         const textLines2 = (ta.value || "").split("\n");
-                        const taContentH2 = textLines2.length * p.fontSize * Math.max(1, vr2.scale) * (p.lineHeight || 1.4) + 10;
+                        const bp2 = p.bgPadding ?? 4;
+                        const taContentH2 = textLines2.length * p.fontSize * Math.max(1, vr2.scale) * (p.lineHeight || 1.4) + bp2 * 2 * Math.max(1, vr2.scale);
                         ta.style.height = Math.max(90, node.size[1] * vr2.scale, taContentH2) + "px";
                     }
                     node.setDirtyCanvas?.(true, true);
@@ -8802,6 +8289,10 @@ app.registerExtension({
                     if (e.key === "Escape") removeTitleEditor(node);
                     e.stopPropagation();
                 });
+                bgPaddingSlider.addEventListener("keydown", e => {
+                    if (e.key === "Escape") removeTitleEditor(node);
+                    e.stopPropagation();
+                });
                 advancedToggle.addEventListener("keydown", e => {
                     if (e.key === "Escape") removeTitleEditor(node);
                     e.stopPropagation();
@@ -8814,7 +8305,7 @@ app.registerExtension({
                     node._mouseDownInEditor = false;
                     while (el) {
                         if (el === container || el === toolbar) { node._mouseDownInEditor = true; break; }
-                        if (el.id === "xzg-arrow-color-picker" || el.id === "xzg-glow-color-picker") { node._mouseDownInEditor = true; break; }
+                        if (el.id === "xzg-glow-color-picker") { node._mouseDownInEditor = true; break; }
                         if (el.classList && (el.classList.contains("xzg-wf-dialog-overlay") || el.classList.contains("xzg-dialog-overlay"))) { node._mouseDownInEditor = true; break; }
                         el = el.parentElement;
                     }
@@ -8826,7 +8317,7 @@ app.registerExtension({
                     let el = e.target;
                     while (el) {
                         if (el === container || el === toolbar) return;
-                        if (el.id === "xzg-arrow-color-picker" || el.id === "xzg-glow-color-picker") return;
+                        if (el.id === "xzg-glow-color-picker") return;
                         if (el.classList && (el.classList.contains("xzg-wf-dialog-overlay") || el.classList.contains("xzg-dialog-overlay"))) return;
                         el = el.parentElement;
                     }
@@ -8839,12 +8330,10 @@ app.registerExtension({
                 const isFocusInside = () => {
                     const ae = document.activeElement;
                     if (colorPanel.contains(ae)) return true;
-                    const arrowPicker = document.getElementById("xzg-arrow-color-picker");
-                    if (arrowPicker && arrowPicker.contains(ae)) return true;
                     const glowPicker = document.getElementById("xzg-glow-color-picker");
                     if (glowPicker && glowPicker.contains(ae)) return true;
-                    if (advancedWrap.contains(ae) || bgRow.contains(ae) || row4.contains(ae) || row5.contains(ae) || arrowRow.contains(ae)) return true;
-                    return ae === ta || ae === slider || ae === letterSpacingSlider || ae === lineHeightSlider || ae === fontSizeInput || ae === alignLeft || ae === alignCenter || ae === alignRight || ae === glowToggle || ae === glowSizeSlider || ae === glowIntensitySlider || ae === glowColorBtn || ae === rainbowToggle || ae === rainbowSpeedSlider || ae === bgToggle || ae === bgOpacitySlider || ae === bgRadiusSlider || ae === advancedToggle || ae === arrowToggle || ae === arrowAngleSlider || ae === arrowCurveSlider || ae === arrowThickSlider || ae === arrowLenSlider || ae === arrowColorBtn;
+                    if (advancedWrap.contains(ae) || bgRow.contains(ae) || row4.contains(ae) || row5.contains(ae)) return true;
+                    return ae === ta || ae === slider || ae === letterSpacingSlider || ae === lineHeightSlider || ae === fontSizeInput || ae === alignLeft || ae === alignCenter || ae === alignRight || ae === glowToggle || ae === glowSizeSlider || ae === glowIntensitySlider || ae === glowColorBtn || ae === rainbowToggle || ae === rainbowSpeedSlider || ae === bgToggle || ae === bgOpacitySlider || ae === bgRadiusSlider || ae === advancedToggle;
                 };
 
                 ta.addEventListener("blur", () => { setTimeout(() => {
@@ -8908,11 +8397,9 @@ app.registerExtension({
                 if (node._posRaf) { cancelAnimationFrame(node._posRaf); node._posRaf = null; }
                 if (node._docClickHandler) { document.removeEventListener("click", node._docClickHandler, true); node._docClickHandler = null; }
                 if (node._docMouseDown) { document.removeEventListener("mousedown", node._docMouseDown, true); node._docMouseDown = null; }
-                const arrowPicker = document.getElementById("xzg-arrow-color-picker");
-                if (arrowPicker) arrowPicker.remove();
+                
                 const glowPicker = document.getElementById("xzg-glow-color-picker");
                 if (glowPicker) glowPicker.remove();
-                if (node._arrowOverlay) { node._arrowOverlay.remove(); node._arrowOverlay = null; }
                 if (node.editTextarea) { node.editTextarea.remove(); node.editTextarea = null; }
                 delete node._userText;
                 node.isEditing = false;
