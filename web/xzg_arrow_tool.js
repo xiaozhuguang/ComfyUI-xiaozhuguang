@@ -48,7 +48,7 @@ const arrowSettings = {
     lineWidth: 3,
     arrowSize: 10,
     opacity: 1.0,
-    shapeType: "arrow", // "arrow" | "rectangle" | "ellipse" | "circle" | "bezier"
+    shapeType: "arrow", // "arrow" | "rectangle" | "ellipse" | "circle" | "bezier" | "freehand"
     shapeMode: "border", // "border" | "fill"
     borderRadius: 0,
     lineStyle: "solid", // "solid" | "dashed" | "dotted"
@@ -56,9 +56,11 @@ const arrowSettings = {
     animType: "none",   // 特效动画类型
     animSpeed: 1,       // 动画速度
     animCount: 5,       // 动画数量（星芒/粒子/光点等个数）
-    animSize: 50,       // 动画元素大小（0-100，默认50为100%）
+    animSize: 100,      // 动画元素大小（0-100，默认100为500%，最小10%）
     fadeInEnabled: false,  // 渐入开关
-    fadeInDuration: 1000   // 渐入时长（ms）
+    fadeInDuration: 1000,   // 渐入时长（ms）
+    smoothness: 10,         // 手绘平滑幅度（5-100px，最小收集距离）
+    closed: false           // 曲线闭合
 };
 
 // 快捷键
@@ -246,8 +248,8 @@ function scheduleRender() {
 // 计算形状包围盒
 function getShapeBounds(shape) {
     // 新格式贝塞尔曲线：从所有点计算包围盒
-    if (shape.type === "bezier" && shape.points && shape.points.length > 0) {
-        const pts = getBezierPoints(shape);
+    if ((shape.type === "bezier" || shape.type === "freehand") && shape.points && shape.points.length > 0) {
+        const pts = shape.type === "bezier" ? getBezierPoints(shape) : shape.points;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const p of pts) {
             if (p.x < minX) minX = p.x;
@@ -326,33 +328,6 @@ function drawShape(ctx, shape, isSelected) {
     const type = shape.type || "arrow";
     const mode = shape.mode || "border";
 
-    // 选中高亮：虚线方框
-    if (isSelected) {
-        ctx.save();
-        const bounds = getShapeBounds(shape);
-        const pad = 6;
-        const x = bounds.minX - pad;
-        const y = bounds.minY - pad;
-        const w = bounds.maxX - bounds.minX + pad * 2;
-        const h = bounds.maxY - bounds.minY + pad * 2;
-        // 半透明填充背景
-        ctx.fillStyle = "rgba(0, 255, 0, 0.08)";
-        ctx.fillRect(x, y, w, h);
-        // 亮色虚线边框
-        ctx.strokeStyle = "rgba(0, 255, 0, 0.8)";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([5, 4]);
-        ctx.globalAlpha = 1;
-        ctx.strokeRect(x, y, w, h);
-        // 外发光辅助线
-        ctx.strokeStyle = "rgba(0, 255, 0, 0.38)";
-        ctx.lineWidth = 4;
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 0.5;
-        ctx.strokeRect(x, y, w, h);
-        ctx.restore();
-    }
-
     const sx = shape.start.x, sy = shape.start.y;
     const ex = shape.end.x, ey = shape.end.y;
 
@@ -372,6 +347,20 @@ function drawShape(ctx, shape, isSelected) {
         case "bezier":
             drawBezierShape(ctx, shape, mode);
             break;
+        case "freehand":
+            drawFreehandShape(ctx, shape, mode);
+            break;
+    }
+
+    // 选中高亮：白色虚线描边跟随形状轮廓（绘制在形状上层）
+    if (isSelected) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
+        ctx.globalAlpha = 1;
+        drawShapeVectorPath(ctx, shape);
+        ctx.restore();
     }
 
     // 特效动画覆盖层（绘制在基础形状之上）
@@ -425,14 +414,16 @@ function getBezierPoints(shape) {
 }
 
 // 沿 catmull-rom 曲线采样点（用于命中检测）
-function getBezierSamplePoints(pts, samplesPerSegment = 12) {
+function getBezierSamplePoints(pts, samplesPerSegment = 12, closed = false) {
     if (pts.length < 2) return pts;
+    const n = pts.length;
     const result = [pts[0]];
-    for (let i = 0; i < pts.length - 1; i++) {
-        const p0 = i > 0 ? pts[i - 1] : pts[i];
+    const segments = closed ? n : n - 1;
+    for (let i = 0; i < segments; i++) {
+        const p0 = closed ? pts[(i - 1 + n) % n] : (i > 0 ? pts[i - 1] : pts[i]);
         const p1 = pts[i];
-        const p2 = pts[i + 1];
-        const p3 = i < pts.length - 2 ? pts[i + 2] : pts[i + 1];
+        const p2 = pts[(i + 1) % n];
+        const p3 = closed ? pts[(i + 2) % n] : (i < n - 2 ? pts[i + 2] : pts[i + 1]);
         // catmull-rom 转三次贝塞尔控制点（与渲染保持一致）
         const cp1x = p1.x + (p2.x - p0.x) / 6;
         const cp1y = p1.y + (p2.y - p0.y) / 6;
@@ -449,6 +440,29 @@ function getBezierSamplePoints(pts, samplesPerSegment = 12) {
     return result;
 }
 
+// 绘制 Catmull-Rom 插值曲线路径，支持闭合环绕（环绕时最后一段也是平滑贝塞尔曲线）
+function drawCatmullRomPath(ctx, rawPts, closed) {
+    const n = rawPts.length;
+    if (n < 2) return;
+    ctx.moveTo(rawPts[0].x, rawPts[0].y);
+    if (n === 2) {
+        ctx.lineTo(rawPts[1].x, rawPts[1].y);
+        return;
+    }
+    const segments = closed ? n : n - 1;
+    for (let i = 0; i < segments; i++) {
+        const p0 = closed ? rawPts[(i - 1 + n) % n] : (i > 0 ? rawPts[i - 1] : rawPts[i]);
+        const p1 = rawPts[i];
+        const p2 = rawPts[(i + 1) % n];
+        const p3 = closed ? rawPts[(i + 2) % n] : (i < n - 2 ? rawPts[i + 2] : rawPts[i + 1]);
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    }
+}
+
 function drawBezierShape(ctx, shape, mode) {
     const rawPts = getBezierPoints(shape);
     if (rawPts.length < 2) return;
@@ -461,22 +475,7 @@ function drawBezierShape(ctx, shape, mode) {
         ctx.save();
         ctx.globalAlpha = shape.opacity;
         ctx.beginPath();
-        ctx.moveTo(rawPts[0].x, rawPts[0].y);
-        if (rawPts.length === 2) {
-            ctx.lineTo(rawPts[1].x, rawPts[1].y);
-        } else {
-            for (let i = 0; i < rawPts.length - 1; i++) {
-                const p0 = i > 0 ? rawPts[i - 1] : rawPts[i];
-                const p1 = rawPts[i];
-                const p2 = rawPts[i + 1];
-                const p3 = i < rawPts.length - 2 ? rawPts[i + 2] : rawPts[i + 1];
-                const cp1x = p1.x + (p2.x - p0.x) / 6;
-                const cp1y = p1.y + (p2.y - p0.y) / 6;
-                const cp2x = p2.x - (p3.x - p1.x) / 6;
-                const cp2y = p2.y - (p3.y - p1.y) / 6;
-                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-            }
-        }
+        drawCatmullRomPath(ctx, rawPts, shape.closed === true);
         ctx.closePath();
         ctx.fillStyle = shape.color;
         ctx.fill();
@@ -486,6 +485,21 @@ function drawBezierShape(ctx, shape, mode) {
 
     // 实线 + 有箭头：绘制正经矢量箭头（单路径填充）
     if (lineStyle === "solid" && headSize > 0) {
+        if (shape.closed) {
+            // 闭合曲线：无箭头，直接描边
+            ctx.save();
+            ctx.globalAlpha = shape.opacity;
+            ctx.strokeStyle = shape.color;
+            ctx.lineWidth = shape.lineWidth;
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            ctx.beginPath();
+            drawCatmullRomPath(ctx, rawPts, true);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
         drawBezierArrowShape(ctx, shape, rawPts);
         return;
     }
@@ -498,27 +512,13 @@ function drawBezierShape(ctx, shape, mode) {
 
     applyLineDash(ctx, lineStyle, shape.lineWidth);
     ctx.beginPath();
-    ctx.moveTo(rawPts[0].x, rawPts[0].y);
-    if (rawPts.length === 2) {
-        ctx.lineTo(rawPts[1].x, rawPts[1].y);
-    } else {
-        for (let i = 0; i < rawPts.length - 1; i++) {
-            const p0 = i > 0 ? rawPts[i - 1] : rawPts[i];
-            const p1 = rawPts[i];
-            const p2 = rawPts[i + 1];
-            const p3 = i < rawPts.length - 2 ? rawPts[i + 2] : rawPts[i + 1];
-            const cp1x = p1.x + (p2.x - p0.x) / 6;
-            const cp1y = p1.y + (p2.y - p0.y) / 6;
-            const cp2x = p2.x - (p3.x - p1.x) / 6;
-            const cp2y = p2.y - (p3.y - p1.y) / 6;
-            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-        }
-    }
+    drawCatmullRomPath(ctx, rawPts, shape.closed === true);
+    if (shape.closed) ctx.closePath();
     ctx.stroke();
     ctx.restore();
 
-    // 箭头头部：描边模式下单独绘制填充三角形
-    if (headSize > 0 && rawPts.length >= 2) {
+    // 箭头头部：描边模式下单独绘制填充三角形（闭合曲线不画箭头）
+    if (!shape.closed && headSize > 0 && rawPts.length >= 2) {
         const last = rawPts[rawPts.length - 1];
         const prev = rawPts[rawPts.length - 2];
         drawArrowHead(ctx, last.x, last.y, last.x - prev.x, last.y - prev.y, headSize, shape.color, shape.opacity);
@@ -619,6 +619,99 @@ function drawBezierArrowShape(ctx, shape, rawPts) {
 }
 
 // ============================================================================
+// 手绘形状（自由绘制 + 路径平滑）
+// ============================================================================
+
+// 收集原始点期间，只保留距离上一个点 >= minDist 的点，减少抖动
+function collectFreehandPoint(rawPts, pt, minDist) {
+    if (rawPts.length === 0) { rawPts.push(pt); return; }
+    const last = rawPts[rawPts.length - 1];
+    if (Math.hypot(pt.x - last.x, pt.y - last.y) >= minDist) {
+        rawPts.push(pt);
+    }
+}
+
+// Catmull-Rom 插值平滑：对简化后的点生成密集光滑曲线
+function smoothFreehandPoints(rawPts) {
+    if (rawPts.length < 3) return rawPts;
+    const result = [];
+    for (let i = 0; i < rawPts.length - 1; i++) {
+        const p0 = rawPts[Math.max(0, i - 1)];
+        const p1 = rawPts[i];
+        const p2 = rawPts[i + 1];
+        const p3 = rawPts[Math.min(rawPts.length - 1, i + 2)];
+        // 每段插值 8 个点
+        for (let t = 0; t < 1; t += 0.125) {
+            const tt = t * t;
+            const ttt = tt * t;
+            const x = 0.5 * (
+                2 * p1.x +
+                (-p0.x + p2.x) * t +
+                (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * tt +
+                (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * ttt
+            );
+            const y = 0.5 * (
+                2 * p1.y +
+                (-p0.y + p2.y) * t +
+                (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * tt +
+                (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * ttt
+            );
+            result.push({ x, y });
+        }
+    }
+    result.push(rawPts[rawPts.length - 1]);
+    return result;
+}
+
+// 绘制手绘形状（使用 Catmull-Rom 插值平滑描边）
+function drawFreehandShape(ctx, shape, mode) {
+    const pts = shape.points || [];
+    if (pts.length < 2) return;
+    const lineStyle = shape.lineStyle || "solid";
+    ctx.save();
+    ctx.globalAlpha = shape.opacity;
+    if (mode === "fill") {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+            const p0 = i > 0 ? pts[i - 1] : pts[i];
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const p3 = i < pts.length - 2 ? pts[i + 2] : pts[i + 1];
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            const cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            const cp2y = p2.y - (p3.y - p1.y) / 6;
+            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = shape.color;
+        ctx.fill();
+    } else {
+        ctx.strokeStyle = shape.color;
+        ctx.lineWidth = shape.lineWidth;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        applyLineDash(ctx, lineStyle, shape.lineWidth);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+            const p0 = i > 0 ? pts[i - 1] : pts[i];
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const p3 = i < pts.length - 2 ? pts[i + 2] : pts[i + 1];
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            const cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            const cp2y = p2.y - (p3.y - p1.y) / 6;
+            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+        }
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+// ============================================================================
 // 线型工具
 // ============================================================================
 
@@ -642,9 +735,14 @@ function applyLineDash(ctx, lineStyle, lineWidth) {
 // 获取形状描边采样点
 function getShapeStrokePoints(shape) {
     const type = shape.type || "arrow";
+    if (type === "freehand" && shape.points && shape.points.length >= 2) {
+        return shape.points;
+    }
     if (type === "bezier") {
         const pts = getBezierPoints(shape);
-        if (pts.length >= 2) return getBezierSamplePoints(pts, 12);
+        if (pts.length >= 2) {
+            return getBezierSamplePoints(pts, 12, shape.closed === true);
+        }
         return [];
     }
     if (type === "arrow") {
@@ -1067,9 +1165,16 @@ function drawShapeVectorPath(ctx, shape) {
     } else if (type === "bezier") {
         const pts = getBezierPoints(shape);
         if (pts.length >= 2) {
-            const samples = getBezierSamplePoints(pts, 12);
+            const samples = getBezierSamplePoints(pts, 12, shape.closed === true);
             path.moveTo(samples[0].x, samples[0].y);
             for (let i = 1; i < samples.length; i++) path.lineTo(samples[i].x, samples[i].y);
+            if (shape.closed) path.closePath();
+        }
+    } else if (type === "freehand") {
+        const pts = shape.points || [];
+        if (pts.length >= 2) {
+            path.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) path.lineTo(pts[i].x, pts[i].y);
         }
     } else {
         // 兜底：使用采样点
@@ -1089,6 +1194,14 @@ function getShapePathCacheKey(shape) {
     const ex = shape.end.x, ey = shape.end.y;
     const br = shape.borderRadius || 0;
     const headLen = shape.arrowSize || 0;
+    if (type === "freehand") {
+        const pts = shape.points || [];
+        return `${type}|${pts.length}|${pts[0]?.x.toFixed(1)}|${pts[0]?.y.toFixed(1)}`;
+    }
+    if (type === "bezier") {
+        const pts = shape.points || [];
+        return `${type}|${pts.length}|${!!shape.closed}`;
+    }
     return `${type}|${sx.toFixed(1)}|${sy.toFixed(1)}|${ex.toFixed(1)}|${ey.toFixed(1)}|${br}|${headLen}`;
 }
 
@@ -1101,7 +1214,7 @@ function drawArrowAnim(ctx, shape) {
     const rawSpeed = shape.animSpeed || 1;
     const speed = remapAnimSpeed(rawSpeed);
     const count = Math.max(1, shape.animCount || 5);
-    const sizeRatio = shape.animSize !== undefined ? shape.animSize / 50 : 1;
+    const sizeRatio = shape.animSize !== undefined ? 0.1 + (shape.animSize / 100) * 4.9 : 1;
     const t = performance.now();
     switch (animType) {
         case "sparkle":   drawAnimSparkle(ctx, pts, speed, t, count, sizeRatio); break;
@@ -1566,10 +1679,21 @@ function hitTestShape(canvasX, canvasY) {
             // 贝塞尔曲线：采样曲线点，检测到曲线段的最小距离
             const pts = getBezierPoints(a);
             if (pts.length >= 2) {
-                const samples = getBezierSamplePoints(pts);
+                const samples = getBezierSamplePoints(pts, 12, a.closed === true);
                 let minDist = Infinity;
                 for (let s = 0; s < samples.length - 1; s++) {
                     const d = distanceToSegment(canvasX, canvasY, samples[s].x, samples[s].y, samples[s+1].x, samples[s+1].y);
+                    if (d < minDist) minDist = d;
+                }
+                if (minDist <= threshold) return i;
+            }
+        } else if (type === "freehand") {
+            // 手绘：检测到平滑后点的距离
+            const pts = a.points || [];
+            if (pts.length >= 2) {
+                let minDist = Infinity;
+                for (let s = 0; s < pts.length - 1; s++) {
+                    const d = distanceToSegment(canvasX, canvasY, pts[s].x, pts[s].y, pts[s+1].x, pts[s+1].y);
                     if (d < minDist) minDist = d;
                 }
                 if (minDist <= threshold) return i;
@@ -1701,14 +1825,17 @@ function drawModeIndicator(ctx, width, height) {
         rectangle: xzgT("矩形", "Rect"),
         ellipse: xzgT("椭圆", "Oval"),
         circle: xzgT("圆形", "Circle"),
-        bezier: xzgT("曲线", "Curve")
+        bezier: xzgT("曲线", "Curve"),
+        freehand: xzgT("手绘", "Freehand")
     };
     const shapeName = shapeNames[arrowSettings.shapeType] || xzgT("箭头", "Arrow");
-    // 贝塞尔打点式：显示当前阶段提示
+    // 贝塞尔/手绘：显示当前阶段提示
     let stageText = xzgT("绘制中", "DRAWING");
     if (arrowSettings.shapeType === "bezier") {
         if (bezierDrawStage === 0) stageText = xzgT("点击放置起点", "Click to set start");
         else stageText = xzgT("点击添加点，双击完成", "Click to add, dbl-click to finish");
+    } else if (arrowSettings.shapeType === "freehand") {
+        stageText = xzgT("拖拽绘制", "Drag to draw");
     }
     const text = `${shapeName}: ${stageText}`;
     const bgColor = "rgba(255, 85, 85, 0.9)";
@@ -1976,7 +2103,8 @@ function handlePointerDown(e) {
                 animType: arrowSettings.animType,
                 animSpeed: arrowSettings.animSpeed,
                 animCount: arrowSettings.animCount,
-                animSize: arrowSettings.animSize
+                animSize: arrowSettings.animSize,
+                closed: arrowSettings.closed
             };
         } else {
             // 后续点击：添加新点
@@ -2009,6 +2137,12 @@ function handlePointerDown(e) {
         animCount: arrowSettings.animCount,
         animSize: arrowSettings.animSize
     };
+    // 手绘：初始化原始点收集数组
+    if (arrowSettings.shapeType === "freehand") {
+        if (!currentArrow.rawPoints) currentArrow.rawPoints = [];
+        if (!currentArrow.points) currentArrow.points = [];
+        collectFreehandPoint(currentArrow.rawPoints, { x: canvasPos.x, y: canvasPos.y }, arrowSettings.smoothness);
+    }
     lastPoint = { x: canvasPos.x, y: canvasPos.y };
 
     if (e.target.setPointerCapture) {
@@ -2026,8 +2160,14 @@ function handlePointerMove(e) {
     if (!isDrawing) return;
 
     if (currentArrow) {
-        // 贝塞尔打点：用 previewPoint 实时预览下一段曲线
-        if (currentArrow.type === "bezier" && bezierDrawStage >= 1) {
+        if (currentArrow.type === "freehand") {
+            // 手绘：收集原始点并实时平滑预览
+            if (!currentArrow.rawPoints) currentArrow.rawPoints = [];
+            collectFreehandPoint(currentArrow.rawPoints, { x: canvasPos.x, y: canvasPos.y }, arrowSettings.smoothness);
+            currentArrow.points = smoothFreehandPoints(currentArrow.rawPoints);
+            currentArrow.end = { x: canvasPos.x, y: canvasPos.y };
+        } else if (currentArrow.type === "bezier" && bezierDrawStage >= 1) {
+            // 贝塞尔打点：用 previewPoint 实时预览下一段曲线
             currentArrow.previewPoint = { x: canvasPos.x, y: canvasPos.y };
             currentArrow.end = { x: canvasPos.x, y: canvasPos.y };
         } else {
@@ -2054,12 +2194,17 @@ function handlePointerUp(e) {
     isDrawing = false;
 
     if (currentArrow && currentArrow.start && currentArrow.end) {
-        const dx = currentArrow.end.x - currentArrow.start.x;
-        const dy = currentArrow.end.y - currentArrow.start.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        // 手绘：用原始点数作为有效长度判断
+        const isValid = currentArrow.type === "freehand"
+            ? (currentArrow.rawPoints && currentArrow.rawPoints.length >= 3)
+            : (() => {
+                const dx = currentArrow.end.x - currentArrow.start.x;
+                const dy = currentArrow.end.y - currentArrow.start.y;
+                return Math.sqrt(dx * dx + dy * dy) >= 10;
+              })();
 
-        if (dist >= 10) {
-            arrows.push({
+        if (isValid) {
+            const arrowData = {
                 start: { x: currentArrow.start.x, y: currentArrow.start.y },
                 end: { x: currentArrow.end.x, y: currentArrow.end.y },
                 color: currentArrow.color,
@@ -2072,11 +2217,19 @@ function handlePointerUp(e) {
                 lineStyle: currentArrow.lineStyle || "solid",
                 animType: currentArrow.animType || "none",
                 animSpeed: currentArrow.animSpeed || 1,
-                animCount: currentArrow.animCount || 5
-            });
+                animCount: currentArrow.animCount || 5,
+                animSize: currentArrow.animSize !== undefined ? currentArrow.animSize : 50
+            };
+            // 手绘：保存平滑后的点和平滑幅度
+            if (currentArrow.type === "freehand" && currentArrow.rawPoints) {
+                arrowData.points = smoothFreehandPoints(currentArrow.rawPoints);
+                arrowData.smoothness = arrowSettings.smoothness;
+            }
+            arrows.push(arrowData);
             // 自动选中新绘制的箭头
             selectedArrowIndex = arrows.length - 1;
-            recordState(xzgT("绘制箭头", "Draw arrow"));
+            const actionName = currentArrow.type === "freehand" ? xzgT("手绘绘制", "Freehand draw") : xzgT("绘制箭头", "Draw arrow");
+            recordState(actionName);
             updateToolbarState();
             updateTransformSliders();
             updateStyleSliders();
@@ -2138,7 +2291,9 @@ function finishBezierDrawing() {
         lineStyle: currentArrow.lineStyle || "solid",
         animType: currentArrow.animType || "none",
         animSpeed: currentArrow.animSpeed || 1,
-        animCount: currentArrow.animCount || 5
+        animCount: currentArrow.animCount || 5,
+        animSize: currentArrow.animSize !== undefined ? currentArrow.animSize : 50,
+        closed: arrowSettings.closed
     });
     selectedArrowIndex = arrows.length - 1;
     recordState(xzgT("绘制曲线", "Draw curve"));
@@ -2529,6 +2684,33 @@ function updateStyleSliders() {
         if (radiusDisplay) radiusDisplay.textContent = arrow.borderRadius || 0;
         if (radiusRow) radiusRow.style.display = type === "rectangle" ? "" : "none";
 
+        // 同步平滑幅度滑条
+        const smoothnessSlider = toolbarElement.querySelector(".xzg-arrow-smoothness-slider");
+        const smoothnessDisplay = toolbarElement.querySelector(".xzg-arrow-smoothness-value");
+        const smoothnessRow = toolbarElement.querySelector("#xzg-arrow-smoothness-row");
+        const smoothVal = arrow.smoothness !== undefined ? arrow.smoothness : arrowSettings.smoothness;
+        if (smoothnessSlider) smoothnessSlider.value = smoothVal;
+        if (smoothnessDisplay) smoothnessDisplay.textContent = smoothVal;
+        if (smoothnessRow) smoothnessRow.style.display = type === "freehand" ? "" : "none";
+
+        // 同步闭合开关
+        const closedToggle = toolbarElement.querySelector(".xzg-arrow-closed-toggle");
+        const closedState = toolbarElement.querySelector(".xzg-arrow-closed-state");
+        const closedRow = toolbarElement.querySelector("#xzg-arrow-closed-row");
+        const closedVal = arrow.closed !== undefined ? arrow.closed : arrowSettings.closed;
+        if (closedToggle) {
+            closedToggle.dataset.checked = closedVal ? "true" : "false";
+            const track = closedToggle.querySelector(".xzg-closed-toggle-track");
+            const thumb = closedToggle.querySelector(".xzg-closed-toggle-thumb");
+            if (track) track.style.background = closedVal ? "#4CAF50" : "#666666";
+            if (thumb) thumb.style.left = closedVal ? "14px" : "2px";
+        }
+        if (closedState) {
+            closedState.textContent = closedVal ? xzgT("开", "ON") : xzgT("关", "OFF");
+            closedState.style.color = closedVal ? "#4CAF50" : "#999";
+        }
+        if (closedRow) closedRow.style.display = type === "bezier" ? "" : "none";
+
         // 同步特效动画控件
         const animType = arrow.animType || "none";
         const animSpd = arrow.animSpeed !== undefined ? arrow.animSpeed : 1;
@@ -2563,7 +2745,7 @@ function updateStyleSliders() {
         if (dashGapDisplay) dashGapDisplay.textContent = arrowSettings.dashGap;
         // 同步模式行显示
         const modeRow = toolbarElement.querySelector("#xzg-arrow-mode-row");
-        if (modeRow) modeRow.style.display = (type === "arrow" || type === "bezier") ? "none" : "";
+        if (modeRow) modeRow.style.display = (type === "arrow" || type === "bezier" || type === "freehand") ? "none" : "";
         // 同步模式按钮
         toolbarElement.querySelectorAll(".xzg-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
     } else {
@@ -2578,6 +2760,31 @@ function updateStyleSliders() {
         if (radiusSlider) radiusSlider.value = arrowSettings.borderRadius;
         if (radiusDisplay) radiusDisplay.textContent = arrowSettings.borderRadius;
         if (radiusRow) radiusRow.style.display = arrowSettings.shapeType === "rectangle" ? "" : "none";
+
+        // 同步平滑幅度滑条（全局设置）
+        const smoothnessSlider = toolbarElement.querySelector(".xzg-arrow-smoothness-slider");
+        const smoothnessDisplay = toolbarElement.querySelector(".xzg-arrow-smoothness-value");
+        const smoothnessRow = toolbarElement.querySelector("#xzg-arrow-smoothness-row");
+        if (smoothnessSlider) smoothnessSlider.value = arrowSettings.smoothness;
+        if (smoothnessDisplay) smoothnessDisplay.textContent = arrowSettings.smoothness;
+        if (smoothnessRow) smoothnessRow.style.display = arrowSettings.shapeType === "freehand" ? "" : "none";
+
+        // 同步闭合开关（全局设置）
+        const closedToggle = toolbarElement.querySelector(".xzg-arrow-closed-toggle");
+        const closedState = toolbarElement.querySelector(".xzg-arrow-closed-state");
+        const closedRow = toolbarElement.querySelector("#xzg-arrow-closed-row");
+        if (closedToggle) {
+            closedToggle.dataset.checked = arrowSettings.closed ? "true" : "false";
+            const track = closedToggle.querySelector(".xzg-closed-toggle-track");
+            const thumb = closedToggle.querySelector(".xzg-closed-toggle-thumb");
+            if (track) track.style.background = arrowSettings.closed ? "#4CAF50" : "#666666";
+            if (thumb) thumb.style.left = arrowSettings.closed ? "14px" : "2px";
+        }
+        if (closedState) {
+            closedState.textContent = arrowSettings.closed ? xzgT("开", "ON") : xzgT("关", "OFF");
+            closedState.style.color = arrowSettings.closed ? "#4CAF50" : "#999";
+        }
+        if (closedRow) closedRow.style.display = arrowSettings.shapeType === "bezier" ? "" : "none";
 
         // 同步特效动画控件为全局设置
         if (animSelect) animSelect.value = arrowSettings.animType;
@@ -2608,7 +2815,7 @@ function updateStyleSliders() {
         if (dashGapSlider) dashGapSlider.value = arrowSettings.dashGap;
         if (dashGapDisplay) dashGapDisplay.textContent = arrowSettings.dashGap;
         const modeRow = toolbarElement.querySelector("#xzg-arrow-mode-row");
-        if (modeRow) modeRow.style.display = (arrowSettings.shapeType === "arrow" || arrowSettings.shapeType === "bezier") ? "none" : "";
+        if (modeRow) modeRow.style.display = (arrowSettings.shapeType === "arrow" || arrowSettings.shapeType === "bezier" || arrowSettings.shapeType === "freehand") ? "none" : "";
         toolbarElement.querySelectorAll(".xzg-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === arrowSettings.shapeMode));
     }
 }
@@ -2686,7 +2893,9 @@ function syncArrowsToExtra() {
                         animType: a.animType || "none",
                         animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
                         animCount: a.animCount !== undefined ? a.animCount : 5,
-                        animSize: a.animSize !== undefined ? a.animSize : 50
+                        animSize: a.animSize !== undefined ? a.animSize : 50,
+                        smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
+                        closed: a.closed !== undefined ? a.closed : arrowSettings.closed
                     };
                     if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
                     if (a.control) obj.control = { x: a.control.x, y: a.control.y };
@@ -2738,7 +2947,9 @@ function setupPersistence() {
                             animType: a.animType || "none",
                             animSpeed: a.animSpeed || 1,
                             animCount: a.animCount || 5,
-                            animSize: a.animSize !== undefined ? a.animSize : 50
+                            animSize: a.animSize !== undefined ? a.animSize : 50,
+                            smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
+                            closed: a.closed !== undefined ? a.closed : arrowSettings.closed
                         };
                         if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
                         if (a.control) obj.control = { x: a.control.x, y: a.control.y };
@@ -2830,6 +3041,8 @@ function setupPersistence() {
                     animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
                     animCount: a.animCount !== undefined ? a.animCount : 5,
                     animSize: a.animSize !== undefined ? a.animSize : 50,
+                    smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
+                    closed: a.closed !== undefined ? a.closed : arrowSettings.closed,
                     ...(a.points ? { points: a.points.map(p => ({ x: p.x, y: p.y })) } : {}),
                     ...(a.control ? { control: { x: a.control.x, y: a.control.y } } : {})
                 }));
@@ -2879,6 +3092,8 @@ function loadSettings() {
             if (parsed.animSize !== undefined) arrowSettings.animSize = parsed.animSize;
             if (parsed.fadeInEnabled !== undefined) arrowSettings.fadeInEnabled = parsed.fadeInEnabled;
             if (parsed.fadeInDuration !== undefined) arrowSettings.fadeInDuration = parsed.fadeInDuration;
+            if (parsed.smoothness !== undefined) arrowSettings.smoothness = parsed.smoothness;
+            if (parsed.closed !== undefined) arrowSettings.closed = parsed.closed;
         }
     } catch (e) {}
 }
@@ -3111,6 +3326,7 @@ function buildToolbarHTML() {
                 <div class="xzg-arrow-select-cell">
                     <label>${xzgT("形状", "Shape")}</label>
                     <select class="xzg-shape-select" id="xzg-shape-select">
+                        <option value="freehand" ${arrowSettings.shapeType === "freehand" ? "selected" : ""}>${xzgT("手绘", "Freehand")}</option>
                         <option value="arrow" ${arrowSettings.shapeType === "arrow" ? "selected" : ""}>${xzgT("箭头", "Arrow")}</option>
                         <option value="rectangle" ${arrowSettings.shapeType === "rectangle" ? "selected" : ""}>${xzgT("矩形", "Rect")}</option>
                         <option value="ellipse" ${arrowSettings.shapeType === "ellipse" ? "selected" : ""}>${xzgT("椭圆", "Oval")}</option>
@@ -3127,36 +3343,56 @@ function buildToolbarHTML() {
                     </select>
                 </div>
             </div>
-            <div class="xzg-arrow-mode-row" id="xzg-arrow-mode-row" style="${(arrowSettings.shapeType === "arrow" || arrowSettings.shapeType === "bezier") ? "display:none;" : ""}">
+            <div class="xzg-arrow-mode-row" id="xzg-arrow-mode-row" style="${(arrowSettings.shapeType === "arrow" || arrowSettings.shapeType === "bezier" || arrowSettings.shapeType === "freehand") ? "display:none;" : ""}">
                 <button class="xzg-mode-btn ${arrowSettings.shapeMode === "border" ? "active" : ""}" data-mode="border">${xzgT("边框", "Border")}</button>
                 <button class="xzg-mode-btn ${arrowSettings.shapeMode === "fill" ? "active" : ""}" data-mode="fill">${xzgT("填充", "Fill")}</button>
             </div>
             <div class="xzg-arrow-section">
                 <div class="xzg-arrow-basic-group">
+                <div class="xzg-arrow-setting-row" id="xzg-arrow-smoothness-row" style="${arrowSettings.shapeType === "freehand" ? "" : "display:none;"}">
+                    <label class="xzg-arrow-red-label">${xzgT("平滑", "Smooth")}</label>
+                    <input type="range" class="xzg-arrow-smoothness-slider xzg-arrow-red-slider" min="5" max="100" value="${arrowSettings.smoothness}">
+                    <span class="xzg-arrow-smoothness-value">${arrowSettings.smoothness}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="smoothness" title="应用到所有">▣</button>
+                </div>
+                <div class="xzg-arrow-setting-row" id="xzg-arrow-closed-row" style="${arrowSettings.shapeType === "bezier" ? "" : "display:none;"}">
+                    <label class="xzg-arrow-red-label">${xzgT("闭合", "Closed")}</label>
+                    <button type="button" class="xzg-arrow-closed-toggle" data-checked="${arrowSettings.closed ? 'true' : 'false'}" style="background:none;border:none;padding:0;cursor:pointer;display:inline-flex;align-items:center;">
+                        <span class="xzg-closed-toggle-track" style="position:relative;display:inline-block;width:32px;height:20px;border-radius:10px;background:${arrowSettings.closed ? '#4CAF50' : '#666666'};transition:background 0.2s;">
+                            <span class="xzg-closed-toggle-thumb" style="position:absolute;top:2px;left:${arrowSettings.closed ? '14px' : '2px'};width:16px;height:16px;border-radius:8px;background:#fff;transition:left 0.2s;"></span>
+                        </span>
+                    </button>
+                    <span class="xzg-arrow-closed-state" style="font-size:12px;color:${arrowSettings.closed ? '#4CAF50' : '#999'};min-width:20px;text-align:left;">${arrowSettings.closed ? xzgT("开", "ON") : xzgT("关", "OFF")}</span>
+                </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-red-label">${xzgT("颜色", "Color")}</label>
                     <input type="color" class="xzg-arrow-color-input" value="${arrowSettings.color}">
                     <span class="xzg-arrow-color-placeholder"></span>
+                    <button class="xzg-apply-prop-btn" data-prop="color" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-red-label">${xzgT("线宽", "Width")}</label>
                     <input type="range" class="xzg-arrow-width-slider xzg-arrow-red-slider" min="1" max="10" value="${arrowSettings.lineWidth}">
                     <span class="xzg-arrow-width-value">${arrowSettings.lineWidth}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="lineWidth" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-red-label">${xzgT("透明度", "Opacity")}</label>
                     <input type="range" class="xzg-arrow-opacity-slider xzg-arrow-red-slider" min="${arrowSettings.animType !== "none" ? 0 : 20}" max="100" value="${Math.round(arrowSettings.opacity * 100)}">
                     <span class="xzg-arrow-opacity-value">${Math.round(arrowSettings.opacity * 100)}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="opacity" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-head-row">
                     <label class="xzg-arrow-red-label">${xzgT("箭头", "Head")}</label>
                     <input type="range" class="xzg-arrow-head-slider xzg-arrow-red-slider" min="0" max="50" value="${arrowSettings.arrowSize}">
                     <span class="xzg-arrow-head-value">${arrowSettings.arrowSize}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="arrowSize" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-radius-row" style="display:none;">
                     <label class="xzg-arrow-red-label">${xzgT("圆角", "Radius")}</label>
                     <input type="range" class="xzg-arrow-radius-slider xzg-arrow-red-slider" min="0" max="50" value="${arrowSettings.borderRadius}">
                     <span class="xzg-arrow-radius-value">${arrowSettings.borderRadius}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="borderRadius" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-green-label">${xzgT("旋转", "Rotate")}</label>
@@ -3191,26 +3427,31 @@ function buildToolbarHTML() {
                         <option value="pulse" ${arrowSettings.animType === "pulse" ? "selected" : ""}>${xzgT("脉冲呼吸", "Pulse")}</option>
                         <option value="comet" ${arrowSettings.animType === "comet" ? "selected" : ""}>${xzgT("流星彗星", "Comet")}</option>
                     </select>
+                    <button class="xzg-apply-prop-btn" data-prop="animType" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-anim-speed-row" style="display:none;">
                     <label class="xzg-arrow-blue-label">${xzgT("速度", "Speed")}</label>
                     <input type="range" class="xzg-arrow-anim-speed-slider xzg-arrow-blue-slider" min="1" max="100" value="${arrowSettings.animSpeed}">
                     <span class="xzg-arrow-anim-speed-value">${arrowSettings.animSpeed}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="animSpeed" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-anim-count-row" style="display:none;">
                     <label class="xzg-arrow-blue-label">${xzgT("数量", "Count")}</label>
                     <input type="range" class="xzg-arrow-anim-count-slider xzg-arrow-blue-slider" min="1" max="30" value="${arrowSettings.animCount}">
                     <span class="xzg-arrow-anim-count-value">${arrowSettings.animCount}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="animCount" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-anim-size-row" style="display:none;">
                     <label class="xzg-arrow-blue-label">${xzgT("大小", "Size")}</label>
                     <input type="range" class="xzg-arrow-anim-size-slider xzg-arrow-blue-slider" min="0" max="100" value="${arrowSettings.animSize}">
                     <span class="xzg-arrow-anim-size-value">${arrowSettings.animSize}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="animSize" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-dashgap-row" style="display:${(arrowSettings.lineStyle === "solid") ? "none" : "flex"};">
                     <label class="xzg-arrow-blue-label">${xzgT("间距", "Gap")}</label>
                     <input type="range" class="xzg-arrow-dashgap-slider xzg-arrow-blue-slider" min="1" max="10" value="${arrowSettings.dashGap}">
                     <span class="xzg-arrow-dashgap-value">${arrowSettings.dashGap}</span>
+                    <button class="xzg-apply-prop-btn" data-prop="dashGap" title="应用到所有">▣</button>
                 </div>
                 </div>
                 <div class="xzg-arrow-copper-group">
@@ -3224,6 +3465,7 @@ function buildToolbarHTML() {
                     <div class="xzg-fadein-duration-row" style="display:flex;flex:1;align-items:center;gap:8px;opacity:${arrowSettings.fadeInEnabled ? '1' : '0.4'};">
                         <input type="range" class="xzg-arrow-fadein-slider xzg-arrow-copper-slider" min="100" max="8000" step="100" value="${arrowSettings.fadeInDuration}">
                         <span class="xzg-arrow-fadein-value" style="min-width:36px;text-align:right;font-size:14px;padding-right:4px;box-sizing:content-box;">${(arrowSettings.fadeInDuration / 1000).toFixed(1)}s</span>
+                        <button class="xzg-apply-prop-btn" data-prop="fadeInDuration" title="应用到所有">▣</button>
                     </div>
                 </div>
                 </div>
@@ -3239,6 +3481,7 @@ function buildToolbarHTML() {
                             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z"/></svg>
                             ${xzgT("清除全部", "Clear All")}
                         </button>
+
                     </div>
                 </div>
             </div>
@@ -3401,6 +3644,22 @@ function applyToolbarStyles() {
             align-items: center;
             gap: 8px;
             margin-bottom: 6px;
+        }
+        .xzg-apply-prop-btn {
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 2px;
+            line-height: 1;
+            flex-shrink: 0;
+            opacity: 0.5;
+            transition: opacity 0.2s, color 0.2s;
+        }
+        .xzg-apply-prop-btn:hover {
+            opacity: 1;
+            color: #4CAF50;
         }
         .xzg-arrow-setting-row:last-child {
             margin-bottom: 0;
@@ -3608,7 +3867,7 @@ function setupToolbarEvents() {
         // 箭头/曲线类型默认为边框模式，隐藏模式行；其他形状显示模式行
         const modeRow = toolbarElement.querySelector("#xzg-arrow-mode-row");
         if (modeRow) {
-            const noMode = shape === "arrow" || shape === "bezier";
+            const noMode = shape === "arrow" || shape === "bezier" || shape === "freehand";
             modeRow.style.display = noMode ? "none" : "";
             if (noMode) arrowSettings.shapeMode = "border";
         }
@@ -3616,6 +3875,16 @@ function setupToolbarEvents() {
         const radiusRow = toolbarElement.querySelector("#xzg-arrow-radius-row");
         if (radiusRow) {
             radiusRow.style.display = shape === "rectangle" ? "" : "none";
+        }
+        // 平滑幅度滑条仅手绘显示
+        const smoothnessRow = toolbarElement.querySelector("#xzg-arrow-smoothness-row");
+        if (smoothnessRow) {
+            smoothnessRow.style.display = shape === "freehand" ? "" : "none";
+        }
+        // 闭合开关仅曲线显示
+        const closedRow = toolbarElement.querySelector("#xzg-arrow-closed-row");
+        if (closedRow) {
+            closedRow.style.display = shape === "bezier" ? "" : "none";
         }
         // 更新模式按钮激活状态
         toolbarElement.querySelectorAll(".xzg-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === arrowSettings.shapeMode));
@@ -3780,6 +4049,52 @@ function setupToolbarEvents() {
         }
     });
 
+    // 平滑幅度滑块（仅手绘模式）
+    const smoothnessSlider = toolbarElement.querySelector(".xzg-arrow-smoothness-slider");
+    smoothnessSlider?.addEventListener("input", (e) => {
+        arrowSettings.smoothness = parseInt(e.target.value);
+        const display = toolbarElement.querySelector(".xzg-arrow-smoothness-value");
+        if (display) display.textContent = arrowSettings.smoothness;
+        // 当前正在绘制的手绘，更新实时平滑
+        if (currentArrow && currentArrow.type === "freehand" && currentArrow.rawPoints) {
+            currentArrow.points = smoothFreehandPoints(currentArrow.rawPoints);
+        }
+        renderArrows();
+        saveSettings();
+    });
+    smoothnessSlider?.addEventListener("change", () => {
+        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+            recordState(xzgT("修改平滑幅度", "Change smoothness"));
+        }
+    });
+
+    // 闭合开关（仅曲线模式）
+    const closedToggle = toolbarElement.querySelector(".xzg-arrow-closed-toggle");
+    closedToggle?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const isChecked = closedToggle.dataset.checked === "true";
+        const newVal = !isChecked;
+        arrowSettings.closed = newVal;
+        closedToggle.dataset.checked = newVal ? "true" : "false";
+        const track = closedToggle.querySelector(".xzg-closed-toggle-track");
+        const thumb = closedToggle.querySelector(".xzg-closed-toggle-thumb");
+        if (track) track.style.background = newVal ? "#4CAF50" : "#666666";
+        if (thumb) thumb.style.left = newVal ? "14px" : "2px";
+        const stateLabel = toolbarElement.querySelector(".xzg-arrow-closed-state");
+        if (stateLabel) {
+            stateLabel.textContent = newVal ? xzgT("开", "ON") : xzgT("关", "OFF");
+            stateLabel.style.color = newVal ? "#4CAF50" : "#999";
+        }
+        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+            arrows[selectedArrowIndex].closed = arrowSettings.closed;
+        }
+        renderArrows();
+        saveSettings();
+        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+            recordState(xzgT("切换闭合", "Toggle closed"));
+        }
+    });
+
     // 特效动画下拉
     const animSelect = toolbarElement.querySelector(".xzg-arrow-anim-select");
     const animSpeedRow = toolbarElement.querySelector("#xzg-arrow-anim-speed-row");
@@ -3900,6 +4215,24 @@ function setupToolbarEvents() {
     });
     fadeInSlider?.addEventListener("change", () => {
         saveSettings();
+    });
+
+    // 单项应用到所有（通过事件委托监听 .xzg-apply-prop-btn 点击）
+    toolbarElement.addEventListener("click", (e) => {
+        const btn = e.target.closest(".xzg-apply-prop-btn");
+        if (!btn) return;
+        e.stopPropagation();
+        const prop = btn.dataset.prop;
+        if (!prop) return;
+        if (selectedArrowIndex < 0 || selectedArrowIndex >= arrows.length) return;
+        const source = arrows[selectedArrowIndex];
+        if (!source || source[prop] === undefined) return;
+        const val = source[prop];
+        for (let i = 0; i < arrows.length; i++) {
+            arrows[i][prop] = val;
+        }
+        renderArrows();
+        recordState(xzgT("应用" + prop, "Apply " + prop));
     });
 
     // 旋转滑块
@@ -4068,7 +4401,6 @@ function updateToolbarState() {
 
     const clearBtn = toolbarElement.querySelector(".xzg-arrow-clear-btn");
     const deleteBtn = toolbarElement.querySelector(".xzg-arrow-delete-btn");
-
     if (clearBtn) clearBtn.disabled = arrows.length === 0;
     if (deleteBtn) deleteBtn.disabled = selectedArrowIndex < 0 || selectedArrowIndex >= arrows.length;
 }
