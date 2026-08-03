@@ -293,7 +293,7 @@ class XzgAudioWaveformViewer {
         this._widgetH = 0; // widget 总高度（包括波形周围黑色区域）
 
         // 循环/单次播放：true=循环，false=单次
-        this._loopPlayback = true;
+        this._loopPlayback = false;
         this._loopBtn = null;
 
         // 播放头拖动结束时间（防止拖动到界面外后误触发播放）

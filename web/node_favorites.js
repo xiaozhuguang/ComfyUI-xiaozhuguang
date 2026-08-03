@@ -5962,7 +5962,7 @@ app.registerExtension({
                 bgPadding: 4,
                 textAlign: "center",
                 letterSpacing: 0,
-                lineHeight: 1.4,
+                lineHeight: 1,
                 glowEnabled: false,
                 glowSize: 15,
                 glowColor: "#4CAF50",
@@ -6213,7 +6213,7 @@ app.registerExtension({
                 const p = this.properties || DEFAULT_PROPS;
                 const fontSize = p.fontSize || 16;
                 const text = p.text || "";
-                const lineHeight = fontSize * (p.lineHeight || 1.4);
+                const lineHeight = fontSize * (p.lineHeight || 1);
                 const lines = text.split("\n");
                 const cv = (window.app?.canvas || LGraphCanvas.active_canvas)?.canvas;
                 const ctx = cv ? cv.getContext("2d") : null;
@@ -6271,7 +6271,7 @@ app.registerExtension({
                 const p = this.properties || DEFAULT_PROPS;
                 const text = p.text || "";
                 const fontSize = p.fontSize || 16;
-                const lineHeight = fontSize * (p.lineHeight || 1.4);
+                const lineHeight = fontSize * (p.lineHeight || 1);
                 const lines = text.split("\n");
                 const cv = (window.app?.canvas || LGraphCanvas.active_canvas)?.canvas;
                 const ctx = cv ? cv.getContext("2d") : null;
@@ -6325,7 +6325,7 @@ app.registerExtension({
                 const rainbowEnabled = p.rainbowEnabled;
                 const rainbowSpeed = p.rainbowSpeed ?? 30;
                 const lines = text.split("\n");
-                const lineHeight = fontSize * (p.lineHeight || 1.4);
+                const lineHeight = fontSize * (p.lineHeight || 1);
                 ctx.save();
 
                 if (p.bgEnabled && p.bgColor && p.bgColor !== "transparent") {
@@ -6640,8 +6640,16 @@ app.registerExtension({
                 // 此时 textarea 文字顶部 = 0 + halfLeading = 0.2 * p.fontSize * sc
                 // canvas 文字顶部 = (0.75 - 0.8) * p.fontSize * sc = -0.05 * p.fontSize * sc
                 // 差异仅 0.25 * fontSize * sc，约 12.5px（fontSize=50时），远小于旧公式的 43.5px
-                const editPaddingTop = 0;
-                ta.style.cssText = `width:100%;height:${editHeight}px;outline:none;border:none;resize:none;padding:${editPaddingTop}px 0 0 0;box-sizing:border-box;text-align:left;background:transparent;color:transparent;caret-color:#00ff6a;-webkit-text-fill-color:transparent;font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${p.lineHeight || 1.4};letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;overflow:hidden;white-space:pre;position:relative;`;
+                // 加上 bgPadding 对齐，使选中高亮与渲染文字垂直位置一致
+                // 补偿 CSS line-height 半行距（halfLeading = fontSize * (lineHeight - 1) / 2）
+                const calcTitlePad = (props, s, lh) => {
+                    const bp = (props.bgPadding ?? 4) * s;
+                    const lineH = lh ?? props.lineHeight ?? 1;
+                    const hl = (props.fontSize || 16) * s * (lineH - 1) / 2;
+                    return bp - hl;
+                };
+                const editPaddingTop = calcTitlePad(p, sc);
+                ta.style.cssText = `width:100%;height:${editHeight}px;outline:none;border:none;resize:none;padding:${editPaddingTop}px;box-sizing:border-box;text-align:left;background:transparent;color:transparent;caret-color:#00ff6a;-webkit-text-fill-color:transparent;font: normal ${editFontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif;line-height:${p.lineHeight || 1};letter-spacing:${(p.letterSpacing || 0) * editScale}px;border-radius:${(p.borderRadius ?? 8) * editScale}px;overflow:hidden;white-space:pre;position:relative;`;
                 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = `position:absolute;left:0;right:0;bottom:100%;display:flex;align-items:stretch;margin-bottom:6px;`;
@@ -6710,14 +6718,14 @@ app.registerExtension({
                 
                 const lineHeightSlider = document.createElement("input");
                 lineHeightSlider.type = "range";
-                lineHeightSlider.min = "1.2";
-                lineHeightSlider.max = "2";
+                lineHeightSlider.min = "1";
+                lineHeightSlider.max = "3";
                 lineHeightSlider.step = "0.1";
-                lineHeightSlider.value = p.lineHeight || 1.4;
+                lineHeightSlider.value = p.lineHeight || 1;
                 lineHeightSlider.style.cssText = `flex:1;height:4px;cursor:pointer;`;
                 
                 const lineHeightValue = document.createElement("span");
-                lineHeightValue.textContent = (p.lineHeight || 1.4).toFixed(1);
+                lineHeightValue.textContent = (p.lineHeight || 1).toFixed(1);
                 lineHeightValue.style.cssText = `color:#4CAF50;font-size:13px;white-space:nowrap;min-width:30px;text-align:right;font-family:Arial,sans-serif;`;
 
                 row2.appendChild(lineHeightLabel);
@@ -7631,7 +7639,8 @@ app.registerExtension({
                     const nr = getNodeViewportRect(node);
                     const scale = nr ? nr.scale : 1;
                     ta.style.fontSize = s * scale + "px";
-                    ta.style.lineHeight = s * scale * 1.4 + "px";
+                    ta.style.lineHeight = s * scale * (p.lineHeight || 1) + "px";
+                    ta.style.padding = calcTitlePad(p, scale) + "px";
                     if (s <= 100) {
                         slider.value = s;
                     }
@@ -7660,6 +7669,11 @@ app.registerExtension({
                 }
                 let _pendingTextAlign = _savedTextAlign;
 
+                // 编辑模式下 canvas 始终按行距1显示，退出时恢复实际值
+                const _savedLineHeight = p.lineHeight || 1;
+                p.lineHeight = 1;
+                let _pendingLineHeight = _savedLineHeight;
+
                 const updateTextAlign = (align) => {
                     if (align === "left") {
                         _pendingTextAlign = null;
@@ -7681,19 +7695,11 @@ app.registerExtension({
                 };
 
                 const updateLineHeight = (value) => {
-                    const v = parseFloat(value) || 1.4;
-                    p.lineHeight = v;
+                    const v = parseFloat(value) || 1;
+                    _pendingLineHeight = v;
                     lineHeightValue.textContent = v.toFixed(1);
-                    const nr = getNodeViewportRect(node);
-                    const scale = nr ? nr.scale : 1;
-                    ta.style.lineHeight = p.fontSize * scale * v + "px";
-                    // 确保textarea高度能容纳新行距
-                    const lines = (p.text || "").split("\n");
-                    const bp = p.bgPadding ?? 4;
-                    const neededH = lines.length * p.fontSize * scale * v + bp * 2 * scale;
-                    ta.style.height = Math.max(parseFloat(ta.style.height) || 90, neededH) + "px";
-                    node.adjustHeightToContent();
-                    if (node.graph) node.graph.setDirtyCanvas(true, true);
+                    // 编辑模式下 canvas 和 textarea 均按行距1显示，退出时生效
+                    lineHeightSlider.value = v;
                 };
 
                 const updateLetterSpacing = (value) => {
@@ -7709,6 +7715,7 @@ app.registerExtension({
                 const saveClose = () => {
                     if (!node.editTextarea) return;
                     p.text = ta.value;
+                    p.lineHeight = _pendingLineHeight;
                     if (_pendingTextAlign && _pendingTextAlign !== p.textAlign) {
                         p.textAlign = _pendingTextAlign;
                     }
@@ -7733,12 +7740,13 @@ app.registerExtension({
                         // textarea 高度按 CSS 行距计算，避免行距加大时文字被裁剪
                         const textLines = (ta.value || "").split("\n");
                         const bp = p.bgPadding ?? 4;
-                        const taContentH = textLines.length * p.fontSize * es * (p.lineHeight || 1.4) + bp * 2 * es;
+                        const taContentH = textLines.length * p.fontSize * es * (p.lineHeight || 1) + bp * 2 * es;
                         ta.style.height = Math.max(node.size[1] * s, taContentH) + "px";
                         ta.style.fontSize = p.fontSize * s + "px";
-                        ta.style.lineHeight = p.fontSize * s * (p.lineHeight || 1.4) + "px";
+                        ta.style.lineHeight = p.fontSize * s * (p.lineHeight || 1) + "px";
                         ta.style.letterSpacing = (p.letterSpacing || 0) * es + "px";
                         ta.style.borderRadius = (p.borderRadius ?? 8) * s + "px";
+                        ta.style.padding = calcTitlePad(p, s) + "px";
                     }
                     node._posRaf = requestAnimationFrame(_posTick);
                 };
@@ -8115,6 +8123,8 @@ app.registerExtension({
 
                 const updateBgPadding = (padding) => {
                     p.bgPadding = parseInt(padding);
+                    const nr = getNodeViewportRect(node);
+                    if (nr) ta.style.padding = calcTitlePad(p, nr.scale) + "px";
                     node._customWidth = null;
                     node._customHeight = null;
                     node.adjustHeightToContent();
@@ -8196,8 +8206,9 @@ app.registerExtension({
                         container.style.top = vr2.top + "px";
                         const textLines2 = (ta.value || "").split("\n");
                         const bp2 = p.bgPadding ?? 4;
-                        const taContentH2 = textLines2.length * p.fontSize * Math.max(1, vr2.scale) * (p.lineHeight || 1.4) + bp2 * 2 * Math.max(1, vr2.scale);
+                        const taContentH2 = textLines2.length * p.fontSize * Math.max(1, vr2.scale) * (p.lineHeight || 1) + bp2 * 2 * Math.max(1, vr2.scale);
                         ta.style.height = Math.max(90, node.size[1] * vr2.scale, taContentH2) + "px";
+                        ta.style.padding = calcTitlePad(p, Math.max(1, vr2.scale)) + "px";
                     }
                     node.setDirtyCanvas?.(true, true);
                     window.app?.graph?.setDirtyCanvas(true);

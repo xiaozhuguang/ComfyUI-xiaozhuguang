@@ -46,6 +46,7 @@ from .xzg_longcat_model_cache import (
     offload_model_to_cpu,
     resume_model_to_cuda,
     set_cached_model,
+    set_generating,
     set_keep_loaded,
     unload_model,
 )
@@ -339,6 +340,9 @@ class XzgAudioDiTTTS:
         if torch.cuda.is_available():
             torch.cuda.manual_seed(actual_seed)
 
+        # 标记生成进行中，防止 soft_empty_cache 误卸载/offload 模型
+        set_generating(True)
+
         # 逐段生成
         chunks: list[np.ndarray] = []
         total_segments = len(segments)
@@ -383,6 +387,8 @@ class XzgAudioDiTTTS:
                 offload_model_to_cpu()
         except Exception:
             pass
+        finally:
+            set_generating(False)
         return (result,)
 
     def _get_model(self, model_path, tokenizer, device, dtype, attention, keep_loaded=False):
@@ -392,7 +398,8 @@ class XzgAudioDiTTTS:
             logger.info(f"参数变化 → 卸载旧缓存模型。旧: {cached_key}, 新: {key}")
             unload_model()
         if cached_model is not None and cached_key == key:
-            set_keep_loaded(keep_loaded)
+            # 临时设为 True，防止 soft_empty_cache 在模型恢复/推理间隙误卸载
+            set_keep_loaded(True)
             if is_offloaded():
                 device_str, _ = resolve_device(device)
                 logger.info(f"恢复已卸载的模型到 {device_str}…")
@@ -401,7 +408,8 @@ class XzgAudioDiTTTS:
                 logger.info("复用缓存模型（严格离线）。")
             return cached_model, cached_tokenizer
         model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
-        set_cached_model(model, tokenizer, key, keep_loaded=keep_loaded)
+        # 临时设为 True，防止 soft_empty_cache 在加载完成到推理之间误卸载
+        set_cached_model(model, tokenizer, key, keep_loaded=True)
         return model, tokenizer
 
 
@@ -562,6 +570,9 @@ class XzgAudioDiTVoiceCloneTTS:
         if torch.cuda.is_available():
             torch.cuda.manual_seed(actual_seed)
 
+        # 标记生成进行中，防止 soft_empty_cache 误卸载/offload 模型
+        set_generating(True)
+
         # 逐段生成
         chunks: list[np.ndarray] = []
         total_segments = len(segments)
@@ -611,6 +622,8 @@ class XzgAudioDiTVoiceCloneTTS:
                 offload_model_to_cpu()
         except Exception:
             pass
+        finally:
+            set_generating(False)
         return (result,)
 
     def _get_model(self, model_path, tokenizer, device, dtype, attention, keep_loaded=False):
@@ -619,13 +632,15 @@ class XzgAudioDiTVoiceCloneTTS:
         if cached_model is not None and cached_key != key:
             unload_model()
         if cached_model is not None and cached_key == key:
-            set_keep_loaded(keep_loaded)
+            # 临时设为 True，防止 soft_empty_cache 在模型恢复/推理间隙误卸载
+            set_keep_loaded(True)
             if is_offloaded():
                 device_str, _ = resolve_device(device)
                 resume_model_to_cuda(device_str)
             return cached_model, cached_tokenizer
         model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
-        set_cached_model(model, tokenizer, key, keep_loaded=keep_loaded)
+        # 临时设为 True，防止 soft_empty_cache 在加载完成到推理之间误卸载
+        set_cached_model(model, tokenizer, key, keep_loaded=True)
         return model, tokenizer
 
 
@@ -777,8 +792,9 @@ if _V3:
 
             model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
             try:
+                # 临时设为 True，防止 soft_empty_cache 在加载完成到推理之间误卸载
                 set_cached_model(model, tokenizer, get_cache_key(model_path, device, dtype, attention, tokenizer),
-                                 keep_loaded=keep_model_loaded)
+                                 keep_loaded=True)
             except Exception:
                 pass
 
@@ -790,6 +806,9 @@ if _V3:
             torch.manual_seed(actual_seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed(actual_seed)
+
+            # 标记生成进行中，防止 soft_empty_cache 误卸载/offload 模型
+            set_generating(True)
 
             chunks: list[np.ndarray] = []
             for idx, (speaker_0b, line) in enumerate(turns):
@@ -872,4 +891,6 @@ if _V3:
                     offload_model_to_cpu()
             except Exception:
                 pass
+            finally:
+                set_generating(False)
             return (result,)

@@ -16,6 +16,9 @@ _offloaded: bool = False
 
 cancel_event: threading.Event = threading.Event()
 
+# 生成进行中标志：防止 soft_empty_cache 在生成期间卸载或 offload 模型
+_generating: bool = False
+
 
 def get_cache_key(
     model_path: str, device: str, precision: str, attention: str,
@@ -42,6 +45,13 @@ def set_keep_loaded(keep_loaded: bool):
     global _keep_loaded
     with _cache_lock:
         _keep_loaded = keep_loaded
+
+
+def set_generating(generating: bool):
+    """设置生成进行中标志。生成期间 soft_empty_cache 不会卸载/offload 模型。"""
+    global _generating
+    with _cache_lock:
+        _generating = generating
 
 
 def is_offloaded() -> bool:
@@ -147,6 +157,9 @@ def _hook_comfy_model_management():
         _original = mm.soft_empty_cache
 
         def _patched_soft_empty_cache(*args, **kwargs):
+            # 生成进行中：完全跳过，防止误卸载/offload 模型
+            if _generating:
+                return _original(*args, **kwargs)
             # Only offload to CPU if keep_model_loaded is True, otherwise full unload
             if _keep_loaded and _cached_model is not None:
                 offload_model_to_cpu()

@@ -203,7 +203,7 @@ class XiaozhuguangWaveformViewer {
         this._dragThreshold = 5;
         this.volume = 1.0;
         // 循环/单次播放：true=循环，false=单次
-        this._loopPlayback = true;
+        this._loopPlayback = false;
         this._loopBtn = null;
         // 播放头拖动结束时间（防止拖动到界面外后误触发播放）
         this._lastPlayheadEnd = 0;

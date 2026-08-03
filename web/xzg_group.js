@@ -331,7 +331,7 @@ const XZGGroup = {
                             locked: attrs?.locked || false,
                             hidden: attrs?.hidden || false,
                             bounds: { x: 0, y: 0, w: 300, h: 200 },
-                            fontSize: attrs?.fontSize || 14,
+                            fontSize: attrs?.fontSize || 20,
                             colorHue: attrs?.colorHue ?? 48,
                             colorSat: attrs?.colorSat ?? 100,
                             colorLit: attrs?.colorLit ?? 55,
@@ -497,7 +497,7 @@ const XZGGroup = {
                     const buildDefaultGroup2 = (newGid, nodeIds, oldGroup) => ({
                         id: newGid, title: oldGroup?.title || '右键标题栏设置', nodeIds, bypassed: false,
                         locked: oldGroup?.locked || false, hidden: oldGroup?.hidden || false, bounds: { x: 0, y: 0, w: 300, h: 200 },
-                        fontSize: oldGroup?.fontSize || 14, colorHue: oldGroup?.colorHue ?? 48,
+                        fontSize: oldGroup?.fontSize || 20, colorHue: oldGroup?.colorHue ?? 48,
                         colorSat: oldGroup?.colorSat ?? 100, colorLit: oldGroup?.colorLit ?? 55,
                         effect: oldGroup?.effect || 'none', effectSpeed: oldGroup?.effectSpeed || 3,
                         borderWidth: oldGroup?.borderWidth || 2, borderOpacity: oldGroup?.borderOpacity ?? 1,
@@ -1041,7 +1041,7 @@ const XZGGroup = {
             el.style.display = 'block';
             // 标题文字/栏高度跟随画布缩放（无标题时保留最小操作区域）
             // 超出基准高度部分编组框整体向外（向上）扩展，避免向内遮挡节点
-            const fs = (g.fontSize || 14) * scale;
+            const fs = (g.fontSize || 20) * scale;
             const showTitle = (g.title || '').trim() !== '';
             const baseHeaderHeight = 18 * scale;
             const headerHeight = Math.max(baseHeaderHeight, fs + 4 * scale);
@@ -1069,7 +1069,7 @@ const XZGGroup = {
             const span = el.querySelector('.xzg-group-title-text');
             if (span) {
                 span.style.fontSize = fs + 'px';
-                span.style.lineHeight = (headerHeight * 0.9) + 'px';
+                span.style.lineHeight = (g.lineHeight ?? 1);
                 span.style.color = g.titleColor || '#FFD700';
                 span.style.display = showTitle ? '' : 'none';
             }
@@ -1454,6 +1454,7 @@ const XZGGroup = {
             borderWidth: last.borderWidth, borderOpacity: last.borderOpacity,
             headerBgColor: last.headerBgColor,
             titleColor: last.titleColor,
+            lineHeight: 1,
             fadeEnabled: last.fadeEnabled,
             fadeOutDuration: 0,
             fadeInDuration: last.fadeInDuration
@@ -1505,16 +1506,17 @@ const XZGGroup = {
         const bw = group.borderWidth || 2;
         const bo = group.borderOpacity ?? 1;
         el.style.cssText = `position:absolute;pointer-events:none;border:${bw}px solid hsla(48,100%,55%,${bo});border-radius:8px;background:transparent;box-sizing:border-box;z-index:5;`;
-        const fs = group.fontSize || 14;
+        const scale = app?.canvas?.ds?.scale || 1;
+        const fs = (group.fontSize || 20) * scale;
         const showTitle = (group.title || '').trim() !== '';
-        const headerHeight = Math.max(18, fs + 4);
+        const headerHeight = Math.max(18 * scale, fs + 4 * scale);
         el.innerHTML = `
             <div class="xzg-group-header" style="display:flex;align-items:center;padding:0;background:${showTitle ? (group.headerBgColor || 'rgba(0,0,0,0.4)') : 'transparent'};border-radius:7px 7px 0 0;cursor:pointer;user-select:none;pointer-events:auto;height:${headerHeight}px;box-sizing:border-box;overflow:visible;z-index:4;">
                 <div class="xzg-left-fifth" title="点击此区域：该编组开启，同级其他全部绕过" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-right:1px solid rgba(255,255,255,0.1);position:relative;">
                     <span class="xzg-left-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">◀</span>
                 </div>
                 <div style="flex:1 1 auto;min-width:0;overflow:hidden;padding:0;display:flex;align-items:center;justify-content:center;height:100%;">
-                    <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:${headerHeight * 0.9}px;overflow:hidden;text-overflow:ellipsis;${showTitle ? '' : 'display:none;'}">${showTitle ? group.title : ''}</span>
+                    <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:${(group.lineHeight ?? 1)};overflow:hidden;text-overflow:ellipsis;${showTitle ? '' : 'display:none;'}">${showTitle ? group.title : ''}</span>
                 </div>
                 <div class="xzg-right-fifth" title="点击此区域：该编组绕过，同级其他全部开启" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-left:1px solid rgba(255,255,255,0.1);position:relative;">
                     <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">▶</span>
@@ -1712,7 +1714,7 @@ const XZGGroup = {
     /* ── 上次标题配置存取（颜色/大小/炫彩/背景/辉光等继承） ── */
     getLastTitleConfig() {
         const defaults = {
-            fontSize: 14,
+            fontSize: 20,
             colorHue: 48, colorSat: 100, colorLit: 55,
             effect: 'none', effectSpeed: 3,
             borderWidth: 2, borderOpacity: 1,
@@ -1809,10 +1811,17 @@ const XZGGroup = {
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">文字大小</label>
-                    <input class="xzg-set-fontsize" type="range" min="6" max="48" value="${group.fontSize || 14}" style="flex:1;height:28px;margin:0;">
+                    <input class="xzg-set-fontsize" type="range" min="6" max="48" value="${group.fontSize || 20}" style="flex:1;height:28px;margin:0;">
                     <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:28px;">
-                        <span class="xzg-set-fs-val" style="color:#fff;font-size:12px;width:28px;text-align:left;">${group.fontSize || 14}</span>
+                        <span class="xzg-set-fs-val" style="color:#fff;font-size:12px;width:28px;text-align:left;">${group.fontSize || 20}</span>
                         <div class="xzg-title-color-swatch" style="width:22px;height:22px;border-radius:4px;cursor:pointer;background:${group.titleColor || '#FFD700'};border:1px solid rgba(255,255,255,0.2);flex-shrink:0;"></div>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">行距</label>
+                    <input class="xzg-set-lineheight" type="range" min="1" max="3" step="0.1" value="${group.lineHeight ?? 1}" style="flex:1;height:28px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:28px;">
+                        <span class="xzg-set-lh-val" style="color:#fff;font-size:12px;width:28px;text-align:left;">${(group.lineHeight ?? 1).toFixed(1)}</span>
                     </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
@@ -2020,12 +2029,26 @@ const XZGGroup = {
         const fsR = modal.querySelector('.xzg-set-fontsize');
         const fsV = modal.querySelector('.xzg-set-fs-val');
         fsR.addEventListener('input', () => {
-            const v = parseInt(fsR.value) || 14;
+            const v = parseInt(fsR.value) || 20;
             fsV.textContent = v;
             group.fontSize = v;
             const span = self.groupEls[group.id]?.querySelector('.xzg-group-title-text');
-            if (span) span.style.fontSize = v + 'px';
+            const sc = app?.canvas?.ds?.scale || 1;
+            if (span) span.style.fontSize = (v * sc) + 'px';
         });
+
+        // 行距滑块
+        const lhR = modal.querySelector('.xzg-set-lineheight');
+        const lhV = modal.querySelector('.xzg-set-lh-val');
+        if (lhR && lhV) {
+            lhR.addEventListener('input', function() {
+                const v = parseFloat(this.value) || 1;
+                lhV.textContent = v.toFixed(1);
+                group.lineHeight = v;
+                const span = self.groupEls[group.id]?.querySelector('.xzg-group-title-text');
+                if (span) span.style.lineHeight = v;
+            });
+        }
 
         // 文字颜色 - 隐藏颜色选择器
         const titleColorPicker = document.createElement('input');
@@ -2121,7 +2144,7 @@ const XZGGroup = {
         const applySettings = (targetGroup) => {
             const newTitle = modal.querySelector('.xzg-set-title').value.trim();
             targetGroup.title = newTitle;
-            targetGroup.fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 14;
+            targetGroup.fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 20;
             targetGroup.colorHue = sel.h; targetGroup.colorSat = sel.s; targetGroup.colorLit = sel.l;
             targetGroup.effect = modal.querySelector('.xzg-set-effect').value;
             targetGroup.effectSpeed = parseInt(modal.querySelector('.xzg-set-speed').value) || 3;
@@ -2135,6 +2158,7 @@ const XZGGroup = {
                 return `rgba(${r},${g},${b},${headerAlpha})`;
             })();
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
+            targetGroup.lineHeight = parseFloat(modal.querySelector('.xzg-set-lineheight').value) || 1;
             targetGroup.fadeEnabled = fadeToggle.dataset.checked === 'true';
             targetGroup.fadeInDuration = parseInt(fadeDurR.value) || 1000;
             if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
@@ -2153,16 +2177,17 @@ const XZGGroup = {
                     this.rebuildGroupEl(targetGroup);
                 } else {
                     delete el._xzgRefs;
+                    const sc = app?.canvas?.ds?.scale || 1;
                     const span = el.querySelector('.xzg-group-title-text');
                     if (span) {
                         span.textContent = targetGroup.title;
-                        span.style.fontSize = targetGroup.fontSize + 'px';
+                        span.style.fontSize = (targetGroup.fontSize * sc) + 'px';
                         span.style.color = targetGroup.titleColor;
                         span.style.display = '';
                     }
                     const header = el.querySelector('.xzg-group-header');
                     if (header) {
-                        header.style.height = Math.max(18, targetGroup.fontSize + 4) + 'px';
+                        header.style.height = Math.max(18 * sc, targetGroup.fontSize * sc + 4 * sc) + 'px';
                         header.style.background = targetGroup.headerBgColor || 'rgba(0,0,0,0.4)';
                     }
                     this.updateGroupStyle(targetGroup.id);
@@ -2202,7 +2227,7 @@ const XZGGroup = {
         modal.querySelector('.xzg-set-apply-all').addEventListener('click', () => {
             const effect = modal.querySelector('.xzg-set-effect').value;
             const speed = parseInt(modal.querySelector('.xzg-set-speed').value) || 3;
-            const fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 14;
+            const fontSize = parseInt(modal.querySelector('.xzg-set-fontsize').value) || 20;
             const bw = parseInt(modal.querySelector('.xzg-set-borderwidth').value) || 2;
             const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 100) / 100;
             const fadeEnabled = fadeToggle.dataset.checked === 'true';
@@ -2225,9 +2250,10 @@ const XZGGroup = {
                 g2.fadeInDuration = fadeInDuration;
                 if (g2.fadeOutDuration === undefined) g2.fadeOutDuration = 0;
                 this.updateGroupStyle(g2.id);
+                const sc = app?.canvas?.ds?.scale || 1;
                 const span = this.groupEls[g2.id]?.querySelector('.xzg-group-title-text');
                 if (span) {
-                    span.style.fontSize = fontSize + 'px';
+                    span.style.fontSize = (fontSize * sc) + 'px';
                     span.style.color = titleColorPicker.value || '#FFD700';
                 }
                 const header = this.groupEls[g2.id]?.querySelector('.xzg-group-header');
@@ -2288,7 +2314,8 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (!group) return;
         const input = document.createElement('input');
         input.value = group.title;
-        input.style.cssText = `color:${group.titleColor || '#FFD700'};font-size:${group.fontSize||14}px;font-weight:400;background:rgba(0,0,0,0.8);border:1px solid rgba(255,215,0,0.5);border-radius:3px;padding:1px 4px;outline:none;width:120px;`;
+        const sc = app?.canvas?.ds?.scale || 1;
+        input.style.cssText = `color:${group.titleColor || '#FFD700'};font-size:${(group.fontSize||20)*sc}px;font-weight:400;background:rgba(0,0,0,0.8);border:1px solid rgba(255,215,0,0.5);border-radius:3px;padding:1px 4px;outline:none;width:120px;`;
         span.replaceWith(input);
         input.focus(); input.select();
         const done = () => {
@@ -2302,7 +2329,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             }
             const ns = document.createElement('span');
             ns.className = 'xzg-group-title-text';
-            ns.style.cssText = `color:${group.titleColor || '#FFD700'};font-size:${group.fontSize||14}px;font-weight:400;`;
+            ns.style.cssText = `color:${group.titleColor || '#FFD700'};font-size:${(group.fontSize||20)*sc}px;font-weight:400;`;
             ns.textContent = group.title;
             input.replaceWith(ns);
         };
@@ -3233,7 +3260,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
         // 计算标题栏中心（与 updatePositions 保持一致）
         // 标题栏在编组顶部，中心水平居中
-        const fs = (g.fontSize || 14) * scale;
+        const fs = (g.fontSize || 20) * scale;
         const headerHeight = Math.max(18 * scale, fs + 4 * scale);
         const extraTop = headerHeight - 18 * scale;
         const cx = b.x + b.w / 2;
@@ -3823,7 +3850,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (!app?.graph) return;
         const gd = {};
         for (const [id, g] of Object.entries(this.groups)) {
-            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
+            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, lineHeight: g.lineHeight ?? 1, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
         }
         app.graph.extra = app.graph.extra || {};
         app.graph.extra.xzgGroups = gd;
@@ -4054,7 +4081,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         }
                         const gd = {};
                         for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
+                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, lineHeight: g.lineHeight ?? 1, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
                         }
                         if (Object.keys(gd).length) {
                             console.log('[小珠光编组] LGraph.serialize写入编组数据:', Object.keys(gd).length, '个');
@@ -4124,6 +4151,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                                 borderOpacity: g.borderOpacity,
                                 headerBgColor: g.headerBgColor,
                                 titleColor: g.titleColor,
+                                lineHeight: g.lineHeight,
                             };
                         }
 
@@ -4214,7 +4242,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             locked: !!(attrs && attrs.locked),
             hidden: !!(attrs && attrs.hidden),
             bounds: { x: 0, y: 0, w: 300, h: 200 },
-            fontSize: (attrs && attrs.fontSize) || 14,
+            fontSize: (attrs && attrs.fontSize) || 20,
             colorHue: (attrs && typeof attrs.colorHue === 'number') ? attrs.colorHue : 48,
             colorSat: (attrs && typeof attrs.colorSat === 'number') ? attrs.colorSat : 100,
             colorLit: (attrs && typeof attrs.colorLit === 'number') ? attrs.colorLit : 55,
@@ -5058,7 +5086,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     locked: oldGroup?.locked || false,
                     hidden: oldGroup?.hidden || false,
                     bounds: { x: 0, y: 0, w: 300, h: 200 },
-                    fontSize: oldGroup?.fontSize || 14,
+                    fontSize: oldGroup?.fontSize || 20,
                     colorHue: oldGroup?.colorHue ?? 48,
                     colorSat: oldGroup?.colorSat ?? 100,
                     colorLit: oldGroup?.colorLit ?? 55,
@@ -5292,7 +5320,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         const serializeGroups = () => {
             const gd = {};
             for (const [id, g] of Object.entries(self.groups)) {
-                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor };
+                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor, lineHeight: g.lineHeight ?? 1, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
             }
             return gd;
         };
@@ -5468,11 +5496,11 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 const bounds = this.calcBounds(nids) || { x: 0, y: 0, w: 300, h: 200 };
                 this.groups[gid] = fromExtra ? { ...fromExtra } : {
                     id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, locked: false, bounds,
-                    fontSize: 14, colorHue: 48, colorSat: 100, colorLit: 55,
+                    fontSize: 20, colorHue: 48, colorSat: 100, colorLit: 55,
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 1,
                     headerBgColor: 'rgba(0,0,0,0.4)', titleColor: '#FFD700',
-                    fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 1000
+                    lineHeight: 1, fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 1000
                 };
             } else {
                 this.groups[gid].nodeIds = nids;
@@ -5489,6 +5517,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             if (g.fadeOutDuration === undefined) g.fadeOutDuration = 0;
             if (g.fadeInDuration === undefined) g.fadeInDuration = 1000;
             if (g.hidden === undefined) g.hidden = false;
+            if (g.lineHeight === undefined) g.lineHeight = 1;
         }
         // 清理已持久化的删除标记：只保留此次恢复中仍然出现在任意数据源里的 ID
         // （如果 auto-save 已生效，group 不再出现于数据中，就可以从列表移除）

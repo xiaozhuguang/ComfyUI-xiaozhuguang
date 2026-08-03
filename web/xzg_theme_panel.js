@@ -2497,6 +2497,10 @@ window.XZGThemePanel = {
             (obj.favoritesPreviews && Array.isArray(obj.favoritesPreviews) && obj.favoritesPreviews.length > 0) ||
             (obj.workflowUsage && typeof obj.workflowUsage === "object" && Object.keys(obj.workflowUsage).length > 0)
         );
+        const hasNotes = !!(
+            (obj.notes && typeof obj.notes === "object") ||
+            (obj.localStorage && obj.localStorage["xiaozhuguang.notes"])
+        );
 
         // 弹导入选项（备注/记事本已合并进小珠光配置，不再单独复选）
         const opt = await this.showImportDialog(hasComfy, hasXzg);

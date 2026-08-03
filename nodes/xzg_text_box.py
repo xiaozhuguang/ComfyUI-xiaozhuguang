@@ -310,6 +310,7 @@ def _digits_to_zh(text: str) -> str:
     # 书名号《》→ 句号。；省略号…… → 句号。
     text = text.replace("《", "。").replace("》", "。")
     text = text.replace("……", "。")
+    text = text.replace("+", "加")
 
     MARK_HEAD = "\uE000"  # Unicode Private Use 起始
     MARK_TAIL = "\uE001"
