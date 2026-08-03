@@ -367,22 +367,29 @@ class XiaozhuguangImageLoader:
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
+                "mask_data": ("STRING", {"default": ""}),
+                "upload_mode": ("STRING", {"default": "append"}),  # append=多图 / replace=单图，前端持久化用
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    OUTPUT_IS_LIST = (True,)  # 驱动下游迭代；若版本不支持可改为 (False,)，列表模式同返回 [batch]
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("图像", "遮罩")
+    OUTPUT_IS_LIST = (True, False)
     FUNCTION = "load_images"
     CATEGORY = "xiaozhuguang"
 
-    def load_images(self, image_list, index, batch_mode, unique_id=None):
+    def load_images(self, image_list, index, batch_mode, unique_id=None, mask_data="", upload_mode="append"):
+        # 调试：打印遮罩数据长度
+        mask_len = len(mask_data) if mask_data else 0
+        print(f"[小珠光图像加载器] mask_data 长度: {mask_len}, 前50字符: {str(mask_data)[:50]}")
+        # 空图或无效输入时返回全黑遮罩（未绘制=没有任何区域被遮罩）
+        empty_mask = torch.zeros((1, 1), dtype=torch.float32)
         if not image_list or not image_list.strip():
-            return ([],)
+            return ([], empty_mask)
 
         names = [n.strip() for n in image_list.split("\n") if n.strip()]
         if not names:
-            return ([],)
+            return ([], empty_mask)
 
         images = []
         for name in names:
@@ -401,9 +408,35 @@ class XiaozhuguangImageLoader:
             except Exception:
                 continue
 
+        # 解析遮罩数据（单图模式使用第一张图的尺寸）
+        # 语义约定：白色(255 / 1.0) = 用户绘制过的区域；黑色(0 / 0.0) = 未绘制区域
+        # —— 无数据或失败时返回全黑(zeros)，代表"没画任何东西，没遮罩任何部分"
+        def _decode_mask(mask_str, ref_h, ref_w):
+            if ref_h <= 0 or ref_w <= 0:
+                return torch.zeros((max(1, ref_h), max(1, ref_w)), dtype=torch.float32)
+            if not mask_str:
+                return torch.zeros((ref_h, ref_w), dtype=torch.float32)
+            try:
+                # 支持 "data:image/png;base64,xxx" 格式或纯 base64
+                if mask_str.startswith("data:"):
+                    import base64
+                    _, b64part = mask_str.split(",", 1)
+                    raw = base64.b64decode(b64part)
+                else:
+                    import base64
+                    raw = base64.b64decode(mask_str)
+                mask_pil = Image.open(io.BytesIO(raw)).convert("L")
+                if mask_pil.size != (ref_w, ref_h):
+                    mask_pil = mask_pil.resize((ref_w, ref_h), Image.LANCZOS)
+                arr = np.array(mask_pil).astype(np.float32) / 255.0
+                return torch.from_numpy(arr)
+            except Exception as e:
+                print(f"[小珠光图像加载器] 遮罩解码失败: {e}")
+                return torch.zeros((ref_h, ref_w), dtype=torch.float32)
+
         if batch_mode:
             if len(images) == 0:
-                return ([],)
+                return ([], torch.zeros((1, 1), dtype=torch.float32))
 
             max_h = max(img.shape[1] for img in images)
             max_w = max(img.shape[2] for img in images)
@@ -432,10 +465,20 @@ class XiaozhuguangImageLoader:
                 resized.append(tensor)
 
             batch = torch.cat(resized, dim=0)
-            return ([batch],)
+            # 批次模式下遮罩尺寸对齐到批次尺寸，用 index 对应的图参考尺寸解码
+            ref_h, ref_w = max_h, max_w
+            mask_out = _decode_mask(mask_data, ref_h, ref_w)
+            return ([batch], mask_out)
         else:
             # 列表模式：每张图独立放入列表，OUTPUT_IS_LIST 驱动下游 N 次执行
-            return (images,)
+            # 遮罩对齐到 index 对应的图像尺寸
+            idx = max(0, min(int(index), len(images) - 1)) if images else 0
+            if len(images) > 0 and 0 <= idx < len(images):
+                _, ref_h, ref_w, _ = images[idx].shape
+            else:
+                ref_h, ref_w = 1, 1
+            mask_out = _decode_mask(mask_data, ref_h, ref_w)
+            return (images, mask_out)
 
 
 NODE_CLASS_MAPPINGS = {

@@ -303,6 +303,24 @@ class XzgAudioWaveformViewer {
         this._rafId = null;
     }
 
+    destroy() {
+        this._stopPlaybackRaf();
+        if (this._audio) {
+            this._audio.pause();
+            this._audio.removeAttribute("src");
+            this._audio.load();
+        }
+        if (this._clickTimer) {
+            clearTimeout(this._clickTimer);
+            this._clickTimer = null;
+        }
+        window.removeEventListener("mousemove", this._onMouseMove);
+        window.removeEventListener("mouseup", this._onMouseUp);
+        window.removeEventListener("pointermove", this._onMouseMove);
+        window.removeEventListener("pointerup", this._onMouseUp);
+        window.removeEventListener("pointercancel", this._onMouseUp);
+    }
+
     _startPlaybackRaf() {
         if (this._rafId) return;
         const loop = () => {
@@ -1132,6 +1150,13 @@ app.registerExtension({
             requestAnimationFrame(() => {
                 node.onResize?.(node.size);
             });
+
+            // 节点移除时（切换工作流/刷新浏览器）立即停止音频播放
+            const origOnRemoved = node.onRemoved;
+            node.onRemoved = function () {
+                waveformViewer.destroy();
+                origOnRemoved?.apply(this, arguments);
+            };
         };
     },
 });

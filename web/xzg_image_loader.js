@@ -27,6 +27,14 @@ function getBatchModeWidget(node) {
     return getWidgetByName(node, "batch_mode");
 }
 
+function getMaskDataWidget(node) {
+    return getWidgetByName(node, "mask_data");
+}
+
+function getUploadModeWidget(node) {
+    return getWidgetByName(node, "upload_mode");
+}
+
 function normalizeAnnotatedName(name) {
     const s = String(name || "").replace(/\r/g, "").trim();
     for (const suffix of ["[output]", "[input]", "[temp]"]) {
@@ -394,6 +402,26 @@ function createImgBatchUI(node) {
     window.addEventListener("pointerdown", dismissContextMenu, true);
     window.addEventListener("contextmenu", dismissContextMenu, true);
 
+    // ═══════════ 遮罩绘制状态 ═══════════
+    let maskEnabled = false;               // 遮罩绘制模式是否开启
+    let maskTool = "brush";                // brush | eraser
+    let brushSize = 30;                    // 画笔大小 px
+    let _maskDrawing = false;
+    let _maskLastPt = null;
+    let _maskHoverPt = null;               // 鼠标在 overlay 上的 CSS 像素坐标，用于笔刷预览
+    let _lastCursorZoom = 0;               // 缓存上次光标更新时的 zoom，避免频繁重建
+    let _altDragActive = false;            // Alt+左右拖动调整笔刷大小
+    let _altDragStartX = 0;                // Alt+拖动起始 X 坐标
+    let _altDragStartBrush = 0;            // Alt+拖动起始笔刷大小
+    // 遮罩离屏 canvas：始终保存"原图尺寸"的遮罩数据，不受 DOM 显示缩放影响
+    const maskOffscreen = document.createElement("canvas");
+    const maskOffCtx = maskOffscreen.getContext("2d");
+    // 记录当前遮罩对应哪张图（文件名），切图时自动重建
+    let _maskBoundImageName = null;
+    // 遮罩原图真实尺寸（像素），用于映射绘制坐标
+    let _maskImgNaturalW = 0;
+    let _maskImgNaturalH = 0;
+
     const getImgNameFromEvent = (e) => {
         const cell = e.target.closest("[data-xzg-img-card]");
         if (cell) {
@@ -452,7 +480,39 @@ function createImgBatchUI(node) {
     actionGroup.appendChild(clearBtn);
     sidebar.appendChild(actionGroup);
 
-    let uploadMode = "append";
+    // 初始化：优先从 upload_mode widget 里恢复上次保存的值（append=多图 / replace=单图）
+    function _readUploadMode() {
+        const w = getUploadModeWidget(node);
+        const v = String(w?.value || "").trim().toLowerCase();
+        return (v === "replace") ? "replace" : "append";
+    }
+    // 写入 widget：持久化上传模式，刷新/保存后能恢复
+    function _writeUploadMode(mode) {
+        const w = getUploadModeWidget(node);
+        if (!w) return;
+        const m = mode === "replace" ? "replace" : "append";
+        if (w.value !== m) {
+            w.value = m;
+            w.callback?.(m);
+        }
+    }
+    let uploadMode = _readUploadMode();
+    let viewMode = uploadMode === "append" ? "grid" : "single";
+
+    // 从 widget 重新同步 uploadMode 和 viewMode（onConfigure 恢复 widget 值后调用）
+    function _syncUploadModeFromWidget() {
+        const newMode = _readUploadMode();
+        if (newMode === uploadMode) return;
+        uploadMode = newMode;
+        viewMode = uploadMode === "append" ? "grid" : "single";
+        if (uploadMode === "append") {
+            maskEnabled = false;
+        }
+        updateUploadModeBtn();
+        _refreshMaskToolbar();
+        _updateMaskCursor();
+        redraw(true);
+    }
 
     const uploadModeBtn = document.createElement("button");
     uploadModeBtn.style.cssText =
@@ -468,6 +528,12 @@ function createImgBatchUI(node) {
         const wasAppend = uploadMode === "append";
         uploadMode = uploadMode === "append" ? "replace" : "append";
         viewMode = uploadMode === "append" ? "grid" : "single";
+        // 保存到 widget，随工作流持久化
+        _writeUploadMode(uploadMode);
+        // 切到多图模式自动关闭遮罩绘制
+        if (uploadMode === "append") {
+            maskEnabled = false;
+        }
         // 切换到单图模式时，只保留第一张图片
         if (wasAppend && uploadMode === "replace") {
             const names = parseNameList(getImageListWidget(node)?.value);
@@ -477,6 +543,8 @@ function createImgBatchUI(node) {
             }
         }
         updateUploadModeBtn();
+        _refreshMaskToolbar();
+        _updateMaskCursor();
         redraw(true);
     });
 
@@ -557,6 +625,138 @@ function createImgBatchUI(node) {
     bottomGroup.appendChild(modeBtn);
     sidebar.appendChild(bottomGroup);
 
+    // ═══════════ 遮罩绘制工具栏（左侧面板，清空按钮下方） ═══════════
+    const maskToolbar = document.createElement("div");
+    maskToolbar.style.cssText = "display:none;flex-direction:column;gap:2px;width:100%;";
+    const _mkMaskBtn = (label, title) => {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.title = title || label;
+        b.style.cssText =
+            "padding:4px 2px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        b.addEventListener("mouseenter", () => { b.style.filter = "brightness(1.2)"; });
+        b.addEventListener("mouseleave", () => { b.style.filter = ""; });
+        return b;
+    };
+    const maskToggleBtn = _mkMaskBtn("遮罩:关", "开启/关闭遮罩绘制模式（仅单图模式）");
+    const maskBrushBtn = _mkMaskBtn("画笔", "切换到画笔工具");
+    const maskEraserBtn = _mkMaskBtn("橡皮", "切换到橡皮擦工具");
+    const maskClearBtn = _mkMaskBtn("清空", "清除整个遮罩");
+    const maskInvertBtn = _mkMaskBtn("反相", "反相遮罩黑白区域");
+
+    // 画笔大小滑条
+    const brushSizeRow = document.createElement("div");
+    brushSizeRow.style.cssText = "display:flex;flex-direction:column;gap:1px;padding:2px 2px;";
+    const brushSizeLabel = document.createElement("div");
+    brushSizeLabel.style.cssText = "font-size:10px;color:var(--input-text);text-align:center;line-height:1.3;";
+    brushSizeLabel.textContent = `笔刷:${brushSize}`;
+    const brushSizeInput = document.createElement("input");
+    brushSizeInput.type = "range";
+    brushSizeInput.min = "1";
+    brushSizeInput.max = "200";
+    brushSizeInput.value = String(brushSize);
+    brushSizeInput.style.cssText = "width:100%;margin:0;accent-color:#FFD700;";
+    brushSizeInput.addEventListener("input", () => {
+        brushSize = parseInt(brushSizeInput.value, 10) || 1;
+        brushSizeLabel.textContent = `笔刷:${brushSize}`;
+        _updateMaskCursor();
+        _renderBrushPreview();
+    });
+    brushSizeRow.appendChild(brushSizeLabel);
+    brushSizeRow.appendChild(brushSizeInput);
+
+    maskToolbar.appendChild(maskToggleBtn);
+    maskToolbar.appendChild(brushSizeRow);
+    maskToolbar.appendChild(maskBrushBtn);
+    maskToolbar.appendChild(maskEraserBtn);
+    maskToolbar.appendChild(maskClearBtn);
+    maskToolbar.appendChild(maskInvertBtn);
+    actionGroup.appendChild(maskToolbar);
+
+    // 统一的显示状态同步（只在这个函数里改 overlay/eventLayer 的 pointer-events/display，避免多改冲突）
+    const _syncMaskLayerVisibility = () => {
+        const isSingle = uploadMode === "replace";
+        const shouldShow = isSingle && maskEnabled;
+        // overlay：开启遮罩才显示红色遮罩半透层，始终不接受事件
+        singleMaskOverlay.style.display = shouldShow ? "block" : "none";
+        singleMaskOverlay.style.pointerEvents = "none";
+        // eventLayer：始终不接受事件
+        singleMaskEventLayer.style.display = shouldShow ? "block" : "none";
+        singleMaskEventLayer.style.pointerEvents = "none";
+        // brushPreview：跟随 shouldShow
+        if (!shouldShow) {
+            singleBrushPreview.style.display = "none";
+            _maskHoverPt = null;
+        }
+        // singleImgContainer 的 cursor
+        if (shouldShow) {
+            singleImgContainer.style.cursor = "crosshair";
+        } else {
+            singleImgContainer.style.cursor = "";
+        }
+    };
+
+    // 刷新遮罩工具栏按钮高亮状态
+    const _refreshMaskToolbar = () => {
+        const isSingle = uploadMode === "replace";
+        maskToolbar.style.display = isSingle ? "flex" : "none";
+        maskToggleBtn.textContent = maskEnabled ? "遮罩:开" : "遮罩:关";
+        maskToggleBtn.style.color = maskEnabled ? "#FFD700" : "var(--input-text)";
+        maskToggleBtn.style.borderColor = maskEnabled ? "#FFD700" : "var(--border-color)";
+        maskBrushBtn.style.color = maskTool === "brush" ? "#66CC66" : "var(--input-text)";
+        maskBrushBtn.style.borderColor = maskTool === "brush" ? "#66CC66" : "var(--border-color)";
+        maskEraserBtn.style.color = maskTool === "eraser" ? "#FF6B6B" : "var(--input-text)";
+        maskEraserBtn.style.borderColor = maskTool === "eraser" ? "#FF6B6B" : "var(--border-color)";
+        // 遮罩关闭时折叠调整按钮，开启时展开
+        const vis = maskEnabled ? "" : "none";
+        brushSizeRow.style.display = vis;
+        maskBrushBtn.style.display = vis;
+        maskEraserBtn.style.display = vis;
+        maskClearBtn.style.display = vis;
+        maskInvertBtn.style.display = vis;
+        _syncMaskLayerVisibility();
+    };
+
+    maskToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (uploadMode !== "replace") {
+            xzgAlert("遮罩绘制仅在单图模式下可用");
+            return;
+        }
+        maskEnabled = !maskEnabled;
+        // 开启时初始化一次离屏 canvas 尺寸
+        if (maskEnabled && singleImgEl.complete && singleImgEl.naturalWidth > 0) {
+            _ensureOffscreenCanvasSize(singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey, true);
+            _renderMaskOverlay();
+        }
+        _refreshMaskToolbar();
+        _updateMaskCursor();
+    });
+    maskBrushBtn.addEventListener("click", (e) => { e.stopPropagation(); maskTool = "brush"; _refreshMaskToolbar(); _updateMaskCursor(); _renderBrushPreview(); });
+    maskEraserBtn.addEventListener("click", (e) => { e.stopPropagation(); maskTool = "eraser"; _refreshMaskToolbar(); _updateMaskCursor(); _renderBrushPreview(); });
+    maskClearBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
+            maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
+            _renderMaskOverlay();
+            _commitMaskToWidget();
+        }
+    });
+    maskInvertBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
+        const w = maskOffscreen.width, h = maskOffscreen.height;
+        const imgData = maskOffCtx.getImageData(0, 0, w, h);
+        const d = imgData.data;
+        for (let i = 0; i < d.length; i += 4) {
+            d[i] = 255 - d[i];     // R 通道存的是 alpha 值
+            d[i + 3] = 255;         // alpha 通道保持完全不透明
+        }
+        maskOffCtx.putImageData(imgData, 0, 0);
+        _renderMaskOverlay();
+        _commitMaskToWidget();
+    });
+
     sidebar.addEventListener("dblclick", (e) => {
         if (e.target.closest("button")) return;
         e.preventDefault();
@@ -568,7 +768,6 @@ function createImgBatchUI(node) {
     let lastCardSize = null;
     let selectedIndexes = [];
     let lastClickedIndex = -1;
-    let viewMode = "grid";
 
     const mainContent = document.createElement("div");
     mainContent.style.cssText = "flex:1;display:flex;flex-direction:column;pointer-events:auto;min-width:0;min-height:120px;";
@@ -657,9 +856,9 @@ function createImgBatchUI(node) {
 
     const singleImgContainer = document.createElement("div");
     singleImgContainer.id = "xzg-single-img-container";
-    singleImgContainer.style.cssText = "flex:1;display:none;align-items:center;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;";
+    singleImgContainer.style.cssText = "flex:1;display:none;align-items:stretch;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;";
     const singleImgEl = document.createElement("img");
-    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;background:rgba(128,128,128,0.4);";
+    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;background:rgba(128,128,128,0.4);position:relative;z-index:1;";
     singleImgEl.draggable = false;
     singleImgEl.onerror = () => {
         const names = parseNameList(getImageListWidget(node)?.value);
@@ -670,11 +869,589 @@ function createImgBatchUI(node) {
         }
     };
     singleImgContainer.appendChild(singleImgEl);
+
+    // 遮罩显示/绘制层：覆盖在图片之上，尺寸与 singleImgContainer 一致
+    // 图片在容器内 object-fit:contain，我们需要计算图片实际显示矩形以正确映射坐标
+    const singleMaskOverlay = document.createElement("canvas");
+    singleMaskOverlay.style.cssText = "position:absolute;inset:0;z-index:2;display:none;pointer-events:none;";
+    singleMaskOverlay.width = 1;
+    singleMaskOverlay.height = 1;
+    singleImgContainer.appendChild(singleMaskOverlay);
+
+    // 绘制监听层：放在遮罩 overlay 上层，接收事件（同尺寸）
+    // —— 重点：pointer-events 只在 maskEnabled=true 时才设为 auto，否则不拦截正常点击
+    const singleMaskEventLayer = document.createElement("div");
+    singleMaskEventLayer.style.cssText = "position:absolute;inset:0;z-index:3;display:block;pointer-events:none;touch-action:none;background:transparent;";
+    singleMaskEventLayer.dataset.xzgMaskLayer = "1";
+    singleImgContainer.appendChild(singleMaskEventLayer);
+
+    // 笔刷预览圆圈：覆盖在最上层，跟随鼠标显示实际笔刷大小
+    const singleBrushPreview = document.createElement("canvas");
+    singleBrushPreview.style.cssText = "position:absolute;inset:0;z-index:4;display:none;pointer-events:none;";
+    singleBrushPreview.width = 1;
+    singleBrushPreview.height = 1;
+    singleImgContainer.appendChild(singleBrushPreview);
+
     mainContent.insertBefore(singleImgContainer, emptyTip);
 
+    // ═══════════ 遮罩绘制辅助函数 ═══════════
 
+    // 获取图片在 singleImgContainer 内实际显示的矩形（object-fit:contain）
+    function _getImageDisplayRect() {
+        const cw = singleImgContainer.clientWidth;
+        const ch = singleImgContainer.clientHeight;
+        const iw = _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+        const ih = _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+        if (cw <= 0 || ch <= 0 || iw <= 0 || ih <= 0) {
+            return { x: 0, y: 0, w: cw, h: ch, scale: 1 };
+        }
+        const scale = Math.min(cw / iw, ch / ih);
+        const w = iw * scale;
+        const h = ih * scale;
+        const x = (cw - w) / 2;
+        const y = (ch - h) / 2;
+        return { x, y, w, h, scale };
+    }
+
+    // 把 overlay 上的坐标映射到离屏 canvas 的像素坐标
+    function _overlayPtToOffscreen(px, py) {
+        const rect = _getImageDisplayRect();
+        if (rect.scale <= 0) return null;
+        const localX = px - rect.x;
+        const localY = py - rect.y;
+        if (localX < 0 || localY < 0 || localX > rect.w || localY > rect.h) return null;
+        const ox = localX / rect.scale;
+        const oy = localY / rect.scale;
+        return { x: ox, y: oy };
+    }
+
+    // 确保离屏 canvas 匹配当前图的自然尺寸；切图时若换了图则重建；same=true 表示同一图保留已有内容
+    function _ensureOffscreenCanvasSize(imageName, keepContent = false) {
+        const iw = singleImgEl.naturalWidth;
+        const ih = singleImgEl.naturalHeight;
+        if (iw <= 0 || ih <= 0) return;
+        _maskImgNaturalW = iw;
+        _maskImgNaturalH = ih;
+
+        const sameImage = imageName && _maskBoundImageName === imageName;
+        const sameSize = maskOffscreen.width === iw && maskOffscreen.height === ih;
+        if (sameImage && sameSize) return;
+
+        // 保存旧内容用于缩放迁移（仅当 keepContent=true 且已有内容时）
+        let oldSnapshot = null;
+        if (keepContent && maskOffscreen.width > 0 && maskOffscreen.height > 0) {
+            oldSnapshot = document.createElement("canvas");
+            oldSnapshot.width = maskOffscreen.width;
+            oldSnapshot.height = maskOffscreen.height;
+            oldSnapshot.getContext("2d").drawImage(maskOffscreen, 0, 0);
+        }
+
+        maskOffscreen.width = iw;
+        maskOffscreen.height = ih;
+        // 默认清空（白底 + 完全透明的 alpha，我们用 R 通道存遮罩值并保持 A=255 以便渲染）
+        maskOffCtx.clearRect(0, 0, iw, ih);
+
+        if (oldSnapshot && keepContent) {
+            maskOffCtx.save();
+            maskOffCtx.imageSmoothingEnabled = true;
+            maskOffCtx.imageSmoothingQuality = "high";
+            maskOffCtx.drawImage(oldSnapshot, 0, 0, oldSnapshot.width, oldSnapshot.height, 0, 0, iw, ih);
+            maskOffCtx.restore();
+        }
+
+        _maskBoundImageName = imageName || null;
+    }
+
+    // 把离屏遮罩渲染到 singleMaskOverlay（同步 overlay canvas 尺寸到容器尺寸，缩放绘制）
+    function _renderMaskOverlay() {
+        const cw = singleImgContainer.clientWidth;
+        const ch = singleImgContainer.clientHeight;
+        if (cw <= 0 || ch <= 0) return;
+        // 同步 CSS 尺寸（确保 canvas 内部分辨率与 CSS 布局一致，避免坐标偏移）
+        singleMaskOverlay.style.width = cw + "px";
+        singleMaskOverlay.style.height = ch + "px";
+        singleMaskOverlay.style.left = "0";
+        singleMaskOverlay.style.top = "0";
+        if (singleMaskOverlay.width !== cw || singleMaskOverlay.height !== ch) {
+            singleMaskOverlay.width = cw;
+            singleMaskOverlay.height = ch;
+        }
+        const octx = singleMaskOverlay.getContext("2d");
+        octx.clearRect(0, 0, cw, ch);
+        if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
+        const rect = _getImageDisplayRect();
+        octx.save();
+        octx.imageSmoothingEnabled = true;
+        octx.imageSmoothingQuality = "high";
+        // 遮罩层使用半透红色叠加，白色区域表示遮罩（绘制区域）
+        // 先把离屏的 R 通道作为 alpha，渲染一层半透明红色
+        const tmp = document.createElement("canvas");
+        tmp.width = maskOffscreen.width;
+        tmp.height = maskOffscreen.height;
+        const tctx = tmp.getContext("2d");
+        const src = maskOffCtx.getImageData(0, 0, maskOffscreen.width, maskOffscreen.height);
+        const dst = tctx.createImageData(tmp.width, tmp.height);
+        const sd = src.data, dd = dst.data;
+        for (let i = 0; i < sd.length; i += 4) {
+            const v = sd[i]; // R 通道 = 遮罩强度
+            dd[i] = 255;                 // R = 红
+            dd[i + 1] = 100;             // G
+            dd[i + 2] = 100;             // B
+            dd[i + 3] = Math.floor(v * 0.45); // A = 遮罩强度 * 半透明
+        }
+        tctx.putImageData(dst, 0, 0);
+        octx.drawImage(tmp, rect.x, rect.y, rect.w, rect.h);
+        // 再画一圈细边框，标识图像显示区域
+        octx.strokeStyle = "rgba(255,215,0,0.35)";
+        octx.lineWidth = 1;
+        octx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+        octx.restore();
+    }
+
+    // 更新光标样式（使用 crosshair，笔刷大小由 overlay 预览圆圈显示）
+    function _updateMaskCursor() {
+        if (!singleMaskEventLayer) return;
+        if (!maskEnabled) {
+            singleMaskEventLayer.style.cursor = "";
+            singleBrushPreview.style.display = "none";
+            _maskHoverPt = null;
+            _lastCursorZoom = 0;
+            return;
+        }
+        singleMaskEventLayer.style.cursor = "crosshair";
+        // 重置缓存，确保下次 hover 时重绘预览
+        _lastCursorZoom = 0;
+    }
+
+    // 在笔刷预览 canvas 上绘制跟随鼠标的圆圈
+    function _renderBrushPreview() {
+        if (!maskEnabled) { singleBrushPreview.style.display = "none"; return; }
+        if (!_maskHoverPt) { singleBrushPreview.style.display = "none"; return; }
+        const cw = singleImgContainer.clientWidth;
+        const ch = singleImgContainer.clientHeight;
+        if (cw <= 0 || ch <= 0) return;
+        // 同步 canvas 尺寸
+        singleBrushPreview.style.width = cw + "px";
+        singleBrushPreview.style.height = ch + "px";
+        singleBrushPreview.style.left = "0";
+        singleBrushPreview.style.top = "0";
+        if (singleBrushPreview.width !== cw || singleBrushPreview.height !== ch) {
+            singleBrushPreview.width = cw;
+            singleBrushPreview.height = ch;
+        }
+        singleBrushPreview.style.display = "block";
+        const ctx = singleBrushPreview.getContext("2d");
+        ctx.clearRect(0, 0, cw, ch);
+        const r = Math.max(1, brushSize / 2);
+        const px = _maskHoverPt.x;
+        const py = _maskHoverPt.y;
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.fillStyle = maskTool === "brush" ? "rgba(255,215,0,0.25)" : "rgba(255,100,100,0.25)";
+        ctx.fill();
+        ctx.strokeStyle = maskTool === "brush" ? "#000" : "#f33";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
+
+    // 在离屏 canvas 上画一段（从 from 到 to 的线段 + 端点），使用画笔/橡皮
+    function _maskDrawSegment(fromPt, toPt) {
+        if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
+        const tool = maskTool;
+        const radius = Math.max(0.5, brushSize / 2);
+        // 显示层的笔刷大小要映射到离屏坐标：显示 scale → 离屏 scale 是 1/rect.scale
+        const rect = _getImageDisplayRect();
+        const offBrushR = Math.max(0.5, radius / (rect.scale || 1));
+
+        maskOffCtx.save();
+        maskOffCtx.lineCap = "round";
+        maskOffCtx.lineJoin = "round";
+        maskOffCtx.lineWidth = offBrushR * 2;
+        if (tool === "brush") {
+            // 画笔：把 RGBA 全部填为 (255,0,0,255)
+            maskOffCtx.globalCompositeOperation = "source-over";
+            maskOffCtx.strokeStyle = "rgba(255,0,0,1)";
+            maskOffCtx.fillStyle = "rgba(255,0,0,1)";
+        } else {
+            // 橡皮擦：把 RGBA 全部清空为透明 0（清空 R 通道 = 遮罩值 0）
+            maskOffCtx.globalCompositeOperation = "source-over";
+            maskOffCtx.strokeStyle = "rgba(0,0,0,0)";
+            maskOffCtx.fillStyle = "rgba(0,0,0,0)";
+            // 用 clearRect 逐段太麻烦，改用 destination-out 配合 alpha=1 可以清空像素到 0,0,0,0
+            maskOffCtx.globalCompositeOperation = "destination-out";
+            maskOffCtx.strokeStyle = "rgba(255,255,255,1)";
+            maskOffCtx.fillStyle = "rgba(255,255,255,1)";
+        }
+        // 端点补圆（保证点击一下也有圆点，而不是线宽线段）
+        if (toPt) {
+            maskOffCtx.beginPath();
+            maskOffCtx.moveTo(fromPt.x, fromPt.y);
+            maskOffCtx.lineTo(toPt.x, toPt.y);
+            maskOffCtx.stroke();
+            maskOffCtx.beginPath();
+            maskOffCtx.arc(toPt.x, toPt.y, offBrushR, 0, Math.PI * 2);
+            maskOffCtx.fill();
+        } else {
+            maskOffCtx.beginPath();
+            maskOffCtx.arc(fromPt.x, fromPt.y, offBrushR, 0, Math.PI * 2);
+            maskOffCtx.fill();
+        }
+        maskOffCtx.restore();
+    }
+
+    // 序列化离屏遮罩为 base64 PNG（数据 URL），保存到 widget
+    let _maskCommitTimer = null;
+    function _commitMaskToWidget() {
+        if (_maskCommitTimer) clearTimeout(_maskCommitTimer);
+        _maskCommitTimer = setTimeout(() => {
+            _maskCommitTimer = null;
+            const w = getMaskDataWidget(node);
+            if (!w) return;
+            if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) {
+                w.value = "";
+                w.callback?.(w.value);
+                return;
+            }
+            // 后处理：根据图片大小对遮罩做平滑，消除锯齿
+            _smoothMask();
+            // 导出灰度 PNG：R = 遮罩值，A = 255
+            const out = document.createElement("canvas");
+            out.width = maskOffscreen.width;
+            out.height = maskOffscreen.height;
+            const octx = out.getContext("2d");
+            const src = maskOffCtx.getImageData(0, 0, out.width, out.height);
+            const dst = octx.createImageData(out.width, out.height);
+            const sd = src.data, dd = dst.data;
+            for (let i = 0; i < sd.length; i += 4) {
+                const v = sd[i]; // R = 遮罩强度
+                dd[i] = v; dd[i + 1] = v; dd[i + 2] = v; dd[i + 3] = 255;
+            }
+            octx.putImageData(dst, 0, 0);
+            try {
+                const dataUrl = out.toDataURL("image/png");
+                w.value = dataUrl;
+                w.callback?.(w.value);
+            } catch (e) {
+                console.warn("[小珠光图像加载器] 遮罩序列化失败:", e);
+            }
+        }, 60);
+    }
+
+    // 对遮罩离屏画布做平滑处理（直接修改 maskOffCtx）
+    function _smoothMask() {
+        const iw = maskOffscreen.width;
+        const ih = maskOffscreen.height;
+        if (iw <= 0 || ih <= 0) return;
+        const srcData = maskOffCtx.getImageData(0, 0, iw, ih);
+        const smoothed = _smoothMaskData(srcData, iw, ih);
+        if (smoothed) {
+            maskOffCtx.putImageData(smoothed, 0, 0);
+        }
+    }
+
+    // 对遮罩 R 通道做平滑处理，返回新的 ImageData（不修改原始离屏画布）
+    function _smoothMaskData(srcData, iw, ih) {
+        const maxDim = Math.max(iw, ih);
+        const radius = Math.max(2, Math.round(maxDim / 100));
+        if (radius < 2) return null; // 极小图无需平滑
+        const sd = srcData.data;
+        const buf = new Uint8Array(iw * ih);
+        // 提取 R 通道
+        for (let i = 0; i < buf.length; i++) buf[i] = sd[i * 4];
+        // 两遍 1D box blur（水平 + 垂直），O(n) 复杂度
+        const tmp = new Uint8Array(buf.length);
+        const kernel = radius * 2 + 1;
+        // 水平模糊
+        for (let y = 0; y < ih; y++) {
+            const row = y * iw;
+            let sum = 0;
+            for (let x = -radius; x <= radius; x++) {
+                const sx = Math.max(0, Math.min(iw - 1, x));
+                sum += buf[row + sx];
+            }
+            tmp[row] = Math.round(sum / kernel);
+            for (let x = 1; x < iw; x++) {
+                const left = Math.max(0, x - radius - 1);
+                const right = Math.min(iw - 1, x + radius);
+                sum += buf[row + right] - buf[row + left];
+                tmp[row + x] = Math.round(sum / kernel);
+            }
+        }
+        // 垂直模糊
+        for (let x = 0; x < iw; x++) {
+            let sum = 0;
+            for (let y = -radius; y <= radius; y++) {
+                const sy = Math.max(0, Math.min(ih - 1, y));
+                sum += tmp[sy * iw + x];
+            }
+            buf[x] = Math.round(sum / kernel);
+            for (let y = 1; y < ih; y++) {
+                const top = Math.max(0, y - radius - 1);
+                const bottom = Math.min(ih - 1, y + radius);
+                sum += tmp[bottom * iw + x] - tmp[top * iw + x];
+                buf[y * iw + x] = Math.round(sum / kernel);
+            }
+        }
+        // 二值化：128 为阈值，消除半透明
+        for (let i = 0; i < buf.length; i++) {
+            buf[i] = buf[i] >= 128 ? 255 : 0;
+        }
+        // 写回平滑+二值化后的 R 通道到新 ImageData
+        const result = new ImageData(iw, ih);
+        const rd = result.data;
+        for (let i = 0; i < buf.length; i++) {
+            const v = buf[i];
+            rd[i * 4] = v;
+            rd[i * 4 + 1] = v;
+            rd[i * 4 + 2] = v;
+            rd[i * 4 + 3] = 255;
+        }
+        return result;
+    }
+
+    // 从 widget 加载已有遮罩到离屏 canvas
+    function _loadMaskFromWidget(imageName) {
+        const w = getMaskDataWidget(node);
+        const data = w?.value;
+        if (!data) {
+            // 无保存数据 → 清空
+            if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
+                maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
+            }
+            return;
+        }
+        const img = new Image();
+        img.onload = () => {
+            if (_maskBoundImageName !== imageName) return; // 异步回来时已切图则丢弃
+            if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
+            maskOffCtx.save();
+            maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
+            // 把灰度 PNG 的 R 通道写入我们的 R 通道，A 置为 255
+            const tmp = document.createElement("canvas");
+            tmp.width = img.naturalWidth;
+            tmp.height = img.naturalHeight;
+            tmp.getContext("2d").drawImage(img, 0, 0);
+            const src = tmp.getContext("2d").getImageData(0, 0, tmp.width, tmp.height);
+            const dst = maskOffCtx.createImageData(maskOffscreen.width, maskOffscreen.height);
+            const sd = src.data, dd = dst.data;
+            const sw = tmp.width, sh = tmp.height;
+            const dw = maskOffscreen.width, dh = maskOffscreen.height;
+            // 尺寸不一致 → 最近邻采样
+            if (sw === dw && sh === dh) {
+                for (let i = 0; i < sd.length; i += 4) {
+                    const v = sd[i];
+                    dd[i] = v; dd[i + 1] = 0; dd[i + 2] = 0; dd[i + 3] = 255;
+                }
+            } else {
+                for (let y = 0; y < dh; y++) {
+                    const sy = Math.min(sh - 1, Math.floor(y * sh / dh));
+                    for (let x = 0; x < dw; x++) {
+                        const sx = Math.min(sw - 1, Math.floor(x * sw / dw));
+                        const si = (sy * sw + sx) * 4;
+                        const di = (y * dw + x) * 4;
+                        const v = sd[si];
+                        dd[di] = v; dd[di + 1] = 0; dd[di + 2] = 0; dd[di + 3] = 255;
+                    }
+                }
+            }
+            maskOffCtx.putImageData(dst, 0, 0);
+            maskOffCtx.restore();
+            _renderMaskOverlay();
+        };
+        img.onerror = () => { /* 忽略损坏数据，保持空白 */ };
+        img.src = data;
+    }
+
+    // ═══════════ 遮罩绘制事件绑定 ═══════════
+    // 事件一律挂在 singleImgContainer（父）上，统一走捕获阶段，彻底避免子层 pointer-events 设置
+    // 失效或 DOM 重排导致的"接不到事件"问题，这是最稳妥的一层。
+    // pointer* 只在 maskEnabled=true 时真正进入绘制分支；false 时什么都不做直接放行。
+
+    singleImgEl.draggable = false;
+
+    // 仅阻止冒泡+默认，不杀同元素监听器
+    const _softKill = (e) => {
+        if (!maskEnabled) return;
+        // 只当事件目标在遮罩区域（singleMaskEventLayer/Overlay/Img/Container 自身）才拦
+        const path = e.composedPath ? e.composedPath() : [];
+        if (!(path.includes(singleMaskEventLayer) || path.includes(singleMaskOverlay) ||
+              e.target === singleImgEl || e.target === singleImgContainer)) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+    };
+    singleImgContainer.addEventListener("mousedown", _softKill, true);
+    singleImgContainer.addEventListener("touchstart", _softKill, true);
+    singleImgContainer.addEventListener("touchmove", (e) => {
+        if (!maskEnabled) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+    }, { capture: true, passive: false });
+    singleImgContainer.addEventListener("gesturestart", _softKill, true);
+    singleImgContainer.addEventListener("contextmenu", _softKill, true);
+    singleImgContainer.addEventListener("dragstart", _softKill, true);
+    singleImgContainer.addEventListener("selectstart", _softKill, true);
+    singleImgEl.addEventListener("dragstart", (e) => { try { e.preventDefault(); } catch (_) {} }, true);
+
+    function _onMaskPointerDown(e) {
+        if (!maskEnabled) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        _updateMaskCursor();
+        // 判断是否点在遮罩事件层或 img 自身的矩形内（点击 sidebar 不触发）
+        const path = e.composedPath ? e.composedPath() : [e.target];
+        const hit = path.includes(singleMaskEventLayer) || path.includes(singleMaskOverlay) ||
+                    e.target === singleImgEl || e.target === singleImgContainer;
+        if (!hit) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+        const rect = singleImgContainer.getBoundingClientRect();
+        const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+        const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+        const px = (e.clientX - rect.left) / zoomX;
+        const py = (e.clientY - rect.top) / zoomY;
+        _maskHoverPt = { x: px, y: py };
+        _renderBrushPreview();
+        const pt = _overlayPtToOffscreen(px, py);
+        if (!pt) return;
+        _maskDrawing = true;
+        _maskLastPt = pt;
+        try {
+            if (singleImgContainer.setPointerCapture) {
+                singleImgContainer.setPointerCapture(e.pointerId);
+            }
+        } catch (_) {}
+        _maskDrawSegment(pt, null);
+        _renderMaskOverlay();
+    }
+    function _onMaskPointerMove(e) {
+        if (!_maskDrawing) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+        const rect = singleImgContainer.getBoundingClientRect();
+        const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+        const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+        const px = (e.clientX - rect.left) / zoomX;
+        const py = (e.clientY - rect.top) / zoomY;
+        _maskHoverPt = { x: px, y: py }; // 更新预览位置
+        _renderBrushPreview();
+        const pt = _overlayPtToOffscreen(px, py);
+        if (!pt) { _maskLastPt = null; return; }
+        const from = _maskLastPt || pt;
+        _maskDrawSegment(from, pt);
+        _maskLastPt = pt;
+        _renderMaskOverlay();
+    }
+    function _onMaskPointerUp(e) {
+        const wasDrawing = _maskDrawing;
+        if (wasDrawing) {
+            _maskDrawing = false;
+            _maskLastPt = null;
+            try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
+            _commitMaskToWidget();
+            _renderMaskOverlay();
+            _renderBrushPreview(); // 刷新预览（保持显示）
+        }
+        if (maskEnabled) {
+            try { e.preventDefault(); } catch (_) {}
+            try { e.stopPropagation(); } catch (_) {}
+        }
+    }
+    // 统一在 singleImgContainer 捕获阶段处理（先于冒泡阶段的 container.marquee 监听）
+    singleImgContainer.addEventListener("pointerdown", _onMaskPointerDown, true);
+    singleImgContainer.addEventListener("pointermove", _onMaskPointerMove, true);
+    // hover / Alt+拖动调整笔刷大小
+    singleImgContainer.addEventListener("pointermove", (e) => {
+        if (!maskEnabled || _maskDrawing) return;
+        const rect = singleImgContainer.getBoundingClientRect();
+        const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+        const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+        const px = (e.clientX - rect.left) / zoomX;
+        const py = (e.clientY - rect.top) / zoomY;
+        // Alt+左右拖动调整笔刷大小
+        if (e.altKey) {
+            if (!_altDragActive) {
+                _altDragActive = true;
+                _altDragStartX = px;
+                _altDragStartBrush = brushSize;
+                singleImgContainer.style.cursor = "ew-resize";
+            }
+            const dx = px - _altDragStartX;
+            const newSize = Math.max(1, Math.min(200, Math.round(_altDragStartBrush + dx)));
+            if (newSize !== brushSize) {
+                brushSize = newSize;
+                brushSizeInput.value = String(brushSize);
+                brushSizeLabel.textContent = `笔刷:${brushSize}`;
+                _renderBrushPreview();
+            }
+            _maskHoverPt = { x: px, y: py };
+            return;
+        }
+        // Alt 松开，退出拖动模式
+        if (_altDragActive) {
+            _altDragActive = false;
+            singleImgContainer.style.cursor = "crosshair";
+        }
+        // 跟踪鼠标位置用于笔刷预览圆圈
+        _maskHoverPt = { x: px, y: py };
+        _renderBrushPreview();
+    }, true);
+    // 鼠标离开时清除预览和 Alt 拖动状态
+    singleImgContainer.addEventListener("pointerleave", () => {
+        _maskHoverPt = null;
+        _altDragActive = false;
+        _renderBrushPreview();
+    }, true);
+    // Alt 键松开时退出拖动模式
+    window.addEventListener("keyup", (e) => {
+        if (e.key === "Alt" && _altDragActive) {
+            _altDragActive = false;
+            if (singleImgContainer) singleImgContainer.style.cursor = "crosshair";
+        }
+    }, true);
+    singleImgContainer.addEventListener("pointerup", _onMaskPointerUp, true);
+    singleImgContainer.addEventListener("pointercancel", _onMaskPointerUp, true);
+    // pointerleave 不一定要结算（滑出容器还在拖的话，保持 drawing，回来还能续画）
+    // 只有 pointerup/cancel 才真正落盘。
+
+    // singleMaskEventLayer 还是保留用于视觉上的 hit 说明，但其 pointer-events
+    // 始终为 none（永远不接事件），防止"pointerEvents:auto 没生效"这个最常见坑。
+    singleMaskEventLayer.style.pointerEvents = "none";
+    singleMaskEventLayer.style.display = "block";
+    // 同步一次
+    _updateMaskCursor();
+
+    // 容器尺寸变化时重新渲染遮罩层
+    const _maskResizeObserver = new ResizeObserver(() => {
+        if (singleImgContainer.style.display !== "none") {
+            _renderMaskOverlay();
+            _renderBrushPreview();
+        }
+    });
+    _maskResizeObserver.observe(singleImgContainer);
+
+    // 图片加载完成后 → 初始化离屏 canvas、尝试加载保存的遮罩
+    singleImgEl.addEventListener("load", () => {
+        const curName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        _ensureOffscreenCanvasSize(curName, false);
+        _loadMaskFromWidget(curName);
+        _renderMaskOverlay();
+        _updateMaskCursor();
+    });
+
+    // 当遮罩开启时，阻止 singleImgContainer 内的 mousedown 冒泡到外层容器（否则会触发卡片拖动/框选等逻辑）
+    singleImgContainer.addEventListener("mousedown", (e) => {
+        if (!maskEnabled) return;
+        // 点击到侧边按钮不阻止（按钮在 sidebar，不在 singleImgContainer 内所以这里基本安全）
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
 
     singleImgContainer.addEventListener("dblclick", (e) => {
+        if (maskEnabled) {
+            // 遮罩开启时不响应双击上传，避免打断绘制
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         openUploadDialog();
@@ -843,6 +1620,17 @@ function createImgBatchUI(node) {
         if (e.target.closest(".del-btn")) return;
         if (e.target.closest("button")) return;
         if (e.target.closest("input")) return;
+        // 遮罩绘制模式下，命中遮罩事件层/遮罩覆盖层的 mousedown 直接丢弃，不进入卡片拖选/框选
+        if (maskEnabled) {
+            if (e.target === singleMaskEventLayer || e.target === singleMaskOverlay ||
+                e.composedPath().includes(singleMaskEventLayer) ||
+                e.composedPath().includes(singleMaskOverlay)) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation?.();
+                return;
+            }
+        }
         e.stopPropagation();
 
         const cell = e.target.closest("[data-xzg-img-card]");
@@ -1293,6 +2081,19 @@ function createImgBatchUI(node) {
         const cardSize = getCardSize(node);
         const idx = getIndex(node);
 
+        // 始终从 widget 同步真实值，防止闭包变量 uploadMode 在 onConfigure 之前被初始化
+        // 为 "append" 后永远无法被更新（redraw 是调用最频繁的入口，这里最为可靠）
+        const w = getUploadModeWidget(node);
+        if (w) {
+            const modeFromWidget = (String(w.value).trim().toLowerCase() === "replace") ? "replace" : "append";
+            if (modeFromWidget !== uploadMode) {
+                uploadMode = modeFromWidget;
+                if (uploadMode === "append") maskEnabled = false;
+                updateUploadModeBtn();
+                _refreshMaskToolbar();
+                _updateMaskCursor();
+            }
+        }
         viewMode = uploadMode === "append" ? "grid" : "single";
 
         const effectiveSingle = viewMode === "single" || (viewMode === "grid" && names.length === 1);
@@ -1312,13 +2113,20 @@ function createImgBatchUI(node) {
             grid.style.display = "none";
             emptyTip.style.display = "none";
             singleImgContainer.style.display = "flex";
+            // 统一同步遮罩层显示状态（只通过一个入口改，避免冲突）
+            _syncMaskLayerVisibility();
             const curIdx = idx >= 0 && idx < names.length ? idx : 0;
             const name = names[curIdx];
             // 单图/1图模式使用压缩预览（最长边 3840px），避免大图卡顿
-            if (singleImgEl.dataset.previewKey !== name) {
+            const imgKeyChanged = singleImgEl.dataset.previewKey !== name;
+            if (imgKeyChanged) {
                 singleImgEl.dataset.previewKey = name;
                 singleImgEl.dataset.currentName = name;
                 singleImgEl.src = getPreviewUrl(name);
+            } else if (singleImgEl.complete && singleImgEl.naturalWidth > 0) {
+                // 图片已加载好：立即同步离屏 canvas 尺寸，必要时加载保存的遮罩
+                _ensureOffscreenCanvasSize(name, false);
+                _renderMaskOverlay();
             }
             if (selectedIndexes.length !== 1 || selectedIndexes[0] !== curIdx) {
                 selectedIndexes = [curIdx];
@@ -1326,8 +2134,13 @@ function createImgBatchUI(node) {
             lastClickedIndex = curIdx;
             lastNames = [...names];
             lastCardSize = cardSize;
+            _refreshMaskToolbar();
+            _updateMaskCursor();
             return;
         }
+
+        // 多图网格模式：统一入口同步
+        _syncMaskLayerVisibility();
 
         grid.style.display = "grid";
         singleImgContainer.style.display = "none";
@@ -2000,10 +2813,12 @@ function createImgBatchUI(node) {
         grid,
         redraw,
         updateModeBtn,
+        updateUploadModeBtn,
         resizeObserver,
         _updateLabelScale: updateLabelScale,
         _updateBypassState: updateBypassState,
         _onWheel: onWheel,
+        syncUploadModeFromWidget: _syncUploadModeFromWidget,
         get isSingleMode() { return uploadMode === "replace"; },
     };
 }
@@ -2012,8 +2827,37 @@ app.registerExtension({
     name: "xiaozhuguang.image_loader",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "XiaozhuguangImageLoader") {
+            // ═══════════════════════════════════════════════════════
+            //  在此处强制纠正 nodeData.outputs，确保：
+            //   第 0 个输出 = IMAGE 类型，name = "图像"
+            //   第 1 个输出 = MASK  类型，name = "遮罩"
+            //  用 [对象数组] 形式指定 type+name 双保险，而非仅字符串数组
+            // ═══════════════════════════════════════════════════════
+            if (!Array.isArray(nodeData.output))       nodeData.output = [];
+            if (!Array.isArray(nodeData.output_name))  nodeData.output_name = [];
+            if (!Array.isArray(nodeData.output_is_list)) nodeData.output_is_list = [];
+            // 端口 0: IMAGE
+            nodeData.output[0]       = "IMAGE";
+            nodeData.output_name[0]  = "图像";
+            nodeData.output_is_list[0] = true;
+            // 端口 1: MASK —— 如果之前是 count/COUNT/数字/图片数量，彻底清掉类型
+            nodeData.output[1]       = "MASK";
+            nodeData.output_name[1]  = "遮罩";
+            nodeData.output_is_list[1] = false;
+            // 兼容：有些旧版 ComfyUI 用 nodeData.output 是对象数组 {type,name, …}
+            if (!Array.isArray(nodeData.outputs)) nodeData.outputs = [];
+            nodeData.outputs[0] = Object.assign({}, nodeData.outputs[0] || {}, { type: "IMAGE", name: "图像", label: "图像" });
+            nodeData.outputs[1] = Object.assign({}, nodeData.outputs[1] || {}, { type: "MASK",  name: "遮罩", label: "遮罩" });
+            // 再彻底清空旧缓存残留
+            if (Array.isArray(nodeData.output_link_labels)) nodeData.output_link_labels = null;
+            if (nodeData.return_names)  nodeData.return_names  = ["图像", "遮罩"];
+            if (nodeData.return_types)  nodeData.return_types  = ["IMAGE", "MASK"];
+            if (nodeData.output_is_array) nodeData.output_is_array = [true, false];
+
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
+                // 运行时二次保险：修正节点实例的 outputs 数组元信息
+                _forceCorrectOutputs(this);
                 const r = origOnNodeCreated?.apply(this, arguments);
 
                 const listWidget = getImageListWidget(this);
@@ -2039,6 +2883,62 @@ app.registerExtension({
                     batchWidget.type = "hidden";
                     batchWidget.hidden = true;
                     batchWidget.computeSize = () => [0, 0];
+                }
+                let maskWidget = getMaskDataWidget(this);
+                // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
+                if (!maskWidget) {
+                    const w = this.addWidget("string", "mask_data", "", null, { serialize: true });
+                    if (w) {
+                        maskWidget = w;
+                    } else {
+                        maskWidget = {
+                            name: "mask_data",
+                            type: "hidden",
+                            value: "",
+                            options: { serialize: true },
+                            hidden: true,
+                            computeSize: () => [0, 0],
+                            callback: null,
+                        };
+                        this.widgets.push(maskWidget);
+                    }
+                }
+                if (maskWidget) {
+                    maskWidget.type = "hidden";
+                    maskWidget.hidden = true;
+                    maskWidget.computeSize = () => [0, 0];
+                    maskWidget.options = maskWidget.options || {};
+                    maskWidget.options.serialize = true;
+                }
+                let umWidget = getUploadModeWidget(this);
+                // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
+                if (!umWidget) {
+                    const w = this.addWidget("string", "upload_mode", "append", null, { serialize: true });
+                    if (w) {
+                        umWidget = w;
+                    } else {
+                        // addWidget 可能返回 undefined，手动 push
+                        umWidget = {
+                            name: "upload_mode",
+                            type: "hidden",
+                            value: "append",
+                            options: { serialize: true },
+                            hidden: true,
+                            computeSize: () => [0, 0],
+                            callback: null,
+                        };
+                        this.widgets.push(umWidget);
+                    }
+                }
+                if (umWidget) {
+                    umWidget.type = "hidden";
+                    umWidget.hidden = true;
+                    umWidget.computeSize = () => [0, 0];
+                    umWidget.options = umWidget.options || {};
+                    umWidget.options.serialize = true;
+                    if (!umWidget.value || (umWidget.value !== "append" && umWidget.value !== "replace")) {
+                        umWidget.value = "append";
+                    }
                 }
 
                 const ui = createImgBatchUI(this);
@@ -2075,6 +2975,23 @@ app.registerExtension({
                 const wIndex = getIndexWidget(this);
                 const wList = getImageListWidget(this);
                 const wSize = getCardSizeWidget(this);
+                const wMask = getMaskDataWidget(this);
+                const _nodeSelf = this;
+
+                // 当 index/imageList 变化导致"当前图片名"改变时 → 清空遮罩，避免旧遮罩粘到新图上
+                const _clearMaskIfImageChanged = () => {
+                    const names = parseNameList(getImageListWidget(_nodeSelf)?.value || "");
+                    const idx = getIndex(_nodeSelf);
+                    const curImg = names[idx >= 0 && idx < names.length ? idx : 0] || "";
+                    const prev = ui._lastMaskImageName || null;
+                    if (curImg && prev && prev !== curImg) {
+                        if (wMask) {
+                            wMask.value = "";
+                            wMask.callback?.("");
+                        }
+                    }
+                    ui._lastMaskImageName = curImg || null;
+                };
 
                 if (wIndex) {
                     const origCallback = wIndex.callback;
@@ -2083,6 +3000,7 @@ app.registerExtension({
                         origCallback?.call(this, value);
                         if (value === wIndex._xzg_lastValue) return;
                         wIndex._xzg_lastValue = value;
+                        _clearMaskIfImageChanged();
                         ui.redraw(false);
                     };
                 }
@@ -2094,6 +3012,7 @@ app.registerExtension({
                         origCallback?.call(this, value);
                         if (value === wList._xzg_lastValue) return;
                         wList._xzg_lastValue = value;
+                        _clearMaskIfImageChanged();
                         ui.updateModeBtn?.();
                         ui.redraw(true);
                     };
@@ -2120,12 +3039,111 @@ app.registerExtension({
                 }
 
                 ui.redraw(true);
+                // 初始化"当前图片名"，用于切图时判断是否清空遮罩
+                {
+                    const names = parseNameList(getImageListWidget(this)?.value || "");
+                    const idx = getIndex(this);
+                    ui._lastMaskImageName = names[idx >= 0 && idx < names.length ? idx : 0] || null;
+                }
                 return r;
             };
+
+            // ═══════════════════════════════════════════════════════
+            //  第三层/第四层保险：
+            //   * _forceCorrectOutputs() 在 onNodeCreated + onConfigure + onAfterGraphConfigured
+            //     后均调用，彻底兜住老工作流 data.outputs 里残留的 COUNT/图片数量
+            //   * onDrawForeground: 直接在绘制端口文字时"用'图像/遮罩'覆盖绘制"，
+            //     这是终极手段，只要走到这里无论任何缓存都会显示正确的中文标签
+            // ═══════════════════════════════════════════════════════
+            function _forceCorrectOutputs(nodeInst) {
+                if (!Array.isArray(nodeInst.outputs)) nodeInst.outputs = [];
+                const defaults = [
+                    { type: "IMAGE", name: "图像", shape: -1, label: "图像" },
+                    { type: "MASK",  name: "遮罩", shape: -1, label: "遮罩" },
+                ];
+                defaults.forEach((def, i) => {
+                    let o = nodeInst.outputs[i];
+                    if (!o) {
+                        o = { name: def.name, type: def.type, links: null, slot_index: i };
+                        nodeInst.outputs.push(o);
+                    }
+                    o.type  = def.type;
+                    o.name  = def.name;
+                    o.label = def.label;
+                    if (o.shape === undefined || o.shape === null) o.shape = def.shape;
+                    // 防残留：如果旧数据 name/type 里含有 count/图片数量，整项覆写
+                    const rawName = String(o.name || "").toLowerCase();
+                    const rawType = String(o.type || "").toLowerCase();
+                    if (rawName === "count" || rawName === "图片数量" || rawName === "count" ||
+                        rawName.includes("count") || rawType.includes("count")) {
+                        const links = o.links;
+                        const slot  = o.slot_index;
+                        Object.assign(o, {
+                            type: def.type, name: def.name, label: def.label,
+                            links, slot_index: slot, shape: def.shape
+                        });
+                    }
+                });
+            }
+
+            // 终极：绘制端口标签时强行覆盖，把第二行(如果有的话)文字直接盖掉
+            // 这样无论 this.outputs[i].name 被谁改成了"图片数量"，画出来的一定是"遮罩"
+            const origOnDrawForeground = nodeType.prototype.onDrawForeground;
+            nodeType.prototype.onDrawForeground = function (ctx, canvas, graphcanvas) {
+                const r = origOnDrawForeground?.apply(this, arguments);
+                try {
+                    // ComfyUI 的 LGraphCanvas.drawNode 会在节点右侧画 outputs 文本，
+                    // 用 name/label；我们不能直接改它的绘制流程，就在 onDrawForeground 后
+                    // 再把同样位置的文字重新"画一次正确的"（覆盖在原有文字上方）。
+                    if (!graphcanvas?.node_output_font) return;
+                    if (!this.outputs || this.outputs.length < 2) return;
+                    const NODE_TITLE_HEIGHT = (LiteGraph && LiteGraph.NODE_TITLE_HEIGHT) || 30;
+                    const NODE_WIDGET_HEIGHT = (LiteGraph && LiteGraph.NODE_WIDGET_HEIGHT) || 20;
+                    const NODE_SLOT_HEIGHT  = (LiteGraph && LiteGraph.NODE_SLOT_HEIGHT)  || 20;
+                    const slotsStartY = NODE_TITLE_HEIGHT + NODE_WIDGET_HEIGHT * (this.widgets?.length || 0) + 8;
+                    const labels = ["图像", "遮罩"];
+                    ctx.save();
+                    ctx.font = graphcanvas.node_output_font || "12px Arial";
+                    ctx.textAlign = "right";
+                    ctx.textBaseline = "middle";
+                    for (let i = 0; i < Math.min(this.outputs.length, labels.length); i++) {
+                        // 背景盖掉旧文字：在右侧输出区域画一个不透明的小矩形
+                        const y = slotsStartY + i * NODE_SLOT_HEIGHT;
+                        const textW = Math.round(this.size[0]) - 28;
+                        // 取节点背景色（半透明的节点主体色）
+                        ctx.fillStyle = this.color || (graphcanvas.colors?.node_bg || "#2a2a2a");
+                        ctx.fillRect(textW - 38, y - 9, this.size[0] - textW + 36, 18);
+                        // 画正确文字
+                        ctx.fillStyle = this.outputs?.[i]?.type === "MASK"
+                            ? (graphcanvas.colors?.MASK_TYPE || "#7f7")
+                            : (graphcanvas.colors?.STRING_TYPE || "#ccc");
+                        ctx.fillText(labels[i], this.size[0] - 22, y);
+                    }
+                    ctx.restore();
+                } catch (_) {}
+                return r;
+            };
+
+            // 额外：graph 全部 configure 完成后再跑一遍，防止 async 时序问题
+            setTimeout(() => {
+                try {
+                    if (typeof app?.graph?._nodes === "object") {
+                        for (const n of app.graph._nodes) {
+                            if (n && n.type === nodeData.name) {
+                                _forceCorrectOutputs(n);
+                                // 同步 upload_mode 到闭包（如果还没被 onConfigure 同步）
+                                try { n._xzgImgLoaderUI?.syncUploadModeFromWidget?.(); } catch (_) {}
+                            }
+                        }
+                    }
+                } catch (_) {}
+            }, 0);
 
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (data) {
                 const r = origOnConfigure?.apply(this, arguments);
+                // configure 调用会从 data.outputs 恢复，刚好调用完覆盖
+                _forceCorrectOutputs(this);
                 const listWidget = getImageListWidget(this);
                 if (listWidget) {
                     listWidget.type = "hidden";
@@ -2160,7 +3178,58 @@ app.registerExtension({
                     batchWidget.hidden = true;
                     batchWidget.computeSize = () => [0, 0];
                 }
+                let maskWidget = getMaskDataWidget(this);
+                // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
+                if (!maskWidget) {
+                    const w = this.addWidget("string", "mask_data", "", null, { serialize: true });
+                    if (w) {
+                        maskWidget = w;
+                    } else {
+                        maskWidget = {
+                            name: "mask_data",
+                            type: "hidden",
+                            value: "",
+                            options: { serialize: true },
+                            hidden: true,
+                            computeSize: () => [0, 0],
+                            callback: null,
+                        };
+                        this.widgets.push(maskWidget);
+                    }
+                }
+                if (maskWidget) {
+                    maskWidget.type = "hidden";
+                    maskWidget.hidden = true;
+                    maskWidget.computeSize = () => [0, 0];
+                    maskWidget.options = maskWidget.options || {};
+                    maskWidget.options.serialize = true;
+                    // 从 widgets_values 恢复遮罩数据
+                    if (data?.widgets_values && Array.isArray(data.widgets_values)) {
+                        const idx = this.widgets?.findIndex(w => w === maskWidget);
+                        if (idx >= 0 && data.widgets_values[idx] != null) {
+                            maskWidget.value = data.widgets_values[idx];
+                        }
+                    }
+                    // 从 properties 恢复（兜底，防止 widgets_values 被截断）
+                    if (data?.properties?.xzg_mask_data != null && !maskWidget.value) {
+                        maskWidget.value = data.properties.xzg_mask_data;
+                    }
+                }
+                const umWidget = getUploadModeWidget(this);
+                // 从 data.properties 恢复（最可靠，不受 widget 索引影响）
+                const propMode = data?.properties?.xzg_upload_mode;
+                const restoredMode = (String(propMode || "").trim().toLowerCase() === "replace") ? "replace" : "append";
+                if (umWidget) {
+                    umWidget.type = "hidden";
+                    umWidget.hidden = true;
+                    umWidget.computeSize = () => [0, 0];
+                    umWidget.options = umWidget.options || {};
+                    umWidget.options.serialize = true;
+                    umWidget.value = restoredMode;
+                }
                 if (this._xzgImgLoaderUI) {
+                    // 先确保 upload_mode widget 值已恢复 → 再同步到闭包变量
+                    this._xzgImgLoaderUI.syncUploadModeFromWidget?.();
                     this._xzgImgLoaderUI.redraw(true);
                     this._xzgImgLoaderUI.updateModeBtn?.();
                 }
@@ -2170,10 +3239,26 @@ app.registerExtension({
             const origOnSerialize = nodeType.prototype.onSerialize;
             nodeType.prototype.onSerialize = function (data) {
                 const r = origOnSerialize?.apply(this, arguments);
+                if (!data.properties) data.properties = {};
                 const listWidget = getImageListWidget(this);
                 if (listWidget && listWidget.value) {
-                    if (!data.properties) data.properties = {};
                     data.properties.xzg_image_list = listWidget.value;
+                }
+                // upload_mode
+                const umWidget = getUploadModeWidget(this);
+                const umValue = String(umWidget?.value || "").trim().toLowerCase();
+                const expected = (umValue === "replace") ? "replace" : "append";
+                data.properties.xzg_upload_mode = expected;
+                if (umWidget && data?.widgets_values && Array.isArray(this.widgets)) {
+                    const idx = this.widgets.indexOf(umWidget);
+                    if (idx >= 0) {
+                        data.widgets_values[idx] = expected;
+                    }
+                }
+                // mask_data：显式保存到 properties，确保大数据不被截断
+                const maskWidget = getMaskDataWidget(this);
+                if (maskWidget && maskWidget.value) {
+                    data.properties.xzg_mask_data = maskWidget.value;
                 }
                 return r;
             };
