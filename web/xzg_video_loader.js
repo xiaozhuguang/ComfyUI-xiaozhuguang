@@ -713,6 +713,32 @@ function bindVideoLoaderInteractions(node) {
             if (!url) return;
             XiaozhuguangVideoPlayer.downloadVideo(url, _extractFilename(url));
         },
+        // 拖拽红杠 → 更新跳过帧数
+        onLoadRangeStartDrag: (value, isEnd) => {
+            const skipWidget = node.widgets?.find(w => w.name === "跳过帧数");
+            if (!skipWidget) return;
+            skipWidget.value = value;
+            if (skipWidget.callback) skipWidget.callback(value);
+            if (!isEnd) {
+                _xzgShowLaserLine(skipWidget, node);
+            } else {
+                _xzgHideLaserLine();
+            }
+            node.setDirtyCanvas?.(true, true);
+        },
+        // 拖拽蓝杠 → 更新帧数上限
+        onLoadRangeEndDrag: (value, isEnd) => {
+            const limitWidget = node.widgets?.find(w => w.name === "帧数上限");
+            if (!limitWidget) return;
+            limitWidget.value = value;
+            if (limitWidget.callback) limitWidget.callback(value);
+            if (!isEnd) {
+                _xzgShowLaserLine(limitWidget, node);
+            } else {
+                _xzgHideLaserLine();
+            }
+            node.setDirtyCanvas?.(true, true);
+        },
     });
     node._xzgVideoPlayer = player;
 

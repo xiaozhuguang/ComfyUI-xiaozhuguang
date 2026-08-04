@@ -413,6 +413,13 @@ function createImgBatchUI(node) {
     let _altDragActive = false;            // Alt+左右拖动调整笔刷大小
     let _altDragStartX = 0;                // Alt+拖动起始 X 坐标
     let _altDragStartBrush = 0;            // Alt+拖动起始笔刷大小
+    let _maskOrigSize = null;               // 记录遮罩开启前的节点原始大小
+    let _maskOrigCanvas = null;              // 记录遮罩开启前的画布状态 { scale, offset }
+    let _maskImgZoom = 1;                    // 图片缩放倍率（1x~8x）
+    let _maskTx = 0;                         // 当前 CSS translateX（增量累积）
+    let _maskTy = 0;                         // 当前 CSS translateY（增量累积）
+    let _lastKnownMouseX = 0;                // 全局跟踪的鼠标 X（相对容器），wheel 事件可能坐标滞后
+    let _lastKnownMouseY = 0;                // 全局跟踪的鼠标 Y（相对容器）
     // 遮罩离屏 canvas：始终保存"原图尺寸"的遮罩数据，不受 DOM 显示缩放影响
     const maskOffscreen = document.createElement("canvas");
     const maskOffCtx = maskOffscreen.getContext("2d");
@@ -507,6 +514,7 @@ function createImgBatchUI(node) {
         viewMode = uploadMode === "append" ? "grid" : "single";
         if (uploadMode === "append") {
             maskEnabled = false;
+            _resetImgZoom();
         }
         updateUploadModeBtn();
         _refreshMaskToolbar();
@@ -533,6 +541,7 @@ function createImgBatchUI(node) {
         // 切到多图模式自动关闭遮罩绘制
         if (uploadMode === "append") {
             maskEnabled = false;
+            _resetImgZoom();
         }
         // 切换到单图模式时，只保留第一张图片
         if (wasAppend && uploadMode === "replace") {
@@ -676,20 +685,19 @@ function createImgBatchUI(node) {
     // 统一的显示状态同步（只在这个函数里改 overlay/eventLayer 的 pointer-events/display，避免多改冲突）
     const _syncMaskLayerVisibility = () => {
         const isSingle = uploadMode === "replace";
-        const shouldShow = isSingle && maskEnabled;
-        // overlay：开启遮罩才显示红色遮罩半透层，始终不接受事件
-        singleMaskOverlay.style.display = shouldShow ? "block" : "none";
+        // 遮罩覆盖层始终显示（单图模式下），不受 maskEnabled 影响
+        singleMaskOverlay.style.display = isSingle ? "block" : "none";
         singleMaskOverlay.style.pointerEvents = "none";
-        // eventLayer：始终不接受事件
-        singleMaskEventLayer.style.display = shouldShow ? "block" : "none";
+        // 事件层和笔刷预览仅在绘制模式开启时显示
+        const shouldEdit = isSingle && maskEnabled;
+        singleMaskEventLayer.style.display = shouldEdit ? "block" : "none";
         singleMaskEventLayer.style.pointerEvents = "none";
-        // brushPreview：跟随 shouldShow
-        if (!shouldShow) {
+        if (!shouldEdit) {
             singleBrushPreview.style.display = "none";
             _maskHoverPt = null;
         }
         // singleImgContainer 的 cursor
-        if (shouldShow) {
+        if (shouldEdit) {
             singleImgContainer.style.cursor = "crosshair";
         } else {
             singleImgContainer.style.cursor = "";
@@ -724,6 +732,43 @@ function createImgBatchUI(node) {
             return;
         }
         maskEnabled = !maskEnabled;
+        // 开启遮罩时自动选中节点、调整大小、放大画布
+        if (maskEnabled && app?.canvas) {
+            app.canvas.selectNode(node);
+            if (!_maskOrigSize) {
+                _maskOrigSize = [node.size[0], node.size[1]];
+            }
+            if (!_maskOrigCanvas) {
+                _maskOrigCanvas = {
+                    scale: app.canvas.ds.scale,
+                    offset: [app.canvas.ds.offset[0], app.canvas.ds.offset[1]],
+                };
+            }
+            node.setSize([1280, 720]);
+            // 缩放画布使节点充满屏幕
+            const cw = app.canvas.canvas.width;
+            const ch = app.canvas.canvas.height;
+            const scale = Math.min(cw / 1280, ch / 720) * 0.95;
+            const nodeCenterX = node.pos[0] + 640;
+            const nodeCenterY = node.pos[1] + 360;
+            app.canvas.ds.scale = scale;
+            app.canvas.ds.offset[0] = cw / (2 * scale) - nodeCenterX;
+            app.canvas.ds.offset[1] = ch / (2 * scale) - nodeCenterY;
+            app.canvas.setDirty(true, true);
+        }
+        // 关闭遮罩时恢复原始大小和画布状态
+        if (!maskEnabled && _maskOrigSize) {
+            node.setSize(_maskOrigSize);
+            _maskOrigSize = null;
+            _resetImgZoom();
+            if (_maskOrigCanvas && app?.canvas) {
+                app.canvas.ds.scale = _maskOrigCanvas.scale;
+                app.canvas.ds.offset[0] = _maskOrigCanvas.offset[0];
+                app.canvas.ds.offset[1] = _maskOrigCanvas.offset[1];
+                _maskOrigCanvas = null;
+            }
+            app.canvas.setDirty(true, true);
+        }
         // 开启时初始化一次离屏 canvas 尺寸
         if (maskEnabled && singleImgEl.complete && singleImgEl.naturalWidth > 0) {
             _ensureOffscreenCanvasSize(singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey, true);
@@ -894,6 +939,16 @@ function createImgBatchUI(node) {
 
     mainContent.insertBefore(singleImgContainer, emptyTip);
 
+    // 包装层：用于图片缩放（CSS transform），包裹图片和所有遮罩层
+    const singleImgInner = document.createElement("div");
+    singleImgInner.style.cssText = "position:absolute;inset:0;transform-origin:0 0;";
+    // 将 singleImgEl 和遮罩层移入包装层
+    singleImgContainer.appendChild(singleImgInner);
+    singleImgInner.appendChild(singleImgEl);
+    singleImgInner.appendChild(singleMaskOverlay);
+    singleImgInner.appendChild(singleMaskEventLayer);
+    singleImgInner.appendChild(singleBrushPreview);
+
     // ═══════════ 遮罩绘制辅助函数 ═══════════
 
     // 获取图片在 singleImgContainer 内实际显示的矩形（object-fit:contain）
@@ -911,6 +966,41 @@ function createImgBatchUI(node) {
         const x = (cw - w) / 2;
         const y = (ch - h) / 2;
         return { x, y, w, h, scale };
+    }
+
+    // 将容器坐标转换为 inner 坐标（基于当前 transform: translate(tx,ty) scale(zoom)）
+    function _containerPtToInner(px, py) {
+        const zoom = _maskImgZoom || 1;
+        return { x: (px - _maskTx) / zoom, y: (py - _maskTy) / zoom };
+    }
+
+    // 增量缩放：在当前 transform 基础上叠加，保持鼠标下方图像点不动
+    // 使用逐步计算方式：先算鼠标下图像点在 inner 坐标中的位置，再反推新 transform
+    function _applyImgZoom(mx, my, delta) {
+        const oldZoom = _maskImgZoom;
+        const newZoom = Math.max(1, Math.min(8, oldZoom * delta));
+        const oldTx = _maskTx;
+        const oldTy = _maskTy;
+        // 步骤1：计算鼠标下方图像点在 inner 坐标中的位置
+        const ix = (mx - oldTx) / oldZoom;
+        const iy = (my - oldTy) / oldZoom;
+        // 步骤2：应用新缩放
+        _maskImgZoom = newZoom;
+        // 步骤3：反推新 translate，使同一图像点仍位于鼠标下方
+        _maskTx = mx - ix * newZoom;
+        _maskTy = my - iy * newZoom;
+        // 步骤4：应用 CSS transform（使用 matrix 避免 CSS 解析歧义）
+        singleImgInner.style.transformOrigin = "0 0";
+        singleImgInner.style.transform = `matrix(${newZoom}, 0, 0, ${newZoom}, ${_maskTx}, ${_maskTy})`;
+    }
+
+    // 重置图片缩放
+    function _resetImgZoom() {
+        _maskImgZoom = 1;
+        _maskTx = 0;
+        _maskTy = 0;
+        singleImgInner.style.transform = "";
+        singleImgInner.style.transformOrigin = "";
     }
 
     // 把 overlay 上的坐标映射到离屏 canvas 的像素坐标
@@ -935,7 +1025,13 @@ function createImgBatchUI(node) {
 
         const sameImage = imageName && _maskBoundImageName === imageName;
         const sameSize = maskOffscreen.width === iw && maskOffscreen.height === ih;
-        if (sameImage && sameSize) return;
+        if (sameImage && sameSize) {
+            if (keepContent) return;
+            // keepContent=false 时仍需清空（同名图片重新上传场景）
+            maskOffCtx.clearRect(0, 0, iw, ih);
+            _maskBoundImageName = imageName || null;
+            return;
+        }
 
         // 保存旧内容用于缩放迁移（仅当 keepContent=true 且已有内容时）
         let oldSnapshot = null;
@@ -1030,26 +1126,30 @@ function createImgBatchUI(node) {
         const cw = singleImgContainer.clientWidth;
         const ch = singleImgContainer.clientHeight;
         if (cw <= 0 || ch <= 0) return;
-        // 同步 canvas 尺寸
+        const dpr = window.devicePixelRatio || 1;
+        // 同步 canvas 尺寸（CSS 保持容器大小，内部缓冲按 dpr 倍率提升分辨率）
         singleBrushPreview.style.width = cw + "px";
         singleBrushPreview.style.height = ch + "px";
         singleBrushPreview.style.left = "0";
         singleBrushPreview.style.top = "0";
-        if (singleBrushPreview.width !== cw || singleBrushPreview.height !== ch) {
-            singleBrushPreview.width = cw;
-            singleBrushPreview.height = ch;
+        const bufW = Math.round(cw * dpr);
+        const bufH = Math.round(ch * dpr);
+        if (singleBrushPreview.width !== bufW || singleBrushPreview.height !== bufH) {
+            singleBrushPreview.width = bufW;
+            singleBrushPreview.height = bufH;
         }
         singleBrushPreview.style.display = "block";
         const ctx = singleBrushPreview.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, cw, ch);
         const r = Math.max(1, brushSize / 2);
         const px = _maskHoverPt.x;
         const py = _maskHoverPt.y;
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
-        ctx.fillStyle = maskTool === "brush" ? "rgba(255,215,0,0.25)" : "rgba(255,100,100,0.25)";
+        ctx.fillStyle = maskTool === "brush" ? "rgba(0,255,0,0.25)" : "rgba(255,100,100,0.25)";
         ctx.fill();
-        ctx.strokeStyle = maskTool === "brush" ? "#000" : "#f33";
+        ctx.strokeStyle = maskTool === "brush" ? "#0f0" : "#f33";
         ctx.lineWidth = 1;
         ctx.stroke();
     }
@@ -1112,8 +1212,6 @@ function createImgBatchUI(node) {
                 w.callback?.(w.value);
                 return;
             }
-            // 后处理：根据图片大小对遮罩做平滑，消除锯齿
-            _smoothMask();
             // 导出灰度 PNG：R = 遮罩值，A = 255
             const out = document.createElement("canvas");
             out.width = maskOffscreen.width;
@@ -1135,78 +1233,6 @@ function createImgBatchUI(node) {
                 console.warn("[小珠光图像加载器] 遮罩序列化失败:", e);
             }
         }, 60);
-    }
-
-    // 对遮罩离屏画布做平滑处理（直接修改 maskOffCtx）
-    function _smoothMask() {
-        const iw = maskOffscreen.width;
-        const ih = maskOffscreen.height;
-        if (iw <= 0 || ih <= 0) return;
-        const srcData = maskOffCtx.getImageData(0, 0, iw, ih);
-        const smoothed = _smoothMaskData(srcData, iw, ih);
-        if (smoothed) {
-            maskOffCtx.putImageData(smoothed, 0, 0);
-        }
-    }
-
-    // 对遮罩 R 通道做平滑处理，返回新的 ImageData（不修改原始离屏画布）
-    function _smoothMaskData(srcData, iw, ih) {
-        const maxDim = Math.max(iw, ih);
-        const radius = Math.max(2, Math.round(maxDim / 100));
-        if (radius < 2) return null; // 极小图无需平滑
-        const sd = srcData.data;
-        const buf = new Uint8Array(iw * ih);
-        // 提取 R 通道
-        for (let i = 0; i < buf.length; i++) buf[i] = sd[i * 4];
-        // 两遍 1D box blur（水平 + 垂直），O(n) 复杂度
-        const tmp = new Uint8Array(buf.length);
-        const kernel = radius * 2 + 1;
-        // 水平模糊
-        for (let y = 0; y < ih; y++) {
-            const row = y * iw;
-            let sum = 0;
-            for (let x = -radius; x <= radius; x++) {
-                const sx = Math.max(0, Math.min(iw - 1, x));
-                sum += buf[row + sx];
-            }
-            tmp[row] = Math.round(sum / kernel);
-            for (let x = 1; x < iw; x++) {
-                const left = Math.max(0, x - radius - 1);
-                const right = Math.min(iw - 1, x + radius);
-                sum += buf[row + right] - buf[row + left];
-                tmp[row + x] = Math.round(sum / kernel);
-            }
-        }
-        // 垂直模糊
-        for (let x = 0; x < iw; x++) {
-            let sum = 0;
-            for (let y = -radius; y <= radius; y++) {
-                const sy = Math.max(0, Math.min(ih - 1, y));
-                sum += tmp[sy * iw + x];
-            }
-            buf[x] = Math.round(sum / kernel);
-            for (let y = 1; y < ih; y++) {
-                const top = Math.max(0, y - radius - 1);
-                const bottom = Math.min(ih - 1, y + radius);
-                sum += tmp[bottom * iw + x] - tmp[top * iw + x];
-                buf[y * iw + x] = Math.round(sum / kernel);
-            }
-        }
-        // 二值化：128 为阈值，消除半透明
-        for (let i = 0; i < buf.length; i++) {
-            buf[i] = buf[i] >= 128 ? 255 : 0;
-        }
-        // 写回平滑+二值化后的 R 通道到新 ImageData
-        const result = new ImageData(iw, ih);
-        const rd = result.data;
-        for (let i = 0; i < buf.length; i++) {
-            const v = buf[i];
-            rd[i * 4] = v;
-            rd[i * 4 + 1] = v;
-            rd[i * 4 + 2] = v;
-            rd[i * 4 + 3] = 255;
-        }
-        return result;
     }
 
     // 从 widget 加载已有遮罩到离屏 canvas
@@ -1306,11 +1332,13 @@ function createImgBatchUI(node) {
         const rect = singleImgContainer.getBoundingClientRect();
         const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
         const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
-        const px = (e.clientX - rect.left) / zoomX;
-        const py = (e.clientY - rect.top) / zoomY;
-        _maskHoverPt = { x: px, y: py };
+        let px = (e.clientX - rect.left) / zoomX;
+        let py = (e.clientY - rect.top) / zoomY;
+        // 图片缩放时转换到 inner 坐标
+        const innerPt = _containerPtToInner(px, py);
+        _maskHoverPt = { x: innerPt.x, y: innerPt.y };
         _renderBrushPreview();
-        const pt = _overlayPtToOffscreen(px, py);
+        const pt = _overlayPtToOffscreen(innerPt.x, innerPt.y);
         if (!pt) return;
         _maskDrawing = true;
         _maskLastPt = pt;
@@ -1329,11 +1357,12 @@ function createImgBatchUI(node) {
         const rect = singleImgContainer.getBoundingClientRect();
         const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
         const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
-        const px = (e.clientX - rect.left) / zoomX;
-        const py = (e.clientY - rect.top) / zoomY;
-        _maskHoverPt = { x: px, y: py }; // 更新预览位置
+        let px = (e.clientX - rect.left) / zoomX;
+        let py = (e.clientY - rect.top) / zoomY;
+        const innerPt = _containerPtToInner(px, py);
+        _maskHoverPt = { x: innerPt.x, y: innerPt.y };
         _renderBrushPreview();
-        const pt = _overlayPtToOffscreen(px, py);
+        const pt = _overlayPtToOffscreen(innerPt.x, innerPt.y);
         if (!pt) { _maskLastPt = null; return; }
         const from = _maskLastPt || pt;
         _maskDrawSegment(from, pt);
@@ -1366,6 +1395,7 @@ function createImgBatchUI(node) {
         const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
         const px = (e.clientX - rect.left) / zoomX;
         const py = (e.clientY - rect.top) / zoomY;
+        const innerPt = _containerPtToInner(px, py);
         // Alt+左右拖动调整笔刷大小
         if (e.altKey) {
             if (!_altDragActive) {
@@ -1382,7 +1412,7 @@ function createImgBatchUI(node) {
                 brushSizeLabel.textContent = `笔刷:${brushSize}`;
                 _renderBrushPreview();
             }
-            _maskHoverPt = { x: px, y: py };
+            _maskHoverPt = { x: innerPt.x, y: innerPt.y };
             return;
         }
         // Alt 松开，退出拖动模式
@@ -1391,7 +1421,7 @@ function createImgBatchUI(node) {
             singleImgContainer.style.cursor = "crosshair";
         }
         // 跟踪鼠标位置用于笔刷预览圆圈
-        _maskHoverPt = { x: px, y: py };
+        _maskHoverPt = { x: innerPt.x, y: innerPt.y };
         _renderBrushPreview();
     }, true);
     // 鼠标离开时清除预览和 Alt 拖动状态
@@ -1431,6 +1461,7 @@ function createImgBatchUI(node) {
     // 图片加载完成后 → 初始化离屏 canvas、尝试加载保存的遮罩
     singleImgEl.addEventListener("load", () => {
         const curName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        _resetImgZoom();
         _ensureOffscreenCanvasSize(curName, false);
         _loadMaskFromWidget(curName);
         _renderMaskOverlay();
@@ -1467,7 +1498,40 @@ function createImgBatchUI(node) {
     container.appendChild(sidebar);
     container.appendChild(mainContent);
 
+    // 全局跟踪鼠标位置（wheel 事件的 clientX/Y 可能滞后）
+    container.addEventListener("pointermove", (e) => {
+        const rect = singleImgContainer.getBoundingClientRect();
+        const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+        const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+        _lastKnownMouseX = (e.clientX - rect.left) / zoomX;
+        _lastKnownMouseY = (e.clientY - rect.top) / zoomY;
+    });
+
     const onWheel = (e) => {
+        // 遮罩开启时，画布不再缩放，滚轮缩放图片本身
+        if (maskEnabled) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (singleImgContainer.contains(e.target)) {
+                const delta = e.deltaY > 0 ? 0.85 : 1.15;
+                // 直接使用 wheel 事件的屏幕坐标计算容器内坐标，避免 _lastKnownMouseX/Y 滞后问题
+                const rect = singleImgContainer.getBoundingClientRect();
+                const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+                const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+                const mx = (e.clientX - rect.left) / zoomX;
+                const my = (e.clientY - rect.top) / zoomY;
+                _applyImgZoom(mx, my, delta);
+                // 缩放后同步更新 _lastKnownMouseX/Y 和触发 pointermove 让 hover handler 重新计算画笔位置
+                _lastKnownMouseX = mx;
+                _lastKnownMouseY = my;
+                const fakeMove = new PointerEvent("pointermove", {
+                    clientX: e.clientX, clientY: e.clientY,
+                    bubbles: true, cancelable: true,
+                });
+                singleImgContainer.dispatchEvent(fakeMove);
+            }
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         // 普通滚轮事件传递给画布（用于缩放画布）
@@ -2819,6 +2883,14 @@ function createImgBatchUI(node) {
         _updateBypassState: updateBypassState,
         _onWheel: onWheel,
         syncUploadModeFromWidget: _syncUploadModeFromWidget,
+        clearMask: () => {
+            if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
+                maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
+            }
+            _maskBoundImageName = null;
+            _resetImgZoom();
+            _renderMaskOverlay();
+        },
         get isSingleMode() { return uploadMode === "replace"; },
     };
 }
@@ -2979,16 +3051,18 @@ app.registerExtension({
                 const _nodeSelf = this;
 
                 // 当 index/imageList 变化导致"当前图片名"改变时 → 清空遮罩，避免旧遮罩粘到新图上
-                const _clearMaskIfImageChanged = () => {
+                // forceClear=true 时（列表变化）无论名称是否相同都清空
+                const _clearMaskIfImageChanged = (forceClear = false) => {
                     const names = parseNameList(getImageListWidget(_nodeSelf)?.value || "");
                     const idx = getIndex(_nodeSelf);
                     const curImg = names[idx >= 0 && idx < names.length ? idx : 0] || "";
                     const prev = ui._lastMaskImageName || null;
-                    if (curImg && prev && prev !== curImg) {
+                    if (forceClear || (curImg && prev && prev !== curImg)) {
                         if (wMask) {
                             wMask.value = "";
                             wMask.callback?.("");
                         }
+                        ui.clearMask?.();
                     }
                     ui._lastMaskImageName = curImg || null;
                 };
@@ -3012,7 +3086,7 @@ app.registerExtension({
                         origCallback?.call(this, value);
                         if (value === wList._xzg_lastValue) return;
                         wList._xzg_lastValue = value;
-                        _clearMaskIfImageChanged();
+                        _clearMaskIfImageChanged(true);
                         ui.updateModeBtn?.();
                         ui.redraw(true);
                     };
