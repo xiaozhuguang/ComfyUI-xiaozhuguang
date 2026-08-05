@@ -99,15 +99,46 @@ let isResizing = false;
 let resizeStartX = 0;
 let resizeStartWidth = 0;
 
-// 箭头选中状态
-let selectedArrowIndex = -1;
+// 箭头选中状态（多选支持）
+let selectedArrowIndices = new Set();
+
+// 辅助函数：选中状态查询
+function isSelected(idx) { return selectedArrowIndices.has(idx); }
+function getSelectedIndices() { return [...selectedArrowIndices]; }
+function hasSelection() { return selectedArrowIndices.size > 0; }
+function clearSelection() { selectedArrowIndices.clear(); }
+function setSingleSelection(idx) { selectedArrowIndices.clear(); selectedArrowIndices.add(idx); }
+function addToSelection(idx) { selectedArrowIndices.add(idx); }
+function removeFromSelection(idx) { selectedArrowIndices.delete(idx); }
+function toggleSelection(idx) { if (selectedArrowIndices.has(idx)) selectedArrowIndices.delete(idx); else selectedArrowIndices.add(idx); }
+function getFirstSelectedIndex() { return selectedArrowIndices.size > 0 ? [...selectedArrowIndices][0] : -1; }
+
+// 批量应用属性到所有选中的箭头，返回是否成功应用
+function applyToSelectedArrows(prop, val) {
+    if (!hasSelection()) return false;
+    const selIndices = getSelectedIndices();
+    for (const idx of selIndices) {
+        arrows[idx][prop] = val;
+    }
+    return true;
+}
+
+// 端点拖拽状态
+let _draggingEndpoint = null; // { arrowIndex: number, point: 'start'|'end', pointIndex?: number, startX: number, startY: number }
+
+// 整体拖拽状态（拖动中心手柄移动整个形状，支持多选）
+let _draggingShape = null; // { arrowIndices: number[], refIndex: number, offsetX: number, offsetY: number, startCenters: {x:number,y:number}[] }
+
+// 旋转拖拽状态（拖动旋转手柄旋转形状，仅单选）
+let _draggingRotation = null; // { arrowIndex: number, centerX: number, centerY: number, startAngle: number }
+
+// 框选状态
+let _boxSelecting = false;
+let _boxSelectStart = null; // { x, y }
+let _boxSelectRect = null; // { x, y, w, h } — 规范化后的矩形（x,y为左上角）
 
 // 拖拽滑条时隐藏选中高亮，避免干扰实时预览
 let _hideSelectionHighlight = false;
-
-// 位移滑条上一次值（用于计算相对偏移）
-let lastSliderX = 0;
-let lastSliderY = 0;
 
 // 动画渲染循环
 let animRafId = null;
@@ -371,6 +402,133 @@ function drawShape(ctx, shape, isSelected) {
         ctx.globalAlpha = 1;
         drawShapeVectorPath(ctx, shape);
         ctx.restore();
+
+        // 端点拖拽手柄（选中时显示，手绘不显示）
+        // 贝塞尔曲线显示所有控制点，其他类型显示首尾端点
+        // 圆形/椭圆：在边缘显示手柄，用于调整半径
+        const skipHandleTypes = ["freehand"];
+        if (!skipHandleTypes.includes(shape.type || "arrow")) {
+            ctx.save();
+            ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+            ctx.lineWidth = 1.5;
+            const handleR = 5;
+            if (shape.type === "circle") {
+                // 圆形：右侧边缘一个手柄
+                const cx = (shape.start.x + shape.end.x) / 2;
+                const cy = (shape.start.y + shape.end.y) / 2;
+                const r = Math.max(Math.abs(shape.end.x - shape.start.x), Math.abs(shape.end.y - shape.start.y)) / 2;
+                ctx.beginPath();
+                ctx.arc(cx + r, cy, handleR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            } else if (shape.type === "ellipse") {
+                // 椭圆：右侧（长轴）和下侧（短轴）各一个手柄
+                const cx = (shape.start.x + shape.end.x) / 2;
+                const cy = (shape.start.y + shape.end.y) / 2;
+                const rx = Math.max(Math.abs(shape.end.x - shape.start.x) / 2, 0.1);
+                const ry = Math.max(Math.abs(shape.end.y - shape.start.y) / 2, 0.1);
+                const rot = shape.rotation || 0;
+                const cos = Math.cos(rot * Math.PI / 180), sin = Math.sin(rot * Math.PI / 180);
+                // 右侧手柄（视觉位置）
+                const rhx = cx + rx * cos;
+                const rhy = cy + rx * sin;
+                ctx.beginPath();
+                ctx.arc(rhx, rhy, handleR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                // 下侧手柄（视觉位置）
+                const bhx = cx - ry * sin;
+                const bhy = cy + ry * cos;
+                ctx.beginPath();
+                ctx.arc(bhx, bhy, handleR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            } else if (shape.type === "bezier" && shape.points && shape.points.length > 0) {
+                // 贝塞尔曲线：绘制所有控制点
+                for (const p of shape.points) {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, handleR, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                }
+            } else {
+                // 矩形：端点未旋转，需要应用旋转变换
+                const type = shape.type || "arrow";
+                const rot = shape.rotation || 0;
+                if (type === "rectangle" && rot !== 0) {
+                    const cx = (shape.start.x + shape.end.x) / 2;
+                    const cy = (shape.start.y + shape.end.y) / 2;
+                    ctx.translate(cx, cy);
+                    ctx.rotate(rot * Math.PI / 180);
+                    ctx.translate(-cx, -cy);
+                }
+                // 起始点
+                ctx.beginPath();
+                ctx.arc(shape.start.x, shape.start.y, handleR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                // 结束点
+                ctx.beginPath();
+                ctx.arc(shape.end.x, shape.end.y, handleR, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // 中心拖动手柄（菱形，所有类型都显示，用于整体移动形状）
+        {
+            const center = _getShapeCenter(shape);
+            const size = 6;
+            ctx.save();
+            ctx.fillStyle = "rgba(255, 215, 0, 0.85)";
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(center.x, center.y - size);
+            ctx.lineTo(center.x + size, center.y);
+            ctx.lineTo(center.x, center.y + size);
+            ctx.lineTo(center.x - size, center.y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // 旋转手柄（中心上方的小圆 + 连接虚线，用于旋转形状）
+        {
+            const center = _getShapeCenter(shape);
+            const rotDist = 30;
+            const rotHandleX = center.x;
+            const rotHandleY = center.y - rotDist;
+            ctx.save();
+            // 旋转手柄跟着形状一起转
+            const rot = shape.rotation || 0;
+            if (rot !== 0) {
+                ctx.translate(center.x, center.y);
+                ctx.rotate(rot * Math.PI / 180);
+                ctx.translate(-center.x, -center.y);
+            }
+            // 连接虚线
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(center.x, center.y - 6);
+            ctx.lineTo(rotHandleX, rotHandleY + 5);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 旋转手柄圆
+            ctx.fillStyle = "rgba(100, 200, 255, 0.85)";
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(rotHandleX, rotHandleY, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
     }
 
     // 特效动画覆盖层（绘制在基础形状之上）
@@ -976,9 +1134,16 @@ function drawRectShape(ctx, shape, mode) {
     const w = Math.abs(ex - sx), h = Math.abs(ey - sy);
     const br = Math.min(shape.borderRadius || 0, Math.min(w, h) / 2);
     const lineStyle = shape.lineStyle || "solid";
+    const rot = shape.rotation || 0;
 
     ctx.save();
     ctx.globalAlpha = shape.opacity;
+    if (rot !== 0) {
+        const cx = (sx + ex) / 2, cy = (sy + ey) / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(rot * Math.PI / 180);
+        ctx.translate(-cx, -cy);
+    }
 
     if (mode === "fill") {
         ctx.beginPath();
@@ -1005,9 +1170,15 @@ function drawEllipseShape(ctx, shape, mode) {
     const cx = (sx + ex) / 2, cy = (sy + ey) / 2;
     const rx = Math.abs(ex - sx) / 2, ry = Math.abs(ey - sy) / 2;
     const lineStyle = shape.lineStyle || "solid";
+    const rot = shape.rotation || 0;
 
     ctx.save();
     ctx.globalAlpha = shape.opacity;
+    if (rot !== 0) {
+        ctx.translate(cx, cy);
+        ctx.rotate(rot * Math.PI / 180);
+        ctx.translate(-cx, -cy);
+    }
 
     if (mode === "fill") {
         ctx.beginPath();
@@ -1032,9 +1203,15 @@ function drawCircleShape(ctx, shape, mode) {
     const cx = (sx + ex) / 2, cy = (sy + ey) / 2;
     const r = Math.max(Math.abs(ex - sx), Math.abs(ey - sy)) / 2;
     const lineStyle = shape.lineStyle || "solid";
+    const rot = shape.rotation || 0;
 
     ctx.save();
     ctx.globalAlpha = shape.opacity;
+    if (rot !== 0) {
+        ctx.translate(cx, cy);
+        ctx.rotate(rot * Math.PI / 180);
+        ctx.translate(-cx, -cy);
+    }
 
     if (mode === "fill") {
         ctx.beginPath();
@@ -1118,10 +1295,24 @@ function remapAnimSpeed(s) {
 // 使用 Canvas 矢量命令绘制形状路径（圆角处用 arcTo，避免 lineTo 采样导致的锯齿）
 // 内部使用 Path2D 缓存，形状不变时复用路径，避免重复构建
 function drawShapeVectorPath(ctx, shape) {
+    const rotType = shape.type || "arrow";
+    const rot = shape.rotation || 0;
+    const needsRot = (rotType === "rectangle" || rotType === "ellipse" || rotType === "circle") && rot !== 0;
     // 尝试使用缓存的 Path2D
     const cacheKey = getShapePathCacheKey(shape);
     if (shape._vectorPath2d && shape._vectorPathKey === cacheKey) {
-        ctx.stroke(shape._vectorPath2d);
+        if (needsRot) {
+            const cx = (shape.start.x + shape.end.x) / 2;
+            const cy = (shape.start.y + shape.end.y) / 2;
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(rot * Math.PI / 180);
+            ctx.translate(-cx, -cy);
+            ctx.stroke(shape._vectorPath2d);
+            ctx.restore();
+        } else {
+            ctx.stroke(shape._vectorPath2d);
+        }
         return;
     }
     const path = new Path2D();
@@ -1195,7 +1386,19 @@ function drawShapeVectorPath(ctx, shape) {
     // 缓存 Path2D
     shape._vectorPath2d = path;
     shape._vectorPathKey = cacheKey;
-    ctx.stroke(path);
+    // 矩形/椭圆/圆形：应用旋转变换后描边
+    if (needsRot) {
+        const cx = (shape.start.x + shape.end.x) / 2;
+        const cy = (shape.start.y + shape.end.y) / 2;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rot * Math.PI / 180);
+        ctx.translate(-cx, -cy);
+        ctx.stroke(path);
+        ctx.restore();
+    } else {
+        ctx.stroke(path);
+    }
 }
 
 function getShapePathCacheKey(shape) {
@@ -1206,13 +1409,16 @@ function getShapePathCacheKey(shape) {
     const headLen = shape.arrowSize || 0;
     if (type === "freehand") {
         const pts = shape.points || [];
-        return `${type}|${pts.length}|${pts[0]?.x.toFixed(1)}|${pts[0]?.y.toFixed(1)}`;
+        const ptHash = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('|');
+        return `${type}|${pts.length}|${ptHash}`;
     }
     if (type === "bezier") {
         const pts = shape.points || [];
-        return `${type}|${pts.length}|${!!shape.closed}`;
+        const ptHash = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('|');
+        return `${type}|${pts.length}|${!!shape.closed}|${ptHash}`;
     }
-    return `${type}|${sx.toFixed(1)}|${sy.toFixed(1)}|${ex.toFixed(1)}|${ey.toFixed(1)}|${br}|${headLen}`;
+    const rot = shape.rotation || 0;
+    return `${type}|${sx.toFixed(1)}|${sy.toFixed(1)}|${ex.toFixed(1)}|${ey.toFixed(1)}|${br}|${headLen}|${rot.toFixed(1)}`;
 }
 
 // 动画调度
@@ -1787,10 +1993,21 @@ function hitTestShape(canvasX, canvasY) {
         } else {
             // 矩形/椭圆/圆形：检测点是否在形状内部（带边框阈值）
             const sx = a.start.x, sy = a.start.y, ex = a.end.x, ey = a.end.y;
+            // 旋转变换：将点击坐标转换到形状的本地坐标系
+            let lx = canvasX, ly = canvasY;
+            const rot = a.rotation || 0;
+            if (rot !== 0) {
+                const cx = (sx + ex) / 2, cy = (sy + ey) / 2;
+                const angle = -rot * Math.PI / 180;
+                const cos = Math.cos(angle), sin = Math.sin(angle);
+                const dx = canvasX - cx, dy = canvasY - cy;
+                lx = cx + dx * cos - dy * sin;
+                ly = cy + dx * sin + dy * cos;
+            }
             const minX = Math.min(sx, ex) - threshold, minY = Math.min(sy, ey) - threshold;
             const maxX = Math.max(sx, ex) + threshold, maxY = Math.max(sy, ey) + threshold;
             // 先在包围盒范围内检测
-            if (canvasX >= minX && canvasX <= maxX && canvasY >= minY && canvasY <= maxY) {
+            if (lx >= minX && lx <= maxX && ly >= minY && ly <= maxY) {
                 const left = Math.min(sx, ex), right = Math.max(sx, ex);
                 const top = Math.min(sy, ey), bottom = Math.max(sy, ey);
                 const w = right - left, h = bottom - top;
@@ -1800,7 +2017,7 @@ function hitTestShape(canvasX, canvasY) {
                         const br = Math.min(a.borderRadius || 0, Math.min(w, h) / 2);
                         if (br > 0) {
                             // 圆角矩形：使用 SDF 检测点是否在内部
-                            if (sdRoundedRect(canvasX, canvasY, cx, cy, w / 2, h / 2, br) <= 0) return i;
+                            if (sdRoundedRect(lx, ly, cx, cy, w / 2, h / 2, br) <= 0) return i;
                         } else {
                             return i;
                         }
@@ -1814,14 +2031,14 @@ function hitTestShape(canvasX, canvasY) {
                     if (type === "rectangle") {
                         const br = Math.min(a.borderRadius || 0, Math.min(w, h) / 2);
                         // 使用 SDF 检测点到圆角矩形边框的距离
-                        const sd = sdRoundedRect(canvasX, canvasY, cx, cy, w / 2, h / 2, br);
+                        const sd = sdRoundedRect(lx, ly, cx, cy, w / 2, h / 2, br);
                         if (Math.abs(sd) <= threshold) return i;
                     } else if (type === "ellipse" || type === "circle") {
                         const r = type === "circle" ? Math.max(rx, ry) : 1;
                         const rxActual = type === "circle" ? r : rx;
                         const ryActual = type === "circle" ? r : ry;
-                        const dx = (canvasX - cx) / rxActual;
-                        const dy = (canvasY - cy) / ryActual;
+                        const dx = (lx - cx) / rxActual;
+                        const dy = (ly - cy) / ryActual;
                         const dist = Math.sqrt(dx * dx + dy * dy);
                         // 点在椭圆内部且靠近边界（dist 在 0.8~1.0 之间）
                         if (dist >= 0.7 && dist <= 1.0) return i;
@@ -1831,6 +2048,195 @@ function hitTestShape(canvasX, canvasY) {
         }
     }
     return -1;
+}
+
+// 整体偏移形状的所有点
+function _offsetShape(shape, dx, dy) {
+    if (shape.start) { shape.start.x += dx; shape.start.y += dy; }
+    if (shape.end) { shape.end.x += dx; shape.end.y += dy; }
+    if (shape.points) {
+        for (const p of shape.points) { p.x += dx; p.y += dy; }
+    }
+}
+
+// 旋转形状的所有点（绕中心点旋转 deltaDeg 度）
+// 矩形/椭圆/圆形：不旋转坐标点，旋转通过渲染时 canvas 变换实现
+function _rotateShape(shape, cx, cy, deltaDeg) {
+    const type = shape.type || "arrow";
+    if (type === "rectangle" || type === "ellipse" || type === "circle") return;
+    const delta = deltaDeg * Math.PI / 180;
+    const cos = Math.cos(delta);
+    const sin = Math.sin(delta);
+    if (shape.points) {
+        for (const p of shape.points) {
+            const px = p.x - cx;
+            const py = p.y - cy;
+            p.x = cx + px * cos - py * sin;
+            p.y = cy + px * sin + py * cos;
+        }
+    }
+    if (shape.start) {
+        const sx = shape.start.x - cx;
+        const sy = shape.start.y - cy;
+        shape.start.x = cx + sx * cos - sy * sin;
+        shape.start.y = cy + sx * sin + sy * cos;
+    }
+    if (shape.end) {
+        const ex = shape.end.x - cx;
+        const ey = shape.end.y - cy;
+        shape.end.x = cx + ex * cos - ey * sin;
+        shape.end.y = cy + ex * sin + ey * cos;
+    }
+    if (shape.control) {
+        const px = shape.control.x - cx;
+        const py = shape.control.y - cy;
+        shape.control.x = cx + px * cos - py * sin;
+        shape.control.y = cy + px * sin + py * cos;
+    }
+}
+
+// 计算形状的中心点坐标
+function _getShapeCenter(shape) {
+    const type = shape.type || "arrow";
+    if (type === "freehand" || type === "bezier") {
+        const pts = shape.points || [];
+        if (pts.length === 0) {
+            return { x: (shape.start.x + shape.end.x) / 2, y: (shape.start.y + shape.end.y) / 2 };
+        }
+        let sx = 0, sy = 0;
+        for (const p of pts) { sx += p.x; sy += p.y; }
+        return { x: sx / pts.length, y: sy / pts.length };
+    }
+    // arrow, rectangle, ellipse, circle：使用 start/end 中点
+    return { x: (shape.start.x + shape.end.x) / 2, y: (shape.start.y + shape.end.y) / 2 };
+}
+
+// 检测点击是否命中箭头的端点（首/尾），用于拖拽调整
+// 返回 { arrowIndex, point: 'start'|'end', pointIndex?: number } 或 null
+// 手绘、椭圆、圆形不支持端点拖拽
+// 贝塞尔曲线支持所有控制点拖拽（pointIndex 为 points 数组索引）
+function hitTestEndpoint(canvasX, canvasY) {
+    if (!hasSelection()) return null;
+    const threshold = 15;
+    const selIndices = getSelectedIndices();
+
+    for (const selIdx of selIndices) {
+        if (selIdx < 0 || selIdx >= arrows.length) continue;
+        const arrow = arrows[selIdx];
+        const type = arrow.type || "arrow";
+        if (type === "freehand") continue;
+
+        // 圆形：只检测右侧手柄
+        if (type === "circle") {
+            const cx = (arrow.start.x + arrow.end.x) / 2;
+            const cy = (arrow.start.y + arrow.end.y) / 2;
+            const r = Math.max(Math.abs(arrow.end.x - arrow.start.x), Math.abs(arrow.end.y - arrow.start.y)) / 2;
+            const hx = cx + r;
+            const hy = cy;
+            const dist = Math.hypot(canvasX - hx, canvasY - hy);
+            if (dist <= threshold) return { arrowIndex: selIdx, point: 'radius' };
+            continue;
+        }
+
+        // 椭圆：检测右侧（rx）和下侧（ry）手柄
+        if (type === "ellipse") {
+            const cx = (arrow.start.x + arrow.end.x) / 2;
+            const cy = (arrow.start.y + arrow.end.y) / 2;
+            const rx = Math.max(Math.abs(arrow.end.x - arrow.start.x) / 2, 0.1);
+            const ry = Math.max(Math.abs(arrow.end.y - arrow.start.y) / 2, 0.1);
+            const rot = arrow.rotation || 0;
+            const cos = Math.cos(rot * Math.PI / 180), sin = Math.sin(rot * Math.PI / 180);
+            // 右侧手柄
+            const rhx = cx + rx * cos;
+            const rhy = cy + rx * sin;
+            if (Math.hypot(canvasX - rhx, canvasY - rhy) <= threshold) {
+                return { arrowIndex: selIdx, point: 'rx' };
+            }
+            // 下侧手柄
+            const bhx = cx - ry * sin;
+            const bhy = cy + ry * cos;
+            if (Math.hypot(canvasX - bhx, canvasY - bhy) <= threshold) {
+                return { arrowIndex: selIdx, point: 'ry' };
+            }
+            continue;
+        }
+
+        // 贝塞尔曲线：检测所有控制点
+        if (type === "bezier" && arrow.points && arrow.points.length > 0) {
+            for (let i = 0; i < arrow.points.length; i++) {
+                const p = arrow.points[i];
+                const dist = Math.hypot(canvasX - p.x, canvasY - p.y);
+                if (dist <= threshold) {
+                    return { arrowIndex: selIdx, point: i === 0 ? 'start' : (i === arrow.points.length - 1 ? 'end' : 'control'), pointIndex: i };
+                }
+            }
+            continue;
+        }
+
+        // 矩形：端点未旋转，需要逆旋转点击坐标后再检测
+        let lx = canvasX, ly = canvasY;
+        if (type === "rectangle" && arrow.rotation) {
+            const rot = arrow.rotation * Math.PI / 180;
+            const cos = Math.cos(-rot), sin = Math.sin(-rot);
+            const cx = (arrow.start.x + arrow.end.x) / 2;
+            const cy = (arrow.start.y + arrow.end.y) / 2;
+            const dx = canvasX - cx, dy = canvasY - cy;
+            lx = cx + dx * cos - dy * sin;
+            ly = cy + dx * sin + dy * cos;
+        }
+
+        // 检查起始点
+        if (arrow.start) {
+            const dist = Math.hypot(lx - arrow.start.x, ly - arrow.start.y);
+            if (dist <= threshold) return { arrowIndex: selIdx, point: 'start' };
+        }
+        // 检查结束点
+        if (arrow.end) {
+            const dist = Math.hypot(lx - arrow.end.x, ly - arrow.end.y);
+            if (dist <= threshold) return { arrowIndex: selIdx, point: 'end' };
+        }
+    }
+    return null;
+}
+
+// 检测点击是否命中形状的中心拖动手柄（菱形）
+function hitTestShapeCenter(canvasX, canvasY) {
+    if (!hasSelection()) return null;
+    const threshold = 12;
+    const selIndices = getSelectedIndices();
+
+    for (const selIdx of selIndices) {
+        if (selIdx < 0 || selIdx >= arrows.length) continue;
+        const arrow = arrows[selIdx];
+        const center = _getShapeCenter(arrow);
+        const dist = Math.hypot(canvasX - center.x, canvasY - center.y);
+        if (dist <= threshold) return { arrowIndex: selIdx, centerX: center.x, centerY: center.y };
+    }
+    return null;
+}
+
+// 检测点击是否命中旋转手柄（中心上方的小圆）
+function hitTestRotationHandle(canvasX, canvasY) {
+    const selIdx = getFirstSelectedIndex();
+    if (selIdx < 0 || selIdx >= arrows.length) return null;
+    const threshold = 10;
+    const arrow = arrows[selIdx];
+    const center = _getShapeCenter(arrow);
+    const rotDist = 30;
+    const rot = arrow.rotation || 0;
+    let hx = center.x;
+    let hy = center.y - rotDist;
+    // 手柄跟着旋转，计算旋转后的位置
+    if (rot !== 0) {
+        const angle = rot * Math.PI / 180;
+        const cos = Math.cos(angle), sin = Math.sin(angle);
+        const dy = -rotDist;
+        hx = center.x + dy * sin;
+        hy = center.y + dy * cos;
+    }
+    const dist = Math.hypot(canvasX - hx, canvasY - hy);
+    if (dist <= threshold) return { arrowIndex: selIdx, centerX: center.x, centerY: center.y };
+    return null;
 }
 
 // 检查是否存在带动画的箭头
@@ -1888,13 +2294,25 @@ function renderArrows() {
 
     // 绘制所有已完成形状
     for (let i = 0; i < arrows.length; i++) {
-        const isSel = i === selectedArrowIndex && !_hideSelectionHighlight;
+        const isSel = isSelected(i) && !_hideSelectionHighlight;
         drawShape(ctx, arrows[i], isSel);
     }
 
     // 绘制当前正在绘制的形状
     if (isDrawing && currentArrow && currentArrow.start && currentArrow.end) {
         drawShape(ctx, currentArrow);
+    }
+
+    // 绘制框选矩形
+    if (_boxSelecting && _boxSelectRect) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(102, 153, 255, 0.9)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 3]);
+        ctx.fillStyle = "rgba(102, 153, 255, 0.1)";
+        ctx.fillRect(_boxSelectRect.x, _boxSelectRect.y, _boxSelectRect.w, _boxSelectRect.h);
+        ctx.strokeRect(_boxSelectRect.x, _boxSelectRect.y, _boxSelectRect.w, _boxSelectRect.h);
+        ctx.restore();
     }
 
     // 绘制模式指示器（屏幕坐标）
@@ -2126,7 +2544,7 @@ function setupLiteGraphArrowClick() {
             showOverlay();
             setPointerEventsMode("auto");
             setCursor("crosshair");
-            selectedArrowIndex = hitIndex;
+            setSingleSelection(hitIndex);
             renderArrows();
             updateToolbarState();
             updateTransformSliders();
@@ -2150,13 +2568,107 @@ function handlePointerDown(e) {
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const canvasPos = screenToCanvas(screenX, screenY);
+    const ctrlHeld = e.ctrlKey || e.metaKey;
 
     // 检查是否点击到已有箭头（贝塞尔打点进行中时跳过命中检测，继续打点）
     const hitIndex = (bezierDrawStage > 0) ? -1 : hitTestShape(canvasPos.x, canvasPos.y);
     if (hitIndex >= 0) {
+        // Ctrl+点击：切换该形状的选中状态
+        if (ctrlHeld) {
+            toggleSelection(hitIndex);
+            renderArrows();
+            updateToolbarState();
+            updateTransformSliders();
+            updateStyleSliders();
+            e.preventDefault();
+            return;
+        }
+
+        // 如果点击的是已选中形状之一，检查手柄
+        if (isSelected(hitIndex)) {
+            // 旋转手柄：仅单选时可用
+            if (selectedArrowIndices.size === 1) {
+                const rotHit = hitTestRotationHandle(canvasPos.x, canvasPos.y);
+                if (rotHit) {
+                    const startAngle = Math.atan2(canvasPos.y - rotHit.centerY, canvasPos.x - rotHit.centerX);
+                    _draggingRotation = {
+                        arrowIndex: rotHit.arrowIndex,
+                        centerX: rotHit.centerX,
+                        centerY: rotHit.centerY,
+                        startAngle: startAngle
+                    };
+                    e.preventDefault();
+                    return;
+                }
+            }
+            // 中心手柄：拖拽所有选中的形状
+            const centerHit = hitTestShapeCenter(canvasPos.x, canvasPos.y);
+            if (centerHit) {
+                const selIndices = getSelectedIndices();
+                const startCenters = selIndices.map(i => _getShapeCenter(arrows[i]));
+                const center = _getShapeCenter(arrows[centerHit.arrowIndex]);
+                _draggingShape = {
+                    arrowIndices: selIndices,
+                    refIndex: centerHit.arrowIndex,
+                    offsetX: canvasPos.x - center.x,
+                    offsetY: canvasPos.y - center.y,
+                    startCenters: startCenters
+                };
+                e.preventDefault();
+                return;
+            }
+            // 端点手柄：仅拖拽该形状的端点
+            const epHit = hitTestEndpoint(canvasPos.x, canvasPos.y);
+            if (epHit) {
+                const arrow = arrows[epHit.arrowIndex];
+                let pt;
+                if (epHit.pointIndex !== undefined && arrow.points) {
+                    pt = arrow.points[epHit.pointIndex];
+                } else {
+                    pt = epHit.point === 'start' ? arrow.start : arrow.end;
+                }
+                _draggingEndpoint = {
+                    arrowIndex: epHit.arrowIndex,
+                    point: epHit.point,
+                    pointIndex: epHit.pointIndex,
+                    startX: pt.x,
+                    startY: pt.y
+                };
+                // 矩形：记录对侧端点的视觉位置
+                if (arrow.type === "rectangle" && arrow.rotation) {
+                    const rot = arrow.rotation * Math.PI / 180;
+                    const cos = Math.cos(rot), sin = Math.sin(rot);
+                    const cx = (arrow.start.x + arrow.end.x) / 2;
+                    const cy = (arrow.start.y + arrow.end.y) / 2;
+                    if (epHit.point === 'start') {
+                        const dx = arrow.end.x - cx, dy = arrow.end.y - cy;
+                        _draggingEndpoint.fixedVisualX = cx + dx * cos - dy * sin;
+                        _draggingEndpoint.fixedVisualY = cy + dx * sin + dy * cos;
+                    } else {
+                        const dx = arrow.start.x - cx, dy = arrow.start.y - cy;
+                        _draggingEndpoint.fixedVisualX = cx + dx * cos - dy * sin;
+                        _draggingEndpoint.fixedVisualY = cy + dx * sin + dy * cos;
+                    }
+                }
+                // 圆形：记录圆心
+                if (arrow.type === "circle") {
+                    _draggingEndpoint.centerX = (arrow.start.x + arrow.end.x) / 2;
+                    _draggingEndpoint.centerY = (arrow.start.y + arrow.end.y) / 2;
+                }
+                // 椭圆：记录圆心和另一轴长度
+                if (arrow.type === "ellipse") {
+                    _draggingEndpoint.centerX = (arrow.start.x + arrow.end.x) / 2;
+                    _draggingEndpoint.centerY = (arrow.start.y + arrow.end.y) / 2;
+                    _draggingEndpoint.otherRx = Math.max(Math.abs(arrow.end.x - arrow.start.x) / 2, 0.1);
+                    _draggingEndpoint.otherRy = Math.max(Math.abs(arrow.end.y - arrow.start.y) / 2, 0.1);
+                }
+                e.preventDefault();
+                return;
+            }
+        }
+
         // 钝化激活模式下，只有面板已打开时才能点选
         if (arrowSettings.deactivateClickSelect && !isArrowModeActive) {
-            // 不激活模式，不选中箭头，直接返回
             e.preventDefault();
             return;
         }
@@ -2167,8 +2679,8 @@ function handlePointerDown(e) {
             setPointerEventsMode("auto");
             setCursor("crosshair");
         }
-        // 选中箭头
-        selectedArrowIndex = hitIndex;
+        // 单选该形状
+        setSingleSelection(hitIndex);
         renderArrows();
         updateToolbarState();
         updateTransformSliders();
@@ -2177,13 +2689,105 @@ function handlePointerDown(e) {
         return;
     }
 
+    // 未命中箭头
+    // Ctrl+拖拽：启动框选
+    if (ctrlHeld && isArrowModeActive) {
+        _boxSelecting = true;
+        _boxSelectStart = { x: canvasPos.x, y: canvasPos.y };
+        _boxSelectRect = null;
+        e.preventDefault();
+        return;
+    }
+
+    // 检查是否点击了已选中形状的手柄（边框模式下中心在内部，hitTestShape 检测不到）
+    if (hasSelection()) {
+        // 旋转手柄：仅单选时可用
+        if (selectedArrowIndices.size === 1) {
+            const rotHit = hitTestRotationHandle(canvasPos.x, canvasPos.y);
+            if (rotHit) {
+                const startAngle = Math.atan2(canvasPos.y - rotHit.centerY, canvasPos.x - rotHit.centerX);
+                _draggingRotation = {
+                    arrowIndex: rotHit.arrowIndex,
+                    centerX: rotHit.centerX,
+                    centerY: rotHit.centerY,
+                    startAngle: startAngle
+                };
+                e.preventDefault();
+                return;
+            }
+        }
+        const centerHit = hitTestShapeCenter(canvasPos.x, canvasPos.y);
+        if (centerHit && isSelected(centerHit.arrowIndex)) {
+            const selIndices = getSelectedIndices();
+            const startCenters = selIndices.map(i => _getShapeCenter(arrows[i]));
+            const center = _getShapeCenter(arrows[centerHit.arrowIndex]);
+            _draggingShape = {
+                arrowIndices: selIndices,
+                refIndex: centerHit.arrowIndex,
+                offsetX: canvasPos.x - center.x,
+                offsetY: canvasPos.y - center.y,
+                startCenters: startCenters
+            };
+            e.preventDefault();
+            return;
+        }
+        const epHit2 = hitTestEndpoint(canvasPos.x, canvasPos.y);
+        if (epHit2) {
+            const arrow2 = arrows[epHit2.arrowIndex];
+            let pt2;
+            if (epHit2.pointIndex !== undefined && arrow2.points) {
+                pt2 = arrow2.points[epHit2.pointIndex];
+            } else {
+                pt2 = epHit2.point === 'start' ? arrow2.start : arrow2.end;
+            }
+            _draggingEndpoint = {
+                arrowIndex: epHit2.arrowIndex,
+                point: epHit2.point,
+                pointIndex: epHit2.pointIndex,
+                startX: pt2.x,
+                startY: pt2.y
+            };
+            // 矩形
+            if (arrow2.type === "rectangle" && arrow2.rotation) {
+                const rot3 = arrow2.rotation * Math.PI / 180;
+                const cos3 = Math.cos(rot3), sin3 = Math.sin(rot3);
+                const cx3 = (arrow2.start.x + arrow2.end.x) / 2;
+                const cy3 = (arrow2.start.y + arrow2.end.y) / 2;
+                if (epHit2.point === 'start') {
+                    const dx3 = arrow2.end.x - cx3, dy3 = arrow2.end.y - cy3;
+                    _draggingEndpoint.fixedVisualX = cx3 + dx3 * cos3 - dy3 * sin3;
+                    _draggingEndpoint.fixedVisualY = cy3 + dx3 * sin3 + dy3 * cos3;
+                } else {
+                    const dx3 = arrow2.start.x - cx3, dy3 = arrow2.start.y - cy3;
+                    _draggingEndpoint.fixedVisualX = cx3 + dx3 * cos3 - dy3 * sin3;
+                    _draggingEndpoint.fixedVisualY = cy3 + dx3 * sin3 + dy3 * cos3;
+                }
+            }
+            if (arrow2.type === "circle") {
+                _draggingEndpoint.centerX = (arrow2.start.x + arrow2.end.x) / 2;
+                _draggingEndpoint.centerY = (arrow2.start.y + arrow2.end.y) / 2;
+            }
+            if (arrow2.type === "ellipse") {
+                _draggingEndpoint.centerX = (arrow2.start.x + arrow2.end.x) / 2;
+                _draggingEndpoint.centerY = (arrow2.start.y + arrow2.end.y) / 2;
+                _draggingEndpoint.otherRx = Math.max(Math.abs(arrow2.end.x - arrow2.start.x) / 2, 0.1);
+                _draggingEndpoint.otherRy = Math.max(Math.abs(arrow2.end.y - arrow2.start.y) / 2, 0.1);
+            }
+            e.preventDefault();
+            return;
+        }
+        // 点击空白处（无Ctrl）：取消选择
+        clearSelection();
+        renderArrows();
+        updateToolbarState();
+    }
+
     // 未命中箭头：仅在模式激活时开始绘制新箭头
     if (!isArrowModeActive) return;
 
-    // 贝塞尔曲线：顺序打点绘制（1, 2, 3, 4, 5...），双击或回车完成
+    // 贝塞尔曲线：顺序打点绘制
     if (arrowSettings.shapeType === "bezier") {
         if (bezierDrawStage === 0) {
-            // 第一击：起点
             bezierDrawStage = 1;
             isDrawing = true;
             startPoint = { x: canvasPos.x, y: canvasPos.y };
@@ -2209,13 +2813,9 @@ function handlePointerDown(e) {
                 pacmanDotRatio: arrowSettings.pacmanDotRatio
             };
         } else {
-            // 后续点击：添加新点
-            // 如果点击位置离上一个点很近（<5px），可能是双击完成，跳过添加，
-            // 让 dblclick 事件自行处理 finishBezierDrawing，避免先加后删造成视觉延伸回弹
             const lastPt = currentArrow.points[currentArrow.points.length - 1];
             const dist = Math.hypot(canvasPos.x - lastPt.x, canvasPos.y - lastPt.y);
             if (dist < 5) {
-                // 双击场景：不添加点，直接结束绘制
                 e.preventDefault();
                 return;
             }
@@ -2252,7 +2852,6 @@ function handlePointerDown(e) {
         pacmanSize: arrowSettings.pacmanSize,
         pacmanDotRatio: arrowSettings.pacmanDotRatio
     };
-    // 手绘：初始化原始点收集数组
     if (arrowSettings.shapeType === "freehand") {
         if (!currentArrow.rawPoints) currentArrow.rawPoints = [];
         if (!currentArrow.points) currentArrow.points = [];
@@ -2271,6 +2870,183 @@ function handlePointerMove(e) {
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const canvasPos = screenToCanvas(screenX, screenY);
+
+    // 框选中：更新框选矩形
+    if (_boxSelecting && _boxSelectStart) {
+        const x = Math.min(_boxSelectStart.x, canvasPos.x);
+        const y = Math.min(_boxSelectStart.y, canvasPos.y);
+        const w = Math.abs(canvasPos.x - _boxSelectStart.x);
+        const h = Math.abs(canvasPos.y - _boxSelectStart.y);
+        _boxSelectRect = { x, y, w, h };
+        scheduleRender();
+        e.preventDefault();
+        return;
+    }
+
+    // 端点拖拽中：更新端点位置
+    if (_draggingEndpoint) {
+        const arrow = arrows[_draggingEndpoint.arrowIndex];
+        if (arrow) {
+            if (_draggingEndpoint.pointIndex !== undefined && arrow.points) {
+                // 贝塞尔曲线控制点拖拽
+                arrow.points[_draggingEndpoint.pointIndex].x = canvasPos.x;
+                arrow.points[_draggingEndpoint.pointIndex].y = canvasPos.y;
+                // 同步 start/end
+                if (_draggingEndpoint.pointIndex === 0) {
+                    arrow.start.x = canvasPos.x;
+                    arrow.start.y = canvasPos.y;
+                }
+                if (_draggingEndpoint.pointIndex === arrow.points.length - 1) {
+                    arrow.end.x = canvasPos.x;
+                    arrow.end.y = canvasPos.y;
+                }
+            } else if (_draggingEndpoint.point === 'radius') {
+                // 圆形：保持圆心不动，拖动右侧手柄改变半径
+                const cx = _draggingEndpoint.centerX;
+                const cy = _draggingEndpoint.centerY;
+                const newR = Math.max(Math.abs(canvasPos.x - cx), Math.abs(canvasPos.y - cy));
+                arrow.start.x = cx - newR;
+                arrow.start.y = cy - newR;
+                arrow.end.x = cx + newR;
+                arrow.end.y = cy + newR;
+            } else if (_draggingEndpoint.point === 'rx') {
+                // 椭圆：拖动右侧手柄，只改变rx，保持圆心和ry不变
+                const cx = _draggingEndpoint.centerX;
+                const cy = _draggingEndpoint.centerY;
+                const ry = _draggingEndpoint.otherRy;
+                const rot = (arrow.rotation || 0) * Math.PI / 180;
+                const cos = Math.cos(rot), sin = Math.sin(rot);
+                const dx = canvasPos.x - cx, dy = canvasPos.y - cy;
+                const newRx = Math.max(Math.abs(dx * cos + dy * sin), 0.1);
+                arrow.start.x = cx - newRx;
+                arrow.start.y = cy - ry;
+                arrow.end.x = cx + newRx;
+                arrow.end.y = cy + ry;
+            } else if (_draggingEndpoint.point === 'ry') {
+                // 椭圆：拖动下侧手柄，只改变ry，保持圆心和rx不变
+                const cx = _draggingEndpoint.centerX;
+                const cy = _draggingEndpoint.centerY;
+                const rx = _draggingEndpoint.otherRx;
+                const rot = (arrow.rotation || 0) * Math.PI / 180;
+                const cos = Math.cos(rot), sin = Math.sin(rot);
+                const dx = canvasPos.x - cx, dy = canvasPos.y - cy;
+                const newRy = Math.max(Math.abs(-dx * sin + dy * cos), 0.1);
+                arrow.start.x = cx - rx;
+                arrow.start.y = cy - newRy;
+                arrow.end.x = cx + rx;
+                arrow.end.y = cy + newRy;
+            } else if (_draggingEndpoint.point === 'start') {
+                // 矩形旋转后：以对侧端点视觉位置为锚点，保持不动
+                if (arrow.type === "rectangle" && arrow.rotation && _draggingEndpoint.fixedVisualX !== undefined) {
+                    const rot = arrow.rotation * Math.PI / 180;
+                    const cos = Math.cos(rot), sin = Math.sin(rot);
+                    const fvx = _draggingEndpoint.fixedVisualX;
+                    const fvy = _draggingEndpoint.fixedVisualY;
+                    const newCx = (canvasPos.x + fvx) / 2;
+                    const newCy = (canvasPos.y + fvy) / 2;
+                    const hdx = (canvasPos.x - fvx) / 2;
+                    const hdy = (canvasPos.y - fvy) / 2;
+                    const invHdx = hdx * cos + hdy * sin;
+                    const invHdy = -hdx * sin + hdy * cos;
+                    arrow.start.x = newCx + invHdx;
+                    arrow.start.y = newCy + invHdy;
+                    arrow.end.x = newCx - invHdx;
+                    arrow.end.y = newCy - invHdy;
+                } else {
+                    arrow.start.x = canvasPos.x;
+                    arrow.start.y = canvasPos.y;
+                }
+                // 贝塞尔曲线同步 points 首点
+                if (arrow.type === "bezier" && arrow.points && arrow.points.length > 0) {
+                    arrow.points[0].x = canvasPos.x;
+                    arrow.points[0].y = canvasPos.y;
+                }
+            } else {
+                // 矩形旋转后：以对侧端点视觉位置为锚点，保持不动
+                if (arrow.type === "rectangle" && arrow.rotation && _draggingEndpoint.fixedVisualX !== undefined) {
+                    const rot = arrow.rotation * Math.PI / 180;
+                    const cos = Math.cos(rot), sin = Math.sin(rot);
+                    const fvx = _draggingEndpoint.fixedVisualX;
+                    const fvy = _draggingEndpoint.fixedVisualY;
+                    const newCx = (canvasPos.x + fvx) / 2;
+                    const newCy = (canvasPos.y + fvy) / 2;
+                    const hdx = (canvasPos.x - fvx) / 2;
+                    const hdy = (canvasPos.y - fvy) / 2;
+                    const invHdx = hdx * cos + hdy * sin;
+                    const invHdy = -hdx * sin + hdy * cos;
+                    arrow.end.x = newCx + invHdx;
+                    arrow.end.y = newCy + invHdy;
+                    arrow.start.x = newCx - invHdx;
+                    arrow.start.y = newCy - invHdy;
+                } else {
+                    arrow.end.x = canvasPos.x;
+                    arrow.end.y = canvasPos.y;
+                }
+                // 贝塞尔曲线同步 points 尾点
+                if (arrow.type === "bezier" && arrow.points && arrow.points.length > 0) {
+                    const last = arrow.points[arrow.points.length - 1];
+                    last.x = canvasPos.x;
+                    last.y = canvasPos.y;
+                }
+            }
+            scheduleRender();
+        }
+        e.preventDefault();
+        return;
+    }
+
+    // 旋转拖拽中：旋转整个形状
+    if (_draggingRotation) {
+        const arrow = arrows[_draggingRotation.arrowIndex];
+        if (arrow) {
+            const currentAngle = Math.atan2(canvasPos.y - _draggingRotation.centerY, canvasPos.x - _draggingRotation.centerX);
+            const deltaDeg = (currentAngle - _draggingRotation.startAngle) * 180 / Math.PI;
+            const prevRotation = arrow.rotation || 0;
+            const targetAngleDeg = prevRotation + deltaDeg;
+            _rotateShape(arrow, _draggingRotation.centerX, _draggingRotation.centerY, targetAngleDeg - prevRotation);
+            arrow.rotation = ((targetAngleDeg % 360) + 360) % 360;
+            _draggingRotation.startAngle = currentAngle;
+            scheduleRender();
+        }
+        e.preventDefault();
+        return;
+    }
+
+    // 整体拖拽中：移动所有选中的形状
+    if (_draggingShape) {
+        const targetX = canvasPos.x - _draggingShape.offsetX;
+        const targetY = canvasPos.y - _draggingShape.offsetY;
+        // 以拖拽起始形状的中心为参考计算偏移
+        const refCenter = _getShapeCenter(arrows[_draggingShape.refIndex]);
+        const dx = targetX - refCenter.x;
+        const dy = targetY - refCenter.y;
+        for (const idx of _draggingShape.arrowIndices) {
+            _offsetShape(arrows[idx], dx, dy);
+        }
+        scheduleRender();
+        e.preventDefault();
+        return;
+    }
+
+    // 悬停在已选中箭头的手柄上时，切换光标
+    if (hasSelection() && isArrowModeActive) {
+        const rotHit = hitTestRotationHandle(canvasPos.x, canvasPos.y);
+        if (rotHit) {
+            setCursor("grab");
+        } else {
+            const centerHit = hitTestShapeCenter(canvasPos.x, canvasPos.y);
+            if (centerHit && isSelected(centerHit.arrowIndex)) {
+                setCursor("move");
+            } else {
+                const epHit = hitTestEndpoint(canvasPos.x, canvasPos.y);
+                if (epHit) {
+                    setCursor("grab");
+                } else {
+                    setCursor("crosshair");
+                }
+            }
+        }
+    }
 
     if (!isDrawing) return;
 
@@ -2296,6 +3072,87 @@ function handlePointerMove(e) {
 }
 
 function handlePointerUp(e) {
+    // 框选结束：选中框内所有形状
+    if (_boxSelecting) {
+        _boxSelecting = false;
+        if (_boxSelectRect && _boxSelectRect.w > 4 && _boxSelectRect.h > 4) {
+            // 收集框内的形状
+            for (let i = 0; i < arrows.length; i++) {
+                const center = _getShapeCenter(arrows[i]);
+                if (center.x >= _boxSelectRect.x && center.x <= _boxSelectRect.x + _boxSelectRect.w &&
+                    center.y >= _boxSelectRect.y && center.y <= _boxSelectRect.y + _boxSelectRect.h) {
+                    addToSelection(i);
+                }
+            }
+            renderArrows();
+            updateToolbarState();
+            updateTransformSliders();
+            updateStyleSliders();
+        }
+        _boxSelectStart = null;
+        _boxSelectRect = null;
+        renderArrows();
+        return;
+    }
+
+    // 端点拖拽结束：记录状态并清理
+    if (_draggingEndpoint) {
+        const arrow = arrows[_draggingEndpoint.arrowIndex];
+        if (arrow) {
+            let pt;
+            if (_draggingEndpoint.pointIndex !== undefined && arrow.points) {
+                pt = arrow.points[_draggingEndpoint.pointIndex];
+            } else {
+                pt = _draggingEndpoint.point === 'start' ? arrow.start : arrow.end;
+            }
+            // 只有位置确实改变了才记录
+            if (pt && (pt.x !== _draggingEndpoint.startX || pt.y !== _draggingEndpoint.startY)) {
+                recordState(xzgT("调整箭头端点", "Adjust arrow endpoint"));
+                syncArrowsToExtra();
+            }
+        }
+        _draggingEndpoint = null;
+        updateTransformSliders();
+        updateStyleSliders();
+        renderArrows();
+        return;
+    }
+
+    // 整体拖拽结束：记录状态并清理
+    if (_draggingShape) {
+        // 检查是否有形状实际移动了
+        let moved = false;
+        for (let i = 0; i < _draggingShape.arrowIndices.length; i++) {
+            const idx = _draggingShape.arrowIndices[i];
+            const nowCenter = _getShapeCenter(arrows[idx]);
+            const startCenter = _draggingShape.startCenters[i];
+            if (nowCenter.x !== startCenter.x || nowCenter.y !== startCenter.y) {
+                moved = true;
+                break;
+            }
+        }
+        if (moved) {
+            recordState(xzgT("移动形状位置", "Move shape position"));
+            syncArrowsToExtra();
+        }
+        _draggingShape = null;
+        updateTransformSliders();
+        updateStyleSliders();
+        renderArrows();
+        return;
+    }
+
+    // 旋转拖拽结束：记录状态并清理
+    if (_draggingRotation) {
+        recordState(xzgT("旋转形状", "Rotate shape"));
+        syncArrowsToExtra();
+        _draggingRotation = null;
+        updateTransformSliders();
+        updateStyleSliders();
+        renderArrows();
+        return;
+    }
+
     if (!isDrawing) return;
 
     // 贝塞尔打点式绘制：pointerup 不结束绘制，等待下一次点击
@@ -2346,8 +3203,8 @@ function handlePointerUp(e) {
                 arrowData.smoothness = arrowSettings.smoothness;
             }
             arrows.push(arrowData);
-            // 自动选中新绘制的箭头
-            selectedArrowIndex = arrows.length - 1;
+            // 自动选中新绘制的箭头（单选）
+            setSingleSelection(arrows.length - 1);
             const actionName = currentArrow.type === "freehand" ? xzgT("手绘绘制", "Freehand draw") : xzgT("绘制箭头", "Draw arrow");
             recordState(actionName);
             updateToolbarState();
@@ -2374,6 +3231,28 @@ function handlePointerLeave(e) {
 }
 
 function handlePointerCancel(e) {
+    if (_boxSelecting) {
+        _boxSelecting = false;
+        _boxSelectStart = null;
+        _boxSelectRect = null;
+        renderArrows();
+        return;
+    }
+    if (_draggingEndpoint) {
+        _draggingEndpoint = null;
+        renderArrows();
+        return;
+    }
+    if (_draggingShape) {
+        _draggingShape = null;
+        renderArrows();
+        return;
+    }
+    if (_draggingRotation) {
+        _draggingRotation = null;
+        renderArrows();
+        return;
+    }
     abortCurrentArrow();
     renderArrows();
 }
@@ -2417,7 +3296,7 @@ function finishBezierDrawing() {
         dashGap: arrowSettings.dashGap,
         rotation: 0
     });
-    selectedArrowIndex = arrows.length - 1;
+    setSingleSelection(arrows.length - 1);
     recordState(xzgT("绘制曲线", "Draw curve"));
     updateToolbarState();
     updateTransformSliders();
@@ -2475,8 +3354,11 @@ function performRedo() {
 }
 
 function syncSelectionAfterChange() {
-    if (selectedArrowIndex >= arrows.length) {
-        selectedArrowIndex = -1;
+    // 清除已失效的选中索引（箭头被删除后索引不再有效）
+    for (const idx of selectedArrowIndices) {
+        if (idx >= arrows.length) {
+            selectedArrowIndices.delete(idx);
+        }
     }
 }
 
@@ -2596,183 +3478,27 @@ async function clearAllArrows() {
     );
     if (!confirmed) return;
     arrows = [];
-    selectedArrowIndex = -1;
+    clearSelection();
     recordState(xzgT("清除所有箭头", "Clear all arrows"));
     renderArrows();
     updateToolbarState();
 }
 
 function deleteSelectedArrow() {
-    if (selectedArrowIndex < 0 || selectedArrowIndex >= arrows.length) return;
-    arrows.splice(selectedArrowIndex, 1);
-    selectedArrowIndex = -1;
-    recordState(xzgT("删除箭头", "Delete arrow"));
+    if (!hasSelection()) return;
+    const indices = getSelectedIndices().sort((a, b) => b - a); // 从大到小排序，从后往前删除
+    for (const idx of indices) {
+        arrows.splice(idx, 1);
+    }
+    clearSelection();
+    const count = indices.length;
+    recordState(xzgT(`删除${count}个箭头`, `Delete ${count} arrows`));
     renderArrows();
     updateToolbarState();
 }
 
-// 变换函数
-function applyArrowRotation(index, targetAngleDeg) {
-    const arrow = arrows[index];
-    const prevRotation = arrow.rotation || 0;
-    const deltaDeg = targetAngleDeg - prevRotation;
-    if (Math.abs(deltaDeg) < 0.001) {
-        arrow.rotation = targetAngleDeg;
-        updateTransformSliders();
-        return;
-    }
-    // 计算中心点
-    let cx, cy;
-    if (arrow.points && arrow.points.length > 0) {
-        cx = arrow.points.reduce((s, p) => s + p.x, 0) / arrow.points.length;
-        cy = arrow.points.reduce((s, p) => s + p.y, 0) / arrow.points.length;
-    } else {
-        cx = (arrow.start.x + arrow.end.x) / 2;
-        cy = (arrow.start.y + arrow.end.y) / 2;
-    }
-    const delta = deltaDeg * Math.PI / 180;
-    const cos = Math.cos(delta);
-    const sin = Math.sin(delta);
-
-    // 旋转所有点（新格式）
-    if (arrow.points) {
-        for (const p of arrow.points) {
-            const px = p.x - cx;
-            const py = p.y - cy;
-            p.x = cx + px * cos - py * sin;
-            p.y = cy + px * sin + py * cos;
-        }
-    }
-
-    // 旋转起点/终点/控制点（旧格式）
-    const sx = arrow.start.x - cx;
-    const sy = arrow.start.y - cy;
-    arrow.start.x = cx + sx * cos - sy * sin;
-    arrow.start.y = cy + sx * sin + sy * cos;
-
-    const ex = arrow.end.x - cx;
-    const ey = arrow.end.y - cy;
-    arrow.end.x = cx + ex * cos - ey * sin;
-    arrow.end.y = cy + ex * sin + ey * cos;
-
-    if (arrow.control) {
-        const px = arrow.control.x - cx;
-        const py = arrow.control.y - cy;
-        arrow.control.x = cx + px * cos - py * sin;
-        arrow.control.y = cy + px * sin + py * cos;
-    }
-
-    arrow.rotation = targetAngleDeg;
-    updateTransformSliders();
-}
-
-function applyArrowPosition(index) {
-    const arrow = arrows[index];
-    const sliderX = toolbarElement?.querySelector(".xzg-arrow-x-slider");
-    const sliderY = toolbarElement?.querySelector(".xzg-arrow-y-slider");
-    if (!sliderX || !sliderY) return;
-
-    const offsetX = parseFloat(sliderX.value);
-    const offsetY = parseFloat(sliderY.value);
-    const dx = offsetX - lastSliderX;
-    const dy = offsetY - lastSliderY;
-
-    // 移动所有点（新格式）
-    if (arrow.points) {
-        for (const p of arrow.points) {
-            p.x += dx;
-            p.y += dy;
-        }
-    }
-
-    arrow.start.x += dx;
-    arrow.start.y += dy;
-    arrow.end.x += dx;
-    arrow.end.y += dy;
-    // 贝塞尔曲线的控制点也一起移动
-    if (arrow.control) {
-        arrow.control.x += dx;
-        arrow.control.y += dy;
-    }
-
-    lastSliderX = offsetX;
-    lastSliderY = offsetY;
-}
-
-// 重置单轴位移（双击滑块触发）
-function resetAxis(axis) {
-    if (selectedArrowIndex < 0 || selectedArrowIndex >= arrows.length) return;
-    const arrow = arrows[selectedArrowIndex];
-
-    if (axis === "x") {
-        const delta = 0 - lastSliderX;
-        if (delta !== 0) {
-            if (arrow.points) {
-                for (const p of arrow.points) { p.x += delta; }
-            }
-            arrow.start.x += delta;
-            arrow.end.x += delta;
-            if (arrow.control) arrow.control.x += delta;
-        }
-        const slider = toolbarElement?.querySelector(".xzg-arrow-x-slider");
-        const display = toolbarElement?.querySelector(".xzg-arrow-x-value");
-        if (slider) slider.value = 0;
-        if (display) display.textContent = "0";
-        lastSliderX = 0;
-    } else {
-        const delta = 0 - lastSliderY;
-        if (delta !== 0) {
-            if (arrow.points) {
-                for (const p of arrow.points) { p.y += delta; }
-            }
-            arrow.start.y += delta;
-            arrow.end.y += delta;
-            if (arrow.control) arrow.control.y += delta;
-        }
-        const slider = toolbarElement?.querySelector(".xzg-arrow-y-slider");
-        const display = toolbarElement?.querySelector(".xzg-arrow-y-value");
-        if (slider) slider.value = 0;
-        if (display) display.textContent = "0";
-        lastSliderY = 0;
-    }
-
-    renderArrows();
-    recordState(xzgT("重置位移", "Reset offset"));
-}
-
-function updateTransformSliders() {
-    if (!toolbarElement) return;
-    const rotateSlider = toolbarElement.querySelector(".xzg-arrow-rotate-slider");
-    const xSlider = toolbarElement.querySelector(".xzg-arrow-x-slider");
-    const ySlider = toolbarElement.querySelector(".xzg-arrow-y-slider");
-    const rotateDisplay = toolbarElement.querySelector(".xzg-arrow-rotate-value");
-    const xDisplay = toolbarElement.querySelector(".xzg-arrow-x-value");
-    const yDisplay = toolbarElement.querySelector(".xzg-arrow-y-value");
-
-    if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-        const arrow = arrows[selectedArrowIndex];
-        const rot = arrow.rotation || 0;
-
-        if (rotateSlider) rotateSlider.value = rot;
-        if (rotateDisplay) rotateDisplay.textContent = `${Math.round(rot)}`;
-
-        // 重置位移滑条为相对偏移 0
-        lastSliderX = 0;
-        lastSliderY = 0;
-        if (xSlider) { xSlider.value = 0; }
-        if (xDisplay) xDisplay.textContent = `0`;
-        if (ySlider) { ySlider.value = 0; }
-        if (yDisplay) yDisplay.textContent = `0`;
-    } else {
-        // 无选中箭头时重置滑条
-        if (rotateSlider) rotateSlider.value = 0;
-        if (rotateDisplay) rotateDisplay.textContent = `0`;
-        if (xSlider) xSlider.value = 0;
-        if (xDisplay) xDisplay.textContent = `0`;
-        if (ySlider) ySlider.value = 0;
-        if (yDisplay) yDisplay.textContent = `0`;
-    }
-}
+// 变换函数（旋转手柄已替代旋转滑条，保留空函数兼容调用）
+function updateTransformSliders() {}
 
 function updateStyleSliders() {
     if (!toolbarElement) return;
@@ -2794,8 +3520,8 @@ function updateStyleSliders() {
     const animSpeedDisplay = toolbarElement.querySelector(".xzg-arrow-anim-speed-value");
     const animSpeedRow = toolbarElement.querySelector("#xzg-arrow-anim-speed-row");
 
-    if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-        const arrow = arrows[selectedArrowIndex];
+    if (hasSelection()) {
+        const arrow = arrows[getFirstSelectedIndex()];
         const type = arrow.type || "arrow";
         const mode = arrow.mode || "border";
         const lineStyle = arrow.lineStyle || "solid";
@@ -3043,7 +3769,7 @@ function toggleArrowMode() {
         setPointerEventsMode("none");
         setCursor("default");
         abortCurrentArrow();
-        selectedArrowIndex = -1;
+        clearSelection();
     }
 
     renderArrows();
@@ -3104,6 +3830,7 @@ function syncArrowsToExtra() {
                         pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
                         pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio
                     };
+                    if (a.rotation !== undefined) obj.rotation = a.rotation;
                     if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
                     if (a.control) obj.control = { x: a.control.x, y: a.control.y };
                     return obj;
@@ -3161,6 +3888,7 @@ function setupPersistence() {
                             pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
                             pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio
                         };
+                        if (a.rotation !== undefined) obj.rotation = a.rotation;
                         if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
                         if (a.control) obj.control = { x: a.control.x, y: a.control.y };
                         return obj;
@@ -3214,6 +3942,7 @@ function setupPersistence() {
                                 animCount: a.animCount !== undefined ? a.animCount : 5,
                                 animSize: a.animSize !== undefined ? a.animSize : 50
                             };
+                            if (a.rotation !== undefined) obj.rotation = a.rotation;
                             if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
                             if (a.control) obj.control = { x: a.control.x, y: a.control.y };
                             return obj;
@@ -3256,6 +3985,7 @@ function setupPersistence() {
                     pacmanDots: a.pacmanDots !== undefined ? a.pacmanDots : arrowSettings.pacmanDots,
                     pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
                     pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio,
+                    rotation: a.rotation !== undefined ? a.rotation : 0,
                     ...(a.points ? { points: a.points.map(p => ({ x: p.x, y: p.y })) } : {}),
                     ...(a.control ? { control: { x: a.control.x, y: a.control.y } } : {})
                 }));
@@ -3352,9 +4082,6 @@ function resetArrowSettings() {
         [".xzg-arrow-dashgap-slider", ".xzg-arrow-dashgap-value", arrowSettings.dashGap],
         [".xzg-arrow-radius-slider", ".xzg-arrow-radius-value", arrowSettings.borderRadius],
         [".xzg-arrow-smoothness-slider", null, arrowSettings.smoothness],
-        [".xzg-arrow-rotate-slider", ".xzg-arrow-rotate-value", 0],
-        [".xzg-arrow-x-slider", ".xzg-arrow-x-value", 0],
-        [".xzg-arrow-y-slider", ".xzg-arrow-y-value", 0],
         [".xzg-arrow-anim-speed-slider", ".xzg-arrow-anim-speed-value", arrowSettings.animSpeed],
         [".xzg-arrow-anim-count-slider", ".xzg-arrow-anim-count-value", arrowSettings.animCount],
         [".xzg-arrow-anim-size-slider", ".xzg-arrow-anim-size-value", arrowSettings.animSize],
@@ -3440,38 +4167,35 @@ function resetArrowSettings() {
     const pacmanRatioRow = toolbarElement.querySelector("#xzg-arrow-pacman-ratio-row");
     if (pacmanRatioRow) pacmanRatioRow.style.display = arrowSettings.animType === "pacman" ? "" : "none";
 
-    // 如果选中了某个绘图，将该绘图参数也恢复默认
-    if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-        const arrow = arrows[selectedArrowIndex];
-        arrow.color = DEFAULT_ARROW_SETTINGS.color;
-        arrow.lineWidth = DEFAULT_ARROW_SETTINGS.lineWidth;
-        arrow.arrowSize = DEFAULT_ARROW_SETTINGS.arrowSize;
-        arrow.opacity = DEFAULT_ARROW_SETTINGS.opacity;
-        arrow.borderRadius = DEFAULT_ARROW_SETTINGS.borderRadius;
-        arrow.lineStyle = DEFAULT_ARROW_SETTINGS.lineStyle;
-        arrow.animType = DEFAULT_ARROW_SETTINGS.animType;
-        arrow.animSpeed = DEFAULT_ARROW_SETTINGS.animSpeed;
-        arrow.animCount = DEFAULT_ARROW_SETTINGS.animCount;
-        arrow.animSize = DEFAULT_ARROW_SETTINGS.animSize;
-        if (arrow.hasOwnProperty("pacmanDots")) arrow.pacmanDots = DEFAULT_ARROW_SETTINGS.pacmanDots;
-        if (arrow.hasOwnProperty("pacmanSize")) arrow.pacmanSize = DEFAULT_ARROW_SETTINGS.pacmanSize;
-        if (arrow.hasOwnProperty("pacmanDotRatio")) arrow.pacmanDotRatio = DEFAULT_ARROW_SETTINGS.pacmanDotRatio;
-        if (arrow.hasOwnProperty("closed")) arrow.closed = DEFAULT_ARROW_SETTINGS.closed;
-        if (arrow.hasOwnProperty("smoothness")) arrow.smoothness = DEFAULT_ARROW_SETTINGS.smoothness;
-        // 如果形状是箭头/曲线，模式强制设为 border
-        if (arrow.type === "arrow" || arrow.type === "bezier" || arrow.type === "freehand") {
-            arrow.mode = "border";
-        } else {
-            arrow.mode = DEFAULT_ARROW_SETTINGS.shapeMode;
+    // 如果选中了绘图，批量恢复所有选中绘图参数为默认
+    if (hasSelection()) {
+        const selIndices = getSelectedIndices();
+        for (const idx of selIndices) {
+            const arrow = arrows[idx];
+            arrow.color = DEFAULT_ARROW_SETTINGS.color;
+            arrow.lineWidth = DEFAULT_ARROW_SETTINGS.lineWidth;
+            arrow.arrowSize = DEFAULT_ARROW_SETTINGS.arrowSize;
+            arrow.opacity = DEFAULT_ARROW_SETTINGS.opacity;
+            arrow.borderRadius = DEFAULT_ARROW_SETTINGS.borderRadius;
+            arrow.lineStyle = DEFAULT_ARROW_SETTINGS.lineStyle;
+            arrow.animType = DEFAULT_ARROW_SETTINGS.animType;
+            arrow.animSpeed = DEFAULT_ARROW_SETTINGS.animSpeed;
+            arrow.animCount = DEFAULT_ARROW_SETTINGS.animCount;
+            arrow.animSize = DEFAULT_ARROW_SETTINGS.animSize;
+            if (arrow.hasOwnProperty("pacmanDots")) arrow.pacmanDots = DEFAULT_ARROW_SETTINGS.pacmanDots;
+            if (arrow.hasOwnProperty("pacmanSize")) arrow.pacmanSize = DEFAULT_ARROW_SETTINGS.pacmanSize;
+            if (arrow.hasOwnProperty("pacmanDotRatio")) arrow.pacmanDotRatio = DEFAULT_ARROW_SETTINGS.pacmanDotRatio;
+            if (arrow.hasOwnProperty("closed")) arrow.closed = DEFAULT_ARROW_SETTINGS.closed;
+            if (arrow.hasOwnProperty("smoothness")) arrow.smoothness = DEFAULT_ARROW_SETTINGS.smoothness;
+            // 如果形状是箭头/曲线，模式强制设为 border
+            if (arrow.type === "arrow" || arrow.type === "bezier" || arrow.type === "freehand") {
+                arrow.mode = "border";
+            } else {
+                arrow.mode = DEFAULT_ARROW_SETTINGS.shapeMode;
+            }
         }
         renderArrows();
         recordState(xzgT("恢复默认参数", "Reset to defaults"));
-    } else {
-        // 未选中绘图时，取消选择
-        if (selectedArrowIndex >= 0) {
-            selectedArrowIndex = -1;
-            renderArrows();
-        }
     }
     saveSettings();
 }
@@ -3588,7 +4312,6 @@ function showArrowHelp() {
         '<li><b>' + xzgT("平滑", "Smooth") + '</b>：' + xzgT("手绘线条平滑幅度", "Freehand smoothness") + '</li>',
         '<li><b>' + xzgT("线型", "Line") + '</b>：' + xzgT("实线 / 虚线 / 圆点虚线", "Solid / Dashed / Dotted") + '</li>',
         '<li><b>' + xzgT("间距", "Gap") + '</b>：' + xzgT("虚线/圆点的间距倍数", "Dash/dot gap multiplier") + '</li>',
-        '<li><b>' + xzgT("旋转", "Rotate") + '</b>：' + xzgT("相对角度旋转，默认为 0", "Relative rotation angle, default 0") + '</li>',
         '<li><b>' + xzgT("特效", "Effect") + '</b>：' + xzgT("动画特效类型及参数（速度、数量、大小、淡入）", "Animation effect type and parameters (speed, count, size, fade-in)") + '</li>',
         '<li><b>' + xzgT("钝化激活", "Deactivate") + '</b>：' + xzgT("开启后，只能通过快捷键 T 打开面板后点选绘图内容，无法在画布上直接点选激活", "When enabled, drawings can only be selected after opening the panel via shortcut T; direct canvas click selection is disabled") + '</li>',
         '</ul>',
@@ -3865,25 +4588,6 @@ function buildToolbarHTML() {
                     <input type="range" class="xzg-arrow-radius-slider xzg-arrow-red-slider" min="0" max="50" value="${arrowSettings.borderRadius}">
                     <span class="xzg-arrow-radius-value">${arrowSettings.borderRadius}</span>
                     <button class="xzg-apply-prop-btn" data-prop="borderRadius" title="应用到所有">▣</button>
-                </div>
-                <div class="xzg-arrow-setting-row">
-                    <label class="xzg-arrow-green-label">${xzgT("旋转", "Rotate")}</label>
-                    <input type="range" class="xzg-arrow-rotate-slider xzg-arrow-green-slider" min="0" max="360" value="0">
-                    <span class="xzg-arrow-rotate-value">0</span>
-                    <button class="xzg-apply-prop-btn" style="visibility:hidden;" tabindex="-1">▣</button>
-                </div>
-                <div class="xzg-arrow-setting-row">
-                    <label class="xzg-arrow-green-label">${xzgT("相对X", "Rel X")}</label>
-                    <input type="range" class="xzg-arrow-x-slider xzg-arrow-green-slider" min="-200" max="200" value="0">
-                    <span class="xzg-arrow-x-value">0</span>
-                    <button class="xzg-apply-prop-btn" style="visibility:hidden;" tabindex="-1">▣</button>
-                </div>
-                <div class="xzg-arrow-setting-row">
-                    <label class="xzg-arrow-green-label">${xzgT("相对Y", "Rel Y")}</label>
-                    <input type="range" class="xzg-arrow-y-slider xzg-arrow-green-slider" min="-200" max="200" value="0">
-                    <span class="xzg-arrow-y-value">0</span>
-                    <button class="xzg-apply-prop-btn" style="visibility:hidden;" tabindex="-1">▣</button>
-                </div>
                 </div>
                 <div class="xzg-arrow-silver-group">
                 <div class="xzg-arrow-setting-row" id="xzg-arrow-anim-row">
@@ -4558,8 +5262,7 @@ function setupToolbarEvents() {
         if (dashGapRow) dashGapRow.style.display = (arrowSettings.lineStyle === "solid") ? "none" : "flex";
         // 立即应用到当前选中的箭头
         if (currentArrow) currentArrow.lineStyle = arrowSettings.lineStyle;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].lineStyle = arrowSettings.lineStyle;
+        if (applyToSelectedArrows("lineStyle", arrowSettings.lineStyle)) {
             renderArrows();
             recordState(xzgT("切换线型", "Change line style"));
         }
@@ -4572,8 +5275,7 @@ function setupToolbarEvents() {
         const val = parseInt(e.target.value);
         const display = toolbarElement.querySelector(".xzg-arrow-dashgap-value");
         if (display) display.textContent = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].dashGap = val;
+        if (applyToSelectedArrows("dashGap", val)) {
             renderArrows();
         } else {
             arrowSettings.dashGap = val;
@@ -4590,8 +5292,7 @@ function setupToolbarEvents() {
             arrowSettings.shapeMode = btn.dataset.mode;
             toolbarElement.querySelectorAll(".xzg-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === arrowSettings.shapeMode));
             // 立即应用到当前选中的节点
-            if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-                arrows[selectedArrowIndex].mode = arrowSettings.shapeMode;
+            if (applyToSelectedArrows("mode", arrowSettings.shapeMode)) {
                 renderArrows();
                 recordState(xzgT("切换填充模式", "Toggle fill mode"));
             }
@@ -4606,14 +5307,12 @@ function setupToolbarEvents() {
         if (currentArrow) {
             currentArrow.color = e.target.value;
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].color = e.target.value;
-        }
+        applyToSelectedArrows("color", e.target.value);
         renderArrows();
         saveSettings();
     });
     colorInput?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("修改箭头颜色", "Change arrow color"));
         }
     });
@@ -4627,14 +5326,12 @@ function setupToolbarEvents() {
         if (currentArrow) {
             currentArrow.lineWidth = arrowSettings.lineWidth;
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].lineWidth = arrowSettings.lineWidth;
-        }
+        applyToSelectedArrows("lineWidth", arrowSettings.lineWidth);
         renderArrows();
         saveSettings();
     });
     widthSlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("修改箭头线宽", "Change arrow width"));
         }
     });
@@ -4648,14 +5345,12 @@ function setupToolbarEvents() {
         if (currentArrow) {
             currentArrow.arrowSize = arrowSettings.arrowSize;
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].arrowSize = arrowSettings.arrowSize;
-        }
+        applyToSelectedArrows("arrowSize", arrowSettings.arrowSize);
         renderArrows();
         saveSettings();
     });
     headSlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("修改箭头大小", "Change arrow size"));
         }
     });
@@ -4669,14 +5364,12 @@ function setupToolbarEvents() {
         if (currentArrow) {
             currentArrow.opacity = arrowSettings.opacity;
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].opacity = arrowSettings.opacity;
-        }
+        applyToSelectedArrows("opacity", arrowSettings.opacity);
         renderArrows();
         saveSettings();
     });
     opacitySlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("修改箭头透明度", "Change arrow opacity"));
         }
     });
@@ -4690,14 +5383,12 @@ function setupToolbarEvents() {
         if (currentArrow) {
             currentArrow.borderRadius = arrowSettings.borderRadius;
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].borderRadius = arrowSettings.borderRadius;
-        }
+        applyToSelectedArrows("borderRadius", arrowSettings.borderRadius);
         renderArrows();
         saveSettings();
     });
     radiusSlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("修改矩形圆角", "Change rectangle radius"));
         }
     });
@@ -4716,7 +5407,7 @@ function setupToolbarEvents() {
         saveSettings();
     });
     smoothnessSlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("修改平滑幅度", "Change smoothness"));
         }
     });
@@ -4738,9 +5429,7 @@ function setupToolbarEvents() {
             stateLabel.textContent = newVal ? xzgT("开", "ON") : xzgT("关", "OFF");
             stateLabel.style.color = newVal ? "#4CAF50" : "#999";
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].closed = arrowSettings.closed;
-        }
+        applyToSelectedArrows("closed", arrowSettings.closed);
         // 闭合曲线时隐藏箭头大小滑条
         const headRow = toolbarElement.querySelector("#xzg-arrow-head-row");
         if (headRow) {
@@ -4749,7 +5438,7 @@ function setupToolbarEvents() {
         }
         renderArrows();
         saveSettings();
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+        if (hasSelection()) {
             recordState(xzgT("切换闭合", "Toggle closed"));
         }
     });
@@ -4800,9 +5489,12 @@ function setupToolbarEvents() {
             currentArrow.animType = arrowSettings.animType;
             currentArrow.opacity = arrowSettings.opacity;
         }
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].animType = arrowSettings.animType;
-            arrows[selectedArrowIndex].opacity = arrowSettings.opacity;
+        if (hasSelection()) {
+            const selIndices = getSelectedIndices();
+            for (const idx of selIndices) {
+                arrows[idx].animType = arrowSettings.animType;
+                arrows[idx].opacity = arrowSettings.opacity;
+            }
             recordState(xzgT("修改特效动画", "Change animation"));
         }
         if (arrowSettings.animType !== "none") {
@@ -4823,9 +5515,7 @@ function setupToolbarEvents() {
         const val = parseInt(e.target.value);
         arrowSettings.animSpeed = val;
         if (currentArrow) currentArrow.animSpeed = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].animSpeed = val;
-        }
+        applyToSelectedArrows("animSpeed", val);
         renderArrows();
         saveSettings();
     });
@@ -4837,9 +5527,7 @@ function setupToolbarEvents() {
         const display = toolbarElement.querySelector(".xzg-arrow-anim-count-value");
         if (display) display.textContent = val;
         if (currentArrow) currentArrow.animCount = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].animCount = val;
-        }
+        applyToSelectedArrows("animCount", val);
         renderArrows();
     });
     animCountSlider?.addEventListener("change", () => {
@@ -4854,9 +5542,7 @@ function setupToolbarEvents() {
         const display = toolbarElement.querySelector(".xzg-arrow-anim-size-value");
         if (display) display.textContent = val;
         if (currentArrow) currentArrow.animSize = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].animSize = val;
-        }
+        applyToSelectedArrows("animSize", val);
         renderArrows();
     });
     animSizeSlider?.addEventListener("change", () => {
@@ -4871,9 +5557,7 @@ function setupToolbarEvents() {
         const display = toolbarElement.querySelector(".xzg-arrow-pacman-dots-value");
         if (display) display.textContent = val;
         if (currentArrow) currentArrow.pacmanDots = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].pacmanDots = val;
-        }
+        applyToSelectedArrows("pacmanDots", val);
         renderArrows();
     });
     pacmanDotsSlider?.addEventListener("change", () => {
@@ -4888,9 +5572,7 @@ function setupToolbarEvents() {
         const display = toolbarElement.querySelector(".xzg-arrow-pacman-size-value");
         if (display) display.textContent = val;
         if (currentArrow) currentArrow.pacmanSize = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].pacmanSize = val;
-        }
+        applyToSelectedArrows("pacmanSize", val);
         renderArrows();
     });
     pacmanSizeSlider?.addEventListener("change", () => {
@@ -4905,9 +5587,7 @@ function setupToolbarEvents() {
         const display = toolbarElement.querySelector(".xzg-arrow-pacman-ratio-value");
         if (display) display.textContent = val;
         if (currentArrow) currentArrow.pacmanDotRatio = val;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            arrows[selectedArrowIndex].pacmanDotRatio = val;
-        }
+        applyToSelectedArrows("pacmanDotRatio", val);
         renderArrows();
     });
     pacmanRatioSlider?.addEventListener("change", () => {
@@ -4983,8 +5663,8 @@ function setupToolbarEvents() {
         e.stopPropagation();
         const prop = btn.dataset.prop;
         if (!prop) return;
-        if (selectedArrowIndex < 0 || selectedArrowIndex >= arrows.length) return;
-        const source = arrows[selectedArrowIndex];
+        if (!hasSelection()) return;
+        const source = arrows[getFirstSelectedIndex()];
         if (!source || source[prop] === undefined) return;
         const val = source[prop];
         for (let i = 0; i < arrows.length; i++) {
@@ -4992,67 +5672,6 @@ function setupToolbarEvents() {
         }
         renderArrows();
         recordState(xzgT("应用" + prop, "Apply " + prop));
-    });
-
-    // 旋转滑块
-    const rotateSlider = toolbarElement.querySelector(".xzg-arrow-rotate-slider");
-    rotateSlider?.addEventListener("input", (e) => {
-        const angle = parseFloat(e.target.value);
-        const display = toolbarElement.querySelector(".xzg-arrow-rotate-value");
-        if (display) display.textContent = `${Math.round(angle)}`;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            applyArrowRotation(selectedArrowIndex, angle);
-            renderArrows();
-        }
-    });
-    rotateSlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            recordState(xzgT("旋转箭头", "Rotate arrow"));
-        }
-    });
-
-    // X 位移滑块
-    const xSlider = toolbarElement.querySelector(".xzg-arrow-x-slider");
-    xSlider?.addEventListener("input", (e) => {
-        const val = parseFloat(e.target.value);
-        const display = toolbarElement.querySelector(".xzg-arrow-x-value");
-        if (display) display.textContent = `${Math.round(val)}`;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            applyArrowPosition(selectedArrowIndex);
-            renderArrows();
-        }
-    });
-    xSlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            recordState(xzgT("移动箭头", "Move arrow"));
-        }
-    });
-    // 双击 X 滑块归零
-    xSlider?.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        resetAxis("x");
-    });
-
-    // Y 位移滑块
-    const ySlider = toolbarElement.querySelector(".xzg-arrow-y-slider");
-    ySlider?.addEventListener("input", (e) => {
-        const val = parseFloat(e.target.value);
-        const display = toolbarElement.querySelector(".xzg-arrow-y-value");
-        if (display) display.textContent = `${Math.round(val)}`;
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            applyArrowPosition(selectedArrowIndex);
-            renderArrows();
-        }
-    });
-    ySlider?.addEventListener("change", () => {
-        if (selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
-            recordState(xzgT("移动箭头", "Move arrow"));
-        }
-    });
-    // 双击 Y 滑块归零
-    ySlider?.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        resetAxis("y");
     });
 
     // 清除按钮
@@ -5162,7 +5781,7 @@ function updateToolbarState() {
     const clearBtn = toolbarElement.querySelector(".xzg-arrow-clear-btn");
     const deleteBtn = toolbarElement.querySelector(".xzg-arrow-delete-btn");
     if (clearBtn) clearBtn.disabled = arrows.length === 0;
-    if (deleteBtn) deleteBtn.disabled = selectedArrowIndex < 0 || selectedArrowIndex >= arrows.length;
+    if (deleteBtn) deleteBtn.disabled = !hasSelection();
 }
 
 function showToolbar() {
@@ -5231,7 +5850,7 @@ function setupKeyboardShortcut() {
                 e.stopPropagation();
             }
             // Delete/Backspace 删除选中箭头
-            if ((e.key === "Delete" || e.key === "Backspace") && selectedArrowIndex >= 0 && selectedArrowIndex < arrows.length) {
+            if ((e.key === "Delete" || e.key === "Backspace") && hasSelection()) {
                 deleteSelectedArrow();
                 e.preventDefault();
                 e.stopPropagation();
@@ -5340,18 +5959,19 @@ function initializeArrowSystem(litegraphCanvas) {
     setupPersistence();
 
     // 滑条拖拽时隐藏选中高亮，避免干扰调整时的实时预览
+    // 使用捕获阶段确保在滑条自身处理器之前执行，避免事件顺序导致手柄闪烁/消失
     if (toolbarElement) {
         toolbarElement.addEventListener("input", (e) => {
             if (e.target.matches('input[type="range"]')) {
                 _hideSelectionHighlight = true;
             }
-        });
+        }, true);
         toolbarElement.addEventListener("change", (e) => {
             if (e.target.matches('input[type="range"]')) {
                 _hideSelectionHighlight = false;
                 renderArrows();
             }
-        });
+        }, true);
     }
 
     // 页面关闭/刷新前确保箭头数据已同步到 graph.extra
@@ -5391,6 +6011,90 @@ function createTransformTracker(onChange) {
         }
     };
 }
+
+// ============================================================================
+// 全局 API：供编组拖动时移动箭头
+// ============================================================================
+
+/**
+ * 计算箭头的中心点（图坐标）
+ * @param {Object} arrow - 箭头数据
+ * @returns {{x: number, y: number} | null}
+ */
+function getArrowCenter(arrow) {
+    if (arrow.points && arrow.points.length > 0) {
+        const cx = arrow.points.reduce((s, p) => s + p.x, 0) / arrow.points.length;
+        const cy = arrow.points.reduce((s, p) => s + p.y, 0) / arrow.points.length;
+        return { x: cx, y: cy };
+    }
+    if (arrow.start && arrow.end) {
+        return { x: (arrow.start.x + arrow.end.x) / 2, y: (arrow.start.y + arrow.end.y) / 2 };
+    }
+    return null;
+}
+
+/**
+ * 获取中心点落在指定编组框内的箭头的初始位置快照
+ * 返回快照数组，供编组拖动时计算偏移
+ * @param {{x: number, y: number, w: number, h: number}} bounds - 编组框（图坐标）
+ * @returns {Array<{index: number, startX: number, startY: number, ...}>}
+ */
+function getArrowStartsInBounds(bounds) {
+    const snapshots = [];
+    if (!bounds || arrows.length === 0) return snapshots;
+    for (let i = 0; i < arrows.length; i++) {
+        const arrow = arrows[i];
+        const center = getArrowCenter(arrow);
+        if (!center) continue;
+        if (center.x >= bounds.x && center.x <= bounds.x + bounds.w &&
+            center.y >= bounds.y && center.y <= bounds.y + bounds.h) {
+            const snap = { index: i, start: { x: arrow.start?.x, y: arrow.start?.y } };
+            if (arrow.end) snap.end = { x: arrow.end.x, y: arrow.end.y };
+            if (arrow.points) snap.points = arrow.points.map(p => ({ x: p.x, y: p.y }));
+            if (arrow.control) snap.control = { x: arrow.control.x, y: arrow.control.y };
+            snapshots.push(snap);
+        }
+    }
+    return snapshots;
+}
+
+/**
+ * 根据快照将箭头移动到初始位置 + 偏移量的位置
+ * @param {Array} snapshots - getArrowStartsInBounds 返回的快照
+ * @param {number} dx - X 偏移量
+ * @param {number} dy - Y 偏移量
+ */
+function applyArrowStarts(snapshots, dx, dy) {
+    if (!snapshots || snapshots.length === 0) return;
+    for (const snap of snapshots) {
+        const arrow = arrows[snap.index];
+        if (!arrow) continue;
+        if (snap.points && arrow.points) {
+            for (let j = 0; j < arrow.points.length; j++) {
+                arrow.points[j].x = snap.points[j].x + dx;
+                arrow.points[j].y = snap.points[j].y + dy;
+            }
+        }
+        if (snap.start && arrow.start) {
+            arrow.start.x = snap.start.x + dx;
+            arrow.start.y = snap.start.y + dy;
+        }
+        if (snap.end && arrow.end) {
+            arrow.end.x = snap.end.x + dx;
+            arrow.end.y = snap.end.y + dy;
+        }
+        if (snap.control && arrow.control) {
+            arrow.control.x = snap.control.x + dx;
+            arrow.control.y = snap.control.y + dy;
+        }
+    }
+    renderArrows();
+    syncArrowsToExtra();
+}
+
+// 挂载到全局供编组模块调用
+window.__xzg_getArrowStartsInBounds = getArrowStartsInBounds;
+window.__xzg_applyArrowStarts = applyArrowStarts;
 
 // ============================================================================
 // 扩展注册

@@ -303,6 +303,7 @@ class Xiaozhuguang {
                         } else {
                             self.addNodeToCanvasAt(self.draggingNodeType, offsetX, offsetY);
                         }
+                        self.collapsePanel();
                     }
                 }
                 self.removeDragPreview();
@@ -321,6 +322,7 @@ class Xiaozhuguang {
                         } else {
                             self.addWorkflowToCanvasAt(self.draggingWorkflowId, offsetX, offsetY);
                         }
+                        self.collapsePanel();
                     }
                 }
                 self.removeDragPreview();
@@ -2637,6 +2639,7 @@ class Xiaozhuguang {
 
     collapsePanel() {
         if (!this.panel) return;
+        this._hidePreview(0);
         const rect = this.panel.getBoundingClientRect();
         this._expandedPos = { left: rect.left, top: rect.top };
         this._expandedWidth = this.panel.style.width;
@@ -4001,6 +4004,7 @@ class Xiaozhuguang {
                     } else {
                         self.addNodeToCanvas(dragInfo.type);
                     }
+                    self.collapsePanel();
                 }
 
                 dragInfo = null;

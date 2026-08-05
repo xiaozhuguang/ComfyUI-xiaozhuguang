@@ -165,7 +165,7 @@ const XZGGroup = {
                     for (const [gid, g] of Object.entries(self.groups)) {
                         if (!g.bounds) continue;
                         const allNodeIds = self._collectAllNodeIdsInGroup(gid);
-                        if (allNodeIds.length === 0) continue;
+                        if (allNodeIds.length <= 1) continue;
                         const baseSel = session.startSelSnapshot || selIdSet;
                         if (allNodeIds.every(id => baseSel.has(String(id)))) fullySelectedGids.push(gid);
                     }
@@ -2414,6 +2414,9 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             }
         }
 
+        // 捕获编组框内箭头的初始位置快照，拖动时一起移动
+        const arrowStarts = window.__xzg_getArrowStartsInBounds?.(b) || [];
+
         const onMove = e => {
             const dx = (e.clientX - startX) / scale;
             const dy = (e.clientY - startY) / scale;
@@ -2428,6 +2431,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             });
             // 部分重叠编组中完全落在大边框内的节点也跟随移动
             partialOverlapNodes.forEach(s => { s.node.pos[0] = s.x + dx; s.node.pos[1] = s.y + dy; });
+            // 编组框内的箭头跟随移动
+            if (arrowStarts.length > 0) {
+                window.__xzg_applyArrowStarts?.(arrowStarts, dx, dy);
+            }
             graph.setDirtyCanvas?.(true, true);
         };
         const onUp = () => {
@@ -3698,7 +3705,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             for (const [gid, g] of Object.entries(this.groups)) {
                 if (!g.bounds) continue;
                 const allNodeIds = this._collectAllNodeIdsInGroup(gid);
-                if (allNodeIds.length === 0) continue;
+                if (allNodeIds.length <= 1) continue;
                 // 完整性判定基准：使用锁定瞬间的选中快照（若存在），否则当前选中
                 const baseSel = session.startSelSnapshot || selIdSet;
                 const allSelected = allNodeIds.every(id => baseSel.has(String(id)));
@@ -3947,7 +3954,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     for (const [gid, g] of Object.entries(self.groups)) {
                         if (!g.bounds) continue;
                         const allNodeIds = self._collectAllNodeIdsInGroup(gid);
-                        if (allNodeIds.length === 0) continue;
+                        if (allNodeIds.length <= 1) continue;
                         const baseSel = session.startSelSnapshot || selIdSet;
                         if (allNodeIds.every(id => baseSel.has(String(id)))) fullySelectedGids.push(gid);
                     }
