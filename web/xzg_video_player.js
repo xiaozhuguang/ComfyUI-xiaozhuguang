@@ -512,9 +512,11 @@ export class XiaozhuguangVideoPlayer {
 
         if (dur > 0) {
             const fps = this._frameRate || 24;
-            // 优先使用后端实际加载的帧数，避免前端推算误差
-            const totalFrames = this._totalFrames || Math.max(1, Math.round(dur * fps));
-            const curFrameIdx = Math.min(Math.floor(cur * fps), totalFrames - 1);
+            // 使用源视频总帧数作为分母，与蓝杠/红杠标记保持一致
+            const sourceTotalFrames = this.getSourceTotalFrames();
+            const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(dur * fps));
+            const endFrame = this._computeEndFrame();
+            const curFrameIdx = Math.min(Math.floor(cur * fps), endFrame);
             const pct = totalFrames > 1 ? (curFrameIdx / (totalFrames - 1)) * 100 : 0;
             const startPct = this._getStartPct();
             this._progressFill.style.left = startPct + "%";
@@ -561,8 +563,7 @@ export class XiaozhuguangVideoPlayer {
             if (!this._isDragging && !this._isDraggingMarker && cur > 0) {
                 const endFrame = this._computeEndFrame();
                 const fps = this._frameRate || 24;
-                const endTime = endFrame / fps;
-                if (cur >= endTime - 0.05) {
+                if (cur * fps >= endFrame + 1) {
                     if (this._loopPlayback) {
                         // 循环模式：跳回红杠位置重新开始
                         this._video.currentTime = this._skipFrames / fps;
@@ -641,8 +642,9 @@ export class XiaozhuguangVideoPlayer {
         const fps = this._frameRate || 24;
         const rect = this._progressBar.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        // 优先使用后端实际加载的帧数
-        const totalFrames = this._totalFrames || Math.max(1, Math.round(this._video.duration * fps));
+        // 使用源视频总帧数作为分母，与蓝杠/红杠标记保持一致
+        const sourceTotalFrames = this.getSourceTotalFrames();
+        const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(this._video.duration * fps));
         const endFrame = this._computeEndFrame();
         const frameIdx = Math.max(this._skipFrames, Math.min(Math.floor(ratio * totalFrames), endFrame));
         const pct = totalFrames > 1 ? (frameIdx / (totalFrames - 1)) * 100 : 0;
