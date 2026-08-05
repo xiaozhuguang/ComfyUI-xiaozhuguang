@@ -229,14 +229,11 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[1] = y; y += n.size[1] + V_GAP; });
             endChange();
         }
-        // 上侧区域：垂直居中(以最左侧节点为锚) + 水平等距分布(两端不动)
+        // 上侧区域：水平等距分布(两端不动，只改变左右位置)
         function distHTopAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const anchor = getLeftmost(nodes);
-            const targetCY = anchor.pos[1] + anchor.size[1] / 2;
-            nodes.forEach(n => { n.pos[1] = targetCY - n.size[1] / 2; });
 
             const sorted = [...nodes].sort((a, b) => a.pos[0] - b.pos[0]);
             const minX = sorted[0].pos[0];
@@ -247,14 +244,12 @@ app.registerExtension({
             sorted.forEach(n => { n.pos[0] = x; x += n.size[0] + gap; });
             endChange();
         }
-        // 下侧区域：垂直居中(以最左侧节点为锚) + 水平固定间距(最左节点不动)
+        // 下侧区域：水平固定间距(最左节点不动，只改变左右位置)
         function distHBottomAnchor() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
             const anchor = getLeftmost(nodes);
-            const targetCY = anchor.pos[1] + anchor.size[1] / 2;
-            nodes.forEach(n => { n.pos[1] = targetCY - n.size[1] / 2; });
 
             const sorted = [...nodes].sort((a, b) => a.pos[0] - b.pos[0]);
             const startX = anchor.pos[0];
