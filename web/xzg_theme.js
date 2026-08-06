@@ -2871,6 +2871,12 @@ window.XZGThemeManager = {
 
         function makeDrawShapeWrapper(origFn) {
             return function(node, ctx, size, fgcolor, bgcolor, selected, mouseOver) {
+                // 绕过状态下不应用主题色，保持紫色绕过状态
+                if (node.mode === 4) {
+                    origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
+                    return;
+                }
+
                 if (!node._xzgGradient) {
                     origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                     return;

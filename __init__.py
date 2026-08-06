@@ -190,6 +190,8 @@ from .nodes.xzg_image_save import XiaozhuguangImageSave
 from .nodes.xzg_audio_save import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
+from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt
+from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -525,6 +527,58 @@ class XiaozhuguangDataBlock:
             return (None,)
 
 
+class XiaozhuguangCompareDataBlock:
+    """
+    小珠光比较大小-数据阻断
+    比较输入整数与设定值的大小关系，大于/等于/小于时传输数据，否则阻断输出 None
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "输入": ("*", {}),
+                "输入整数": ("INT", {"default": 0, "min": -999999, "max": 999999, "step": 1, "forceInput": True}),
+                "比较方式": (["大于", "等于", "小于"], {"default": "大于"}),
+                "比较值": ("INT", {"default": 0, "min": -999999, "max": 999999, "step": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("*",)
+    RETURN_NAMES = ("输出",)
+    FUNCTION = "execute"
+    CATEGORY = "xiaozhuguang"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types):
+        return True
+
+    def execute(self, 输入整数, 比较方式, 比较值, 输入=None):
+        # 确保比较值是整数
+        try:
+            val = int(比较值)
+        except (ValueError, TypeError):
+            return (None,)
+
+        # 确保输入整数有效
+        try:
+            input_val = int(输入整数)
+        except (ValueError, TypeError):
+            return (None,)
+
+        if 比较方式 == "大于":
+            if input_val > val:
+                return (输入,)
+        elif 比较方式 == "等于":
+            if input_val == val:
+                return (输入,)
+        elif 比较方式 == "小于":
+            if input_val < val:
+                return (输入,)
+
+        return (None,)
+
+
 class XiaozhuguangTitle:
     @classmethod
     def INPUT_TYPES(cls):
@@ -627,6 +681,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
     "XiaozhuguangBoolNot": XiaozhuguangBoolNot,
     "XiaozhuguangDataBlock": XiaozhuguangDataBlock,
+    "XiaozhuguangCompareDataBlock": XiaozhuguangCompareDataBlock,
     "XiaozhuguangTitle": XiaozhuguangTitle,
     "XiaozhuguangNumberSwitch": XiaozhuguangNumberSwitch,
     "XiaozhuguangUniversalSlider": XiaozhuguangUniversalSlider,
@@ -644,6 +699,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
+    "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
+    "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -655,6 +712,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBooleanSelector": "小珠光布尔",
     "XiaozhuguangBoolNot": "小珠光反向布尔",
     "XiaozhuguangDataBlock": "小珠光数据阻断",
+    "XiaozhuguangCompareDataBlock": "小珠光比较大小-数据阻断",
     "XiaozhuguangTitle": "小珠光标题",
     "XiaozhuguangNumberSwitch": "小珠光编号切换",
     "XiaozhuguangUniversalSlider": "小珠光万能滑条",
@@ -673,6 +731,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",
+    "XiaozhuguangNinimaxH3Prompt": "小珠光 MiniMax H3 提示词",
+    "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"

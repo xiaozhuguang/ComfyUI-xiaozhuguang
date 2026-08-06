@@ -60,6 +60,9 @@ export class XiaozhuguangVideoPlayer {
         this._skipFrames = 0;
         this._frameLimit = 0;
         this._frameDisplay = null;
+        // 红蓝条对应的帧数显示（红=起点/跳过帧数，蓝=终点/帧数上限）
+        this._redFrameDisplay = null;
+        this._blueFrameDisplay = null;
         this._placeholder = null;
         this._loadingSpinner = null;
         this._stage = null;
@@ -203,7 +206,7 @@ export class XiaozhuguangVideoPlayer {
             "background:linear-gradient(transparent 0%,rgba(0,0,0,0.5) 40%,rgba(0,0,0,0.9) 100%);" +
             "display:flex;flex-direction:column-reverse;pointer-events:auto;z-index:10;";
 
-        // 时间显示行（紧贴播放条上方），左下角：播放图标 + 时间 + 帧数
+        // 时间显示行（紧贴播放条上方），左下角：时间码
         const timeRow = document.createElement("div");
         timeRow.style.cssText =
             "display:flex;align-items:flex-end;padding:0 6px 0;" +
@@ -211,17 +214,17 @@ export class XiaozhuguangVideoPlayer {
 
         this._timeDisplay = document.createElement("span");
         this._timeDisplay.style.cssText =
-            "color:#fff;font-size:10px;font-family:monospace;" +
+            "color:#fff;font-size:8px;font-family:monospace;" +
             "font-variant-numeric:tabular-nums;" +
-            "width:80px;text-shadow:0 1px 3px rgba(0,0,0,0.6);";
+            "width:64px;text-shadow:0 1px 3px rgba(0,0,0,0.6);";
         this._timeDisplay.textContent = "00:00 / 00:00";
 
+        // 白色帧数显示（紧贴播放条上方，靠视频右边右对齐）
         this._frameDisplay = document.createElement("span");
         this._frameDisplay.style.cssText =
-            "color:#fff;font-size:10px;font-family:monospace;" +
-            "font-variant-numeric:tabular-nums;" +
-            "width:60px;text-align:right;" +
-            "text-shadow:0 1px 3px rgba(0,0,0,0.6);";
+            "color:#fff;font-size:8px;font-family:monospace;" +
+            "font-variant-numeric:tabular-nums;text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
+            "white-space:nowrap;pointer-events:none;margin-left:auto;";
         this._frameDisplay.textContent = "";
 
         timeRow.appendChild(this._timeDisplay);
@@ -302,6 +305,17 @@ export class XiaozhuguangVideoPlayer {
             "cursor:ew-resize;z-index:5;" +
             "filter:drop-shadow(0 0 4px rgba(239,68,68,0.8));";
 
+        // 红色竖线上方的帧数标签
+        this._redFrameDisplay = document.createElement("span");
+        this._redFrameDisplay.style.cssText =
+            "position:absolute;bottom:calc(100% + 2px);left:50%;transform:translateX(-50%);" +
+            "color:#FF5555;font-size:7px;font-family:monospace;" +
+            "font-variant-numeric:tabular-nums;" +
+            "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
+            "white-space:nowrap;pointer-events:none;";
+        this._redFrameDisplay.textContent = "";
+        this._loadRangeStart.appendChild(this._redFrameDisplay);
+
         // 加载区间结束标记（蓝色竖线，表示加载帧的分界，8px宽可拖拽）
         this._loadRangeEnd = document.createElement("div");
         this._loadRangeEnd.style.cssText =
@@ -310,6 +324,17 @@ export class XiaozhuguangVideoPlayer {
             "pointer-events:auto;display:none;transform:translateX(-50%);" +
             "cursor:ew-resize;z-index:5;" +
             "filter:drop-shadow(0 0 4px rgba(59,130,246,0.8));";
+
+        // 蓝色竖线上方的帧数标签
+        this._blueFrameDisplay = document.createElement("span");
+        this._blueFrameDisplay.style.cssText =
+            "position:absolute;bottom:calc(100% + 2px);left:50%;transform:translateX(-50%);" +
+            "color:#5599FF;font-size:7px;font-family:monospace;" +
+            "font-variant-numeric:tabular-nums;" +
+            "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
+            "white-space:nowrap;pointer-events:none;";
+        this._blueFrameDisplay.textContent = "";
+        this._loadRangeEnd.appendChild(this._blueFrameDisplay);
 
         this._progressBar.appendChild(this._loadRangeFill);
         this._progressBar.appendChild(this._loadRangeStart);
@@ -459,6 +484,29 @@ export class XiaozhuguangVideoPlayer {
         return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
     }
 
+    // 更新红蓝条对应的帧数显示
+    // 红=起点（跳过帧数 _skipFrames），蓝=终点（_computeEndFrame 计算结果）
+    _updateRangeDisplay() {
+        if (!this._redFrameDisplay || !this._video || !this._video.duration) {
+            if (this._redFrameDisplay) this._redFrameDisplay.textContent = "";
+            if (this._blueFrameDisplay) this._blueFrameDisplay.textContent = "";
+            return;
+        }
+        const fps = this._frameRate || 24;
+        const startFrame = this._skipFrames;
+        const endFrame = this._computeEndFrame();
+
+        // 红色标签：起点帧数（显示在红色竖杠上方）
+        this._redFrameDisplay.textContent = this._fpsDetected
+            ? `${startFrame + 1}`
+            : "";
+
+        // 蓝色标签：终点帧数（显示在蓝色竖杠上方）
+        this._blueFrameDisplay.textContent = this._fpsDetected
+            ? `${endFrame + 1}`
+            : "";
+    }
+
     _onLoadedMeta = () => {
         if (this._video.videoWidth && this._video.videoHeight) {
             this._videoRatio = this._video.videoWidth / this._video.videoHeight;
@@ -467,6 +515,8 @@ export class XiaozhuguangVideoPlayer {
         }
         this._placeholder.style.display = "none";
         this._updateLoadRangeMarkers();
+        // 元数据加载完成后更新红蓝条对应值显示
+        this._updateRangeDisplay();
         this.onLoadedMetadata?.(this);
     };
 
@@ -509,6 +559,9 @@ export class XiaozhuguangVideoPlayer {
     _updateProgressDisplay(cur, dur) {
         // 拖拽中：完全不更新视觉（参考 WhatDreamsCost：ontimeupdate 中 if(dragging) return）
         if (this._isDragging) return;
+        // 拖动红蓝杠期间：白色帧数应保持为跳过帧数+1（播放头位置=红杠位置），
+        // 不被 ontimeupdate 的旧 currentTime 覆盖
+        if (this._isDraggingMarker) return;
 
         if (dur > 0) {
             const fps = this._frameRate || 24;
@@ -533,6 +586,8 @@ export class XiaozhuguangVideoPlayer {
                 }
             }
             this._timeDisplay.textContent = `${this._formatTime(cur)} / ${this._formatTime(dur)}`;
+            // 同步更新红蓝条对应的时间码和帧数
+            this._updateRangeDisplay();
         }
     }
 
@@ -583,6 +638,15 @@ export class XiaozhuguangVideoPlayer {
         }
         // 加载失败时隐藏加载进度图
         if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
+        // 加载失败时恢复占位提示，隐藏黑色视频面，避免显示0秒黑色假视频
+        if (this._placeholder) this._placeholder.style.display = "flex";
+        if (this._videoSurface) this._videoSurface.style.display = "none";
+        if (this._video) {
+            this._video.removeAttribute("src");
+            this._video.load();
+        }
+        this._resetProgress();
+        if (this._timeDisplay) this._timeDisplay.textContent = "00:00 / 00:00";
         this.onError?.(this, e);
     };
 
@@ -665,6 +729,8 @@ export class XiaozhuguangVideoPlayer {
             if (!this._fpsDetected) this._frameDisplay.textContent = "";
             else this._frameDisplay.textContent = `${frameIdx + 1} / ${totalFrames}`;
         }
+        // 同步更新红蓝条对应的时间码和帧数
+        this._updateRangeDisplay();
         // seek 视频
         this.seek(curTime);
     }
@@ -762,13 +828,13 @@ export class XiaozhuguangVideoPlayer {
             this._progressFill.style.left = startPct + "%";
             this._progressFill.style.width = "0%";
         }
-        // 视频跳转到红杠位置
+        // 视频跳转到红杠位置（+0.5 帧偏移避免 seek 精度损失导致帧数少1）
         if (this._video) {
             const fps = this._frameRate || 24;
-            this._video.currentTime = this._skipFrames > 0 ? this._skipFrames / fps : 0;
+            this._video.currentTime = this._skipFrames > 0 ? (this._skipFrames + 0.5) / fps : 0;
             // 更新时间/帧数显示
             if (this._timeDisplay) {
-                this._timeDisplay.textContent = `${this._formatTime(this._video.currentTime)} / ${this._formatTime(this._video.duration || 0)}`;
+                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(this._video.duration || 0)}`;
             }
             if (this._frameDisplay) {
                 if (!this._fpsDetected) {
@@ -778,6 +844,8 @@ export class XiaozhuguangVideoPlayer {
                     this._frameDisplay.textContent = `${this._skipFrames + 1} / ${totalFrames}`;
                 }
             }
+            // 同步更新红蓝条对应的时间码和帧数
+            this._updateRangeDisplay();
         }
     }
 
@@ -842,6 +910,9 @@ export class XiaozhuguangVideoPlayer {
             this._video.loop = this._savedLoop;
             this._savedLoop = undefined;
         }
+
+        // 拖动结束后重置播放头到红杠位置，确保白色帧数显示为跳过帧数+1
+        this._resetPlaybackToStart();
 
         // 通知拖拽结束（isEnd=true）
         if (markerType === 'start') {
@@ -952,6 +1023,8 @@ export class XiaozhuguangVideoPlayer {
         }
         if (this._timeDisplay) this._timeDisplay.textContent = "00:00 / 00:00";
         if (this._frameDisplay) this._frameDisplay.textContent = "";
+        // 重置时清空红蓝条对应值显示
+        this._updateRangeDisplay();
     }
 
     load(src) {
@@ -1162,6 +1235,8 @@ export class XiaozhuguangVideoPlayer {
         this._frameLimit = Math.max(0, parseInt(frameLimit) || 0);
         this._updateLoadRangeMarkers();
         this._resetPlaybackToStart();
+        // 确保红蓝显示更新（即使视频未加载，_resetPlaybackToStart 内部会跳过）
+        this._updateRangeDisplay();
     }
 
     _updateLoadRangeMarkers() {
@@ -1397,6 +1472,8 @@ export class XiaozhuguangVideoPlayer {
         this._loadRangeEnd = null;
         this._loadRangeFill = null;
         this._frameDisplay = null;
+        this._redFrameDisplay = null;
+        this._blueFrameDisplay = null;
         this._loopBtn = null;
         this._placeholder = null;
         this._stage = null;

@@ -1,6 +1,43 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
+import { xzgLang } from "./xzg_i18n.js";
+
+// ═══════════════════════════════════════════════════════════════════════
+// 双语标签翻译映射
+// ═══════════════════════════════════════════════════════════════════════
+const _LABEL_MAP = {
+    "强制帧率": "Force FPS",
+    "视频": "Video",
+    "视频比例": "Aspect Ratio",
+    "自定义宽度": "Custom Width",
+    "自定义高度": "Custom Height",
+    "跳过帧数": "Skip Frames",
+    "帧数上限": "Max Frames",
+    "上传视频": "Upload Video",
+    "边长模式": "Edge Mode",
+    "边长尺寸": "Edge Size",
+    "自定义比例": "Custom Ratio",
+    "原始比例": "Original",
+    "竖屏9:16": "Portrait 9:16",
+    "竖屏3:4": "Portrait 3:4",
+    "横屏16:9": "Landscape 16:9",
+    "横屏4:3": "Landscape 4:3",
+    "等比1:1": "Square 1:1",
+    "长边": "Long Edge",
+    "短边": "Short Edge",
+    "宽度": "Width",
+    "高度": "Height",
+    "图像": "image",
+    "音频": "audio",
+    "视频信息": "video info",
+    "单击视频播放或暂停/双击视频上传": "Click to play/pause | Double-click to upload",
+};
+
+function _tr(zh) {
+    const lang = xzgLang();
+    return (lang === "en" && _LABEL_MAP[zh]) ? _LABEL_MAP[zh] : zh;
+}
 
 const VIDEO_EXTS = ["webm", "mp4", "mkv", "gif", "mov", "avi", "flv", "wmv", "m4v", "mpg", "mpeg", "ts"];
 const VIDEO_PREVIEW_WIDGET_NAME = "xzg_video_preview";
@@ -215,7 +252,10 @@ function _xzgShowComboDropdown(widget, node, event) {
     }
 
     const dropdown = document.createElement('div');
-    dropdown.className = 'xzg-fps-dropdown';
+    dropdown.className = 'xzg-fps-dropdown notranslate';
+    dropdown.setAttribute('translate', 'no');
+    dropdown.dataset.noTranslate = '1';
+    dropdown.dataset.xzgFpsDropdown = '1';
     dropdown.style.cssText = `
         position: fixed; z-index: 99999;
         left: ${Math.max(4, wx - 60)}px; top: ${wy + 4}px;
@@ -224,10 +264,18 @@ function _xzgShowComboDropdown(widget, node, event) {
         padding: 4px 0; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     `;
 
+    const createdItems = [];
     values.forEach(v => {
         const item = document.createElement('div');
+        item.className = 'notranslate';
+        item.setAttribute('translate', 'no');
+        item.dataset.noTranslate = '1';
         const displayText = widget._xzgDisplayVal ? widget._xzgDisplayVal(String(v)) : String(v);
+        // 使用 dataset 缓存原始正确值，防止被外部 MutationObserver 篡改
+        item.dataset.xzgRawValue = String(v);
+        item.dataset.xzgDisplay = displayText;
         item.textContent = displayText;
+        createdItems.push({ el: item, expected: displayText, raw: String(v) });
         const selected = String(v) === String(widget.value);
         item.style.cssText = `
             padding: 4px 16px; cursor: pointer; font-size: 13px;
@@ -261,6 +309,23 @@ function _xzgShowComboDropdown(widget, node, event) {
     document.addEventListener('pointerdown', close, true);
 
     document.body.appendChild(dropdown);
+
+    // 兜底修复：防止 PromptAssistant 或其他使用 MutationObserver 的插件
+    // 在 DOM append 后批量改写我们刚刚设置的 textContent（例如把 Custom 误改成"自定义节点"）
+    // 分别在 0ms（微任务之后）、10ms、50ms 三重修正
+    const repairIfTampered = () => {
+        if (!document.body.contains(dropdown)) return;
+        createdItems.forEach(({ el, expected }) => {
+            if (el.textContent !== expected) {
+                console.warn("[小珠光 dropdown] 检测到外部插件篡改下拉项文本，已修复:",
+                    JSON.stringify(el.textContent), "->", JSON.stringify(expected));
+                el.textContent = expected;
+            }
+        });
+    };
+    Promise.resolve().then(repairIfTampered);
+    setTimeout(repairIfTampered, 10);
+    setTimeout(repairIfTampered, 50);
 }
 
 function _xzgDrawButtonWidget(ctx, node, width, y, H) {
@@ -445,13 +510,13 @@ function _updateRatioWidgets(node) {
 
     if (isRatio) {
         wWidget.options.values = ["1", "2", "3", "4"];
-        wWidget._xzgDisplayVal = (v) => ({1:"长边",2:"短边",3:"宽度",4:"高度"})[v] || v;
+        wWidget._xzgDisplayVal = (v) => _tr(({1:"长边",2:"短边",3:"宽度",4:"高度"})[v] || v);
         wWidget.draw = _xzgDrawComboWidget;
         wWidget.mouse = _xzgFpsComboMouse;
         wWidget._xzgShowReset = false;
-        wWidget.label = "边长模式";
+        wWidget.label = _tr("边长模式");
         if (wWidget.value < 1 || wWidget.value > 4) wWidget.value = "1";
-        hWidget.label = "边长尺寸";
+        hWidget.label = _tr("边长尺寸");
         hWidget.draw = _xzgDrawWidget;
         hWidget.mouse = _xzgWidgetNumberMouse;
         hWidget._xzgShowReset = false;
@@ -461,12 +526,12 @@ function _updateRatioWidgets(node) {
         wWidget.draw = _xzgDrawWidget;
         wWidget.mouse = _xzgWidgetNumberWithResetMouse;
         wWidget._xzgShowReset = true;
-        wWidget.label = "自定义宽度";
+        wWidget.label = _tr("自定义宽度");
         wWidget.value = 0;
         hWidget.draw = _xzgDrawWidget;
         hWidget.mouse = _xzgWidgetNumberWithResetMouse;
         hWidget._xzgShowReset = true;
-        hWidget.label = "自定义高度";
+        hWidget.label = _tr("自定义高度");
         hWidget.value = 0;
     }
     node.setDirtyCanvas?.(true, true);
@@ -481,31 +546,39 @@ function _applyWidgetStyles(node) {
             w._xzgShowReset = true;
             w.draw = _xzgDrawWidget;
             w.mouse = _xzgWidgetNumberWithResetMouse;
+            w.label = _tr("强制帧率");
         } else if (w.name === '视频') {
             w.draw = _xzgDrawComboWidget;
+            w.label = _tr("视频");
         } else if (w.name === '视频比例') {
             w.draw = _xzgDrawComboWidget;
             w.mouse = _xzgFpsComboMouse;
             w.value = String(w.value ?? "自定义比例");
             w.options = w.options || {};
             w.options.values = ["自定义比例", "原始比例", "竖屏9:16", "竖屏3:4", "横屏16:9", "横屏4:3", "等比1:1"];
+            w._xzgDisplayVal = (v) => _tr(String(v));
+            w.label = _tr("视频比例");
         } else if (w.name === '上传视频') {
             w.draw = _xzgDrawButtonWidget;
+            w.label = _tr("上传视频");
         } else if (w.name === '跳过帧数') {
             w._xzgValueColor = '#FF4444';
             w._xzgShowReset = true;
             w.draw = _xzgDrawWidget;
             w.mouse = _xzgWidgetNumberWithLaserMouse;
+            w.label = _tr("跳过帧数");
         } else if (w.name === '帧数上限') {
             w._xzgValueColor = '#6699FF';
             w._xzgShowReset = true;
             w.draw = _xzgDrawWidget;
             w.mouse = _xzgWidgetNumberWithLaserMouse;
+            w.label = _tr("帧数上限");
         } else if (w.name === '自定义宽度' || w.name === '自定义高度') {
             w._xzgValueColor = w._xzgValueColor || '#fff';
             w._xzgShowReset = true;
             w.draw = _xzgDrawWidget;
             w.mouse = _xzgWidgetNumberWithResetMouse;
+            w.label = _tr(w.name);
         }
     }
 }
@@ -658,19 +731,36 @@ function bindVideoLoaderInteractions(node) {
     playerContainer.style.position = "relative";
     playerContainer.style.pointerEvents = "none";
 
+    // Bypass 紫色覆盖层
+    const bypassOverlay = document.createElement("div");
+    bypassOverlay.style.cssText =
+        "position:absolute;inset:0;background-color:rgba(106,36,106,0.6);pointer-events:none;z-index:100;display:none;";
+    playerContainer.appendChild(bypassOverlay);
+
+    const updateBypassState = () => {
+        if (node.mode === 4) {
+            bypassOverlay.style.display = "block";
+        } else {
+            bypassOverlay.style.display = "none";
+        }
+    };
+    updateBypassState();
+
+    node._xzgUpdateBypassState = updateBypassState;
+
     node._xzgSourceFps = null;
 
     const updateFpsLabel = (sourceFps) => {
         const fpsWidget = node.widgets?.find(w => w.name === "强制帧率");
         if (!fpsWidget) return;
-        fpsWidget.label = "强制帧率";
+        fpsWidget.label = _tr("强制帧率");
         node.setDirtyCanvas?.(true, true);
     };
 
     const updateFrameLimitLabel = () => {
         const limitWidget = node.widgets?.find(w => w.name === "帧数上限");
         if (!limitWidget) return;
-        limitWidget.label = "帧数上限";
+        limitWidget.label = _tr("帧数上限");
         node.setDirtyCanvas?.(true, true);
     };
 
@@ -682,10 +772,10 @@ function bindVideoLoaderInteractions(node) {
         const hWidget = node.widgets?.find(w => w.name === "自定义高度");
         const isRatio = ratioWidget?.value !== "自定义比例";
         if (wWidget) {
-            wWidget.label = isRatio ? "边长模式" : "自定义宽度";
+            wWidget.label = isRatio ? _tr("边长模式") : _tr("自定义宽度");
         }
         if (hWidget) {
-            hWidget.label = isRatio ? "边长尺寸" : "自定义高度";
+            hWidget.label = isRatio ? _tr("边长尺寸") : _tr("自定义高度");
         }
         updateFrameLimitLabel();
     };
@@ -804,7 +894,7 @@ function bindVideoLoaderInteractions(node) {
 
     // 视频播放区域下方的小字描述
     const hintText = document.createElement("div");
-    hintText.textContent = "单击视频播放或暂停/双击视频上传";
+    hintText.textContent = _tr("单击视频播放或暂停/双击视频上传");
     hintText.style.cssText = `
         width: 100%; text-align: center; font-size: 11px; color: #666;
         padding: 4px 0 2px; pointer-events: none;
@@ -1107,7 +1197,7 @@ app.registerExtension({
                     inp[1].widgetType ??= "XZG" + inp[0];
                 }
             }
-            const correctOutputs = ["图像", "音频", "视频信息"];
+            const correctOutputs = [_tr("图像"), _tr("音频"), _tr("视频信息")];
             if (nodeData.outputs && Array.isArray(nodeData.outputs)) {
                 nodeData.outputs.forEach((out, i) => {
                     if (correctOutputs[i]) out.name = correctOutputs[i];
@@ -1131,6 +1221,15 @@ app.registerExtension({
                     });
                 }
                 return r;
+            };
+
+            // 绕过状态更新（画布重绘时同步）
+            const origOnDrawBackground = nodeType.prototype.onDrawBackground;
+            nodeType.prototype.onDrawBackground = function (ctx) {
+                if (this._xzgVideoPlayer && this._xzgUpdateBypassState) {
+                    this._xzgUpdateBypassState();
+                }
+                return origOnDrawBackground?.apply(this, arguments);
             };
         }
     },

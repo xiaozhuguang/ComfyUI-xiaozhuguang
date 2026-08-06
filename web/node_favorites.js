@@ -6330,6 +6330,7 @@ app.registerExtension({
                 const rainbowSpeed = p.rainbowSpeed ?? 30;
                 const lines = text.split("\n");
                 const lineHeight = fontSize * (p.lineHeight || 1);
+                const isBypassed = this.mode === 4; // LiteGraph.BYPASS
                 ctx.save();
 
                 if (p.bgEnabled && p.bgColor && p.bgColor !== "transparent") {
@@ -6498,6 +6499,12 @@ app.registerExtension({
                         ctx.textAlign = savedAlign;
                     });
                 });
+
+                // 绕过状态：紫色半透明覆盖层
+                if (isBypassed) {
+                    ctx.fillStyle = "rgba(106, 36, 106, 0.5)";
+                    ctx.fillRect(0, 0, w, h);
+                }
 
                 ctx.restore();
             };

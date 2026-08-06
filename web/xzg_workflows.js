@@ -1420,7 +1420,7 @@ class XZGWorkflowsManager {
                 overflow: hidden;
             }
             .xzg-wf-left-col {
-                width: 100px;
+                width: 80px;
                 border-right: 1px solid var(--border-color, #444);
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
                 flex-shrink: 0;
@@ -1595,7 +1595,7 @@ class XZGWorkflowsManager {
                 flex: 1;
                 display: flex;
                 flex-direction: column;
-                min-width: 0;
+                min-width: 300px;
                 min-height: 0;
             }
             .xzg-wf-list-header {
@@ -2704,7 +2704,7 @@ class XZGWorkflowsManager {
         let startX, startWidth;
 
         const savedWidth = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
-        if (savedWidth && savedWidth >= 80 && savedWidth <= 300) {
+        if (savedWidth && savedWidth >= 80 && savedWidth <= 500) {
             leftCol.style.width = savedWidth + "px";
         }
 
@@ -2717,7 +2717,7 @@ class XZGWorkflowsManager {
 
         document.addEventListener("mousemove", (e) => {
             if (!isResizing) return;
-            const newWidth = Math.max(80, Math.min(300, startWidth + (e.clientX - startX)));
+            const newWidth = Math.max(80, Math.min(500, startWidth + (e.clientX - startX)));
             leftCol.style.width = newWidth + "px";
         });
 
@@ -3536,9 +3536,26 @@ class XZGWorkflowsManager {
                 this.saveMeta();
             }
 
-            await this.loadWorkflows();
+            // 同步删除 ComfyUI 原生工作流存储（IndexedDB），避免 URL 切换时恢复
             const wfStore = app.extensionManager?.workflow;
-            if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
+            if (wfStore) {
+                const officialPath = 'workflows/' + wf.path + '.json';
+                try {
+                    if (typeof wfStore.deleteWorkflow === 'function') {
+                        await wfStore.deleteWorkflow(officialPath);
+                    } else if (wfStore.getWorkflowByPath) {
+                        const persistedWf = wfStore.getWorkflowByPath(officialPath);
+                        if (persistedWf && typeof persistedWf.delete === 'function') {
+                            await persistedWf.delete();
+                        }
+                    }
+                } catch (e) {
+                    console.warn("[小珠光] 同步删除原生工作流失败:", e);
+                }
+                try { await wfStore.loadWorkflows(); } catch (e) {}
+            }
+
+            await this.loadWorkflows();
         } catch (e) {
             alert(xzgT('删除失败: ','Delete failed: ') + e.message);
         }

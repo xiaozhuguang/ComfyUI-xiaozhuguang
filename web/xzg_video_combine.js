@@ -1,6 +1,30 @@
-﻿import { app } from "../../scripts/app.js";
+import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
+import { xzgLang } from "./xzg_i18n.js";
+
+// ═══════════════════════════════════════════════════════════════════════
+// 小珠光视频保存 - 双语翻译表
+// ═══════════════════════════════════════════════════════════════════════
+const _LABEL_MAP = {
+    "图像": "Images",
+    "帧率": "Frame Rate",
+    "文件名前缀": "Filename Prefix",
+    "格式": "Format",
+    "CRF": "CRF",
+    "模式": "Mode",
+    "音频": "Audio",
+    // 下拉值翻译
+    "保存": "Save",
+    "预览": "Preview",
+    // CRF 注释翻译
+    "数值越大质量越差 默认19": "Higher = lower quality, default 19",
+};
+
+function _tr(zh) {
+    const lang = xzgLang();
+    return (lang === "en" && _LABEL_MAP[zh]) ? _LABEL_MAP[zh] : zh;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // 自定义数值 widget（VHS 同款方案：从源头创建 canvas 不认识的 widget 类型）
@@ -65,7 +89,8 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(this.label || this.name || '', pad + 6, y + H / 2);
+    const labelText = this._xzgLabel ? this._xzgLabel() : (this.label || this.name || '');
+    ctx.fillText(labelText, pad + 6, y + H / 2);
     const valueText = String(this.value);
     ctx.fillStyle = this._xzgValueColor || '#fff';
     ctx.font = '14px sans-serif';
@@ -89,7 +114,7 @@ function _xzgDrawComboWidget(ctx, node, width, y, H) {
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const labelText = this.label || this.name || '';
+    const labelText = this._xzgLabel ? this._xzgLabel() : (this.label || this.name || '');
     const labelMaxW = width - pad * 2 - 54;
     if (ctx.measureText(labelText).width > labelMaxW) {
         let truncated = labelText;
@@ -157,7 +182,10 @@ function _xzgShowComboDropdown(widget, node, event) {
     }
 
     const dropdown = document.createElement('div');
-    dropdown.className = 'xzg-fps-dropdown';
+    dropdown.className = 'xzg-fps-dropdown notranslate';
+    dropdown.setAttribute('translate', 'no');
+    dropdown.dataset.noTranslate = '1';
+    dropdown.dataset.xzgFpsDropdown = '1';
     dropdown.style.cssText = `
         position: fixed; z-index: 99999;
         left: ${Math.max(4, wx - 60)}px; top: ${wy + 4}px;
@@ -166,10 +194,17 @@ function _xzgShowComboDropdown(widget, node, event) {
         padding: 4px 0; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     `;
 
+    const createdItems = [];
     values.forEach(v => {
         const item = document.createElement('div');
+        item.className = 'notranslate';
+        item.setAttribute('translate', 'no');
+        item.dataset.noTranslate = '1';
         const displayText = widget._xzgDisplayVal ? widget._xzgDisplayVal(String(v)) : String(v);
+        item.dataset.xzgRawValue = String(v);
+        item.dataset.xzgDisplay = displayText;
         item.textContent = displayText;
+        createdItems.push({ el: item, expected: displayText, raw: String(v) });
         const selected = String(v) === String(widget.value);
         item.style.cssText = `
             padding: 4px 16px; cursor: pointer; font-size: 13px;
@@ -188,6 +223,21 @@ function _xzgShowComboDropdown(widget, node, event) {
         };
         dropdown.appendChild(item);
     });
+
+    // 兜底：对抗 PromptAssistant 等外部 MutationObserver 篡改下拉文字
+    const repairIfTampered = () => {
+        if (!document.body.contains(dropdown)) return;
+        createdItems.forEach(({ el, expected }) => {
+            if (el.textContent !== expected) {
+                console.warn("[小珠光 video_save dropdown] 检测到外部插件篡改下拉项文本，已修复:",
+                    JSON.stringify(el.textContent), "->", JSON.stringify(expected));
+                el.textContent = expected;
+            }
+        });
+    };
+    Promise.resolve().then(repairIfTampered);
+    setTimeout(repairIfTampered, 10);
+    setTimeout(repairIfTampered, 50);
 
     dropdown.addEventListener('pointerdown', (e) => e.stopPropagation());
 
@@ -303,9 +353,25 @@ app.registerExtension({
             playerContainer.style.position = "relative";
             playerContainer.style.pointerEvents = "none";
 
+            // Bypass 紫色覆盖层
+            const bypassOverlay = document.createElement("div");
+            bypassOverlay.style.cssText =
+                "position:absolute;inset:0;background-color:rgba(106,36,106,0.6);pointer-events:none;z-index:100;display:none;";
+            playerContainer.appendChild(bypassOverlay);
+
+            const updateBypassState = () => {
+                if (node.mode === 4) {
+                    bypassOverlay.style.display = "block";
+                } else {
+                    bypassOverlay.style.display = "none";
+                }
+            };
+            updateBypassState();
+            node._xzgUpdateBypassState = updateBypassState;
+
             const player = new XiaozhuguangVideoPlayer({
                 container: playerContainer,
-                placeholderText: "",
+                placeholderText: "🎬 暂无视频",
                 onSaveToDesktop: () => {
                     const url = player.getSrc();
                     if (!url) return;
@@ -437,16 +503,24 @@ app.registerExtension({
 
             _xzgPatchCanvasPrompt();
 
-            // 统一渲染风格：combo 用圆角 draw
+            // 统一渲染风格：combo 用圆角 draw；所有 widget 加双语 label / value 显示
             for (const w of this.widgets || []) {
+                // 给每个 widget 绑定动态双语 label（随语言切换）
+                if (w.name === '帧率' || w.name === '文件名前缀' || w.name === '格式' || w.name === 'CRF' || w.name === '模式') {
+                    w._xzgLabel = () => _tr(w.name);
+                }
                 if (w.name === '格式') {
                     w.draw = _xzgDrawComboWidget;
                     w.mouse = _xzgFpsComboMouse;
                     w.value = String(w.value ?? "mp4");
                     w.options = w.options || {};
                     w.options.values = ["mp4", "webm", "gif"];
+                    // 格式：保持英文原样（技术名词不翻译）
+                    w._xzgDisplayVal = (v) => String(v);
                 } else if (w.name === '帧率') {
+                    w.draw = _xzgDrawWidget;
                     w._xzgValueColor = '#fff';
+                    if (typeof w.mouse !== 'function') w.mouse = _xzgWidgetNumberMouse;
                 } else if (w.name === '文件名前缀') {
                     // STRING 文本框：圆角矩形 + 标签 + 值
                     w.draw = _xzgDrawWidget;
@@ -467,7 +541,7 @@ app.registerExtension({
                         ctx.font = '12px sans-serif';
                         ctx.textAlign = 'left';
                         ctx.textBaseline = 'middle';
-                        ctx.fillText(this.label || this.name || '', pad + 6, y + H / 2);
+                        ctx.fillText((this._xzgLabel ? this._xzgLabel() : (this.label || this.name || '')), pad + 6, y + H / 2);
                         // 右侧数值
                         const valueText = String(this.value);
                         ctx.font = '14px sans-serif';
@@ -479,13 +553,14 @@ app.registerExtension({
                         ctx.fillStyle = '#555';
                         ctx.font = '10px sans-serif';
                         ctx.textAlign = 'right';
-                        ctx.fillText('数值越大质量越差 默认19', width - pad - 6 - vw - 10, y + H / 2);
+                        ctx.fillText(_tr('数值越大质量越差 默认19'), width - pad - 6 - vw - 10, y + H / 2);
                     };
                 } else if (w.name === '模式') {
                     // 模式：保存/预览 切换开关（与音频保存一致）
                     w.value = String(w.value ?? "保存");
                     w.options = w.options || {};
                     w.options.values = ["保存", "预览"];
+                    w._xzgDisplayVal = (v) => _tr(String(v));
                     w.draw = function(ctx, nd, width, y, H) {
                         this._xzgDrawW = width;
                         const pad = 16, r = 6, wr = width - pad * 2;
@@ -500,13 +575,14 @@ app.registerExtension({
                         ctx.font = '12px sans-serif';
                         ctx.textAlign = 'left';
                         ctx.textBaseline = 'middle';
-                        ctx.fillText('模式', pad + 6, y + H / 2);
+                        ctx.fillText((this._xzgLabel ? this._xzgLabel() : '模式'), pad + 6, y + H / 2);
                         // 右侧状态：保存=金色，预览=蓝色
                         const isSave = this.value !== '预览';
+                        const dispVal = this._xzgDisplayVal ? this._xzgDisplayVal(this.value || '保存') : (this.value || '保存');
                         ctx.fillStyle = isSave ? '#FFD700' : '#88ccff';
                         ctx.font = '13px sans-serif';
                         ctx.textAlign = 'right';
-                        ctx.fillText(this.value || '保存', width - pad - 6, y + H / 2);
+                        ctx.fillText(dispVal, width - pad - 6, y + H / 2);
                     };
                     w.mouse = function(event, [x, y], node) {
                         if (event.type === 'pointerdown') return false;
@@ -522,6 +598,15 @@ app.registerExtension({
             }
 
             requestAnimationFrame(() => player.resize());
+        };
+
+        // 绕过状态更新（画布重绘时同步）
+        const origOnDrawBackground = nodeType.prototype.onDrawBackground;
+        nodeType.prototype.onDrawBackground = function (ctx) {
+            if (this._xzgUpdateBypassState) {
+                this._xzgUpdateBypassState();
+            }
+            return origOnDrawBackground?.apply(this, arguments);
         };
     },
 });

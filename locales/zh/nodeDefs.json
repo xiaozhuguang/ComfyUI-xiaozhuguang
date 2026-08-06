@@ -52,6 +52,18 @@
       "0": { "name": "输出" }
     }
   },
+  "XiaozhuguangCompareDataBlock": {
+    "display_name": "小珠光比较大小-数据阻断",
+    "inputs": {
+      "输入": { "name": "输入" },
+      "输入整数": { "name": "输入整数" },
+      "比较方式": { "name": "比较方式" },
+      "比较值": { "name": "比较值" }
+    },
+    "outputs": {
+      "0": { "name": "输出" }
+    }
+  },
   "XiaozhuguangTitle": {
     "display_name": "小珠光标题"
   },
@@ -212,11 +224,11 @@
     "inputs": {
       "视频": { "name": "视频" },
       "强制帧率": { "name": "强制帧率" },
+      "视频比例": { "name": "视频比例" },
       "自定义宽度": { "name": "自定义宽度" },
       "自定义高度": { "name": "自定义高度" },
       "跳过帧数": { "name": "跳过帧数" },
-      "帧数上限": { "name": "帧数上限" },
-      "VAE": { "name": "VAE" }
+      "帧数上限": { "name": "帧数上限" }
     },
     "outputs": {
       "0": { "name": "图像" },
@@ -295,6 +307,42 @@
     },
     "outputs": {
       "0": { "name": "文件路径" }
+    }
+  },
+  "XiaozhuguangNinimaxH3Prompt": {
+    "display_name": "小珠光 MiniMax H3 提示词",
+    "inputs": {
+      "qwen_model": { "name": "Qwen模型" },
+      "user_prompt": { "name": "用户提示词" },
+      "generation_mode": { "name": "生成模式" },
+      "style_preset": { "name": "风格预设" },
+      "seed": { "name": "种子" },
+      "unload_after": { "name": "卸载模型" },
+      "image_1": { "name": "Image_1" },
+      "image_2": { "name": "Image_2" },
+      "image_3": { "name": "Image_3" },
+      "image_4": { "name": "Image_4" },
+      "image_5": { "name": "Image_5" },
+      "image_6": { "name": "Image_6" },
+      "image_7": { "name": "Image_7" },
+      "image_8": { "name": "Image_8" },
+      "image_9": { "name": "Image_9" }
+    },
+    "outputs": {
+      "0": { "name": "提示词输出" }
+    }
+  },
+  "XiaozhuguangQwenModelLoader": {
+    "display_name": "小珠光 Qwen 模型加载器",
+    "inputs": {
+      "model_family": { "name": "模型系列" },
+      "model_file": { "name": "模型文件" },
+      "mmproj": { "name": "多模态投影" },
+      "context_length": { "name": "上下文长度" },
+      "gpu_layers": { "name": "GPU层数" }
+    },
+    "outputs": {
+      "0": { "name": "Qwen模型" }
     }
   }
 }

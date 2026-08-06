@@ -52,6 +52,18 @@
       "0": { "name": "output" }
     }
   },
+  "XiaozhuguangCompareDataBlock": {
+    "display_name": "Xiaozhuguang Compare Data Block",
+    "inputs": {
+      "输入": { "name": "input" },
+      "输入整数": { "name": "input integer" },
+      "比较方式": { "name": "comparison" },
+      "比较值": { "name": "compare value" }
+    },
+    "outputs": {
+      "0": { "name": "output" }
+    }
+  },
   "XiaozhuguangTitle": {
     "display_name": "Xiaozhuguang Title"
   },
@@ -212,11 +224,11 @@
     "inputs": {
       "视频": { "name": "video" },
       "强制帧率": { "name": "force fps" },
+      "视频比例": { "name": "aspect ratio" },
       "自定义宽度": { "name": "custom width" },
       "自定义高度": { "name": "custom height" },
       "跳过帧数": { "name": "skip frames" },
-      "帧数上限": { "name": "max frames" },
-      "VAE": { "name": "VAE" }
+      "帧数上限": { "name": "max frames" }
     },
     "outputs": {
       "0": { "name": "image" },
@@ -294,6 +306,42 @@
     },
     "outputs": {
       "0": { "name": "file_path" }
+    }
+  },
+  "XiaozhuguangNinimaxH3Prompt": {
+    "display_name": "XZG MiniMax H3 Prompt",
+    "inputs": {
+      "qwen_model": { "name": "Qwen Model" },
+      "user_prompt": { "name": "User Prompt" },
+      "generation_mode": { "name": "Generation Mode" },
+      "style_preset": { "name": "Style Preset" },
+      "seed": { "name": "Seed" },
+      "unload_after": { "name": "Unload Model" },
+      "image_1": { "name": "Image_1" },
+      "image_2": { "name": "Image_2" },
+      "image_3": { "name": "Image_3" },
+      "image_4": { "name": "Image_4" },
+      "image_5": { "name": "Image_5" },
+      "image_6": { "name": "Image_6" },
+      "image_7": { "name": "Image_7" },
+      "image_8": { "name": "Image_8" },
+      "image_9": { "name": "Image_9" }
+    },
+    "outputs": {
+      "0": { "name": "Prompt Output" }
+    }
+  },
+  "XiaozhuguangQwenModelLoader": {
+    "display_name": "XZG Qwen Model Loader",
+    "inputs": {
+      "model_family": { "name": "Model Family" },
+      "model_file": { "name": "Model File" },
+      "mmproj": { "name": "MMProj" },
+      "context_length": { "name": "Context Length" },
+      "gpu_layers": { "name": "GPU Layers" }
+    },
+    "outputs": {
+      "0": { "name": "Qwen Model" }
     }
   }
 }

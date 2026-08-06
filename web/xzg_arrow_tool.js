@@ -2521,6 +2521,14 @@ function setupCanvasDoubleClick() {
 function setupLiteGraphArrowClick() {
     if (!litegraphCanvas) return;
 
+    // 追踪鼠标在画布上的坐标（面板关闭时 overlay 不接收事件，需在 LiteGraph 画布上追踪）
+    litegraphCanvas.addEventListener("pointermove", (e) => {
+        const rect = litegraphCanvas.getBoundingClientRect();
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        _lastMouseCanvasPos = screenToCanvas(screenX, screenY);
+    });
+
     litegraphCanvas.addEventListener("pointerdown", (e) => {
         // 模式激活时由覆盖层处理，无需在此处理
         if (isArrowModeActive) return;
@@ -2529,6 +2537,8 @@ function setupLiteGraphArrowClick() {
         const screenX = e.clientX - rect.left;
         const screenY = e.clientY - rect.top;
         const canvasPos = screenToCanvas(screenX, screenY);
+        // 同步鼠标坐标
+        _lastMouseCanvasPos = { x: canvasPos.x, y: canvasPos.y };
         const hitIndex = hitTestShape(canvasPos.x, canvasPos.y);
 
         if (hitIndex >= 0) {
@@ -2870,6 +2880,8 @@ function handlePointerMove(e) {
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const canvasPos = screenToCanvas(screenX, screenY);
+    // 追踪鼠标在画布上的坐标，供粘贴时定位使用
+    _lastMouseCanvasPos = { x: canvasPos.x, y: canvasPos.y };
 
     // 框选中：更新框选矩形
     if (_boxSelecting && _boxSelectStart) {
@@ -3495,6 +3507,86 @@ function deleteSelectedArrow() {
     recordState(xzgT(`删除${count}个箭头`, `Delete ${count} arrows`));
     renderArrows();
     updateToolbarState();
+}
+
+// ============================================================================
+// 复制 / 粘贴
+// ============================================================================
+
+// 剪贴板：存储复制的箭头深拷贝
+let _arrowClipboard = null;
+// 最后一次鼠标在画布上的坐标（画布坐标系，非屏幕坐标）
+let _lastMouseCanvasPos = null;
+
+// 深拷贝单个箭头对象（包含所有位置字段：start/end/points/control）
+function _cloneArrow(arrow) {
+    const copy = JSON.parse(JSON.stringify(arrow));
+    return copy;
+}
+
+// 偏移箭头的所有位置字段
+function _offsetArrow(arrow, dx, dy) {
+    if (arrow.start) { arrow.start.x += dx; arrow.start.y += dy; }
+    if (arrow.end) { arrow.end.x += dx; arrow.end.y += dy; }
+    if (arrow.control) { arrow.control.x += dx; arrow.control.y += dy; }
+    if (arrow.points && Array.isArray(arrow.points)) {
+        for (const p of arrow.points) { p.x += dx; p.y += dy; }
+    }
+    return arrow;
+}
+
+// 计算多个箭头的整体包围盒中心
+function _calcClipboardCenter(arrowList) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const a of arrowList) {
+        const b = getShapeBounds(a);
+        if (!b) continue;
+        if (b.minX < minX) minX = b.minX;
+        if (b.minY < minY) minY = b.minY;
+        if (b.maxX > maxX) maxX = b.maxX;
+        if (b.maxY > maxY) maxY = b.maxY;
+    }
+    if (minX === Infinity) return null;
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+}
+
+function copySelectedArrows() {
+    if (!hasSelection()) return;
+    const indices = getSelectedIndices().sort((a, b) => a - b); // 从小到大排序，保持顺序
+    _arrowClipboard = indices.map(idx => _cloneArrow(arrows[idx]));
+    const count = _arrowClipboard.length;
+    console.log(`${LOG_PREFIX} 复制 ${count} 个箭头到剪贴板`);
+}
+
+function pasteArrows() {
+    if (!_arrowClipboard || _arrowClipboard.length === 0) return;
+    clearSelection();
+    // 计算偏移：优先用鼠标位置作为粘贴中心；无鼠标位置时回退到固定偏移
+    let dx = 20, dy = 20;
+    const clipCenter = _calcClipboardCenter(_arrowClipboard);
+    if (clipCenter && _lastMouseCanvasPos) {
+        // 让剪贴板内容的包围盒中心对齐到鼠标位置
+        dx = _lastMouseCanvasPos.x - clipCenter.x;
+        dy = _lastMouseCanvasPos.y - clipCenter.y;
+    }
+    const newIndices = [];
+    for (const arrowData of _arrowClipboard) {
+        const copy = _cloneArrow(arrowData);
+        _offsetArrow(copy, dx, dy);
+        arrows.push(copy);
+        newIndices.push(arrows.length - 1);
+    }
+    // 选中新粘贴的箭头
+    for (const idx of newIndices) {
+        selectedArrowIndices.add(idx);
+    }
+    const count = newIndices.length;
+    recordState(xzgT(`粘贴${count}个箭头`, `Paste ${count} arrows`));
+    renderArrows();
+    updateToolbarState();
+    updateTransformSliders();
+    updateStyleSliders();
+    console.log(`${LOG_PREFIX} 粘贴 ${count} 个箭头（偏移 dx=${dx.toFixed(1)}, dy=${dy.toFixed(1)}）`);
 }
 
 // 变换函数（旋转手柄已替代旋转滑条，保留空函数兼容调用）
@@ -5852,6 +5944,25 @@ function setupKeyboardShortcut() {
             // Delete/Backspace 删除选中箭头
             if ((e.key === "Delete" || e.key === "Backspace") && hasSelection()) {
                 deleteSelectedArrow();
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            // Ctrl+C 复制选中箭头（箭头模式激活时拦截，避免触发 ComfyUI 节点复制）
+            if ((e.key === "c" || e.key === "C") && (e.ctrlKey || e.metaKey) && hasSelection()) {
+                copySelectedArrows();
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            // Ctrl+V 粘贴箭头（箭头模式激活时拦截，避免触发 ComfyUI 节点粘贴）
+            if ((e.key === "v" || e.key === "V") && (e.ctrlKey || e.metaKey) && _arrowClipboard && _arrowClipboard.length > 0) {
+                pasteArrows();
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            // Ctrl+D 原地复制（复制并立即粘贴）
+            if ((e.key === "d" || e.key === "D") && (e.ctrlKey || e.metaKey) && hasSelection()) {
+                copySelectedArrows();
+                pasteArrows();
                 e.preventDefault();
                 e.stopPropagation();
             }
