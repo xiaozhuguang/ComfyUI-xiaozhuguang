@@ -155,7 +155,7 @@ non_diegetic_music: ...
 Image alignment instructions (must be the first line, followed by one blank line):
 
 - I2VA: `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.`
-- FL2VA: `How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video.`
+- FL2VA: `How the reference pictures align with the target video — <Picture 1> (from Shot 1) aligns with the 0.00-second mark of the target video; <Picture 2> (from Shot N) aligns with the S.SS-second mark of the target video.`
 - L2VA: `How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.`
 
 ## 3. Writing the Multimodal Description
@@ -747,6 +747,9 @@ _GEN_MODE_ZH_TO_EN = {
 # ── 生成模式全部可选值（中英文合并，兼容中英文模式下保存的工作流） ──
 _GEN_MODE_VALUES = list(_GEN_MODE_ZH_TO_EN.keys()) + list(_GEN_MODE_ZH_TO_EN.values())
 
+# ── 合法的英文生成模式集合（用于防错校验） ──
+_GEN_MODE_EN_VALUES = set(_GEN_MODE_ZH_TO_EN.values())
+
 
 def _xzg_build_system_prompt(output_language, style_preset=None):
     """根据语言选项和风格预设动态构建系统提示词。"""
@@ -836,7 +839,7 @@ class XiaozhuguangNinimaxH3Prompt:
         mode_hints = {
             "Text to Video (T2VA)": "Current mode: T2VA (Text to Video). No reference materials. Build the complete audiovisual timeline from text. Begin directly with the three core fields — no alignment instruction. Ensure the prompt contains detailed subject appearance, scene details, action descriptions, and style.",
             "Image to Video (I2VA)": "Current mode: I2VA (Image to Video). First-frame instruction + T2VA body. The user will upload images. Use the first-frame alignment instruction: 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.' Develop forward from the first frame. If two images are provided, treat as first frame + last frame (FL2VA).",
-            "First+Last Frame (FL2VA)": "Current mode: FL2VA (First+Last Frame). T2VA body + first-and-last-frame instruction. Picture 1 is the opening, Picture 2 is the ending. Describe the continuous path connecting them. Use alignment instruction: 'How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video.' Focus on how the subject moves, poses change, composition evolves. Generally favor a single shot so the model can interpolate continuously.",
+            "First+Last Frame (FL2VA)": "Current mode: FL2VA (First+Last Frame). T2VA body + first-and-last-frame instruction. Picture 1 is the opening, Picture 2 is the ending. Describe the continuous path connecting them. Use alignment instruction: 'How the reference pictures align with the target video — <Picture 1> (from Shot 1) aligns with the 0.00-second mark of the target video; <Picture 2> (from Shot N) aligns with the S.SS-second mark of the target video.' Focus on how the subject moves, poses change, composition evolves. Generally favor a single shot so the model can interpolate continuously.",
             "Last Frame (L2VA)": "Current mode: L2VA (Last Frame). T2VA body + last-frame instruction. Picture 1 is the final frame, belonging to the last [Shot N]. Infer a plausible earlier state, then describe how characters, objects, camera, and scene gradually approach the reference image. Use alignment instruction: 'How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.' Recommended structure: plausible preceding state → explicit action/transition → gradual convergence in final shot → last-frame landing.",
             "Full Reference (Ref2VA)": "Current mode: Ref2VA (Full Reference). The user may upload character images, action videos, scene images, music, etc. Use the full-reference six-section format (see Section 6 of the system prompt): subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Key rules: (1) Define reference labels <Subject N>, <Picture N>, <Video N>, <Audio N> in subject_definitions — each label keeps the same meaning across all sections. (2) summary begins with a task-type prefix: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference — combine with ' + ' when multiple apply. (3) retention_analysis uses markers: visible content → fully_preserved / partially_preserved / attribute_transfer / weak_reference; audio → fully_copy / partially_copy / reference / weak_reference. (4) The main field is detailed_description (NOT integrated_multimodal_description), 350-500 English words for generation tasks. Establish style in 1-2 sentences BEFORE [Shot 1]. Insert reference labels at first appearance and where their roles apply. (5) When a referenced subject speaks, write <Subject N> (Sx). No alignment instruction needed.",
         }
@@ -975,8 +978,14 @@ class XiaozhuguangNinimaxH3Prompt:
         # 根据语言选项和风格预设动态构建系统提示词
         # 支持英文名反向映射（JS 端切换英文时传回英文名）
         style_preset = _STYLE_PRESET_EN_TO_ZH.get(style_preset, style_preset)
-        # 支持中文名反向映射（JS 端切换中文时传回中文名）
-        generation_mode = _GEN_MODE_ZH_TO_EN.get(generation_mode, generation_mode)
+        # 防错校验：generation_mode 必须原样为合法英文值（不接受中文名映射）
+        if generation_mode not in _GEN_MODE_EN_VALUES:
+            raise ValueError(
+                f"Invalid generation_mode: {generation_mode!r}. "
+                f"Must be one of: {sorted(_GEN_MODE_EN_VALUES)}.\n"
+                f"生成模式无效：{generation_mode!r}，请使用以下合法值之一："
+                f"{sorted(_GEN_MODE_EN_VALUES)}"
+            )
         preset = None if style_preset in ("无 (默认)", "None (Default)") else style_preset
         system_prompt = _xzg_build_system_prompt(output_language, preset)
         if preset:

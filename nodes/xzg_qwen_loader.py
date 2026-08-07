@@ -4,6 +4,159 @@
 输出 BSAI_QWEN_MODEL 类型，与 BSAI 插件兼容。
 """
 
+# ---------------------------------------------------------------------------
+# DLL bootstrap: two layers of defence on Win10+/Python 3.8+:
+#   1. os.add_dll_directory() — official per-process DLL search path
+#      (bypasses PATH ordering and "SafeDllSearchMode" quirks)
+#   2. PATH prepend — fallback for LoadLibrary("basename.dll") callers that
+#      don't use AddDllDirectory (older extensions / ctypes CDLL).
+# llama-cpp-python ships ggml.dll / llama.dll under site-packages/llama_cpp/{bin,lib}
+# and they often can't resolve their own transitive deps (c10 / CUDA cudart /
+# VC++ CRT / libiomp5md) from the default ComfyUI launcher PATH. Register all
+# likely dirs before `import llama_cpp` so the loader can resolve them.
+# ---------------------------------------------------------------------------
+import os as _xzg_os
+import sys as _xzg_sys
+def _xzg_add_dll_dir(p: str) -> None:
+    if not isinstance(p, str) or not p or not _xzg_os.path.isdir(p):
+        return
+    p = _xzg_os.path.abspath(p)
+    # Layer 1: official Win10+ DLL search directory
+    try:
+        add_dll_dir = getattr(_xzg_os, "add_dll_directory", None)
+        if callable(add_dll_dir):
+            try:
+                add_dll_dir(p)
+            except (FileNotFoundError, OSError):
+                pass
+    except Exception:
+        pass
+    # Layer 2: PATH prepend (legacy fallback)
+    cur = _xzg_os.environ.get("PATH", "")
+    entries = cur.split(_xzg_os.pathsep) if cur else []
+    if p not in entries:
+        _xzg_os.environ["PATH"] = p + (_xzg_os.pathsep + cur if cur else "")
+
+# 1) torch/lib (c10.dll, torch_cuda.dll, libiomp5md.dll)
+try:
+    import torch as _xzg_torch
+    _xzg_add_dll_dir(_xzg_os.path.join(_xzg_os.path.dirname(_xzg_torch.__file__), "lib"))
+except Exception:
+    pass
+
+# 2) CUDA Toolkit (ggml-cuda builds need cudart64 / nvrtc / npps at runtime)
+#
+# Discovery order (most specific → most generic, first hit wins):
+#   1. Explicit CUDA_PATH env var (user / launcher override)
+#   2. NVIDIA-installer specific env vars like CUDA_PATH_V13_3, CUDA_PATH_V12_6, etc.
+#      (probes all combinations of major ∈ {11..14}, minor ∈ {0..9})
+#   3. Default installer locations on ALL fixed drives (C: .. Z:), scanning
+#      versions from newest to oldest. Many users install CUDA on D: or
+#      another large-volume drive, so just checking C:\Program Files misses
+#      those installations.
+#
+# If nothing is found we silently fall through: PyTorch wheels ship their own
+# copies of cudart64 / cufft64 / nvrtc64 / cublas64 inside torch/lib (which
+# was registered above), so inference-only usage (the typical ComfyUI case)
+# does NOT require a full CUDA Toolkit install on the system.
+def _xzg_probe_cuda_root():
+    # --- 1. explicit CUDA_PATH ---
+    env_cuda = _xzg_os.environ.get("CUDA_PATH", None)
+    if env_cuda and _xzg_os.path.isdir(env_cuda):
+        return env_cuda
+
+    # --- 2. NVIDIA installer env vars: CUDA_PATH_V<MAJOR>_<MINOR> ---
+    for major in (14, 13, 12, 11):
+        for minor in range(9, -1, -1):
+            key = f"CUDA_PATH_V{major}_{minor}"
+            p = _xzg_os.environ.get(key, None)
+            if p and _xzg_os.path.isdir(p):
+                return p
+
+    # --- 3. default install dirs on every fixed drive ---
+    drives = []
+    try:
+        import string as _xzg_str
+        import ctypes as _xzg_ct
+        DRIVE_FIXED = 3
+        bitmask = _xzg_ct.windll.kernel32.GetLogicalDrives()
+        for i, letter in enumerate(_xzg_str.ascii_uppercase):
+            if bitmask & (1 << i):
+                root = f"{letter}:\\"
+                try:
+                    if _xzg_ct.windll.kernel32.GetDriveTypeW(root) == DRIVE_FIXED:
+                        drives.append(f"{letter}:")
+                except Exception:
+                    # Fallback: assume it exists if we got here
+                    drives.append(f"{letter}:")
+    except Exception:
+        # If Win32 probe fails for any reason, try the common suspects anyway
+        drives = ["C:", "D:", "E:", "F:", "G:"]
+
+    versions_newest_first = (
+        # CUDA 14 (future)
+        "v14.3", "v14.2", "v14.1", "v14.0",
+        # CUDA 13 (current PyTorch cu130 matches this line)
+        "v13.4", "v13.3", "v13.2", "v13.1", "v13.0",
+        # CUDA 12.x (widely deployed, PyTorch cu121/cu124/cu126 targets)
+        "v12.8", "v12.7", "v12.6", "v12.5", "v12.4", "v12.3", "v12.2", "v12.1", "v12.0",
+        # CUDA 11.x (legacy, still common on older builds / server GPUs)
+        "v11.8", "v11.7", "v11.6", "v11.5", "v11.4", "v11.3", "v11.2", "v11.1", "v11.0",
+    )
+
+    for drive in drives:
+        base = _xzg_os.path.join(drive + _xzg_os.sep if drive.endswith(":") else drive,
+                                 "Program Files", "NVIDIA GPU Computing Toolkit", "CUDA")
+        try:
+            if not _xzg_os.path.isdir(base):
+                continue
+            for ver in versions_newest_first:
+                p = _xzg_os.path.join(base, ver)
+                if _xzg_os.path.isdir(p):
+                    return p
+        except Exception:
+            continue
+    return None
+
+_cuda_root = _xzg_probe_cuda_root()
+del _xzg_probe_cuda_root
+if _cuda_root and _xzg_os.path.isdir(_cuda_root):
+    # NOTE: CUDA 13.x moved 64-bit runtime DLLs (cudart64_13.dll, cufft64_12.dll,
+    # nvrtc64_130_0.dll, ...) to bin/x64. Older CUDA 12.x keep them in bin. Add both.
+    for _sub in (
+        _xzg_os.path.join("bin", "x64"),
+        "bin",
+        "libnvvp",
+        _xzg_os.path.join("extras", "CUPTI", "lib64"),
+        _xzg_os.path.join("lib", "x64"),
+    ):
+        _xzg_add_dll_dir(_xzg_os.path.join(_cuda_root, _sub))
+
+# 3) llama-cpp-python's own DLL directories (ggml.dll / llama.dll live here)
+_sp = None
+for _p in getattr(_xzg_sys, "path", []):
+    if _p and _xzg_os.path.isdir(_p) and _xzg_os.path.basename(_p.rstrip("\\/")).lower() == "site-packages":
+        _sp = _p
+        break
+if _sp is None:
+    _sp = _xzg_os.path.join(_xzg_sys.base_prefix, "Lib", "site-packages")
+try:
+    import llama_cpp as _xzg_llama_pkg
+    _llama_base = _xzg_os.path.dirname(_xzg_llama_pkg.__file__)
+    _xzg_add_dll_dir(_xzg_os.path.join(_llama_base, "bin"))
+    _xzg_add_dll_dir(_xzg_os.path.join(_llama_base, "lib"))
+except Exception:
+    for _cand in (
+        _xzg_os.path.join(_sp, "llama_cpp", "bin"),
+        _xzg_os.path.join(_sp, "llama_cpp", "lib"),
+    ):
+        _xzg_add_dll_dir(_cand)
+
+# 4) Python base / DLLs (VC++ CRT / python312.dll)
+_xzg_add_dll_dir(_xzg_os.path.join(_xzg_sys.base_prefix, "DLLs"))
+_xzg_add_dll_dir(_xzg_sys.base_prefix)
+del _xzg_add_dll_dir, _xzg_os, _xzg_sys
+
 import os
 import gc
 import inspect
@@ -13,7 +166,17 @@ import comfy.model_management as mm
 
 try:
     from llama_cpp import Llama
-except Exception:
+except Exception as _xzg_llama_err:
+    # Replace the silent None with a log entry that tells the user WHY it failed
+    import logging as _xzg_log
+    _xzg_log.warning(
+        "[小珠光 QwenLoader] from llama_cpp import Llama failed with %s: %s. "
+        "XiaozhuguangQwenModelLoader will raise '未安装' until this import succeeds. "
+        "If you just installed llama-cpp-python, restart ComfyUI so the PATH bootstrap at "
+        "the top of xzg_qwen_loader.py takes effect.",
+        type(_xzg_llama_err).__name__, _xzg_llama_err,
+    )
+    del _xzg_log
     Llama = None
 
 try:

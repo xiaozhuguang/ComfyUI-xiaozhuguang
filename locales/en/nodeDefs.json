@@ -343,5 +343,80 @@
     "outputs": {
       "0": { "name": "Qwen Model" }
     }
+  },
+  "XiaozhuguangATBC": {
+    "display_name": "Xiaozhuguang ATBC (Smart Crop)",
+    "inputs": {
+      "image": { "name": "image" },
+      "mask": { "name": "mask" },
+      "resize_mode": { "name": "resize mode" },
+      "Box_grow_factor": { "name": "box grow factor" },
+      "megapixels": { "name": "megapixels" },
+      "divisible_by": { "name": "divisible by" },
+      "ratio": { "name": "ratio" },
+      "startup_threshold": { "name": "startup threshold" },
+      "fill_color": { "name": "fill color" },
+      "mask_smooth": { "name": "mask smooth" },
+      "sum_mask": { "name": "sum mask" }
+    },
+    "outputs": {
+      "0": { "name": "cropped image" },
+      "1": { "name": "crop box" },
+      "2": { "name": "cropped mask" }
+    }
+  },
+  "XiaozhuguangATR": {
+    "display_name": "Xiaozhuguang ATR (Image Restore)",
+    "inputs": {
+      "original_image": { "name": "original image" },
+      "processed_image": { "name": "processed image" },
+      "crop_box": { "name": "crop box" },
+      "blur_amount": { "name": "blur amount" },
+      "mask_expand": { "name": "mask expand" },
+      "mask": { "name": "mask" }
+    },
+    "outputs": {
+      "0": { "name": "restored image" }
+    }
+  },
+  "XiaozhuguangFaceAlign": {
+    "display_name": "Xiaozhuguang Face Align",
+    "inputs": {
+      "target_image": { "name": "target image" },
+      "reference_image": { "name": "reference image" },
+      "target_frame_index": { "name": "target frame index" },
+      "padding_mode": { "name": "padding mode" },
+      "检测分辨率": { "name": "detection resolution" }
+    },
+    "outputs": {
+      "0": { "name": "aligned reference image" }
+    }
+  },
+  "XiaozhuguangImageSplitter": {
+    "display_name": "Xiaozhuguang IS (Image Split)",
+    "inputs": {
+      "image": { "name": "image" },
+      "split_x": { "name": "split x" },
+      "split_y": { "name": "split y" },
+      "overlap": { "name": "overlap" },
+      "mask": { "name": "mask" }
+    },
+    "outputs": {
+      "0": { "name": "images" },
+      "1": { "name": "masks" },
+      "2": { "name": "split data" },
+      "3": { "name": "merge weights" }
+    }
+  },
+  "XiaozhuguangImageMerger": {
+    "display_name": "Xiaozhuguang IM (Image Merge)",
+    "inputs": {
+      "images": { "name": "images" },
+      "split_data": { "name": "split data" },
+      "masks": { "name": "masks" }
+    },
+    "outputs": {
+      "0": { "name": "merged" }
+    }
   }
 }

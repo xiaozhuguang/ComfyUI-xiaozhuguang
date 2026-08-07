@@ -305,16 +305,15 @@ export class XiaozhuguangVideoPlayer {
             "cursor:ew-resize;z-index:5;" +
             "filter:drop-shadow(0 0 4px rgba(239,68,68,0.8));";
 
-        // 红色竖线上方的帧数标签
+        // 红色竖线上方的帧数标签（作为进度条子元素，直接相对进度条定位避免边缘裁剪）
         this._redFrameDisplay = document.createElement("span");
         this._redFrameDisplay.style.cssText =
-            "position:absolute;bottom:calc(100% + 2px);left:50%;transform:translateX(-50%);" +
+            "position:absolute;bottom:calc(100% + 2px);left:0;transform:translateX(0);" +
             "color:#FF5555;font-size:7px;font-family:monospace;" +
             "font-variant-numeric:tabular-nums;" +
             "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
-            "white-space:nowrap;pointer-events:none;";
+            "white-space:nowrap;pointer-events:none;z-index:6;";
         this._redFrameDisplay.textContent = "";
-        this._loadRangeStart.appendChild(this._redFrameDisplay);
 
         // 加载区间结束标记（蓝色竖线，表示加载帧的分界，8px宽可拖拽）
         this._loadRangeEnd = document.createElement("div");
@@ -325,20 +324,21 @@ export class XiaozhuguangVideoPlayer {
             "cursor:ew-resize;z-index:5;" +
             "filter:drop-shadow(0 0 4px rgba(59,130,246,0.8));";
 
-        // 蓝色竖线上方的帧数标签
+        // 蓝色竖线上方的帧数标签（作为进度条子元素，直接相对进度条定位避免边缘裁剪）
         this._blueFrameDisplay = document.createElement("span");
         this._blueFrameDisplay.style.cssText =
-            "position:absolute;bottom:calc(100% + 2px);left:50%;transform:translateX(-50%);" +
+            "position:absolute;bottom:calc(100% + 2px);left:0;transform:translateX(0);" +
             "color:#5599FF;font-size:7px;font-family:monospace;" +
             "font-variant-numeric:tabular-nums;" +
             "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
-            "white-space:nowrap;pointer-events:none;";
+            "white-space:nowrap;pointer-events:none;z-index:6;";
         this._blueFrameDisplay.textContent = "";
-        this._loadRangeEnd.appendChild(this._blueFrameDisplay);
 
         this._progressBar.appendChild(this._loadRangeFill);
         this._progressBar.appendChild(this._loadRangeStart);
         this._progressBar.appendChild(this._loadRangeEnd);
+        this._progressBar.appendChild(this._redFrameDisplay);
+        this._progressBar.appendChild(this._blueFrameDisplay);
         this._progressBar.appendChild(this._progressFill);
         this._progressBar.appendChild(this._progressThumb);
         this._progressContainer.appendChild(this._progressBar);
@@ -1270,12 +1270,18 @@ export class XiaozhuguangVideoPlayer {
         // 红色引导线始终显示（跳过帧数=0 时在最左侧 0% 位置）
         if (this._loadRangeStart) {
             this._loadRangeStart.style.display = "block";
-            this._loadRangeStart.style.left = Math.max(edgeOffsetPct, startPct) + "%";
+            const clampedStartPct = Math.max(edgeOffsetPct, startPct);
+            this._loadRangeStart.style.left = clampedStartPct + "%";
+            // 红字始终在红杠右侧 5px
+            this._positionRedLabel(clampedStartPct, barW);
         }
         // 蓝色引导线始终显示（帧数上限=0 时在最右侧 100% 位置）
         if (this._loadRangeEnd) {
             this._loadRangeEnd.style.display = "block";
-            this._loadRangeEnd.style.left = Math.min(100 - edgeOffsetPct, endPct) + "%";
+            const clampedEndPct = Math.min(100 - edgeOffsetPct, endPct);
+            this._loadRangeEnd.style.left = clampedEndPct + "%";
+            // 蓝字最右侧字符始终在蓝杠左侧 5px
+            this._positionBlueLabel(clampedEndPct, barW);
         }
         // 加载区间填充始终显示
         if (this._loadRangeFill) {
@@ -1283,6 +1289,27 @@ export class XiaozhuguangVideoPlayer {
             this._loadRangeFill.style.left = startPct + "%";
             this._loadRangeFill.style.width = (endPct - startPct) + "%";
         }
+    }
+
+    // 红字始终在红杠右侧 1px：
+    // 红杠中心在 pct%，竖杠宽 8px（translateX(-50%) 后左右各 4px）。
+    // 数字左边缘 = 红杠中心 + 4px（竖杠右边缘） + 1px = 红杠中心 + 5px
+    _positionRedLabel(pct, barW) {
+        if (!this._redFrameDisplay) return;
+        const centerPx = (pct / 100) * barW;
+        const leftPx = centerPx + 5;
+        this._redFrameDisplay.style.left = leftPx + "px";
+        this._redFrameDisplay.style.transform = "translateX(0)";
+    }
+
+    // 蓝字最右侧字符始终在蓝杠左侧 1px：
+    // 蓝杠中心在 pct%，数字右边缘 = 蓝杠中心 - 4px（竖杠左边缘） - 1px = 蓝杠中心 - 5px
+    _positionBlueLabel(pct, barW) {
+        if (!this._blueFrameDisplay) return;
+        const centerPx = (pct / 100) * barW;
+        const rightPx = centerPx - 5;
+        this._blueFrameDisplay.style.left = rightPx + "px";
+        this._blueFrameDisplay.style.transform = "translateX(-100%)";
     }
 
     autoDetectFps() {

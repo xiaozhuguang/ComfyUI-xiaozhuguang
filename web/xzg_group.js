@@ -81,6 +81,22 @@ const XZGGroup = {
         this.setupSerializationHooks();
         this.startSyncLoop();
         this.waitForGraph();
+
+        // 注册全局钩子：供箭头工具切换编组边框的 pointer-events
+        // 箭头模式激活时，编组边框穿透事件，避免拖动箭头经过编组时被拦截导致"停止"
+        window.__xzg_setArrowModeActive = (active) => this.setArrowModeActive(active);
+    },
+
+    // 箭头模式切换：动态调整编组框交互元素的 pointer-events
+    // 激活时设为 none 让事件穿透，避免拖动箭头经过编组时被边框/标题栏/手柄拦截导致"停止"
+    // 关闭时恢复 auto，编组框可正常拖动移动/调整大小
+    setArrowModeActive(active) {
+        const pe = active ? 'none' : 'auto';
+        for (const el of Object.values(this.groupEls)) {
+            if (!el) continue;
+            el.querySelectorAll('.xzg-border-left, .xzg-border-right, .xzg-border-bottom, .xzg-resize-handle, .xzg-group-header')
+               .forEach(b => { b.style.pointerEvents = pe; });
+        }
     },
 
     /* ── 运行时注入：确保功能1/2 所需的方法存在，并包装 updatePositions
@@ -117,6 +133,14 @@ const XZGGroup = {
         // 2) 注入 _syncSelectedGroupsFollowNodes，并包装 updatePositions
         if (typeof self._syncSelectedGroupsFollowNodes !== 'function') {
             self._syncSelectedGroupsFollowNodes = function() {
+                // 已禁用：编组不再跟随节点移动。重置会话状态避免残留。
+                self._nodePosCache = null;
+                const s = typeof _XZG_NODE_DRAG_SESSION !== 'undefined' ? _XZG_NODE_DRAG_SESSION : null;
+                if (s && s.active) { s.active=false; s.lockedGids.clear(); s.startSelSnapshot=null; s.startTs=0; s.lastMovedTs=0; }
+                return;
+            };
+            // 兜底注入已改为空操作，下方为原逻辑（已禁用，保留备查）
+            self._syncSelectedGroupsFollowNodes_DISABLED_ORIGINAL_FALLBACK = function() {
                 const c = app?.canvas;
                 const graph = app?.graph;
                 if (!c?.selected_nodes || !graph?._nodes) return;
@@ -3639,8 +3663,17 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         return nodeIds;
     },
 
-    /* ── 功能1：所有节点被选中时，编组跟随节点一起移动（增量平移 bounds） */
+    /* ── 功能1：所有节点被选中时，编组跟随节点一起移动（增量平移 bounds）
+       已禁用：编组不再跟随节点移动。方法保留为空操作以维持调用结构稳定。 */
     _syncSelectedGroupsFollowNodes() {
+        // 重置缓存的拖动会话状态，避免残留锁定
+        this._nodePosCache = null;
+        const s = typeof _XZG_NODE_DRAG_SESSION !== 'undefined' ? _XZG_NODE_DRAG_SESSION : null;
+        if (s && s.active) { s.active=false; s.lockedGids.clear(); s.startSelSnapshot=null; s.startTs=0; s.lastMovedTs=0; }
+        return;
+    },
+
+    _syncSelectedGroupsFollowNodes_DISABLED_ORIGINAL() {
         const c = app?.canvas;
         const graph = app?.graph;
         if (!c?.selected_nodes || !graph?._nodes) return;
@@ -3906,6 +3939,14 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         }
         if (typeof self._syncSelectedGroupsFollowNodes !== 'function') {
             self._syncSelectedGroupsFollowNodes = function() {
+                // 已禁用：编组不再跟随节点移动。重置会话状态避免残留。
+                self._nodePosCache = null;
+                const s = typeof _XZG_NODE_DRAG_SESSION !== 'undefined' ? _XZG_NODE_DRAG_SESSION : null;
+                if (s && s.active) { s.active=false; s.lockedGids.clear(); s.startSelSnapshot=null; s.startTs=0; s.lastMovedTs=0; }
+                return;
+            };
+            // 兜底注入已改为空操作，下方为原逻辑（已禁用，保留备查）
+            self._syncSelectedGroupsFollowNodes_DISABLED_ORIGINAL_FALLBACK = function() {
                 const c = app?.canvas;
                 const graph = app?.graph;
                 if (!c?.selected_nodes || !graph?._nodes) return;

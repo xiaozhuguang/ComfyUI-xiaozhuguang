@@ -2,6 +2,19 @@ torch
 torchvision
 numpy
 Pillow
+opencv-python
 transformers
 qwen-vl-utils
 imageio_ffmpeg
+safetensors
+librosa
+llama-cpp-python
+
+# 可选（缺失会降级但不影响其它节点）：
+# huggingface_hub      # 模型下载，缺失时改用本地扫描
+# einops               # audiodit 建模，仅推理时触发
+# mediapipe            # Face Align 人脸检测，缺失降级到 insightface / 整图兜底
+# insightface          # Face Align 人脸检测，缺失降级到整图兜底
+# onnxruntime          # insightface 推理后端，缺失则 insightface 不可用
+# flash-attn           # 注意力加速，缺失回退到 SDPA
+# sageattention        # 注意力加速，缺失回退到标准实现

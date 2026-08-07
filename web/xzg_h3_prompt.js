@@ -37,27 +37,28 @@ app.registerExtension({
                 const lang = xzgLang();
 
                 if (lang === "zh") {
-                    // 中文环境：只保留中文选项
-                    const zhGenModes = new Set([
-                        "文生视频 (T2VA)", "图生视频 (I2VA)", "首尾帧 (FL2VA)", "尾帧 (L2VA)", "全参考 (Ref2VA)"
+                    // 中文环境：生成模式统一用英文（便于上游输入字符串匹配），风格预设保留中文
+                    const enGenModes = new Set([
+                        "Text to Video (T2VA)", "Image to Video (I2VA)", "First+Last Frame (FL2VA)", "Last Frame (L2VA)", "Full Reference (Ref2VA)"
                     ]);
                     const zhStyles = new Set([
                         "无 (默认)", "极简产品广告", "3D动画短片", "纸艺定格科普",
                         "品牌宣传短片", "音乐美学MV", "双人游戏开场", "纸拼贴讲解", "手绘实拍融合"
                     ]);
 
-                    // 生成模式
+                    // 生成模式：保持英文，仅过滤掉历史中文值
                     const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
                     if (gmWidget && gmWidget.options) {
-                        gmWidget.options.values = gmWidget.options.values.filter(v => zhGenModes.has(v));
-                        const enToZh = {
-                            "Text to Video (T2VA)": "文生视频 (T2VA)",
-                            "Image to Video (I2VA)": "图生视频 (I2VA)",
-                            "First+Last Frame (FL2VA)": "首尾帧 (FL2VA)",
-                            "Last Frame (L2VA)": "尾帧 (L2VA)",
-                            "Full Reference (Ref2VA)": "全参考 (Ref2VA)",
+                        gmWidget.options.values = gmWidget.options.values.filter(v => enGenModes.has(v));
+                        // 历史中文值映射为英文
+                        const zhToEn = {
+                            "文生视频 (T2VA)": "Text to Video (T2VA)",
+                            "图生视频 (I2VA)": "Image to Video (I2VA)",
+                            "首尾帧 (FL2VA)": "First+Last Frame (FL2VA)",
+                            "尾帧 (L2VA)": "Last Frame (L2VA)",
+                            "全参考 (Ref2VA)": "Full Reference (Ref2VA)",
                         };
-                        gmWidget.value = enToZh[gmWidget.value] || gmWidget.value;
+                        gmWidget.value = zhToEn[gmWidget.value] || (enGenModes.has(gmWidget.value) ? gmWidget.value : "Text to Video (T2VA)");
                     }
 
                     // 风格预设

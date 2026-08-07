@@ -192,6 +192,10 @@ from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
+from .nodes.xzg_atbc import XiaozhuguangATBC
+from .nodes.xzg_atr import XiaozhuguangATR
+from .nodes.xzg_face_align import XiaozhuguangFaceAlign
+from .nodes.xzg_image_split_merge import XiaozhuguangImageSplitter, XiaozhuguangImageMerger
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -701,6 +705,11 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
     "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
+    "XiaozhuguangATBC": XiaozhuguangATBC,
+    "XiaozhuguangATR": XiaozhuguangATR,
+    "XiaozhuguangFaceAlign": XiaozhuguangFaceAlign,
+    "XiaozhuguangImageSplitter": XiaozhuguangImageSplitter,
+    "XiaozhuguangImageMerger": XiaozhuguangImageMerger,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -733,6 +742,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangTextBox": "小珠光文本框",
     "XiaozhuguangNinimaxH3Prompt": "小珠光 MiniMax H3 提示词",
     "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",
+    "XiaozhuguangATBC": "小珠光 ATBC (智能裁剪)",
+    "XiaozhuguangATR": "小珠光 ATR (图像回贴)",
+    "XiaozhuguangFaceAlign": "小珠光 Face Align (人脸对齐)",
+    "XiaozhuguangImageSplitter": "小珠光 IS (图像分割)",
+    "XiaozhuguangImageMerger": "小珠光 IM (图像合并)",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"

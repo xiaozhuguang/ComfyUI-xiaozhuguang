@@ -344,5 +344,80 @@
     "outputs": {
       "0": { "name": "Qwen模型" }
     }
+  },
+  "XiaozhuguangATBC": {
+    "display_name": "小珠光 ATBC (智能裁剪)",
+    "inputs": {
+      "image": { "name": "图像" },
+      "mask": { "name": "遮罩" },
+      "resize_mode": { "name": "缩放模式" },
+      "Box_grow_factor": { "name": "扩展倍数" },
+      "megapixels": { "name": "百万像素" },
+      "divisible_by": { "name": "整除数" },
+      "ratio": { "name": "比例" },
+      "startup_threshold": { "name": "启动阈值" },
+      "fill_color": { "name": "填充颜色" },
+      "mask_smooth": { "name": "遮罩平滑" },
+      "sum_mask": { "name": "遮罩求和" }
+    },
+    "outputs": {
+      "0": { "name": "裁剪图像" },
+      "1": { "name": "裁剪框" },
+      "2": { "name": "裁剪遮罩" }
+    }
+  },
+  "XiaozhuguangATR": {
+    "display_name": "小珠光 ATR (图像回贴)",
+    "inputs": {
+      "original_image": { "name": "原始图像" },
+      "processed_image": { "name": "处理图像" },
+      "crop_box": { "name": "裁剪框" },
+      "blur_amount": { "name": "羽化值" },
+      "mask_expand": { "name": "遮罩扩展" },
+      "mask": { "name": "遮罩" }
+    },
+    "outputs": {
+      "0": { "name": "还原图像" }
+    }
+  },
+  "XiaozhuguangFaceAlign": {
+    "display_name": "小珠光 Face Align (人脸对齐)",
+    "inputs": {
+      "target_image": { "name": "目标图像" },
+      "reference_image": { "name": "参考图像" },
+      "target_frame_index": { "name": "目标帧索引" },
+      "padding_mode": { "name": "填充模式" },
+      "检测分辨率": { "name": "检测分辨率" }
+    },
+    "outputs": {
+      "0": { "name": "对齐参考图像" }
+    }
+  },
+  "XiaozhuguangImageSplitter": {
+    "display_name": "小珠光 IS (图像分割)",
+    "inputs": {
+      "image": { "name": "图像" },
+      "split_x": { "name": "横向分割" },
+      "split_y": { "name": "纵向分割" },
+      "overlap": { "name": "重叠" },
+      "mask": { "name": "遮罩" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "遮罩" },
+      "2": { "name": "分割数据" },
+      "3": { "name": "合并权重" }
+    }
+  },
+  "XiaozhuguangImageMerger": {
+    "display_name": "小珠光 IM (图像合并)",
+    "inputs": {
+      "images": { "name": "图像" },
+      "split_data": { "name": "分割数据" },
+      "masks": { "name": "遮罩" }
+    },
+    "outputs": {
+      "0": { "name": "合并图像" }
+    }
   }
 }

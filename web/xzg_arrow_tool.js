@@ -3864,6 +3864,12 @@ function toggleArrowMode() {
         clearSelection();
     }
 
+    // 通知编组模块：箭头模式切换，动态调整编组边框的 pointer-events
+    // 激活时让编组边框穿透事件，避免拖动箭头经过编组时被拦截导致"停止"
+    if (typeof window.__xzg_setArrowModeActive === 'function') {
+        try { window.__xzg_setArrowModeActive(isArrowModeActive); } catch (e) {}
+    }
+
     renderArrows();
     updateToolbarState();
     updateTransformSliders();
