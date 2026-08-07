@@ -38,8 +38,9 @@ _ZH_DIGIT_MAP = {
 #    - 正则匹配时按长度降序排序，长字符串优先匹配（"千克" 优先于 "克"）
 #    - 为避免与中文名词混淆（例如 "720分辨率" 的 "分"、"第12条" 的"条"
 #      作量词但"条款"的"条"作名词），这里不收录有明显歧义的单字：
-#        分、秒、节、条、款、项、页、课、关、档、级、星
+#        分、节、条、款、项、页、课、关、档、级、星
 #      如需要表达这些量词，写双字词形式即可（分钟/秒钟/章节/条款/…）
+#      注："秒" 单字已收录（15秒→十五秒），"秒钟" 优先于 "秒" 匹配。
 #    - 纯中文但较无歧义的计数/度量/时间/序号量词 仍收录
 # ────────────────────────────────────────────────────────────
 _QUANTIFIER_UNITS = [
@@ -105,7 +106,7 @@ _QUANTIFIER_UNITS = [
     # 11) 时间
     "分钟", "秒钟", "小时", "钟头", "点钟", "点半",
     "星期", "礼拜",
-    "余年", "年", "月", "日", "时", "点", "周",
+    "余年", "年", "月", "日", "时", "点", "周", "秒",
     # 12) 繁体/台港澳 常用量词（长词优先，且单字无歧义的收录）
     "歲", "樓", "號", "層", "節", "項", "冊", "個",
     "隻", "條", "張", "公里", "公斤", "公升",
@@ -285,12 +286,28 @@ def _num_to_zh_full(num_str: str) -> str:
 
 
 def _digits_to_zh_by_char(text: str) -> str:
-    """按位逐字符替换 0-9 为中文数字，其他字符原样保留。"""
+    """按位逐字符替换 0-9 为中文数字，其他字符原样保留。
+
+    小数点处理：当 "." 前后均为数字时，作为小数点转为"点"
+    （如 3.2 → 三点二）；其余情况（句末标点等）保留原样不转。
+    """
     if not text:
         return ""
     out = []
-    for ch in text:
-        out.append(_ZH_DIGIT_MAP.get(ch, ch))
+    _ascii_digits = "0123456789"
+    for i, ch in enumerate(text):
+        if ch in _ZH_DIGIT_MAP:
+            out.append(_ZH_DIGIT_MAP[ch])
+        elif ch == ".":
+            # 仅当 "." 前后均为 ASCII 数字时，作为小数点转为"点"
+            prev_is_digit = i > 0 and text[i - 1] in _ascii_digits
+            next_is_digit = i + 1 < len(text) and text[i + 1] in _ascii_digits
+            if prev_is_digit and next_is_digit:
+                out.append("点")
+            else:
+                out.append(ch)
+        else:
+            out.append(_ZH_DIGIT_MAP.get(ch, ch))
     return "".join(out)
 
 
