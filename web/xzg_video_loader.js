@@ -587,7 +587,7 @@ function _xzgCreateNumberWidget(node, inputName, inputData) {
     const opts = inputData[1] || {};
     const w = {
         name: inputName,
-        type: 'xzg-number',
+        type: 'number',
         value: opts.default ?? 0,
         options: {},
         _xzgStep: opts.step || 1,
@@ -1092,12 +1092,50 @@ function bindVideoLoaderInteractions(node) {
         // 同步自定义宽高到播放器，预览比例随参数变化
         const wWidget = node.widgets?.find(w => w.name === "自定义宽度");
         const hWidget = node.widgets?.find(w => w.name === "自定义高度");
+
+        // 追踪外部连线输入的值：当 widget 被转为 input 时，
+        // 通过 graph.links 追溯到上游节点（通常是 PrimitiveNode）读取其 widget 值
+        const _resolveLinkedValue = (inputName) => {
+            // 先检查对应的 input 是否有连线 → 有连线时优先从连线追溯
+            const inp = node.inputs?.find(x => x.name === inputName);
+            if (inp && inp.link != null) {
+                const graph = node.graph;
+                if (graph && graph.links) {
+                    const link = graph.links[inp.link];
+                    if (link) {
+                        const originNode = graph.getNodeById(link.origin_id);
+                        if (originNode) {
+                            // PrimitiveNode（ComfyUI widget→input 转换节点）：读其 widget 值
+                            if (originNode.type === "PrimitiveNode" && originNode.widgets) {
+                                const pw = originNode.widgets[0];
+                                if (pw) return Number(pw.value) || 0;
+                            }
+                            // 其他节点：尝试匹配同名的输出 widget 值
+                            if (originNode.widgets) {
+                                const pw = originNode.widgets.find(x => x.name === inputName);
+                                if (pw) return Number(pw.value) || 0;
+                            }
+                        }
+                    }
+                }
+            }
+            // 无连线 → 使用 widget 自身值
+            const w = node.widgets?.find(x => x.name === inputName);
+            if (w) return Number(w.value) || 0;
+            return 0;
+        };
+
         const syncCustomSize = () => {
             // 比例模式下自定义宽度/高度为计算方式和边长尺寸，不用于预览
             const ratioW = node.widgets?.find(w => w.name === "视频比例");
             if (ratioW && ratioW.value !== "自定义比例") return;
-            player.setCustomSize(wWidget?.value || 0, hWidget?.value || 0);
+            // 同时兼容 widget 直接输入和外部连线输入
+            const cw = _resolveLinkedValue("自定义宽度");
+            const ch = _resolveLinkedValue("自定义高度");
+            player.setCustomSize(cw, ch);
         };
+        // 暴露给右键菜单调用（尽早赋值，避免后续代码异常导致无法访问）
+        node._xzgSyncCustomSize = syncCustomSize;
         [wWidget, hWidget].forEach(w => {
             if (!w) return;
             const origCb = w.callback;
@@ -1106,6 +1144,50 @@ function bindVideoLoaderInteractions(node) {
                 syncCustomSize();
             };
         });
+
+        // 当连线变化时（widget 被转为 input 或外部连线接入/断开），重新同步预览比例
+        const origOnConnectionsChange = node.onConnectionsChange;
+        const _xzgUpstreamHooks = new Set();
+        const _hookUpstreamWidget = (originNode, inputName) => {
+            if (!originNode || !originNode.widgets) return;
+            const pw = originNode.widgets[0] || originNode.widgets.find(x => x.name === inputName);
+            if (!pw || pw._xzgHooked) return;
+            pw._xzgHooked = true;
+            _xzgUpstreamHooks.add(pw);
+            const origPwCb = pw.callback;
+            pw.callback = function (value) {
+                origPwCb?.apply(this, arguments);
+                syncCustomSize();
+            };
+        };
+        const _hookAllUpstream = () => {
+            ["自定义宽度", "自定义高度"].forEach(name => {
+                const inp = node.inputs?.find(x => x.name === name);
+                if (!inp || !inp.link) return;
+                const graph = node.graph;
+                const link = graph?.links?.[inp.link];
+                if (!link) return;
+                _hookUpstreamWidget(graph.getNodeById(link.origin_id), name);
+            });
+        };
+        node.onConnectionsChange = function (side, slot, connected, link_info) {
+            origOnConnectionsChange?.apply(this, arguments);
+            // 仅处理 input 侧变化（side === 1 为 input，LiteGraph 约定）
+            if (side === 1) {
+                const inp = this.inputs?.[slot];
+                if (inp && (inp.name === "自定义宽度" || inp.name === "自定义高度")) {
+                    setTimeout(() => { _hookAllUpstream(); syncCustomSize(); }, 0);
+                }
+            }
+        };
+
+        // 工作流加载后重新同步（graph configure 后连线才可用）
+        const origOnAfterGraphConfigured = node.onAfterGraphConfigured;
+        node.onAfterGraphConfigured = function () {
+            origOnAfterGraphConfigured?.apply(this, arguments);
+            setTimeout(() => { _hookAllUpstream(); syncCustomSize(); }, 0);
+        };
+
         syncCustomSize();
         const limitWidget = node.widgets?.find(w => w.name === "帧数上限");
         const skipWidget = node.widgets?.find(w => w.name === "跳过帧数");
@@ -1169,6 +1251,66 @@ function bindVideoLoaderInteractions(node) {
             };
         }
         _updateRatioWidgets(node);
+
+        // ═══════════════════════════════════════════════════════════════════
+        // 工作流执行后自动加载预览视频到预览区
+        // 原理：后端 load_video 执行时会用 ffmpeg 生成一个按目标宽高处理的
+        // 临时预览视频，通过 ui 字段返回。但 ComfyUI 只对 OUTPUT_NODE 发送
+        // executed 事件，视频加载器不是输出节点，所以监听 execution_success
+        // 事件，从 /api/history 中读取本节点的 ui.video_preview 数据。
+        // ═══════════════════════════════════════════════════════════════════
+
+        const _onExecutionSuccess = async ({ detail }) => {
+            try {
+                if (!node.graph) return;
+                const promptId = detail?.prompt_id;
+                if (!promptId) return;
+
+                // 从 /api/history 读取本次执行的完整结果
+                const resp = await fetch(`/api/history/${promptId}`);
+                if (!resp.ok) return;
+                const history = await resp.json();
+                // history 结构: { [promptId]: { outputs: { [nodeId]: { ... } } } }
+                const promptHistory = history?.[promptId] || history;
+                const outputs = promptHistory?.outputs || promptHistory?.status?.outputs || {};
+                // 读取本节点的输出（包含 ui.video_preview）
+                const nodeOutput = outputs[String(node.id)];
+                if (!nodeOutput) {
+                    console.warn("[小珠光视频加载器] history 中未找到本节点输出, nodeId=" + node.id + ", outputs=" + JSON.stringify(Object.keys(outputs)));
+                    return;
+                }
+
+                // video_preview 是数组格式: [{filename, subfolder, type}]
+                const previewList = nodeOutput?.video_preview;
+                if (!Array.isArray(previewList) || previewList.length === 0) {
+                    console.warn("[小珠光视频加载器] video_preview 不存在或非数组, nodeOutput keys=" + JSON.stringify(Object.keys(nodeOutput || {})));
+                    return;
+                }
+                const preview = previewList[0];
+                const filename = preview?.filename;
+                const subfolder = preview?.subfolder || "";
+                const type = preview?.type || "temp";
+                if (!filename) return;
+
+                // 构造 /view URL 并加载到预览区
+                const params = new URLSearchParams({ filename, type, subfolder });
+                const url = `/view?${params.toString()}&rand=${Math.random()}`;
+                console.warn("[小珠光视频加载器] 加载预览视频到预览区: " + filename);
+                player.load(url);
+                node.setDirtyCanvas(true, true);
+            } catch (e) {
+                console.warn("[小珠光视频加载器] 加载预览视频失败:", e?.message || e);
+            }
+        };
+        api.addEventListener("execution_success", _onExecutionSuccess);
+
+        // 节点移除时清理事件监听，避免内存泄漏
+        const _origOnRemoved = node.onRemoved;
+        node.onRemoved = function () {
+            try { api.removeEventListener("execution_success", _onExecutionSuccess); } catch (_) {}
+            _origOnRemoved?.apply(this, arguments);
+        };
+
         player.resize();
     });
 }

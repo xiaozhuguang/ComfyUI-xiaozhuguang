@@ -491,18 +491,96 @@ class XiaozhuguangVideoLoader:
             "filename": 视频,
         }
 
+        # ═══════════════════════════════════════════════════════════════════
+        # 生成预览视频：按目标宽高/帧率/跳过帧/帧数上限用 ffmpeg 转码
+        # 生成一个临时视频文件，通过 ui 返回给前端，覆盖在预览区
+        # ═══════════════════════════════════════════════════════════════════
+        preview_ui = {}
+        try:
+            temp_dir = folder_paths.get_temp_directory()
+            preview_filename = f"xzg_preview_{unique_id or 'node'}_{int(time.time() * 1000)}.mp4"
+            preview_path = os.path.join(temp_dir, preview_filename)
+
+            # 构建 vf 滤镜（基于已解码的 info：src_w/src_h 原始尺寸，new_w/new_h 目标尺寸）
+            src_ar = src_w / src_h if src_h > 0 else 1.0
+            dst_ar = new_w / new_h if new_h > 0 else 1.0
+            vf_parts = []
+            if new_w != src_w or new_h != src_h:
+                if abs(src_ar - dst_ar) < 0.01:
+                    vf_parts.append(f"scale={new_w}:{new_h}")
+                else:
+                    vf_parts.append(f"scale={new_w}:{new_h}:force_original_aspect_ratio=increase")
+                    vf_parts.append(f"crop={new_w}:{new_h}")
+                vf_parts.append("setsar=1")
+
+            cmd = [ffmpeg_path, "-y", "-v", "error"]
+            # 起始时间（跳过帧数 → 时间）
+            start_time = 跳过帧数 / src_fps if src_fps > 0 else 0.0
+            if start_time > 0:
+                if start_time > 4:
+                    cmd += ["-ss", str(start_time - 4), "-i", video_path, "-ss", "4"]
+                else:
+                    cmd += ["-ss", str(start_time), "-i", video_path]
+            else:
+                cmd += ["-i", video_path]
+
+            # 帧率
+            if 强制帧率 > 0:
+                cmd += ["-r", str(强制帧率)]
+
+            # vf 滤镜
+            if vf_parts:
+                cmd += ["-vf", ",".join(vf_parts)]
+
+            # 帧数上限
+            if 帧数上限 > 0:
+                cmd += ["-frames:v", str(帧数上限)]
+
+            # 持续时间限制
+            if loaded_duration > 0:
+                cmd += ["-t", str(loaded_duration)]
+
+            # 编码参数：H.264 + AAC，快速预设
+            cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k",
+                    preview_path]
+
+            proc = subprocess.run(cmd, capture_output=True, timeout=120)
+            if proc.returncode != 0:
+                err = proc.stderr.decode(*ENCODE_ARGS)
+                print(f"[小珠光视频加载器] 预览视频转码失败 (rc={proc.returncode}): {err[:500]}")
+            elif os.path.isfile(preview_path):
+                # ui 字段的值必须是数组（ComfyUI 的约定，参考 videos 字段格式）
+                preview_ui = {
+                    "video_preview": [{
+                        "filename": preview_filename,
+                        "subfolder": "",
+                        "type": "temp",
+                    }]
+                }
+                print(f"[小珠光视频加载器] 预览视频已生成: {preview_filename}")
+        except Exception as e:
+            print(f"[小珠光视频加载器] 预览视频生成异常: {e}")
+
         if image_tensor.size(3) == 4:
             rgb = image_tensor[:, :, :, :3]
-            return (rgb, audio, video_info)
-        return (image_tensor, audio, video_info)
+            result = (rgb, audio, video_info)
+        else:
+            result = (image_tensor, audio, video_info)
+
+        return {"result": result, "ui": preview_ui}
 
     @classmethod
-    def IS_CHANGED(cls, 视频, **kwargs):
+    def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 自定义宽度=0, 自定义高度=0,
+                   帧数上限=0, 跳过帧数=0, **kwargs):
         try:
             path = folder_paths.get_annotated_filepath(视频)
-            return calculate_file_hash(path)
+            file_hash = calculate_file_hash(path)
         except Exception:
-            return "0"
+            file_hash = "0"
+        # 将所有影响输出的参数纳入变化检测，避免参数变化时被缓存跳过
+        return f"{file_hash}|{强制帧率}|{视频比例}|{自定义宽度}|{自定义高度}|{帧数上限}|{跳过帧数}"
 
     @classmethod
     def VALIDATE_INPUTS(cls, 视频, **kwargs):
