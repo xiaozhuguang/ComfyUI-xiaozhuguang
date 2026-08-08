@@ -741,15 +741,16 @@ app.registerExtension({
                 if (this.canvasWidget && !this.widgets.includes(this.canvasWidget)) {
                     this.widgets.push(this.canvasWidget);
                 }
-                // 移除被隐藏控件的输入端口（防止通过连线连接）
-                if (this.inputs) {
-                    this.inputs = this.inputs.filter(inp =>
-                        inp.name !== "reduce_lag" &&
-                        inp.name !== "save_format" &&
-                        inp.name !== "filename_prefix" &&
-                        inp.name !== "output_path"
-                    );
-                }
+                // 白名单模式：只保留 images 输入端口，移除所有其他输入
+                // （包含 hidden 字段、option 控件端口等）
+                this.__xzgSanitizeInputs = function () {
+                    if (this.inputs && this.inputs.length > 1) {
+                        this.inputs = this.inputs.filter(inp => inp.name === "images");
+                    }
+                };
+                this.__xzgSanitizeInputs();
+                // 延迟再执行一次，确保 ComfyUI 内部注册完成后仍然有效
+                setTimeout(() => this.__xzgSanitizeInputs(), 0);
             };
 
             nodeType.prototype.onExecuted = function (output) {
@@ -766,6 +767,17 @@ app.registerExtension({
 
             nodeType.prototype.onConfigure = function (o) {
                 proto.onConfigure.call(this, o);
+                // 从工作流恢复后：白名单只保留 images 端口（ComfyUI configure 会恢复保存的全部 inputs）
+                this.__xzgSanitizeInputs?.call(this);
+                // 再延迟一轮 ensure：configure 后 ComfyUI 内部可能还有后处理
+                setTimeout(() => this.__xzgSanitizeInputs?.call(this), 0);
+            };
+
+            // 最后一道防线：每次绘制前清理一次 inputs，确保即使其他回调错过了也不留下多余端口
+            const _origDrawBackground = nodeType.prototype.onDrawBackground;
+            nodeType.prototype.onDrawBackground = function (ctx, canvas) {
+                this.__xzgSanitizeInputs?.call(this);
+                return _origDrawBackground ? _origDrawBackground.call(this, ctx, canvas) : undefined;
             };
 
             nodeType.prototype.onMouseMove = function (e, pos) {
