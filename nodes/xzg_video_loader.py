@@ -183,6 +183,65 @@ def target_size(width, height, custom_width, custom_height, downscale_ratio=8):
     return width, height
 
 
+def _build_framerate_filters(force_rate, source_fps):
+    """构建帧率转换滤镜，使用与达芬奇时间线相同的 Bresenham floor 映射算法。
+
+    达芬奇算法（通过实测验证）：
+      输出的第 k 帧 = floor(k × source_fps / target_fps)
+
+    降帧（src > dst）用 ffmpeg select 滤镜实现（已通过测试验证）：
+      30→24: 丢弃第 5/10/15/20/25/30 帧
+      60→24: 保留 0,2,5,7,10,12,15,17,20,22,25,27...
+      25→24: 丢弃第 25/50/75... 帧
+      60→30: 保留偶数帧（0,2,4,...）
+
+    升帧（src < dst）返回空滤镜，由 Python 端按 floor(k*src/dst) 缓存前一帧 yield：
+      24→25: 第1帧重复一次（0,0,1,2,...,23）
+
+    Args:
+        force_rate: 目标帧率（0 表示不转换）
+        source_fps: 源视频帧率
+    Returns:
+        tuple: (filters: list[str], is_upscale: bool)
+    """
+    from math import gcd
+
+    if force_rate <= 0:
+        return [], False
+    if source_fps <= 0:
+        return [f"fps=fps={force_rate}"], False
+
+    # 升帧：返回空滤镜，由 Python 端处理帧复制
+    if force_rate > source_fps:
+        return [], True
+
+    # 等帧率：直通
+    if force_rate == source_fps:
+        return [], False
+
+    # 降帧：用 select + Bresenham floor 映射
+    # 仅处理整数帧率；非整数帧率（如 29.97）回退 fps 滤镜
+    if source_fps != int(source_fps) or force_rate != int(force_rate):
+        return [f"fps=fps={force_rate}:round=down"], False
+
+    src = int(source_fps)
+    dst = int(force_rate)
+    g = gcd(src, dst)
+    p = src // g  # 周期长度
+    q = dst // g  # 每周期保留帧数
+
+    # 周期过长 → 回退 fps 滤镜
+    if p > 120:
+        return [f"fps=fps={force_rate}:round=down"], False
+
+    # Bresenham/floor 映射：周期内保留的位置集合
+    keep_positions = sorted(set(int(k * p / q) for k in range(q)))
+    pos_exprs = [f"eq(mod(n\\,{p})\\,{pos})" for pos in keep_positions]
+    select_expr = "+".join(pos_exprs)
+    return [f"select={select_expr}"], False
+
+
+
 def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                            custom_width, custom_height, downscale_ratio=8,
                            aspect_ratio=None, ratio_mode=1, ratio_dim=0):
@@ -280,8 +339,9 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                 custom_width = custom_height * _ratio
 
     vfilters = []
-    if force_rate != 0:
-        vfilters.append("fps=fps=" + str(force_rate))
+    # 帧率转换（与达芬奇相同的 Bresenham floor 映射）
+    fr_filters, is_upscale = _build_framerate_filters(force_rate, fps_base)
+    vfilters.extend(fr_filters)
     if custom_width != 0 or custom_height != 0:
         size = target_size(size_base[0], size_base[1], custom_width,
                            custom_height, downscale_ratio=downscale_ratio)
@@ -301,14 +361,28 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     if len(vfilters) > 0:
         args_all_frames += ["-vf", ",".join(vfilters)]
 
-    yieldable_frames = (force_rate or fps_base) * duration
+    # 用源帧数推导目标帧数，避免 ffmpeg duration 浮点精度误差
+    # ffmpeg 报告的 duration 可能有偏差（如 30/16=1.875 报为 1.88），导致帧数多/少 1
+    # 正确方式：source_frames = round(fps_base × duration)，再按比例计算目标帧数
+    source_frame_count = round(fps_base * duration) if fps_base > 0 else 0
+    if force_rate and fps_base > 0:
+        yieldable_frames = source_frame_count * force_rate / fps_base
+    else:
+        yieldable_frames = source_frame_count
     if frame_load_cap > 0:
-        args_all_frames += ["-frames:v", str(frame_load_cap)]
         yieldable_frames = min(yieldable_frames, frame_load_cap)
+
+    # 降帧时始终限制输出帧数到 floor(源帧数 × 目标帧率/源帧率)
+    # select 滤镜按周期模式匹配，可能输出超出时长的帧（如 60fps 30帧→25fps 应12帧，select 输出13帧）
+    if not is_upscale:
+        args_all_frames += ["-frames:v", str(int(yieldable_frames))]
 
     yield (size_base[0], size_base[1], fps_base, duration, fps_base * duration,
            1.0 / (force_rate or fps_base), yieldable_frames, size[0], size[1], alpha)
 
+    # 降帧时 -vsync 0（passthrough），升帧时直通
+    if not is_upscale:
+        args_all_frames += ["-vsync", "0"]
     args_all_frames += ["-f", "rawvideo", "-"]
 
     pbar = ProgressBar(int(yieldable_frames)) if yieldable_frames > 0 else None
@@ -317,42 +391,79 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     try:
         with subprocess.Popen(args_all_frames, stdout=subprocess.PIPE) as proc:
             bpi = size[0] * size[1] * 8
-            current_bytes = bytearray(bpi)
-            current_offset = 0
-            prev_frame = None
-            while True:
-                bytes_read = proc.stdout.read(bpi - current_offset)
-                if bytes_read is None:
-                    time.sleep(.05)
-                    continue
-                if len(bytes_read) == 0:
-                    break
-                current_bytes[current_offset:len(bytes_read)] = bytes_read
-                current_offset += len(bytes_read)
-                if current_offset == bpi:
-                    if prev_frame is not None:
-                        yield prev_frame
-                        frames_added += 1
-                        if pbar is not None:
-                            pbar.update_absolute(frames_added, int(yieldable_frames))
-                    prev_frame = np.frombuffer(current_bytes,
-                                               dtype=np.dtype(np.uint16).newbyteorder("<")
-                                               ).reshape(size[1], size[0], 4) / 65535.0
-                    if not alpha:
-                        prev_frame = prev_frame[:, :, :-1]
-                    current_offset = 0
+
+            def _read_one_frame():
+                """从 ffmpeg stdout 读取一帧，返回 numpy 数组或 None（EOF）"""
+                buf = bytearray(bpi)
+                off = 0
+                while off < bpi:
+                    chunk = proc.stdout.read(bpi - off)
+                    if not chunk:
+                        return None
+                    buf[off:off + len(chunk)] = chunk
+                    off += len(chunk)
+                frame = np.frombuffer(buf, dtype=np.dtype(np.uint16).newbyteorder("<")
+                                      ).reshape(size[1], size[0], 4) / 65535.0
+                if not alpha:
+                    frame = frame[:, :, :-1]
+                return frame
+
+            if is_upscale:
+                # 升帧：按 floor(k * src/dst) 选择/复制帧（与达芬奇一致）
+                # 24→25: [0,0,1,2,...,23]（第1帧重复）
+                src_n = 0
+                prev_frame = None
+                for k in range(int(yieldable_frames)):
+                    target = int(k * fps_base / force_rate)  # floor(k * src/dst)
+                    # 读取直到 src_n > target，确保 prev_frame 是 target 帧数据
+                    while src_n <= target:
+                        prev_frame = _read_one_frame()
+                        if prev_frame is None:
+                            break
+                        src_n += 1
+                    if prev_frame is None:
+                        break
+                    yield prev_frame
+                    frames_added += 1
+                    if pbar is not None:
+                        pbar.update_absolute(frames_added, int(yieldable_frames))
+            else:
+                # 降帧/直通：select 滤镜已选择帧，直接 yield
+                current_bytes = bytearray(bpi)
+                current_offset = 0
+                prev_frame = None
+                while True:
+                    bytes_read = proc.stdout.read(bpi - current_offset)
+                    if bytes_read is None:
+                        time.sleep(.05)
+                        continue
+                    if len(bytes_read) == 0:
+                        break
+                    current_bytes[current_offset:len(bytes_read)] = bytes_read
+                    current_offset += len(bytes_read)
+                    if current_offset == bpi:
+                        if prev_frame is not None:
+                            yield prev_frame
+                            frames_added += 1
+                            if pbar is not None:
+                                pbar.update_absolute(frames_added, int(yieldable_frames))
+                        prev_frame = np.frombuffer(current_bytes,
+                                                   dtype=np.dtype(np.uint16).newbyteorder("<")
+                                                   ).reshape(size[1], size[0], 4) / 65535.0
+                        if not alpha:
+                            prev_frame = prev_frame[:, :, :-1]
+                        current_offset = 0
+                if prev_frame is not None:
+                    yield prev_frame
+                    frames_added += 1
+                    if pbar is not None:
+                        pbar.update_absolute(frames_added, int(yieldable_frames))
     except BrokenPipeError:
         try:
             err = proc.stderr.read().decode(*ENCODE_ARGS)
         except Exception:
             err = ""
         raise Exception("FFmpeg read error:\n" + err)
-
-    if prev_frame is not None:
-        yield prev_frame
-        frames_added += 1
-        if pbar is not None:
-            pbar.update_absolute(frames_added, int(yieldable_frames))
 
 
 class XiaozhuguangVideoLoader:
@@ -513,6 +624,13 @@ class XiaozhuguangVideoLoader:
                     vf_parts.append(f"scale={new_w}:{new_h}:force_original_aspect_ratio=increase")
                     vf_parts.append(f"crop={new_w}:{new_h}")
                 vf_parts.append("setsar=1")
+            # 帧率滤镜：降帧用 select（与帧提取一致），升帧用 fps round=down（预览可接受末帧重复）
+            fr_filters, _is_upscale = _build_framerate_filters(强制帧率, src_fps)
+            if _is_upscale:
+                # 升帧：预览视频用 fps 滤镜（mp4 输出需要 PTS，无法 Python 端处理）
+                fr_filters = [f"fps=fps={强制帧率}:round=down"]
+            if fr_filters:
+                vf_parts = fr_filters + vf_parts
 
             cmd = [ffmpeg_path, "-y", "-v", "error"]
             # 起始时间（跳过帧数 → 时间）
@@ -525,7 +643,7 @@ class XiaozhuguangVideoLoader:
             else:
                 cmd += ["-i", video_path]
 
-            # 帧率
+            # 输出帧率（容器元数据，fps 滤镜已处理帧选择/复制）
             if 强制帧率 > 0:
                 cmd += ["-r", str(强制帧率)]
 

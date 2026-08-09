@@ -223,11 +223,26 @@ export async function xzgGetRealUrl(imgData) {
 
 /**
  * 下载图片（支持懒编码 PNG）
+ * 优先级：
+ *   1) 保存模式下已保存到 output 目录的 PNG → 直接引用，无需懒编码（最快）
+ *   2) 已有 real_url 或可懒编码获取 → 走懒编码
  */
 export async function downloadLazyImage(imgData) {
     if (!imgData) return;
 
-    // 优先使用已有真实 URL
+    // 1) 优先：output 目录已有 PNG 文件，直接构造 /view URL 下载
+    if (imgData.saved_filename && imgData.saved_type) {
+        const savedUrl = api.apiURL(
+            `/view?filename=${encodeURIComponent(imgData.saved_filename)}`
+            + `&type=${encodeURIComponent(imgData.saved_type)}`
+            + `&subfolder=${encodeURIComponent(imgData.saved_subfolder || "")}`
+            + `${app.getRandParam()}`
+        );
+        await downloadImage(savedUrl, imgData.saved_filename || `xzg-save-${xzgTimestamp()}.png`);
+        return;
+    }
+
+    // 2) 回退：懒编码获取全分辨率 PNG
     let url = imgData.real_url || await xzgGetRealUrl(imgData);
     if (url) {
         await downloadImage(url, `xzg-save-${xzgTimestamp()}.png`);

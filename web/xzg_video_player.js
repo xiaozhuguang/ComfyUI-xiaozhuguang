@@ -94,6 +94,10 @@ export class XiaozhuguangVideoPlayer {
         // 循环/单次播放：false=单次（播放到蓝杠停止），true=循环（蓝杠→红杠重新开始）
         this._loopPlayback = false;
         this._loopBtn = null;
+        // 静音状态
+        this._muted = false;
+        this._muteBtn = null;
+        this._buttonRow = null;
 
         this._buildDOM();
     }
@@ -182,23 +186,46 @@ export class XiaozhuguangVideoPlayer {
         this._playOverlay = document.createElement("div");
         this._playOverlay.style.display = "none";
 
-        // 循环/单次播放切换按钮（左上角）
+        // 播放模式按钮行（左下角，时间码上方）
+        this._buttonRow = document.createElement("div");
+        this._buttonRow.style.cssText =
+            "display:flex;align-items:center;padding:0 6px 4px;gap:8px;" +
+            "pointer-events:none;";
+
+        // 循环/单次播放切换按钮（金黄色）
         this._loopBtn = document.createElement("span");
         this._loopBtn.style.cssText =
-            "position:absolute;left:6px;top:6px;z-index:15;" +
-            "color:rgba(255,255,255,0.55);font-size:12px;font-family:sans-serif;" +
+            "color:#FFD700;font-size:12px;font-family:sans-serif;" +
             "cursor:pointer;pointer-events:auto;user-select:none;" +
             "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
             "transition:color 0.15s;";
         this._loopBtn.textContent = "→";
+        this._loopBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
         this._loopBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
             this._loopPlayback = !this._loopPlayback;
             this._loopBtn.textContent = this._loopPlayback ? "⇆" : "→";
-            this._loopBtn.style.color = this._loopPlayback ? "#FFD700" : "rgba(255,255,255,0.55)";
         });
-        this._controlsLayer.appendChild(this._loopBtn);
+        this._buttonRow.appendChild(this._loopBtn);
+
+        // 静音按钮（播放模式按钮右侧，金黄色）
+        this._muteBtn = document.createElement("span");
+        this._muteBtn.style.cssText =
+            "color:#FFD700;font-size:12px;font-family:sans-serif;" +
+            "cursor:pointer;pointer-events:auto;user-select:none;" +
+            "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
+            "transition:color 0.15s;";
+        this._muteBtn.textContent = "🔊";
+        this._muteBtn.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+        this._muteBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this._muted = !this._muted;
+            if (this._video) this._video.muted = this._muted;
+            this._muteBtn.textContent = this._muted ? "🔇" : "🔊";
+        });
+        this._buttonRow.appendChild(this._muteBtn);
 
         this._bottomBar = document.createElement("div");
         this._bottomBar.style.cssText =
@@ -351,9 +378,10 @@ export class XiaozhuguangVideoPlayer {
         this._bottomBar.addEventListener("pointerup", this._onProgressUp);
         this._bottomBar.addEventListener("wheel", this._forwardWheel, { passive: false });
 
-        // column-reverse 下先添加进度条容器（底部），再添加时间行（紧贴其上）
+        // column-reverse 下先添加进度条容器（底部），再添加时间行（紧贴其上），最后添加按钮行（最上层）
         this._bottomBar.appendChild(this._progressContainer);
         this._bottomBar.appendChild(timeRow);
+        this._bottomBar.appendChild(this._buttonRow);
         this._controlsLayer.appendChild(this._bottomBar);
 
         this._videoSurface.appendChild(this._controlsLayer);
@@ -1502,6 +1530,8 @@ export class XiaozhuguangVideoPlayer {
         this._redFrameDisplay = null;
         this._blueFrameDisplay = null;
         this._loopBtn = null;
+        this._muteBtn = null;
+        this._buttonRow = null;
         this._placeholder = null;
         this._stage = null;
         this._progressRafId = null;

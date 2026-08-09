@@ -406,6 +406,7 @@ function createImgBatchUI(node) {
     let maskEnabled = false;               // 遮罩绘制模式是否开启
     let maskTool = "brush";                // brush | eraser
     let brushSize = 30;                    // 画笔大小 px
+    let _maskRightErasing = false;         // 右键擦除中（临时覆盖 maskTool 为 eraser）
     let _maskDrawing = false;
     let _maskLastPt = null;
     let _maskHoverPt = null;               // 鼠标在 overlay 上的 CSS 像素坐标，用于笔刷预览
@@ -708,9 +709,9 @@ function createImgBatchUI(node) {
     const _refreshMaskToolbar = () => {
         const isSingle = uploadMode === "replace";
         maskToolbar.style.display = isSingle ? "flex" : "none";
-        maskToggleBtn.textContent = maskEnabled ? "遮罩:开" : "遮罩:关";
-        maskToggleBtn.style.color = maskEnabled ? "#FFD700" : "var(--input-text)";
-        maskToggleBtn.style.borderColor = maskEnabled ? "#FFD700" : "var(--border-color)";
+        maskToggleBtn.textContent = maskEnabled ? "退出遮罩" : "遮罩:关";
+        maskToggleBtn.style.color = maskEnabled ? "#FF6B6B" : "var(--input-text)";
+        maskToggleBtn.style.borderColor = maskEnabled ? "#FF6B6B" : "var(--border-color)";
         maskBrushBtn.style.color = maskTool === "brush" ? "#66CC66" : "var(--input-text)";
         maskBrushBtn.style.borderColor = maskTool === "brush" ? "#66CC66" : "var(--border-color)";
         maskEraserBtn.style.color = maskTool === "eraser" ? "#FF6B6B" : "var(--input-text)";
@@ -722,6 +723,9 @@ function createImgBatchUI(node) {
         maskEraserBtn.style.display = vis;
         maskClearBtn.style.display = vis;
         maskInvertBtn.style.display = vis;
+        // 遮罩开启时隐藏上传/.input/.output/删除/清空按钮及左下角单图/列表批次按钮，避免误操作
+        const actionBtns = [uploadBtn, folderBtn, outputBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn];
+        actionBtns.forEach(btn => { btn.style.display = maskEnabled ? "none" : ""; });
         _syncMaskLayerVisibility();
     };
 
@@ -1147,9 +1151,9 @@ function createImgBatchUI(node) {
         const py = _maskHoverPt.y;
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
-        ctx.fillStyle = maskTool === "brush" ? "rgba(0,255,0,0.25)" : "rgba(255,100,100,0.25)";
+        ctx.fillStyle = (_maskRightErasing ? "eraser" : maskTool) === "brush" ? "rgba(0,255,0,0.25)" : "rgba(255,100,100,0.25)";
         ctx.fill();
-        ctx.strokeStyle = maskTool === "brush" ? "#0f0" : "#f33";
+        ctx.strokeStyle = (_maskRightErasing ? "eraser" : maskTool) === "brush" ? "#0f0" : "#f33";
         ctx.lineWidth = 1;
         ctx.stroke();
     }
@@ -1157,7 +1161,7 @@ function createImgBatchUI(node) {
     // 在离屏 canvas 上画一段（从 from 到 to 的线段 + 端点），使用画笔/橡皮
     function _maskDrawSegment(fromPt, toPt) {
         if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
-        const tool = maskTool;
+        const tool = _maskRightErasing ? "eraser" : maskTool;
         const radius = Math.max(0.5, brushSize / 2);
         // 显示层的笔刷大小要映射到离屏坐标：显示 scale → 离屏 scale 是 1/rect.scale
         const rect = _getImageDisplayRect();
@@ -1320,7 +1324,8 @@ function createImgBatchUI(node) {
 
     function _onMaskPointerDown(e) {
         if (!maskEnabled) return;
-        if (e.button !== undefined && e.button !== 0) return;
+        // 左键(0)画笔涂抹遮罩；右键(2)临时擦除遮罩；其它按键忽略
+        if (e.button !== 0 && e.button !== 2) return;
         _updateMaskCursor();
         // 判断是否点在遮罩事件层或 img 自身的矩形内（点击 sidebar 不触发）
         const path = e.composedPath ? e.composedPath() : [e.target];
@@ -1337,9 +1342,11 @@ function createImgBatchUI(node) {
         // 图片缩放时转换到 inner 坐标
         const innerPt = _containerPtToInner(px, py);
         _maskHoverPt = { x: innerPt.x, y: innerPt.y };
-        _renderBrushPreview();
         const pt = _overlayPtToOffscreen(innerPt.x, innerPt.y);
         if (!pt) return;
+        // 命中且坐标有效后才设置右键擦除标志（避免误留状态影响预览颜色）
+        _maskRightErasing = (e.button === 2);
+        _renderBrushPreview();
         _maskDrawing = true;
         _maskLastPt = pt;
         try {
@@ -1374,10 +1381,11 @@ function createImgBatchUI(node) {
         if (wasDrawing) {
             _maskDrawing = false;
             _maskLastPt = null;
+            _maskRightErasing = false;
             try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
             _commitMaskToWidget();
             _renderMaskOverlay();
-            _renderBrushPreview(); // 刷新预览（保持显示）
+            _renderBrushPreview(); // 刷新预览（恢复当前 maskTool 颜色）
         }
         if (maskEnabled) {
             try { e.preventDefault(); } catch (_) {}
@@ -1575,6 +1583,16 @@ function createImgBatchUI(node) {
         });
     };
 
+    // 更新删除按钮尺寸（跟随卡片边长 20%）
+    const _applyDelBtnSize = (delBtn, cardSize) => {
+        if (!delBtn) return;
+        const delBtnSize = Math.round(cardSize * 0.2);
+        const delBtnFont = Math.round(delBtnSize * 0.72);
+        delBtn.style.width = `${delBtnSize}px`;
+        delBtn.style.height = `${delBtnSize}px`;
+        delBtn.style.fontSize = `${delBtnFont}px`;
+    };
+
     const resizeObserver = new ResizeObserver(() => {
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         resizeRaf = requestAnimationFrame(() => {
@@ -1608,6 +1626,7 @@ function createImgBatchUI(node) {
                             cell.style.height = `${finalSize}px`;
                             cell.style.transition = "none";
                             cell.style.animation = "none";
+                            _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
                         });
                         // 统一强制 reflow 一次，确保所有 cell 的 animation:none 已提交
                         void grid.offsetWidth;
@@ -1643,6 +1662,7 @@ function createImgBatchUI(node) {
                             cell.style.height = `${finalSize}px`;
                             cell.style.transition = "none";
                             cell.style.animation = "none";
+                            _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
                         });
                         // 统一强制 reflow
                         void grid.offsetWidth;
@@ -2275,11 +2295,13 @@ function createImgBatchUI(node) {
             };
             thumbEl.src = getThumbUrl(name, 512);
 
+            // 删除按钮尺寸跟随卡片缩放：卡片边长的 20%，贴近右上角
             const delBtn = document.createElement("div");
             delBtn.className = "del-btn";
             delBtn.textContent = "×";
             delBtn.style.cssText =
-                "position:absolute;top:2px;right:2px;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;background:rgba(0,0,0,0.7);color:#fff;border-radius:50%;cursor:pointer;z-index:3;opacity:0;";
+                "position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;line-height:1;color:#fff;cursor:pointer;z-index:3;opacity:0;";
+            _applyDelBtnSize(delBtn, contentSize);
             delBtn.title = "删除";
             delBtn.addEventListener("click", (e) => {
                 e.preventDefault();

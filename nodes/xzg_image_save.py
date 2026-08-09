@@ -101,6 +101,7 @@ class XiaozhuguangImageSave(PreviewImage):
             compressed_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
 
             # 保存到输出目录（仅保存模式）
+            saved_info = None
             if not is_preview_mode:
                 while True:
                     fname = f"{filename_prefix}_{counter:05d}"
@@ -119,11 +120,12 @@ class XiaozhuguangImageSave(PreviewImage):
                     # 压缩 JPG（与预览相同的压缩参数）
                     compressed_pil.save(full_path, "JPEG", quality=quality, optimize=True)
 
-                saved.append({
+                saved_info = {
                     "filename": os.path.basename(full_path),
                     "subfolder": subfolder,
                     "type": "output"
-                })
+                }
+                saved.append(saved_info)
 
             entries.append({
                 "filename": preview_fname,
@@ -133,6 +135,10 @@ class XiaozhuguangImageSave(PreviewImage):
                 "real_index": i,
                 "real_width": int(w),
                 "real_height": int(h),
+                # 保存模式下附带 output 目录文件信息，右键可直接下载，无需懒编码
+                "saved_filename": saved_info["filename"] if saved_info else None,
+                "saved_subfolder": saved_info["subfolder"] if saved_info else None,
+                "saved_type": saved_info["type"] if saved_info else None,
             })
             counter += 1
 

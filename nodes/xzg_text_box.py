@@ -36,12 +36,11 @@ _ZH_DIGIT_MAP = {
 #  量词/单位/后缀 白名单（数字 紧跟这些词 → 完整读数）
 #  注意：
 #    - 正则匹配时按长度降序排序，长字符串优先匹配（"千克" 优先于 "克"）
-#    - 为避免与中文名词混淆（例如 "720分辨率" 的 "分"、"第12条" 的"条"
-#      作量词但"条款"的"条"作名词），这里不收录有明显歧义的单字：
-#        分、节、条、款、项、页、课、关、档、级、星
-#      如需要表达这些量词，写双字词形式即可（分钟/秒钟/章节/条款/…）
-#      注："秒" 单字已收录（15秒→十五秒），"秒钟" 优先于 "秒" 匹配。
-#    - 纯中文但较无歧义的计数/度量/时间/序号量词 仍收录
+#    - 为避免与中文名词混淆（例如 "720分辨率" 的 "分" 会把 "720分" 当成单位）
+#      这类有强歧义的单字不收录：分、关、档、级、星
+#      如需要表达相关量词，写双字词形式即可（分钟/秒钟/章节/条款/关卡/档次/级别…）
+#    - 纯中文但较无歧义的计数/度量/时间/序号量词 仍收录，包括：
+#      节、条、款、项、页、课（"98条→九十八条"，"第12条"已由序数正则优先占用，不冲突）
 # ────────────────────────────────────────────────────────────
 _QUANTIFIER_UNITS = [
     # 1) 年龄
@@ -102,10 +101,13 @@ _QUANTIFIER_UNITS = [
     "单元", "号楼", "号楼层",
     "号", "栋", "楼", "层", "室", "房",
     "届", "次", "版", "卷", "期", "章", "册", "集", "话", "季", "部",
+    "节", "条", "款", "项", "页", "课",
     "號", "樓", "層", "單元", "屆", "冊", "部",
     # 11) 时间
     "分钟", "秒钟", "小时", "钟头", "点钟", "点半",
-    "星期", "礼拜",
+    "星期", "礼拜", "天",
+    # 年份时间后缀（2位数字+这些后缀 → 纪年简写按位读：24年底→二四年底）
+    "年底", "年初", "年末", "年前", "年后", "年中", "年终", "年尾",
     "余年", "年", "月", "日", "时", "点", "周", "秒",
     # 12) 繁体/台港澳 常用量词（长词优先，且单字无歧义的收录）
     "歲", "樓", "號", "層", "節", "項", "冊", "個",
@@ -174,14 +176,45 @@ _UNIT_TO_ZH = {
 }
 
 # 主正则：数字（整数或小数）+ 量词/单位
-#   数字部分：\d+(?:\.\d+)?
+#   数字部分：-?\d+(?:\.\d+)?   （支持可选前导负号，如 -12℃）
 #   量词部分：白名单
 _QUANTIFIER_RE = re.compile(
-    r"(\d+(?:\.\d+)?)"
+    r"(-?\d+(?:\.\d+)?)"
     r"(" + "|".join(re.escape(u) for u in _QUANTIFIER_UNITS) + r")"
 )
 # 保留旧拼写作为别名（防止有外部引用）
 _QUNATIFIER_RE = _QUANTIFIER_RE
+
+# ────────────────────────────────────────────────────────────
+#  分数 正则（带分数 + 普通分数）
+#    1 1/2  →  一又二分之一  （带分数：整数 + 空格 + 分子/分母）
+#    1/2    →  二分之一       （普通分数：分子/分母）
+#    3/4    →  四分之三
+#    负分数：-1/2 → 负二分之一，-2 1/3 → 负二又三分之一
+#  前后加断言，避免日期（1/2/2024）或 IP 段（192/168/0/1）被误匹配：
+#    - 左边界：前字符不能是 数字 / 斜杠 / 小数点
+#    - 右边界：后字符不能是 数字 / 斜杠
+# ────────────────────────────────────────────────────────────
+_MIXED_FRACTION_RE = re.compile(
+    r"(?<![\d/.])"            # 左边界
+    r"(-?\d+)"                # 整数部分（可选负号）
+    r"\s+"                    # 空格（带分数的整数与分数之间必须有空格）
+    r"(\d+)/(\d+)"            # 分子/分母
+    r"(?![\d/])"              # 右边界
+)
+_FRACTION_RE = re.compile(
+    r"(?<![\d/.])"
+    r"(-?\d+)/(\d+)"
+    r"(?![\d/])"
+)
+
+# 2 位数 + 年份时间后缀 集合（纪年简写式：24年底 → 二四年底，不走"二十四年"）
+_YEAR_SUFFIX_ABBREV = {"年底", "年初", "年末", "年前", "年后", "年中", "年终", "年尾"}
+
+# 温度/温感单位集合（决定 "-12℃" 读"零下"还是"负"）
+_TEMP_UNITS = {"摄氏度", "华氏度", "℃", "℉", "度"}
+# 负号 量词回调里识别的单位集合快速查（温度→零下，其它→负）
+_TEMP_UNIT_EXACT = _TEMP_UNITS | {"°C", "°F"}
 
 # ────────────────────────────────────────────────────────────
 #  乘积 / 分辨率 正则（连乘链，2 段及以上）
@@ -195,6 +228,19 @@ _MULTIPLY_CHAIN_RE = re.compile(
     r"\d+(?:\.\d+)?(?:\s*[xX×\*]\s*\d+(?:\.\d+)?){1,}"
 )
 _MULTIPLY_SPLIT_RE = re.compile(r"\s*[xX×\*]\s*")
+
+# ────────────────────────────────────────────────────────────
+#  比率 正则（A:B / A比B）
+#   9:16   →  九比十六
+#   16:9   →  十六比九
+#   9比16  →  九比十六
+#   4:3    →  四比三
+# 两段数字均按完整读数（非按位读），中间分隔符统一为"比"。
+# 仅匹配恰好为 ":" 或 "比" 的分隔符，不误伤"比较/比如"等词。
+# ────────────────────────────────────────────────────────────
+_RATIO_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*[:比]\s*(\d+(?:\.\d+)?)"
+)
 
 # 「第 / 其」 序数前缀匹配：(第|其) + 整数（1-4位足以覆盖常用序数，放宽到无上限）+ 可选序号后缀
 _ORDINAL_SUFFIXES = [
@@ -217,10 +263,16 @@ _SMALL_UNITS = ["", "十", "百", "千"]
 def _int_to_zh_full(n: int) -> str:
     """把一个非负整数按中文完整读法写出（万级+个级，覆盖 0~9999_9999）。
 
-    规则关键点：
+    规则关键点（含"二/两"上下文策略）：
       - 10～19 的"十"位最高省略"一"：12 → 十二，10 → 十
       - 每段中间连续的 0 合并为一个"零"：105 → 一百零五，1001 → 一千零一
       - 万级与个级之间（若个级 < 1000 且非 0），"万"后补"零"
+      - 二/两策略（段首位）：
+          · 段首位的 "2" 后面接 "百/千" → 用"两"：两百、两千
+          · "十"位的 "2" → 永远"二"（二十、十二，不可"两十"）
+          · 个位 "2" → 保持"二"，由量词回调按需转"两"
+      - 二/两策略（万级）：
+          · 万级是 2 → "两万"（不是"二万"，由外层替换修正）
     """
     if n < 0:
         n = -n
@@ -251,7 +303,11 @@ def _int_to_zh_full(n: int) -> str:
             if unit == "十" and digit == 1 and start == i:
                 out.append("十")
             else:
-                out.append(_ZH_DIGIT_MAP[str(digit)] + unit)
+                digit_zh = _ZH_DIGIT_MAP[str(digit)]
+                # 段首位的 2 + 单位是 百/千 → 两；十/个位 保持二
+                if digit == 2 and start == i and unit not in ("", "十"):
+                    digit_zh = "两"
+                out.append(digit_zh + unit)
         return "".join(out)
 
     wan = n // 10000
@@ -260,6 +316,9 @@ def _int_to_zh_full(n: int) -> str:
         return _read_four(ge) or "零"
 
     wan_str = _read_four(wan)
+    # 2万 → 两万（"二万"不自然）；万级是 2 时 _read_four 返回 "二"（个位 2），替换之
+    if wan_str == "二":
+        wan_str = "两"
     ge_str = _read_four(ge)
     if not ge_str:
         return wan_str + "万"
@@ -314,9 +373,13 @@ def _digits_to_zh_by_char(text: str) -> str:
 def _digits_to_zh(text: str) -> str:
     """把字符串中 0-9 转为中文数字：
       - 乘积/分辨率（1280x720, 3×4, 1x2x3）→ A乘以B 完整读数
+      - 比率（9:16, 9比16, 16:9）→ A比B 完整读数
       - 数字 + 量词/单位白名单（含英文缩写转中文 cm→厘米…）→ 完整读数
       - 第/其 + 数字（+可选序号后缀） → 完整读数
       - 4位及以上数字 + "年" → 按位读（1926年→一九二六年）
+      - 分数（1/2, 3/4, 1 1/2, -2 3/8）→ 分母+分之+分子
+      - 负数 + 量词（-12℃, -5个）→ 零下/负 + 量词读数
+      - 二/两上下文：200→两百、2000→两千、2万→两万；"2个/只/米…"→"两个…"
       - 其他 → 按位读
     使用 Unicode 私用码位 + 全角数字 作为占位符，
     确保占位符本身不包含 ASCII 0-9，不会被按位转换二次改写。
@@ -358,6 +421,38 @@ def _digits_to_zh(text: str) -> str:
 
     stage1 = _ORDINAL_RE.sub(_ordinal_sub, text)
 
+    # ── 1.5) 分数：带分数 优先（长匹配），再处理普通分数
+    #           优先级高于连乘链（1/2x3 先匹配 1/2，再留 x3 给连乘处理）
+    def _mixed_fraction_sub(m: re.Match) -> str:
+        """2 1/2 → 二又二分之一；-1 3/4 → 负一又四分之三"""
+        int_part = m.group(1)
+        num = m.group(2)
+        den = m.group(3)
+        sign = ""
+        if int_part.startswith("-"):
+            sign = "负"
+            int_part = int_part[1:]
+        int_zh = _int_to_zh_full(int(int_part))
+        num_zh = _int_to_zh_full(int(num))
+        den_zh = _int_to_zh_full(int(den))
+        return _hold(f"{sign}{int_zh}又{den_zh}分之{num_zh}")
+
+    stage1b = _MIXED_FRACTION_RE.sub(_mixed_fraction_sub, stage1)
+
+    def _fraction_sub(m: re.Match) -> str:
+        """1/2 → 二分之一；-3/4 → 负四分之三"""
+        num = m.group(1)
+        den = m.group(2)
+        sign = ""
+        if num.startswith("-"):
+            sign = "负"
+            num = num[1:]
+        num_zh = _int_to_zh_full(int(num))
+        den_zh = _int_to_zh_full(int(den))
+        return _hold(f"{sign}{den_zh}分之{num_zh}")
+
+    stage1c = _FRACTION_RE.sub(_fraction_sub, stage1b)
+
     # ── 2) 再处理 乘积 / 分辨率 链（1280x720 / 1x2x3 / 3×4） ──
     #    乘积场景按位读（分辨率/尺寸/型号感）：1280x720 → 一二八零乘以七二零
     def _multiply_sub(m: re.Match) -> str:
@@ -366,20 +461,41 @@ def _digits_to_zh(text: str) -> str:
         zh_parts = [_digits_to_zh_by_char(p) for p in parts]
         return _hold("乘以".join(zh_parts))
 
-    stage2 = _MULTIPLY_CHAIN_RE.sub(_multiply_sub, stage1)
+    stage2 = _MULTIPLY_CHAIN_RE.sub(_multiply_sub, stage1c)
 
-    # ── 3) 再处理 数字 + 量词/单位（含 % 百分号、英文缩写 → 中文单位） ──
+    # ── 2.5) 比率（9:16 / 9比16）→ 完整读数比完整读数 ──
+    def _ratio_sub(m: re.Match) -> str:
+        left = _num_to_zh_full(m.group(1))
+        right = _num_to_zh_full(m.group(2))
+        return _hold(left + "比" + right)
+
+    stage2b = _RATIO_RE.sub(_ratio_sub, stage2)
+
+    # ── 3) 再处理 数字 + 量词/单位（含 % 百分号、英文缩写 → 中文单位、负数零下/负、2→两修正） ──
     def _quant_sub(m: re.Match) -> str:
-        num_str = m.group(1)
+        raw_num = m.group(1)  # 可能带前导 "-"
         unit = m.group(2)
+
+        # 处理负号：先拆 sign 与 绝对值 num_str
+        if raw_num.startswith("-"):
+            sign = "-"
+            num_str = raw_num[1:]
+        else:
+            sign = ""
+            num_str = raw_num
+
         try:
-            # 年份特殊读法
-            if unit == "年" and "." not in num_str:
+            # 年份读法分支：unit == "年" 或 2位纪年简写后缀（年底/年初…）
+            is_year_suffix = unit == "年"
+            is_year_abbrev = (unit in _YEAR_SUFFIX_ABBREV) and ("." not in num_str) and (len(num_str) == 2)
+            if (is_year_suffix or is_year_abbrev) and "." not in num_str:
                 num_int = int(num_str)
+                # 2 位数 + 年底/年初/年末/… → 纪年简写按位读：24年底→二四年底
+                if is_year_abbrev:
+                    base = _digits_to_zh_by_char(num_str)
                 # 整千年（2000/3000/5000…）→ 完整读数，2000 读"两千"而非"二千"
-                if num_int >= 1000 and num_int % 1000 == 0:
+                elif num_int >= 1000 and num_int % 1000 == 0:
                     base = _int_to_zh_full(num_int)
-                    # 二千 → 两千（年份场景更自然）
                     if base.startswith("二千"):
                         base = "两" + base[1:]
                 # 4位及以上非整千年 → 按位读（1926年→一九二六年）
@@ -391,6 +507,24 @@ def _digits_to_zh(text: str) -> str:
                 base = _num_to_zh_full(num_str)
         except ValueError:
             base = _digits_to_zh_by_char(num_str)
+
+        # ── 二/两修正：单个整数 2（非小数、非多位）在量词前 → "两个/两只/两米/两岁"
+        if "." not in num_str and num_str == "2":
+            # _num_to_zh_full 返回 "二"，替换为 "两"
+            if base == "二":
+                base = "两"
+            elif base.startswith("二") and len(base) == 1:
+                base = "两"
+
+        # ── 负号前缀：温度单位用"零下"，其它用"负"
+        if sign == "-":
+            zh_unit_check = _UNIT_TO_ZH.get(unit, unit)
+            # 原单位名 或 其中文译名 命中温度集合 → "零下"
+            if unit in _TEMP_UNIT_EXACT or zh_unit_check in _TEMP_UNIT_EXACT:
+                base = "零下" + base
+            else:
+                base = "负" + base
+
         # 英文缩写 → 中文单位名（cm→厘米、kg→千克…），未命中则保留原单位
         zh_unit = _UNIT_TO_ZH.get(unit, unit)
         if unit == "%":
@@ -399,7 +533,7 @@ def _digits_to_zh(text: str) -> str:
             return _hold("千分之" + base)
         return _hold(base + zh_unit)
 
-    stage3 = _QUANTIFIER_RE.sub(_quant_sub, stage2)
+    stage3 = _QUANTIFIER_RE.sub(_quant_sub, stage2b)
 
     # ── 4) 剩余数字（纯编号/代码/串号）按位读 ──
     stage4 = _digits_to_zh_by_char(stage3)

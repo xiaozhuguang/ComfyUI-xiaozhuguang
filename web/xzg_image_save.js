@@ -56,16 +56,23 @@ function _xzgImgSaveEnsureCtxMenu() {
     });
     menu.appendChild(jpgItem);
 
+    menu._pngItem = pngItem;
+    menu._jpgItem = jpgItem;
     document.body.appendChild(menu);
 
-    // 点击其他地方关闭菜单
+    // 点击其他地方关闭菜单（pointerdown 覆盖鼠标+触摸，mousedown 兜底，contextmenu 处理右键，keydown Escape）
     const dismiss = (e) => {
         if (menu.style.display === "block" && !menu.contains(e.target)) {
             _xzgImgSaveHideCtxMenu();
         }
     };
+    window.addEventListener("pointerdown", dismiss, true);
     window.addEventListener("mousedown", dismiss, true);
     window.addEventListener("contextmenu", dismiss, true);
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && menu.style.display === "block") _xzgImgSaveHideCtxMenu();
+    }, true);
+    window.addEventListener("wheel", dismiss, true);
 
     _xzgImgSaveCtxMenu = menu;
     return menu;
@@ -74,6 +81,12 @@ function _xzgImgSaveEnsureCtxMenu() {
 function _xzgImgSaveShowCtxMenu(widget, x, y) {
     _xzgImgSaveCtxCurrentWidget = widget;
     const menu = _xzgImgSaveEnsureCtxMenu();
+
+    // 根据 save_format 只显示对应菜单项
+    const fmt = widget?.node?._xzgFormatWidget?.value || "JPG";
+    if (menu._pngItem) menu._pngItem.style.display = (fmt === "PNG") ? "" : "none";
+    if (menu._jpgItem) menu._jpgItem.style.display = (fmt === "JPG") ? "" : "none";
+
     menu.style.left = x + "px";
     menu.style.top = y + "px";
     menu.style.display = "block";
@@ -568,6 +581,10 @@ class XiaozhuguangImageSaveNode {
             real_index: (d.real_index != null) ? d.real_index : i,
             real_width: d.real_width,
             real_height: d.real_height,
+            // 保存模式下附带 output 目录文件信息，右键 PNG 可直接下载，无需懒编码
+            saved_filename: d.saved_filename || null,
+            saved_subfolder: d.saved_subfolder || null,
+            saved_type: d.saved_type || null,
         }));
         this.canvasWidget.value = { images: imagesToShow };
         if (imagesToShow.length > 1) {
@@ -714,7 +731,8 @@ app.registerExtension({
 
                 // 保存需要引用的 widget 引用，然后从 widgets 数组中完全移除
                 // 避免 LiteGraph 为每个隐藏 widget 添加默认间距
-                // mode widget 保留在 widgets 数组中（隐藏渲染），确保值能传递给后端
+                // mode/save_format/reduce_lag widget 保留在 widgets 数组中（隐藏默认渲染，已由自定义按钮绘制），
+                // 确保 LiteGraph 序列化时能把这些值传递给后端
                 this._xzgFormatWidget = null;
                 this._xzgLagWidget = null;
                 this._xzgModeWidget = null;
@@ -723,16 +741,18 @@ app.registerExtension({
                     this._xzgLagWidget = this.widgets.find(w => w.name === "reduce_lag") || null;
                     this._xzgModeWidget = this.widgets.find(w => w.name === "mode") || null;
 
-                    // mode widget 保留在数组中但隐藏默认渲染（值需要传递给后端）
-                    if (this._xzgModeWidget) {
-                        this._xzgModeWidget.draw = function () {};
-                        this._xzgModeWidget.computeSize = function () { return [0, 0]; };
-                        this._xzgModeWidget.mouse = function () { return false; };
-                    }
+                    // 保留在数组中但隐藏默认渲染（值需要传递给后端）
+                    const hideWidget = (w) => {
+                        if (!w) return;
+                        w.draw = function () {};
+                        w.computeSize = function () { return [0, 0]; };
+                        w.mouse = function () { return false; };
+                    };
+                    hideWidget(this._xzgModeWidget);
+                    hideWidget(this._xzgFormatWidget);
+                    hideWidget(this._xzgLagWidget);
 
                     this.widgets = this.widgets.filter(w =>
-                        w.name !== "reduce_lag" &&
-                        w.name !== "save_format" &&
                         w.name !== "filename_prefix" &&
                         w.name !== "output_path"
                     );
@@ -828,16 +848,19 @@ app.registerExtension({
                 const w = this.canvasWidget;
                 if (w && !w.gridMode && w.value && w.value.images && w.value.images.length) {
                     const cur = w.value.images[w.currentIndex] || w.value.images[0];
-                    const saveOpts = [
-                        {
+                    const fmt = this._xzgFormatWidget?.value || "JPG";
+                    const saveOpts = [];
+                    if (fmt === "PNG") {
+                        saveOpts.push({
                             content: `<span style="color:#4CAF50;">PNG保存</span>`,
                             callback: () => { downloadImage(cur); }
-                        },
-                        {
+                        });
+                    } else {
+                        saveOpts.push({
                             content: `<span style="color:#4CAF50;">JPG保存</span>`,
                             callback: () => { downloadJpgImage(cur); }
-                        }
-                    ];
+                        });
+                    }
                     options.splice(0, 0, ...saveOpts, null);
                 }
             };

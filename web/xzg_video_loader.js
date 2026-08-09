@@ -47,6 +47,16 @@ const VIDEO_PREVIEW_MIN_H = 100;
 // 自定义数值 widget（VHS 同款方案：从源头创建 canvas 不认识的 widget 类型）
 // ═══════════════════════════════════════════════════════════════════════
 function _xzgWidgetNumberMouse(event, [x, y], node) {
+    // 防御性检查：如果 widget 实际是 combo（有 options.values），显示下拉列表而非 prompt
+    // 覆盖 onConfigure/requestAnimationFrame 时序窗口内 mouse handler 未及时更新的情况
+    if (Array.isArray(this.options?.values) && this.options.values.length > 0) {
+        if (event.type === 'pointerup' && !app.canvas._xzgValueDragged) {
+            if (app.canvas) app.canvas._xzgBlockPrompt = true;
+            _xzgShowComboDropdown(this, node, event);
+            return true;
+        }
+        return true;
+    }
     const widgetWidth = this._xzgDrawW || this.width || node.size[0];
     const oldValue = this.value;
     const step = this._xzgStep || 1;
@@ -98,6 +108,15 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
 
 // 带重置按钮的数值控件鼠标处理器（点击 × 一键归零）
 function _xzgWidgetNumberWithResetMouse(event, [x, y], node) {
+    // 防御性检查：combo widget 不走重置按钮逻辑，避免 stale _xzgResetRect 误触发
+    if (Array.isArray(this.options?.values) && this.options.values.length > 0) {
+        if (event.type === 'pointerup' && !app.canvas._xzgValueDragged) {
+            if (app.canvas) app.canvas._xzgBlockPrompt = true;
+            _xzgShowComboDropdown(this, node, event);
+            return true;
+        }
+        return true;
+    }
     if (event.type === 'pointerup' && !app.canvas._xzgValueDragged && this._xzgResetRect) {
         const [rx, ry, rw, rh] = this._xzgResetRect;
         if (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh) {
@@ -220,6 +239,17 @@ function _xzgDrawComboWidget(ctx, node, width, y, H) {
 
 // 强制帧率 combo 的 mouse 处理器：点击弹出下拉列表，禁止拖拽
 function _xzgFpsComboMouse(event, [x, y], node) {
+    if (event.type === 'pointerdown') {
+        // 在 pointerdown 时就阻止 prompt，防止 LiteGraph 在 pointerup 后调用 prompt
+        if (app.canvas) app.canvas._xzgBlockPrompt = true;
+        // 安全网：如果 pointerup 没有触发 _xzgShowComboDropdown（如用户拖走），
+        // 500ms 后自动恢复 _xzgBlockPrompt
+        setTimeout(() => {
+            if (!document.querySelector('.xzg-fps-dropdown') && app.canvas) {
+                app.canvas._xzgBlockPrompt = false;
+            }
+        }, 500);
+    }
     if (event.type === 'pointerup') {
         _xzgShowComboDropdown(this, node, event);
         return true;
@@ -232,6 +262,9 @@ function _xzgShowComboDropdown(widget, node, event) {
     // 移除已有的下拉
     const old = document.querySelector('.xzg-fps-dropdown');
     if (old) old.remove();
+
+    // 下拉打开期间阻止 LiteGraph 原生 prompt 弹出（避免 value 对话框与下拉同时出现）
+    if (app.canvas) app.canvas._xzgBlockPrompt = true;
 
     const values = widget.options?.values || ["0", "16", "24", "25", "30", "60"];
     const canvasRect = app.canvas?.canvas?.getBoundingClientRect?.();
@@ -291,7 +324,7 @@ function _xzgShowComboDropdown(widget, node, event) {
             widget.value = v;
             if (widget.callback) widget.callback(v);
             node.setDirtyCanvas?.(true, true);
-            dropdown.remove();
+            _closeDropdown();
         };
         dropdown.appendChild(item);
     });
@@ -299,10 +332,16 @@ function _xzgShowComboDropdown(widget, node, event) {
     // 阻止 dropdown 本身的 pointerdown 冒泡
     dropdown.addEventListener('pointerdown', (e) => e.stopPropagation());
 
+    // 关闭下拉并恢复 prompt 权限
+    const _closeDropdown = () => {
+        dropdown.remove();
+        if (app.canvas) app.canvas._xzgBlockPrompt = false;
+    };
+
     // 点击外部关闭（capture 阶段拦截，不受 LiteGraph stopPropagation 影响）
     const close = (e) => {
         if (!dropdown.contains(e.target)) {
-            dropdown.remove();
+            _closeDropdown();
             document.removeEventListener('pointerdown', close, true);
         }
     };
@@ -608,6 +647,8 @@ function _xzgPatchCanvasPrompt() {
     if (app.canvas._xzgPromptPatched) return;
     const origPrompt = app.canvas.prompt;
     app.canvas.prompt = function () {
+        // 自定义下拉打开期间，彻底阻止原生 prompt 弹出
+        if (app.canvas._xzgBlockPrompt) return null;
         if (app.canvas._xzgAllowPrompt) {
             app.canvas._xzgAllowPrompt = false;
             app.canvas._xzgLastPromptMs = Date.now();
@@ -1126,10 +1167,23 @@ function bindVideoLoaderInteractions(node) {
         };
 
         const syncCustomSize = () => {
-            // 比例模式下自定义宽度/高度为计算方式和边长尺寸，不用于预览
             const ratioW = node.widgets?.find(w => w.name === "视频比例");
-            if (ratioW && ratioW.value !== "自定义比例") return;
-            // 同时兼容 widget 直接输入和外部连线输入
+            const ratioVal = ratioW?.value;
+            // 预设比例模式：根据预设值直接设置预览比例
+            if (ratioVal && ratioVal !== "自定义比例") {
+                if (ratioVal === "原始比例") {
+                    // 清除自定义比例，使用视频原始比例
+                    player.setCustomSize(0, 0);
+                } else {
+                    // 解析 "横屏16:9" / "竖屏9:16" / "等比1:1" 等
+                    const m = String(ratioVal).match(/(\d+)\s*[:：]\s*(\d+)/);
+                    if (m) {
+                        player.setCustomSize(parseInt(m[1], 10), parseInt(m[2], 10));
+                    }
+                }
+                return;
+            }
+            // 自定义比例：同时兼容 widget 直接输入和外部连线输入
             const cw = _resolveLinkedValue("自定义宽度");
             const ch = _resolveLinkedValue("自定义高度");
             player.setCustomSize(cw, ch);
@@ -1248,6 +1302,7 @@ function bindVideoLoaderInteractions(node) {
             ratioWidget.callback = function (value) {
                 origRatioCb?.apply(this, arguments);
                 _updateRatioWidgets(node);
+                syncCustomSize();
             };
         }
         _updateRatioWidgets(node);
