@@ -1253,61 +1253,98 @@ function bindVideoLoaderInteractions(node) {
         _updateRatioWidgets(node);
 
         // ═══════════════════════════════════════════════════════════════════
-        // 工作流执行后自动加载预览视频到预览区
-        // 原理：后端 load_video 执行时会用 ffmpeg 生成一个按目标宽高处理的
-        // 临时预览视频，通过 ui 字段返回。但 ComfyUI 只对 OUTPUT_NODE 发送
-        // executed 事件，视频加载器不是输出节点，所以监听 execution_success
-        // 事件，从 /api/history 中读取本节点的 ui.video_preview 数据。
+        // 工作流执行后自动加载预览视频到预览区（立即加载策略）
+        // 核心思路：
+        //   视频加载器是 OUTPUT_NODE = True，ComfyUI 在节点执行完后立即发送
+        //   executed 事件，detail.output 里直接包含 ui.video_preview 数据，
+        //   不需要轮询 history，也不用等下游节点执行完毕。
+        //   execution_success 兜底处理节点被缓存等极端情况。
         // ═══════════════════════════════════════════════════════════════════
 
-        const _onExecutionSuccess = async ({ detail }) => {
-            try {
-                if (!node.graph) return;
-                const promptId = detail?.prompt_id;
-                if (!promptId) return;
+        let _previewLoadedForPrompt = new Set();  // 记录已经加载过 preview 的 prompt_id，避免重复
 
-                // 从 /api/history 读取本次执行的完整结果
+        const _loadPreviewFromOutput = (output, promptId) => {
+            if (promptId && _previewLoadedForPrompt.has(promptId)) return false;
+            if (!output) return false;
+            const previewList = output?.video_preview;
+            if (!Array.isArray(previewList) || previewList.length === 0) return false;
+            const preview = previewList[0];
+            const filename = preview?.filename;
+            if (!filename) return false;
+
+            const subfolder = preview?.subfolder || "";
+            const type = preview?.type || "temp";
+            const params = new URLSearchParams({ filename, type, subfolder });
+            const url = `/view?${params.toString()}&rand=${Math.random()}`;
+            console.warn("[小珠光视频加载器] (立即)加载预览视频到预览区: " + filename);
+            player.load(url);
+            node.setDirtyCanvas(true, true);
+            if (promptId) _previewLoadedForPrompt.add(promptId);
+            return true;
+        };
+
+        // executed 事件：OUTPUT_NODE 执行完后立即发送，payload 自带 output
+        const _onExecuted = ({ detail }) => {
+            if (!detail) return;
+            if (String(detail.node) !== String(node.id)) return;
+            _loadPreviewFromOutput(detail.output, detail.prompt_id);
+        };
+        api.addEventListener("executed", _onExecuted);
+
+        // execution_cached：节点被缓存跳过（同样会被视为已执行），也要尝试加载 preview
+        const _onExecutionCached = async ({ detail }) => {
+            const nodes = detail?.nodes || [];
+            if (!nodes.includes(Number(node.id)) && !nodes.includes(String(node.id))) return;
+            const promptId = detail?.prompt_id;
+            if (!promptId) return;
+            try {
                 const resp = await fetch(`/api/history/${promptId}`);
                 if (!resp.ok) return;
                 const history = await resp.json();
-                // history 结构: { [promptId]: { outputs: { [nodeId]: { ... } } } }
                 const promptHistory = history?.[promptId] || history;
-                const outputs = promptHistory?.outputs || promptHistory?.status?.outputs || {};
-                // 读取本节点的输出（包含 ui.video_preview）
+                const outputs = promptHistory?.outputs || {};
                 const nodeOutput = outputs[String(node.id)];
-                if (!nodeOutput) {
-                    console.warn("[小珠光视频加载器] history 中未找到本节点输出, nodeId=" + node.id + ", outputs=" + JSON.stringify(Object.keys(outputs)));
-                    return;
-                }
+                _loadPreviewFromOutput(nodeOutput, promptId);
+            } catch (_) {}
+        };
+        api.addEventListener("execution_cached", _onExecutionCached);
 
-                // video_preview 是数组格式: [{filename, subfolder, type}]
-                const previewList = nodeOutput?.video_preview;
-                if (!Array.isArray(previewList) || previewList.length === 0) {
-                    console.warn("[小珠光视频加载器] video_preview 不存在或非数组, nodeOutput keys=" + JSON.stringify(Object.keys(nodeOutput || {})));
-                    return;
-                }
-                const preview = previewList[0];
-                const filename = preview?.filename;
-                const subfolder = preview?.subfolder || "";
-                const type = preview?.type || "temp";
-                if (!filename) return;
-
-                // 构造 /view URL 并加载到预览区
-                const params = new URLSearchParams({ filename, type, subfolder });
-                const url = `/view?${params.toString()}&rand=${Math.random()}`;
-                console.warn("[小珠光视频加载器] 加载预览视频到预览区: " + filename);
-                player.load(url);
-                node.setDirtyCanvas(true, true);
-            } catch (e) {
-                console.warn("[小珠光视频加载器] 加载预览视频失败:", e?.message || e);
-            }
+        // 兜底：execution_success 时若还没加载，从 history 再试一次（比如 OUTPUT_NODE 标记未生效的情况）
+        const _onExecutionSuccess = async ({ detail }) => {
+            const promptId = detail?.prompt_id;
+            if (!promptId) return;
+            if (_previewLoadedForPrompt.has(promptId)) return;
+            try {
+                const resp = await fetch(`/api/history/${promptId}`);
+                if (!resp.ok) return;
+                const history = await resp.json();
+                const promptHistory = history?.[promptId] || history;
+                const outputs = promptHistory?.outputs || {};
+                const nodeOutput = outputs[String(node.id)];
+                _loadPreviewFromOutput(nodeOutput, promptId);
+            } catch (_) {}
         };
         api.addEventListener("execution_success", _onExecutionSuccess);
 
-        // 节点移除时清理事件监听，避免内存泄漏
+        // 开始新执行时清理旧的 prompt_id 记录（防止内存无限增长）
+        const _onExecutionStart = ({ detail }) => {
+            // 只保留最近 5 个 prompt_id，避免记录无限增长
+            if (_previewLoadedForPrompt.size > 8) {
+                const arr = Array.from(_previewLoadedForPrompt);
+                _previewLoadedForPrompt = new Set(arr.slice(arr.length - 5));
+            }
+            // 新执行开始，若被缓存（execution_cached 在 execution_start 之前发）
+            // 那 prompt_id 已经在 Set 里了，没关系，_loadPreviewFromOutput 会跳过
+        };
+        api.addEventListener("execution_start", _onExecutionStart);
+
+        // 节点移除时清理所有事件监听，避免内存泄漏
         const _origOnRemoved = node.onRemoved;
         node.onRemoved = function () {
+            try { api.removeEventListener("executed", _onExecuted); } catch (_) {}
+            try { api.removeEventListener("execution_cached", _onExecutionCached); } catch (_) {}
             try { api.removeEventListener("execution_success", _onExecutionSuccess); } catch (_) {}
+            try { api.removeEventListener("execution_start", _onExecutionStart); } catch (_) {}
             _origOnRemoved?.apply(this, arguments);
         };
 

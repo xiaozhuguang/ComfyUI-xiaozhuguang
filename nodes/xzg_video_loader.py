@@ -394,6 +394,7 @@ class XiaozhuguangVideoLoader:
     RETURN_NAMES = ("图像", "音频", "视频信息")
     FUNCTION = "load_video"
     CATEGORY = "xiaozhuguang"
+    OUTPUT_NODE = True
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, unique_id=None):
