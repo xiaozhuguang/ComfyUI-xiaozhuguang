@@ -6,6 +6,9 @@ import {
 } from "./xzg_save_utils.js";
 
 const XZG_IMAGE_SAVE_TYPE = "XiaozhuguangImageSave";
+const XZG_IMAGE_SAVE_CUSTOM_TYPE = "XiaozhuguangImageSaveCustom";
+// 支持的节点类型集合（新节点「小珠光图像保存-自定义输出」复用同一前端逻辑）
+const XZG_IMAGE_SAVE_TYPES = new Set([XZG_IMAGE_SAVE_TYPE, XZG_IMAGE_SAVE_CUSTOM_TYPE]);
 const IMAGE_MARGIN = 6;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -110,7 +113,7 @@ function _xzgImgSaveIsInImageArea(canvasX, canvasY) {
     else if (canvas.getNodeAtPos) nd = canvas.getNodeAtPos(canvasX, canvasY);
     else if (canvas.graph?.getNodeOnPos) nd = canvas.graph.getNodeOnPos(canvasX, canvasY);
 
-    if (nd?.type !== XZG_IMAGE_SAVE_TYPE) return null;
+    if (!nd || !XZG_IMAGE_SAVE_TYPES.has(nd.type)) return null;
     const w = nd.canvasWidget;
     if (!w) return null;
     const startY = w._startY ?? 0;
@@ -205,7 +208,7 @@ function _xzgImgSaveInstallHooks(retryCount = 0) {
         LGraphCanvas.prototype._xzgImgSaveCtxMenuPatched = true;
         const origProcessContextMenu = LGraphCanvas.prototype.processContextMenu;
         LGraphCanvas.prototype.processContextMenu = function (node, e) {
-            if (node?.type === XZG_IMAGE_SAVE_TYPE) {
+            if (node && XZG_IMAGE_SAVE_TYPES.has(node.type)) {
                 const cx = e?.canvasX ?? e?.x ?? 0;
                 const cy = e?.canvasY ?? e?.y ?? 0;
                 const widget = _xzgImgSaveIsInImageArea(cx, cy);
@@ -294,65 +297,88 @@ class XzgImageSaveWidget {
         const btnH = 18;
         const imgs = this._value.images;
 
-        // 按钮行：mode（左）+ save_format（中）+ reduce_lag（右），三等分
+        // 按钮行布局：
+        //   原节点（XiaozhuguangImageSave）：三等分 mode / save_format / reduce_lag
+        //   自定义节点（XiaozhuguangImageSaveCustom）：四等分 输出目录 / mode / save_format / reduce_lag
         const modeWidget = node._xzgModeWidget;
         const lagWidget = node._xzgLagWidget;
         const formatWidget = node._xzgFormatWidget;
+        const isCustom = node.type === XZG_IMAGE_SAVE_CUSTOM_TYPE;
 
-        if (modeWidget || formatWidget || lagWidget) {
-            const thirdW = width / 3;
+        if (isCustom || modeWidget || formatWidget || lagWidget) {
+            const cols = isCustom ? 4 : 3;
+            const colW = width / cols;
             ctx.font = "11px Arial";
             ctx.textBaseline = "middle";
 
-            // 最左侧：保存/预览 切换
+            let idx = 0;
+            // 保存/预览 切换
             if (modeWidget) {
                 ctx.textAlign = "center";
                 const isSave = modeWidget.value !== "预览";
                 ctx.fillStyle = isSave ? "#FFD700" : "#88ccff";
-                ctx.fillText(modeWidget.value || "保存", thirdW / 2, y + btnH / 2);
+                ctx.fillText(modeWidget.value || "保存", colW * idx + colW / 2, y + btnH / 2);
                 this.hitAreas["mode"] = {
-                    bounds: [0, y, thirdW, btnH],
+                    bounds: [colW * idx, y, colW, btnH],
                     onDown: () => {
                         modeWidget.value = isSave ? "预览" : "保存";
                         node.setDirtyCanvas(true);
                     }
                 };
+                idx++;
             }
 
-            // 中间：JPG/PNG 切换（预览模式下灰显且不可点击）
+            // JPG/PNG 切换（预览模式下灰显且不可点击）
             if (formatWidget) {
                 ctx.textAlign = "center";
                 const isPreview = modeWidget && modeWidget.value === "预览";
                 ctx.fillStyle = isPreview ? "#555555" : "#aaaaaa";
-                ctx.fillText(formatWidget.value || "JPG", thirdW + thirdW / 2, y + btnH / 2);
+                ctx.fillText(formatWidget.value || "JPG", colW * idx + colW / 2, y + btnH / 2);
                 if (!isPreview) {
                     this.hitAreas["save_format"] = {
-                        bounds: [thirdW, y, thirdW, btnH],
+                        bounds: [colW * idx, y, colW, btnH],
                         onDown: () => {
                             formatWidget.value = formatWidget.value === "JPG" ? "PNG" : "JPG";
                             node.setDirtyCanvas(true);
                         }
                     };
                 }
+                idx++;
             }
 
-            // 最右侧：减小卡顿 / 极速流畅
+            // 减小卡顿 / 极速流畅
             if (lagWidget) {
                 ctx.textAlign = "center";
                 ctx.fillStyle = "#aaaaaa";
-                ctx.fillText(lagWidget.value ? "极致流畅" : "减小卡顿", thirdW * 2 + thirdW / 2, y + btnH / 2);
+                ctx.fillText(lagWidget.value ? "极致流畅" : "减小卡顿", colW * idx + colW / 2, y + btnH / 2);
                 this.hitAreas["reduce_lag"] = {
-                    bounds: [thirdW * 2, y, thirdW, btnH],
+                    bounds: [colW * idx, y, colW, btnH],
                     onDown: () => { lagWidget.value = !lagWidget.value; node.setDirtyCanvas(true); }
                 };
+                idx++;
+            }
+
+            // 自定义节点最右侧：输出目录
+            if (isCustom) {
+                ctx.textAlign = "center";
+                ctx.fillStyle = "#aaaaaa";
+                ctx.fillText("输出目录", colW * idx + colW / 2, y + btnH / 2);
+                this.hitAreas["browse_dir"] = {
+                    bounds: [colW * idx, y, colW, btnH],
+                    onDown: () => {
+                        if (typeof _xzgShowDirBrowser === "function") _xzgShowDirBrowser(node);
+                    }
+                };
+                idx++;
             }
 
             // 分隔竖杠 1px
             ctx.strokeStyle = "#aaaaaa";
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(thirdW, y); ctx.lineTo(thirdW, y + btnH);
-            ctx.moveTo(thirdW * 2, y); ctx.lineTo(thirdW * 2, y + btnH);
+            for (let i = 1; i < idx; i++) {
+                ctx.moveTo(colW * i, y); ctx.lineTo(colW * i, y + btnH);
+            }
             ctx.stroke();
 
             y += btnH + 1;
@@ -660,17 +686,21 @@ class XiaozhuguangImageSaveNode {
         if (this.widgets) {
             this.widgets = [...this.widgets.filter(x => x !== w), w];
         }
+        // "输出目录"按钮已合并到 canvasWidget 首行（与 mode/save_format/reduce_lag 同行）
+        // 仅 CUSTOM 节点显示"输出目录"按钮，通过 canvasWidget.draw 内部判断节点类型绘制
         if (!node.getWidgetOnPos.__xzgPatched) {
+            const origGetWidgetOnPos = node.getWidgetOnPos.bind(node);
             node.getWidgetOnPos = function (x, y, includeDisabled, ...rest) {
                 const lx = x - node.pos[0];
                 const ly = y - node.pos[1];
                 const titleH = (typeof LiteGraph !== 'undefined' && LiteGraph.NODE_TITLE_HEIGHT) || 30;
-                // 仅在图像控件区域内返回 canvasWidget，文本控件区域返回 null 以保证可交互
+                // 仅在图像控件区域内返回 canvasWidget，文本控件区域回退到原始查找逻辑
                 const imgStartY = node.canvasWidget?._startY ?? titleH;
                 if (lx >= 0 && lx <= node.size[0] - 12 && ly >= imgStartY && ly <= node.size[1] - 12) {
                     if (node.canvasWidget) return node.canvasWidget;
                 }
-                return null;
+                // 文本控件区域：调用原始 getWidgetOnPos 查找文本 widget
+                return origGetWidgetOnPos(x, y, includeDisabled, ...rest);
             };
             node.getWidgetOnPos.__xzgPatched = true;
         }
@@ -713,7 +743,7 @@ class XiaozhuguangImageSaveNode {
 app.registerExtension({
     name: "xiaozhuguang.ImageSave",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name === XZG_IMAGE_SAVE_TYPE) {
+        if (XZG_IMAGE_SAVE_TYPES.has(nodeData.name)) {
             nodeType.prototype.previewWidget = null;
             nodeType.prototype.onPreviewRegistered = function () {};
 
@@ -736,14 +766,27 @@ app.registerExtension({
                 this._xzgFormatWidget = null;
                 this._xzgLagWidget = null;
                 this._xzgModeWidget = null;
+                this._xzgBaseDirWidget = null;
+                this._xzgPrefixCustomWidget = null;
+                this._xzgDateStampWidget = null;
+                this._xzgTimeStampWidget = null;
+                this._xzgDefaultOutputWidget = null;
                 if (this.widgets) {
                     this._xzgFormatWidget = this.widgets.find(w => w.name === "save_format") || null;
                     this._xzgLagWidget = this.widgets.find(w => w.name === "reduce_lag") || null;
                     this._xzgModeWidget = this.widgets.find(w => w.name === "mode") || null;
+                    this._xzgBaseDirWidget = this.widgets.find(w => w.name === "base_dir") || null;
+                    this._xzgPrefixCustomWidget = this.widgets.find(w => w.name === "filename_custom") || null;
+                    this._xzgDateStampWidget = this.widgets.find(w => w.name === "add_date_stamp") || null;
+                    this._xzgTimeStampWidget = this.widgets.find(w => w.name === "add_time_stamp") || null;
+                    this._xzgDefaultOutputWidget = this.widgets.find(w => w.name === "use_default_output") || null;
 
                     // 保留在数组中但隐藏默认渲染（值需要传递给后端）
+                    // type="hidden" 让新版 ComfyUI 前端 isWidgetVisible 返回 false，跳过布局占位
                     const hideWidget = (w) => {
                         if (!w) return;
+                        w.type = "hidden";
+                        w.hidden = true;
                         w.draw = function () {};
                         w.computeSize = function () { return [0, 0]; };
                         w.mouse = function () { return false; };
@@ -751,11 +794,25 @@ app.registerExtension({
                     hideWidget(this._xzgModeWidget);
                     hideWidget(this._xzgFormatWidget);
                     hideWidget(this._xzgLagWidget);
+                    // base_dir 通过"输出目录"按钮设置，隐藏文本框
+                    hideWidget(this._xzgBaseDirWidget);
+                    // filename_custom / add_date_stamp / add_time_stamp / use_default_output 在"输出目录"对话框里设置，隐藏主节点控件
+                    hideWidget(this._xzgPrefixCustomWidget);
+                    hideWidget(this._xzgDateStampWidget);
+                    hideWidget(this._xzgTimeStampWidget);
+                    hideWidget(this._xzgDefaultOutputWidget);
 
-                    this.widgets = this.widgets.filter(w =>
-                        w.name !== "filename_prefix" &&
-                        w.name !== "output_path"
-                    );
+                    // 仅原节点过滤 output_path / filename_prefix / filename_custom / add_date_stamp / add_time_stamp / use_default_output
+                    if (this.type !== XZG_IMAGE_SAVE_CUSTOM_TYPE) {
+                        this.widgets = this.widgets.filter(w =>
+                            w.name !== "filename_prefix" &&
+                            w.name !== "filename_custom" &&
+                            w.name !== "add_date_stamp" &&
+                            w.name !== "add_time_stamp" &&
+                            w.name !== "use_default_output" &&
+                            w.name !== "output_path"
+                        );
+                    }
                 }
                 // 确保画布 widget 在数组中
                 if (this.canvasWidget && !this.widgets.includes(this.canvasWidget)) {
@@ -867,3 +924,749 @@ app.registerExtension({
         }
     },
 });
+
+
+// ═══════════════════════════════════════════════════════════════════
+// 文件夹浏览器对话框（仅「小珠光图像保存-自定义输出」节点使用）
+// 通过后端 /xzg_list_dirs API 浏览目录，选择后填充到 base_dir widget
+// 风格：紧凑尺寸 + 小珠光金色 #dcc85b 主题
+// ═══════════════════════════════════════════════════════════════════
+
+let _xzgDirBrowserDlg = null;
+let _xzgQuickDirsCache = null;   // {items, drives} 缓存，首次打开时异步拉
+let _xzgQuickDirsLoading = null; // Promise，避免并发重复请求
+const _xzgDirBrowserState = {
+    currentPath: "",
+    parentPath: null,
+    selectedPath: "",
+    targetNode: null,
+    targetWidget: null,
+};
+
+// 最近使用目录（localStorage，最多5个，不重复，最新在前）
+const _XZG_RECENT_KEY = "xzg_save_recent_dirs_v1";
+function _xzgRecentDirsGet() {
+    try {
+        const raw = localStorage.getItem(_XZG_RECENT_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr.filter(x => typeof x === "string") : [];
+    } catch (e) { return []; }
+}
+function _xzgRecentDirsPush(path) {
+    if (!path) return;
+    let list = _xzgRecentDirsGet().filter(p => p !== path);
+    list.unshift(path);
+    if (list.length > 5) list = list.slice(0, 5);
+    try { localStorage.setItem(_XZG_RECENT_KEY, JSON.stringify(list)); } catch (e) {}
+}
+function _xzgRecentDirsClear() {
+    try { localStorage.removeItem(_XZG_RECENT_KEY); } catch (e) {}
+}
+
+// 懒加载常用位置（桌面/文档/盘符快捷按钮等），缓存复用
+async function _xzgEnsureQuickDirs() {
+    if (_xzgQuickDirsCache) return _xzgQuickDirsCache;
+    if (_xzgQuickDirsLoading) return _xzgQuickDirsLoading;
+    _xzgQuickDirsLoading = (async () => {
+        try {
+            const resp = await api.fetchApi("/xzg_quick_dirs", { method: "POST" });
+            const txt = await resp.text();
+            const data = JSON.parse(txt);
+            _xzgQuickDirsCache = { items: data.items || [], drives: data.drives || [] };
+        } catch (e) {
+            console.warn("[小珠光] 获取常用位置失败:", e);
+            _xzgQuickDirsCache = { items: [], drives: [] };
+        }
+        return _xzgQuickDirsCache;
+    })();
+    return _xzgQuickDirsLoading;
+}
+
+// 给定一个路径，返回逐级向上找最近存在的父目录或空字符串（我的电脑）
+function _xzgClimbToValidParent(path) {
+    if (!path) return "";
+    let p = path;
+    // 最多爬 20 级，防死循环
+    for (let i = 0; i < 20; i++) {
+        // Windows: "D:\" 这类就爬到顶了 → 上一级是空（我的电脑）
+        const norm = p.replace(/[\\/]+$/, "");
+        if (/^[A-Za-z]:$/.test(norm) || norm === "/") {
+            return norm + (norm.length === 2 ? "\\" : "");  // D:\ 或 /
+        }
+        const up = p.replace(/[\\/][^\\/]+[\\/]?$/, "");
+        if (up === p || !up) return "";
+        p = up;
+    }
+    return "";
+}
+
+function _xzgDirBrowserEnsureDlg() {
+    if (_xzgDirBrowserDlg) return _xzgDirBrowserDlg;
+
+    const GOLD = "#dcc85b";
+    const BG = "#1e1e1e";
+    const BG3 = "#2a2a2a";
+    const BORDER = "#444";
+    const BTN_BG = "#353535";
+    const BTN_BORDER = "#555";
+    const TEXT = "#ddd";
+
+    const dlg = document.createElement("div");
+    dlg.style.cssText = [
+        "position: fixed", "top: 50%", "left: 50%", "transform: translate(-50%, -50%)",
+        "width: 420px", "height: 360px", `background: ${BG}`, `border: 1px solid ${BORDER}`,
+        "border-radius: 4px", "box-shadow: 0 6px 20px rgba(0,0,0,0.6)",
+        "display: none", "flex-direction: column", "z-index: 100000",
+        "font-family: Arial, sans-serif", `color: ${TEXT}`, "overflow: hidden",
+        "user-select: none",
+    ].join(";");
+
+    // ── 标题栏（支持拖动移动对话框）──
+    const titleBar = document.createElement("div");
+    titleBar.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:5px 10px;background:${BG3};border-bottom:1px solid ${BORDER};cursor:move;`;
+    const titleText = document.createElement("span");
+    titleText.style.cssText = `font-size:12px;color:${GOLD};font-weight:bold;pointer-events:none;`;
+    titleText.textContent = "📁 选择保存目录";
+    const closeBtn = document.createElement("span");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "cursor:pointer;color:#888;font-size:13px;padding:1px 5px;";
+    closeBtn.addEventListener("mouseenter", () => closeBtn.style.color = TEXT);
+    closeBtn.addEventListener("mouseleave", () => closeBtn.style.color = "#888");
+    closeBtn.addEventListener("click", () => _xzgDirBrowserHide());
+    titleBar.appendChild(titleText);
+    titleBar.appendChild(closeBtn);
+    dlg.appendChild(titleBar);
+
+    // ── 标题栏拖动移动逻辑 ──
+    let _dragState = null; // { startX, startY, origLeft, origTop }
+    const _dragOnMove = (ev) => {
+        if (!_dragState) return;
+        const dx = ev.clientX - _dragState.startX;
+        const dy = ev.clientY - _dragState.startY;
+        let newLeft = _dragState.origLeft + dx;
+        let newTop = _dragState.origTop + dy;
+        // 限制在可视区内（至少保留 40px 可见，方便拖回）
+        const maxLeft = window.innerWidth - 40;
+        const maxTop = window.innerHeight - 40;
+        if (newLeft < -dlg.offsetWidth + 40) newLeft = -dlg.offsetWidth + 40;
+        if (newTop < -20) newTop = -20;
+        if (newLeft > maxLeft) newLeft = maxLeft;
+        if (newTop > maxTop) newTop = maxTop;
+        dlg.style.left = newLeft + "px";
+        dlg.style.top = newTop + "px";
+        dlg.style.transform = "none";
+    };
+    const _dragOnUp = () => {
+        if (_dragState) {
+            // 记住位置，下次打开复用
+            try {
+                localStorage.setItem("xzgDirBrowserPos", JSON.stringify({
+                    left: dlg.style.left,
+                    top: dlg.style.top,
+                }));
+            } catch (_) {}
+            _dragState = null;
+        }
+        window.removeEventListener("pointermove", _dragOnMove, true);
+        window.removeEventListener("pointerup", _dragOnUp, true);
+        window.removeEventListener("pointercancel", _dragOnUp, true);
+    };
+    titleBar.addEventListener("pointerdown", (ev) => {
+        // 点击关闭按钮时不拖动
+        if (ev.target === closeBtn || closeBtn.contains(ev.target)) return;
+        ev.preventDefault();
+        // 切换到 left/top 定位（清除居中 transform）
+        if (dlg.style.transform !== "none") {
+            const rect = dlg.getBoundingClientRect();
+            dlg.style.left = rect.left + "px";
+            dlg.style.top = rect.top + "px";
+            dlg.style.transform = "none";
+        }
+        const curLeft = parseFloat(dlg.style.left) || 0;
+        const curTop = parseFloat(dlg.style.top) || 0;
+        _dragState = {
+            startX: ev.clientX,
+            startY: ev.clientY,
+            origLeft: curLeft,
+            origTop: curTop,
+        };
+        window.addEventListener("pointermove", _dragOnMove, true);
+        window.addEventListener("pointerup", _dragOnUp, true);
+        window.addEventListener("pointercancel", _dragOnUp, true);
+    });
+
+    // ── 面包屑 + 两个快捷按钮（盘符 / 新建）──
+    const navBar = document.createElement("div");
+    navBar.style.cssText = `display:flex;align-items:center;gap:4px;padding:4px 8px;border-bottom:1px solid #333;background:#252525;min-height:26px;`;
+    const crumbWrap = document.createElement("div");
+    crumbWrap.style.cssText = "flex:1;display:flex;align-items:center;gap:0;overflow:hidden;min-width:0;";
+    navBar.appendChild(crumbWrap);
+
+    const mkBtn = (label, gold, title) => {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.title = title || "";
+        b.style.cssText = `background:${BTN_BG};color:${gold ? GOLD : TEXT};border:1px solid ${BTN_BORDER};border-radius:2px;padding:2px 8px;cursor:pointer;font-size:11px;white-space:nowrap;flex-shrink:0;`;
+        b.addEventListener("mouseenter", () => { if (b.style.pointerEvents !== "none") b.style.background = "#3a3a3a"; });
+        b.addEventListener("mouseleave", () => { if (b.style.pointerEvents !== "none") b.style.background = BTN_BG; });
+        return b;
+    };
+    const newFolderBtn = mkBtn("＋", true, "新建文件夹");
+    newFolderBtn.addEventListener("click", () => _xzgDirBrowserNewFolder());
+    navBar.appendChild(newFolderBtn);
+    dlg._crumbWrap = crumbWrap;
+    dlg._newFolderBtn = newFolderBtn;
+    dlg.appendChild(navBar);
+
+    // ── 列表区域 ──
+    const listWrap = document.createElement("div");
+    listWrap.style.cssText = `flex:1;overflow-y:auto;padding:2px 4px;background:${BG};`;
+    dlg.appendChild(listWrap);
+    dlg._listWrap = listWrap;
+
+    // ── 设置区：默认输出 + 自定义前缀 + 日期戳 + 时间戳 开关 ──
+    const settingsRow = document.createElement("div");
+    settingsRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid #333;background:${BG3};flex-wrap:wrap;`;
+    // 默认输出开关
+    const defaultToggle = document.createElement("label");
+    defaultToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
+    const defaultCheck = document.createElement("input");
+    defaultCheck.type = "checkbox";
+    defaultCheck.style.cssText = `accent-color:${GOLD};cursor:pointer;`;
+    defaultToggle.appendChild(defaultCheck);
+    const defaultText = document.createElement("span");
+    defaultText.textContent = "默认输出目录";
+    defaultToggle.appendChild(defaultText);
+    settingsRow.appendChild(defaultToggle);
+    // 自定义前缀
+    const prefixLabel = document.createElement("label");
+    prefixLabel.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;white-space:nowrap;";
+    prefixLabel.textContent = "自定义前缀";
+    const prefixInput = document.createElement("input");
+    prefixInput.type = "text";
+    prefixInput.value = "xzg-save";
+    prefixInput.style.cssText = "background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:2px;padding:2px 6px;font-size:11px;width:110px;";
+    prefixLabel.appendChild(prefixInput);
+    settingsRow.appendChild(prefixLabel);
+    // 日期戳开关
+    const dateToggle = document.createElement("label");
+    dateToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
+    const dateCheck = document.createElement("input");
+    dateCheck.type = "checkbox";
+    dateCheck.style.cssText = `accent-color:${GOLD};cursor:pointer;`;
+    dateToggle.appendChild(dateCheck);
+    const dateText = document.createElement("span");
+    dateText.textContent = "日期戳";
+    dateToggle.appendChild(dateText);
+    settingsRow.appendChild(dateToggle);
+    // 时间戳开关
+    const timeToggle = document.createElement("label");
+    timeToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
+    const timeCheck = document.createElement("input");
+    timeCheck.type = "checkbox";
+    timeCheck.style.cssText = `accent-color:${GOLD};cursor:pointer;`;
+    timeToggle.appendChild(timeCheck);
+    const timeText = document.createElement("span");
+    timeText.textContent = "时间戳";
+    timeToggle.appendChild(timeText);
+    settingsRow.appendChild(timeToggle);
+
+    // 默认输出联动：开启后灰显并禁用 路径选择区 + 自定义前缀/日期戳/时间戳
+    const _xzgApplyDefaultState = () => {
+        const def = !!defaultCheck.checked;
+        const setDisabled = (el, label, disabled) => {
+            if (!el) return;
+            el.disabled = disabled;
+            el.style.opacity = disabled ? "0.4" : "1";
+            if (label) label.style.opacity = disabled ? "0.4" : "1";
+            if (label) label.style.cursor = disabled ? "not-allowed" : "pointer";
+        };
+        setDisabled(prefixInput, prefixLabel, def);
+        setDisabled(dateCheck, dateToggle, def);
+        setDisabled(timeCheck, timeToggle, def);
+        // 路径选择区整体灰显并禁用交互
+        const pathEls = [crumbWrap, newFolderBtn, listWrap, curPathLabel];
+        pathEls.forEach(el => {
+            if (!el) return;
+            el.style.opacity = def ? "0.4" : "1";
+            el.style.pointerEvents = def ? "none" : "auto";
+        });
+    };
+    defaultCheck.addEventListener("change", _xzgApplyDefaultState);
+
+    dlg.appendChild(settingsRow);
+    dlg._prefixInput = prefixInput;
+    dlg._dateCheck = dateCheck;
+    dlg._timeCheck = timeCheck;
+    dlg._defaultCheck = defaultCheck;
+    dlg._applyDefaultState = _xzgApplyDefaultState;
+
+    // ── 底部：路径 + 取消/选择 ──
+    const footer = document.createElement("div");
+    footer.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-top:1px solid #333;background:${BG3};gap:6px;flex-wrap:wrap;`;
+    const curPathLabel = document.createElement("span");
+    curPathLabel.style.cssText = "flex:1;font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
+    footer.appendChild(curPathLabel);
+    dlg._curPathLabel = curPathLabel;
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "取消";
+    cancelBtn.style.cssText = `background:${BTN_BG};color:${TEXT};border:1px solid ${BTN_BORDER};border-radius:2px;padding:3px 12px;cursor:pointer;font-size:11px;`;
+    cancelBtn.addEventListener("mouseenter", () => cancelBtn.style.background = "#3a3a3a");
+    cancelBtn.addEventListener("mouseleave", () => cancelBtn.style.background = BTN_BG);
+    cancelBtn.addEventListener("click", () => _xzgDirBrowserHide());
+    const selectBtn = document.createElement("button");
+    selectBtn.textContent = "选择";
+    selectBtn.style.cssText = `background:${GOLD};color:#1e1e1e;border:1px solid ${GOLD};border-radius:2px;padding:3px 14px;cursor:pointer;font-size:11px;font-weight:bold;`;
+    selectBtn.addEventListener("mouseenter", () => selectBtn.style.filter = "brightness(1.08)");
+    selectBtn.addEventListener("mouseleave", () => selectBtn.style.filter = "");
+    selectBtn.addEventListener("click", () => _xzgDirBrowserConfirm());
+    footer.appendChild(cancelBtn);
+    footer.appendChild(selectBtn);
+    dlg.appendChild(footer);
+
+    document.body.appendChild(dlg);
+
+    // 点击对话框外部关闭
+    window.addEventListener("pointerdown", (e) => {
+        if (dlg.style.display === "flex" && !dlg.contains(e.target)) _xzgDirBrowserHide();
+    }, true);
+    // Escape 关闭
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && dlg.style.display === "flex") _xzgDirBrowserHide();
+    }, true);
+
+    _xzgDirBrowserDlg = dlg;
+    return dlg;
+}
+
+async function _xzgListDirsRequest(path) {
+    const resp = await api.fetchApi("/xzg_list_dirs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path || "" })
+    });
+    const txt = await resp.text();
+    try {
+        return JSON.parse(txt);
+    } catch (e) {
+        return { _raw: txt, _status: resp.status, _jsonErr: e };
+    }
+}
+
+async function _xzgDirBrowserLoad(path) {
+    const dlg = _xzgDirBrowserEnsureDlg();
+    dlg._listWrap.innerHTML = `<div style="padding:20px;text-align:center;color:#666;font-size:11px;">加载中...</div>`;
+    try {
+        const data = await _xzgListDirsRequest(path);
+        // JSON 解析失败（如 404）
+        if (data._jsonErr) {
+            console.error("[小珠光] /xzg_list_dirs 响应异常:", data._status, data._raw);
+            const hint = data._status === 404
+                ? "路由未注册，请重启 ComfyUI 后端"
+                : `HTTP ${data._status}`;
+            dlg._listWrap.innerHTML = `<div style="padding:20px;text-align:center;color:#f66;line-height:1.7;">`
+                + `<div style="font-size:13px;margin-bottom:6px;">❌ ${hint}</div>`
+                + `<div style="font-size:10px;color:#999;word-break:break-all;">${String(data._raw || "").substring(0, 160)}</div>`
+                + `</div>`;
+            return;
+        }
+        // 如果返回 "不是有效目录" 错误，自动爬上级目录找最近可访问路径
+        if (data.error && /不是有效目录/.test(String(data.error))) {
+            const fallback = _xzgClimbToValidParent(data.path || path || "");
+            console.warn(`[小珠光] 路径无效 ${data.path || path}，回退到最近有效目录: ${fallback || "(我的电脑)"}`);
+            dlg._listWrap.innerHTML = `<div style="padding:14px 20px;text-align:center;color:#dcc85b;font-size:11px;line-height:1.6;">`
+                + `⚠ 路径无效，正在回退到最近有效目录...${fallback ? "<br>" + fallback : "<br>我的电脑"}`
+                + `</div>`;
+            if (fallback === (data.path || path || "")) {
+                // 爬到顶还是这个目录（已经是盘符根或 /），直接跳我的电脑
+                await _xzgDirBrowserLoad("");
+            } else if (fallback) {
+                await _xzgDirBrowserLoad(fallback);
+            } else {
+                await _xzgDirBrowserLoad("");
+            }
+            return;
+        }
+        _xzgDirBrowserState.currentPath = data.path || "";
+        _xzgDirBrowserState.parentPath = (data.parent !== undefined && data.parent !== "") ? data.parent : null;
+        _xzgDirBrowserState.selectedPath = data.path || "";
+        await _xzgDirBrowserRender(data);
+    } catch (e) {
+        console.error("[小珠光] 加载目录失败:", e);
+        dlg._listWrap.innerHTML = `<div style="padding:20px;text-align:center;color:#f66;font-size:11px;">加载失败: ${e}</div>`;
+    }
+}
+
+// 把路径切成面包屑段（如 C:\Users\foo → ["我的电脑","C:","Users","foo"]，每段带跳转路径）
+function _xzgSplitCrumbs(path) {
+    if (!path) return [{ label: "我的电脑", path: "" }];
+    // Windows: C:\Users\foo  -> ["C:\\", "Users", "foo"]
+    // Unix:    /home/foo   -> ["/",      "home",  "foo"]
+    const result = [{ label: "我的电脑", path: "" }];
+    let isWin = /^[A-Za-z]:/.test(path);
+    let normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+    if (isWin) {
+        const parts = normalized.split("/").filter(Boolean);
+        // parts[0] = "C:"
+        let acc = "";
+        for (let i = 0; i < parts.length; i++) {
+            if (i === 0) {
+                acc = parts[i] + "\\";
+                result.push({ label: parts[i], path: acc });
+            } else {
+                acc = acc + (acc.endsWith("\\") ? "" : "\\") + parts[i];
+                result.push({ label: parts[i], path: acc });
+            }
+        }
+    } else {
+        if (!normalized.startsWith("/")) normalized = "/" + normalized;
+        const parts = normalized.split("/").filter(Boolean);
+        let acc = "";
+        for (let i = 0; i < parts.length; i++) {
+            acc += "/" + parts[i];
+            result.push({ label: parts[i], path: acc });
+        }
+    }
+    return result;
+}
+
+async function _xzgDirBrowserRender(data) {
+    const dlg = _xzgDirBrowserEnsureDlg();
+    const wrap = dlg._listWrap;
+    wrap.innerHTML = "";
+
+    const GOLD = "#dcc85b";
+
+    // 当前路径（作为默认选中）— 进入任何目录即默认选中该目录
+    const currentPath = data.path || "";
+    _xzgDirBrowserState.selectedPath = currentPath;
+    dlg._curPathLabel.textContent = currentPath || "";
+    dlg._curPathLabel.title = currentPath || "";
+
+    // 新建文件夹按钮可用性
+    const inRealDir = !!currentPath;
+    dlg._newFolderBtn.style.opacity = inRealDir ? "1" : "0.35";
+    dlg._newFolderBtn.style.pointerEvents = inRealDir ? "auto" : "none";
+
+    // ── 渲染面包屑 ──
+    const crumbWrap = dlg._crumbWrap;
+    crumbWrap.innerHTML = "";
+    const crumbs = _xzgSplitCrumbs(currentPath);
+    crumbs.forEach((c, idx) => {
+        const isLast = idx === crumbs.length - 1;
+        if (idx > 0) {
+            const sep = document.createElement("span");
+            sep.style.cssText = "color:#555;font-size:11px;padding:0 2px;flex-shrink:0;";
+            sep.textContent = "▸";
+            crumbWrap.appendChild(sep);
+        }
+        const seg = document.createElement("span");
+        seg.textContent = c.label;
+        if (isLast) {
+            seg.style.cssText = `font-size:11px;color:${GOLD};font-weight:bold;padding:1px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;`;
+        } else {
+            seg.style.cssText = "font-size:11px;color:#888;padding:1px 3px;cursor:pointer;white-space:nowrap;";
+            seg.addEventListener("mouseenter", () => { seg.style.color = "#ddd"; });
+            seg.addEventListener("mouseleave", () => { seg.style.color = "#888"; });
+            seg.addEventListener("click", () => _xzgDirBrowserLoad(c.path));
+        }
+        seg.title = c.path || c.label;
+        crumbWrap.appendChild(seg);
+    });
+
+    // ── 最近使用目录（最多5个，localStorage 保存，最新在前）渲染到列表最顶部 ──
+    try {
+        const recent = _xzgRecentDirsGet();
+        if (recent && recent.length) {
+            const panel = document.createElement("div");
+            panel.style.cssText = "margin:4px 2px 6px;padding:6px 8px;background:#252525;border:1px solid #333;border-radius:3px;";
+            // 标题行：左侧标签 + 右侧清理按钮
+            const header = document.createElement("div");
+            header.style.cssText = `display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;`;
+            const labelEl = document.createElement("div");
+            labelEl.style.cssText = `font-size:10px;color:${GOLD};letter-spacing:0.5px;`;
+            labelEl.textContent = "最近使用";
+            header.appendChild(labelEl);
+            const clearBtn = document.createElement("span");
+            clearBtn.textContent = "🗑";
+            clearBtn.title = "清空最近使用";
+            clearBtn.style.cssText = `font-size:14px;color:#ff5555;cursor:pointer;padding:0 6px;user-select:none;line-height:1;`;
+            clearBtn.addEventListener("mouseenter", () => clearBtn.style.color = "#ff0000");
+            clearBtn.addEventListener("mouseleave", () => clearBtn.style.color = "#ff5555");
+            clearBtn.addEventListener("click", () => {
+                _xzgRecentDirsClear();
+                // 重新渲染当前列表（仅移除最近使用面板，保留其余）
+                const cur = _xzgDirBrowserState.currentPath;
+                _xzgDirBrowserLoad(cur);
+            });
+            header.appendChild(clearBtn);
+            panel.appendChild(header);
+
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
+            recent.slice(0, 5).forEach(p => {
+                const chip = _xzgDirBrowserMakeChip("⏱", p, p);
+                if (chip) row.appendChild(chip);
+            });
+            panel.appendChild(row);
+            wrap.appendChild(panel);
+        }
+    } catch (_) { /* 忽略渲染失败，继续显示下方内容 */ }
+
+    // 错误提示（非"不是有效目录"类的错误）
+    if (data.error) {
+        const err = document.createElement("div");
+        err.style.cssText = "padding:8px 10px;color:#f66;font-size:11px;background:#2a1a1a;border-left:3px solid #f66;margin:4px 2px;";
+        err.textContent = "⚠ " + data.error;
+        wrap.appendChild(err);
+    }
+
+    // 我的电脑（当前在根层时）：C/D/E/F... 统一用 data.drives 列表显示
+    if (data.drives && data.drives.length) {
+        for (const drv of data.drives) {
+            _xzgDirBrowserAddItem(wrap, drv.name + "\\", drv.full_path, true);
+        }
+        return;
+    }
+
+    // 列表第一项：⬆ 返回上级目录（若有上级）
+    const hasParent = _xzgDirBrowserState.parentPath !== null;
+    if (hasParent) {
+        _xzgDirBrowserAddUpItem(wrap, _xzgDirBrowserState.parentPath);
+    }
+
+    // 子目录列表
+    if (data.dirs && data.dirs.length) {
+        for (const d of data.dirs) {
+            _xzgDirBrowserAddItem(wrap, d.name, d.full_path, false);
+        }
+    } else if (!data.error) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "padding:24px;text-align:center;color:#666;font-size:11px;";
+        empty.textContent = "（此目录没有子文件夹）";
+        wrap.appendChild(empty);
+    }
+}
+
+// "⬆ 返回上级目录"项：无需单独选中，点击即跳转
+function _xzgDirBrowserAddUpItem(wrap, parentPath) {
+    const item = document.createElement("div");
+    item.style.cssText = "display:flex;align-items:center;gap:5px;padding:3px 8px;cursor:pointer;border-radius:2px;font-size:12px;line-height:1.5;";
+    const icon = document.createElement("span");
+    icon.style.cssText = "font-size:13px;width:16px;text-align:center;";
+    icon.textContent = "⬆";
+    const label = document.createElement("span");
+    label.textContent = "返回上级目录";
+    label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#888;";
+    item.appendChild(icon);
+    item.appendChild(label);
+    item.addEventListener("mouseenter", () => { item.style.background = "#353535"; label.style.color = "#ddd"; });
+    item.addEventListener("mouseleave", () => { item.style.background = ""; label.style.color = "#888"; });
+    item.addEventListener("click", () => _xzgDirBrowserLoad(parentPath));
+    wrap.appendChild(item);
+}
+
+// 常用位置快捷按钮（芯片样式）
+function _xzgDirBrowserMakeChip(icon, name, path, isDrive) {
+    if (!path) return null;
+    const GOLD = "#dcc85b";
+    const chip = document.createElement("span");
+    chip.style.cssText = [
+        "display:inline-flex",
+        "align-items:center",
+        "gap:3px",
+        "padding:2px 7px",
+        "font-size:11px",
+        "background:#1a1a1a",
+        "border:1px solid #3a3a3a",
+        "border-radius:10px",
+        "cursor:pointer",
+        "color:#ddd",
+        "transition:all .12s",
+        "user-select:none",
+        "line-height:1.4",
+    ].join(";");
+    chip.innerHTML = `<span style="font-size:12px;line-height:1;">${icon || (isDrive ? "💾" : "📁")}</span><span>${name}</span>`;
+    chip.title = path;
+    chip.addEventListener("mouseenter", () => {
+        chip.style.background = "#2c2a1c";
+        chip.style.borderColor = GOLD;
+        chip.style.color = GOLD;
+    });
+    chip.addEventListener("mouseleave", () => {
+        chip.style.background = "#1a1a1a";
+        chip.style.borderColor = "#3a3a3a";
+        chip.style.color = "#ddd";
+    });
+    chip.addEventListener("click", () => _xzgDirBrowserLoad(path));
+    return chip;
+}
+
+function _xzgDirBrowserAddItem(wrap, name, fullPath, isDrive) {
+    const dlg = _xzgDirBrowserDlg;
+    const GOLD = "#dcc85b";
+    const item = document.createElement("div");
+    item.style.cssText = "display:flex;align-items:center;gap:5px;padding:3px 8px;cursor:pointer;border-radius:2px;font-size:12px;line-height:1.5;";
+    const icon = document.createElement("span");
+    icon.style.cssText = "font-size:13px;width:16px;text-align:center;";
+    icon.textContent = isDrive ? "💾" : "📁";
+    const label = document.createElement("span");
+    label.textContent = name;
+    label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    item.appendChild(icon);
+    item.appendChild(label);
+
+    const setIdle = () => {
+        if (item.getAttribute("data-xzg-sel") !== "1") {
+            item.style.background = "";
+            label.style.color = "";
+        }
+    };
+    const setHover = () => {
+        if (item.getAttribute("data-xzg-sel") !== "1") {
+            item.style.background = "#353535";
+        }
+    };
+    const setSelected = () => {
+        item.style.background = "rgba(220,200,91,0.15)";
+        label.style.color = GOLD;
+    };
+    item.addEventListener("mouseenter", setHover);
+    item.addEventListener("mouseleave", setIdle);
+    // 单击：选中该子目录（作为目标路径）
+    item.addEventListener("click", () => {
+        _xzgDirBrowserState.selectedPath = fullPath;
+        dlg._curPathLabel.textContent = fullPath;
+        dlg._curPathLabel.title = fullPath;
+        wrap.querySelectorAll('[data-xzg-sel="1"]').forEach(d => {
+            d.removeAttribute("data-xzg-sel");
+            d.style.background = "";
+            const l = d.querySelector("span:last-child");
+            if (l) l.style.color = "";
+        });
+        item.setAttribute("data-xzg-sel", "1");
+        setSelected();
+    });
+    // 双击：进入该目录
+    item.addEventListener("dblclick", () => _xzgDirBrowserLoad(fullPath));
+    wrap.appendChild(item);
+}
+
+function _xzgDirBrowserConfirm() {
+    const sel = _xzgDirBrowserState.selectedPath || _xzgDirBrowserState.currentPath;
+    const node = _xzgDirBrowserState.targetNode;
+    const widget = _xzgDirBrowserState.targetWidget;
+    const dlg = _xzgDirBrowserEnsureDlg();
+    if (widget && sel) {
+        widget.value = sel;
+        _xzgRecentDirsPush(sel);
+        if (widget.callback) widget.callback(sel);
+        console.log("[小珠光] 已选择保存目录:", sel);
+    }
+    // 保存"默认输出"、"自定义前缀"、"日期戳"、"时间戳"设置回节点
+    if (node) {
+        if (dlg._defaultCheck && node._xzgDefaultOutputWidget) {
+            const v = !!dlg._defaultCheck.checked;
+            node._xzgDefaultOutputWidget.value = v;
+            if (node._xzgDefaultOutputWidget.callback) node._xzgDefaultOutputWidget.callback(v);
+        }
+        if (dlg._prefixInput && node._xzgPrefixCustomWidget) {
+            // 允许保存空字符串（用户主动清空），由后端决定是否回退默认值
+            const v = (dlg._prefixInput.value ?? "").trim();
+            node._xzgPrefixCustomWidget.value = v;
+            if (node._xzgPrefixCustomWidget.callback) node._xzgPrefixCustomWidget.callback(v);
+        }
+        if (dlg._dateCheck && node._xzgDateStampWidget) {
+            const v = !!dlg._dateCheck.checked;
+            node._xzgDateStampWidget.value = v;
+            if (node._xzgDateStampWidget.callback) node._xzgDateStampWidget.callback(v);
+        }
+        if (dlg._timeCheck && node._xzgTimeStampWidget) {
+            const v = !!dlg._timeCheck.checked;
+            node._xzgTimeStampWidget.value = v;
+            if (node._xzgTimeStampWidget.callback) node._xzgTimeStampWidget.callback(v);
+        }
+        node.setDirtyCanvas(true);
+    }
+    _xzgDirBrowserHide();
+}
+
+function _xzgDirBrowserHide() {
+    if (_xzgDirBrowserDlg) _xzgDirBrowserDlg.style.display = "none";
+}
+
+async function _xzgShowDirBrowser(node) {
+    const dlg = _xzgDirBrowserEnsureDlg();
+    _xzgDirBrowserState.targetNode = node;
+    let widget = null;
+    if (node && node.widgets) {
+        widget = node.widgets.find(w => w.name === "base_dir");
+    }
+    _xzgDirBrowserState.targetWidget = widget;
+    // 回显当前节点的"默认输出"设置（必须先回显，后调用 _applyDefaultState）
+    if (dlg._defaultCheck && node && node._xzgDefaultOutputWidget) {
+        dlg._defaultCheck.checked = !!node._xzgDefaultOutputWidget.value;
+    } else if (dlg._defaultCheck) {
+        dlg._defaultCheck.checked = false;
+    }
+    // 回显当前节点的"自定义前缀"、"日期戳"、"时间戳"设置（允许回显空字符串）
+    if (dlg._prefixInput && node && node._xzgPrefixCustomWidget) {
+        dlg._prefixInput.value = node._xzgPrefixCustomWidget.value ?? "";
+    } else if (dlg._prefixInput) {
+        dlg._prefixInput.value = "xzg-save";
+    }
+    if (dlg._dateCheck && node && node._xzgDateStampWidget) {
+        dlg._dateCheck.checked = !!node._xzgDateStampWidget.value;
+    } else if (dlg._dateCheck) {
+        dlg._dateCheck.checked = false;
+    }
+    if (dlg._timeCheck && node && node._xzgTimeStampWidget) {
+        dlg._timeCheck.checked = !!node._xzgTimeStampWidget.value;
+    } else if (dlg._timeCheck) {
+        dlg._timeCheck.checked = false;
+    }
+    // 根据"默认输出"状态，同步灰显/启用 自定义前缀/日期戳/时间戳
+    if (typeof dlg._applyDefaultState === "function") dlg._applyDefaultState();
+    dlg.style.display = "flex";
+    // 恢复上次拖动后的位置（若有），否则保持居中
+    try {
+        const raw = localStorage.getItem("xzgDirBrowserPos");
+        if (raw) {
+            const pos = JSON.parse(raw);
+            if (pos && typeof pos.left === "string" && typeof pos.top === "string") {
+                dlg.style.left = pos.left;
+                dlg.style.top = pos.top;
+                dlg.style.transform = "none";
+            }
+        }
+    } catch (_) {}
+    // 始终默认显示我的电脑（C/D/E/F），用户再点具体盘符进入
+    await _xzgDirBrowserLoad("");
+}
+
+async function _xzgDirBrowserNewFolder() {
+    const cur = _xzgDirBrowserState.currentPath;
+    if (!cur) {
+        alert("请先进入某个盘符/目录后再新建文件夹");
+        return;
+    }
+    const name = prompt("输入新文件夹名称：", "新建文件夹");
+    if (!name) return;
+    try {
+        const resp = await api.fetchApi("/xzg_mkdir", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ parent: cur, name: name })
+        });
+        const data = await resp.json();
+        if (data.error) {
+            alert("创建失败: " + data.error);
+            return;
+        }
+        _xzgDirBrowserLoad(cur);  // 刷新当前目录
+    } catch (e) {
+        alert("创建失败: " + e);
+    }
+}

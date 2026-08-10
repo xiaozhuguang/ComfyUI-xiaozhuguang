@@ -187,6 +187,7 @@ from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
 from .nodes.xzg_image_compare import XiaozhuguangImageCompare
 from .nodes.xzg_image_save import XiaozhuguangImageSave
+from .nodes.xzg_image_save_custom import XiaozhuguangImageSaveCustom
 from .nodes.xzg_audio_save import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
@@ -279,6 +280,185 @@ try:
         # 不销毁数据，允许重复保存（内存由 REAL_STORE 的 100 条上限自动清理）
 
         return web.json_response({"filename": fname, "subfolder": "", "type": "temp"})
+
+    # ── 目录浏览 API：供「小珠光图像保存-自定义输出」节点前端文件夹选择器使用 ──
+    # 入参: { path: str }  空 path → Windows 返回盘符列表；其他平台返回 "/" 内容
+    # 出参: { path, dirs:[{name, full_path}], drives:[{name, full_path}], parent, error }
+    #       parent 为空字符串表示已到根（盘符列表层），前端据此隐藏"上级目录"按钮
+    @_xzg_save_real_routes.post("/xzg_list_dirs")
+    @xzg_safe_handler
+    async def xzg_list_dirs(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+        path = (data.get("path") or "").strip()
+
+        result = {"path": path, "dirs": [], "drives": [], "parent": "", "error": None}
+
+        try:
+            if not path:
+                # 空 path：Windows 列出盘符，其他平台进入根目录
+                if os.name == 'nt':
+                    import string as _str
+                    drives = []
+                    # 桌面放在最前，方便快速跳转
+                    try:
+                        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+                        if os.path.isdir(desktop):
+                            drives.append({"name": "桌面", "full_path": desktop})
+                    except Exception:
+                        pass
+                    for letter in _str.ascii_uppercase:
+                        drv = f"{letter}:\\"
+                        if os.path.isdir(drv):
+                            drives.append({"name": f"{letter}:", "full_path": drv})
+                    result["drives"] = drives
+                    result["is_root"] = True
+                    return web.json_response(result)
+                else:
+                    path = "/"
+
+            if not os.path.isdir(path):
+                result["error"] = f"不是有效目录: {path}"
+                return web.json_response(result)
+
+            # 父目录计算
+            if os.name == 'nt':
+                # Windows：盘符根目录（如 D:\）的父目录应为空（回到盘符列表）
+                norm = path.rstrip('\\').rstrip('/')
+                if len(norm) == 2 and norm[1] == ':':
+                    result["parent"] = ""
+                else:
+                    parent = os.path.dirname(norm)
+                    result["parent"] = parent if parent else ""
+            else:
+                result["parent"] = "" if path == "/" else (os.path.dirname(path) or "/")
+
+            # 列出子目录（仅目录，不含文件，过滤隐藏目录）
+            dirs = []
+            try:
+                for name in sorted(os.listdir(path)):
+                    # 过滤隐藏：Unix 点开头的文件；Windows 隐藏属性
+                    if os.name != 'nt' and name.startswith('.'):
+                        continue
+                    if os.name == 'nt':
+                        try:
+                            import ctypes
+                            attrs = ctypes.windll.kernel32.GetFileAttributesW(os.path.join(path, name))
+                            if attrs != -1 and (attrs & 0x2):  # FILE_ATTRIBUTE_HIDDEN
+                                continue
+                        except Exception:
+                            pass
+                    full = os.path.join(path, name)
+                    try:
+                        if os.path.isdir(full):
+                            dirs.append({"name": name, "full_path": full})
+                    except OSError:
+                        continue
+            except PermissionError:
+                result["error"] = "无权限访问该目录"
+            except OSError as e:
+                result["error"] = f"读取目录失败: {e}"
+
+            result["dirs"] = dirs
+        except Exception as e:
+            result["error"] = f"{type(e).__name__}: {e}"
+
+        return web.json_response(result)
+
+    # ── 新建文件夹 API：供文件夹选择器"新建文件夹"按钮使用 ──
+    # 入参: { parent: str, name: str }
+    # 出参: { path, name, error }
+    @_xzg_save_real_routes.post("/xzg_mkdir")
+    @xzg_safe_handler
+    async def xzg_mkdir(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+        parent = (data.get("parent") or "").strip()
+        name = (data.get("name") or "").strip()
+        if not parent or not name:
+            return web.json_response({"error": "parent 和 name 不能为空"})
+        if not os.path.isdir(parent):
+            return web.json_response({"error": f"父目录不存在: {parent}"})
+        # 清理文件夹名称：替换路径分隔符和非法字符
+        safe_name = name.replace('/', '_').replace('\\', '_').strip().strip('.')
+        # 进一步清理 Windows 非法字符
+        for ch in '<>:"|?*\x00':
+            safe_name = safe_name.replace(ch, '_')
+        if not safe_name:
+            return web.json_response({"error": "文件夹名称无效"})
+        full_path = os.path.join(parent, safe_name)
+        try:
+            os.makedirs(full_path, exist_ok=True)
+            return web.json_response({"path": full_path, "name": safe_name, "error": None})
+        except PermissionError:
+            return web.json_response({"error": "无权限创建目录"})
+        except OSError as e:
+            return web.json_response({"error": f"创建失败: {e}"})
+
+    # ── 常用位置 API：供文件夹选择器顶部"常用位置"快速跳转 ──
+    # 返回: { items:[{name, icon, path}], drives:[{name, full_path}] }
+    #   items 里包含：桌面 / 文档 / 图片 / ComfyUI输出 等系统常用位置
+    #   drives 是当前所有存在的盘符，供前端快捷显示 C/D/E/F
+    @_xzg_save_real_routes.post("/xzg_quick_dirs")
+    @xzg_safe_handler
+    async def xzg_quick_dirs(request):
+        items = []
+        drives = []
+
+        def _add_if_exists(name, icon, path):
+            try:
+                if path and os.path.isdir(path):
+                    items.append({"name": name, "icon": icon, "path": path})
+                    return True
+            except Exception:
+                pass
+            return False
+
+        # Windows 常见用户目录
+        if os.name == 'nt':
+            home = os.path.expanduser("~")
+            _add_if_exists("桌面", "🏠", os.path.join(home, "Desktop"))
+            _add_if_exists("文档", "📄", os.path.join(home, "Documents"))
+            _add_if_exists("图片", "🖼", os.path.join(home, "Pictures"))
+            _add_if_exists("下载", "⬇", os.path.join(home, "Downloads"))
+            # OneDrive 桌面（Win11常见）
+            try:
+                onedrive = os.environ.get("OneDrive") or ""
+                if onedrive:
+                    _add_if_exists("桌面(OneDrive)", "☁️", os.path.join(onedrive, "Desktop"))
+            except Exception:
+                pass
+            # 盘符列表
+            try:
+                import string as _str
+                for letter in _str.ascii_uppercase:
+                    drv = f"{letter}:\\"
+                    if os.path.isdir(drv):
+                        drives.append({"name": f"{letter}:", "full_path": drv})
+            except Exception:
+                pass
+        else:
+            # macOS / Linux
+            home = os.path.expanduser("~")
+            _add_if_exists("桌面", "🏠", os.path.join(home, "Desktop"))
+            _add_if_exists("文档", "📄", os.path.join(home, "Documents"))
+            _add_if_exists("图片", "🖼", os.path.join(home, "Pictures"))
+            _add_if_exists("下载", "⬇", os.path.join(home, "Downloads"))
+            _add_if_exists("Home", "🏠", home)
+
+        # ComfyUI 输出目录（总是优先可用）
+        try:
+            od = folder_paths.get_output_directory()
+            if od:
+                items.append({"name": "ComfyUI输出", "icon": "🎬", "path": od})
+        except Exception:
+            pass
+
+        return web.json_response({"items": items, "drives": drives})
 except Exception as _e:
     print("[xiaozhuguang] 注册 /xzg_save_real 路由失败:", _e)
 
@@ -700,6 +880,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
+    "XiaozhuguangImageSaveCustom": XiaozhuguangImageSaveCustom,
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
@@ -737,6 +918,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangVideoCombine": "小珠光合并视频",
     "XiaozhuguangImageCompare": "小珠光图像对比",
     "XiaozhuguangImageSave": "小珠光图像保存",
+    "XiaozhuguangImageSaveCustom": "小珠光图像保存-化神级",
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",

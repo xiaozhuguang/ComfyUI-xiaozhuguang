@@ -88,6 +88,33 @@ def _get_ffmpeg_path():
 ffmpeg_path = _get_ffmpeg_path()
 
 
+_ffmpeg_major_version = None
+
+
+def _get_ffmpeg_major_version():
+    """获取 FFmpeg 主版本号（缓存），失败返回 0。"""
+    global _ffmpeg_major_version
+    if _ffmpeg_major_version is not None:
+        return _ffmpeg_major_version
+    if ffmpeg_path is None:
+        _ffmpeg_major_version = 0
+        return 0
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, "-version"],
+            capture_output=True, timeout=10
+        )
+        output = (result.stdout + result.stderr).decode(*ENCODE_ARGS)
+        match = re.search(r"ffmpeg version (\d+)", output)
+        if match:
+            _ffmpeg_major_version = int(match.group(1))
+        else:
+            _ffmpeg_major_version = 0
+    except Exception:
+        _ffmpeg_major_version = 0
+    return _ffmpeg_major_version
+
+
 def float_or_int(value, default=0):
     try:
         if isinstance(value, bool):
@@ -380,9 +407,12 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     yield (size_base[0], size_base[1], fps_base, duration, fps_base * duration,
            1.0 / (force_rate or fps_base), yieldable_frames, size[0], size[1], alpha)
 
-    # 降帧时 -vsync 0（passthrough），升帧时直通
+    # 降帧时使用 passthrough 同步：FFmpeg >= 7 用 -fps_mode，< 7 用 -vsync
     if not is_upscale:
-        args_all_frames += ["-vsync", "0"]
+        if _get_ffmpeg_major_version() >= 7:
+            args_all_frames += ["-fps_mode", "passthrough"]
+        else:
+            args_all_frames += ["-vsync", "0"]
     args_all_frames += ["-f", "rawvideo", "-"]
 
     pbar = ProgressBar(int(yieldable_frames)) if yieldable_frames > 0 else None

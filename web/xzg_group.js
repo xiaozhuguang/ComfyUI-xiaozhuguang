@@ -4175,6 +4175,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         }
                         const pendingFromTop = d?._xzgGroups || d?.extra?.xzgGroups || null;
                         if (pendingFromTop) console.log('[小珠光编组] LGraph.configure检测到编组数据:', Object.keys(pendingFromTop).length, '个');
+                        // 加载新工作流时清空跨会话删除标记：xzg_deleted_groups 是全局的，
+                        // 不应跨工作流生效。加载新工作流时完全信任工作流 JSON 数据，
+                        // 防止「在工作流A删除编组 → 切换到工作流B → B中相同gid的编组被跳过 → 永久丢失」
+                        try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
                         c.apply(this, arguments);
                         if (app?.graph !== this) return;
 
@@ -5478,18 +5482,19 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         console.log('[小珠光编组] 恢复编组...', this._pendingGroups ? Object.keys(this._pendingGroups).length + '个编组数据待恢复' : '无待恢复数据', '已删除:', _deletedGids.length);
 
         // 优先从工作流保存的完整编组数据恢复（包含动画、颜色、标题等）
+        // 注意：_pendingGroups 来自工作流 JSON，是用户明确保存的编组数据，优先级最高，
+        // 不受 _deletedGids 影响（防止跨工作流删除标记导致编组永久丢失）
         if (this._pendingGroups) {
             for (const [id, g] of Object.entries(this._pendingGroups)) {
-                if (_deletedGids.includes(id)) continue;
                 this.groups[id] = { ...g };
             }
             this._pendingGroups = null;
         }
 
         // 额外：从 app.graph.extra 恢复（兼容新版 ComfyUI 前端）
+        // graph.extra 来自 LiteGraph configure，也是工作流数据，同样不受 _deletedGids 影响
         if (app?.graph?.extra?.xzgGroups && Object.keys(app.graph.extra.xzgGroups).length) {
             for (const [id, g] of Object.entries(app.graph.extra.xzgGroups)) {
-                if (_deletedGids.includes(id)) continue;
                 if (!this.groups[id]) {
                     this.groups[id] = { ...g };
                 }
