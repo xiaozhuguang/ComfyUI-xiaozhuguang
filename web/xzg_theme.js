@@ -19,6 +19,8 @@ window.XZGThemeManager = {
     linkAnimRunning: false,
     linkAnimFrameId: null,
     linkHighlightDimAlpha: 0.45,
+    // 连线高亮模式下的动画类型（'none' 表示仅金色高亮，无动画）
+    linkHighlightAnimType: 'none',
     // 吃豆人动画状态
     _pacCurrentKey: null,
     _pacProgress: 0,
@@ -41,6 +43,11 @@ window.XZGThemeManager = {
             const saved = localStorage.getItem('xzg-link-highlight');
             if (saved === 'true') {
                 this.linkHighlightActive = true;
+            }
+            // 连线高亮动画类型
+            const hlAnimTypeSaved = localStorage.getItem('xzg-link-highlight-anim-type');
+            if (hlAnimTypeSaved) {
+                this.linkHighlightAnimType = hlAnimTypeSaved;
             }
             // 连线动画（星芒效果），默认关闭
             const animSaved = localStorage.getItem('xzg-link-anim');
@@ -1617,16 +1624,33 @@ window.XZGThemeManager = {
                 isConnected = idSet.has(String(originId)) || idSet.has(String(targetId));
             }
 
-            // 连线高亮：选中节点的连线高亮，其他变暗
+            // 连线高亮：选中节点的连线高亮，其他变暗；未选中节点时所有连线变暗变细
             if (self.linkHighlightActive && hasSelectedNodes) {
+                const hasHighlightAnim = self.linkHighlightAnimType && self.linkHighlightAnimType !== 'none';
                 if (isConnected) {
-                    self._drawHighlightGreenLine(ctx, link);
+                    if (hasHighlightAnim) {
+                        // 开启高亮动画时：连线本体变暗变细（与非选中连线一致），动画叠加上去
+                        const origAlpha = ctx.globalAlpha;
+                        ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
+                        self._drawThinBaseLine(ctx, link);
+                        ctx.globalAlpha = origAlpha;
+                        self._drawLinkAnim(ctx, link, self.linkHighlightAnimType);
+                        self._ensureAnimLoop();
+                    } else {
+                        self._drawHighlightGreenLine(ctx, link);
+                    }
                 } else {
                     const origAlpha = ctx.globalAlpha;
                     ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
                     self._drawThinBaseLine(ctx, link);
                     ctx.globalAlpha = origAlpha;
                 }
+            } else if (self.linkHighlightActive && !hasSelectedNodes) {
+                // 未选中节点时：所有连线变暗变细
+                const origAlpha = ctx.globalAlpha;
+                ctx.globalAlpha = origAlpha * self.linkHighlightDimAlpha;
+                self._drawThinBaseLine(ctx, link);
+                ctx.globalAlpha = origAlpha;
             } else if (self.linkAnimActive) {
                 // 连线动画开启时，所有连线变细变暗，作为星芒的底
                 const origAlpha = ctx.globalAlpha;
@@ -1736,14 +1760,21 @@ window.XZGThemeManager = {
     },
 
     toggleLinkHighlight() {
-        this.linkHighlightActive = !this.linkHighlightActive;
+        const newState = !this.linkHighlightActive;
+        this.linkHighlightActive = newState;
         try {
             localStorage.setItem('xzg-link-highlight', this.linkHighlightActive ? 'true' : 'false');
         } catch(e) {}
+        // 互斥：开启连线高亮时关闭连线动画
+        if (newState && this.linkAnimActive) {
+            this.linkAnimActive = false;
+            try { localStorage.setItem('xzg-link-anim', 'false'); } catch(e) {}
+        }
         if (!this.linkHighlightActive) {
             this._stopHighlightAnimLoop();
         }
-        if (!this.linkHighlightActive && !this.linkLaserActive && !this.linkColorActive) {
+        const hasHighlightAnim = this.linkHighlightActive && this.linkHighlightAnimType && this.linkHighlightAnimType !== 'none';
+        if (!hasHighlightAnim && !this.linkLaserActive && !this.linkColorActive && !this.linkAnimActive) {
             this._stopAnimLoop();
         }
         if (window.app) {
@@ -1757,11 +1788,19 @@ window.XZGThemeManager = {
     },
 
     toggleLinkAnim() {
-        this.linkAnimActive = !this.linkAnimActive;
+        const newState = !this.linkAnimActive;
+        this.linkAnimActive = newState;
         try {
             localStorage.setItem('xzg-link-anim', this.linkAnimActive ? 'true' : 'false');
         } catch(e) {}
-        if (!this.linkAnimActive && !this.linkLaserActive) {
+        // 互斥：开启连线动画时关闭连线高亮
+        if (newState && this.linkHighlightActive) {
+            this.linkHighlightActive = false;
+            try { localStorage.setItem('xzg-link-highlight', 'false'); } catch(e) {}
+            this._stopHighlightAnimLoop();
+        }
+        const hasHighlightAnim = this.linkHighlightActive && this.linkHighlightAnimType && this.linkHighlightAnimType !== 'none';
+        if (!this.linkAnimActive && !this.linkLaserActive && !hasHighlightAnim) {
             this._stopAnimLoop();
         }
         if (window.app) {
@@ -1778,6 +1817,16 @@ window.XZGThemeManager = {
         this.linkAnimType = type;
         try {
             localStorage.setItem('xzg-link-anim-type', type);
+        } catch(e) {}
+        if (window.app?.canvas?.setDirty) {
+            app.canvas.setDirty(true, true);
+        }
+    },
+
+    setLinkHighlightAnimType(type) {
+        this.linkHighlightAnimType = type || 'none';
+        try {
+            localStorage.setItem('xzg-link-highlight-anim-type', this.linkHighlightAnimType);
         } catch(e) {}
         if (window.app?.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
@@ -1964,8 +2013,8 @@ window.XZGThemeManager = {
         ctx.restore();
     },
 
-    _drawLinkAnim(ctx, link) {
-        const type = this.linkAnimType || 'sparkle';
+    _drawLinkAnim(ctx, link, type) {
+        type = type || this.linkAnimType || 'sparkle';
         switch (type) {
             case 'sparkle':      this._drawRainbowSparkles(ctx, link); break;
             case 'pulse':        this._drawPacMan(ctx, link); break;
@@ -2747,13 +2796,14 @@ window.XZGThemeManager = {
         this.linkAnimRunning = true;
         const self = this;
         function loop() {
-            if (!self.linkLaserActive && !self.linkAnimActive) {
+            const hasHighlightAnim = self.linkHighlightActive && self.linkHighlightAnimType && self.linkHighlightAnimType !== 'none' && self._hasSelectedNodes();
+            if (!self.linkLaserActive && !self.linkAnimActive && !hasHighlightAnim) {
                 self.linkAnimRunning = false;
                 self.linkAnimFrameId = null;
                 return;
             }
-            // 吃豆人状态更新（每帧只执行一次）
-            if (self.linkAnimActive && self.linkAnimType === 'pulse') {
+            // 吃豆人状态更新（每帧只执行一次，连线动画或高亮动画为 pulse 时均触发）
+            if ((self.linkAnimActive && self.linkAnimType === 'pulse') || (hasHighlightAnim && self.linkHighlightAnimType === 'pulse')) {
                 self._updatePacManState();
             }
             if (window.app?.canvas?.setDirty) {

@@ -223,6 +223,24 @@ window.XZGThemePanel = {
                         </button>
                     </div>
 
+                    <div class="xzg-link-highlight-section" id="xzg-link-highlight-anim-type-row" style="display:none;">
+                        <span class="xzg-swatch-label">${xzgT('高亮动画','Highlight Anim')}</span>
+                        <select id="xzg-link-highlight-anim-type" style="background:#2a2a2a;color:#ddd;border:1px solid #555;border-radius:4px;padding:2px 6px;font-size:11px;">
+                            <option value="none">${xzgT('无','None')}</option>
+                            <option value="sparkle">${xzgT('七彩星芒','Sparkle')}</option>
+                            <option value="pulse">${xzgT('吃豆人','Pac-Man')}</option>
+                            <option value="crystal">${xzgT('水晶溪流','Crystal Stream')}</option>
+                            <option value="quantum">${xzgT('量子场','Quantum Field')}</option>
+                            <option value="energy">${xzgT('能量脉冲','Energy Pulse')}</option>
+                            <option value="lava">${xzgT('熔岩流','Lava Flow')}</option>
+                            <option value="stellar">${xzgT('恒星等离子','Stellar Plasma')}</option>
+                            <option value="transfer">${xzgT('高速穿梭','Simple Transfer')}</option>
+                            <option value="randspark">${xzgT('随机闪烁','Random Sparkle')}</option>
+                            <option value="diy1">${xzgT('金星流动','Gold Star Flow')}</option>
+                            <option value="diy2">${xzgT('紫色箭头','Purple Arrow')}</option>
+                        </select>
+                    </div>
+
                     <div class="xzg-link-highlight-section">
                         <span class="xzg-swatch-label">${xzgT('连线动画','Link Animation')}</span>
                         <button type="button" id="xzg-link-anim-btn" class="xzg-toggle-switch xzg-link-anim-toggle" data-checked="false" title="${xzgT('开启后，所有连线显示动画效果','Show animation effect on all links')}">
@@ -630,6 +648,18 @@ window.XZGThemePanel = {
         });
 
         const linkHighlightBtn = panel.querySelector("#xzg-link-highlight-btn");
+        const linkHighlightAnimTypeRow = panel.querySelector("#xzg-link-highlight-anim-type-row");
+        const linkHighlightAnimTypeSelect = panel.querySelector("#xzg-link-highlight-anim-type");
+
+        // 速度行可见性：连线动画开启，或高亮动画选中了非 none 类型时显示
+        const updateSpeedRowVisibility = () => {
+            const tm = window.XZGThemeManager;
+            if (!tm || !linkAnimSpeedRow) return;
+            const animOn = !!tm.linkAnimActive;
+            const hlAnimOn = !!tm.linkHighlightActive && tm.linkHighlightAnimType && tm.linkHighlightAnimType !== 'none';
+            linkAnimSpeedRow.style.display = (animOn || hlAnimOn) ? "" : "none";
+        };
+
         if (linkHighlightBtn) {
             linkHighlightBtn.addEventListener("click", (e) => {
                 e.stopPropagation();
@@ -638,6 +668,15 @@ window.XZGThemePanel = {
                     linkHighlightBtn.setAttribute("data-checked", active ? "true" : "false");
                     const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
                     if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
+                    if (linkHighlightAnimTypeRow) linkHighlightAnimTypeRow.style.display = active ? "" : "none";
+                    // 互斥：如果连线高亮开启了，关闭连线动画的面板状态
+                    if (active && linkAnimBtn) {
+                        linkAnimBtn.setAttribute("data-checked", "false");
+                        const l = linkAnimBtn.querySelector(".xzg-toggle-label");
+                        if (l) l.textContent = xzgT("关","Off");
+                        if (linkAnimTypeRow) linkAnimTypeRow.style.display = "none";
+                    }
+                    updateSpeedRowVisibility();
                 }
             });
 
@@ -646,7 +685,22 @@ window.XZGThemePanel = {
                 linkHighlightBtn.setAttribute("data-checked", "true");
                 const label = linkHighlightBtn.querySelector(".xzg-toggle-label");
                 if (label) label.textContent = xzgT("开","On");
+                if (linkHighlightAnimTypeRow) linkHighlightAnimTypeRow.style.display = "";
             }
+        }
+
+        if (linkHighlightAnimTypeSelect) {
+            // 同步初始值
+            if (window.XZGThemeManager && window.XZGThemeManager.linkHighlightAnimType) {
+                linkHighlightAnimTypeSelect.value = window.XZGThemeManager.linkHighlightAnimType;
+            }
+            linkHighlightAnimTypeSelect.addEventListener("change", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setLinkHighlightAnimType(linkHighlightAnimTypeSelect.value);
+                    updateSpeedRowVisibility();
+                }
+            });
         }
 
         const linkAnimBtn = panel.querySelector("#xzg-link-anim-btn");
@@ -664,7 +718,14 @@ window.XZGThemePanel = {
                     const label = linkAnimBtn.querySelector(".xzg-toggle-label");
                     if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
                     if (linkAnimTypeRow) linkAnimTypeRow.style.display = active ? "" : "none";
-                    if (linkAnimSpeedRow) linkAnimSpeedRow.style.display = active ? "" : "none";
+                    // 互斥：如果连线动画开启了，关闭连线高亮的面板状态
+                    if (active && linkHighlightBtn) {
+                        linkHighlightBtn.setAttribute("data-checked", "false");
+                        const l = linkHighlightBtn.querySelector(".xzg-toggle-label");
+                        if (l) l.textContent = xzgT("关","Off");
+                        if (linkHighlightAnimTypeRow) linkHighlightAnimTypeRow.style.display = "none";
+                    }
+                    updateSpeedRowVisibility();
                 }
             });
 
@@ -674,9 +735,11 @@ window.XZGThemePanel = {
                 const label = linkAnimBtn.querySelector(".xzg-toggle-label");
                 if (label) label.textContent = xzgT("开","On");
                 if (linkAnimTypeRow) linkAnimTypeRow.style.display = "";
-                if (linkAnimSpeedRow) linkAnimSpeedRow.style.display = "";
             }
         }
+
+        // 初始同步速度行可见性
+        updateSpeedRowVisibility();
 
         if (linkAnimTypeSelect) {
             // 同步初始值
