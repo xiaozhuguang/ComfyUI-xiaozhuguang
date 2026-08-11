@@ -217,6 +217,13 @@ class XiaozhuguangWaveformViewer {
         this._drawH = 0;
         this._drawW = 0;
 
+        // 解码进度状态
+        this._decoding = false;
+        this._decodeProgress = 0;       // 0~1，-1 表示不确定进度
+        this._decodedTime = 0;          // 已解码秒数
+        this._totalDuration = 0;        // 总时长
+        this._decodeAnimId = null;      // 进度条动画 rAF ID
+
         // 隐藏的 audio 元素（放到 body，不受 widget 销毁影响）
         this._audio = document.createElement("audio");
         this._audio.style.display = "none";
@@ -369,6 +376,156 @@ class XiaozhuguangWaveformViewer {
         }
         this._updateTimeDisplay();
         this.onRequestRedraw();
+    }
+
+    // ── 解码进度控制 ──
+    startDecoding(totalDuration) {
+        this._decoding = true;
+        // 初始使用不确定进度（-1），显示往返动画
+        // 直到收到第一个真实进度数据
+        this._decodeProgress = -1;
+        this._decodedTime = 0;
+        this._totalDuration = totalDuration || 0;
+        this._startDecodeAnim();
+    }
+
+    stopDecoding() {
+        this._decoding = false;
+        this._decodeProgress = 0;
+        this._decodedTime = 0;
+        this._stopDecodeAnim();
+        this.onRequestRedraw();
+    }
+
+    updateDecodeProgress(progress, decodedTime, totalDuration) {
+        this._decodeProgress = progress;
+        this._decodedTime = decodedTime || 0;
+        if (totalDuration != null) this._totalDuration = totalDuration;
+        this.onRequestRedraw();
+    }
+
+    _startDecodeAnim() {
+        if (this._decodeAnimId) return;
+        const loop = () => {
+            if (!this._decoding) return;
+            this.onRequestRedraw();
+            this._decodeAnimId = requestAnimationFrame(loop);
+        };
+        this._decodeAnimId = requestAnimationFrame(loop);
+    }
+
+    _stopDecodeAnim() {
+        if (this._decodeAnimId) {
+            cancelAnimationFrame(this._decodeAnimId);
+            this._decodeAnimId = null;
+        }
+    }
+
+    drawProgressBar(ctx, widgetY, widgetW, widgetH) {
+        const w = widgetW;
+        const h = widgetH;
+        const pad = this._getPad();
+
+        // 半透明遮罩
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+        ctx.fillRect(0, widgetY, w, h);
+
+        // ═══ 音符律动条（均衡器风格，自适应宽度） ═══
+        const maxBarH = Math.min(h * 0.55, 28);  // 最大条高度
+        const minBarH = 3;                       // 最小条高度
+        const barW = 3;                          // 固定每条宽度
+        const barGap = 3;                        // 条间距
+        // 可用宽度 = 节点宽度 - 两侧 padding
+        const usableW = Math.max(40, w - pad * 2);
+        // 根据可用宽度和固定条宽计算最多能放多少条
+        const numBars = Math.max(7, Math.floor((usableW + barGap) / (barW + barGap)));
+        const totalW = numBars * barW + (numBars - 1) * barGap;
+        const startX = pad + (usableW - totalW) / 2;
+        const baseY = widgetY + h / 2 + maxBarH / 2 + 2;  // 底部基线
+
+        const now = Date.now();
+
+        // 每条的高度基于多个正弦波叠加，形成自然律动感
+        // 进度确定时，整体高度随进度递增；不确定时，保持中等高度律动
+        const progressFactor = this._decodeProgress >= 0 ? this._decodeProgress : 0.5;
+
+        // 多彩调色板：红橙黄绿青蓝紫，循环使用
+        const palette = [
+            { dark: '#8B0000', mid: '#FF4444', light: '#FFB3B3' }, // 红
+            { dark: '#8B4500', mid: '#FF8C00', light: '#FFD9B3' }, // 橙
+            { dark: '#8B6914', mid: '#FFD700', light: '#FFF8DC' }, // 黄
+            { dark: '#006400', mid: '#22C55E', light: '#B3F0C4' }, // 绿
+            { dark: '#006964', mid: '#06B6D4', light: '#B3F0F5' }, // 青
+            { dark: '#00008B', mid: '#3B82F6', light: '#B3D4FF' }, // 蓝
+            { dark: '#4B0082', mid: '#8B5CF6', light: '#D4C4FF' }, // 紫
+        ];
+
+        for (let i = 0; i < numBars; i++) {
+            // 多频率叠加：每条用不同的相位和频率，模拟音乐节奏
+            const phase1 = Math.sin(now * 0.006 + i * 0.7) * 0.5 + 0.5;
+            const phase2 = Math.sin(now * 0.011 + i * 1.3 + 1.2) * 0.3 + 0.3;
+            const phase3 = Math.sin(now * 0.004 + i * 0.4 + 2.5) * 0.2 + 0.2;
+            // 中间条更高，两侧递减（形成弧形顶部）
+            const centerWeight = 1 - Math.abs(i - (numBars - 1) / 2) / ((numBars - 1) / 2) * 0.4;
+
+            let intensity = (phase1 + phase2 + phase3) * centerWeight;
+            // 进度越高，整体律动幅度越大（0.4 ~ 1.0）
+            intensity = intensity * (0.4 + progressFactor * 0.6);
+            intensity = Math.max(0, Math.min(1, intensity));
+
+            const barH_i = minBarH + (maxBarH - minBarH) * intensity;
+            const x = startX + i * (barW + barGap);
+            const y = baseY - barH_i;
+
+            // 按位置循环选取调色板颜色
+            const color = palette[i % palette.length];
+            // 渐变色：底部深色 → 中部主色 → 顶部亮色
+            const grad = ctx.createLinearGradient(0, baseY, 0, baseY - maxBarH);
+            grad.addColorStop(0, color.dark);
+            grad.addColorStop(0.5, color.mid);
+            grad.addColorStop(1, color.light);
+            ctx.fillStyle = grad;
+
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(x, y, barW, barH_i, barW / 2);
+            } else {
+                ctx.rect(x, y, barW, barH_i);
+            }
+            ctx.fill();
+        }
+
+        // ═══ 进度百分比 / 状态文字 ═══
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const textY = baseY + 4;
+        if (this._decodeProgress >= 0) {
+            ctx.fillStyle = '#FFD700';
+            ctx.font = '9px sans-serif';
+            ctx.fillText(`解码中... ${Math.round(this._decodeProgress * 100)}%`, w / 2, textY);
+        } else {
+            ctx.fillStyle = '#FFD700';
+            ctx.font = '9px sans-serif';
+            ctx.fillText('正在分析音频...', w / 2, textY);
+        }
+
+        // ═══ 时间文字 ═══
+        ctx.fillStyle = '#888';
+        ctx.font = '7px sans-serif';
+        ctx.textBaseline = 'top';
+        const fmt = (t) => {
+            if (t >= 60) {
+                const m = Math.floor(t / 60);
+                const s = Math.floor(t % 60);
+                return `${m}:${s.toString().padStart(2, '0')}`;
+            }
+            return t.toFixed(1) + 's';
+        };
+        if (this._totalDuration > 0 && this._decodedTime > 0) {
+            ctx.fillText(`${fmt(this._decodedTime)} / ${fmt(this._totalDuration)}`, w / 2, textY + 12);
+        } else if (this._decodedTime > 0) {
+            ctx.fillText(`${fmt(this._decodedTime)}`, w / 2, textY + 12);
+        }
     }
 
     _updateTimeDisplay() {
@@ -551,6 +708,12 @@ class XiaozhuguangWaveformViewer {
         // 背景
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, widgetY, w, h);
+
+        // 解码中：显示进度条，不绘制波形
+        if (this._decoding) {
+            this.drawProgressBar(ctx, widgetY, w, h);
+            return;
+        }
 
         if (!this.peaks || this.peaks.length === 0) {
             // 空状态提示
@@ -811,8 +974,12 @@ class XiaozhuguangWaveformViewer {
         if (localY < widgetY || localY > widgetY + widgetH) return false;
 
         if (event.type === 'pointerdown' || event.type === 'mousedown') {
+            // 提前检测双击（在 200ms 防误触守卫之前），确保上半区双击上传不被拦截
+            const _now = Date.now();
+            const _isDoubleClick = (this._lastClickTime && _now - this._lastClickTime < 300);
             // 播放头拖动进行中或刚结束(200ms内)：忽略新的按下，防止拖到界面外后误触发播放
-            if (this.isDragging || (this._lastPlayheadEnd && Date.now() - this._lastPlayheadEnd < 200)) {
+            // 但双击不拦截（用于上半区双击上传）
+            if (!_isDoubleClick && (this.isDragging || (this._lastPlayheadEnd && _now - this._lastPlayheadEnd < 200))) {
                 return true;
             }
             // 右键：弹出保存菜单
@@ -892,7 +1059,7 @@ class XiaozhuguangWaveformViewer {
                 hitHandle = true;
             } else {
                 // 下半区：双击上传文件，单击立即播放/暂停（按下即响应，无延迟）
-                // 不进入拖动模式，允许节点正常拖动
+                // 不允许从音轨拖动移动节点
                 if (isDoubleClick) {
                     if (this._clickTimer) {
                         clearTimeout(this._clickTimer);
@@ -903,8 +1070,8 @@ class XiaozhuguangWaveformViewer {
                 }
                 // 立即切换播放/暂停（按下即响应）
                 this.togglePlay();
-                // 返回 false：不拦截事件，允许节点拖动
-                return false;
+                // 返回 true：拦截事件，不允许从音轨拖动移动节点
+                return true;
             }
 
             // 双击处理（下半区、音量、start/end标记）
@@ -1083,6 +1250,7 @@ class XiaozhuguangWaveformViewer {
 
     destroy() {
         this._stopPlaybackAnimation();
+        this._stopDecodeAnim();
         window.removeEventListener("mousemove", this._onMouseMove);
         window.removeEventListener("mouseup", this._onMouseUp);
         window.removeEventListener("pointermove", this._onMouseMove);
@@ -1133,9 +1301,97 @@ function getAudioUrl(filename) {
     return `/view?${params.toString()}&rand=${Math.random()}`;
 }
 
+// 官方 ComfyUI 上传大小限制（来自 /features 端点的 max_upload_size，字节）
+let _xzgMaxUploadSizeBytes = null;
+const _XZG_DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 官方默认 100MB
+
+async function _xzgGetMaxUploadSize() {
+    if (_xzgMaxUploadSizeBytes != null) return _xzgMaxUploadSizeBytes;
+    try {
+        const resp = await api.fetchApi("/features");
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data && typeof data.max_upload_size === "number" && data.max_upload_size > 0) {
+                _xzgMaxUploadSizeBytes = data.max_upload_size;
+                return _xzgMaxUploadSizeBytes;
+            }
+        }
+    } catch (e) {
+        console.warn("[小珠光] 获取上传大小限制失败，使用默认值:", e);
+    }
+    _xzgMaxUploadSizeBytes = _XZG_DEFAULT_MAX_UPLOAD_BYTES;
+    return _xzgMaxUploadSizeBytes;
+}
+
+function _xzgFormatBytes(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+// 音频加载器专用提示弹窗（风格与使用说明弹窗一致）
+function _xzgAudioAlert(message, title = "提示") {
+    const existing = document.querySelector(".xzg-audio-alert-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.className = "xzg-audio-alert-overlay";
+    overlay.style.cssText =
+        "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:99999;font-family:sans-serif;";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    const dialog = document.createElement("div");
+    dialog.style.cssText =
+        "background:var(--comfy-menu-bg,#1e1e1e);color:#ddd;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.5);width:420px;max-width:90vw;border:1px solid rgba(255,255,255,0.1);";
+    dialog.onclick = (e) => e.stopPropagation();
+
+    dialog.innerHTML = `
+        <div style="padding:14px 18px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between;align-items:center;">
+            <div style="font-size:14px;font-weight:bold;color:#FFD700;">${title}</div>
+        </div>
+        <div style="padding:14px 18px;font-size:12px;line-height:1.6;white-space:pre-wrap;">${message}</div>
+        <div style="padding:12px 18px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:flex-end;">
+            <button class="xzg-audio-alert-ok" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;">知道了</button>
+        </div>
+    `;
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const close = () => {
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+    };
+    dialog.querySelector(".xzg-audio-alert-ok").onclick = close;
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    const onKey = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    };
+    document.addEventListener("keydown", onKey, true);
+}
+
 async function uploadAudioFiles(files) {
-    const uploaded = [];
+    const maxBytes = await _xzgGetMaxUploadSize();
+    const tooLarge = [];
+    const okFiles = [];
     for (const file of files) {
+        if (file.size > maxBytes) {
+            tooLarge.push(file);
+        } else {
+            okFiles.push(file);
+        }
+    }
+    if (tooLarge.length > 0) {
+        const limitStr = _xzgFormatBytes(maxBytes);
+        const list = tooLarge.map(f => `• ${f.name}（${_xzgFormatBytes(f.size)}）`).join("\n");
+        _xzgAudioAlert(
+            `以下音频文件超出服务器上传大小限制（${limitStr}）：\n${list}`,
+            "上传失败"
+        );
+    }
+    const uploaded = [];
+    for (const file of okFiles) {
         try {
             const body = new FormData();
             body.append("image", file);
@@ -1147,6 +1403,14 @@ async function uploadAudioFiles(files) {
                 if (data && data.name) {
                     uploaded.push(data.name);
                 }
+            } else if (resp.status === 413) {
+                // 服务器端拦截（client_max_size），作为前端预检的兜底
+                _xzgAudioAlert(
+                    `音频 "${file.name}"（${_xzgFormatBytes(file.size)}）超出服务器上传大小限制（${_xzgFormatBytes(maxBytes)}）。`,
+                    "上传失败"
+                );
+            } else {
+                console.warn(`[小珠光] 音频上传失败: ${file.name}, HTTP ${resp.status}`);
             }
         } catch (e) {
             console.warn("[小珠光] 音频上传失败:", e);
@@ -1184,6 +1448,72 @@ async function fetchWaveformData(filename) {
     }
 }
 
+// 带进度跟踪的波形获取：POST 启动解码 → 轮询进度 → 返回结果
+// 失败时自动回退到 fetchWaveformData
+const _XZG_MIN_DECODE_ANIM_MS = 300;
+
+async function fetchWaveformWithProgress(filename, onProgress) {
+    let result = null;
+    try {
+        const startResp = await api.fetchApi("/xzg/audio_decode_start", {
+            method: "POST",
+            body: JSON.stringify({ filename }),
+            headers: { "Content-Type": "application/json" },
+        });
+        if (!startResp.ok) {
+            // 端点不存在（旧版后端），回退
+            return fetchWaveformData(filename);
+        }
+        const startData = await startResp.json();
+        const jobId = startData.job_id;
+        const totalDuration = startData.total_duration || 0;
+
+        // 收到总时长后更新（progress 仍为 -1 保持不确定动画，直到第一次轮询返回真实进度）
+        if (onProgress) onProgress(-1, 0, totalDuration);
+
+        // 轮询进度
+        const maxPolls = 6000; // 最多轮询 6000 次（100ms × 6000 = 10 分钟）
+        for (let i = 0; i < maxPolls; i++) {
+            await new Promise(r => setTimeout(r, 100));
+            const resp = await api.fetchApi(
+                `/xzg/audio_decode_progress?job_id=${encodeURIComponent(jobId)}`
+            );
+            if (!resp.ok) {
+                console.warn("[小珠光] 轮询解码进度失败:", resp.status);
+                return fetchWaveformData(filename);
+            }
+            const data = await resp.json();
+
+            if (data.error) {
+                console.warn("[小珠光] 解码失败:", data.error);
+                return fetchWaveformData(filename);
+            }
+
+            if (onProgress) {
+                onProgress(data.progress, data.decoded_time, data.total_duration);
+            }
+
+            if (data.done) {
+                result = {
+                    peaks: data.peaks || [],
+                    duration: data.duration || 0,
+                };
+                break;
+            }
+        }
+
+        if (!result) {
+            console.warn("[小珠光] 解码轮询超时，回退到普通方式");
+            return fetchWaveformData(filename);
+        }
+    } catch (e) {
+        console.warn("[小珠光] 进度解码失败，回退到普通方式:", e);
+        return fetchWaveformData(filename);
+    }
+
+    return result;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 使用说明弹窗
 // ═══════════════════════════════════════════════════════════════════════
@@ -1218,7 +1548,7 @@ function showAudioHelpDialog() {
                 <div style="font-weight: bold; color: #FFD700; margin-bottom: 4px;">📁 添加音频</div>
                 <ul style="margin: 0; padding-left: 18px;">
                     <li>点击"上传音频"按钮选择文件</li>
-                    <li>双击波形区域上传</li>
+                    <li>双击波形区域（上半区或下半区均可）上传</li>
                     <li>直接拖拽音频文件到波形区域</li>
                 </ul>
             </div>
@@ -1226,8 +1556,9 @@ function showAudioHelpDialog() {
                 <div style="font-weight: bold; color: #FFD700; margin-bottom: 4px;">▶️ 播放控制</div>
                 <ul style="margin: 0; padding-left: 18px;">
                     <li>音轨上 1/3 处有半透明白色虚线分界</li>
-                    <li>分界线上方（上 1/3）：点击跳转、拖动调整播放头</li>
-                    <li>分界线下方（下 2/3）：单击播放 / 暂停</li>
+                    <li>分界线上方（上 1/3）：点击跳转、拖动调整播放头、双击上传</li>
+                    <li>分界线下方（下 2/3）：单击播放 / 暂停、双击上传</li>
+                    <li>音轨区域不允许拖动移动节点</li>
                     <li>循环/单次：时间码右侧小符号 ⇆ / → 点击切换</li>
                 </ul>
             </div>
@@ -1389,15 +1720,44 @@ function bindAudioLoaderInteractions(node) {
     const canvasEl = app.canvas?.canvas;
     if (canvasEl && !canvasEl._xzgAudioDragDrop) {
         canvasEl._xzgAudioDragDrop = true;
+        // 将 DOM 事件坐标转换为画布坐标（考虑缩放和平移）
+        function _xzgAudioEventToCanvasCoords(ev) {
+            const cv = app.canvas;
+            if (!cv) return null;
+            // 优先使用 LiteGraph 内置方法
+            if (typeof cv.convertEventToCanvasOffset === 'function') {
+                try { return cv.convertEventToCanvasOffset(ev); } catch (_) {}
+            }
+            // 手动转换
+            const rect = canvasEl.getBoundingClientRect();
+            const localX = ev.clientX - rect.left;
+            const localY = ev.clientY - rect.top;
+            const scale = cv.ds?.scale || 1;
+            const offset = cv.ds?.offset || [0, 0];
+            return [localX / scale - offset[0], localY / scale - offset[1]];
+        }
+        // 使用与项目其他文件一致的回退链查找节点
+        function _xzgAudioGetNodeAt(x, y) {
+            const cv = app.canvas;
+            if (!cv) return null;
+            if (cv.getNodeAtPosition) return cv.getNodeAtPosition(x, y);
+            if (cv.getNodeAtPos) return cv.getNodeAtPos(x, y);
+            if (cv.graph?.getNodeOnPos) return cv.graph.getNodeOnPos(x, y);
+            return null;
+        }
         canvasEl.addEventListener('dragover', (e) => {
-            const nd = app.canvas.getNodeAtPos(e.offsetX, e.offsetY);
+            const pos = _xzgAudioEventToCanvasCoords(e);
+            if (!pos) return;
+            const nd = _xzgAudioGetNodeAt(pos[0], pos[1]);
             if (nd?._xzgWaveformViewer) {
                 e.preventDefault();
                 e.stopPropagation();
             }
         });
         canvasEl.addEventListener('drop', (e) => {
-            const nd = app.canvas.getNodeAtPos(e.offsetX, e.offsetY);
+            const pos = _xzgAudioEventToCanvasCoords(e);
+            if (!pos) return;
+            const nd = _xzgAudioGetNodeAt(pos[0], pos[1]);
             if (!nd?._xzgWaveformViewer) return;
             e.preventDefault();
             e.stopPropagation();
@@ -1410,14 +1770,21 @@ function bindAudioLoaderInteractions(node) {
         });
     }
 
+    // 加载 ID：用于取消旧的解码请求（切换文件时旧结果被忽略）
+    let _xzgAudioLoadId = 0;
+
     async function loadWaveformForFile(filename) {
+        const loadId = ++_xzgAudioLoadId;
+
         if (!filename) {
+            if (loadId !== _xzgAudioLoadId) return;
+            waveformViewer.stopDecoding();
             waveformViewer.setData([], 0);
             waveformViewer.setAudioUrl("");
             waveformViewer.setFilename("");
             return;
         }
-        const data = await fetchWaveformData(filename);
+
         const audioUrl = getAudioUrl(filename);
         waveformViewer.setAudioUrl(audioUrl);
         // 提取纯文件名（去掉 [output]/[input]/[temp] 后缀）
@@ -1430,6 +1797,32 @@ function bindAudioLoaderInteractions(node) {
             }
         }
         waveformViewer.setFilename(pureName);
+
+        // 启动解码进度显示
+        const animStart = Date.now();
+        waveformViewer.startDecoding(0);
+
+        const data = await fetchWaveformWithProgress(filename, (progress, decodedTime, totalDuration) => {
+            // 旧请求的回调被忽略
+            if (loadId !== _xzgAudioLoadId) return;
+            waveformViewer.updateDecodeProgress(progress, decodedTime, totalDuration);
+        });
+
+        // 切换文件后旧结果被忽略
+        if (loadId !== _xzgAudioLoadId) return;
+
+        // 保证动画至少显示 2 秒，避免快速解码时进度条闪烁
+        const elapsed = Date.now() - animStart;
+        const remaining = _XZG_MIN_DECODE_ANIM_MS - elapsed;
+        if (remaining > 0) {
+            await new Promise(r => setTimeout(r, remaining));
+        }
+
+        // 再次检查是否被新请求覆盖
+        if (loadId !== _xzgAudioLoadId) return;
+
+        waveformViewer.stopDecoding();
+
         if (data) {
             waveformViewer.setData(data.peaks, data.duration);
             _syncWidgetsFromViewer();
@@ -1569,6 +1962,8 @@ function bindAudioLoaderInteractions(node) {
             audioInfo = output.ui.audio_info[0];
         }
         if (audioInfo && audioInfo.full_peaks) {
+            // 节点执行直接获得波形数据，停止解码进度显示
+            waveformViewer.stopDecoding();
             waveformViewer.peaks = audioInfo.full_peaks;
             waveformViewer.duration = audioInfo.total_duration;
             const start = audioInfo.start_time || 0;
@@ -1592,8 +1987,14 @@ function bindAudioLoaderInteractions(node) {
         node.setDirtyCanvas?.(true, true);
     });
 
-    const origProcessDrop = node.processDrop;
-    node.processDrop = function (e) {
+    // 节点级拖放回调（LiteGraph 官方方式，前端 v1.47+ 通过 onDragOver/onDragDrop 派发）
+    node.onDragOver = function (e) {
+        const files = Array.from(e.dataTransfer?.files || []);
+        // 有音频文件或无文件（可能是 ComfyUI 内部拖入）时允许放置
+        return files.length === 0 || files.some(f => isAudioFilename(f.name));
+    };
+    const _origOnDragDrop = node.onDragDrop;
+    node.onDragDrop = function (e) {
         const files = Array.from(e.dataTransfer?.files || []).filter(f => isAudioFilename(f.name));
         if (files.length > 0) {
             e.preventDefault?.();
@@ -1604,7 +2005,7 @@ function bindAudioLoaderInteractions(node) {
             fileInput.dispatchEvent(new Event("change", { bubbles: true }));
             return true;
         }
-        return origProcessDrop?.apply(this, arguments);
+        return _origOnDragDrop?.apply(this, arguments);
     };
 
     requestAnimationFrame(() => {

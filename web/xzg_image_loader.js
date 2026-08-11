@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { xzgT } from "./xzg_i18n.js";
+import { xzgT, xzgTh } from "./xzg_i18n.js";
 
 // ═══════════════════════════════════════════════
 //  小珠光图像加载器 · 前端
@@ -126,8 +126,8 @@ function xzgConfirm(message, onOk) {
     dialog.innerHTML = `
         <div style="font-size:13px;color:var(--input-text);margin-bottom:16px;line-height:1.5;">${message}</div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
-            <button class="xzg-cancel-btn" style="padding:6px 16px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">取消</button>
-            <button class="xzg-ok-btn" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;">确定</button>
+            <button class="xzg-cancel-btn" style="padding:6px 16px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("取消", "Cancel")}</button>
+            <button class="xzg-ok-btn" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("确定", "OK")}</button>
         </div>
     `;
 
@@ -155,7 +155,7 @@ function xzgAlert(message, onClose) {
     dialog.innerHTML = `
         <div style="font-size:13px;color:var(--input-text);margin-bottom:16px;line-height:1.5;white-space:pre-wrap;">${message}</div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
-            <button class="xzg-ok-btn" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;">确定</button>
+            <button class="xzg-ok-btn" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("确定", "OK")}</button>
         </div>
     `;
 
@@ -190,6 +190,28 @@ function getOriginalImageUrl(filename) {
 // 压缩预览 URL：复用缩略图端点，按最长边缩放到 3840px 并输出 JPG（带缓存）
 function getPreviewUrl(filename) {
     return getThumbUrl(filename, 3840);
+}
+
+// 原始分辨率缓存：filename → {width, height}
+const _xzgImgInfoCache = new Map();
+
+// 异步获取图片原始分辨率（通过后端 /xzg_image_info API，仅读头信息，轻量）
+// 返回 Promise<{width, height}>；失败时回退 null
+async function _xzgFetchOriginalSize(filename) {
+    if (!filename) return null;
+    if (_xzgImgInfoCache.has(filename)) return _xzgImgInfoCache.get(filename);
+    try {
+        const url = api.apiURL(`/xzg_image_info?filename=${encodeURIComponent(filename)}`);
+        const resp = await fetch(url);
+        if (!resp.ok) { _xzgImgInfoCache.set(filename, null); return null; }
+        const data = await resp.json();
+        const result = (data && data.width && data.height) ? { width: data.width, height: data.height } : null;
+        _xzgImgInfoCache.set(filename, result);
+        return result;
+    } catch (_) {
+        _xzgImgInfoCache.set(filename, null);
+        return null;
+    }
 }
 
 async function uploadOneImage(file) {
@@ -249,7 +271,7 @@ async function xzgSaveImage(url, filename) {
                 const pickerOpts = {
                     suggestedName: filename || "image.png",
                     types: [{
-                        description: "图片文件",
+                        description: xzgT("图片文件", "Image Files"),
                         accept: { [mimeType]: ["." + ext] },
                     }],
                 };
@@ -352,7 +374,7 @@ function createImgBatchUI(node) {
         const targetNames = multi ? selectedNames : [imageName];
 
         const saveItem = document.createElement("div");
-        saveItem.textContent = multi ? `保存选中图片 (${selectedNames.length}张)` : "保存图片";
+        saveItem.textContent = multi ? `${xzgT("保存选中图片", "Save Selected Images")} (${selectedNames.length}${xzgT("张", "")})` : xzgT("保存图片", "Save Image");
         saveItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
         saveItem.addEventListener("mouseenter", () => { saveItem.style.background = "var(--comfy-input-bg)"; });
         saveItem.addEventListener("mouseleave", () => { saveItem.style.background = ""; });
@@ -559,8 +581,8 @@ function createImgBatchUI(node) {
     });
 
     const updateUploadModeBtn = () => {
-        uploadModeBtn.textContent = uploadMode === "append" ? "多图" : "单图";
-        uploadModeBtn.title = uploadMode === "append" ? "批量加载图片模式" : "单图加载模式";
+        uploadModeBtn.textContent = uploadMode === "append" ? xzgT("多图", "Multi") : xzgT("单图", "Single");
+        uploadModeBtn.title = uploadMode === "append" ? xzgT("批量加载图片模式", "Batch Load Mode") : xzgT("单图加载模式", "Single Load Mode");
         uploadModeBtn.style.border = "1px solid var(--border-color)";
         uploadModeBtn.style.background = "transparent";
         uploadModeBtn.style.color = "#FF6B6B";
@@ -591,16 +613,16 @@ function createImgBatchUI(node) {
         const isSingleMode = uploadMode === "replace";
         const disabled = singleImg || isSingleMode;
         
-        modeBtn.textContent = isBatch ? "批次" : "列表";
+        modeBtn.textContent = isBatch ? xzgT("批次", "Batch") : xzgT("列表", "List");
         if (disabled) {
-            modeBtn.title = isSingleMode ? "单图加载模式下不可用" : "";
+            modeBtn.title = isSingleMode ? xzgT("单图加载模式下不可用", "Not available in single mode") : "";
             modeBtn.style.borderColor = "#666";
             modeBtn.style.borderWidth = "1px";
             modeBtn.style.borderStyle = "solid";
             modeBtn.style.cursor = "default";
             modeBtn.style.opacity = "0.4";
         } else {
-            modeBtn.title = isBatch ? "切换为列表模式" : "切换为批次模式";
+            modeBtn.title = isBatch ? xzgT("切换为列表模式", "Switch to List Mode") : xzgT("切换为批次模式", "Switch to Batch Mode");
             modeBtn.style.borderColor = isBatch ? "#66CC66" : "#6699FF";
             modeBtn.style.borderWidth = "1px";
             modeBtn.style.borderStyle = "solid";
@@ -648,18 +670,18 @@ function createImgBatchUI(node) {
         b.addEventListener("mouseleave", () => { b.style.filter = ""; });
         return b;
     };
-    const maskToggleBtn = _mkMaskBtn("遮罩:关", "开启/关闭遮罩绘制模式（仅单图模式）");
-    const maskBrushBtn = _mkMaskBtn("画笔", "切换到画笔工具");
-    const maskEraserBtn = _mkMaskBtn("橡皮", "切换到橡皮擦工具");
-    const maskClearBtn = _mkMaskBtn("清空", "清除整个遮罩");
-    const maskInvertBtn = _mkMaskBtn("反相", "反相遮罩黑白区域");
+    const maskToggleBtn = _mkMaskBtn(xzgT("遮罩:关", "Mask:Off"), xzgT("开启/关闭遮罩绘制模式（仅单图模式）", "Toggle mask drawing (single mode only)"));
+    const maskBrushBtn = _mkMaskBtn(xzgT("画笔", "Brush"), xzgT("切换到画笔工具", "Switch to Brush"));
+    const maskEraserBtn = _mkMaskBtn(xzgT("橡皮", "Eraser"), xzgT("切换到橡皮擦工具", "Switch to Eraser"));
+    const maskClearBtn = _mkMaskBtn(xzgT("清空", "Clear"), xzgT("清除整个遮罩", "Clear mask"));
+    const maskInvertBtn = _mkMaskBtn(xzgT("反相", "Invert"), xzgT("反相遮罩黑白区域", "Invert mask B/W"));
 
     // 画笔大小滑条
     const brushSizeRow = document.createElement("div");
     brushSizeRow.style.cssText = "display:flex;flex-direction:column;gap:1px;padding:2px 2px;";
     const brushSizeLabel = document.createElement("div");
     brushSizeLabel.style.cssText = "font-size:10px;color:var(--input-text);text-align:center;line-height:1.3;";
-    brushSizeLabel.textContent = `笔刷:${brushSize}`;
+    brushSizeLabel.textContent = `${xzgT("笔刷", "Brush")}:${brushSize}`;
     const brushSizeInput = document.createElement("input");
     brushSizeInput.type = "range";
     brushSizeInput.min = "1";
@@ -668,7 +690,7 @@ function createImgBatchUI(node) {
     brushSizeInput.style.cssText = "width:100%;margin:0;accent-color:#FFD700;";
     brushSizeInput.addEventListener("input", () => {
         brushSize = parseInt(brushSizeInput.value, 10) || 1;
-        brushSizeLabel.textContent = `笔刷:${brushSize}`;
+        brushSizeLabel.textContent = `${xzgT("笔刷", "Brush")}:${brushSize}`;
         _updateMaskCursor();
         _renderBrushPreview();
     });
@@ -709,7 +731,7 @@ function createImgBatchUI(node) {
     const _refreshMaskToolbar = () => {
         const isSingle = uploadMode === "replace";
         maskToolbar.style.display = isSingle ? "flex" : "none";
-        maskToggleBtn.textContent = maskEnabled ? "退出遮罩" : "遮罩:关";
+        maskToggleBtn.textContent = maskEnabled ? xzgT("退出遮罩", "Exit Mask") : xzgT("遮罩:关", "Mask:Off");
         maskToggleBtn.style.color = maskEnabled ? "#FF6B6B" : "var(--input-text)";
         maskToggleBtn.style.borderColor = maskEnabled ? "#FF6B6B" : "var(--border-color)";
         maskBrushBtn.style.color = maskTool === "brush" ? "#66CC66" : "var(--input-text)";
@@ -732,7 +754,7 @@ function createImgBatchUI(node) {
     maskToggleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         if (uploadMode !== "replace") {
-            xzgAlert("遮罩绘制仅在单图模式下可用");
+            xzgAlert(xzgT("遮罩绘制仅在单图模式下可用", "Mask drawing is only available in single image mode"));
             return;
         }
         maskEnabled = !maskEnabled;
@@ -862,34 +884,34 @@ function createImgBatchUI(node) {
         "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;";
     emptyTip.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
-            <div style="text-align:center;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;">小珠光图像加载器</div>
+            <div style="text-align:center;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;">${xzgTh("小珠光图像加载器", "Xiaozhuguang Image Loader")}</div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
-                <div style="font-weight:bold;opacity:0.75;">📁 添加图片</div>
-                <div style="opacity:0.5;padding-left:12px;">双击空白处 / 点击上传按钮</div>
-                <div style="opacity:0.5;padding-left:12px;">.input 从输入文件夹选择</div>
-                <div style="opacity:0.5;padding-left:12px;">.output 从输出文件夹选择</div>
+                <div style="font-weight:bold;opacity:0.75;">${xzgTh("📁 添加图片", "📁 Add Images")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("双击空白处 / 点击上传按钮", "Double-click blank / Click upload button")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh(".input 从输入文件夹选择", ".input Select from input folder")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh(".output 从输出文件夹选择", ".output Select from output folder")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
-                <div style="font-weight:bold;opacity:0.75;">🖱️ 鼠标操作</div>
-                <div style="opacity:0.5;padding-left:12px;">左键点击：选中 / Ctrl多选 / Shift范围选</div>
-                <div style="opacity:0.5;padding-left:12px;">长按卡片拖动：调整顺序</div>
-                <div style="opacity:0.5;padding-left:12px;">卡片上拖动：框选多个图片</div>
-                <div style="opacity:0.5;padding-left:12px;">悬停卡片右上角：删除单张</div>
+                <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖱️ 鼠标操作", "🖱️ Mouse Operations")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击：选中 / Ctrl多选 / Shift范围选", "Left click: Select / Ctrl+Multi / Shift+Range")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("长按卡片拖动：调整顺序", "Long press card to drag: Reorder")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("卡片上拖动：框选多个图片", "Drag on card: Box select")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("悬停卡片右上角：删除单张", "Hover card corner: Delete")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
-                <div style="font-weight:bold;opacity:0.75;">🔄 模式切换</div>
-                <div style="opacity:0.5;padding-left:12px;">多图/单图：批量加载图片模式 / 单图加载模式</div>
-                <div style="opacity:0.5;padding-left:12px;">批次模式：统一分辨率，批量处理</div>
-                <div style="opacity:0.5;padding-left:12px;">列表模式：支持不同分辨率，逐张处理</div>
+                <div style="font-weight:bold;opacity:0.75;">${xzgTh("🔄 模式切换", "🔄 Mode Switch")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("多图/单图：批量加载图片模式 / 单图加载模式", "Multi/Single: Batch load mode / Single load mode")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("批次模式：统一分辨率，批量处理", "Batch: Uniform resolution, batch processing")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("列表模式：支持不同分辨率，逐张处理", "List: Different resolutions, per-image")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
-                <div style="font-weight:bold;opacity:0.75;">💡 提示</div>
-                <div style="opacity:0.5;padding-left:12px;">缩略图大小根据节点大小自动调整</div>
-                <div style="opacity:0.5;padding-left:12px;">拖动节点边缘可改变节点大小</div>
+                <div style="font-weight:bold;opacity:0.75;">${xzgTh("💡 提示", "💡 Tips")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("缩略图大小根据节点大小自动调整", "Thumbnail size auto-adjusts to node size")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("拖动节点边缘可改变节点大小", "Drag node edge to resize")}</div>
             </div>
         </div>
     `;
@@ -907,8 +929,32 @@ function createImgBatchUI(node) {
     singleImgContainer.id = "xzg-single-img-container";
     singleImgContainer.style.cssText = "flex:1;display:none;align-items:stretch;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;";
     const singleImgEl = document.createElement("img");
-    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;background:rgba(128,128,128,0.4);position:relative;z-index:1;";
+    singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:1;";
     singleImgEl.draggable = false;
+
+    // 单图模式分辨率标签
+    const singleResLabel = document.createElement("div");
+    singleResLabel.style.cssText =
+        "position:absolute;left:50%;bottom:3px;transform:translateX(-50%);z-index:5;" +
+        "pointer-events:none;padding:2px 8px;border-radius:3px;" +
+        "background:rgba(0,0,0,0.55);color:#fff;font-size:11px;line-height:16px;font-family:Arial,sans-serif;" +
+        "display:flex;align-items:center;justify-content:center;white-space:nowrap;";
+
+    // 当前单图的原始分辨率（通过 /xzg_image_info API 获取，与压缩预览图分离）
+    let _singleOrigW = 0, _singleOrigH = 0;
+
+    function _updateSingleResLabel() {
+        // 优先使用原始分辨率；未取到时回退到压缩预览图的自然尺寸
+        const iw = _singleOrigW || _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+        const ih = _singleOrigH || _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+        if (iw > 0 && ih > 0) {
+            singleResLabel.textContent = `${iw} × ${ih}`;
+            singleResLabel.style.display = "flex";
+        } else {
+            singleResLabel.style.display = "none";
+        }
+    }
+
     singleImgEl.onerror = () => {
         const names = parseNameList(getImageListWidget(node)?.value);
         if (names.length === 1) {
@@ -917,7 +963,13 @@ function createImgBatchUI(node) {
             setIndex(node, 0);
         }
     };
+    singleImgEl.onload = () => {
+        _maskImgNaturalW = singleImgEl.naturalWidth;
+        _maskImgNaturalH = singleImgEl.naturalHeight;
+        _updateSingleResLabel();
+    };
     singleImgContainer.appendChild(singleImgEl);
+    singleImgContainer.appendChild(singleResLabel);
 
     // 遮罩显示/绘制层：覆盖在图片之上，尺寸与 singleImgContainer 一致
     // 图片在容器内 object-fit:contain，我们需要计算图片实际显示矩形以正确映射坐标
@@ -1026,6 +1078,7 @@ function createImgBatchUI(node) {
         if (iw <= 0 || ih <= 0) return;
         _maskImgNaturalW = iw;
         _maskImgNaturalH = ih;
+        _updateSingleResLabel();
 
         const sameImage = imageName && _maskBoundImageName === imageName;
         const sameSize = maskOffscreen.width === iw && maskOffscreen.height === ih;
@@ -1417,7 +1470,7 @@ function createImgBatchUI(node) {
             if (newSize !== brushSize) {
                 brushSize = newSize;
                 brushSizeInput.value = String(brushSize);
-                brushSizeLabel.textContent = `笔刷:${brushSize}`;
+                brushSizeLabel.textContent = `${xzgT("笔刷", "Brush")}:${brushSize}`;
                 _renderBrushPreview();
             }
             _maskHoverPt = { x: innerPt.x, y: innerPt.y };
@@ -2207,10 +2260,31 @@ function createImgBatchUI(node) {
                 singleImgEl.dataset.previewKey = name;
                 singleImgEl.dataset.currentName = name;
                 singleImgEl.src = getPreviewUrl(name);
+                // 切图时重置原始分辨率，异步获取真实尺寸更新分辨率标签
+                _singleOrigW = 0;
+                _singleOrigH = 0;
+                _xzgFetchOriginalSize(name).then((info) => {
+                    if (info && singleImgEl.dataset.previewKey === name) {
+                        _singleOrigW = info.width;
+                        _singleOrigH = info.height;
+                        _updateSingleResLabel();
+                    }
+                });
             } else if (singleImgEl.complete && singleImgEl.naturalWidth > 0) {
                 // 图片已加载好：立即同步离屏 canvas 尺寸，必要时加载保存的遮罩
                 _ensureOffscreenCanvasSize(name, false);
                 _renderMaskOverlay();
+                _updateSingleResLabel();
+                // 若原始分辨率尚未获取，补充获取一次
+                if (!_singleOrigW) {
+                    _xzgFetchOriginalSize(name).then((info) => {
+                        if (info && singleImgEl.dataset.previewKey === name) {
+                            _singleOrigW = info.width;
+                            _singleOrigH = info.height;
+                            _updateSingleResLabel();
+                        }
+                    });
+                }
             }
             if (selectedIndexes.length !== 1 || selectedIndexes[0] !== curIdx) {
                 selectedIndexes = [curIdx];
@@ -2302,7 +2376,7 @@ function createImgBatchUI(node) {
             delBtn.style.cssText =
                 "position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;line-height:1;color:#fff;cursor:pointer;z-index:3;opacity:0;";
             _applyDelBtnSize(delBtn, contentSize);
-            delBtn.title = "删除";
+            delBtn.title = xzgT("删除", "Delete");
             delBtn.addEventListener("click", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -2426,20 +2500,20 @@ function createImgBatchUI(node) {
             dialog.onclick = (e) => e.stopPropagation();
 
             dialog.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border-color);">
-                    <div style="font-weight:bold;font-size:14px;color:var(--input-text);">从 ${title} 文件夹选择</div>
-                    <input type="text" class="search-input" placeholder="搜索..." style="padding:4px 8px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;font-size:12px;width:180px;outline:none;">
+                    <div style="font-weight:bold;font-size:14px;color:var(--input-text);">${xzgTh("从", "Select from")} ${title} ${xzgTh("文件夹选择", "folder")}</div>
+                    <input type="text" class="search-input" placeholder="${xzgTh("搜索...", "Search...")}" style="padding:4px 8px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;font-size:12px;width:180px;outline:none;">
                 </div>
                 <div class="xzg-folder-grid xzg-img-grid" style="flex:1;width:100%;box-sizing:border-box;overflow-y:auto;padding:8px;min-height:360px;"></div>
                 <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border-color);background:var(--comfy-input-bg);">
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <span style="font-size:12px;color:var(--input-text);">已选: <span class="selected-count">${selectedSet.size}</span></span>
-                        <button class="select-all-btn" style="padding:4px 10px;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">全选</button>
-                        <button class="clear-select-btn" style="padding:4px 10px;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">取消全选</button>
-                        <button class="del-selected-btn" style="padding:4px 10px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">删除选中</button>
+                        <span style="font-size:12px;color:var(--input-text);">${xzgTh("已选:", "Selected:")} <span class="selected-count">${selectedSet.size}</span></span>
+                        <button class="select-all-btn" style="padding:4px 10px;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("全选", "Select All")}</button>
+                        <button class="clear-select-btn" style="padding:4px 10px;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("取消全选", "Deselect All")}</button>
+                        <button class="del-selected-btn" style="padding:4px 10px;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("删除选中", "Delete Selected")}</button>
                     </div>
                     <div style="display:flex;gap:8px;">
-                        <button class="cancel-btn" style="padding:6px 16px;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">取消</button>
-                        <button class="ok-btn" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;">载入</button>
+                        <button class="cancel-btn" style="padding:6px 16px;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("取消", "Cancel")}</button>
+                        <button class="ok-btn" style="padding:6px 16px;background:#FFD700;color:#333;border:none;border-radius:4px;cursor:pointer;font-size:12px;">${xzgTh("载入", "Load")}</button>
                     </div>
                 </div>
             `;
@@ -2772,7 +2846,7 @@ function createImgBatchUI(node) {
         })
         .catch(err => {
             console.error("Failed to load files:", apiUrl, err);
-            let msg = "加载文件列表失败";
+            let msg = xzgT("加载文件列表失败", "Failed to load file list");
             if (err && err.message) msg += "\n" + err.message;
             if (err && err.status) msg += "\nHTTP " + err.status;
             xzgAlert(msg);
@@ -2837,6 +2911,134 @@ function createImgBatchUI(node) {
         e.preventDefault();
         e.stopPropagation();
     }, { capture: true });
+
+    // ── 粘贴上传：Ctrl+V 粘贴剪贴板图片到当前加载器 ──
+    const _handlePasteUpload = async (e) => {
+        // 输入框中粘贴文本：不拦截，默认粘贴
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+
+        const cd = e.clipboardData || e.originalEvent?.clipboardData;
+        if (!cd) return;
+
+        // 1) 优先：图片文件（例如从文件管理器/截图软件复制的图片）
+        const files = [];
+        if (cd.files && cd.files.length) {
+            for (let i = 0; i < cd.files.length; i++) {
+                const f = cd.files[i];
+                if (f?.type && String(f.type).startsWith("image/")) files.push(f);
+            }
+        }
+        // 2) 兜底：clipboardData.items 中的 image item（从浏览器网页复制的图片）
+        if (files.length === 0 && cd.items && cd.items.length) {
+            for (const it of cd.items) {
+                if (it.kind === "file" && it.type && it.type.startsWith("image/")) {
+                    const f = it.getAsFile();
+                    if (f) files.push(f);
+                }
+            }
+        }
+
+        if (files.length > 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            // 复制粘贴的图片通常没有名字，生成一个基于时间戳的 PNG 文件名
+            const named = files.map((f, i) => {
+                let name = f.name || "";
+                if (!name || /^(blob|image|clipboard|非图片)$/i.test(name) || !name.includes('.')) {
+                    const ts = new Date();
+                    const stamp = `${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}`;
+                    const ext = f.type && f.type.includes('/') ? f.type.split('/')[1].split(';')[0].toLowerCase() : 'png';
+                    const validExt = IMAGE_EXTS.includes(ext) ? ext : 'png';
+                    const suffix = files.length > 1 ? `-${i+1}` : '';
+                    name = `clipboard-${stamp}${suffix}.${validExt}`;
+                    try {
+                        return new File([f], name, { type: f.type || 'image/png' });
+                    } catch (_) {
+                        Object.defineProperty(f, 'name', { value: name, writable: true });
+                        return f;
+                    }
+                }
+                return f;
+            });
+            const uploaded = await uploadFilesSequential(named);
+            if (uploaded.length === 0) return;
+            if (uploadMode === "replace") {
+                setNameList(node, uploaded);
+                setIndex(node, 0);
+            } else {
+                const all = parseNameList(getImageListWidget(node)?.value);
+                const existing = new Set(all);
+                const newOnes = uploaded.filter(n => !existing.has(n));
+                const merged = newOnes.concat(all);
+                setNameList(node, merged);
+                setIndex(node, 0);
+            }
+            redraw(true);
+            return;
+        }
+
+        // 3) 文本粘贴：复制了文件名（从 ComfyUI 预览面板复制的文件名）
+        const textData = cd.getData?.('text/plain') || "";
+        if (textData) {
+            const lines = String(textData).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const names = [];
+            for (const rawLine of lines) {
+                let rawName = rawLine;
+                for (const s of [' [output]', ' [input]', ' [temp]']) {
+                    if (rawName.endsWith(s)) {
+                        rawName = rawName.slice(0, -s.length);
+                        break;
+                    }
+                }
+                const ext = rawName.split('.').pop()?.toLowerCase();
+                if (IMAGE_EXTS.includes(ext)) {
+                    names.push(rawLine);
+                }
+            }
+            if (names.length > 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (uploadMode === "replace") {
+                    setNameList(node, names);
+                    setIndex(node, 0);
+                } else {
+                    const all = parseNameList(getImageListWidget(node)?.value);
+                    const existing = new Set(all);
+                    const newOnes = names.filter(n => !existing.has(n));
+                    const merged = newOnes.concat(all);
+                    setNameList(node, merged);
+                    setIndex(node, 0);
+                }
+                redraw(true);
+            }
+        }
+    };
+
+    // 只在 container 上捕获，因为 container 覆盖了节点的全部 UI 区域
+    container.addEventListener('paste', (e) => {
+        _handlePasteUpload(e);
+    }, { capture: true });
+
+    // 兜底：用户 Ctrl+V 时，焦点不一定在 container 内（例如侧边栏输入框外）
+    // 使用 pointerenter/pointerleave 跟踪鼠标是否在当前节点内，仅在内部时响应
+    let _mouseInside = false;
+    container.addEventListener('pointerenter', () => { _mouseInside = true; });
+    container.addEventListener('pointerleave', () => { _mouseInside = false; });
+    const _windowPasteHandler = (e) => {
+        if (!_mouseInside) return;
+        // 如果 container 已经处理过（e.defaultPrevented），直接跳过
+        if (e.defaultPrevented) return;
+        _handlePasteUpload(e);
+    };
+    window.addEventListener('paste', _windowPasteHandler, true);
+    // 节点销毁时移除 window 监听，防止泄漏
+    const origOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        window.removeEventListener('paste', _windowPasteHandler, true);
+        if (origOnRemoved) return origOnRemoved.apply(this, arguments);
+    };
+
     container.addEventListener('drop', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -2932,19 +3134,19 @@ app.registerExtension({
             if (!Array.isArray(nodeData.output_is_list)) nodeData.output_is_list = [];
             // 端口 0: IMAGE
             nodeData.output[0]       = "IMAGE";
-            nodeData.output_name[0]  = "图像";
+            nodeData.output_name[0]  = xzgT("图像", "images");
             nodeData.output_is_list[0] = true;
             // 端口 1: MASK —— 如果之前是 count/COUNT/数字/图片数量，彻底清掉类型
             nodeData.output[1]       = "MASK";
-            nodeData.output_name[1]  = "遮罩";
+            nodeData.output_name[1]  = xzgT("遮罩", "mask");
             nodeData.output_is_list[1] = false;
             // 兼容：有些旧版 ComfyUI 用 nodeData.output 是对象数组 {type,name, …}
             if (!Array.isArray(nodeData.outputs)) nodeData.outputs = [];
-            nodeData.outputs[0] = Object.assign({}, nodeData.outputs[0] || {}, { type: "IMAGE", name: "图像", label: "图像" });
-            nodeData.outputs[1] = Object.assign({}, nodeData.outputs[1] || {}, { type: "MASK",  name: "遮罩", label: "遮罩" });
+            nodeData.outputs[0] = Object.assign({}, nodeData.outputs[0] || {}, { type: "IMAGE", name: xzgT("图像", "images"), label: xzgT("图像", "images") });
+            nodeData.outputs[1] = Object.assign({}, nodeData.outputs[1] || {}, { type: "MASK",  name: xzgT("遮罩", "mask"), label: xzgT("遮罩", "mask") });
             // 再彻底清空旧缓存残留
             if (Array.isArray(nodeData.output_link_labels)) nodeData.output_link_labels = null;
-            if (nodeData.return_names)  nodeData.return_names  = ["图像", "遮罩"];
+            if (nodeData.return_names)  nodeData.return_names  = [xzgT("图像", "images"), xzgT("遮罩", "mask")];
             if (nodeData.return_types)  nodeData.return_types  = ["IMAGE", "MASK"];
             if (nodeData.output_is_array) nodeData.output_is_array = [true, false];
 
@@ -3154,8 +3356,8 @@ app.registerExtension({
             function _forceCorrectOutputs(nodeInst) {
                 if (!Array.isArray(nodeInst.outputs)) nodeInst.outputs = [];
                 const defaults = [
-                    { type: "IMAGE", name: "图像", shape: -1, label: "图像" },
-                    { type: "MASK",  name: "遮罩", shape: -1, label: "遮罩" },
+                    { type: "IMAGE", name: xzgT("图像", "images"), shape: -1, label: xzgT("图像", "images") },
+                    { type: "MASK",  name: xzgT("遮罩", "mask"), shape: -1, label: xzgT("遮罩", "mask") },
                 ];
                 defaults.forEach((def, i) => {
                     let o = nodeInst.outputs[i];
@@ -3197,7 +3399,7 @@ app.registerExtension({
                     const NODE_WIDGET_HEIGHT = (LiteGraph && LiteGraph.NODE_WIDGET_HEIGHT) || 20;
                     const NODE_SLOT_HEIGHT  = (LiteGraph && LiteGraph.NODE_SLOT_HEIGHT)  || 20;
                     const slotsStartY = NODE_TITLE_HEIGHT + NODE_WIDGET_HEIGHT * (this.widgets?.length || 0) + 8;
-                    const labels = ["图像", "遮罩"];
+                    const labels = [xzgT("图像", "images"), xzgT("遮罩", "mask")];
                     ctx.save();
                     ctx.font = graphcanvas.node_output_font || "12px Arial";
                     ctx.textAlign = "right";

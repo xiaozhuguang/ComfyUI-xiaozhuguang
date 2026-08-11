@@ -736,3 +736,224 @@ class XiaozhuguangVideoLoader:
         if not folder_paths.exists_annotated_filepath(视频):
             return f"Invalid video file: {视频}"
         return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 分块上传支持（并发 + 断点续传 + 1GB 限制）
+# 比 Load Video UI 的改进：
+#   1. 偏移量写入（非追加）→ 支持并发上传和断点续传
+#   2. 预分配文件空间 → 无碎片，写入速度快
+#   3. 会话管理 → 中断后可恢复，无需从头重传
+#   4. 分块校验 → 跟踪已接收分块，重复分块自动跳过
+# ═══════════════════════════════════════════════════════════════════════════
+import uuid as _xzg_uuid
+import threading as _xzg_threading
+import time as _xzg_time
+
+from server import PromptServer as _xzg_PS
+from aiohttp import web as _xzg_web2
+
+# 路由安全装饰器（与音频加载器一致的 fallback 模式）
+import functools as _xzg_ft2
+import traceback as _xzg_tb2
+try:
+    from .. import xzg_safe_handler as _xzg_safe_handler
+except Exception:
+    import asyncio as _xzg_aio2
+    def _xzg_safe_handler(fn):
+        def _fmt(exc, status=500):
+            tb_s = ''.join(_xzg_tb2.format_exception(type(exc), exc, exc.__traceback__))
+            try:
+                return _xzg_web2.json_response(
+                    {'error': '%s: %s' % (type(exc).__name__, exc), 'traceback': tb_s}, status=status)
+            except Exception:
+                return _xzg_web2.Response(status=500, text='%s: %s\n\n%s' % (type(exc).__name__, exc, tb_s))
+        if _xzg_aio2.iscoroutinefunction(fn):
+            @_xzg_ft2.wraps(fn)
+            async def _aw(*a, **kw):
+                try: return await fn(*a, **kw)
+                except _xzg_web2.HTTPException: raise
+                except BaseException as e:
+                    print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                    _xzg_tb2.print_exc()
+                    return _fmt(e)
+            return _aw
+        @_xzg_ft2.wraps(fn)
+        def _sw(*a, **kw):
+            try: return fn(*a, **kw)
+            except _xzg_web2.HTTPException: raise
+            except BaseException as e:
+                print('[小珠光路由异常] %s: %s: %s' % (fn.__name__, type(e).__name__, e))
+                _xzg_tb2.print_exc()
+                return _fmt(e)
+        return _sw
+
+# 上传会话存储
+_xzg_video_sessions = {}
+_xzg_video_sessions_lock = _xzg_threading.Lock()
+_XZG_VIDEO_MAX_SIZE = 1024 * 1024 * 1024  # 1GB
+_XZG_VIDEO_SESSION_TIMEOUT = 3600  # 会话超时 1 小时
+
+
+def _xzg_secure_video_filename(name):
+    """生成安全的文件名，防止路径穿越"""
+    import re as _re
+    # 只保留文件名部分（去掉路径）
+    name = os.path.basename(name)
+    # 替换危险字符
+    name = _re.sub(r'[^\w.\-]', '_', name)
+    if not name:
+        name = 'video.mp4'
+    # 加时间戳前缀防重名
+    return '%d_%s' % (_xzg_time.time(), name)
+
+
+def _xzg_cleanup_video_sessions():
+    """清理超时的上传会话"""
+    now = _xzg_time.time()
+    with _xzg_video_sessions_lock:
+        expired = [sid for sid, s in _xzg_video_sessions.items()
+                   if now - s.get('last_activity', 0) > _XZG_VIDEO_SESSION_TIMEOUT]
+        for sid in expired:
+            session = _xzg_video_sessions.pop(sid, None)
+            # 清理未完成的临时文件
+            if session and not session.get('done'):
+                try:
+                    if os.path.exists(session['file_path']):
+                        os.remove(session['file_path'])
+                except Exception:
+                    pass
+
+
+if getattr(_xzg_PS, 'instance', None) is not None:
+
+    @_xzg_PS.instance.routes.post("/xzg/video_upload_start")
+    @_xzg_safe_handler
+    async def xzg_video_upload_start(request):
+        """启动分块上传会话，预分配文件空间"""
+        data = await request.json()
+        filename = data.get("filename", "")
+        total_size = int(data.get("total_size", 0))
+        total_chunks = int(data.get("total_chunks", 0))
+
+        if not filename or total_size <= 0 or total_chunks <= 0:
+            return _xzg_web2.json_response({"error": "参数无效"}, status=400)
+
+        # 1GB 硬限制
+        if total_size > _XZG_VIDEO_MAX_SIZE:
+            return _xzg_web2.json_response({"error": "文件超过 1GB 限制"}, status=413)
+
+        _xzg_cleanup_video_sessions()
+
+        safe_name = _xzg_secure_video_filename(filename)
+        upload_dir = folder_paths.get_input_directory()
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = os.path.join(upload_dir, safe_name)
+
+        # 预分配文件空间（truncate 到目标大小，支持偏移量写入）
+        with open(file_path, 'wb') as f:
+            f.truncate(total_size)
+
+        session_id = str(_xzg_uuid.uuid4())
+        with _xzg_video_sessions_lock:
+            _xzg_video_sessions[session_id] = {
+                'filename': safe_name,
+                'file_path': file_path,
+                'total_size': total_size,
+                'total_chunks': total_chunks,
+                'received_chunks': set(),
+                'received_bytes': 0,
+                'created_at': _xzg_time.time(),
+                'last_activity': _xzg_time.time(),
+                'done': False,
+            }
+
+        return _xzg_web2.json_response({
+            "session_id": session_id,
+            "filename": safe_name,
+        })
+
+    @_xzg_PS.instance.routes.post("/xzg/video_upload_chunk")
+    @_xzg_safe_handler
+    async def xzg_video_upload_chunk(request):
+        """上传单个分块（偏移量写入，支持并发和断点续传）"""
+        post = await request.post()
+        session_id = post.get("session_id", "")
+        chunk_index = int(post.get("chunk_index", -1))
+        chunk_offset = int(post.get("chunk_offset", -1))
+        chunk_file = post.get("chunk")
+
+        if not session_id or chunk_index < 0 or chunk_offset < 0 or not chunk_file:
+            return _xzg_web2.json_response({"error": "参数无效"}, status=400)
+
+        with _xzg_video_sessions_lock:
+            session = _xzg_video_sessions.get(session_id)
+            if not session:
+                return _xzg_web2.json_response({"error": "会话不存在或已过期"}, status=404)
+            session['last_activity'] = _xzg_time.time()
+
+            # 已接收的分块直接跳过（断点续传）
+            if chunk_index in session['received_chunks']:
+                return _xzg_web2.json_response({
+                    "status": "duplicate",
+                    "received": len(session['received_chunks']),
+                    "total": session['total_chunks'],
+                })
+
+            if chunk_index >= session['total_chunks']:
+                return _xzg_web2.json_response({"error": "分块索引越界"}, status=400)
+
+            file_path = session['file_path']
+            total_chunks = session['total_chunks']
+
+        # 读取分块数据
+        chunk_data = chunk_file.file.read()
+        chunk_size = len(chunk_data)
+
+        # 偏移量写入（每个分块写入到文件的指定位置，互不重叠）
+        with open(file_path, 'r+b') as f:
+            f.seek(chunk_offset)
+            f.write(chunk_data)
+
+        with _xzg_video_sessions_lock:
+            session['received_chunks'].add(chunk_index)
+            session['received_bytes'] += chunk_size
+            received_count = len(session['received_chunks'])
+
+            # 所有分块已接收 → 标记完成
+            if received_count >= total_chunks:
+                session['done'] = True
+                return _xzg_web2.json_response({
+                    "status": "done",
+                    "filename": session['filename'],
+                    "received": received_count,
+                    "total": total_chunks,
+                })
+
+        return _xzg_web2.json_response({
+            "status": "ok",
+            "received": received_count,
+            "total": total_chunks,
+        })
+
+    @_xzg_PS.instance.routes.get("/xzg/video_upload_status")
+    @_xzg_safe_handler
+    async def xzg_video_upload_status(request):
+        """查询上传会话状态（用于断点续传）"""
+        session_id = request.query.get("session_id", "")
+        if not session_id:
+            return _xzg_web2.json_response({"error": "session_id required"}, status=400)
+
+        with _xzg_video_sessions_lock:
+            session = _xzg_video_sessions.get(session_id)
+            if not session:
+                return _xzg_web2.json_response({"error": "会话不存在或已过期"}, status=404)
+            return _xzg_web2.json_response({
+                "session_id": session_id,
+                "filename": session['filename'],
+                "total_size": session['total_size'],
+                "total_chunks": session['total_chunks'],
+                "received_chunks": sorted(session['received_chunks']),
+                "received_count": len(session['received_chunks']),
+                "done": session['done'],
+            })

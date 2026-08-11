@@ -20,7 +20,7 @@ from nodes import PreviewImage
 
 # 用于懒编码：执行时仅存原始像素(uint8)，右键保存真实分辨率图时才临时编码 PNG
 # 与 xzg_image_save 共享同一个 REAL_STORE（同一懒编码路由 /xzg_save_real）
-from .xzg_image_save import REAL_STORE
+from .xzg_image_save import REAL_STORE, _xzg_composite_checkerboard
 
 # 路径非法字符（Windows）→ 下划线，保留路径分隔符 / 和 \
 _INVALID_CHARS_RE = re.compile(r'[<>:"|?*\x00-\x1f]')
@@ -97,7 +97,7 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                 "use_default_output": ("BOOLEAN", {"default": True, "label_on": "默认输出", "label_off": "自定义输出"}),
                 "save_format": (["JPG", "PNG"], {"default": "JPG"}),
                 "reduce_lag": ("BOOLEAN", {"default": False, "label_on": "开启", "label_off": "关闭"}),
-                "mode": (["保存", "预览"], {"default": "保存"}),
+                "mode": (["Save", "Preview"], {"default": "Save"}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -113,13 +113,15 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
 
     def save_images(self, images, base_dir="", output_path="",
                     filename_custom="xzg-save", add_date_stamp=False, add_time_stamp=False,
-                    use_default_output=True, save_format="JPG", reduce_lag=False, mode="保存",
+                    use_default_output=True, save_format="JPG", reduce_lag=False, mode="Save",
                     prompt=None, extra_pnginfo=None, unique_id=None):
 
         max_side = 3840 if reduce_lag else 6400
         quality = 85 if reduce_lag else 80
 
-        is_preview_mode = (mode == "预览")
+        # 兼容老工作流的中文值
+        mode_norm = "Preview" if str(mode) in ("预览", "Preview", "preview") else "Save"
+        is_preview_mode = (mode_norm == "Preview")
 
         # ── 默认输出（use_default_output=True）：与原「小珠光图像保存」节点逻辑完全一致
         #    忽略 base_dir / 自定义前缀 / 日期戳 / 时间戳，文件名固定 xzg-save_序号，保存在 output/ 根目录或 output_path 子目录
@@ -235,8 +237,14 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
         entries = []
         counter = 0
 
+        # 预扫描：批次中任一张图带 alpha 通道则强制 PNG 输出（JPG 无法保留透明度）
+        batch_has_alpha = any((t.dim() == 3 and t.shape[2] == 4) for t in images)
+        if batch_has_alpha:
+            save_format = "PNG"
+
         for i, tensor in enumerate(images):
             h, w = tensor.shape[0], tensor.shape[1]
+            has_alpha = (tensor.dim() == 3 and tensor.shape[2] == 4)
 
             # 存储原始像素（uint8，CPU），供右键时编码 PNG
             real_np = (tensor.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
@@ -252,11 +260,22 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
             img = img.squeeze(0).permute(1, 2, 0).cpu().numpy()
             compressed_pil = Image.fromarray((img * 255).clip(0, 255).astype(np.uint8))
 
+            # 预览始终为 JPG（减少卡顿）：RGBA 合成到棋盘格背景后转 RGB（Photoshop 风格透明指示）
+            if compressed_pil.mode != "RGB":
+                if compressed_pil.mode == "RGBA":
+                    # 格子大小按图像尺寸自适应（最长边 / 32，范围 16~40px）
+                    _cell = max(16, min(40, max(w, h) // 32))
+                    jpg_pil = _xzg_composite_checkerboard(compressed_pil, cell=_cell)
+                else:
+                    jpg_pil = compressed_pil.convert("RGB")
+            else:
+                jpg_pil = compressed_pil
+
             # 保存压缩 JPG 预览到临时目录（画布显示，始终 JPG）
             preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
-            compressed_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
+            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
 
-            # 保存到输出目录（仅保存模式）
+            # 保存到输出目录（仅保存模式；RGBA 已强制 PNG）
             saved_info = None
             if not is_preview_mode:
                 while True:
@@ -270,11 +289,11 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                     counter += 1
 
                 if save_format == "PNG":
-                    # 全分辨率 PNG（无损）
+                    # 全分辨率 PNG（无损）；RGBA 保留 alpha 通道（透明背景）
                     Image.fromarray(real_np).save(full_path, "PNG")
                 else:
-                    # 压缩 JPG（与预览相同的压缩参数）
-                    compressed_pil.save(full_path, "JPEG", quality=quality, optimize=True)
+                    # 压缩 JPG（使用已合成到棋盘格背景并转为 RGB 的图像，避免 RGBA 保存失败）
+                    jpg_pil.save(full_path, "JPEG", quality=quality, optimize=True)
 
                 # 仅当非绝对路径时才提供 saved 信息给前端直接下载
                 # 绝对路径无法通过 ComfyUI /view 路由下载（会拼接 output 目录），
@@ -295,6 +314,8 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                 "real_index": i,
                 "real_width": int(w),
                 "real_height": int(h),
+                # 标记是否含 alpha 通道：前端据此强制右键只允许 PNG 保存
+                "has_alpha": bool(has_alpha),
                 # 保存模式下附带 output 目录文件信息，右键可直接下载，无需懒编码
                 "saved_filename": saved_info["filename"] if saved_info else None,
                 "saved_subfolder": saved_info["subfolder"] if saved_info else None,

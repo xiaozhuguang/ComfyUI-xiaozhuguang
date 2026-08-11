@@ -210,13 +210,12 @@
     "display_name": "Xiaozhuguang Image Loader",
     "inputs": {
       "image_list": { "name": "image list" },
-      "card_size": { "name": "card size" },
-      "index": { "name": "index" }
+      "index": { "name": "index" },
+      "batch_mode": { "name": "batch mode" }
     },
     "outputs": {
       "0": { "name": "images" },
-      "1": { "name": "count" },
-      "2": { "name": "file list" }
+      "1": { "name": "mask" }
     }
   },
   "XiaozhuguangVideoLoader": {
@@ -289,9 +288,23 @@
     "inputs": {
       "images": { "name": "images" },
       "output_path": { "name": "output path" },
-      "filename_prefix": { "name": "filename prefix" },
       "save_format": { "name": "save format" },
-      "reduce_lag": { "name": "Reduce Lag" }
+      "reduce_lag": { "name": "Reduce Lag" },
+      "mode": { "name": "Mode" }
+    }
+  },
+  "XiaozhuguangImageSaveCustom": {
+    "display_name": "Xiaozhuguang Image Save (Custom)",
+    "inputs": {
+      "images": { "name": "images" },
+      "base_dir": { "name": "output dir" },
+      "filename_custom": { "name": "custom prefix" },
+      "add_date_stamp": { "name": "date stamp" },
+      "add_time_stamp": { "name": "time stamp" },
+      "use_default_output": { "name": "default output" },
+      "save_format": { "name": "save format" },
+      "reduce_lag": { "name": "Reduce Lag" },
+      "mode": { "name": "Mode" }
     }
   },
   "XiaozhuguangAudioSave": {
@@ -417,6 +430,17 @@
     },
     "outputs": {
       "0": { "name": "merged" }
+    }
+  },
+  "XiaozhuguangSeed": {
+    "display_name": "Xiaozhuguang Seed",
+    "inputs": {
+      "seed": { "name": "seed" },
+      "seed_min": { "name": "seed min" },
+      "seed_max": { "name": "seed max" }
+    },
+    "outputs": {
+      "0": { "name": "SEED" }
     }
   }
 }

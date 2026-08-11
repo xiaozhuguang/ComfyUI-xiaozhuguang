@@ -210,13 +210,12 @@
     "display_name": "小珠光图像加载器",
     "inputs": {
       "image_list": { "name": "图片列表" },
-      "card_size": { "name": "卡片尺寸" },
-      "index": { "name": "索引" }
+      "index": { "name": "索引" },
+      "batch_mode": { "name": "批次模式" }
     },
     "outputs": {
       "0": { "name": "图像" },
-      "1": { "name": "图片数量" },
-      "2": { "name": "文件列表" }
+      "1": { "name": "遮罩" }
     }
   },
   "XiaozhuguangVideoLoader": {
@@ -289,7 +288,20 @@
     "inputs": {
       "images": { "name": "图像" },
       "output_path": { "name": "输出路径" },
-      "filename_prefix": { "name": "文件名前缀" },
+      "save_format": { "name": "保存格式" },
+      "reduce_lag": { "name": "减少卡顿" },
+      "mode": { "name": "模式" }
+    }
+  },
+  "XiaozhuguangImageSaveCustom": {
+    "display_name": "小珠光图像保存-化神级",
+    "inputs": {
+      "images": { "name": "图像" },
+      "base_dir": { "name": "输出目录" },
+      "filename_custom": { "name": "自定义前缀" },
+      "add_date_stamp": { "name": "日期戳" },
+      "add_time_stamp": { "name": "时间戳" },
+      "use_default_output": { "name": "默认输出" },
       "save_format": { "name": "保存格式" },
       "reduce_lag": { "name": "减少卡顿" },
       "mode": { "name": "模式" }
@@ -418,6 +430,17 @@
     },
     "outputs": {
       "0": { "name": "合并图像" }
+    }
+  },
+  "XiaozhuguangSeed": {
+    "display_name": "小珠光随机种子",
+    "inputs": {
+      "seed": { "name": "种子" },
+      "seed_min": { "name": "种子最小值" },
+      "seed_max": { "name": "种子最大值" }
+    },
+    "outputs": {
+      "0": { "name": "种子" }
     }
   }
 }

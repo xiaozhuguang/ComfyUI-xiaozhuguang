@@ -22,7 +22,11 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | ⚡ **快速节点** | 连线即出常用节点、搜索框快速添加、夺舍模式、配置导入导出 |
 | 📐 **田字格对齐** | 6 种对齐 + 4 种分布、拖拽尺子等距分布、长按自动布局、可自定义间距 |
 | 📦 **视觉编组** | 半透明框体、彩虹 / 呼吸 / 辉光动画、同级别反选、锁定、组内执行、自动收纳 |
-| 🔧 **实用节点** | 选择器 / 布尔 / 标题 / 滑条 / 万能滑条 / 编号切换 / SAM 点编辑器 / **文本框（数字→中文）** / **AudioDiT 离线 TTS（音色克隆）** 等 |
+| 🖼 **图像节点** | 图像加载器（拖入上传/多图模式）、图像保存（懒编码+化神级自定义输出）、图像对比、分割/合并、智能裁剪 ATBC、图像回贴 ATR、人脸对齐 Face Align、图像预览 |
+| 🎬 **视频节点** | 视频加载器（1GB 分块上传 + 并发重试）、视频信息读取、帧提取、首尾帧、帧优化、合并视频 |
+| 🔊 **音频节点** | 音频加载器（大小限制 + 解码律动进度条 + 拖入上传 + 播放头精准交互）、音频保存、AudioDiT 离线 TTS（音色克隆/零样本/多人对话） |
+| 🤖 **大模型节点** | Qwen/Qwen-VL 模型加载与推理、MiniMax H3 提示词处理 |
+| 🔧 **实用节点** | 选择器 / 布尔（+反向）/ 数据阻断（+比较大小）/ 标题 / 滑条 / 万能滑条 / 编号切换 / 随机种子 / 获取控件值 / 输入惰性判断 / SAM 点编辑器 / **文本框（数字→中文）** |
 | 🌐 **国际化** | 遵循 ComfyUI 官方 i18n 规范，中英文界面自动切换 |
 
 > 💡 全部功能均可通过右键菜单、快捷键或面板一键调用，开箱即用、零外部依赖。
@@ -60,16 +64,45 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | 节点名称 | 说明 |
 |---------|------|
 | **小珠光选择器** | 点击按钮选择标签，输出对应整数值 |
-| **小珠光布尔** | 开关切换 True/False，输出 0/1 整数值 |
+| **小珠光布尔 / 反向布尔** | 开关切换 True/False；反向布尔输入取反 |
+| **小珠光数据阻断 / 比较大小-数据阻断** | 开关控制数据是否传输；按大于/等于/小于比较值决定数据通断 |
 | **小珠光标题** | 标题装饰节点，无实际输出 |
 | **小珠光滑条** | 通过滑块调整浮点数值 |
-| **小珠光万能滑条** | 功能丰富的滑条节点，支持自定义样式 |
+| **小珠光万能滑条** | 浮点/整数双模式切换，右键切换类型 |
 | **小珠光编号切换** | 0–49 路输入选择器，在多种数据类型间切换 |
+| **小珠光随机种子** | 标准 seed 输入与随机化功能，防止重复拦截 |
 | **小珠光点编辑器** | SAM 点坐标可视化编辑器 |
+| **小珠光获取控件值** | 读取工作流中指定节点的控件当前值 |
 | **小珠光文本框** | 双通道文本输出，默认将阿拉伯数字智能转换为中文（支持量词、单位、序数、分辨率乘积） |
+| **🖼 图像处理节点** | |
+| **小珠光图像加载器** | 支持拖入上传、多图/单图模式、拼音搜索、棋盘格透明背景显示 |
+| **小珠光图像预览** | 图像预览节点 |
+| **小珠光图像保存** | 保存图像，支持懒编码 + 右键保存真实分辨率 |
+| **小珠光图像保存-化神级** | 自定义输出路径、文件夹选择器、JPEG/PNG/WebP 多格式 |
+| **小珠光图像对比** | 两张图像并排对比查看 |
+| **小珠光 IS (图像分割) / IM (图像合并)** | 将图像按行列分割；将分割图像合并回原图 |
+| **小珠光 ATBC (智能裁剪)** | 按目标尺寸智能裁剪与补边 |
+| **小珠光 ATR (图像回贴)** | 将处理后的子图按坐标回贴回原图 |
+| **小珠光 Face Align (人脸对齐)** | 人脸关键点检测与对齐 |
+| **🎬 视频处理节点** | |
+| **小珠光视频加载器** | 分块上传支持最大 1GB、3 路并发 + 重试、自定义进度对话框 |
+| **小珠光视频信息读取** | 读取视频分辨率、帧率、时长、总帧数等元信息 |
+| **小珠光帧提取** | 按步长/间隔从视频抽取指定帧 |
+| **小珠光首尾帧** | 提取视频的第一帧与最后一帧 |
+| **小珠光帧优化** | 复制首帧填充到指定长度（去首帧闪烁） |
+| **小珠光合并视频** | 将图像序列合成为视频（可搭配音频） |
+| **🔊 音频处理节点** | |
+| **小珠光音频加载器** | 上传大小限制、解码进度律动动画、拖入上传、双击上传、播放头精准交互 |
+| **小珠光音频保存** | 保存音频到文件 |
+| **🤖 大模型节点** | |
+| **小珠光 MiniMax H3 提示词** | MiniMax H3 提示词处理节点 |
+| **小珠光 Qwen Model Loader** | Qwen 系列模型加载器 |
+| **小珠光qwenVL** | Qwen-VL 多模态指令跟随节点（依赖 transformers） |
 | **小珠光 AudioDiT 零样本TTS** | 严格离线版 LongCat-AudioDiT 零样本合成（与原插件共享模型目录，永不触发 HF 下载） |
 | **小珠光 AudioDiT 音色克隆TTS** | 严格离线版音色克隆：参考音频 3–15s + 转录文本 → 目标语音，最常用节点 |
 | **小珠光 AudioDiT 多人对话TTS** | 严格离线版多说话人对话：2–10 个克隆音色 + [speaker_N]: 台词标签驱动逐段合成 |
+| **🧪 实用杂项节点** | |
+| **小珠光输入惰性判断** | 判断输入是否被真实连接到下游使用 |
 
 ---
 
@@ -520,27 +553,75 @@ git clone https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang.git
 
 ```
 ComfyUI-xiaozhuguang/
-├── __init__.py                  # 节点定义
-├── extension.json               # 扩展配置（版本 5.1.0）
+├── __init__.py                  # 节点定义 + NODE_CLASS/DISPLAY_NAME_MAPPINGS + 懒编码/目录浏览等路由
+├── extension.json               # 扩展配置（版本 11.4.0 + JS/CSS 资源清单）
+├── pyproject.toml                # Comfy Registry 发布元数据
 ├── LICENSE                      # MIT 许可证
 ├── README.md                    # 本文档
-├── requirements.txt             # 依赖声明（无外部依赖）
+├── requirements.txt             # 依赖声明
 ├── workflows.py                 # 工作流管理后端 API
 ├── .gitignore                   # Git 忽略规则
+├── .comfyignore                 # Comfy Registry 忽略规则
+├── .github/workflows/
+│   └── publish_action.yml       # 推送 tag → 自动创建 Release + 发布到 Comfy Registry
 ├── docs/
+│   ├── code-audit-report.md     # 代码审计报告
 │   └── skill-panel-alignment.txt # 设置面板弹出对齐 Skill 文档
+├── locales/                     # 官方 i18n 规范翻译文件
+│   ├── en/ (nodeDefs.json, main.json)
+│   └── zh/ (nodeDefs.json, main.json)
+├── example_workflows/
+│   └── example_workflows.json
+├── _xzg_audiodit/               # AudioDiT 严格离线建模库（本地扫描，完全不触网）
+│   ├── __init__.py
+│   ├── configuration_audiodit.py
+│   ├── fp8_linear.py
+│   ├── modeling_audiodit.py
+│   └── utils.py
 ├── nodes/
+│   ├── xzg_seed.py              # 小珠光随机种子节点
+│   ├── xzg_get_widget.py        # 获取控件值节点
 │   ├── xzg_first_last_frame.py  # 首尾帧节点
-│   ├── xzg_get_widget.py    # 获取控件值节点
-│   ├── xzg_qwen3_vl_instruct.py # qwenVL 节点
-│   ├── xzg_text_box.py      # 文本框节点（数字转中文）
+│   ├── xzg_duplicate_first_frame.py # 帧优化节点（复制首帧填充）
+│   ├── xzg_frame_extract.py     # 帧提取节点
+│   ├── xzg_image_loader.py      # 图像加载器后端
+│   ├── xzg_image_preview.py     # 图像预览节点
+│   ├── xzg_image_save.py        # 图像保存（懒编码 + 右键真实分辨率）
+│   ├── xzg_image_save_custom.py # 图像保存-化神级（自定义输出路径/格式）
+│   ├── xzg_image_compare.py     # 图像对比节点
+│   ├── xzg_image_split_merge.py # 图像分割 / 合并节点
+│   ├── xzg_atbc.py              # ATBC 智能裁剪
+│   ├── xzg_atr.py               # ATR 图像回贴
+│   ├── xzg_face_align.py        # Face Align 人脸对齐
+│   ├── xzg_video_loader.py      # 视频加载器后端（1GB 分块上传端点）
+│   ├── xzg_video_info_reader.py # 视频信息读取节点
+│   ├── xzg_video_combine.py     # 合并视频节点
+│   ├── xzg_audio_loader.py      # 音频加载器后端（上传大小限制 + 解码进度端点）
+│   ├── xzg_audio_save.py        # 音频保存节点
+│   ├── xzg_lazy_check.py        # 输入惰性判断节点
+│   ├── xzg_text_box.py          # 文本框节点（数字转中文）
 │   ├── xzg_universal_slider.py  # 万能滑条节点
-│   ├── xzg_audiodit_loader.py   # AudioDiT 严格离线加载器（本地扫描 + 不联网）
-│   └── xzg_audiodit_tts.py      # AudioDiT 离线 TTS 三节点（零样本 / 音色克隆 / 多人对话）
+│   ├── xzg_h3_prompt.py         # MiniMax H3 提示词节点
+│   ├── xzg_qwen_loader.py       # Qwen Model Loader
+│   ├── xzg_qwen3_vl_instruct.py # qwenVL 多模态节点
+│   ├── xzg_longcat_loader.py    # AudioDiT 严格离线模型加载器
+│   ├── xzg_longcat_model_cache.py # AudioDiT 模型缓存
+│   ├── xzg_audiodit_tts.py      # AudioDiT 离线 TTS 三节点（零样本/音色克隆/多人对话）
+│   └── xzg_points_editor.py / xzg_selector.js 关联等
 └── web/
+    ├── xzg_seed.js              # 随机种子节点前端
+    ├── xzg_image_loader.js      # 图像加载器前端（多图/单图/棋盘格/拖拽）
+    ├── xzg_image_preview.js     # 图像预览前端
+    ├── xzg_image_save.js        # 图像保存前端（懒编码/右键保存）
+    ├── xzg_video_loader.js      # 视频加载器前端（分块上传/自定义进度对话框）
+    ├── xzg_video_player.js      # 视频播放器前端
+    ├── xzg_video_combine.js     # 合并视频前端
+    ├── xzg_audio_loader.js      # 音频加载器前端（解码律动进度条/拖入上传/播放头交互）
+    ├── xzg_audio_save.js        # 音频保存前端
+    ├── xzg_image_compare.js     # 图像对比前端
     ├── node_favorites.js        # 收藏管理核心逻辑
     ├── node_favorites.css       # 收藏面板样式
-    ├── pinyin-pro.esm.js     # 拼音搜索库
+    ├── pinyin-pro.esm.js        # 拼音搜索库
     ├── xzg_boolean_selector.js  # 布尔选择器前端
     ├── xzg_group.js             # 编组功能
     ├── xzg_group.css            # 编组样式
@@ -551,15 +632,64 @@ ComfyUI-xiaozhuguang/
     ├── xzg_theme.js             # 主题核心
     ├── xzg_theme_presets.js     # 主题预设
     ├── xzg_theme_panel.js       # 主题面板
+    ├── xzg_theme.css            # 主题样式
     ├── xzg_quick_nodes.js       # 快速节点功能
     ├── xzg_universal_slider.js  # 万能滑条前端
     ├── xzg_workflows.js         # 工作流管理前端
-    └── xzg_align.js             # 田字格对齐功能
+    ├── xzg_align.js             # 田字格对齐功能
+    ├── xzg_get_widget.js        # 获取控件值前端
+    ├── xzg_i18n.js              # 国际化辅助
+    ├── xzg_menu_hide.js         # 菜单隐藏（夺舍模式辅助）
+    ├── xzg_arrow_tool.js        # 箭头绘制工具
+    ├── xzg_save_utils.js        # 保存通用工具
+    ├── xzg_h3_prompt.js         # MiniMax H3 前端
+    ├── xzg_text_box.js          # 文本框前端（数字转中文）
+    └── xzg_qwen.js              # Qwen/qwenVL 前端
 ```
 
 ---
 
 ## 📋 更新日志
+
+### V11.4.0 (2026-08-11)
+
+**🎵 小珠光音频加载器全面升级：**
+
+- **上传大小限制**：与官方一致，通过 `/features` 端点获取 `max_upload_size`，前端预检 + 服务端 HTTP 413 兜底双重校验
+- **解码进度条动画**：新增后台线程解码进度端点，前端 Canvas 绘制**音符律动风格均衡器条**动画，多频率叠加实现自然律动感，进度联动调整幅度，底部金色→顶部亮金渐变色
+- **解码动画最短时长**：已完成解码后动画至少持续 0.3 秒（300ms），避免动画闪烁
+- **动画宽度与竖条优化**：整体宽度拉宽，竖条调细，视觉更轻盈
+- **多色彩支持**：音轨波形颜色支持红、橙、青、绿等多种配色
+- **拖入上传功能**：支持直接将音频文件拖拽到节点上完成上传，通过 `convertEventToCanvasOffset` 转换坐标 + `onDragOver`/`onDragDrop` 回调实现
+- **双击上传区域扩展**：虚线以上（播放条区域）双击同样支持上传音频，与虚线以下区域保持一致
+- **禁止拖动移动节点**：音轨点击区域禁止拖动节点本体，避免误操作
+- **播放头交互优化**：白色播放头始终可见；点击波形任意位置跳转播放；播放头支持拖拽调整；波形中线上下分区：上半区按下即切换播放/暂停（无延迟），下半区点击或拖动移动播放头；双击波形触发上传
+- **音频播放头默认位置**：新生成音频播放头默认位于起始位置 0，而非中间
+
+**🎬 小珠光视频加载器大文件支持：**
+
+- **分块上传实现**：参考官方 Load Video UI，将大文件切分为 **20MB 固定块**，**3 路并发**上传，每块支持**重试 3 次**，支持服务端偏移量写入与会话管理
+- **1GB 大小限制**：严格限制单视频最大 1GB，超出立即报错
+- **自定义上传限制对话框**：与音频加载器风格一致，使用插件内对话框而非浏览器原生 alert，视觉统一
+- **进度条显示精简**：只显示「上传视频中...」文案、进度条和百分比，隐藏「XX/XX 分块」等技术细节，用户体验更清爽
+- **视频预览交互**：鼠标悬停视频帧显示手型指针；单击切换播放/暂停；双击触发新视频上传；仅实际视频帧区域响应点击（黑边区域不触发）；播放条与播放信息始终可见；白色时间码与帧计数显示在播放条上方右侧
+
+**🌱 新增小珠光随机种子节点：**
+
+- 新增 `XiaozhuguangSeed` 节点（双语显示：小珠光随机种子 / Xiaozhuguang Seed）
+- 使用 `_xzgQueuePromptIntercepted` 标志防止重复拦截
+- 支持标准 seed 输入与随机化功能
+
+**🖼 图像加载器 / 保存器优化：**
+
+- 图像加载器、图像保存、图像保存-化神级节点多处功能增强与 bug 修复
+- 节点中英双语翻译同步更新（`locales/en/nodeDefs.json`、`locales/zh/nodeDefs.json`）
+
+**📚 文档与国际化：**
+
+- 节点功能中英双语显示名同步维护，符合 ComfyUI 官方 i18n 规范
+
+---
 
 ### V9.4.0 (2026-07-30)
 

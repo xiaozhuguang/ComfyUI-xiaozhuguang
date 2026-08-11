@@ -98,6 +98,18 @@ _thumb_cache_dir = None
 DEFAULT_THUMB_SIZE = 256
 
 
+def _xzg_make_checkerboard(w, h, cell=8, c1=255, c2=220):
+    """生成 Photoshop 风格透明指示棋盘格背景（ffffff / dcdcdc 交替）。
+    返回 RGB 模式的 PIL Image。cell 为方格边长（像素）。"""
+    row_odd = np.tile(np.where(np.arange(w) // cell % 2 == 0, c1, c2), (cell, 1))
+    row_even = np.tile(np.where(np.arange(w) // cell % 2 == 1, c1, c2), (cell, 1))
+    pair = np.concatenate([row_odd, row_even], axis=0)  # (2*cell, w)
+    reps = int(np.ceil(h / (2 * cell)))
+    board = np.concatenate([pair] * reps, axis=0)[:h]  # (h, w)
+    board_rgb = np.stack([board, board, board], axis=-1).astype(np.uint8)
+    return Image.fromarray(board_rgb, "RGB")
+
+
 def _get_thumb_cache_dir():
     global _thumb_cache_dir
     if _thumb_cache_dir is None:
@@ -114,8 +126,9 @@ def _get_thumb_cache_key(filename, size):
             return None
         mtime = str(os.path.getmtime(fpath))
         fsize = str(os.path.getsize(fpath))
-        raw = f"{filename}_{size}_{mtime}_{fsize}"
-        return hashlib.md5(raw.encode('utf-8')).hexdigest() + ".jpg"
+        # v2: 缓存版本号，区分旧版全 JPEG 缓存（现在 RGBA 输出 PNG）
+        raw = f"v2_{filename}_{size}_{mtime}_{fsize}"
+        return hashlib.md5(raw.encode('utf-8')).hexdigest()
     except Exception:
         return None
 
@@ -231,8 +244,16 @@ async def xzg_image_loader_thumb(request):
     try:
         img = node_helpers.pillow(Image.open, image_path)
         img = ImageOps.exif_transpose(img)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
+        # 有 alpha 通道时合成到棋盘格背景后输出 JPG（保留抠图效果，同时保持 JPG 压缩避免卡顿）
+        if 'A' in img.getbands():
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            _cell = max(16, min(40, max(img.size) // 32))
+            bg = _xzg_make_checkerboard(img.size[0], img.size[1], cell=_cell).convert("RGBA")
+            img = Image.alpha_composite(bg, img).convert("RGB")
+        else:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
 
         img.thumbnail((size, size), Image.LANCZOS)
 
@@ -258,6 +279,28 @@ async def xzg_image_loader_thumb(request):
         )
     except Exception as e:
         return web.Response(status=500, text=str(e))
+
+
+@routes.get("/xzg_image_info")
+@xzg_safe_handler
+async def xzg_image_info(request):
+    """返回图片原始尺寸（width/height），用于前端分辨率显示。
+    轻量实现：仅读取图片头信息，不加载完整像素数据。"""
+    filename = request.rel_url.query.get("filename", "")
+    if not filename:
+        return web.json_response({"error": "filename required"}, status=400)
+
+    filename = _normalize_annotated_filename(filename)
+    image_path = folder_paths.get_annotated_filepath(filename)
+    if not image_path or not os.path.isfile(image_path):
+        return web.json_response({"error": "image not found"}, status=404)
+
+    try:
+        with Image.open(image_path) as img:
+            w, h = img.size
+        return web.json_response({"width": int(w), "height": int(h)})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
 
 @routes.post("/xzg_delete_images")
@@ -363,7 +406,7 @@ class XiaozhuguangImageLoader:
             "required": {
                 "image_list": ("STRING", {"default": ""}),
                 "index": ("INT", {"default": 0, "min": 0, "max": 999999}),
-                "batch_mode": ("BOOLEAN", {"default": True}),
+                "batch_mode": ("BOOLEAN", {"default": True, "label_on": "批次", "label_off": "列表"}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -373,7 +416,7 @@ class XiaozhuguangImageLoader:
         }
 
     RETURN_TYPES = ("IMAGE", "MASK")
-    RETURN_NAMES = ("图像", "遮罩")
+    RETURN_NAMES = ("images", "mask")
     OUTPUT_IS_LIST = (True, False)
     FUNCTION = "load_images"
     CATEGORY = "xiaozhuguang"
@@ -382,8 +425,8 @@ class XiaozhuguangImageLoader:
         # 调试：打印遮罩数据长度
         mask_len = len(mask_data) if mask_data else 0
         print(f"[小珠光图像加载器] mask_data 长度: {mask_len}, 前50字符: {str(mask_data)[:50]}")
-        # 空图或无效输入时返回全黑遮罩（未绘制=没有任何区域被遮罩）
-        empty_mask = torch.zeros((1, 1), dtype=torch.float32)
+        # 空图或无效输入时返回空遮罩（3D 形状匹配官方 LoadImage 默认值）
+        empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
         if not image_list or not image_list.strip():
             return ([], empty_mask)
 
@@ -392,6 +435,7 @@ class XiaozhuguangImageLoader:
             return ([], empty_mask)
 
         images = []
+        image_alphas = []  # 每张图的 alpha 通道（无 alpha 则 None），用于无用户遮罩时回退提取
         for name in names:
             try:
                 name_norm = _normalize_annotated_filename(name)
@@ -401,21 +445,37 @@ class XiaozhuguangImageLoader:
 
                 img = node_helpers.pillow(Image.open, image_path)
                 img = ImageOps.exif_transpose(img)
+                # 在 convert("RGB") 之前提取 alpha 通道（与官方 LoadImage 一致）
+                alpha = img.getchannel('A') if 'A' in img.getbands() else None
                 image = img.convert("RGB")
                 image = np.array(image).astype(np.float32) / 255.0
                 image = torch.from_numpy(image)[None,]
                 images.append(image)
+                image_alphas.append(alpha)
             except Exception:
                 continue
 
-        # 解析遮罩数据（单图模式使用第一张图的尺寸）
+        # 解析遮罩数据
         # 语义约定：白色(255 / 1.0) = 用户绘制过的区域；黑色(0 / 0.0) = 未绘制区域
-        # —— 无数据或失败时返回全黑(zeros)，代表"没画任何东西，没遮罩任何部分"
-        def _decode_mask(mask_str, ref_h, ref_w):
+        # 无用户遮罩数据时，从图片 alpha 通道提取（与官方 LoadImage 行为一致）：
+        #   alpha=255(不透明)→mask=0(未遮罩)，alpha=0(透明)→mask=1(已遮罩)
+        # 所有返回均为 3D 张量 (1, H, W)，匹配官方 LoadImage 的 MASK 输出形状
+        def _decode_mask(mask_str, ref_h, ref_w, pil_alpha=None):
             if ref_h <= 0 or ref_w <= 0:
-                return torch.zeros((max(1, ref_h), max(1, ref_w)), dtype=torch.float32)
+                return torch.zeros((1, max(1, ref_h), max(1, ref_w)), dtype=torch.float32)
             if not mask_str:
-                return torch.zeros((ref_h, ref_w), dtype=torch.float32)
+                # 无用户绘制的遮罩，尝试从图片 alpha 通道提取（与官方 LoadImage 一致）
+                if pil_alpha is not None:
+                    try:
+                        if pil_alpha.size != (ref_w, ref_h):
+                            pil_alpha = pil_alpha.resize((ref_w, ref_h), Image.LANCZOS)
+                        arr = np.array(pil_alpha).astype(np.float32) / 255.0
+                        # 反转：alpha=255(不透明)→mask=0，alpha=0(透明)→mask=1
+                        mask = 1. - torch.from_numpy(arr)
+                        return mask.unsqueeze(0)  # (1, H, W) — 3D
+                    except Exception as e:
+                        print(f"[小珠光图像加载器] alpha 遮罩提取失败: {e}")
+                return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
             try:
                 # 支持 "data:image/png;base64,xxx" 格式或纯 base64
                 if mask_str.startswith("data:"):
@@ -429,14 +489,14 @@ class XiaozhuguangImageLoader:
                 if mask_pil.size != (ref_w, ref_h):
                     mask_pil = mask_pil.resize((ref_w, ref_h), Image.LANCZOS)
                 arr = np.array(mask_pil).astype(np.float32) / 255.0
-                return torch.from_numpy(arr)
+                return torch.from_numpy(arr).unsqueeze(0)  # (1, H, W) — 3D
             except Exception as e:
                 print(f"[小珠光图像加载器] 遮罩解码失败: {e}")
-                return torch.zeros((ref_h, ref_w), dtype=torch.float32)
+                return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
 
         if batch_mode:
             if len(images) == 0:
-                return ([], torch.zeros((1, 1), dtype=torch.float32))
+                return ([], torch.zeros((1, 64, 64), dtype=torch.float32))
 
             max_h = max(img.shape[1] for img in images)
             max_w = max(img.shape[2] for img in images)
@@ -467,7 +527,12 @@ class XiaozhuguangImageLoader:
             batch = torch.cat(resized, dim=0)
             # 批次模式下遮罩尺寸对齐到批次尺寸，用 index 对应的图参考尺寸解码
             ref_h, ref_w = max_h, max_w
-            mask_out = _decode_mask(mask_data, ref_h, ref_w)
+            idx = max(0, min(int(index), len(image_alphas) - 1)) if image_alphas else 0
+            ref_alpha = image_alphas[idx] if 0 <= idx < len(image_alphas) else None
+            mask_out = _decode_mask(mask_data, ref_h, ref_w, ref_alpha)
+            # 批次模式下将遮罩扩展到与批次相同的数量 (N, H, W)
+            if batch.shape[0] > 1 and mask_out.shape[0] == 1:
+                mask_out = mask_out.repeat(batch.shape[0], 1, 1)
             return ([batch], mask_out)
         else:
             # 列表模式：每张图独立放入列表，OUTPUT_IS_LIST 驱动下游 N 次执行
@@ -476,8 +541,9 @@ class XiaozhuguangImageLoader:
             if len(images) > 0 and 0 <= idx < len(images):
                 _, ref_h, ref_w, _ = images[idx].shape
             else:
-                ref_h, ref_w = 1, 1
-            mask_out = _decode_mask(mask_data, ref_h, ref_w)
+                ref_h, ref_w = 64, 64
+            ref_alpha = image_alphas[idx] if 0 <= idx < len(image_alphas) else None
+            mask_out = _decode_mask(mask_data, ref_h, ref_w, ref_alpha)
             return (images, mask_out)
 
 

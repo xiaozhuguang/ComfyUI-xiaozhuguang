@@ -13,6 +13,9 @@ import torch
 import folder_paths
 from aiohttp import web
 from server import PromptServer
+import uuid
+import threading
+import time
 
 # ---------- 小珠光路由安全装饰器 ----------
 import asyncio as _xzg_asyncio
@@ -296,6 +299,134 @@ def generate_waveform_peaks(waveform, num_samples=WAVEFORM_SAMPLES):
     return peaks
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 音频解码进度跟踪（后台线程 + 轮询）
+# ═══════════════════════════════════════════════════════════════════════
+_xzg_decode_jobs = {}
+_xzg_decode_jobs_lock = threading.Lock()
+_XZG_DECODE_JOB_TTL = 120  # 完成后保留时间（秒）
+_XZG_DECODE_TIMEOUT = 600  # 解码超时（秒）
+
+
+def _xzg_cleanup_old_jobs():
+    """清理过期的解码任务"""
+    now = time.time()
+    with _xzg_decode_jobs_lock:
+        expired = [jid for jid, job in _xzg_decode_jobs.items()
+                   if job.get('done') and job.get('finished_at')
+                   and now - job['finished_at'] > _XZG_DECODE_JOB_TTL]
+        for jid in expired:
+            del _xzg_decode_jobs[jid]
+
+
+def _xzg_decode_audio_thread(audio_path, sample_rate, job_id, total_duration):
+    """在后台线程中解码音频，实时更新进度。
+    进度基于已接收的字节数 vs 预期总字节数计算，不依赖 FFmpeg 的 -progress 输出。
+    """
+    try:
+        if not ffmpeg_path:
+            with _xzg_decode_jobs_lock:
+                job = _xzg_decode_jobs.get(job_id)
+                if job:
+                    job['error'] = 'FFmpeg not found'
+                    job['done'] = True
+                    job['finished_at'] = time.time()
+            return
+
+        # 预期总字节数 = 采样率 × 声道数 × 每样本字节数(f32le=4) × 时长
+        # f32le: float32 little-endian, 2 channels interleaved
+        bytes_per_second = sample_rate * 2 * 4
+        expected_bytes = int(bytes_per_second * total_duration) if total_duration > 0 else 0
+
+        args = [ffmpeg_path, "-v", "error",
+                "-i", audio_path,
+                "-ac", "2", "-ar", str(sample_rate),
+                "-f", "f32le", "-"]
+
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        stdout_chunks = []
+        bytes_read = 0
+        start_time = time.time()
+
+        while True:
+            chunk = proc.stdout.read(8192)
+            if not chunk:
+                break
+            stdout_chunks.append(chunk)
+            bytes_read += len(chunk)
+
+            # 基于字节数计算进度
+            if expected_bytes > 0:
+                progress = min(1.0, bytes_read / expected_bytes)
+                decoded_time = bytes_read / bytes_per_second
+            else:
+                # 无法确定总时长，使用不确定进度
+                progress = -1
+                decoded_time = bytes_read / bytes_per_second if bytes_per_second > 0 else 0
+
+            with _xzg_decode_jobs_lock:
+                job = _xzg_decode_jobs.get(job_id)
+                if job:
+                    job['progress'] = progress
+                    job['decoded_time'] = decoded_time
+
+            if time.time() - start_time > _XZG_DECODE_TIMEOUT:
+                proc.kill()
+                with _xzg_decode_jobs_lock:
+                    job = _xzg_decode_jobs.get(job_id)
+                    if job:
+                        job['error'] = '解码超时 (%ds)' % _XZG_DECODE_TIMEOUT
+                        job['done'] = True
+                        job['finished_at'] = time.time()
+                return
+
+        proc.wait()
+        stderr_output = proc.stderr.read().decode(*ENCODE_ARGS)
+        raw = b''.join(stdout_chunks)
+
+        if proc.returncode != 0:
+            with _xzg_decode_jobs_lock:
+                job = _xzg_decode_jobs.get(job_id)
+                if job:
+                    job['error'] = stderr_output[:500] or 'ffmpeg exited with code %d' % proc.returncode
+                    job['done'] = True
+                    job['finished_at'] = time.time()
+            return
+
+        if not raw or len(raw) < 4:
+            with _xzg_decode_jobs_lock:
+                job = _xzg_decode_jobs.get(job_id)
+                if job:
+                    job['error'] = 'No audio data'
+                    job['done'] = True
+                    job['finished_at'] = time.time()
+            return
+
+        audio_np = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).T
+        audio_np = np.clip(audio_np, -1.0, 1.0)
+        waveform = torch.from_numpy(audio_np.astype(np.float32))
+        peaks = generate_waveform_peaks(waveform, WAVEFORM_SAMPLES)
+        actual_duration = waveform.shape[-1] / sample_rate
+
+        with _xzg_decode_jobs_lock:
+            job = _xzg_decode_jobs.get(job_id)
+            if job:
+                job['peaks'] = peaks
+                job['duration'] = actual_duration
+                job['progress'] = 1.0
+                job['decoded_time'] = actual_duration
+                job['done'] = True
+                job['finished_at'] = time.time()
+    except Exception as e:
+        with _xzg_decode_jobs_lock:
+            job = _xzg_decode_jobs.get(job_id)
+            if job:
+                job['error'] = str(e)
+                job['done'] = True
+                job['finished_at'] = time.time()
+
+
 class XiaozhuguangAudioLoader:
     """
     小珠光音频加载器
@@ -465,3 +596,86 @@ if getattr(PromptServer, 'instance', None) is not None:
             "channels": info['channels'] if info else 2,
             "peaks": peaks,
         })
+
+    @PromptServer.instance.routes.post("/xzg/audio_decode_start")
+    @xzg_safe_handler
+    async def start_audio_decode(request):
+        """启动音频解码任务（带进度跟踪），返回 job_id"""
+        data = await request.json()
+        filename = data.get("filename", "")
+        if not filename:
+            return web.json_response({"error": "filename is required"}, status=400)
+
+        try:
+            audio_path = folder_paths.get_annotated_filepath(filename)
+        except Exception:
+            return web.json_response({"error": "file not found"}, status=404)
+
+        if not audio_path or not os.path.isfile(audio_path):
+            return web.json_response({"error": "file not found"}, status=404)
+
+        # 清理旧任务
+        _xzg_cleanup_old_jobs()
+
+        info = probe_audio_info(audio_path)
+        sr = info['sample_rate'] if info else 44100
+        total_duration = info['duration'] if info else 0.0
+
+        job_id = str(uuid.uuid4())
+        with _xzg_decode_jobs_lock:
+            _xzg_decode_jobs[job_id] = {
+                'progress': 0.0,
+                'decoded_time': 0.0,
+                'total_duration': total_duration,
+                'sample_rate': sr,
+                'done': False,
+                'error': None,
+                'peaks': None,
+                'duration': 0.0,
+                'created_at': time.time(),
+                'finished_at': None,
+            }
+
+        # 在后台线程中解码
+        thread = threading.Thread(
+            target=_xzg_decode_audio_thread,
+            args=(audio_path, sr, job_id, total_duration),
+            daemon=True
+        )
+        thread.start()
+
+        return web.json_response({
+            "job_id": job_id,
+            "total_duration": total_duration,
+            "sample_rate": sr,
+        })
+
+    @PromptServer.instance.routes.get("/xzg/audio_decode_progress")
+    @xzg_safe_handler
+    async def poll_audio_decode_progress(request):
+        """轮询音频解码进度"""
+        job_id = request.query.get("job_id", "")
+        if not job_id:
+            return web.json_response({"error": "job_id is required"}, status=400)
+
+        with _xzg_decode_jobs_lock:
+            job = _xzg_decode_jobs.get(job_id)
+            if job is None:
+                return web.json_response({"error": "job not found"}, status=404)
+
+            result = {
+                "progress": job['progress'],
+                "decoded_time": job['decoded_time'],
+                "total_duration": job['total_duration'],
+                "done": job['done'],
+                "error": job['error'],
+            }
+            if job['done'] and job['peaks'] is not None:
+                result['peaks'] = job['peaks']
+                result['duration'] = job['duration']
+                result['sample_rate'] = job['sample_rate']
+
+        # 定期清理过期任务
+        _xzg_cleanup_old_jobs()
+
+        return web.json_response(result)
