@@ -73,6 +73,9 @@ function getNodeSettings(node, defaults) {
     if (!s.widths || typeof s.widths !== "object") {
         s.widths = {};
     }
+    if (!s.rowBias || typeof s.rowBias !== "object") {
+        s.rowBias = {};
+    }
     return s;
 }
 
@@ -88,13 +91,25 @@ function getDisplayLabel(value, labels) {
 
 function getButtonWidth(index, settings) {
     const key = String(index);
-    if (settings.widths && settings.widths[key] !== undefined) {
-        return clamp(settings.widths[key], 55, 300);
-    }
-    return clamp(settings.btnWidth, 55, 300);
+    const bias = (settings.widths && settings.widths[key] !== undefined)
+        ? settings.widths[key] : 0;
+    // bias: -100~100, 正值变宽，负值变窄，0为等宽
+    const weight = 1 + bias / 100;
+    return Math.max(1, (settings.btnWidth || 60) * weight);
 }
 
-function getButtonRects(y, W, settings) {
+/**
+ * 计算按钮布局矩形。
+ * 当节点宽度不足以容纳所有按钮时，等比缩小按钮宽度以避免溢出；
+ * 当节点宽度有空余时，等比放大按钮宽度以填满空间，避免留白。
+ * 当节点高度高于自然内容高度时，等比放大按钮高度以填满垂直空间。
+ * 按钮之间的比例关系（由 settings.widths 或 settings.btnWidth 决定）保持不变。
+ * @param {number} y - 控件顶部 y 坐标
+ * @param {number} W - 节点宽度
+ * @param {object} settings - 节点设置
+ * @param {number} [availableH] - 可用高度（可选），大于自然高度时缩放按钮高度
+ */
+function getButtonRects(y, W, settings, availableH) {
     const count = settings.count;
     const cols = settings.columns;
     const gap = settings.btnGap;
@@ -102,30 +117,87 @@ function getButtonRects(y, W, settings) {
     const rows = Math.ceil(count / cols);
     const rects = [];
     const startY = y + 4;
+    const availableW = Math.max(0, W - 12); // 左右各 6px 边距
+
+    // 计算自然内容高度，并根据可用高度缩放按钮高度
+    const naturalContentH = rows > 0 ? rows * btnH + (rows - 1) * gap : 0;
+    let scaledBtnH = btnH;
+    let contentH = naturalContentH;
+    if (availableH !== undefined && rows > 0) {
+        if (availableH > naturalContentH) {
+            // 放大按钮填满空间
+            const extraSpace = availableH - naturalContentH;
+            scaledBtnH = btnH + extraSpace / rows;
+            contentH = availableH;
+        } else if (availableH < naturalContentH) {
+            // 缩小按钮避免溢出
+            const totalGap = (rows - 1) * gap;
+            scaledBtnH = Math.max(10, (availableH - totalGap) / rows);
+            contentH = availableH;
+        }
+    }
 
     for (let r = 0; r < rows; r++) {
         const rowStartIdx = r * cols;
         const rowEndIdx = Math.min(rowStartIdx + cols, count);
         const rowCount = rowEndIdx - rowStartIdx;
-        let rowWidth = 0;
+
+        // 计算该行自然宽度（各按钮原始宽度之和 + 间距）
+        let naturalWidths = [];
+        let naturalRowWidth = 0;
         for (let i = rowStartIdx; i < rowEndIdx; i++) {
-            rowWidth += getButtonWidth(i, settings);
+            const bw = getButtonWidth(i, settings);
+            naturalWidths[i] = bw;
+            naturalRowWidth += bw;
         }
-        rowWidth += (rowCount - 1) * gap;
+        naturalRowWidth += (rowCount - 1) * gap;
+
+        // 根据可用宽度等比缩放各按钮
+        let scaledWidths = [];
+        let rowWidth;
+        if (naturalRowWidth > 0 && rowCount > 0) {
+            const totalGap = (rowCount - 1) * gap;
+            const naturalContentW = naturalRowWidth - totalGap;
+            const availableContentW = Math.max(0, availableW - totalGap);
+            const scale = availableContentW / naturalContentW;
+            for (let i = rowStartIdx; i < rowEndIdx; i++) {
+                scaledWidths[i] = naturalWidths[i] * scale;
+            }
+            rowWidth = availableW;
+        } else {
+            for (let i = rowStartIdx; i < rowEndIdx; i++) {
+                scaledWidths[i] = naturalWidths[i];
+            }
+            rowWidth = naturalRowWidth;
+        }
+
         const rowStartX = Math.max(6, (W - rowWidth) / 2);
         let curX = rowStartX;
         for (let i = rowStartIdx; i < rowEndIdx; i++) {
-            const w = getButtonWidth(i, settings);
+            const w = scaledWidths[i];
             rects[i] = {
                 x: curX,
-                y: startY + r * (btnH + gap),
+                y: startY + r * (scaledBtnH + gap),
                 w: w,
-                h: btnH,
+                h: scaledBtnH,
             };
             curX += w + gap;
         }
     }
 
+    const contentW = availableW;
+    return { rects, contentW, contentH };
+}
+
+/**
+ * 计算自然内容尺寸（不缩放，用于初始节点大小设置）。
+ */
+function calcNaturalContentSize(settings) {
+    const count = settings.count;
+    const cols = settings.columns;
+    const gap = settings.btnGap;
+    const btnH = settings.btnHeight;
+    const rows = Math.ceil(count / cols);
     let maxRowWidth = 0;
     for (let r = 0; r < rows; r++) {
         const rowStartIdx = r * cols;
@@ -138,10 +210,8 @@ function getButtonRects(y, W, settings) {
         rowWidth += (rowCount - 1) * gap;
         maxRowWidth = Math.max(maxRowWidth, rowWidth);
     }
-
-    const contentW = maxRowWidth;
     const contentH = rows * btnH + (rows - 1) * gap;
-    return { rects, contentW, contentH };
+    return { contentW: maxRowWidth, contentH };
 }
 
 const DEFAULT_SETTINGS = {
@@ -155,7 +225,8 @@ const DEFAULT_SETTINGS = {
     btnGap: 4,
     fontColor: "#aaa",
     inactiveColor: "#2a2a2a",
-    widths: {}
+    widths: {},
+    rowBias: {}
 };
 
 app.registerExtension({
@@ -168,9 +239,10 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
-            this.resizable = false;
+            // 允许自由拖动节点大小
+            this.resizable = true;
             this.flags = this.flags || {};
-            this.flags.resizable = false;
+            this.flags.resizable = true;
 
             const settingsWidget = this.widgets?.find(w => w.name === "_xz_settings");
             if (settingsWidget) settingsWidget.hidden = true;
@@ -192,7 +264,10 @@ app.registerExtension({
                 draw(ctx, node, W, y, H) {
                     const settings = getNodeSettings(node, DEFAULT_SETTINGS);
                     const count = settings.count;
-                    const { rects, contentH } = getButtonRects(y, W, settings);
+                    // 用节点实际高度计算可用高度，而非 H 参数（H 始终为自然高度）
+                    const nodeH = node.size[1] || 0;
+                    const availH = Math.max(0, nodeH - y - 8);
+                    const { rects, contentH } = getButtonRects(y, W, settings, availH);
                     const currentValue = String(tagWidget.value ?? "0");
 
                     for (let i = 0; i < count; i++) {
@@ -223,53 +298,61 @@ app.registerExtension({
                         ctx.font = `${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.textAlign = "center";
                         ctx.textBaseline = "middle";
-                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);
+                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
                         ctx.restore();
                     }
 
+                    node._xzgSelY = y;
                     node._xzgSelH = contentH + 8;
                 },
 
                 mouse(event, pos, node) {
-                    if (event.type === "wheel") return false;
-                    if (event.type !== "mousedown" && event.type !== "pointerdown") return false;
-                    if (event.button !== 0 && event.type === "mousedown") return false;
-
-                    const settings = getNodeSettings(node, DEFAULT_SETTINGS);
-                    const W = node.size[0];
-                    const { rects } = getButtonRects(this.y || 0, W, settings);
-
-                    for (let i = 0; i < rects.length; i++) {
-                        const r = rects[i];
-                        if (!r) continue;
-                        if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
-                            pos[1] >= r.y && pos[1] <= r.y + r.h) {
-                            const value = String(i);
-                            tagWidget.value = value;
-                            if (tagWidget.callback) {
-                                try { tagWidget.callback(value); } catch (e) {}
-                            }
-                            node.setDirtyCanvas(true, true);
-                            return true;
-                        }
-                    }
+                    // 点击检测由 node.onMouseDown 处理，这里不再响应
                     return false;
                 },
 
                 computeSize(width) {
-                    const settings = getNodeSettings(node, DEFAULT_SETTINGS);
-                    const { contentH } = getButtonRects(0, width, settings);
-                    return [width, contentH + 8];
+                    // 返回极小值，不干预节点高度，让用户自由拖动
+                    return [width, 4];
                 },
             });
 
             const custom = this.widgets.pop();
             this.widgets.splice(widgetIndex + 1, 0, custom);
 
+            // 节点级点击检测：覆盖整个节点区域，不受 computeSize 限制
+            const _node = this;
+            _node.onMouseDown = function(event, pos) {
+                if (event.button !== 0) return false;
+                const settings = getNodeSettings(_node, DEFAULT_SETTINGS);
+                const W = _node.size[0];
+                const yPos = _node._xzgSelY !== undefined ? _node._xzgSelY : 0;
+                const nodeH = _node.size[1] || 0;
+                const availH = Math.max(0, nodeH - yPos - 8);
+                const { rects } = getButtonRects(yPos, W, settings, availH);
+
+                for (let i = 0; i < rects.length; i++) {
+                    const r = rects[i];
+                    if (!r) continue;
+                    if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
+                        pos[1] >= r.y && pos[1] <= r.y + r.h) {
+                        const value = String(i);
+                        tagWidget.value = value;
+                        if (tagWidget.callback) {
+                            try { tagWidget.callback(value); } catch (e) {}
+                        }
+                        _node.setDirtyCanvas(true, true);
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            // 初始大小：与 rebuildSelectorNode 公式一致
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
-            const { contentW, contentH } = getButtonRects(0, this.size[0], settings);
+            const { contentW, contentH } = calcNaturalContentSize(settings);
             this.size[0] = Math.max(120, contentW + 12);
-            this.size[1] = Math.max(45, contentH + 28);
+            this.size[1] = contentH + 30 + 8;
         };
     },
 });

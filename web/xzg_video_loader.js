@@ -60,6 +60,9 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
     const widgetWidth = this._xzgDrawW || this.width || node.size[0];
     const oldValue = this.value;
     const step = this._xzgStep || 1;
+    // 拖动时的量化步长：step>1（如自定义宽高 step=8）时 dragStep=1（流畅1像素/单位），否则与 step 相同
+    // 也允许外部显式设置 widget._xzgDragStep 覆盖
+    const dragStep = this._xzgDragStep ?? (step > 1 ? 1 : step);
     const min = this._xzgMin;
     const max = this._xzgMax;
     // 拖动时的上限（如果设置了 _xzgDragMax，则拖动时用它；输入框输入时用 _xzgMax）
@@ -74,13 +77,29 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
 
     if (event.type === 'pointermove') {
         if (event.deltaX) {
-            this.value = clamp(this.value + event.deltaX, dragMax);
+            let newValue = this.value + event.deltaX;
+            // 拖动过程中按 dragStep 吸附（宽/高 step=8 时用 dragStep=1 保证流畅）
+            if (dragStep > 0) {
+                newValue = Math.round(newValue / dragStep) * dragStep;
+            }
+            // 浮点累加精度修正：极接近整数时归整
+            if (Math.abs(newValue - Math.round(newValue)) < 1e-6) {
+                newValue = Math.round(newValue);
+            }
+            this.value = clamp(newValue, dragMax);
             app.canvas._xzgValueDragged = true;
         }
     } else if (event.type === 'pointerup') {
         if (app.canvas._xzgValueDragged) {
-            // 松手吸附到 step 倍数（拖动时用 dragMax）
-            this.value = clamp(Math.round(this.value / step) * step, dragMax);
+            // 松手时按最终 step 吸附（宽高：1→8 倍数；跳过帧数/帧数上限：1→1；强制帧率：0.001→0.001）
+            let newValue = this.value;
+            if (step > 0) {
+                newValue = Math.round(newValue / step) * step;
+            }
+            if (Math.abs(newValue - Math.round(newValue)) < 1e-6) {
+                newValue = Math.round(newValue);
+            }
+            this.value = clamp(newValue, dragMax);
         } else {
             // 点击 → 弹输入框（输入时用 max）
             app.canvas._xzgAllowPrompt = true;
@@ -88,7 +107,14 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
                 this.label || this.name,
                 this.value,
                 (v) => {
-                    this.value = clamp(Number(v), max);
+                    let nv = Number(v);
+                    if (step > 0) {
+                        nv = Math.round(nv / step) * step;
+                    }
+                    if (Math.abs(nv - Math.round(nv)) < 1e-6) {
+                        nv = Math.round(nv);
+                    }
+                    this.value = clamp(nv, max);
                     if (this.callback) this.callback(this.value);
                     node.setDirtyCanvas?.(true, true);
                 },
@@ -156,7 +182,22 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
     ctx.textBaseline = 'middle';
     ctx.fillText(this.label || this.name || '', pad + 6, y + H / 2);
     // 右侧：当前值（支持自定义颜色）
-    const valueText = String(this.value);
+    // 拖动中：按 dragStep 显示（宽高 step=8 时 dragStep=1 → 流畅显示 1,2,3…）
+    // 非拖动状态：按 step 显示（松手后为 8 的倍数 / step 的整数倍）
+    const step = this._xzgStep || 1;
+    const dragStep = this._xzgDragStep ?? (step > 1 ? 1 : step);
+    const isDragging = !!app.canvas?._xzgValueDragged;
+    const displayStep = isDragging ? dragStep : step;
+    let displayValue = this.value;
+    if (typeof displayValue === 'number' && !Number.isNaN(displayValue)) {
+        if (displayStep > 0) {
+            displayValue = Math.round(displayValue / displayStep) * displayStep;
+        }
+        if (Math.abs(displayValue - Math.round(displayValue)) < 1e-6) {
+            displayValue = Math.round(displayValue);
+        }
+    }
+    const valueText = String(displayValue);
     ctx.fillStyle = this._xzgValueColor || '#fff';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'right';
@@ -586,6 +627,8 @@ function _applyWidgetStyles(node) {
             w.draw = _xzgDrawWidget;
             w.mouse = _xzgWidgetNumberWithResetMouse;
             w.label = _tr("强制帧率");
+            // 拖动时每步 +1（流畅整数），松手/输入按 step=0.001 吸附精度
+            w._xzgDragStep = 1;
         } else if (w.name === '视频') {
             w.draw = _xzgDrawComboWidget;
             w.label = _tr("视频");
@@ -972,10 +1015,20 @@ function bindVideoLoaderInteractions(node) {
     };
 
     const playerContainer = document.createElement("div");
+    playerContainer.className = "xzg-video-preview-container";
     playerContainer.style.width = "100%";
     playerContainer.style.background = "#1a1a1a";
     playerContainer.style.position = "relative";
     playerContainer.style.pointerEvents = "none";
+    // 注入全局 CSS：统一预览区背景色，避免 ComfyUI 默认样式干扰
+    if (!document.getElementById("xzg-video-preview-style")) {
+        const st = document.createElement("style");
+        st.id = "xzg-video-preview-style";
+        st.textContent = `
+            .xzg-video-preview-container { background: #1a1a1a !important; }
+        `;
+        document.head.appendChild(st);
+    }
 
     // Bypass 紫色覆盖层
     const bypassOverlay = document.createElement("div");
@@ -1663,7 +1716,7 @@ app.registerExtension({
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "XiaozhuguangVideoLoader") {
+        if (nodeData.name === "XiaozhuguangVideoLoader" || nodeData.name === "XiaozhuguangVideoLoaderPro") {
             // 强制帧率：强制走自定义 number widget，从源头避免原生 combo 列表
             if (nodeData.input?.required?.["强制帧率"]) {
                 nodeData.input.required["强制帧率"][1].widgetType = "XZGFLOAT";

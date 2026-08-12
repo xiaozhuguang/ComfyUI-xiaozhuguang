@@ -91,6 +91,7 @@ app.registerExtension({
         let colorMenu = null;
         let colorMenuOpen = false;
         let centerDrag = null;
+        let wasCenterDrag = false; // 中心拖动后抑制误触 click
         let dirArrow = null;
         let pressRing = null;
         let pressTimer = null;
@@ -1557,8 +1558,8 @@ app.registerExtension({
             });
             overlay.addEventListener("click", (e) => {
                 if (colorMenuOpen) { hideColorMenu(); return; }
-                if (centerDrag && centerDrag.justDragged) {
-                    centerDrag.justDragged = false;
+                if (wasCenterDrag) {
+                    wasCenterDrag = false;
                     return;
                 }
                 const { x, y } = getLocal(e);
@@ -1575,9 +1576,9 @@ app.registerExtension({
                         const dx = centerDrag.lastDx || 0;
                         const dy = centerDrag.lastDy || 0;
                         const absDx = Math.abs(dx), absDy = Math.abs(dy);
-                        const showDist = Math.max(absDx, absDy);
-                        const hadAction = showDist >= DRAG_THRESHOLD && getSelectedNodes().length >= 2;
 
+                        // 只要拖动就执行等宽/等高，不设阈值
+                        const hadAction = getSelectedNodes().length >= 2;
                         if (hadAction) {
                             if (absDx >= absDy) {
                                 sameWidth();
@@ -1586,13 +1587,11 @@ app.registerExtension({
                             }
                         }
 
+                        // 标记刚结束中心拖动，抑制后续 click 误触
+                        wasCenterDrag = true;
                         centerDrag = null;
                         if (dirArrow) dirArrow.setAttribute("opacity", "0");
-                        if (hadAction) {
-                            closeTianPanel();
-                        } else {
-                            setHover(null, null);
-                        }
+                        closeTianPanel();
                     } else {
                         // 没有拖拽，是短按（未达2秒）→ 不执行任何操作
                         centerDrag = null;
