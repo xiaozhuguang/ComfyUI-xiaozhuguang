@@ -400,37 +400,70 @@ class _XZG_QwenStorage:
         if mmproj_path:
             if family in ("Qwen3.5-VL", "Qwen3.6-VL"):
                 if Qwen35ChatHandler is None:
-                    raise RuntimeError(
-                        "当前 llama-cpp-python 不支持 Qwen35ChatHandler，请更新 llama-cpp-python。"
+                    print(
+                        "[小珠光 QwenLoader] 当前 llama-cpp-python 缺少 Qwen35ChatHandler，"
+                        "将尝试使用 llama 默认 chat_format（可能图片识别不生效，"
+                        "建议升级 llama-cpp-python 到 0.3.30+ 获取最佳兼容性）。"
                     )
-                try:
-                    chat_handler = Qwen35ChatHandler(
-                        clip_model_path=mmproj_path, enable_thinking=think, verbose=False
-                    )
-                except Exception:
-                    chat_handler = Qwen35ChatHandler(clip_model_path=mmproj_path, verbose=False)
+                else:
+                    try:
+                        chat_handler = Qwen35ChatHandler(
+                            clip_model_path=mmproj_path, enable_thinking=think, verbose=False
+                        )
+                    except Exception:
+                        chat_handler = Qwen35ChatHandler(
+                            clip_model_path=mmproj_path, verbose=False
+                        )
             elif family == "Qwen3-VL":
-                if Qwen3VLChatHandler is None:
-                    raise RuntimeError(
-                        "当前 llama-cpp-python 不支持 Qwen3VLChatHandler，请更新 llama-cpp-python。"
+                # Qwen3-VL 与 Qwen3.5/3.6-VL 同族，优先 Qwen3VLChatHandler，
+                # 缺失时回退 Qwen35ChatHandler，最后降级为默认 chat_format，
+                # 避免因用户整合包里的 llama-cpp-python 较旧就直接失败。
+                if Qwen3VLChatHandler is not None:
+                    try:
+                        chat_handler = Qwen3VLChatHandler(
+                            clip_model_path=mmproj_path, force_reasoning=think, verbose=False
+                        )
+                    except Exception:
+                        chat_handler = Qwen3VLChatHandler(
+                            clip_model_path=mmproj_path, verbose=False
+                        )
+                elif Qwen35ChatHandler is not None:
+                    print(
+                        "[小珠光 QwenLoader] 当前 llama-cpp-python 缺少 Qwen3VLChatHandler，"
+                        "已回退使用 Qwen35ChatHandler（Qwen3-VL 与 Qwen3.5/3.6-VL 同族，"
+                        "绝大多数情况下可正常使用图片识别）。"
                     )
-                try:
-                    chat_handler = Qwen3VLChatHandler(
-                        clip_model_path=mmproj_path, force_reasoning=think, verbose=False
+                    try:
+                        chat_handler = Qwen35ChatHandler(
+                            clip_model_path=mmproj_path, enable_thinking=think, verbose=False
+                        )
+                    except Exception:
+                        chat_handler = Qwen35ChatHandler(
+                            clip_model_path=mmproj_path, verbose=False
+                        )
+                else:
+                    print(
+                        "[小珠光 QwenLoader] 当前 llama-cpp-python 同时缺少 "
+                        "Qwen3VLChatHandler / Qwen35ChatHandler，"
+                        "将尝试使用默认 chat_format（可能图片识别不生效，"
+                        "建议升级 llama-cpp-python 到 0.3.30+）。"
                     )
-                except Exception:
-                    chat_handler = Qwen3VLChatHandler(clip_model_path=mmproj_path, verbose=False)
             elif family == "Gemma4":
                 if Gemma4ChatHandler is None:
-                    raise RuntimeError(
-                        "当前 llama-cpp-python 不支持 Gemma4ChatHandler，请更新 llama-cpp-python到0.3.36+。"
+                    print(
+                        "[小珠光 QwenLoader] 当前 llama-cpp-python 缺少 Gemma4ChatHandler，"
+                        "将尝试使用默认 chat_format（可能图片识别不生效，"
+                        "建议升级 llama-cpp-python 到 0.3.36+）。"
                     )
-                try:
-                    chat_handler = Gemma4ChatHandler(
-                        clip_model_path=mmproj_path, enable_thinking=think, verbose=False
-                    )
-                except Exception:
-                    chat_handler = Gemma4ChatHandler(clip_model_path=mmproj_path, verbose=False)
+                else:
+                    try:
+                        chat_handler = Gemma4ChatHandler(
+                            clip_model_path=mmproj_path, enable_thinking=think, verbose=False
+                        )
+                    except Exception:
+                        chat_handler = Gemma4ChatHandler(
+                            clip_model_path=mmproj_path, verbose=False
+                        )
 
         llama_kwargs = {
             "model_path": model_path,
