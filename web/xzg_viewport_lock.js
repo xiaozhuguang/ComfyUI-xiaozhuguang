@@ -13,9 +13,70 @@ const STORAGE_KEY = "xzg_viewport_lock_slots_v4";
 const POS_KEY = "xzg_viewport_lock_pos_v4";
 const PANEL_ID = "xzg-viewport-lock-btn-v4";
 const EXTRA_KEY = "xzg_viewport_slots";  // graph.extra 中的字段名（随工作流持久化）
+const CONFIG_KEY = "xzg_viewport_lock_config_v4";
 const GOLD = "#dcc85b";
 const GRAY = "#999";
 const SLOT_COUNT = 5;
+
+// 可选速度倍率（循环切换）
+const SPEED_LEVELS = [0.5, 1, 1.5, 2, 3];
+// 可选缓动曲线（按顺序：无→线性→In→Out→InOut→Boing）
+const EASE_OPTIONS = [
+    { key: "none",   label: "None",    fn: t => 1 },
+    { key: "linear", label: "Linear",  fn: t => t },
+    { key: "in",     label: "In",      fn: t => (t <= 0) ? 0 : Math.pow(2, 10 * t - 10) },
+    { key: "out",    label: "Out",     fn: t => (t >= 1) ? 1 : 1 - Math.pow(2, -10 * t) },
+    { key: "inout",  label: "InOut",   fn: t => t < 0.5
+                                        ? (Math.pow(2, 20 * t - 10)) / 2
+                                        : (2 - Math.pow(2, -20 * t + 10)) / 2 },
+    { key: "boing",  label: "Boing",   fn: t => 1 },  // Boing 专用：在 animateViewState 内单独处理分量
+];
+
+// Boing 弹性专用：位移用 easeOutBack（轻度过冲），scale 用过冲回弹
+const EASE_BACK_C1 = 1.70158;
+const EASE_BACK_C3 = EASE_BACK_C1 + 1;
+function easeOutBack(t) {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    const k = t - 1;
+    return 1 + EASE_BACK_C3 * k * k * k + EASE_BACK_C1 * k * k;
+}
+// scale 专用：先过冲到 1+overshoot，再回弹到 1
+function easeBoingScale(t, overshoot = 0.10) {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    // 第一段 (0..0.55) easeOut 冲到 1+overshoot
+    // 第二段 (0.55..1) easeOut 回落到 1
+    if (t < 0.55) {
+        const k = t / 0.55;
+        const e = 1 - Math.pow(1 - k, 3);   // easeOutCubic
+        return e * (1 + overshoot);
+    } else {
+        const k = (t - 0.55) / 0.45;
+        const e = 1 - Math.pow(1 - k, 4);   // easeOutQuart，更干脆的回落
+        return (1 + overshoot) - e * overshoot;
+    }
+}
+
+// 配置加载/保存
+function loadConfig() {
+    let cfg = { speed: 1, ease: "inout" };
+    try {
+        const raw = localStorage.getItem(CONFIG_KEY);
+        if (raw) cfg = Object.assign(cfg, JSON.parse(raw));
+    } catch (e) {}
+    // 校验合法值
+    if (!SPEED_LEVELS.includes(cfg.speed)) cfg.speed = 1;
+    if (!EASE_OPTIONS.some(e => e.key === cfg.ease)) cfg.ease = "inout";
+    return cfg;
+}
+function saveConfig(cfg) {
+    try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (e) {}
+}
+let vpConfig = loadConfig();
+function getEaseFn(key) {
+    return (EASE_OPTIONS.find(e => e.key === key) || EASE_OPTIONS[0]).fn;
+}
 
 function getCanvas() {
     return app.canvas;
@@ -89,35 +150,79 @@ function setViewState(state) {
     if (canvas.graph) canvas.graph.setDirtyCanvas(true, true);
 }
 
-// 带动画的视角过渡（easeOut 缓动）
+// 带动画的视角过渡（支持速度倍率 + 多种缓动曲线 + 无动画）
 let vpAnimTimer = null;
 function animateViewState(target) {
     const canvas = getCanvas();
     if (!canvas || !canvas.ds || !target) return;
     if (vpAnimTimer) cancelAnimationFrame(vpAnimTimer);
 
+    // 无动画模式：直接瞬间设置
+    if (vpConfig.ease === "none") {
+        canvas.ds.scale = target.scale;
+        canvas.ds.offset[0] = target.x;
+        canvas.ds.offset[1] = target.y;
+        canvas.setDirty(true, true);
+        if (canvas.graph) canvas.graph.setDirtyCanvas(true, true);
+        return;
+    }
+
     const start = {
         scale: canvas.ds.scale,
         x: canvas.ds.offset[0],
         y: canvas.ds.offset[1],
     };
-    const duration = 320;  // 动画时长 ms
+    // 根据移动距离动态调整基础时长
+    const dx = target.x - start.x;
+    const dy = target.y - start.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const scaleDiff = Math.abs(target.scale - start.scale);
+    const baseDuration = 200;
+    const extraForDist = Math.min(180, dist / 8);
+    const extraForScale = Math.min(120, scaleDiff * 600);
+    // 应用速度倍率：速度越大，时长越短（3x → 时长 / 3）
+    const speed = vpConfig.speed || 1;
+    const duration = (baseDuration + extraForDist + extraForScale) / speed;
+
     const t0 = performance.now();
 
-    const easeOut = t => 1 - Math.pow(1 - t, 3);  // easeOutCubic
+    // 从配置读取缓动曲线（Boing 模式在 frame 内部分量处理）
+    const isBoing = vpConfig.ease === "boing";
+    const ease = isBoing ? (t => t) : getEaseFn(vpConfig.ease);
 
+    let lastT = -1;
     function frame(now) {
         const t = Math.min(1, (now - t0) / duration);
-        const e = easeOut(t);
-        canvas.ds.scale = start.scale + (target.scale - start.scale) * e;
-        canvas.ds.offset[0] = start.x + (target.x - start.x) * e;
-        canvas.ds.offset[1] = start.y + (target.y - start.y) * e;
+        if (t === lastT && t < 1) {
+            vpAnimTimer = requestAnimationFrame(frame);
+            return;
+        }
+        lastT = t;
+        let eScale, eX, eY;
+        if (isBoing) {
+            // Boing：仅 scale 有弹性（先过冲再回弹）；位移用 InOut 平滑到位，不过冲
+            eScale = easeBoingScale(t, 0.12);
+            const t2 = t;
+            const ePos = t2 < 0.5
+                ? (Math.pow(2, 20 * t2 - 10)) / 2
+                : (2 - Math.pow(2, -20 * t2 + 10)) / 2;
+            eX = ePos;
+            eY = ePos;
+        } else {
+            const e = ease(t);
+            eScale = e;
+            eX = e;
+            eY = e;
+        }
+        canvas.ds.scale = start.scale + (target.scale - start.scale) * eScale;
+        canvas.ds.offset[0] = start.x + (target.x - start.x) * eX;
+        canvas.ds.offset[1] = start.y + (target.y - start.y) * eY;
         canvas.setDirty(true, true);
-        if (canvas.graph) canvas.graph.setDirtyCanvas(true, true);
         if (t < 1) {
             vpAnimTimer = requestAnimationFrame(frame);
         } else {
             vpAnimTimer = null;
+            if (canvas.graph) canvas.graph.setDirtyCanvas(true, true);
         }
     }
     vpAnimTimer = requestAnimationFrame(frame);
@@ -456,6 +561,192 @@ function buildSlotPanel() {
     });
     slotPanel.appendChild(clearBtn);
 
+    // ── 通用下拉列表构造器 ──
+    let openDropdown = null;   // 当前打开的下拉引用
+    function closeOpenDropdown() {
+        if (openDropdown && openDropdown._close) {
+            openDropdown._close();
+            openDropdown = null;
+        }
+    }
+    document.addEventListener("click", (e) => {
+        if (!openDropdown) return;
+        if (!openDropdown.contains(e.target)) closeOpenDropdown();
+    }, true);
+
+    function buildDropdown({ width, options, getCurrent, onSelect, titlePrefix }) {
+        const wrap = document.createElement("div");
+        wrap.style.cssText = `
+            position:relative;height:28px;width:${width}px;flex-shrink:0;
+        `;
+
+        // 按钮
+        const btn = document.createElement("div");
+        btn.style.cssText = `
+            width:100%;height:100%;
+            display:flex;align-items:center;justify-content:space-between;
+            padding:0 8px 0 8px;box-sizing:border-box;
+            cursor:pointer;border-radius:6px;
+            background:rgba(40,40,40,0.6);
+            transition:background 0.15s;
+            font-size:12px;font-family:Arial,sans-serif;user-select:none;
+            gap:4px;
+        `;
+        const label = document.createElement("span");
+        label.style.flex = "1";
+        label.style.textAlign = "center";
+        const arrow = document.createElement("span");
+        arrow.textContent = "▾";
+        arrow.style.cssText = "font-size:10px;color:#888;transition:transform 0.15s;";
+        btn.appendChild(label);
+        btn.appendChild(arrow);
+        wrap.appendChild(btn);
+
+        // 弹层
+        const list = document.createElement("div");
+        list.style.cssText = `
+            position:absolute;left:0;top:calc(100% + 4px);
+            min-width:100%;padding:4px 0;
+            background:rgba(28,28,28,0.98);
+            border:1px solid rgba(220,200,91,0.25);
+            border-radius:6px;z-index:10001;
+            box-shadow:0 4px 14px rgba(0,0,0,0.5);
+            display:none;overflow:hidden;
+        `;
+        wrap.appendChild(list);
+
+        let isOpen = false;
+        function updateBtn() {
+            const cur = getCurrent();
+            const opt = options.find(o => o.value === cur);
+            const text = opt ? opt.label : String(cur);
+            label.textContent = text;
+            label.style.color = GOLD;
+            label.style.fontWeight = "bold";
+            btn.title = titlePrefix + " " + text + "（点击展开）";
+        }
+        function renderList() {
+            list.innerHTML = "";
+            const cur = getCurrent();
+            options.forEach((opt, idx) => {
+                const row = document.createElement("div");
+                const sel = (opt.value === cur);
+                row.style.cssText = `
+                    padding:6px 22px 6px 12px;
+                    font-size:12px;font-family:Arial,sans-serif;
+                    cursor:pointer;white-space:nowrap;
+                    color:${GOLD};
+                    background:${sel ? "rgba(220,200,91,0.12)" : "transparent"};
+                    font-weight:${sel ? "bold" : "normal"};
+                    transition:background 0.1s;
+                    display:flex;align-items:center;gap:8px;
+                `;
+                // 选中勾
+                const check = document.createElement("span");
+                check.textContent = sel ? "✓" : "";
+                check.style.cssText = `width:10px;color:${GOLD};font-size:11px;`;
+                row.appendChild(check);
+                const txt = document.createElement("span");
+                txt.textContent = opt.label;
+                row.appendChild(txt);
+                // 提示
+                if (opt.desc) {
+                    const desc = document.createElement("span");
+                    desc.textContent = opt.desc;
+                    desc.style.cssText = "color:#777;font-size:10px;margin-left:auto;";
+                    row.appendChild(desc);
+                }
+                row.addEventListener("mouseenter", () => {
+                    if (!sel) row.style.background = "rgba(255,255,255,0.06)";
+                });
+                row.addEventListener("mouseleave", () => {
+                    row.style.background = sel ? "rgba(220,200,91,0.12)" : "transparent";
+                });
+                row.addEventListener("click", (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    onSelect(opt.value);
+                    close();
+                });
+                list.appendChild(row);
+            });
+        }
+        function open() {
+            closeOpenDropdown();
+            renderList();
+            list.style.display = "block";
+            arrow.style.transform = "rotate(180deg)";
+            btn.style.background = "rgba(60,60,60,0.85)";
+            isOpen = true;
+            openDropdown = wrap;
+        }
+        function close() {
+            list.style.display = "none";
+            arrow.style.transform = "rotate(0deg)";
+            btn.style.background = "rgba(40,40,40,0.6)";
+            isOpen = false;
+            if (openDropdown === wrap) openDropdown = null;
+        }
+        wrap._close = close;
+        btn.addEventListener("mouseenter", () => {
+            if (!isOpen) btn.style.background = "rgba(60,60,60,0.8)";
+        });
+        btn.addEventListener("mouseleave", () => {
+            if (!isOpen) btn.style.background = "rgba(40,40,40,0.6)";
+        });
+        btn.addEventListener("click", (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (isOpen) close(); else open();
+        });
+        updateBtn();
+        wrap._updateBtn = updateBtn;
+        return wrap;
+    }
+
+    // 速度下拉
+    const speedDropdown = buildDropdown({
+        width: 58,
+        titlePrefix: "动画速度",
+        getCurrent: () => vpConfig.speed,
+        options: SPEED_LEVELS.map((s, i) => ({
+            value: s,
+            label: s === 1 ? "1×" : (s + "×"),
+            isDefault: s === 1,
+            desc: ["慢", "标准", "快", "很快", "极快"][i],
+        })),
+        onSelect: (v) => {
+            vpConfig.speed = v;
+            saveConfig(vpConfig);
+            speedDropdown._updateBtn?.();
+        },
+    });
+    slotPanel.appendChild(speedDropdown);
+
+    // 缓动下拉
+    const easeDropdown = buildDropdown({
+        width: 78,
+        titlePrefix: "缓动曲线",
+        getCurrent: () => vpConfig.ease,
+        options: EASE_OPTIONS.map(e => ({
+            value: e.key,
+            label: e.label,
+            isDefault: e.key === "inout",
+            desc: {
+                out: "快入慢出",
+                inout: "缓入缓出",
+                in: "慢入快出",
+                linear: "匀速",
+                none: "瞬间跳转",
+                boing: "弹性回弹",
+            }[e.key] || "",
+        })),
+        onSelect: (v) => {
+            vpConfig.ease = v;
+            saveConfig(vpConfig);
+            easeDropdown._updateBtn?.();
+        },
+    });
+    slotPanel.appendChild(easeDropdown);
+
     // 使用说明
     const helpBtn = document.createElement("div");
     helpBtn.title = "使用说明";
@@ -516,6 +807,8 @@ function showHelpDialog() {
         <div><span style="color:${GOLD};">左键</span> 槽位（1-5）：恢复对应视角</div>
         <div><span style="color:${GOLD};">键盘 1-5</span>：快捷恢复对应视角</div>
         <div><span style="color:${GOLD};">垃圾桶</span>：清空所有记录</div>
+        <div><span style="color:${GOLD};">速度</span>：切换动画速度（0.5× / 1× / 1.5× / 2× / 3×）</div>
+        <div><span style="color:${GOLD};">缓动</span>：切换缓动曲线（Out / InOut / In / Linear / None / Boing）</div>
         <div style="margin-top:10px;color:#999;font-size:12px;line-height:1.6;">
             · 每个工作流独立记录视角<br>
             · 需保存工作流才会保留记录
