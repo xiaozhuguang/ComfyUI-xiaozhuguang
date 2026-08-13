@@ -347,12 +347,8 @@ function updateMainIcon() {
     const hasAny = slots.some(s => s);
     const iconBox = menuBtn.querySelector(".xzg-vp-icon");
     if (!iconBox) return;
-    // 没有任何记录时，显示金色圆圈+"空"；有记录时显示金色靶心
-    if (hasAny) {
-        iconBox.innerHTML = targetIcon(GOLD, 32);
-    } else {
-        iconBox.innerHTML = circleIcon(GOLD, "空", 32);
-    }
+    // 无记录（新建/未记录过的工作流）或有记录，统一只显示空心圆环（targetIcon），不显示"空"文字
+    iconBox.innerHTML = targetIcon(GOLD, 32);
 }
 
 // 主图标临时显示某个槽位的圆圈（覆盖靶心），与展开槽位同等大小，一段时间后恢复
