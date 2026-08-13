@@ -25,3 +25,7 @@ python_paths.json
 # Log / temp
 _thumb_out2.txt
 custom-node-list.json
+
+# Node.js deps
+node_modules/
+web/node_modules/

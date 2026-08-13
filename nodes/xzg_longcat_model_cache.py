@@ -11,7 +11,11 @@ _cache_lock = threading.Lock()
 _cached_model: Any = None
 _cached_tokenizer: Any = None
 _cached_key: tuple = ()
-_keep_loaded: bool = False
+# 模型卸载模式（三态）：
+#   "full_unload": 完全卸载（del + empty_cache + gc），显存彻底释放
+#   "offload_cpu": offload 到 CPU（保留权重，下次推理 resume 回 GPU，平衡显存与速度）
+#   "keep_gpu":    完全保持 GPU（永不离开 GPU，占显存换最快连续推理速度）
+_unload_mode: str = "offload_cpu"
 _offloaded: bool = False
 
 cancel_event: threading.Event = threading.Event()
@@ -31,20 +35,21 @@ def get_cached_model():
     return _cached_model, _cached_tokenizer, _cached_key
 
 
-def set_cached_model(model: Any, tokenizer: Any, key: tuple, keep_loaded: bool = False):
-    global _cached_model, _cached_tokenizer, _cached_key, _keep_loaded, _offloaded
+def set_cached_model(model: Any, tokenizer: Any, key: tuple, unload_mode: str = "offload_cpu"):
+    global _cached_model, _cached_tokenizer, _cached_key, _unload_mode, _offloaded
     with _cache_lock:
         _cached_model = model
         _cached_tokenizer = tokenizer
         _cached_key = key
-        _keep_loaded = keep_loaded
+        _unload_mode = unload_mode
         _offloaded = False
 
 
-def set_keep_loaded(keep_loaded: bool):
-    global _keep_loaded
+def set_unload_mode(unload_mode: str):
+    """设置模型卸载模式。用于 _get_model 在加载/复用模型时临时保护模型不被误卸载。"""
+    global _unload_mode
     with _cache_lock:
-        _keep_loaded = keep_loaded
+        _unload_mode = unload_mode
 
 
 def set_generating(generating: bool):
@@ -67,21 +72,22 @@ def offload_model_to_cpu() -> None:
         if _offloaded:
             return
 
-        if getattr(_cached_model, "_vbar_active", False) or getattr(
-            _cached_model, "_aimdo_auto", False
-        ):
-            _offloaded = True  # Mark as offloaded so subsequent calls are silent
-            mode = "VBAR" if getattr(_cached_model, "_vbar_active", False) else "aimdo auto"
-            logger.info(f"{mode} active — skipping manual CPU offload")
-            return
-
+        # 原逻辑：检测到 ComfyUI VBAR/aimdo 时跳过手动 offload，交给 ComfyUI 自动管理。
+        # 实际问题：aimdo 只管 ComfyUI 内置 model_management 注册的模型，不管 AudioDiT
+        # 这种外部缓存模型，结果显存始终不释放。改为统一走实际 CPU offload。
         try:
             _cached_model.to("cpu")
             _offloaded = True
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
-            logger.info("Model offloaded to CPU. VRAM freed.")
+            mode = []
+            if getattr(_cached_model, "_vbar_active", False):
+                mode.append("VBAR")
+            if getattr(_cached_model, "_aimdo_auto", False):
+                mode.append("aimdo")
+            mode_str = f" ({'+'.join(mode)} active, but aimdo does not manage AudioDiT)" if mode else ""
+            logger.info(f"Model offloaded to CPU. VRAM freed.{mode_str}")
         except Exception as e:
             logger.warning(f"Failed to offload model: {e}")
 
@@ -102,7 +108,7 @@ def resume_model_to_cuda(device: str = "cuda") -> None:
 
 
 def unload_model():
-    global _cached_model, _cached_tokenizer, _cached_key, _keep_loaded, _offloaded
+    global _cached_model, _cached_tokenizer, _cached_key, _unload_mode, _offloaded
     with _cache_lock:
         if _cached_model is not None:
             logger.info("Unloading LongCat-AudioDiT model from memory...")
@@ -116,7 +122,7 @@ def unload_model():
             _cached_model = None
             _cached_tokenizer = None
             _cached_key = ()
-            _keep_loaded = False
+            _unload_mode = "full_unload"
             _offloaded = False
             gc.collect()
             if torch.cuda.is_available():
@@ -160,10 +166,17 @@ def _hook_comfy_model_management():
             # 生成进行中：完全跳过，防止误卸载/offload 模型
             if _generating:
                 return _original(*args, **kwargs)
-            # Only offload to CPU if keep_model_loaded is True, otherwise full unload
-            if _keep_loaded and _cached_model is not None:
+            if _cached_model is None:
+                return _original(*args, **kwargs)
+            # 三种卸载模式：
+            #   keep_gpu:    不动，模型完全保持在 GPU
+            #   offload_cpu: offload 到 CPU（若已 offloaded 则 skip）
+            #   full_unload: 完全卸载
+            if _unload_mode == "keep_gpu":
+                pass
+            elif _unload_mode == "offload_cpu":
                 offload_model_to_cpu()
-            else:
+            else:  # full_unload 或未知值
                 unload_model()
             return _original(*args, **kwargs)
 

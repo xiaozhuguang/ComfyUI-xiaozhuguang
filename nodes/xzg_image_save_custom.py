@@ -111,7 +111,7 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
 
-    def save_images(self, images, base_dir="", output_path="",
+    def save_images(self, images, base_dir="",
                     filename_custom="xzg-save", add_date_stamp=False, add_time_stamp=False,
                     use_default_output=True, save_format="JPG", reduce_lag=False, mode="Save",
                     prompt=None, extra_pnginfo=None, unique_id=None):
@@ -124,16 +124,12 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
         is_preview_mode = (mode_norm == "Preview")
 
         # ── 默认输出（use_default_output=True）：与原「小珠光图像保存」节点逻辑完全一致
-        #    忽略 base_dir / 自定义前缀 / 日期戳 / 时间戳，文件名固定 xzg-save_序号，保存在 output/ 根目录或 output_path 子目录
+        #    忽略 base_dir / 自定义前缀 / 日期戳 / 时间戳，文件名固定 xzg-save_序号，保存在 output/ 根目录
         if use_default_output:
             # 输出目录（与 XiaozhuguangImageSave 完全一致）
             if not is_preview_mode:
-                if output_path and output_path.strip():
-                    base_dir_full = os.path.join(folder_paths.get_output_directory(), output_path.strip().strip("/\\"))
-                    subfolder = output_path.strip()
-                else:
-                    base_dir_full = folder_paths.get_output_directory()
-                    subfolder = ""
+                base_dir_full = folder_paths.get_output_directory()
+                subfolder = ""
                 os.makedirs(base_dir_full, exist_ok=True)
             resolved_prefix = "xzg-save"
             prefix_sep = "_"  # 原节点使用 _ 分隔
@@ -161,7 +157,6 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
 
             # ── 解析模板 ──
             resolved_base = _resolve_template(base_dir or "", ctx)
-            resolved_path = ""
             # 允许 filename_custom 为空字符串：仅当空且日期戳/时间戳都关时才回退默认 xzg-save
             _custom_raw = filename_custom if filename_custom is not None else ""
             _custom = _resolve_template(_custom_raw, ctx) if _custom_raw else ""
@@ -187,34 +182,22 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                 resolved_prefix = "xzg-save"
             # 清理路径中的非法字符
             resolved_base = _sanitize(resolved_base) if resolved_base else ""
-            resolved_path = _sanitize(resolved_path) if resolved_path else ""
             resolved_prefix = resolved_prefix or "xzg-save"
 
             # ── 输出目录（仅保存模式） ──
-            # 优先级：base_dir（绝对路径）> output_path（相对 ComfyUI output/）> ComfyUI output/
+            # 优先级：base_dir（绝对路径）> base_dir（相对路径，拼到 ComfyUI output/ 下）> ComfyUI output/
             subfolder = ""
             is_absolute_base = False  # 标记是否使用绝对路径（影响前端下载方式）
             if not is_preview_mode:
                 if resolved_base and _is_absolute_path(resolved_base):
-                    # base_dir 是绝对路径：直接作为根目录，output_path 拼接其后
+                    # base_dir 是绝对路径：直接作为根目录
                     is_absolute_base = True
-                    root_dir = resolved_base
-                    if resolved_path:
-                        base_dir_full = os.path.join(root_dir, resolved_path)
-                        subfolder = os.path.join(root_dir, resolved_path)
-                    else:
-                        base_dir_full = root_dir
-                        subfolder = root_dir
-                elif resolved_path:
-                    # 无 base_dir 或 base_dir 是相对路径：拼到 ComfyUI output/ 下
-                    if resolved_base:
-                        # 相对 base_dir 和 output_path 拼接
-                        combined = os.path.join(resolved_base, resolved_path)
-                        base_dir_full = os.path.join(folder_paths.get_output_directory(), combined)
-                        subfolder = combined
-                    else:
-                        base_dir_full = os.path.join(folder_paths.get_output_directory(), resolved_path)
-                        subfolder = resolved_path
+                    base_dir_full = resolved_base
+                    subfolder = resolved_base
+                elif resolved_base:
+                    # base_dir 是相对路径：拼到 ComfyUI output/ 下
+                    base_dir_full = os.path.join(folder_paths.get_output_directory(), resolved_base)
+                    subfolder = resolved_base
                 else:
                     base_dir_full = folder_paths.get_output_directory()
                 os.makedirs(base_dir_full, exist_ok=True)

@@ -82,6 +82,72 @@ const XZGGroup = {
         this.startSyncLoop();
         this.waitForGraph();
 
+        // ── 实例方法 hook（防跨工作流窜流的关键） ──
+        // 视角锁定功能在 app.graph 实例上覆盖了 configure 和 clear，
+        // 导致原型 hook 不被调用。用 tryInjectLoop 在 app.graph 就绪后
+        // 包装实例方法，确保我们的逻辑在最外层执行。
+        const self = this;
+        const tryHookInstance = (retry = 0) => {
+            if (!app?.graph) {
+                if (retry < 60) setTimeout(() => tryHookInstance(retry + 1), 100);
+                return;
+            }
+            if (app.graph._xzgInstanceHooked) return;
+
+            // 包装实例的 clear
+            const origInstClear = app.graph.clear;
+            if (origInstClear) {
+                app.graph.clear = function() {
+                    self._loadingNewWorkflow = true;
+                    for (const gid of Object.keys(self.groups)) self.killGroup(gid);
+                    self.groups = {};
+                    try { localStorage.removeItem('xzg_groups_backup'); } catch(e) {}
+                    try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
+                    self._needRestore = true;
+                    if (!self._pendingGroups) self._pendingGroups = {};
+                    return origInstClear.apply(this, arguments);
+                };
+            }
+
+            // 包装实例的 configure
+            const origInstConfigure = app.graph.configure;
+            if (origInstConfigure) {
+                app.graph.configure = function(d) {
+                    if (self._isPasting || self._isCopying) {
+                        return origInstConfigure.apply(this, arguments);
+                    }
+                    const pendingFromTop = d?._xzgGroups || d?.extra?.xzgGroups || null;
+                    const isCrossWorkflow = !!self._loadingNewWorkflow;
+                    const result = origInstConfigure.apply(this, arguments);
+                    self._loadingNewWorkflow = false;
+                    if (app?.graph !== this) return result;
+                    if (self._isPasting) return result;
+
+                    // 跨工作流切换时清空旧编组，用新工作流数据恢复
+                    if (isCrossWorkflow && pendingFromTop) {
+                        for (const gid of Object.keys(self.groups)) self.killGroup(gid);
+                        self.groups = {};
+                        self._needRestore = true;
+                        self._pendingGroups = pendingFromTop;
+                        if (app.graph._nodes?.length) {
+                            self.restoreGroups();
+                        }
+                    }
+                    return result;
+                };
+            }
+
+            app.graph._xzgInstanceHooked = true;
+            console.log('[小珠光编组] app.graph 实例 clear/configure 钩子已安装');
+        };
+        tryHookInstance();
+
+        // 额外保障：基于 extra 的持久化（新版 ComfyUI 前端兼容）
+        this._setupExtraBasedPersistence();
+
+        // LiteGraph 就绪后安装剪贴板钩子（必须在此处调用，因为需要 LG.LGraphCanvas.prototype）
+        this.setupClipboardHook();
+
         // 注册全局钩子：供箭头工具切换编组边框的 pointer-events
         // 箭头模式激活时，编组边框穿透事件，避免拖动箭头经过编组时被拦截导致"停止"
         window.__xzg_setArrowModeActive = (active) => this.setArrowModeActive(active);
@@ -236,372 +302,6 @@ const XZGGroup = {
                 return origUpdatePositions.apply(self, arguments);
             };
             self._updatePositionsPatched = true;
-        }
-        // 4) 强制覆盖 copyToClipboard / pasteFromClipboard —— 采用「新思路 v2」
-        //    核心：复制时即时捕捉选中节点所归属的完整编组（递归包含判定）存为『快照』，
-        //    粘贴时对新增节点的『包围盒』按相对偏移重建所有编组（先小组再大组，空间判定 nodeIds）。
-        //    彻底避免依赖节点序列化字段 _xzgGroupId / 旧ID比对，跨工作流也100%稳定。
-        if (!self._clipboardHooksV2Patched) {
-            const LG = window.LiteGraph;
-            if (LG && LGraphCanvas && LGraphCanvas.prototype) {
-                // ────────── copyToClipboard（新思路 v2）──────────
-                const origCopy = LGraphCanvas.prototype.copyToClipboard;
-                LGraphCanvas.prototype.copyToClipboard = function(nodes) {
-                    const nodeArr = nodes || (this.selected_nodes ? Object.values(this.selected_nodes) : []);
-
-                    // 先执行原复制（LiteGraph 系统剪贴板写节点数据）
-                    try { origCopy.apply(this, arguments); } catch(e) {}
-
-                    if (!nodeArr?.length) {
-                        self._v2Snapshot = null;
-                        self._clipboardGroups = null;
-                        return;
-                    }
-
-                    // 选中节点集合 & 选中节点包围盒（快照相对参考）
-                    const copiedNodeIds = new Set(nodeArr.map(n => n.id));
-                    const copiedIdStrSet = new Set([...copiedNodeIds].map(v => String(v)));
-                    const hasCopied = (id) => {
-                        if (id == null) return false;
-                        if (copiedNodeIds.has(id)) return true;
-                        const s = String(id);
-                        if (copiedIdStrSet.has(s)) return true;
-                        for (const v of copiedNodeIds) { try { if (v == id) return true; } catch(e) {} }
-                        return false;
-                    };
-                    const selectionBB = (typeof self.calcBounds === 'function')
-                        ? self.calcBounds(nodeArr.map(n => n.id))
-                        : null;
-                    if (!selectionBB) { self._v2Snapshot = null; self._clipboardGroups = null; return; }
-
-                    // 收集完整编组（编组 g 的所有控制节点都被选中）
-                    const snapshot = [];
-                    const gidEntries = Object.entries(self.groups);
-                    for (const [gid, g] of gidEntries) {
-                        if (!g?.bounds) continue;
-                        const allNodeIds = (typeof self._collectAllNodeIdsInGroup === 'function')
-                            ? self._collectAllNodeIdsInGroup(gid)
-                            : (g.nodeIds || []);
-                        if (allNodeIds.length === 0) continue;
-                        if (!allNodeIds.every(id => hasCopied(id))) continue;
-                        // 快照项：相对选中节点包围盒的偏移量 + 尺寸 + 全量属性
-                        const snap = {
-                            area: g.bounds.w * g.bounds.h,
-                            // bounds 相对 selectionBB 的像素偏移（粘贴时映射到新节点包围盒即可）
-                            offsetX: g.bounds.x - selectionBB.x,
-                            offsetY: g.bounds.y - selectionBB.y,
-                            w: g.bounds.w,
-                            h: g.bounds.h,
-                            attrs: JSON.parse(JSON.stringify(g)) // 所有颜色字号 padding 属性
-                        };
-                        delete snap.attrs.bounds;
-                        delete snap.attrs.id;
-                        delete snap.attrs.nodeIds;
-                        snapshot.push(snap);
-                    }
-                    // area 从小到大（先小组、再大组，保证父编组创建时子编组已存在）
-                    snapshot.sort((a, b) => a.area - b.area);
-
-                    self._v2Snapshot = {
-                        version: 2,
-                        createdFromSelectedCount: nodeArr.length,
-                        selectionBB: { ...selectionBB },
-                        sorted: snapshot
-                    };
-                    // 兼容旧逻辑：_clipboardGroups 也填一份（兜底用）
-                    const groupsToCopy = {};
-                    for (const [gid, g] of gidEntries) {
-                        if (!g?.bounds) continue;
-                        const allNodeIds = (typeof self._collectAllNodeIdsInGroup === 'function')
-                            ? self._collectAllNodeIdsInGroup(gid)
-                            : (g.nodeIds || []);
-                        if (allNodeIds.length && allNodeIds.every(id => hasCopied(id))) {
-                            groupsToCopy[gid] = JSON.parse(JSON.stringify(g));
-                        }
-                    }
-                    self._clipboardGroups = Object.keys(groupsToCopy).length ? groupsToCopy : null;
-                    console.log('[小珠光编组 v2] 复制：选中', nodeArr.length, '节点，捕捉完整编组', snapshot.length, '个');
-                };
-
-                // ────────── pasteFromClipboard（新思路 v2）──────────
-                const origPaste = LGraphCanvas.prototype.pasteFromClipboard;
-                LGraphCanvas.prototype.pasteFromClipboard = function() {
-                    const existingIds = new Set();
-                    if (app.graph?._nodes) app.graph._nodes.forEach(n => existingIds.add(n.id));
-
-                    self._isPasting = true;
-                    try { origPaste.apply(this, arguments); }
-                    finally { self._isPasting = false; }
-
-                    // 找出新增节点 T
-                    const T = [];
-                    if (app.graph?._nodes) app.graph._nodes.forEach(n => {
-                        if (!existingIds.has(n.id)) T.push(n);
-                    });
-                    if (!T.length) return;
-
-                    // ── 优先走 v2 快照重建（最稳定）──
-                    const snap = self._v2Snapshot;
-                    if (snap && snap.version === 2 && Array.isArray(snap.sorted) && snap.sorted.length > 0) {
-                        const newNodesBB = (typeof self.calcBounds === 'function')
-                            ? self.calcBounds(T.map(n => n.id))
-                            : null;
-                        if (!newNodesBB) return;
-                        const buildDefaultGroup = (newGid, nodeIds, attrs) => ({
-                            id: newGid,
-                            title: attrs?.title || '右键标题栏设置',
-                            nodeIds: nodeIds,
-                            bypassed: false,
-                            locked: attrs?.locked || false,
-                            hidden: attrs?.hidden || false,
-                            bounds: { x: 0, y: 0, w: 300, h: 200 },
-                            fontSize: attrs?.fontSize || 20,
-                            colorHue: attrs?.colorHue ?? 48,
-                            colorSat: attrs?.colorSat ?? 100,
-                            colorLit: attrs?.colorLit ?? 55,
-                            effect: attrs?.effect || 'none',
-                            effectSpeed: attrs?.effectSpeed || 3,
-                            borderWidth: attrs?.borderWidth || 2,
-                            borderOpacity: attrs?.borderOpacity ?? 1,
-                            headerBgColor: attrs?.headerBgColor || 'rgba(0,0,0,0.4)',
-                            titleColor: attrs?.titleColor || '#FFD700',
-                            fadeEnabled: attrs?.fadeEnabled || false,
-                            fadeOutDuration: attrs?.fadeOutDuration ?? 0,
-                            fadeInDuration: attrs?.fadeInDuration ?? 1000
-                        });
-                        // 先把所有已有编组的 nodeIds 节点上的 _xzgGroupId 清掉（避免污染）
-                        T.forEach(n => {
-                            n._xzgGroupId = null;
-                            n._xzgGroupData = null;
-                            if (n.properties) delete n.properties._xzgGroup;
-                        });
-                        const createdGids = []; // 按排序创建（小 → 大）
-                        for (let idx = 0; idx < snap.sorted.length; idx++) {
-                            const s = snap.sorted[idx];
-                            const bounds = {
-                                x: newNodesBB.x + s.offsetX,
-                                y: newNodesBB.y + s.offsetY,
-                                w: s.w,
-                                h: s.h
-                            };
-                            // 空间判定：T 中 pos 落在 bounds 内（或至少 pos[0]/pos[1] 在 bounds 矩形内）的节点 → 作为该编组 nodeIds
-                            const nodeIds = [];
-                            for (const n of T) {
-                                if (!n?.pos || n.pos.length < 2) continue;
-                                const nx = Number(n.pos[0]) || 0;
-                                const ny = Number(n.pos[1]) || 0;
-                                // 节点左上角在矩形内即归属（小珠光的 calcBounds 也是按节点左上角判）
-                                if (nx >= bounds.x - 0.001 && nx <= bounds.x + bounds.w + 0.001 &&
-                                    ny >= bounds.y - 0.001 && ny <= bounds.y + bounds.h + 0.001) {
-                                    nodeIds.push(n.id);
-                                }
-                            }
-                            if (!nodeIds.length) continue; // 没节点就跳过
-                            const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                            const group = buildDefaultGroup(newGid, nodeIds, s.attrs || {});
-                            group.bounds = bounds;
-                            // 拷贝 attrs 里的自定义属性（覆盖 buildDefaultGroup 里的默认值）
-                            if (s.attrs && typeof s.attrs === 'object') {
-                                for (const k of Object.keys(s.attrs)) {
-                                    if (!(k in group)) continue;
-                                    try { group[k] = JSON.parse(JSON.stringify(s.attrs[k])); } catch(e) {}
-                                }
-                            }
-                            self.groups[newGid] = group;
-                            createdGids.push(newGid);
-                            // 为属于该编组的节点写最新 _xzgGroupId / _xzgGroupData
-                            // 注意：节点可能同时属于多个嵌套编组（父+子），这里写最后一个（面积最大的父编组），
-                            // 但 nodeIds 上小组编组已记录节点，所以 _collectAllNodeIdsInGroup 仍能正确收集
-                            for (const nid of nodeIds) {
-                                const n = T.find(x => String(x.id) === String(nid));
-                                if (!n) continue;
-                                n._xzgGroupId = newGid;
-                                n._xzgGroupData = JSON.parse(JSON.stringify(group));
-                            }
-                        }
-                        if (createdGids.length > 0) {
-                            console.log('[小珠光编组 v2] 粘贴：新增节点', T.length, '，重建编组', createdGids.length, '个', createdGids);
-                            return; // v2 完成即返回，不再走下面旧逻辑
-                        }
-                    }
-                    // ── v2 快照不可用（不存在/0 编组）时兜底走旧逻辑：基于节点标记重建 ──
-                    const newGroupedNodes = T.filter(n => n._xzgGroupId || n._xzgGroupData || n.properties?._xzgGroup);
-                    if (!newGroupedNodes.length) return;
-                    console.log('[小珠光编组 v2-fallback] 粘贴：回退旧标记逻辑，带标记节点', newGroupedNodes.length);
-
-                    const getOldGid = (n) => {
-                        if (n._xzgGroupId) return String(n._xzgGroupId);
-                        const gd = n._xzgGroupData || n.properties?._xzgGroup;
-                        if (gd?.id) return String(gd.id);
-                        return null;
-                    };
-                    const getOldGroupData = (n) => n._xzgGroupData || n.properties?._xzgGroup || null;
-                    const allNewNodes = T;
-                    const groupsMap = {};
-                    const oldGroupDataCache = {};
-                    newGroupedNodes.forEach(n => {
-                        const oldGid = getOldGid(n);
-                        if (!oldGid) return;
-                        if (!groupsMap[oldGid]) groupsMap[oldGid] = [];
-                        groupsMap[oldGid].push(n);
-                        if (!oldGroupDataCache[oldGid]) { const gd = getOldGroupData(n); if (gd) oldGroupDataCache[oldGid] = gd; }
-                    });
-                    const allOldGroups = {};
-                    if (self._clipboardGroups) for (const [oid, og] of Object.entries(self._clipboardGroups)) allOldGroups[oid] = og;
-                    for (const [oid, og] of Object.entries(oldGroupDataCache)) if (!allOldGroups[oid]) allOldGroups[oid] = og;
-
-                    const collectOldExpectedIds = (oldGid, visited) => {
-                        if (!visited) visited = new Set();
-                        if (visited.has(oldGid)) return { ids: [], len: 0 };
-                        visited.add(oldGid);
-                        const og = allOldGroups[oldGid];
-                        if (!og) return { ids: [], len: 0 };
-                        const seen = new Set();
-                        const push = (id) => { if (id == null) return; const s = String(id); if (!seen.has(s)) seen.add(s); };
-                        for (const id of (og.nodeIds || [])) push(id);
-                        const pb = og.bounds; const parentArea = pb ? pb.w * pb.h : 0;
-                        if (parentArea > 0 && pb && typeof self._isFullyContained === 'function') {
-                            for (const [childOldGid, childOg] of Object.entries(allOldGroups)) {
-                                if (childOldGid === oldGid || !childOg?.bounds) continue;
-                                const cb = childOg.bounds; const childArea = cb.w * cb.h;
-                                if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                                    const sub = collectOldExpectedIds(childOldGid, visited);
-                                    for (const id of sub.ids) push(id);
-                                }
-                            }
-                        }
-                        const arr = [...seen]; return { ids: arr, len: arr.length };
-                    };
-                    const collectChildOldGids = (oldGid, visited) => {
-                        if (!visited) visited = new Set();
-                        if (visited.has(oldGid)) return [];
-                        visited.add(oldGid);
-                        const res = [oldGid];
-                        const og = allOldGroups[oldGid];
-                        if (!og?.bounds) return res;
-                        const pb = og.bounds; const parentArea = pb.w * pb.h;
-                        if (parentArea > 0 && typeof self._isFullyContained === 'function') {
-                            for (const [childOldGid, childOg] of Object.entries(allOldGroups)) {
-                                if (childOldGid === oldGid || !childOg?.bounds) continue;
-                                const cb = childOg.bounds; const childArea = cb.w * cb.h;
-                                if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                                    for (const c of collectChildOldGids(childOldGid, visited)) if (!res.includes(c)) res.push(c);
-                                }
-                            }
-                        }
-                        return res;
-                    };
-                    const nodeDirectOldGid = new Map();
-                    for (const n of allNewNodes) { if (n.id != null) { const dir = getOldGid(n); if (dir) nodeDirectOldGid.set(String(n.id), dir); } }
-                    const validOldGids = new Set();
-                    for (const [oldGid, oldGroup] of Object.entries(allOldGroups)) {
-                        if (!oldGroup?.bounds) continue;
-                        const expected = collectOldExpectedIds(oldGid);
-                        if (expected.len === 0) continue;
-                        const relatedOldGids = collectChildOldGids(oldGid);
-                        const actualNodes = allNewNodes.filter(n => {
-                            if (n.id == null) return false;
-                            const d = nodeDirectOldGid.get(String(n.id));
-                            return d && relatedOldGids.includes(d);
-                        });
-                        const og = allOldGroups[oldGid];
-                        const directNodeCount = groupsMap[oldGid] ? groupsMap[oldGid].length : 0;
-                        const ogDirectExpected = (og.nodeIds || []).length;
-                        if (directNodeCount === ogDirectExpected && actualNodes.length >= expected.len) validOldGids.add(oldGid);
-                    }
-                    for (const oldGid of Object.keys(groupsMap)) {
-                        if (!validOldGids.has(oldGid)) { groupsMap[oldGid].forEach(n => self._clearNodeGroupData(n)); delete groupsMap[oldGid]; }
-                    }
-                    if (!Object.keys(groupsMap).length && validOldGids.size === 0) return;
-
-                    const getOldGroup = (oldGid) => {
-                        if (self._clipboardGroups && self._clipboardGroups[oldGid]) return self._clipboardGroups[oldGid];
-                        return oldGroupDataCache[oldGid] || null;
-                    };
-                    const buildDefaultGroup2 = (newGid, nodeIds, oldGroup) => ({
-                        id: newGid, title: oldGroup?.title || '右键标题栏设置', nodeIds, bypassed: false,
-                        locked: oldGroup?.locked || false, hidden: oldGroup?.hidden || false, bounds: { x: 0, y: 0, w: 300, h: 200 },
-                        fontSize: oldGroup?.fontSize || 20, colorHue: oldGroup?.colorHue ?? 48,
-                        colorSat: oldGroup?.colorSat ?? 100, colorLit: oldGroup?.colorLit ?? 55,
-                        effect: oldGroup?.effect || 'none', effectSpeed: oldGroup?.effectSpeed || 3,
-                        borderWidth: oldGroup?.borderWidth || 2, borderOpacity: oldGroup?.borderOpacity ?? 1,
-                        headerBgColor: oldGroup?.headerBgColor || 'rgba(0,0,0,0.4)', titleColor: oldGroup?.titleColor || '#FFD700',
-                        fadeEnabled: oldGroup?.fadeEnabled || false, fadeOutDuration: oldGroup?.fadeOutDuration ?? 0,
-                        fadeInDuration: oldGroup?.fadeInDuration ?? 1000
-                    });
-                    const gidMap = {};
-                    for (const [oldGid, nodes] of Object.entries(groupsMap)) {
-                        const oldGroup = getOldGroup(oldGid);
-                        const newNodeIds = nodes.map(n => n.id);
-                        let newBounds;
-                        if (oldGroup?.bounds) {
-                            const nodeBounds = self.calcBounds(newNodeIds);
-                            if (nodeBounds) {
-                                if (typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number')
-                                    newBounds = { x: nodeBounds.x + oldGroup._offsetX, y: nodeBounds.y + oldGroup._offsetY, w: oldGroup.bounds.w, h: oldGroup.bounds.h };
-                                else
-                                    newBounds = { x: nodeBounds.x - 20, y: nodeBounds.y - 58, w: Math.max(oldGroup.bounds.w, nodeBounds.w + 40), h: Math.max(oldGroup.bounds.h, nodeBounds.h + 78) };
-                            } else newBounds = { ...oldGroup.bounds };
-                        } else newBounds = self.calcBounds(newNodeIds) || { x: 0, y: 0, w: 300, h: 200 };
-                        const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                        gidMap[oldGid] = newGid;
-                        self.groups[newGid] = buildDefaultGroup2(newGid, newNodeIds, oldGroup);
-                        self.groups[newGid].bounds = newBounds;
-                    }
-                    // 旧逻辑第二遍：补父编组
-                    let changed = true; let guard = 0;
-                    while (changed && guard < 10) {
-                        changed = false; guard++;
-                        for (const oldGid of validOldGids) {
-                            if (gidMap[oldGid]) continue;
-                            const oldGroup = allOldGroups[oldGid];
-                            if (!oldGroup?.bounds) continue;
-                            const pb = oldGroup.bounds; const parentArea = pb.w * pb.h;
-                            const childOldGids = [];
-                            for (const [childOldGid, childNewGid] of Object.entries(gidMap)) {
-                                const childOld = allOldGroups[childOldGid];
-                                if (!childOld?.bounds) continue;
-                                const cb = childOld.bounds; const childArea = cb.w * cb.h;
-                                if (childArea < parentArea && self._isFullyContained && self._isFullyContained(pb, cb)) childOldGids.push(childOldGid);
-                            }
-                            if (childOldGids.length === 0) continue;
-                            const allNodeIds = [];
-                            childOldGids.forEach(childOldGid => {
-                                const childNewGid = gidMap[childOldGid];
-                                const childGroup = self.groups[childNewGid];
-                                if (childGroup) childGroup.nodeIds.forEach(nid => {
-                                    if (!allNodeIds.some(x => self._idEq(x, nid))) allNodeIds.push(nid);
-                                });
-                            });
-                            if (allNodeIds.length === 0) continue;
-                            const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                            gidMap[oldGid] = newGid;
-                            self.groups[newGid] = buildDefaultGroup2(newGid, allNodeIds, oldGroup);
-                            const nb = self.calcBounds(allNodeIds);
-                            const nb2 = (nb && typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number')
-                                ? { x: nb.x + Number(oldGroup._offsetX), y: nb.y + Number(oldGroup._offsetY), w: oldGroup.bounds.w, h: oldGroup.bounds.h }
-                                : (nb ? { x: nb.x - 20, y: nb.y - 58, w: Math.max(oldGroup.bounds.w, nb.w + 40), h: Math.max(oldGroup.bounds.h, nb.h + 78) } : { ...pb });
-                            self.groups[newGid].bounds = nb2;
-                            changed = true;
-                        }
-                    }
-                    // 统一刷新节点引用
-                    for (const [oldGid, newGid] of Object.entries(gidMap)) {
-                        const ng = self.groups[newGid];
-                        if (!ng) continue;
-                        ng.nodeIds.forEach(nid => {
-                            const n = app.graph?._nodes?.find(nn => String(nn.id) === String(nid));
-                            if (!n) return;
-                            n._xzgGroupId = newGid;
-                            try { n._xzgGroupData = JSON.parse(JSON.stringify(ng)); } catch(e) {}
-                        });
-                    }
-                    console.log('[小珠光编组 v2-fallback] 粘贴：新创建编组', Object.keys(gidMap).length, gidMap);
-                };
-
-                console.log('[小珠光编组 v2] 剪贴板钩子已安装（新思路：相对节点包围盒快照重建）');
-            }
-            self._clipboardHooksV2Patched = true;
         }
     },
 
@@ -4115,7 +3815,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     LG.LGraph.prototype.serialize = function() {
                         const d = s.apply(this, arguments);
                         // ── 复制/粘贴期间：彻底不写编组到剪贴板（d._xzgGroups / d.extra.xzgGroups / d.nodes[i]._xzgGroupId）
-                        //    防止 LGraph.configure 钩子读到编组数据后直接 restore，造成与 v3 paste 钩子双重创建 = 重复编组 ──
+                        //    防止 LGraph.configure 钩子读到编组数据后触发 restore，造成粘贴后产生死标记 ──
                         if (self._isCopying || self._isPasting) {
                             delete d._xzgGroups;
                             if (d.extra) delete d.extra.xzgGroups;
@@ -4167,8 +3867,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 const c = LG.LGraph.prototype.configure;
                 if (c) {
                     LG.LGraph.prototype.configure = function(d) {
-                        // ── 粘贴/复制期间：最开头就拦截，避免外层paste hook设_isPasting之前就被内层调用触发restore
-                        //    （彻底根除「configure先restore了一遍编组，v3 paste钩子又重建一遍」的双重创建） ──
+                        // ── 粘贴/复制期间：最开头就拦截，避免 configure 钩子读到剪贴板残留数据触发 restore ──
                         if (self._isPasting || self._isCopying) {
                             c.apply(this, arguments);
                             return;
@@ -4179,7 +3878,17 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         // 不应跨工作流生效。加载新工作流时完全信任工作流 JSON 数据，
                         // 防止「在工作流A删除编组 → 切换到工作流B → B中相同gid的编组被跳过 → 永久丢失」
                         try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
+                        // 判断是否跨工作流切换（两条检测路径，任一命中即认为是跨工作流）：
+                        // 1. loadGraphData 钩子设置 _loadingNewWorkflow 标志（官方加载路径）
+                        // 2. graph.clear() 在 configure 之前被调用 → this._nodes 已空
+                        //    （小珠光工作流切换走 graph.clear()+graph.configure()，不走 loadGraphData）
+                        // 同工作流 reconfigure（auto-save/undo）时 _nodes 非空且不经过 loadGraphData
+                        const oldNodeIds = new Set();
+                        if (this._nodes) for (const n of this._nodes) oldNodeIds.add(n.id);
+                        const isCrossWorkflow = !!self._loadingNewWorkflow || oldNodeIds.size === 0;
                         c.apply(this, arguments);
+                        // 消费标志：configure 完成后清除，后续的 reconfigure 不会误判
+                        self._loadingNewWorkflow = false;
                         if (app?.graph !== this) return;
 
                         // 粘贴期间跳过编组恢复，避免破坏粘贴钩子的处理
@@ -4208,10 +3917,21 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         }
 
                         // 将自定义属性合并到序列化数据中，确保 restoreGroups 读取正确值
-                        if (pendingFromTop) {
+                        // ⚠️ 仅在同工作流 reconfigure 时合并（保留用户未保存的视觉编辑）
+                        //    跨工作流切换时完全信任新工作流 JSON 数据，防止旧工作流的
+                        //    标题/颜色/特效窜入新工作流相同 gid 的编组（窜流根因）
+                        if (!isCrossWorkflow && pendingFromTop) {
                             for (const [gid, props] of Object.entries(savedCustomProps)) {
                                 if (pendingFromTop[gid]) {
                                     Object.assign(pendingFromTop[gid], props);
+                                }
+                            }
+                        } else if (isCrossWorkflow) {
+                            console.log('[小珠光编组] 检测到跨工作流切换，跳过旧工作流视觉属性合并（防窜流）');
+                            // 调试：打印 pendingFromTop 的实际内容，确认是否纯净
+                            if (pendingFromTop) {
+                                for (const [gid, g] of Object.entries(pendingFromTop)) {
+                                    console.log(`[小珠光编组][调试] pendingFromTop gid=${gid} title="${g.title}" hue=${g.colorHue}`);
                                 }
                             }
                         }
@@ -4227,602 +3947,46 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     };
                 }
             } catch(e) {}
-        }
 
-        // 额外保障：基于 extra 的持久化（新版 ComfyUI 前端兼容）
-        this._setupExtraBasedPersistence();
-
-        // LiteGraph 就绪后安装剪贴板钩子（必须在此处调用，因为需要 LG.LGraphCanvas.prototype）
-        this.setupClipboardHook();
-    },
-
-    /* ── v3 剪贴板钩子（用户新逻辑：按框选范围 R 收集编组，彻底不依赖 nodeIds 关联）── */
-    _forceApplyV3ClipboardHooks(LG, LGraphCanvas) {
-        // 只要应用成功就不再重复；若 detect 当前已经被多次包装，就先还原为原生（从构造函数原型获取备份）
-        if (this._clipboardHooksV3Applied) return true;
-        const self = this;
-        if (!LGraphCanvas || !LGraphCanvas.prototype) return false;
-        const P = LGraphCanvas.prototype;
-        // 1) 防重复 + 防叠加包装：检测当前是否已经被旧逻辑包装过（含 xzgGroup/collectOldExpectedIds/validOldGids 等特征）
-        //    如果是，还原为 LiteGraph 原生。原生通过 canvas 实例的构造函数未污染版本（或从 window.LiteGraph.LGraphCanvas.prototype 取）
-        const detectOldWrap = (fnStr) => /_xzgGroupId|collectOldExpectedIds|validOldGids|_clipboardGroups/.test(fnStr || '');
-        try {
-            const curCopyStr = (P.copyToClipboard || '').toString();
-            const curPasteStr = (P.pasteFromClipboard || '').toString();
-            const copyWrappedByUs = detectOldWrap(curCopyStr);
-            const pasteWrappedByUs = detectOldWrap(curPasteStr);
-            // 尝试获取原生：window.LiteGraph.LGraphCanvas.prototype 上未被包装的方法
-            let nativeCopy = null;
-            let nativePaste = null;
+            // ── hook LGraph.prototype.clear（防跨工作流窜流的关键） ──
+            // 视角锁定功能在 app.graph 实例上覆盖了 configure，导致上面的原型 configure hook 不被调用。
+            // 但视角锁定没有 hook clear，所以 hook clear 来清空旧编组：
+            // 1. 工作流切换走 graph.clear() + graph.configure()
+            // 2. clear 时清空 self.groups，防止旧编组残留
+            // 3. 设置 _pendingGroups = {} 满足 syncLoop 的 _needRestore && _pendingGroups 条件
+            // 4. configure 后 graph.extra 有新数据，restoreGroups 从 graph.extra 补充（因 groups 已清空）
             try {
-                // 从全局 LG 的原始原型取（如果浏览器有 _xzgNativeBackup 就优先用）
-                if (window._xzgNativeBackup && window._xzgNativeBackup.copyToClipboard) {
-                    nativeCopy = window._xzgNativeBackup.copyToClipboard;
-                    nativePaste = window._xzgNativeBackup.pasteFromClipboard;
-                } else {
-                    if (LG && LG.LGraphCanvas && LG.LGraphCanvas.prototype && !copyWrappedByUs) {
-                        nativeCopy = LG.LGraphCanvas.prototype.copyToClipboard;
-                    }
-                    if (LG && LG.LGraphCanvas && LG.LGraphCanvas.prototype && !pasteWrappedByUs) {
-                        nativePaste = LG.LGraphCanvas.prototype.pasteFromClipboard;
-                    }
-                    if (!nativeCopy && typeof P.copyToClipboard === 'function' && !copyWrappedByUs) nativeCopy = P.copyToClipboard;
-                    if (!nativePaste && typeof P.pasteFromClipboard === 'function' && !pasteWrappedByUs) nativePaste = P.pasteFromClipboard;
-                }
-            } catch(e) {}
-            if (!nativeCopy) nativeCopy = P.copyToClipboard;
-            if (!nativePaste) nativePaste = P.pasteFromClipboard;
-            // 保存一次原生备份（多次调用时都用同一个原生，防止层层包）
-            if (!window._xzgNativeBackup) {
-                window._xzgNativeBackup = { copyToClipboard: nativeCopy, pasteFromClipboard: nativePaste };
-            } else {
-                if (nativeCopy && !window._xzgNativeBackup.copyToClipboard) window._xzgNativeBackup.copyToClipboard = nativeCopy;
-                if (nativePaste && !window._xzgNativeBackup.pasteFromClipboard) window._xzgNativeBackup.pasteFromClipboard = nativePaste;
-            }
-            nativeCopy = window._xzgNativeBackup.copyToClipboard;
-            nativePaste = window._xzgNativeBackup.pasteFromClipboard;
-            // 立即还原 P 为原生（清除旧包装残留）
-            P.copyToClipboard = nativeCopy;
-            P.pasteFromClipboard = nativePaste;
-        } catch(e) {}
-
-        const buildDefaultGroup = (newGid, nodeIds, attrs) => ({
-            id: newGid,
-            title: (attrs && attrs.title) || '右键标题栏设置',
-            nodeIds: nodeIds,
-            bypassed: false,
-            locked: !!(attrs && attrs.locked),
-            hidden: !!(attrs && attrs.hidden),
-            bounds: { x: 0, y: 0, w: 300, h: 200 },
-            fontSize: (attrs && attrs.fontSize) || 20,
-            colorHue: (attrs && typeof attrs.colorHue === 'number') ? attrs.colorHue : 48,
-            colorSat: (attrs && typeof attrs.colorSat === 'number') ? attrs.colorSat : 100,
-            colorLit: (attrs && typeof attrs.colorLit === 'number') ? attrs.colorLit : 55,
-            effect: (attrs && attrs.effect) || 'none',
-            effectSpeed: (attrs && attrs.effectSpeed) || 3,
-            borderWidth: (attrs && attrs.borderWidth) || 2,
-            borderOpacity: (attrs && typeof attrs.borderOpacity === 'number') ? attrs.borderOpacity : 1,
-            headerBgColor: (attrs && attrs.headerBgColor) || 'rgba(0,0,0,0.4)',
-            titleColor: (attrs && attrs.titleColor) || '#FFD700',
-            fadeEnabled: !!(attrs && attrs.fadeEnabled),
-            fadeOutDuration: (attrs && typeof attrs.fadeOutDuration === 'number') ? attrs.fadeOutDuration : 0,
-            fadeInDuration: (attrs && typeof attrs.fadeInDuration === 'number') ? attrs.fadeInDuration : 1000
-        });
-
-        // ═════════════════════════ copyToClipboard v3 ═════════════════════════
-        const origCopy = window._xzgNativeBackup.copyToClipboard;
-        self._v3OrigCopy = origCopy;
-        P.copyToClipboard = function(nodes) {
-            // ── 复制一开始就锁标志（比 origCopy 更早），确保 LGraph.serialize / LGraphNode.serialize
-            //    内层调用时能读到 _isCopying=true，彻底不写编组到剪贴板JSON，从源头避免重复编组 ──
-            self._isCopying = true;
-            try {
-                // 1) 先让 LiteGraph 系统完成原生节点复制（写剪贴板）
-                try { origCopy.apply(this, arguments); } catch(e) {}
-            } finally {
-                self._isCopying = false;
-            }
-
-            const nodeArr = nodes || (this.selected_nodes ? Object.values(this.selected_nodes) : []);
-            if (!nodeArr || !nodeArr.length) {
-                self._v3Snapshot = null;
-                self._clipboardGroups = null;
-                return;
-            }
-
-            // 2) 选中节点集合
-            const copiedNodeIds = new Set(nodeArr.map(n => n.id));
-            const copiedIdStrSet = new Set([...copiedNodeIds].map(v => String(v)));
-            const hasCopied = (id) => {
-                if (id == null) return false;
-                if (copiedNodeIds.has(id)) return true;
-                const s = String(id);
-                if (copiedIdStrSet.has(s)) return true;
-                for (const v of copiedNodeIds) { try { if (v == id) return true; } catch(e) {} }
-                return false;
-            };
-
-            // 3) 计算『框选范围 R』（用户新逻辑核心）
-            //    优先级 1：canvas 上有记录的上次拖框矩形（真实用户从左上到右下的框）
-            //    优先级 2：选中节点的 tight 包围盒 + padding（用户没拖框但已经全选节点）
-            let R = null;
-            try {
-                if (this._lastMarqueeRect && this._lastMarqueeRect.w > 0 && this._lastMarqueeRect.h > 0) {
-                    R = { x: this._lastMarqueeRect.x, y: this._lastMarqueeRect.y, w: this._lastMarqueeRect.w, h: this._lastMarqueeRect.h };
-                }
-            } catch(e) {}
-            if (!R && typeof self.calcBounds === 'function') {
-                const bb = self.calcBounds(nodeArr.map(n => n.id));
-                if (bb) {
-                    const PAD = 6;
-                    R = { x: bb.x - PAD, y: bb.y - PAD, w: bb.w + PAD * 2, h: bb.h + PAD * 2 };
-                }
-            }
-            if (!R) { self._v3Snapshot = null; self._clipboardGroups = null; return; }
-
-            // 4) 按 R 收集编组（用户新逻辑：只要编组 bounds 与 R 相交 / 完全落入）
-            //    附加完整性校验：编组的所有控制节点必须都在选中集中（保证父编组只有在其子组节点全部被选中才被复制）
-            const snapshot = [];
-            const groupsToCopy = {};
-            const gidEntries = Object.entries(self.groups);
-            const intersects = (A, B) => {
-                return (A.x <= B.x + B.w) && (A.x + A.w >= B.x) && (A.y <= B.y + B.h) && (A.y + A.h >= B.y);
-            };
-            const fullyInside = (inner, outer) => {
-                return (inner.x >= outer.x - 0.001) && (inner.y >= outer.y - 0.001)
-                    && (inner.x + inner.w <= outer.x + outer.w + 0.001)
-                    && (inner.y + inner.h <= outer.y + outer.h + 0.001);
-            };
-            for (let i = 0; i < gidEntries.length; i++) {
-                const gid = gidEntries[i][0];
-                const g = gidEntries[i][1];
-                if (!g || !g.bounds) continue;
-                const gb = g.bounds;
-                const inRange = fullyInside(gb, R) || intersects(gb, R);
-                if (!inRange) continue;
-                // 完整性：编组控制的所有节点（含嵌套）必须全部被选中
-                const allNodeIds = (typeof self._collectAllNodeIdsInGroup === 'function')
-                    ? self._collectAllNodeIdsInGroup(gid)
-                    : (g.nodeIds || []);
-                if (allNodeIds.length === 0) continue;
-                if (!allNodeIds.every(id => hasCopied(id))) continue;
-                // 命中：进快照 & 兼容旧 _clipboardGroups
-                const snap = {
-                    area: gb.w * gb.h,
-                    offsetX: gb.x - R.x,
-                    offsetY: gb.y - R.y,
-                    w: gb.w,
-                    h: gb.h,
-                    attrs: JSON.parse(JSON.stringify(g))
-                };
-                delete snap.attrs.bounds;
-                delete snap.attrs.id;
-                delete snap.attrs.nodeIds;
-                snapshot.push(snap);
-                groupsToCopy[gid] = JSON.parse(JSON.stringify(g));
-            }
-            snapshot.sort((a, b) => a.area - b.area);
-            self._v3Snapshot = { version: 3, R: { ...R }, createdFromSelectedCount: nodeArr.length, sorted: snapshot };
-            self._clipboardGroups = Object.keys(groupsToCopy).length ? groupsToCopy : null;
-            console.log('[小珠光编组 v3] 复制：选中', nodeArr.length, '节点, 框选R=', R, ', 收集完整编组', snapshot.length, '个');
-        };
-
-        // ═════════════════════════ pasteFromClipboard v3 ═════════════════════════
-        const origPaste = window._xzgNativeBackup.pasteFromClipboard;
-        self._v3OrigPaste = origPaste;
-        P.pasteFromClipboard = function() {
-            // ── 粘贴一开始就锁标志（必须在 origPaste 之前！因为 origPaste 内部会立即调用
-            //    LGraph.configure / LGraphNode.configure，必须让它们第一时间读到 _isPasting=true） ──
-            self._isPasting = true;
-            try {
-                const existingIds = new Set();
-                if (app.graph && app.graph._nodes) app.graph._nodes.forEach(n => existingIds.add(n.id));
-                try { origPaste.apply(this, arguments); } catch(e) {}
-                const T = [];
-                if (app.graph && app.graph._nodes) {
-                    app.graph._nodes.forEach(n => { if (!existingIds.has(n.id)) T.push(n); });
-                }
-                if (!T.length) return;
-
-                // ═══════ 优先走 v3 快照重建（最稳定）═══════
-            const snap = self._v3Snapshot;
-            if (snap && snap.version === 3 && Array.isArray(snap.sorted) && snap.sorted.length > 0) {
-                const newNodesBB = (typeof self.calcBounds === 'function')
-                    ? self.calcBounds(T.map(n => n.id))
-                    : null;
-                if (!newNodesBB) return;
-                // 把粘贴出来的 T 节点包围盒作为新的 R'，按原 R 的相对偏移重建每个编组 bounds
-                const Rp = {
-                    x: newNodesBB.x - 6,
-                    y: newNodesBB.y - 6,
-                    w: newNodesBB.w + 12,
-                    h: newNodesBB.h + 12
-                };
-                T.forEach(n => {
-                    n._xzgGroupId = null;
-                    n._xzgGroupData = null;
-                    if (n.properties) delete n.properties._xzgGroup;
-                });
-                const createdGids = [];
-                for (let idx = 0; idx < snap.sorted.length; idx++) {
-                    const s = snap.sorted[idx];
-                    const bounds = {
-                        x: Rp.x + s.offsetX,
-                        y: Rp.y + s.offsetY,
-                        w: s.w,
-                        h: s.h
+                const origClear = LG.LGraph.prototype.clear;
+                if (origClear) {
+                    LG.LGraph.prototype.clear = function() {
+                        // 工作流切换/新建：清空旧编组，防止跨工作流窜流
+                        self._loadingNewWorkflow = true;
+                        for (const gid of Object.keys(self.groups)) self.killGroup(gid);
+                        self.groups = {};
+                        try { localStorage.removeItem('xzg_groups_backup'); } catch(e) {}
+                        try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
+                        // 设空对象满足 syncLoop 条件；若 configure hook 也执行会覆盖为真实数据
+                        self._needRestore = true;
+                        if (!self._pendingGroups) self._pendingGroups = {};
+                        return origClear.apply(this, arguments);
                     };
-                    const nodeIds = [];
-                    for (let j = 0; j < T.length; j++) {
-                        const n = T[j];
-                        if (!n || !n.pos || n.pos.length < 2) continue;
-                        const nx = Number(n.pos[0]) || 0;
-                        const ny = Number(n.pos[1]) || 0;
-                        if (nx >= bounds.x - 0.001 && nx <= bounds.x + bounds.w + 0.001
-                         && ny >= bounds.y - 0.001 && ny <= bounds.y + bounds.h + 0.001) {
-                            nodeIds.push(n.id);
-                        }
-                    }
-                    if (!nodeIds.length) continue;
-                    const newGid = 'g_v3_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
-                    const group = buildDefaultGroup(newGid, nodeIds, s.attrs || {});
-                    group.bounds = { ...bounds };
-                    if (s.attrs && typeof s.attrs === 'object') {
-                        for (const k of Object.keys(s.attrs)) {
-                            if (!(k in group)) continue;
-                            try { group[k] = JSON.parse(JSON.stringify(s.attrs[k])); } catch(e) {}
-                        }
-                    }
-                    self.groups[newGid] = group;
-                    createdGids.push(newGid);
-                    for (const nid of nodeIds) {
-                        const n = T.find(x => String(x.id) === String(nid));
-                        if (!n) continue;
-                        n._xzgGroupId = newGid;
-                        try { n._xzgGroupData = JSON.parse(JSON.stringify(group)); } catch(e) {}
-                    }
+                    console.log('[小珠光编组] LGraph.clear 钩子已安装（防跨工作流窜流）');
                 }
-                if (createdGids.length > 0) {
-                    // ═══════ v3 成功后：彻底清除 T 上残留的旧编组标记 + 旧 _clipboardGroups，
-                    // 防止 fallback 或下次别的钩子重复创建 ═══════
-                    T.forEach(n => {
-                        n._xzgGroupId = null;
-                        n._xzgGroupData = null;
-                        if (n.properties) delete n.properties._xzgGroup;
-                    });
-                    // 用刚刚 v3 创建的最新编组，写回一次节点引用（保证其他功能用 _xzgGroupId 不崩）
-                    for (let i = 0; i < createdGids.length; i++) {
-                        const ng = self.groups[createdGids[i]];
-                        if (!ng || !ng.nodeIds) continue;
-                        for (let j = 0; j < ng.nodeIds.length; j++) {
-                            const nid = ng.nodeIds[j];
-                            const n = T.find(x => String(x.id) === String(nid));
-                            if (!n) continue;
-                            n._xzgGroupId = ng.id;
-                            try { n._xzgGroupData = JSON.parse(JSON.stringify(ng)); } catch(e) {}
-                        }
-                    }
-                    // 清掉兜底数据
-                    self._clipboardGroups = null;
-
-                    // ═══════ 保险去重：检测是否有 configure 钩子先 restore 了一遍相同编组（与 v3 刚创建的重复）
-                    // 规则：bounds 几乎相同（<2px） + 所有控制节点都属于 T → 删除重复的，只保留 v3 创建的一份 ═══════
-                    try {
-                        const T_idSet = new Set(T.map(n => String(n.id)));
-                        // 计算 v3 刚创建组的签名（bounds 数字四舍五入到整数 + nodeCount）
-                        const sigOf = (b) => `${Math.round(b.x)|0},${Math.round(b.y)|0},${Math.round(b.w)|0},${Math.round(b.h)|0}`;
-                        const createdSigs = new Map(); // sig -> [createdGid...]
-                        for (let i = 0; i < createdGids.length; i++) {
-                            const cg = self.groups[createdGids[i]];
-                            if (!cg || !cg.bounds) continue;
-                            const s = sigOf(cg.bounds);
-                            if (!createdSigs.has(s)) createdSigs.set(s, []);
-                            createdSigs.get(s).push(cg.id);
-                        }
-                        const toDelete = [];
-                        for (const [otherGid, otherG] of Object.entries(self.groups)) {
-                            if (!otherG || !otherG.bounds) continue;
-                            if (createdGids.indexOf(otherGid) >= 0) continue; // v3 自己创建的跳过
-                            // 判定该组所有节点都来自本次粘贴的 T（不可能是历史编组）
-                            const otherIds = otherG.nodeIds || [];
-                            if (!otherIds.length) continue;
-                            const allFromT = otherIds.every(id => T_idSet.has(String(id)));
-                            if (!allFromT) continue;
-                            // 判定 bounds 与 v3 某组几乎重合（<2px 容差）
-                            const ob = otherG.bounds;
-                            let isDup = false;
-                            for (const [s, cgList] of createdSigs) {
-                                for (let k = 0; k < cgList.length; k++) {
-                                    const cb = self.groups[cgList[k]].bounds;
-                                    if (Math.abs(ob.x - cb.x) < 2 && Math.abs(ob.y - cb.y) < 2
-                                     && Math.abs(ob.w - cb.w) < 2 && Math.abs(ob.h - cb.h) < 2) {
-                                        isDup = true; break;
-                                    }
-                                }
-                                if (isDup) break;
-                            }
-                            if (isDup) toDelete.push(otherGid);
-                        }
-                        for (let i = 0; i < toDelete.length; i++) {
-                            const gid = toDelete[i];
-                            if (self.groups[gid]) {
-                                const ns = self.groups[gid].nodeIds || [];
-                                for (let j = 0; j < ns.length; j++) {
-                                    const nid = ns[j];
-                                    const nn = T.find(x => String(x.id) === String(nid));
-                                    if (nn && nn._xzgGroupId === gid) {
-                                        // 如果节点引用的是旧重复组的 gid，改为 v3 对应的新 gid（按相同 bounds 找）
-                                        const oldb = self.groups[gid].bounds;
-                                        for (let k = 0; k < createdGids.length; k++) {
-                                            const cb = self.groups[createdGids[k]].bounds;
-                                            if (Math.abs(oldb.x - cb.x) < 2 && Math.abs(oldb.y - cb.y) < 2
-                                             && Math.abs(oldb.w - cb.w) < 2 && Math.abs(oldb.h - cb.h) < 2) {
-                                                nn._xzgGroupId = createdGids[k];
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                delete self.groups[gid];
-                            }
-                        }
-                        if (toDelete.length > 0) {
-                            console.log('[小珠光编组 v3] 去重：清理了 configure 钩子先 restore 的重复编组', toDelete.length, toDelete);
-                        }
-                    } catch(e) {}
-
-                    console.log('[小珠光编组 v3] 粘贴：新增节点', T.length, ', 重建编组', createdGids.length, createdGids);
-                    try { self.rebuildAllEls && self.rebuildAllEls(); } catch(e) {}
-                    return;
-                }
-            }
-
-            // ═══════ v3 快照不可用时 → 兜底走旧逻辑（基于节点标记）═══════
-            const newGroupedNodes = T.filter(n => n._xzgGroupId || n._xzgGroupData || (n.properties && n.properties._xzgGroup));
-            if (!newGroupedNodes.length) return;
-            console.log('[小珠光编组 v3-fallback] 粘贴：回退旧标记逻辑，带标记节点', newGroupedNodes.length);
-            const getOldGid = (n) => {
-                if (n._xzgGroupId) return String(n._xzgGroupId);
-                const gd = n._xzgGroupData || (n.properties && n.properties._xzgGroup);
-                if (gd && gd.id) return String(gd.id);
-                return null;
-            };
-            const getOldGroupData = (n) => n._xzgGroupData || (n.properties && n.properties._xzgGroup) || null;
-            const allNewNodes = T;
-            const groupsMap = {};
-            const oldGroupDataCache = {};
-            newGroupedNodes.forEach(n => {
-                const oldGid = getOldGid(n);
-                if (!oldGid) return;
-                if (!groupsMap[oldGid]) groupsMap[oldGid] = [];
-                groupsMap[oldGid].push(n);
-                if (!oldGroupDataCache[oldGid]) {
-                    const gd = getOldGroupData(n);
-                    if (gd) oldGroupDataCache[oldGid] = gd;
-                }
-            });
-            const allOldGroups = {};
-            if (self._clipboardGroups) for (const [oid, og] of Object.entries(self._clipboardGroups)) allOldGroups[oid] = og;
-            for (const [oid, og] of Object.entries(oldGroupDataCache)) if (!allOldGroups[oid]) allOldGroups[oid] = og;
-
-            const collectOldExpectedIds = (oldGid, visited) => {
-                if (!visited) visited = new Set();
-                if (visited.has(oldGid)) return { ids: [], len: 0 };
-                visited.add(oldGid);
-                const og = allOldGroups[oldGid];
-                if (!og) return { ids: [], len: 0 };
-                const seen = new Set();
-                const push = (id) => { if (id == null) return; const s = String(id); if (!seen.has(s)) seen.add(s); };
-                for (const id of (og.nodeIds || [])) push(id);
-                const pb = og.bounds; const parentArea = pb ? pb.w * pb.h : 0;
-                if (parentArea > 0 && pb && typeof self._isFullyContained === 'function') {
-                    for (const [childOldGid, childOg] of Object.entries(allOldGroups)) {
-                        if (childOldGid === oldGid || !childOg || !childOg.bounds) continue;
-                        const cb = childOg.bounds; const childArea = cb.w * cb.h;
-                        if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                            const sub = collectOldExpectedIds(childOldGid, visited);
-                            for (const id of sub.ids) push(id);
-                        }
-                    }
-                }
-                const arr = [...seen]; return { ids: arr, len: arr.length };
-            };
-            const collectChildOldGids = (oldGid, visited) => {
-                if (!visited) visited = new Set();
-                if (visited.has(oldGid)) return [];
-                visited.add(oldGid);
-                const res = [oldGid];
-                const og = allOldGroups[oldGid];
-                if (!og || !og.bounds) return res;
-                const pb = og.bounds; const parentArea = pb.w * pb.h;
-                if (parentArea > 0 && typeof self._isFullyContained === 'function') {
-                    for (const [childOldGid, childOg] of Object.entries(allOldGroups)) {
-                        if (childOldGid === oldGid || !childOg || !childOg.bounds) continue;
-                        const cb = childOg.bounds; const childArea = cb.w * cb.h;
-                        if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                            for (const c of collectChildOldGids(childOldGid, visited)) if (!res.includes(c)) res.push(c);
-                        }
-                    }
-                }
-                return res;
-            };
-            const nodeDirectOldGid = new Map();
-            for (const n of allNewNodes) { if (n.id != null) { const dir = getOldGid(n); if (dir) nodeDirectOldGid.set(String(n.id), dir); } }
-            const validOldGids = new Set();
-            for (const [oldGid, oldGroup] of Object.entries(allOldGroups)) {
-                if (!oldGroup || !oldGroup.bounds) continue;
-                const expected = collectOldExpectedIds(oldGid);
-                if (expected.len === 0) continue;
-                const relatedOldGids = collectChildOldGids(oldGid);
-                const actualNodes = allNewNodes.filter(n => {
-                    if (n.id == null) return false;
-                    const d = nodeDirectOldGid.get(String(n.id));
-                    return d && relatedOldGids.includes(d);
-                });
-                const og = allOldGroups[oldGid];
-                const directNodeCount = groupsMap[oldGid] ? groupsMap[oldGid].length : 0;
-                const ogDirectExpected = (og.nodeIds || []).length;
-                if (directNodeCount === ogDirectExpected && actualNodes.length >= expected.len) validOldGids.add(oldGid);
-            }
-            for (const oldGid of Object.keys(groupsMap)) {
-                if (!validOldGids.has(oldGid)) {
-                    groupsMap[oldGid].forEach(n => { try { self._clearNodeGroupData(n); } catch(e) {} });
-                    delete groupsMap[oldGid];
-                }
-            }
-            if (!Object.keys(groupsMap).length && validOldGids.size === 0) return;
-            const getOldGroup = (oldGid) => {
-                if (self._clipboardGroups && self._clipboardGroups[oldGid]) return self._clipboardGroups[oldGid];
-                return oldGroupDataCache[oldGid] || null;
-            };
-            const gidMap = {};
-            for (const [oldGid, nodes] of Object.entries(groupsMap)) {
-                const oldGroup = getOldGroup(oldGid);
-                const newNodeIds = nodes.map(n => n.id);
-                let newBounds;
-                if (oldGroup && oldGroup.bounds) {
-                    const nodeBounds = (typeof self.calcBounds === 'function') ? self.calcBounds(newNodeIds) : null;
-                    if (nodeBounds) {
-                        if (typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number')
-                            newBounds = { x: nodeBounds.x + oldGroup._offsetX, y: nodeBounds.y + oldGroup._offsetY, w: oldGroup.bounds.w, h: oldGroup.bounds.h };
-                        else
-                            newBounds = { x: nodeBounds.x - 20, y: nodeBounds.y - 58, w: Math.max(oldGroup.bounds.w, nodeBounds.w + 40), h: Math.max(oldGroup.bounds.h, nodeBounds.h + 78) };
-                    } else newBounds = { ...oldGroup.bounds };
-                } else newBounds = (typeof self.calcBounds === 'function' && self.calcBounds(newNodeIds)) || { x: 0, y: 0, w: 300, h: 200 };
-                const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                gidMap[oldGid] = newGid;
-                self.groups[newGid] = buildDefaultGroup(newGid, newNodeIds, oldGroup || {});
-                self.groups[newGid].bounds = newBounds;
-            }
-            // 补父编组
-            let changed = true; let guard = 0;
-            while (changed && guard < 10) {
-                changed = false; guard++;
-                for (const oldGid of validOldGids) {
-                    if (gidMap[oldGid]) continue;
-                    const oldGroup = allOldGroups[oldGid];
-                    if (!oldGroup || !oldGroup.bounds) continue;
-                    const pb = oldGroup.bounds; const parentArea = pb.w * pb.h;
-                    const childOldGids = [];
-                    for (const [childOldGid, childNewGid] of Object.entries(gidMap)) {
-                        const childOld = allOldGroups[childOldGid];
-                        if (!childOld || !childOld.bounds) continue;
-                        const cb = childOld.bounds; const childArea = cb.w * cb.h;
-                        if (childArea < parentArea && self._isFullyContained && self._isFullyContained(pb, cb)) childOldGids.push(childOldGid);
-                    }
-                    if (childOldGids.length === 0) continue;
-                    const allNodeIds = [];
-                    childOldGids.forEach(childOldGid => {
-                        const childNewGid = gidMap[childOldGid];
-                        const childGroup = self.groups[childNewGid];
-                        if (childGroup) childGroup.nodeIds.forEach(nid => {
-                            if (!allNodeIds.some(x => self._idEq(x, nid))) allNodeIds.push(nid);
-                        });
-                    });
-                    if (allNodeIds.length === 0) continue;
-                    const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                    gidMap[oldGid] = newGid;
-                    self.groups[newGid] = buildDefaultGroup(newGid, allNodeIds, oldGroup || {});
-                    const nb = (typeof self.calcBounds === 'function') ? self.calcBounds(allNodeIds) : null;
-                    const nb2 = (nb && typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number')
-                        ? { x: nb.x + Number(oldGroup._offsetX), y: nb.y + Number(oldGroup._offsetY), w: oldGroup.bounds.w, h: oldGroup.bounds.h }
-                        : (nb ? { x: nb.x - 20, y: nb.y - 58, w: Math.max(oldGroup.bounds.w, nb.w + 40), h: Math.max(oldGroup.bounds.h, nb.h + 78) } : { ...pb });
-                    self.groups[newGid].bounds = nb2;
-                    changed = true;
-                }
-            }
-            for (const [oldGid, newGid] of Object.entries(gidMap)) {
-                const ng = self.groups[newGid];
-                if (!ng) continue;
-                ng.nodeIds.forEach(nid => {
-                    const n = app.graph && app.graph._nodes && app.graph._nodes.find(nn => String(nn.id) === String(nid));
-                    if (!n) return;
-                    n._xzgGroupId = newGid;
-                    try { n._xzgGroupData = JSON.parse(JSON.stringify(ng)); } catch(e) {}
-                });
-            }
-            // ═══════ fallback 去重（与 v3 主流程保持一致，防 configure 钩子先 restore 造成重复） ═══════
-            try {
-                const createdFallbackGids = Object.values(gidMap);
-                if (createdFallbackGids.length > 0) {
-                    const T_idSet = new Set(T.map(n => String(n.id)));
-                    const sigOfFb = (b) => `${Math.round(b.x)|0},${Math.round(b.y)|0},${Math.round(b.w)|0},${Math.round(b.h)|0}`;
-                    const createdSigsFb = new Map();
-                    for (let i = 0; i < createdFallbackGids.length; i++) {
-                        const cg = self.groups[createdFallbackGids[i]];
-                        if (!cg || !cg.bounds) continue;
-                        const s = sigOfFb(cg.bounds);
-                        if (!createdSigsFb.has(s)) createdSigsFb.set(s, []);
-                        createdSigsFb.get(s).push(cg.id);
-                    }
-                    const toDelFb = [];
-                    for (const [ogid, og] of Object.entries(self.groups)) {
-                        if (!og || !og.bounds) continue;
-                        if (createdFallbackGids.indexOf(ogid) >= 0) continue;
-                        const oIds = og.nodeIds || [];
-                        if (!oIds.length) continue;
-                        if (!oIds.every(id => T_idSet.has(String(id)))) continue;
-                        const ob = og.bounds; let dup = false;
-                        for (const [s, cgList] of createdSigsFb) {
-                            for (let k = 0; k < cgList.length; k++) {
-                                const cb = self.groups[cgList[k]].bounds;
-                                if (Math.abs(ob.x - cb.x) < 2 && Math.abs(ob.y - cb.y) < 2
-                                 && Math.abs(ob.w - cb.w) < 2 && Math.abs(ob.h - cb.h) < 2) { dup = true; break; }
-                            }
-                            if (dup) break;
-                        }
-                        if (dup) toDelFb.push(ogid);
-                    }
-                    for (let i = 0; i < toDelFb.length; i++) {
-                        const gid = toDelFb[i];
-                        if (self.groups[gid]) {
-                            const ns = self.groups[gid].nodeIds || [];
-                            for (let j = 0; j < ns.length; j++) {
-                                const nid = ns[j];
-                                const nn = T.find(x => String(x.id) === String(nid));
-                                if (nn && nn._xzgGroupId === gid) {
-                                    const oldb = self.groups[gid].bounds;
-                                    for (let k = 0; k < createdFallbackGids.length; k++) {
-                                        const cb = self.groups[createdFallbackGids[k]].bounds;
-                                        if (Math.abs(oldb.x - cb.x) < 2 && Math.abs(oldb.y - cb.y) < 2
-                                         && Math.abs(oldb.w - cb.w) < 2 && Math.abs(oldb.h - cb.h) < 2) {
-                                            nn._xzgGroupId = createdFallbackGids[k];
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            delete self.groups[gid];
-                        }
-                    }
-                    if (toDelFb.length > 0) console.log('[小珠光编组 v3-fallback] 去重：清理了', toDelFb.length, '个重复编组', toDelFb);
-                }
-            } catch(e) {}
-            console.log('[小珠光编组 v3-fallback] 粘贴：新创建编组', Object.keys(gidMap).length, gidMap);
-                try { self.rebuildAllEls && self.rebuildAllEls(); } catch(e) {}
-            } finally {
-                self._isPasting = false;
-            }
-        };
-
-        this._clipboardHooksV3Applied = true;
-        // 同时把其他版本的 hooked 标志全部置 true，防止后续旧代码继续再叠加包装
-        this._clipboardHooked = true;
-        this._clipboardHooksForcedPatched = true;
-        this._clipboardHooksV2Patched = true;
-        console.log('[小珠光编组 v3] 剪贴板钩子已强制应用（按框选范围R收集编组，已清除所有旧包装）');
-        return true;
+            } catch(e) { console.warn('[小珠光编组] LGraph.clear 钩子安装失败:', e); }
+        }
     },
 
-    /* ── 复制/粘贴编组钩子 ── */
+    /* ── 复制/粘贴：仅维护 _isCopying/_isPasting 标志，不再复制编组框 ──
+     * 粘贴后的节点是"干净的孤儿节点"（_xzgGroupId 已在序列化阶段被擦除）。
+     * 编组框需要用户手动 Ctrl+G 重建。
+     * 保留标志是为了在 LGraph.serialize / LGraphNode.serialize 中阻止 _xzgGroupId
+     * 残留标记污染剪贴板 JSON，避免粘贴后产生死标记。 */
     setupClipboardHook() {
         if (this._clipboardHooked) return;
         const self = this;
-        // 获取 LiteGraph 命名空间：优先 window.LiteGraph，否则从 canvas 实例反查构造函数
-        let LG = window.LiteGraph;
         let LGraphCanvas = null;
-        if (LG?.LGraphCanvas?.prototype) {
-            LGraphCanvas = LG.LGraphCanvas;
+        if (window.LiteGraph?.LGraphCanvas?.prototype) {
+            LGraphCanvas = window.LiteGraph.LGraphCanvas;
         } else {
             LGraphCanvas = app.canvas?.constructor;
             if (!LGraphCanvas?.prototype) {
@@ -4831,535 +3995,32 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 return;
             }
         }
-
-        // ══════════════════ v3 优先：立即强制应用 v3 钩子（成功就不再走下面旧版钩子） ══════════════════
-        if (this._forceApplyV3ClipboardHooks(LG, LGraphCanvas)) {
-            this._clipboardHooked = true;
-            return;
-        }
-
         this._clipboardHooked = true;
-        console.log('[小珠光编组] 剪贴板钩子已安装（回退旧版）');
 
-        // 钩住 copyToClipboard：保存被复制节点所属的编组定义
-        const origCopy = LGraphCanvas.prototype.copyToClipboard;
+        const P = LGraphCanvas.prototype;
+        const origCopy = P.copyToClipboard;
         if (origCopy) {
-            LGraphCanvas.prototype.copyToClipboard = function(nodes) {
-                // ── 旧版兜底复制同样锁标志，从源头阻止写编组到剪贴板JSON ──
+            P.copyToClipboard = function() {
                 self._isCopying = true;
                 try {
-                    const nodeArr = nodes || (this.selected_nodes ? Object.values(this.selected_nodes) : []);
-                    if (!nodeArr?.length) {
-                        origCopy.apply(this, arguments);
-                        self._clipboardGroups = null;
-                        return;
-                    }
-                const copiedNodeIds = new Set(nodeArr.map(n => n.id));
-                // 兼容不同 id 类型（number vs string）做快速查找
-                const copiedIdStrSet = new Set([...copiedNodeIds].map(v => String(v)));
-                const hasCopied = (id) => {
-                    if (id == null) return false;
-                    if (copiedNodeIds.has(id)) return true;
-                    const s = String(id);
-                    if (copiedIdStrSet.has(s)) return true;
-                    for (const v of copiedNodeIds) {
-                        try { if (v == id) return true; } catch(e) {}
-                    }
-                    return false;
-                };
-
-                const groupsToCopy = {};
-                const fullyCopiedGroupIds = new Set();
-                // 先按面积从小到大排序，以便父编组在子编组之后处理（先验证子再验证父）
-                const gidEntries = Object.entries(self.groups);
-                gidEntries.sort((a, b) => {
-                    const ba = a[1]?.bounds, bb = b[1]?.bounds;
-                    const aa = ba ? ba.w * ba.h : 0, ab = bb ? bb.w * bb.h : 0;
-                    return aa - ab;
-                });
-                for (const [gid, g] of gidEntries) {
-                    // 注意：用递归收集「该编组控制下的所有节点（自身+子编组节点）」
-                    // 规则：只有当编组的所有控制节点都被选中复制了，才复制这个编组
-                    // 注意：这里我们用 nodeIds 并递归包含子编组节点（基于包含关系）
-                    const allNodeIds = self._collectAllNodeIdsInGroup(gid);
-                    if (allNodeIds.length === 0) continue;
-                    const allNodesCopied = allNodeIds.every(id => hasCopied(id));
-                    if (allNodesCopied) {
-                        const gCopy = JSON.parse(JSON.stringify(g));
-                        // 保存 bounds 相对节点包围盒的偏移量，粘贴时保持原编组框位置/大小
-                        const gNodeIds = self.getGroupNodes(gid).map(n => n.id);
-                        const nb = self.calcBounds(gNodeIds.length ? gNodeIds : allNodeIds);
-                        if (nb && gCopy.bounds) {
-                            gCopy._offsetX = gCopy.bounds.x - nb.x;
-                            gCopy._offsetY = gCopy.bounds.y - nb.y;
-                        }
-                        groupsToCopy[gid] = gCopy;
-                        fullyCopiedGroupIds.add(gid);
-                    }
-                }
-
-                const savedData = [];
-                for (const node of nodeArr) {
-                    const gid = node._xzgGroupId;
-                    if (gid && !fullyCopiedGroupIds.has(gid)) {
-                        savedData.push({
-                            node: node,
-                            groupId: node._xzgGroupId,
-                            groupData: node._xzgGroupData,
-                            propsGroup: node.properties?._xzgGroup
-                        });
-                        node._xzgGroupId = null;
-                        node._xzgGroupData = null;
-                        if (node.properties) {
-                            delete node.properties._xzgGroup;
-                        }
-                    }
-                }
-
-                try {
-                    origCopy.apply(this, arguments);
-                } finally {
-                    for (const item of savedData) {
-                        item.node._xzgGroupId = item.groupId;
-                        item.node._xzgGroupData = item.groupData;
-                        if (item.propsGroup !== undefined && item.node.properties) {
-                            item.node.properties._xzgGroup = item.propsGroup;
-                        }
-                    }
-                }
-
-                self._clipboardGroups = Object.keys(groupsToCopy).length ? groupsToCopy : null;
-                console.log('[小珠光编组] copyToClipboard: 复制了', nodeArr.length, '个节点,', Object.keys(groupsToCopy).length, '个编组');
+                    return origCopy.apply(this, arguments);
                 } finally {
                     self._isCopying = false;
                 }
             };
         }
-
-        // 钩住 pasteFromClipboard：为粘贴的节点创建新编组
-        const origPaste = LGraphCanvas.prototype.pasteFromClipboard;
+        const origPaste = P.pasteFromClipboard;
         if (origPaste) {
-            LGraphCanvas.prototype.pasteFromClipboard = function() {
-                // ── 旧版兜底粘贴同样锁标志，阻止configure钩子过早restore编组 ──
+            P.pasteFromClipboard = function() {
                 self._isPasting = true;
                 try {
-                    // 记录粘贴前已有的节点ID
-                    const existingIds = new Set();
-                    if (app.graph?._nodes) {
-                        app.graph._nodes.forEach(n => existingIds.add(n.id));
-                    }
-
-                // 粘贴期间禁止 configure 钩子破坏编组（标志由最外层 try-finally 统一重置）
-                try {
-                    origPaste.apply(this, arguments);
-                } catch(e) {}
-
-                // 找出粘贴后新增的、带有旧编组数据的节点（检查所有可能的数据源）
-                const newGroupedNodes = [];
-                if (app.graph?._nodes) {
-                    app.graph._nodes.forEach(n => {
-                        if (existingIds.has(n.id)) return;
-                        const hasGroupData = n._xzgGroupId || n._xzgGroupData || n.properties?._xzgGroup;
-                        if (hasGroupData) {
-                            newGroupedNodes.push(n);
-                        }
-                    });
-                }
-                if (!newGroupedNodes.length) return;
-                console.log('[小珠光编组] pasteFromClipboard: 检测到', newGroupedNodes.length, '个带编组数据的新节点');
-
-                // 辅助：获取节点的旧编组ID（从多个数据源）
-                const getOldGid = (n) => {
-                    if (n._xzgGroupId) return String(n._xzgGroupId);
-                    const gdata = n._xzgGroupData || n.properties?._xzgGroup;
-                    if (gdata?.id) return String(gdata.id);
-                    return null;
-                };
-
-                // 辅助：获取节点上的旧编组数据（用于恢复自定义属性）
-                const getOldGroupData = (n) => {
-                    return n._xzgGroupData || n.properties?._xzgGroup || null;
-                };
-
-                // 粘贴节点完整集合（所有新建的节点，不管它是否带编组数据）
-                const allNewNodes = [];
-                if (app.graph?._nodes) {
-                    app.graph._nodes.forEach(n => {
-                        if (existingIds.has(n.id)) return;
-                        allNewNodes.push(n);
-                    });
-                }
-
-                // 按旧编组ID分组（节点通过 _xzgGroupId / _xzgGroupData.id 告诉我们它「属于」哪个旧编组）
-                const groupsMap = {};
-                const oldGroupDataCache = {};
-                newGroupedNodes.forEach(n => {
-                    const oldGid = getOldGid(n);
-                    if (!oldGid) return;
-                    if (!groupsMap[oldGid]) groupsMap[oldGid] = [];
-                    groupsMap[oldGid].push(n);
-                    // 缓存该旧编组的数据（用于没有 _clipboardGroups 的跨标签场景）
-                    if (!oldGroupDataCache[oldGid]) {
-                        const gdata = getOldGroupData(n);
-                        if (gdata) oldGroupDataCache[oldGid] = gdata;
-                    }
-                });
-
-                // 合并所有旧编组数据源
-                const allOldGroups = {};
-                if (self._clipboardGroups) {
-                    for (const [oid, og] of Object.entries(self._clipboardGroups)) {
-                        allOldGroups[oid] = og;
-                    }
-                }
-                for (const [oid, og] of Object.entries(oldGroupDataCache)) {
-                    if (!allOldGroups[oid]) allOldGroups[oid] = og;
-                }
-
-                // ── 严格检查：只有当「旧编组定义里期望拥有的节点数（递归含子编组）」
-                // == 「实际粘贴的新节点中，带该oldGid或其递归子oldGid标记的节点数」时，才算完整
-                //
-                // 辅助1：收集旧编组 oldGid 递归期望的全部 nodeIds 数量（注意：是「旧 nodeIds 列表去重后的长度」，
-                // 不是字符串比对，因为粘贴后 id 变了，但编组定义中 nodeIds 的长度不变）
-                const collectOldExpectedIds = (oldGid, visited = null) => {
-                    if (!visited) visited = new Set();
-                    if (visited.has(oldGid)) return { ids: [], len: 0 };
-                    visited.add(oldGid);
-                    const og = allOldGroups[oldGid];
-                    if (!og) return { ids: [], len: 0 };
-                    const seen = new Set();
-                    const push = (id) => {
-                        if (id == null) return;
-                        const s = String(id);
-                        if (seen.has(s)) return;
-                        seen.add(s);
-                    };
-                    for (const id of (og.nodeIds || [])) push(id);
-                    // 子编组
-                    const pb = og.bounds;
-                    const parentArea = pb ? pb.w * pb.h : 0;
-                    if (parentArea > 0 && pb) {
-                        for (const [childOldGid, childOg] of Object.entries(allOldGroups)) {
-                            if (childOldGid === oldGid || !childOg?.bounds) continue;
-                            const cb = childOg.bounds;
-                            const childArea = cb.w * cb.h;
-                            if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                                const sub = collectOldExpectedIds(childOldGid, visited);
-                                for (const id of sub.ids) push(id);
-                            }
-                        }
-                    }
-                    const arr = [...seen];
-                    return { ids: arr, len: arr.length };
-                };
-                // 辅助2：收集 oldGid 及其所有递归子 oldGid（用于在新节点中聚合归属节点）
-                const collectChildOldGids = (oldGid, visited = null) => {
-                    if (!visited) visited = new Set();
-                    if (visited.has(oldGid)) return [];
-                    visited.add(oldGid);
-                    const res = [oldGid];
-                    const og = allOldGroups[oldGid];
-                    if (!og?.bounds) return res;
-                    const pb = og.bounds;
-                    const parentArea = pb.w * pb.h;
-                    if (parentArea > 0) {
-                        for (const [childOldGid, childOg] of Object.entries(allOldGroups)) {
-                            if (childOldGid === oldGid || !childOg?.bounds) continue;
-                            const cb = childOg.bounds;
-                            const childArea = cb.w * cb.h;
-                            if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                                for (const c of collectChildOldGids(childOldGid, visited)) {
-                                    if (!res.includes(c)) res.push(c);
-                                }
-                            }
-                        }
-                    }
-                    return res;
-                };
-                // 构建：每个新节点 → 所有它携带的 oldGid 标签
-                const nodeOldGids = new Map(); // newNode.id => Set(oldGidStr)
-                // 注意：节点的直接标记是单个 oldGid（_xzgGroupId），但为了父编组检测，
-                // 需要把「节点实际所在的子编组 oldGid，加上其所有父编组 oldGid」都关联上。
-                // 简化做法：先直接用节点带的 oldGid，后续校验父编组时用子 oldGids 集合反查
-                const nodeDirectOldGid = new Map(); // newNode.id -> oldGid string (direct)
-                for (const n of allNewNodes) {
-                    if (n.id == null) continue;
-                    const dir = getOldGid(n);
-                    if (dir) nodeDirectOldGid.set(String(n.id), dir);
-                }
-
-                const validOldGids = new Set();
-                const oldGidExpectedCountMemo = new Map();
-                for (const [oldGid, oldGroup] of Object.entries(allOldGroups)) {
-                    if (!oldGroup?.bounds) continue;
-                    // 期望节点数（旧编组定义的 nodeIds + 嵌套子编组 nodeIds 去重后长度）
-                    const expected = collectOldExpectedIds(oldGid);
-                    oldGidExpectedCountMemo.set(oldGid, expected.len);
-                    if (expected.len === 0) continue;
-                    // 实际粘贴的节点数：「所有属于该oldGid或其子oldGid的直接带标节点」
-                    const relatedOldGids = collectChildOldGids(oldGid); // 含自身
-                    const actualNodes = allNewNodes.filter(n => {
-                        if (n.id == null) return false;
-                        const d = nodeDirectOldGid.get(String(n.id));
-                        return d && relatedOldGids.includes(d);
-                    });
-                    // 认为完整的条件：实际节点数量 >= 期望（可能有重复节点？）；且至少包含 groupsMap[oldGid]
-                    // 或者最保险：actualNodes.length === expected.len 并且 groupsMap[oldGid] 长度 === og.nodeIds.length
-                    const og = allOldGroups[oldGid];
-                    const directNodeCount = groupsMap[oldGid] ? groupsMap[oldGid].length : 0;
-                    const ogDirectExpected = (og.nodeIds || []).length;
-                    if (directNodeCount === ogDirectExpected && actualNodes.length >= expected.len) {
-                        validOldGids.add(oldGid);
-                    }
-                }
-                // 仅保留通过验证的旧编组（groupsMap 中不完整的被清除节点残留）
-                for (const oldGid of Object.keys(groupsMap)) {
-                    if (!validOldGids.has(oldGid)) {
-                        groupsMap[oldGid].forEach(n => self._clearNodeGroupData(n));
-                        delete groupsMap[oldGid];
-                    }
-                }
-                if (!Object.keys(groupsMap).length && validOldGids.size === 0) return;
-
-                // 获取旧编组的完整数据（优先用 _clipboardGroups，其次用节点上缓存的数据）
-                const getOldGroup = (oldGid) => {
-                    if (self._clipboardGroups && self._clipboardGroups[oldGid]) {
-                        return self._clipboardGroups[oldGid];
-                    }
-                    return oldGroupDataCache[oldGid] || null;
-                };
-
-                // 辅助：构建默认编组数据
-                const buildDefaultGroup = (newGid, nodeIds, oldGroup) => ({
-                    id: newGid,
-                    title: oldGroup?.title || '右键标题栏设置',
-                    nodeIds: nodeIds,
-                    bypassed: false,
-                    locked: oldGroup?.locked || false,
-                    hidden: oldGroup?.hidden || false,
-                    bounds: { x: 0, y: 0, w: 300, h: 200 },
-                    fontSize: oldGroup?.fontSize || 20,
-                    colorHue: oldGroup?.colorHue ?? 48,
-                    colorSat: oldGroup?.colorSat ?? 100,
-                    colorLit: oldGroup?.colorLit ?? 55,
-                    effect: oldGroup?.effect || 'none',
-                    effectSpeed: oldGroup?.effectSpeed || 3,
-                    borderWidth: oldGroup?.borderWidth || 2,
-                    borderOpacity: oldGroup?.borderOpacity ?? 1,
-                    headerBgColor: oldGroup?.headerBgColor || 'rgba(0,0,0,0.4)',
-                    titleColor: oldGroup?.titleColor || '#FFD700',
-                    fadeEnabled: oldGroup?.fadeEnabled || false,
-                    fadeOutDuration: oldGroup?.fadeOutDuration ?? 0,
-                    fadeInDuration: oldGroup?.fadeInDuration ?? 1000
-                });
-
-                // 旧编组ID -> 新编组ID 的映射（用于恢复嵌套关系）
-                const gidMap = {};
-                // 第一遍：根据节点旧编组ID创建直接的新编组
-                for (const [oldGid, nodes] of Object.entries(groupsMap)) {
-                    const oldGroup = getOldGroup(oldGid);
-                    const newNodeIds = nodes.map(n => n.id);
-                    let newBounds;
-
-                    if (oldGroup?.bounds) {
-                        const nodeBounds = self.calcBounds(newNodeIds);
-                        if (nodeBounds) {
-                            if (typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number') {
-                                newBounds = {
-                                    x: nodeBounds.x + oldGroup._offsetX,
-                                    y: nodeBounds.y + oldGroup._offsetY,
-                                    w: oldGroup.bounds.w,
-                                    h: oldGroup.bounds.h
-                                };
-                            } else {
-                                newBounds = {
-                                    x: nodeBounds.x - 20,
-                                    y: nodeBounds.y - 58,
-                                    w: Math.max(oldGroup.bounds.w, nodeBounds.w + 40),
-                                    h: Math.max(oldGroup.bounds.h, nodeBounds.h + 78)
-                                };
-                            }
-                        } else {
-                            newBounds = { ...oldGroup.bounds };
-                        }
-                    } else {
-                        newBounds = self.calcBounds(newNodeIds);
-                        if (!newBounds) {
-                            const firstNode = nodes.find(n => n?.pos);
-                            if (firstNode) {
-                                const nw = firstNode.size?.[0] || 200, nh = firstNode.size?.[1] || 100;
-                                const p = 20, topPad = 58;
-                                newBounds = {
-                                    x: firstNode.pos[0] - p,
-                                    y: firstNode.pos[1] - topPad,
-                                    w: nw + p * 2,
-                                    h: nh + topPad + p
-                                };
-                            } else {
-                                newBounds = { x: 0, y: 0, w: 300, h: 200 };
-                            }
-                        }
-                    }
-
-                    const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                    gidMap[oldGid] = newGid;
-                    self.groups[newGid] = buildDefaultGroup(newGid, newNodeIds, oldGroup);
-                    self.groups[newGid].bounds = newBounds;
-
-                    // 暂时不清除旧数据，等所有编组创建完再统一更新节点引用
-                    nodes.forEach(n => {
-                        n._xzgNewGid = newGid;
-                    });
-                }
-
-                // 第二遍：补充创建没有直接节点的父编组（所有节点都在子编组中）
-                // 注意：只处理 validOldGids 里通过完整性检查的旧编组（避免创建不完整的父编组）
-                // 循环创建父编组，直到没有新的父编组被识别（支持多层嵌套）
-                let changed = true;
-                let guard = 0;
-                while (changed && guard < 10) {
-                    changed = false;
-                    guard++;
-                    for (const oldGid of validOldGids) {
-                        if (gidMap[oldGid]) continue; // 已创建
-                        const oldGroup = allOldGroups[oldGid];
-                        if (!oldGroup?.bounds) continue;
-                        const pb = oldGroup.bounds;
-                        const parentArea = pb.w * pb.h;
-
-                        // 找出这个旧编组包含的、已创建的子编组
-                        const childOldGids = [];
-                        for (const [childOldGid, childNewGid] of Object.entries(gidMap)) {
-                            const childOld = allOldGroups[childOldGid];
-                            if (!childOld?.bounds) continue;
-                            const cb = childOld.bounds;
-                            const childArea = cb.w * cb.h;
-                            if (childArea < parentArea && self._isFullyContained(pb, cb)) {
-                                childOldGids.push(childOldGid);
-                            }
-                        }
-                        if (childOldGids.length === 0) continue;
-
-                        // 收集所有子编组的节点
-                        const allNodeIds = [];
-                        childOldGids.forEach(childOldGid => {
-                            const childNewGid = gidMap[childOldGid];
-                            const childGroup = self.groups[childNewGid];
-                            if (childGroup) {
-                                childGroup.nodeIds.forEach(nid => {
-                                    if (!allNodeIds.some(x => self._idEq(x, nid))) allNodeIds.push(nid);
-                                });
-                            }
-                        });
-                        if (allNodeIds.length === 0) continue;
-
-                        const newGid = 'g_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
-                        gidMap[oldGid] = newGid;
-                        self.groups[newGid] = buildDefaultGroup(newGid, allNodeIds, oldGroup);
-                        changed = true;
-                    }
-                }
-
-                // 第三遍：基于旧bounds恢复嵌套父子关系（合并子编组节点到父编组）
-                for (const [parentOldGid, parentNewGid] of Object.entries(gidMap)) {
-                    const parentGroup = self.groups[parentNewGid];
-                    const parentOld = allOldGroups[parentOldGid];
-                    if (!parentGroup || !parentOld?.bounds) continue;
-                    const pb = parentOld.bounds;
-                    const parentArea = pb.w * pb.h;
-
-                    for (const [childOldGid, childNewGid] of Object.entries(gidMap)) {
-                        if (childOldGid === parentOldGid) continue;
-                        const childOld = allOldGroups[childOldGid];
-                        if (!childOld?.bounds) continue;
-                        const cb = childOld.bounds;
-                        const childArea = cb.w * cb.h;
-                        if (childArea >= parentArea) continue;
-                        if (self._isFullyContained(pb, cb)) {
-                            const childGroup = self.groups[childNewGid];
-                            if (!childGroup) continue;
-                            childGroup.nodeIds.forEach(nid => {
-                                if (!parentGroup.nodeIds.some(x => self._idEq(x, nid))) {
-                                    parentGroup.nodeIds.push(nid);
-                                }
-                            });
-                        }
-                    }
-                }
-
-                // 第四遍：更新编组bounds（有旧编组数据则保持相对偏移和原大小；无旧数据则重新计算）
-                const newGidList = Object.values(gidMap);
-                for (const newGid of newGidList) {
-                    const g = self.groups[newGid];
-                    if (!g) continue;
-                    const nodeBounds = self.calcBounds(g.nodeIds);
-                    if (nodeBounds) {
-                        const oldGid = Object.keys(gidMap).find(k => gidMap[k] === newGid);
-                        const oldGroup = oldGid ? allOldGroups[oldGid] : null;
-                        if (oldGroup?.bounds) {
-                            if (typeof oldGroup._offsetX === 'number' && typeof oldGroup._offsetY === 'number') {
-                                g.bounds = {
-                                    x: nodeBounds.x + oldGroup._offsetX,
-                                    y: nodeBounds.y + oldGroup._offsetY,
-                                    w: oldGroup.bounds.w,
-                                    h: oldGroup.bounds.h
-                                };
-                            } else {
-                                g.bounds = {
-                                    x: nodeBounds.x - 20,
-                                    y: nodeBounds.y - 58,
-                                    w: Math.max(oldGroup.bounds.w, nodeBounds.w + 40),
-                                    h: Math.max(oldGroup.bounds.h, nodeBounds.h + 78)
-                                };
-                            }
-                        } else {
-                            g.bounds = nodeBounds;
-                        }
-                    }
-                    self.renderGroup(newGid);
-                }
-
-                // 第五遍：统一更新所有新节点的编组引用（彻底清理旧数据，设置新引用）
-                // 同时更新 _xzgGroupData 为新编组数据，确保后续复制时序列化完整
-                const newGroupSerialCache = {};
-                const getGroupSerialData = (gid) => {
-                    if (newGroupSerialCache[gid]) return newGroupSerialCache[gid];
-                    const g = self.groups[gid];
-                    if (!g) return null;
-                    const data = {
-                        id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed,
-                        locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize,
-                        colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit,
-                        effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth,
-                        borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, titleColor: g.titleColor,
-                        fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000
-                    };
-                    newGroupSerialCache[gid] = data;
-                    return data;
-                };
-                newGroupedNodes.forEach(n => {
-                    const newGid = n._xzgNewGid;
-                    self._clearNodeGroupData(n);
-                    if (newGid && self.groups[newGid]) {
-                        n._xzgGroupId = newGid;
-                        n._xzgGroupData = getGroupSerialData(newGid);
-                    }
-                    delete n._xzgNewGid;
-                });
-
-                // 阻止 restoreGroups 用旧ID覆盖新创建的编组
-                self._needRestore = false;
-                self._pendingGroups = null;
-
-                self.syncGroupsToExtra();
-                app.graph?.setDirtyCanvas?.(true, true);
-                app.graph?.change?.();
-                console.log('[小珠光编组] 粘贴完成，创建了', newGidList.length, '个新编组');
+                    return origPaste.apply(this, arguments);
                 } finally {
                     self._isPasting = false;
                 }
             };
         }
+        console.log('[小珠光编组] 剪贴板钩子已安装（精简版：仅维护标志，不复制编组框）');
     },
 
     /* ── 基于 extra 的持久化（兼容新版 ComfyUI 前端） ── */
@@ -5409,6 +4070,12 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             }
             const origLoad = app.loadGraphData;
             app.loadGraphData = async function(data, ...args) {
+                // 标记正在加载新工作流（loadGraphData 总是在 configure 之前被调用）
+                // 用于 LGraph.configure 钩子区分「跨工作流加载」与「同工作流 reconfigure」
+                self._loadingNewWorkflow = true;
+                // 清空全局 localStorage backup：xzg_groups_backup 是全局的，
+                // 加载新工作流时必须清除，防止 restoreGroups 兜底用旧工作流编组数据污染新工作流
+                try { localStorage.removeItem('xzg_groups_backup'); } catch(e) {}
                 // 从加载的数据中提取编组信息
                 const groups = data?.extra?.xzgGroups || data?._xzgGroups || null;
                 if (groups && Object.keys(groups).length) {

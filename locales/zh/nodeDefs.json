@@ -20,7 +20,7 @@
       "_xz_settings": { "name": "设置(JSON)" }
     },
     "outputs": {
-      "0": { "name": "数值" }
+      "0": { "name": "*" }
     }
   },
   "XiaozhuguangBooleanSelector": {

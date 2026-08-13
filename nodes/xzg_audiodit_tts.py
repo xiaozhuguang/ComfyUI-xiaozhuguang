@@ -47,7 +47,7 @@ from .xzg_longcat_model_cache import (
     resume_model_to_cuda,
     set_cached_model,
     set_generating,
-    set_keep_loaded,
+    set_unload_mode,
     unload_model,
 )
 
@@ -78,6 +78,19 @@ except Exception:
     _V3 = False
 
 MAX_SPEAKERS = 10
+
+# 模型卸载模式三选一：
+#   full_unload: 完全卸载（del + empty_cache），显存彻底释放，下次推理重新加载
+#   offload_cpu: offload 到 CPU（保留权重），显存释放但模型仍在内存，下次推理 resume 回 GPU
+#   keep_gpu:    完全保持 GPU，永不离开，占显存换最快连续推理速度
+UNLOAD_MODES = ["full_unload", "offload_cpu", "keep_gpu"]
+UNLOAD_MODE_DEFAULT = "offload_cpu"
+UNLOAD_MODE_TOOLTIP = (
+    "模型卸载模式：\n"
+    "  full_unload: 完全卸载（彻底释放显存，下次推理重新加载，最慢但显存最干净）\n"
+    "  offload_cpu: offload 到 CPU（释放显存但保留权重，下次推理快速 resume，平衡）\n"
+    "  keep_gpu:    完全保持 GPU（永不离开 GPU，占显存换最快连续推理速度）"
+)
 
 
 # ---------------- 共享辅助函数 ----------------
@@ -137,6 +150,7 @@ def _split_text_into_segments(
     available_duration: float,
     sr: int,
     full_hop: int,
+    duration_multiplier: float = 1.0,
 ) -> list[tuple[str, int]]:
     """
     将长文本按标点切分为多个小段，每段时长不超过 available_duration。
@@ -147,6 +161,9 @@ def _split_text_into_segments(
     2. 单句超长则按逗号/冒号切分
     3. 仍超长则按字数硬切
     4. 将短句合批，尽量填满 available_duration
+
+    duration_multiplier: 时长放大系数（用于音色克隆时匹配参考音频语速）。
+        每段的 dur_frames 会乘以此系数，让模型生成更长的音频（语速更慢）。
     """
     # 安全余量系数：所有分段只用 85% 可用时长的字数，留 15% 防止吞字
     SAFE_FACTOR = 0.85
@@ -187,7 +204,7 @@ def _split_text_into_segments(
     for sent in sentences:
         sent_dur = approx_duration_from_text(sent, max_duration=safe_duration)
         if cur_dur + sent_dur > safe_duration and cur_text:
-            dur_frames = max(1, math.ceil(cur_dur * sr / full_hop))
+            dur_frames = max(1, math.ceil(cur_dur * sr / full_hop * duration_multiplier))
             segments.append((cur_text, dur_frames))
             cur_text = sent
             cur_dur = sent_dur
@@ -196,7 +213,7 @@ def _split_text_into_segments(
             cur_dur += sent_dur
 
     if cur_text:
-        dur_frames = max(1, math.ceil(cur_dur * sr / full_hop))
+        dur_frames = max(1, math.ceil(cur_dur * sr / full_hop * duration_multiplier))
         segments.append((cur_text, dur_frames))
 
     return segments
@@ -285,9 +302,9 @@ class XzgAudioDiTTTS:
                     "INT", {"default": 0, "min": 0, "max": 2**31 - 1,
                             "tooltip": "随机种子。0 = 每次随机。"},
                 ),
-                "keep_model_loaded": (
-                    "BOOLEAN", {"default": True,
-                                "tooltip": "保持模型常驻；生成后自动把权重踢回 CPU 省显存，下次推理再切 GPU。"},
+                "unload_mode": (
+                    UNLOAD_MODES,
+                    {"default": UNLOAD_MODE_DEFAULT, "tooltip": UNLOAD_MODE_TOOLTIP},
                 ),
                 "pause_between_segments": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.1,
                     "tooltip": "自动分句时各段之间的静音秒数。长文本分句拼接时使用。"}),
@@ -311,7 +328,7 @@ class XzgAudioDiTTTS:
         dtype: str,
         attention: str,
         seed: int,
-        keep_model_loaded: bool,
+        unload_mode: str,
         pause_between_segments: float = 0.3,
     ) -> Tuple[dict]:
         cancel_event.clear()
@@ -321,7 +338,7 @@ class XzgAudioDiTTTS:
             raise ValueError("[小珠光AudioDiT] 文本不能为空。")
 
         model, tokenizer = self._get_model(
-            model_path, tokenizer, device, dtype, attention, keep_model_loaded
+            model_path, tokenizer, device, dtype, attention, unload_mode
         )
 
         sr = model.config.sampling_rate
@@ -384,25 +401,27 @@ class XzgAudioDiTTTS:
             pbar.update_absolute(total_segments + 1, total_segments + 1)
 
         try:
-            if not keep_model_loaded:
+            # 根据卸载模式处理：full_unload 完全卸载，offload_cpu 释放到 CPU，keep_gpu 保持 GPU
+            if unload_mode == "full_unload":
                 unload_model()
-            else:
+            elif unload_mode == "offload_cpu":
                 offload_model_to_cpu()
+            # keep_gpu: 不动，模型完全保持在 GPU
         except Exception:
             pass
         finally:
             set_generating(False)
         return (result,)
 
-    def _get_model(self, model_path, tokenizer, device, dtype, attention, keep_loaded=False):
+    def _get_model(self, model_path, tokenizer, device, dtype, attention, unload_mode="offload_cpu"):
         key = get_cache_key(model_path, device, dtype, attention, tokenizer)
         cached_model, cached_tokenizer, cached_key = get_cached_model()
         if cached_model is not None and cached_key != key:
             logger.info(f"参数变化 → 卸载旧缓存模型。旧: {cached_key}, 新: {key}")
             unload_model()
         if cached_model is not None and cached_key == key:
-            # 临时设为 True，防止 soft_empty_cache 在模型恢复/推理间隙误卸载
-            set_keep_loaded(True)
+            # 临时设为 keep_gpu 防止 soft_empty_cache 在模型恢复/推理间隙误卸载
+            set_unload_mode("keep_gpu")
             if is_offloaded():
                 device_str, _ = resolve_device(device)
                 logger.info(f"恢复已卸载的模型到 {device_str}…")
@@ -411,8 +430,8 @@ class XzgAudioDiTTTS:
                 logger.info("复用缓存模型（严格离线）。")
             return cached_model, cached_tokenizer
         model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
-        # 临时设为 True，防止 soft_empty_cache 在加载完成到推理之间误卸载
-        set_cached_model(model, tokenizer, key, keep_loaded=True)
+        # 临时设为 keep_gpu 防止 soft_empty_cache 在加载完成到推理之间误卸载
+        set_cached_model(model, tokenizer, key, unload_mode="keep_gpu")
         return model, tokenizer
 
 
@@ -470,7 +489,10 @@ class XzgAudioDiTVoiceCloneTTS:
                                                              "tooltip": "音色克隆推荐 bf16，fp16 会数值溢出。"}),
                 "attention": (["auto", "sdpa", "sage_attention", "flash_attention"], {"default": "auto"}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1}),
-                "keep_model_loaded": ("BOOLEAN", {"default": True}),
+                "unload_mode": (
+                    UNLOAD_MODES,
+                    {"default": UNLOAD_MODE_DEFAULT, "tooltip": UNLOAD_MODE_TOOLTIP},
+                ),
                 "pause_between_segments": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.1,
                     "tooltip": "自动分句时各段之间的静音秒数。长文本分句拼接时使用。"}),
             },
@@ -495,7 +517,7 @@ class XzgAudioDiTVoiceCloneTTS:
         dtype: str,
         attention: str,
         seed: int,
-        keep_model_loaded: bool,
+        unload_mode: str,
         pause_between_segments: float = 0.3,
     ) -> Tuple[dict]:
         cancel_event.clear()
@@ -515,7 +537,7 @@ class XzgAudioDiTVoiceCloneTTS:
             dtype = "bf16"
 
         model, tokenizer = self._get_model(
-            model_path, tokenizer, device, dtype, attention, keep_model_loaded
+            model_path, tokenizer, device, dtype, attention, unload_mode
         )
 
         sr = model.config.sampling_rate
@@ -530,31 +552,7 @@ class XzgAudioDiTVoiceCloneTTS:
                 f"参考音频时长 {prompt_duration:.1f}s > 30s。可能影响生成，建议裁剪。"
             )
 
-        prompt_text_norm = normalize_text(prompt_text) if prompt_text.strip() else ""
-        if prompt_text_norm:
-            approx_pd = approx_duration_from_text(prompt_text_norm, max_duration=max_duration)
-            prompt_time = prompt_duration if prompt_duration > 0 else approx_pd
-        else:
-            prompt_time = prompt_duration
-
-        available_duration = max_duration - prompt_time
-        if available_duration <= 1.0:
-            raise ValueError(
-                f"可用时长 {available_duration:.1f}s 太短（参考音频占 {prompt_time:.1f}s）。"
-                f"请缩短参考音频或增加文本。"
-            )
-
-        text_norm = normalize_text(text)
-        logger.info(f"LongCat 音色克隆: {text_norm[:80]}{'…' if len(text_norm) > 80 else ''}")
-
-        # 自动分句
-        segments = _split_text_into_segments(text_norm, available_duration, sr, full_hop)
-        if len(segments) > 1:
-            logger.info(f"文本自动分为 {len(segments)} 段（每段 ≤ {available_duration:.1f}s）")
-        else:
-            logger.info(f"单段生成，预计 ≤ {available_duration:.1f}s")
-
-        # 预编码参考音频 VAE latent（所有段共享）
+        # 预编码参考音频 VAE latent（所有段共享，提前到分段之前以便计算 ratio）
         prompt_audio_tensor = prompt_wav.unsqueeze(0)
         off = 3
         pw = prompt_wav.clone()
@@ -566,6 +564,44 @@ class XzgAudioDiTVoiceCloneTTS:
         if off:
             plt = plt[..., :-off]
         prompt_dur = plt.shape[-1]
+        prompt_time = prompt_dur * full_hop / sr
+
+        # ratio: 参考音频实际语速 vs 估算语速，用于放大目标文本时长（匹配原 LongCat 逻辑）
+        prompt_text_norm = normalize_text(prompt_text) if prompt_text.strip() else ""
+        ratio = 1.0
+        if prompt_text_norm:
+            approx_pd = approx_duration_from_text(prompt_text_norm, max_duration=max_duration)
+            ratio = float(np.clip(prompt_time / max(approx_pd, 0.1), 1.0, 1.5))
+            logger.info(
+                f"参考音频语速系数 ratio={ratio:.2f}"
+                f"（prompt_time={prompt_time:.2f}s, approx_pd={approx_pd:.2f}s）"
+            )
+
+        available_duration = max_duration - prompt_time
+        if available_duration <= 1.0:
+            raise ValueError(
+                f"可用时长 {available_duration:.1f}s 太短（参考音频占 {prompt_time:.1f}s）。"
+                f"请缩短参考音频或增加文本。"
+            )
+
+        text_norm = normalize_text(text)
+        logger.info(f"LongCat 音色克隆: {text_norm[:80]}{'…' if len(text_norm) > 80 else ''}")
+
+        # 自动分句（ratio 放大每段 dur_frames，让语速匹配参考音频）
+        # 关键：分段阈值按 ratio 反向缩小，使每段 cur_dur * ratio 不超过 available_duration，
+        # 避免 duration = seg_dur_frames + prompt_dur 撞 max_dur_frames 上限被截断吞字。
+        # 数学保证：cur_dur ≤ (available_duration / ratio) * 0.85
+        #         → cur_dur * ratio ≤ available_duration * 0.85 < available_duration
+        seg_threshold = available_duration / ratio if ratio > 0 else available_duration
+        segments = _split_text_into_segments(
+            text_norm, seg_threshold, sr, full_hop, duration_multiplier=ratio
+        )
+        if len(segments) > 1:
+            logger.info(
+                f"文本自动分为 {len(segments)} 段（每段 ≤ {seg_threshold:.1f}s, ratio={ratio:.2f}）"
+            )
+        else:
+            logger.info(f"单段生成，预计 ≤ {seg_threshold:.1f}s, ratio={ratio:.2f}")
 
         actual_seed = seed if seed != 0 else torch.randint(0, 2**31, (1,)).item()
         torch.manual_seed(actual_seed)
@@ -624,31 +660,33 @@ class XzgAudioDiTVoiceCloneTTS:
             pbar.update_absolute(total_segments + 1, total_segments + 1)
 
         try:
-            if not keep_model_loaded:
+            # 根据卸载模式处理：full_unload 完全卸载，offload_cpu 释放到 CPU，keep_gpu 保持 GPU
+            if unload_mode == "full_unload":
                 unload_model()
-            else:
+            elif unload_mode == "offload_cpu":
                 offload_model_to_cpu()
+            # keep_gpu: 不动，模型完全保持在 GPU
         except Exception:
             pass
         finally:
             set_generating(False)
         return (result,)
 
-    def _get_model(self, model_path, tokenizer, device, dtype, attention, keep_loaded=False):
+    def _get_model(self, model_path, tokenizer, device, dtype, attention, unload_mode="offload_cpu"):
         key = get_cache_key(model_path, device, dtype, attention, tokenizer)
         cached_model, cached_tokenizer, cached_key = get_cached_model()
         if cached_model is not None and cached_key != key:
             unload_model()
         if cached_model is not None and cached_key == key:
-            # 临时设为 True，防止 soft_empty_cache 在模型恢复/推理间隙误卸载
-            set_keep_loaded(True)
+            # 临时设为 keep_gpu 防止 soft_empty_cache 在模型恢复/推理间隙误卸载
+            set_unload_mode("keep_gpu")
             if is_offloaded():
                 device_str, _ = resolve_device(device)
                 resume_model_to_cuda(device_str)
             return cached_model, cached_tokenizer
         model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
-        # 临时设为 True，防止 soft_empty_cache 在加载完成到推理之间误卸载
-        set_cached_model(model, tokenizer, key, keep_loaded=True)
+        # 临时设为 keep_gpu 防止 soft_empty_cache 在加载完成到推理之间误卸载
+        set_cached_model(model, tokenizer, key, unload_mode="keep_gpu")
         return model, tokenizer
 
 
@@ -745,7 +783,8 @@ if _V3:
                                    tooltip="音色克隆路径推荐 bf16；fp16 自动升级为 bf16。"),
                     IO.Combo.Input("attention", options=["auto", "sdpa", "sage_attention", "flash_attention"], default="auto"),
                     IO.Int.Input("seed", default=0, min=0, max=2**31 - 1),
-                    IO.Boolean.Input("keep_model_loaded", default=True),
+                    IO.Combo.Input("unload_mode", options=UNLOAD_MODES, default=UNLOAD_MODE_DEFAULT,
+                                   tooltip=UNLOAD_MODE_TOOLTIP),
                     IO.Float.Input("pause_after_speaker", default=0.4, min=0.0, max=2.0, step=0.1,
                                    tooltip="每轮说话结束后追加的静音秒数。"),
                     IO.Float.Input("pause_between_segments", default=0.3, min=0.0, max=2.0, step=0.1,
@@ -766,7 +805,7 @@ if _V3:
             dtype = inputs["dtype"]
             attention = inputs["attention"]
             seed = int(inputs["seed"])
-            keep_model_loaded = bool(inputs["keep_model_loaded"])
+            unload_mode = inputs["unload_mode"]
             pause = float(inputs.get("pause_after_speaker", 0.4))
             pause_seg = float(inputs.get("pause_between_segments", 0.3))
 
@@ -800,9 +839,9 @@ if _V3:
 
             model, tokenizer = load_model_xzg(model_path, device, dtype, attention, tokenizer)
             try:
-                # 临时设为 True，防止 soft_empty_cache 在加载完成到推理之间误卸载
+                # 临时设为 keep_gpu 防止 soft_empty_cache 在加载完成到推理之间误卸载
                 set_cached_model(model, tokenizer, get_cache_key(model_path, device, dtype, attention, tokenizer),
-                                 keep_loaded=True)
+                                 unload_mode="keep_gpu")
             except Exception:
                 pass
 
@@ -899,10 +938,12 @@ if _V3:
             logger.info(f"多人对话总时长 {len(final_wav) / sr:.2f}s @ {sr}Hz（共 {len(chunks)} 轮）")
             result = numpy_audio_to_comfy(final_wav, sr)
             try:
-                if not keep_model_loaded:
+                # 根据卸载模式处理：full_unload 完全卸载，offload_cpu 释放到 CPU，keep_gpu 保持 GPU
+                if unload_mode == "full_unload":
                     unload_model()
-                else:
+                elif unload_mode == "offload_cpu":
                     offload_model_to_cpu()
+                # keep_gpu: 不动，模型完全保持在 GPU
             except Exception:
                 pass
             finally:

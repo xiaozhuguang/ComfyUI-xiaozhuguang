@@ -1043,7 +1043,7 @@ app.registerExtension({
                     if (this._xzgModeWidget) {
                         const _normModeVal = (v) => {
                             const s = String(v ?? "Save");
-                            if (s === "预览" || s === "preview") return "Preview";
+                            if (s === "预览" || s === "Preview" || s === "preview") return "Preview";
                             return "Save"; // "保存"/"Save"/其他 均视为 Save
                         };
                         this._xzgModeWidget.value = _normModeVal(this._xzgModeWidget.value);

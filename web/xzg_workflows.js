@@ -2318,6 +2318,13 @@ class XZGWorkflowsManager {
     bindPanelEvents() {
         const container = this.container;
 
+        // 同步排序按钮高亮状态：HTML 模板默认给 default 按钮加了 active，
+        // 但 sortMode 可能从 meta 中加载为其他值（如 time），需按实际值修正，
+        // 否则会出现「按钮显示使用频率高亮，实际却按最近使用排序」的不一致。
+        container.querySelectorAll(".xzg-wf-sort-btn").forEach(b => {
+            b.classList.toggle("active", b.dataset.sort === this.sortMode);
+        });
+
         const searchInput = container.querySelector(".xzg-wf-search-input");
         const clearBtn = container.querySelector(".xzg-wf-clear-btn");
 

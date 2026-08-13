@@ -540,8 +540,8 @@ class XiaozhuguangQwenModelLoader:
                 ),
                 "context_length": (
                     "INT",
-                    {"default": 16384, "min": 1024, "max": 327680, "step": 256,
-                     "tooltip": "上下文长度，建议 16384+ / Context length"},
+                    {"default": 32768, "min": 1024, "max": 327680, "step": 256,
+                     "tooltip": "上下文长度（KV cache 显存占用与长度成正比，显存不足时降低）/ Context length"},
                 ),
                 "gpu_layers": (
                     "INT",

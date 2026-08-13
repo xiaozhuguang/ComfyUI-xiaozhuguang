@@ -31,3 +31,7 @@ Thumbs.db
 
 # 示例工作流（体积大的可选排除）
 # example_workflows/
+
+# Node.js 依赖
+node_modules/
+web/node_modules/

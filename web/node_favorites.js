@@ -5425,9 +5425,10 @@ app.registerExtension({
             const DEFAULT_COLUMNS = DEFAULT_COUNT;
             const DEFAULT_BTN_WIDTH = 60;
             const DEFAULT_BTN_HEIGHT = 30;
-            const DEFAULT_FONT_SIZE = 12;
             const DEFAULT_BTN_GAP = 4;
             const DEFAULT_FONT_COLOR = "#FFFFFF";
+            const DEFAULT_FONT_BIAS = 15;
+            const DEFAULT_GAP_BIAS = 10;
             const DEFAULT_COLORS = {
                 color1: "#000000",
                 color2: "#FF0000",
@@ -5441,8 +5442,8 @@ app.registerExtension({
                 columns: DEFAULT_COLUMNS,
                 btnWidth: DEFAULT_BTN_WIDTH,
                 btnHeight: DEFAULT_BTN_HEIGHT,
-                fontSize: DEFAULT_FONT_SIZE,
-                btnGap: DEFAULT_BTN_GAP,
+                fontSize: DEFAULT_FONT_BIAS,
+                gapBias: DEFAULT_GAP_BIAS,
                 fontColor: DEFAULT_FONT_COLOR,
                 inactiveColor: "#2a2a2a",
                 widths: {},
@@ -5457,6 +5458,15 @@ app.registerExtension({
                         const settings = { ...DEFAULT_SETTINGS, ...parsed };
                         const max = Math.max(1, settings.count);
                         settings.columns = Math.max(1, Math.min(settings.columns, max));
+                        // 兼容旧 fontBias 字段：转换为 fontSize（基准 = btnHeight/2）
+                        if (settings.fontSize === undefined && settings.fontBias !== undefined) {
+                            const base = (settings.btnHeight || DEFAULT_BTN_HEIGHT) / 2;
+                            settings.fontSize = Math.max(8, Math.min(60, Math.round(base * (1 + (settings.fontBias || 0) / 100))));
+                        }
+                        // 兼容旧 btnGap 字段：转换为 gapBias（0-100 线性映射到 0-40px）
+                        if (settings.gapBias === undefined && settings.btnGap !== undefined) {
+                            settings.gapBias = Math.max(0, Math.min(100, Math.round(settings.btnGap / 40 * 100)));
+                        }
                         if (!settings.widths || typeof settings.widths !== "object") {
                             settings.widths = {};
                         }
@@ -5515,9 +5525,9 @@ app.registerExtension({
                     const key = String(i);
                     let bw;
                     if (settings.widths && settings.widths[key] !== undefined) {
-                        bw = Math.max(55, Math.min(300, settings.widths[key]));
+                        bw = Math.max(30, Math.min(300, settings.widths[key]));
                     } else {
-                        bw = Math.max(55, Math.min(300, settings.btnWidth));
+                        bw = Math.max(30, Math.min(300, settings.btnWidth));
                     }
                     naturalRowWidth += bw;
                 }
@@ -5533,11 +5543,11 @@ app.registerExtension({
                 const key = String(index);
                 let baseWidth;
                 if (settings.widths && settings.widths[key] !== undefined) {
-                    baseWidth = Math.max(55, Math.min(300, settings.widths[key]));
+                    baseWidth = Math.max(30, Math.min(300, settings.widths[key]));
                 } else {
-                    baseWidth = Math.max(55, Math.min(300, settings.btnWidth));
+                    baseWidth = Math.max(30, Math.min(300, settings.btnWidth));
                 }
-                return Math.round(clamp(baseWidth * scale, 55, 300));
+                return Math.round(clamp(baseWidth * scale, 30, 300));
             }
 
             function buildLabelsHTML(labels, widths, count, columns) {
@@ -5626,15 +5636,15 @@ app.registerExtension({
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
                                     <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('字体大小：','Font size:')}</label>
-                                    <input type="range" id="nf-font-size" min="10" max="24" value="${settings.fontSize || DEFAULT_FONT_SIZE}" style="flex: 1; height: 14px;" />
-                                    <span id="nf-font-size-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.fontSize || DEFAULT_FONT_SIZE}</span>
+                                    <input type="range" id="nf-font-size" min="8" max="60" value="${settings.fontSize ?? DEFAULT_FONT_BIAS}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-font-size-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.fontSize ?? DEFAULT_FONT_BIAS}</span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
                                     <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('标签间距：','Label gap:')}</label>
-                                    <input type="range" id="nf-btn-gap" min="0" max="20" value="${settings.btnGap || DEFAULT_BTN_GAP}" style="flex: 1; height: 14px;" />
-                                    <span id="nf-btn-gap-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.btnGap || DEFAULT_BTN_GAP}</span>
+                                    <input type="range" id="nf-btn-gap" min="0" max="100" value="${settings.gapBias ?? DEFAULT_GAP_BIAS}" style="flex: 1; height: 14px;" />
+                                    <span id="nf-btn-gap-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.gapBias ?? DEFAULT_GAP_BIAS}</span>
                                 </div>
                             </div>
                             <div id="nf-labels-container" style="padding-top: 4px;">
@@ -5702,11 +5712,12 @@ app.registerExtension({
                     newColumns = Math.min(newColumns, newCount);
                     const newColors = getCurrentColors();
                     let newFontSize = parseInt(fontSizeInput?.value, 10);
-                    if (isNaN(newFontSize) || newFontSize < 10) newFontSize = 10;
-                    if (newFontSize > 24) newFontSize = 24;
-                    let newBtnGap = parseInt(btnGapInput?.value, 10);
-                    if (isNaN(newBtnGap) || newBtnGap < 0) newBtnGap = 0;
-                    if (newBtnGap > 20) newBtnGap = 20;
+                    if (isNaN(newFontSize)) newFontSize = DEFAULT_FONT_BIAS;
+                    if (newFontSize < 8) newFontSize = 8;
+                    if (newFontSize > 60) newFontSize = 60;
+                    let newGapBias = parseInt(btnGapInput?.value, 10);
+                    if (isNaN(newGapBias) || newGapBias < 0) newGapBias = 0;
+                    if (newGapBias > 100) newGapBias = 100;
                     const newFontColor = fontColorInput?.value || DEFAULT_FONT_COLOR;
                     const newInactiveColor = inactiveColorInput?.value || "#2a2a2a";
                     setNodeSettings(node, {
@@ -5717,7 +5728,7 @@ app.registerExtension({
                         btnWidth: settings.btnWidth || DEFAULT_BTN_WIDTH,
                         btnHeight: settings.btnHeight || DEFAULT_BTN_HEIGHT,
                         fontSize: newFontSize,
-                        btnGap: newBtnGap,
+                        gapBias: newGapBias,
                         fontColor: newFontColor,
                         inactiveColor: newInactiveColor,
                         widths: newWidths
@@ -5784,7 +5795,11 @@ app.registerExtension({
                     }
                 });
 
-                // 双击宽度滑条归零
+                // 双击滑条归零（标签宽度、字体大小、标签间距）
+                const DBLCLICK_RESET_MAP = {
+                    "nf-font-size": fontSizeValueEl,
+                    "nf-btn-gap": btnGapValueEl,
+                };
                 labelsContainer.addEventListener("dblclick", (e) => {
                     if (e.target && e.target.id && e.target.id.startsWith("nf-label-width-")) {
                         e.target.value = "0";
@@ -5793,6 +5808,21 @@ app.registerExtension({
                         if (valEl) valEl.textContent = "0";
                         applyCurrentSettings();
                     }
+                });
+                [fontSizeInput, btnGapInput].forEach(inp => {
+                    if (!inp) return;
+                    inp.addEventListener("dblclick", (e) => {
+                        if (inp.id === "nf-btn-gap") {
+                            inp.value = String(DEFAULT_GAP_BIAS);
+                            const valEl = DBLCLICK_RESET_MAP[inp.id];
+                            if (valEl) valEl.textContent = String(DEFAULT_GAP_BIAS);
+                        } else {
+                            inp.value = String(DEFAULT_FONT_BIAS);
+                            const valEl = DBLCLICK_RESET_MAP[inp.id];
+                            if (valEl) valEl.textContent = String(DEFAULT_FONT_BIAS);
+                        }
+                        applyCurrentSettings();
+                    });
                 });
 
                 columnsInput?.addEventListener("input", () => {
@@ -5807,8 +5837,9 @@ app.registerExtension({
 
                 fontSizeInput?.addEventListener("input", () => {
                     let v = parseInt(fontSizeInput.value, 10);
-                    if (isNaN(v) || v < 10) v = 10;
-                    if (v > 24) v = 24;
+                    if (isNaN(v)) v = 0;
+                    if (v < -100) v = -100;
+                    if (v > 100) v = 100;
                     fontSizeInput.value = String(v);
                     if (fontSizeValueEl) fontSizeValueEl.textContent = String(v);
                     applyCurrentSettings();
@@ -5817,7 +5848,7 @@ app.registerExtension({
                 btnGapInput?.addEventListener("input", () => {
                     let v = parseInt(btnGapInput.value, 10);
                     if (isNaN(v) || v < 0) v = 0;
-                    if (v > 20) v = 20;
+                    if (v > 100) v = 100;
                     btnGapInput.value = String(v);
                     if (btnGapValueEl) btnGapValueEl.textContent = String(v);
                     applyCurrentSettings();
@@ -5844,16 +5875,22 @@ app.registerExtension({
                     color3Input.value = DEFAULT_COLORS.color3;
                     colorDirectionInput.value = DEFAULT_COLORS.direction;
                     if (columnsInput) columnsInput.value = String(Math.min(DEFAULT_COLUMNS, defaultCount));
-                    if (fontSizeInput) fontSizeInput.value = String(DEFAULT_FONT_SIZE);
-                    if (fontSizeValueEl) fontSizeValueEl.textContent = String(DEFAULT_FONT_SIZE) + "px";
-                    if (btnGapInput) btnGapInput.value = String(DEFAULT_BTN_GAP);
-                    if (btnGapValueEl) btnGapValueEl.textContent = String(DEFAULT_BTN_GAP) + "px";
+                    if (fontSizeInput) fontSizeInput.value = String(DEFAULT_FONT_BIAS);
+                    if (fontSizeValueEl) fontSizeValueEl.textContent = String(DEFAULT_FONT_BIAS);
+                    if (btnGapInput) btnGapInput.value = String(DEFAULT_GAP_BIAS);
+                    if (btnGapValueEl) btnGapValueEl.textContent = String(DEFAULT_GAP_BIAS);
                     if (fontColorInput) fontColorInput.value = DEFAULT_FONT_COLOR;
                     updateColumnsState();
                     // 先将节点设置恢复为默认，再调用 applyCurrentSettings 确保转换公式使用默认基准值
                     setNodeSettings(node, { ...DEFAULT_SETTINGS, colors: { ...DEFAULT_COLORS }, widths: {} });
                     applyColorPreview();
                     applyCurrentSettings();
+                    // 恢复默认时重置节点尺寸为初始值
+                    if (node.size) {
+                        node.size[0] = 210;
+                        node.size[1] = 58;
+                    }
+                    if (app?.canvas) app.canvas.setDirty(true, true);
                 });
                 const dialogEl = dialog.querySelector(".nf-selector-settings-dialog");
                 let isDragging = false;
@@ -5936,18 +5973,39 @@ app.registerExtension({
                 const settings = getNodeSettings(node);
                 const count = settings.count;
                 const perRow = settings.columns;
-                const gap = Math.max(0, Math.min(20, settings.btnGap || DEFAULT_BTN_GAP));
+                const gap = Math.max(0, Math.min(40, settings.btnGap ?? 0));
                 const btnHeight = Math.max(30, Math.min(80, settings.btnHeight || DEFAULT_BTN_HEIGHT));
                 const rows = Math.ceil(count / perRow);
 
+                // 计算自然内容宽度（按钮自然宽度 + gap），确保调整 gap 时不压缩按钮
+                let maxRowWidth = 0;
+                for (let r = 0; r < rows; r++) {
+                    const rowStartIdx = r * perRow;
+                    const rowEndIdx = Math.min(rowStartIdx + perRow, count);
+                    const rowCount = rowEndIdx - rowStartIdx;
+                    let rowWidth = 0;
+                    for (let i = rowStartIdx; i < rowEndIdx; i++) {
+                        const key = String(i);
+                        const bw = (settings.widths && settings.widths[key] !== undefined)
+                            ? Math.max(30, Math.min(300, settings.btnWidth * (1 + settings.widths[key] / 100)))
+                            : Math.max(30, Math.min(300, settings.btnWidth));
+                        rowWidth += bw;
+                    }
+                    rowWidth += (rowCount - 1) * gap;
+                    maxRowWidth = Math.max(maxRowWidth, rowWidth);
+                }
+                const naturalW = Math.max(210, maxRowWidth + 12);
+
                 const contentH = rows * btnHeight + (rows - 1) * gap;
-                // 固定 yOff=30（标题栏高度），与初始化一致
-                const naturalH = contentH + 30 + 8;
+                // 与初始化 this.size[1] = 58 一致：默认 1 行 30px 内容 + 28 偏移 = 58
+                const naturalH = contentH + 28;
 
                 if (!node.size) {
-                    node.size = [120, naturalH];
+                    node.size = [naturalW, naturalH];
                 } else {
-                    node.size[1] = naturalH;
+                    // 已有节点：只放大不缩小，保持用户手动设定的尺寸不变
+                    node.size[0] = Math.max(node.size[0], naturalW);
+                    node.size[1] = Math.max(node.size[1], naturalH);
                 }
 
                 if (app?.canvas) {

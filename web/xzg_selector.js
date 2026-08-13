@@ -66,10 +66,21 @@ function getNodeSettings(node, defaults) {
     const s = { ...defaults, ...parsed };
     const max = Math.max(1, s.count);
     s.columns = Math.max(1, Math.min(s.columns, max));
-    s.btnWidth = clamp(s.btnWidth, 55, 300);
+    s.btnWidth = clamp(s.btnWidth, 30, 300);
     s.btnHeight = clamp(s.btnHeight, 30, 80);
-    s.fontSize = clamp(s.fontSize, 10, 24);
-    s.btnGap = clamp(s.btnGap, 0, 20);
+    // 字体大小直接数值 8-60，不再绑定 btnHeight
+    if (s.fontSize === undefined && s.fontBias !== undefined) {
+        // 兼容旧 fontBias：基准 = btnHeight/2，转换为数值
+        const base = (s.btnHeight || defaults.btnHeight) / 2;
+        s.fontSize = clamp(Math.round(base * (1 + (s.fontBias || 0) / 100)), 8, 60);
+    }
+    s.fontSize = clamp(s.fontSize || 15, 8, 60);
+    // gapBias 0-100 线性映射到间距 0-40px（bias=0→0px，bias=50→20px，bias=100→40px）
+    if (s.gapBias === undefined && s.btnGap !== undefined) {
+        s.gapBias = clamp(Math.round(s.btnGap / 40 * 100), 0, 100);
+    }
+    s.gapBias = clamp(s.gapBias ?? 10, 0, 100);
+    s.btnGap = s.gapBias * 0.4;
     if (!s.widths || typeof s.widths !== "object") {
         s.widths = {};
     }
@@ -95,7 +106,7 @@ function getButtonWidth(index, settings) {
         ? settings.widths[key] : 0;
     // bias: -100~100, 正值变宽，负值变窄，0为等宽
     const weight = 1 + bias / 100;
-    return Math.max(1, (settings.btnWidth || 60) * weight);
+    return Math.max(20, (settings.btnWidth || 60) * weight);
 }
 
 /**
@@ -152,18 +163,27 @@ function getButtonRects(y, W, settings, availableH) {
         }
         naturalRowWidth += (rowCount - 1) * gap;
 
-        // 根据可用宽度等比缩放各按钮
+        // 按钮宽度：节点宽度足够时等比放大填满；不足时保持自然宽度，不压缩按钮（由节点宽度自适应）
         let scaledWidths = [];
         let rowWidth;
         if (naturalRowWidth > 0 && rowCount > 0) {
             const totalGap = (rowCount - 1) * gap;
             const naturalContentW = naturalRowWidth - totalGap;
             const availableContentW = Math.max(0, availableW - totalGap);
-            const scale = availableContentW / naturalContentW;
-            for (let i = rowStartIdx; i < rowEndIdx; i++) {
-                scaledWidths[i] = naturalWidths[i] * scale;
+            if (availableContentW >= naturalContentW) {
+                // 节点够宽：放大按钮填满
+                const scale = availableContentW / naturalContentW;
+                for (let i = rowStartIdx; i < rowEndIdx; i++) {
+                    scaledWidths[i] = naturalWidths[i] * scale;
+                }
+                rowWidth = availableW;
+            } else {
+                // 节点不够宽：保持按钮自然宽度，不压缩
+                for (let i = rowStartIdx; i < rowEndIdx; i++) {
+                    scaledWidths[i] = naturalWidths[i];
+                }
+                rowWidth = naturalRowWidth;
             }
-            rowWidth = availableW;
         } else {
             for (let i = rowStartIdx; i < rowEndIdx; i++) {
                 scaledWidths[i] = naturalWidths[i];
@@ -186,7 +206,9 @@ function getButtonRects(y, W, settings, availableH) {
     }
 
     const contentW = availableW;
-    return { rects, contentW, contentH };
+    // 字体随按钮高度等比缩放：scaledBtnH / btnH
+    const heightScale = btnH > 0 ? scaledBtnH / btnH : 1;
+    return { rects, contentW, contentH, heightScale };
 }
 
 /**
@@ -221,9 +243,9 @@ const DEFAULT_SETTINGS = {
     columns: 2,
     btnWidth: 60,
     btnHeight: 30,
-    fontSize: 12,
-    btnGap: 4,
-    fontColor: "#aaa",
+    fontSize: 15,
+    gapBias: 10,
+    fontColor: "#FFFFFF",
     inactiveColor: "#2a2a2a",
     widths: {},
     rowBias: {}
@@ -243,6 +265,16 @@ app.registerExtension({
             this.resizable = true;
             this.flags = this.flags || {};
             this.flags.resizable = true;
+
+            // 拖动缩放时强制最小尺寸
+            const origOnResize = this.onResize;
+            this.onResize = function () {
+                if (origOnResize) origOnResize.apply(this, arguments);
+                if (this.size) {
+                    if (this.size[0] < 210) this.size[0] = 210;
+                    if (this.size[1] < 58) this.size[1] = 58;
+                }
+            };
 
             const settingsWidget = this.widgets?.find(w => w.name === "_xz_settings");
             if (settingsWidget) settingsWidget.hidden = true;
@@ -267,7 +299,7 @@ app.registerExtension({
                     // 用节点实际高度计算可用高度，而非 H 参数（H 始终为自然高度）
                     const nodeH = node.size[1] || 0;
                     const availH = Math.max(0, nodeH - y - 8);
-                    const { rects, contentH } = getButtonRects(y, W, settings, availH);
+                    const { rects, contentH, heightScale } = getButtonRects(y, W, settings, availH);
                     const currentValue = String(tagWidget.value ?? "0");
 
                     for (let i = 0; i < count; i++) {
@@ -294,11 +326,17 @@ app.registerExtension({
                         ctx.stroke();
 
                         const label = getDisplayLabel(value, settings.labels);
-                        ctx.fillStyle = settings.fontColor || "#aaa";
-                        ctx.font = `${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                        ctx.fillStyle = settings.fontColor || "#FFFFFF";
+                        // 字体大小直接使用 fontSize 数值（8-60），不再随节点高度缩放
+                        const effectiveFont = clamp(settings.fontSize || 15, 8, r.h * 0.85);
+                        ctx.font = `${effectiveFont}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.textAlign = "center";
-                        ctx.textBaseline = "middle";
-                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+                        // 用实际字形度量精确垂直居中，避免大字体时偏上
+                        ctx.textBaseline = "alphabetic";
+                        const m = ctx.measureText(label);
+                        const ascent = m.actualBoundingBoxAscent || effectiveFont * 0.8;
+                        const descent = m.actualBoundingBoxDescent || effectiveFont * 0.2;
+                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + (ascent - descent) / 2);
                         ctx.restore();
                     }
 
@@ -351,8 +389,8 @@ app.registerExtension({
             // 初始大小：与 rebuildSelectorNode 公式一致
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
             const { contentW, contentH } = calcNaturalContentSize(settings);
-            this.size[0] = Math.max(120, contentW + 12);
-            this.size[1] = contentH + 30 + 8;
+            this.size[0] = Math.max(210, contentW + 12);
+            this.size[1] = 58;
         };
     },
 });
