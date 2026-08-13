@@ -200,15 +200,35 @@ except Exception:
 # ============================================================
 
 def _xzg_list_llm_files():
-    """列出 ComfyUI/models/LLM/ 下的模型文件。"""
+    """列出所有注册 LLM 路径下的模型文件（主目录 + extra_model_paths.yaml 额外路径）。"""
     folder_name = "LLM"
+    llm_extensions = {".gguf", ".safetensors", ".bin", ".pth", ".pt"}
     llm_dir = os.path.join(folder_paths.models_dir, folder_name)
     try:
-        if folder_name not in folder_paths.folder_names_and_paths:
-            folder_paths.folder_names_and_paths[folder_name] = (
-                [llm_dir],
-                {".gguf", ".safetensors", ".bin", ".pth", ".pt"},
-            )
+        # 1) 用标准 API 把主目录追加到 LLM 路径列表（兼容用户已通过 extra_model_paths.yaml 先注册的情况）。
+        #    主目录放在最后，以便用户配置的额外路径优先级更高。
+        if hasattr(folder_paths, "add_model_folder_path"):
+            folder_paths.add_model_folder_path(folder_name, llm_dir, is_default=False)
+        else:
+            if folder_name not in folder_paths.folder_names_and_paths:
+                folder_paths.folder_names_and_paths[folder_name] = (
+                    [llm_dir],
+                    set(llm_extensions),
+                )
+            elif llm_dir not in folder_paths.folder_names_and_paths[folder_name][0]:
+                folder_paths.folder_names_and_paths[folder_name][0].append(llm_dir)
+
+        # 2) 确保扩展名集合包含 LLM 支持的后缀。extra_model_paths.yaml 注册新 key 时会创建空集合，
+        #    若不补全，主目录里的 .gguf 等文件在某些 ComfyUI 版本会被 filter_files_extensions 过滤掉。
+        if folder_name in folder_paths.folder_names_and_paths:
+            _paths, exts = folder_paths.folder_names_and_paths[folder_name]
+            if not exts:
+                folder_paths.folder_names_and_paths[folder_name] = (
+                    _paths,
+                    set(llm_extensions),
+                )
+            else:
+                exts.update(llm_extensions)
     except Exception:
         pass
     try:
