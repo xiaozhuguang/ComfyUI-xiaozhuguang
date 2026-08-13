@@ -17,6 +17,7 @@ Xiaozhuguang AudioDiT Offline TTS Nodes
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Any, Tuple
 
@@ -26,7 +27,6 @@ import torch.nn.functional as F
 
 # —— 依赖我们自己的离线加载器 ——
 from .xzg_audiodit_loader import (
-    TOKENIZER_AUTO_OPTION,
     approx_duration_from_text,
     load_model_xzg,
     normalize_text,
@@ -148,6 +148,10 @@ def _split_text_into_segments(
     3. 仍超长则按字数硬切
     4. 将短句合批，尽量填满 available_duration
     """
+    # 安全余量系数：所有分段只用 85% 可用时长的字数，留 15% 防止吞字
+    SAFE_FACTOR = 0.85
+    safe_duration = available_duration * SAFE_FACTOR
+
     # Step 1: 按句末标点切分
     raw_sentences = re.split(r'(?<=[。！？.!?；;])\s*', text)
     raw_sentences = [s.strip() for s in raw_sentences if s.strip()]
@@ -155,35 +159,35 @@ def _split_text_into_segments(
     # Step 2: 检查每句时长，超长则继续切分
     sentences: list[str] = []
     for sent in raw_sentences:
-        sent_dur = approx_duration_from_text(sent, max_duration=available_duration)
-        if sent_dur <= available_duration:
+        sent_dur = approx_duration_from_text(sent, max_duration=safe_duration)
+        if sent_dur <= safe_duration:
             sentences.append(sent)
         else:
             # 按逗号/冒号切分
             comma_parts = re.split(r'(?<=[，,、：:])\s*', sent)
             comma_parts = [p.strip() for p in comma_parts if p.strip()]
             for cp in comma_parts:
-                cp_dur = approx_duration_from_text(cp, max_duration=available_duration)
-                if cp_dur <= available_duration:
+                cp_dur = approx_duration_from_text(cp, max_duration=safe_duration)
+                if cp_dur <= safe_duration:
                     sentences.append(cp)
                 else:
                     # 仍超长 → 按字数硬切（按比例估算每段字数）
                     chars_per_sec = len(cp) / max(cp_dur, 0.1)
-                    max_chars = max(1, int(available_duration * chars_per_sec * 0.85))
+                    max_chars = max(1, int(safe_duration * chars_per_sec))
                     for i in range(0, len(cp), max_chars):
                         chunk = cp[i : i + max_chars]
                         if chunk:
                             sentences.append(chunk)
 
-    # Step 3: 将短句合批为不超时的段
+    # Step 3: 将短句合批为不超时的段（使用 safe_duration 而非 available_duration）
     segments: list[tuple[str, int]] = []
     cur_text = ""
     cur_dur = 0.0
 
     for sent in sentences:
-        sent_dur = approx_duration_from_text(sent, max_duration=available_duration)
-        if cur_dur + sent_dur > available_duration and cur_text:
-            dur_frames = max(1, int(cur_dur * sr // full_hop))
+        sent_dur = approx_duration_from_text(sent, max_duration=safe_duration)
+        if cur_dur + sent_dur > safe_duration and cur_text:
+            dur_frames = max(1, math.ceil(cur_dur * sr / full_hop))
             segments.append((cur_text, dur_frames))
             cur_text = sent
             cur_dur = sent_dur
@@ -192,7 +196,7 @@ def _split_text_into_segments(
             cur_dur += sent_dur
 
     if cur_text:
-        dur_frames = max(1, int(cur_dur * sr // full_hop))
+        dur_frames = max(1, math.ceil(cur_dur * sr / full_hop))
         segments.append((cur_text, dur_frames))
 
     return segments
@@ -237,11 +241,10 @@ class XzgAudioDiTTTS:
                 "tokenizer": (
                     tokenizer_names,
                     {
-                        "default": TOKENIZER_AUTO_OPTION,
                         "tooltip": (
                             "文本分词器目录（UMT5 tokenizer）。\n"
-                            "auto = 自动按 4 级回退查找（umt5-base-tokenizer → umt5-base → HF 缓存 → 环境变量）。\n"
-                            "选择具体目录则直接使用该目录，缺失时回退到 auto。"
+                            "仅列出本地已存在的 tokenizer 目录（含 HF 缓存）。\n"
+                            "未安装时列表为空，请把 tokenizer 放到 ComfyUI/models/audiodit/umt5-base-tokenizer/"
                         ),
                     },
                 ),
@@ -434,9 +437,8 @@ class XzgAudioDiTVoiceCloneTTS:
                 "tokenizer": (
                     tokenizer_names,
                     {
-                        "default": TOKENIZER_AUTO_OPTION,
                         "tooltip": (
-                            "文本分词器目录（UMT5 tokenizer）。auto = 自动回退查找。"
+                            "文本分词器目录（UMT5 tokenizer）。仅列出本地已存在的目录。"
                         ),
                     },
                 ),
@@ -589,7 +591,13 @@ class XzgAudioDiTVoiceCloneTTS:
             attention_mask = inputs.attention_mask.to(model.device)
 
             duration = seg_dur_frames + prompt_dur
-            duration = min(duration, int(max_duration * sr // full_hop))
+            max_dur_frames = int(max_duration * sr // full_hop)
+            if duration > max_dur_frames:
+                logger.warning(
+                    "[小珠光AudioDiT] 段 %d/%d 时长 %d 帧超过最大限制 %d 帧（已截断，可能吞字）：'%s'",
+                    seg_idx + 1, total_segments, duration, max_dur_frames, seg_text[:40],
+                )
+            duration = min(duration, max_dur_frames)
 
             seg_seed = (actual_seed + seg_idx * 1000003) % (2**31)
             with torch.no_grad():
@@ -716,8 +724,8 @@ if _V3:
                 inputs=[
                     IO.Combo.Input("model_path", options=model_names,
                                    tooltip="严格离线：仅列本地模型。未找到时放 ComfyUI/models/audiodit/"),
-                    IO.Combo.Input("tokenizer", options=tokenizer_names, default=TOKENIZER_AUTO_OPTION,
-                                   tooltip="文本分词器目录（UMT5 tokenizer）。auto = 自动回退查找。"),
+                    IO.Combo.Input("tokenizer", options=tokenizer_names,
+                                   tooltip="文本分词器目录（UMT5 tokenizer）。仅列出本地已存在的目录。"),
                     IO.DynamicCombo.Input(
                         "num_speakers",
                         options=speaker_options,
@@ -748,7 +756,7 @@ if _V3:
 
         def execute(self, *_, **inputs):
             model_path = inputs["model_path"]
-            tokenizer = inputs.get("tokenizer", TOKENIZER_AUTO_OPTION)
+            tokenizer = inputs.get("tokenizer", "")
             num_speakers = int(inputs.get("num_speakers", 2))
             text = inputs["text"]
             steps = int(inputs["steps"])
@@ -859,7 +867,13 @@ if _V3:
                     input_ids = t_inputs.input_ids.to(model.device)
                     attention_mask = t_inputs.attention_mask.to(model.device)
                     duration = seg_dur_frames + prompt_dur
-                    duration = min(duration, int(max_duration * sr // full_hop))
+                    max_dur_frames = int(max_duration * sr // full_hop)
+                    if duration > max_dur_frames:
+                        logger.warning(
+                            "[小珠光AudioDiT] 说话人 %d 段 %d/%d 时长 %d 帧超过最大限制 %d 帧（已截断，可能吞字）：'%s'",
+                            idx + 1, seg_idx + 1, len(turn_segments), duration, max_dur_frames, seg_text[:40],
+                        )
+                    duration = min(duration, max_dur_frames)
                     turn_seed = (actual_seed + idx * 1000003 + seg_idx * 7919) % (2**31)
                     with torch.no_grad():
                         output = model(

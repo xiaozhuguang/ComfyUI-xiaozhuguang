@@ -344,16 +344,25 @@ class _XZG_QwenStorage:
         if cls.model is not None:
             cls.unload()
 
-        model_path = os.path.join(folder_paths.models_dir, "LLM", config["model"])
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"模型文件未找到: {model_path}")
+        # 用 get_full_path 遍历所有注册的 LLM 路径（含 extra_model_paths.yaml 配置的额外路径），
+        # 而非仅查主目录 folder_paths.models_dir/LLM，避免「下拉列表可见但加载失败」。
+        model_path = folder_paths.get_full_path("LLM", config["model"])
+        if model_path is None or not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"模型文件未找到: {config['model']}\n"
+                f"已查找的路径以下拉列表为准（含 extra_model_paths.yaml 配置的额外路径）。\n"
+                f"ComfyUI 主目录: {os.path.join(folder_paths.models_dir, 'LLM')}"
+            )
 
         mmproj = config.get("mmproj", "None")
         mmproj_path = None
         if mmproj and mmproj not in ("None", "无", ""):
-            mmproj_path = os.path.join(folder_paths.models_dir, "LLM", mmproj)
-            if not os.path.exists(mmproj_path):
-                raise FileNotFoundError(f"mmproj 文件未找到: {mmproj_path}")
+            mmproj_path = folder_paths.get_full_path("LLM", mmproj)
+            if mmproj_path is None or not os.path.exists(mmproj_path):
+                raise FileNotFoundError(
+                    f"mmproj 文件未找到: {mmproj}\n"
+                    f"ComfyUI 主目录: {os.path.join(folder_paths.models_dir, 'LLM')}"
+                )
 
         family = config["family"]
         think = config.get("think", False)

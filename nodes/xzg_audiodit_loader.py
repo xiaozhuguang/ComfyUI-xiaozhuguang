@@ -145,59 +145,145 @@ def scan_local_models() -> list[str]:
     return names
 
 
-# tokenizer 下拉项的「自动」选项名（沿用 4 级回退查找）
-TOKENIZER_AUTO_OPTION = "auto"
-
-
 def scan_local_tokenizers() -> list[str]:
-    """列出 ComfyUI/models/audiodit/ 下可作为 tokenizer 的目录。
+    """列出所有可用作 UMT5 tokenizer 的目录（永不触网）。
 
-    判定规则与 _dir_has_tokenizer_files 一致：
-      - 至少含 tokenizer_config.json
-      - 且含 spiece.model / tokenizer.json / sentencepiece.bpe.model 之一
-    模型目录（含 config.json + 权重）也会被当作 tokenizer 候选
-    —— 因为用户可能直接把 HF 仓库（如 umt5-base）拷过来当 tokenizer 用。
+    扫描范围（覆盖本地目录 + HF 缓存）：
+      1) ComfyUI/models/audiodit/ 下符合 tokenizer 判定的子目录
+      2) HF 缓存 ~/.cache/huggingface/hub/models--google--umt5-base/snapshots/<hash>/
+      3) HF_HOME / TRANSFORMERS_CACHE 环境变量指向的缓存
+
+    返回「显示名」列表（去重）。HF 缓存条目带前缀以便用户区分来源。
     """
-    base = _get_models_base()
     names: list[str] = []
+    seen: set[str] = set()
+
+    # 1) ComfyUI/models/audiodit/ 下所有合法目录
+    base = _get_models_base()
     try:
         for entry in sorted(base.iterdir()):
-            if not entry.is_dir():
-                continue
-            if _dir_has_tokenizer_files(entry):
-                names.append(entry.name)
+            if entry.is_dir() and _dir_has_tokenizer_files(entry):
+                if entry.name not in seen:
+                    seen.add(entry.name)
+                    names.append(entry.name)
     except OSError as e:
         logger.warning(f"扫描 {base} 失败: {e}")
+
+    # 2) + 3) HF 缓存（umt5-base / google--umt5-base snapshots）
+    hf_home = Path(
+        os.environ.get("HF_HOME")
+        or os.environ.get("TRANSFORMERS_CACHE")
+        or (Path.home() / ".cache" / "huggingface" / "hub")
+    )
+    repo_dir = hf_home / "models--google--umt5-base"
+    if repo_dir.is_dir():
+        snapshots = repo_dir / "snapshots"
+        if snapshots.is_dir():
+            try:
+                # 按 mtime 倒序：最新 snapshot 排前面
+                snaps = sorted(
+                    snapshots.iterdir(),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for s in snaps:
+                    if s.is_dir() and _dir_has_tokenizer_files(s):
+                        # 显示名加前缀，便于用户识别来源
+                        display = f"[HF缓存] {s.parent.parent.name}/{s.name[:8]}"
+                        if display not in seen:
+                            seen.add(display)
+                            names.append(display)
+            except OSError:
+                pass
+
     return names
 
 
 def tokenizer_names_or_default() -> list[str]:
-    """返回 tokenizer 下拉项。首项固定为 'auto'（保留 4 级回退），后接本地扫描结果。"""
-    names = [TOKENIZER_AUTO_OPTION]
-    names.extend(scan_local_tokenizers())
+    """返回 tokenizer 下拉项。
+
+    - 有本地 tokenizer：返回所有扫描结果（不再插入 auto）
+    - 无任何 tokenizer：返回占位提示项（与模型列表一致的处理方式）
+    """
+    names = scan_local_tokenizers()
+    if not names:
+        base = _get_models_base()
+        logger.warning(
+            "[小珠光AudioDiT] 未检测到任何 UMT5 tokenizer。\n"
+            "请把 tokenizer 文件放到: %s\n"
+            "（至少含 tokenizer_config.json + spiece.model 或 tokenizer.json）\n"
+            "或从 https://huggingface.co/google/umt5-base 下载整个仓库放入上述目录。",
+            base / _LOCAL_TOKENIZER_DIRNAME,
+        )
+        return ["（请先放入 UMT5 tokenizer 到 ComfyUI/models/audiodit/）"]
     return names
 
 
-def resolve_tokenizer_path(name: str, text_encoder_hint: str = _KNOWN_TOKENIZER_REPO) -> Path:
-    """根据用户选择解析 tokenizer 目录。
+def _resolve_tokenizer_by_display(name: str) -> Path | None:
+    """根据下拉显示名解析 tokenizer 目录。
 
-    - name == "auto"：走原有 4 级回退查找（_find_local_tokenizer）
-    - name 为具体目录名：先在 ComfyUI/models/audiodit/ 下找；
-      找到则直接用；找不到再回退到 4 级查找（容错）
+    - 普通名字 → 在 ComfyUI/models/audiodit/ 下查找
+    - "[HF缓存] xxx" → 反查 HF 缓存 snapshots 目录
     """
-    if not name or name == TOKENIZER_AUTO_OPTION:
-        return _find_local_tokenizer(text_encoder_hint)
-
     base = _get_models_base()
+
+    # HF 缓存条目
+    if name.startswith("[HF缓存] "):
+        hf_home = Path(
+            os.environ.get("HF_HOME")
+            or os.environ.get("TRANSFORMERS_CACHE")
+            or (Path.home() / ".cache" / "huggingface" / "hub")
+        )
+        repo_dir = hf_home / "models--google--umt5-base"
+        snapshots = repo_dir / "snapshots"
+        if snapshots.is_dir():
+            try:
+                for s in sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                    if not s.is_dir() or not _dir_has_tokenizer_files(s):
+                        continue
+                    display = f"[HF缓存] {s.parent.parent.name}/{s.name[:8]}"
+                    if display == name:
+                        return s
+            except OSError:
+                pass
+        return None
+
+    # 普通目录名
     candidate = base / name
     if candidate.is_dir() and _dir_has_tokenizer_files(candidate):
         return candidate
+    return None
 
-    # 容错：用户选择的名字找不到时，回退到自动查找
-    logger.warning(
-        f"选择的 tokenizer 目录不存在或不完整: {candidate}，回退到自动查找"
+
+def resolve_tokenizer_path(name: str, text_encoder_hint: str = _KNOWN_TOKENIZER_REPO) -> Path:
+    """根据用户下拉选择解析 tokenizer 目录（不再支持 auto）。
+
+    - name 为空或占位项 → 清晰报错（让用户立刻知道要装 tokenizer）
+    - name 为具体条目 → 解析目录；解析失败也清晰报错
+    """
+    # 占位提示项（列表为空时返回的字符串）
+    if not name or name.startswith("（请先放入"):
+        base = _get_models_base()
+        raise FileNotFoundError(
+            f"[小珠光AudioDiT] 未选择 tokenizer。\n"
+            f"本节点采用「严格离线」模式，不会在推理时联网下载。\n"
+            f"请把 UMT5 tokenizer 放到:\n"
+            f"  {base / _LOCAL_TOKENIZER_DIRNAME}\n"
+            f"HuggingFace 仓库: https://huggingface.co/{_KNOWN_TOKENIZER_REPO}\n"
+            f"至少包含: tokenizer_config.json + spiece.model（或 tokenizer.json）"
+        )
+
+    # 显式选择：直接解析
+    path = _resolve_tokenizer_by_display(name)
+    if path is not None:
+        logger.info(f"使用本地 tokenizer: {path}")
+        return path
+
+    # 解析失败（理论上不该发生，除非用户改了文件后没刷新节点）
+    raise FileNotFoundError(
+        f"[小珠光AudioDiT] 选择的 tokenizer 不存在或不完整: {name}\n"
+        f"请检查文件是否被移动/删除，或重新扫描（刷新节点列表）。"
     )
-    return _find_local_tokenizer(text_encoder_hint)
 
 
 def resolve_model_path_xzg(name: str) -> Path:
@@ -228,59 +314,6 @@ def resolve_model_path_xzg(name: str) -> Path:
     raise FileNotFoundError("\n".join(hint_lines))
 
 
-def _find_local_tokenizer(text_encoder_hint: str) -> Path:
-    """只在本地找 tokenizer 目录；永远不调用 huggingface_hub。
-
-    查找顺序（最先命中优先）：
-      1) ComfyUI/models/audiodit/umt5-base-tokenizer/  （本插件推荐放置处）
-      2) 同层级的 umt5-base / models--google--umt5-base 目录（用户可能直接把整个 HF 仓库拷过来）
-      3) huggingface_hub 本地缓存（~/.cache/huggingface/hub/.../snapshots/...）
-      4) HF_HOME / TRANSFORMERS_CACHE 环境变量指向的缓存
-    """
-    base = _get_models_base()
-    candidates: list[Path] = []
-
-    # 1) 本插件共享目录下的专用 tokenizer 子目录
-    candidates.append(base / _LOCAL_TOKENIZER_DIRNAME)
-
-    # 2) 同层级的 umt5-base / google--umt5-base 目录
-    candidates.append(base / "umt5-base")
-    candidates.append(base / "models--google--umt5-base")
-
-    # 3) HF 缓存（models--google--umt5-base / snapshots / <hash> / ...）
-    hf_home = Path(
-        os.environ.get("HF_HOME")
-        or os.environ.get("TRANSFORMERS_CACHE")
-        or (Path.home() / ".cache" / "huggingface" / "hub")
-    )
-    repo_dir = hf_home / "models--google--umt5-base"
-    if repo_dir.is_dir():
-        snapshots = repo_dir / "snapshots"
-        if snapshots.is_dir():
-            # 最新一个 snapshot
-            snaps = sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-            for s in snaps:
-                candidates.append(s)
-        candidates.append(repo_dir)
-
-    for p in candidates:
-        if _dir_has_tokenizer_files(p):
-            logger.info(f"使用本地 tokenizer: {p}")
-            return p
-
-    err_lines = [
-        "[小珠光AudioDiT] 严格离线模式下未找到 UMT5 tokenizer。",
-        "请手动下载以下 tokenizer 文件放入目录:",
-        f"  {base / _LOCAL_TOKENIZER_DIRNAME}",
-        f"HuggingFace 仓库: https://huggingface.co/{_KNOWN_TOKENIZER_REPO}",
-        "至少包含: tokenizer_config.json + spiece.model（或 tokenizer.json）",
-        "下载后路径示例:",
-        f"  {base / _LOCAL_TOKENIZER_DIRNAME / 'tokenizer_config.json'}",
-        f"  {base / _LOCAL_TOKENIZER_DIRNAME / 'spiece.model'}",
-    ]
-    raise FileNotFoundError("\n".join(err_lines))
-
-
 # ---------------------------------------------------------------- #
 #  模型加载（核心：完全离线；from_pretrained / fp8 反量化 / dtype 等
 #  直接沿用移植到本插件内部的 LongCat 实现，保持兼容性）
@@ -290,7 +323,7 @@ def load_model_xzg(
     device: str,
     precision: str,
     attention: str,
-    tokenizer_name: str = TOKENIZER_AUTO_OPTION,
+    tokenizer_name: str = "",
 ):
     # 1) 严格离线找目录
     model_path = resolve_model_path_xzg(model_name)
