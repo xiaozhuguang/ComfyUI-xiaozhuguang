@@ -651,6 +651,42 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V11.6.0 (2026-08-15)
+
+**🎬 小珠光合并视频节点（视频保存）预览刷新修复：**
+
+- **跨工作流 Tab 预览不刷新核心 Bug**：切换工作流 Tab 时，原 Tab 的节点 + 播放器会被销毁重建，节点级 `executed` 监听器在 `onRemoved` 中被移除，导致后台工作流跑完后视频信息完全丢失，切回 Tab 预览为空，必须手动再运行一次才能刷新
+- **修复方案 — 模块级全局视频输出缓存**：借鉴 ComfyUI 原生 `setNodeOutputsByExecutionId` 全局 store 思路，在 `app.registerExtension.init()` 中注册**模块级全局 executed 监听器**（不随节点生命周期销毁），只要工作流执行完成就把视频信息写入 `_xzgVideoOutputCache` Map，key 为节点 id，完全不依赖节点是否存活
+- **三重恢复路径**：切回 Tab 重建节点后，通过 ① `onConfigure` rAF 优先读 cache → ② `ResizeObserver` 容器可见时兜底读 cache/properties → ③ `properties._xzgVideoOutput`（工作流保存/加载场景兜底）三层机制确保预览 100% 恢复，不再需要手动再运行
+- **API 兼容**：兼容 `output.ui.videos` / `output.video` 两种数据路径，`_lastAppliedKey` 去重避免 onExecuted 与全局 api 事件重复触发
+- **ResizeObserver 可见性感知**：Tab 不可见（容器宽高为 0）时只记录 `_pendingVideoUrl`，不立即调用 `player.load()`（否则 canvas 渲染失败导致黑屏）；容器变可见时自动从 pending 或 cache 恢复
+
+**🎬 小珠光视频加载器宽高重置 Bug 修复：**
+
+- **切换工作流宽高被重置为 0**：`_updateRatioWidgets` 在"自定义比例"分支硬编码 `wWidget.value = 0` / `hWidget.value = 0`，但该函数在 `onConfigure` 的 rAF 中被调用，时序为「configure 先恢复数值（如 1024）→ rAF 执行 → 强制重置为 0」，用户设置的分辨率瞬间丢失
+- **修复方案**：改为仅在值无效时重置 0 —— 从"边长模式"切来（value 是字符串 "1"-"4"）→ 重置 ✓；configure 恢复的数字 → 保留 ✓；负数 → 重置 0 ✓。VideoLoaderPro 共用同一套逻辑一并修复
+
+**🎬 化神级视频编辑器全面升级（OpenCut 式裁剪 + 桥接手柄 + 历史撤销重做）：**
+
+- **裁剪逻辑全面改写为 OpenCut 模式**：左手柄同步修改 `tlStart` 和 `start`，`end` 不变；右手柄修改 `end`，`tlStart` 和 `start` 不变，彻底替代旧的三模式方向决策逻辑
+- **桥接手柄（相邻片段交界处滚动裁剪）**：交界处显示 `←||→` 红色光标（播放头同色 `#ff4444`），触发区域宽 10px（左右各 5px），z-index 高于普通手柄；往右拖=左片段尾扩+右片段头同步右移，往左拖=右片段头扩+左片段尾同步左移，保持相邻且缩略图同步更新
+- **片段裁剪拖动期间缩略图循环补全**：`_loadClipThumbs` 中当可用缩略图数量 `inRange.length <= need` 时 `inRange[i % inRange.length]` 循环选取，确保放大时间线后整段有图覆盖
+- **吸附阈值加大与新增起点吸附**：拖动/首尾手柄磁吸阈值统一 15px，新增吸附到时间轴起点（0），构建 `clipRects` 检测边缘避免多次吸附冲突
+- **从媒体库拖入片段对齐方式**：拖入时鼠标 X 对齐片段最左侧；Alt+拖动复制时鼠标对齐片段中心点；拖入预览仅显示半透明金色虚线边框（不显示缩略图），移除浏览器默认半透明拖动缩略图
+- **空格键播放/暂停修复**：在 keydown capture 阶段监听，按住空格忽略 `e.repeat`，焦点在播放按钮上时跳过处理，避免播放↔暂停相互抵消
+- **播放头交互精简**：`pointer-events: none`，移除点击轨道空白处跳转逻辑，避免与片段选中冲突
+- **片段选中优化**：`_updateClipSelection()` 仅遍历现有 DOM 切换 `xzg-ve-selected` class，不重建 DOM 或重新加载缩略图；清空选中同样只切 class
+- **完整撤销/重做支持**：所有修改操作（添加/分割/删除/移动/复制片段、手柄裁剪、桥接手柄裁剪）统一调用 `_pushHistory()` 记录状态，支持 Ctrl+Z 撤销、Ctrl+Shift+Z/Ctrl+Y 重做
+- **时间线缩放锁定**：裁剪手柄按下时设置 `_tlBaseLocked=true`，阻止自适应重新计算 `pxPerSec` 导致片段缩放；拖动期间直接更新 DOM `width/left`，通过 `transform: translateX(-offset)` 实现左侧裁剪视觉效果，不重建 DOM 避免缩略图闪烁
+
+**🖼 其他优化与维护：**
+
+- `web/lib/mediabunny.min.mjs`：新增视频解码库（MediaBunny）
+- `web/xzg_frame_decoder.js`：新增帧解码器，配合视频播放器实现高效解码
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `11.5.8` 升至 `11.6.0`
+
+---
+
 ### V11.5.8 (2026-08-14)
 
 **🎛️ 小珠光选择器节点全面优化：**

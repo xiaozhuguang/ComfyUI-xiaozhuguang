@@ -16,3 +16,15 @@ class XiaozhuguangVideoLoaderPro(XiaozhuguangVideoLoader):
     """
 
     CATEGORY = "xiaozhuguang"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # 复用父类配置，但「视频」字段默认为空（与普通版区分：新建节点不预选视频）
+        types = super().INPUT_TYPES()
+        required = dict(types.get("required", {}))
+        # 把视频下拉的第一个值替换为空字符串占位，作为默认值
+        video_entry = required.get("视频")
+        if isinstance(video_entry, tuple) and len(video_entry) >= 1:
+            required["视频"] = ([""] + list(video_entry[0]),) + tuple(video_entry[1:])
+        types["required"] = required
+        return types

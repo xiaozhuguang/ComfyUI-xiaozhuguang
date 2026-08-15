@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT, xzgTh } from "./xzg_i18n.js";
+import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 
 // ═══════════════════════════════════════════════
 //  小珠光图像加载器 · 前端
@@ -318,6 +319,8 @@ function createImgBatchUI(node) {
         "width:100%;min-width:0;min-height:200px;box-sizing:border-box;overflow:hidden;padding:6px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:4px 0;display:flex;flex-direction:row;gap:6px;z-index:10;position:relative;";
     container.style.userSelect = "none";
     container.style.webkitUserSelect = "none";
+    // 启用空格+拖动平移画布（DOM widget 默认会拦截 pointer 事件）
+    xzgEnableCanvasPanOnSpace(container);
 
     // Bypass 紫色覆盖层
     const bypassOverlay = document.createElement("div");

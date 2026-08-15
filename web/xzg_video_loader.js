@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
 import { xzgLang } from "./xzg_i18n.js";
+import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // 双语标签翻译映射
@@ -607,12 +608,14 @@ function _updateRatioWidgets(node) {
         wWidget.mouse = _xzgWidgetNumberWithResetMouse;
         wWidget._xzgShowReset = true;
         wWidget.label = _tr("自定义宽度");
-        wWidget.value = 0;
+        // 仅在值无效（边长模式遗留的字符串，或负数）时重置为 0
+        // 保留 configure 恢复的数值，避免切换工作流后宽高被冲掉
+        if (typeof wWidget.value !== "number" || wWidget.value < 0) wWidget.value = 0;
         hWidget.draw = _xzgDrawWidget;
         hWidget.mouse = _xzgWidgetNumberWithResetMouse;
         hWidget._xzgShowReset = true;
         hWidget.label = _tr("自定义高度");
-        hWidget.value = 0;
+        if (typeof hWidget.value !== "number" || hWidget.value < 0) hWidget.value = 0;
     }
     node.setDirtyCanvas?.(true, true);
 }
@@ -1003,7 +1006,8 @@ function bindVideoLoaderInteractions(node) {
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
-    fileInput.multiple = false;
+    // Pro 节点支持多选：选多个视频时直接打开视频编辑器
+    fileInput.multiple = (node.type === "XiaozhuguangVideoLoaderPro");
     fileInput.accept = VIDEO_EXTS.map(e => "." + e).join(",");
     fileInput.style.display = "none";
     document.body.appendChild(fileInput);
@@ -1020,12 +1024,22 @@ function bindVideoLoaderInteractions(node) {
     playerContainer.style.background = "#1a1a1a";
     playerContainer.style.position = "relative";
     playerContainer.style.pointerEvents = "none";
+    // 启用空格+拖动平移画布（DOM widget 默认会拦截 pointer 事件）
+    xzgEnableCanvasPanOnSpace(playerContainer);
     // 注入全局 CSS：统一预览区背景色，避免 ComfyUI 默认样式干扰
     if (!document.getElementById("xzg-video-preview-style")) {
         const st = document.createElement("style");
         st.id = "xzg-video-preview-style";
         st.textContent = `
             .xzg-video-preview-container { background: #1a1a1a !important; }
+            .xzg-video-preview-container, .xzg-video-preview-container * {
+                user-select: none; -webkit-user-select: none;
+            }
+            .xzg-video-preview-container input,
+            .xzg-video-preview-container textarea,
+            .xzg-video-preview-container [contenteditable] {
+                user-select: text; -webkit-user-select: text;
+            }
         `;
         document.head.appendChild(st);
     }
@@ -1100,8 +1114,8 @@ function bindVideoLoaderInteractions(node) {
     };
 
     const updateVideoInfoLabels = () => {
-        const video = player.videoElement;
-        if (!video) return;
+        // Canvas 架构：player.videoElement 始终返回 null，改用 player.src 判断
+        if (!player.src) return;
         const ratioWidget = node.widgets?.find(w => w.name === "视频比例");
         const wWidget = node.widgets?.find(w => w.name === "自定义宽度");
         const hWidget = node.widgets?.find(w => w.name === "自定义高度");
@@ -1309,6 +1323,12 @@ function bindVideoLoaderInteractions(node) {
             if (typeof fps === "number" && fps > 0) {
                 player.applyBackendFps(Math.round(fps));
             }
+            // 记录原视频分辨率（供视频编辑器继承：自定义宽高为0时用此值）
+            const sw = vi.source_width, sh = vi.source_height;
+            if (typeof sw === "number" && typeof sh === "number" && sw > 0 && sh > 0) {
+                node._xzgSourceWidth = Math.round(sw);
+                node._xzgSourceHeight = Math.round(sh);
+            }
             // 用后端实际加载的帧数（准确，避免前端推算误差）
             const lf = vi.loaded_frame_count;
             if (typeof lf === "number" && lf > 0) {
@@ -1338,10 +1358,19 @@ function bindVideoLoaderInteractions(node) {
         });
         showUploadProgress(false);
         if (uploaded.length > 0) {
-            const videoWidget = node.widgets?.find(w => w.name === "视频");
-            if (videoWidget) {
-                await refreshVideoCombo(videoWidget, uploaded[0]);
-                player.load(getVideoUrl(videoWidget.value));
+            // 多个视频 + Pro 节点：直接打开视频编辑器，把所有视频作为初始媒体库
+            if (uploaded.length > 1 && typeof node._xzgOpenVideoEditor === "function") {
+                const extraMedia = uploaded.map(name => ({ name, type: "input" }));
+                // 仍把第一个设为节点当前视频，保持节点可用
+                const videoWidget = node.widgets?.find(w => w.name === "视频");
+                if (videoWidget) await refreshVideoCombo(videoWidget, uploaded[0]);
+                node._xzgOpenVideoEditor(extraMedia);
+            } else {
+                const videoWidget = node.widgets?.find(w => w.name === "视频");
+                if (videoWidget) {
+                    await refreshVideoCombo(videoWidget, uploaded[0]);
+                    player.load(getVideoUrl(videoWidget.value));
+                }
             }
         }
         fileInput.value = "";

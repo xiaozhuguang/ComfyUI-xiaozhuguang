@@ -1,11 +1,11 @@
 /**
- * 小珠光视频播放器 · 高扩展性架构
+ * 小珠光视频播放器 · Canvas 解码架构
  *
  * 架构设计：
  *   container (根容器)
  *     ├─ videoStage (视频舞台，背景深色)
  *     │    └─ videoSurface (视频画面区域，自适应比例，居中，响应点击)
- *     │         └─ <video> (真实视频元素)
+ *     │         └─ <canvas> (Canvas 解码渲染目标)
  *     │    └─ controlsLayer (控制层，悬浮在视频上)
  *     │         ├─ playOverlay (中央播放/暂停图标)
  *     │         └─ bottomBar (底部控制条：进度条、时间等)
@@ -15,8 +15,13 @@
  *   - 精确点击区域：只有视频画面区域(videoSurface)响应播放/暂停/双击
  *   - 完全自主控制：无浏览器原生controls，双击不全屏
  *   - 模块化：controlsLayer可独立扩展控制功能
- *   - 高性能：原生<video>硬件解码
+ *   - 高性能：Canvas 直接解码（mediabunny + WebCodecs），无 keyframe 限制
  *   - 响应式：自适应容器，保持视频宽高比
+ *
+ * 渲染管线：decoderPool → VideoDecoderInstance.renderFrame → canvas
+ *   - 帧缓存命中零延迟 drawImage
+ *   - 最近帧降级显示（拖动永不卡顿）
+ *   - RAF 节流（mousemove 合并到每帧一次）
  */
 
 import { app } from "../../scripts/app.js";
@@ -24,6 +29,20 @@ import {
     downloadVideo,
     xzgTimestamp,
 } from "./xzg_save_utils.js";
+import { decoderPool } from "./xzg_frame_decoder.js";
+
+// mediabunny 库加载状态（懒加载）
+let _mbLoaded = false;
+async function _ensureMediabunny() {
+    if (_mbLoaded || window.mb) { _mbLoaded = true; return; }
+    await import("./lib/mediabunny.min.mjs").then(m => {
+        window.mb = m.default || m;
+        _mbLoaded = true;
+    }).catch(e => {
+        console.error("[小珠光] mediabunny 加载失败:", e);
+        throw e;
+    });
+}
 
 const DEFAULT_BG = "#1a1a1a";
 const SURFACE_BG = "#000";
@@ -41,9 +60,11 @@ export class XiaozhuguangVideoPlayer {
         this.onSaveToDesktop = options.onSaveToDesktop || null;
         this.onLoadRangeStartDrag = options.onLoadRangeStartDrag || null;
         this.onLoadRangeEndDrag = options.onLoadRangeEndDrag || null;
+        this.onSourceFpsDetected = options.onSourceFpsDetected || null;
         this.placeholderText = options.placeholderText ?? "🎬 双击加载视频";
 
-        this._video = null;
+        this._canvas = null;          // Canvas 渲染目标（替代 <video>）
+        this._currentDecoder = null;  // 当前 VideoDecoderInstance
         this._videoSurface = null;
         this._controlsLayer = null;
         this._playOverlay = null;
@@ -70,6 +91,8 @@ export class XiaozhuguangVideoPlayer {
         this._contextMenuDesktop = null;
         this._contextMenuSaveAs = null;
         this._src = "";
+        this._currentFilename = "";  // 当前视频文件名（用于 decoderPool key）
+        this._currentType = "input";  // 当前视频类型
         this._destroyed = false;
         this._dblClickTimer = null;
         this._clickHandled = false;
@@ -83,6 +106,7 @@ export class XiaozhuguangVideoPlayer {
         this._frameRate = 24;
         this._totalFrames = null; // 后端实际加载的帧数（优先使用）
         this._sourceTotalFrames = null; // 原始视频的总帧数（不受帧率调整影响）
+        this._sourceFps = null;    // 原始视频帧率（decoder.fps）
         this._fpsDetected = false;
         this._resizeObserver = null;
         this._progressRafId = null;
@@ -98,6 +122,27 @@ export class XiaozhuguangVideoPlayer {
         this._muted = false;
         this._muteBtn = null;
         this._buttonRow = null;
+
+        // ── Canvas 解码相关状态 ──
+        this._scrubRafId = null;        // seek RAF 节流 ID
+        this._playbackRaf = 0;          // 播放循环 RAF ID
+        this._playbackIterator = null;  // 播放迭代器
+        this._playbackBuffer = [];      // 预缓冲队列
+        this._playbackBufferSize = 10;  // 预缓冲帧数
+        this._playbackStartFrame = 0;   // 播放起始帧
+        this._playbackStartTime = 0;    // 播放起始时间（performance.now）
+        this._isBuffering = false;      // 预缓冲锁
+        this._audioCtx = null;          // AudioContext
+        this._audioGain = null;         // 音量控制节点
+        this._audioSource = null;       // 当前音频源
+        this._fullAudioBuffer = null;   // 完整音频缓冲
+        this._audioPlayStartTime = 0;   // 音频播放起始时间
+        this._audioPlayStartOffset = 0; // 音频播放起始偏移
+        this._currentTime = 0;          // 当前播放时间（秒）
+        this._isPlayingState = false;   // 播放状态（P7: 显式初始化）
+        this._playbackRate = 1;         // 播放速率（P16: 支持变速）
+        this._loadToken = 0;            // 加载竞态 guard（P1）
+        this._audioDecoding = false;    // 音频解码中标志（P4: 防止重复解码）
 
         this._buildDOM();
     }
@@ -139,23 +184,11 @@ export class XiaozhuguangVideoPlayer {
         this._videoSurface.addEventListener("wheel", this._forwardWheel, { passive: false });
         this._videoSurface.addEventListener("contextmenu", this._onContextMenu);
 
-        this._video = document.createElement("video");
-        this._video.setAttribute("playsinline", "");
-        this._video.controls = false;
-        this._video.controlsList = "nodownload nofullscreen noremoteplayback";
-        this._video.disablePictureInPicture = true;
-        this._video.style.cssText =
+        // Canvas 解码渲染目标（替代 <video>）
+        this._canvas = document.createElement("canvas");
+        this._canvas.style.cssText =
             "width:100%;height:100%;display:block;background:#000;object-fit:fill;pointer-events:none;";
-        this._video.preload = "metadata";
-
-        this._video.addEventListener("loadedmetadata", this._onLoadedMeta);
-        this._video.addEventListener("play", this._onPlayEvt);
-        this._video.addEventListener("pause", this._onPauseEvt);
-        this._video.addEventListener("ended", this._onEndedEvt);
-        this._video.addEventListener("timeupdate", this._onTimeUpdateEvt);
-        this._video.addEventListener("error", this._onErrorEvt);
-
-        this._videoSurface.appendChild(this._video);
+        this._videoSurface.appendChild(this._canvas);
 
         // 加载进度图：旋转圆环
         this._loadingSpinner = document.createElement("div");
@@ -222,7 +255,7 @@ export class XiaozhuguangVideoPlayer {
             e.preventDefault();
             e.stopPropagation();
             this._muted = !this._muted;
-            if (this._video) this._video.muted = this._muted;
+            this._applyMute();
             this._muteBtn.textContent = this._muted ? "🔇" : "🔊";
         });
         this._buttonRow.appendChild(this._muteBtn);
@@ -478,17 +511,20 @@ export class XiaozhuguangVideoPlayer {
     }
 
     _updateFrameTicks() {
-        if (!this._video || !this._video.duration) return;
+        const dur = this.duration;
+        if (!this._canvas || dur <= 0) return;
         const fps = this._frameRate || 24;
-        const totalFrames = Math.round(this._video.duration * fps);
+        const totalFrames = Math.round(dur * fps);
         if (totalFrames <= 1) return;
         const bar = this._progressBar;
         if (!bar) return;
         // 延时取 bar 宽度以确保布局完成
         requestAnimationFrame(() => {
+            // P18: 防御 destroyed
+            if (this._destroyed) return;
             const barW = bar.offsetWidth || 300;
-            // 帧边界线 = totalFrames - 1（第一帧在左边缘，最后一帧在右边缘）
-            const boundaries = totalFrames - 1;
+            // 帧边界线 = totalFrames（进度条按帧数等分：30 帧 → 30 格 → 31 个刻度点 0~30）
+            const boundaries = totalFrames;
             const spacing = boundaries > 0 ? barW / boundaries : barW;
             if (spacing >= 2) {
                 // 每个周期末尾画一条 1px 竖线作为帧边界，底色为暗色
@@ -515,7 +551,8 @@ export class XiaozhuguangVideoPlayer {
     // 更新红蓝条对应的帧数显示
     // 红=起点（跳过帧数 _skipFrames），蓝=终点（_computeEndFrame 计算结果）
     _updateRangeDisplay() {
-        if (!this._redFrameDisplay || !this._video || !this._video.duration) {
+        const dur = this.duration;
+        if (!this._redFrameDisplay || !this._canvas || dur <= 0) {
             if (this._redFrameDisplay) this._redFrameDisplay.textContent = "";
             if (this._blueFrameDisplay) this._blueFrameDisplay.textContent = "";
             return;
@@ -524,81 +561,61 @@ export class XiaozhuguangVideoPlayer {
         const startFrame = this._skipFrames;
         const endFrame = this._computeEndFrame();
 
-        // 红色标签：起点帧数（显示在红色竖杠上方）
+        // 红色标签：起点帧号（0-based，与主帧数显示一致）
         this._redFrameDisplay.textContent = this._fpsDetected
-            ? `${startFrame + 1}`
+            ? `${startFrame}`
             : "";
 
-        // 蓝色标签：终点帧数（显示在蓝色竖杠上方）
+        // 蓝色标签：终点帧号（0-based）
         this._blueFrameDisplay.textContent = this._fpsDetected
-            ? `${endFrame + 1}`
+            ? `${endFrame}`
             : "";
     }
 
+    // Canvas 解码架构：不再有 <video> 事件，这些方法保留为空壳兼容外部调用
     _onLoadedMeta = () => {
-        if (this._video.videoWidth && this._video.videoHeight) {
-            this._videoRatio = this._video.videoWidth / this._video.videoHeight;
-            this._applyVideoFit();
-            this._updateSurfaceSize();
-        }
-        this._placeholder.style.display = "none";
-        this._updateLoadRangeMarkers();
-        // 元数据加载完成后更新红蓝条对应值显示
-        this._updateRangeDisplay();
-        this.onLoadedMetadata?.(this);
+        // 由 _loadDecoderAsync 触发，不再由 video 事件触发
     };
+    _onPlayEvt = () => { /* Canvas 架构由 _startPlaybackLoop 驱动 */ };
+    _onPauseEvt = () => { /* Canvas 架构由 _stopPlaybackLoop 驱动 */ };
+    _onTimeUpdateEvt = () => { /* Canvas 架构在播放循环中更新 */ };
 
-    _onPlayEvt = () => {
-        this._startProgressRaf();
-        this.autoDetectFps();
-        // 播放时激活流星高亮流光
-        if (this._progressShine) {
-            this._progressShine.style.display = "block";
-        }
-        this.onPlay?.(this);
-    };
-
-    _onPauseEvt = () => {
+    // Canvas 架构：_onEndedEvt 仅在非循环模式下由 _startPlaybackLoop 调用
+    // P12: 移除循环分支死代码（循环由 _startPlaybackLoop 内联处理）
+    _onEndedEvt = () => {
         this._stopProgressRaf();
-        // 暂停时隐藏流星光流（拖动中除外，拖动结束会单独处理）
-        if (this._progressShine && !this._isDragging) {
+        if (this._progressShine) {
             this._progressShine.style.display = "none";
         }
-        this.onPause?.(this);
+        this.onEnded?.(this);
     };
 
-    _onEndedEvt = () => {
-        if (!this._isDragging && !this._isDraggingMarker) {
-            this._stopProgressRaf();
-            if (this._progressShine) {
-                this._progressShine.style.display = "none";
-            }
-            if (this._loopPlayback) {
-                // 循环模式：从红杠（跳过帧）位置重新开始
-                const fps = this._frameRate || 24;
-                this._video.currentTime = this._skipFrames / fps;
-                this._video.play().catch(() => {});
-            }
-            // 单次模式：视频自然结束，不做额外处理
-            this.onEnded?.(this);
-        }
+    _onErrorEvt = (e) => {
+        const msg = e?.message || String(e);
+        console.warn("[小珠光] 视频加载错误:", msg);
+        // P14: 在 UI 上展示错误信息（复用 timeDisplay）
+        if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
+        if (this._placeholder) this._placeholder.style.display = "flex";
+        if (this._videoSurface) this._videoSurface.style.display = "none";
+        if (this._timeDisplay) this._timeDisplay.textContent = "错误: " + msg.slice(0, 40);
+        // 清理解码器引用
+        this._currentDecoder = null;
+        this._resetProgress();
+        this.onError?.(this, e);
     };
 
     _updateProgressDisplay(cur, dur) {
-        // 拖拽中：完全不更新视觉（参考 WhatDreamsCost：ontimeupdate 中 if(dragging) return）
         if (this._isDragging) return;
-        // 拖动红蓝杠期间：白色帧数应保持为跳过帧数+1（播放头位置=红杠位置），
-        // 不被 ontimeupdate 的旧 currentTime 覆盖
         if (this._isDraggingMarker) return;
 
         if (dur > 0) {
             const fps = this._frameRate || 24;
-            // 使用源视频总帧数作为分母，与蓝杠/红杠标记保持一致
             const sourceTotalFrames = this.getSourceTotalFrames();
             const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(dur * fps));
             const endFrame = this._computeEndFrame();
             const curFrameIdx = Math.min(Math.floor(cur * fps), endFrame);
-            const pct = totalFrames > 1 ? (curFrameIdx / (totalFrames - 1)) * 100 : 0;
+            // 进度条按帧数等分：分母用 totalFrames，使最右侧（curFrameIdx=totalFrames）对应 100%
+            const pct = totalFrames > 0 ? (curFrameIdx / totalFrames) * 100 : 0;
             const startPct = this._getStartPct();
             this._progressFill.style.left = startPct + "%";
             this._progressFill.style.width = Math.max(0, pct - startPct) + "%";
@@ -610,11 +627,11 @@ export class XiaozhuguangVideoPlayer {
                 if (!this._fpsDetected) {
                     this._frameDisplay.textContent = "";
                 } else {
-                    this._frameDisplay.textContent = `${curFrameIdx + 1} / ${totalFrames}`;
+                    // 0-based：最左=0，最右=totalFrames（与编辑器时间线一致）
+                    this._frameDisplay.textContent = `${curFrameIdx} / ${totalFrames}`;
                 }
             }
             this._timeDisplay.textContent = `${this._formatTime(cur)} / ${this._formatTime(dur)}`;
-            // 同步更新红蓝条对应的时间码和帧数
             this._updateRangeDisplay();
         }
     }
@@ -622,8 +639,8 @@ export class XiaozhuguangVideoPlayer {
     _startProgressRaf() {
         this._stopProgressRaf();
         const loop = () => {
-            if (this._destroyed || !this._video || this._video.paused) return;
-            this._updateProgressDisplay(this._video.currentTime, this._video.duration || 0);
+            if (this._destroyed || !this._canvas || !this._isPlayingState) return;
+            this._updateProgressDisplay(this._currentTime, this.duration || 0);
             this._progressRafId = requestAnimationFrame(loop);
         };
         this._progressRafId = requestAnimationFrame(loop);
@@ -635,48 +652,6 @@ export class XiaozhuguangVideoPlayer {
             this._progressRafId = null;
         }
     }
-
-    _onTimeUpdateEvt = () => {
-        if (this._video && this._progressFill && this._timeDisplay) {
-            const cur = this._video.currentTime;
-            const dur = this._video.duration || 0;
-            this._updateProgressDisplay(cur, dur);
-
-            // 播放到蓝杠位置时停止或循环
-            if (!this._isDragging && !this._isDraggingMarker && cur > 0) {
-                const endFrame = this._computeEndFrame();
-                const fps = this._frameRate || 24;
-                if (cur * fps >= endFrame + 1) {
-                    if (this._loopPlayback) {
-                        // 循环模式：跳回红杠位置重新开始
-                        this._video.currentTime = this._skipFrames / fps;
-                    } else {
-                        // 单次模式：停止播放
-                        this._video.pause();
-                    }
-                }
-            }
-        }
-        this.onTimeUpdate?.(this);
-    };
-
-    _onErrorEvt = (e) => {
-        if (this._video.error) {
-            console.warn("[小珠光] 视频加载错误:", this._video.error);
-        }
-        // 加载失败时隐藏加载进度图
-        if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
-        // 加载失败时恢复占位提示，隐藏黑色视频面，避免显示0秒黑色假视频
-        if (this._placeholder) this._placeholder.style.display = "flex";
-        if (this._videoSurface) this._videoSurface.style.display = "none";
-        if (this._video) {
-            this._video.removeAttribute("src");
-            this._video.load();
-        }
-        this._resetProgress();
-        if (this._timeDisplay) this._timeDisplay.textContent = "00:00 / 00:00";
-        this.onError?.(this, e);
-    };
 
     _onSurfaceClick = (e) => {
         e.preventDefault();
@@ -730,17 +705,17 @@ export class XiaozhuguangVideoPlayer {
     };
 
     _seekByClientX(clientX) {
-        if (!this._video || !this._video.duration) return;
+        const dur = this.duration;
+        if (!this._canvas || dur <= 0) return;
         const fps = this._frameRate || 24;
         const rect = this._progressBar.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        // 使用源视频总帧数作为分母，与蓝杠/红杠标记保持一致
         const sourceTotalFrames = this.getSourceTotalFrames();
-        const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(this._video.duration * fps));
+        const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(dur * fps));
         const endFrame = this._computeEndFrame();
         const frameIdx = Math.max(this._skipFrames, Math.min(Math.floor(ratio * totalFrames), endFrame));
-        const pct = totalFrames > 1 ? (frameIdx / (totalFrames - 1)) * 100 : 0;
-        // 视觉同步：填充从红杠位置开始，宽度实时跟随
+        // 进度条按帧数等分：分母用 totalFrames
+        const pct = totalFrames > 0 ? (frameIdx / totalFrames) * 100 : 0;
         if (this._progressFill) {
             const startPct = this._getStartPct();
             this._progressFill.style.left = startPct + "%";
@@ -750,16 +725,13 @@ export class XiaozhuguangVideoPlayer {
             this._progressThumb.style.left = pct + "%";
             this._progressThumb.style.display = "none";
         }
-        // 更新帧数和时间
-        const curTime = (frameIdx + 0.5) / fps;
-        this._timeDisplay.textContent = `${this._formatTime(curTime)} / ${this._formatTime(this._video.duration)}`;
+        const curTime = frameIdx / fps;
+        this._timeDisplay.textContent = `${this._formatTime(curTime)} / ${this._formatTime(dur)}`;
         if (this._frameDisplay) {
             if (!this._fpsDetected) this._frameDisplay.textContent = "";
-            else this._frameDisplay.textContent = `${frameIdx + 1} / ${totalFrames}`;
+            else this._frameDisplay.textContent = `${frameIdx} / ${totalFrames}`;
         }
-        // 同步更新红蓝条对应的时间码和帧数
         this._updateRangeDisplay();
-        // seek 视频
         this.seek(curTime);
     }
 
@@ -767,19 +739,15 @@ export class XiaozhuguangVideoPlayer {
         if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
-        // 先标记拖动状态，再 pause 视频
         this._isDragging = true;
-        // 拖动时也显示流星光流，跟随播放头
         if (this._progressShine) {
             this._progressShine.style.display = "block";
         }
-        this._video?.pause();
-        if (this._video) {
-            this._savedLoop = this._video.loop;
-            this._video.loop = false;
-        }
+        // Canvas 架构：暂停播放循环
+        this._stopPlaybackLoop();
+        this._stopAudio();
+        this._savedLoop = this._loopPlayback;
         this._seekByClientX(e.clientX);
-        // 创建全屏遮罩，捕获拖动期间所有指针事件，防止穿透到画布
         if (!this._dragOverlay) {
             this._dragOverlay = document.createElement("div");
             this._dragOverlay.style.cssText =
@@ -790,7 +758,6 @@ export class XiaozhuguangVideoPlayer {
         this._dragOverlay.addEventListener("pointermove", this._onProgressMove);
         this._dragOverlay.addEventListener("pointerup", this._onProgressUp);
         this._dragOverlay.addEventListener("pointercancel", this._onProgressUp);
-        // 兜底：mouseup 也监听
         window.addEventListener("mouseup", this._onProgressUp);
     };
 
@@ -803,7 +770,6 @@ export class XiaozhuguangVideoPlayer {
 
     _cleanupDrag = () => {
         this._isDragging = false;
-        // 拖动结束后：当前处于暂停状态，隐藏流星光流
         if (this._progressShine) {
             this._progressShine.style.display = "none";
         }
@@ -814,8 +780,8 @@ export class XiaozhuguangVideoPlayer {
             this._dragOverlay.remove();
         }
         window.removeEventListener("mouseup", this._onProgressUp);
-        if (this._video && this._savedLoop !== undefined) {
-            this._video.loop = this._savedLoop;
+        if (this._savedLoop !== undefined) {
+            this._loopPlayback = this._savedLoop;
             this._savedLoop = undefined;
         }
     };
@@ -823,7 +789,6 @@ export class XiaozhuguangVideoPlayer {
     _onProgressUp = (e) => {
         if (!this._isDragging) return;
         this._cleanupDrag();
-        // 阻止后续 click 事件触发 togglePlay
         const suppressClick = (ev) => {
             ev.stopPropagation();
             ev.preventDefault();
@@ -834,52 +799,54 @@ export class XiaozhuguangVideoPlayer {
 
     // ── 标记条拖拽 ──
 
+    // 加载范围终点（0-based 帧号，最大 = totalFrames）
+    // 注意：此值为"进度条位置/显示帧号"，实际解码帧索引最大为 totalFrames-1
     _computeEndFrame() {
         const totalFrames = this.getSourceTotalFrames();
         if (!totalFrames) return 0;
         if (this._frameLimit > 0) {
-            return Math.min(this._skipFrames + this._frameLimit, totalFrames) - 1;
+            return Math.min(this._skipFrames + this._frameLimit, totalFrames);
         }
-        return totalFrames - 1;
+        return totalFrames;
     }
 
     _getStartPct() {
         const totalFrames = this.getSourceTotalFrames();
-        if (!totalFrames || totalFrames <= 1) return 0;
-        return (this._skipFrames / (totalFrames - 1)) * 100;
+        if (!totalFrames || totalFrames <= 0) return 0;
+        // 进度条按帧数等分：分母用 totalFrames
+        return (this._skipFrames / totalFrames) * 100;
     }
 
     _resetPlaybackToStart() {
-        // 进度填充重置到红杠位置，宽度归零
         const startPct = this._getStartPct();
         if (this._progressFill) {
             this._progressFill.style.left = startPct + "%";
             this._progressFill.style.width = "0%";
         }
-        // 视频跳转到红杠位置（+0.5 帧偏移避免 seek 精度损失导致帧数少1）
-        if (this._video) {
+        if (this._canvas) {
             const fps = this._frameRate || 24;
-            this._video.currentTime = this._skipFrames > 0 ? (this._skipFrames + 0.5) / fps : 0;
-            // 更新时间/帧数显示
+            const seekTime = this._skipFrames / fps;
+            this.seek(seekTime);
+            const dur = this.duration || 0;
             if (this._timeDisplay) {
-                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(this._video.duration || 0)}`;
+                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(dur)}`;
             }
             if (this._frameDisplay) {
                 if (!this._fpsDetected) {
                     this._frameDisplay.textContent = "";
                 } else {
                     const totalFrames = this._totalFrames || this.getTotalFrames();
-                    this._frameDisplay.textContent = `${this._skipFrames + 1} / ${totalFrames}`;
+                    this._frameDisplay.textContent = `${this._skipFrames} / ${totalFrames}`;
                 }
             }
-            // 同步更新红蓝条对应的时间码和帧数
             this._updateRangeDisplay();
         }
     }
 
     _onMarkerDown = (e) => {
         if (e.button !== 0) return;
-        if (!this._video || !this._video.duration) return;
+        const dur = this.duration;
+        if (!this._canvas || dur <= 0) return;
         const totalFrames = this.getSourceTotalFrames();
         if (!totalFrames || totalFrames <= 1) return;
 
@@ -888,15 +855,13 @@ export class XiaozhuguangVideoPlayer {
 
         this._isDraggingMarker = true;
         this._draggingMarkerType = e.currentTarget === this._loadRangeStart ? 'start' : 'end';
-        // 记录拖拽开始时另一端的约束位置
         this._markerDragStartFrame = this._skipFrames;
         this._markerDragEndFrame = this._computeEndFrame();
 
-        if (this._video) {
-            this._savedLoop = this._video.loop;
-            this._video.loop = false;
-            this._video.pause();
-        }
+        // Canvas 架构：暂停播放循环
+        this._stopPlaybackLoop();
+        this._stopAudio();
+        this._savedLoop = this._loopPlayback;
 
         if (!this._markerDragOverlay) {
             this._markerDragOverlay = document.createElement("div");
@@ -934,15 +899,13 @@ export class XiaozhuguangVideoPlayer {
         }
         window.removeEventListener("mouseup", this._onMarkerUp);
 
-        if (this._video && this._savedLoop !== undefined) {
-            this._video.loop = this._savedLoop;
+        if (this._savedLoop !== undefined) {
+            this._loopPlayback = this._savedLoop;
             this._savedLoop = undefined;
         }
 
-        // 拖动结束后重置播放头到红杠位置，确保白色帧数显示为跳过帧数+1
         this._resetPlaybackToStart();
 
-        // 通知拖拽结束（isEnd=true）
         if (markerType === 'start') {
             this.onLoadRangeStartDrag?.(this._skipFrames, true);
         } else {
@@ -956,7 +919,8 @@ export class XiaozhuguangVideoPlayer {
 
         const rect = this._progressBar.getBoundingClientRect();
         const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-        const frameIndex = Math.round(ratio * (totalFrames - 1));
+        // 进度条按帧数等分：分母用 totalFrames，使最右侧能到达 totalFrames
+        const frameIndex = Math.round(ratio * totalFrames);
 
         if (this._draggingMarkerType === 'start') {
             // 红杠：约束在 [0, endFrame]
@@ -966,10 +930,10 @@ export class XiaozhuguangVideoPlayer {
             this._resetPlaybackToStart();
             this.onLoadRangeStartDrag?.(clamped, false);
         } else {
-            // 蓝杠：约束在 [startFrame, totalFrames-1]
-            const clamped = Math.max(this._markerDragStartFrame, Math.min(frameIndex, totalFrames - 1));
+            // 蓝杠：约束在 [startFrame, totalFrames]
+            const clamped = Math.max(this._markerDragStartFrame, Math.min(frameIndex, totalFrames));
             // frameIndex → frameLimit（0=加载全部剩余帧）
-            const frameLimit = (clamped >= totalFrames - 1) ? 0 : clamped - this._markerDragStartFrame + 1;
+            const frameLimit = (clamped >= totalFrames) ? 0 : clamped - this._markerDragStartFrame;
             this._frameLimit = frameLimit;
             this._updateLoadRangeMarkers();
             this._resetPlaybackToStart();
@@ -1055,102 +1019,245 @@ export class XiaozhuguangVideoPlayer {
         this._updateRangeDisplay();
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Canvas 解码架构核心：load/play/pause/seek
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // 从 URL 中解析 filename 和 type
+    _parseVideoUrl(url) {
+        if (!url) return { filename: "", type: "input" };
+        try {
+            const u = new URL(url, location.origin);
+            return {
+                filename: u.searchParams.get("filename") || "",
+                type: u.searchParams.get("type") || "input",
+                subfolder: u.searchParams.get("subfolder") || "",
+            };
+        } catch (_) {
+            return { filename: "", type: "input" };
+        }
+    }
+
+    async _loadDecoderAsync(src) {
+        // P1: 竞态 guard —— 每次 load 递增 token，异步完成后校验是否仍是最新
+        const token = ++this._loadToken;
+        if (this._loadingSpinner) this._loadingSpinner.style.display = "flex";
+        try {
+            await _ensureMediabunny();
+            if (typeof VideoDecoder === 'undefined') {
+                throw new Error("当前浏览器不支持 WebCodecs，请使用 Chrome 94+/Edge 94+/Safari 16.4+");
+            }
+            const { filename, type } = this._parseVideoUrl(src);
+            this._currentFilename = filename;
+            this._currentType = type;
+            // P2: filename 为空时（blob:/data: URL）使用 src 作为 key，避免池化串台
+            const poolKey = filename || src;
+            const poolType = filename ? type : "blob";
+            const decoder = await decoderPool.get(poolKey, poolType, src);
+            // P1: 校验 token，若期间又调用了 load 则放弃本次结果
+            if (token !== this._loadToken) return;
+            this._currentDecoder = decoder;
+            // 设置视频比例
+            if (decoder.width && decoder.height) {
+                this._videoRatio = decoder.width / decoder.height;
+                this._applyVideoFit();
+            }
+            // 帧率：直接使用 decoder.fps（mediabunny 精确计算，无需 autoDetectFps）
+            if (!this._manualFrameRate && !this._backendFps) {
+                const fps = decoder.fps || 30;
+                if (fps > 0 && fps <= 120) {
+                    this._frameRate = fps;
+                    this._sourceFps = fps;
+                    this._sourceTotalFrames = decoder.frameCount || Math.round(decoder.duration * fps);
+                    this._fpsDetected = true;
+                    this._updateFrameTicks();
+                    this._updateLoadRangeMarkers();
+                    this.onFpsChange?.(fps);
+                    this.onSourceFpsDetected?.(fps);
+                }
+            }
+            // P6: 同步 canvas 内部分辨率，避免 drawImage 拉伸模糊
+            if (decoder.previewWidth && decoder.previewHeight) {
+                this._canvas.width = decoder.previewWidth;
+                this._canvas.height = decoder.previewHeight;
+            } else if (decoder.width && decoder.height) {
+                this._canvas.width = decoder.width;
+                this._canvas.height = decoder.height;
+            }
+            // 隐藏占位提示，显示 canvas
+            this._placeholder.style.display = "none";
+            this._videoSurface.style.display = "block";
+            this._updateSurfaceSize();
+            // 渲染首帧
+            const startFrame = this._skipFrames > 0 ? this._skipFrames : 0;
+            const targetFrame = Math.max(0, Math.min(startFrame, Math.max(0, decoder.frameCount - 1)));
+            await decoder.renderFrame(targetFrame, this._canvas, true);
+            if (token !== this._loadToken) return;
+            this._currentTime = targetFrame / (this._frameRate || 24);
+            this._updateDisplay();
+            this._updateLoadRangeMarkers();
+            this._updateRangeDisplay();
+            // P4: 后台预解码音频（不阻塞首帧渲染），避免首次播放时音频延迟
+            this._preloadAudio(decoder);
+            // 触发 onLoadedMetadata 回调
+            this.onLoadedMetadata?.(this);
+            this._updateSurfaceSize();
+        } catch (e) {
+            if (token !== this._loadToken) return;
+            console.error("[小珠光] Canvas 解码加载失败:", e);
+            this._onErrorEvt(e);
+        } finally {
+            if (token === this._loadToken && this._loadingSpinner) {
+                this._loadingSpinner.style.display = "none";
+            }
+        }
+    }
+
+    // P4: 后台预解码音频，首次播放时直接使用，无延迟
+    async _preloadAudio(decoder) {
+        if (!decoder || !decoder.hasAudio) return;
+        if (this._fullAudioBuffer || this._audioDecoding) return;
+        this._audioDecoding = true;
+        try {
+            this._fullAudioBuffer = await decoder.decodeFullAudio();
+        } catch (e) {
+            console.warn("[小珠光] 预解码音频失败:", e);
+        } finally {
+            this._audioDecoding = false;
+        }
+    }
+
     load(src) {
         if (this._destroyed) return;
         this._src = src || "";
-        // 加载新视频时重置帧率检测状态
         this._backendFps = false;
-        // 强制帧率模式下保留 _fpsDetected 状态，避免 autoDetectFps 被阻塞后帧率显示丢失
         if (!this._manualFrameRate) {
             this._fpsDetected = false;
         }
         this._sourceFps = null;
         this._sourceTotalFrames = null;
         this._totalFrames = null;
+        // 停止播放
+        this._stopPlaybackLoop();
+        this._stopAudio();
+        this._stopProgressRaf();
+        this._resetProgress();
         if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
         if (this._loadRangeEnd) this._loadRangeEnd.style.display = "none";
         if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
-        if (this._video) {
-            this._video.pause();
-            this._stopProgressRaf();
-            this._resetProgress();
-            if (src) {
-                this._video.src = src;
-                this._video.load();
-                this._placeholder.style.display = "none";
-                this._videoSurface.style.display = "block";
-                // 显示加载进度图
-                if (this._loadingSpinner) this._loadingSpinner.style.display = "flex";
-                // 立即注册监听器，避免 rAF 滞后导致 video 已缓存时 loadedmetadata 提前触发
-                const onMeta = () => {
-                    this._video.removeEventListener("loadedmetadata", onMeta);
-                    this.autoDetectFps();
-                    this._updateDisplay();
-                    const onCanPlay = () => {
-                        this._video.removeEventListener("canplay", onCanPlay);
-                        this._updateDisplay();
-                        // 视频可播放时隐藏加载进度图
-                        if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
-                    };
-                    this._video.addEventListener("canplay", onCanPlay);
-                };
-                this._video.addEventListener("loadedmetadata", onMeta);
-                requestAnimationFrame(() => {
-                    this._updateSurfaceSize();
-                });
-            } else {
-                this._video.removeAttribute("src");
-                this._video.load();
-                this._placeholder.style.display = "flex";
-                this._videoSurface.style.display = "none";
-                this._videoRatio = 16 / 9;
-                if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
-            }
+        if (src) {
+            this._currentDecoder = null;  // 重置引用，_loadDecoderAsync 会重新赋值
+            this._placeholder.style.display = "none";
+            this._videoSurface.style.display = "block";
+            this._loadDecoderAsync(src);
+            requestAnimationFrame(() => {
+                this._updateSurfaceSize();
+            });
+        } else {
+            this._currentDecoder = null;
+            this._currentFilename = "";
+            this._placeholder.style.display = "flex";
+            this._videoSurface.style.display = "none";
+            this._videoRatio = 16 / 9;
+            if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
         }
     }
 
     play() {
-        if (this._video && this._src) {
-            const fps = this._frameRate || 24;
-            const cur = this._video.currentTime;
-            const startTime = this._skipFrames / fps;
-            const endFrame = this._computeEndFrame();
-            const endTime = endFrame / fps;
-            // 仅当当前位置在红蓝区间外时，才从红杠开始播放
-            if (cur < startTime || cur >= endTime) {
-                this._video.currentTime = startTime;
-            }
-            this._video.play().catch(() => {});
+        if (!this._canvas || !this._src || !this._currentDecoder) return;
+        const fps = this._frameRate || 24;
+        // P11: 边界保护 —— _skipFrames 越界时纠正
+        const totalFrames = this.getSourceTotalFrames();
+        if (totalFrames > 0 && this._skipFrames >= totalFrames) {
+            this._skipFrames = Math.max(0, totalFrames - 1);
         }
+        const cur = this._currentTime;
+        const startTime = this._skipFrames / fps;
+        const endFrame = this._computeEndFrame();
+        const endTime = endFrame / fps;
+        // P11: 若 startTime > endTime（无效范围），直接从 0 播放到末尾
+        const effectiveStart = startTime <= endTime ? startTime : 0;
+        if (cur < effectiveStart || cur >= endTime) {
+            this.seek(effectiveStart);
+        }
+        this._isPlayingState = true;
+        this._startPlaybackLoop();
+        this._startAudioPlayback();
+        this._startProgressRaf();
+        if (this._progressShine) this._progressShine.style.display = "block";
+        this.onPlay?.(this);
     }
 
     pause() {
-        this._video?.pause();
+        this._isPlayingState = false;
+        this._stopPlaybackLoop();
+        // P10: 暂停时停止音频源但不丢弃已解码的 buffer，避免重复解码
+        this._stopAudioSource();
+        this._stopProgressRaf();
+        if (this._progressShine && !this._isDragging) {
+            this._progressShine.style.display = "none";
+        }
+        this.onPause?.(this);
     }
 
     togglePlay() {
-        if (!this._video || !this._src) return;
-        if (this._video.paused) {
-            this.play();
-        } else {
+        if (!this._canvas || !this._src) return;
+        if (this._isPlayingState) {
             this.pause();
+        } else {
+            this.play();
         }
     }
 
+    // seek：RAF 节流 + 最近帧降级（拖动跟手，不卡顿）
     seek(time) {
-        if (this._video) this._video.currentTime = time;
+        if (!this._canvas || !this._currentDecoder) return;
+        const dur = this.duration;
+        const target = Math.max(0, Math.min(time, dur));
+        this._currentTime = target;
+        this._updateProgressDisplay(target, dur);
+        // P5: 若正在播放，重置音频位置以保持同步
+        if (this._isPlayingState) {
+            this._startAudioPlayback();
+        }
+        if (this._scrubRafId) return;
+        this._scrubRafId = requestAnimationFrame(() => {
+            this._scrubRafId = null;
+            const t = this._currentTime;
+            const fps = this._frameRate || 24;
+            const targetFrame = Math.max(0, Math.min(
+                Math.round(t * fps),
+                Math.max(0, this._currentDecoder.frameCount - 1)
+            ));
+            this._currentDecoder.renderFrame(targetFrame, this._canvas, true);
+        });
     }
 
     setMuted(muted) {
-        if (this._video) this._video.muted = !!muted;
+        this._muted = !!muted;
+        this._applyMute();
+    }
+
+    _applyMute() {
+        if (this._audioGain) {
+            this._audioGain.gain.value = this._muted ? 0 : 1;
+        }
     }
 
     setPlaybackRate(rate) {
-        if (this._video) this._video.playbackRate = rate;
+        // P16: 支持变速播放
+        const r = Math.max(0.25, Math.min(4, rate || 1));
+        if (this._isPlayingState) {
+            // 变速时重置播放起点为当前帧，避免时间漂移
+            const fps = this._frameRate || 24;
+            this._playbackStartFrame = Math.round(this._currentTime * fps);
+            this._playbackStartTime = performance.now();
+        }
+        this._playbackRate = r;
     }
 
     setLoop(loop) {
-        if (this._video) this._video.loop = !!loop;
+        this._loopPlayback = !!loop;
     }
 
     setCustomSize(w, h) {
@@ -1166,24 +1273,180 @@ export class XiaozhuguangVideoPlayer {
     }
 
     _applyVideoFit() {
-        if (!this._video) return;
+        if (!this._canvas) return;
         if (!this._customRatio || !this._videoRatio) {
-            // 无自定义比例 → 拉伸填满
-            this._video.style.objectFit = "fill";
-            this._video.style.objectPosition = "center";
+            this._canvas.style.objectFit = "fill";
+            this._canvas.style.objectPosition = "center";
             return;
         }
         const src_ar = this._videoRatio;
         const dst_ar = this._customRatio;
         if (Math.abs(src_ar - dst_ar) < 0.01) {
-            // 宽高比一致 → 拉伸填满（仅分辨率调整）
-            this._video.style.objectFit = "fill";
-            this._video.style.objectPosition = "center";
+            this._canvas.style.objectFit = "fill";
+            this._canvas.style.objectPosition = "center";
         } else {
-            // 宽高比不同 → cover 模式（居中裁剪）
-            this._video.style.objectFit = "cover";
-            this._video.style.objectPosition = "center";
+            this._canvas.style.objectFit = "cover";
+            this._canvas.style.objectPosition = "center";
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 播放循环：播放迭代器 + 预缓冲队列（参考编辑器架构）
+    // ═══════════════════════════════════════════════════════════════════════════
+    _startPlaybackLoop() {
+        this._stopPlaybackLoop();
+        if (!this._canvas || !this._currentDecoder) return;
+        const decoder = this._currentDecoder;
+        const fps = this._frameRate || 24;
+        const startLocalTime = this._currentTime;
+        const startFrame = Math.max(0, Math.round(startLocalTime * fps));
+        // 创建播放迭代器
+        this._playbackIterator = decoder.createPlaybackIterator(startLocalTime);
+        this._playbackBuffer = [];
+        this._playbackStartFrame = startFrame;
+        this._playbackStartTime = performance.now();
+        this._isBuffering = false;
+        this._fillPlaybackBuffer();
+        // P16: 变速播放：frameDuration 除以速率
+        const rate = this._playbackRate || 1;
+        const frameDuration = 1000 / fps / rate;
+        let lastFrame = startFrame;
+        let lastRafTime = performance.now();
+        const loop = () => {
+            if (!this._isPlayingState || !this._currentDecoder) {
+                this._playbackRaf = 0;
+                return;
+            }
+            const now = performance.now();
+            // P17: 标签页后台恢复时 RAF 间隔过大，重置计时避免快进追赶
+            const rafDelta = now - lastRafTime;
+            lastRafTime = now;
+            if (rafDelta > 500) {
+                // 后台恢复：重置起始时间，跳到当前应播放的帧
+                this._playbackStartTime = now - (lastFrame - this._playbackStartFrame) * frameDuration;
+            }
+            const elapsedMs = now - this._playbackStartTime;
+            const expectedFrame = this._playbackStartFrame + Math.floor(elapsedMs / frameDuration);
+            const framesToAdvance = Math.min(expectedFrame - lastFrame, 5); // P17: 限制单次追赶帧数
+            if (framesToAdvance > 0) {
+                for (let i = 0; i < framesToAdvance; i++) {
+                    if (this._playbackBuffer.length > 0) {
+                        const frame = this._playbackBuffer.shift();
+                        const ctx = this._canvas.getContext('2d');
+                        ctx.drawImage(frame.canvas, 0, 0, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
+                        this._currentTime = frame.timestamp;
+                        lastFrame++;
+                        this._fillPlaybackBuffer();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            // 检查播放结束
+            const endFrame = this._computeEndFrame();
+            const endTime = endFrame / fps;
+            if (this._currentTime >= endTime) {
+                if (this._loopPlayback) {
+                    // P3: 循环回到起点时重建迭代器和清空 buffer，避免第二轮卡死
+                    const startTime = this._skipFrames / fps;
+                    this._currentTime = startTime;
+                    this._playbackIterator = decoder.createPlaybackIterator(startTime);
+                    this._playbackBuffer = [];
+                    this._playbackStartTime = performance.now();
+                    this._playbackStartFrame = this._skipFrames;
+                    lastFrame = this._skipFrames;
+                    this._fillPlaybackBuffer();
+                    this._startAudioPlayback();
+                } else {
+                    this._isPlayingState = false;
+                    this._onEndedEvt();
+                    this._playbackRaf = 0;
+                    return;
+                }
+            }
+            this._playbackRaf = requestAnimationFrame(loop);
+        };
+        this._playbackRaf = requestAnimationFrame(loop);
+    }
+
+    async _fillPlaybackBuffer() {
+        if (this._isBuffering || !this._isPlayingState) return;
+        if (!this._playbackIterator) return;
+        this._isBuffering = true;
+        try {
+            while (this._playbackBuffer.length < this._playbackBufferSize && this._isPlayingState) {
+                const result = await this._playbackIterator.next();
+                if (result.done) break;
+                const wc = result.value;
+                if (wc && wc.canvas) {
+                    const copy = document.createElement('canvas');
+                    copy.width = wc.canvas.width;
+                    copy.height = wc.canvas.height;
+                    copy.getContext('2d').drawImage(wc.canvas, 0, 0);
+                    this._playbackBuffer.push({ canvas: copy, timestamp: wc.timestamp });
+                }
+            }
+        } catch (e) {
+            console.error("[小珠光] 预缓冲失败:", e);
+        } finally {
+            this._isBuffering = false;
+        }
+    }
+
+    _stopPlaybackLoop() {
+        if (this._playbackRaf) {
+            cancelAnimationFrame(this._playbackRaf);
+            this._playbackRaf = 0;
+        }
+        this._playbackIterator = null;
+        this._playbackBuffer = [];
+        this._isBuffering = false;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 音频播放（基于 AudioContext + AudioBufferSink）
+    // ═══════════════════════════════════════════════════════════════════════════
+    _ensureAudioContext() {
+        if (!this._audioCtx) {
+            this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            this._audioGain = this._audioCtx.createGain();
+            this._audioGain.connect(this._audioCtx.destination);
+            this._applyMute();
+        }
+        if (this._audioCtx.state === 'suspended') this._audioCtx.resume();
+    }
+
+    async _startAudioPlayback() {
+        if (!this._currentDecoder || !this._currentDecoder.hasAudio) return;
+        this._ensureAudioContext();
+        if (!this._fullAudioBuffer) {
+            this._fullAudioBuffer = await this._currentDecoder.decodeFullAudio();
+        }
+        if (!this._fullAudioBuffer) return;
+        const localTime = this._currentTime;
+        this._stopAudioSource();
+        try {
+            this._audioSource = this._audioCtx.createBufferSource();
+            this._audioSource.buffer = this._fullAudioBuffer;
+            this._audioSource.connect(this._audioGain);
+            this._audioSource.start(0, localTime);
+            this._audioPlayStartOffset = localTime;
+            this._audioPlayStartTime = this._audioCtx.currentTime;
+        } catch (e) {
+            console.warn("[小珠光] 音频播放失败:", e);
+        }
+    }
+
+    _stopAudioSource() {
+        if (this._audioSource) {
+            try { this._audioSource.stop(); } catch (_) {}
+            this._audioSource = null;
+        }
+    }
+
+    _stopAudio() {
+        // P10: 仅停止音频源，保留已解码的 _fullAudioBuffer，避免重复解码
+        this._stopAudioSource();
     }
 
     setFrameRate(fps) {
@@ -1193,7 +1456,7 @@ export class XiaozhuguangVideoPlayer {
             this._backendFps = false;
             this._fpsDetected = true;
             this._updateProgressBarSize(this._videoSurface?.offsetHeight || 200);
-            this._updateProgressDisplay(this._video?.currentTime || 0, this._video?.duration || 0);
+            this._updateProgressDisplay(this._currentTime || 0, this.duration || 0);
             this._updateLoadRangeMarkers();
             this.onFpsChange?.(fps);
         }
@@ -1209,19 +1472,34 @@ export class XiaozhuguangVideoPlayer {
         this._updateDisplay();
         this._updateLoadRangeMarkers();
         this.onFpsChange?.(24);
-        // 触发自动检测（如果视频正在播放）
-        requestAnimationFrame(() => this.autoDetectFps());
+        // Canvas 架构：fps 由 decoder 直接提供，重新读取
+        if (this._currentDecoder) {
+            const fps = this._currentDecoder.fps || 30;
+            if (fps > 0 && fps <= 120) {
+                this._frameRate = fps;
+                this._sourceFps = fps;
+                this._sourceTotalFrames = this._currentDecoder.frameCount || Math.round(this._currentDecoder.duration * fps);
+                this._fpsDetected = true;
+                this._updateFrameTicks();
+                this._updateDisplay();
+                this._updateLoadRangeMarkers();
+                this.onFpsChange?.(fps);
+                this.onSourceFpsDetected?.(fps);
+            }
+        }
     }
 
     applyBackendFps(fps) {
         if (typeof fps === "number" && fps > 0) {
             this._frameRate = fps;
+            this._sourceFps = fps;
             this._backendFps = true;
             this._fpsDetected = true;
             this._updateFrameTicks();
             this._updateDisplay();
             this._updateLoadRangeMarkers();
             this.onFpsChange?.(fps);
+            this.onSourceFpsDetected?.(fps);
         }
     }
 
@@ -1231,17 +1509,19 @@ export class XiaozhuguangVideoPlayer {
 
     getTotalFrames() {
         if (this._totalFrames) return this._totalFrames;
-        if (this._video && this._video.duration > 0) {
-            return Math.max(1, Math.round(this._video.duration * (this._frameRate || 24)));
+        const dur = this.duration;
+        if (dur > 0) {
+            return Math.max(1, Math.round(dur * (this._frameRate || 24)));
         }
         return 0;
     }
 
     getSourceTotalFrames() {
         if (this._sourceTotalFrames) return this._sourceTotalFrames;
-        if (this._video && this._video.duration > 0) {
+        const dur = this.duration;
+        if (dur > 0) {
             const srcFps = this._sourceFps || this._frameRate || 24;
-            return Math.max(1, Math.round(this._video.duration * srcFps));
+            return Math.max(1, Math.round(dur * srcFps));
         }
         return 0;
     }
@@ -1263,12 +1543,12 @@ export class XiaozhuguangVideoPlayer {
         this._frameLimit = Math.max(0, parseInt(frameLimit) || 0);
         this._updateLoadRangeMarkers();
         this._resetPlaybackToStart();
-        // 确保红蓝显示更新（即使视频未加载，_resetPlaybackToStart 内部会跳过）
         this._updateRangeDisplay();
     }
 
     _updateLoadRangeMarkers() {
-        if (!this._progressBar || !this._video || !this._video.duration) return;
+        const dur = this.duration;
+        if (!this._progressBar || !this._canvas || dur <= 0) return;
         const totalSourceFrames = this.getSourceTotalFrames();
         if (!totalSourceFrames || totalSourceFrames <= 1) {
             if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
@@ -1279,9 +1559,9 @@ export class XiaozhuguangVideoPlayer {
         const startFrame = this._skipFrames;
         let endFrame;
         if (this._frameLimit > 0) {
-            endFrame = Math.min(startFrame + this._frameLimit, totalSourceFrames) - 1;
+            endFrame = Math.min(startFrame + this._frameLimit, totalSourceFrames);
         } else {
-            endFrame = totalSourceFrames - 1;
+            endFrame = totalSourceFrames;
         }
         if (startFrame >= totalSourceFrames || endFrame < 0 || startFrame > endFrame) {
             if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
@@ -1289,29 +1569,24 @@ export class XiaozhuguangVideoPlayer {
             if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
             return;
         }
-        const denom = totalSourceFrames - 1;
+        // 进度条按帧数等分：分母用 totalSourceFrames，使最右侧（endFrame=totalSourceFrames）对应 100%
+        const denom = totalSourceFrames;
         const startPct = (startFrame / denom) * 100;
         const endPct = (endFrame / denom) * 100;
-        // 竖杠宽 2px + translateX(-50%) → 左右各 1px。边界处需偏移避免被 overflow:hidden 裁剪
         const barW = this._progressBar.offsetWidth || 300;
         const edgeOffsetPct = barW > 0 ? (1 / barW) * 100 : 0.35;
-        // 红色引导线始终显示（跳过帧数=0 时在最左侧 0% 位置）
         if (this._loadRangeStart) {
             this._loadRangeStart.style.display = "block";
             const clampedStartPct = Math.max(edgeOffsetPct, startPct);
             this._loadRangeStart.style.left = clampedStartPct + "%";
-            // 红字始终在红杠右侧 5px
             this._positionRedLabel(clampedStartPct, barW);
         }
-        // 蓝色引导线始终显示（帧数上限=0 时在最右侧 100% 位置）
         if (this._loadRangeEnd) {
             this._loadRangeEnd.style.display = "block";
             const clampedEndPct = Math.min(100 - edgeOffsetPct, endPct);
             this._loadRangeEnd.style.left = clampedEndPct + "%";
-            // 蓝字最右侧字符始终在蓝杠左侧 5px
             this._positionBlueLabel(clampedEndPct, barW);
         }
-        // 加载区间填充始终显示
         if (this._loadRangeFill) {
             this._loadRangeFill.style.display = "block";
             this._loadRangeFill.style.left = startPct + "%";
@@ -1319,9 +1594,6 @@ export class XiaozhuguangVideoPlayer {
         }
     }
 
-    // 红字始终在红杠右侧 1px：
-    // 红杠中心在 pct%，竖杠宽 8px（translateX(-50%) 后左右各 4px）。
-    // 数字左边缘 = 红杠中心 + 4px（竖杠右边缘） + 1px = 红杠中心 + 5px
     _positionRedLabel(pct, barW) {
         if (!this._redFrameDisplay) return;
         const centerPx = (pct / 100) * barW;
@@ -1330,8 +1602,6 @@ export class XiaozhuguangVideoPlayer {
         this._redFrameDisplay.style.transform = "translateX(0)";
     }
 
-    // 蓝字最右侧字符始终在蓝杠左侧 1px：
-    // 蓝杠中心在 pct%，数字右边缘 = 蓝杠中心 - 4px（竖杠左边缘） - 1px = 蓝杠中心 - 5px
     _positionBlueLabel(pct, barW) {
         if (!this._blueFrameDisplay) return;
         const centerPx = (pct / 100) * barW;
@@ -1340,103 +1610,37 @@ export class XiaozhuguangVideoPlayer {
         this._blueFrameDisplay.style.transform = "translateX(-100%)";
     }
 
+    // Canvas 架构：fps 由 decoder 精确提供，无需复杂的 autoDetectFps
+    // 保留空壳方法兼容外部调用（_onPlayEvt 等历史代码可能引用）
     autoDetectFps() {
         if (this._manualFrameRate || this._backendFps || this._detectingFps) return;
-        const video = this._video;
-        if (!video || !video.src) return;
-        this._detectingFps = true;
-
-        // 方案 A：用隐藏的 offscreen video 解码，不影响主视频画面
-        if (typeof HTMLVideoElement.prototype.requestVideoFrameCallback === "function") {
-            // 创建离屏 video（不挂载到 DOM，不显示）
-            const probe = document.createElement("video");
-            probe.src = video.src;
-            probe.muted = true;
-            probe.style.position = "absolute";
-            probe.style.width = "1px";
-            probe.style.height = "1px";
-            probe.style.opacity = "0";
-            probe.style.pointerEvents = "none";
-            probe.style.left = "-9999px";
-            document.body.appendChild(probe);
-
-            let prevMediaTime = null;
-            const samples = [];
-            let seekCount = 0;
-            const maxSeeks = 20;
-            const initialFps = this._frameRate || 24;
-            const step = 1 / initialFps;
-            let seekTarget = 0;
-            let done = false;
-
-            const cleanup = () => {
-                done = true;
-                this._detectingFps = false;
-                try { probe.pause(); probe.removeAttribute("src"); probe.load(); } catch (_) {}
-                probe.remove();
-            };
-
-            const onMeta = () => {
-                probe.removeEventListener("loadedmetadata", onMeta);
-                const dur = probe.duration || 0;
-                const cb = (now, metadata) => {
-                    if (done || this._destroyed || this._backendFps) {
-                        cleanup();
-                        return;
-                    }
-                    const mt = metadata.mediaTime;
-                    if (prevMediaTime !== null) {
-                        const dt = mt - prevMediaTime;
-                        if (dt > 0.001 && dt < 1) samples.push(dt);
-                    }
-                    prevMediaTime = mt;
-                    seekCount++;
-                    if (samples.length >= 8 || seekCount >= maxSeeks) {
-                        cleanup();
-                        if (samples.length > 0) {
-                            samples.sort((a, b) => a - b);
-                            const median = samples[Math.floor(samples.length / 2)];
-                            const detectedFps = Math.round(1 / median);
-                        if (detectedFps >= 1 && detectedFps <= 120) {
-                            this._frameRate = detectedFps;
-                            this._fpsDetected = true;
-                            this._updateFrameTicks();
-                            this._updateDisplay();
-                            this._updateLoadRangeMarkers();
-                            this.onFpsChange?.(detectedFps);
-                        }
-                        }
-                    } else {
-                        seekTarget += step;
-                        if (dur > 0 && seekTarget >= dur) seekTarget = 0;
-                        probe.currentTime = seekTarget;
-                        probe.requestVideoFrameCallback(cb);
-                    }
-                };
-                probe.currentTime = 0;
-                probe.requestVideoFrameCallback(cb);
-            };
-            probe.addEventListener("loadedmetadata", onMeta);
-            // 加载超时保护
-            setTimeout(() => { if (!done && samples.length === 0) cleanup(); }, 8000);
-            return;
+        if (!this._currentDecoder) return;
+        const fps = this._currentDecoder.fps || 30;
+        if (fps > 0 && fps <= 120) {
+            this._frameRate = fps;
+            this._sourceFps = fps;
+            this._sourceTotalFrames = this._currentDecoder.frameCount || Math.round(this._currentDecoder.duration * fps);
+            this._fpsDetected = true;
+            this._updateFrameTicks();
+            this._updateDisplay();
+            this._updateLoadRangeMarkers();
+            this.onFpsChange?.(fps);
+            this.onSourceFpsDetected?.(fps);
         }
-
-        // 方案 B：不支持 requestVideoFrameCallback 时，等待后端 onExecuted 提供
-        this._detectingFps = false;
     }
 
     _updateDisplay() {
-        // 一次性刷新当前进度显示，供检测 fps 后调用
-        this._updateProgressDisplay(this._video?.currentTime || 0, this._video?.duration || 0);
+        this._updateProgressDisplay(this._currentTime || 0, this.duration || 0);
     }
 
-    get isPlaying() { return this._video ? !this._video.paused : false; }
-    get currentTime() { return this._video?.currentTime ?? 0; }
-    get duration() { return this._video?.duration ?? 0; }
-    get videoWidth() { return this._video?.videoWidth ?? 0; }
-    get videoHeight() { return this._video?.videoHeight ?? 0; }
-    get videoElement() { return this._video; }
+    // Canvas 架构 getters
+    get isPlaying() { return !!this._isPlayingState; }
+    get currentTime() { return this._currentTime ?? 0; }
+    get duration() { return this._currentDecoder?.duration ?? 0; }
+    get videoWidth() { return this._currentDecoder?.width ?? 0; }
+    get videoHeight() { return this._currentDecoder?.height ?? 0; }
+    // 兼容外部访问：返回 null（Canvas 架构无 video 元素）
+    get videoElement() { return null; }
     get src() { return this._src; }
 
     setPlaceholder(text) {
@@ -1446,7 +1650,22 @@ export class XiaozhuguangVideoPlayer {
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
+        // Canvas 架构清理
+        this._stopPlaybackLoop();
+        this._stopAudio();
         this._stopProgressRaf();
+        if (this._scrubRafId) {
+            cancelAnimationFrame(this._scrubRafId);
+            this._scrubRafId = null;
+        }
+        if (this._audioCtx) {
+            try { this._audioCtx.close(); } catch (_) {}
+            this._audioCtx = null;
+            this._audioGain = null;
+            this._audioSource = null;
+        }
+        // 释放当前解码器引用（池化管理，不主动销毁）
+        this._currentDecoder = null;
         if (this._dblClickTimer) {
             clearTimeout(this._dblClickTimer);
             this._dblClickTimer = null;
@@ -1461,12 +1680,13 @@ export class XiaozhuguangVideoPlayer {
             this._placeholder.remove();
         }
         if (this._bottomBar) {
-            this._bottomBar.removeEventListener("mousedown", this._onProgressDown);
+            // P8: 修正事件类型为 pointerdown（与注册时一致）
+            this._bottomBar.removeEventListener("pointerdown", this._onProgressDown);
             this._bottomBar.removeEventListener("wheel", this._forwardWheel);
         }
-        // 清理可能的拖拽监听残留
-        document.removeEventListener("mousemove", this._onProgressMove);
-        document.removeEventListener("mouseup", this._onProgressUp);
+        // P8: 从 document 清理改为从 window 清理（与注册位置一致）
+        window.removeEventListener("mousemove", this._onProgressMove);
+        window.removeEventListener("mouseup", this._onProgressUp);
         window.removeEventListener("mouseup", this._onMarkerUp);
         if (this._markerDragOverlay) {
             this._markerDragOverlay.removeEventListener("pointermove", this._onMarkerMove);
@@ -1487,20 +1707,9 @@ export class XiaozhuguangVideoPlayer {
             this._videoSurface.removeEventListener("wheel", this._forwardWheel);
             this._videoSurface.removeEventListener("contextmenu", this._onContextMenu);
         }
-        if (this._video) {
-            this._video.pause();
-            this._video.removeAttribute("src");
-            this._video.load();
-            this._video.removeEventListener("loadedmetadata", this._onLoadedMeta);
-            this._video.removeEventListener("play", this._onPlayEvt);
-            this._video.removeEventListener("pause", this._onPauseEvt);
-            this._video.removeEventListener("ended", this._onEndedEvt);
-            this._video.removeEventListener("timeupdate", this._onTimeUpdateEvt);
-            this._video.removeEventListener("error", this._onErrorEvt);
-        }
         if (this._placeholder) this._placeholder.remove();
         if (this._loadingSpinner) this._loadingSpinner.remove();
-        if (this._video) this._video.remove();
+        if (this._canvas) this._canvas.remove();
         if (this._videoSurface) this._videoSurface.remove();
         if (this._progressContainer) this._progressContainer.remove();
         if (this._progressThumb) this._progressThumb.remove();
@@ -1511,7 +1720,7 @@ export class XiaozhuguangVideoPlayer {
             this._stage.removeEventListener("contextmenu", this._onContextMenu);
             this._stage.remove();
         }
-        this._video = null;
+        this._canvas = null;
         this._videoSurface = null;
         this._loadingSpinner = null;
         this._controlsLayer = null;

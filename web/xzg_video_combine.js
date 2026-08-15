@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
 import { xzgLang } from "./xzg_i18n.js";
+import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 
 // ═══════════════════════════════════════════════════════════════════════
 // 小珠光视频保存 - 双语翻译表
@@ -296,6 +297,12 @@ function _xzgPatchCanvasPrompt() {
 const VIDEO_PREVIEW_WIDGET_NAME = "xzg_video_combine_preview";
 const VIDEO_PREVIEW_MIN_H = 100;
 
+// 模块级全局视频输出缓存：跨 tab 重建节点后恢复预览的关键
+// key: 节点 id 字符串；value: { filename, type, subfolder, frame_rate }
+// 借鉴 ComfyUI 原生 setNodeOutputsByExecutionId 全局 store 思路：
+// executed 事件到达时无条件写入（即使节点已销毁），切回 tab 重建节点后从此读取恢复
+const _xzgVideoOutputCache = new Map();
+
 function getVideoUrl(filename, type, subfolder) {
     if (!filename) return "";
     const params = new URLSearchParams({
@@ -318,6 +325,30 @@ function _extractFilename(url) {
 
 app.registerExtension({
     name: "xiaozhuguang.video_combine",
+    init() {
+        // 模块级全局 executed 监听器：节点销毁期间（切 tab）也能写入 cache
+        // 解决节点级监听器随 onRemoved 移除导致事件丢失的问题
+        api.addEventListener("executed", (event) => {
+            const detail = event.detail;
+            if (!detail || !detail.output) return;
+            const ui = detail.output.ui || detail.output;
+            const videos = ui?.videos || ui?.video;
+            if (!Array.isArray(videos) || videos.length === 0) return;
+            const v = videos[0];
+            if (!v || !v.filename) return;
+            const execNode = String(detail.node || detail.display_node || "");
+            const localId = execNode.split(":").pop();
+            const info = {
+                filename: v.filename || "",
+                type: v.type || "output",
+                subfolder: v.subfolder || "",
+            };
+            if (typeof v.frame_rate === "number" && v.frame_rate > 0) {
+                info.frame_rate = v.frame_rate;
+            }
+            _xzgVideoOutputCache.set(localId, info);
+        });
+    },
     getCustomWidgets() {
         return {
             XZGINT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
@@ -352,6 +383,8 @@ app.registerExtension({
             playerContainer.style.background = "#1a1a1a";
             playerContainer.style.position = "relative";
             playerContainer.style.pointerEvents = "none";
+            // 启用空格+拖动平移画布（DOM widget 默认会拦截 pointer 事件）
+            xzgEnableCanvasPanOnSpace(playerContainer);
 
             // Bypass 紫色覆盖层
             const bypassOverlay = document.createElement("div");
@@ -414,7 +447,8 @@ app.registerExtension({
                 {
                     hideOnZoom: false,
                     getValue() {
-                        const info = player._videoInfo;
+                        // 优先从 properties 读取（跨 tab 重建后 player._videoInfo 会丢失）
+                        const info = node.properties?._xzgVideoOutput || player._videoInfo;
                         return info ? {
                             filename: info.filename || "",
                             type: info.type || "output",
@@ -434,7 +468,11 @@ app.registerExtension({
                         if (!filename) { player.load(""); return; }
                         const url = getVideoUrl(filename, type, subfolder);
                         if (url && url !== player.src) {
-                            player._videoInfo = { filename, type, subfolder };
+                            const info = { filename, type, subfolder };
+                            player._videoInfo = info;
+                            // 同步 properties，保证后续序列化/重建可恢复
+                            node.properties = node.properties || {};
+                            node.properties._xzgVideoOutput = info;
                             player.load(url);
                         }
                     },
@@ -458,6 +496,8 @@ app.registerExtension({
 
             const origOnRemoved = node.onRemoved;
             node.onRemoved = function () {
+                api.removeEventListener("executed", _onApiExecuted);
+                _visibilityObserver.disconnect();
                 player.destroy();
                 return origOnRemoved?.apply(this, arguments);
             };
@@ -465,39 +505,145 @@ app.registerExtension({
             const origOnConfigure = node.onConfigure;
             node.onConfigure = function (info) {
                 origOnConfigure?.apply(this, arguments);
-                requestAnimationFrame(() => player.resize());
+                requestAnimationFrame(() => {
+                    player.resize();
+                    if (player._destroyed) return;
+                    // 切 tab 重建 / 加载工作流后恢复视频预览
+                    // 优先级 1：模块级全局 cache（executed 事件写入，跨节点重建稳定）
+                    // 优先级 2：node.properties（工作流保存/加载场景兜底）
+                    const saved = _xzgVideoOutputCache.get(String(node.id))
+                                 || node.properties?._xzgVideoOutput;
+                    if (saved && saved.filename) {
+                        const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}`;
+                        if (player._lastAppliedKey !== key) {
+                            player._lastAppliedKey = key;
+                            player._videoInfo = saved;
+                            if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
+                            const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
+                            if (url) {
+                                const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
+                                if (visible) {
+                                    player.load(url);
+                                } else {
+                                    player._pendingVideoUrl = url;
+                                }
+                            }
+                        }
+                    }
+                });
             };
 
             // 执行完成后加载输出视频
-            const origOnExecuted = node.onExecuted;
-            node.onExecuted = function (output) {
-                origOnExecuted?.apply(this, arguments);
+            // 提取为独立函数，供 onExecuted 和 api executed 事件共用
+            // 关键：视频信息同步写入 node.properties，跨 tab 重建后可恢复
+            // （借鉴 ComfyUI 原生 setNodeOutputsByExecutionId 全局 store 思路）
+            const _applyVideoOutput = (output) => {
                 if (!output || !player) return;
                 const ui = output.ui || output;
-                
+
                 // 更新输出目录显示（使用执行返回的路径）
                 if (ui?.output_dir) {
                     node._xzgFullOutputDir = ui.output_dir;
                     node.setDirtyCanvas(true, true);
                 }
-                
-                const videos = ui?.videos;
+
+                // 兼容 output.videos / output.video 两种字段名
+                const videos = ui?.videos || ui?.video;
                 if (Array.isArray(videos) && videos.length > 0) {
                     const v = videos[0];
-                    player._videoInfo = {
+                    const info = {
                         filename: v.filename || "",
                         type: v.type || "output",
                         subfolder: v.subfolder || "",
                     };
-                    const url = getVideoUrl(v.filename, v.type, v.subfolder);
+                    if (typeof v.frame_rate === "number" && v.frame_rate > 0) {
+                        info.frame_rate = v.frame_rate;
+                    }
+                    // 关键：先无条件写入模块级全局 cache
+                    // 切 tab 重建节点后，onConfigure/ResizeObserver 从此读取恢复预览
+                    _xzgVideoOutputCache.set(String(node.id), info);
+                    // 同步 properties（工作流保存/加载场景兜底）
+                    node.properties = node.properties || {};
+                    node.properties._xzgVideoOutput = info;
+                    // player 已销毁时只存信息，等重建后由 onConfigure 恢复
+                    if (player._destroyed) return;
+                    // 去重：同一视频不重复加载（onExecuted 与 api 事件可能同时触发）
+                    const key = `${info.filename}|${info.type || ""}|${info.subfolder || ""}`;
+                    if (player._lastAppliedKey === key) return;
+                    player._lastAppliedKey = key;
+                    player._videoInfo = info;
+                    const url = getVideoUrl(info.filename, info.type, info.subfolder);
                     if (url) {
-                        player.load(url);
-                        if (typeof v.frame_rate === "number" && v.frame_rate > 0) {
-                            player.setFrameRate?.(v.frame_rate);
+                        if (info.frame_rate) player.setFrameRate?.(info.frame_rate);
+                        // 容器可见时立即加载；不可见时只记录 pending，等 ResizeObserver 触发
+                        const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
+                        if (visible) {
+                            player.load(url);
+                        } else {
+                            player._pendingVideoUrl = url;
                         }
                     }
                 }
             };
+
+            const origOnExecuted = node.onExecuted;
+            node.onExecuted = function (output) {
+                origOnExecuted?.apply(this, arguments);
+                _applyVideoOutput(output);
+            };
+
+            // 补充：监听 api executed 事件，解决切换工作流后 onExecuted 不触发的问题。
+            // ComfyUI 前端只在当前 rootGraph 中查找节点调用 onExecuted，切换 tab 后
+            // 原工作流的节点不在当前 rootGraph 中，onExecuted 不会被调用。
+            const _onApiExecuted = (event) => {
+                const detail = event.detail;
+                if (!detail || !detail.output) return;
+                // 匹配节点 id（兼容子图 executionId 格式 "parentId:childId"，取最后一段）
+                const execNode = String(detail.node || detail.display_node || "");
+                const localId = execNode.split(":").pop();
+                if (localId !== String(node.id)) return;
+                // 无条件调用：_applyVideoOutput 内部会先写模块级 cache（即使 player 销毁），
+                // 再判断 player 是否可用决定是否立即 load
+                _applyVideoOutput(detail.output);
+            };
+            api.addEventListener("executed", _onApiExecuted);
+
+            // 监听容器可见性变化：切 tab 时 DOM widget 容器尺寸变为 0，
+            // 切回时从 0 变为非 0。此时若有待加载视频就 load，确保预览刷新。
+            let _containerVisible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
+            const _visibilityObserver = new ResizeObserver(() => {
+                if (player._destroyed) return;
+                const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
+                if (visible && !_containerVisible) {
+                    // 容器从不可见变为可见（切回 tab）
+                    if (player._pendingVideoUrl) {
+                        const url = player._pendingVideoUrl;
+                        player._pendingVideoUrl = null;
+                        player.load(url);
+                    } else if (player.getSrc() && player._currentDecoder) {
+                        // 已有视频，重新渲染当前帧（canvas 在不可见时可能渲染异常）
+                        player.seek(player._currentTime || 0);
+                        player._updateSurfaceSize?.();
+                    } else {
+                        // player 无视频但有缓存记录：从模块级 cache / properties 恢复
+                        // （覆盖 onConfigure 恢复时机遗漏的场景）
+                        const saved = _xzgVideoOutputCache.get(String(node.id))
+                                     || node.properties?._xzgVideoOutput;
+                        if (saved && saved.filename) {
+                            const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}`;
+                            if (player._lastAppliedKey !== key) {
+                                player._lastAppliedKey = key;
+                                player._videoInfo = saved;
+                                if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
+                                const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
+                                if (url) player.load(url);
+                            }
+                        }
+                    }
+                }
+                _containerVisible = visible;
+            });
+            _visibilityObserver.observe(playerContainer);
 
             node._xzgVideoPlayer = player;
 

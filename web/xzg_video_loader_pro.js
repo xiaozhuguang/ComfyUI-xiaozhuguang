@@ -73,12 +73,18 @@ app.registerExtension({
             const r = origOnNodeCreated?.apply(this, arguments);
             requestAnimationFrame(() => {
                 if (this.widgets?.some(w => w.name === "视频编辑器")) return;
-                const btn = this.addWidget("button", "视频编辑器", "edit", () => {
+                // 打开编辑器的统一入口：支持 extraMedia 批量传入初始媒体
+                this._xzgOpenVideoEditor = (extraMedia) => {
                     const { filename, type } = _xzgProGetCurrentVideo(this);
-                    // 打开编辑器（无论当前是否选了视频，都可进入编辑器再添加视频）
+                    // extraMedia 非空时以其首项作为 initialFilename，便于编辑器聚焦
+                    const initName = (extraMedia && extraMedia.length > 0) ? extraMedia[0].name : filename;
+                    const initType = (extraMedia && extraMedia.length > 0) ? (extraMedia[0].type || "input") : type;
+                    // 剪辑界面与节点参数完全解耦：帧率始终用原视频帧率，分辨率由编辑器内自定义设置
                     const editor = new XiaozhuguangVideoEditor({
-                        filename: filename,
-                        type: type,
+                        filename: initName,
+                        type: initType,
+                        extraMedia: extraMedia,
+                        nodeId: String(this.id || ""),
                         onCancel: () => {},
                         onApplied: async (newFilename, newType) => {
                             await _xzgProRefreshVideoCombo(this, newFilename);
@@ -90,6 +96,9 @@ app.registerExtension({
                         },
                     });
                     editor.open();
+                };
+                const btn = this.addWidget("button", "视频编辑器", "edit", () => {
+                    this._xzgOpenVideoEditor();
                 });
                 btn.options.serialize = false;
                 // 应用与「上传视频」一致的绘制风格（圆角等）

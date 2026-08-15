@@ -256,3 +256,110 @@ export async function downloadLazyJpg(imgData) {
     if (!imgData || !imgData.url) return;
     await downloadJpgImage(imgData.url, `xzg-save-${xzgTimestamp()}.jpg`);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// DOM widget 空格+拖动平移画布支持
+//
+// ComfyUI 原生 canvas widget（draw+mouse）的事件由 LiteGraph 直接处理，
+// 按住空格+拖动能正常平移画布。但 DOM widget（addDOMWidget）的 HTML
+// 元素会拦截 pointer 事件，导致空格+拖动无法到达 canvas。
+//
+// 本函数在容器上以捕获阶段监听 pointer 事件，当空格按下时把事件转发
+// 到 canvas 元素，让 LiteGraph 处理画布平移。等价于 ComfyUI 前端内部
+// useCanvasInteractions 的 handleLeftButtonReadOnlyPointer + forwardEventToCanvas。
+// ═══════════════════════════════════════════════════════════════════════
+
+// 全局空格按下状态（单例，所有容器共享，避免重复监听 keydown/keyup）
+let _xzgSpaceDown = false;
+let _xzgSpaceKeyListenersBound = false;
+
+function _xzgBindSpaceKeyListeners() {
+    if (_xzgSpaceKeyListenersBound) return;
+    _xzgSpaceKeyListenersBound = true;
+
+    // 捕获阶段监听，确保在 canvas 元素之前收到（canvas 的 keydown 也可能在捕获阶段）
+    document.addEventListener("keydown", (e) => {
+        if (e.key === " " || e.code === "Space") {
+            _xzgSpaceDown = true;
+            // 同步 ComfyUI 的 read_only 状态，让 canvas 进入画布平移模式
+            // 与 LGraphCanvas.processKey 的逻辑保持一致
+            const cv = app.canvas;
+            if (cv) {
+                cv.read_only = true;
+                if (cv._previously_dragging_canvas == null) {
+                    cv._previously_dragging_canvas = cv.dragging_canvas;
+                }
+                cv.dragging_canvas = cv.pointer?.isDown ?? false;
+            }
+        }
+    }, true);
+
+    document.addEventListener("keyup", (e) => {
+        if (e.key === " " || e.code === "Space") {
+            _xzgSpaceDown = false;
+            const cv = app.canvas;
+            if (cv) {
+                cv.read_only = false;
+                cv.dragging_canvas = (cv._previously_dragging_canvas ?? false) && (cv.pointer?.isDown ?? false);
+                cv._previously_dragging_canvas = null;
+            }
+        }
+    }, true);
+
+    // 窗口失焦时重置状态，避免 keyup 丢失导致空格卡住
+    window.addEventListener("blur", () => {
+        _xzgSpaceDown = false;
+        const cv = app.canvas;
+        if (cv) {
+            cv.read_only = false;
+            cv._previously_dragging_canvas = null;
+        }
+    });
+}
+
+/**
+ * 为 DOM widget 容器启用「空格+拖动平移画布」支持。
+ * 在容器上以捕获阶段监听 pointer 事件，空格按下时转发到 canvas 元素。
+ *
+ * @param {HTMLElement} container DOM widget 的容器元素
+ */
+export function xzgEnableCanvasPanOnSpace(container) {
+    if (!container || container.__xzgSpacePan) return;
+    container.__xzgSpacePan = true;
+    _xzgBindSpaceKeyListeners();
+
+    // 把 pointer 事件转发到 canvas 元素，让 LiteGraph 的 processMouseDown/Move/Up 处理
+    const forwardToCanvas = (e) => {
+        const canvasEl = app.canvas?.canvas;
+        if (!canvasEl) return;
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+            // 用原始事件构造同类型新事件并派发到 canvas 元素
+            const newEvent = new e.constructor(e.type, e);
+            canvasEl.dispatchEvent(newEvent);
+        } catch (_) {
+            // 某些浏览器对 PointerEvent 构造函数支持不全，回退到 MouseEvent
+            try {
+                const fallback = new MouseEvent(e.type, e);
+                canvasEl.dispatchEvent(fallback);
+            } catch (_) {}
+        }
+    };
+
+    const handler = (e) => {
+        if (!_xzgSpaceDown) return;
+        // 仅处理左键（buttons bit 0）和中键（buttons bit 1）
+        const isLeft = e.buttons === 1 || (e.type === "pointerdown" && e.button === 0);
+        const isMiddle = e.buttons === 4 || (e.type === "pointerdown" && e.button === 1);
+        if (isLeft || isMiddle) {
+            forwardToCanvas(e);
+        }
+    };
+
+    // 捕获阶段监听，确保在子元素 stopPropagation 之前拦截
+    container.addEventListener("pointerdown", handler, { capture: true });
+    container.addEventListener("pointermove", handler, { capture: true });
+    container.addEventListener("pointerup", handler, { capture: true });
+    container.addEventListener("pointercancel", handler, { capture: true });
+}

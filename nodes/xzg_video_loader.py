@@ -796,7 +796,7 @@ _XZG_VIDEO_SESSION_TIMEOUT = 3600  # 会话超时 1 小时
 
 
 def _xzg_secure_video_filename(name):
-    """生成安全的文件名，防止路径穿越"""
+    """生成安全的文件名，防止路径穿越。重名时加序号后缀，不加时间戳前缀"""
     import re as _re
     # 只保留文件名部分（去掉路径）
     name = os.path.basename(name)
@@ -804,8 +804,15 @@ def _xzg_secure_video_filename(name):
     name = _re.sub(r'[^\w.\-]', '_', name)
     if not name:
         name = 'video.mp4'
-    # 加时间戳前缀防重名
-    return '%d_%s' % (_xzg_time.time(), name)
+    # 重名时加序号后缀（如 video.mp4 → video_1.mp4）
+    upload_dir = folder_paths.get_input_directory()
+    base, ext = os.path.splitext(name)
+    final_name = name
+    seq = 1
+    while os.path.exists(os.path.join(upload_dir, final_name)):
+        final_name = f"{base}_{seq}{ext}"
+        seq += 1
+    return final_name
 
 
 def _xzg_cleanup_video_sessions():
@@ -920,9 +927,24 @@ if getattr(_xzg_PS, 'instance', None) is not None:
             session['received_bytes'] += chunk_size
             received_count = len(session['received_chunks'])
 
-            # 所有分块已接收 → 标记完成
+            # 所有分块已接收 → 验证文件大小并标记完成
             if received_count >= total_chunks:
                 session['done'] = True
+                # 验证最终文件大小与预期一致（防止损坏文件残留）
+                actual_size = 0
+                try:
+                    actual_size = os.path.getsize(file_path)
+                except Exception:
+                    pass
+                if actual_size != session['total_size']:
+                    # 文件大小不匹配，删除损坏文件
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+                    return _xzg_web2.json_response({
+                        "error": f"文件大小不匹配 (预期 {session['total_size']}，实际 {actual_size})，已删除损坏文件",
+                    }, status=500)
                 return _xzg_web2.json_response({
                     "status": "done",
                     "filename": session['filename'],
