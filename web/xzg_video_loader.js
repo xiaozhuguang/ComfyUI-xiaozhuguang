@@ -167,6 +167,10 @@ function _xzgWidgetNumberWithResetMouse(event, [x, y], node) {
 
 function _xzgDrawWidget(ctx, node, width, y, H) {
     this._xzgDrawW = width;
+    // 记录 LiteGraph 实际计算的 y/H，供激光线等需要精确定位的元素使用
+    // 解决节点 resize 后硬编码 yOffset 导致位置错乱的问题
+    this._xzgLastY = y;
+    this._xzgLastH = H;
     const pad = 16;
     const r = 6;
     const w = width - pad * 2;
@@ -229,6 +233,8 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
 // combo / button 同款圆角风格
 function _xzgDrawComboWidget(ctx, node, width, y, H) {
     this._xzgDrawW = width;
+    this._xzgLastY = y;
+    this._xzgLastH = H;
     const pad = 16, r = 6;
     const w = width - pad * 2;
     ctx.fillStyle = '#2a2a2a';
@@ -316,13 +322,22 @@ function _xzgShowComboDropdown(widget, node, event) {
     let wx = event.clientX;
     let wy = event.clientY;
     if (!wx || !wy) {
-        // fallback: 用 canvas 坐标推算
+        // fallback: 优先使用 _xzgDrawComboWidget 中记录的实际绘制位置
         const pad = 16;
-        const nodeX = (node.pos?.[0] || 0) * app.canvas.ds.scale + canvasRect.left;
-        const nodeY = (node.pos?.[1] || 0) * app.canvas.ds.scale + canvasRect.top;
-        const widgetIdx = node.widgets?.indexOf(widget) ?? 0;
-        const widgetY = nodeY + node.widgets?.slice(0, widgetIdx).reduce((s, w) => s + (w.computeSize?.(node.size[0])?.[1] || 20), 0) || 0;
-        wx = nodeX + node.size[0] * app.canvas.ds.scale - pad;
+        const scale = app.canvas.ds.scale;
+        const offset = app.canvas.ds.offset;
+        const nodeX = (node.pos?.[0] + offset[0]) * scale + canvasRect.left;
+        const nodeY = (node.pos?.[1] + offset[1]) * scale + canvasRect.top;
+        const lastY = widget._xzgLastY;
+        const lastH = widget._xzgLastH ?? 20;
+        const widgetY = (lastY != null)
+            ? (nodeY + (lastY + lastH) * scale)
+            : (() => {
+                // 最终回退：用 computeSize 累加
+                const widgetIdx = node.widgets?.indexOf(widget) ?? 0;
+                return nodeY + (node.widgets?.slice(0, widgetIdx).reduce((s, w) => s + (w.computeSize?.(node.size[0])?.[1] || 20), 0) || 0) * scale;
+            })();
+        wx = nodeX + node.size[0] * scale - pad;
         wy = widgetY;
     }
 
@@ -448,7 +463,7 @@ function _xzgShowLaserLine(widget, node) {
     svg.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:100000;";
     svg.id = "xzg-video-loader-laser";
 
-    // 计算控件数值区域屏幕位置（X固定在数值处，Y固定在节点顶部往下250px）
+    // 计算控件数值区域屏幕位置（使用 widget 实际绘制位置，跟随节点 resize 变化）
     const getWidgetScreenPos = () => {
         const canvas = app.canvas;
         if (!canvas?.ds || !canvas?.canvas) return null;
@@ -458,8 +473,13 @@ function _xzgShowLaserLine(widget, node) {
 
         // 节点右侧数值区域屏幕坐标（需加 offset 补偿画布平移）
         const valueX = (node.pos[0] + offset[0] + node.size[0] - 50) * scale + canvasRect.left;
-        // Y 根据控件不同：红线（跳过帧数）上移100，蓝线（帧数上限）保持250
-        const yOffset = (widget.name === '跳过帧数') ? 197 : 222;
+        // Y: 优先使用 _xzgDrawWidget 中记录的实际绘制位置（精确跟随 resize）
+        // 回退到硬编码值（首次绘制前或异常情况）
+        const lastY = widget._xzgLastY;
+        const lastH = widget._xzgLastH ?? 20;
+        const yOffset = (lastY != null)
+            ? (lastY + lastH / 2)
+            : ((widget.name === '跳过帧数') ? 197 : 222);
         const sy = (node.pos[1] + offset[1] + yOffset) * scale + canvasRect.top;
         return { x1: valueX, y1: sy };
     };
@@ -681,6 +701,27 @@ function _xzgCreateNumberWidget(node, inputName, inputData) {
         computeSize(width) { return [width, 20]; },
         draw: _xzgDrawWidget,
         mouse: _xzgWidgetNumberMouse,
+        callback(v) { if (this._xzgCb) this._xzgCb(v); },
+    };
+    if (!node.widgets) node.widgets = [];
+    node.widgets.push(w);
+    return w;
+}
+
+// 自定义 combo widget：从源头创建，绕过 ComfyUI 原生 combo 渲染
+// 完全使用小珠光圆角风格 draw + 自定义 DOM 下拉列表
+// type 设为 'xzg_combo' 而非 'combo'，防止 LiteGraph processNodeWidgets 识别为原生 combo 弹出 <select>
+function _xzgCreateComboWidget(node, inputName, inputData) {
+    const values = Array.isArray(inputData[0]) ? inputData[0] : [];
+    const opts = inputData[1] || {};
+    const w = {
+        name: inputName,
+        type: 'xzg_combo',
+        value: opts.default != null ? opts.default : (values[0] != null ? values[0] : ""),
+        options: { values: values },
+        computeSize(width) { return [width, 20]; },
+        draw: _xzgDrawComboWidget,
+        mouse: _xzgFpsComboMouse,
         callback(v) { if (this._xzgCb) this._xzgCb(v); },
     };
     if (!node.widgets) node.widgets = [];
@@ -1006,8 +1047,7 @@ function bindVideoLoaderInteractions(node) {
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
-    // Pro 节点支持多选：选多个视频时直接打开视频编辑器
-    fileInput.multiple = (node.type === "XiaozhuguangVideoLoaderPro");
+    fileInput.multiple = false;
     fileInput.accept = VIDEO_EXTS.map(e => "." + e).join(",");
     fileInput.style.display = "none";
     document.body.appendChild(fileInput);
@@ -1358,19 +1398,10 @@ function bindVideoLoaderInteractions(node) {
         });
         showUploadProgress(false);
         if (uploaded.length > 0) {
-            // 多个视频 + Pro 节点：直接打开视频编辑器，把所有视频作为初始媒体库
-            if (uploaded.length > 1 && typeof node._xzgOpenVideoEditor === "function") {
-                const extraMedia = uploaded.map(name => ({ name, type: "input" }));
-                // 仍把第一个设为节点当前视频，保持节点可用
-                const videoWidget = node.widgets?.find(w => w.name === "视频");
-                if (videoWidget) await refreshVideoCombo(videoWidget, uploaded[0]);
-                node._xzgOpenVideoEditor(extraMedia);
-            } else {
-                const videoWidget = node.widgets?.find(w => w.name === "视频");
-                if (videoWidget) {
-                    await refreshVideoCombo(videoWidget, uploaded[0]);
-                    player.load(getVideoUrl(videoWidget.value));
-                }
+            const videoWidget = node.widgets?.find(w => w.name === "视频");
+            if (videoWidget) {
+                await refreshVideoCombo(videoWidget, uploaded[0]);
+                player.load(getVideoUrl(videoWidget.value));
             }
         }
         fileInput.value = "";
@@ -1742,22 +1773,23 @@ app.registerExtension({
         return {
             XZGINT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
             XZGFLOAT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
+            XZGCOMBO: (node, name, data) => _xzgCreateComboWidget(node, name, data),
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "XiaozhuguangVideoLoader" || nodeData.name === "XiaozhuguangVideoLoaderPro") {
+        if (nodeData.name === "XiaozhuguangVideoLoader") {
             // 强制帧率：强制走自定义 number widget，从源头避免原生 combo 列表
             if (nodeData.input?.required?.["强制帧率"]) {
                 nodeData.input.required["强制帧率"][1].widgetType = "XZGFLOAT";
             }
-            // 视频比例：同样避免原生 combo 列表（双列表问题）
-            if (nodeData.input?.required?.["视频比例"]) {
-                nodeData.input.required["视频比例"][1].widgetType = "XZGINT";
-            }
-            // 注入自定义 widget 类型
+            // 注入自定义 widget 类型：INT/FLOAT → XZG 数值控件，combo(数组) → XZGCOMBO 自定义下拉
+            // 完全绕过 ComfyUI 原生 combo 渲染，避免出现输入 value 框
             for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
-                if (["INT", "FLOAT"].includes(inp[0]) && inp[1]) {
+                if (!inp || !inp[1]) continue;
+                if (["INT", "FLOAT"].includes(inp[0])) {
                     inp[1].widgetType ??= "XZG" + inp[0];
+                } else if (Array.isArray(inp[0])) {
+                    inp[1].widgetType ??= "XZGCOMBO";
                 }
             }
             const correctOutputs = [_tr("图像"), _tr("音频"), _tr("视频信息")];

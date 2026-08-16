@@ -1946,3 +1946,8 @@ async function _xzgDirBrowserNewFolder() {
         alert("创建失败: " + e);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// 全局导出：供其他模块（如快剪编辑器 xzg_video_editor.js）复用目录浏览器
+// ═══════════════════════════════════════════════════════════════════
+window._xzgShowDirBrowser = _xzgShowDirBrowser;

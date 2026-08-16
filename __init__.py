@@ -182,7 +182,6 @@ from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 from .nodes.xzg_video_loader import XiaozhuguangVideoLoader
-from .nodes.xzg_video_loader_pro import XiaozhuguangVideoLoaderPro
 from .nodes.xzg_audio_loader import XiaozhuguangAudioLoader
 from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
@@ -465,7 +464,7 @@ except Exception as _e:
     print("[xiaozhuguang] 注册 /xzg_save_real 路由失败:", _e)
 
 
-# ============ 小珠光视频编辑器 API（化神级专用） ============
+# ============ 小珠光快剪编辑器 API ============
 # 路由注册在 xzg_video_editor_api.py 内部完成（和 xzg_video_loader.py 一样的方式）
 # 这里只需导入该模块，触发路由注册
 try:
@@ -888,7 +887,6 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
     "XiaozhuguangVideoLoader": XiaozhuguangVideoLoader,
-    "XiaozhuguangVideoLoaderPro": XiaozhuguangVideoLoaderPro,
     "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
@@ -928,7 +926,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFrameExtract": "小珠光帧提取",
     "XiaozhuguangImageLoader": "小珠光图像加载器",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
-    "XiaozhuguangVideoLoaderPro": "小珠光视频加载-化神级",
     "XiaozhuguangAudioLoader": "小珠光音频加载器",
     "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
     "XiaozhuguangVideoCombine": "小珠光合并视频",

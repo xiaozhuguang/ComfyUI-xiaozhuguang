@@ -348,7 +348,7 @@ function updateMainIcon() {
     const iconBox = menuBtn.querySelector(".xzg-vp-icon");
     if (!iconBox) return;
     // 无记录（新建/未记录过的工作流）或有记录，统一只显示空心圆环（targetIcon），不显示"空"文字
-    iconBox.innerHTML = targetIcon(GOLD, 32);
+    iconBox.innerHTML = targetIcon(GOLD, 25);
 }
 
 // 主图标临时显示某个槽位的圆圈（覆盖靶心），与展开槽位同等大小，一段时间后恢复
@@ -359,7 +359,7 @@ function flashMainIcon(idx) {
     if (!iconBox) return;
     const color = SLOT_COLORS[idx];
     const text = slots[idx] ? String(idx + 1) : "空";
-    iconBox.innerHTML = circleIcon(color, text, 32);
+    iconBox.innerHTML = circleIcon(color, text, 25);
     clearTimeout(mainIconFlashTimer);
     mainIconFlashTimer = setTimeout(() => {
         updateMainIcon();

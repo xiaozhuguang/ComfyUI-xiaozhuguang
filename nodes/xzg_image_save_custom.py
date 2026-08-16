@@ -37,7 +37,7 @@ def _is_absolute_path(p: str) -> bool:
 
 
 def _sanitize(name: str) -> str:
-    """把路径中的非法字符替换为 _，保留 / 和 \ 作为路径分隔符，并去掉首尾空白和点。
+    r"""把路径中的非法字符替换为 _，保留 / 和 \ 作为路径分隔符，并去掉首尾空白和点。
     Windows 盘符冒号（如 C:）会被保留，避免破坏绝对路径。
     """
     if not name:

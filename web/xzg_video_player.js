@@ -127,6 +127,7 @@ export class XiaozhuguangVideoPlayer {
         this._scrubRafId = null;        // seek RAF 节流 ID
         this._playbackRaf = 0;          // 播放循环 RAF ID
         this._playbackIterator = null;  // 播放迭代器
+        this._playbackIteratorDone = false;  // 迭代器是否已耗尽（所有源帧已解码完）
         this._playbackBuffer = [];      // 预缓冲队列
         this._playbackBufferSize = 10;  // 预缓冲帧数
         this._playbackStartFrame = 0;   // 播放起始帧
@@ -502,11 +503,30 @@ export class XiaozhuguangVideoPlayer {
             this._progressBar.style.marginTop = marginTop + "px";
             // 帧刻度：每帧 1px 竖线
             this._updateFrameTicks();
+            // 进度条宽度变化后，重新定位红蓝帧号标签（像素定位需跟随 resize）
+            this._repositionRangeLabels();
         }
         if (this._progressThumb) {
             this._progressThumb.style.width = thumbSize + "px";
             this._progressThumb.style.height = thumbSize + "px";
             this._progressThumb.style.top = thumbTop + "px";
+        }
+    }
+
+    // 重新定位红蓝帧号标签：resize 后进度条宽度变化，像素定位的标签需要重算
+    _repositionRangeLabels() {
+        if (!this._progressBar || !this._canvas) return;
+        const dur = this.duration;
+        if (dur <= 0) return;
+        const barW = this._progressBar.offsetWidth || 300;
+        // 从竖线的 left 百分比反推标签位置，确保标签始终紧跟竖线
+        if (this._loadRangeStart && this._loadRangeStart.style.display !== "none") {
+            const leftPct = parseFloat(this._loadRangeStart.style.left) || 0;
+            this._positionRedLabel(leftPct, barW);
+        }
+        if (this._loadRangeEnd && this._loadRangeEnd.style.display !== "none") {
+            const leftPct = parseFloat(this._loadRangeEnd.style.left) || 0;
+            this._positionBlueLabel(leftPct, barW);
         }
     }
 
@@ -656,18 +676,14 @@ export class XiaozhuguangVideoPlayer {
     _onSurfaceClick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this._clickHandled = true;
-        setTimeout(() => {
-            if (this._clickHandled) {
-                this.togglePlay();
-            }
-        }, 200);
+        // 立即响应播放/暂停，双击上传通过 _onSurfaceDblClick 回调处理
+        // 若双击回调中需要撤销播放，可自行在 onDblClick 中 togglePlay
+        this.togglePlay();
     };
 
     _onSurfaceDblClick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this._clickHandled = false;
         this.onDblClick?.();
     };
 
@@ -1140,6 +1156,9 @@ export class XiaozhuguangVideoPlayer {
         // 停止播放
         this._stopPlaybackLoop();
         this._stopAudio();
+        // 切换视频时必须清除旧音频缓冲，否则会播放上一个视频的声音
+        this._fullAudioBuffer = null;
+        this._audioDecoding = false;
         this._stopProgressRaf();
         this._resetProgress();
         if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
@@ -1177,7 +1196,9 @@ export class XiaozhuguangVideoPlayer {
         const endTime = endFrame / fps;
         // P11: 若 startTime > endTime（无效范围），直接从 0 播放到末尾
         const effectiveStart = startTime <= endTime ? startTime : 0;
-        if (cur < effectiveStart || cur >= endTime) {
+        // 播放结束或位置越界时回到起点（含裁剪起点 _skipFrames）
+        // 容差 0.05s：避免浮点精度导致 cur 略小于 endTime 时误判为未结束
+        if (cur < effectiveStart || cur >= endTime - 0.05) {
             this.seek(effectiveStart);
         }
         this._isPlayingState = true;
@@ -1302,6 +1323,7 @@ export class XiaozhuguangVideoPlayer {
         const startFrame = Math.max(0, Math.round(startLocalTime * fps));
         // 创建播放迭代器
         this._playbackIterator = decoder.createPlaybackIterator(startLocalTime);
+        this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._playbackStartFrame = startFrame;
         this._playbackStartTime = performance.now();
@@ -1345,12 +1367,16 @@ export class XiaozhuguangVideoPlayer {
             // 检查播放结束
             const endFrame = this._computeEndFrame();
             const endTime = endFrame / fps;
-            if (this._currentTime >= endTime) {
+            // buffer 耗尽且迭代器已结束：所有源帧已播放完，触发结束
+            // 修复：85帧视频最后一帧 timestamp=84/fps < endTime=85/fps，原判断不触发
+            if (this._currentTime >= endTime ||
+                (this._playbackBuffer.length === 0 && this._playbackIteratorDone && !this._isBuffering)) {
                 if (this._loopPlayback) {
                     // P3: 循环回到起点时重建迭代器和清空 buffer，避免第二轮卡死
                     const startTime = this._skipFrames / fps;
                     this._currentTime = startTime;
                     this._playbackIterator = decoder.createPlaybackIterator(startTime);
+                    this._playbackIteratorDone = false;
                     this._playbackBuffer = [];
                     this._playbackStartTime = performance.now();
                     this._playbackStartFrame = this._skipFrames;
@@ -1358,6 +1384,9 @@ export class XiaozhuguangVideoPlayer {
                     this._fillPlaybackBuffer();
                     this._startAudioPlayback();
                 } else {
+                    // 非循环：定位到结束时间，确保播放头停在最终位置
+                    this._currentTime = endTime;
+                    this._updateProgressDisplay(endTime, this.duration);
                     this._isPlayingState = false;
                     this._onEndedEvt();
                     this._playbackRaf = 0;
@@ -1376,7 +1405,10 @@ export class XiaozhuguangVideoPlayer {
         try {
             while (this._playbackBuffer.length < this._playbackBufferSize && this._isPlayingState) {
                 const result = await this._playbackIterator.next();
-                if (result.done) break;
+                if (result.done) {
+                    this._playbackIteratorDone = true;  // 所有源帧已解码完
+                    break;
+                }
                 const wc = result.value;
                 if (wc && wc.canvas) {
                     const copy = document.createElement('canvas');
@@ -1399,6 +1431,7 @@ export class XiaozhuguangVideoPlayer {
             this._playbackRaf = 0;
         }
         this._playbackIterator = null;
+        this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._isBuffering = false;
     }

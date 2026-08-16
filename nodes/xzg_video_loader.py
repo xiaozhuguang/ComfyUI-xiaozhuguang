@@ -795,17 +795,22 @@ _XZG_VIDEO_MAX_SIZE = 1024 * 1024 * 1024  # 1GB
 _XZG_VIDEO_SESSION_TIMEOUT = 3600  # 会话超时 1 小时
 
 
-def _xzg_secure_video_filename(name):
-    """生成安全的文件名，防止路径穿越。重名时加序号后缀，不加时间戳前缀"""
+def _xzg_secure_video_filename(name, upload_dir=None):
+    """生成安全的文件名，防止路径穿越。重名时加序号后缀，不加时间戳前缀
+    保留中文、字母、数字、点、连字符、下划线、空格等常见字符
+    """
     import re as _re
     # 只保留文件名部分（去掉路径）
     name = os.path.basename(name)
-    # 替换危险字符
-    name = _re.sub(r'[^\w.\-]', '_', name)
+    # 仅替换文件系统非法字符（Windows: <>:"/\\|?* 和控制字符）为下划线
+    name = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
+    # 去除首尾空格和点（Windows 不允许）
+    name = name.strip().strip('.')
     if not name:
         name = 'video.mp4'
     # 重名时加序号后缀（如 video.mp4 → video_1.mp4）
-    upload_dir = folder_paths.get_input_directory()
+    if upload_dir is None:
+        upload_dir = folder_paths.get_input_directory()
     base, ext = os.path.splitext(name)
     final_name = name
     seq = 1
@@ -813,6 +818,22 @@ def _xzg_secure_video_filename(name):
         final_name = f"{base}_{seq}{ext}"
         seq += 1
     return final_name
+
+
+def _xzg_secure_subfolder(subfolder):
+    """安全过滤 subfolder，只允许字母数字/_-，禁止 .. 防止路径穿越
+    返回过滤后的相对路径（如 'fastcut-cache'），无效输入返回空串
+    """
+    if not subfolder:
+        return ""
+    import re as _re
+    parts = []
+    for p in subfolder.replace("\\", "/").split("/"):
+        p = _re.sub(r'[^\w.\-]', '_', p)
+        if p in ("", ".", ".."):
+            continue
+        parts.append(p)
+    return "/".join(parts)
 
 
 def _xzg_cleanup_video_sessions():
@@ -837,11 +858,14 @@ if getattr(_xzg_PS, 'instance', None) is not None:
     @_xzg_PS.instance.routes.post("/xzg/video_upload_start")
     @_xzg_safe_handler
     async def xzg_video_upload_start(request):
-        """启动分块上传会话，预分配文件空间"""
+        """启动分块上传会话，预分配文件空间
+        可选 subfolder 参数：快剪传 'fastcut-cache'，文件保存到 input/fastcut-cache/
+        """
         data = await request.json()
         filename = data.get("filename", "")
         total_size = int(data.get("total_size", 0))
         total_chunks = int(data.get("total_chunks", 0))
+        subfolder = _xzg_secure_subfolder(data.get("subfolder", ""))
 
         if not filename or total_size <= 0 or total_chunks <= 0:
             return _xzg_web2.json_response({"error": "参数无效"}, status=400)
@@ -852,10 +876,17 @@ if getattr(_xzg_PS, 'instance', None) is not None:
 
         _xzg_cleanup_video_sessions()
 
-        safe_name = _xzg_secure_video_filename(filename)
         upload_dir = folder_paths.get_input_directory()
-        os.makedirs(upload_dir, exist_ok=True)
-        file_path = os.path.join(upload_dir, safe_name)
+        # 支持子目录：快剪传 fastcut-cache，文件保存到 input/fastcut-cache/
+        if subfolder:
+            target_dir = os.path.join(upload_dir, *subfolder.split("/"))
+            os.makedirs(target_dir, exist_ok=True)
+            safe_name = _xzg_secure_video_filename(filename, target_dir)
+        else:
+            target_dir = upload_dir
+            os.makedirs(target_dir, exist_ok=True)
+            safe_name = _xzg_secure_video_filename(filename)
+        file_path = os.path.join(target_dir, safe_name)
 
         # 预分配文件空间（truncate 到目标大小，支持偏移量写入）
         with open(file_path, 'wb') as f:
@@ -865,6 +896,7 @@ if getattr(_xzg_PS, 'instance', None) is not None:
         with _xzg_video_sessions_lock:
             _xzg_video_sessions[session_id] = {
                 'filename': safe_name,
+                'subfolder': subfolder,
                 'file_path': file_path,
                 'total_size': total_size,
                 'total_chunks': total_chunks,
@@ -875,9 +907,11 @@ if getattr(_xzg_PS, 'instance', None) is not None:
                 'done': False,
             }
 
+        # 返回完整子路径（如 fastcut-cache/video.mp4），前端直接用作 media name
+        full_name = f"{subfolder}/{safe_name}" if subfolder else safe_name
         return _xzg_web2.json_response({
             "session_id": session_id,
-            "filename": safe_name,
+            "filename": full_name,
         })
 
     @_xzg_PS.instance.routes.post("/xzg/video_upload_chunk")
