@@ -303,6 +303,8 @@ class XiaozhuguangAudioSave:
             },
             "optional": {
                 "模式": (["保存", "预览"], {"default": "保存"}),
+                # 音量：仅前端监听预览用，不影响最终文件输出
+                "音量": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.01}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -318,7 +320,7 @@ class XiaozhuguangAudioSave:
     OUTPUT_NODE = True
 
     def save_audio(self, 音频, 格式, 质量, 文件名前缀,
-                   模式="保存", **kwargs):
+                   模式="保存", 音量=1.0, **kwargs):
         if ffmpeg_path is None:
             raise RuntimeError("FFmpeg not found. Please install FFmpeg.")
 

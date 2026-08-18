@@ -17,7 +17,9 @@
  *   └──────────────────────────────────────────────┘
  */
 import { api } from "../../scripts/api.js";
+import { app } from "../../scripts/app.js";
 import { decoderPool, VideoDecoderInstance } from "./xzg_frame_decoder.js";
+import { downloadVideo, xzgDownload, downloadAudio } from "./xzg_save_utils.js";
 
 const API_PROBE = "/xzg_video_editor_probe";
 const API_EXTRACT = "/xzg_video_editor_extract_frame";
@@ -118,8 +120,18 @@ function _xzgVeSaveSessionTimeline(timeline) {
             tlStart: c.tlStart != null ? c.tlStart : -1,
             audioTlStart: c.audioTlStart != null ? c.audioTlStart : -1,
             kind: c.kind || "video",
+            track: c.track || (c.kind === "audio" ? "a1" : "v1"),
             skip_audio: c.skip_audio === true ? true : undefined,
             pairedWith: c.pairedWith != null ? c.pairedWith : undefined,
+            scale: c.scale != null ? c.scale : 1,
+            offsetX: c.offsetX != null ? c.offsetX : 0,
+            offsetY: c.offsetY != null ? c.offsetY : 0,
+            cropLeft: c.cropLeft != null ? c.cropLeft : 0,
+            cropRight: c.cropRight != null ? c.cropRight : 0,
+            cropTop: c.cropTop != null ? c.cropTop : 0,
+            cropBottom: c.cropBottom != null ? c.cropBottom : 0,
+            opacity: c.opacity != null ? c.opacity : 1,
+            volume: c.volume != null ? c.volume : 1,
         }));
         localStorage.setItem(_XZG_VE_TL_KEY, JSON.stringify(data));
     } catch (_) {}
@@ -183,18 +195,152 @@ async function _postJson(url, body) {
     }
 }
 
+// 小珠光风格确认对话框（替代原生 confirm）
+// 样式参考小珠光工作流管理/图像加载器的统一确认对话框：
+//   半透明遮罩 + 居中深色圆角对话框 + 金色(#dcc85b)确定按钮
+// 返回 Promise<boolean>：确定 → true，取消/点击遮罩/Escape → false
+function _xzgVeConfirm(message, okText) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.style.cssText =
+            "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);" +
+            "z-index:999999;display:flex;align-items:center;justify-content:center;";
+        const close = (val) => { overlay.remove(); resolve(val); };
+        overlay.addEventListener("pointerdown", (e) => { if (e.target === overlay) close(false); });
+
+        const dialog = document.createElement("div");
+        dialog.style.cssText =
+            "background:#1e1e1e;border:1px solid #3a3a3a;border-top:2px solid #dcc85b;" +
+            "border-radius:8px;padding:18px 22px;min-width:320px;max-width:90vw;" +
+            "box-shadow:0 4px 24px rgba(0,0,0,0.6);";
+        dialog.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+        const msg = document.createElement("div");
+        msg.style.cssText = "font-size:13px;color:#ddd;margin-bottom:16px;line-height:1.6;white-space:pre-wrap;";
+        msg.textContent = message;
+        dialog.appendChild(msg);
+
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex;gap:10px;justify-content:flex-end;";
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.textContent = "取消";
+        cancelBtn.style.cssText =
+            "padding:6px 16px;background:#2a2a2a;color:#ddd;border:1px solid #444;" +
+            "border-radius:4px;cursor:pointer;font-size:12px;";
+        cancelBtn.addEventListener("mouseenter", () => cancelBtn.style.background = "#3a3a3a");
+        cancelBtn.addEventListener("mouseleave", () => cancelBtn.style.background = "#2a2a2a");
+        cancelBtn.addEventListener("click", () => close(false));
+
+        const okBtn = document.createElement("button");
+        okBtn.textContent = okText || "确定";
+        okBtn.style.cssText =
+            "padding:6px 16px;background:#dcc85b;color:#1e1e1e;border:none;" +
+            "border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;";
+        okBtn.addEventListener("mouseenter", () => okBtn.style.filter = "brightness(1.1)");
+        okBtn.addEventListener("mouseleave", () => okBtn.style.filter = "");
+        okBtn.addEventListener("click", () => close(true));
+
+        btnRow.appendChild(cancelBtn);
+        btnRow.appendChild(okBtn);
+        dialog.appendChild(btnRow);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+        okBtn.focus();
+    });
+}
+
+// 批量导出静帧目录选择对话框：仅支持"输出目录"和"自定义目录"，不支持另存为
+// 返回 Promise<'default'|'custom'|null>：null = 取消
+function _xzgVeFrameExportDialog(hasCustomDir) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement("div");
+        overlay.style.cssText =
+            "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);" +
+            "z-index:999999;display:flex;align-items:center;justify-content:center;";
+        const close = (val) => { overlay.remove(); resolve(val); };
+        overlay.addEventListener("pointerdown", (e) => { if (e.target === overlay) close(null); });
+
+        const dialog = document.createElement("div");
+        dialog.style.cssText =
+            "background:#1e1e1e;border:1px solid #3a3a3a;border-top:2px solid #dcc85b;" +
+            "border-radius:8px;padding:18px 22px;min-width:320px;max-width:90vw;" +
+            "box-shadow:0 4px 24px rgba(0,0,0,0.6);";
+        dialog.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+        const title = document.createElement("div");
+        title.style.cssText = "font-size:14px;color:#dcc85b;font-weight:bold;margin-bottom:14px;";
+        title.textContent = "批量导出静帧 — 选择输出目录";
+        dialog.appendChild(title);
+
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex;gap:10px;justify-content:center;flex-wrap:wrap;";
+
+        const makeBtn = (text, mode, isPrimary) => {
+            const btn = document.createElement("button");
+            btn.textContent = text;
+            btn.style.cssText = isPrimary
+                ? "padding:8px 20px;background:#dcc85b;color:#1e1e1e;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;"
+                : "padding:8px 20px;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;";
+            btn.addEventListener("mouseenter", () => {
+                btn.style.filter = isPrimary ? "brightness(1.1)" : "";
+                btn.style.background = isPrimary ? "" : "#3a3a3a";
+            });
+            btn.addEventListener("mouseleave", () => {
+                btn.style.filter = "";
+                btn.style.background = isPrimary ? "" : "#2a2a2a";
+            });
+            btn.addEventListener("click", () => close(mode));
+            return btn;
+        };
+
+        btnRow.appendChild(makeBtn("输出目录", "default", true));
+        btnRow.appendChild(makeBtn("自定义目录", "custom", hasCustomDir));
+        dialog.appendChild(btnRow);
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.textContent = "取消";
+        cancelBtn.style.cssText =
+            "display:block;margin:14px auto 0;padding:6px 20px;background:transparent;color:#888;border:none;" +
+            "cursor:pointer;font-size:12px;";
+        cancelBtn.addEventListener("mouseenter", () => cancelBtn.style.color = "#ddd");
+        cancelBtn.addEventListener("mouseleave", () => cancelBtn.style.color = "#888");
+        cancelBtn.addEventListener("click", () => close(null));
+        dialog.appendChild(cancelBtn);
+
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    });
+}
+
 export class XiaozhuguangVideoEditor {
-    constructor() {
+    constructor(options = {}) {
         // 编辑器完全独立：不再接收节点参数（filename/type/nodeId/onApplied/onCancel）
+        // _confirmCallback: 由视频加载器等打开时传入，点"确认"后导出并回调；
+        //   直接打开（菜单栏）时为 null，点"确认"仅关闭窗口
+        this._confirmCallback = typeof options.confirmCallback === "function" ? options.confirmCallback : null;
+        // _modeFilter: 加载器限定模式 —— "audio"（音频加载器打开：只留音频格式，隐藏导出按钮）
+        //                                          "video"（视频加载器打开：只留视频格式，隐藏导出按钮）
+        //               null = 独立打开（菜单栏），完整 UI
+        this._modeFilter = (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
         // _renderTargetW/H: 渲染目标分辨率（null=用首个片段原分辨率）
         this._renderTargetW = null;
         this._renderTargetH = null;
-        // 输出目录设置（与小珠光图像保存-化神级完全一致）
-        // useDefaultOutput=true → ComfyUI output 目录，前缀固定 xzg-edit
-        // useDefaultOutput=false → 自定义目录 base_dir + 前缀/日期戳/时间戳
+        // 输出目录设置
+        //   output_mode: "default" → 默认输出到 ComfyUI output 目录，前缀固定 xzg-edit
+        //               "saveas"  → 另存为（浏览器下载对话框）
+        //               "custom"  → 自定义目录 base_dir + 前缀/日期戳/时间戳
         this._xzgVeOutputKey = "xzg_ve_output_settings";
         const savedOutput = _xzgVeLoadJson(this._xzgVeOutputKey, {});
-        this._useDefaultOutput = savedOutput.use_default_output !== false;  // 默认 true
+        // output_mode 优先，其次兼容旧字段 use_default_output；首次默认 "saveas"（另存为）
+        let savedMode = savedOutput.output_mode;
+        if (!savedMode) {
+            if (savedOutput.use_default_output === false) savedMode = "custom";
+            else if (savedOutput.use_default_output === true) savedMode = "default";
+            else savedMode = "saveas";  // 无配置时首次默认 = 另存为
+        }
+        this._outputMode = savedMode;
+        this._useDefaultOutput = (this._outputMode === "default");  // 向后兼容
         this._baseDir = savedOutput.base_dir || "";
         this._filenamePrefix = savedOutput.filename_prefix || "xzg-edit";
         this._addDateStamp = !!savedOutput.add_date_stamp;
@@ -206,6 +352,9 @@ export class XiaozhuguangVideoEditor {
         this.timeline = [];
         this.selectedClipIds = new Set();  // 多选集合
         this._clipIdCounter = 0;
+        this._magnetEnabled = true;  // 磁吸开关：true=开启(红)，false=关闭(灰)
+        // 快捷键配置（可自定义，持久化到 localStorage）
+        this._shortcutKeys = this._loadShortcuts();
         this._root = null;
         this._canvas = null;       // 预览区 canvas（替代 <video>）
         this._draggingClip = null;
@@ -235,15 +384,16 @@ export class XiaozhuguangVideoEditor {
         this._isBuffering = false;
         this._playbackStartFrame = 0;
         this._playbackStartTime = 0;
+        this._playbackStartGlobalTime = 0;  // 音频播放循环起始全局时间
         // 音频
         this._audioCtx = null;
         this._audioGain = null;
-        this._audioSource = null;
-        this._fullAudioBuffer = null;
+        this._audioSources = {};   // clipId -> { source, buffer, startTime, startOffset }（多源混音）
+        this._audioBuffers = {};   // clipId -> AudioBuffer（解码缓存）
         this._audioBufferCache = new Map();  // key: "filename|type" -> AudioBuffer（波形共享缓存）
+        this._audioDecodePending = new Set();  // clipId 集合：正在解码的片段，防止并发重复解码
         this._audioPlayStartOffset = 0;
         this._audioPlayStartTime = 0;
-        this._playingAudioClipId = null;  // 当前 _fullAudioBuffer 对应的音频 clip ID
         this.selectedMediaNames = new Set();  // 媒体库多选集合
         this._mediaSelBox = null;  // 媒体库框选矩形
         // 离线媒体集合：磁盘上不存在的媒体文件名（手工删除或被清理）
@@ -263,20 +413,32 @@ export class XiaozhuguangVideoEditor {
         this._mediaWidthKey = "xzg_ve_media_width";
         this._mediaPanel = null;
         this._resizer = null;
+        // 属性面板宽度持久化
+        this._propsWidthKey = "xzg_ve_props_width";
+        this._propsPanel = null;
+        this._propsResizer = null;
         // 时间线面板高度（刷新/重启后恢复默认值，不持久化）
         this._tlHeightKey = "xzg_ve_tl_height";
-        this._tlHeight = 280;
+        this._tlHeight = 350;
         this._tlPanel = null;
         this._tlResizer = null;
-        this._tlVideoHeader = null;       // 视频轨道头
+        this._tlVideoHeader = null;       // V1 视频轨道头
         this._tlAudioHeader = null;       // 音频轨道头
-        this._tlResizerTop = null;        // 上手柄（调整视频高度）
-        this._tlResizerMid = null;        // 中手柄（调整视频/音频分配比例）
-        this._tlResizerBottom = null;     // 下手柄（调整音频高度）
-        this._tlVideoHeight = 80;         // 视频头/轨道高度
-        this._tlAudioHeight = 70;         // 音频头/轨道高度
-        this._tlVideoTopOffset = 0;      // 视频顶部偏移（相对 35px 刻度区域底部，向下为正）
+        this._tlV2TopHeader = null;       // V2-上 轨道头
+        this._tlV2BotHeader = null;       // V2-下 轨道头
+        this._tlResizerTop = null;        // V1 上手柄（调整 V1 高度，V2-上 联动）
+        this._tlResizerMid = null;        // 中手柄（V1+音频整体平移，V2 上/下 此消彼长）
+        this._tlResizerBottom = null;     // 音频下手柄（调整音频高度，V2-下 联动）
+        this._tlResizerV2Top = null;      // V2-上 手柄（调整 V2-上 高度）
+        this._tlResizerV2Bot = null;      // V2-下 手柄（调整 V2-下 高度）
+        this._tlVideoHeight = 78;         // V1 轨道高度（默认布局由 _applyTrackLayout 四轨均分覆盖）
+        this._tlAudioHeight = 78;         // A1 轨道高度（同上）
+        this._tlV2TopHeight = 78;         // V2 轨道高度（同上；占位避免 0 时 _yToTrack 误判）
+        this._tlV2BotHeight = 77;         // A2 轨道高度（同上）
         this._tlHeightsCustomized = false; // 是否已通过手柄自定义高度（false=默认居中）
+        this._tlViewMode = "both";        // 视图模式：both=视频+音频，video=仅视频，audio=仅音频（双击轨道头文字切换）
+        this._tlMaximizedTrack = null;   // 最大化轨道：null=正常，"v1"/"v2"/"a1"/"a2"=该轨道最大化，其他25px
+        this._markerFlags = [];          // 旗标列表：{ time: 秒 }
         // 刷新/重启后恢复默认布局（不恢复 sessionStorage）
         this._playbackRaf = 0;  // 播放时 rAF 循环 id
         // 时间线缩放（Alt+滚轮）与横向滚动
@@ -341,11 +503,90 @@ export class XiaozhuguangVideoEditor {
                 this._autoCheckOffline();
             }
         }, 15000);
+        // ── 预览画面缩放：滚轮放大/缩小（以鼠标为中心），Z / 「重置视图」按钮恢复居中 ──
+        // ResizeObserver：预览容器尺寸变化时（窗口 resize、拖动分隔条），
+        //   保持画面相对位置不跳，使用 keepTransform=true
+        if (typeof ResizeObserver !== "undefined" && this._previewHost) {
+            this._previewResizeObserver = new ResizeObserver(() => {
+                if (this._destroyed) return;
+                this._applyPreviewFrameSize(true);
+            });
+            this._previewResizeObserver.observe(this._previewHost);
+        }
+        // 预览滚轮缩放（不影响渲染输出，只改显示大小）
+        //   以鼠标位置为缩放中心：鼠标指向的像素点在缩放前后保持屏幕坐标不变
+        if (this._previewHost) {
+            this._previewWheelHandler = (e) => {
+                // 直接阻止事件向画布/其他监听器传播，避免同时触发 ComfyUI 布局缩放
+                e.preventDefault();
+                e.stopPropagation();
+                const hostRect = this._previewHost.getBoundingClientRect();
+                const hx = e.clientX - hostRect.left;
+                const hy = e.clientY - hostRect.top;
+                // 每格 ΔY=100 ≈ ×÷1.1 倍；按住 Ctrl/MacCmd 更精细 ×÷1.03
+                const factor = (e.ctrlKey || e.metaKey)
+                    ? (e.deltaY > 0 ? 1 / 1.03 : 1.03)
+                    : (e.deltaY > 0 ? 1 / 1.1 : 1.1);
+                this._zoomPreviewAtPoint(hx, hy, factor);
+            };
+            this._previewHost.addEventListener("wheel", this._previewWheelHandler, { passive: false, capture: true });
+        }
+        // 屏蔽 Ctrl/Meta+滚轮：防止触发浏览器页面缩放（Chrome/Edge/Safari 都会把 Ctrl+滚轮解释为页面 zoom）
+        // 必须 passive:false + capture 阶段才生效；仅在编辑器打开期间生效，关闭时移除
+        this._ctrlZoomBlocker = (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        };
+        window.addEventListener("wheel", this._ctrlZoomBlocker, { passive: false, capture: true });
+        // 中键按住拖动：在视频/音频轨道区域（排除左侧功能区和上方刻度区）平移时间线
+        // 用 capture 阶段在片段/手柄 stopPropagation 之前拦截，保证点在片段上也能拖动
+        this._middleBtnPanHandler = (e) => {
+            if (e.button !== 1) return;
+            if (!this._timeline) return;
+            const path = e.composedPath();
+            // 命中视频或音频轨道（含 V2-上 / V2-下 视频轨道，排除左侧 150px 功能区、刻度区 35px 及刻度拖动条、时间线外部）
+            const onVTrack = path.some(el => el?.classList?.contains?.("xzg-ve-video-track") ||
+                el?.classList?.contains?.("xzg-ve-video2-top-track") ||
+                el?.classList?.contains?.("xzg-ve-video2-bot-track"));
+            const onATrack = path.some(el => el?.classList?.contains?.("xzg-ve-audio-track"));
+            if (!onVTrack && !onATrack) return;
+            // 命中时间线的 resizer 手柄或刻度区：不启动平移
+            const onResizer = path.some(el => el?.classList?.contains?.("xzg-ve-track-resizer") ||
+                el?.classList?.contains?.("xzg-ve-tl-scrub"));
+            if (onResizer) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const startClientX = e.clientX;
+            const startScroll = this._tlScrollLeft;
+            const onMove = (ev) => {
+                const dx = ev.clientX - startClientX;
+                this._tlScrollLeft = startScroll - dx;
+                this._clampScrollLeft();
+                this._applyTlScroll();
+            };
+            const onUp = () => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+            };
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mousedown", this._middleBtnPanHandler, { capture: true });
+        // 初始化预览尺寸（DOM 挂载后）
+        this._applyPreviewFrameSize(false);
         // 时间线从空开始或从 localStorage 恢复，用户从媒体库自行拖入需要的片段
     }
 
     close() {
         if (this._destroyed) return;
+        // 关闭前：若存在 confirmCallback 且尚未消费（无 callbackCalled 标记），发送空结果通知调用方
+        // （避免调用方按钮一直停在"等待确认..."状态）
+        if (this._confirmCallback && !this._confirmCallbackCalled) {
+            this._confirmCallbackCalled = true;
+            try { this._confirmCallback({}); } catch (_) {}
+        }
         this._destroyed = true;
         this._stopPlaybackLoop();
         this._stopAudio();
@@ -377,6 +618,23 @@ export class XiaozhuguangVideoEditor {
             document.removeEventListener("contextmenu", this._onContextMenu);
             this._onContextMenu = null;
         }
+        // 预览缩放监听 & ResizeObserver 清理
+        if (this._previewResizeObserver) {
+            try { this._previewResizeObserver.disconnect(); } catch (_) {}
+            this._previewResizeObserver = null;
+        }
+        if (this._previewWheelHandler && this._previewHost) {
+            this._previewHost.removeEventListener("wheel", this._previewWheelHandler, { capture: true });
+            this._previewWheelHandler = null;
+        }
+        if (this._ctrlZoomBlocker) {
+            window.removeEventListener("wheel", this._ctrlZoomBlocker, { capture: true });
+            this._ctrlZoomBlocker = null;
+        }
+        if (this._middleBtnPanHandler) {
+            window.removeEventListener("mousedown", this._middleBtnPanHandler, { capture: true });
+            this._middleBtnPanHandler = null;
+        }
         // Canvas 解码器不在这里关闭（由 decoderPool 统一管理，跨实例复用）
         this._currentDecoder = null;
         // 清理本实例仍在探测中的 key，避免其他实例永久等待
@@ -393,9 +651,219 @@ export class XiaozhuguangVideoEditor {
         this._canvas = null;
     }
 
+    // ── 快捷键配置 ──────────────────────────────────────────────────
+    _defaultShortcuts() {
+        return {
+            playpause: "Space",        // 播放/暂停
+            delete: "Delete",          // 删除选中
+            frameskip: "ArrowLeft",    // 帧步进（左/右）
+            split: "b",                // 分割
+            addflag: "m",              // 添加旗标
+            fitview: "e",              // 时间线适配宽度
+            zoom10: "r",               // 以播放头为中心显示 10 秒
+            resetzoom: "z",            // 重置预览缩放
+            undo: "ctrl+z",            // 撤销
+            redo: "ctrl+shift+z",      // 重做
+        };
+    }
+    _loadShortcuts() {
+        try {
+            const saved = JSON.parse(localStorage.getItem("xzg_ve_shortcuts") || "{}");
+            return { ...this._defaultShortcuts(), ...saved };
+        } catch (_) {
+            return this._defaultShortcuts();
+        }
+    }
+    _saveShortcuts() {
+        try {
+            localStorage.setItem("xzg_ve_shortcuts", JSON.stringify(this._shortcutKeys));
+        } catch (_) { /* 忽略存储失败 */ }
+    }
+    _resetShortcuts() {
+        this._shortcutKeys = this._defaultShortcuts();
+        this._saveShortcuts();
+    }
+    // 打开快捷键设置弹窗：列出可配置的快捷键，点击后按下新键即可录制
+    _openShortcutSettings() {
+        const self = this;
+        const overlay = document.createElement("div");
+        overlay.style.cssText =
+            "position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;";
+        const close = () => { overlay.remove(); window.removeEventListener("keydown", recordHandler, true); };
+        overlay.addEventListener("pointerdown", (e) => { if (e.target === overlay) close(); });
+
+        const dialog = document.createElement("div");
+        dialog.style.cssText =
+            "background:#1e1e1e;border:1px solid #3a3a3a;border-top:2px solid #dcc85b;" +
+            "border-radius:8px;padding:18px 22px;min-width:380px;max-width:640px;max-height:80vh;overflow-y:auto;" +
+            "box-shadow:0 4px 24px rgba(0,0,0,0.6);";
+        dialog.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+        const title = document.createElement("div");
+        title.style.cssText = "font-size:14px;color:#dcc85b;font-weight:bold;margin-bottom:14px;";
+        title.textContent = "快捷键设置";
+        dialog.appendChild(title);
+
+        // 动作中文名映射
+        const LABELS = {
+            playpause: "播放 / 暂停",
+            delete: "删除选中",
+            split: "分割片段",
+            addflag: "添加旗标",
+            fitview: "时间线适配宽度",
+            zoom10: "缩放显示 10 秒",
+            resetzoom: "重置预览视图",
+            undo: "撤销",
+            redo: "重做",
+        };
+        const bindingToKey = (b) => b || "";
+
+        let recordingAction = null;
+        const rowEls = {};
+        const recordHandler = (e) => {
+            // 在录制时拦截按键，防止触发其他快捷键
+            if (recordingAction) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                const keyMap = {
+                    " ": "space", "Space": "space",
+                    "Delete": "delete", "Backspace": "delete",
+                    "ArrowLeft": "arrowleft", "ArrowRight": "arrowright",
+                };
+                let keyPart = keyMap[e.key] || (e.key.length === 1 ? e.key.toLowerCase() : e.key);
+                // 忽略单独按下的修饰键
+                const MOD_KEYS = ["control", "shift", "alt", "meta"];
+                if (MOD_KEYS.includes(keyPart.toLowerCase())) return;
+                const mods = [];
+                if (e.ctrlKey || e.metaKey) mods.push("ctrl");
+                if (e.shiftKey) mods.push("shift");
+                if (e.altKey) mods.push("alt");
+                let binding = [...mods, keyPart].join("+");
+                if (keyPart === "escape") { close(); return; }
+                if (keyPart === "enter") { recordingAction = null; this._renderShortcutRows(dialog, rowEls, LABELS); return; }
+                this._shortcutKeys[recordingAction] = binding;
+                recordingAction = null;
+                this._saveShortcuts();
+                this._renderShortcutRows(dialog, rowEls, LABELS);
+            }
+        };
+        // capture 阶段监听，确保先于主快捷键处理
+        window.addEventListener("keydown", recordHandler, true);
+
+        this._renderShortcutRows = (d, rowEls, LABELS) => {
+            // 移除旧的列表行（保留标题/按钮区域），重建
+            d.querySelectorAll(".xzg-shortcut-row").forEach(el => el.remove());
+            const actions = Object.keys(self._defaultShortcuts());
+            for (const action of actions) {
+                const row = document.createElement("div");
+                row.className = "xzg-shortcut-row";
+                row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid #2a2a2a;";
+                const nameEl = document.createElement("span");
+                nameEl.style.cssText = "font-size:13px;color:#ddd;";
+                nameEl.textContent = LABELS[action] || action;
+                const keyBtn = document.createElement("button");
+                keyBtn.style.cssText =
+                    "background:#2a2a2a;color:#fff;border:1px solid #4a4a4a;border-radius:4px;" +
+                    "padding:3px 12px;font-size:13px;cursor:pointer;min-width:110px;text-align:center;";
+                keyBtn.textContent = self._shortcutLabel(self._shortcutKeys[action]);
+                keyBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    if (recordingAction === action) {
+                        recordingAction = null;
+                        keyBtn.textContent = self._shortcutLabel(self._shortcutKeys[action]);
+                    } else {
+                        recordingAction = action;
+                        keyBtn.textContent = "按下新键…";
+                        keyBtn.style.background = "#3a4a6a";
+                    }
+                    // 高亮当前行
+                    d.querySelectorAll(".xzg-shortcut-row .xzg-shortcut-record-btn").forEach(b => b.style.background = "#2a2a2a");
+                    keyBtn.style.background = recordingAction === action ? "#3a4a6a" : "#2a2a2a";
+                });
+                keyBtn.classList.add("xzg-shortcut-record-btn");
+                row.appendChild(nameEl);
+                row.appendChild(keyBtn);
+                rowEls[action] = keyBtn;
+                d.appendChild(row);
+            }
+        };
+
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;";
+        const resetBtn = document.createElement("button");
+        resetBtn.textContent = "恢复默认";
+        resetBtn.style.cssText = "background:transparent;color:#dcc85b;border:1px solid #dcc85b;border-radius:4px;padding:5px 14px;font-size:12px;cursor:pointer;";
+        resetBtn.addEventListener("click", () => {
+            this._resetShortcuts();
+            this._renderShortcutRows(dialog, rowEls, LABELS);
+        });
+        const closeBtn = document.createElement("button");
+        closeBtn.textContent = "关闭";
+        closeBtn.style.cssText = "background:#3a4a6a;color:#fff;border:none;border-radius:4px;padding:5px 16px;font-size:12px;cursor:pointer;";
+        closeBtn.addEventListener("click", close);
+        btnRow.appendChild(resetBtn);
+        btnRow.appendChild(closeBtn);
+        dialog.appendChild(btnRow);
+
+        // 说明
+        const tip = document.createElement("div");
+        tip.style.cssText = "font-size:11px;color:#888;margin-top:8px;";
+        tip.textContent = "点击右侧按钮后，在键盘上按下新的组合键即可修改。Ctrl/Shift/Alt 可与任意键组合。Esc 关闭弹窗，Enter 取消录制。";
+        dialog.appendChild(tip);
+
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+        this._renderShortcutRows(dialog, rowEls, LABELS);
+    }
+    // 判断按键事件是否匹配某个绑定（支持纯键 / ctrl+ / shift+ / alt+ / Space / 方向键）
+    _matchShortcut(e, binding) {
+        if (!binding) return false;
+        const parts = binding.toLowerCase().split("+");
+        let keyPart = parts.pop();
+        const needsCtrl = parts.includes("ctrl") || parts.includes("meta");
+        const needsShift = parts.includes("shift");
+        const needsAlt = parts.includes("alt");
+        // 解析按键部分：Space / Delete / ArrowLeft 等保留大小写，单字符转小写
+        if (/^[a-z0-9]$/i.test(keyPart)) keyPart = keyPart.toLowerCase();
+        let eventKey;
+        if (keyPart === "space") eventKey = " ";
+        else if (keyPart === "arrowleft") eventKey = "ArrowLeft";
+        else if (keyPart === "arrowright") eventKey = "ArrowRight";
+        else if (keyPart === "delete") eventKey = "Delete";
+        else eventKey = keyPart;
+        // 键匹配：兼容 e.key（可能大小写/特殊字符）与 e.code（如 KeyZ）
+        let keyMatches;
+        if (eventKey.length === 1 && /[a-z0-9]/i.test(eventKey)) {
+            keyMatches = e.key.toLowerCase() === eventKey.toLowerCase();
+        } else {
+            keyMatches = (e.key === eventKey) || (e.code === eventKey);
+        }
+        if (!keyMatches) return false;
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (ctrl !== needsCtrl) return false;
+        if (e.shiftKey !== needsShift) return false;
+        if (e.altKey !== needsAlt) return false;
+        return true;
+    }
+    // 把绑定转成可读字符串（用于设置弹窗显示）
+    _shortcutLabel(binding) {
+        if (!binding) return "未设置";
+        return binding.split("+").map(p => {
+            if (p === "ctrl") return "Ctrl";
+            if (p === "shift") return "Shift";
+            if (p === "alt") return "Alt";
+            if (p === "meta") return "Cmd";
+            if (p === "space") return "空格";
+            if (p === "arrowleft") return "←";
+            if (p === "arrowright") return "→";
+            if (p === "delete") return "Del";
+            return p.toUpperCase();
+        }).join("+");
+    }
+
     _onKeyDown(e) {
-        // 空格键播放/暂停
-        if (e.key === " " || e.code === "Space") {
+        // 空格键播放/暂停（可自定义）
+        if (this._matchShortcut(e, this._shortcutKeys.playpause)) {
             // 始终阻止浏览器默认行为（防止滚动、按钮激活、菜单弹出等）
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -414,30 +882,17 @@ export class XiaozhuguangVideoEditor {
         const tag = (e.target?.tagName || "").toLowerCase();
         if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
         // Ctrl+Z 撤销 / Ctrl+Shift+Z 重做（也支持 Ctrl+Y 重做）
-        if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+        if (this._matchShortcut(e, this._shortcutKeys.undo)) {
             e.preventDefault();
-            if (e.shiftKey) this._redo();
-            else this._undo();
+            this._undo();
             return;
         }
-        if ((e.ctrlKey || e.metaKey) && e.key === "y") {
+        if (this._matchShortcut(e, this._shortcutKeys.redo) || (this._shortcutKeys.redo === "ctrl+shift+z" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y")) {
             e.preventDefault();
             this._redo();
             return;
         }
-        // 空格键播放/暂停
-        if (e.key === " " || e.code === "Space") {
-            // 始终阻止浏览器默认行为（防止滚动、按钮激活、菜单弹出等）
-            e.preventDefault();
-            // 按住空格会重复触发 keydown，忽略 repeat 避免快速切换播放/暂停
-            if (e.repeat) return;
-            // 焦点在按钮上时，空格键会触发按钮 click，preventDefault 阻止默认 click 避免双重触发，直接执行播放/暂停
-            if (this.timeline.length > 0) {
-                this._toggleTimelinePlay();
-            }
-            return;
-        }
-        if (e.key === "Delete" || e.key === "Backspace") {
+        if (this._matchShortcut(e, this._shortcutKeys.delete) || e.key === "Backspace") {
             const mediaSel = this.selectedMediaNames.size > 0;
             const clipSel = this.selectedClipIds.size > 0;
             if (!mediaSel && !clipSel) return;
@@ -454,29 +909,14 @@ export class XiaozhuguangVideoEditor {
                     }
                 })();
             }
-            // 删除选中的片段：如果删掉了「带配对关系的视频片段」，同步删掉它的配对音频（精确匹配 pairedWith）
+            // 删除选中的片段：视频与配对音频拆分后各自独立，删除任意一方都不级联删除另一方
+            //   - 单独删配对音频：视频保留，skip_audio=true 继续静音
+            //   - 单独删视频：配对音频继续存在（变成独立音频片段）
             if (clipSel) {
                 const ids = Array.from(this.selectedClipIds);
-                // 收集被删除片段的配对 ID（通过 pairedWith 字段精确匹配）
-                const pairedIdsToDelete = new Set();
-                for (const id of ids) {
-                    const c = this.timeline.find(cc => cc.id === id);
-                    if (c && c.pairedWith != null) {
-                        pairedIdsToDelete.add(c.pairedWith);
-                    }
-                }
-                // 删除用户选中的片段
                 for (const id of ids) {
                     const idx = this.timeline.findIndex(c => c.id === id);
                     if (idx >= 0) this.timeline.splice(idx, 1);
-                }
-                // 同步删除：被删片段的配对片段（精确 ID 匹配，不影响其他同源片段）
-                if (pairedIdsToDelete.size > 0) {
-                    for (let i = this.timeline.length - 1; i >= 0; i--) {
-                        if (pairedIdsToDelete.has(this.timeline[i].id)) {
-                            this.timeline.splice(i, 1);
-                        }
-                    }
                 }
                 this.selectedClipIds.clear();
             }
@@ -491,12 +931,12 @@ export class XiaozhuguangVideoEditor {
             }
             return;
         }
-        // 左右箭头：单帧步进；Shift+左右箭头：10帧步进
+        // 左右箭头：单帧步进；Shift+左右箭头：1秒步进（按当前帧率，24fps=24帧，30fps=30帧）
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
             if (this.timeline.length === 0) return;
             e.preventDefault();
             const fps = this._currentClip ? this._getClipFps(this._currentClip) : 30;
-            const frames = e.shiftKey ? 10 : 1;
+            const frames = e.shiftKey ? fps : 1;
             const dt = (e.key === "ArrowRight" ? frames : -frames) / fps;
             const total = this._getTimelineTotalDuration();
             let newTime = this._tlGlobalTime + dt;
@@ -506,11 +946,45 @@ export class XiaozhuguangVideoEditor {
             this._seekToGlobalTime(newTime);
             return;
         }
-        // S 键：在播放头位置分割选中的片段
-        if (e.key === "s" || e.key === "S") {
+        // 分割（与工具栏剪刀按钮同功能）
+        // stopImmediatePropagation 防止穿透到画布触发编组开关面板（画布 B 键）
+        if (this._matchShortcut(e, this._shortcutKeys.split)) {
             if (this.timeline.length === 0) return;
             e.preventDefault();
+            e.stopImmediatePropagation();
+            const ae = document.activeElement;
+            if (ae && ae.tagName === "BUTTON") ae.blur();
             this._splitClipAtPlayhead();
+            return;
+        }
+        // 添加旗标
+        if (this._matchShortcut(e, this._shortcutKeys.addflag)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            // 焦点在按钮上时按键可能触发 :active 高亮，preventDefault 无法阻止
+            const ae = document.activeElement;
+            if (ae && ae.tagName === "BUTTON") ae.blur();
+            this._addMarkerFlag();
+            return;
+        }
+        // 时间线适配宽度
+        if (this._matchShortcut(e, this._shortcutKeys.fitview)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (!e.repeat) this._fitTimelineToView();
+            return;
+        }
+        // 以播放头为中心缩放显示 10 秒
+        if (this._matchShortcut(e, this._shortcutKeys.zoom10)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (!e.repeat) this._zoomToTenSeconds();
+            return;
+        }
+        // 重置预览视图（缩放 100% + 居中），和「重置视图」按钮一致
+        if (this._matchShortcut(e, this._shortcutKeys.resetzoom)) {
+            e.preventDefault();
+            this._resetPreviewZoom();
             return;
         }
     }
@@ -577,6 +1051,7 @@ export class XiaozhuguangVideoEditor {
                 tlStart: target.tlStart + splitTl,
                 audioTlStart: target.tlStart + splitTl,
                 kind: leftClip.kind || "video",
+                track: leftClip.track || (leftClip.kind === "audio" ? "a1" : "v1"),
             };
 
             const idx = this.timeline.findIndex(c => c === leftClip);
@@ -602,28 +1077,35 @@ export class XiaozhuguangVideoEditor {
                     <span class="xzg-ve-title">🎬 小珠光 · 快剪</span>
                     <span class="xzg-ve-status"></span>
                     <div class="xzg-ve-header-right">
-                        <button class="xzg-ve-btn xzg-ve-btn-output-settings" style="padding:4px 12px;font-size:12px;color:#fff;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">输出目录设置</button>
+                        <button class="xzg-ve-btn xzg-ve-btn-shortcut-settings" title="快捷键设置">⚙️</button>
+                        <button class="xzg-ve-btn xzg-ve-btn-output-settings" title="输出目录设置">输出目录设置</button>
+                        <span class="xzg-ve-format-label">格式</span>
+                        <select class="xzg-ve-format-select">
+                            <option value="video-mp4" selected>视频 MP4</option>
+                            <option value="audio-mp3">音频 MP3</option>
+                            <option value="audio-wav">音频 WAV</option>
+                            <option value="audio-flac">音频 FLAC</option>
+                        </select>
                         <span class="xzg-ve-quality-label">质量</span>
-                        <select class="xzg-ve-quality-select">
-                            <option value="high">高 (CRF 10)</option>
-                            <option value="medium" selected>中 (CRF 20)</option>
+                        <select class="xzg-ve-quality-select" data-mode="video">
+                            <option value="high" selected>高 (CRF 10)</option>
+                            <option value="medium">中 (CRF 20)</option>
                             <option value="low">低 (CRF 28)</option>
                         </select>
                         <button class="xzg-ve-btn xzg-ve-btn-apply">导出</button>
-                        <button class="xzg-ve-btn xzg-ve-btn-cancel">×</button>
+                        <button class="xzg-ve-btn xzg-ve-btn-cancel">确认</button>
+                        <button class="xzg-ve-btn xzg-ve-btn-close-x" title="关闭快剪（不导出）">×</button>
                     </div>
                 </div>
                 <div class="xzg-ve-body">
                     <div class="xzg-ve-media-panel">
                         <div class="xzg-ve-panel-header">
                             <div class="xzg-ve-media-title-group">
-                                <span>媒体库</span>
-                                <button class="xzg-ve-refresh-btn" title="检测离线媒体">刷新</button>
+                                <span style="color:#fff;">媒体库</span>
                                 <button class="xzg-ve-cache-btn" title="删除所有上传的媒体文件和缩略图缓存">一键清理缓存</button>
                             </div>
                             <div class="xzg-ve-media-btns">
                                 <button class="xzg-ve-thumb-btn"></button>
-                                <button class="xzg-ve-clear-btn">🗑</button>
                                 <button class="xzg-ve-add-btn">
                                     <svg width="20" height="16" viewBox="0 0 20 16" xmlns="http://www.w3.org/2000/svg">
                                         <!-- 文件夹外框 -->
@@ -668,51 +1150,112 @@ export class XiaozhuguangVideoEditor {
                                 <option value="120">120</option>
                             </select>
                             <input type="number" class="xzg-ve-render-fps" min="0" max="240" step="1" placeholder="--" disabled>
+                            <button type="button" class="xzg-ve-btn xzg-ve-btn-reset-view" title="重置视图（快捷键：Z）" aria-label="重置视图">
+                                <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" focusable="false">
+                                    <path d="M3 2 H6 V3 H4 V6 H3 V2.5 Z" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="miter"/>
+                                    <path d="M15 2 H12 V3 H14 V6 H15 V2.5 Z" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="miter"/>
+                                    <path d="M3 16 H6 V15 H4 V12 H3 V15.5 Z" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="miter"/>
+                                    <path d="M15 16 H12 V15 H14 V12 H15 V15.5 Z" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="miter"/>
+                                </svg>
+                            </button>
                         </div>
                         <div class="xzg-ve-preview">
-                            <canvas class="xzg-ve-canvas"></canvas>
+                            <div class="xzg-ve-preview-frame">
+                                <canvas class="xzg-ve-canvas"></canvas>
+                            </div>
                             <div class="xzg-ve-preview-empty">从媒体库拖拽视频到时间线</div>
                         </div>
                         <div class="xzg-ve-preview-controls">
                             <button class="xzg-ve-play-btn"></button>
                             <span class="xzg-ve-time">00:00.00 / 00:00.00</span>
                             <span class="xzg-ve-frames">0 / 0 帧</span>
-                            <button class="xzg-ve-frame-btn">📷 导出帧</button>
+                            <button class="xzg-ve-frame-btn">📷 批量导出静帧</button>
                         </div>
                     </div>
+                    <div class="xzg-ve-props-resizer"></div>
                     <div class="xzg-ve-props-panel">
-                        <div class="xzg-ve-panel-header">属性</div>
+                        <div class="xzg-ve-props-tabs">
+                            <button class="xzg-ve-props-tab xzg-ve-props-tab-active" data-type="video">视频</button>
+                            <button class="xzg-ve-props-tab" data-type="audio">音频</button>
+                        </div>
                         <div class="xzg-ve-props-content"></div>
                     </div>
                 </div>
                 <div class="xzg-ve-timeline-resizer"></div>
                 <div class="xzg-ve-timeline-panel">
                     <div class="xzg-ve-timeline-header">
-                        <button class="xzg-ve-btn xzg-ve-btn-clear-tl">🗑 清空时间线</button>
-                        <button class="xzg-ve-btn xzg-ve-btn-reset-layout" title="恢复视频/音频轨道高度和位置为默认居中布局（不影响已加载内容）"><span class="xzg-ve-reset-icon">↺</span> 恢复默认布局</button>
+                        <button class="xzg-ve-magnet-btn" title="磁吸：开启（红）/ 关闭（灰）">🧲</button>
+                        <button class="xzg-ve-split-btn" title="分割 (B)">
+                            <svg class="xzg-ve-split-svg" width="25" height="25" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
+                                <circle cx="4.5" cy="14.5" r="2.5" fill="none" stroke="rgb(0,255,0)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+                                <circle cx="4.5" cy="5.5" r="2.5" fill="none" stroke="rgb(0,255,0)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+                                <line x1="6.6" y1="12.7" x2="17" y2="4" stroke="rgb(0,255,0)" stroke-width="1.4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+                                <line x1="6.6" y1="7.3" x2="17" y2="16" stroke="rgb(0,255,0)" stroke-width="1.4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+                            </svg>
+                        </button>
+                        <button class="xzg-ve-flag-btn" title="添加旗标 (M) | 右键清空所有旗标">
+                            <svg class="xzg-ve-flag-btn-svg" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="#4a9eff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="4" y1="2" x2="4" y2="22"/>
+                                <path d="M4,4 L18,4 L14,10 L18,16 L4,16"/>
+                            </svg>
+                        </button>
+                        <button class="xzg-ve-ruler-btn" title="时间线适配宽度 (E)">
+                            <svg class="xzg-ve-ruler-svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                <rect x="2" y="8" width="20" height="8" rx="2"/>
+                                <line x1="6" y1="8" x2="6" y2="11"/>
+                                <line x1="10" y1="8" x2="10" y2="11"/>
+                                <line x1="14" y1="8" x2="14" y2="11"/>
+                                <line x1="18" y1="8" x2="18" y2="11"/>
+                            </svg>
+                        </button>
+                        <button class="xzg-ve-rulerzoom-btn" title="以播放头为中心显示 10 秒 (R)">
+                            <svg class="xzg-ve-rulerzoom-svg" width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect x="2" y="8" width="16" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                <line x1="5" y1="8" x2="5" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                <line x1="8" y1="8" x2="8" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                <line x1="11" y1="8" x2="11" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                <circle cx="17" cy="17" r="4" fill="none" stroke="currentColor" stroke-width="2"/>
+                                <line x1="20" y1="20" x2="22.5" y2="22.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </button>
                         <span class="xzg-ve-tl-info"></span>
                     </div>
                     <div class="xzg-ve-timeline" tabindex="0">
                         <div class="xzg-ve-tl-leftpad">
-                            <div class="xzg-ve-track-resizer xzg-ve-resizer-top"></div>
+                            <button class="xzg-ve-btn xzg-ve-btn-reset-layout" title="恢复视频/音频轨道高度和位置为默认居中布局（不影响已加载内容）"><svg class="xzg-ve-reset-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#dcc85b" stroke-width="2" stroke-linecap="round"><line x1="3" y1="5" x2="21" y2="5"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="3" y1="20" x2="21" y2="20"/></svg></button>
+                            <div class="xzg-ve-track-header xzg-ve-video2-top-header">
+                                <span class="xzg-ve-track-name">V2</span>
+                            </div>
                             <div class="xzg-ve-track-header xzg-ve-video-header">
-                                <span class="xzg-ve-track-name">视频</span>
+                                <span class="xzg-ve-track-name">V1</span>
                             </div>
-                            <div class="xzg-ve-track-resizer xzg-ve-resizer-mid"></div>
                             <div class="xzg-ve-track-header xzg-ve-audio-header">
-                                <span class="xzg-ve-track-name">音频</span>
+                                <span class="xzg-ve-track-name">A1</span>
                             </div>
-                            <div class="xzg-ve-track-resizer xzg-ve-resizer-bottom"></div>
+                            <div class="xzg-ve-track-header xzg-ve-video2-bot-header">
+                                <span class="xzg-ve-track-name">A2</span>
+                            </div>
                         </div>
                         <div class="xzg-ve-tl-scrub-divider"></div>
+                        <!-- V2-上 顶边缘 1px 实线（原 .xzg-ve-tl-video-top 复用，语义改为 V2-上 最顶） -->
                         <div class="xzg-ve-tl-video-top"></div>
                         <div class="xzg-ve-tl-scrub">
                             <div class="xzg-ve-tl-ticks"></div>
                         </div>
+                        <div class="xzg-ve-tl-track xzg-ve-video2-top-track"></div>
                         <div class="xzg-ve-tl-track xzg-ve-video-track"></div>
                         <div class="xzg-ve-tl-track xzg-ve-audio-track"></div>
+                        <div class="xzg-ve-tl-track xzg-ve-video2-bot-track"></div>
+                        <!-- V2-下 底边缘 1px 实线（原 .xzg-ve-tl-audio-bottom 复用，语义改为 V2-下 最底） -->
                         <div class="xzg-ve-tl-audio-bottom"></div>
-                        <div class="xzg-ve-tl-divider"></div>
+                        <!-- 四个手柄：时间线直接子元素，贯穿整个时间线左右（A2 最底不再放手柄） -->
+                        <div class="xzg-ve-track-resizer xzg-ve-resizer-v2-top"></div>
+                        <div class="xzg-ve-track-resizer xzg-ve-resizer-top"></div>
+                        <div class="xzg-ve-track-resizer xzg-ve-resizer-mid"></div>
+                        <div class="xzg-ve-track-resizer xzg-ve-resizer-bottom"></div>
+                        <!-- 二条分割线：V1↔音频（mid）、音频↔V2-下（v2bot） -->
+                        <div class="xzg-ve-tl-divider xzg-ve-tl-divider-mid"></div>
+                        <div class="xzg-ve-tl-divider xzg-ve-tl-divider-v2bot"></div>
                         <div class="xzg-ve-tl-playhead"></div>
                     </div>
                 </div>
@@ -731,13 +1274,26 @@ export class XiaozhuguangVideoEditor {
         `;
         this._root = root;
         this._canvas = root.querySelector(".xzg-ve-canvas");
+        this._previewFrame = root.querySelector(".xzg-ve-preview-frame");
+        this._previewHost = root.querySelector(".xzg-ve-preview");
+        // 离屏 canvas：作为 decoder 渲染目标（decoder 内部会重置 canvas.width/height，不能直接用主 canvas）
+        this._offscreenCanvas = document.createElement("canvas");
+        // 预览画面缩放：只改变显示大小，不影响渲染输出的分辨率
+        //   zoom=1 时自然 contain 到预览容器，tx/ty 按居中定位
+        //   所有定位用 transform: translate(tx, ty) scale(zoom) + transform-origin 0 0
+        this._previewZoom = 1;   // 范围 0.1 ~ 8
+        this._previewTx = 0;
+        this._previewTy = 0;
         this._mediaList = root.querySelector(".xzg-ve-media-list");
         this._timeline = root.querySelector(".xzg-ve-timeline");
         this._tlTrack = root.querySelector(".xzg-ve-video-track");
         this._tlAudioTrack = root.querySelector(".xzg-ve-audio-track");
-        this._tlDivider = root.querySelector(".xzg-ve-tl-divider");
-        this._tlVideoTopDivider = root.querySelector(".xzg-ve-tl-video-top");
-        this._tlAudioBottomDivider = root.querySelector(".xzg-ve-tl-audio-bottom");
+        this._tlV2TopTrack = root.querySelector(".xzg-ve-video2-top-track");
+        this._tlV2BotTrack = root.querySelector(".xzg-ve-video2-bot-track");
+        this._tlDivider = root.querySelector(".xzg-ve-tl-divider-mid");
+        this._tlVideoTopDivider = root.querySelector(".xzg-ve-tl-video-top");   // 语义：V2上↔V1 之间 1px 细实线分隔
+        this._tlAudioBottomDivider = root.querySelector(".xzg-ve-tl-audio-bottom"); // 语义：V2-下 最底 1px 实线
+        this._tlDividerV2Bot = root.querySelector(".xzg-ve-tl-divider-v2bot"); // 音频↔V2-下 分割线
         // 全局缩略图渲染提示：挂载到时间线视口（非滚动内容），始终居中，不随片段滚动/缩放移动
         this._tlThumbLoadingHint = _el("div", "xzg-ve-clip-thumb-loading", "缩略图渲染中", this._timeline);
         this._playhead = root.querySelector(".xzg-ve-tl-playhead");
@@ -745,6 +1301,12 @@ export class XiaozhuguangVideoEditor {
         this._timeLabel = root.querySelector(".xzg-ve-time");
         this._framesLabel = root.querySelector(".xzg-ve-frames");
         this._propsContent = root.querySelector(".xzg-ve-props-content");
+        this._propsTab = "video";  // 属性面板切换标签：video / audio
+        this._propsTabs = root.querySelector(".xzg-ve-props-tabs");
+        this._activeRange = null;  // 当前正在拖动的属性滑条
+        this._compositeBusy = false; // 多轨合成渲染防抖
+        this._compositeV1Cache = null;   // 播放合成时缓存的 V1 底层帧
+        this._compositeV1Pending = false; // V1 帧是否在途渲染
         this._tlInfo = root.querySelector(".xzg-ve-tl-info");
         this._previewEmpty = root.querySelector(".xzg-ve-preview-empty");
         // 加载遮罩元素引用（大视频加载进度显示）
@@ -755,28 +1317,143 @@ export class XiaozhuguangVideoEditor {
         this._loadingSize = root.querySelector(".xzg-ve-loading-size");
 
         // 事件绑定
+        // 属性面板「视频/音频」标签切换
+        this._propsTabs?.querySelectorAll(".xzg-ve-props-tab").forEach(tab => {
+            tab.addEventListener("click", () => {
+                this._propsTab = tab.dataset.type === "audio" ? "audio" : "video";
+                this._syncPropsTabs();
+                this._renderProps();
+            });
+        });
         root.querySelector(".xzg-ve-btn-cancel").onclick = () => this._cancel();
+        root.querySelector(".xzg-ve-btn-close-x").onclick = () => this.close();
         root.querySelector(".xzg-ve-btn-apply").onclick = () => this._render();
-        root.querySelector(".xzg-ve-btn-clear-tl").onclick = () => this._clearTimeline();
+        // 格式切换：视频（CRF 高中低）/ 音频 MP3（比特率 320/192/128）/ FLAC·WAV（单选项「无损」占位）
+        const formatSel = root.querySelector(".xzg-ve-format-select");
+        const qualitySel = root.querySelector(".xzg-ve-quality-select");
+        if (formatSel && qualitySel) {
+            this._syncQualityOptions = (fmt) => {
+                const f = fmt || formatSel.value || "video-mp4";
+                const prevVal = qualitySel.value;
+                // 清空重建
+                qualitySel.innerHTML = "";
+                const add = (value, text, sel = false) => {
+                    const o = document.createElement("option");
+                    o.value = value;
+                    o.textContent = text;
+                    if (sel) o.selected = true;
+                    qualitySel.appendChild(o);
+                };
+                if (f.startsWith("video-")) {
+                    add("high",   "高 (CRF 10)");
+                    add("medium", "中 (CRF 20)", true);
+                    add("low",    "低 (CRF 28)");
+                    qualitySel.dataset.mode = "video";
+                    qualitySel.disabled = false;
+                } else if (f === "audio-mp3") {
+                    add("320", "320 kbps", true);
+                    add("192", "192 kbps");
+                    add("128", "128 kbps");
+                    qualitySel.dataset.mode = "audio";
+                    qualitySel.disabled = false;
+                } else {
+                    // FLAC / WAV：无损，无质量选择
+                    add("lossless", "无损", true);
+                    qualitySel.dataset.mode = "audio";
+                    qualitySel.disabled = true;
+                }
+                // 恢复原值（若匹配）
+                for (let i = 0; i < qualitySel.options.length; i++) {
+                    if (qualitySel.options[i].value === prevVal) {
+                        qualitySel.selectedIndex = i;
+                        break;
+                    }
+                }
+            };
+            formatSel.addEventListener("change", () => this._syncQualityOptions(formatSel.value));
+            this._syncQualityOptions(formatSel.value);
+        }
+        // 模式过滤（加载器限定模式）：按 _modeFilter 重建格式下拉 + 隐藏「导出」按钮
+        //   audio → 只留音频格式（默认 MP3）；video → 只留视频 MP4；null → 完整列表
+        //   每次调用从头重建，模式切换（如单例复用时）自然可逆
+        const XZG_VE_FORMATS = [
+            { value: "video-mp4", label: "视频 MP4" },
+            { value: "audio-mp3", label: "音频 MP3" },
+            { value: "audio-wav", label: "音频 WAV" },
+            { value: "audio-flac", label: "音频 FLAC" },
+        ];
+        this._applyModeFilter = () => {
+            const formatSel2 = this._root?.querySelector(".xzg-ve-format-select");
+            const applyBtn = this._root?.querySelector(".xzg-ve-btn-apply");
+            if (!formatSel2) return;
+            const mode = this._modeFilter;
+            // 限定模式（加载器打开）隐藏「导出」按钮；独立模式恢复
+            if (applyBtn) applyBtn.style.display = mode ? "none" : "";
+            // 直接打开（无 confirmCallback）：隐藏「确认」按钮（点了没意义）
+            const cancelBtn = this._root?.querySelector(".xzg-ve-btn-cancel");
+            if (cancelBtn) cancelBtn.style.display = this._confirmCallback ? "" : "none";
+            const allowed = XZG_VE_FORMATS.filter(f =>
+                mode === "audio" ? f.value.startsWith("audio-")
+                : mode === "video" ? f.value.startsWith("video-")
+                : true
+            );
+            const prev = formatSel2.value;
+            formatSel2.innerHTML = "";
+            for (const f of allowed) {
+                const o = document.createElement("option");
+                o.value = f.value;
+                o.textContent = f.label;
+                formatSel2.appendChild(o);
+            }
+            // 保留仍允许的原选中值，否则取默认（audio→MP3, video→MP4, 完整→MP4）
+            formatSel2.value = (prev && allowed.some(f => f.value === prev))
+                ? prev
+                : (allowed[0]?.value || "video-mp4");
+            this._syncQualityOptions?.(formatSel2.value);
+            // 音频加载器打开：隐藏视频轨道，A1/A2 均分高度
+            if (mode === "audio") {
+                this._tlViewMode = "audio";
+                this._tlHeightsCustomized = true;
+                this._tlMaximizedTrack = null;
+                const tlH = Math.max(1, (this._timeline && this._timeline.clientHeight > 0) ? this._timeline.clientHeight : 400);
+                const trackAreaH = tlH - 35;
+                this._tlV2TopHeight = 0;
+                this._tlVideoHeight = 0;
+                const eachH = Math.floor((trackAreaH - 1) / 2);
+                this._tlAudioHeight = eachH;
+                this._tlV2BotHeight = eachH;
+                this._applyTrackLayout();
+            } else if (mode === "video") {
+                // 视频加载器打开：保持四轨均分（默认行为）
+                this._tlViewMode = "both";
+                this._tlHeightsCustomized = false;
+                this._tlMaximizedTrack = null;
+                this._applyTrackLayout();
+            }
+            // mode === null（独立打开）：不强制重置布局，保留用户当前布局
+        };
+        this._applyModeFilter();
         // 输出目录设置按钮：复用小珠光图像保存-化神级的目录浏览器对话框
         // 通过模拟 node + widget 的方式对接全局 _xzgShowDirBrowser
         const outputSettingsBtn = root.querySelector(".xzg-ve-btn-output-settings");
-        // 更新按钮文字：显示当前输出目录设置摘要
+        // 更新按钮 tooltip：显示当前输出目录设置摘要（三种模式：默认/另存为/自定义目录）
+        // 按钮本身固定显示文字「输出目录设置」，模式信息只放在 title 悬浮提示
         this._updateOutputBtn = () => {
             if (!outputSettingsBtn) return;
-            if (this._useDefaultOutput) {
-                outputSettingsBtn.textContent = "输出目录设置: 默认";
-                outputSettingsBtn.title = "默认输出到 ComfyUI output 目录，前缀 xzg-edit";
+            outputSettingsBtn.textContent = "输出目录设置";
+            if (this._outputMode === "default") {
+                outputSettingsBtn.title = "输出目录设置：默认（输出到 ComfyUI output 目录，前缀 xzg-edit）";
+            } else if (this._outputMode === "saveas") {
+                outputSettingsBtn.title = "输出目录设置：另存为（导出时弹出浏览器另存为对话框，手动选择保存位置和文件名）";
             } else {
-                // 显示目录名 + 前缀
+                // custom：目录名 + 前缀 + 戳
                 const parts = (this._baseDir || "").replace(/[\\/]+$/, "").split(/[\\/]/);
                 const last = parts[parts.length - 1] || this._baseDir || "(未选目录)";
-                outputSettingsBtn.textContent = `输出目录设置: ${last}`;
                 const stamps = [];
                 if (this._addDateStamp) stamps.push("日期");
                 if (this._addTimeStamp) stamps.push("时间");
                 const stampStr = stamps.length ? ` + ${stamps.join("/")}` : "";
-                outputSettingsBtn.title = `目录: ${this._baseDir || "(未选)"}\n前缀: ${this._filenamePrefix}${stampStr}`;
+                outputSettingsBtn.title = `输出目录设置：${last}\n目录: ${this._baseDir || "(未选)"}\n前缀: ${this._filenamePrefix}${stampStr}`;
             }
         };
         if (outputSettingsBtn) {
@@ -789,6 +1466,17 @@ export class XiaozhuguangVideoEditor {
                 // 构造模拟 node + widget，对接全局对话框
                 // _xzgDirBrowserConfirm 会设置 widget.value 并调用 callback
                 const self = this;
+                const outputModeWidget = {
+                    name: "output_mode",
+                    value: this._outputMode,
+                    callback: function(v) {
+                        // v: "default" | "saveas" | "custom"
+                        self._outputMode = v || "default";
+                        self._useDefaultOutput = (self._outputMode === "default");  // 向后兼容
+                        self._saveOutputSettings();
+                        self._updateOutputBtn();
+                    }
+                };
                 const baseDirWidget = {
                     name: "base_dir",
                     value: this._baseDir || "",
@@ -803,6 +1491,10 @@ export class XiaozhuguangVideoEditor {
                     value: this._useDefaultOutput,
                     callback: function(v) {
                         self._useDefaultOutput = !!v;
+                        // 旧版兼容：从 use_default_output 同步到 outputMode
+                        if (self._outputMode !== "saveas") {
+                            self._outputMode = self._useDefaultOutput ? "default" : "custom";
+                        }
                         self._saveOutputSettings();
                         self._updateOutputBtn();
                     }
@@ -837,6 +1529,7 @@ export class XiaozhuguangVideoEditor {
                 const fakeNode = {
                     widgets: [baseDirWidget],
                     setDirtyCanvas: () => {},
+                    _xzgOutputModeWidget: outputModeWidget,
                     _xzgBaseDirWidget: baseDirWidget,
                     _xzgDefaultOutputWidget: defaultOutputWidget,
                     _xzgPrefixCustomWidget: prefixWidget,
@@ -846,6 +1539,8 @@ export class XiaozhuguangVideoEditor {
                 window._xzgShowDirBrowser(fakeNode);
             };
         }
+        const shortcutSettingsBtn = root.querySelector(".xzg-ve-btn-shortcut-settings");
+        if (shortcutSettingsBtn) shortcutSettingsBtn.onclick = () => { shortcutSettingsBtn.blur(); this._openShortcutSettings(); };
         this._updateOutputBtn();
         root.querySelector(".xzg-ve-btn-reset-layout").onclick = (e) => { e.currentTarget.blur(); this._resetTrackLayout(); };
         // 渲染分辨率控件：预设选择 → 自动填入宽高；竖屏按钮 → 交换宽高使较大值为高
@@ -872,12 +1567,22 @@ export class XiaozhuguangVideoEditor {
                     hInput.value = 0;
                 }
                 _syncPortraitLock();
+                // 切换分辨率后预览即时按新比例 letterbox
+                if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
             };
         }
         if (wInput && hInput) {
             // 输入框手动修改时，预设自动切回"原始"（避免与输入值不同步）
-            wInput.oninput = () => { if (presetsSel) presetsSel.value = "0"; _syncPortraitLock(); };
-            hInput.oninput = () => { if (presetsSel) presetsSel.value = "0"; _syncPortraitLock(); };
+            wInput.oninput = () => {
+                if (presetsSel) presetsSel.value = "0";
+                _syncPortraitLock();
+                if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
+            };
+            hInput.oninput = () => {
+                if (presetsSel) presetsSel.value = "0";
+                _syncPortraitLock();
+                if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
+            };
         }
         // 帧率下拉列表：选择具体数值 → 填入输入框并禁用手动输入；选择"自定义" → 启用输入框
         const fpsSel = root.querySelector(".xzg-ve-render-fps-sel");
@@ -929,12 +1634,17 @@ export class XiaozhuguangVideoEditor {
                     }
                     if (!matched) presetsSel.value = "0";
                 }
+                // 交换后预览按新分辨率比例重新 letterbox
+                if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
             };
         }
+        // 「重置视图」按钮：恢复 100% 居中
+        const resetViewBtn = root.querySelector(".xzg-ve-btn-reset-view");
+        if (resetViewBtn) {
+            resetViewBtn.onclick = (e) => { e.preventDefault(); this._resetPreviewZoom(); };
+        }
         root.querySelector(".xzg-ve-add-btn").onclick = () => this._addFromInput();
-        root.querySelector(".xzg-ve-clear-btn").onclick = () => this._clearMediaLibrary();
         root.querySelector(".xzg-ve-cache-btn").onclick = () => this._clearCache();
-        root.querySelector(".xzg-ve-refresh-btn").onclick = () => this._refreshOfflineStatus();
         this._thumbBtn = root.querySelector(".xzg-ve-thumb-btn");
         this._updateThumbBtn();
         this._thumbBtn.onclick = () => this._toggleThumbMode();
@@ -945,14 +1655,23 @@ export class XiaozhuguangVideoEditor {
         this._resizer = root.querySelector(".xzg-ve-media-resizer");
         this._restoreMediaWidth();
         this._bindResizer();
+        // 属性面板宽度拖动调整
+        this._propsPanel = root.querySelector(".xzg-ve-props-panel");
+        this._propsResizer = root.querySelector(".xzg-ve-props-resizer");
+        this._restorePropsWidth();
+        this._bindPropsResizer();
         // 时间线高度拖动调整
         this._tlPanel = root.querySelector(".xzg-ve-timeline-panel");
         this._tlResizer = root.querySelector(".xzg-ve-timeline-resizer");
         this._tlVideoHeader = root.querySelector(".xzg-ve-video-header");
         this._tlAudioHeader = root.querySelector(".xzg-ve-audio-header");
+        this._tlV2TopHeader = root.querySelector(".xzg-ve-video2-top-header");
+        this._tlV2BotHeader = root.querySelector(".xzg-ve-video2-bot-header");
         this._tlResizerTop = root.querySelector(".xzg-ve-resizer-top");
         this._tlResizerMid = root.querySelector(".xzg-ve-resizer-mid");
         this._tlResizerBottom = root.querySelector(".xzg-ve-resizer-bottom");
+        this._tlResizerV2Top = root.querySelector(".xzg-ve-resizer-v2-top");
+        this._tlResizerV2Bot = root.querySelector(".xzg-ve-resizer-v2-bot");
         this._restoreTimelineHeight();
         this._bindTimelineResizer();
         this._initTrackResizer();
@@ -962,6 +1681,46 @@ export class XiaozhuguangVideoEditor {
             e.currentTarget.blur();  // 点击后立即失焦，避免空格播放时残留焦点高亮
         };
         root.querySelector(".xzg-ve-frame-btn").onclick = () => this._exportFrame();
+        root.querySelector(".xzg-ve-split-btn").onclick = (e) => {
+            e.currentTarget.blur();
+            if (this.timeline.length > 0) this._splitClipAtPlayhead();
+        };
+        const magnetBtn = root.querySelector(".xzg-ve-magnet-btn");
+        if (magnetBtn) {
+            // 磁吸开关：开启=红色，关闭=灰色
+            const applyMagnetStyle = () => {
+                if (this._magnetEnabled) {
+                    magnetBtn.classList.remove("xzg-ve-magnet-off");
+                    magnetBtn.style.color = "#ff4444";  // 红
+                } else {
+                    magnetBtn.classList.add("xzg-ve-magnet-off");
+                    magnetBtn.style.color = "#181882";  // 未激活：深蓝
+                }
+            };
+            applyMagnetStyle();
+            magnetBtn.onclick = (e) => {
+                e.currentTarget.blur();
+                this._magnetEnabled = !this._magnetEnabled;
+                applyMagnetStyle();
+                this._setStatus(this._magnetEnabled ? "磁吸：开启" : "磁吸：关闭");
+            };
+        }
+        root.querySelector(".xzg-ve-flag-btn").onclick = (e) => {
+            e.currentTarget.blur();
+            this._addMarkerFlag();
+        };
+        const rulerBtn = root.querySelector(".xzg-ve-ruler-btn");
+        if (rulerBtn) rulerBtn.onclick = (e) => { e.currentTarget.blur(); this._fitTimelineToView(); };
+        const rulerZoomBtn = root.querySelector(".xzg-ve-rulerzoom-btn");
+        if (rulerZoomBtn) rulerZoomBtn.onclick = (e) => { e.currentTarget.blur(); this._zoomToTenSeconds(); };
+        root.querySelector(".xzg-ve-flag-btn").oncontextmenu = (e) => {
+            e.preventDefault();
+            if (this._markerFlags.length > 0) {
+                this._markerFlags = [];
+                this._renderMarkerFlags();
+                this._setStatus("已清空所有旗标");
+            }
+        };
         // canvas 点击切换播放
         this._canvas.addEventListener("click", () => this._toggleTimelinePlay());
 
@@ -974,26 +1733,22 @@ export class XiaozhuguangVideoEditor {
         // 时间线拖放：拖动时实时预览片段在轨道上的位置，松开后落入
         this._timeline.addEventListener("dragenter", (e) => {
             e.preventDefault();
-            this._tlTrack.classList.add("xzg-ve-drag-over");
         });
         this._timeline.addEventListener("dragover", (e) => {
             e.preventDefault();
-            this._tlTrack.classList.add("xzg-ve-drag-over");
             // 实时预览：根据鼠标 X 位置显示片段占位
             const name = e.dataTransfer.types.includes("text/x-media-name");
             if (!name) return;
-            this._showDragPreview(e.clientX);
+            this._showDragPreview(e.clientX, null, "left", "video", e.clientY);
         });
         this._timeline.addEventListener("dragleave", (e) => {
-            // 仅当离开整个 timeline 才取消高亮和预览
+            // 仅当离开整个 timeline 才取消预览
             if (!this._timeline.contains(e.relatedTarget)) {
-                this._tlTrack.classList.remove("xzg-ve-drag-over");
                 this._hideDragPreview();
             }
         });
         this._timeline.addEventListener("drop", (e) => {
             e.preventDefault();
-            this._tlTrack.classList.remove("xzg-ve-drag-over");
             this._hideDragPreview();
             const name = e.dataTransfer.getData("text/x-media-name");
             const type = e.dataTransfer.getData("text/x-media-type") || "input";
@@ -1001,12 +1756,17 @@ export class XiaozhuguangVideoEditor {
                 // 根据鼠标 X 位置计算放置点（秒，鼠标对应片段左边缘）+ 磁吸对齐
                 const media = this.mediaLibrary.find(m => m.name === name);
                 const isImg = _isImage(name) || media?.info?.is_image === true;
+                const isAudio = media?.isAudio || (media?.info?.audio_only === true);
+                // 音频加载器模式：所有拖入（包括视频）强制作为音频处理
+                const kind = (this._modeFilter === "audio" || isAudio) ? "audio" : "video";
                 const md = media?.info?.duration || 0;
                 // 图片 duration=0，使用默认 5 秒；视频 probe 未完成用 60 秒占位
                 const dur = isImg ? (media?.info?.default_duration || 5) : (md > 0 ? md : 60);
                 let tlStart = this._clientXToTlStart(e.clientX, dur);
                 tlStart = this._snapTlStart(tlStart, dur);
-                this._addClipToTimeline(name, type, tlStart);
+                // 根据鼠标 Y 判断落在哪个轨道（V2/V1/A1/A2）
+                const track = this._yToTrack(e.clientY, kind);
+                this._addClipToTimeline(name, type, tlStart, track);
             }
         });
 
@@ -1079,17 +1839,11 @@ export class XiaozhuguangVideoEditor {
             sub.appendChild(item);
         }
 
-        // 一级菜单：颜色（带 ▸ 展开子菜单）
-        const colorItem = document.createElement("div");
-        colorItem.className = "xzg-ve-ctx-item xzg-ve-ctx-has-sub";
-        colorItem.innerHTML = `<span>颜色</span><span class="xzg-ve-ctx-arrow">▸</span>`;
-        colorItem.appendChild(sub);
-        menu.appendChild(colorItem);
-
+        // 一级菜单顺序：分割 → 标记 → 删除 → 颜色
         // 分割：在播放头位置分割当前右键的片段
         const splitItem = document.createElement("div");
         splitItem.className = "xzg-ve-ctx-item";
-        splitItem.innerHTML = `<span>✂ 分割</span>`;
+        splitItem.innerHTML = `<span class="xzg-ve-ctx-icon" aria-hidden="true">✂</span><span class="xzg-ve-ctx-label">分割 B</span>`;
         splitItem.addEventListener("mousedown", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1102,10 +1856,22 @@ export class XiaozhuguangVideoEditor {
         });
         menu.appendChild(splitItem);
 
+        // 标记：在当前播放头位置添加旗标
+        const flagItem = document.createElement("div");
+        flagItem.className = "xzg-ve-ctx-item";
+        flagItem.innerHTML = `<span class="xzg-ve-ctx-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4a9eff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="2" x2="4" y2="22"/><path d="M4,4 L18,4 L14,10 L18,16 L4,16"/></svg></span><span class="xzg-ve-ctx-label">标记 M</span>`;
+        flagItem.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this._addMarkerFlag();
+            this._hideCtxMenu();
+        });
+        menu.appendChild(flagItem);
+
         // 删除
         const delItem = document.createElement("div");
         delItem.className = "xzg-ve-ctx-item";
-        delItem.innerHTML = `<span>🗑 删除</span>`;
+        delItem.innerHTML = `<span class="xzg-ve-ctx-icon" aria-hidden="true">🗑</span><span class="xzg-ve-ctx-label">删除</span>`;
         delItem.addEventListener("mousedown", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1114,6 +1880,13 @@ export class XiaozhuguangVideoEditor {
             this._hideCtxMenu();
         });
         menu.appendChild(delItem);
+
+        // 颜色（带 ▸ 展开子菜单）
+        const colorItem = document.createElement("div");
+        colorItem.className = "xzg-ve-ctx-item xzg-ve-ctx-has-sub";
+        colorItem.innerHTML = `<span class="xzg-ve-ctx-icon" aria-hidden="true"></span><span class="xzg-ve-ctx-label">颜色</span><span class="xzg-ve-ctx-arrow">▸</span>`;
+        colorItem.appendChild(sub);
+        menu.appendChild(colorItem);
 
         // 显示/隐藏控制
         this._ctxMenu = menu;
@@ -1253,8 +2026,8 @@ export class XiaozhuguangVideoEditor {
             user-select: text; -webkit-user-select: text;
         }
         .xzg-ve-modal {
-            width: 98vw; height: 95vh; background: #2a2a2a; border: 1px solid #444;
-            border-radius: 8px; display: flex; flex-direction: column; overflow: hidden;
+            width: 100vw; height: 100vh; background: #2a2a2a; border: none;
+            border-radius: 0; display: flex; flex-direction: column; overflow: hidden;
             position: relative; /* 供加载遮罩 absolute 定位 */
         }
         .xzg-ve-header {
@@ -1343,21 +2116,6 @@ export class XiaozhuguangVideoEditor {
             white-space: nowrap;
         }
         .xzg-ve-cache-btn:hover { background: #5a2a2a; }
-        .xzg-ve-refresh-btn {
-            background: #2a2a2a; border: none; color: #ddd;
-            font-size: 12px; padding: 2px 6px; border-radius: 3px; cursor: pointer;
-            height: 24px; box-sizing: border-box; line-height: 1;
-            white-space: nowrap;
-        }
-        .xzg-ve-refresh-btn:hover { background: #454545; }
-        .xzg-ve-clear-btn {
-            background: #2a2a2a; border: none; color: #ff6b6b;
-            font-size: 18px; padding: 3px 6px; border-radius: 3px; cursor: pointer;
-            display: inline-flex; align-items: center; justify-content: center;
-            width: 32px; height: 24px; box-sizing: border-box;
-            line-height: 1;
-        }
-        .xzg-ve-clear-btn:hover { background: #5a2a2a; }
         .xzg-ve-thumb-btn {
             background: #2a2a2a; border: none; color: #fff;
             font-size: 11px; padding: 3px 6px; border-radius: 3px; cursor: pointer;
@@ -1417,7 +2175,8 @@ export class XiaozhuguangVideoEditor {
             color: #444; font-size: 10px;
         }
         .xzg-ve-media-name { color: #ddd; overflow: hidden; text-overflow: ellipsis;
-            white-space: nowrap; }
+            white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+        .xzg-ve-media-icon { flex-shrink: 0; width: 14px; height: 14px; }
         .xzg-ve-media-info { color: #666; font-size: 10px; margin-top: 2px; }
         .xzg-ve-media-info-err { color: #ff6b6b; }
         /* 离线媒体项：磁盘上不存在的媒体文件，红色背景 + 大红字提示 */
@@ -1438,10 +2197,24 @@ export class XiaozhuguangVideoEditor {
         }
         .xzg-ve-preview {
             flex: 1; background: #1d1d1d; position: relative;
-            display: flex; align-items: center; justify-content: center;
             min-height: 0;
+            overflow: hidden;  /* 不用滚动条，画面超出部分裁切，通过缩放 + 平移观察 */
         }
-        .xzg-ve-canvas { max-width: 100%; max-height: 100%; display: none; image-rendering: auto; }
+        /* 预览画布框：采用 absolute 定位 + transform(translate + scale)
+           - left/top = 0 固定，画面位置完全由 JS 写入 translate(tx, ty) 控制
+           - transform-origin: 0 0，这样 translate 就是左上角到容器左上角的像素距离，计算直观
+           - width/height = natural (contain 到容器时的尺寸，不随 zoom 变)，缩放由 scale 承担
+           - 这样就不需要滚动条，缩放围绕鼠标像素位置精准计算 */
+        .xzg-ve-preview-frame {
+            position: absolute; left: 0; top: 0;
+            background: #000; box-shadow: 0 0 0 1px rgba(255,255,255,0.05);
+            transform-origin: 0 0;
+            display: flex; align-items: center; justify-content: center;
+            line-height: 0;
+            /* 默认尺寸：open 后 JS 会根据目标分辨率 contain 重新赋值 */
+            width: 640px; height: 360px;
+        }
+        .xzg-ve-canvas { width: 100%; height: 100%; display: none; image-rendering: auto; }
         .xzg-ve-canvas.xzg-ve-active { display: block; }
         .xzg-ve-preview-empty {
             color: #555; font-size: 14px; text-align: center;
@@ -1459,19 +2232,19 @@ export class XiaozhuguangVideoEditor {
             display: inline-flex; align-items: center; justify-content: center;
             padding: 0;
         }
-        /* 播放符号 ▶：CSS 三角形，精确居中（字形 ▶ 默认偏左） */
+        /* 暂停符号 ❚❚：两根竖线，对称居中（正在播放时显示） */
         .xzg-ve-play-btn.xzg-ve-playing::before {
-            content: ""; display: inline-block;
-            border-style: solid; border-width: 6px 0 6px 10px;
-            border-color: transparent transparent transparent #fff;
-            margin-left: 2px;
-        }
-        /* 暂停符号 ❚❚：两根竖线，对称居中 */
-        .xzg-ve-play-btn:not(.xzg-ve-playing)::before {
             content: ""; display: inline-block;
             width: 10px; height: 12px;
             border-left: 3px solid #fff; border-right: 3px solid #fff;
             box-sizing: border-box;
+        }
+        /* 播放符号 ▶：CSS 三角形，精确居中（暂停时显示；字形 ▶ 默认偏左） */
+        .xzg-ve-play-btn:not(.xzg-ve-playing)::before {
+            content: ""; display: inline-block;
+            border-style: solid; border-width: 6px 0 6px 10px;
+            border-color: transparent transparent transparent #fff;
+            margin-left: 2px;
         }
         .xzg-ve-play-btn:hover { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.18); }
         /* 禁用按钮默认焦点轮廓，避免空格播放时残留高亮 */
@@ -1484,11 +2257,36 @@ export class XiaozhuguangVideoEditor {
             font-size: 11px; padding: 4px 8px; border-radius: 3px; cursor: pointer;
         }
         .xzg-ve-frame-btn:hover { background: #454545; }
+        .xzg-ve-props-resizer {
+            width: 8px; cursor: col-resize; background: transparent;
+            flex-shrink: 0; position: relative; transition: background 0.15s;
+        }
+        .xzg-ve-props-resizer::after {
+            content: ""; position: absolute; left: 50%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px; height: 0; background: transparent; border-radius: 1px;
+            transition: background 0.15s, height 0.15s;
+        }
+        .xzg-ve-props-resizer:hover::after,
+        .xzg-ve-props-resizer.xzg-ve-resizing::after {
+            background: #FFFFFF; height: 32px;
+        }
         .xzg-ve-props-panel {
             width: 220px; background: #2a2a2a; border-left: 1px solid #535353;
             display: flex; flex-direction: column; flex-shrink: 0;
             box-shadow: -1px 0 0 0 rgba(83,83,83,0.5), inset 1px 0 0 0 rgba(83,83,83,0.5);
         }
+        .xzg-ve-props-tabs {
+            display: flex; border-bottom: 1px solid #535353; flex-shrink: 0;
+        }
+        .xzg-ve-props-tab {
+            flex: 1; padding: 6px 0; background: transparent; border: none;
+            color: #888; font-size: 12px; cursor: pointer;
+            border-bottom: 2px solid transparent;
+        }
+        .xzg-ve-props-tab:hover { color: #ccc; }
+        .xzg-ve-props-tab-active { color: #fff; border-bottom-color: #dcc85b; font-weight: bold; }
+        .xzg-ve-props-tab:focus, .xzg-ve-props-tab:focus-visible { outline: none; }
         .xzg-ve-props-content { flex: 1; overflow-y: auto; padding: 8px 10px; font-size: 11px; }
         .xzg-ve-prop-row { margin-bottom: 8px; }
         .xzg-ve-prop-label { color: #888; margin-bottom: 3px; }
@@ -1497,6 +2295,17 @@ export class XiaozhuguangVideoEditor {
             border-radius: 3px; color: #ddd; font-size: 11px; box-sizing: border-box;
         }
         .xzg-ve-prop-input:focus { border-color: #dcc85b; outline: none; }
+        .xzg-ve-prop-range-wrap { display: flex; align-items: center; gap: 4px; }
+        .xzg-ve-prop-range { flex: 1; min-width: 0; height: 4px; accent-color: #dcc85b; outline: none; }
+        .xzg-ve-prop-range:focus { outline: none; box-shadow: none; }
+        .xzg-ve-prop-range.xzg-ve-prop-range-changed { accent-color: #e04848; }
+        .xzg-ve-prop-range-val { color: #ddd; font-size: 10px; min-width: 28px; text-align: right; }
+        .xzg-ve-prop-reset {
+            width: 20px; height: 20px; padding: 0; flex-shrink: 0;
+            background: transparent; border: none; color: #888; font-size: 14px;
+            cursor: pointer; border-radius: 3px; line-height: 1;
+        }
+        .xzg-ve-prop-reset:hover { background: #454545; color: #fff; }
         .xzg-ve-timeline-panel {
             background: #2a2a2a; flex-shrink: 0;
             display: flex; flex-direction: column;
@@ -1527,23 +2336,77 @@ export class XiaozhuguangVideoEditor {
             color: #6699ff; font-size: 14px;
             margin-left: auto;
         }
-        .xzg-ve-btn.xzg-ve-btn-reset-layout {
-            padding: 4px 10px; font-size: 14px; line-height: 1;
-            border: none;
-            border-radius: 3px;
+        .xzg-ve-magnet-btn {
+            position: absolute;
+            width: 20px; height: 20px; background: transparent; border: none;
+            cursor: pointer; padding: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 20px; line-height: 1;
+            /* 开口朝上 */
+            transform: rotate(90deg);
+            /* 放在分割剪刀左侧 */
+            left: calc(150px + (100% - 150px) / 2 - 66px);
+            top: 6px;
         }
-        .xzg-ve-btn.xzg-ve-btn-reset-layout:hover { background: #454545; }
-        .xzg-ve-reset-icon { font-size: 16px; }
+        .xzg-ve-magnet-btn.xzg-ve-magnet-off { filter: grayscale(1) opacity(0.85); }
+        .xzg-ve-magnet-btn:focus, .xzg-ve-magnet-btn:focus-visible { outline: none; }
+        .xzg-ve-split-btn {
+            position: absolute;
+            width: 25px; height: 25px; background: transparent; border: none;
+            cursor: pointer; padding: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            /* x 位置：扣除左侧150px占位区后，对齐到 resizer 手柄小条左侧一点 */
+            left: calc(150px + (100% - 150px) / 2 - 20px);
+            transform: translateX(-50%);
+        }
+        .xzg-ve-split-btn svg circle, .xzg-ve-split-btn svg line { transition: stroke 0.15s ease; }
+        .xzg-ve-split-btn:hover svg circle, .xzg-ve-split-btn:hover svg line { stroke: rgb(0,255,100); }
+        .xzg-ve-split-btn:focus, .xzg-ve-split-btn:focus-visible { outline: none; }
+        .xzg-ve-flag-btn {
+            position: absolute;
+            width: 25px; height: 25px; background: transparent; border: none;
+            cursor: pointer; padding: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            left: calc(150px + (100% - 150px) / 2 + 5px);
+            top: 6px;
+        }
+        .xzg-ve-flag-btn svg { transition: stroke 0.15s ease; }
+        .xzg-ve-flag-btn:hover svg { stroke: #7abfff; }
+        .xzg-ve-flag-btn:focus, .xzg-ve-flag-btn:focus-visible { outline: none; }
+        .xzg-ve-ruler-btn, .xzg-ve-rulerzoom-btn {
+            position: absolute;
+            width: 32px; height: 32px; background: transparent; border: none;
+            cursor: pointer; padding: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+            color: rgba(255,255,255,0.75);
+            top: -3px;
+        }
+        .xzg-ve-ruler-btn svg, .xzg-ve-rulerzoom-btn svg { transition: color 0.15s ease; }
+        .xzg-ve-ruler-btn:hover svg, .xzg-ve-rulerzoom-btn:hover svg { color: #7abfff; }
+        .xzg-ve-ruler-btn:focus, .xzg-ve-ruler-btn:focus-visible,
+        .xzg-ve-rulerzoom-btn:focus, .xzg-ve-rulerzoom-btn:focus-visible { outline: none; }
+        .xzg-ve-ruler-btn { left: calc(150px + (100% - 150px) / 2 + 305px); }
+        .xzg-ve-rulerzoom-btn { left: calc(150px + (100% - 150px) / 2 + 350px); }
+        .xzg-ve-marker-flag {
+            position: absolute; top: 2px; width: 12px; height: 14px;
+            pointer-events: auto; cursor: pointer; z-index: 5;
+        }
+        .xzg-ve-marker-flag:hover { opacity: 0.7; }
+        .xzg-ve-btn.xzg-ve-btn-reset-layout {
+            position: absolute; top: 2px; left: 2px; right: 2px;
+            height: 30px; padding: 0; font-size: 12px; line-height: 1;
+            border: none; border-radius: 3px;
+            background: transparent; color: #aaa;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; z-index: 10;
+        }
+        .xzg-ve-btn.xzg-ve-btn-reset-layout:hover { background: #454545; color: #ddd; }
+        .xzg-ve-reset-icon { vertical-align: middle; }
         .xzg-ve-timeline {
             flex: 1; position: relative; background: #2a2a2a; overflow: clip;
             overflow-clip-margin: 10px; /* 允许播放头标记伸出边界10px不被裁剪 */
             min-height: 0; padding: 4px 0;
             outline: none; /* 按空格播放时容器获焦点，屏蔽浏览器默认白色轮廓 */
-        }
-        .xzg-ve-timeline.xzg-ve-drag-over,
-        .xzg-ve-tl-track.xzg-ve-drag-over {
-            background: rgba(144, 238, 144, 0.18); border-color: rgba(144, 238, 144, 0.6);
-            box-shadow: inset 0 0 10px rgba(144, 238, 144, 0.25);
         }
         /* 拖放预览：半透明片段占位，跟随鼠标 X 显示放置位置 */
         .xzg-ve-clip-preview {
@@ -1582,9 +2445,17 @@ export class XiaozhuguangVideoEditor {
             padding: 4px 8px;
             display: flex; align-items: center; background: #303030;
         }
+        /* V2-上 / V2-下 轨道头：复用视频头视觉（高度由 JS 设置覆盖 60px 默认值） */
+        .xzg-ve-video2-top-header,
+        .xzg-ve-video2-bot-header {
+            position: absolute; left: 0; right: 0;
+            padding: 4px 8px;
+            display: flex; align-items: center; background: #303030;
+        }
         .xzg-ve-track-name {
             color: #ddd; font-size: 12px; flex: 1;
             user-select: none; -webkit-user-select: none;
+            cursor: pointer; /* 双击可切换仅视频/仅音频显示 */
         }
         /* 三个手柄：top(视频高度)、mid(视频/音频分配比例)、bottom(音频高度)
            都用 absolute + top 定位，由 JS _applyTrackLayout 统一计算 */
@@ -1593,7 +2464,7 @@ export class XiaozhuguangVideoEditor {
             cursor: ns-resize; z-index: 7;
         }
         .xzg-ve-track-resizer::after {
-            content: ""; position: absolute; left: 50%; top: 50%;
+            content: ""; position: absolute; left: 75px; top: 50%;
             transform: translate(-50%, -50%);
             width: 28px; height: 2px; background: #717070; border-radius: 1px;
             transition: background 0.15s, width 0.15s;
@@ -1654,9 +2525,23 @@ export class XiaozhuguangVideoEditor {
             border-top-right-radius: 0;
             padding: 0 2px 2px 0;
         }
+        /* A1 / A2（音频副轨道）：A1 下贴 V1 交界细分隔线；A2 上贴音频↔A2 5px 分割线 */
+        .xzg-ve-video2-top-track {
+            background: #2a2a2a;
+            border-bottom-left-radius: 0;
+            border-bottom-right-radius: 0;
+            padding: 2px 2px 0 0;  /* 下padding 0，贴细分隔线 */
+        }
+        .xzg-ve-video2-bot-track {
+            background: #2a2a2a;
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+            padding: 0 2px 2px 0;  /* 上padding 0，贴5px分割线 */
+        }
         /* 视频轨道内片段：height:100%填满content-box；父box-sizing:border-box高度vH已含顶部2pxpadding
            → 片段底部正好=轨道底部=分割线顶部（midTop），零缝隙 */
         .xzg-ve-video-track .xzg-ve-clip { height: 100%; }
+        .xzg-ve-video2-top-track .xzg-ve-clip { height: 100%; }
         /* 音频轨道内片段：height:100%填满content-box；父box-sizing:border-box高度aH已含底部2pxpadding
            → 片段正好停在2px下padding上边缘，不越过轨道 */
         .xzg-ve-audio-track .xzg-ve-clip { height: 100%; }
@@ -1668,7 +2553,6 @@ export class XiaozhuguangVideoEditor {
             background: #448F64; border: 1px solid #000;
             font-size: 9px; color: #ddd;
             user-select: none; -webkit-user-select: none; -webkit-user-drag: none;
-            box-sizing: border-box;
             --xzg-ve-clip-border: #4376A1; /* 默认色（色板蓝），可通过 JS 覆盖（与视频片段一致） */
         }
         /* 内边框：上/左/右各2px，下边25px向上延伸；与视频片段 ::after 完全一致 */
@@ -1810,7 +2694,7 @@ export class XiaozhuguangVideoEditor {
             background: transparent; z-index: 8;
             cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M10 12H1M6 7l-5 5 5 5' stroke='%23ff4444' stroke-width='2.5' fill='none'/%3E%3Cline x1='10' y1='0' x2='10' y2='24' stroke='%23ff4444' stroke-width='2'/%3E%3Cline x1='14' y1='0' x2='14' y2='24' stroke='%23ff4444' stroke-width='2'/%3E%3Cpath d='M14 12h9M18 7l5 5-5 5' stroke='%23ff4444' stroke-width='2.5' fill='none'/%3E%3C/svg%3E") 12 12, ew-resize;
         }
-        .xzg-ve-clip-name { color: rgba(255,255,255,0.85); font-weight: normal; }
+        .xzg-ve-clip-name { color: rgba(255,255,255,0.85); font-weight: normal; font-size: 12px; }
         .xzg-ve-clip-time { color: rgba(255,255,255,0.6); }
         /* 离线媒体：媒体库中被删除的片段，红色背景 + 大红字提示 */
         .xzg-ve-clip.xzg-ve-clip-offline,
@@ -1852,6 +2736,15 @@ export class XiaozhuguangVideoEditor {
             position: relative;
         }
         .xzg-ve-ctx-item:hover { background: #3a3a3a; }
+        /* 图标占位：固定 16px 宽度，保证文字左对齐 */
+        .xzg-ve-ctx-icon {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 16px; height: 16px;
+            flex-shrink: 0;
+            font-size: 12px;
+            line-height: 1;
+        }
+        .xzg-ve-ctx-label { flex: 1; }
         .xzg-ve-ctx-arrow { margin-left: auto; color: #888; font-size: 11px; }
         .xzg-ve-ctx-swatch {
             display: inline-block;
@@ -1882,8 +2775,10 @@ export class XiaozhuguangVideoEditor {
             opacity: 1;
         }
         .xzg-ve-tl-playhead {
-            position: absolute; top: 0; bottom: 0; width: 2px; background: #ff4444;
+            position: absolute; top: 0; bottom: 0; width: 1px; background: #ff4444;
+            box-shadow: -1px 0 0 #ff4444, 1px 0 0 #ff4444;
             z-index: 1000; pointer-events: none; display: none; left: 0;
+            will-change: left;
         }
         .xzg-ve-tl-playhead::before {
             content: ""; position: absolute; top: 0; left: 50%;
@@ -1910,27 +2805,68 @@ export class XiaozhuguangVideoEditor {
         }
         .xzg-ve-btn:hover { background: #454545; }
         .xzg-ve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .xzg-ve-btn.xzg-ve-btn-shortcut-settings {
+            background: transparent; color: #ddd; border: none;
+            border-radius: 4px; padding: 0 7px; font-size: 16px; line-height: 1;
+            margin-right: 4px;
+        }
+        .xzg-ve-btn.xzg-ve-btn-shortcut-settings:hover {
+            background: #454545;
+        }
+        .xzg-ve-btn.xzg-ve-btn-shortcut-settings:focus,
+        .xzg-ve-btn.xzg-ve-btn-shortcut-settings:focus-visible { outline: none; }
+        .xzg-ve-btn.xzg-ve-btn-output-settings {
+            background: transparent; color: #fff; border: none;
+            border-radius: 4px; padding: 3px 10px; font-size: 12px;
+            white-space: nowrap;
+        }
+        .xzg-ve-btn.xzg-ve-btn-output-settings:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        .xzg-ve-btn.xzg-ve-btn-output-settings:focus,
+        .xzg-ve-btn.xzg-ve-btn-output-settings:focus-visible { outline: none; }
         .xzg-ve-btn-apply {
             background: transparent; color: #dcc85b; border: none;
             font-size: 16px; font-weight: bold;
         }
         .xzg-ve-btn-apply:hover { background: rgba(220, 200, 91, 0.15); }
         .xzg-ve-btn-cancel {
-            background: transparent; color: #ff3b30; border: none;
-            font-size: 32px; font-weight: bold; line-height: 1; padding: 0 4px;
-            display: flex; align-items: center;
+            background: transparent; color: #dcc85b; border: none;
+            font-size: 16px; font-weight: bold;
         }
-        .xzg-ve-btn-cancel:hover { background: #5a2a2a; color: #ff6b6b; }
-        .xzg-ve-btn-clear-tl {
-            font-size: 14px; color: #ff6b6b;
+        .xzg-ve-btn-cancel:hover { background: rgba(220, 200, 91, 0.15); }
+        /* 右上角 X 按钮：直接关闭，不触发导出计算 */
+        .xzg-ve-btn-close-x {
+            background: transparent;
+            color: #ff6b6b;
             border: none;
-            padding: 4px 10px; line-height: 1;
+            font-size: 22px;
+            font-weight: bold;
+            line-height: 1;
+            padding: 4px 8px;
+            margin-left: 6px;
+            height: 26px;
+            box-sizing: border-box;
+            cursor: pointer;
             border-radius: 3px;
+            outline: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
-        .xzg-ve-btn-clear-tl:hover { background: #5a2a2a; }
-        .xzg-ve-quality-label { color: #ddd; opacity: 0.4; font-size: 12px; font-weight: bold; }
-        .xzg-ve-quality-select {
-            background: #1D1D1D; color: #ddd; border: 1px solid #000;
+        .xzg-ve-btn-close-x:hover {
+            background: #5a2a2a;   /* 小珠光统一：× 按钮悬停红色方格底色 */
+            color: #ff6b6b;
+        }
+        .xzg-ve-btn-close-x:focus,
+        .xzg-ve-btn-close-x:focus-visible {
+            outline: none;
+            box-shadow: none;
+        }
+        .xzg-ve-quality-label { color: #fff; font-size: 12px; font-weight: bold; margin-left: 10px; }
+        .xzg-ve-format-label  { color: #fff; font-size: 12px; font-weight: bold; }
+        .xzg-ve-quality-select,
+        .xzg-ve-format-select {
+            background: #1D1D1D; color: #fff; border: 1px solid #000;
             border-radius: 3px; padding: 2px 6px; font-size: 12px; cursor: pointer;
             outline: none; height: 26px; box-sizing: border-box;
         }
@@ -1942,7 +2878,7 @@ export class XiaozhuguangVideoEditor {
             background: #2a2a2a; border-bottom: 1px solid #000;
             color: #aaa; font-size: 12px; flex-shrink: 0;
         }
-        .xzg-ve-render-label { color: #888; }
+        .xzg-ve-render-label { color: #fff; }
         .xzg-ve-render-opts input[type="number"] {
             background: #1D1D1D; color: #ddd; border: 1px solid #000;
             border-radius: 3px; padding: 2px 4px; font-size: 12px;
@@ -1959,11 +2895,23 @@ export class XiaozhuguangVideoEditor {
             border-radius: 3px; padding: 2px 6px; font-size: 12px; cursor: pointer;
         }
         .xzg-ve-render-opts select:hover { border-color: #777; }
+        .xzg-ve-render-opts select:focus { border-color: #000; outline: none; }
         .xzg-ve-btn-portrait, .xzg-ve-btn-portrait:hover {
             font-size: 12px; padding: 0; margin-left: 4px;
             background: transparent; border: none; cursor: default;
-            color: #ddd; opacity: 0.4; vertical-align: middle;
+            color: #fff; vertical-align: middle;
         }
+        /* 分辨率栏「重置视图」按钮：四角图标（fit-to-view），跟随竖屏方块尺寸 */
+        .xzg-ve-btn-reset-view {
+            width: 18px; height: 18px; padding: 0; margin-left: 6px;
+            background: transparent; border: none; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+            vertical-align: middle; border-radius: 3px;
+            transition: background 0.15s;
+            outline: none; user-select: none; -webkit-tap-highlight-color: transparent;
+        }
+        .xzg-ve-btn-reset-view:hover { background: rgba(220, 200, 91, 0.15); }
+        .xzg-ve-btn-reset-view:focus, .xzg-ve-btn-reset-view:focus-visible { outline: none; }
         .xzg-ve-render-label-fps { margin-left: 10px; }
         .xzg-ve-portrait-lock {
             width: 18px; height: 18px; padding: 0; margin-left: 4px;
@@ -1979,8 +2927,8 @@ export class XiaozhuguangVideoEditor {
         }
         .xzg-ve-portrait-lock.xzg-ve-active::after { opacity: 1; }
         .xzg-ve-portrait-lock:disabled { opacity: 0.4; cursor: not-allowed; }
-        .xzg-ve-render-opts input:disabled, .xzg-ve-render-opts select:disabled,
-        .xzg-ve-btn-portrait:disabled { opacity: 0.4; cursor: not-allowed; }
+        .xzg-ve-render-opts input:disabled, .xzg-ve-render-opts select:disabled { opacity: 0.4; cursor: not-allowed; }
+        .xzg-ve-btn-portrait:disabled { color: #fff; cursor: not-allowed; }
         `;
         document.head.appendChild(st);
     }
@@ -2021,6 +2969,18 @@ export class XiaozhuguangVideoEditor {
         const pendingCount = this.mediaLibrary.filter(m => m.probeState === "pending" && !this.offlineMediaNames.has(m.name)).length;
         // 恢复上次的时间线
         this._restoreTimelineSession();
+        // 音频加载器模式：自动清理时间线上「看不到的视频」片段，避免影响导出时长
+        if (this._modeFilter === "audio") {
+            const videoClips = this.timeline.filter(c => c.kind !== "audio");
+            if (videoClips.length > 0) {
+                this.timeline = this.timeline.filter(c => c.kind === "audio");
+                for (const v of videoClips) this.selectedClipIds.delete(v.id);
+                this._saveTimelineSession();
+                this._renderTimeline();
+                this._renderProps();
+                this._setStatus(`已自动清理 ${videoClips.length} 个视频片段（音频模式）`);
+            }
+        }
         this._renderMediaList();
         const total = this.mediaLibrary.length;
         const offlineCount = this.offlineMediaNames.size;
@@ -2396,7 +3356,33 @@ export class XiaozhuguangVideoEditor {
                     }
                 }
             }
-            _el("div", "xzg-ve-media-name", m.displayName || m.name, item);
+            // 名称：根据媒体类型添加对应图标
+            const isAudioIcon = m.isAudio;
+            const isImgIcon = m.isImage || _isImage(m.name);
+            const nameDiv = _el("div", "xzg-ve-media-name", null, item);
+            // SVG 图标
+            const iconSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            iconSvg.setAttribute("viewBox", "0 0 24 24");
+            iconSvg.setAttribute("fill", "none");
+            iconSvg.setAttribute("stroke-width", "2");
+            iconSvg.setAttribute("stroke-linecap", "round");
+            iconSvg.setAttribute("stroke-linejoin", "round");
+            iconSvg.classList.add("xzg-ve-media-icon");
+            if (isAudioIcon) {
+                // 双音符 🎵（紫色）
+                iconSvg.setAttribute("stroke", "#6953B0");
+                iconSvg.innerHTML = '<path d="M9,3 V17"/><ellipse cx="7" cy="17" rx="3" ry="2.5"/><path d="M9,5 L17,9"/><path d="M17,9 V19"/><ellipse cx="15" cy="19" rx="3" ry="2.5"/>';
+            } else if (isImgIcon) {
+                // 图片（绿色）
+                iconSvg.setAttribute("stroke", "#4CAF50");
+                iconSvg.innerHTML = '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/>';
+            } else {
+                // 摄像机（视频，橙色）
+                iconSvg.setAttribute("stroke", "#FF8C00");
+                iconSvg.innerHTML = '<polygon points="23,7 16,12 23,17"/><rect x="1" y="5" width="15" height="14" rx="2"/><circle cx="8.5" cy="12" r="1.5"/>';
+            }
+            nameDiv.appendChild(iconSvg);
+            nameDiv.appendChild(document.createTextNode(" " + (m.displayName || m.name)));
             let infoText = "";
             let infoClass = "xzg-ve-media-info";
             const isAudio = m.isAudio;
@@ -2406,9 +3392,9 @@ export class XiaozhuguangVideoEditor {
                 infoClass += " xzg-ve-media-info-err";
             } else if (m.probeState === "ok" && m.info) {
                 if (isAudio) {
-                    infoText = `🎵 音频 · ${_fmtTime(m.info.duration)}`;
+                    infoText = `音频 · ${_fmtTime(m.info.duration)}`;
                 } else if (isImg) {
-                    infoText = `🖼 图片 · ${m.info.width}×${m.info.height}`;
+                    infoText = `图片 · ${m.info.width}×${m.info.height}`;
                 } else {
                     infoText = `${m.info.width}×${m.info.height} · ${_fmtTime(m.info.duration)}`;
                 }
@@ -2577,6 +3563,51 @@ export class XiaozhuguangVideoEditor {
         });
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  属性面板宽度拖动调整（手柄在属性面板最左侧）
+    // ═══════════════════════════════════════════════════════════
+    _restorePropsWidth() {
+        try {
+            const w = parseInt(localStorage.getItem(this._propsWidthKey), 10);
+            if (w >= 160 && w <= 600 && this._propsPanel) {
+                this._propsPanel.style.width = w + "px";
+            }
+        } catch (_) {}
+    }
+
+    _savePropsWidth(w) {
+        try { localStorage.setItem(this._propsWidthKey, String(w)); } catch (_) {}
+    }
+
+    _bindPropsResizer() {
+        if (!this._propsResizer || !this._propsPanel) return;
+        this._propsResizer.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this._propsResizer.classList.add("xzg-ve-resizing");
+            const panel = this._propsPanel;
+            const startX = e.clientX;
+            const startW = panel.getBoundingClientRect().width;
+            const onMove = (ev) => {
+                // 属性面板在右侧，向左拖（startX - clientX）增大宽度
+                let w = startW + (startX - ev.clientX);
+                if (w < 160) w = 160;
+                if (w > 600) w = 600;
+                panel.style.width = w + "px";
+            };
+            const onUp = () => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+                this._propsResizer.classList.remove("xzg-ve-resizing");
+                const finalW = Math.round(panel.getBoundingClientRect().width);
+                this._savePropsWidth(finalW);
+                this._setStatus(`属性面板宽度: ${finalW}px`);
+            };
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+        });
+    }
+
     _restoreTimelineHeight() {
         if (this._tlPanel) {
             this._tlPanel.style.height = this._tlHeight + "px";
@@ -2596,42 +3627,58 @@ export class XiaozhuguangVideoEditor {
             const panel = this._tlPanel;
             const startY = e.clientY;
             const startH = panel.getBoundingClientRect().height;
+            // 记录起始四轨道高度：拖动面板高度时四轨道同等压缩/扩张（每条 ±Δ/4，保留相对差异）
+            const sV2t = this._tlV2TopHeight;
+            const sVH = this._tlVideoHeight;
+            const sAH = this._tlAudioHeight;
+            const sV2b = this._tlV2BotHeight;
+            const minT = 25;
+            this._tlHeightsCustomized = true; // 拖动期间不走 _applyTrackLayout 自动均分，直接应用等量变化
             const onMove = (ev) => {
                 let h = startH + (startY - ev.clientY);
-                // 最小高度 = 36(header) + 35(刻度) + 0(留白) + 25(视频) + 5(分割线) + 25(音频) = 126
-                if (h < 126) h = 126;
+                // 最小高度 = 36(header) + 35(刻度) + 25*4(四轨) + 5px粗 ≈ 176
+                if (h < 176) h = 176;
                 if (h > 500) h = 500;
-                panel.style.height = h + "px";
-
-                const tlH = Math.max(1, this._timeline.clientHeight);
-                const trackAreaH = tlH - 35;
-
-                const dVH = 80, dAH = 70, minT = 25;
-                const defaultContentH = dVH + 5 + dAH; // 115
-                const minContentH = minT + 5 + minT;   // 55
-
-                let vH, aH, vOff;
-                if (trackAreaH >= defaultContentH) {
-                    // 空间充足：默认轨道高度 + 对称留白
-                    vH = dVH; aH = dAH;
-                    vOff = Math.floor((trackAreaH - defaultContentH) / 2);
-                } else if (trackAreaH >= minContentH) {
-                    // 空间不足：按比例平分压缩轨道高度，留白=0
-                    const overflow = defaultContentH - trackAreaH;
-                    const vCap = dVH - minT, aCap = dAH - minT, totalCap = vCap + aCap;
-                    const cutV = Math.round(overflow * vCap / totalCap);
-                    const cutA = overflow - cutV;
-                    vH = dVH - cutV; aH = dAH - cutA;
-                    vOff = 0;
-                } else {
-                    // 极限：都到最小值，禁止继续下拖
-                    vH = minT; aH = minT; vOff = 0;
-                    panel.style.height = (36 + 35 + minContentH) + "px";
+                const delta = h - startH;   // 面板高度变化量（正=变高，负=变矮）
+                const d = delta / 4;        // 等量增减量（每轨）
+                // 各轨道先等量增减
+                let vals = [sV2t + d, sVH + d, sAH + d, sV2b + d];
+                if (delta < 0) {
+                    // 压缩：先对每条轨道钳制到最小 25px；被钳掉的空间按“剩余可压缩量”比例补偿给仍可压缩的轨道，
+                    // 避免 V1/A1/A2 已被压到极限时，继续拖分界手柄把它们的值压成负数、挤出边界消失
+                    let clamped = 0;
+                    vals = vals.map(v => {
+                        if (v < minT) { clamped += minT - v; return minT; }
+                        return v;
+                    });
+                    let guard = 0;
+                    while (clamped > 0.5 && guard < 8) {
+                        guard++;
+                        const candIdx = [];
+                        let candSum = 0;
+                        for (let i = 0; i < 4; i++) {
+                            if (vals[i] > minT + 0.001) { candIdx.push(i); candSum += vals[i] - minT; }
+                        }
+                        if (!candIdx.length) break;
+                        let redist = 0;
+                        for (const i of candIdx) {
+                            const cap = vals[i] - minT;   // 该轨道剩余可压缩量
+                            const share = Math.min(cap, clamped * cap / candSum);
+                            vals[i] -= share;
+                            redist += share;
+                        }
+                        clamped -= redist;
+                        if (redist <= 0.001) break;
+                    }
                 }
-
-                this._tlVideoHeight = vH;
-                this._tlAudioHeight = aH;
-                this._tlVideoTopOffset = vOff;
+                this._tlV2TopHeight = Math.round(vals[0]);
+                this._tlVideoHeight = Math.round(vals[1]);
+                this._tlAudioHeight = Math.round(vals[2]);
+                this._tlV2BotHeight = Math.round(vals[3]);
+                // 面板高度与实际四轨总高保持一致（36 header + 35 刻度 + 轨道总高 + 5px 粗分割），
+                // 轨道已全到极限时面板不再下压，轨道不会被挤出边界
+                const trackSum = this._tlV2TopHeight + this._tlVideoHeight + this._tlAudioHeight + this._tlV2BotHeight;
+                panel.style.height = Math.max(176, 76 + trackSum) + "px";
                 this._applyTrackLayout();
             };
             const onUp = () => {
@@ -2644,6 +3691,7 @@ export class XiaozhuguangVideoEditor {
                 this._saveTlLayout(); // 持久化压缩后的轨道高度/偏移
                 this._setStatus(`时间线高度: ${finalH}px`);
                 this._applyTrackLayout();
+                this._syncAllClipThumbs();
                 this._renderTicks();
                 this._updatePlayhead();
             };
@@ -2651,91 +3699,172 @@ export class XiaozhuguangVideoEditor {
             window.addEventListener("mouseup", onUp);
         });
 
-        // Shift+鼠标滚轮：在视频/音频轨道上调整对应轨道高度
+        // Shift+鼠标滚轮：在 V2上/V1/音频/V2下 轨道上调整对应轨道高度（与手柄拖动规则一致，可达极限）
         const onTrackWheel = (which) => (e) => {
             if (!e.shiftKey) return;
             e.preventDefault();
             e.stopPropagation();
             // 滚轮向上(deltaY<0)增大高度，向下(deltaY>0)减小高度
-            const delta = e.deltaY < 0 ? 5 : -5;
+            const delta = e.deltaY < 0 ? 10 : -10;
             this._tlHeightsCustomized = true;
-            const tlH = Math.max(1, this._timeline.clientHeight);
-            const trackAreaH = tlH - 35;
-            const dVH = 80, dAH = 70, minT = 25, gap = 5;
-            let vH = this._tlVideoHeight, aH = this._tlAudioHeight;
-            const otherH = which === "video" ? aH : vH;
-            const maxCur = trackAreaH - otherH - gap;
-            if (which === "video") {
-                vH = Math.max(minT, Math.min(dVH, vH + delta));
-                vH = Math.min(vH, Math.max(minT, maxCur));
-            } else {
-                aH = Math.max(minT, Math.min(dAH, aH + delta));
-                aH = Math.min(aH, Math.max(minT, maxCur));
-            }
-            this._tlVideoHeight = vH;
-            this._tlAudioHeight = aH;
-            // 重新计算对称留白
-            const totalContentH = vH + gap + aH;
-            this._tlVideoTopOffset = totalContentH <= trackAreaH
-                ? Math.max(0, Math.floor((trackAreaH - totalContentH) / 2))
-                : 0;
+            const minT = 25;
+            // 只改当前轨道高度，其他轨道保持不变
+            const fields = { v2top: "_tlV2TopHeight", video: "_tlVideoHeight", audio: "_tlAudioHeight", v2bot: "_tlV2BotHeight" };
+            const f = fields[which];
+            if (!f) return;
+            // 当前轨道上限 = 面板上限(500) - 固定(76) - 其他三轨之和，保证时间线底部不溢出
+            const sum = this._tlV2TopHeight + this._tlVideoHeight + this._tlAudioHeight + this._tlV2BotHeight;
+            const maxT = Math.max(minT, 424 - (sum - this[f]));
+            this[f] = Math.min(Math.max(minT, this[f] + delta), maxT);
+            // 面板高度 = 36 header + 35 刻度 + 5px 粗分割 + 四轨总高
+            // 其他轨道不变 → 底部固定，预览/时间线分界随面板高度自适应
+            const trackSum = this._tlV2TopHeight + this._tlVideoHeight + this._tlAudioHeight + this._tlV2BotHeight;
+            const panelH = Math.max(176, 76 + trackSum);
+            if (this._tlPanel) this._tlPanel.style.height = panelH + "px";
+            this._tlHeight = panelH;
             this._applyTrackLayout();
         };
+        if (this._tlV2TopTrack) this._tlV2TopTrack.addEventListener("wheel", onTrackWheel("v2top"), { passive: false });
         if (this._tlTrack) this._tlTrack.addEventListener("wheel", onTrackWheel("video"), { passive: false });
         if (this._tlAudioTrack) this._tlAudioTrack.addEventListener("wheel", onTrackWheel("audio"), { passive: false });
+        if (this._tlV2BotTrack) this._tlV2BotTrack.addEventListener("wheel", onTrackWheel("v2bot"), { passive: false });
     }
 
-    // 一键恢复默认布局：重置预览区与时间线占比、视频/音频轨道高度和位置为默认值，
+    // 一键恢复默认布局：重置预览区与时间线占比、V2上/V1/音频/V2下 轨道高度为默认值，
     // 不影响已加载的视频、时间线片段内容、媒体库内容
     _resetTrackLayout() {
         // 恢复时间线面板默认高度（预览区与时间线的分割占比）
-        this._tlHeight = 280;
-        if (this._tlPanel) this._tlPanel.style.height = "280px";
-        this._saveTimelineHeight(280);
-        // 恢复轨道高度和位置
-        this._tlVideoHeight = 80;
-        this._tlAudioHeight = 70;
-        this._tlVideoTopOffset = 0;
-        this._tlHeightsCustomized = false; // false 触发 _applyTrackLayout 的自动居中逻辑
+        this._tlHeight = 350;
+        if (this._tlPanel) this._tlPanel.style.height = "350px";
+        this._saveTimelineHeight(350);
+        this._tlMaximizedTrack = null; // 清除双击最大化轨道状态
+        // 音频加载器模式：仅显示音频轨道，A1/A2 均分高度
+        if (this._modeFilter === "audio") {
+            this._tlViewMode = "audio";
+            this._tlHeightsCustomized = true;
+            const tlH = Math.max(1, (this._timeline && this._timeline.clientHeight > 0) ? this._timeline.clientHeight : 400);
+            const trackAreaH = tlH - 35;
+            this._tlV2TopHeight = 0;
+            this._tlVideoHeight = 0;
+            const eachH = Math.floor((trackAreaH - 1) / 2);
+            this._tlAudioHeight = eachH;
+            this._tlV2BotHeight = eachH;
+        } else {
+            this._tlViewMode = "both";
+            this._tlHeightsCustomized = false;
+        }
         this._applyTrackLayout();
         this._saveTlLayout();
         this._renderTicks();
         this._updatePlayhead();
     }
 
-    // 同步三个手柄、视频/音频轨道头与轨道的 top 位置（达芬奇式）
-    // 布局（自上而下）：上手柄 → 视频头/轨道 → 中手柄 → 音频头/轨道 → 下手柄
+    // 同步五个手柄、V2上/V1/音频/V2下 轨道头与轨道的 top 位置（达芬奇式）
+    // 布局（自上而下）：
+    //   V2-上手柄 → V2-上头/轨道 → V2-上↔V1 分割线 → V1 上手柄 → V1 头/轨道
+    //   → 中手柄 → V1↔音频 分割线 → 音频头/轨道 → 音频↔V2-下 分割线 → V2-下 手柄 → V2-下 头/轨道
     _applyTrackLayout() {
-        // 默认布局：视频60px、音频50px（初始值），未自定义时让音视频整体居中于可用区域
-        if (!this._tlHeightsCustomized && this._timeline) {
+        // 默认布局（未自定义）：V2 / V1 / A1 / A2 四轨道平均分配
+        //   trackAreaH = 面板高 - 35(刻度区)，扣除 5px 粗分割线后均分 4 份（余数补前面轨道），每条最小 25px
+        if (!this._tlHeightsCustomized && this._timeline && this._timeline.clientHeight > 0) {
             const tlH = Math.max(1, this._timeline.clientHeight);
-            const trackAreaH = tlH - 35; // 扣除固定 35px 刻度区域
-            const totalH = this._tlVideoHeight + 5 + this._tlAudioHeight;
-            // 整体居中：上方留白 = (可用高度 - 音视频总高度) / 2
-            this._tlVideoTopOffset = Math.max(0, Math.floor((trackAreaH - totalH) / 2));
+            const trackAreaH = tlH - 35;
+            const dividers = 5; // 1 条 5px 粗分割（V1↔A1 视频/音频大分界）；V2↔V1、A1↔A2 仅 1px 细线不计入
+            const minT = 25;
+            const avail = Math.max(minT * 4, trackAreaH - dividers);
+            const q = Math.floor(avail / 4), r = avail - q * 4;
+            this._tlV2TopHeight = q + (r > 0 ? 1 : 0);
+            this._tlVideoHeight = q + (r > 1 ? 1 : 0);
+            this._tlAudioHeight = q + (r > 2 ? 1 : 0);
+            this._tlV2BotHeight = q;
         }
-        const vOff = this._tlVideoTopOffset || 0;
+        // 最大化轨道：选中轨道铺满，其他3轨压缩到25px
+        const maxTrack = this._tlMaximizedTrack;
+        if (maxTrack) {
+            const tlH = Math.max(1, (this._timeline && this._timeline.clientHeight > 0) ? this._timeline.clientHeight : 400);
+            const trackAreaH = tlH - 35;
+            // 分割线：V2-V1 1px + V1-A1 5px + A1-A2 1px = 7px
+            const maxH = Math.max(25, trackAreaH - 7 - 25 * 3);
+            const set = { v2: "_tlV2TopHeight", v1: "_tlVideoHeight", a1: "_tlAudioHeight", a2: "_tlV2BotHeight" };
+            for (const [k, f] of Object.entries(set)) {
+                this[f] = k === maxTrack ? maxH : 25;
+            }
+        }
+        const v2tH = this._tlV2TopHeight;
         const vH = this._tlVideoHeight;
         const aH = this._tlAudioHeight;
-        const vTop = vOff;              // 视频头/轨道 top（相对 35px 刻度区域底部）
-        const midTop = vOff + vH;       // 视频底部 = 分割线上边缘
-        const aTop = vOff + vH + 5;     // 音频顶 = 分割线下边缘（+5px，与5px分割线紧贴无间隙）
-        const botTop = aTop + aH;       // 音频底部
+        const v2bH = this._tlV2BotHeight;
+        // 隐藏轨道仍参与位置计算，切换回来不跳位
+        const mode = this._tlViewMode || "both";
+        const showV = mode !== "audio";
+        const showA = mode !== "video";
+        // A1 / A2（音频副轨道，跟随音频显示）
+        if (this._tlV2TopHeader) this._tlV2TopHeader.style.display = showV ? "" : "none";
+        if (this._tlV2TopTrack) this._tlV2TopTrack.style.display = showV ? "" : "none";
+        if (this._tlV2BotHeader) this._tlV2BotHeader.style.display = showA ? "" : "none";
+        if (this._tlV2BotTrack) this._tlV2BotTrack.style.display = showA ? "" : "none";
+        if (this._tlResizerV2Top) this._tlResizerV2Top.style.display = showV ? "" : "none";
+        // A1↔A2 1px 细分隔（音频组内部细分隔）：需音频显示
+        if (this._tlDividerV2Bot) this._tlDividerV2Bot.style.display = showA ? "" : "none";
+        // V2↔V1 1px 细实线分隔（视频组内部细分隔）：需视频显示
+        if (this._tlVideoTopDivider) this._tlVideoTopDivider.style.display = showV ? "" : "none";
+        // V1 视频
+        if (this._tlVideoHeader) this._tlVideoHeader.style.display = showV ? "" : "none";
+        if (this._tlTrack) this._tlTrack.style.display = showV ? "" : "none";
+        if (this._tlResizerTop) this._tlResizerTop.style.display = showV ? "" : "none";
+        // 中手柄 / V1↔音频 分割线（需 V1+音频同时显示）
+        if (this._tlResizerMid) this._tlResizerMid.style.display = (showV && showA) ? "" : "none";
+        if (this._tlDivider) this._tlDivider.style.display = (showV && showA) ? "" : "none";
+        // 音频
+        if (this._tlAudioHeader) this._tlAudioHeader.style.display = showA ? "" : "none";
+        if (this._tlAudioTrack) this._tlAudioTrack.style.display = showA ? "" : "none";
+        if (this._tlResizerBottom) this._tlResizerBottom.style.display = showA ? "" : "none";
+        // A2 底边缘 1px 实线（A2 最底，需 A2 显示）
+        if (this._tlAudioBottomDivider) this._tlAudioBottomDivider.style.display = showA ? "" : "none";
+
+        // 位置计算（相对 35px 刻度区域底部，向下为正）
+        //   视频组（上）：V2 → V1（中间 1px 细分隔）
+        //   5px 粗大分界：V1↔A1（视频/音频大分界，仅 mid 一条）
+        //   音频组（下）：A1 → A2（中间 1px 细分隔，A1↔A2）
+        const v2tTop = 0;                 // V2 顶（紧贴刻度区下沿）
+        const v1Top = v2tH;               // V1 顶 = V2 底（中间 1px 细分隔，无 5px 粗线）
+        const midTop = v1Top + vH;        // V1 底 = V1↔A1 5px 粗分割线上沿（大分界）
+        // 音频加载器模式：无视频轨道，音频从顶部开始（无 5px 粗分割线）
+        const aTop = this._modeFilter === "audio" ? 0 : (midTop + 5);
+        const botTop = aTop + aH;         // A1 底 = A1↔A2 交界处（1px 细分隔）
+        const v2bTop = botTop;            // A2 顶 = A1 底（中间 1px 细分隔，无 5px 粗线）
         // 用 calc(35px + Npx)：刻度区域固定 35px，不随时间线高度变化
         const calc = (n) => `calc(35px + ${n}px)`;
-        // 视频上边缘贯穿最左的1px实线：中线对齐视频顶部
-        if (this._tlVideoTopDivider) this._tlVideoTopDivider.style.top = calc(vTop - 0.5);
-        if (this._tlResizerTop) this._tlResizerTop.style.top = calc(vTop - 4);
-        if (this._tlVideoHeader) this._tlVideoHeader.style.top = calc(vTop);
-        if (this._tlVideoHeader) this._tlVideoHeader.style.height = vH + "px";
+
+        // V2↔V1 1px 细实线分隔：紧贴 V2 底 / V1 顶 交界上方 0.5px
+        if (this._tlVideoTopDivider) this._tlVideoTopDivider.style.top = calc(v1Top - 0.5);
+        // V2 手柄：中心对齐 V2 底（= V1 顶）
+        if (this._tlResizerV2Top) this._tlResizerV2Top.style.top = calc(v1Top - 4);
+        // V2 头 / 轨道
+        if (this._tlV2TopHeader) {
+            this._tlV2TopHeader.style.top = calc(v2tTop);
+            this._tlV2TopHeader.style.height = v2tH + "px";
+        }
+        if (this._tlV2TopTrack) {
+            this._tlV2TopTrack.style.top = calc(v2tTop);
+            this._tlV2TopTrack.style.height = v2tH + "px";
+        }
+        // V1 上手柄：中心对齐 V1 顶（与 V2 手柄中心位置相同，叠加无碍）
+        if (this._tlResizerTop) this._tlResizerTop.style.top = calc(v1Top - 4);
+        // V1 头 / 轨道
+        if (this._tlVideoHeader) {
+            this._tlVideoHeader.style.top = calc(v1Top);
+            this._tlVideoHeader.style.height = vH + "px";
+        }
         if (this._tlTrack) {
-            this._tlTrack.style.top = calc(vTop);
+            this._tlTrack.style.top = calc(v1Top);
             this._tlTrack.style.height = vH + "px";
         }
-        // 中手柄中心对齐5px分割线的中线（midTop + 2.5）
+        // 中手柄：中心对齐 V1↔A1 5px 粗分割线（mid）的中线（midTop + 2.5）
         if (this._tlResizerMid) this._tlResizerMid.style.top = calc(midTop + 2.5 - 4);
-        // 音视频之间 5px 贯穿分割线：上边缘贴视频底 (midTop)，下边缘贴音频顶 (aTop = midTop+5)
+        // V1↔A1 5px 粗分割线（mid，视频/音频大分界）
         if (this._tlDivider) this._tlDivider.style.top = calc(midTop);
+        // A1 头 / 轨道
         if (this._tlAudioHeader) {
             this._tlAudioHeader.style.top = calc(aTop);
             this._tlAudioHeader.style.height = aH + "px";
@@ -2743,27 +3872,76 @@ export class XiaozhuguangVideoEditor {
         if (this._tlAudioTrack) {
             this._tlAudioTrack.style.top = calc(aTop);
             this._tlAudioTrack.style.height = aH + "px";
-            // 紧凑模式：音频轨道高度<50px时，波形区<25px色带，波形扩展到色带区域显示
+            // 紧凑模式：A1 轨道高度<50px时，波形区<25px色带，波形扩展到色带区域显示
             this._tlAudioTrack.classList.toggle("xzg-ve-audio-compact", aH < 50);
         }
-        // 音频下边缘贯穿最左的1px实线：中线对齐音频底部
-        if (this._tlAudioBottomDivider) this._tlAudioBottomDivider.style.top = calc(botTop - 0.5);
+        // A1↔A2 1px 细实线分隔（覆盖 5px 渐变视觉，A1↔A2 交界处上方 0.5px）
+        if (this._tlDividerV2Bot) {
+            this._tlDividerV2Bot.style.top = calc(botTop - 0.5);
+            this._tlDividerV2Bot.style.height = "1px";
+            this._tlDividerV2Bot.style.background = "#1a1919";
+        }
+        // A1 下手柄：中心对齐 A1 底（A1↔A2 交界处）
         if (this._tlResizerBottom) this._tlResizerBottom.style.top = calc(botTop - 4);
+        // A2 头 / 轨道
+        if (this._tlV2BotHeader) {
+            this._tlV2BotHeader.style.top = calc(v2bTop);
+            this._tlV2BotHeader.style.height = v2bH + "px";
+        }
+        if (this._tlV2BotTrack) {
+            this._tlV2BotTrack.style.top = calc(v2bTop);
+            this._tlV2BotTrack.style.height = v2bH + "px";
+            // 紧凑模式（与 A1 一致）：A2 高度<50px 时波形扩展到色带区域显示
+            this._tlV2BotTrack.classList.toggle("xzg-ve-audio-compact", v2bH < 50);
+        }
+        // A2 最底 1px 实线
+        if (this._tlAudioBottomDivider) this._tlAudioBottomDivider.style.top = calc(v2bTop + v2bH - 0.5);
+
         // 轨道高度变化后重绘所有波形，使波形上下收缩自适应新高度（不被裁剪）
         // 用 requestAnimationFrame 延迟到下一帧，确保浏览器已回流、canvas.clientHeight 反映新高度
         requestAnimationFrame(() => {
             this._redrawAllWaveforms();
-            // 同步所有视频片段缩略图（按新高度重新计算缩略图数量和宽度）
-            this._syncAllClipThumbs();
         });
     }
 
-    // 三个手柄：
-    //   top    - 调整视频高度（_tlVideoHeight），上下拖动增减视频高度，音频位置随之上下平移但高度不变
-    //   mid    - 视频与音频整体上下平移（调整 _tlVideoTopOffset），两者高度均不变
-    //   bottom - 调整音频高度（_tlAudioHeight），上下拖动增减音频高度
+    // 五个手柄：
+    //   v2-top - 调整 V2-上 高度（_tlV2TopHeight），顶部固定（紧贴刻度区下沿 35px），底部移动
+    //   top    - 调整 V1 高度（_tlVideoHeight），V1 顶固定（= V2-上 底，中间仅 1px 细分隔），V1 底移动，V2-上 联动
+    //   mid    - V1+音频整体上下平移，V2-上 / V2-下 此消彼长（高度之和不变）
+    //   bottom - 调整音频高度（_tlAudioHeight），音频顶固定（= V1 底 + 5px），音频底移动，V2-下 联动
+    //   v2-bot - 调整 V2-下 高度（_tlV2BotHeight），顶部固定（= 音频底 + 5px），底部移动
     _initTrackResizer() {
-        // 上手柄：调整视频高度（视频底部固定，顶部随手柄上下移动，音频位置不变）
+        // V2-上 手柄：调整 V2-上 高度（顶部固定，底部移动）
+        if (this._tlResizerV2Top) {
+            this._tlResizerV2Top.addEventListener("mousedown", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._tlHeightsCustomized = true;
+                this._tlResizerV2Top.classList.add("xzg-ve-resizing");
+                const startY = e.clientY;
+                const startV2t = this._tlV2TopHeight;
+                const onMove = (ev) => {
+                    // 向下拖→V2-上 底下移→v2tH 增大；向上拖→v2tH 减小
+                    const delta = ev.clientY - startY;
+                    const tlH = Math.max(1, this._timeline.clientHeight);
+                    const trackAreaH = tlH - 35;
+                    const gap = 5; // 1 条 5px 粗分割（V1↔A1 视频/音频大分界）；V2↔V1、A1↔A2 仅 1px 细线不计入
+                    const maxV2t = Math.max(25, trackAreaH - this._tlVideoHeight - this._tlAudioHeight - this._tlV2BotHeight - gap);
+                    this._tlV2TopHeight = Math.max(25, Math.min(maxV2t, Math.round(startV2t + delta)));
+                    this._applyTrackLayout();
+                };
+                const onUp = () => {
+                    window.removeEventListener("mousemove", onMove);
+                    window.removeEventListener("mouseup", onUp);
+                    this._tlResizerV2Top.classList.remove("xzg-ve-resizing");
+                    this._saveTlLayout();
+                    this._syncAllClipThumbs();
+                };
+                window.addEventListener("mousemove", onMove);
+                window.addEventListener("mouseup", onUp);
+            });
+        }
+        // V1 上手柄：调整 V1 高度（V1 顶固定 = V2-上 底，V1 底移动，V2-上 联动）
         if (this._tlResizerTop) {
             this._tlResizerTop.addEventListener("mousedown", (e) => {
                 e.preventDefault();
@@ -2772,17 +3950,19 @@ export class XiaozhuguangVideoEditor {
                 this._tlResizerTop.classList.add("xzg-ve-resizing");
                 const startY = e.clientY;
                 const startVH = this._tlVideoHeight;
-                const startOff = this._tlVideoTopOffset || 0;
-                const vBottom = startOff + startVH; // 视频底部固定基准
+                const startV2t = this._tlV2TopHeight; // V2-上 联动基准
                 const onMove = (ev) => {
-                    // 手柄在视频顶部：向上拖→顶部上移→视频变高；向下拖→顶部下移→视频变窄
-                    // 保持 vOff + vH = vBottom 不变 → 视频底/音频顶不动
+                    // 向上拖→V1 顶上移→V1 变高，V2-上 变矮；向下拖→V1 变窄，V2-上 变高
+                    // V1 顶固定（= V2-上 底，位置不变）→ newV2t + newVH = startV2t + startVH
                     const delta = ev.clientY - startY;
                     let newVH = Math.max(25, Math.round(startVH - delta));
-                    // 限制 newVH 不超过 vBottom，保证 vOff >= 0
-                    if (newVH > vBottom) newVH = vBottom;
+                    let newV2t = startV2t + (startVH - newVH);
+                    if (newV2t < 25) {
+                        newV2t = 25;
+                        newVH = startVH + startV2t - 25; // 反推 V1，保证 V1 顶固定
+                    }
                     this._tlVideoHeight = newVH;
-                    this._tlVideoTopOffset = vBottom - newVH;
+                    this._tlV2TopHeight = newV2t;
                     this._applyTrackLayout();
                 };
                 const onUp = () => {
@@ -2790,12 +3970,16 @@ export class XiaozhuguangVideoEditor {
                     window.removeEventListener("mouseup", onUp);
                     this._tlResizerTop.classList.remove("xzg-ve-resizing");
                     this._saveTlLayout();
+                    this._syncAllClipThumbs();
                 };
                 window.addEventListener("mousemove", onMove);
                 window.addEventListener("mouseup", onUp);
             });
         }
-        // 中手柄：视频/音频整体上下平移（高度不变，调整 _tlVideoTopOffset）
+        // 中手柄：视频组(V2+V1) ↔ 音频组(A1+A2) 的分界
+        //   向上拖→视频组整体压缩（V2/V1 按比例缩，各自极限 25px），音频组扩张
+        //   向下拖→音频组整体压缩（A1/A2 按比例缩，各自极限 25px），视频组扩张
+        //   组内某条先到 25px 后，其余压缩量全部给另一条（V2 和 V1 都能压到 25，A1 和 A2 同理）
         if (this._tlResizerMid) {
             this._tlResizerMid.addEventListener("mousedown", (e) => {
                 e.preventDefault();
@@ -2803,20 +3987,37 @@ export class XiaozhuguangVideoEditor {
                 this._tlHeightsCustomized = true;
                 this._tlResizerMid.classList.add("xzg-ve-resizing");
                 const startY = e.clientY;
-                const startOff = this._tlVideoTopOffset || 0;
+                const startV2t = this._tlV2TopHeight;
+                const startVH = this._tlVideoHeight;
+                const startAH = this._tlAudioHeight;
+                const startV2b = this._tlV2BotHeight;
+                const startV = startV2t + startVH;        // 视频组总高
+                const startA = startAH + startV2b;        // 音频组总高
+                const total = startV + startA;            // 两组总高恒定（时间线区域高固定）
+                const minT = 25;
+                const minGroup = minT * 2;                // 每组极限 = 两条轨道各 25px
+                const ratioV2t = startV > 0 ? startV2t / startV : 0.5;
+                const ratioAH = startA > 0 ? startAH / startA : 0.5;
                 const onMove = (ev) => {
-                    // 向下拖增大 _tlVideoTopOffset，视频与音频整体下移；向上拖减小偏移
                     const delta = ev.clientY - startY;
-                    let newOff = Math.max(0, Math.round(startOff + delta));
-                    // 限制音频下边缘不超出时间线容器可用区域底部（刻度区以下区域）
-                    // 刻度区域固定 35px
-                    const tlH = Math.max(1, this._timeline.clientHeight);
-                    const trackAreaH = tlH - 35;
-                    const vH = this._tlVideoHeight;
-                    const aH = this._tlAudioHeight;
-                    const maxOff = Math.max(0, Math.round(trackAreaH - vH - 5 - aH));
-                    if (newOff > maxOff) newOff = maxOff;
-                    this._tlVideoTopOffset = newOff;
+                    let newV = startV + delta;            // 向下拖→视频组变大
+                    if (newV < minGroup) newV = minGroup; // 视频组极限（V2=V1=25）
+                    if (newV > total - minGroup) newV = total - minGroup; // 音频组极限（A1=A2=25）
+                    const newA = total - newV;
+                    // 视频组内分配：按起始比例，先到 25px 的定住，余量给另一条
+                    let v2t = Math.round(newV * ratioV2t);
+                    if (v2t < minT) v2t = minT;
+                    let vH = newV - v2t;
+                    if (vH < minT) { vH = minT; v2t = newV - vH; }
+                    // 音频组内分配：同上
+                    let aH = Math.round(newA * ratioAH);
+                    if (aH < minT) aH = minT;
+                    let v2b = newA - aH;
+                    if (v2b < minT) { v2b = minT; aH = newA - v2b; }
+                    this._tlV2TopHeight = v2t;
+                    this._tlVideoHeight = vH;
+                    this._tlAudioHeight = aH;
+                    this._tlV2BotHeight = v2b;
                     this._applyTrackLayout();
                 };
                 const onUp = () => {
@@ -2824,12 +4025,13 @@ export class XiaozhuguangVideoEditor {
                     window.removeEventListener("mouseup", onUp);
                     this._tlResizerMid.classList.remove("xzg-ve-resizing");
                     this._saveTlLayout();
+                    this._syncAllClipThumbs();
                 };
                 window.addEventListener("mousemove", onMove);
                 window.addEventListener("mouseup", onUp);
             });
         }
-        // 下手柄：调整音频高度（下拖极限不超过时间线容器底部）
+        // 下手柄：调整音频高度（音频顶固定 = V1 底 + 5px，音频底移动，V2-下 联动）
         if (this._tlResizerBottom) {
             this._tlResizerBottom.addEventListener("mousedown", (e) => {
                 e.preventDefault();
@@ -2838,15 +4040,19 @@ export class XiaozhuguangVideoEditor {
                 this._tlResizerBottom.classList.add("xzg-ve-resizing");
                 const startY = e.clientY;
                 const startAH = this._tlAudioHeight;
+                const startV2b = this._tlV2BotHeight; // V2-下 联动基准
                 const onMove = (ev) => {
+                    // 向下拖→音频底下移→aH 增大，V2-下 减小；向上拖反之
+                    // 音频顶固定 → v2b_new = startV2b - (newAH - startAH)
                     const delta = ev.clientY - startY;
-                    // 计算时间线容器的可用高度上限：刻度区域(固定35px)以下至容器底部
-                    const tlH = Math.max(1, this._timeline.clientHeight);
-                    const trackAreaH = tlH - 35;
-                    const vOff = this._tlVideoTopOffset || 0;
-                    const vH = this._tlVideoHeight;
-                    const maxAH = Math.max(25, Math.round(trackAreaH - vOff - vH - 5));
-                    this._tlAudioHeight = Math.max(25, Math.min(maxAH, Math.round(startAH + delta)));
+                    let newAH = Math.max(25, Math.round(startAH + delta));
+                    let newV2b = startV2b - (newAH - startAH);
+                    if (newV2b < 25) {
+                        newV2b = 25;
+                        newAH = startAH + startV2b - 25; // 反推音频，保证音频顶固定
+                    }
+                    this._tlAudioHeight = newAH;
+                    this._tlV2BotHeight = newV2b;
                     this._applyTrackLayout();
                 };
                 const onUp = () => {
@@ -2854,11 +4060,45 @@ export class XiaozhuguangVideoEditor {
                     window.removeEventListener("mouseup", onUp);
                     this._tlResizerBottom.classList.remove("xzg-ve-resizing");
                     this._saveTlLayout();
+                    this._syncAllClipThumbs();
                 };
                 window.addEventListener("mousemove", onMove);
                 window.addEventListener("mouseup", onUp);
             });
         }
+        // A2 最底手柄已移除：A2 高度由面板高度手柄（四轨等量）与恢复默认布局控制，不再单独拖动
+        // 双击轨道头文字：最大化该轨道（其他3轨压缩到25px），再次双击恢复
+        //   V1头 → V1最大化；V2头 → V2最大化；A1头 → A1最大化；A2头 → A2最大化
+        const toggleSingle = (track) => () => {
+            if (this._tlMaximizedTrack === track) {
+                this._tlMaximizedTrack = null;
+                this._tlHeightsCustomized = false;
+            } else {
+                this._tlMaximizedTrack = track;
+                this._tlHeightsCustomized = true;
+            }
+            this._applyTrackLayout();
+            // 轨道高度变化后同步缩略图尺寸（clip 通过 CSS height:100% 自动适配，仅缩略图需手动更新）
+            this._syncAllClipThumbs();
+            const names = { v1: "V1", v2: "V2", a1: "A1", a2: "A2" };
+            this._setStatus(this._tlMaximizedTrack ? `${names[this._tlMaximizedTrack]}最大化（双击文字恢复）` : "显示全部轨道");
+        };
+        if (this._tlVideoHeader) this._tlVideoHeader.addEventListener("dblclick", toggleSingle("v1"));
+        if (this._tlV2TopHeader) this._tlV2TopHeader.addEventListener("dblclick", toggleSingle("v2"));
+        if (this._tlV2BotHeader) this._tlV2BotHeader.addEventListener("dblclick", toggleSingle("a2"));
+        if (this._tlAudioHeader) this._tlAudioHeader.addEventListener("dblclick", toggleSingle("a1"));
+    }
+
+    // 切换时间线视图模式：both=视频+音频，video=仅视频，audio=仅音频
+    // 隐藏轨道仍参与布局计算，切回时位置高度保持不变
+    _setTlViewMode(mode) {
+        if (this._tlViewMode === mode) return;
+        this._tlViewMode = mode;
+        this._tlHeightsCustomized = true; // 保持当前位置，不再自动居中
+        this._applyTrackLayout();
+        this._setStatus(mode === "video" ? "仅显示视频轨道（双击文字恢复）"
+            : mode === "audio" ? "仅显示音频轨道（双击文字恢复）"
+            : "显示视频+音频轨道");
     }
 
     // 异步加载缩略图：probe 完成后取视频第 1 秒（或中段）的帧
@@ -2895,12 +4135,12 @@ export class XiaozhuguangVideoEditor {
             const t = dur > 2 ? Math.min(1, dur * 0.1) : 0;
             console.log("[xzg-ve] thumb: 发送 extract_frame 请求, name=", m.name, "time=", t);
             const data = await _postJson(API_EXTRACT, {
-                filename: m.name, type: m.type, time: t,
+                filename: m.name, type: m.type, time: t, small: true,
             });
             console.log("[xzg-ve] thumb: extract_frame 返回, name=", m.name, "data=", data);
             if (data.error) throw new Error(data.error);
-            // data.filename + data.subfolder 是 input 下的完整子路径
-            const url = `/view?filename=${encodeURIComponent(data.filename)}&type=input&subfolder=${encodeURIComponent(data.subfolder || "")}&t=${Date.now()}`;
+            // data.filename + data.subfolder 是 input 下的完整子路径（small=true 时 type=input）
+            const url = `/view?filename=${encodeURIComponent(data.filename)}&type=${encodeURIComponent(data.type || "input")}&subfolder=${encodeURIComponent(data.subfolder || "")}&t=${Date.now()}`;
             _XZG_VE_THUMB_CACHE[key] = { url, failed: false };
             this._applyThumbImg(m, url);
             console.log("[xzg-ve] thumb: 缩略图已应用, name=", m.name, "url=", url);
@@ -2993,7 +4233,12 @@ export class XiaozhuguangVideoEditor {
 
     async _clearCache() {
         // 一键清理缓存：删除整个 fastcut-cache 目录（上传的媒体文件 + 缩略图）
-        if (!confirm("将删除所有上传的媒体文件和缩略图缓存（不可恢复），媒体库和时间线将被清空。确认清理？")) return;
+        // 删除前弹小珠光风格确认对话框
+        const ok = await _xzgVeConfirm(
+            "确定要一键清理缓存吗？\n\n将删除所有上传的媒体文件和缩略图缓存（不可恢复），\n媒体库和时间线将被清空。",
+            "清理"
+        );
+        if (!ok) return;
         this._setStatus("正在清理缓存...");
         try {
             const resp = await _postJson("/xzg_video_editor_clear_cache", {});
@@ -3187,7 +4432,7 @@ export class XiaozhuguangVideoEditor {
                 id: ++this._clipIdCounter,
                 filename: s.filename,
                 type: s.type || "input",
-                name: s.name || s.filename,
+                name: (s.name || s.filename).split("/").pop().split("\\").pop(),  // 色带显示文件名（不含路径）
                 start: s.start || 0,
                 end: s.end || 0,
                 sourceDuration: s.sourceDuration || 0,
@@ -3197,7 +4442,18 @@ export class XiaozhuguangVideoEditor {
                 audioTlStart: s.audioTlStart != null && s.audioTlStart >= 0 ? s.audioTlStart : null,
                 skip_audio: s.skip_audio === true ? true : undefined,
                 kind,
+                track: s.track || (kind === "audio" ? "a1" : "v1"),
                 pairedWith: s.pairedWith != null ? s.pairedWith : undefined,
+                // 视频变换属性（恢复，带默认值兜底）
+                scale: s.scale != null && s.scale > 0 ? s.scale : 1,
+                offsetX: s.offsetX != null ? s.offsetX : 0,
+                offsetY: s.offsetY != null ? s.offsetY : 0,
+                cropLeft: s.cropLeft != null ? s.cropLeft : 0,
+                cropRight: s.cropRight != null ? s.cropRight : 0,
+                cropTop: s.cropTop != null ? s.cropTop : 0,
+                cropBottom: s.cropBottom != null ? s.cropBottom : 0,
+                opacity: s.opacity != null ? s.opacity : 1,
+                volume: s.volume != null ? s.volume : 1,
             });
         }
         if (this.timeline.length > 0) {
@@ -3290,7 +4546,7 @@ export class XiaozhuguangVideoEditor {
         this._seekToGlobalTime(this._tlGlobalTime);
     }
 
-    _addClipToTimeline(filename, type, tlStart = null) {
+    _addClipToTimeline(filename, type, tlStart = null, track = null) {
         const media = this.mediaLibrary.find(m => m.name === filename);
         const isImage = _isImage(filename) || media?.info?.is_image === true;
         const duration = media?.info?.duration || 0;
@@ -3300,8 +4556,21 @@ export class XiaozhuguangVideoEditor {
                                (duration > 0 ? duration : 60);
         // kind: "audio" = 纯音频片段（无视频流），"video" = 含视频流片段（默认）
         // 图片视为视频片段（静止画面）
-        const kind = (media?.isAudio || (media?.info?.audio_only === true)) ? "audio" : "video";
+        // 音频加载器模式：所有拖入（包括视频、图片）强制视为纯音频片段，提取音频流
+        const isAudioKind = (this._modeFilter === "audio") || media?.isAudio || (media?.info?.audio_only === true);
+        const kind = isAudioKind ? "audio" : "video";
         const hasAudio = media?.info?.has_audio === true;
+        // 轨道映射：video 只能在 v1/v2；audio 只能在 a1/a2
+        //   未指定 track：视频默认 v1，音频默认 a1；
+        //   用户拖到 V2 轨道 → 视频 track=v2；音频拖到 A2 → track=a2
+        //   视频+音频配对规则：V1 视频 配 A1 音频；V2 视频 配 A2 音频（V1↔A1、V2↔A2 音视频匹配）
+        let videoTrack, audioTrack;
+        if (kind === "audio") {
+            audioTrack = (track === "a2" || track === "v2") ? "a2" : "a1";
+        } else {
+            videoTrack = (track === "v2") ? "v2" : "v1";
+            audioTrack = (videoTrack === "v2") ? "a2" : "a1";
+        }
         this._pushHistory();
         // 按 kind 设置对应位置字段：视频用 tlStart，音频用 audioTlStart
         const isVideoClip = kind === "video";
@@ -3309,7 +4578,7 @@ export class XiaozhuguangVideoEditor {
             id: ++this._clipIdCounter,
             filename,
             type,
-            name: filename,
+            name: filename.split("/").pop().split("\\").pop(),  // 色带显示文件名（不含路径）
             start: 0,
             end: placeholderDur,
             sourceDuration: placeholderDur,
@@ -3318,17 +4587,29 @@ export class XiaozhuguangVideoEditor {
             tlStart: isVideoClip ? tlStart : null,
             audioTlStart: isVideoClip ? null : tlStart,  // 纯音频片段位置存在 audioTlStart
             kind,  // 片段类型：video / audio（纯音频）
+            track: isVideoClip ? videoTrack : audioTrack,
+            // 视频变换属性（仅视频片段使用）
+            scale: 1,     // 大小缩放比例（0.1~3）
+            offsetX: 0,   // 移动：水平偏移（像素，正=右，负=左）
+            offsetY: 0,   // 移动：垂直偏移（像素，正=下，负=上）
+            cropLeft: 0,     // 裁剪左：从左边裁掉的比例（0~1）
+            cropRight: 0,    // 裁剪右：从右边裁掉的比例（0~1）
+            cropTop: 0,      // 裁剪上：从上面裁掉的比例（0~1）
+            cropBottom: 0,   // 裁剪下：从下面裁掉的比例（0~1）
+            opacity: 1,   // 透明度（0~1）
+            volume: 1,    // 音量（0~2）
         };
         // 视频含音频流：同时创建独立的音频片段，在音频轨道独立存在、可单独拖动/裁剪
+        // 音频加载器模式：跳过（主片段本身已是 audio，无需再拆分配对）
         let audioClip = null;
-        if (kind === "video" && hasAudio) {
+        if (kind === "video" && hasAudio && this._modeFilter !== "audio") {
             // 标记视频片段：音频已独立拆分（即使后来删除了音频片段，也不要再从视频本身提音频）
             clip.skip_audio = true;
             audioClip = {
                 id: ++this._clipIdCounter,
                 filename,
                 type,
-                name: filename,
+                name: filename.split("/").pop().split("\\").pop(),  // 色带显示文件名（不含路径）
                 start: 0,
                 end: placeholderDur,
                 sourceDuration: placeholderDur,
@@ -3337,6 +4618,7 @@ export class XiaozhuguangVideoEditor {
                 tlStart: null,          // 视频片段专用字段，音频片段不使用
                 audioTlStart: tlStart,  // 音频独立位置，初始与视频对齐
                 kind: "audio",
+                track: audioTrack,      // V1↔A1、V2↔A2 音视频匹配
                 pairedWith: clip.id,    // 标记配对的视频片段 ID
             };
             // 视频片段也标记配对的音频 ID
@@ -3373,28 +4655,42 @@ export class XiaozhuguangVideoEditor {
 
     _renderTimeline() {
         const track = this._tlTrack;
+        const v2Track = this._tlV2TopTrack;   // V2 上层视频轨道
+        const a1Track = this._tlAudioTrack;   // A1 主音频轨道
+        const a2Track = this._tlV2BotTrack;   // A2 下层音频轨道
         // 达芬奇式保留：先收集旧片段的缩略图 img，重建后再移入对应新片段，避免缩放时缩略图清空闪烁
         // 旧 img 在 _loadClipThumbs 中由新缩略图加载完成后逐步替换（淡入过渡）
         const oldThumbsByClipId = new Map();
-        for (const oldEl of track.querySelectorAll(".xzg-ve-clip")) {
-            const oldId = parseInt(oldEl.dataset.clipId);
-            if (!oldId) continue;
-            const oldWrap = oldEl.querySelector(".xzg-ve-clip-thumbs");
-            if (oldWrap) {
-                const imgs = Array.from(oldWrap.querySelectorAll("img.xzg-ve-clip-thumb"));
-                if (imgs.length > 0) oldThumbsByClipId.set(oldId, imgs);
+        const collectOldThumbs = (t) => {
+            if (!t) return;
+            for (const oldEl of t.querySelectorAll(".xzg-ve-clip")) {
+                const oldId = parseInt(oldEl.dataset.clipId);
+                if (!oldId) continue;
+                const oldWrap = oldEl.querySelector(".xzg-ve-clip-thumbs");
+                if (oldWrap) {
+                    const imgs = Array.from(oldWrap.querySelectorAll("img.xzg-ve-clip-thumb"));
+                    if (imgs.length > 0) oldThumbsByClipId.set(oldId, imgs);
+                }
             }
-        }
-        track.innerHTML = "";
-        // 同步清空音频轨道
-        if (this._tlAudioTrack) this._tlAudioTrack.innerHTML = "";
+        };
+        collectOldThumbs(track);
+        collectOldThumbs(v2Track);
+        if (track) track.innerHTML = "";
+        if (v2Track) v2Track.innerHTML = "";
+        if (a1Track) a1Track.innerHTML = "";
+        if (a2Track) a2Track.innerHTML = "";
         // 持久化当前时间线（恢复时由 _restoreTimelineSession 接管，不会循环）
         this._saveTimelineSession();
         // 收集本次渲染的 clip 元素，稍后异步加载缩略图
         const pendingThumbs = [];
         const pendingWaveforms = [];
         if (this.timeline.length === 0) {
-            _el("div", "xzg-ve-timeline-empty", "拖拽媒体库中的视频到此处", track);
+            if (track) _el("div", "xzg-ve-timeline-empty", "拖拽媒体库中的视频到此处", track);
+            // V2 空提示：与 V1 一致
+            if (v2Track) _el("div", "xzg-ve-timeline-empty", "拖拽媒体库中的视频到此处", v2Track);
+            // A1 / A2 空提示：提示拖音频
+            if (a1Track) _el("div", "xzg-ve-timeline-empty", "拖拽媒体库中的音频到此处", a1Track);
+            if (a2Track) _el("div", "xzg-ve-timeline-empty", "拖拽媒体库中的音频到此处", a2Track);
             this._tlInfo.textContent = "";
             // 无片段时禁用分辨率控件
             this._disableRenderOpts();
@@ -3404,9 +4700,6 @@ export class XiaozhuguangVideoEditor {
             this._updatePlayhead();
             return;
         }
-        // 计算内容总时长（裁剪后各片段时长之和，用于信息显示）
-        const contentTotal = this.timeline.reduce((s, c) => s + (c.end - c.start), 0);
-        this._tlInfo.textContent = `${this.timeline.length} 片段 · 总时长 ${_fmtTime(contentTotal)}`;
         // 片段宽度按缩放后的内容宽度计算（Alt+滚轮可缩放）
         const pxPerSec = this._getPxPerSec();
         this._clampScrollLeft();
@@ -3488,8 +4781,8 @@ export class XiaozhuguangVideoEditor {
                 }
             }
 
-            // 视频片段 x 基于视频轨道 tsVideo
-            const xVideo = (isVideoClip ? tsVideo : 0) * pxPerSec;
+            // 片段 x：视频用 tsVideo，音频用 tsAudio（确保 maxRight 包含音频实际位置）
+            const xVideo = (isVideoClip ? tsVideo : (tsAudio || 0)) * pxPerSec;
             clipRects.push({
                 clip,
                 x: xVideo,
@@ -3504,75 +4797,88 @@ export class XiaozhuguangVideoEditor {
             const { clip, w } = rect;
             const x = rect.x;
             // 在音频轨道创建波形元素：仅纯音频片段（kind==="audio"）
-            // 视频片段的音频已作为独立的音频片段存在于音频轨道，不再在此渲染
-            if (this._tlAudioTrack && !this._tlInHandleDrag && clip.kind === "audio") {
-                const wfMediaExists = !this.offlineMediaNames.has(clip.filename);
-                const wfEl = _el("div", "xzg-ve-audio-clip", null, this._tlAudioTrack);
-                wfEl.dataset.clipId = clip.id;
-                // 音频片段位置：使用 clipRects 中统一计算好的 audioTlStart（已含 null→autoEndAudio 兜底）
-                const aTs = rect.audioTlStart;
-                wfEl.style.left = `${aTs * pxPerSec}px`;
-                wfEl.style.width = `${w}px`;
-                if (this.selectedClipIds.has(clip.id)) wfEl.classList.add("xzg-ve-selected");
-                if (!wfMediaExists) wfEl.classList.add("xzg-ve-clip-offline");
-                // 自定义边框颜色（与视频片段一致，通过 CSS 变量控制 ::after 彩色边框）
-                if (clip.borderColor) wfEl.style.setProperty("--xzg-ve-clip-border", clip.borderColor);
-                if (!wfMediaExists) {
-                    // 离线音频：显示大红字提示，不加载波形
-                    _el("div", "xzg-ve-clip-offline-label", "离线媒体", wfEl);
-                } else {
-                    const wfCanvas = _el("canvas", "xzg-ve-waveform", null, wfEl);
-                    // 底部信息条（名称）：与视频片段一致，覆盖在色带区域
-                    const wfInfo = _el("div", "xzg-ve-clip-info", null, wfEl);
-                    _el("span", "xzg-ve-clip-name", clip.name, wfInfo);
-                    pendingWaveforms.push({ el: wfEl, canvas: wfCanvas, clip, width: w });
-                }
-                // 左右拖拽手柄
-                const wLh = _el("div", "xzg-ve-clip-handle xzg-ve-clip-handle-left", null, wfEl);
-                const wRh = _el("div", "xzg-ve-clip-handle xzg-ve-clip-handle-right", null, wfEl);
-                // 拖动（与视频片段共用同一逻辑）
-                wfEl.addEventListener("mousedown", (e) => {
-                    if (e.target === wLh || e.target === wRh) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (e.altKey) {
-                        this._startClipAltDrag(e, clip);
+            //   clip.track === "a2" → 渲染到 A2（下音频轨道 _tlV2BotTrack）
+            //   其他（默认 "a1"）→ 渲染到 A1（主音频轨道 _tlAudioTrack）
+            if (clip.kind === "audio") {
+                const dstAudioTrack = clip.track === "a2" ? a2Track : a1Track;
+                if (dstAudioTrack && !this._tlInHandleDrag) {
+                    const wfMediaExists = !this.offlineMediaNames.has(clip.filename);
+                    const wfEl = _el("div", "xzg-ve-audio-clip", null, dstAudioTrack);
+                    wfEl.dataset.clipId = clip.id;
+                    // 音频片段位置：使用 clipRects 中统一计算好的 audioTlStart（已含 null→autoEndAudio 兜底）
+                    const aTs = rect.audioTlStart;
+                    wfEl.style.left = `${aTs * pxPerSec}px`;
+                    wfEl.style.width = `${w}px`;
+                    if (this.selectedClipIds.has(clip.id)) wfEl.classList.add("xzg-ve-selected");
+                    if (!wfMediaExists) wfEl.classList.add("xzg-ve-clip-offline");
+                    // 自定义边框颜色（与视频片段一致，通过 CSS 变量控制 ::after 彩色边框）
+                    if (clip.borderColor) wfEl.style.setProperty("--xzg-ve-clip-border", clip.borderColor);
+                    if (!wfMediaExists) {
+                        // 离线音频：显示大红字提示，不加载波形
+                        _el("div", "xzg-ve-clip-offline-label", "离线媒体", wfEl);
                     } else {
-                        this._startClipDrag(e, clip, clipRects, "audio");
+                        const wfCanvas = _el("canvas", "xzg-ve-waveform", null, wfEl);
+                        // 底部信息条（名称）：与视频片段一致，覆盖在色带区域
+                        const wfInfo = _el("div", "xzg-ve-clip-info", null, wfEl);
+                        _el("span", "xzg-ve-clip-name", clip.name, wfInfo);
+                        pendingWaveforms.push({ el: wfEl, canvas: wfCanvas, clip, width: w });
                     }
-                });
-                // 点击选中（与视频片段一致）
-                wfEl.addEventListener("click", (e) => {
-                    if (e.target === wLh || e.target === wRh) return;
-                    if (this._clipDragged) { this._clipDragged = false; return; }
-                    if (e.ctrlKey || e.metaKey) {
-                        if (this.selectedClipIds.has(clip.id)) {
-                            this.selectedClipIds.delete(clip.id);
+                    // 左右拖拽手柄（宽度随时间线缩放调整，缩小后避免判定范围过大）
+                    const wHandleW = Math.max(8, Math.min(16, pxPerSec * 0.4));
+                    const wLh = _el("div", "xzg-ve-clip-handle xzg-ve-clip-handle-left", null, wfEl);
+                    const wRh = _el("div", "xzg-ve-clip-handle xzg-ve-clip-handle-right", null, wfEl);
+                    wLh.style.width = `${wHandleW}px`;
+                    wRh.style.width = `${wHandleW}px`;
+                    // 拖动（与视频片段共用同一逻辑）
+                    wfEl.addEventListener("mousedown", (e) => {
+                        if (e.target === wLh || e.target === wRh) return;
+                        if (e.button !== 0) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.altKey) {
+                            this._startClipAltDrag(e, clip);
                         } else {
-                            this.selectedClipIds.add(clip.id);
+                            this._startClipDrag(e, clip, clipRects, "audio");
                         }
-                    } else {
-                        this.selectedClipIds = new Set([clip.id]);
-                    }
-                    if (this.selectedMediaNames.size > 0) {
-                        this.selectedMediaNames.clear();
-                        this._renderMediaList();
-                    }
-                    this._updateClipSelection();
-                    this._renderProps();
-                });
-                // 右键菜单
-                wfEl.addEventListener("contextmenu", (e) => this._showCtxMenu(e, clip.id));
-                // 调整入出点
-                wLh.addEventListener("pointerdown", (e) => this._onHandleDown(e, clip, "left"));
-                wRh.addEventListener("pointerdown", (e) => this._onHandleDown(e, clip, "right"));
+                    });
+                    // 点击选中（与视频片段一致）
+                    wfEl.addEventListener("click", (e) => {
+                        if (e.target === wLh || e.target === wRh) return;
+                        if (this._clipDragged) { this._clipDragged = false; return; }
+                        if (e.ctrlKey || e.metaKey) {
+                            if (this.selectedClipIds.has(clip.id)) {
+                                this.selectedClipIds.delete(clip.id);
+                            } else {
+                                this.selectedClipIds.add(clip.id);
+                            }
+                        } else {
+                            this.selectedClipIds = new Set([clip.id]);
+                        }
+                        if (this.selectedMediaNames.size > 0) {
+                            this.selectedMediaNames.clear();
+                            this._renderMediaList();
+                        }
+                        this._updateClipSelection();
+                        this._renderProps();
+                    });
+                    // 右键菜单
+                    wfEl.addEventListener("contextmenu", (e) => this._showCtxMenu(e, clip.id));
+                    // 调整入出点
+                    wLh.addEventListener("pointerdown", (e) => this._onHandleDown(e, clip, "left"));
+                    wRh.addEventListener("pointerdown", (e) => this._onHandleDown(e, clip, "right"));
+                }
             }
 
             // 纯音频片段：不在视频轨道渲染（仅音频轨道显示波形）
             if (clip.kind === "audio") continue;
             // 离线检测：磁盘上是否存在该片段引用的媒体文件
             const mediaExists = !this.offlineMediaNames.has(clip.filename);
-            const el = _el("div", "xzg-ve-clip", null, track);
+            // 视频片段根据 clip.track 分发到 V1 / V2：
+            //   track=v2 → 上层视频轨道 V2（_tlV2TopTrack）
+            //   其他（默认 v1）→ 主视频轨道 V1（_tlTrack）
+            const dstVideoTrack = clip.track === "v2" ? v2Track : track;
+            if (!dstVideoTrack) continue;
+            const el = _el("div", "xzg-ve-clip", null, dstVideoTrack);
             el.dataset.clipId = clip.id;
             if (this.selectedClipIds.has(clip.id)) el.classList.add("xzg-ve-selected");
             if (!mediaExists) el.classList.add("xzg-ve-clip-offline");
@@ -3600,13 +4906,17 @@ export class XiaozhuguangVideoEditor {
                 }
             }
 
-            // 左右拖拽手柄
+            // 左右拖拽手柄（宽度随时间线缩放调整，缩小后避免判定范围过大）
+            const handleW = Math.max(8, Math.min(16, pxPerSec * 0.4));
             const lh = _el("div", "xzg-ve-clip-handle xzg-ve-clip-handle-left", null, el);
             const rh = _el("div", "xzg-ve-clip-handle xzg-ve-clip-handle-right", null, el);
+            lh.style.width = `${handleW}px`;
+            rh.style.width = `${handleW}px`;
 
             // 自由拖动（mousedown 在片段主体，非手柄）
             el.addEventListener("mousedown", (e) => {
                 if (e.target === lh || e.target === rh) return;
+                if (e.button !== 0) return;
                 e.preventDefault(); // 阻止浏览器默认拖拽/文字选择行为，确保 pointermove 实时跟随
                 e.stopPropagation();
                 // Alt+拖动：复制片段（原片段保留），显示金色预览框（与媒体库拖入一致），松开后才落入时间线
@@ -3650,59 +4960,72 @@ export class XiaozhuguangVideoEditor {
             }
         }
         // 检测相邻片段并添加桥接手柄（交界处 ±5px，滚动裁剪：左尾+右头同步移动，避免中间断开）
-        // 视频片段和音频片段分别在各轨道创建桥接手柄
+        // 各轨道在各自轨道独立创建桥接手柄
         const EPS_SEC = 0.02; // 相邻容差（秒），避免浮点误差
-        // 视频轨道桥接手柄
-        const videoSorted = clipRects.filter(r => r.clip.kind !== "audio").sort((a, b) => a.tlStart - b.tlStart);
-        for (let i = 0; i < videoSorted.length - 1; i++) {
-            const a = videoSorted[i];
-            const b = videoSorted[i + 1];
-            const aDur = a.clip.end - a.clip.start;
-            const aRight = a.tlStart + aDur;
-            const bLeft = b.tlStart;
-            if (Math.abs(aRight - bLeft) < EPS_SEC) {
-                const bridgeX = a.x + a.w;
-                const bridge = _el("div", "xzg-ve-clip-bridge", null, track);
-                bridge.style.left = `${bridgeX - 5}px`;
-                bridge.style.height = "100%";
-                bridge.addEventListener("pointerdown", (e) => this._onBridgeHandleDown(e, a.clip, b.clip));
-            }
-        }
-        // 音频轨道桥接手柄（音频片段之间相邻时创建）
-        if (this._tlAudioTrack) {
-            const audioSorted = clipRects.filter(r => r.clip.kind === "audio")
-                .sort((a, b) => (a.audioTlStart || 0) - (b.audioTlStart || 0));
-            for (let i = 0; i < audioSorted.length - 1; i++) {
-                const a = audioSorted[i];
-                const b = audioSorted[i + 1];
-                const aDur = a.clip.end - a.clip.start;
-                const aRight = (a.audioTlStart || 0) + aDur;
-                const bLeft = (b.audioTlStart || 0);
+        // 构建桥梁辅助：按轨道分组，在轨道容器创建相邻桥
+        const buildBridges = (sorted, dstTrack, getLeft, getRight, getX) => {
+            if (!dstTrack) return;
+            for (let i = 0; i < sorted.length - 1; i++) {
+                const a = sorted[i];
+                const b = sorted[i + 1];
+                const aRight = getRight(a);
+                const bLeft = getLeft(b);
                 if (Math.abs(aRight - bLeft) < EPS_SEC) {
-                    const aX = (a.audioTlStart || 0) * pxPerSec;
-                    const bridgeX = aX + a.w;
-                    const bridge = _el("div", "xzg-ve-clip-bridge", null, this._tlAudioTrack);
-                    bridge.style.left = `${bridgeX - 5}px`;
+                    const bridgeX = getX(a) + a.w;
+                    const bridge = _el("div", "xzg-ve-clip-bridge", null, dstTrack);
+                    // 宽度随时间线缩放调整，缩小后避免判定范围过大
+                    const bridgeW = Math.max(6, Math.min(14, pxPerSec * 0.4));
+                    bridge.style.width = `${bridgeW}px`;
+                    bridge.style.left = `${bridgeX - bridgeW / 2}px`;
                     bridge.style.height = "100%";
                     bridge.addEventListener("pointerdown", (e) => this._onBridgeHandleDown(e, a.clip, b.clip));
                 }
             }
-        }
+        };
+        // V1 视频桥接（track = clip.track !== "v2"）
+        const v1Sorted = clipRects.filter(r => r.clip.kind !== "audio" && r.clip.track !== "v2")
+            .sort((a, b) => a.tlStart - b.tlStart);
+        buildBridges(v1Sorted, track,
+            r => r.tlStart,
+            r => r.tlStart + (r.clip.end - r.clip.start),
+            r => r.x);
+        // V2 视频桥接
+        const v2Sorted = clipRects.filter(r => r.clip.kind !== "audio" && r.clip.track === "v2")
+            .sort((a, b) => a.tlStart - b.tlStart);
+        buildBridges(v2Sorted, v2Track,
+            r => r.tlStart,
+            r => r.tlStart + (r.clip.end - r.clip.start),
+            r => r.x);
+        // A1 音频桥接
+        const a1Sorted = clipRects.filter(r => r.clip.kind === "audio" && r.clip.track !== "a2")
+            .sort((a, b) => (a.audioTlStart || 0) - (b.audioTlStart || 0));
+        buildBridges(a1Sorted, a1Track,
+            r => (r.audioTlStart || 0),
+            r => (r.audioTlStart || 0) + (r.clip.end - r.clip.start),
+            r => (r.audioTlStart || 0) * pxPerSec);
+        // A2 音频桥接
+        const a2Sorted = clipRects.filter(r => r.clip.kind === "audio" && r.clip.track === "a2")
+            .sort((a, b) => (a.audioTlStart || 0) - (b.audioTlStart || 0));
+        buildBridges(a2Sorted, a2Track,
+            r => (r.audioTlStart || 0),
+            r => (r.audioTlStart || 0) + (r.clip.end - r.clip.start),
+            r => (r.audioTlStart || 0) * pxPerSec);
         // 计算内容总宽度（最后一个片段右边缘 + 视口宽度尾部留白，确保播放头在末尾也能居中）
         const tailPad = this._getViewWidth();
         const maxRight = clipRects.length > 0
             ? Math.max(...clipRects.map(r => r.x + r.w)) + tailPad
             : tailPad;
-        // 设置 track 内容宽度（通过子元素 absolute 定位，需显式设 scrollWidth）
-        track.style.width = "";
-        // 尾部占位（保证可滚动到最右）
-        const tailSpacer = _el("div", "xzg-ve-clip-tail-spacer", null, track);
-        tailSpacer.style.cssText = `position: absolute; left: ${maxRight - tailPad}px; width: ${tailPad}px; height: 100%;`;
-        // 音频轨道同样设置尾部占位，保证与视频轨道同步滚动
-        if (this._tlAudioTrack) {
-            const aTail = _el("div", "xzg-ve-clip-tail-spacer", null, this._tlAudioTrack);
-            aTail.style.cssText = `position: absolute; left: ${maxRight - tailPad}px; width: ${tailPad}px; height: 100%;`;
-        }
+        // 每条轨道都设置尾部占位，保证 4 条轨道可同步滚动到最右
+        const addTailSpacer = (t) => {
+            if (!t) return;
+            t.style.width = "";
+            const ts = _el("div", "xzg-ve-clip-tail-spacer", null, t);
+            ts.style.cssText = `position: absolute; left: ${maxRight - tailPad}px; width: ${tailPad}px; height: 100%; pointer-events: none;`;
+        };
+        addTailSpacer(track);
+        addTailSpacer(v2Track);
+        addTailSpacer(a1Track);
+        addTailSpacer(a2Track);
         // 异步加载所有片段缩略图（不阻塞渲染）
         for (const { wrap, clip, width } of pendingThumbs) {
             this._loadClipThumbs(wrap, clip, width);
@@ -3721,17 +5044,39 @@ export class XiaozhuguangVideoEditor {
     // 片段自由拖动 + 磁吸 + 帧对齐（基于时间轴秒数，非像素）
     // 音视频完全独立：拖动视频只改 tlStart，拖动音频只改 audioTlStart
     // 拖动位置始终对齐到帧边界，确保导出时帧精确
+    // 在 4 条轨道（V1/V2/A1/A2）上查找指定 clip 的 DOM 元素，找不到返回 null
+    _findClipEl(clip) {
+        if (!clip) return null;
+        const isAudio = clip.kind === "audio";
+        const cls = isAudio ? ".xzg-ve-audio-clip" : ".xzg-ve-clip";
+        const sel = `${cls}[data-clip-id="${clip.id}"]`;
+        const tracks = isAudio
+            ? [this._tlAudioTrack, this._tlV2BotTrack]    // A1 / A2
+            : [this._tlTrack, this._tlV2TopTrack];        // V1 / V2
+        for (const t of tracks) {
+            if (!t) continue;
+            const el = t.querySelector(sel);
+            if (el) return el;
+        }
+        return null;
+    }
     _startClipDrag(e, clip, clipRects, source = "video") {
         const startX = e.clientX;
+        const startY = e.clientY;
         const pxPerSec = this._getPxPerSec();
         const myRect = clipRects.find(r => r.clip === clip);
         // 拖动位置字段：视频用 tlStart，音频用 audioTlStart（完全独立）
         const origField = source === "audio" ? "audioTlStart" : "tlStart";
         const origTlStart = myRect ? (myRect[origField] != null ? myRect[origField] : (clip[origField] || 0)) : (clip[origField] || 0);
+        const origTrack = clip.track || (clip.kind === "audio" ? "a1" : "v1");
         let moved = false;
         this._clipDragged = false;
         const SNAP_SEC = 15 / pxPerSec; // 磁吸阈值（15px，秒）
         let dragEl = null;
+        let lastClientY = startY;   // 记录最后一次 pointermove 的 clientY（用于 pointerup 判断最终落轨道）
+        let finalTlStart = origTlStart;  // 拖动结束后的最终位置（move 中不断更新，up 中应用）
+        let singlePreviewEl = null;       // 单片段拖动预览框
+        let singlePrevPreviewTrack = null;
 
         // 帧对齐：将时间量化到最近的帧边界
         const clipFps = this._getClipFps(clip) || 30;
@@ -3758,7 +5103,35 @@ export class XiaozhuguangVideoEditor {
         const snapSkipIds = isMultiDrag ? this.selectedClipIds : null;
 
         const move = (ev) => {
+            lastClientY = ev.clientY;
             const dx = ev.clientX - startX;
+            const dy = ev.clientY - startY;
+            const shiftHeld = ev.shiftKey;
+            let newTlStart = origTlStart;  // 默认保持原位（Shift模式锁定）
+            // Shift+拖动：仅上下切换轨道，锁定X位置
+            if (shiftHeld) {
+                if (!moved && Math.abs(dy) < 3) return;
+                if (!moved) {
+                    this._pushHistory();
+                    if (!isMultiDrag && !this.selectedClipIds.has(clip.id)) {
+                        this.selectedClipIds = new Set([clip.id]);
+                        this._updateClipSelection();
+                        this._renderProps();
+                    }
+                    // 拖动开始时隐藏本体片段，仅显示预览虚线
+                    if (!dragEl) dragEl = this._findClipEl(clip);
+                    if (dragEl) dragEl.style.display = "none";
+                    if (isMultiDrag) {
+                        for (const g of group) {
+                            if (g.c === clip) continue;
+                            g.el = this._findClipEl(g.c);
+                            if (g.el) g.el.style.display = "none";
+                        }
+                    }
+                }
+                moved = true;
+                this._clipDragged = true;
+            } else {
             if (!moved && Math.abs(dx) < 3) return;
             if (!moved) {
                 this._pushHistory();
@@ -3768,89 +5141,118 @@ export class XiaozhuguangVideoEditor {
                     this._updateClipSelection();
                     this._renderProps();
                 }
+                // 拖动开始时隐藏本体片段，仅显示预览虚线
+                if (!dragEl) dragEl = this._findClipEl(clip);
+                if (dragEl) dragEl.style.display = "none";
+                if (isMultiDrag) {
+                    for (const g of group) {
+                        if (g.c === clip) continue;
+                        g.el = this._findClipEl(g.c);
+                        if (g.el) g.el.style.display = "none";
+                    }
+                }
             }
             moved = true;
             this._clipDragged = true;
-            let newTlStart = origTlStart + dx / pxPerSec;
+            // 按住 Alt：拖动速度降为原来的 20%（移动更精细）
+            newTlStart = origTlStart + (ev.altKey ? dx * 0.2 : dx) / pxPerSec;
             newTlStart = Math.max(0, newTlStart);
 
-            // 磁吸：片段左右边缘与时间轴起点(0)及其他片段边缘对齐
-            // 其他片段按 kind 选择对应位置字段（音频用 audioTlStart，视频用 tlStart），实现音频↔视频双向吸附
-            const myDur = clip.end - clip.start;
-            const myLeft = newTlStart;
-            const myRight = newTlStart + myDur;
-            let snapped = false;
-            // 吸附到时间轴起点（0）
-            if (!snapped && Math.abs(myLeft) < SNAP_SEC) { newTlStart = 0; snapped = true; }
-            if (!snapped && Math.abs(myRight) < SNAP_SEC) { newTlStart = -myDur; snapped = true; }
-            // 吸附到其他片段边缘
-            if (!snapped) {
-                for (const r of clipRects) {
-                    if (r.clip === clip) continue;
-                    // 多选拖动：跳过其他选中片段（它们会一起移动，不应作为吸附目标）
-                    if (snapSkipIds && snapSkipIds.has(r.clip.id)) continue;
-                    const posField = r.clip.kind === "audio" ? "audioTlStart" : "tlStart";
-                    const oLeft = r.clip[posField] != null ? r.clip[posField] : (r.tlStart || 0);
-                    const oRight = oLeft + (r.clip.end - r.clip.start);
-                    if (Math.abs(myLeft - oLeft) < SNAP_SEC) { newTlStart = oLeft; snapped = true; break; }
-                    if (Math.abs(myLeft - oRight) < SNAP_SEC) { newTlStart = oRight; snapped = true; break; }
-                    if (Math.abs(myRight - oLeft) < SNAP_SEC) { newTlStart = oLeft - myDur; snapped = true; break; }
-                    if (Math.abs(myRight - oRight) < SNAP_SEC) { newTlStart = oRight - myDur; snapped = true; break; }
+            // 磁吸（仅在磁吸开启时生效）：片段左右边缘与时间轴起点(0)及其他片段边缘对齐
+            if (this._magnetEnabled) {
+                const myDur = clip.end - clip.start;
+                const myLeft = newTlStart;
+                const myRight = newTlStart + myDur;
+                let snapped = false;
+                // 吸附到时间轴起点（0）
+                if (!snapped && Math.abs(myLeft) < SNAP_SEC) { newTlStart = 0; snapped = true; }
+                if (!snapped && Math.abs(myRight) < SNAP_SEC) { newTlStart = -myDur; snapped = true; }
+                // 吸附到播放头位置
+                if (!snapped) {
+                    const playheadT = this._tlGlobalTime != null ? this._tlGlobalTime : 0;
+                    if (Math.abs(myLeft - playheadT) < SNAP_SEC) { newTlStart = playheadT; snapped = true; }
+                    else if (Math.abs(myRight - playheadT) < SNAP_SEC) { newTlStart = playheadT - myDur; snapped = true; }
+                }
+                // 吸附到其他片段边缘
+                if (!snapped) {
+                    for (const r of clipRects) {
+                        if (r.clip === clip) continue;
+                        if (snapSkipIds && snapSkipIds.has(r.clip.id)) continue;
+                        const posField = r.clip.kind === "audio" ? "audioTlStart" : "tlStart";
+                        const oLeft = r.clip[posField] != null ? r.clip[posField] : (r.tlStart || 0);
+                        const oRight = oLeft + (r.clip.end - r.clip.start);
+                        if (Math.abs(myLeft - oLeft) < SNAP_SEC) { newTlStart = oLeft; snapped = true; break; }
+                        if (Math.abs(myLeft - oRight) < SNAP_SEC) { newTlStart = oRight; snapped = true; break; }
+                        if (Math.abs(myRight - oLeft) < SNAP_SEC) { newTlStart = oLeft - myDur; snapped = true; break; }
+                        if (Math.abs(myRight - oRight) < SNAP_SEC) { newTlStart = oRight - myDur; snapped = true; break; }
+                    }
                 }
             }
             newTlStart = Math.max(0, newTlStart);
-            // 帧对齐：将位置量化到最近的帧边界（磁吸目标已是帧对齐的，对齐不影响吸附结果）
             newTlStart = snapToFrame(newTlStart);
-
-            // 音视频完全独立：仅更新对应轨道的位置字段
-            clip[origField] = newTlStart;
-
-            // 直接更新 DOM，避免重建闪烁
-            if (source === "video") {
-                if (!dragEl) dragEl = this._tlTrack.querySelector(`.xzg-ve-clip[data-clip-id="${clip.id}"]`);
-                if (dragEl) {
-                    dragEl.style.left = `${newTlStart * pxPerSec}px`;
-                    dragEl.style.zIndex = "100";
-                }
-            } else if (source === "audio" && this._tlAudioTrack) {
-                const wfEl = this._tlAudioTrack.querySelector(`.xzg-ve-audio-clip[data-clip-id="${clip.id}"]`);
-                if (wfEl) {
-                    wfEl.style.left = `${newTlStart * pxPerSec}px`;
-                    wfEl.style.zIndex = "100";
-                }
-            }
-            if (myRect) {
-                myRect.x = newTlStart * pxPerSec;
-                myRect[origField] = newTlStart;
-            }
-
-            // 多选拖动：其他选中片段应用相同位移（磁吸后的总位移），并帧对齐
+            } // end else (normal drag)
+            // 拖动期间：本体片段已隐藏，在目标轨道显示金色虚线预览框
+            const trackMap = { v1: this._tlTrack, v2: this._tlV2TopTrack, a1: this._tlAudioTrack, a2: this._tlV2BotTrack };
+            finalTlStart = newTlStart;  // 记录最终位置，供 up 中应用
+            const curTrack = this._yToTrack(ev.clientY, clip.kind);
+            // 多选拖动：为每个选中片段创建/更新预览框
             if (isMultiDrag) {
                 const delta = newTlStart - origTlStart;
+                // 轨道偏移：主片段轨道变化量，同类型片段跟随偏移
+                const trackIdxV = { v2: 0, v1: 1 };
+                const trackNamesV = ["v2", "v1"];
+                const trackIdxA = { a1: 0, a2: 1 };
+                const trackNamesA = ["a1", "a2"];
+                const mainOrigTrackIdx = (clip.kind === "audio" ? trackIdxA : trackIdxV)[origTrack] ?? 0;
+                const mainCurTrackIdx = (clip.kind === "audio" ? trackIdxA : trackIdxV)[curTrack] ?? 0;
+                const trackDelta = mainCurTrackIdx - mainOrigTrackIdx;
                 for (const g of group) {
-                    if (g.c === clip) continue; // 主片段已处理
-                    let np = g.origPos + delta;
-                    np = Math.max(0, np);
-                    // 帧对齐：每个片段用自己的帧率量化
-                    const gFps = this._getClipFps(g.c) || 30;
-                    if (gFps > 0) np = Math.round(np * gFps) / gFps;
-                    g.c[g.field] = np;
-                    // 更新 DOM（按片段类型查找对应轨道元素）
-                    if (g.el === null) {
-                        if (g.c.kind === "audio" && this._tlAudioTrack) {
-                            g.el = this._tlAudioTrack.querySelector(`.xzg-ve-audio-clip[data-clip-id="${g.c.id}"]`);
-                        } else {
-                            g.el = this._tlTrack.querySelector(`.xzg-ve-clip[data-clip-id="${g.c.id}"]`);
+                    const gOrigTrack = g.c.track || (g.c.kind === "audio" ? "a1" : "v1");
+                    let gCurTrack;
+                    if (g.c.kind === clip.kind) {
+                        // 同类型：跟随主片段轨道偏移
+                        const idxMap = g.c.kind === "audio" ? trackIdxA : trackIdxV;
+                        const names = g.c.kind === "audio" ? trackNamesA : trackNamesV;
+                        const gIdx = idxMap[gOrigTrack] ?? 0;
+                        gCurTrack = names[Math.max(0, Math.min(names.length - 1, gIdx + trackDelta))] || gOrigTrack;
+                    } else {
+                        // 不同类型：保持原轨道
+                        gCurTrack = gOrigTrack;
+                    }
+                    if (gCurTrack !== g.prevPreviewTrack || !g.previewEl) {
+                        if (g.previewEl) { g.previewEl.remove(); g.previewEl = null; }
+                        const tgt = trackMap[gCurTrack];
+                        if (tgt) {
+                            g.previewEl = document.createElement("div");
+                            g.previewEl.className = "xzg-ve-clip-preview";
+                            tgt.appendChild(g.previewEl);
                         }
+                        g.prevPreviewTrack = gCurTrack;
                     }
-                    if (g.el) {
-                        g.el.style.left = `${np * pxPerSec}px`;
-                        g.el.style.zIndex = "100";
+                    if (g.previewEl) {
+                        let gPos = g.origPos + delta;
+                        if (shiftHeld) gPos = g.origPos; // Shift锁定X位置
+                        const gDur = g.c.end - g.c.start;
+                        g.previewEl.style.left = `${Math.max(0, gPos) * pxPerSec}px`;
+                        g.previewEl.style.width = `${Math.max(30, gDur * pxPerSec)}px`;
                     }
-                    if (g.rect) {
-                        g.rect.x = np * pxPerSec;
-                        g.rect[g.field] = np;
+                }
+            } else {
+                // 单片段拖动：单个预览框
+                if (curTrack !== singlePrevPreviewTrack || !singlePreviewEl) {
+                    if (singlePreviewEl) { singlePreviewEl.remove(); singlePreviewEl = null; }
+                    const tgt = trackMap[curTrack];
+                    if (tgt) {
+                        singlePreviewEl = document.createElement("div");
+                        singlePreviewEl.className = "xzg-ve-clip-preview";
+                        tgt.appendChild(singlePreviewEl);
                     }
+                    singlePrevPreviewTrack = curTrack;
+                }
+                if (singlePreviewEl) {
+                    const dur = clip.end - clip.start;
+                    singlePreviewEl.style.left = `${newTlStart * pxPerSec}px`;
+                    singlePreviewEl.style.width = `${Math.max(30, dur * pxPerSec)}px`;
                 }
             }
         };
@@ -3858,11 +5260,91 @@ export class XiaozhuguangVideoEditor {
             window.removeEventListener("pointermove", move);
             window.removeEventListener("pointerup", up);
             if (moved) {
-                // 恢复 z-index（主片段 + 多选拖动的其他片段）
-                if (dragEl) dragEl.style.zIndex = "";
+                // 移除所有预览框
+                if (singlePreviewEl) { singlePreviewEl.remove(); singlePreviewEl = null; }
                 if (isMultiDrag) {
                     for (const g of group) {
-                        if (g.el && g.c !== clip) g.el.style.zIndex = "";
+                        if (g.previewEl) { g.previewEl.remove(); g.previewEl = null; }
+                    }
+                }
+                // 恢复本体片段显示
+                if (dragEl) dragEl.style.display = "";
+                if (isMultiDrag) {
+                    for (const g of group) {
+                        if (g.el && g.c !== clip) g.el.style.display = "";
+                    }
+                }
+                // 应用最终位置到数据
+                clip[origField] = finalTlStart;
+                // 多选拖动：其他选中片段应用相同位移
+                if (isMultiDrag) {
+                    const delta = finalTlStart - origTlStart;
+                    for (const g of group) {
+                        if (g.c === clip) continue;
+                        let np = g.origPos + delta;
+                        np = Math.max(0, np);
+                        const gFps = this._getClipFps(g.c) || 30;
+                        if (gFps > 0) np = Math.round(np * gFps) / gFps;
+                        g.c[g.field] = np;
+                    }
+                }
+                // ═══ 跨轨道切换：根据最终鼠标 Y 更新 clip.track（组内切换）═══
+                //   视频：只能在视频组内 V1↔V2 切换
+                //   音频：只能在音频组内 A1↔A2 切换
+                //   多选拖动：所有选中片段跟随主片段落位轨道切换（如果类型允许）
+                const dstTrack = this._yToTrack(lastClientY, clip.kind);
+                if (dstTrack !== origTrack) {
+                    // 主片段：改 track（类型已由 _yToTrack 强制合法）
+                    clip.track = dstTrack;
+                    // 音视频配对规则：V1↔A1、V2↔A2。
+                    //   如果主 clip 是视频且有 pairedWith 音频片段，联动把配对音频也切到与视频匹配的轨道
+                    if (clip.kind !== "audio" && clip.pairedWith != null) {
+                        const paired = this.timeline.find(c => c.id === clip.pairedWith);
+                        if (paired && paired.kind === "audio") {
+                            paired.track = dstTrack === "v2" ? "a2" : "a1";
+                        }
+                    }
+                    //   如果主 clip 是音频且有 pairedWith 视频片段，联动把配对视频切到与音频匹配的轨道
+                    if (clip.kind === "audio" && clip.pairedWith != null) {
+                        const paired = this.timeline.find(c => c.id === clip.pairedWith);
+                        if (paired && paired.kind !== "audio") {
+                            paired.track = dstTrack === "a2" ? "v2" : "v1";
+                        }
+                    }
+                    // 多选：所有其他选中片段跟随切换（按各自 kind 合法落位，使用轨道偏移而非同一 Y 坐标）
+                    if (isMultiDrag) {
+                        const trackIdxV = { v2: 0, v1: 1 };
+                        const trackNamesV = ["v2", "v1"];
+                        const trackIdxA = { a1: 0, a2: 1 };
+                        const trackNamesA = ["a1", "a2"];
+                        const mainTrackDelta = (clip.kind === "audio"
+                            ? (trackIdxA[dstTrack] ?? 0) - (trackIdxA[origTrack] ?? 0)
+                            : (trackIdxV[dstTrack] ?? 1) - (trackIdxV[origTrack] ?? 1));
+                        for (const g of group) {
+                            if (g.c === clip) continue;
+                            const gOrigTrack = g.c.track || (g.c.kind === "audio" ? "a1" : "v1");
+                            let gDst = gOrigTrack;
+                            if (g.c.kind === clip.kind) {
+                                const idxMap = g.c.kind === "audio" ? trackIdxA : trackIdxV;
+                                const names = g.c.kind === "audio" ? trackNamesA : trackNamesV;
+                                const gIdx = idxMap[gOrigTrack] ?? 0;
+                                gDst = names[Math.max(0, Math.min(names.length - 1, gIdx + mainTrackDelta))] || gOrigTrack;
+                            }
+                            g.c.track = gDst;
+                            // 联动配对（V1↔A1、V2↔A2）
+                            if (g.c.kind !== "audio" && g.c.pairedWith != null) {
+                                const gp = this.timeline.find(c => c.id === g.c.pairedWith);
+                                if (gp && gp.kind === "audio") {
+                                    gp.track = gDst === "v2" ? "a2" : "a1";
+                                }
+                            }
+                            if (g.c.kind === "audio" && g.c.pairedWith != null) {
+                                const gp = this.timeline.find(c => c.id === g.c.pairedWith);
+                                if (gp && gp.kind !== "audio") {
+                                    gp.track = gDst === "a2" ? "v2" : "v1";
+                                }
+                            }
+                        }
                     }
                 }
                 // 音视频完全独立：拖动后均进行重叠裁剪和切割（在各自轨道内）
@@ -3900,8 +5382,8 @@ export class XiaozhuguangVideoEditor {
             }
             this._clipDragged = true;
             // 显示金色预览框（使用源片段实际时长，鼠标对应片段中心点）
-            // 根据源片段类型决定预览框所在轨道
-            this._showDragPreview(ev.clientX, srcDur, "center", srcClip.kind || "video");
+            // 根据源片段类型决定预览框所在轨道；Alt+拖动支持跨轨道复制（鼠标Y落到哪条轨道）
+            this._showDragPreview(ev.clientX, srcDur, "center", srcClip.kind || "video", ev.clientY);
         };
         const up = (ev) => {
             window.removeEventListener("pointermove", move);
@@ -3912,6 +5394,9 @@ export class XiaozhuguangVideoEditor {
                 let tlStart = this._clientXToTlStart(ev.clientX, srcDur, "center");
                 tlStart = this._snapTlStart(tlStart, srcDur);
                 const kind = srcClip.kind || "video";
+                // Alt+拖动跨轨道复制：根据鼠标Y落到哪条轨道决定新 clip.track
+                //   视频只能在 v1/v2；音频只能在 a1/a2
+                const dstTrack = this._yToTrack(ev.clientY, kind);
                 const copy = {
                     id: ++this._clipIdCounter,
                     filename: srcClip.filename,
@@ -3927,6 +5412,7 @@ export class XiaozhuguangVideoEditor {
                     tlStart: kind === "video" ? tlStart : null,
                     audioTlStart: kind === "audio" ? tlStart : null,
                     kind,
+                    track: dstTrack,
                 };
                 this.timeline.push(copy);
                 this._applyClipOverlapTrim(copy);
@@ -3961,6 +5447,9 @@ export class XiaozhuguangVideoEditor {
             if (c.id === draggedId) continue;
             // 音视频完全独立：不同类型的片段互不裁剪
             if ((c.kind || "video") !== (draggedClip.kind || "video")) continue;
+            // 轨道独立：不同轨道互不裁剪（V1 与 V2 允许重叠交叉，上层覆盖；A1 与 A2 同理）
+            const _tk = (cl) => cl.track || (cl.kind === "audio" ? "a1" : "v1");
+            if (_tk(c) !== _tk(draggedClip)) continue;
             const cDur = c.end - c.start;
             const cPosField = c.kind === "audio" ? "audioTlStart" : "tlStart";
             const cLeft = c[cPosField] != null ? c[cPosField] : 0;
@@ -4009,6 +5498,9 @@ export class XiaozhuguangVideoEditor {
             if (c.id === newClip.id) continue;
             // 音视频完全独立：不同类型的片段互不切割
             if ((c.kind || "video") !== (newClip.kind || "video")) continue;
+            // 轨道独立：不同轨道互不切割（V1 与 V2 允许重叠交叉；A1 与 A2 同理）
+            const _tk = (cl) => cl.track || (cl.kind === "audio" ? "a1" : "v1");
+            if (_tk(c) !== _tk(newClip)) continue;
             const cDur = c.end - c.start;
             const cPosField = c.kind === "audio" ? "audioTlStart" : "tlStart";
             const cLeft = c[cPosField] != null ? c[cPosField] : 0;
@@ -4041,6 +5533,7 @@ export class XiaozhuguangVideoEditor {
                     tlStart: rightKind === "audio" ? null : dRight,
                     audioTlStart: rightKind === "audio" ? dRight : null,
                     kind: rightKind,
+                    track: c.track || (rightKind === "audio" ? "a1" : "v1"),
                 };
                 this.timeline.push(rightPart);
             }
@@ -4050,17 +5543,20 @@ export class XiaozhuguangVideoEditor {
     // 同步所有视频片段的缩略图（轨道高度变化时调用，按新高度重新计算缩略图数量和宽度）
     _syncAllClipThumbs() {
         if (!this._tlTrack) return;
-        const videoClips = this._tlTrack.querySelectorAll(".xzg-ve-clip");
-        videoClips.forEach((clipEl) => {
-            const cid = parseInt(clipEl.dataset.clipId);
-            const clip = this.timeline.find(c => c.id === cid);
-            if (!clip || clip.kind === "audio") return;
-            const thumbsWrap = clipEl.querySelector(".xzg-ve-clip-thumbs");
-            if (!thumbsWrap) return;
-            // 用当前片段宽度重新同步（_syncThumbsFromCache 内部会按新高度计算 thumbW）
-            const width = parseInt(clipEl.style.width) || clipEl.clientWidth;
-            this._syncThumbsFromCache(clip, thumbsWrap, width);
-        });
+        // V1 + V2 两条视频轨道统一遍历
+        const videoTracks = [this._tlTrack, this._tlV2TopTrack].filter(Boolean);
+        for (const t of videoTracks) {
+            t.querySelectorAll(".xzg-ve-clip").forEach((clipEl) => {
+                const cid = parseInt(clipEl.dataset.clipId);
+                const clip = this.timeline.find(c => c.id === cid);
+                if (!clip || clip.kind === "audio") return;
+                const thumbsWrap = clipEl.querySelector(".xzg-ve-clip-thumbs");
+                if (!thumbsWrap) return;
+                // 用当前片段宽度重新同步（_syncThumbsFromCache 内部会按新高度计算 thumbW）
+                const width = parseInt(clipEl.style.width) || clipEl.clientWidth;
+                this._syncThumbsFromCache(clip, thumbsWrap, width);
+            });
+        }
     }
 
     // 同步从缓存更新缩略图（拖动时调用，利用已缓存的缩略图流，复用现有 img，仅更新 src）
@@ -4302,8 +5798,9 @@ export class XiaozhuguangVideoEditor {
         // 从 AudioBuffer 提取 clip 范围的峰值数据（按当前 clipWidth 下采样）
         const peaks = this._extractPeaks(audioBuf, clip.start, clip.end, clipWidth);
         if (!peaks) return;
-        // 绘制波形到 canvas
-        this._drawWaveform(canvas, peaks);
+        // 绘制波形到 canvas（应用音量增益）
+        canvas._xzgGain = clip.volume != null ? clip.volume : 1;
+        this._drawWaveform(canvas, peaks, undefined, canvas._xzgGain);
         // 缓存 peaks 到 canvas 元素，便于轨道高度变化时重绘（无需重新解码）
         canvas._xzgPeaks = peaks;
     }
@@ -4355,18 +5852,35 @@ export class XiaozhuguangVideoEditor {
         const w = Math.max(1, Math.floor(width != null ? width : (canvas.clientWidth || wfEl.clientWidth)));
         const peaks = this._extractPeaks(audioBuf, clip.start, clip.end, w);
         if (peaks) {
-            this._drawWaveform(canvas, peaks, w);
+            canvas._xzgGain = clip.volume != null ? clip.volume : 1;
+            this._drawWaveform(canvas, peaks, w, canvas._xzgGain);
             canvas._xzgPeaks = peaks;
+        }
+    }
+
+    // 音量调节时实时预览：用缓存的峰值重绘波形，幅度随音量变化
+    _refreshWaveformVolume(clip) {
+        if (clip.kind !== "audio") return;
+        const audioTracks = [this._tlAudioTrack, this._tlV2BotTrack].filter(Boolean);
+        for (const t of audioTracks) {
+            const wfEl = t.querySelector(`.xzg-ve-audio-clip[data-clip-id="${clip.id}"]`);
+            if (!wfEl) continue;
+            const canvas = wfEl.querySelector("canvas.xzg-ve-waveform");
+            if (!canvas || !canvas._xzgPeaks) continue;
+            canvas._xzgGain = clip.volume != null ? clip.volume : 1;
+            const w = canvas.clientWidth || parseInt(wfEl.style.width) || wfEl.clientWidth || 0;
+            this._drawWaveform(canvas, canvas._xzgPeaks, w > 0 ? w : undefined, canvas._xzgGain);
         }
     }
 
     // 重绘音频轨道所有可见波形（轨道高度变化时调用，波形自适应新高度）
     _redrawAllWaveforms() {
         if (!this._tlAudioTrack) return;
-        const clips = this._tlAudioTrack.querySelectorAll(".xzg-ve-audio-clip");
-        // 紧凑模式：音频轨道高度<50px时，波形区<色带，波形扩展到色带区域显示（占满整个片段高度）
-        const isCompact = this._tlAudioTrack.classList.contains("xzg-ve-audio-compact");
-        for (const clipEl of clips) {
+        // A1 + A2 两条音频轨道统一遍历
+        const audioTracks = [this._tlAudioTrack, this._tlV2BotTrack].filter(Boolean);
+        for (const t of audioTracks) {
+        const isCompact = t.classList.contains("xzg-ve-audio-compact");
+        for (const clipEl of t.querySelectorAll(".xzg-ve-audio-clip")) {
             const canvas = clipEl.querySelector("canvas.xzg-ve-waveform");
             if (!canvas || !canvas._xzgPeaks) continue;
             // 用音频片段实际高度计算波形高度（紧凑模式占满，否则扣除底部25px色带）
@@ -4389,14 +5903,18 @@ export class XiaozhuguangVideoEditor {
             ctx.fillStyle = "#fff";
             const peaks = canvas._xzgPeaks;
             const len = peaks.length;
+            // 音量增益（实时预览：音量为 0 时无波形）
+            const g = canvas._xzgGain != null && canvas._xzgGain > 0 ? Math.min(canvas._xzgGain, 3) : 0;
             for (let i = 0; i < len; i++) {
                 const peak = peaks[i];
                 if (peak <= 0) continue;
-                const barH = Math.max(1, peak * maxH);
+                const barH = Math.min(maxH, peak * g * maxH);
+                if (barH <= 0) continue;  // 音量为 0 → 无波形
                 const x = (i / len) * wfW;
                 const barW = Math.max(1, wfW / len);
                 ctx.fillRect(x, midY - barH, barW, barH * 2);
             }
+        }
         }
     }
 
@@ -4418,7 +5936,7 @@ export class XiaozhuguangVideoEditor {
 
     // 将峰值数据绘制为波形
     // overrideW 可选：拖动时传入明确宽度，避免未回流时 clientWidth 为旧值导致波形错位
-    _drawWaveform(canvas, peaks, overrideW) {
+    _drawWaveform(canvas, peaks, overrideW, gain) {
         if (!canvas || !canvas.isConnected) return;
         // 读取 canvas 自身尺寸（正常模式扣除25px色带；紧凑模式占满整个片段高度）
         const w = overrideW != null ? overrideW : (canvas.clientWidth || canvas.parentElement?.clientWidth || 0);
@@ -4435,13 +5953,16 @@ export class XiaozhuguangVideoEditor {
         // 中线
         const midY = h / 2;
         const maxH = h / 2 - 1; // 上下各留 1px
+        // 音量增益（实时预览：音量越大波形越高，音量为 0 时无波形）
+        const g = gain != null && gain > 0 ? Math.min(gain, 3) : 0;
         // 波形颜色：白色
         ctx.fillStyle = "#fff";
         const len = peaks.length;
         for (let i = 0; i < len; i++) {
             const peak = peaks[i];
             if (peak <= 0) continue;
-            const barH = Math.max(1, peak * maxH);
+            const barH = Math.min(maxH, peak * g * maxH);
+            if (barH <= 0) continue;  // 音量为 0 → 无波形
             const x = (i / len) * w;
             const barW = Math.max(1, w / len);
             ctx.fillRect(x, midY - barH, barW, barH * 2);
@@ -4569,6 +6090,48 @@ export class XiaozhuguangVideoEditor {
             const label = _el("div", "xzg-ve-tl-tick-label", String(f), ticks);
             label.style.left = (x + 3) + "px";
         }
+        // 渲染旗标
+        this._renderMarkerFlags();
+    }
+
+    _addMarkerFlag() {
+        const time = this._tlGlobalTime || 0;
+        // 避免重复：同一秒内不重复添加（容差 0.1 秒）
+        const exists = this._markerFlags.some(f => Math.abs(f.time - time) < 0.1);
+        if (exists) return;
+        this._markerFlags.push({ time });
+        this._markerFlags.sort((a, b) => a.time - b.time);
+        this._renderMarkerFlags();
+    }
+
+    _renderMarkerFlags() {
+        const ticks = this._tlTicks;
+        if (!ticks) return;
+        // 移除旧旗标 DOM
+        ticks.querySelectorAll(".xzg-ve-marker-flag").forEach(el => el.remove());
+        const pxPerSec = this._getPxPerSec();
+        const scrollLeft = this._tlScrollLeft || 0;
+        for (const f of this._markerFlags) {
+            const x = f.time * pxPerSec - scrollLeft;
+            const flag = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            flag.setAttribute("viewBox", "0 0 24 24");
+            flag.setAttribute("fill", "none");
+            flag.setAttribute("stroke", "#4a9eff");
+            flag.setAttribute("stroke-width", "2");
+            flag.setAttribute("stroke-linecap", "round");
+            flag.setAttribute("stroke-linejoin", "round");
+            flag.classList.add("xzg-ve-marker-flag");
+            flag.style.left = (x - 6) + "px";
+            flag.innerHTML = '<line x1="4" y1="2" x2="4" y2="22"/><path d="M4,4 L18,4 L14,10 L18,16 L4,16"/>';
+            flag.title = `旗标 ${_fmtTime(f.time)}（右键删除）`;
+            flag.addEventListener("contextmenu", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._markerFlags = this._markerFlags.filter(m => m !== f);
+                this._renderMarkerFlags();
+            });
+            ticks.appendChild(flag);
+        }
     }
 
     _reorderClip(srcId, dstId) {
@@ -4620,6 +6183,8 @@ export class XiaozhuguangVideoEditor {
     _onTimelineWheel(e) {
         const total = this._getTimelineTotalDuration();
         if (total <= 0) return;
+        // 仅保留 Alt+滚轮缩放时间线，取消普通滚轮横向滚动
+        if (!e.altKey) return;
         e.preventDefault();
         const rect = this._timeline.getBoundingClientRect();
         // 内容区起点 = timeline左 + 左侧占位（刻度0与左侧分界线对齐）
@@ -4627,39 +6192,32 @@ export class XiaozhuguangVideoEditor {
         // 鼠标在内容中的位置（含滚动偏移）
         const mouseX = e.clientX - contentLeft + this._tlScrollLeft;
 
-        if (e.altKey) {
-            // 以播放头为中心缩放：缩放后播放头尽量位于视口中央
-            const oldPxPerSec = this._getPxPerSec();
-            const viewWidth = this._getViewWidth();
+        // 以播放头为中心缩放：缩放后播放头尽量位于视口中央
+        const oldPxPerSec = this._getPxPerSec();
+        const viewWidth = this._getViewWidth();
 
-            // 向上滚（deltaY<0）放大，向下滚（deltaY>0）缩小
-            const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-            let newZoom = this._tlZoom * factor;
-            // 允许缩小到 0.1（右侧留白），放大到 20
-            newZoom = Math.max(0.1, Math.min(20, newZoom));
-            this._tlZoom = newZoom;
-            const newPxPerSec = this._getPxPerSec();
-            const newPlayheadX = this._tlGlobalTime * newPxPerSec;
+        // 向上滚（deltaY<0）放大，向下滚（deltaY>0）缩小
+        const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+        let newZoom = this._tlZoom * factor;
+        // 允许缩小到 0.1（右侧留白），放大到 20
+        newZoom = Math.max(0.1, Math.min(20, newZoom));
+        this._tlZoom = newZoom;
+        const newPxPerSec = this._getPxPerSec();
+        const newPlayheadX = this._tlGlobalTime * newPxPerSec;
 
-            // 始终尝试让播放头居中，clamp 自动处理边界
-            // 只要内容足够宽（maxScroll 足够大），播放头就能居中
-            this._tlScrollLeft = newPlayheadX - viewWidth / 2;
-            this._clampScrollLeft();
-            this._renderTimeline();
-        } else {
-            // 普通滚轮：横向滚动
-            const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-            this._tlScrollLeft += delta;
-            this._clampScrollLeft();
-            this._applyTlScroll();
-        }
+        // 始终尝试让播放头居中，clamp 自动处理边界
+        // 只要内容足够宽（maxScroll 足够大），播放头就能居中
+        this._tlScrollLeft = newPlayheadX - viewWidth / 2;
+        this._clampScrollLeft();
+        this._renderTimeline();
     }
 
     _onTimelineMouseDown(e) {
+        // 用 composedPath 替代 target.closest，确保捕获 ::after 等伪元素区域的点击
+        const path = e.composedPath();
+        const isOnClip = path.some(el => el?.classList?.contains?.("xzg-ve-clip") || el?.classList?.contains?.("xzg-ve-audio-clip"));
         // 只在时间线空白区域（非片段、非手柄、非删除按钮）启动框选
-        const target = e.target;
-        if (target.closest(".xzg-ve-clip")) return;
-        if (target.closest(".xzg-ve-audio-clip")) return;
+        if (isOnClip) return;
         // 只接受左键
         if (e.button !== 0) return;
 
@@ -4688,11 +6246,11 @@ export class XiaozhuguangVideoEditor {
             }
         }
 
-        // 计算当前选择框相交的片段 id（视频 + 音频）
+        // 计算当前选择框相交的片段 id（视频 V1+V2 + 音频 A1+A2）
         const calcIntersect = () => {
             const boxRect = box.getBoundingClientRect();
             const ids = new Set();
-            this._tlTrack.querySelectorAll(".xzg-ve-clip").forEach((clipEl) => {
+            const testEl = (clipEl) => {
                 const r = clipEl.getBoundingClientRect();
                 const intersect = !(r.right < boxRect.left || r.left > boxRect.right ||
                                      r.bottom < boxRect.top || r.top > boxRect.bottom);
@@ -4700,17 +6258,17 @@ export class XiaozhuguangVideoEditor {
                     const cid = parseInt(clipEl.dataset.clipId);
                     if (this.timeline.some(c => c.id === cid)) ids.add(cid);
                 }
-            });
-            const audioClips = this._tlAudioTrack?.querySelectorAll(".xzg-ve-audio-clip") || [];
-            audioClips.forEach((clipEl) => {
-                const r = clipEl.getBoundingClientRect();
-                const intersect = !(r.right < boxRect.left || r.left > boxRect.right ||
-                                     r.bottom < boxRect.top || r.top > boxRect.bottom);
-                if (intersect) {
-                    const cid = parseInt(clipEl.dataset.clipId);
-                    if (this.timeline.some(c => c.id === cid)) ids.add(cid);
-                }
-            });
+            };
+            // 视频片段：V1（_tlTrack）+ V2（_tlV2TopTrack）
+            for (const t of [this._tlTrack, this._tlV2TopTrack]) {
+                if (!t) continue;
+                t.querySelectorAll(".xzg-ve-clip").forEach(testEl);
+            }
+            // 音频片段：A1（_tlAudioTrack）+ A2（_tlV2BotTrack）
+            for (const t of [this._tlAudioTrack, this._tlV2BotTrack]) {
+                if (!t) continue;
+                t.querySelectorAll(".xzg-ve-audio-clip").forEach(testEl);
+            }
             return ids;
         };
 
@@ -4834,6 +6392,7 @@ export class XiaozhuguangVideoEditor {
     }
 
     _onHandleDown(e, clip, which) {
+        if (e.button !== 0) return;  // 只接受左键，右键保留给菜单
         e.preventDefault();
         e.stopPropagation();
         this._pushHistory();  // 记录裁剪前状态，支持 Ctrl+Z 撤销
@@ -4855,6 +6414,12 @@ export class XiaozhuguangVideoEditor {
         const startX = e.clientX;
         const media = this.mediaLibrary.find(m => m.name === clip.filename);
         const sourceDuration = media?.info?.duration || clip.sourceDuration || Infinity;
+        // 拖动裁剪：隐藏本体 + 金色虚线预览框（与移动片段一致）
+        let moved = false;
+        let dragEl = null;            // 本体元素（拖动时隐藏）
+        let previewEl = null;         // 金色虚线预览框
+        let previewTrack = null;      // 预览框所在轨道
+        let newStartVal = clip.start, newEndVal = clip.end, newPosVal = 0;
 
         // OpenCut 模式（compute-resize.ts / buildResizeUpdate）：
         // 每个 element 有 startTime(时间轴位置) / duration(时长) / trimStart(源入点) / trimEnd(源出点余量)
@@ -4882,7 +6447,10 @@ export class XiaozhuguangVideoEditor {
         const move = (ev) => {
             const pxPerSec = this._getPxPerSec();
             const dx = ev.clientX - startX;
-            const deltaTime = dx / pxPerSec;
+            // 按住 Alt：拖动速度降为原来的 20%（裁剪更精细）
+            const moveScale = ev.altKey ? 0.2 : 1;
+            const deltaTime = (dx * moveScale) / pxPerSec;
+            let newStart, newEnd, newPos;
 
             if (which === "left") {
                 // 左手柄：位置字段(tlStart/audioTlStart) 和 start 同步移动 deltaTime，end 不变
@@ -4890,96 +6458,116 @@ export class XiaozhuguangVideoEditor {
                 const maxDelta = dur0 - minDuration;  // 右拖上限（裁头部，最短保留 minDuration）
                 const minDelta = -start0;              // 左拖下限（扩展头部到源起点）
                 let clampedDelta = Math.max(minDelta, Math.min(maxDelta, deltaTime));
-                let newStart = start0 + clampedDelta;
-                let newPos = posStart0 + clampedDelta;
-                // 磁吸：左边缘(位置)与时间轴起点(0)及其他片段左右边缘对齐
-                const myLeft = newPos;
-                if (Math.abs(myLeft) < SNAP_SEC) {
-                    newPos = 0; newStart = start0 + (newPos - posStart0);
-                } else {
-                    for (const r of clipRects) {
-                        if (r.clip === clip) continue;
-                        const oLeft = r.tlStart;
-                        const oRight = r.tlStart + (r.clip.end - r.clip.start);
-                        if (Math.abs(myLeft - oLeft) < SNAP_SEC) { newPos = oLeft; break; }
-                        if (Math.abs(myLeft - oRight) < SNAP_SEC) { newPos = oRight; break; }
+                newStart = start0 + clampedDelta;
+                newPos = posStart0 + clampedDelta;
+                newEnd = end0;
+                // 磁吸（仅磁吸开启时）：左边缘(位置)与时间轴起点(0)及其他片段左右边缘对齐
+                if (this._magnetEnabled) {
+                    const myLeft = newPos;
+                    if (Math.abs(myLeft) < SNAP_SEC) {
+                        newPos = 0; newStart = start0 + (newPos - posStart0);
+                    } else {
+                        // 吸附到播放头位置
+                        const playheadT = this._tlGlobalTime != null ? this._tlGlobalTime : 0;
+                        if (Math.abs(myLeft - playheadT) < SNAP_SEC) {
+                            newPos = playheadT; newStart = start0 + (newPos - posStart0);
+                        } else {
+                            for (const r of clipRects) {
+                                if (r.clip === clip) continue;
+                                const oLeft = r.tlStart;
+                                const oRight = r.tlStart + (r.clip.end - r.clip.start);
+                                if (Math.abs(myLeft - oLeft) < SNAP_SEC) { newPos = oLeft; break; }
+                                if (Math.abs(myLeft - oRight) < SNAP_SEC) { newPos = oRight; break; }
+                            }
+                            newStart = start0 + (newPos - posStart0);
+                        }
                     }
-                    newStart = start0 + (newPos - posStart0);
                 }
-                clip.start = newStart;
-                clip[posField0] = newPos;
-                clip.end = end0;
             } else {
                 // 右手柄：end 移动 deltaTime，位置字段(tlStart/audioTlStart) 和 start 不变
                 // clamp: end <= sourceDuration（源出点不越界），duration >= minDuration
                 const maxDelta = (sourceDuration === Infinity ? Infinity : sourceDuration - end0);  // 右拖上限（扩展尾部到源末尾）
                 const minDelta = -(dur0 - minDuration);  // 左拖下限（裁尾部，最短保留 minDuration）
                 let clampedDelta = Math.max(minDelta, Math.min(maxDelta, deltaTime));
-                let newEnd = end0 + clampedDelta;
-                // 磁吸：右边缘(位置 + dur)与其他片段左右边缘对齐
-                const myRight = posStart0 + (newEnd - start0);
-                for (const r of clipRects) {
-                    if (r.clip === clip) continue;
-                    const oLeft = r.tlStart;
-                    const oRight = r.tlStart + (r.clip.end - r.clip.start);
-                    if (Math.abs(myRight - oLeft) < SNAP_SEC) { newEnd = start0 + (oLeft - posStart0); break; }
-                    if (Math.abs(myRight - oRight) < SNAP_SEC) { newEnd = start0 + (oRight - posStart0); break; }
-                }
-                clip.end = newEnd;
-                clip[posField0] = posStart0;
-                clip.start = start0;
-            }
-            // 直接更新片段DOM（不调用 _renderTimeline，避免缩略图重新加载导致重新分布）
-            const newPosValue = clip[posField0] != null ? clip[posField0] : 0;
-            const newDur = clip.end - clip.start;
-            const newWidth = Math.max(30, newDur * pxPerSec);
-            const newX = newPosValue * pxPerSec;
-            if (isAudioClip) {
-                // 纯音频片段：更新音频轨道波形元素
-                if (this._tlAudioTrack) {
-                    const wfEl = this._tlAudioTrack.querySelector(`.xzg-ve-audio-clip[data-clip-id="${clip.id}"]`);
-                    if (wfEl) {
-                        wfEl.style.width = `${newWidth}px`;
-                        wfEl.style.left = `${newX}px`;
-                        wfEl.style.zIndex = "100";
-                        // 按裁剪后的 start/end 范围重新提取 peaks，波形实时反映裁剪范围
-                        // 传入 newWidth 避免浏览器未回流时 clientWidth 仍为旧值导致 peaks 长度不匹配
-                        this._refreshWaveformForClip(clip, newWidth);
+                newEnd = end0 + clampedDelta;
+                newStart = start0;
+                newPos = posStart0;
+                // 磁吸（仅磁吸开启时）：右边缘(位置 + dur)与其他片段左右边缘及播放头对齐
+                if (this._magnetEnabled) {
+                    const myRight = posStart0 + (newEnd - start0);
+                    let snappedPh = false;
+                    // 吸附到播放头位置
+                    const playheadT = this._tlGlobalTime != null ? this._tlGlobalTime : 0;
+                    if (Math.abs(myRight - playheadT) < SNAP_SEC) {
+                        newEnd = start0 + (playheadT - posStart0); snappedPh = true;
+                    }
+                    if (!snappedPh) {
+                        for (const r of clipRects) {
+                            if (r.clip === clip) continue;
+                            const oLeft = r.tlStart;
+                            const oRight = r.tlStart + (r.clip.end - r.clip.start);
+                            if (Math.abs(myRight - oLeft) < SNAP_SEC) { newEnd = start0 + (oLeft - posStart0); break; }
+                            if (Math.abs(myRight - oRight) < SNAP_SEC) { newEnd = start0 + (oRight - posStart0); break; }
+                        }
                     }
                 }
-            } else {
-                // 视频片段：更新视频轨道元素
-                const clipEl = this._tlTrack.querySelector(`[data-clip-id="${clip.id}"]`);
-                if (clipEl) {
-                    clipEl.style.width = `${newWidth}px`;
-                    clipEl.style.left = `${newX}px`;
-                    clipEl.style.zIndex = "100";
-                    const thumbsWrap = clipEl.querySelector(".xzg-ve-clip-thumbs");
-                    if (thumbsWrap) {
-                        thumbsWrap.style.width = `${newWidth}px`;
-                        thumbsWrap.style.transform = "";
-                        this._syncThumbsFromCache(clip, thumbsWrap, newWidth);
-                    }
-                }
-                // 视频片段的音频已独立，不再同步音频轨道
             }
-            this._renderProps();
+
+            if (!moved) {
+                moved = true;
+                // 首次移动：隐藏本体片段，仅显示金色虚线预览框（与移动片段一致）
+                const trackMap = { v1: this._tlTrack, v2: this._tlV2TopTrack, a1: this._tlAudioTrack, a2: this._tlV2BotTrack };
+                const tName = clip.track || (isAudioClip ? "a1" : "v1");
+                const tgt = trackMap[tName] || this._tlTrack;
+                if (isAudioClip) {
+                    if (this._tlAudioTrack) {
+                        const wfEl = this._tlAudioTrack.querySelector(`.xzg-ve-audio-clip[data-clip-id="${clip.id}"]`);
+                        if (wfEl) { dragEl = wfEl; dragEl.style.display = "none"; }
+                    }
+                } else {
+                    const clipEl = this._tlTrack.querySelector(`[data-clip-id="${clip.id}"]`)
+                        || this._tlV2TopTrack?.querySelector(`[data-clip-id="${clip.id}"]`);
+                    if (clipEl) { dragEl = clipEl; dragEl.style.display = "none"; }
+                }
+                if (tgt) {
+                    previewEl = document.createElement("div");
+                    previewEl.className = "xzg-ve-clip-preview";
+                    tgt.appendChild(previewEl);
+                    previewTrack = tName;
+                }
+            }
+
+            // 保存最终裁剪值（up 时应用）
+            newStartVal = newStart;
+            newEndVal = newEnd;
+            newPosVal = newPos;
+
+            // 更新金色虚线预览框的位置/大小
+            if (previewEl) {
+                const px = this._getPxPerSec();
+                const leftPx = newPos * px;
+                const widthPx = Math.max(30, (newEnd - newStart) * px);
+                previewEl.style.left = `${leftPx}px`;
+                previewEl.style.width = `${widthPx}px`;
+            }
         };
         const up = () => {
             this._tlInHandleDrag = false;
             window.removeEventListener("pointermove", move);
             window.removeEventListener("pointerup", up);
-            // 恢复 z-index
-            const clipEl = this._tlTrack.querySelector(`[data-clip-id="${clip.id}"]`);
-            if (clipEl) clipEl.style.zIndex = "";
-            if (this._tlAudioTrack) {
-                const wfEl = this._tlAudioTrack.querySelector(`.xzg-ve-audio-clip[data-clip-id="${clip.id}"]`);
-                if (wfEl) wfEl.style.zIndex = "";
+            // 移除预览框，恢复本体显示
+            if (previewEl) { previewEl.remove(); previewEl = null; }
+            if (dragEl) dragEl.style.display = "";
+            if (moved) {
+                // 应用最终裁剪值到片段数据
+                clip.start = newStartVal;
+                clip.end = newEndVal;
+                clip[posField0] = newPosVal;
+                // 裁剪手柄松开后，应用重叠裁剪（被拖动片段保持完整，被覆盖片段自动裁剪）
+                this._applyClipOverlapTrim(clip);
+                this._renderTimeline();
+                this._saveTimelineSession();
             }
-            // 裁剪手柄松开后，应用重叠裁剪（被拖动片段保持完整，被覆盖片段自动裁剪）
-            this._applyClipOverlapTrim(clip);
-            this._renderTimeline();
-            this._saveTimelineSession();
         };
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
@@ -5022,7 +6610,9 @@ export class XiaozhuguangVideoEditor {
         const move = (ev) => {
             const pxPerSec = this._getPxPerSec();
             const dx = ev.clientX - startX;
-            const deltaTime = dx / pxPerSec;
+            // 按住 Alt：拖动速度降为原来的 20%（裁剪更精细）
+            const moveScale = ev.altKey ? 0.2 : 1;
+            const deltaTime = (dx * moveScale) / pxPerSec;
 
             // 右拖上限：min(左片段源出点剩余, 右片段最短保留)
             const maxDelta = Math.min(
@@ -5139,10 +6729,12 @@ export class XiaozhuguangVideoEditor {
         // 返回所有片段末尾位置的最大值（音视频独立轨道，取最远末尾）
         // 纯音频片段用 audioTlStart 定位，视频片段用 tlStart
         // tlStart/audioTlStart 为 null 时按数组顺序自动追加到上一片段末尾
+        // 音频加载器模式：完全忽略视频片段，只计算音频
         if (this.timeline.length === 0) return 0;
         let autoEnd = 0;
         let maxEnd = 0;
         for (const clip of this.timeline) {
+            if (this._modeFilter === "audio" && clip.kind !== "audio") continue;
             const dur = clip.end - clip.start;
             const posField = clip.kind === "audio" ? "audioTlStart" : "tlStart";
             const ts = clip[posField] != null ? clip[posField] : autoEnd;
@@ -5168,21 +6760,94 @@ export class XiaozhuguangVideoEditor {
     _getPxPerSec() {
         return 30 * this._tlZoom;
     }
+    // 时间线适配宽度：缩放到让全部内容刚好铺满可视区
+    _fitTimelineToView() {
+        const total = this._getTimelineTotalDuration();
+        const viewWidth = this._getViewWidth();
+        if (total <= 0 || viewWidth <= 0) return;
+        // 留 5% 边距，避免内容紧贴右边界
+        let newZoom = (viewWidth * 0.95) / (total * 30);
+        newZoom = Math.max(0.1, Math.min(20, newZoom));
+        this._tlZoom = newZoom;
+        this._tlScrollLeft = 0;
+        this._clampScrollLeft();
+        this._renderTimeline();
+        this._setStatus("时间线适配宽度");
+    }
+    // 缩放到显示 10 秒内容（10 倍帧率帧数），以当前播放头为中心，左右均分各 5 秒
+    _zoomToTenSeconds() {
+        const viewWidth = this._getViewWidth();
+        if (viewWidth <= 0) return;
+        // 让 10 秒刚好铺满可视区：zoom = 可视宽 / (10s * 30px/s)
+        let newZoom = viewWidth / (10 * 30);
+        newZoom = Math.max(0.1, Math.min(20, newZoom));
+        this._tlZoom = newZoom;
+        // 以播放头为中心：播放头 X 位于视口正中，左右各 5 秒
+        const playheadX = this._tlGlobalTime * this._getPxPerSec();
+        this._tlScrollLeft = playheadX - viewWidth / 2;
+        this._clampScrollLeft();
+        this._renderTimeline();
+        this._setStatus(`时间线缩放：以播放头为中心显示 10 秒`);
+    }
     // 鼠标 X 坐标转时间轴秒数（用于拖放定位）
     // align: "left" → 鼠标对应片段左边缘（媒体库拖入）；"center" → 鼠标对应片段中心点（Alt+拖动复制）
+    // 根据鼠标 clientY 判断落在 V2/V1/A1/A2 哪个轨道区间
+    // 坐标系：_timeline 区域 top 0~35px 是刻度区；轨道区 top=35px，向下为正
+    //   V2 区间: [35, 35+v2tH)
+    //   V1 区间: [35+v2tH, 35+v2tH+vH)
+    //   5px 粗分割: [35+v2tH+vH, 35+v2tH+vH+5)    （视频/音频大分界）
+    //   A1 区间: [35+v2tH+vH+5, 35+v2tH+vH+5+aH)
+    //   A2 区间: [35+v2tH+vH+5+aH, +∞)
+    // 参数 kind 用来过滤不合理轨道：
+    //   kind="video" 时，落在音频区 → 返回 v1；落在 A1/A2 → 返回 v1（视频只能落 V1/V2，优先 V1）
+    //   kind="audio" 时，落在视频区 → 返回 a1（音频只能落 A1/A2，优先 A1）
+    _yToTrack(clientY, kind = "video") {
+        if (!this._timeline) return kind === "audio" ? "a1" : "v1";
+        const tlRect = this._timeline.getBoundingClientRect();
+        const relY = clientY - tlRect.top - 35; // 相对轨道区顶部（刻度区底部）
+        const v2tH = this._tlV2TopHeight || 0;
+        const vH = this._tlVideoHeight || 0;
+        const aH = this._tlAudioHeight || 0;
+        const v1End = v2tH + vH;        // V1 底 = V1↔A1 粗分割线上沿
+        const a1Start = v1End + 5;      // A1 顶 = 粗分割线下沿
+        const a1End = a1Start + aH;     // A1 底 = A1↔A2 细分隔
+        let track;
+        if (relY < v2tH) track = "v2";
+        else if (relY < v1End) track = "v1";
+        else if (relY < a1Start) track = kind === "audio" ? "a1" : "v1";  // 落在 5px 粗分界：按 kind 选邻近
+        else if (relY < a1End) track = "a1";
+        else track = "a2";
+        // 按 kind 纠正不合理轨道
+        if (kind === "audio") {
+            if (track !== "a1" && track !== "a2") return "a1";
+        } else {
+            if (track !== "v1" && track !== "v2") return "v1";
+        }
+        return track;
+    }
     _clientXToTlStart(clientX, duration = 0, align = "left") {
-        const trackRect = this._tlTrack.getBoundingClientRect();
-        // track 已通过 CSS left:150px 偏移，trackRect.left 已是占位区之后的位置，无需再减 _tlLeftPad
-        const xRelative = clientX - trackRect.left + this._tlScrollLeft;
+        // 使用与 _mouseXToGlobalTime 完全一致的参考系：_timeline.getBoundingClientRect() + _tlLeftPad
+        // 避免混用 _tlTrack.getBoundingClientRect() 导致在纯音频模式下（V1高度=0）X坐标计算错位
         const pxPerSec = this._getPxPerSec();
+        if (pxPerSec <= 0) return 0;
+        const tlRect = this._timeline.getBoundingClientRect();
+        const contentLeft = tlRect.left + this._tlLeftPad;
+        const xRelative = clientX - contentLeft + this._tlScrollLeft;
         const mouseSec = Math.max(0, xRelative / pxPerSec);
         // align="center" 时鼠标对应片段中心 → tlStart = mouseSec - duration/2；align="left" 时鼠标对应片段左边缘 → tlStart = mouseSec
-        return Math.max(0, align === "center" ? mouseSec - duration / 2 : mouseSec);
+        let ts = Math.max(0, align === "center" ? mouseSec - duration / 2 : mouseSec);
+        // 帧对齐：量化到时间轴统一帧率边界（与播放头 _mouseXToGlobalTime、刻度 _renderTicks 一致）
+        // 否则拖入的片段会落在半帧位置，与播放头/刻度错位
+        const fps = this._getTimelineFps();
+        if (fps > 0) ts = Math.round(ts * fps) / fps;
+        return Math.max(0, ts);
     }
     // 磁吸：片段左右边缘吸附到时间轴起点(0)及其他片段边缘，阈值15px
     // 支持音频↔视频双向吸附：遍历所有片段，按其 kind 选择对应位置字段
     // tlStart：当前 tlStart；dur：片段时长；excludeId：拖动中需排除的片段 id（可选）
     _snapTlStart(tlStart, dur, excludeId = null) {
+        // 磁吸关闭时不做任何吸附，直接返回原位置
+        if (!this._magnetEnabled) return tlStart;
         const pxPerSec = this._getPxPerSec();
         const SNAP_SEC = 15 / pxPerSec;
         const myLeft = tlStart;
@@ -5190,9 +6855,15 @@ export class XiaozhuguangVideoEditor {
         // 吸附到时间轴起点（0）
         if (Math.abs(myLeft) < SNAP_SEC) return 0;
         if (Math.abs(myRight) < SNAP_SEC) return -dur;
+        // 吸附到播放头位置
+        const playheadT = this._tlGlobalTime != null ? this._tlGlobalTime : 0;
+        if (Math.abs(myLeft - playheadT) < SNAP_SEC) return playheadT;
+        if (Math.abs(myRight - playheadT) < SNAP_SEC) return playheadT - dur;
         // 吸附到其他片段边缘（音频用 audioTlStart，视频用 tlStart）
+        // 音频加载器模式：完全忽略视频片段，只吸附到音频片段
         for (const c of this.timeline) {
             if (c.id === excludeId) continue;
+            if (this._modeFilter === "audio" && c.kind !== "audio") continue;
             const posField = c.kind === "audio" ? "audioTlStart" : "tlStart";
             const oLeft = c[posField] != null ? c[posField] : 0;
             const oRight = oLeft + (c.end - c.start);
@@ -5207,16 +6878,21 @@ export class XiaozhuguangVideoEditor {
     // duration 可选：Alt+拖动复制片段时传入源片段实际时长，媒体库拖入时不传（从 mediaLibrary 查找）
     // align: "left"（默认，媒体库拖入，鼠标对应片段左边缘）或 "center"（Alt+拖动复制，鼠标对应片段中心点）
     // kind: "video"（默认，预览框显示在视频轨道）或 "audio"（预览框显示在音频轨道）
-    _showDragPreview(clientX, duration, align = "left", kind = "video") {
+    // clientY: 可选，传入后用 _yToTrack 精确选中 V2/V1 或 A1/A2 预览轨道
+    _showDragPreview(clientX, duration, align = "left", kind = "video", clientY = null) {
+        // 音频加载器模式：所有拖入媒体强制视为音频，摒弃视频轨道干扰
+        if (this._modeFilter === "audio") kind = "audio";
         const pxPerSec = this._getPxPerSec();
 
         let dur = duration;
+        let dragMedia = null;  // 保存媒体引用，用于后续音频轨道预览判断
         if (dur == null) {
             // 获取拖放的媒体信息以计算预览宽度
             const name = this._dragPreviewName;
             dur = 5; // 默认预览时长 5s
             if (name) {
                 const media = this.mediaLibrary.find(m => m.name === name);
+                dragMedia = media;
                 // 媒体库音频文件强制 kind=audio
                 if (media?.isAudio) kind = "audio";
                 const isImg = _isImage(name) || media?.info?.is_image === true;
@@ -5237,9 +6913,33 @@ export class XiaozhuguangVideoEditor {
         const leftPx = tlStart * pxPerSec;
         const widthPx = Math.max(30, dur * pxPerSec);
 
-        // 根据片段类型选择预览框所在的轨道
-        const targetTrack = kind === "audio" ? this._tlAudioTrack : this._tlTrack;
+        // 根据轨道选择预览框所在的轨道：
+        //   video + track=v2 → V2 上轨道
+        //   video + track=v1 → V1 主轨道
+        //   audio + track=a1 → A1 主音频轨道
+        //   audio + track=a2 → A2 下音频轨道
+        const track = clientY != null ? this._yToTrack(clientY, kind)
+                                      : (kind === "audio" ? "a1" : "v1");
+        let targetTrack;
+        if (kind === "audio") {
+            targetTrack = track === "a2" ? this._tlV2BotTrack : this._tlAudioTrack;
+        } else {
+            targetTrack = track === "v2" ? this._tlV2TopTrack : this._tlTrack;
+        }
         if (!targetTrack) return;
+        // 视频含音频时，对应音频轨道也需显示预览框（V2→A2，V1→A1）
+        const hasAudio = kind === "video" && dragMedia?.info?.has_audio === true;
+        const audioTrackName = hasAudio ? (track === "v2" ? "a2" : "a1") : null;
+        const audioTargetTrack = audioTrackName === "a2" ? this._tlV2BotTrack : (audioTrackName === "a1" ? this._tlAudioTrack : null);
+        // 先清除其他轨道上残留的旧预览（避免拖到不同轨道后旧框还在）
+        // 视频含音频时保留音频轨道预览不清除
+        const allTracks = [this._tlTrack, this._tlAudioTrack, this._tlV2TopTrack, this._tlV2BotTrack];
+        for (const t of allTracks) {
+            if (t && t !== targetTrack && t !== audioTargetTrack) {
+                const p = t.querySelector(".xzg-ve-clip-preview");
+                if (p) p.remove();
+            }
+        }
         let preview = targetTrack.querySelector(".xzg-ve-clip-preview");
         if (!preview) {
             preview = document.createElement("div");
@@ -5248,16 +6948,25 @@ export class XiaozhuguangVideoEditor {
         }
         preview.style.left = `${leftPx}px`;
         preview.style.width = `${widthPx}px`;
+        // 视频含音频：同时在音频轨道显示预览框
+        if (hasAudio && audioTargetTrack) {
+            let audioPreview = audioTargetTrack.querySelector(".xzg-ve-clip-preview");
+            if (!audioPreview) {
+                audioPreview = document.createElement("div");
+                audioPreview.className = "xzg-ve-clip-preview";
+                audioTargetTrack.appendChild(audioPreview);
+            }
+            audioPreview.style.left = `${leftPx}px`;
+            audioPreview.style.width = `${widthPx}px`;
+        }
     }
     _hideDragPreview() {
-        // 从两个轨道都移除预览框
-        if (this._tlTrack) {
-            const v = this._tlTrack.querySelector(".xzg-ve-clip-preview");
-            if (v) v.remove();
-        }
-        if (this._tlAudioTrack) {
-            const a = this._tlAudioTrack.querySelector(".xzg-ve-clip-preview");
-            if (a) a.remove();
+        // 从所有轨道（V1、A1、V2、A2）都移除预览框
+        const allTracks = [this._tlTrack, this._tlAudioTrack, this._tlV2TopTrack, this._tlV2BotTrack];
+        for (const t of allTracks) {
+            if (!t) continue;
+            const p = t.querySelector(".xzg-ve-clip-preview");
+            if (p) p.remove();
         }
         this._dragPreviewName = null;
         this._dragPreviewType = null;
@@ -5272,14 +6981,14 @@ export class XiaozhuguangVideoEditor {
     _applyTlScroll() {
         if (this._tlTicks) {
             this._tlTicks.style.transform = `translateX(${-this._tlScrollLeft}px)`;
+            this._renderMarkerFlags();
         }
-        // 同步 track 的原生 scrollLeft，使片段随刻度同步滚动
-        if (this._tlTrack) {
-            this._tlTrack.scrollLeft = this._tlScrollLeft;
-        }
-        // 同步音频轨道滚动
-        if (this._tlAudioTrack) {
-            this._tlAudioTrack.scrollLeft = this._tlScrollLeft;
+        // 同步 4 条轨道（V1/V2/A1/A2）的原生 scrollLeft，使片段随刻度同步滚动
+        // 缺一会导致该轨道片段不随时间线平移，缩放（播放头居中使 scrollLeft 变化）时与播放头逐渐错位
+        for (const t of [this._tlTrack, this._tlV2TopTrack, this._tlAudioTrack, this._tlV2BotTrack]) {
+            if (t) {
+                t.scrollLeft = this._tlScrollLeft;
+            }
         }
         // 更新片段文件名位置：滚动时文字始终粘在可见区域左侧
         this._updateClipLabels();
@@ -5290,14 +6999,18 @@ export class XiaozhuguangVideoEditor {
     _updateClipLabels() {
         if (!this._tlTrack) return;
         const scrollLeft = this._tlScrollLeft;
-        for (const el of this._tlTrack.querySelectorAll(".xzg-ve-clip")) {
-            const clipLeft = parseFloat(el.style.left) || 0;
-            const clipWidth = parseFloat(el.style.width) || 0;
-            const info = el.querySelector(".xzg-ve-clip-info");
-            if (!info) continue;
-            // 文字偏移：粘在视口左边缘，但不超过片段右边界（保留 60px 显示空间）
-            const offset = Math.max(0, Math.min(scrollLeft - clipLeft, Math.max(0, clipWidth - 60)));
-            info.style.left = offset > 0 ? `${offset}px` : "";
+        // V1 + V2 两条视频轨道统一遍历
+        for (const t of [this._tlTrack, this._tlV2TopTrack]) {
+            if (!t) continue;
+            for (const el of t.querySelectorAll(".xzg-ve-clip")) {
+                const clipLeft = parseFloat(el.style.left) || 0;
+                const clipWidth = parseFloat(el.style.width) || 0;
+                const info = el.querySelector(".xzg-ve-clip-info");
+                if (!info) continue;
+                // 文字偏移：粘在视口左边缘，但不超过片段右边界（保留 60px 显示空间）
+                const offset = Math.max(0, Math.min(scrollLeft - clipLeft, Math.max(0, clipWidth - 60)));
+                info.style.left = offset > 0 ? `${offset}px` : "";
+            }
         }
     }
     // 播放时自动滚动（达芬奇式）：
@@ -5335,27 +7048,53 @@ export class XiaozhuguangVideoEditor {
     _findClipByGlobalTime(globalTime) {
         // 基于 tlStart/audioTlStart 和片段时长查找，正确处理片段间空隙（空隙处返回 null → 黑屏）
         // 音频片段用 audioTlStart 定位（音频轨道位置），视频片段用 tlStart
-        // ⚠️ 两段式查找：优先返回 video 命中；只有时间轴此处无视频片段时才返回纯 audio 命中
-        //    防止音视频片段 tlStart 相同时，音频排在 timeline 数组前导致预览显示🎵黑屏
-        let audioHit = null;
+        // ⚠️ 多轨视频优先级：V2（上层视频，clip.track=="v2"）> V1（下层视频）
+        //   同时间点 V2 与 V1 在 X 方向重叠 → 返回 V2（V2 画面覆盖 V1 显示）
+        //   只有该时间点无任何 V2 命中才回落 V1；无视频命中才返回纯 audio 命中
+        // 音频加载器模式：完全忽略视频片段，只查找音频
+        let v2Hit = null;       // V2 上层视频命中
+        let v1Hit = null;       // V1 下层视频命中（兜底）
+        let audioHit = null;    // 纯音频命中
         for (let i = 0; i < this.timeline.length; i++) {
             const clip = this.timeline[i];
+            if (this._modeFilter === "audio" && clip.kind !== "audio") continue;
             const dur = clip.end - clip.start;
             if (dur <= 0) continue;
             const clipStart = this._getClipTlStart(clip);
             const clipEnd = clipStart + dur;
-            if (globalTime >= clipStart && globalTime < clipEnd) {
-                if (clip.kind !== "audio") {
-                    // 视频片段命中：直接返回（最高优先级）
-                    return { clip, clipIndex: i, localTime: clip.start + (globalTime - clipStart) };
-                } else if (!audioHit) {
-                    // 独立音频命中：先缓存，等确认此时间点无视频后再返回
-                    audioHit = { clip, clipIndex: i, localTime: clip.start + (globalTime - clipStart) };
+            if (!(globalTime >= clipStart && globalTime < clipEnd)) continue;
+            if (clip.kind !== "audio") {
+                const h = { clip, clipIndex: i, localTime: clip.start + (globalTime - clipStart) };
+                if (clip.track === "v2") {
+                    if (!v2Hit) v2Hit = h;
+                } else {
+                    if (!v1Hit) v1Hit = h;
                 }
+            } else if (!audioHit) {
+                audioHit = { clip, clipIndex: i, localTime: clip.start + (globalTime - clipStart) };
             }
         }
-        // 没有任何 video 命中；若有纯音频命中则返回（画面显示🎵图标占位）
-        return audioHit;
+        // 返回优先级：V2 → V1 → audioHit → null
+        return v2Hit || v1Hit || audioHit || null;
+    }
+
+    // 返回某个全局时间点所有活跃的视频片段（用于多轨合成预览），按轨道 V1→V2 排序。
+    // 返回 [{ clip, localTime, track }]；无视频命中返回 []。
+    _getVideoLayersAt(globalTime) {
+        const layers = [];
+        for (let i = 0; i < this.timeline.length; i++) {
+            const clip = this.timeline[i];
+            if (clip.kind === "audio") continue;
+            const dur = clip.end - clip.start;
+            if (dur <= 0) continue;
+            const clipStart = this._getClipTlStart(clip);
+            const clipEnd = clipStart + dur;
+            if (!(globalTime >= clipStart && globalTime < clipEnd)) continue;
+            layers.push({ clip, localTime: clip.start + (globalTime - clipStart), track: clip.track === "v2" ? "v2" : "v1" });
+        }
+        // V1 在下层，V2 在上层
+        layers.sort((a, b) => (a.track === "v2" ? 1 : 0) - (b.track === "v2" ? 1 : 0));
+        return layers;
     }
 
     // 计算片段在时间线上的全局起始偏移
@@ -5425,14 +7164,10 @@ export class XiaozhuguangVideoEditor {
         // E4: 竞态 guard —— 用 clipId 标记当前目标
         this._loadClipToken = (this._loadClipToken || 0) + 1;
         const token = this._loadClipToken;
-        // E1: 先停止旧的播放循环和音频（避免 await 期间旧循环继续更新 _tlGlobalTime）
+        // E1: 先停止旧的播放循环（避免 await 期间旧循环继续更新 _tlGlobalTime）
         this._stopPlaybackLoop();
-        this._stopAudioSource();
-        // E3: 切换片段时清空旧音频 buffer（不同片段音频不同）
-        if (this._currentClip && this._currentClip.id !== clip.id) {
-            this._fullAudioBuffer = null;
-            this._playingAudioClipId = null;
-        }
+        // 音频源管理由 _startAudioPlayback 统一负责（定期调用时自动停止非活跃源、启动活跃源）
+        // 视频片段切换时音频独立播放，不应中断；音频缓冲也不应清空（各片段按 clip.id 独立缓存）
         this._currentClip = clip;
         this._canvas.classList.add("xzg-ve-active");
         this._previewEmpty.classList.add("xzg-ve-hidden");
@@ -5457,16 +7192,12 @@ export class XiaozhuguangVideoEditor {
                     img.src = url;
                 });
                 if (token !== this._loadClipToken) return;
-                // 同步 canvas 内部分辨率
-                if (img.naturalWidth && img.naturalHeight) {
-                    this._canvas.width = img.naturalWidth;
-                    this._canvas.height = img.naturalHeight;
-                }
-                const ctx = this._canvas.getContext("2d");
-                ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
-                ctx.drawImage(img, 0, 0, this._canvas.width, this._canvas.height);
+                // letterbox 模式：主 canvas 按目标分辨率比例 contain + 居中绘制图片（上下/左右黑边）
+                this._drawSourceToCanvas(img);
                 // 缓存图片元素供播放循环复用
+                this._imgElement = img;
                 this._currentImageEl = img;
+                this._imgLoadedFile = clip.filename;
                 // 加载成功且需要自动播放：启动图片播放循环
                 if (autoplay && this._tlPlaying) {
                     this._startPlaybackLoop();
@@ -5479,17 +7210,22 @@ export class XiaozhuguangVideoEditor {
             }
             return;
         }
+        this._imgElement = null;
         this._currentImageEl = null;
-        if (isAudioOnly) {
+        this._imgLoadedFile = null;
+        if (isAudioOnly || this._modeFilter === "audio") {
             this._currentDecoder = null;
-            this._clearCanvasForAudio();
+            this._canvas.classList.add("xzg-ve-active");
+            this._previewEmpty.classList.add("xzg-ve-hidden");
+            // 音频加载器模式：纯黑屏，不显示🎵图标
+            if (this._modeFilter === "audio") {
+                this._clearCanvasBlack();
+            } else {
+                this._clearCanvasForAudio();
+            }
             this._hideLoadingOverlay();
-            // 预解码音频缓冲（用于播放）
+            // 预解码音频缓冲并启动所有活跃音频片段（多源混音）
             try {
-                if (!this._fullAudioBuffer) {
-                    this._fullAudioBuffer = await this._decodeStandaloneAudio(clip.filename, clip.type);
-                }
-                if (token !== this._loadClipToken) return;
                 if (autoplay && this._tlPlaying) {
                     this._startAudioOnlyPlaybackLoop(clip, localTime);
                     this._startAudioPlayback();
@@ -5531,13 +7267,9 @@ export class XiaozhuguangVideoEditor {
                 this._hideLoadingOverlay();
             }
 
-            // E7: 同步 canvas 内部分辨率，避免 drawImage 拉伸模糊
-            const cw = decoder.previewWidth || decoder.width;
-            const ch = decoder.previewHeight || decoder.height;
-            if (cw && ch && (this._canvas.width !== cw || this._canvas.height !== ch)) {
-                this._canvas.width = cw;
-                this._canvas.height = ch;
-            }
+            // Letterbox 预览：主 canvas 内部分辨率固定 = 目标分辨率（导出宽高）
+            // 解码器渲到离屏 canvas（decoder 会重置它的 width/height 为 previewWidth/previewHeight）
+            // 然后我们手动 letterbox 贴到主 canvas
 
             // 计算目标帧号
             const fps = decoder.fps || 30;
@@ -5546,9 +7278,13 @@ export class XiaozhuguangVideoEditor {
                 Math.max(0, decoder.frameCount - 1)
             ));
 
-            // 渲染目标帧到 canvas（带缓存 + 最近帧降级）
-            await decoder.renderFrame(targetFrame, this._canvas, true);
+            // 渲染目标帧到离屏 canvas（decoder 会重置其 width/height = preview 尺寸）
+            await decoder.renderFrame(targetFrame, this._offscreenCanvas, true);
             if (token !== this._loadClipToken) return;
+            // 多轨合成优先（V2 半透明露出 V1）；否则 Letterbox 贴到主 canvas
+            if (!this._renderCompositeFromSeek(this._offscreenCanvas, this._offscreenCanvas.width, this._offscreenCanvas.height)) {
+                this._drawSourceToCanvas(this._offscreenCanvas);
+            }
 
             // 若在播放，启动播放循环 + 音频
             if (autoplay && this._tlPlaying) {
@@ -5568,6 +7304,7 @@ export class XiaozhuguangVideoEditor {
     // 纯音频片段：清空 canvas 显示音频占位（黑底 + 🎵 图标）
     _clearCanvasForAudio() {
         if (!this._canvas) return;
+        this._syncPreviewCanvasSize();  // 确保 canvas 尺寸 = 目标分辨率
         const ctx = this._canvas.getContext("2d");
         if (!ctx) return;
         ctx.fillStyle = "#000";
@@ -5580,6 +7317,417 @@ export class XiaozhuguangVideoEditor {
         ctx.fillText("🎵", this._canvas.width / 2, this._canvas.height / 2);
     }
 
+    // 音频加载器模式：纯黑屏，无任何图标
+    _clearCanvasBlack() {
+        if (!this._canvas) return;
+        this._syncPreviewCanvasSize();
+        const ctx = this._canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
+    }
+
+    // ── 预览画布按「目标渲染分辨率」letterbox 显示 ──────────────────────
+    // 优先级：手动设置宽高 > 首个带分辨率的片段 > 默认 1280x720
+    _getTargetResolution() {
+        if (this._root) {
+            const wInput = this._root.querySelector(".xzg-ve-render-w");
+            const hInput = this._root.querySelector(".xzg-ve-render-h");
+            const tw = Math.max(0, Math.round(Number(wInput?.value || 0)));
+            const th = Math.max(0, Math.round(Number(hInput?.value || 0)));
+            if (tw > 0 && th > 0) return { w: tw, h: th };
+        }
+        // 回退：时间线中首个带分辨率的片段
+        if (this.timeline && this.mediaLibrary) {
+            for (const clip of this.timeline) {
+                const m = this.mediaLibrary.find(mm => mm.name === clip.filename && mm.type === (clip.type || "input"));
+                if (m && m.info && m.info.width > 0 && m.info.height > 0) {
+                    return { w: m.info.width, h: m.info.height };
+                }
+            }
+        }
+        // 默认（导出端和纯音频时一致）
+        return { w: 1280, h: 720 };
+    }
+
+    // 根据当前目标分辨率，同步预览框的比例与定位
+    // 由于已改用 absolute + transform 精确控制，这里仅委托 apply
+    _updatePreviewFrameAspect() {
+        this._applyPreviewFrameSize(false);
+    }
+
+    // 把当前 _previewTx / _previewTy / _previewZoom 写入 CSS transform（transform-origin 已在 CSS 设为 0 0）
+    _writePreviewTransform() {
+        if (!this._previewFrame) return;
+        const tx = Math.round(this._previewTx * 100) / 100;
+        const ty = Math.round(this._previewTy * 100) / 100;
+        const zm = Math.round(this._previewZoom * 10000) / 10000;
+        this._previewFrame.style.transform = `translate(${tx}px, ${ty}px) scale(${zm})`;
+    }
+
+    /**
+     * 按「目标分辨率比例」contain 到 .xzg-ve-preview 容器得到 natural 尺寸。
+     * 预览画面通过 transform(translate + scale) 定位：
+     *   - zoom=1 且 center=true（初始化/重置）：画面居中显示（tx,ty 自动计算）
+     *   - 容器尺寸变化（keepTransform=true，即 ResizeObserver、用户改分辨率等不强制回到中心）：
+     *     保持画面中心相对容器中心的比例不变（避免画面突然跳到居中）
+     *
+     * @param {boolean} keepTransform  true=按比例保留当前相对位置；false=回到居中
+     */
+    _applyPreviewFrameSize(keepTransform = false) {
+        const frame = this._previewFrame;
+        const host = this._previewHost;
+        if (!frame || !host) return;
+        const { w: tw, h: th } = this._getTargetResolution();
+        if (!(tw > 0 && th > 0)) return;
+
+        const hostW = Math.max(1, host.clientWidth);
+        const hostH = Math.max(1, host.clientHeight);
+        const ratio = tw / th;
+        // contain 算法：naturalW × naturalH 即 zoom=1 时画面的 CSS 尺寸（不乘 zoom）
+        let naturalW = Math.min(hostW, hostH * ratio);
+        let naturalH = naturalW / ratio;
+        if (naturalH > hostH) {
+            naturalH = hostH;
+            naturalW = naturalH * ratio;
+        }
+        naturalW = Math.max(1, Math.round(naturalW));
+        naturalH = Math.max(1, Math.round(naturalH));
+        frame.style.width = naturalW + "px";
+        frame.style.height = naturalH + "px";
+
+        const zoom = this._previewZoom;
+        const scaledW = naturalW * zoom;
+        const scaledH = naturalH * zoom;
+        const centerTx = (hostW - scaledW) / 2;
+        const centerTy = (hostH - scaledH) / 2;
+
+        if (!keepTransform) {
+            // false：初始化 / 重置 / 用户明确要求居中
+            this._previewTx = centerTx;
+            this._previewTy = centerTy;
+        } else {
+            // true：容器或目标分辨率变化导致 natural / host 变了，
+            //       保留画面中心相对容器中心的比例（避免突然跳到中心）
+            //       比例 = (当前画面中心 - 容器中心) / natural * zoom 映射
+            //       简化：按画面中心相对容器中心的偏移比例来保存
+            if (naturalW > 0 && naturalH > 0 && scaledW > 0 && scaledH > 0) {
+                // 当前画面中心相对容器中心的偏移（像素）
+                const oldCenterX = this._previewTx + scaledW / 2 - hostW / 2;
+                const oldCenterY = this._previewTy + scaledH / 2 - hostH / 2;
+                // 按比例映射：如果 natural 变了 (目标分辨率变化) 或 host 变了，也要保持大致位置
+                // 简化：直接用旧的偏移像素，新 centerTx + 旧偏移
+                // （这样用户感觉画面"中心没变"，符合直觉）
+                this._previewTx = centerTx + oldCenterX;
+                this._previewTy = centerTy + oldCenterY;
+            } else {
+                this._previewTx = centerTx;
+                this._previewTy = centerTy;
+            }
+        }
+        this._writePreviewTransform();
+    }
+
+    /**
+     * 以 host 内的相对坐标 (hx, hy) 为缩放中心调整预览缩放倍率。
+     * 保证同一个 frame 坐标点在缩放前后都对应屏幕上相同的鼠标位置。
+     * @param {number} hx 鼠标相对预览容器 host 的 X
+     * @param {number} hy 鼠标相对预览容器 host 的 Y
+     * @param {number} factor 缩放系数（>1 放大）
+     * @returns {boolean} 是否真的发生了变化（clamp 到边界可能不变）
+     */
+    _zoomPreviewAtPoint(hx, hy, factor) {
+        if (!this._previewHost || !this._previewFrame) return false;
+        const before = this._previewZoom;
+        let next = before * factor;
+        next = Math.max(0.1, Math.min(8, next));
+        if (Math.abs(next - before) < 0.001) return false;
+        // 1) 算 (hx, hy) 对应 frame 坐标系的点（以 frame 左上角为原点，不考虑缩放）
+        //    frame 坐标系中坐标 = (屏幕坐标 - translate) / zoom
+        const frameX = (hx - this._previewTx) / before;
+        const frameY = (hy - this._previewTy) / before;
+        // 2) 应用新 zoom，让同一个 frameX/Y 点仍落在 (hx, hy)
+        //    hx = tx2 + frameX * next  =>  tx2 = hx - frameX * next
+        this._previewZoom = next;
+        this._previewTx = hx - frameX * next;
+        this._previewTy = hy - frameY * next;
+        this._writePreviewTransform();
+        return true;
+    }
+
+    /** 重置预览视图：zoom=1 并且画面居中（对应工具栏按钮 + Z 快捷键） */
+    _resetPreviewZoom() {
+        this._previewZoom = 1;
+        this._applyPreviewFrameSize(false);  // false = 居中
+    }
+
+    // 同步主 canvas 的内部分辨率到「目标分辨率」，同时保证 wrapper div 比例一致
+    // 注：decoder 渲染到离屏 canvas，不会再修改主 canvas 的宽高
+    _syncPreviewCanvasSize() {
+        if (!this._canvas) return;
+        this._updatePreviewFrameAspect();
+        const { w, h } = this._getTargetResolution();
+        if (w > 0 && h > 0 && (this._canvas.width !== w || this._canvas.height !== h)) {
+            this._canvas.width = w;
+            this._canvas.height = h;
+        }
+    }
+
+    /**
+     * 把源图像（canvas/img/video）以 contain+letterbox 方式画到主 canvas（目标分辨率）：
+     *   - 先整屏黑色填充（保证两侧/上下黑底）
+     *   - 按 contain 比例计算居中的绘制矩形
+     *   - drawImage(src, dx, dy, dW, dH)
+     * @param {HTMLCanvasElement|HTMLImageElement|HTMLVideoElement} src 源图像
+     * @param {number} [srcW] 源图像宽；不传则取 naturalWidth/width
+     * @param {number} [srcH] 源图像高；不传则取 naturalHeight/height
+     */
+    _drawSourceToCanvas(src, srcW, srcH) {
+        if (!this._canvas || !src) return;
+        this._syncPreviewCanvasSize();
+        const canvas = this._canvas;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        // 先填黑底（letterbox 区域的黑）
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        this._paintClipFrame(ctx, canvas.width, canvas.height, src, srcW, srcH, this._currentClip);
+    }
+
+    // 把单个片段的帧绘制到指定 context（不填黑底、不做尺寸同步），应用裁剪/大小/移动/透明度。
+    // 供多层合成时从底层到顶层依次调用。
+    _paintClipFrame(ctx, TW, TH, src, srcW, srcH, c) {
+        if (!src || !ctx) return;
+        if (srcW == null) {
+            srcW = src.naturalWidth || src.videoWidth || src.width || 0;
+        }
+        if (srcH == null) {
+            srcH = src.naturalHeight || src.videoHeight || src.height || 0;
+        }
+        if (!(srcW > 0 && srcH > 0 && TW > 0 && TH > 0)) return;
+        // 应用裁剪 / 大小缩放 / 透明度（音频无这些属性）
+        const scale = (c && c.scale != null && c.scale > 0) ? c.scale : 1;
+        const opacity = (c && c.opacity != null) ? Math.min(1, Math.max(0, c.opacity)) : 1;
+        const cropLeft = (c && c.cropLeft != null) ? Math.min(1, Math.max(0, c.cropLeft)) : 0;
+        const cropRight = (c && c.cropRight != null) ? Math.min(1, Math.max(0, c.cropRight)) : 0;
+        const cropTop = (c && c.cropTop != null) ? Math.min(1, Math.max(0, c.cropTop)) : 0;
+        const cropBottom = (c && c.cropBottom != null) ? Math.min(1, Math.max(0, c.cropBottom)) : 0;
+        // 移动：水平/垂直像素偏移
+        const offsetX = (c && c.offsetX != null) ? c.offsetX : 0;
+        const offsetY = (c && c.offsetY != null) ? c.offsetY : 0;
+        // 先按完整源图 contain 到画布（含 scale），得到画面在画布上的绘制矩形（大小/位置保持不变）
+        const baseScale = Math.min(TW / srcW, TH / srcH) * scale;
+        const dW = Math.max(1, Math.round(srcW * baseScale));
+        const dH = Math.max(1, Math.round(srcH * baseScale));
+        const dx = Math.round((TW - dW) / 2);
+        const dy = Math.round((TH - dH) / 2);
+        // 裁剪：从画面四边裁掉指定比例，剩余区域保持原大小与位置（不重新缩放适应）
+        const keepW = Math.max(0.01, 1 - cropLeft - cropRight);   // 水平保留比例
+        const keepH = Math.max(0.01, 1 - cropTop - cropBottom);    // 垂直保留比例
+        const cropPx = cropLeft * dW;   // 保留区域起点（相对画面矩形）
+        const cropPy = cropTop * dH;
+        const cropPw = Math.max(1, Math.round(keepW * dW));
+        const cropPh = Math.max(1, Math.round(keepH * dH));
+        // 把保留区域映射回源图坐标
+        const sx = cropPx / dW * srcW;
+        const sy = cropPy / dH * srcH;
+        const sw = cropPw / dW * srcW;
+        const sh = cropPh / dH * srcH;
+        // 高质量 + 透明度；保留区域在画布上保持原大小绘制，并应用移动偏移
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.globalAlpha = opacity;
+        ctx.drawImage(src, sx, sy, sw, sh, dx + cropPx + offsetX, dy + cropPy + offsetY, cropPw, cropPh);
+        ctx.globalAlpha = 1;
+    }
+
+    // 获取/复用一块离屏 canvas，供多轨合成时渲染某一层帧
+    _getLayerCanvas() {
+        if (!this._layerCanvas) this._layerCanvas = document.createElement("canvas");
+        return this._layerCanvas;
+    }
+
+    // 渲染单个片段在某局部时间的一帧，返回 { src, srcW, srcH }（Promise；失败返回 null）
+    async _renderLayerFrame(clip, localTime) {
+        if (!clip) return null;
+        const media = this.mediaLibrary.find(m => m.name === clip.filename && m.type === clip.type);
+        const isImage = _isImage(clip.filename) || media?.info?.is_image === true;
+        if (isImage) {
+            // 图片：若当前已加载同文件图片则直接复用
+            if (this._imgElement && this._imgLoadedFile === clip.filename) {
+                return { src: this._imgElement, srcW: this._imgElement.naturalWidth, srcH: this._imgElement.naturalHeight };
+            }
+            return null;
+        }
+        try {
+            const decoder = await decoderPool.get(clip.filename, clip.type, this._videoUrl(clip.filename, clip.type), () => {});
+            const fps = decoder.fps || 30;
+            const loc = Math.max(0, localTime - clip.start);
+            const f = Math.max(0, Math.min(Math.round(loc * fps), Math.max(0, decoder.frameCount - 1)));
+            const tmp = this._getLayerCanvas();
+            await decoder.renderFrame(f, tmp, true);
+            if (tmp.width > 0 && tmp.height > 0) {
+                return { src: tmp, srcW: tmp.width, srcH: tmp.height };
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    // 多轨合成预览：渲染当前时间点 V1(底层)+V2(上层) 的合成帧（V2 半透明露出 V1）。
+    // 返回 true 表示已合成绘制；false 表示无需合成（由单层逻辑处理）。
+    async _renderCompositePreview(globalTime) {
+        const layers = this._getVideoLayersAt(globalTime);
+        if (layers.length < 2) return false;
+        const hasV1 = layers.some(l => l.track === "v1");
+        const hasV2 = layers.some(l => l.track === "v2");
+        if (!(hasV1 && hasV2)) return false;
+        this._syncPreviewCanvasSize();
+        const canvas = this._canvas;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return false;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // 从底层到顶层逐层绘制
+        for (const layer of layers) {
+            const frame = await this._renderLayerFrame(layer.clip, layer.localTime);
+            if (frame) {
+                this._paintClipFrame(ctx, canvas.width, canvas.height, frame.src, frame.srcW, frame.srcH, layer.clip);
+            }
+        }
+        return true;
+    }
+
+    // 播放循环中的多轨合成：底层 V1 帧用缓存（异步节流更新），上层 V2 用当前帧，同步合成。
+    // 返回 true 表示已合成；false 表示无需合成（调用方走单层 Letterbox）。
+    _drawPlaybackComposite(v2Canvas, v2w, v2h) {
+        const gt = this._tlGlobalTime;
+        const layers = this._getVideoLayersAt(gt);
+        if (layers.length < 2) return false;
+        const hasV1 = layers.some(l => l.track === "v1");
+        const hasV2 = layers.some(l => l.track === "v2");
+        if (!(hasV1 && hasV2)) return false;
+        const v1Layer = layers.find(l => l.track === "v1");
+        // 异步节流更新 V1 底层帧缓存（不阻塞当前帧）
+        this._scheduleCompositeV1(v1Layer, gt);
+        // 若 V1 缓存尚未就绪，走完整合成（异步渲染 V1+V2），确保首帧也正确
+        if (!this._compositeV1Cache || !this._compositeV1Cache.frame) {
+            return this._renderCompositeFromSeek(v2Canvas, v2w, v2h);
+        }
+        // 用缓存 V1 + 当前 V2 帧同步合成
+        this._paintCompositeNow(v1Layer, v2Canvas, v2w, v2h);
+        return true;
+    }
+
+    // 异步渲染 V1 底层帧并缓存（同一时刻只允许一个在途，避免堆积）
+    _scheduleCompositeV1(v1Layer, gt) {
+        if (!v1Layer || this._compositeV1Pending) return;
+        this._compositeV1Pending = true;
+        this._renderLayerFrame(v1Layer.clip, v1Layer.localTime).then((frame) => {
+            if (frame) this._compositeV1Cache = { frame };
+        }).finally(() => {
+            this._compositeV1Pending = false;
+        });
+    }
+
+    // 同步合成绘制：底层 V1（用缓存帧）+ 上层 V2（当前帧）
+    _paintCompositeNow(v1Layer, v2Canvas, v2w, v2h) {
+        this._syncPreviewCanvasSize();
+        const canvas = this._canvas;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // 底层 V1
+        const v1 = this._compositeV1Cache ? this._compositeV1Cache.frame : null;
+        if (v1 && v1Layer) {
+            this._paintClipFrame(ctx, canvas.width, canvas.height, v1.src, v1.srcW, v1.srcH, v1Layer.clip);
+        }
+        // 上层 V2（当前播放片段）
+        this._paintClipFrame(ctx, canvas.width, canvas.height, v2Canvas, v2w, v2h, this._currentClip);
+    }
+
+    // seek/加载后的多轨合成：完整渲染 V1(底层)+V2(上层) 合成帧（不依赖缓存，可靠）。
+    // 返回 true 表示已触发合成（异步绘制）；false 表示无需合成。
+    _renderCompositeFromSeek(v2Canvas, v2w, v2h) {
+        const gt = this._tlGlobalTime;
+        const layers = this._getVideoLayersAt(gt);
+        if (layers.length < 2) return false;
+        const hasV1 = layers.some(l => l.track === "v1");
+        const hasV2 = layers.some(l => l.track === "v2");
+        if (!(hasV1 && hasV2)) return false;
+        const clipId = this._currentClip ? this._currentClip.id : null;
+        (async () => {
+            try {
+                this._syncPreviewCanvasSize();
+                const canvas = this._canvas;
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return;
+                ctx.fillStyle = "#000";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                for (const layer of layers) {
+                    let frame;
+                    if (layer.clip.id === clipId) {
+                        frame = { src: v2Canvas, srcW: v2w, srcH: v2h };
+                    } else {
+                        frame = await this._renderLayerFrame(layer.clip, layer.localTime);
+                    }
+                    if (frame) {
+                        this._paintClipFrame(ctx, canvas.width, canvas.height, frame.src, frame.srcW, frame.srcH, layer.clip);
+                    }
+                }
+            } catch (_) {
+            }
+        })();
+        return true;
+    }
+
+    /**
+     * 当用户修改了分辨率/切换了预设，立即刷新当前预览帧：
+     *   - 有视频解码器 & 当前帧号 → 渲离屏再 letterbox 贴回
+     *   - 有图片 Image → 重新 drawSourceToCanvas
+     *   - 纯音频 → 重新画黑屏音乐符（此时 sync 了目标分辨率）
+     */
+    _refreshCurrentFrame() {
+        this._syncPreviewCanvasSize();
+        // 多轨合成：当前时间点存在 V1(底层)+V2(上层) 时，渲染合成帧（V2 半透明露出 V1）
+        const layers = this._getVideoLayersAt(this._tlGlobalTime);
+        const hasCompose = layers.length >= 2 && layers.some(l => l.track === "v1") && layers.some(l => l.track === "v2");
+        if (hasCompose) {
+            this._renderCompositePreview(this._tlGlobalTime);
+            return;
+        }
+        // 纯音频（无解码器，也无图片）→ 直接音乐符占位
+        const clip = this._currentClip;
+        if (!clip) return;
+        const media = this.mediaLibrary.find(m => m.name === clip.filename && m.type === clip.type);
+        const isAudioOnly = clip.kind === "audio" || media?.isAudio || media?.info?.audio_only === true;
+        const isImage = _isImage(clip.filename) || media?.info?.is_image === true;
+        if (isAudioOnly) {
+            this._clearCanvasForAudio();
+            return;
+        }
+        if (isImage && this._imgElement) {
+            this._drawSourceToCanvas(this._imgElement);
+            return;
+        }
+        if (this._currentDecoder && this._currentClip) {
+            const fps = this._currentDecoder.fps || 30;
+            const loc = this._tlGlobalTime - (this._getClipTlStart(this._currentClip) || 0);
+            const f = Math.max(0, Math.min(
+                Math.round(Math.max(0, loc) * fps),
+                Math.max(0, this._currentDecoder.frameCount - 1)
+            ));
+            // 先渲离屏再贴回来
+            this._currentDecoder.renderFrame(f, this._offscreenCanvas, true).then(() => {
+                if (this._offscreenCanvas.width > 0 && this._offscreenCanvas.height > 0) {
+                    this._drawSourceToCanvas(this._offscreenCanvas);
+                }
+            }).catch(() => {});
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+
     // 纯音频片段的播放循环：用 RAF 推进 _tlGlobalTime，到达片段末尾切换下一个
     _startAudioOnlyPlaybackLoop(clip, startLocalTime) {
         this._stopPlaybackLoop();
@@ -5587,28 +7735,64 @@ export class XiaozhuguangVideoEditor {
         const offset = this._getClipTlStart(clip);
         const clampedStart = Math.min(startLocalTime, clip.end - 0.001);
         this._playbackStartFrame = 0;
-        this._playbackStartTime = performance.now() - (clampedStart - clip.start) * 1000;
+        this._playbackStartTime = performance.now();
+        this._playbackStartGlobalTime = this._tlGlobalTime;
         const clipId = clip.id;
         const loop = () => {
-            if (!this._tlPlaying || !this._currentClip || this._currentClip.id !== clipId) {
+            if (!this._tlPlaying || !this._currentClip) {
                 this._playbackRaf = 0;
+                return;
+            }
+            // 多轨重叠切换：与视频/图片播放循环一致，每帧检查当前时间点是否有更高优先级片段（如V1/V2视频）。
+            // 音频加载器模式：跳过视频片段检测，仅处理音频
+            const activeNow = this._findClipByGlobalTime(this._tlGlobalTime);
+            if (this._modeFilter !== "audio" && activeNow && activeNow.clip.kind !== "audio" && activeNow.clip.id !== clipId) {
+                this._loadClipAtTime(activeNow.clip, activeNow.localTime, true);
                 return;
             }
             const now = performance.now();
             const elapsedSec = (now - this._playbackStartTime) / 1000;
-            const localTime = clip.start + elapsedSec;
-            this._tlGlobalTime = offset + (localTime - clip.start);
+            const prevGt = this._tlGlobalTime;
+            this._tlGlobalTime = this._playbackStartGlobalTime + elapsedSec;
             this._updatePlayhead();
             this._updateTimeDisplay();
             this._autoScrollToPlayhead();
-            if (localTime >= clip.end) {
-                this._advanceToNextClip();
+            // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
+            this._checkAudioBoundary(prevGt, this._tlGlobalTime);
+            // 音频循环终止条件：以时间线总时长为准，不调用 _advanceToNextClip（该函数为视频循环设计，会重置 _tlGlobalTime 导致播放头回跳）。
+            // 所有音频源的启停由 _startAudioPlayback（每 3 帧调用一次）负责管理。
+            const total = this._getTimelineTotalDuration();
+            if (this._tlGlobalTime >= total - 0.001) {
+                this._tlPlaying = false;
+                this._updatePlayBtn(false);
+                this._stopPlaybackLoop();
+                this._stopAudio();
+                this._tlGlobalTime = total;
+                this._updatePlayhead();
+                this._updateTimeDisplay();
                 this._playbackRaf = 0;
                 return;
             }
             this._playbackRaf = requestAnimationFrame(loop);
         };
         this._playbackRaf = requestAnimationFrame(loop);
+    }
+
+    // 获取当前全局时间点所有活跃音频片段的最大结束时间（用于多源混音播放循环）
+    _getMaxAudioEndTime(gt) {
+        let maxEnd = 0;
+        for (let i = 0; i < this.timeline.length; i++) {
+            const c = this.timeline[i];
+            if (c.kind !== "audio") continue;
+            const dur = c.end - c.start;
+            if (dur <= 0) continue;
+            const cs = c.audioTlStart != null ? c.audioTlStart : 0;
+            const ce = cs + dur;
+            if (gt >= cs && gt < ce) {
+                maxEnd = Math.max(maxEnd, ce);
+            }
+        }
+        return maxEnd;
     }
 
     // 加载片段到预览区（仅在添加片段到空时间线时调用，用于首次显示画面）
@@ -5644,14 +7828,22 @@ export class XiaozhuguangVideoEditor {
             if (!this._currentClip || this._currentClip.id !== found.clip.id) {
                 this._currentClip = found.clip;
                 this._currentDecoder = null;
-                this._fullAudioBuffer = null;  // 切换片段时清空，触发重新解码
-                this._playingAudioClipId = null;
                 this._clearCanvasForAudio();
                 this._decodeStandaloneAudio(found.clip.filename, found.clip.type).then(buf => {
                     if (buf && this._currentClip && this._currentClip.id === found.clip.id) {
-                        this._fullAudioBuffer = buf;
+                        this._audioBuffers[found.clip.id] = buf;
                     }
                 }).catch(e => console.warn("[小珠光] 音频预解码失败:", e));
+            }
+            return;
+        }
+
+        // 音频加载器模式：跳过视频帧解码，黑屏显示
+        if (this._modeFilter === "audio") {
+            if (!this._currentClip || this._currentClip.id !== found.clip.id) {
+                this._currentClip = found.clip;
+                this._currentDecoder = null;
+                this._clearCanvasBlack();
             }
             return;
         }
@@ -5665,8 +7857,14 @@ export class XiaozhuguangVideoEditor {
                     Math.round(found.localTime * fps),
                     Math.max(0, this._currentDecoder.frameCount - 1)
                 ));
-                // renderFrame 内部带缓存 + 最近帧降级 + RAF 节流
-                this._currentDecoder.renderFrame(targetFrame, this._canvas, true);
+                // renderFrame 内部带缓存 + 最近帧降级 + RAF 节流；渲到离屏再 letterbox 贴回
+                this._currentDecoder.renderFrame(targetFrame, this._offscreenCanvas, true);
+                if (this._offscreenCanvas.width > 0 && this._offscreenCanvas.height > 0) {
+                    // 多轨合成优先（V2 半透明露出 V1）；否则 Letterbox
+                    if (!this._renderCompositeFromSeek(this._offscreenCanvas, this._offscreenCanvas.width, this._offscreenCanvas.height)) {
+                        this._drawSourceToCanvas(this._offscreenCanvas);
+                    }
+                }
             }
             return;
         }
@@ -5692,12 +7890,10 @@ export class XiaozhuguangVideoEditor {
                 if (!this._currentClip || this._currentClip.id !== found.clip.id) {
                     this._currentClip = found.clip;
                     this._currentDecoder = null;
-                    this._fullAudioBuffer = null;
-                    this._playingAudioClipId = null;
                     this._clearCanvasForAudio();
                     this._decodeStandaloneAudio(found.clip.filename, found.clip.type).then(buf => {
                         if (buf && this._currentClip && this._currentClip.id === found.clip.id) {
-                            this._fullAudioBuffer = buf;
+                            this._audioBuffers[found.clip.id] = buf;
                         }
                     }).catch(e => console.warn("[小珠光] 音频预解码失败:", e));
                 }
@@ -5710,7 +7906,13 @@ export class XiaozhuguangVideoEditor {
                     Math.round(found.localTime * fps),
                     Math.max(0, this._currentDecoder.frameCount - 1)
                 ));
-                this._currentDecoder.renderFrame(targetFrame, this._canvas, true);
+                this._currentDecoder.renderFrame(targetFrame, this._offscreenCanvas, true);
+                if (this._offscreenCanvas.width > 0 && this._offscreenCanvas.height > 0) {
+                    // 多轨合成优先（V2 半透明露出 V1）；否则 Letterbox
+                    if (!this._renderCompositeFromSeek(this._offscreenCanvas, this._offscreenCanvas.width, this._offscreenCanvas.height)) {
+                        this._drawSourceToCanvas(this._offscreenCanvas);
+                    }
+                }
             } else {
                 this._loadClipAtTime(found.clip, found.localTime, false);
             }
@@ -5732,7 +7934,7 @@ export class XiaozhuguangVideoEditor {
             const found = this._findClipByGlobalTime(this._tlGlobalTime);
             if (found) {
                 // 纯音频片段：用独立播放循环（无视频解码）
-                if (found.clip.kind === "audio") {
+                if (found.clip.kind === "audio" || this._modeFilter === "audio") {
                     if (this._currentClip && this._currentClip.id === found.clip.id) {
                         // 同片段且音频缓冲已就绪：直接启动音频循环
                         this._startAudioOnlyPlaybackLoop(found.clip, found.localTime);
@@ -5753,6 +7955,7 @@ export class XiaozhuguangVideoEditor {
                 const candidates = this.timeline
                     .map(c => ({ clip: c, tlStart: this._getClipTlStart(c), dur: c.end - c.start }))
                     .filter(x => x.dur > 0 && x.tlStart > this._tlGlobalTime - 0.001)
+                    .filter(x => !(this._modeFilter === "audio" && x.clip.kind !== "audio"))
                     .sort((a, b) => a.tlStart - b.tlStart);
                 if (candidates.length > 0) {
                     this._clearCanvasForGap();
@@ -5822,6 +8025,16 @@ export class XiaozhuguangVideoEditor {
                 this._playbackRaf = 0;
                 return;
             }
+            // 多轨重叠切换：播放中每帧用 _findClipByGlobalTime 判定当前应显示的片段。
+            // 若更高优先级片段（如 V2 在 X 方向覆盖 V1）已接管当前时间点，立即切到它并让新循环接管；
+            // V2 时段结束回到 V1、或 V1 先于 V2 结束等交叉场景都会自动切换（剪辑软件叠放逻辑）。
+            // 纯音频命中不在此切换（无视频画面，交给结束/空隙逻辑处理）。
+            // 音频加载器模式：跳过视频片段检测
+            const activeNow = this._findClipByGlobalTime(this._tlGlobalTime);
+            if (this._modeFilter !== "audio" && activeNow && activeNow.clip.kind !== "audio" && activeNow.clip.id !== clipId) {
+                this._loadClipAtTime(activeNow.clip, activeNow.localTime, true);
+                return;
+            }
             const now = performance.now();
             // E8: 后台标签恢复时 RAF 间隔过大，重置计时避免快进追赶
             const rafDelta = now - lastRafTime;
@@ -5833,11 +8046,20 @@ export class XiaozhuguangVideoEditor {
             const expectedFrame = this._playbackStartFrame + Math.floor(elapsedMs / frameDuration);
             // E8: 限制单次追赶帧数，避免卡顿后画面跳跃
             const framesToAdvance = Math.min(expectedFrame - lastFrame, 5);
+            const prevGt = this._tlGlobalTime;
 
             if (framesToAdvance > 0) {
                 for (let i = 0; i < framesToAdvance; i++) {
                     // 当前目标帧号（0-based，基于目标帧率）
                     const targetFrameIdx = lastFrame + 1;
+                    // 目标帧时间（片段内 localTime）已到达片段末尾：立即切换，不再绘制当前片段的帧。
+                    // 否则会把当前片段最后一帧多显示一帧（buffer 里 timestamp ≤ 末尾的帧被绘制后，
+                    // 切换要等下一轮 rAF / V1 异步加载完成），导致 V2→V1 交接延迟、时有时无。
+                    if (targetFrameIdx / targetFps >= clip.end) {
+                        this._advanceToNextClip();
+                        this._playbackRaf = 0;
+                        return;
+                    }
                     // Bresenham floor 映射：目标第 k 帧对应源第 floor(k × srcFps / targetFps) 帧
                     const srcFrameIdx = Math.floor(targetFrameIdx * srcFps / targetFps);
                     // 源帧对应的时间点（秒）
@@ -5849,9 +8071,13 @@ export class XiaozhuguangVideoEditor {
                     }
                     if (frame) {
                         this._lastShownFrame = frame;
-                        // 绘制到 canvas
-                        const ctx = this._canvas.getContext('2d');
-                        ctx.drawImage(frame.canvas, 0, 0, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
+                        // 多轨合成优先：当前时间点存在 V1+V2 时渲染合成帧（V2 半透明露出 V1）
+                        if (this._drawPlaybackComposite(frame.canvas, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height)) {
+                            // 合成帧已异步绘制，这里先不重复 Letterbox
+                        } else {
+                            // Letterbox 绘制到主 canvas（按目标分辨率 contain，两侧/上下黑边）
+                            this._drawSourceToCanvas(frame.canvas, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
+                        }
                         // 更新全局时间：按目标帧率推进（与渲染输出一致）
                         this._tlGlobalTime = offset + (targetFrameIdx / targetFps - clip.start);
                         lastFrame++;
@@ -5866,6 +8092,8 @@ export class XiaozhuguangVideoEditor {
                     }
                 }
             }
+            // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
+            this._checkAudioBoundary(prevGt, this._tlGlobalTime);
             // 超出片段出点 → 切换下一个片段
             const localTime = clip.start + (this._tlGlobalTime - offset);
             if (localTime >= clip.end) {
@@ -5939,35 +8167,73 @@ export class XiaozhuguangVideoEditor {
         this._tlGlobalTime = curTlStart + clipDur;
         if (!this._tlPlaying) return;
 
-        // 按时间线起始位置排序找到下一个片段（拖放后数组顺序可能不按时间排列）
-        // 音频用 audioTlStart，视频用 tlStart（统一通过 _getClipTlStart 取值）
         const curTlEnd = this._tlGlobalTime;
-        // 容差 +0.001：排除与当前片段同时结束的片段（同文件的视频/音频片段起始位置和时长相同）
-        const candidates = this.timeline
-            .filter(c => c.id !== this._currentClip.id)
-            .map(c => ({ clip: c, tlStart: this._getClipTlStart(c), dur: c.end - c.start }))
-            .filter(x => x.dur > 0 && x.tlStart + x.dur > curTlEnd + 0.001)
-            .sort((a, b) => a.tlStart - b.tlStart);
+        const total = this._getTimelineTotalDuration();
 
-        if (candidates.length > 0) {
-            const next = candidates[0].clip;
-            const nextTlStart = this._getClipTlStart(next);
-            // 空隙处理：若下一个片段的起始位置大于当前全局时间，先进入空隙黑屏等待
-            if (nextTlStart > this._tlGlobalTime + 0.001) {
-                this._clearCanvasForGap();
-                this._scheduleGapAdvance(nextTlStart, next);
-            } else {
-                this._updatePlayhead();
-                this._updateTimeDisplay();
-                this._loadClipAtTime(next, next.start, true);
-            }
-        } else {
-            // 末尾 → 停止
+        // 已到（或超过）总时长 → 停止。总时长由最长轨道决定：
+        // 即使 V1 视频早已播完，只要 A1 音频还延伸到末尾，就要播完 A1 才算完成。
+        if (curTlEnd >= total - 0.001) {
             this._tlPlaying = false;
             this._updatePlayBtn(false);
             this._stopPlaybackLoop();
             this._stopAudio();
-            this._tlGlobalTime = this._getTimelineTotalDuration();
+            this._tlGlobalTime = total;
+            this._updatePlayhead();
+            this._updateTimeDisplay();
+            return;
+        }
+
+        // 多轨重叠：当前片段结束后，此刻可能仍有其它片段在播
+        // （V2/V1 交叉覆盖、音频轨道延展）。用 _findClipByGlobalTime 判定
+        // curTlEnd 时刻真正应显示的片段，而不是按起始时间顺序找“下一个”，
+        // 否则会把早已开始且仍在延展的音频（如 A1）误当成“下一段”从片头重播，
+        // 导致播放头回跳、看起来像在循环。
+        const active = this._findClipByGlobalTime(curTlEnd);
+        if (active && active.clip.id !== this._currentClip.id) {
+            const next = active.clip;
+            // 纯音频接管（视频已播完，音频轨道仍在延展）：
+            // 用正确 localTime 续播，全局时间连续推进，播完 A1 才结束；
+            // 若切换到了不同音频片段，需重启音频源播放新片段
+            if (next.kind === "audio") {
+                this._stopPlaybackLoop();
+                this._currentClip = next;
+                this._currentDecoder = null;
+                this._currentImageEl = null;
+                this._clearCanvasForAudio();
+                this._startAudioOnlyPlaybackLoop(next, active.localTime);
+                this._updatePlayhead();
+                this._updateTimeDisplay();
+                this._startAudioPlayback();
+                return;
+            }
+            // 音频加载器模式：跳过视频片段接管，落入空隙逻辑
+            if (this._modeFilter !== "audio") {
+                // 视频接管（V2 结束瞬间 V1 已在播）：用正确 localTime 续播，避免从片头重播
+                this._updatePlayhead();
+                this._updateTimeDisplay();
+                this._loadClipAtTime(next, active.localTime, true);
+                return;
+            }
+        }
+
+        // 真正的空隙：当前时间点无任何片段在播 → 黑屏等待，直到下一个片段起始
+        const candidates = this.timeline
+            .filter(c => c.id !== this._currentClip.id)
+            .map(c => ({ clip: c, tlStart: this._getClipTlStart(c), dur: c.end - c.start }))
+            .filter(x => x.dur > 0 && x.tlStart > curTlEnd + 0.001)
+            .filter(x => !(this._modeFilter === "audio" && x.clip.kind !== "audio"))
+            .sort((a, b) => a.tlStart - b.tlStart);
+
+        if (candidates.length > 0) {
+            this._clearCanvasForGap();
+            this._scheduleGapAdvance(candidates[0].tlStart, candidates[0].clip);
+        } else {
+            // 末尾无后续片段 → 停止
+            this._tlPlaying = false;
+            this._updatePlayBtn(false);
+            this._stopPlaybackLoop();
+            this._stopAudio();
+            this._tlGlobalTime = total;
             this._updatePlayhead();
             this._updateTimeDisplay();
         }
@@ -5985,10 +8251,19 @@ export class XiaozhuguangVideoEditor {
                 this._playbackRaf = 0;
                 return;
             }
+            // 多轨重叠切换：与视频播放循环一致，轮到更高优先级片段（V2 覆盖 V1）时立即切换
+            const activeNow = this._findClipByGlobalTime(this._tlGlobalTime);
+            if (activeNow && activeNow.clip.kind !== "audio" && activeNow.clip.id !== clipId) {
+                this._loadClipAtTime(activeNow.clip, activeNow.localTime, true);
+                return;
+            }
             const now = performance.now();
             const dt = (now - lastTime) / 1000;
             lastTime = now;
+            const prevGt = this._tlGlobalTime;
             this._tlGlobalTime += dt;
+            // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
+            this._checkAudioBoundary(prevGt, this._tlGlobalTime);
             // 到达片段末尾：停止并切换到下一个片段
             if (this._tlGlobalTime >= clipEndGlobal - 0.001) {
                 this._tlGlobalTime = clipEndGlobal;
@@ -6052,14 +8327,28 @@ export class XiaozhuguangVideoEditor {
         if (this._audioCtx.state === 'suspended') this._audioCtx.resume();
     }
 
+    // 检测音频片段边界变化：仅在片段开始/结束时调用 _startAudioPlayback，避免频繁调用干扰音频线程
+    _checkAudioBoundary(prevGt, currGt) {
+        if (prevGt === currGt) return;
+        for (let i = 0; i < this.timeline.length; i++) {
+            const c = this.timeline[i];
+            if (c.kind !== "audio") continue;
+            const dur = c.end - c.start;
+            if (dur <= 0) continue;
+            const cs = c.audioTlStart != null ? c.audioTlStart : 0;
+            const ce = cs + dur;
+            // 检测是否跨越了片段的起始或结束边界
+            if ((prevGt < cs && currGt >= cs) || (prevGt < ce && currGt >= ce)) {
+                this._startAudioPlayback();
+                return;
+            }
+        }
+    }
+
     async _startAudioPlayback() {
-        // 在当前 _tlGlobalTime 时间点：
-        //   1. 优先找 timeline 上命中的 kind=audio 独立片段（按 audioTlStart 计算范围）
-        //   2. 只有命中了独立音频片段才播放（未命中则完全静音）
-        //   3. 不再从 video decoder 提取音轨 —— 因为独立音频片段支持任意拖动、裁剪、错位，
-        //      必须按 timeline 上独立音频片段的编辑结果来播放，才能与后端 render_timeline 导出保持一致
-        let audioClip = null;
+        // 多源混音：找到当前时间点所有活跃的 kind=audio 独立片段，同时播放
         const gt = this._tlGlobalTime;
+        const activeClips = [];
         for (let i = 0; i < this.timeline.length; i++) {
             const c = this.timeline[i];
             if (c.kind !== "audio") continue;
@@ -6068,57 +8357,100 @@ export class XiaozhuguangVideoEditor {
             const cs = c.audioTlStart != null ? c.audioTlStart : 0;
             const ce = cs + dur;
             if (gt >= cs && gt < ce) {
-                audioClip = c;
-                break;
+                activeClips.push(c);
             }
         }
-        // 没找到当前时间点要播的独立音频 → 静音
-        if (!audioClip) return;
-        // 切换了新的音频 clip → 清空缓存，触发重新解码
-        if (this._playingAudioClipId !== audioClip.id) {
-            this._fullAudioBuffer = null;
-            this._playingAudioClipId = audioClip.id;
+        // 停止已不再活跃的音频源
+        const activeIds = new Set(activeClips.map(c => c.id));
+        for (const [id, src] of Object.entries(this._audioSources)) {
+            if (!activeIds.has(id)) {
+                try { src.source.stop(); } catch (_) {}
+                delete this._audioSources[id];
+            }
         }
         this._ensureAudioContext();
-        // 首次播放（或切换 clip 后）：用 decodeStandaloneAudio 解码，不依赖 video decoder
-        // 这样无论 audioClip 是「纯音频文件」还是「视频拆分出来的独立音轨」都可以统一处理
-        if (!this._fullAudioBuffer) {
-            try {
-                this._fullAudioBuffer = await this._decodeStandaloneAudio(audioClip.filename, audioClip.type);
-            } catch (e) {
-                console.warn("[xzg-ve] 独立音频解码失败:", audioClip.filename, e.message);
-                this._fullAudioBuffer = null;
+        // 预解码：提前解码即将在 0.3s 内开始的音频片段，减少切换延迟
+        const lookahead = gt + 0.3;
+        for (let i = 0; i < this.timeline.length; i++) {
+            const c = this.timeline[i];
+            if (c.kind !== "audio") continue;
+            const dur = c.end - c.start;
+            if (dur <= 0) continue;
+            const cs = c.audioTlStart != null ? c.audioTlStart : 0;
+            if (cs > gt && cs < lookahead && !this._audioBuffers[c.id] && !activeIds.has(c.id)) {
+                // 去重：同一片段已有解码在途（含预解码和活跃解码），跳过避免并发 decodeAudioData 干扰音频线程
+                if (this._audioDecodePending && this._audioDecodePending.has(c.id)) continue;
+                if (!this._audioDecodePending) this._audioDecodePending = new Set();
+                this._audioDecodePending.add(c.id);
+                // 异步预解码，不阻塞当前帧
+                this._decodeStandaloneAudio(c.filename, c.type).then(buf => {
+                    if (buf) this._audioBuffers[c.id] = buf;
+                }).catch(() => {}).finally(() => {
+                    this._audioDecodePending.delete(c.id);
+                });
             }
         }
-        if (!this._fullAudioBuffer) return;
-        const clip = audioClip;
-        const offset = clip.audioTlStart != null ? clip.audioTlStart : 0;
-        const localTime = clip.start + (gt - offset);
-        const clampedLocal = Math.max(clip.start, Math.min(clip.end - 0.001, localTime));
-        this._stopAudioSource();
-        try {
-            this._audioSource = this._audioCtx.createBufferSource();
-            this._audioSource.buffer = this._fullAudioBuffer;
-            this._audioSource.connect(this._audioGain);
-            this._audioSource.start(0, clampedLocal);
-            this._audioPlayStartOffset = clampedLocal;
-            this._audioPlayStartTime = this._audioCtx.currentTime;
-        } catch (e) {
-            console.warn("[xzg-ve] 音频播放失败:", e);
+        // 为每个活跃片段启动音频源（已播放的跳过）
+        for (const clip of activeClips) {
+            if (this._audioSources[clip.id]) continue;  // 已在播放
+            // 解码音频缓冲
+            if (!this._audioBuffers[clip.id]) {
+                // 去重：同一片段已有解码在途，跳过避免并发重复创建 source
+                if (this._audioDecodePending && this._audioDecodePending.has(clip.id)) continue;
+                if (!this._audioDecodePending) this._audioDecodePending = new Set();
+                this._audioDecodePending.add(clip.id);
+                try {
+                    this._audioBuffers[clip.id] = await this._decodeStandaloneAudio(clip.filename, clip.type);
+                } catch (e) {
+                    console.warn("[xzg-ve] 独立音频解码失败:", clip.filename, e.message);
+                    continue;
+                } finally {
+                    this._audioDecodePending.delete(clip.id);
+                }
+            }
+            // await 后重新检查：并发的另一波调用可能已启动此片段的 source
+            if (this._audioSources[clip.id]) continue;
+            const buffer = this._audioBuffers[clip.id];
+            if (!buffer) continue;
+            const offset = clip.audioTlStart != null ? clip.audioTlStart : 0;
+            const localTime = clip.start + (gt - offset);
+            const clampedLocal = Math.max(clip.start, Math.min(clip.end - 0.001, localTime));
+            const source = this._audioCtx.createBufferSource();
+            source.buffer = buffer;
+            // 每个片段独立的音量增益（应用 clip.volume）
+            const gain = this._audioCtx.createGain();
+            gain.gain.value = (clip.volume != null ? clip.volume : 1);
+            source.connect(gain);
+            gain.connect(this._audioGain);
+            source.start(0, clampedLocal, clip.end - clampedLocal);
+            this._audioSources[clip.id] = { source, gain, buffer, startTime: this._audioCtx.currentTime, startOffset: clampedLocal };
+        }
+        // 完全没有活跃片段 → 静音
+        if (activeClips.length === 0) {
+            this._stopAudioSource();
         }
     }
 
-    _stopAudioSource() {
-        if (this._audioSource) {
-            try { this._audioSource.stop(); } catch (_) {}
-            this._audioSource = null;
+    _stopAudioSource(clipId) {
+        if (clipId != null) {
+            const src = this._audioSources[clipId];
+            if (src) {
+                try { src.source.stop(); } catch (_) {}
+                try { src.gain && src.gain.disconnect(); } catch (_) {}
+                delete this._audioSources[clipId];
+            }
+        } else {
+            for (const [id, src] of Object.entries(this._audioSources)) {
+                try { src.source.stop(); } catch (_) {}
+                try { src.gain && src.gain.disconnect(); } catch (_) {}
+                delete this._audioSources[id];
+            }
         }
     }
 
     _stopAudio() {
-        this._stopAudioSource();
-        this._fullAudioBuffer = null;  // 切换片段时清空，下次重新解码
-        this._playingAudioClipId = null;
+        this._stopAudioSource();  // 停止所有音频源
+        this._audioBuffers = {};  // 清空所有缓冲
     }
 
     _updatePlayhead() {
@@ -6127,7 +8459,7 @@ export class XiaozhuguangVideoEditor {
         let x = this._tlLeftPad + this._tlGlobalTime * pxPerSec - this._tlScrollLeft;
         // 下限：左侧占位区分界线（不随滚动变化，占位区是 fixed 不滚动的）
         x = Math.max(x, this._tlLeftPad);
-        this._playhead.style.left = x + "px";
+        this._playhead.style.left = Math.round(x) + "px";
         this._playhead.classList.add("xzg-ve-active");
     }
 
@@ -6141,13 +8473,21 @@ export class XiaozhuguangVideoEditor {
 
     _updateTimeDisplay() {
         const total = this._getTimelineTotalDuration();
-        this._timeLabel.textContent = `${_fmtTime(this._tlGlobalTime)} / ${_fmtTime(total)}`;
         // 帧数 = 时间 × fps（取当前片段帧率，无则用 30）
         const fps = this._currentClip ? this._getClipFps(this._currentClip) : 30;
+        // 时间码格式 MM:SS:FF（帧号 0 到 fps-1，到 fps 进位到秒）
+        const fmtTC = (s) => {
+            if (!isFinite(s) || s < 0) s = 0;
+            const totalFrames = Math.round(s * fps);
+            const m = Math.floor(totalFrames / (fps * 60));
+            const sec = Math.floor(totalFrames / fps) % 60;
+            const ff = totalFrames % fps;
+            return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}:${ff.toString().padStart(2, "0")}`;
+        };
+        this._timeLabel.textContent = `${fmtTC(this._tlGlobalTime)} / ${fmtTC(total)}`;
         // 总帧数：后端 probe 已用 frame_count 反算精确 duration，故 round(total * fps) 无浮点误差
         const totalFrames = Math.max(1, Math.round(total * fps));
         // 帧号 0-based：最左侧=0，最右侧=totalFrames
-        // 用 round 而非 floor：使最右侧（globalTime≈total）精确显示 totalFrames
         const curFrame = Math.max(0, Math.min(totalFrames, Math.round(this._tlGlobalTime * fps)));
         if (this._framesLabel) {
             this._framesLabel.textContent = `${curFrame} / ${totalFrames} 帧`;
@@ -6160,6 +8500,8 @@ export class XiaozhuguangVideoEditor {
         const fpsInput = this._root?.querySelector(".xzg-ve-render-fps");
         const fpsVal = Number(fpsInput?.value || 0);
         if (fpsVal > 0) return fpsVal;
+        // 音频加载器模式：不查找媒体 fps，直接回退 30（摒弃视频干扰）
+        if (this._modeFilter === "audio") return 30;
         // 回退：片段自身原始帧率
         const media = this.mediaLibrary.find(m => m.name === clip.filename && m.type === clip.type);
         return media?.info?.fps || 30;
@@ -6189,6 +8531,19 @@ export class XiaozhuguangVideoEditor {
         // 帧对齐：量化到最近的帧边界（最小单位 1 帧）
         const fps = this._getTimelineFps();
         if (fps > 0) tt = Math.round(tt * fps) / fps;
+        // 磁吸：播放头吸附到各轨道片段的头尾（受磁铁开关控制）
+        if (this._magnetEnabled) {
+            const SNAP_SEC = 15 / pxPerSec;
+            let best = null, bestDist = SNAP_SEC;
+            if (Math.abs(tt - 0) < bestDist) { best = 0; bestDist = Math.abs(tt - 0); } // 时间轴起点
+            for (const c of this.timeline) {
+                const left = this._getClipTlStart(c);
+                const right = left + (c.end - c.start);
+                if (Math.abs(tt - left) < bestDist) { best = left; bestDist = Math.abs(tt - left); }
+                if (Math.abs(tt - right) < bestDist) { best = right; bestDist = Math.abs(tt - right); }
+            }
+            if (best != null) tt = Math.max(0, best);
+        }
         return tt;
     }
 
@@ -6236,6 +8591,7 @@ export class XiaozhuguangVideoEditor {
     // 上方 1/4 拖动区：点击立即跳转 + 按住拖动跟随
     // E9: 拖动期间停止音频
     _onScrubDown(e) {
+        if (e.button !== 0) return;  // 只接受左键，右键保留给菜单
         e.preventDefault();
         e.stopPropagation();
         const gt0 = this._mouseXToGlobalTime(e);
@@ -6276,17 +8632,22 @@ export class XiaozhuguangVideoEditor {
     // 仅更新片段选中态 class（不重建 DOM，避免缩略图重新加载闪烁）
     _updateClipSelection() {
         if (!this._tlTrack) return;
-        for (const el of this._tlTrack.querySelectorAll(".xzg-ve-clip")) {
-            const id = parseInt(el.dataset.clipId);
-            if (this.selectedClipIds.has(id)) {
-                el.classList.add("xzg-ve-selected");
-            } else {
-                el.classList.remove("xzg-ve-selected");
+        // V1 + V2 所有视频片段元素（不同轨道容器统一遍历）
+        const videoTracks = [this._tlTrack, this._tlV2TopTrack].filter(Boolean);
+        for (const t of videoTracks) {
+            for (const el of t.querySelectorAll(".xzg-ve-clip")) {
+                const id = parseInt(el.dataset.clipId);
+                if (this.selectedClipIds.has(id)) {
+                    el.classList.add("xzg-ve-selected");
+                } else {
+                    el.classList.remove("xzg-ve-selected");
+                }
             }
         }
-        // 同步音频轨道波形元素的选中态
-        if (this._tlAudioTrack) {
-            for (const el of this._tlAudioTrack.querySelectorAll(".xzg-ve-audio-clip")) {
+        // 同步音频轨道（A1 + A2）波形元素的选中态
+        const audioTracks = [this._tlAudioTrack, this._tlV2BotTrack].filter(Boolean);
+        for (const t of audioTracks) {
+            for (const el of t.querySelectorAll(".xzg-ve-audio-clip")) {
                 const id = parseInt(el.dataset.clipId);
                 if (this.selectedClipIds.has(id)) {
                     el.classList.add("xzg-ve-selected");
@@ -6303,27 +8664,39 @@ export class XiaozhuguangVideoEditor {
     _renderProps() {
         const c = this._propsContent;
         c.innerHTML = "";
-        const selClips = this.timeline.filter(cl => this.selectedClipIds.has(cl.id));
+        // 自动切换标签：当前标签类型无选中片段，而另一类型有选中时，切到有选中的类型
+        const allSel = this.timeline.filter(cl => this.selectedClipIds.has(cl.id));
+        if (allSel.length > 0) {
+            const hasVideo = allSel.some(cl => cl.kind !== "audio");
+            const hasAudio = allSel.some(cl => cl.kind === "audio");
+            if (this._propsTab === "audio" && !hasAudio && hasVideo) this._propsTab = "video";
+            else if (this._propsTab === "video" && !hasVideo && hasAudio) this._propsTab = "audio";
+        }
+        // 按当前标签过滤选中片段
+        const selClips = allSel.filter(cl =>
+            (this._propsTab === "audio") ? (cl.kind === "audio") : (cl.kind !== "audio"));
+        this._syncPropsTabs();
         if (selClips.length === 0) {
             _el("div", "", "未选中片段", c);
             return;
         }
         if (selClips.length > 1) {
             _el("div", "xzg-ve-prop-row", null, c);
-            _el("div", "xzg-ve-prop-label", `已选中 ${selClips.length} 个片段`, c);
+            _el("div", "xzg-ve-prop-label", `已选中 ${selClips.length} 个片段`, c).style.color = "#fff";
             const totalDur = selClips.reduce((s, cl) => s + (cl.end - cl.start), 0);
-            _el("div", "", `总时长 ${_fmtTime(totalDur)}`, c);
+            _el("div", "", `总时长 ${_fmtTime(totalDur)}`, c).style.color = "#fff";
             const delBtn = _el("button", "xzg-ve-btn", "🗑 删除选中", c);
             delBtn.style.width = "100%";
             delBtn.style.marginTop = "6px";
             delBtn.style.background = "#5a2a2a";
             delBtn.onclick = () => {
-                const ids = Array.from(this.selectedClipIds);
+                // 只删除当前标签类型下的选中片段
+                const ids = selClips.map(cl => cl.id);
                 for (const id of ids) {
                     const idx = this.timeline.findIndex(cl => cl.id === id);
                     if (idx >= 0) this.timeline.splice(idx, 1);
                 }
-                this.selectedClipIds.clear();
+                for (const id of ids) this.selectedClipIds.delete(id);
                 this._renderTimeline();
                 this._renderProps();
                 this._setStatus(`已删除 ${ids.length} 个片段`);
@@ -6331,49 +8704,226 @@ export class XiaozhuguangVideoEditor {
             return;
         }
         const clip = selClips[0];
-        const row1 = _el("div", "xzg-ve-prop-row", null, c);
-        _el("div", "xzg-ve-prop-label", "文件", row1);
-        _el("div", "", clip.name, row1);
+        if (clip.kind === "audio") {
+            // 音频片段：只显示 音量调节
+            this._renderAudioVolumeControl(c, clip);
+        } else {
+            // 视频片段：只显示 大小 / 移动 / 裁剪 / 透明度
+            this._renderVideoTransformControls(c, clip);
+        }
+    }
 
-        const row2 = _el("div", "xzg-ve-prop-row", null, c);
-        _el("div", "xzg-ve-prop-label", "入点 (秒)", row2);
-        const inInput = _el("input", "xzg-ve-prop-input", null, row2);
-        inInput.type = "number";
-        inInput.step = "0.01";
-        inInput.min = "0";
-        inInput.max = String(clip.sourceDuration);
-        inInput.value = clip.start.toFixed(2);
-        inInput.onchange = () => {
-            const v = parseFloat(inInput.value) || 0;
-            clip.start = Math.max(0, Math.min(v, clip.end - 0.1));
-            this._renderTimeline();
-            this._renderProps();
+    // 音频片段音量调节（预览即时生效）
+    _renderAudioVolumeControl(c, clip) {
+        const row = _el("div", "xzg-ve-prop-row", null, c);
+        _el("div", "xzg-ve-prop-label", "音量", row);
+        const wrap = _el("div", "xzg-ve-prop-range-wrap", null, row);
+        const slider = _el("input", "xzg-ve-prop-range", null, wrap);
+        slider.type = "range";
+        slider.min = "0";
+        slider.max = "2";
+        slider.step = "0.05";
+        const vol = (clip.volume != null ? clip.volume : 1);
+        slider.value = String(vol);
+        const fmt = (v) => v.toFixed(2);
+        const valSpan = _el("span", "xzg-ve-prop-range-val", fmt(vol), wrap);
+        const applyVol = (v) => {
+            clip.volume = Math.max(0, Math.min(2, v));
+            this._saveTimelineSession();
+            // 若该片段正在播放，实时更新其增益
+            const src = this._audioSources[clip.id];
+            if (src && src.gain) src.gain.gain.value = clip.volume;
+            // 实时预览：波形幅度随音量变化
+            this._refreshWaveformVolume(clip);
         };
-
-        const row3 = _el("div", "xzg-ve-prop-row", null, c);
-        _el("div", "xzg-ve-prop-label", "出点 (秒)", row3);
-        const outInput = _el("input", "xzg-ve-prop-input", null, row3);
-        outInput.type = "number";
-        outInput.step = "0.01";
-        outInput.min = "0";
-        outInput.max = String(clip.sourceDuration);
-        outInput.value = clip.end.toFixed(2);
-        outInput.onchange = () => {
-            const v = parseFloat(outInput.value) || 0;
-            clip.end = Math.max(clip.start + 0.1, Math.min(v, clip.sourceDuration));
-            this._renderTimeline();
-            this._renderProps();
+        // 值偏离默认值 1 时滑条变红
+        const applyColor = () => {
+            const v = parseFloat(slider.value);
+            slider.classList.toggle("xzg-ve-prop-range-changed", Math.abs(v - 1) > 0.001);
         };
+        applyColor();
+        // 音量滑条：原生 range 拖动（默认行为）
+        slider.addEventListener("input", () => {
+            valSpan.textContent = fmt(parseFloat(slider.value));
+            applyVol(parseFloat(slider.value));
+            applyColor();
+        });
+        // 重置按钮
+        const resetBtn = _el("button", "xzg-ve-prop-reset", "↺", wrap);
+        resetBtn.title = "重置";
+        resetBtn.addEventListener("click", () => {
+            slider.value = "1";
+            valSpan.textContent = "1.00";
+            applyVol(1);
+            applyColor();
+        });
+    }
 
-        const row4 = _el("div", "xzg-ve-prop-row", null, c);
-        _el("div", "xzg-ve-prop-label", "片段时长", row4);
-        _el("div", "", _fmtTime(clip.end - clip.start), row4);
+    // 视频片段变换控件：大小调节、裁剪（可折叠）、透明度（预览即时生效）
+    _renderVideoTransformControls(c, clip) {
+        // 滑条：parent 为可选的父容器（默认属性内容区）；defaultVal 用于滑条的重置按钮
+        // fineDrag：true 时启用 Alt+拖动精调（相对增量），其他滑条保持原生 range 默认行为
+        const makeSlider = (label, min, max, step, val, onChange, parent, defaultVal, fineDrag) => {
+            const host = parent || c;
+            const row = _el("div", "xzg-ve-prop-row", null, host);
+            _el("div", "xzg-ve-prop-label", label, row);
+            const wrap = _el("div", "xzg-ve-prop-range-wrap", null, row);
+            const slider = _el("input", "xzg-ve-prop-range", null, wrap);
+            slider.type = "range";
+            slider.min = String(min);
+            slider.max = String(max);
+            slider.step = String(step);
+            slider.value = String(val);
+            const baseStep = step;
+            const defaultV = defaultVal != null ? defaultVal : min;
+            const fmt = (v) => v.toFixed(baseStep < 0.1 ? 2 : 1);
+            const valSpan = _el("span", "xzg-ve-prop-range-val", fmt(val), wrap);
+            // 值偏离默认值时滑条变红（提示该参数被修改过）
+            const applyColor = () => {
+                const v = parseFloat(slider.value);
+                const diff = Math.abs(v - defaultV);
+                const tol = Math.max(baseStep / 2, 0.0001);
+                slider.classList.toggle("xzg-ve-prop-range-changed", diff > tol);
+            };
+            applyColor();
+            if (fineDrag) {
+                // 仅移动水平/垂直：手动控制，按住 Alt 时位移降为 20%（提高精细度）
+                slider.addEventListener("pointerdown", (e) => {
+                    e.preventDefault();
+                    this._activeRange = slider;
+                    const startCX = e.clientX;
+                    const startVal = parseFloat(slider.value);
+                    const snap = (v) => {
+                        let s = min + Math.round((v - min) / baseStep) * baseStep;
+                        return Math.max(min, Math.min(max, Math.round(s * 100000) / 100000));
+                    };
+                    const onMove = (ev) => {
+                        if (this._activeRange !== slider) return;
+                        const factor = ev.altKey ? 0.2 : 1;
+                        const ratio = (ev.clientX - startCX) * factor / Math.max(slider.getBoundingClientRect().width, 1);
+                        const nv = snap(startVal + ratio * (max - min));
+                        slider.value = String(nv);
+                        const v = parseFloat(slider.value);
+                        onChange(v);
+                        valSpan.textContent = fmt(v);
+                        applyColor();
+                    };
+                    const cleanup = () => {
+                        document.removeEventListener("pointermove", onMove, true);
+                        document.removeEventListener("pointerup", onUp, true);
+                        this._activeRange = null;
+                    };
+                    const onUp = () => cleanup();
+                    document.addEventListener("pointermove", onMove, true);
+                    document.addEventListener("pointerup", onUp, true);
+                });
+            }
+            // 原生 range 拖动（其余滑条）→ input 事件
+            slider.addEventListener("input", () => {
+                const v = parseFloat(slider.value);
+                onChange(v);
+                valSpan.textContent = fmt(v);
+                applyColor();
+            });
+            // 重置按钮：重置回默认值
+            const resetBtn = _el("button", "xzg-ve-prop-reset", "↺", wrap);
+            resetBtn.title = "重置";
+            resetBtn.addEventListener("click", () => {
+                const d = defaultVal != null ? defaultVal : min;
+                slider.value = String(d);
+                valSpan.textContent = fmt(d);
+                onChange(d);
+                applyColor();
+            });
+            return { slider, valSpan, row, resetBtn };
+        };
+        const refresh = () => {
+            this._saveTimelineSession();
+            // 确保当前加载的是被修改的片段，再刷新预览（含多轨合成），保证拖动时实时显示
+            if (!this._currentClip || this._currentClip.id !== clip.id) {
+                const tlStart = this._getClipTlStart(clip) || 0;
+                const localTime = clip.start + (this._tlGlobalTime - tlStart);
+                this._loadClipAtTime(clip, Math.max(0, localTime), false);
+            } else {
+                this._refreshCurrentFrame();
+            }
+        };
+        // 大小调节（默认 1；步进 0.01 提高精度）
+        makeSlider("大小", 0.1, 3, 0.01, clip.scale || 1, (v) => {
+            clip.scale = v;
+            refresh();
+        }, null, 1);
+        // 移动：水平/垂直像素偏移（直接显示，不折叠；默认 0，范围 ±2000px，每次最小 1；Alt+拖动精调）
+        makeSlider("移动水平", -2000, 2000, 1, clip.offsetX || 0, (v) => {
+            clip.offsetX = v;
+            refresh();
+        }, null, 0, true);
+        makeSlider("移动垂直", -2000, 2000, 1, clip.offsetY || 0, (v) => {
+            clip.offsetY = v;
+            refresh();
+        }, null, 0, true);
+        // 裁剪：左/右/上/下（直接显示，不折叠；被裁掉的比例，视频大小与位置不变；默认 0）
+        makeSlider("裁剪左", 0, 1, 0.01, clip.cropLeft || 0, (v) => {
+            clip.cropLeft = v;
+            refresh();
+        }, null, 0);
+        makeSlider("裁剪右", 0, 1, 0.01, clip.cropRight || 0, (v) => {
+            clip.cropRight = v;
+            refresh();
+        }, null, 0);
+        makeSlider("裁剪上", 0, 1, 0.01, clip.cropTop || 0, (v) => {
+            clip.cropTop = v;
+            refresh();
+        }, null, 0);
+        makeSlider("裁剪下", 0, 1, 0.01, clip.cropBottom || 0, (v) => {
+            clip.cropBottom = v;
+            refresh();
+        }, null, 0);
+        // 透明度（默认 1）
+        makeSlider("透明度", 0, 1, 0.05, clip.opacity != null ? clip.opacity : 1, (v) => {
+            clip.opacity = v;
+            refresh();
+        }, null, 1);
+        // 重置按钮
+        const resetRow = _el("div", "xzg-ve-prop-row", null, c);
+        const resetBtn = _el("button", "xzg-ve-btn", "重置视频变换", resetRow);
+        resetBtn.style.width = "100%";
+        resetBtn.style.fontSize = "16px";
+        resetBtn.style.color = "#e04848";
+        resetBtn.style.fontWeight = "bold";
+        resetBtn.onclick = () => {
+            clip.scale = 1; clip.offsetX = 0; clip.offsetY = 0;
+            clip.cropLeft = 0; clip.cropRight = 0;
+            clip.cropTop = 0; clip.cropBottom = 0; clip.opacity = 1;
+            this._renderProps();
+            refresh();
+        };
+    }
+
+    // 同步属性面板「视频/音频」标签的激活态
+    _syncPropsTabs() {
+        if (!this._propsTabs) return;
+        const tabs = this._propsTabs.querySelectorAll(".xzg-ve-props-tab");
+        for (const t of tabs) {
+            const active = t.dataset.type === this._propsTab;
+            t.classList.toggle("xzg-ve-props-tab-active", active);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
     //  导出
     // ═══════════════════════════════════════════════════════════
     async _exportFrame() {
+        // 弹出对话框选择导出模式（仅支持输出目录/自定义目录，不支持另存为）
+        const hasCustomDir = !!(this._baseDir);
+        const mode = await _xzgVeFrameExportDialog(hasCustomDir);
+        if (!mode) return;  // 用户取消
+
+        // 有旗标时：批量导出每个旗标所在帧
+        if (this._markerFlags.length > 0) {
+            await this._exportFramesAtFlags(mode);
+            return;
+        }
         if (!this._currentDecoder || !this._currentClip) {
             this._setStatus("无视频播放");
             return;
@@ -6383,17 +8933,90 @@ export class XiaozhuguangVideoEditor {
         const localTime = this._currentClip.start + (this._tlGlobalTime - offset);
         const t = Math.max(0, localTime);
         this._setStatus(`导出 ${_fmtTime(t)} 处单帧...`);
+        const isCustom = (mode === "custom");
+        const payload = {
+            filename: this._currentClip.filename,
+            type: this._currentClip.type,
+            time: t,
+            small: false,
+            use_default_output: !isCustom,
+            output_mode: mode,
+        };
+        if (isCustom) {
+            payload.base_dir = this._baseDir || "";
+            payload.filename_prefix = this._filenamePrefix || "xzg-edit";
+            payload.add_date_stamp = this._addDateStamp;
+            payload.add_time_stamp = this._addTimeStamp;
+            if (!this._baseDir) {
+                this._setStatus("请先点击\"输出目录设置\"选择输出目录");
+                return;
+            }
+        }
         try {
-            const data = await _postJson(API_EXTRACT, {
-                filename: this._currentClip.filename,
-                type: this._currentClip.type,
-                time: t,
-            });
+            const data = await _postJson(API_EXTRACT, payload);
             if (data.error) throw new Error(data.error);
-            this._setStatus(`已导出帧: ${data.filename}`);
+            const display = data.filename || "(未命名)";
+            if (data.type === "output") {
+                const sub = data.subfolder ? `/${data.subfolder}` : "";
+                this._setStatus(`✅ 已导出静帧: output${sub}/${display}`);
+            } else if (data.type === "absolute") {
+                this._setStatus(`✅ 已导出静帧: ${display}`);
+            } else {
+                this._setStatus(`已导出静帧: ${display}`);
+            }
         } catch (e) {
             this._setStatus(`导出失败: ${e.message}`);
         }
+    }
+
+    // 批量导出所有旗标位置的帧
+    async _exportFramesAtFlags(mode) {
+        const flags = this._markerFlags;
+        if (flags.length === 0) return;
+        const isCustom = (mode === "custom");
+        if (isCustom && !this._baseDir) {
+            this._setStatus("请先点击\"输出目录设置\"选择输出目录");
+            return;
+        }
+        let success = 0;
+        let failed = 0;
+        for (let i = 0; i < flags.length; i++) {
+            const f = flags[i];
+            this._setStatus(`导出旗标 ${i + 1}/${flags.length} (${_fmtTime(f.time)})...`);
+            const found = this._findClipByGlobalTime(f.time);
+            if (!found || found.clip.kind === "audio") {
+                failed++;
+                continue;
+            }
+            const clip = found.clip;
+            const offset = this._getClipTlStart(clip);
+            const localTime = clip.start + (f.time - offset);
+            const t = Math.max(0, localTime);
+            const payload = {
+                filename: clip.filename,
+                type: clip.type,
+                time: t,
+                small: false,
+                use_default_output: !isCustom,
+                output_mode: mode,
+            };
+            if (isCustom) {
+                payload.base_dir = this._baseDir || "";
+                payload.filename_prefix = this._filenamePrefix || "xzg-edit";
+                payload.add_date_stamp = this._addDateStamp;
+                payload.add_time_stamp = this._addTimeStamp;
+            }
+            try {
+                const data = await _postJson(API_EXTRACT, payload);
+                if (data.error) throw new Error(data.error);
+                // 批量导出：静默保存到 output 目录，不弹另存为对话框
+                success++;
+            } catch (e) {
+                failed++;
+                console.warn("[小珠光] 旗标导出失败:", e);
+            }
+        }
+        this._setStatus(`✅ 旗标导出完成: ${success} 成功${failed > 0 ? `, ${failed} 失败` : ""}`);
     }
 
     // 用首个片段的原分辨率填充宽高输入框（首个片段加入时间线时调用）
@@ -6452,6 +9075,10 @@ export class XiaozhuguangVideoEditor {
                     }
                 }
             }
+            // 同步预览外观比例与 canvas 内部分辨率 = 首片段分辨率
+            this._syncPreviewCanvasSize();
+            // 如果此时已有渲染到 canvas 的当前帧（比如拖入后立即播放/seek），重新按目标比例 letterbox 画一次
+            if (this._currentClip) this._refreshCurrentFrame();
         }
     }
 
@@ -6478,6 +9105,69 @@ export class XiaozhuguangVideoEditor {
     //  （无需自定义对话框，通过模拟 node + widget 对接全局对话框）
     // ═══════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════
+    //  渲染参数构造 + 格式（video/audio）辅助
+    // ═══════════════════════════════════════════════════════════
+    _buildTimelineData() {
+        return _buildTimelineData(this.timeline);
+    }
+
+    /**
+     * 构造渲染参数（_render / _cancel / silentRender 共用）
+     * @param {'default'|'saveas'|'custom'|null} forceMode 覆盖输出模式（_cancel 传 'default'：固定 output 目录）
+     * @returns { renderOpts: object, mode: string, audioOnly: boolean, audioFormat: string|null, isCustom: boolean, bitrateOrQuality: string }
+     */
+    _buildRenderOpts(forceMode = null) {
+        const tlData = this._buildTimelineData();
+        const renderOpts = { timeline: tlData };
+
+        // 输出目录设置（三种模式）
+        let mode = forceMode || this._outputMode || "default";
+        const isCustom = (mode === "custom");
+        renderOpts.use_default_output = !isCustom;
+        renderOpts.output_mode = mode;
+        if (isCustom) {
+            renderOpts.base_dir = this._baseDir || "";
+            renderOpts.filename_prefix = this._filenamePrefix || "xzg-edit";
+            renderOpts.add_date_stamp = this._addDateStamp;
+            renderOpts.add_time_stamp = this._addTimeStamp;
+        }
+        // 帧率 + 分辨率
+        if (this.timeline.length > 0) {
+            const fps = this._getClipFps(this.timeline[0]);
+            if (fps > 0) renderOpts.target_fps = fps;
+        }
+        const wInput = this._root?.querySelector(".xzg-ve-render-w");
+        const hInput = this._root?.querySelector(".xzg-ve-render-h");
+        const tw = Math.max(0, Math.round(Number(wInput?.value || 0)));
+        const th = Math.max(0, Math.round(Number(hInput?.value || 0)));
+        if (tw > 0 && th > 0) { renderOpts.target_width = tw; renderOpts.target_height = th; }
+
+        // 格式 + 质量/比特率
+        const formatSel = this._root?.querySelector(".xzg-ve-format-select");
+        const fmt = (formatSel && formatSel.value) || "video-mp4";
+        const audioOnly = fmt.startsWith("audio-");
+        const audioFormat = audioOnly ? fmt.slice("audio-".length) : null;
+        renderOpts.audio_only = audioOnly;
+        if (audioOnly && audioFormat) {
+            renderOpts.audio_format = audioFormat;
+            // 比特率：FLAC/WAV 下拉被禁用，默认 128 也行（后端忽略）
+            const qSel = this._root?.querySelector(".xzg-ve-quality-select");
+            renderOpts.audio_bitrate = (qSel && qSel.value) ? String(qSel.value) : "320";
+        } else {
+            // 视频模式：quality 传 high/medium/low
+            const qSel = this._root?.querySelector(".xzg-ve-quality-select");
+            if (qSel && qSel.value) renderOpts.quality = qSel.value;
+        }
+
+        return {
+            renderOpts, mode,
+            audioOnly, audioFormat,
+            isCustom,
+            bitrateOrQuality: renderOpts.quality || renderOpts.audio_bitrate || "",
+        };
+    }
+
     async _render() {
         if (this.timeline.length === 0) {
             this._setStatus("时间线为空");
@@ -6486,123 +9176,71 @@ export class XiaozhuguangVideoEditor {
         const btn = this._root.querySelector(".xzg-ve-btn-apply");
         btn.disabled = true;
         btn.textContent = "导出中...";
-        // 渲染数据：包含视频和音频片段，各自计算时间线位置
-        // 视频用 tlStart，音频用 audioTlStart；为 null 时各自自动追加
-        // ════════════════════════════════════════════════════════
-        // 先按实际位置字段排序计算基准 autoEnd，避免 timeline 数组乱序导致 null 片段错位
-        const videoClipsSorted = [...this.timeline].filter(c => c.kind !== "audio")
-            .sort((a, b) => {
-                const at = a.tlStart != null ? a.tlStart : Infinity;
-                const bt = b.tlStart != null ? b.tlStart : Infinity;
-                return at - bt;
-            });
-        const audioClipsSorted = [...this.timeline].filter(c => c.kind === "audio")
-            .sort((a, b) => {
-                const at = a.audioTlStart != null ? a.audioTlStart : Infinity;
-                const bt = b.audioTlStart != null ? b.audioTlStart : Infinity;
-                return at - bt;
-            });
-        // 计算基准末尾：所有显式定位片段的最大终点 + null 片段按顺序占用的时长
-        let baseEndVideo = 0;
-        for (const c of videoClipsSorted) {
-            if (c.tlStart != null) baseEndVideo = Math.max(baseEndVideo, c.tlStart + (c.end - c.start));
-            else baseEndVideo += (c.end - c.start);
+        // 构造渲染参数（_cancel / silentRender 复用同一方法）
+        const { renderOpts, mode, audioOnly, audioFormat, isCustom } = this._buildRenderOpts();
+        if (isCustom && !this._baseDir) {
+            this._setStatus("请先点击\"输出目录设置\"选择输出目录");
+            btn.disabled = false;
+            btn.textContent = "导出";
+            return;
         }
-        let baseEndAudio = 0;
-        for (const c of audioClipsSorted) {
-            if (c.audioTlStart != null) baseEndAudio = Math.max(baseEndAudio, c.audioTlStart + (c.end - c.start));
-            else baseEndAudio += (c.end - c.start);
-        }
-
-        const tlData = [];
-        let accVideo = 0;
-        let accAudio = 0;
-        for (const c of this.timeline) {
-            const dur = c.end - c.start;
-            if (c.kind === "audio") {
-                let ts;
-                if (c.audioTlStart != null) {
-                    ts = c.audioTlStart;
-                    accAudio = Math.max(accAudio, ts + dur);
-                } else {
-                    ts = accAudio >= baseEndAudio ? accAudio : baseEndAudio;
-                    if (ts < accAudio) ts = accAudio;
-                    accAudio = ts + dur;
-                }
-                tlData.push({
-                    filename: c.filename,
-                    type: c.type,
-                    start: c.start,
-                    end: c.end,
-                    kind: "audio",
-                    tlStart: ts,
-                });
-            } else {
-                let ts;
-                if (c.tlStart != null) {
-                    ts = c.tlStart;
-                    accVideo = Math.max(accVideo, ts + dur);
-                } else {
-                    ts = accVideo >= baseEndVideo ? accVideo : baseEndVideo;
-                    if (ts < accVideo) ts = accVideo;
-                    accVideo = ts + dur;
-                }
-                const vEntry = {
-                    filename: c.filename,
-                    type: c.type,
-                    start: c.start,
-                    end: c.end,
-                    kind: "video",
-                    tlStart: ts,
-                };
-                // 独立音频拆分标记：true 时告诉后端不要从该视频再自动提音频（即使源 has_audio=true）
-                if (c.skip_audio === true) vEntry.skip_audio = true;
-                tlData.push(vEntry);
-            }
-        }
-        this._setStatus(`正在渲染 ${tlData.length} 个片段...`);
-        // 渲染参数：帧率读取编辑器帧率输入框（_getClipFps），与预览播放一致
-        // 分辨率：读取宽/高输入框，0 表示用首个片段原分辨率
-        const renderOpts = { timeline: tlData };
-        // 输出目录设置（与化神级一致）：use_default_output / base_dir / filename_prefix / 日期戳 / 时间戳
-        renderOpts.use_default_output = this._useDefaultOutput;
-        if (!this._useDefaultOutput) {
-            renderOpts.base_dir = this._baseDir || "";
-            renderOpts.filename_prefix = this._filenamePrefix || "xzg-edit";
-            renderOpts.add_date_stamp = this._addDateStamp;
-            renderOpts.add_time_stamp = this._addTimeStamp;
-            // 非默认输出但未选目录：提示用户先设置
-            if (!this._baseDir) {
-                this._setStatus("请先点击\"输出目录设置\"选择输出目录");
-                btn.disabled = false;
-                btn.textContent = "导出";
-                return;
-            }
-        }
-        // 传入帧率给后端（>0 时覆盖首个片段帧率）
-        if (this.timeline.length > 0) {
-            const fps = this._getClipFps(this.timeline[0]);
-            if (fps > 0) renderOpts.target_fps = fps;
-        }
-        const wInput = this._root.querySelector(".xzg-ve-render-w");
-        const hInput = this._root.querySelector(".xzg-ve-render-h");
-        const tw = Math.max(0, Math.round(Number(wInput?.value || 0)));
-        const th = Math.max(0, Math.round(Number(hInput?.value || 0)));
-        if (tw > 0 && th > 0) {
-            renderOpts.target_width = tw;
-            renderOpts.target_height = th;
-        }
-        // 质量等级：high/medium/low 传给后端决定 CRF/CQ
-        const qSel = this._root.querySelector(".xzg-ve-quality-select");
-        if (qSel && qSel.value) renderOpts.quality = qSel.value;
+        const tlCount = renderOpts.timeline ? renderOpts.timeline.length : 0;
+        const kindLabel = audioOnly ? `音频 ${(audioFormat || "").toUpperCase()}` : "视频 MP4";
+        this._setStatus(`正在导出 ${kindLabel} · ${tlCount} 个片段...`);
         try {
             const data = await _postJson(API_RENDER, renderOpts);
             if (data.error) throw new Error(data.error);
-            // 导出成功提示：显示文件名和保存位置
-            const locLabel = this._useDefaultOutput
-                ? "ComfyUI output 目录"
-                : (this._baseDir || "output 目录");
-            this._setStatus(`✅ 已导出: ${data.filename} （保存到 ${locLabel}）`);
+            const saveasAudioOnly = audioOnly && (data.audio_only || data.extension && data.extension !== "mp4");
+            // saveas 模式：使用 File System Access API 弹出另存为对话框
+            //   视频走 downloadVideo（记忆 xzg_video），音频走 downloadAudio（记忆 xzg_audio）
+            if (mode === "saveas" && data.filename) {
+                try {
+                    const fname = data.filename;
+                    const rawName = fname.split("/").pop() || (saveasAudioOnly ? "xzg-edit.mp3" : "xzg-edit.mp4");
+                    const viewSub = data.subfolder ? `&subfolder=${encodeURIComponent(data.subfolder)}` : "";
+                    const viewUrl = api.apiURL(
+                        `/view?filename=${encodeURIComponent(fname)}&type=${encodeURIComponent(data.type || "output")}${viewSub}${app.getRandParam()}`
+                    );
+                    if (saveasAudioOnly) {
+                        await downloadAudio(viewUrl, rawName);
+                    } else {
+                        await downloadVideo(viewUrl, rawName);
+                    }
+                    this._setStatus(`✅ 已导出${saveasAudioOnly ? "音频" : ""}: ${rawName} （另存为完成）`);
+                } catch (dlErr) {
+                    if (dlErr?.name === "AbortError") {
+                        this._setStatus(`已导出${saveasAudioOnly ? "音频" : ""}: ${data.filename} （用户取消另存为，文件已保存到 ComfyUI output 目录）`);
+                    } else {
+                        console.warn("[小珠光] 另存为失败，文件已保存到 output 目录:", dlErr);
+                        this._setStatus(`✅ 已导出${saveasAudioOnly ? "音频" : ""}: ${data.filename} （保存到 ComfyUI output 目录）`);
+                    }
+                }
+            } else {
+                let locLabel;
+                if (mode === "default") locLabel = "ComfyUI output 目录";
+                else locLabel = this._baseDir || "output 目录";
+                this._setStatus(`✅ 已导出${saveasAudioOnly ? "音频" : ""}: ${data.filename} （保存到 ${locLabel}）`);
+            }
+            // 通知外部（视频加载器 / 音频加载器等注册的回调），与静默导出一致
+            if (typeof window._xzgOnVideoEditorExport === 'function') {
+                try {
+                    // 新：传完整 data（加载器根据 audio_only 字段消费）
+                    window._xzgOnVideoEditorExport(data);
+                    // 兼容旧签名：当回调用 (filename, type) 形式时确保能被正确接收
+                    if (window._xzgOnVideoEditorExport.length >= 2) {
+                        window._xzgOnVideoEditorExport(data.filename, data.type || "output");
+                    }
+                }
+                catch (e) { console.warn("[小珠光] 导出回调异常:", e); }
+            }
+            // 如果本实例有 confirmCallback（从加载器等打开），也通知一下
+            if (this._confirmCallback && !this._confirmCallbackCalled) {
+                this._confirmCallbackCalled = true;
+                try {
+                    // 与全局回调相同：传完整 data（加载器根据 audio_only / video 字段消费）
+                    this._confirmCallback(data);
+                } catch (_) {}
+            }
             btn.disabled = false;
             btn.textContent = "导出";
         } catch (e) {
@@ -6612,14 +9250,53 @@ export class XiaozhuguangVideoEditor {
         }
     }
 
-    _cancel() {
-        this.close();
+    async _cancel() {
+        // 有回调 → 来自视频加载器/音频加载器：点"确认"执行导出并回传，再关闭
+        // 无回调 → 直接打开：点"确认"仅关闭窗口
+        if (this._confirmCallback) {
+            const cancelBtn = this._root?.querySelector(".xzg-ve-btn-cancel");
+            if (this.timeline.length === 0) {
+                this._setStatus("时间线为空");
+                this._confirmCallbackCalled = true;
+                try { this._confirmCallback({ error: "快剪时间线为空，请先添加片段" }); } catch (_) {}
+                this.close();
+                return;
+            }
+            // 按钮进入加载态
+            if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = "确认中..."; }
+            try {
+                // 使用输出目录固定 default（保证文件一定在 ComfyUI output 中，加载器/view 都能访问）
+                const { renderOpts, audioOnly, audioFormat } = this._buildRenderOpts("default");
+                const kindLabel = audioOnly ? `音频 ${(audioFormat || "").toUpperCase()}` : "视频 MP4";
+                this._setStatus(`正在为确认回调导出 ${kindLabel}...`);
+                const data = await _postJson(API_RENDER, renderOpts);
+                if (data.error) throw new Error(data.error);
+                // 调用外部回调（视频/音频加载器注册的接收函数）——传完整 data
+                if (typeof window._xzgOnVideoEditorExport === 'function') {
+                    try { window._xzgOnVideoEditorExport(data); }
+                    catch (e) { console.warn("[小珠光] 导出回调异常:", e); }
+                }
+                // 调用实例回调
+                this._confirmCallbackCalled = true;
+                try { this._confirmCallback(data); } catch (_) {}
+                this.close();
+            } catch (e) {
+                this._setStatus(`确认导出失败: ${e.message}`);
+                if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = "确认"; }
+                this._confirmCallbackCalled = true;
+                try { this._confirmCallback({ error: e.message }); } catch (_) {}
+            }
+        } else {
+            // 直接打开 → 仅关闭
+            this.close();
+        }
     }
 
-    // 保存输出目录设置到 localStorage（与化神级一致的字段名）
+    // 保存输出目录设置到 localStorage
     _saveOutputSettings() {
         try {
             localStorage.setItem(this._xzgVeOutputKey, JSON.stringify({
+                output_mode: this._outputMode,
                 use_default_output: this._useDefaultOutput,
                 base_dir: this._baseDir,
                 filename_prefix: this._filenamePrefix,
@@ -6633,3 +9310,130 @@ export class XiaozhuguangVideoEditor {
         if (this._status) this._status.textContent = msg;
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  全局辅助：从 timeline 片段列表构造带时间定位的渲染数据
+// （类方法 _buildTimelineData / 静默导出 silentRender 都用它）
+// ═══════════════════════════════════════════════════════════════
+function _buildTimelineData(timeline) {
+    const videoClipsSorted = [...timeline].filter(c => c.kind !== "audio")
+        .sort((a, b) => {
+            const at = a.tlStart != null ? a.tlStart : Infinity;
+            const bt = b.tlStart != null ? b.tlStart : Infinity;
+            return at - bt;
+        });
+    const audioClipsSorted = [...timeline].filter(c => c.kind === "audio")
+        .sort((a, b) => {
+            const at = a.audioTlStart != null ? a.audioTlStart : Infinity;
+            const bt = b.audioTlStart != null ? b.audioTlStart : Infinity;
+            return at - bt;
+        });
+    let baseEndVideo = 0;
+    for (const c of videoClipsSorted) {
+        if (c.tlStart != null) baseEndVideo = Math.max(baseEndVideo, c.tlStart + (c.end - c.start));
+        else baseEndVideo += (c.end - c.start);
+    }
+    let baseEndAudio = 0;
+    for (const c of audioClipsSorted) {
+        if (c.audioTlStart != null) baseEndAudio = Math.max(baseEndAudio, c.audioTlStart + (c.end - c.start));
+        else baseEndAudio += (c.end - c.start);
+    }
+    const tlData = [];
+    let accVideo = 0;
+    let accAudio = 0;
+    for (const c of timeline) {
+        const dur = c.end - c.start;
+        if (c.kind === "audio") {
+            let ts;
+            if (c.audioTlStart != null) { ts = c.audioTlStart; accAudio = Math.max(accAudio, ts + dur); }
+            else { ts = accAudio >= baseEndAudio ? accAudio : baseEndAudio; if (ts < accAudio) ts = accAudio; accAudio = ts + dur; }
+            tlData.push({
+                filename: c.filename, type: c.type, start: c.start, end: c.end,
+                kind: "audio", tlStart: ts, track: c.track || "a1",
+                volume: c.volume != null ? c.volume : 1,
+            });
+        } else {
+            let ts;
+            if (c.tlStart != null) { ts = c.tlStart; accVideo = Math.max(accVideo, ts + dur); }
+            else { ts = accVideo >= baseEndVideo ? accVideo : baseEndVideo; if (ts < accVideo) ts = accVideo; accVideo = ts + dur; }
+            const vEntry = {
+                filename: c.filename, type: c.type, start: c.start, end: c.end,
+                kind: "video", tlStart: ts, track: c.track || "v1",
+            };
+            if (c.skip_audio === true) vEntry.skip_audio = true;
+            // 视频变换属性（大小/移动/裁剪/透明度）透传给后端
+            vEntry.scale = c.scale != null ? c.scale : 1;
+            vEntry.offsetX = c.offsetX != null ? c.offsetX : 0;
+            vEntry.offsetY = c.offsetY != null ? c.offsetY : 0;
+            vEntry.cropLeft = c.cropLeft != null ? c.cropLeft : 0;
+            vEntry.cropRight = c.cropRight != null ? c.cropRight : 0;
+            vEntry.cropTop = c.cropTop != null ? c.cropTop : 0;
+            vEntry.cropBottom = c.cropBottom != null ? c.cropBottom : 0;
+            vEntry.opacity = c.opacity != null ? c.opacity : 1;
+            tlData.push(vEntry);
+        }
+    }
+    return tlData;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  静默导出：供视频加载器等外部调用，不打开编辑器界面
+//  从 localStorage 读取时间线数据，直接调用后端渲染 API
+//  成功后调用 window._xzgOnVideoEditorExport?.(filename, type)
+// ═══════════════════════════════════════════════════════════════
+async function _xzgVideoEditorSilentRender() {
+    const timeline = _xzgVeGetSessionTimeline();
+    if (!timeline || timeline.length === 0) {
+        return { error: "快剪时间线为空，请先在快剪编辑器中添加片段" };
+    }
+
+    // 构造渲染数据（复用 _buildTimelineData 与 _render/_cancel 完全一致）
+    const tlData = _buildTimelineData(timeline);
+
+    // 从 localStorage 读取最后一次输出设置（格式/质量），与编辑器保持一致
+    let audioOnly = false, audioFormat = "mp3", audioBitrate = "320", quality = "medium";
+    try {
+        const raw = localStorage.getItem(XZG_VE_SESSION_KEY);
+        if (raw) {
+            const obj = JSON.parse(raw) || {};
+            audioOnly = !!obj.audio_only;
+            audioFormat = obj.audio_format || "mp3";
+            audioBitrate = obj.audio_bitrate || "320";
+            quality = obj.quality || "medium";
+        }
+    } catch (_) {}
+
+    // 渲染参数：强制 default 模式（保存到 ComfyUI output 目录）
+    // 分辨率/帧率不传，让后端用源视频参数
+    const renderOpts = {
+        timeline: tlData,
+        use_default_output: true,
+        output_mode: "default",
+    };
+    if (audioOnly) {
+        renderOpts.audio_only = true;
+        renderOpts.audio_format = audioFormat;
+        if (audioFormat === "mp3") renderOpts.audio_bitrate = audioBitrate;
+    } else {
+        renderOpts.quality = quality;
+    }
+
+    try {
+        const data = await _postJson(API_RENDER, renderOpts);
+        if (data.error) throw new Error(data.error);
+        // 调用外部回调（视频/音频加载器等注册的接收函数）——传完整 data
+        if (typeof window._xzgOnVideoEditorExport === 'function') {
+            try { window._xzgOnVideoEditorExport(data); }
+            catch (e) { console.warn("[小珠光] 导出回调异常:", e); }
+        }
+        return data;
+    } catch (e) {
+        console.warn("[小珠光] 静默导出失败:", e);
+        return { error: e.message };
+    }
+}
+
+// 暴露到 window 供外部调用
+window._xzgVideoEditor = {
+    silentRender: _xzgVideoEditorSilentRender,
+};

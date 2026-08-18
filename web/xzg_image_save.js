@@ -1398,20 +1398,34 @@ function _xzgDirBrowserEnsureDlg() {
     dlg.appendChild(listWrap);
     dlg._listWrap = listWrap;
 
-    // ── 设置区：默认输出 + 自定义前缀 + 日期戳 + 时间戳 开关 ──
+    // ── 设置区：输出模式单选(默认/另存为/自定义) + 自定义前缀 + 日期戳 + 时间戳 开关 ──
     const settingsRow = document.createElement("div");
     settingsRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid #333;background:${BG3};flex-wrap:wrap;`;
-    // 默认输出开关
-    const defaultToggle = document.createElement("label");
-    defaultToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
-    const defaultCheck = document.createElement("input");
-    defaultCheck.type = "checkbox";
-    defaultCheck.style.cssText = `accent-color:${GOLD};cursor:pointer;`;
-    defaultToggle.appendChild(defaultCheck);
-    const defaultText = document.createElement("span");
-    defaultText.textContent = xzgT("默认输出目录", "Default Output Dir");
-    defaultToggle.appendChild(defaultText);
-    settingsRow.appendChild(defaultToggle);
+    // 输出模式：三个单选按钮（使用同一个 radio group name）
+    //   "default"  → 默认输出（ComfyUI output 目录）
+    //   "saveas"   → 另存为（通过浏览器下载对话框保存）
+    //   "custom"   → 自定义目录（选择目录 + 前缀/日期戳/时间戳）
+    const OUTPUT_RADIO_NAME = "_xzg_dir_output_mode_" + Math.random().toString(36).slice(2, 8);
+    const makeRadio = (val, labelText) => {
+        const lab = document.createElement("label");
+        lab.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
+        const rad = document.createElement("input");
+        rad.type = "radio";
+        rad.name = OUTPUT_RADIO_NAME;
+        rad.value = val;
+        rad.style.cssText = `accent-color:${GOLD};cursor:pointer;`;
+        lab.appendChild(rad);
+        const sp = document.createElement("span");
+        sp.textContent = labelText;
+        lab.appendChild(sp);
+        return { label: lab, radio: rad };
+    };
+    const { label: defaultRadioLabel, radio: defaultRadio } = makeRadio("default", xzgT("默认输出 output", "Default Output"));
+    const { label: saveAsRadioLabel, radio: saveAsRadio } = makeRadio("saveas", xzgT("另存为", "Save As"));
+    const { label: customRadioLabel, radio: customRadio } = makeRadio("custom", xzgT("自定义目录", "Custom Dir"));
+    settingsRow.appendChild(defaultRadioLabel);
+    settingsRow.appendChild(saveAsRadioLabel);
+    settingsRow.appendChild(customRadioLabel);
     // 自定义前缀
     const prefixLabel = document.createElement("label");
     prefixLabel.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;white-space:nowrap;";
@@ -1445,9 +1459,24 @@ function _xzgDirBrowserEnsureDlg() {
     timeToggle.appendChild(timeText);
     settingsRow.appendChild(timeToggle);
 
-    // 默认输出联动：开启后灰显并禁用 路径选择区 + 自定义前缀/日期戳/时间戳
+    // 读取当前选中的输出模式（"default" | "saveas" | "custom"）
+    const _xzgGetOutputMode = () => {
+        if (saveAsRadio.checked) return "saveas";
+        if (customRadio.checked) return "custom";
+        return "default";
+    };
+    // 设置当前输出模式
+    const _xzgSetOutputMode = (mode) => {
+        if (mode === "saveas") saveAsRadio.checked = true;
+        else if (mode === "custom") customRadio.checked = true;
+        else defaultRadio.checked = true;
+    };
+    // 输出模式联动：默认输出/另存为 → 灰显并禁用 路径选择区 + 自定义前缀/日期戳/时间戳
+    //            自定义目录 → 全部启用
     const _xzgApplyDefaultState = () => {
-        const def = !!defaultCheck.checked;
+        const mode = _xzgGetOutputMode();
+        // default 或 saveas 都视为"非自定义"，禁用其他设置
+        const isCustom = (mode === "custom");
         const setDisabled = (el, label, disabled) => {
             if (!el) return;
             el.disabled = disabled;
@@ -1455,24 +1484,33 @@ function _xzgDirBrowserEnsureDlg() {
             if (label) label.style.opacity = disabled ? "0.4" : "1";
             if (label) label.style.cursor = disabled ? "not-allowed" : "pointer";
         };
-        setDisabled(prefixInput, prefixLabel, def);
-        setDisabled(dateCheck, dateToggle, def);
-        setDisabled(timeCheck, timeToggle, def);
+        // !isCustom = default 或 saveas → 禁用
+        setDisabled(prefixInput, prefixLabel, !isCustom);
+        setDisabled(dateCheck, dateToggle, !isCustom);
+        setDisabled(timeCheck, timeToggle, !isCustom);
         // 路径选择区整体灰显并禁用交互
         const pathEls = [crumbWrap, newFolderBtn, listWrap, curPathLabel];
         pathEls.forEach(el => {
             if (!el) return;
-            el.style.opacity = def ? "0.4" : "1";
-            el.style.pointerEvents = def ? "none" : "auto";
+            el.style.opacity = !isCustom ? "0.4" : "1";
+            el.style.pointerEvents = !isCustom ? "none" : "auto";
         });
     };
-    defaultCheck.addEventListener("change", _xzgApplyDefaultState);
+    defaultRadio.addEventListener("change", _xzgApplyDefaultState);
+    saveAsRadio.addEventListener("change", _xzgApplyDefaultState);
+    customRadio.addEventListener("change", _xzgApplyDefaultState);
 
     dlg.appendChild(settingsRow);
     dlg._prefixInput = prefixInput;
     dlg._dateCheck = dateCheck;
     dlg._timeCheck = timeCheck;
-    dlg._defaultCheck = defaultCheck;
+    // 输出模式：兼容旧字段 _defaultCheck（defaultCheck 单选 + 新增 outputMode 读写函数）
+    dlg._defaultCheck = defaultRadio;  // 向后兼容：旧代码读 dlg._defaultCheck.checked 时，default=true 等同于 mode="default"
+    dlg._defaultRadio = defaultRadio;
+    dlg._saveAsRadio = saveAsRadio;
+    dlg._customRadio = customRadio;
+    dlg._getOutputMode = _xzgGetOutputMode;
+    dlg._setOutputMode = _xzgSetOutputMode;
     dlg._applyDefaultState = _xzgApplyDefaultState;
 
     // ── 底部：路径 + 取消/选择 ──
@@ -1841,10 +1879,24 @@ function _xzgDirBrowserConfirm() {
         if (widget.callback) widget.callback(sel);
         console.log("[小珠光] 已选择保存目录:", sel);
     }
-    // 保存"默认输出"、"自定义前缀"、"日期戳"、"时间戳"设置回节点
+    // 保存设置回节点（输出模式 + 前缀/日期戳/时间戳）
     if (node) {
-        if (dlg._defaultCheck && node._xzgDefaultOutputWidget) {
-            const v = !!dlg._defaultCheck.checked;
+        // 输出模式：优先使用新版 _getOutputMode() → "default" | "saveas" | "custom"
+        let outputMode = "default";
+        if (typeof dlg._getOutputMode === "function") {
+            outputMode = dlg._getOutputMode();
+        } else if (dlg._defaultCheck) {
+            // 旧版兼容：仅有 checkbox（只有 default / custom 两种）
+            outputMode = !!dlg._defaultCheck.checked ? "default" : "custom";
+        }
+        // 保存 outputMode 到节点专用 widget（快剪会设置 _xzgOutputModeWidget）
+        if (node._xzgOutputModeWidget) {
+            node._xzgOutputModeWidget.value = outputMode;
+            if (node._xzgOutputModeWidget.callback) node._xzgOutputModeWidget.callback(outputMode);
+        }
+        // 兼容旧版：use_default_output = (outputMode === "default")
+        if (node._xzgDefaultOutputWidget) {
+            const v = (outputMode === "default");
             node._xzgDefaultOutputWidget.value = v;
             if (node._xzgDefaultOutputWidget.callback) node._xzgDefaultOutputWidget.callback(v);
         }
@@ -1881,11 +1933,20 @@ async function _xzgShowDirBrowser(node) {
         widget = node.widgets.find(w => w.name === "base_dir");
     }
     _xzgDirBrowserState.targetWidget = widget;
-    // 回显当前节点的"默认输出"设置（必须先回显，后调用 _applyDefaultState）
-    if (dlg._defaultCheck && node && node._xzgDefaultOutputWidget) {
-        dlg._defaultCheck.checked = !!node._xzgDefaultOutputWidget.value;
+    // 回显输出模式（新版优先：_xzgOutputModeWidget → "default" | "saveas" | "custom"）
+    let outputMode = null;
+    if (node && node._xzgOutputModeWidget && typeof node._xzgOutputModeWidget.value === "string") {
+        outputMode = node._xzgOutputModeWidget.value;
     } else if (dlg._defaultCheck) {
-        dlg._defaultCheck.checked = false;
+        // 旧版兼容：从 use_default_output 推导（只有 default / custom 两种）
+        const useDef = node && node._xzgDefaultOutputWidget ? !!node._xzgDefaultOutputWidget.value : true;
+        outputMode = useDef ? "default" : "custom";
+    }
+    if (typeof dlg._setOutputMode === "function") {
+        dlg._setOutputMode(outputMode || "default");
+    } else if (dlg._defaultCheck) {
+        // 极端退化：旧版 UI（仅有 checkbox）
+        dlg._defaultCheck.checked = (outputMode === "default");
     }
     // 回显当前节点的"自定义前缀"、"日期戳"、"时间戳"设置（允许回显空字符串）
     if (dlg._prefixInput && node && node._xzgPrefixCustomWidget) {
@@ -1903,7 +1964,7 @@ async function _xzgShowDirBrowser(node) {
     } else if (dlg._timeCheck) {
         dlg._timeCheck.checked = false;
     }
-    // 根据"默认输出"状态，同步灰显/启用 自定义前缀/日期戳/时间戳
+    // 根据输出模式，同步灰显/启用 自定义前缀/日期戳/时间戳 + 路径选择区
     if (typeof dlg._applyDefaultState === "function") dlg._applyDefaultState();
     dlg.style.display = "flex";
     // 恢复上次拖动后的位置（若有），否则保持居中

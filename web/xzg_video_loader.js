@@ -1108,6 +1108,49 @@ function bindVideoLoaderInteractions(node) {
     uploadOverlay.appendChild(uploadPct);
     playerContainer.appendChild(uploadOverlay);
 
+    // 快剪联动按钮：点击后静默导出快剪时间线，自动加载到当前节点
+    const fastcutBtn = document.createElement("button");
+    fastcutBtn.title = "静默导出快剪编辑器的时间线内容并加载到当前节点";
+    fastcutBtn.style.cssText =
+        "position:absolute;top:6px;right:6px;z-index:102;" +
+        "display:inline-flex;align-items:center;gap:4px;" +
+        "padding:2px 6px;font-size:11px;line-height:1;" +
+        "background:transparent;color:#dcc85b;border:none;" +
+        "cursor:pointer;pointer-events:auto;" +
+        "transition:color 0.15s,opacity 0.2s;" +
+        "opacity:0;";
+    fastcutBtn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从快剪加载</span>';
+    playerContainer.appendChild(fastcutBtn);
+
+    // 鼠标进入预览区时显示按钮，离开时隐藏
+    // playerContainer 本身 pointer-events:none，通过子元素冒泡的 mouseover/mouseout 监听
+    playerContainer.addEventListener("mouseover", () => {
+        fastcutBtn.style.opacity = "1";
+    });
+    playerContainer.addEventListener("mouseout", (e) => {
+        // 只有当鼠标真正离开预览区时才隐藏
+        // 导入过程中保持可见，让用户看到进度反馈
+        if (!playerContainer.contains(e.relatedTarget) && !fastcutBtn.disabled) {
+            fastcutBtn.style.opacity = "0";
+        }
+    });
+
+    // wheel 事件转发：悬浮在从快剪加载按钮/上传遮罩等覆盖层上时，
+    // 滚轮仍能触发布局缩放（与 video player 内部 _forwardWheel 保持一致）
+    const _xzgForwardWheel = (e) => {
+        const cv = app.canvas?.canvas;
+        if (!cv) return;
+        e.preventDefault();
+        e.stopPropagation();
+        cv.dispatchEvent(new WheelEvent('wheel', {
+            deltaY: e.deltaY, deltaX: e.deltaX,
+            clientX: e.clientX, clientY: e.clientY,
+            ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey,
+            bubbles: true, cancelable: true
+        }));
+    };
+    playerContainer.addEventListener('wheel', _xzgForwardWheel, { passive: false });
+
     const showUploadProgress = (visible, completed, total) => {
         if (visible) {
             uploadOverlay.style.display = "flex";
@@ -1465,6 +1508,97 @@ function bindVideoLoaderInteractions(node) {
                 player.load(getVideoUrl(videoWidget.value));
             }
         }
+
+        // 快剪联动按钮：静默导出快剪时间线 → 自动加载到当前节点
+        const _fastcutOriginalText = "从快剪加载";
+        // 只更新文字 span，保留前面的 🎬 图标
+        const _setFastcutText = (text) => {
+            const spans = fastcutBtn.querySelectorAll("span");
+            const textSpan = spans[spans.length - 1];
+            if (textSpan) textSpan.textContent = text;
+        };
+        fastcutBtn.addEventListener("mouseenter", () => {
+            if (fastcutBtn.disabled) return;
+            fastcutBtn.style.color = "#fff";
+        });
+        fastcutBtn.addEventListener("mouseleave", () => {
+            if (fastcutBtn.disabled) return;
+            fastcutBtn.style.color = "#dcc85b";
+        });
+        fastcutBtn.onclick = () => {
+            // 防止重复点击
+            if (fastcutBtn.disabled) return;
+            fastcutBtn.disabled = true;
+            _setFastcutText("等待确认...");
+            fastcutBtn.style.color = "#fff";
+
+            // 注册回调：用户在快剪中点击"确认"→ 导出完成后加载到当前节点
+            // 兼容两种签名：
+            //   旧：(filename, type)   → 双字符串
+            //   新：(data)             → { filename, type, audio_only, ... }
+            window._xzgOnVideoEditorExport = (firstArg, secondArg) => {
+                const isObj = firstArg && typeof firstArg === "object" && !Array.isArray(firstArg);
+                const data = isObj ? firstArg : null;
+                const filename = data ? (data.filename || "") : (firstArg || "");
+                const type = data ? (data.type || "output") : (secondArg || "output");
+                // 纯音频导出时交给回调消费，当前节点（视频加载器）不处理
+                if (data && data.audio_only) return;
+                const annotated = `${filename} [${type}]`;
+                if (videoWidget) {
+                    videoWidget.value = annotated;
+                    videoWidget.callback?.(annotated);
+                } else {
+                    player.load(getVideoUrl(annotated));
+                }
+            };
+
+            const confirmCallback = (result) => {
+                fastcutBtn.disabled = false;
+                if (result && result.error) {
+                    _setFastcutText("失败");
+                    fastcutBtn.style.color = "#ff6b6b";
+                    console.warn("[小珠光] 快剪加载失败:", result.error);
+                    setTimeout(() => {
+                        _setFastcutText(_fastcutOriginalText);
+                        fastcutBtn.style.color = "#dcc85b";
+                    }, 2000);
+                } else if (result && result.filename && !result.audio_only) {
+                    _setFastcutText("已加载");
+                    fastcutBtn.style.color = "#9FC615";
+                    setTimeout(() => {
+                        _setFastcutText(_fastcutOriginalText);
+                        fastcutBtn.style.color = "#dcc85b";
+                    }, 1500);
+                } else if (result && result.audio_only) {
+                    // 音频导出被视频加载器忽略（交给音频加载器）
+                    _setFastcutText("已导出音频");
+                    fastcutBtn.style.color = "#9FC615";
+                    setTimeout(() => {
+                        _setFastcutText(_fastcutOriginalText);
+                        fastcutBtn.style.color = "#dcc85b";
+                    }, 1500);
+                } else {
+                    // 无结果（用户直接关闭但未导出）→ 恢复按钮
+                    _setFastcutText(_fastcutOriginalText);
+                    fastcutBtn.style.color = "#dcc85b";
+                }
+            };
+
+            // 打开快剪编辑器，并传入 confirmCallback
+            // modeFilter: "video" → 快剪只显示视频格式、隐藏「导出」按钮（仅「确认」导出）
+            if (typeof window._xzgOpenVideoEditor === "function") {
+                window._xzgOpenVideoEditor({ confirmCallback, modeFilter: "video" });
+            } else {
+                // 兼容：启动器未加载（理论上不会发生），恢复按钮
+                _setFastcutText("快剪未加载");
+                fastcutBtn.style.color = "#ff6b6b";
+                fastcutBtn.disabled = false;
+                setTimeout(() => {
+                    _setFastcutText(_fastcutOriginalText);
+                    fastcutBtn.style.color = "#dcc85b";
+                }, 2000);
+            }
+        };
         // 同步强制帧率到播放器
         const fpsWidget = node.widgets?.find(w => w.name === "强制帧率");
         // 帧率变化时更新label（包括播放器初始化和自动检测）

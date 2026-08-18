@@ -224,20 +224,34 @@ const XZG_AUDIO_WAVEFORM_MAX_H = 120;
 const XZG_AUDIO_WAVEFORM_WIDGET_NAME = "xzg_audio_waveform";
 
 class XzgAudioWaveformViewer {
-    constructor({ node, onContextMenu }) {
+    constructor({ node, onContextMenu, onVolumeChange }) {
         this._node = node;
         this.onContextMenu = onContextMenu || (() => {});
+        this.onVolumeChange = onVolumeChange || (() => {});
         this.peaks = [];
         this.duration = 0;
         this.sampleRate = 44100;
         this._saveUrl = "";
         this._savedFilename = "";
 
+        // 音量（仅监听预览，不影响最终文件输出）
+        this.volume = 1.0;
+
         // 播放状态
         this.isPlaying = false;
         this.playbackTime = 0;
         this._audio = document.createElement("audio");
         this._audio.preload = "auto";
+        this._audio.crossOrigin = "anonymous";
+        this._audio.style.display = "none";
+        document.body.appendChild(this._audio);
+
+        // Web Audio API 用于支持 >100% 音量增益
+        this._audioCtx = null;
+        this._gainNode = null;
+        this._sourceNode = null;
+        this._audioGraphConnected = false;
+
         this._audio.addEventListener("ended", () => {
             // 播放头拖动中或刚结束(300ms内)时触发的 ended，不自动循环播放
             const inPlayheadDrag = this.isDragging && this.dragType === 'playhead';
@@ -265,7 +279,7 @@ class XzgAudioWaveformViewer {
 
         // 拖动状态
         this.isDragging = false;
-        this.dragType = null; // 'toggle_play' | 'playhead'
+        this.dragType = null; // 'toggle_play' | 'playhead' | 'volume'
         this._dragMoved = false;
         this._dragThreshold = 3;
         this._dragStartX = 0;
@@ -273,6 +287,11 @@ class XzgAudioWaveformViewer {
         this._dragPlayheadX = 0; // 拖动开始时播放头的 X 位置（widget 坐标）
         this._clickTimer = null;
         this._handleWidth = 14; // 播放头拖动判定范围
+        // 音量拖动起始状态
+        this.dragStartVolume = 1.0;
+        this.dragStartVolY = 0;
+        // 双击检测
+        this._lastClickTime = 0;
 
         // 全局鼠标监听（用于拖动）
         this._onMouseMove = (e) => this._handleMouseMove(e);
@@ -309,6 +328,14 @@ class XzgAudioWaveformViewer {
             this._audio.pause();
             this._audio.removeAttribute("src");
             this._audio.load();
+            this._audio.remove();
+        }
+        if (this._audioCtx) {
+            try { this._audioCtx.close(); } catch (e) {}
+            this._audioCtx = null;
+            this._gainNode = null;
+            this._sourceNode = null;
+            this._audioGraphConnected = false;
         }
         if (this._clickTimer) {
             clearTimeout(this._clickTimer);
@@ -426,6 +453,11 @@ class XzgAudioWaveformViewer {
         if (!this._audio.paused) {
             this._audio.pause();
         } else {
+            // 确保 Web Audio 图已连接（支持 >100% 音量增益）
+            this._ensureAudioGraph();
+            if (this._audioCtx && this._audioCtx.state === 'suspended') {
+                this._audioCtx.resume();
+            }
             // 播放前同步音频当前时间到 playbackTime（始终从播放头位置开始播放）
             try {
                 if (Math.abs(this._audio.currentTime - this.playbackTime) > 0.01) {
@@ -439,6 +471,73 @@ class XzgAudioWaveformViewer {
             if (p && p.catch) {
                 p.catch(e => console.warn("[小珠光] 音频播放失败:", e));
             }
+        }
+    }
+
+    // ── Web Audio API：支持 >100% 音量增益 ──
+    _ensureAudioGraph() {
+        if (this._audioGraphConnected) return;
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            this._audioCtx = new AudioContext();
+            this._sourceNode = this._audioCtx.createMediaElementSource(this._audio);
+            this._gainNode = this._audioCtx.createGain();
+            this._gainNode.gain.value = this.volume;
+            this._sourceNode.connect(this._gainNode);
+            this._gainNode.connect(this._audioCtx.destination);
+            this._audioGraphConnected = true;
+            this._audio.volume = 1;
+        } catch (e) {
+            console.warn("[小珠光] Web Audio 初始化失败，使用原生音量:", e);
+            this._audioGraphConnected = false;
+        }
+    }
+
+    _applyVolume(v) {
+        if (this._audioGraphConnected && this._gainNode) {
+            this._gainNode.gain.value = v;
+        } else if (this._audio) {
+            this._audio.volume = Math.min(1, v);
+        }
+    }
+
+    setVolume(v) {
+        this.volume = Math.max(0, Math.min(3.0, v));
+        this._applyVolume(this.volume);
+        this.onVolumeChange(this.volume);
+        this._node.setDirtyCanvas?.(true, true);
+    }
+
+    // ── 音量线 Y 坐标计算（与加载器一致） ──
+    _getVolumeY(widgetY, widgetH) {
+        const barPadY = 2;
+        const waveH = widgetH - barPadY * 2;
+        const v = Math.max(0, Math.min(3.0, this.volume));
+        let yRatio;
+        if (v <= 1.0) {
+            // 0~1.0 映射到 yRatio 1.0~0.5（底部到中线）
+            yRatio = 1.0 - v * 0.5;
+        } else {
+            // 1.0~3.0 映射到 yRatio 0.5~0.0（中线到顶部）
+            const t = (v - 1.0) / 2.0;
+            yRatio = 0.5 - t * 0.5;
+        }
+        return widgetY + barPadY + waveH * yRatio;
+    }
+
+    _getVolumeFromY(y, widgetY, widgetH) {
+        const barPadY = 2;
+        const waveH = widgetH - barPadY * 2;
+        const yRatio = Math.max(0, Math.min(1, (y - widgetY - barPadY) / waveH));
+        if (yRatio >= 0.5) {
+            // yRatio 0.5~1.0 → volume 0~1.0
+            const t = (1.0 - yRatio) / 0.5;
+            return Math.max(0, Math.min(1.0, t));
+        } else {
+            // yRatio 0.0~0.5 → volume 1.0~3.0
+            const t = (0.5 - yRatio) / 0.5;
+            return Math.max(1.0, Math.min(3.0, 1.0 + t * 2.0));
         }
     }
 
@@ -481,7 +580,8 @@ class XzgAudioWaveformViewer {
         const waveH = h - barPadY * 2;
         const waveMid = widgetY + barPadY + waveH / 2;
 
-        // 绘制波形条（与加载器一致：#307960 绿色）
+        // 绘制波形条（与加载器一致：#307960 绿色，音量缩放）
+        const volScale = this.volume;
         const numBars = this.peaks.length;
         const barWidth = usableW / numBars;
         for (let i = 0; i < numBars; i++) {
@@ -490,12 +590,22 @@ class XzgAudioWaveformViewer {
             const bw = Math.max(1, Math.min(barWidth, w - pad - x));
             if (w - pad - x < 1) continue;
             ctx.fillStyle = '#307960';
-            const top = waveMid + minVal * (waveH / 2);
-            const bottom = waveMid + maxVal * (waveH / 2);
+            const top = waveMid + minVal * (waveH / 2) * volScale;
+            const bottom = waveMid + maxVal * (waveH / 2) * volScale;
             const barTop = Math.max(widgetY + barPadY, top);
             const barBottom = Math.min(widgetY + h - barPadY, bottom);
             ctx.fillRect(x, barTop, bw, Math.max(1, barBottom - barTop));
         }
+
+        // 音量线（左侧一小段，与加载器一致）
+        const volY = this._getVolumeY(widgetY, h);
+        const volLineW = 40;
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad, volY);
+        ctx.lineTo(pad + volLineW, volY);
+        ctx.stroke();
 
         // 分区线：上1/3处半透明白线，以上=拖动跳转，以下=播放/暂停
         const divY = widgetY + barPadY + waveH / 3;
@@ -508,26 +618,32 @@ class XzgAudioWaveformViewer {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // 时间码（左上角）：播放时间/总时长，右侧附小字操作提示
-        const timeStartX = pad + 4;
-        const hintText = '线上拖动跳转 线下播放/暂停';
+        // 音量显示（左上角）+ 时间码（紧邻音量右侧）
+        const volText = `音量${Math.round(this.volume * 100)}`;
+        const timeStartX = pad + 2;
+        const hintText = '线上拖动跳转 线下播放/暂停 双击音量线重置';
         if (this.duration > 0 && this._saveUrl) {
-            const curStr = this._formatTime(this.playbackTime || 0);
-            const durStr = this._formatTime(this.duration);
-            const timeStr = `${curStr} / ${durStr}`;
-            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            // 音量文字
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
             ctx.font = '6px sans-serif';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
-            ctx.fillText(timeStr, timeStartX, widgetY + 3);
+            ctx.fillText(volText, timeStartX, widgetY + 3);
+            const volTextW = ctx.measureText(volText).width;
+            // 时间码（音量右侧）
+            const curStr = this._formatTime(this.playbackTime || 0);
+            const durStr = this._formatTime(this.duration);
+            const timeStr = `${curStr} / ${durStr}`;
+            const timeX = timeStartX + volTextW + 6;
+            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            ctx.font = '6px sans-serif';
+            ctx.fillText(timeStr, timeX, widgetY + 3);
             const timeW = ctx.measureText(timeStr).width;
             // 循环/单次播放图标（时间码后面，高度对齐，暗白色小符号）
             const loopSym = this._loopPlayback ? '⇆' : '→';
-            const loopX = timeStartX + timeW + 8;
+            const loopX = timeX + timeW + 8;
             ctx.fillStyle = 'rgba(255,255,255,0.55)';
             ctx.font = '7px sans-serif';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'top';
             ctx.fillText(loopSym, loopX, widgetY + 2);
             const loopW = ctx.measureText(loopSym).width;
             this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 10 };
@@ -536,17 +652,21 @@ class XzgAudioWaveformViewer {
             ctx.font = '5px sans-serif';
             ctx.fillText(hintText, loopX + loopW + 6, widgetY + 4);
         } else if (this.duration > 0) {
-            // 无音频URL时只显示总时长，注释同样显示
-            const timeStr = this._formatTime(this.duration);
-            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            // 无音频URL时显示音量+总时长，注释同样显示
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
             ctx.font = '6px sans-serif';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
-            ctx.fillText(timeStr, timeStartX, widgetY + 3);
+            ctx.fillText(volText, timeStartX, widgetY + 3);
+            const volTextW = ctx.measureText(volText).width;
+            const timeStr = this._formatTime(this.duration);
+            const timeX = timeStartX + volTextW + 6;
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.fillText(timeStr, timeX, widgetY + 3);
             const timeW = ctx.measureText(timeStr).width;
             ctx.fillStyle = 'rgba(255,255,255,0.35)';
             ctx.font = '5px sans-serif';
-            ctx.fillText(hintText, timeStartX + timeW + 6, widgetY + 4);
+            ctx.fillText(hintText, timeX + timeW + 6, widgetY + 4);
         }
 
         // 采样率文字（右下角）
@@ -616,26 +736,59 @@ class XzgAudioWaveformViewer {
 
         // 左键按下
         if (event.type === 'pointerdown' && event.button === 0 && this._saveUrl && this.duration > 0) {
+            // 提前检测双击（在 200ms 防误触守卫之前），确保双击音量线重置不被拦截
+            const _now = Date.now();
+            const _isDoubleClick = (this._lastClickTime && _now - this._lastClickTime < 300);
             // 播放头拖动进行中或刚结束(200ms内)：忽略新的按下，防止拖到界面外后误触发播放
-            if (this.isDragging || (this._lastPlayheadEnd && Date.now() - this._lastPlayheadEnd < 200)) {
+            // 但双击不拦截（用于双击音量线重置）
+            if (!_isDoubleClick && (this.isDragging || (this._lastPlayheadEnd && _now - this._lastPlayheadEnd < 200))) {
                 return true;
             }
             // 点击循环/单次播放切换按钮（右上角）
             if (this._loopBtn) {
                 const btn = this._loopBtn;
                 if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
+                    this._lastClickTime = _now;
                     this._loopPlayback = !this._loopPlayback;
                     this._node.setDirtyCanvas?.(true, true);
                     return true;
                 }
             }
-            // 波形区域上下分区：以波形中线为界
+
             const widgetY = this._drawY;
             const widgetH = this._drawH;
             const barPadY = 2;
             const waveH = widgetH - barPadY * 2;
-            const waveMid = widgetY + barPadY + waveH / 3; // 上1/3处作为分区界限，以上=拖动跳转，以下=播放/暂停
+            const waveMid = widgetY + barPadY + waveH / 3;
             const isUpperHalf = y < waveMid;
+
+            // 优先判断音量线（左侧一小段范围，与加载器一致）
+            const pad = this._getPad();
+            const volY = this._getVolumeY(widgetY, widgetH);
+            const volHandleHeight = 5;
+            const volLineW = 40;
+            const volLineLeft = pad;
+            const volLineRight = pad + volLineW;
+            const hitVolumeLine = Math.abs(y - volY) <= volHandleHeight && x >= volLineLeft && x <= volLineRight;
+
+            // 双击处理（音量线重置到 100%）
+            this._lastClickTime = _now;
+            if (_isDoubleClick && hitVolumeLine) {
+                this.setVolume(1.0);
+                return true;
+            }
+
+            if (hitVolumeLine) {
+                // 音量线拖动模式
+                this.dragType = 'volume';
+                this.isDragging = true;
+                this._dragMoved = false;
+                this._dragStartX = event.clientX;
+                this._dragStartY = event.clientY;
+                this.dragStartVolume = this.volume;
+                this.dragStartVolY = volY;
+                return true;
+            }
 
             if (isUpperHalf) {
                 // 上半区：播放头拖动模式
@@ -703,10 +856,24 @@ class XzgAudioWaveformViewer {
             }
         }
 
-        // 上半区播放头拖动：播放头立即跟随鼠标
-        // 增量方式：dx 是屏幕像素，需要除以画布缩放比得到 widget 逻辑像素增量
         const cv = app.canvas;
         const scale = cv?.ds?.scale || 1;
+
+        // 音量拖动（垂直方向）
+        if (this.dragType === 'volume') {
+            if (!this._dragMoved) return;
+            const widgetY = this._drawY;
+            const widgetH = this._drawH;
+            const dy = (e.clientY - this._dragStartY) / scale;
+            const currentY = this.dragStartVolY + dy;
+            let newVol = this._getVolumeFromY(currentY, widgetY, widgetH);
+            newVol = Math.round(newVol * 100) / 100;
+            this.setVolume(newVol);
+            return;
+        }
+
+        // 上半区播放头拖动：播放头立即跟随鼠标
+        // 增量方式：dx 是屏幕像素，需要除以画布缩放比得到 widget 逻辑像素增量
         const dx = (e.clientX - this._dragStartX) / scale;
 
         const newX = this._dragPlayheadX + dx;
@@ -824,6 +991,12 @@ app.registerExtension({
                     const fmtVal = fmtWidget ? String(fmtWidget.value) : 'mp3';
                     _xzgShowSaveMenu(cx, cy, saveUrl, savedFilename, fmtVal);
                 },
+                onVolumeChange(vol) {
+                    const volWidget = node.widgets?.find(w => w.name === '音量');
+                    if (volWidget) {
+                        volWidget.value = Math.round(vol * 100) / 100;
+                    }
+                },
             });
             node._xzgWaveformViewer = waveformViewer;
 
@@ -836,13 +1009,15 @@ app.registerExtension({
                 _xzgDrawW: 0,
                 draw: function(ctx, node, width, y, H) {
                     this._xzgDrawW = width;
-                    const actualH = node.size[1] - y - 8;
+                    // 边界保护：确保 actualH 不为负，防止波形超出节点边界
+                    const actualH = Math.max(0, node.size[1] - y - 8);
                     const h = Math.max(XZG_AUDIO_WAVEFORM_MIN_H, Math.min(XZG_AUDIO_WAVEFORM_MAX_H, actualH));
-                    // 整个波形区域（含下方黑色区域）填充黑色背景
+                    // 整个波形区域（含下方黑色区域）填充黑色背景，不超过节点边界
+                    const fillH = Math.min(Math.max(h, actualH), node.size[1] - y);
                     ctx.fillStyle = '#000000';
-                    ctx.fillRect(0, y, width, Math.max(h, actualH));
+                    ctx.fillRect(0, y, width, fillH);
                     // 波形从 widget 顶部开始绘制
-                    waveformViewer._widgetH = Math.max(h, actualH); // 保存可点击区域总高度
+                    waveformViewer._widgetH = fillH; // 保存可点击区域总高度
                     waveformViewer.drawOnNode(ctx, y, width, h);
                 },
                 mouse: function(event, [x, y], node) {
@@ -869,6 +1044,14 @@ app.registerExtension({
                                     waveformViewer.playbackTime = 0;
                                 }
                                 node.setDirtyCanvas?.(true, true);
+                            }
+                            // 恢复音量
+                            if (data.volume != null) {
+                                const vol = Math.max(0, Math.min(3.0, Number(data.volume)));
+                                waveformViewer.volume = vol;
+                                waveformViewer._applyVolume(vol);
+                                const volW = node.widgets?.find(w => w.name === '音量');
+                                if (volW) volW.value = vol;
                             }
                         } catch (e) {
                             // 解析失败忽略
@@ -985,13 +1168,36 @@ app.registerExtension({
                 } else if (w.name === '文件名前缀') {
                     w.draw = _xzgDrawWidget;
                     if (!w._xzgValueColor) w._xzgValueColor = '#fff';
+                } else if (w.name === '音量') {
+                    // 音量：隐藏原生 widget（由波形区音量线拖动代替），仅保留 value 用于序列化
+                    w._xzgValueColor = '#ffffff';
+                    w._xzgStep = 0.01;
+                    w._xzgMin = 0;
+                    w._xzgMax = 3.0;
+                    w.hidden = true;
+                    w.computeSize = () => [0, 0];
+                    // widget 值变化时同步到 viewer（工作流重载/外部修改时触发）
+                    const _origVolCb = w.callback;
+                    w.callback = function(v) {
+                        if (typeof _origVolCb === 'function') _origVolCb.apply(this, arguments);
+                        const vol = Math.max(0, Math.min(3.0, Number(v) || 0));
+                        if (waveformViewer.volume !== vol) {
+                            waveformViewer.volume = vol;
+                            waveformViewer._applyVolume(vol);
+                            node.setDirtyCanvas?.(true, true);
+                        }
+                    };
+                    // 初始化音量值
+                    const initVol = Math.max(0, Math.min(3.0, Number(w.value) || 1.0));
+                    w.value = initVol;
+                    waveformViewer.volume = initVol;
                 }
             }
 
             // ─── 节点尺寸限制 ──────────────────────────────────────
             node.resizable = true;
             node.minWidth = 320;
-            node.minHeight = 180;
+            node.minHeight = 216;   // 默认波形高度 120px（y≈88 + 120 + 8）
 
             // 计算波形 widget 的 y 位置（用于最大高度限制）
             const _getWaveformY = () => {
@@ -1007,7 +1213,7 @@ app.registerExtension({
             const origSetSize = node.setSize;
             node.setSize = function(size) {
                 size[0] = Math.max(size[0], this.minWidth || 320);
-                size[1] = Math.max(size[1], this.minHeight || 180);
+                size[1] = Math.max(size[1], this.minHeight || 216);
                 // 最大高度限制：波形高度达到 120px 时不再继续拉高
                 const waveY = _getWaveformY();
                 const maxH = waveY + XZG_AUDIO_WAVEFORM_MAX_H + 8; // +8 是底部留白
@@ -1016,7 +1222,8 @@ app.registerExtension({
                 }
                 return origSetSize?.apply(this, arguments);
             };
-            node.setSize([320, 180]);
+            // 默认节点高度 = 波形 120px（y + 120 + 8）
+            node.setSize([320, _getWaveformY() + XZG_AUDIO_WAVEFORM_MAX_H + 8]);
 
             // 节点尺寸变化时触发重绘（波形高度由 draw 内 node.size[1]-y 实时计算）
             const origOnResize = node.onResize;
@@ -1060,6 +1267,8 @@ app.registerExtension({
                             // 刷新后避免伪 404 链接，只保留波形可视化
                             saveUrl: info.preview ? "" : saveUrl,
                             filename: info.preview ? "" : savedFilename,
+                            // 音量（仅监听预览，不影响文件输出）
+                            volume: waveformViewer.volume,
                         };
                         waveformWidget.value = JSON.stringify(saveData);
                     }
@@ -1088,6 +1297,20 @@ app.registerExtension({
                                 if (data.duration > 0) {
                                     waveformViewer.playbackTime = 0;
                                 }
+                            }
+                            // 恢复音量（优先使用序列化数据，其次用 widget 值）
+                            const restoredVol = (data.volume != null)
+                                ? Math.max(0, Math.min(3.0, Number(data.volume)))
+                                : null;
+                            const volWidget = node.widgets?.find(w => w.name === '音量');
+                            if (restoredVol != null) {
+                                waveformViewer.volume = restoredVol;
+                                waveformViewer._applyVolume(restoredVol);
+                                if (volWidget) volWidget.value = restoredVol;
+                            } else if (volWidget) {
+                                const vol = Math.max(0, Math.min(3.0, Number(volWidget.value) || 1.0));
+                                waveformViewer.volume = vol;
+                                waveformViewer._applyVolume(vol);
                             }
                         } catch (e) {
                             // 解析失败忽略

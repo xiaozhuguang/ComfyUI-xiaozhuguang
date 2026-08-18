@@ -205,6 +205,11 @@ class XiaozhuguangWaveformViewer {
         // 循环/单次播放：true=循环，false=单次
         this._loopPlayback = false;
         this._loopBtn = null;
+        // 「从快剪加载」canvas 按钮：状态 + 命中矩形 + 点击回调
+        // （与「全览/📝」同机制：canvas 绘制 + 节点局部坐标命中，缩放平移绝不错位）
+        this._fastcut = { visible: false, busy: false, text: '从快剪加载', color: '#dcc85b', hover: false };
+        this._fastcutBtn = null;
+        this.onFastcutClick = null;
         // 播放头拖动结束时间（防止拖动到界面外后误触发播放）
         this._lastPlayheadEnd = 0;
         // 显示模式：'full' 全览，'crop' 细节
@@ -709,6 +714,9 @@ class XiaozhuguangWaveformViewer {
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, widgetY, w, h);
 
+        // 「从快剪加载」按钮（canvas 绘制；空状态/解码中也要可见可点）
+        this._drawFastcutButton(ctx, widgetY, w);
+
         // 解码中：显示进度条，不绘制波形
         if (this._decoding) {
             this.drawProgressBar(ctx, widgetY, w, h);
@@ -925,8 +933,44 @@ class XiaozhuguangWaveformViewer {
         this._helpBtn = { x: helpIconX, y: helpIconY, w: helpIconW, h: 14 };
     }
 
+    // ── 「从快剪加载」按钮：canvas 绘制 ──
+    //    与「全览/📝」同机制：画在节点局部坐标系里，跟波形同一帧同一变换，
+    //    画布缩放/平移时位置绝不错位；命中检测用同一坐标系，点击绝不偏移
+    _drawFastcutButton(ctx, widgetY, w) {
+        this._fastcutBtn = null;
+        const st = this._fastcut;
+        if (!st.visible) return;
+        const text = `🎬 ${st.text}`;
+        ctx.font = '7px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        // 与「全览/📝」同一行，位于说明书(📝)左侧：
+        // 布局链（同 drawOnNode 尾部）：全览右缘 = w - pad - 10，全览宽22，📝宽12，各留4px间隙
+        const pad = this._getPad();
+        const x2 = w - pad - 10 - 22 - 4 - 12 - 4;   // 说明书左缘再留 4px
+        const y = widgetY + 2;                        // 与说明书文字基线对齐
+        const tw = ctx.measureText(text).width;
+        ctx.fillStyle = (st.busy || st.hover) ? '#ffffff' : st.color;
+        ctx.fillText(text, x2, y);
+        this._fastcutBtn = { x: x2 - tw - 5, y: y - 2, w: tw + 10, h: 12 };
+    }
+
     // ── LiteGraph widget 鼠标事件 ──
     handleMouse(event, localX, localY) {
+        // 「从快剪加载」按钮：命中检测优先级最高（空状态/解码中也可点击）
+        if (this._fastcutBtn) {
+            const btn = this._fastcutBtn;
+            const hit = localX >= btn.x && localX <= btn.x + btn.w && localY >= btn.y && localY <= btn.y + btn.h;
+            if (hit && (event.type === 'pointerdown' || event.type === 'mousedown') && event.button !== 2) {
+                if (!this._fastcut.busy) this.onFastcutClick?.();
+                return true;
+            }
+            // hover 高亮（每次 mousemove 重算，离开按钮自动熄灭）
+            if ((event.type === 'pointermove' || event.type === 'mousemove') && hit !== this._fastcut.hover) {
+                this._fastcut.hover = hit;
+                this.onRequestRedraw();
+            }
+        }
         if (this.duration <= 0) {
             if (event.type === 'pointerdown' || event.type === 'mousedown') {
                 // 右键：弹出保存菜单
@@ -1635,17 +1679,17 @@ function showAudioHelpDialog() {
 function bindAudioLoaderInteractions(node) {
     node.resizable = true;
     node.minWidth = 320;
-    node.minHeight = 110;
-    node.maxHeight = 190;
+    node.minHeight = 186;   // 默认波形高度 120px（y≈58 + 120 + 8）
+    node.maxHeight = 200;
 
     const origSetSize = node.setSize;
     node.setSize = function(size) {
         size[0] = Math.max(size[0], this.minWidth || 320);
-        size[1] = Math.max(size[1], this.minHeight || 110);
-        size[1] = Math.min(size[1], this.maxHeight || 190);
+        size[1] = Math.max(size[1], this.minHeight || 186);
+        size[1] = Math.min(size[1], this.maxHeight || 200);
         return origSetSize?.apply(this, arguments);
     };
-    node.setSize([320, 110]);
+    node.setSize([320, 186]);
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
@@ -1690,6 +1734,126 @@ function bindAudioLoaderInteractions(node) {
         onUpload: triggerUpload,
     });
     node._xzgWaveformViewer = waveformViewer;
+
+    // =====================================================================
+    // 从快剪加载按钮 —— canvas 绘制（与「全览/📝/音量」同机制）
+    //   不用 HTML 定位：画在节点局部坐标系里，跟波形同一帧同一变换矩阵，
+    //   缩放/平移绝不错位；命中检测用 handleMouse 的同一坐标系，点击绝不偏移
+    // =====================================================================
+    const _fastcutOriginalText = "从快剪加载";
+    const _setFastcutState = (patch) => {
+        Object.assign(waveformViewer._fastcut, patch);
+        // busy 中强制保持可见（即使鼠标离开节点）
+        if (waveformViewer._fastcut.busy) waveformViewer._fastcut.visible = true;
+        waveformViewer.onRequestRedraw?.();
+    };
+
+    // 鼠标进入/离开节点区域：控制按钮显隐（仅开关状态，不做任何定位）
+    (function _bindNodeHoverTrack() {
+        const canvasEl = app.canvas?.canvas;
+        if (!canvasEl) return;
+        function _getCanvasCoords(ev) {
+            const cv = app.canvas;
+            if (!cv) return null;
+            if (typeof cv.convertEventToCanvasOffset === 'function') {
+                try { return cv.convertEventToCanvasOffset(ev); } catch (_) {}
+            }
+            if (typeof cv.convertEventToCanvasCoordinates === 'function') {
+                try { return cv.convertEventToCanvasCoordinates(ev); } catch (_) {}
+            }
+            const rect = canvasEl.getBoundingClientRect();
+            const scale = cv.ds?.scale || 1;
+            const offset = cv.ds?.offset || [0, 0];
+            return [(ev.clientX - rect.left) / scale - offset[0], (ev.clientY - rect.top) / scale - offset[1]];
+        }
+        let _hovered = false;
+        canvasEl.addEventListener('mousemove', (e) => {
+            const pos = _getCanvasCoords(e);
+            if (!pos) return;
+            const [x, y] = pos;
+            const w = node.size[0], h = node.size[1];
+            const inside = (x >= node.pos[0] && x <= node.pos[0] + w && y >= node.pos[1] && y <= node.pos[1] + h);
+            if (inside !== _hovered) {
+                _hovered = inside;
+                if (!waveformViewer._fastcut.busy) {
+                    waveformViewer._fastcut.visible = inside;
+                    waveformViewer._fastcut.hover = false;
+                    waveformViewer.onRequestRedraw?.();
+                }
+            }
+        });
+        canvasEl.addEventListener('mouseleave', () => {
+            if (_hovered) {
+                _hovered = false;
+                if (!waveformViewer._fastcut.busy) {
+                    waveformViewer._fastcut.visible = false;
+                    waveformViewer.onRequestRedraw?.();
+                }
+            }
+        });
+    })();
+
+    // canvas 按钮点击回调（由 handleMouse 命中后调用）
+    waveformViewer.onFastcutClick = () => {
+        _setFastcutState({ busy: true, text: "等待确认..." });
+
+        const audioWidget = node.widgets?.find(w => w.name === "音频");
+
+        // 注册全局回调：快剪完成导出时（从快剪任意入口导出都会通知到这里）
+        // 兼容两种签名：(filename, type) 老签名，(data) 新签名
+        // 注意：不调 refreshAudioCombo——它只扫 input 目录，快剪导出文件在 output，
+        //       fallback 会把刚写入的新文件名覆盖回旧音频（视频加载器同样不刷新）
+        const _applyFastcutAudio = (filename, type) => {
+            if (!filename || !audioWidget) return;
+            const annotated = `${filename} [${type || "output"}]`;
+            audioWidget.value = annotated;
+            audioWidget.callback?.(annotated);
+        };
+        window._xzgOnVideoEditorExport = (firstArg, secondArg) => {
+            const isObj = firstArg && typeof firstArg === "object" && !Array.isArray(firstArg);
+            const data = isObj ? firstArg : null;
+            const isAudio = data ? !!data.audio_only : false;
+            // 如果不是纯音频导出（视频格式），交给视频加载器消费，音频加载器忽略
+            if (!isAudio) return;
+            const filename = data ? (data.filename || "") : (firstArg || "");
+            const type = data ? (data.type || "output") : (secondArg || "output");
+            _applyFastcutAudio(filename, type);
+        };
+
+        const confirmCallback = (result) => {
+            let patch;
+            if (result && result.error) {
+                patch = { text: "失败", color: "#ff6b6b" };
+                console.warn("[小珠光] 快剪加载音频失败:", result.error);
+            } else if (result && result.filename && result.audio_only) {
+                // 加载到 widget（带 [output] 注释；combo 刷新见上方说明）
+                _applyFastcutAudio(result.filename, result.type);
+                patch = { text: "已加载", color: "#9FC615" };
+            } else if (result && result.filename && !result.audio_only) {
+                // 用户在快剪里选了视频格式，音频加载器不消费
+                patch = { text: "格式不匹配", color: "#ff9d3b" };
+            } else {
+                patch = { text: _fastcutOriginalText, color: "#dcc85b" };
+            }
+            const delay = patch.text === "已加载" ? 1500 : 2000;
+            _setFastcutState({ busy: false, ...patch });
+            if (patch.text !== _fastcutOriginalText) {
+                setTimeout(() => {
+                    _setFastcutState({ text: _fastcutOriginalText, color: "#dcc85b" });
+                }, delay);
+            }
+        };
+
+        if (typeof window._xzgOpenVideoEditor === "function") {
+            // modeFilter: "audio" → 快剪只显示音频格式、隐藏「导出」按钮（仅「确认」导出）
+            window._xzgOpenVideoEditor({ confirmCallback, modeFilter: "audio" });
+        } else {
+            _setFastcutState({ busy: false, text: "快剪未加载", color: "#ff6b6b" });
+            setTimeout(() => {
+                _setFastcutState({ text: _fastcutOriginalText, color: "#dcc85b" });
+            }, 2000);
+        }
+    };
 
     // 波形 canvas widget（直接在节点画布上绘制，宽度 = 节点宽度）
     const waveformWidget = {

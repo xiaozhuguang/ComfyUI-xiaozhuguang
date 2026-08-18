@@ -1288,7 +1288,8 @@ const XZGGroup = {
                 if (e.button !== 0) return;
                 e.preventDefault(); e.stopPropagation();
                 bringToFront();
-                self.startDrag(group.id, e);
+                // Ctrl+拖动边框：仅移动框体，节点不跟随
+                self.startDrag(group.id, e, !!e.ctrlKey);
             });
             // 边框区域拦截了滚轮事件，需转发到画布以支持缩放
             borderEl.addEventListener('wheel', e => {
@@ -1304,7 +1305,7 @@ const XZGGroup = {
             }, { passive: false });
         });
 
-        // 标题栏操作：左键单击=绕过/选中，左键按住拖动=移动组，右键任意位置=设置
+        // 标题栏操作：左键单击=绕过/选中，左键按住拖动=移动组（Ctrl+拖动=仅移动框体），右键任意位置=设置
         const headerEl = el.querySelector('.xzg-group-header');
         let startX, startY, dragged;
         headerEl.addEventListener('mousedown', e => {
@@ -1339,14 +1340,16 @@ const XZGGroup = {
                     if (group.locked) return;
                     dragged = true;
                     document.removeEventListener('mousemove', onMove);
-                    self.startDrag(group.id, downE);
+                    // Ctrl+拖动标题栏：仅移动框体，节点不跟随
+                    self.startDrag(group.id, downE, !!downE.ctrlKey);
                 }
             };
             document.addEventListener('mousemove', onMove);
             const onUp = () => {
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
-                if (!dragged) {
+                // Ctrl 留给「仅拖框体」，不触发绕过；普通点击才绕过/开启
+                if (!dragged && !downE.ctrlKey) {
                     if (isLeftFifth) {
                         self.toggleBypassUnified(group.id);
                     } else if (isRightFifth) {
@@ -2008,12 +2011,14 @@ const XZGGroup = {
             box.innerHTML = `<div style="font-size:16px;font-weight:bold;color:#FFD700;margin-bottom:12px;">小珠光编组功能使用说明</div>
 <div style="color:#FFD700;font-weight:bold;">1、基本操作</div>
 选中节点 → Ctrl+G：创建编组框，包含所选节点<br>
-拖拽编组标题栏：移动编组位置<br>
+拖拽编组标题栏或边框：移动编组位置（框体与框内节点一起移动）<br>
+Ctrl+拖拽编组标题栏或边框：仅移动框体，框内节点不跟随<br>
 拖拽边框右下角：调整编组大小<br>
 编组可嵌套：编组框可以包含其他更小的编组框<br>
 <div style="color:#FFD700;font-weight:bold;margin-top:8px;">2、同级别反选模式</div>
 2.1 点击标题栏左侧 1/5 区域，被点击的编组 开启，同一级别的其他编组全部 绕过<br>
 2.2 点击标题栏右侧 1/5 区域，被点击的编组 绕过，同一级别的其他编组全部 开启<br>
+2.3 普通点击标题栏：切换当前编组的绕过/开启状态；Ctrl 专用于「仅拖框体」，不触发绕过<br>
 <div style="color:#FFD700;font-weight:bold;margin-top:8px;">3、锁定/解锁编组</div>
 点击标题栏 🔒 锁图标：锁定/解锁当前编组（锁定后无法拖动和调整大小）<br>
 Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
@@ -2061,8 +2066,8 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } if (e.key === 'Escape') { input.value = group.title; input.blur(); } });
     },
 
-    /* ── 拖动框体（节点跟随，自动收纳框内节点） ── */
-    startDrag(gid, downEv) {
+    /* ── 拖动框体（节点跟随，自动收纳框内节点）；frameOnly=true 时仅移动框体 ── */
+    startDrag(gid, downEv, frameOnly = false) {
         const group = this.groups[gid];
         if (!group?.bounds) return;
         if (group.locked) return;
@@ -2146,6 +2151,11 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             const dy = (e.clientY - startY) / scale;
             group.bounds.x = startBX + dx;
             group.bounds.y = startBY + dy;
+            if (frameOnly) {
+                // Ctrl+拖动：仅移动编组框，节点/子编组/箭头不跟随
+                graph.setDirtyCanvas?.(true, true);
+                return;
+            }
             nodeStarts.forEach(s => { s.node.pos[0] = s.x + dx; s.node.pos[1] = s.y + dy; });
             // 子编组 bounds 及其所有节点一起跟随移动
             childGroupData.forEach(cg => {

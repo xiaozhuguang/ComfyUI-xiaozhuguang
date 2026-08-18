@@ -37,7 +37,9 @@ _INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def _xzg_sanitize(name):
-    """把文件名中的非法字符替换为 _（与化神级 _sanitize 逻辑一致）"""
+    """把文件名中的非法字符替换为 _（与化神级 _sanitize 逻辑一致）
+    注意：本函数只用于单个文件名 / 前缀 / 单段目录名；对于整段路径请用 _xzg_sanitize_path
+    """
     if not name:
         return name
     drive = ""
@@ -48,6 +50,47 @@ def _xzg_sanitize(name):
     name = _INVALID_CHARS_RE.sub("_", name)
     name = name.strip().strip(".")
     return drive + name
+
+
+def _xzg_sanitize_path(p):
+    """清理目录路径（保留路径分隔符 / \\ 以及盘符）。
+    按 '/' 或 '\\' 拆成多段，每段单独用非法字符规则替换成 '_'，再按原风格拼回。
+    用于 base_dir 等用户选择的目录，避免 C:\\Users\\Desktop 变成 C:__Users_Desktop
+    """
+    if not p:
+        return p
+    # 提取 Windows 盘符（如 "C:"），仅保留字母和冒号
+    drive = ""
+    rest = p
+    m = re.match(r'^([A-Za-z]:)', p)
+    if m:
+        drive = m.group(1)
+        rest = p[len(drive):]
+    # 判断用的是哪种分隔符（优先反斜杠，其次正斜杠）
+    sep = "\\" if ("\\" in rest and "/" not in rest) else "/"
+    raw_segments = re.split(r"[\\/]", rest)
+    cleaned = []
+    for seg in raw_segments:
+        if seg == "":
+            # 保留连续分隔符的含义（例如开头的 / 代表绝对路径）
+            cleaned.append("")
+            continue
+        # 单段：只替换 < > : " | ? * 以及控制字符；盘符已单独处理，所以这里把 ':' 也视为非法
+        seg_clean = re.sub(r'[<>:"|?*\x00-\x1f]', "_", seg)
+        seg_clean = seg_clean.strip().strip(".")
+        cleaned.append(seg_clean)
+    result = sep.join(cleaned)
+    # 如果开头原来是分隔符（例如 \server\share 或 /home），确保 join 后仍然有
+    if rest and (rest[0] == "\\" or rest[0] == "/"):
+        if not result.startswith(sep):
+            result = sep + result.lstrip(sep)
+    # 规范化重复分隔符（如 \\server\share 开头保留双反斜，其他压缩为一个）
+    if result.startswith("\\\\"):
+        # UNC 路径：\\?\ 或 \\server\share 保留
+        pass
+    else:
+        result = re.sub(r"[\\/]{2,}", lambda m, s=sep: s, result)
+    return drive + result
 
 
 def _xzg_is_absolute_path(p):
@@ -499,11 +542,16 @@ def probe_video(filename, file_type):
     }
 
 
-def extract_frame(filename, file_type, time_sec, small=False):
-    """提取单帧为图片，写入 input/fastcut-cache/thumbs/frames 目录
-    small=True: 缩放到高度 120px + JPEG（缩略图用，体积小、IO 快）
-    small=False: 全分辨率 PNG（导出帧用）
-    返回: out_name（仅 basename）；子路径固定为 THUMBS_FRAMES_SUBDIR
+def extract_frame(filename, file_type, time_sec, small=False,
+                  use_default_output=True, base_dir="", filename_prefix="xzg-edit",
+                  add_date_stamp=False, add_time_stamp=False):
+    """提取单帧为图片
+    small=True:  缩放到高度 120px + JPEG（缩略图用），输出到 input/fastcut-cache/thumbs/frames
+    small=False: 全分辨率 PNG（导出帧用），输出目录与视频导出的输出设置一致
+    返回: (out_name, out_type, out_subfolder)
+      - out_name: 文件名（basename 或 含子路径的相对名）
+      - out_type: "input" 或 "output"
+      - out_subfolder: 子目录（相对 type 根目录），空字符串表示无
     """
     video_path, _ = resolve_path(filename, file_type)
     if not os.path.isfile(video_path):
@@ -511,25 +559,26 @@ def extract_frame(filename, file_type, time_sec, small=False):
     if time_sec < 0:
         time_sec = 0.0
 
-    input_dir = folder_paths.get_input_directory()
-    # 输出统一嵌套到：input/fastcut-cache/thumbs/frames
-    out_dir = os.path.join(input_dir, *THUMBS_FRAMES_SUBDIR.split("/"))
-    os.makedirs(out_dir, exist_ok=True)
-
-    # 图片：直接复制原图作为"帧"，无需 ffmpeg 转码
-    if _is_image_file(filename):
-        import shutil as _shutil
-        ext = os.path.splitext(filename)[1].lower()
-        out_name = f"frame_{int(time.time() * 1000)}{ext}"
-        out_path = os.path.join(out_dir, out_name)
-        try:
-            _shutil.copy2(video_path, out_path)
-        except Exception as e:
-            raise Exception(f"copy image frame failed: {e}")
-        return out_name
-
+    # ── small 缩略图：固定写入 input/fastcut-cache/thumbs/frames（原逻辑不变） ──
     if small:
-        # 缩略图模式：高度 120px + JPEG q5（按高度缩放保持比例，体积约为 PNG 的 1/10）
+        input_dir = folder_paths.get_input_directory()
+        out_dir = os.path.join(input_dir, *THUMBS_FRAMES_SUBDIR.split("/"))
+        os.makedirs(out_dir, exist_ok=True)
+        out_subfolder = THUMBS_FRAMES_SUBDIR
+        out_type = "input"
+
+        if _is_image_file(filename):
+            import shutil as _shutil
+            ext = os.path.splitext(filename)[1].lower()
+            out_name = f"frame_{int(time.time() * 1000)}_{int(time_sec * 1000)}{ext}"
+            out_path = os.path.join(out_dir, out_name)
+            try:
+                _shutil.copy2(video_path, out_path)
+            except Exception as e:
+                raise Exception(f"copy image frame failed: {e}")
+            return out_name, out_type, out_subfolder
+
+        # 缩略图模式：高度 120px + JPEG q5
         out_name = f"frame_{int(time.time() * 1000)}_{int(time_sec * 1000)}.jpg"
         out_path = os.path.join(out_dir, out_name)
         cmd = [ffmpeg_path, "-y", "-v", "error",
@@ -539,23 +588,114 @@ def extract_frame(filename, file_type, time_sec, small=False):
                "-vf", "scale=-1:120",
                "-q:v", "5",
                out_path]
+        proc = subprocess.run(cmd, capture_output=True, timeout=60)
+        if proc.returncode != 0:
+            err = proc.stderr.decode(*ENCODE_ARGS)
+            raise Exception(f"ffmpeg failed: {err[:500]}")
+        if not os.path.isfile(out_path):
+            raise Exception("frame not produced")
+        return out_name, out_type, out_subfolder
+
+    # ── 非 small 导出帧：目录与视频导出输出设置一致 ──
+    if use_default_output:
+        # 默认输出：ComfyUI output 目录，前缀固定 xzg-edit
+        out_root = folder_paths.get_output_directory()
+        out_type = "output"
+        resolved_prefix = "xzg-edit"
+        prefix_sep = "_"
+        out_subfolder_rel = ""  # 直接放根目录
     else:
-        # 全分辨率 PNG（导出帧用）
-        out_name = f"frame_{int(time.time() * 1000)}.png"
+        # 自定义输出：base_dir + 前缀/日期戳/时间戳
+        now = datetime.now()
+        _custom = _xzg_sanitize(filename_prefix or "")
+        _date = now.strftime("%Y%m%d") if add_date_stamp else ""
+        _time = now.strftime("%H%M%S") if add_time_stamp else ""
+        _dt = ""
+        if _date and _time:
+            _dt = f"{_date}-{_time}"
+        elif _date:
+            _dt = _date
+        elif _time:
+            _dt = _time
+        if _dt and _custom:
+            resolved_prefix = f"{_dt}-{_custom}"
+        elif _dt:
+            resolved_prefix = _dt
+        elif _custom:
+            resolved_prefix = _custom
+        else:
+            resolved_prefix = "xzg-edit"
+        prefix_sep = "-"
+        resolved_base = _xzg_sanitize_path(base_dir or "")
+        if resolved_base and _xzg_is_absolute_path(resolved_base):
+            out_root = resolved_base
+            out_type = "absolute"  # 标记为绝对路径，前端/view 不可直接访问
+            out_subfolder_rel = ""
+        elif resolved_base:
+            out_root = folder_paths.get_output_directory()
+            out_type = "output"
+            out_subfolder_rel = resolved_base  # 相对 output/ 的子目录
+        else:
+            out_root = folder_paths.get_output_directory()
+            out_type = "output"
+            out_subfolder_rel = ""
+
+    # 拼接实际 out_dir（如果是 absolute 模式直接 out_root；否则 out_root + 子目录）
+    if out_type == "absolute":
+        out_dir = out_root
+    elif out_subfolder_rel:
+        out_dir = os.path.join(out_root, *out_subfolder_rel.split("/"))
+    else:
+        out_dir = out_root
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 源文件是图片：直接复制（改扩展名保持原格式）
+    if _is_image_file(filename):
+        import shutil as _shutil
+        ext = os.path.splitext(filename)[1].lower() or ".png"
+        counter = 1
+        while True:
+            out_name = f"{resolved_prefix}{prefix_sep}{counter:04d}{ext}"
+            out_path = os.path.join(out_dir, out_name)
+            if not os.path.exists(out_path):
+                break
+            counter += 1
+        try:
+            _shutil.copy2(video_path, out_path)
+        except Exception as e:
+            raise Exception(f"copy image frame failed: {e}")
+        # 返回格式：subfolder 下的相对名（供 /view 端点使用）
+        if out_subfolder_rel:
+            rel_name = f"{out_subfolder_rel.replace(os.sep, '/')}/{out_name}"
+        else:
+            rel_name = out_name
+        return rel_name, out_type, out_subfolder_rel
+
+    # 全分辨率 PNG（导出帧用），按前缀+序号生成唯一文件名
+    counter = 1
+    while True:
+        out_name = f"{resolved_prefix}{prefix_sep}{counter:04d}.png"
         out_path = os.path.join(out_dir, out_name)
-        cmd = [ffmpeg_path, "-y", "-v", "error",
-               "-ss", f"{time_sec:.3f}",
-               "-i", video_path,
-               "-frames:v", "1",
-               "-q:v", "2",
-               out_path]
+        if not os.path.exists(out_path):
+            break
+        counter += 1
+    cmd = [ffmpeg_path, "-y", "-v", "error",
+           "-ss", f"{time_sec:.3f}",
+           "-i", video_path,
+           "-frames:v", "1",
+           "-q:v", "2",
+           out_path]
     proc = subprocess.run(cmd, capture_output=True, timeout=60)
     if proc.returncode != 0:
         err = proc.stderr.decode(*ENCODE_ARGS)
         raise Exception(f"ffmpeg failed: {err[:500]}")
     if not os.path.isfile(out_path):
         raise Exception("frame not produced")
-    return out_name
+    if out_subfolder_rel:
+        rel_name = f"{out_subfolder_rel.replace(os.sep, '/')}/{out_name}"
+    else:
+        rel_name = out_name
+    return rel_name, out_type, out_subfolder_rel
 
 
 def extract_thumbs_batch(filename, file_type, clip_start, clip_end, count):
@@ -783,15 +923,23 @@ def _xzg_ve_nvenc_available():
 
 
 def render_timeline(timeline, output_name=None, target_w=None, target_h=None, target_fps=None, quality="medium",
-                    use_default_output=True, base_dir="", filename_prefix="xzg-edit", add_date_stamp=False, add_time_stamp=False):
-    """渲染时间线：多源多片段拼接为 mp4
+                    use_default_output=True, base_dir="", filename_prefix="xzg-edit", add_date_stamp=False, add_time_stamp=False,
+                    audio_only=False, audio_format="mp3", audio_bitrate="128"):
+    """渲染时间线：多源多片段拼接为视频 或 仅导出音频
     timeline: [{filename, type, start, end}, ...]
-    target_w/target_h: 目标分辨率（>0 时覆盖首个片段分辨率）
-    target_fps: 目标帧率（>0 时覆盖首个片段帧率）
-    quality: 质量等级 high/medium/low → CRF/CQ 10/20/28
+    target_w/target_h: 目标分辨率（>0 时覆盖首个片段分辨率，audio_only 时忽略）
+    target_fps: 目标帧率（>0 时覆盖首个片段帧率，audio_only 时可忽略）
+    quality: 视频质量等级 high/medium/low → CRF/CQ 10/20/28（audio_only 时忽略）
+    audio_only: True 仅输出音频（无视频流），此时 output_ext = audio_format
+    audio_format: "mp3" / "flac" / "wav"（与小珠光音频保存完全一致）
+    audio_bitrate: MP3 比特率 kbps（"320"/"192"/"128"），FLAC/WAV 忽略（无损）
     输出设置（与小珠光图像保存-化神级完全一致）：
       use_default_output=True → 输出到 ComfyUI output 目录，前缀固定 xzg-edit
       use_default_output=False → 输出到 base_dir，前缀 = filename_prefix + 日期戳/时间戳
+    返回: (safe_out, out_type, extra_dict)
+      safe_out:     相对 output 的文件名（可能含子目录分隔符 /）
+      out_type:     "output" 或 "absolute"
+      extra_dict:   {"audio_only": bool, "audio_format": str|null, "video": bool, "extension": str}
     """
     if not timeline:
         raise Exception("timeline is empty")
@@ -827,6 +975,7 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
             end = float(clip['end'])
             tl_start = float(clip.get('tlStart', 0))
             kind = clip.get('kind', 'video')
+            raw_track = clip.get('track')
         except (TypeError, ValueError, KeyError):
             continue
         if start < 0:
@@ -837,10 +986,21 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
             start, end = end, start
         if end - start < 0.01:
             continue
+        # track 规范化：video 在 {v1, v2}，audio 在 {a1, a2}，不合法回默认
+        if kind == 'audio':
+            track = 'a2' if raw_track == 'a2' else 'a1'
+        else:
+            track = 'v2' if raw_track == 'v2' else 'v1'
         key = f"{clip['filename']}|{clip['type']}"
         # 前端标记 skip_audio=true 表示音频已独立拆分，即使源 has_audio=true 也不再从视频提
         raw_has_audio = source_audio.get(key, True)
         skip_flag = bool(clip.get('skip_audio', False))
+        # 视频变换属性（大小/移动/裁剪/透明度/音量）透传
+        def _f(key, default):
+            v = clip.get(key, default)
+            if v is None:
+                return default
+            return v
         norm_clips.append({
             "filename": clip['filename'],
             "type": clip['type'],
@@ -848,8 +1008,18 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
             "end": end,
             "tlStart": tl_start,
             "kind": kind,
+            "track": track,
             "has_audio": False if skip_flag else raw_has_audio,
             "skip_audio": skip_flag,
+            "scale": float(_f("scale", 1.0)),
+            "offsetX": float(_f("offsetX", 0.0)),
+            "offsetY": float(_f("offsetY", 0.0)),
+            "cropLeft": float(_f("cropLeft", 0.0)),
+            "cropRight": float(_f("cropRight", 0.0)),
+            "cropTop": float(_f("cropTop", 0.0)),
+            "cropBottom": float(_f("cropBottom", 0.0)),
+            "opacity": float(_f("opacity", 1.0)),
+            "volume": float(_f("volume", 1.0)),
         })
     if not norm_clips:
         raise Exception("no valid clips")
@@ -857,11 +1027,59 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
     # 调试日志：打印规整后的片段信息
     print(f"[小珠光] render_timeline: {len(norm_clips)} clips")
     for c in norm_clips:
-        print(f"  kind={c['kind']} file={c['filename']} start={c['start']:.3f} end={c['end']:.3f} tlStart={c['tlStart']:.3f} has_audio={c['has_audio']}")
+        print(f"  kind={c['kind']} track={c['track']} file={c['filename']} start={c['start']:.3f} end={c['end']:.3f} tlStart={c['tlStart']:.3f} has_audio={c['has_audio']}")
 
-    # 分离视频轨和音频轨
+    # 分离视频轨（v1 下层/v2 上层）和音频轨（a1/a2）
     norm_video = [c for c in norm_clips if c['kind'] != 'audio']
+    norm_video_v1 = [c for c in norm_video if c['track'] != 'v2']
+    norm_video_v2 = [c for c in norm_video if c['track'] == 'v2']
     norm_audio = [c for c in norm_clips if c['kind'] == 'audio']
+
+    # ── audio_only 纯音频模式：若没有任何音频来源（连从视频提的都没有）就报错 ──
+    if audio_only:
+        # 先尝试解析是否有可提取的音频源；否则直接抛错
+        any_audio_probe = (
+            len(norm_audio) > 0
+            or any(
+                (not bool(c.get('skip_audio', False))) and source_audio.get(f"{c['filename']}|{c['type']}", False)
+                for c in norm_video
+            )
+        )
+        if not any_audio_probe:
+            raise Exception("时间线上没有任何音频来源，无法仅导出音频。请添加音频片段，或包含带音频的视频片段。")
+        # audio_only 时忽略视频分辨率计算，直接跳过视频轨（base_w/h 仍保留以防 filter 复用）
+        base_w = 0
+        base_h = 0
+        base_fps = 0.0
+        base_fps_str = "0"
+        video_only_audio = False  # 不再需要黑屏填充，我们直接丢弃视频轨
+    else:
+        # 只有音频、无视频：用黑屏填充整个视频轨（默认 1280x720 @ 30fps）
+        video_only_audio = (len(norm_video) == 0 and len(norm_audio) > 0)
+        DEFAULT_BLACK_W = 1280
+        DEFAULT_BLACK_H = 720
+        DEFAULT_BLACK_FPS = 30.0
+
+        # 以首个视频片段分辨率/帧率为基准统一所有片段
+        # 只有音频时：使用默认黑屏分辨率/帧率
+        if video_only_audio:
+            base_w = int(target_w) if (target_w and int(target_w) > 0) else DEFAULT_BLACK_W
+            base_h = int(target_h) if (target_h and int(target_h) > 0) else DEFAULT_BLACK_H
+            base_fps = float(target_fps) if (target_fps and float(target_fps) > 0) else DEFAULT_BLACK_FPS
+        else:
+            base_key = f"{norm_video[0]['filename']}|{norm_video[0]['type']}" if norm_video else f"{norm_clips[0]['filename']}|{norm_clips[0]['type']}"
+            first_info = source_info.get(base_key)
+            if not first_info:
+                raise Exception("无法探测首个片段的分辨率，不能渲染")
+            base_w = int(target_w) if (target_w and int(target_w) > 0) else int(first_info['width'])
+            base_h = int(target_h) if (target_h and int(target_h) > 0) else int(first_info['height'])
+            if base_w <= 0 or base_h <= 0:
+                base_w = base_w if base_w > 0 else DEFAULT_BLACK_W
+                base_h = base_h if base_h > 0 else DEFAULT_BLACK_H
+            base_fps = float(target_fps) if (target_fps and float(target_fps) > 0) else (first_info.get('fps') or 30.0)
+            if base_fps <= 0:
+                base_fps = DEFAULT_BLACK_FPS
+        base_fps_str = f"{base_fps:g}"
 
     # 总时长 = max(视频末尾, 音频末尾)
     video_end = max([c['tlStart'] + (c['end'] - c['start']) for c in norm_video] + [0]) if norm_video else 0
@@ -870,20 +1088,17 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
     if total_duration < 0.01:
         raise Exception("timeline too short")
 
+    # 调试：打印音频片段裁剪信息，便于排查「裁剪后加载器仍显示原时长」
+    if norm_audio:
+        print(f"[小珠光-调试] total_duration={total_duration:.3f} audio_only={audio_only}")
+        for c in norm_audio:
+            print(f"  audio track={c['track']} start={c['start']:.3f} end={c['end']:.3f} "
+                  f"dur={c['end']-c['start']:.3f} tlStart={c['tlStart']:.3f}")
+
     # 音频来源：独立音频片段 或 从视频提取
     has_independent_audio = len(norm_audio) > 0
     has_video_audio = any(c['has_audio'] for c in norm_video)
     any_audio = has_independent_audio or has_video_audio
-
-    # 以首个视频片段分辨率/帧率为基准统一所有片段
-    base_key = f"{norm_video[0]['filename']}|{norm_video[0]['type']}" if norm_video else f"{norm_clips[0]['filename']}|{norm_clips[0]['type']}"
-    first_info = source_info.get(base_key)
-    if not first_info:
-        raise Exception("无法探测首个片段的分辨率，不能渲染")
-    base_w = int(target_w) if (target_w and int(target_w) > 0) else int(first_info['width'])
-    base_h = int(target_h) if (target_h and int(target_h) > 0) else int(first_info['height'])
-    base_fps = float(target_fps) if (target_fps and float(target_fps) > 0) else (first_info.get('fps') or 30.0)
-    base_fps_str = f"{base_fps:g}"
 
     # 构建 ffmpeg 命令
     cmd = [ffmpeg_path, "-y", "-v", "error"]
@@ -898,148 +1113,424 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
     v_idx = 0
     a_idx = 0
 
+    def _vid_transform(clip, base_w, base_h):
+        """生成单个视频片段的「裁剪→contain缩放→大小缩放→移动居中pad」filter 片段。
+        返回逗号连接的 filter 字符串（不含 trim/loop、fps/setsar/format）。
+        """
+        parts = []
+        cl = max(0.0, min(0.99, float(clip.get('cropLeft', 0.0))))
+        cr = max(0.0, min(0.99, float(clip.get('cropRight', 0.0))))
+        ct = max(0.0, min(0.99, float(clip.get('cropTop', 0.0))))
+        cb = max(0.0, min(0.99, float(clip.get('cropBottom', 0.0))))
+        if (cl + cr + ct + cb) > 0.001:
+            # 裁掉四边比例：w=iw*(1-cl-cr) h=ih*(1-ct-cb) x=iw*cl y=ih*ct
+            parts.append(
+                f"crop=iw*(1-{cl:g}-{cr:g}):ih*(1-{ct:g}-{cb:g}):iw*{cl:g}:ih*{ct:g}"
+            )
+        # contain 到目标分辨率
+        parts.append(f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease")
+        # 大小缩放（scale）
+        sc = float(clip.get('scale', 1.0))
+        if abs(sc - 1.0) > 0.001 and sc > 0:
+            parts.append(f"scale=iw*{sc:g}:ih*{sc:g}")
+        # 移动 + 居中 pad（偏移像素）
+        ox = float(clip.get('offsetX', 0.0))
+        oy = float(clip.get('offsetY', 0.0))
+        parts.append(f"pad={base_w}:{base_h}:(ow-iw)/2+{ox:g}:(oh-ih)/2+{oy:g}:black")
+        return ",".join(parts)
+
+    def _vid_opacity(clip):
+        """片段透明度：透明时返回「format=rgba,colorchannelmixer=aa=xxx,format=yuva420p」，
+        不透明时返回 None（直接 format=yuva420p）。
+        必须先转 rgba 再设置 alpha（与透明黑的做法一致），否则 yuva420p 上 aa 不生效。"""
+        op = float(clip.get('opacity', 1.0))
+        op = max(0.0, min(1.0, op))
+        if abs(op - 1.0) < 0.001:
+            return None
+        return f"format=rgba,colorchannelmixer=aa={op:g},format=yuva420p"
+
     # ── 视频轨：排序，左侧空隙黑屏，中间空隙黑屏，末尾补齐黑屏 ──
-    norm_video.sort(key=lambda c: c['tlStart'])
-    v_prev_end = 0.0
-    for clip in norm_video:
-        curr_start = clip['tlStart']
-        dur = clip['end'] - clip['start']
-        # 空隙填充黑屏（左侧 + 中间）
-        if curr_start > v_prev_end + 0.01:
-            gap = curr_start - v_prev_end
+    # V1（下层视频，track!=v2）：按 tlStart 拼接成完整时间线（[vbase]）
+    # V2（上层视频，track==v2）：逐段生成后 overlay 在 [vbase] 上（X重叠时 V2 覆盖 V1）
+    # 只有音频模式：整个视频轨只生成一条黑屏，覆盖 total_duration
+    # audio_only 纯音频模式：跳过所有视频轨 filter，v_labels 留空
+    if not audio_only:
+        if video_only_audio:
+            # 无视频（仅音频）：一条黑屏占位（后续无 V2 overlay）
             filter_parts.append(
-                f"color=black:s={base_w}x{base_h}:d={gap:.3f}:r={base_fps_str},"
+                f"color=black:s={base_w}x{base_h}:d={total_duration:.3f}:r={base_fps_str},"
                 f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
                 f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2:black,"
                 f"fps={base_fps_str},setsar=1,format=yuv420p[v{v_idx}]"
             )
             v_labels.append(f"[v{v_idx}]")
             v_idx += 1
-        # 视频片段
-        key = f"{clip['filename']}|{clip['type']}"
-        src_idx = source_map[key]
-        s, e = clip['start'], clip['end']
-        is_img = _is_image_file(clip['filename'])
-        if is_img:
-            # 图片：单帧，用 loop 滤镜复制帧到指定时长（start/end 在前端已设为 0/duration）
-            dur_clip = e - s
-            filter_parts.append(
-                f"[{src_idx}:v:0]loop=loop=-1:size=1:start=0,"
-                f"trim=duration={dur_clip:.3f},setpts=PTS-STARTPTS,"
-                f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
-                f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2:black,"
-                f"fps={base_fps_str},setsar=1,format=yuv420p[v{v_idx}]"
-            )
         else:
-            filter_parts.append(
-                f"[{src_idx}:v:0]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,"
-                f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
-                f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2:black,"
-                f"fps={base_fps_str},setsar=1,format=yuv420p[v{v_idx}]"
-            )
-        v_labels.append(f"[v{v_idx}]")
-        v_idx += 1
-        v_prev_end = curr_start + dur
-    # 末尾补齐黑屏到总时长
-    if total_duration > v_prev_end + 0.01:
-        gap = total_duration - v_prev_end
-        filter_parts.append(
-            f"color=black:s={base_w}x{base_h}:d={gap:.3f}:r={base_fps_str},"
-            f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
-            f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2:black,"
-            f"fps={base_fps_str},setsar=1,format=yuv420p[v{v_idx}]"
-        )
-        v_labels.append(f"[v{v_idx}]")
-        v_idx += 1
-
-    # ── 音频轨 ──
-    if has_independent_audio:
-        # 独立音频片段：排序，空隙静音，末尾补齐静音
-        norm_audio.sort(key=lambda c: c['tlStart'])
-        a_prev_end = 0.0
-        for clip in norm_audio:
-            curr_start = clip['tlStart']
-            dur = clip['end'] - clip['start']
-            if curr_start > a_prev_end + 0.01:
-                gap = curr_start - a_prev_end
+            # ── 第一步：V1（下层）完整拼接为 [vbase]（带 alpha，支持片段透明度）──
+            norm_video_v1.sort(key=lambda c: c['tlStart'])
+            v_prev_end = 0.0
+            for clip in norm_video_v1:
+                curr_start = clip['tlStart']
+                dur = clip['end'] - clip['start']
+                # 空隙填充黑屏（左侧 + 中间）：不透明黑，与片段同为 yuva420p
+                if curr_start > v_prev_end + 0.01:
+                    gap = curr_start - v_prev_end
+                    filter_parts.append(
+                        f"color=black:s={base_w}x{base_h}:d={gap:.3f}:r={base_fps_str},"
+                        f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
+                        f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2:black,"
+                        f"fps={base_fps_str},setsar=1,format=yuva420p[v{v_idx}]"
+                    )
+                    v_labels.append(f"[v{v_idx}]")
+                    v_idx += 1
+                # 视频片段（V1）：裁剪/大小/移动/透明度
+                key = f"{clip['filename']}|{clip['type']}"
+                src_idx = source_map[key]
+                s, e = clip['start'], clip['end']
+                is_img = _is_image_file(clip['filename'])
+                xf = _vid_transform(clip, base_w, base_h)
+                op = _vid_opacity(clip)
+                fmt_tail = op if op else "format=yuva420p"
+                if is_img:
+                    dur_clip = e - s
+                    filter_parts.append(
+                        f"[{src_idx}:v:0]loop=loop=-1:size=1:start=0,"
+                        f"trim=duration={dur_clip:.3f},setpts=PTS-STARTPTS,"
+                        f"{xf},"
+                        f"fps={base_fps_str},setsar=1,{fmt_tail}[v{v_idx}]"
+                    )
+                else:
+                    filter_parts.append(
+                        f"[{src_idx}:v:0]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,"
+                        f"{xf},"
+                        f"fps={base_fps_str},setsar=1,{fmt_tail}[v{v_idx}]"
+                    )
+                v_labels.append(f"[v{v_idx}]")
+                v_idx += 1
+                v_prev_end = curr_start + dur
+            # 末尾补齐黑屏到总时长
+            if total_duration > v_prev_end + 0.01:
+                gap = total_duration - v_prev_end
                 filter_parts.append(
-                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap:.3f}[a{a_idx}]"
+                    f"color=black:s={base_w}x{base_h}:d={gap:.3f}:r={base_fps_str},"
+                    f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease,"
+                    f"pad={base_w}:{base_h}:(ow-iw)/2:(oh-ih)/2:black,"
+                    f"fps={base_fps_str},setsar=1,format=yuva420p[v{v_idx}]"
                 )
-                a_labels.append(f"[a{a_idx}]")
-                a_idx += 1
-            key = f"{clip['filename']}|{clip['type']}"
-            src_idx = source_map[key]
-            s, e = clip['start'], clip['end']
-            filter_parts.append(
-                f"[{src_idx}:a:0]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{a_idx}]"
-            )
-            a_labels.append(f"[a{a_idx}]")
-            a_idx += 1
-            a_prev_end = curr_start + dur
-        if total_duration > a_prev_end + 0.01:
-            gap = total_duration - a_prev_end
-            filter_parts.append(
-                f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap:.3f}[a{a_idx}]"
-            )
-            a_labels.append(f"[a{a_idx}]")
-            a_idx += 1
-    elif has_video_audio:
-        # 从视频提取音频：跟随视频轨位置，空隙静音，无音频流视频用 anullsrc
-        v_prev_end = 0.0
-        for clip in norm_video:
-            curr_start = clip['tlStart']
-            dur = clip['end'] - clip['start']
-            if curr_start > v_prev_end + 0.01:
-                gap = curr_start - v_prev_end
+                v_labels.append(f"[v{v_idx}]")
+                v_idx += 1
+            # V1 全部 concat → [vbase]（带 alpha）
+            n_v1 = len(v_labels)
+            if n_v1 > 0:
+                filter_parts.append(f"{''.join(v_labels)}concat=n={n_v1}:v=1:a=0[vbase]")
+                v_labels.clear()
+                # V1 是带 alpha 的层：先叠到黑底得到不透明 V1 结果（V1 片段半透明时露出黑底）
                 filter_parts.append(
-                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap:.3f}[a{a_idx}]"
+                    f"color=black:s={base_w}x{base_h}:d={total_duration:.3f}:r={base_fps_str},"
+                    f"setsar=1,format=yuva420p[vblack]"
                 )
-                a_labels.append(f"[a{a_idx}]")
-                a_idx += 1
-            key = f"{clip['filename']}|{clip['type']}"
-            src_idx = source_map[key]
-            s, e = clip['start'], clip['end']
-            if clip['has_audio']:
-                filter_parts.append(
-                    f"[{src_idx}:a:0]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{a_idx}]"
-                )
+                filter_parts.append(f"[vblack][vbase]overlay=x=0:y=0:format=auto:eof_action=pass[v{v_idx}]")
+                base_layer = f"[v{v_idx}]"
+                v_idx += 1
             else:
+                base_layer = None
+
+            # ── 第二步：V2（上层，track=v2）构建为整条时间线 [v2base] ──
+            #    与 V1 base 完全对称：透明黑空隙 + V2 片段 + 末尾透明黑 → concat 成一条从 0
+            #    覆盖到 total_duration 的完整视频流，保证 overlay 两路输入帧始终对齐（不会缺帧停顿）。
+            #    空隙用透明黑(alpha=0)、V2 片段转 yuva420p(不透明)；
+            #    最后 [v1base][v2base]overlay 走 alpha 合成：V2 片段所在 X 窗口自然覆盖 V1，
+            #    其余时段 V2 全透明 → V1 完整透出，互不裁剪。
+            #    ⚠️ 不用 overlay 的 enable 表达式：其 t 取第 2 路输入(overlay)自身 PTS，而 V2 片段
+            #       setpts 从 0 起算，enable='between(t,tls,tle)' 永远不会命中，V2 会完全不显示。
+            norm_video_v2.sort(key=lambda c: c['tlStart'])
+            v2_prev_end = 0.0
+            v2_labels = []
+            for clip in norm_video_v2:
+                curr_start = max(0.0, float(clip['tlStart']))
+                dur_clip = clip['end'] - clip['start']
+                if curr_start + 0.001 >= total_duration or dur_clip <= 0:
+                    continue  # 完全在总时长之后 / 无时长，忽略
+                # V2 空隙：透明黑（alpha=0），overlay 时完全不遮挡 V1
+                if curr_start > v2_prev_end + 0.01:
+                    gap = curr_start - v2_prev_end
+                    filter_parts.append(
+                        f"color=black:s={base_w}x{base_h}:d={gap:.3f}:r={base_fps_str},"
+                        f"setsar=1,format=rgba,colorchannelmixer=aa=0,format=yuva420p[v{v_idx}]"
+                    )
+                    v2_labels.append(f"[v{v_idx}]")
+                    v_idx += 1
+                # V2 片段（带 alpha，支持裁剪/大小/移动/透明度）
+                key = f"{clip['filename']}|{clip['type']}"
+                src_idx = source_map[key]
+                s, e = clip['start'], clip['end']
+                is_img = _is_image_file(clip['filename'])
+                xf = _vid_transform(clip, base_w, base_h)
+                op = _vid_opacity(clip)
+                fmt_tail = op if op else "format=yuva420p"
+                if is_img:
+                    filter_parts.append(
+                        f"[{src_idx}:v:0]loop=loop=-1:size=1:start=0,"
+                        f"trim=duration={dur_clip:.3f},setpts=PTS-STARTPTS,"
+                        f"{xf},"
+                        f"fps={base_fps_str},setsar=1,{fmt_tail}[v{v_idx}]"
+                    )
+                else:
+                    filter_parts.append(
+                        f"[{src_idx}:v:0]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS,"
+                        f"{xf},"
+                        f"fps={base_fps_str},setsar=1,{fmt_tail}[v{v_idx}]"
+                    )
+                v2_labels.append(f"[v{v_idx}]")
+                v_idx += 1
+                v2_prev_end = curr_start + dur_clip
+            # V2 末尾补齐透明黑到总时长
+            if total_duration > v2_prev_end + 0.01:
+                gap = total_duration - v2_prev_end
                 filter_parts.append(
-                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={dur:.3f}[a{a_idx}]"
+                    f"color=black:s={base_w}x{base_h}:d={gap:.3f}:r={base_fps_str},"
+                    f"setsar=1,format=rgba,colorchannelmixer=aa=0,format=yuva420p[v{v_idx}]"
                 )
-            a_labels.append(f"[a{a_idx}]")
-            a_idx += 1
-            v_prev_end = curr_start + dur
-        if total_duration > v_prev_end + 0.01:
-            gap = total_duration - v_prev_end
+                v2_labels.append(f"[v{v_idx}]")
+                v_idx += 1
+            # V2 全部 concat → [v2base]
+            if v2_labels:
+                filter_parts.append(f"{''.join(v2_labels)}concat=n={len(v2_labels)}:v=1:a=0[v2base]")
+                if base_layer:
+                    # V1(不透明) 打底 + V2(带 alpha) 叠加：alpha 合成，V2 只在片段窗口覆盖 V1
+                    filter_parts.append(f"{base_layer}[v2base]overlay=x=0:y=0:format=auto:eof_action=pass[v{v_idx}]")
+                    base_layer = f"[v{v_idx}]"
+                    v_idx += 1
+                else:
+                    # 没有 V1 时先建整段不透明黑屏做底，再叠 V2（透明区最终显黑）
+                    filter_parts.append(
+                        f"color=black:s={base_w}x{base_h}:d={total_duration:.3f}:r={base_fps_str},"
+                        f"fps={base_fps_str},setsar=1,format=yuv420p[v{v_idx}]"
+                    )
+                    base_layer = f"[v{v_idx}]"
+                    v_idx += 1
+                    filter_parts.append(f"{base_layer}[v2base]overlay=x=0:y=0:format=auto:eof_action=pass[v{v_idx}]")
+                    base_layer = f"[v{v_idx}]"
+                    v_idx += 1
+            # 把最终 base_layer 作为视频输出 concat 片段加入 v_labels
+            if base_layer:
+                v_labels.append(base_layer)
+
+    # ── 音频轨：按轨道独立生成完整时间线，最后 amix 混音（剪辑软件逻辑，互不裁剪） ──
+    #
+    # 共四条可能的音频源：
+    #   a1  : 独立音频轨（track=a1 的 norm_audio），整条 total_duration
+    #   a2  : 独立音频轨（track=a2 的 norm_audio），整条 total_duration
+    #   av1 : 从 V1 视频片段提音频（has_audio=True 的 norm_video_v1），整条 total_duration
+    #   av2 : 从 V2 视频片段提音频（has_audio=True 的 norm_video_v2），整条 total_duration
+    # 每条源单独生成 total_duration 长的完整音频流；有几条 amix 几条；一条没有则 anullsrc 补静音。
+    #
+    # 为了便于复用，先写一个 inline 生成"单条音频轨完整流"的小函数：
+    #   build_full_audio(clips, get_has_audio, extract_audio)
+    #     - clips 是按 tlStart 已排好序、带 tlStart/start/end 的片段列表（可能为空）
+    #     - get_has_audio(clip) -> bool；extract_audio(clip) -> 生成带 atrim 的 ffmpeg filter 链尾部标签
+    #     - 返回最终整条音频的 pad label；如果整轨完全没内容，返回 None
+    # （这里为了避免 Python 闭包对 filter_parts/a_idx 副作用问题，直接 inline 生成四条。）
+
+    mixed_audio_inputs = []  # 每个元素为 "[aN]" 标签，用于最后 amix
+    # 统一音频格式：amix 与 concat 都严格要求所有输入通道/采样率/采样格式一致
+    AUDIO_FMT = "aformat=sample_fmts=fltp:channel_layouts=stereo:sample_rates=44100"
+
+    def _build_full_audio_from_clips(clips, has_audio_predicate, extract_audio_filter):
+        """生成单条总时长 total_duration 的完整音频 pad label；若无任何内容返回 None。
+        两遍扫描：先检查是否有真音频，有才生成 filter 链，避免在 filter_parts 中留下孤立 label。
+        """
+        nonlocal a_idx
+        # 第一遍：检查是否有真音频
+        has_real_audio = any(has_audio_predicate(c) for c in clips)
+        if not has_real_audio:
+            # 整条轨只有静音 → 丢弃，不写入任何 filter
+            return None
+        # 第二遍：有真音频，生成完整 filter 链
+        local_labels = []
+        prev_end = 0.0
+        for clip in clips:
+            curr_start = float(clip['tlStart'])
+            dur = float(clip['end'] - clip['start'])
+            # 前置静音
+            if curr_start > prev_end + 0.01:
+                gap = curr_start - prev_end
+                lbl = f"[a{a_idx}]"
+                filter_parts.append(
+                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap:.3f},"
+                    f"{AUDIO_FMT}{lbl}"
+                )
+                local_labels.append(lbl)
+                a_idx += 1
+                prev_end = curr_start
+            if has_audio_predicate(clip):
+                lbl = f"[a{a_idx}]"
+                key = f"{clip['filename']}|{clip['type']}"
+                src_idx = source_map[key]
+                s, e = float(clip['start']), float(clip['end'])
+                # 音量（volume，0~2）
+                vol = float(clip.get('volume', 1.0))
+                vol = max(0.0, min(2.0, vol))
+                vol_tail = f"volume={vol:g}," if abs(vol - 1.0) > 0.001 else ""
+                filter_parts.append(
+                    f"[{src_idx}:a:0]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS,"
+                    f"{vol_tail}{AUDIO_FMT}{lbl}"
+                )
+                local_labels.append(lbl)
+                a_idx += 1
+            else:
+                # 无音频：该片段时长用静音占位，保证轨内对齐
+                lbl = f"[a{a_idx}]"
+                filter_parts.append(
+                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={dur:.3f},"
+                    f"{AUDIO_FMT}{lbl}"
+                )
+                local_labels.append(lbl)
+                a_idx += 1
+            prev_end = curr_start + dur
+        # 末尾补齐静音到 total_duration
+        if float(total_duration) > prev_end + 0.01:
+            gap = float(total_duration) - prev_end
+            lbl = f"[a{a_idx}]"
             filter_parts.append(
-                f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap:.3f}[a{a_idx}]"
+                f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap:.3f},"
+                f"{AUDIO_FMT}{lbl}"
             )
-            a_labels.append(f"[a{a_idx}]")
+            local_labels.append(lbl)
             a_idx += 1
+        n = len(local_labels)
+        if n <= 0:
+            return None
+        if n == 1:
+            return local_labels[0]
+        concat_lbl = f"[a{a_idx}]"
+        a_idx += 1
+        filter_parts.append(f"{''.join(local_labels)}concat=n={n}:v=0:a=1,{AUDIO_FMT}{concat_lbl}")
+        return concat_lbl
 
-    # concat 视频轨和音频轨（片段数独立）
+    # ① 独立音频轨 a1 (track=a1)
+    a1_clips = sorted([c for c in norm_audio if c['track'] == 'a1'], key=lambda c: c['tlStart'])
+    a1_label = _build_full_audio_from_clips(
+        a1_clips,
+        has_audio_predicate=lambda c: True,  # 独立音频片段本身就是音频
+        extract_audio_filter=None,
+    )
+    if a1_label:
+        mixed_audio_inputs.append(a1_label)
+
+    # ② 独立音频轨 a2 (track=a2)
+    a2_clips = sorted([c for c in norm_audio if c['track'] == 'a2'], key=lambda c: c['tlStart'])
+    a2_label = _build_full_audio_from_clips(
+        a2_clips,
+        has_audio_predicate=lambda c: True,
+        extract_audio_filter=None,
+    )
+    if a2_label:
+        mixed_audio_inputs.append(a2_label)
+
+    # ③ 从 V1 视频片段提音频 av1（只有带 has_audio 的片段才贡献真音频）
+    av1_clips = sorted([c for c in norm_video_v1], key=lambda c: c['tlStart'])
+    av1_label = _build_full_audio_from_clips(
+        av1_clips,
+        has_audio_predicate=lambda c: bool(c.get('has_audio', False)),
+        extract_audio_filter=None,
+    )
+    if av1_label:
+        mixed_audio_inputs.append(av1_label)
+
+    # ④ 从 V2 视频片段提音频 av2
+    av2_clips = sorted([c for c in norm_video_v2], key=lambda c: c['tlStart'])
+    av2_label = _build_full_audio_from_clips(
+        av2_clips,
+        has_audio_predicate=lambda c: bool(c.get('has_audio', False)),
+        extract_audio_filter=None,
+    )
+    if av2_label:
+        mixed_audio_inputs.append(av2_label)
+
+    # concat 视频轨（视频始终 1 条输出 [outv]，v_labels 里一般只有 base_layer 这 1 个 label）
     n_v = len(v_labels)
-    if any_audio and a_labels:
-        n_a = len(a_labels)
-        filter_parts.append(f"{''.join(v_labels)}concat=n={n_v}:v=1:a=0[outv]")
-        filter_parts.append(f"{''.join(a_labels)}concat=n={n_a}:v=0:a=1[outa]")
-    else:
-        filter_parts.append(f"{''.join(v_labels)}concat=n={n_v}:v=1:a=0[outv]")
+    # audio_only 且无音频轨不可能走到这（前面有校验），这里只做分支
+    if not audio_only:
+        if n_v <= 0:
+            raise Exception("视频输出未生成（v_labels 为空）")
+        if n_v == 1:
+            # 单段：直接作为 outv，避免 concat 空跑（去掉 alpha，兼容编码器）
+            filter_parts.append(f"{v_labels[0]}format=yuv420p[outv]")
+        else:
+            filter_parts.append(f"{''.join(v_labels)}concat=n={n_v}:v=1:a=0,format=yuv420p[outv]")
 
-    cmd += ["-filter_complex", ";".join(filter_parts),
-            "-map", "[outv]"]
-    if any_audio:
-        cmd += ["-map", "[outa]",
-                "-c:a", "aac", "-b:a", "128k"]
-    # 编码器：优先 NVENC 硬编（大幅提速），否则 libx264 veryfast（比 fast 快约 2 倍）
-    # 质量：high→CRF/CQ 10（视觉无损）、medium→20（默认均衡）、low→28（压缩）
-    q_map = {"high": 10, "medium": 20, "low": 28}
-    q_val = q_map.get(quality, 20)
-    if _xzg_ve_nvenc_available():
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(q_val), "-pix_fmt", "yuv420p"]
+    # ── 音频最终输出：多轨 amix；一轨都没有 → 静音兜底 / 纯音频模式报错 ──
+    if len(mixed_audio_inputs) == 0:
+        if audio_only:
+            raise Exception("音频轨无任何音频来源，无法仅导出音频。")
+        # 视频模式无任何音频：补一条完整时间的静音（保证 -map [outa] 一致）
+        any_audio = False
+        if not audio_only:
+            lbl = f"[a{a_idx}]"
+            filter_parts.append(
+                f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={total_duration:.3f},"
+                f"{AUDIO_FMT}{lbl}"
+            )
+            a_idx += 1
+            mixed_audio_inputs.append(lbl)
+            any_audio = True  # 有静音占位，仍然输出 [outa]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(q_val), "-pix_fmt", "yuv420p"]
+        any_audio = True
+
+    if any_audio and len(mixed_audio_inputs) > 0:
+        if len(mixed_audio_inputs) == 1:
+            filter_parts.append(f"{mixed_audio_inputs[0]}{AUDIO_FMT}[outa]")
+        else:
+            # amix：duration=first 以首条 total_duration 长的轨为基准；
+            # 不使用 normalize=0（部分旧版 ffmpeg 不支持），默认 1/n 归一化避免爆音。
+            n_in = len(mixed_audio_inputs)
+            filter_parts.append(
+                f"{''.join(mixed_audio_inputs)}amix=inputs={n_in}:duration=first:dropout_transition=0,"
+                f"{AUDIO_FMT}[outa]"
+            )
+
+    # ── 编码器与 map 参数：视频模式 / 纯音频模式分支 ──
+    if audio_only:
+        # 纯音频：仅 map 音频，不用视频编码器；format 在 mp3/flac/wav 之间切换
+        audio_format = audio_format if audio_format in ("mp3", "flac", "wav") else "mp3"
+        AUDIO_FORMATS = {
+            "mp3":  {"encoder": "libmp3lame", "extension": "mp3"},
+            "wav":  {"encoder": "pcm_s16le",   "extension": "wav"},
+            "flac": {"encoder": "flac",       "extension": "flac"},
+        }
+        fmt_info = AUDIO_FORMATS[audio_format]
+        cmd += ["-filter_complex", ";".join(filter_parts),
+                "-map", "[outa]",
+                "-c:a", fmt_info["encoder"]]
+        # MP3 → bitrate；FLAC → compression_level 5；WAV → 无损（无额外参数）
+        if audio_format == "mp3":
+            try:
+                br = max(16, min(320, int(audio_bitrate)))
+            except (TypeError, ValueError):
+                br = 128
+            cmd += ["-b:a", f"{br}k"]
+        elif audio_format == "flac":
+            cmd += ["-compression_level", "5"]
+        out_ext = fmt_info["extension"]
+    else:
+        # 调试：打印完整 filter_complex，便于排查透明度/裁剪/移动/大小/音量
+        fc_str = ";".join(filter_parts)
+        print("[小珠光-调试] filter_complex:")
+        print(fc_str)
+        cmd += ["-filter_complex", fc_str,
+                "-map", "[outv]"]
+        if any_audio:
+            cmd += ["-map", "[outa]",
+                    "-c:a", "aac", "-b:a", "128k"]
+        # 编码器：优先 NVENC 硬编（大幅提速），否则 libx264 veryfast
+        q_map = {"high": 10, "medium": 20, "low": 28}
+        q_val = q_map.get(quality, 20)
+        if _xzg_ve_nvenc_available():
+            cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(q_val), "-pix_fmt", "yuv420p"]
+        else:
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(q_val), "-pix_fmt", "yuv420p"]
+        out_ext = "mp4"
 
     # ═══════════════════════════════════════════════════════════════════
     # 输出目录 + 文件名（与小珠光图像保存-化神级完全一致）
@@ -1050,6 +1541,7 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
         out_type = "output"
         resolved_prefix = "xzg-edit"
         prefix_sep = "_"
+        out_subfolder_rel = ""
     else:
         # 自定义输出：base_dir + 前缀/日期戳/时间戳
         now = datetime.now()
@@ -1074,7 +1566,7 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
             resolved_prefix = "xzg-edit"
         prefix_sep = "-"
         # 输出目录：绝对路径直接用，相对路径拼到 ComfyUI output/ 下
-        resolved_base = _xzg_sanitize(base_dir or "")
+        resolved_base = _xzg_sanitize_path(base_dir or "")
         if resolved_base and _xzg_is_absolute_path(resolved_base):
             out_dir = resolved_base
         elif resolved_base:
@@ -1087,7 +1579,7 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
     # 生成唯一文件名：前缀 + 序号（避免覆盖同名文件）
     counter = 1
     while True:
-        safe_out = f"{resolved_prefix}{prefix_sep}{counter:04d}.mp4"
+        safe_out = f"{resolved_prefix}{prefix_sep}{counter:04d}.{out_ext}"
         out_path = os.path.join(out_dir, safe_out)
         if not os.path.exists(out_path):
             break
@@ -1100,7 +1592,23 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
         raise Exception(f"ffmpeg failed: {err[:800]}")
     if not os.path.isfile(out_path):
         raise Exception("output not produced")
-    return safe_out, out_type
+    # out_subfolder_rel 是 custom 模式下相对 output/ 的子目录（default/saveas 为空）
+    # 与 extract_frame 保持一致：若 out_dir != output_root（或绝对路径），safe_out 前面拼子目录
+    if out_type != "absolute" and out_subfolder_rel:
+        rel_prefix = out_subfolder_rel.replace("\\", "/").rstrip("/")
+        safe_out_rel = f"{rel_prefix}/{safe_out}"
+    else:
+        safe_out_rel = safe_out
+    extra = {
+        "audio_only": bool(audio_only),
+        "audio_format": audio_format if audio_only else None,
+        "video": not audio_only,
+        "extension": out_ext,
+        # 子目录信息（前端下载 URL 构造要区分 subfolder / basename）
+        "subfolder": out_subfolder_rel,
+        "basename": safe_out,
+    }
+    return safe_out_rel, out_type, extra
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1173,11 +1681,24 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
         file_type = data.get("type", "input")
         time_sec = float(data.get("time", 0.0))
         small = bool(data.get("small", False))
-        out_name = extract_frame(filename, file_type, time_sec, small)
+        # 输出设置（仅 small=False 导出帧时使用；small=True 缩略图忽略，固定走 input 缓存）
+        use_default_output = bool(data.get("use_default_output", True))
+        base_dir = data.get("base_dir", "")
+        filename_prefix = data.get("filename_prefix", "xzg-edit")
+        add_date_stamp = bool(data.get("add_date_stamp", False))
+        add_time_stamp = bool(data.get("add_time_stamp", False))
+        out_name, out_type, out_subfolder = extract_frame(
+            filename, file_type, time_sec, small,
+            use_default_output=use_default_output,
+            base_dir=base_dir,
+            filename_prefix=filename_prefix,
+            add_date_stamp=add_date_stamp,
+            add_time_stamp=add_time_stamp,
+        )
         return web.json_response({
             "filename": out_name,
-            "subfolder": THUMBS_FRAMES_SUBDIR,  # 帧缩略图统一放到 fastcut-cache/thumbs/frames
-            "type": "input",
+            "subfolder": out_subfolder,
+            "type": out_type,
             "time": time_sec,
             "small": small,
         })
@@ -1224,14 +1745,33 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
         target_h = data.get("target_height")
         target_fps = data.get("target_fps")
         quality = data.get("quality", "medium")
+        output_mode = data.get("output_mode", "default")  # default / saveas / custom
         use_default_output = data.get("use_default_output", True)
         base_dir = data.get("base_dir", "")
         filename_prefix = data.get("filename_prefix", "xzg-edit")
         add_date_stamp = data.get("add_date_stamp", False)
         add_time_stamp = data.get("add_time_stamp", False)
-        out_name, out_type = render_timeline(timeline, output_name, target_w, target_h, target_fps, quality,
-                                             use_default_output, base_dir, filename_prefix, add_date_stamp, add_time_stamp)
-        return web.json_response({"filename": out_name, "type": out_type, "clips_count": len(timeline)})
+        # 纯音频导出
+        audio_only = bool(data.get("audio_only", False))
+        audio_format = data.get("audio_format", "mp3")   # mp3 / flac / wav
+        audio_bitrate = data.get("audio_bitrate", "128")  # 320 / 192 / 128（kbps，仅 mp3 生效）
+        # default / saveas 都走 use_default_output=true；saveas 仅前端触发下载对话框
+        print(f"[小珠光快剪] 导出模式: {output_mode}, use_default_output={use_default_output}, audio_only={audio_only}, audio_format={audio_format}")
+        out_name, out_type, extra = render_timeline(
+            timeline, output_name, target_w, target_h, target_fps, quality,
+            use_default_output, base_dir, filename_prefix, add_date_stamp, add_time_stamp,
+            audio_only=audio_only, audio_format=audio_format, audio_bitrate=audio_bitrate,
+        )
+        resp = {
+            "filename": out_name,
+            "type": out_type,
+            "clips_count": len(timeline),
+            "output_mode": output_mode,
+        }
+        # 把 extra 信息一并返回（audio_only / audio_format / video / extension / subfolder / basename）
+        if isinstance(extra, dict):
+            resp.update(extra)
+        return web.json_response(resp)
 
     @_xzg_ve_PS.instance.routes.post("/xzg_video_editor_clear_cache")
     @_xzg_ve_safe

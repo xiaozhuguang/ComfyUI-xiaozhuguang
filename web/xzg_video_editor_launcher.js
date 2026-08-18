@@ -42,7 +42,7 @@ function buildButton() {
         align-self:center; margin:auto 0;
         background:transparent;
     `;
-    btn.innerHTML = `<span>快剪</span>`;
+    btn.innerHTML = `<span style="font-size:18px;">🎬</span><span>快剪</span>`;
     btn.addEventListener("mouseenter", () => {
         btn.style.background = "var(--comfy-input-bg,#353535)";
     });
@@ -57,14 +57,25 @@ function buildButton() {
     return btn;
 }
 
-function openEditor() {
+function openEditor(options = {}) {
     // 单例：已打开则不重复创建
     if (_editorInstance && !_editorInstance._destroyed) {
-        return;
+        // 切换打开来源：更新回调 / 模式过滤（无参=菜单独立打开，恢复完整 UI）
+        _editorInstance._confirmCallback =
+            typeof options.confirmCallback === "function" ? options.confirmCallback : null;
+        _editorInstance._confirmCallbackCalled = false;
+        _editorInstance._modeFilter =
+            (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
+        _editorInstance._applyModeFilter?.();
+        return _editorInstance;
     }
-    _editorInstance = new XiaozhuguangVideoEditor();
+    _editorInstance = new XiaozhuguangVideoEditor(options);
     _editorInstance.open();
+    return _editorInstance;
 }
+
+// 暴露到 window 供视频加载器等外部调用
+window._xzgOpenVideoEditor = openEditor;
 
 function tryInject(retries) {
     const container = findMenuContainer();
