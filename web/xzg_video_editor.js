@@ -353,8 +353,10 @@ export class XiaozhuguangVideoEditor {
         this.selectedClipIds = new Set();  // 多选集合
         this._clipIdCounter = 0;
         this._magnetEnabled = true;  // 磁吸开关：true=开启(红)，false=关闭(灰)
-        // 快捷键配置（可自定义，持久化到 localStorage）
-        this._shortcutKeys = this._loadShortcuts();
+        // 快捷键配置（固定默认键位，不可自定义）
+        this._shortcutKeys = this._defaultShortcuts();
+        // 清理旧版本遗留的自定义快捷键本地存储
+        try { localStorage.removeItem("xzg_ve_shortcuts"); } catch (_) {}
         this._root = null;
         this._canvas = null;       // 预览区 canvas（替代 <video>）
         this._draggingClip = null;
@@ -666,47 +668,79 @@ export class XiaozhuguangVideoEditor {
             redo: "ctrl+shift+z",      // 重做
         };
     }
-    _loadShortcuts() {
-        try {
-            const saved = JSON.parse(localStorage.getItem("xzg_ve_shortcuts") || "{}");
-            return { ...this._defaultShortcuts(), ...saved };
-        } catch (_) {
-            return this._defaultShortcuts();
-        }
-    }
-    _saveShortcuts() {
-        try {
-            localStorage.setItem("xzg_ve_shortcuts", JSON.stringify(this._shortcutKeys));
-        } catch (_) { /* 忽略存储失败 */ }
-    }
-    _resetShortcuts() {
-        this._shortcutKeys = this._defaultShortcuts();
-        this._saveShortcuts();
-    }
-    // 打开快捷键设置弹窗：列出可配置的快捷键，点击后按下新键即可录制
-    _openShortcutSettings() {
+    // 打开使用说明书弹窗：详细介绍操作、功能与快捷键
+    _openManual() {
         const self = this;
         const overlay = document.createElement("div");
         overlay.style.cssText =
-            "position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;";
-        const close = () => { overlay.remove(); window.removeEventListener("keydown", recordHandler, true); };
+            "position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:999999;display:flex;align-items:center;justify-content:center;";
+        const close = () => overlay.remove();
         overlay.addEventListener("pointerdown", (e) => { if (e.target === overlay) close(); });
 
         const dialog = document.createElement("div");
         dialog.style.cssText =
-            "background:#1e1e1e;border:1px solid #3a3a3a;border-top:2px solid #dcc85b;" +
-            "border-radius:8px;padding:18px 22px;min-width:380px;max-width:640px;max-height:80vh;overflow-y:auto;" +
+            "background:#1e1e1e;border:1px solid #3a3a3a;border-top:2px solid #ff5252;" +
+            "border-radius:8px;padding:18px 22px;min-width:440px;max-width:680px;max-height:82vh;overflow-y:auto;" +
             "box-shadow:0 4px 24px rgba(0,0,0,0.6);";
         dialog.addEventListener("pointerdown", (e) => e.stopPropagation());
 
-        const title = document.createElement("div");
-        title.style.cssText = "font-size:14px;color:#dcc85b;font-weight:bold;margin-bottom:14px;";
-        title.textContent = "快捷键设置";
-        dialog.appendChild(title);
+        // 分区标题 / 正文行
+        const sectionTitle = (t) => {
+            const el = document.createElement("div");
+            el.style.cssText = "font-size:13px;color:#ff5252;font-weight:bold;margin:16px 0 6px;";
+            el.textContent = t;
+            dialog.appendChild(el);
+        };
+        const textRow = (t) => {
+            const el = document.createElement("div");
+            el.style.cssText = "font-size:12px;color:#ccc;line-height:1.9;";
+            el.innerHTML = t;
+            dialog.appendChild(el);
+        };
 
-        // 动作中文名映射
-        const LABELS = {
+        const title = document.createElement("div");
+        title.style.cssText = "font-size:15px;color:#ff5252;font-weight:bold;margin-bottom:4px;";
+        title.textContent = "小珠光 · 快剪 使用说明书";
+        dialog.appendChild(title);
+        const sub = document.createElement("div");
+        sub.style.cssText = "font-size:11px;color:#888;margin-bottom:6px;";
+        sub.textContent = "导入素材 → 时间线剪辑 → 导出成片";
+        dialog.appendChild(sub);
+
+        // ── 一、基本操作 ──
+        sectionTitle("一、基本操作");
+        textRow("1. 导入媒体：点击媒体库左上角「＋」按钮上传视频 / 音频 / 图片；空白处按住拖动可框选多个媒体。");
+        textRow("2. 添加到时间线：从媒体库按住素材拖到时间线轨道（视频 / 图片 → V1、V2 轨道；音频 → A1、A2 轨道），出现金色预览框后松手即可落位。");
+        textRow("3. 播放预览：按「空格」播放 / 暂停；按「← / →」逐帧步进；按住 Shift（Shift+← / Shift+→）按秒步进，步进幅度按当前帧率换算（如 30fps 跳 30 帧 = 1 秒）；点击时间线刻度尺可定位播放头。");
+        textRow("4. 保存：点击「确认」将时间线保存到节点；点击「导出」直接导出成片；点击「×」关闭快剪（不保存）。");
+
+        // ── 二、时间线编辑 ──
+        sectionTitle("二、时间线编辑");
+        textRow("· 选择片段：单击选中；Ctrl+点击 可增减多选；空白处按住拖动可框选。多选后可整体移动 / 删除 / 分割。");
+        textRow("· 移动片段：直接拖动片段；上下拖动可跨轨道（视频 V1 ↔ V2，音频 A1 ↔ A2）。");
+        textRow("· 复制片段：按住 Alt 并拖动片段，原片段保留，松手后生成副本。");
+        textRow("· 修剪长度：拖动片段的左右边缘，可缩短或恢复片段长度。");
+        textRow("· 分割：将播放头移到目标位置，按「B」或点击工具栏「分割」按钮，在播放头处切开片段。");
+        textRow("· 删除：选中片段后按「Delete」。");
+        textRow("· 磁吸：工具栏「🧲」开关（红 = 开，灰 = 关），开启后拖动时片段自动吸附对齐边缘与播放头。");
+        textRow("· 旗标：按「M」在播放头处添加旗标，用于标记关键位置；右键「旗标」按钮清空所有旗标。");
+        textRow("· 缩放时间线：按住 Alt + 滚轮缩放；按「E」时间线适配总宽度；按「R」以播放头为中心显示 10 秒。");
+        textRow("· 平移：中键按住拖动可平移时间线。");
+        textRow("· 轨道高度：在轨道上按住 Shift + 滚轮调整高度；时间线左上角按钮可恢复默认布局。");
+        textRow("· 撤销 / 重做：Ctrl+Z 撤销，Ctrl+Shift+Z（或 Ctrl+Y）重做。");
+
+        // ── 三、预览与属性 ──
+        sectionTitle("三、预览与属性");
+        textRow("· 预览缩放：在预览画面上滚动滚轮放大 / 缩小（以鼠标位置为中心）；按「Z」重置视图。");
+        textRow("· 片段属性：选中片段后，右侧属性面板可调整——视频：大小、水平 / 垂直移动、四边裁剪、透明度、音量；音频：音量。");
+        textRow("· 滑条精调：按住 Alt 拖动属性滑条可进行精细微调。");
+        textRow("· 分辨率 / 帧率：预览区上方可设置导出分辨率与帧率。");
+
+        // ── 四、快捷键 ──
+        sectionTitle("四、快捷键（固定键位）");
+        const SC_LABELS = {
             playpause: "播放 / 暂停",
+            frameskip: "帧步进（← / →，+Shift 按秒步进）",
             delete: "删除选中",
             split: "分割片段",
             addflag: "添加旗标",
@@ -716,104 +750,46 @@ export class XiaozhuguangVideoEditor {
             undo: "撤销",
             redo: "重做",
         };
-        const bindingToKey = (b) => b || "";
+        const scTable = document.createElement("div");
+        scTable.style.cssText = "border:1px solid #3a3a3a;border-radius:6px;padding:4px 12px;";
+        for (const action of Object.keys(self._defaultShortcuts())) {
+            const row = document.createElement("div");
+            row.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #2a2a2a;";
+            const name = document.createElement("span");
+            name.style.cssText = "font-size:12px;color:#ddd;";
+            name.textContent = SC_LABELS[action] || action;
+            const key = document.createElement("span");
+            key.style.cssText = "background:#2a2a2a;border:1px solid #4a4a4a;border-radius:4px;padding:2px 10px;font-size:12px;color:#fff;white-space:nowrap;";
+            key.textContent = self._shortcutLabel(self._shortcutKeys[action]);
+            row.appendChild(name);
+            row.appendChild(key);
+            scTable.appendChild(row);
+        }
+        dialog.appendChild(scTable);
+        const scTip = document.createElement("div");
+        scTip.style.cssText = "font-size:11px;color:#888;margin-top:6px;line-height:1.8;";
+        scTip.innerHTML =
+            "· 帧步进组合：← / → 单帧步进；Shift+← / Shift+→ 按 1 秒步进（按当前帧率换算，如 30fps 跳 30 帧）。";
+        dialog.appendChild(scTip);
 
-        let recordingAction = null;
-        const rowEls = {};
-        const recordHandler = (e) => {
-            // 在录制时拦截按键，防止触发其他快捷键
-            if (recordingAction) {
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                const keyMap = {
-                    " ": "space", "Space": "space",
-                    "Delete": "delete", "Backspace": "delete",
-                    "ArrowLeft": "arrowleft", "ArrowRight": "arrowright",
-                };
-                let keyPart = keyMap[e.key] || (e.key.length === 1 ? e.key.toLowerCase() : e.key);
-                // 忽略单独按下的修饰键
-                const MOD_KEYS = ["control", "shift", "alt", "meta"];
-                if (MOD_KEYS.includes(keyPart.toLowerCase())) return;
-                const mods = [];
-                if (e.ctrlKey || e.metaKey) mods.push("ctrl");
-                if (e.shiftKey) mods.push("shift");
-                if (e.altKey) mods.push("alt");
-                let binding = [...mods, keyPart].join("+");
-                if (keyPart === "escape") { close(); return; }
-                if (keyPart === "enter") { recordingAction = null; this._renderShortcutRows(dialog, rowEls, LABELS); return; }
-                this._shortcutKeys[recordingAction] = binding;
-                recordingAction = null;
-                this._saveShortcuts();
-                this._renderShortcutRows(dialog, rowEls, LABELS);
-            }
-        };
-        // capture 阶段监听，确保先于主快捷键处理
-        window.addEventListener("keydown", recordHandler, true);
+        // ── 五、导出 ──
+        sectionTitle("五、导出");
+        textRow("· 格式：视频 MP4（质量高 CRF10 / 中 CRF20 / 低 CRF28）；音频 MP3（320 / 192 / 128 kbps）；WAV / FLAC 无损。");
+        textRow("· 输出目录：点击顶栏「输出目录设置」选择导出位置。");
+        textRow("· 点击「导出」开始渲染，进度显示在顶栏状态区。");
 
-        this._renderShortcutRows = (d, rowEls, LABELS) => {
-            // 移除旧的列表行（保留标题/按钮区域），重建
-            d.querySelectorAll(".xzg-shortcut-row").forEach(el => el.remove());
-            const actions = Object.keys(self._defaultShortcuts());
-            for (const action of actions) {
-                const row = document.createElement("div");
-                row.className = "xzg-shortcut-row";
-                row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid #2a2a2a;";
-                const nameEl = document.createElement("span");
-                nameEl.style.cssText = "font-size:13px;color:#ddd;";
-                nameEl.textContent = LABELS[action] || action;
-                const keyBtn = document.createElement("button");
-                keyBtn.style.cssText =
-                    "background:#2a2a2a;color:#fff;border:1px solid #4a4a4a;border-radius:4px;" +
-                    "padding:3px 12px;font-size:13px;cursor:pointer;min-width:110px;text-align:center;";
-                keyBtn.textContent = self._shortcutLabel(self._shortcutKeys[action]);
-                keyBtn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    if (recordingAction === action) {
-                        recordingAction = null;
-                        keyBtn.textContent = self._shortcutLabel(self._shortcutKeys[action]);
-                    } else {
-                        recordingAction = action;
-                        keyBtn.textContent = "按下新键…";
-                        keyBtn.style.background = "#3a4a6a";
-                    }
-                    // 高亮当前行
-                    d.querySelectorAll(".xzg-shortcut-row .xzg-shortcut-record-btn").forEach(b => b.style.background = "#2a2a2a");
-                    keyBtn.style.background = recordingAction === action ? "#3a4a6a" : "#2a2a2a";
-                });
-                keyBtn.classList.add("xzg-shortcut-record-btn");
-                row.appendChild(nameEl);
-                row.appendChild(keyBtn);
-                rowEls[action] = keyBtn;
-                d.appendChild(row);
-            }
-        };
-
+        // 底部按钮
         const btnRow = document.createElement("div");
-        btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:14px;";
-        const resetBtn = document.createElement("button");
-        resetBtn.textContent = "恢复默认";
-        resetBtn.style.cssText = "background:transparent;color:#dcc85b;border:1px solid #dcc85b;border-radius:4px;padding:5px 14px;font-size:12px;cursor:pointer;";
-        resetBtn.addEventListener("click", () => {
-            this._resetShortcuts();
-            this._renderShortcutRows(dialog, rowEls, LABELS);
-        });
+        btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:16px;";
         const closeBtn = document.createElement("button");
         closeBtn.textContent = "关闭";
         closeBtn.style.cssText = "background:#3a4a6a;color:#fff;border:none;border-radius:4px;padding:5px 16px;font-size:12px;cursor:pointer;";
         closeBtn.addEventListener("click", close);
-        btnRow.appendChild(resetBtn);
         btnRow.appendChild(closeBtn);
         dialog.appendChild(btnRow);
 
-        // 说明
-        const tip = document.createElement("div");
-        tip.style.cssText = "font-size:11px;color:#888;margin-top:8px;";
-        tip.textContent = "点击右侧按钮后，在键盘上按下新的组合键即可修改。Ctrl/Shift/Alt 可与任意键组合。Esc 关闭弹窗，Enter 取消录制。";
-        dialog.appendChild(tip);
-
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
-        this._renderShortcutRows(dialog, rowEls, LABELS);
     }
     // 判断按键事件是否匹配某个绑定（支持纯键 / ctrl+ / shift+ / alt+ / Space / 方向键）
     _matchShortcut(e, binding) {
@@ -862,7 +838,7 @@ export class XiaozhuguangVideoEditor {
     }
 
     _onKeyDown(e) {
-        // 空格键播放/暂停（可自定义）
+        // 空格键播放/暂停
         if (this._matchShortcut(e, this._shortcutKeys.playpause)) {
             // 始终阻止浏览器默认行为（防止滚动、按钮激活、菜单弹出等）
             e.preventDefault();
@@ -1077,7 +1053,7 @@ export class XiaozhuguangVideoEditor {
                     <span class="xzg-ve-title">🎬 小珠光 · 快剪</span>
                     <span class="xzg-ve-status"></span>
                     <div class="xzg-ve-header-right">
-                        <button class="xzg-ve-btn xzg-ve-btn-shortcut-settings" title="快捷键设置">⚙️</button>
+                        <button class="xzg-ve-btn xzg-ve-btn-manual" title="使用说明书"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#ff5252" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></button>
                         <button class="xzg-ve-btn xzg-ve-btn-output-settings" title="输出目录设置">输出目录设置</button>
                         <span class="xzg-ve-format-label">格式</span>
                         <select class="xzg-ve-format-select">
@@ -1539,8 +1515,8 @@ export class XiaozhuguangVideoEditor {
                 window._xzgShowDirBrowser(fakeNode);
             };
         }
-        const shortcutSettingsBtn = root.querySelector(".xzg-ve-btn-shortcut-settings");
-        if (shortcutSettingsBtn) shortcutSettingsBtn.onclick = () => { shortcutSettingsBtn.blur(); this._openShortcutSettings(); };
+        const manualBtn = root.querySelector(".xzg-ve-btn-manual");
+        if (manualBtn) manualBtn.onclick = () => { manualBtn.blur(); this._openManual(); };
         this._updateOutputBtn();
         root.querySelector(".xzg-ve-btn-reset-layout").onclick = (e) => { e.currentTarget.blur(); this._resetTrackLayout(); };
         // 渲染分辨率控件：预设选择 → 自动填入宽高；竖屏按钮 → 交换宽高使较大值为高
@@ -1895,7 +1871,9 @@ export class XiaozhuguangVideoEditor {
         // 捕获阶段 mousedown：若事件源自菜单内部（颜色项），放行让它走自己的 handler；
         // 否则（点击空白/其他片段）隐藏菜单
         const hideAll = (e) => {
-            if (menu.contains(e.target)) return;
+            // e.target 可能是非 Node（如 window 的 blur/resize），contains 会抛错，需先判断
+            const t = e && e.target;
+            if (t && t.nodeType === 1 && menu.contains(t)) return;
             this._hideCtxMenu();
         };
         document.addEventListener("mousedown", hideAll, true);
@@ -2805,16 +2783,18 @@ export class XiaozhuguangVideoEditor {
         }
         .xzg-ve-btn:hover { background: #454545; }
         .xzg-ve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .xzg-ve-btn.xzg-ve-btn-shortcut-settings {
-            background: transparent; color: #ddd; border: none;
+        .xzg-ve-btn.xzg-ve-btn-manual {
+            background: transparent; color: #ff5252; border: none;
             border-radius: 4px; padding: 0 7px; font-size: 16px; line-height: 1;
-            margin-right: 4px;
+            margin-right: 4px; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
         }
-        .xzg-ve-btn.xzg-ve-btn-shortcut-settings:hover {
-            background: #454545;
+        .xzg-ve-btn.xzg-ve-btn-manual svg { display: block; }
+        .xzg-ve-btn.xzg-ve-btn-manual:hover {
+            background: transparent;
         }
-        .xzg-ve-btn.xzg-ve-btn-shortcut-settings:focus,
-        .xzg-ve-btn.xzg-ve-btn-shortcut-settings:focus-visible { outline: none; }
+        .xzg-ve-btn.xzg-ve-btn-manual:focus,
+        .xzg-ve-btn.xzg-ve-btn-manual:focus-visible { outline: none; }
         .xzg-ve-btn.xzg-ve-btn-output-settings {
             background: transparent; color: #fff; border: none;
             border-radius: 4px; padding: 3px 10px; font-size: 12px;

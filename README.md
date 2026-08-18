@@ -651,6 +651,41 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.1.0 (2026-08-19)
+
+**📦 依赖管理大升级（pyproject.toml + requirements.txt 双清单）**
+
+- **pyproject.toml 补齐必需依赖**：`torch / numpy / Pillow / opencv-python / safetensors / librosa / llama-cpp-python` 升级为必需项，确保 Comfy Registry 安装时核心节点（视频加载/快剪、Qwen、TTS）零缺依赖；`transformers` 明确 `>=4.57.1`（Qwen3VLForConditionalGeneration 要求）；`imageio_ffmpeg` 统一横线为 `imageio-ffmpeg`
+- **huggingface_hub 降为可选**：从必需清单移除，改为注释标记的可选项，缺失时小珠光所有大模型节点（Qwen/AudioDiT）走本地目录扫描模式，不自动联网下载（与离线版设计一致）
+- **requirements.txt 全面重写**：
+  - 顶部大标题注释 + 安装指引 `pip install -r requirements.txt`
+  - 明确划分为「必需依赖」（缺少插件无法启动或核心节点不可用）与「可选依赖」（按需安装，缺失不影响启动）
+  - 每个可选依赖单独一行注释，说明作用与缺失时的降级行为（如 `einops` 仅影响 AudioDiT 推理、`mediapipe`/`insightface` 降级到整图兜底、`flash-attn` 回退到 PyTorch SDPA 等）
+
+**🎬 化神级视频编辑器：使用说明书替换快捷键自定义**
+
+- **移除整套自定义快捷键逻辑**：`_loadShortcuts()` / `_saveShortcuts()` / `_resetShortcuts()` / `_openShortcutSettings()` 及按键录制 handler 全部删除，`_shortcutKeys` 改为直接返回 `_defaultShortcuts()`
+- **启动时清理旧缓存**：初始化处 `localStorage.removeItem("xzg_ve_shortcuts")`，清理旧版本用户遗留的自定义键位，避免与固定键位冲突
+- **⚙️ → 📖 图标更换**：原「⚙️ 快捷键设置」齿轮按钮替换为**红色书本 SVG 图标**（`<svg viewBox="0 0 24 24">` 双翻页书本，描边色 `#ff5252`），title 改为「使用说明书」
+- **全新 `_openManual()` 说明书弹窗**（`z-index:999999`、红色顶边、最大 82vh 滚动），包含 5 大章节：
+  1. **基本操作**：导入媒体、拖入时间线、播放预览（逐帧/秒步）、保存/导出/关闭
+  2. **时间线编辑**：选择/移动/复制/修剪/分割/删除、磁吸、旗标、缩放、平移、轨道高度调整、撤销重做（每项均标注对应快捷键）
+  3. **预览与属性**：预览缩放（Z 重置）、片段属性面板（视频/音频各项调节）、Alt 精调滑条、分辨率帧率设置
+  4. **快捷键（固定键位）**：动作名 + 绑定键表格化展示，底部额外说明「←/→ 单帧、Shift+←/→ 按 1 秒按帧率换算」
+  5. **导出**：格式（MP4 CRF、MP3 320kbps、WAV/FLAC）、输出目录设置、渲染进度
+
+**🛡 右键菜单隐藏鲁棒性修复**
+
+- `_hideCtxMenu` 的 `hideAll` 事件中，`e.target` 可能是非 Node 对象（如 window 的 blur/resize 事件派发时 `e.target` 为 undefined 或 window），直接调用 `menu.contains(e.target)` 会抛 `TypeError`
+- **修复**：解构为 `const t = e && e.target`，再加 `t.nodeType === 1`（元素节点）判断后才走 `menu.contains(t)` 判定，其他情况一律直接隐藏菜单，杜绝偶发报错干扰
+
+**🗂 其他新增与维护**
+
+- 新增 `comfyui.yml` / `editor.yml`：UI 界面元素快照定义（ComfyUI 主界面 + 快剪编辑器元素树引用）
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.0.0` 升至 `12.1.0`
+
+---
+
 ### V12.0.0 (2026-08-18)
 
 **🎬 化神级视频编辑器重磅升级：双视频轨 + 双音频轨（V1/V2/A1/A2）**

@@ -1,0 +1,11 @@
+- generic [active] [ref=e1]:
+  - status "Loading ComfyUI" [ref=e2]:
+    - img [ref=e3]
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - generic "Progress Bar by rgthree. right-click for rgthree menu." [ref=e12]:
+        - generic [ref=e14]: Idle
+      - generic [ref=e15]: .. .. ..
+    - text: 
+  - text: ×
+  - textbox: "#000000"

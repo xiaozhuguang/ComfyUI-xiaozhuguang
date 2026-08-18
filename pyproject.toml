@@ -1,15 +1,29 @@
 [project]
 name = "ComfyUI-xiaozhuguang"
 description = "小珠光 - ComfyUI节点美化增强插件，提供节点收藏、工作流管理、主题美化、田字格对齐、视觉编组等功能"
-version = "12.0.0"
+version = "12.1.0"
 license = { file = "LICENSE" }
 dependencies = [
+    "torch",
     "torchvision",
-    "huggingface_hub",
+    "numpy",
+    "Pillow",
+    "opencv-python",
     "transformers>=4.57.1",
     "qwen-vl-utils",
-    "bitsandbytes",
     "imageio-ffmpeg",
+    "safetensors",
+    "librosa",
+    "llama-cpp-python",
+    "bitsandbytes",
+    # 可选（缺失会降级但不影响其它节点，详见 requirements.txt）：
+    # "huggingface_hub",
+    # "einops",
+    # "mediapipe",
+    # "insightface",
+    # "onnxruntime",
+    # "flash-attn",
+    # "sageattention",
 ]
 
 [project.urls]
