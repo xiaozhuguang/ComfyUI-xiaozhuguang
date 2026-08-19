@@ -352,6 +352,19 @@ export class XiaozhuguangVideoEditor {
         this.timeline = [];
         this.selectedClipIds = new Set();  // 多选集合
         this._clipIdCounter = 0;
+        // 轨道空隙选中（单轨道操作）：{ track: "v1"|"v2"|"a1"|"a2", start, end }
+        // 点击轨道空白处选中两片段之间的空隙，Delete 后空隙后方片段前移贴合（不影响其他轨道）
+        this._selectedGap = null;
+        this._gapSelEl = null;   // 空隙选中框 DOM 元素（渲染在各轨道容器内）
+        // 轨道名单击高亮（单选）：null | "v1" | "v2" | "a1" | "a2"
+        // 单击轨道头名称 → 该名称红色+加粗+加大字体，其他轨道名恢复默认
+        this._activeTrackName = null;
+        // 媒体库 Shift 范围选择锚点（上次单选/Ctrl点选的媒体名）；Shift+点击选中锚点到当前项之间的全部媒体
+        this._mediaSelAnchor = null;
+        // 时间线片段 Shift 范围选择锚点（clip id）；Shift+点击选中同轨道锚点到当前片段之间的全部片段（含两端）
+        this._clipSelAnchor = null;
+        // 最近交互区域："media"（媒体库）| "timeline"（时间线）；Ctrl+A 据此分流全选对象
+        this._lastFocusArea = "media";
         this._magnetEnabled = true;  // 磁吸开关：true=开启(红)，false=关闭(灰)
         // 快捷键配置（固定默认键位，不可自定义）
         this._shortcutKeys = this._defaultShortcuts();
@@ -633,6 +646,15 @@ export class XiaozhuguangVideoEditor {
             window.removeEventListener("wheel", this._ctrlZoomBlocker, { capture: true });
             this._ctrlZoomBlocker = null;
         }
+        // 交互区域激活监听清理（capture 阶段）
+        if (this._tlFocusHandler && this._timeline) {
+            this._timeline.removeEventListener("mousedown", this._tlFocusHandler, true);
+            this._tlFocusHandler = null;
+        }
+        if (this._mediaFocusHandler && this._mediaList) {
+            this._mediaList.removeEventListener("mousedown", this._mediaFocusHandler, true);
+            this._mediaFocusHandler = null;
+        }
         if (this._middleBtnPanHandler) {
             window.removeEventListener("mousedown", this._middleBtnPanHandler, { capture: true });
             this._middleBtnPanHandler = null;
@@ -857,6 +879,30 @@ export class XiaozhuguangVideoEditor {
         // 输入框中不响应快捷键
         const tag = (e.target?.tagName || "").toLowerCase();
         if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
+        // Ctrl+A / Cmd+A：全选。按最近交互区域分流：
+        //   timeline（刚点过时间线片段）→ 全选所有片段；media / 默认 → 全选媒体库
+        if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+            if (this._lastFocusArea === "timeline" && this.timeline.length > 0) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                this._clearGapSelection();
+                this.selectedClipIds = new Set(this.timeline.map(c => c.id));
+                if (this.selectedMediaNames.size > 0) {
+                    this.selectedMediaNames.clear();
+                    this._renderMediaList();
+                }
+                this._updateClipSelection();
+                this._renderProps();
+                this._setStatus(`已全选 ${this.selectedClipIds.size} 个片段（Delete 删除）`);
+            } else if (this.mediaLibrary.length > 0) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                this.selectedMediaNames = new Set(this.mediaLibrary.map(m => m.name));
+                this._renderMediaList();
+                this._setStatus(`已全选 ${this.selectedMediaNames.size} 个媒体（Delete 删除）`);
+            }
+            return;
+        }
         // Ctrl+Z 撤销 / Ctrl+Shift+Z 重做（也支持 Ctrl+Y 重做）
         if (this._matchShortcut(e, this._shortcutKeys.undo)) {
             e.preventDefault();
@@ -871,12 +917,13 @@ export class XiaozhuguangVideoEditor {
         if (this._matchShortcut(e, this._shortcutKeys.delete) || e.key === "Backspace") {
             const mediaSel = this.selectedMediaNames.size > 0;
             const clipSel = this.selectedClipIds.size > 0;
+            const gapSel = !!this._selectedGap;
             // 快剪编辑器打开期间，Delete/Backspace 一律拦截并阻止向 ComfyUI 画布传播：
             // 从音频/视频加载器进入时，加载器节点仍处于画布选中状态，若快剪内无选中片段
             // 直接 return 放行，事件会穿透到 LiteGraph 删除该节点（删光音轨所有音频后误删节点）
             e.preventDefault();
             e.stopImmediatePropagation();
-            if (!mediaSel && !clipSel) return;
+            if (!mediaSel && !clipSel && !gapSel) return;
             this._pushHistory();
             // 删除选中的媒体（同步删除后端缓存文件，避免重新上传时生成 _1 文件）
             if (mediaSel) {
@@ -900,6 +947,11 @@ export class XiaozhuguangVideoEditor {
                 }
                 this.selectedClipIds.clear();
             }
+            // 删除选中的轨道空隙（无片段、无媒体选中时）：空隙后方片段前移贴合，单轨道操作
+            // 媒体删除会级联移除其引用片段，与空隙前移叠加会产生意外位移，故互斥执行
+            if (gapSel && !clipSel && !mediaSel) {
+                this._deleteSelectedGap();
+            }
             this._renderTimeline();
             this._renderProps();
             if (mediaSel && clipSel) {
@@ -909,6 +961,7 @@ export class XiaozhuguangVideoEditor {
             } else if (clipSel) {
                 this._setStatus(`已删除时间线片段`);
             }
+            // gapSel 独有场景的状态提示由 _deleteSelectedGap 内部设置（含轨道名与移动片段数）
             return;
         }
         // 左右箭头：单帧步进；Shift+左右箭头：1秒步进（按当前帧率，24fps=24帧，30fps=30帧）
@@ -1395,6 +1448,7 @@ export class XiaozhuguangVideoEditor {
                 this._tlViewMode = "audio";
                 this._tlHeightsCustomized = true;
                 this._tlMaximizedTrack = null;
+                this._clearGapSelection(); // 模式切换：清空旧空隙选中（隐藏轨道不可见，避免误删）
                 const tlH = Math.max(1, (this._timeline && this._timeline.clientHeight > 0) ? this._timeline.clientHeight : 400);
                 const trackAreaH = tlH - 35;
                 this._tlV2TopHeight = 0;
@@ -1402,12 +1456,19 @@ export class XiaozhuguangVideoEditor {
                 const eachH = Math.floor((trackAreaH - 1) / 2);
                 this._tlAudioHeight = eachH;
                 this._tlV2BotHeight = eachH;
+                // 音频模式固定偏移 71（无 5px 粗分割线），面板高度需匹配轨道总高
+                // 避免初始 Shift+滚轮时面板从 350 跳变到正确高度，导致 A2 视觉跳高
+                const audioFixedOff = 71;
+                const audioPanelH = audioFixedOff + eachH * 2;
+                if (this._tlPanel) this._tlPanel.style.height = audioPanelH + "px";
+                this._tlHeight = audioPanelH;
                 this._applyTrackLayout();
             } else if (mode === "video") {
                 // 视频加载器打开：保持四轨均分（默认行为）
                 this._tlViewMode = "both";
                 this._tlHeightsCustomized = false;
                 this._tlMaximizedTrack = null;
+                this._clearGapSelection(); // 模式切换：清空旧空隙选中（隐藏轨道不可见，避免误删）
                 this._applyTrackLayout();
             }
             // mode === null（独立打开）：不强制重置布局，保留用户当前布局
@@ -1749,6 +1810,19 @@ export class XiaozhuguangVideoEditor {
                 this._addClipToTimeline(name, type, tlStart, track);
             }
         });
+
+        // 交互区域激活（Ctrl+A 分流）：capture 阶段监听容器 mousedown，
+        // 在后代元素（片段/刻度区/轨道手柄等 stopPropagation）之前执行，确保任何单击都能标记焦点区域
+        //   单击时间线任何区域（片段、轨道空白、刻度区、播放头、轨道头、手柄）→ 激活时间线（Ctrl+A 全选片段）
+        //   单击媒体库任何区域（媒体项、空白）→ 激活媒体库（Ctrl+A 全选媒体）
+        this._tlFocusHandler = (e) => {
+            if (e.button === 0 || e.button === 2) this._lastFocusArea = "timeline";
+        };
+        this._timeline.addEventListener("mousedown", this._tlFocusHandler, true);
+        this._mediaFocusHandler = (e) => {
+            if (e.button === 0 || e.button === 2) this._lastFocusArea = "media";
+        };
+        this._mediaList.addEventListener("mousedown", this._mediaFocusHandler, true);
 
         // 时间线框选：在时间线空白区域 mousedown 启动
         this._timeline.addEventListener("mousedown", (e) => this._onTimelineMouseDown(e));
@@ -2400,6 +2474,15 @@ export class XiaozhuguangVideoEditor {
             display: flex; align-items: stretch;
             overflow: hidden;
         }
+        /* 轨道空隙选中框（与拖动预览框同风格：金色虚线 + 半透明金色填充） */
+        .xzg-ve-gap-sel {
+            position: absolute; top: 0; bottom: 0;
+            background: rgba(220, 200, 91, 0.15);
+            border: 1px dashed #dcc85b;
+            border-radius: 3px;
+            pointer-events: none; z-index: 15;
+            box-sizing: border-box;
+        }
         .xzg-ve-sel-box {
             position: absolute; background: rgba(102, 153, 255, 0.15);
             border: 1px dashed #6699ff; pointer-events: none; z-index: 10;
@@ -2438,6 +2521,12 @@ export class XiaozhuguangVideoEditor {
             color: #ddd; font-size: 12px; flex: 1;
             user-select: none; -webkit-user-select: none;
             cursor: pointer; /* 双击可切换仅视频/仅音频显示 */
+        }
+        /* 轨道名单击高亮：红色 + 加粗 + 加大字体（单选，同时仅一个轨道名高亮） */
+        .xzg-ve-track-name.xzg-ve-track-name-active {
+            color: #ff5252;
+            font-weight: 700;
+            font-size: 15px;
         }
         /* 三个手柄：top(视频高度)、mid(视频/音频分配比例)、bottom(音频高度)
            都用 absolute + top 定位，由 JS _applyTrackLayout 统一计算 */
@@ -3074,6 +3163,11 @@ export class XiaozhuguangVideoEditor {
                 m.info = cached.info;
                 m.probeState = "ok";
                 m.error = null;
+                // 探测成功 → 同步清掉「单个缩略图失败黑名单 + loading 去重锁」
+                // 否则清理缓存后重导入，列表渲染会先读 THUMB_CACHE.failed=true → 直接显示 ❌，
+                // 不再触发 _loadThumbnail 重试
+                delete _XZG_VE_THUMB_CACHE[key];
+                _XZG_VE_THUMB_LOADING.delete(key);
                 // 探测成功：文件已恢复在线，从离线集合移除
                 if (this.offlineMediaNames.has(m.name)) {
                     this.offlineMediaNames.delete(m.name);
@@ -3082,37 +3176,14 @@ export class XiaozhuguangVideoEditor {
                 this._renderMediaList();
                 continue;
             } else if (cached && cached.state === "failed") {
-                console.log("[xzg-ve] probeQueue: 缓存命中(failed), name=", m.name);
-                m.probeState = "failed";
+                // 之前探测失败过：但「一键清理缓存后重新导入 / 重新上传恢复离线」场景下，
+                // 文件已在磁盘上重新存在 → 必须重试，不能永远走失败黑名单
+                console.log("[xzg-ve] probeQueue: 缓存命中(failed), 清掉后重试, name=", m.name);
+                delete _XZG_VE_PROBE_CACHE[key];
                 m.error = cached.error;
-                // 文件不存在（手工删除或被清理）：标记为离线，保留媒体库项和时间线片段
-                const isNotFound = m.error && m.error.includes("file not found");
-                if (isNotFound) {
-                    this.offlineMediaNames.add(m.name);
-                    this._setStatus(`视频 "${m.name}" 文件不存在（离线媒体）`);
-                    this._renderTimeline();
-                } else {
-                    // 文件损坏或过小（后端已删除）：从媒体库移除并删除时间线片段
-                    const isCorrupted = m.error && (
-                        m.error.includes("已删除") ||
-                        m.error.includes("文件损坏或过小")
-                    );
-                    if (isCorrupted) {
-                        this._setStatus(`视频 "${m.name}" 文件损坏，已从媒体库移除`);
-                        const idx = this.mediaLibrary.findIndex(item => item.name === m.name && item.type === m.type);
-                        if (idx >= 0) this.mediaLibrary.splice(idx, 1);
-                        _xzgVeRemoveSessionMedia(m.name);
-                        for (let i = this.timeline.length - 1; i >= 0; i--) {
-                            if (this.timeline[i].filename === m.name) {
-                                this.timeline.splice(i, 1);
-                            }
-                        }
-                        this._renderTimeline();
-                        if (this.selectedClipIds.size > 0) this._renderProps();
-                    } else {
-                        this._setStatus(`视频 "${m.name}" 探测失败: ${m.error}（文件保留，可重试）`);
-                    }
-                }
+                // 重置 probeState 为 pending，标记 dirty，循环重新跑探测
+                m.probeState = "pending";
+                this._probeDirty = true;
                 this._renderMediaList();
                 continue;
             }
@@ -3203,10 +3274,17 @@ export class XiaozhuguangVideoEditor {
                             thumbs, interval: thumbsData.interval || 0.3,
                             duration: thumbsData.duration || 0, failed: false,
                         };
+                        // 清理时间线缩略图流级的失败缓存与 loading 锁，
+                        // 确保之前失败过的同 key，能拿到新的 thumbs 不再永远走失败态
+                        _XZG_VE_FULL_THUMB_STREAM_LOADING.delete(mediaKey);
                         console.log("[xzg-ve] probeQueue: 缩略图流已预填充, name=", m.name, "count=", thumbs.length);
                     } else if (resp.thumbs_error) {
                         console.warn("[xzg-ve] probeQueue: 缩略图流生成失败（视频正常）, name=", m.name, "err=", resp.thumbs_error);
                     }
+                    // 探测 + 缩略图流返回后：必须同步清「媒体库单缩略图失败黑名单 / loading 锁」
+                    // 否则 renderMediaList 读 THUMB_CACHE.failed=true 会直接显示 ❌，不触发 _loadThumbnail 重试
+                    delete _XZG_VE_THUMB_CACHE[key];
+                    _XZG_VE_THUMB_LOADING.delete(key);
                 }
             } catch (e) {
                 console.log("[xzg-ve] probeQueue: probe+thumbs 异常, name=", m.name, "error=", e.message);
@@ -3393,19 +3471,37 @@ export class XiaozhuguangVideoEditor {
             }
             _el("div", infoClass, infoText, item);
             // mousedown 选中（不影响拖拽，dragstart 在 mousedown 之后触发）
+            // Ctrl/Meta+点击：增减选择；Shift+点击：范围选择（锚点到当前项之间全部，含两端）；
+            // 普通点击：单选（重置锚点）
             item.addEventListener("mousedown", (e) => {
-                if (e.ctrlKey || e.metaKey) {
+                if (e.shiftKey && this._mediaSelAnchor) {
+                    // Shift 范围选择：锚点 → 当前项（含两端）
+                    const names = this.mediaLibrary.map(mm => mm.name);
+                    const ai = names.indexOf(this._mediaSelAnchor);
+                    const ci = names.indexOf(m.name);
+                    if (ai >= 0 && ci >= 0) {
+                        const [from, to] = ai <= ci ? [ai, ci] : [ci, ai];
+                        this.selectedMediaNames = new Set(names.slice(from, to + 1));
+                    } else {
+                        // 锚点不在当前列表（已删除）：退化为单选并重置锚点
+                        this.selectedMediaNames = new Set([m.name]);
+                        this._mediaSelAnchor = m.name;
+                    }
+                } else if (e.ctrlKey || e.metaKey) {
                     if (this.selectedMediaNames.has(m.name)) {
                         this.selectedMediaNames.delete(m.name);
                     } else {
                         this.selectedMediaNames.add(m.name);
                     }
+                    this._mediaSelAnchor = m.name; // Ctrl 点选也更新锚点（Shift 以最后操作项为基准）
                 } else {
                     if (!this.selectedMediaNames.has(m.name)) {
                         this.selectedMediaNames = new Set([m.name]);
                     }
+                    this._mediaSelAnchor = m.name; // 单选重置锚点
                 }
-                // 点媒体时清空时间线选中
+                // 点媒体时清空时间线选中（含轨道空隙选中）
+                this._clearGapSelection();
                 if (this.selectedClipIds.size > 0) {
                     this.selectedClipIds.clear();
                     this._renderTimeline();
@@ -3620,10 +3716,56 @@ export class XiaozhuguangVideoEditor {
             this._tlHeightsCustomized = true; // 拖动期间不走 _applyTrackLayout 自动均分，直接应用等量变化
             const onMove = (ev) => {
                 let h = startH + (startY - ev.clientY);
-                // 最小高度 = 36(header) + 35(刻度) + 25*4(四轨) + 5px粗 ≈ 176
-                if (h < 176) h = 176;
+                // 音频加载器模式：仅 A1/A2 两轨可见，V2-上/V1 隐藏且高度保持 0
+                //   最小高度 = 36(header) + 35(刻度) + 25*2(两轨) = 121
+                //   固定偏移 = 71（无 5px 粗分割线，A1↔A2 1px 细线为 overlaid 不占高）
+                // 通用模式：四轨可见，最小 176，固定偏移 76（含 5px 粗分割线）
+                const isAudioMode = this._modeFilter === "audio";
+                const minH = isAudioMode ? 121 : 176;
+                const fixedOff = isAudioMode ? 71 : 76;
+                if (h < minH) h = minH;
                 if (h > 500) h = 500;
                 const delta = h - startH;   // 面板高度变化量（正=变高，负=变矮）
+                if (isAudioMode) {
+                    // delta 等量分配给 A1/A2；压缩时钳制到 25px，超出部分相互补偿
+                    const d2 = delta / 2;
+                    let vals2 = [sAH + d2, sV2b + d2];
+                    if (delta < 0) {
+                        let clamped = 0;
+                        vals2 = vals2.map(v => {
+                            if (v < minT) { clamped += minT - v; return minT; }
+                            return v;
+                        });
+                        let guard = 0;
+                        while (clamped > 0.5 && guard < 4) {
+                            guard++;
+                            const candIdx = [];
+                            let candSum = 0;
+                            for (let i = 0; i < 2; i++) {
+                                if (vals2[i] > minT + 0.001) { candIdx.push(i); candSum += vals2[i] - minT; }
+                            }
+                            if (!candIdx.length) break;
+                            let redist = 0;
+                            for (const i of candIdx) {
+                                const cap = vals2[i] - minT;
+                                const share = Math.min(cap, clamped * cap / candSum);
+                                vals2[i] -= share;
+                                redist += share;
+                            }
+                            clamped -= redist;
+                            if (redist <= 0.001) break;
+                        }
+                    }
+                    this._tlV2TopHeight = 0;
+                    this._tlVideoHeight = 0;
+                    this._tlAudioHeight = Math.round(vals2[0]);
+                    this._tlV2BotHeight = Math.round(vals2[1]);
+                    // 面板高度 = 36 header + 35 刻度 + A1 + A2（无 5px 粗分割线）
+                    const trackSum2 = this._tlAudioHeight + this._tlV2BotHeight;
+                    panel.style.height = Math.max(minH, fixedOff + trackSum2) + "px";
+                    this._applyTrackLayout();
+                    return;
+                }
                 const d = delta / 4;        // 等量增减量（每轨）
                 // 各轨道先等量增减
                 let vals = [sV2t + d, sVH + d, sAH + d, sV2b + d];
@@ -3662,7 +3804,7 @@ export class XiaozhuguangVideoEditor {
                 // 面板高度与实际四轨总高保持一致（36 header + 35 刻度 + 轨道总高 + 5px 粗分割），
                 // 轨道已全到极限时面板不再下压，轨道不会被挤出边界
                 const trackSum = this._tlV2TopHeight + this._tlVideoHeight + this._tlAudioHeight + this._tlV2BotHeight;
-                panel.style.height = Math.max(176, 76 + trackSum) + "px";
+                panel.style.height = Math.max(minH, fixedOff + trackSum) + "px";
                 this._applyTrackLayout();
             };
             const onUp = () => {
@@ -3696,14 +3838,19 @@ export class XiaozhuguangVideoEditor {
             const fields = { v2top: "_tlV2TopHeight", video: "_tlVideoHeight", audio: "_tlAudioHeight", v2bot: "_tlV2BotHeight" };
             const f = fields[which];
             if (!f) return;
-            // 当前轨道上限 = 面板上限(500) - 固定(76) - 其他三轨之和，保证时间线底部不溢出
+            // 音频加载器模式：仅 A1/A2 两轨可见，固定偏移 71（无 5px 粗分割线）、最小 121
+            // 通用模式：四轨可见，固定偏移 76（含 5px 粗分割线）、最小 176
+            const isAudioMode = this._modeFilter === "audio";
+            const fixedOff = isAudioMode ? 71 : 76;
+            const minH = isAudioMode ? 121 : 176;
+            // 当前轨道上限 = 面板上限(500) - 固定偏移 - 其他轨道之和，保证时间线底部不溢出
             const sum = this._tlV2TopHeight + this._tlVideoHeight + this._tlAudioHeight + this._tlV2BotHeight;
-            const maxT = Math.max(minT, 424 - (sum - this[f]));
+            const maxT = Math.max(minT, (500 - fixedOff) - (sum - this[f]));
             this[f] = Math.min(Math.max(minT, this[f] + delta), maxT);
-            // 面板高度 = 36 header + 35 刻度 + 5px 粗分割 + 四轨总高
+            // 面板高度 = 36 header + 35 刻度 + (5px 粗分割) + 轨道总高
             // 其他轨道不变 → 底部固定，预览/时间线分界随面板高度自适应
             const trackSum = this._tlV2TopHeight + this._tlVideoHeight + this._tlAudioHeight + this._tlV2BotHeight;
-            const panelH = Math.max(176, 76 + trackSum);
+            const panelH = Math.max(minH, fixedOff + trackSum);
             if (this._tlPanel) this._tlPanel.style.height = panelH + "px";
             this._tlHeight = panelH;
             this._applyTrackLayout();
@@ -3722,6 +3869,7 @@ export class XiaozhuguangVideoEditor {
         if (this._tlPanel) this._tlPanel.style.height = "350px";
         this._saveTimelineHeight(350);
         this._tlMaximizedTrack = null; // 清除双击最大化轨道状态
+        this._clearGapSelection(); // 布局重置后轨道显示状态可能变化，清空空隙选中
         // 音频加载器模式：仅显示音频轨道，A1/A2 均分高度
         if (this._modeFilter === "audio") {
             this._tlViewMode = "audio";
@@ -4071,6 +4219,101 @@ export class XiaozhuguangVideoEditor {
         if (this._tlV2TopHeader) this._tlV2TopHeader.addEventListener("dblclick", toggleSingle("v2"));
         if (this._tlV2BotHeader) this._tlV2BotHeader.addEventListener("dblclick", toggleSingle("a2"));
         if (this._tlAudioHeader) this._tlAudioHeader.addEventListener("dblclick", toggleSingle("a1"));
+        // 单击轨道头：该轨道名高亮（红色+加粗+加大字体），再单击同轨道取消激活，其他轨道名恢复默认
+        const setActiveName = (track) => (e) => {
+            e.stopPropagation();
+            const next = this._activeTrackName === track ? null : track; // 再单击取消激活
+            this._setActiveTrackName(next);
+            const names = { v1: "V1", v2: "V2", a1: "A1", a2: "A2" };
+            this._setStatus(next ? `${names[next]} 轨道已激活（再单击取消）` : `${names[track]} 已取消激活`);
+        };
+        if (this._tlVideoHeader) this._tlVideoHeader.addEventListener("click", setActiveName("v1"));
+        if (this._tlV2TopHeader) this._tlV2TopHeader.addEventListener("click", setActiveName("v2"));
+        if (this._tlV2BotHeader) this._tlV2BotHeader.addEventListener("click", setActiveName("a2"));
+        if (this._tlAudioHeader) this._tlAudioHeader.addEventListener("click", setActiveName("a1"));
+    }
+
+    // 设置轨道名单击高亮（单选）：track 为 null 时全部恢复默认
+    // track 变化时同步按当前播放头位置更新片段选中（激活轨道优先）
+    _setActiveTrackName(track) {
+        const prev = this._activeTrackName;
+        this._activeTrackName = track || null;
+        const headers = {
+            v1: this._tlVideoHeader, v2: this._tlV2TopHeader,
+            a1: this._tlAudioHeader, a2: this._tlV2BotHeader,
+        };
+        for (const key of Object.keys(headers)) {
+            const header = headers[key];
+            if (!header) continue;
+            const nameEl = header.querySelector(".xzg-ve-track-name");
+            if (!nameEl) continue;
+            if (this._activeTrackName === key) nameEl.classList.add("xzg-ve-track-name-active");
+            else nameEl.classList.remove("xzg-ve-track-name-active");
+        }
+        // 激活轨道变化 → 立即按播放头当前位置重算选中片段
+        if (prev !== this._activeTrackName) this._syncSelectionToPlayhead();
+    }
+
+    // 按播放头当前位置同步片段选中（拖动播放头 / 激活轨道变化时调用）
+    // 规则：
+    //   1. 有激活轨道（_activeTrackName）→ 仅在该轨道上找播放头命中的片段并选中
+    //   2. 无激活轨道 → 默认激活"最上面的片段"：V2 → V1 → A1 → A2（与轨道视觉从上到下一致）
+    //   3. 命中片段与当前选中不同才更新（避免拖动播放头过程中重复渲染属性面板）
+    //   4. 空隙处命不中任何片段 → 清空选中（保持播放头语义：选中=播放头正下方的片段）
+    // 加载器限定模式（audio/video）下隐藏轨道不参与查找
+    _syncSelectionToPlayhead() {
+        if (!this._timeline || this.timeline.length === 0) return;
+        // 多选守卫：Ctrl 多选 / Shift 范围选择的状态下，播放头移动不覆盖多选
+        // （仅在无选中或单选时跟随播放头自动切换选中片段）
+        if (this.selectedClipIds.size > 1) return;
+        const gt = this._tlGlobalTime || 0;
+        // 收集播放头命中的片段（含轨道归属）
+        const hits = [];
+        for (let i = 0; i < this.timeline.length; i++) {
+            const clip = this.timeline[i];
+            const dur = clip.end - clip.start;
+            if (dur <= 0) continue;
+            let track;
+            if (clip.kind === "audio") {
+                if (this._modeFilter === "video") continue;
+                track = clip.track === "a2" ? "a2" : "a1";
+            } else {
+                if (this._modeFilter === "audio") continue;
+                track = clip.track === "v2" ? "v2" : "v1";
+            }
+            const clipStart = this._getClipTlStart(clip);
+            if (gt >= clipStart && gt < clipStart + dur) {
+                hits.push({ clip, track });
+            }
+        }
+        if (hits.length === 0) {
+            // 空隙处：清空选中
+            if (this.selectedClipIds.size > 0) {
+                this.selectedClipIds.clear();
+                this._updateClipSelection();
+                this._renderProps();
+            }
+            return;
+        }
+        // 激活轨道优先；无激活轨道时最上层优先（轨道视觉从上到下：V2 → V1 → A1 → A2）
+        const order = ["v2", "v1", "a1", "a2"];
+        let target = null;
+        if (this._activeTrackName) {
+            target = hits.find(h => h.track === this._activeTrackName) || null;
+        }
+        if (!target) {
+            for (const t of order) {
+                const found = hits.find(h => h.track === t);
+                if (found) { target = found; break; }
+            }
+        }
+        if (!target) return;
+        // 命中片段与当前选中相同则不重复更新
+        if (this.selectedClipIds.size === 1 && this.selectedClipIds.has(target.clip.id)) return;
+        this.selectedClipIds = new Set([target.clip.id]);
+        this._clearGapSelection(); // 片段选中与空隙选中互斥
+        this._updateClipSelection();
+        this._renderProps();
     }
 
     // 切换时间线视图模式：both=视频+音频，video=仅视频，audio=仅音频
@@ -4079,6 +4322,7 @@ export class XiaozhuguangVideoEditor {
         if (this._tlViewMode === mode) return;
         this._tlViewMode = mode;
         this._tlHeightsCustomized = true; // 保持当前位置，不再自动居中
+        this._clearGapSelection(); // 视图切换后选中轨道可能被隐藏，清空空隙选中避免不可见误删
         this._applyTrackLayout();
         this._setStatus(mode === "video" ? "仅显示视频轨道（双击文字恢复）"
             : mode === "audio" ? "仅显示音频轨道（双击文字恢复）"
@@ -4230,9 +4474,35 @@ export class XiaozhuguangVideoEditor {
             // 文件已被后端删除，清空前端媒体库
             this.mediaLibrary = [];
             this.selectedMediaNames.clear();
+            this.offlineMediaNames.clear();
             _xzgVeSaveSessionMedia([]);
             // 时间线片段引用的文件已被删除，一并清空
             this._clearTimeline();
+
+            // ═══════════════════════════════════════════════════════════
+            //  关键：清理所有全局内存态缓存 / 失败黑名单 / LOADING 去重锁
+            //  —— 否则同名视频重新导入时，会命中「老失败标记 / 已删文件URL」，
+            //     出现「一键清理缓存后，再次导入视频，缩略图经常不生成」。
+            // ═══════════════════════════════════════════════════════════
+            for (const k of Object.keys(_XZG_VE_THUMB_CACHE))      delete _XZG_VE_THUMB_CACHE[k];
+            for (const k of Object.keys(_XZG_VE_FULL_THUMB_STREAM)) delete _XZG_VE_FULL_THUMB_STREAM[k];
+            for (const k of Object.keys(_XZG_VE_PROBE_CACHE))       delete _XZG_VE_PROBE_CACHE[k];
+            _XZG_VE_THUMB_LOADING.clear();
+            _XZG_VE_FULL_THUMB_STREAM_LOADING.clear();
+            _XZG_VE_PROBE_LOADING.clear();
+            // 单实例级缓存：音频波形 / 解码器 / 正在解码的去重锁 / 帧级 AudioBuffer
+            try { this._audioBufferCache.clear(); } catch (_) {}
+            try { this._audioDecodePending.clear(); } catch (_) {}
+            try { this._audioBuffers = {}; } catch (_) {}
+            try { if (typeof decoderPool !== "undefined" && decoderPool && typeof decoderPool.closeAll === "function") decoderPool.closeAll(); } catch (_) {}
+            // 播放相关：防止清理后仍引用旧 clip / decoder
+            this._currentDecoder = null;
+            this._currentClip = null;
+            this._stopPlaybackLoop();
+            this._stopAudio();
+            this._updatePlayBtn(false);
+            this._tlPlaying = false;
+
             this._renderMediaList();
             const detail = [];
             if (resp.removed_dirs) detail.push(`${resp.removed_dirs} 个目录`);
@@ -4513,6 +4783,7 @@ export class XiaozhuguangVideoEditor {
         const prev = this._undoStack.pop();
         this.timeline = prev;
         this.selectedClipIds.clear();
+        this._clearGapSelection();
         this._renderTimeline();
         this._saveTimelineSession();
         this._seekToGlobalTime(this._tlGlobalTime);
@@ -4525,6 +4796,7 @@ export class XiaozhuguangVideoEditor {
         const next = this._redoStack.pop();
         this.timeline = next;
         this.selectedClipIds.clear();
+        this._clearGapSelection();
         this._renderTimeline();
         this._saveTimelineSession();
         this._seekToGlobalTime(this._tlGlobalTime);
@@ -4622,6 +4894,7 @@ export class XiaozhuguangVideoEditor {
             }
         }
         this.selectedClipIds = new Set([clip.id]);
+        this._clearGapSelection(); // 新片段入轨选中，清空空隙选中（互斥）
         this._renderTimeline();
         this._renderProps();
         this._loadClipToPreview(clip);
@@ -4682,6 +4955,8 @@ export class XiaozhuguangVideoEditor {
             this._renderTicks();
             this._applyTlScroll();
             this._updatePlayhead();
+            // 轨道容器已清空重建，重渲染空隙选中框（内部校验有效性）
+            this._renderGapSelection();
             return;
         }
         // 片段宽度按缩放后的内容宽度计算（Alt+滚轮可缩放）
@@ -4825,25 +5100,11 @@ export class XiaozhuguangVideoEditor {
                             this._startClipDrag(e, clip, clipRects, "audio");
                         }
                     });
-                    // 点击选中（与视频片段一致）
+                    // 点击选中（与视频片段一致：Shift 范围 / Ctrl 增减 / 单选）
                     wfEl.addEventListener("click", (e) => {
                         if (e.target === wLh || e.target === wRh) return;
                         if (this._clipDragged) { this._clipDragged = false; return; }
-                        if (e.ctrlKey || e.metaKey) {
-                            if (this.selectedClipIds.has(clip.id)) {
-                                this.selectedClipIds.delete(clip.id);
-                            } else {
-                                this.selectedClipIds.add(clip.id);
-                            }
-                        } else {
-                            this.selectedClipIds = new Set([clip.id]);
-                        }
-                        if (this.selectedMediaNames.size > 0) {
-                            this.selectedMediaNames.clear();
-                            this._renderMediaList();
-                        }
-                        this._updateClipSelection();
-                        this._renderProps();
+                        this._handleClipClickSelection(clip, e);
                     });
                     // 右键菜单
                     wfEl.addEventListener("contextmenu", (e) => this._showCtxMenu(e, clip.id));
@@ -4914,22 +5175,8 @@ export class XiaozhuguangVideoEditor {
                 if (e.target === lh || e.target === rh) return;
                 // 拖动后误触 click 跳过选中（_clipDragged 标记）
                 if (this._clipDragged) { this._clipDragged = false; return; }
-                if (e.ctrlKey || e.metaKey) {
-                    if (this.selectedClipIds.has(clip.id)) {
-                        this.selectedClipIds.delete(clip.id);
-                    } else {
-                        this.selectedClipIds.add(clip.id);
-                    }
-                } else {
-                    this.selectedClipIds = new Set([clip.id]);
-                }
-                if (this.selectedMediaNames.size > 0) {
-                    this.selectedMediaNames.clear();
-                    this._renderMediaList();
-                }
-                // 仅更新选中态 class，不重建 DOM，避免缩略图重新加载导致闪烁
-                this._updateClipSelection();
-                this._renderProps();
+                // Shift 范围选择（同轨道锚点→当前，含两端）/ Ctrl 增减 / 单选
+                this._handleClipClickSelection(clip, e);
             });
 
             // 右键菜单：颜色 → 红橙黄绿青蓝紫
@@ -5023,6 +5270,66 @@ export class XiaozhuguangVideoEditor {
         this._applyTlScroll();
         this._updatePlayhead();
         this._updateTimeDisplay();
+        // 轨道容器已清空重建，重渲染空隙选中框（内部校验有效性）
+        this._renderGapSelection();
+    }
+
+    // 片段归属轨道（kind 决定唯一轨道：纯音频→A1/A2，视频→V1/V2）
+    _clipTrackOf(clip) {
+        if (clip.kind === "audio") return clip.track === "a2" ? "a2" : "a1";
+        return clip.track === "v2" ? "v2" : "v1";
+    }
+    // 片段在轨道上的起始位置（音频用 audioTlStart，视频用 tlStart）
+    _clipStartOf(clip) {
+        const v = clip.kind === "audio" ? clip.audioTlStart : clip.tlStart;
+        return v ?? 0;
+    }
+    // 片段点击选中统一处理（视频片段 el 与音频片段 wfEl 共用）：
+    //   Shift+点击 → 范围选择：同轨道锚点到当前片段之间（时间序，含两端）全部片段
+    //                不同轨道或锚点已删 → 退化为单选并重置锚点
+    //   Ctrl/Meta+点击 → 增减选择（并更新锚点）
+    //   普通点击 → 单选（重置锚点）
+    _handleClipClickSelection(clip, e) {
+        // 选中片段时清空空隙选中（两者互斥）
+        this._clearGapSelection();
+        if (e.shiftKey && this._clipSelAnchor) {
+            const anchorClip = this.timeline.find(c => c.id === this._clipSelAnchor);
+            if (anchorClip && this._clipTrackOf(anchorClip) === this._clipTrackOf(clip)) {
+                // 同轨道范围选择：按轨道位置收集 [min, max] 区间内（含两端）的所有片段
+                const track = this._clipTrackOf(clip);
+                const lo = Math.min(this._clipStartOf(anchorClip), this._clipStartOf(clip));
+                const hi = Math.max(this._clipStartOf(anchorClip), this._clipStartOf(clip));
+                const ids = new Set();
+                for (const c of this.timeline) {
+                    if (this._clipTrackOf(c) !== track) continue;
+                    const s = this._clipStartOf(c);
+                    if (s >= lo - 1e-6 && s <= hi + 1e-6) ids.add(c.id);
+                }
+                this.selectedClipIds = ids;
+            } else {
+                // 不同轨道或锚点已删：退化为单选并重置锚点
+                this.selectedClipIds = new Set([clip.id]);
+                this._clipSelAnchor = clip.id;
+            }
+        } else if (e.ctrlKey || e.metaKey) {
+            if (this.selectedClipIds.has(clip.id)) {
+                this.selectedClipIds.delete(clip.id);
+            } else {
+                this.selectedClipIds.add(clip.id);
+            }
+            this._clipSelAnchor = clip.id; // Ctrl 点选也更新锚点（Shift 以最后操作项为基准）
+        } else {
+            this.selectedClipIds = new Set([clip.id]);
+            this._clipSelAnchor = clip.id; // 单选重置锚点
+        }
+        // 片段选中与媒体选中互斥
+        if (this.selectedMediaNames.size > 0) {
+            this.selectedMediaNames.clear();
+            this._renderMediaList();
+        }
+        // 仅更新选中态 class，不重建 DOM，避免缩略图重新加载导致闪烁
+        this._updateClipSelection();
+        this._renderProps();
     }
 
     // 片段自由拖动 + 磁吸 + 帧对齐（基于时间轴秒数，非像素）
@@ -5097,6 +5404,7 @@ export class XiaozhuguangVideoEditor {
                 if (!moved && Math.abs(dy) < 3) return;
                 if (!moved) {
                     this._pushHistory();
+                    this._clearGapSelection(); // 拖动选中片段，清空空隙选中（互斥）
                     if (!isMultiDrag && !this.selectedClipIds.has(clip.id)) {
                         this.selectedClipIds = new Set([clip.id]);
                         this._updateClipSelection();
@@ -5120,6 +5428,7 @@ export class XiaozhuguangVideoEditor {
             if (!moved) {
                 this._pushHistory();
                 // 拖动开始时自动选中该片段（多选模式下已在集合中，无需重置）
+                this._clearGapSelection(); // 拖动选中片段，清空空隙选中（互斥）
                 if (!isMultiDrag && !this.selectedClipIds.has(clip.id)) {
                     this.selectedClipIds = new Set([clip.id]);
                     this._updateClipSelection();
@@ -5791,33 +6100,57 @@ export class XiaozhuguangVideoEditor {
 
     // 同步从 AudioBuffer 提取指定时间范围的峰值数据（max abs 下采样到指定宽度）
     // 用于波形渲染：拖动裁剪时按新的 start/end 实时提取，避免旧 peaks 被压缩显示
+    // —— 针对 Alt+滚轮极大放大（每像素对应 <1 个采样）专门处理：
+    //    老逻辑用 Math.floor 算 s0/s1，会出现 s0==s1，内循环不执行，peak=0 残留，
+    //    最终整片波形 barH=0 → 视觉上变成"一片白"。
+    //    修复：① samplesPerPeak>=1 时改为 ceil 边界，保证区间至少覆盖 1 个样本；
+    //          ② samplesPerPeak<1 时反向填充：按样本遍历，把 peak 铺到该样本对应的像素范围。
     _extractPeaks(audioBuf, clipStart, clipEnd, width) {
         if (!audioBuf || width <= 0) return null;
         const sr = audioBuf.sampleRate;
         const startSample = Math.floor(clipStart * sr);
-        const endSample = Math.min(audioBuf.length, Math.floor(clipEnd * sr));
+        const endSample = Math.min(audioBuf.length, Math.max(startSample + 1, Math.floor(clipEnd * sr)));
         const totalSamples = endSample - startSample;
         if (totalSamples <= 0) return null;
         const numCh = audioBuf.numberOfChannels;
-        let data;
-        if (numCh === 1) {
-            data = audioBuf.getChannelData(0);
-        } else {
-            // 多声道：取第 0 声道（与 _loadClipWaveform 保持一致）
-            data = audioBuf.getChannelData(0);
-        }
-        // 下采样：每像素列对应一个峰值（max abs）
+        const data = audioBuf.getChannelData(0); // 多声道：取第 0 声道与旧代码保持一致
         const peaks = new Float32Array(width);
         const samplesPerPeak = totalSamples / width;
-        for (let i = 0; i < width; i++) {
-            const s0 = startSample + Math.floor(i * samplesPerPeak);
-            const s1 = Math.min(endSample, startSample + Math.floor((i + 1) * samplesPerPeak));
-            let peak = 0;
-            for (let s = s0; s < s1; s++) {
-                const v = Math.abs(data[s]);
-                if (v > peak) peak = v;
+
+        if (samplesPerPeak >= 1) {
+            // —— 正常/缩小：每个像素对应 ≥1 个样本，取区间 max(abs)
+            for (let i = 0; i < width; i++) {
+                // 用 ceil 向上取整右端点，避免 Math.floor 导致的零长度区间；
+                // 并强制 s1 = max(s0+1, s1)，确保每个像素至少扫描 1 个样本
+                const s0 = startSample + Math.floor(i * samplesPerPeak);
+                const s1 = Math.min(endSample, Math.max(s0 + 1, startSample + Math.ceil((i + 1) * samplesPerPeak)));
+                let peak = 0;
+                for (let s = s0; s < s1; s++) {
+                    const v = Math.abs(data[s]);
+                    if (v > peak) peak = v;
+                }
+                peaks[i] = peak;
             }
-            peaks[i] = peak;
+        } else {
+            // —— 极大放大：1 个样本跨多个像素。反向遍历样本，每个样本的 peak 同步写到
+            //    它所覆盖的所有像素列，保证像素列不会出现 peak=0 导致的「空白条带」
+            const pxPerSample = width / totalSamples; // > 1
+            for (let s = 0; s < totalSamples; s++) {
+                const peak = Math.abs(data[startSample + s]);
+                if (peak <= 0) continue;
+                const xStart = Math.floor(s * pxPerSample);
+                const xEnd = Math.min(width, Math.ceil((s + 1) * pxPerSample));
+                for (let x = xStart; x < xEnd; x++) {
+                    if (peaks[x] < peak) peaks[x] = peak;
+                }
+            }
+            // 补齐可能未覆盖的首/尾列（浮点误差导致极少数列仍 0）：用最近邻复制
+            for (let i = 1; i < width; i++) {
+                if (peaks[i] === 0) peaks[i] = peaks[i - 1];
+            }
+            for (let i = width - 2; i >= 0; i--) {
+                if (peaks[i] === 0) peaks[i] = peaks[i + 1];
+            }
         }
         return peaks;
     }
@@ -5860,6 +6193,8 @@ export class XiaozhuguangVideoEditor {
     // 重绘音频轨道所有可见波形（轨道高度变化时调用，波形自适应新高度）
     _redrawAllWaveforms() {
         if (!this._tlAudioTrack) return;
+        const MAX_CANVAS_W = 16000;   // 与 _drawWaveform 一致，避免极端放大时 canvas 超限全白
+        const dpr = window.devicePixelRatio || 1;
         // A1 + A2 两条音频轨道统一遍历
         const audioTracks = [this._tlAudioTrack, this._tlV2BotTrack].filter(Boolean);
         for (const t of audioTracks) {
@@ -5870,33 +6205,41 @@ export class XiaozhuguangVideoEditor {
             // 用音频片段实际高度计算波形高度（紧凑模式占满，否则扣除底部25px色带）
             const clipH = clipEl.clientHeight || 0;
             const wfH = Math.max(0, isCompact ? clipH : clipH - 25);
-            const wfW = parseInt(clipEl.style.width) || clipEl.clientWidth || 0;
+            let wfW = parseInt(clipEl.style.width) || clipEl.clientWidth || 0;
             if (wfH <= 0 || wfW <= 0) continue;
+            // 逻辑宽上限：防止 Alt+滚轮极端放大时 canvas.width * dpr 超限
+            let drawW = wfW;
+            if (drawW > MAX_CANVAS_W) drawW = MAX_CANVAS_W;
             // 设置 canvas 位图尺寸（CSS 尺寸 + dpr 缩放）
-            const dpr = window.devicePixelRatio || 1;
-            canvas.width = wfW * dpr;
+            canvas.width = drawW * dpr;
             canvas.height = wfH * dpr;
             canvas.style.width = wfW + "px";
             canvas.style.height = wfH + "px";
             const ctx = canvas.getContext("2d");
+            if (!ctx) continue;
             ctx.setTransform(1, 0, 0, 1, 0, 0); // 重置变换矩阵
             ctx.scale(dpr, dpr);
-            ctx.clearRect(0, 0, wfW, wfH);
+            ctx.clearRect(0, 0, drawW, wfH);
             const midY = wfH / 2;
             const maxH = wfH / 2 - 1;
             ctx.fillStyle = "#fff";
             const peaks = canvas._xzgPeaks;
             const len = peaks.length;
-            // 音量增益（实时预览：音量为 0 时无波形）
-            const g = canvas._xzgGain != null && canvas._xzgGain > 0 ? Math.min(canvas._xzgGain, 3) : 0;
-            for (let i = 0; i < len; i++) {
-                const peak = peaks[i];
+            // 音量增益兜底：null/undefined → 默认 1（避免 clip 未设 volume 时被画成 0 波形）
+            let g = 1;
+            const vGain = canvas._xzgGain;
+            if (vGain == null) g = 1;
+            else if (vGain <= 0) g = 0;
+            else g = Math.min(vGain, 3);
+            // 像素→peaks 最近邻：保证无论 drawW 是否裁剪 MAX_CANVAS_W / peaks 长度是否匹配，
+            // 都不会因浮点折叠出现全 0 条带（「一片白」）
+            for (let x = 0; x < drawW; x++) {
+                const idx = Math.min(len - 1, Math.floor((x / drawW) * len));
+                const peak = peaks[idx];
                 if (peak <= 0) continue;
                 const barH = Math.min(maxH, peak * g * maxH);
-                if (barH <= 0) continue;  // 音量为 0 → 无波形
-                const x = (i / len) * wfW;
-                const barW = Math.max(1, wfW / len);
-                ctx.fillRect(x, midY - barH, barW, barH * 2);
+                if (barH <= 0) continue;
+                ctx.fillRect(x, midY - barH, 1, barH * 2);
             }
         }
         }
@@ -5923,33 +6266,51 @@ export class XiaozhuguangVideoEditor {
     _drawWaveform(canvas, peaks, overrideW, gain) {
         if (!canvas || !canvas.isConnected) return;
         // 读取 canvas 自身尺寸（正常模式扣除25px色带；紧凑模式占满整个片段高度）
-        const w = overrideW != null ? overrideW : (canvas.clientWidth || canvas.parentElement?.clientWidth || 0);
+        let w = overrideW != null ? overrideW : (canvas.clientWidth || canvas.parentElement?.clientWidth || 0);
         const h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0;
         if (w <= 0 || h <= 0) return;
         const dpr = window.devicePixelRatio || 1;
-        canvas.width = w * dpr;
+        // Alt+滚轮放大到极限时，clipWidth 可能达到 3~6 万像素；dpr 倍增后超过浏览器 canvas
+        // 一维上限（通常 2^15=32767），导致 width 赋值被忽略或 getContext 静默空，画布全白。
+        // 解决：对 CSS 逻辑宽做一次「安全上限裁剪」（超过上限则缩放到上限，并在绘制时
+        // 保持 peaks→px 的正确映射比，视觉无损）。
+        const MAX_CANVAS_W = 16000;   // 逻辑宽上限（×常见 dpr=2 → 32k 位图宽，非常安全）
+        let drawW = w;
+        let scale = 1;
+        if (drawW > MAX_CANVAS_W) {
+            scale = MAX_CANVAS_W / drawW;
+            drawW = MAX_CANVAS_W;
+        }
+        canvas.width = drawW * dpr;
         canvas.height = h * dpr;
         canvas.style.width = w + "px";
         canvas.style.height = h + "px";
         const ctx = canvas.getContext("2d");
+        if (!ctx) return;  // 防御：极端 DPR/宽 导致创建失败，避免异常
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.scale(dpr, dpr);
-        ctx.clearRect(0, 0, w, h);
+        ctx.clearRect(0, 0, drawW, h);
         // 中线
         const midY = h / 2;
         const maxH = h / 2 - 1; // 上下各留 1px
-        // 音量增益（实时预览：音量越大波形越高，音量为 0 时无波形）
-        const g = gain != null && gain > 0 ? Math.min(gain, 3) : 0;
+        // 音量增益：null/undefined 视为默认 1（未设置过 clip.volume 时安全兜底）；
+        // 负数/零 → 0 不再绘制（静音=无波形，与背景一致是正确语义，不是 bug）
+        let g = 1;
+        if (gain == null) g = 1;
+        else if (gain <= 0) g = 0;
+        else g = Math.min(gain, 3);
         // 波形颜色：白色
         ctx.fillStyle = "#fff";
         const len = peaks.length;
-        for (let i = 0; i < len; i++) {
-            const peak = peaks[i];
+        // peaks 长度与 drawW 不一致时（如 MAX_CANVAS_W 裁剪、或 _redrawAllWaveforms 复用时）
+        // 以「像素→最近邻 peaks 下标」映射，保证峰值不被错误折叠成全 0 条带
+        for (let x = 0; x < drawW; x++) {
+            const idx = Math.min(len - 1, Math.floor((x / drawW) * len));
+            const peak = peaks[idx];
             if (peak <= 0) continue;
             const barH = Math.min(maxH, peak * g * maxH);
-            if (barH <= 0) continue;  // 音量为 0 → 无波形
-            const x = (i / len) * w;
-            const barW = Math.max(1, w / len);
-            ctx.fillRect(x, midY - barH, barW, barH * 2);
+            if (barH <= 0) continue;
+            ctx.fillRect(x, midY - barH, 1, barH * 2);
         }
     }
 
@@ -6139,6 +6500,7 @@ export class XiaozhuguangVideoEditor {
     _clearTimeline() {
         this.timeline = [];
         this.selectedClipIds.clear();
+        this._clearGapSelection();
         this._renderTimeline();
         this._renderProps();
         this._saveTimelineSession();
@@ -6183,8 +6545,8 @@ export class XiaozhuguangVideoEditor {
         // 向上滚（deltaY<0）放大，向下滚（deltaY>0）缩小
         const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
         let newZoom = this._tlZoom * factor;
-        // 允许缩小到 0.1（右侧留白），放大到 20
-        newZoom = Math.max(0.1, Math.min(20, newZoom));
+        // 允许缩小到 0.1（右侧留白），放大到 100
+        newZoom = Math.max(0.1, Math.min(100, newZoom));
         this._tlZoom = newZoom;
         const newPxPerSec = this._getPxPerSec();
         const newPlayheadX = this._tlGlobalTime * newPxPerSec;
@@ -6208,6 +6570,10 @@ export class XiaozhuguangVideoEditor {
         const tlRect = this._timeline.getBoundingClientRect();
         const startX = e.clientX - tlRect.left;
         const startY = e.clientY - tlRect.top;
+        // 记录按下位置：区分"点击"（选中轨道空隙）与"拖动"（框选）
+        const downClientX = e.clientX;
+        const downClientY = e.clientY;
+        let dragged = false;
 
         // 创建选择框元素
         const box = document.createElement("div");
@@ -6221,14 +6587,7 @@ export class XiaozhuguangVideoEditor {
 
         // Ctrl/Meta 框选：在已有选中基础上增减；非 Ctrl：清空后重新选
         const initialSelected = (e.ctrlKey || e.metaKey) ? new Set(this.selectedClipIds) : null;
-        if (!initialSelected) {
-            this.selectedClipIds.clear();
-            this._updateClipSelection();
-            if (this.selectedMediaNames.size > 0) {
-                this.selectedMediaNames.clear();
-                this._renderMediaList();
-            }
-        }
+        // 清空动作延迟到确认拖动时执行：点击（未拖动）走空隙选中/清空逻辑，避免闪烁
 
         // 计算当前选择框相交的片段 id（视频 V1+V2 + 音频 A1+A2）
         const calcIntersect = () => {
@@ -6258,6 +6617,21 @@ export class XiaozhuguangVideoEditor {
 
         let curX = startX, curY = startY;
         const onMove = (ev) => {
+            // 超过 5px 视为拖动（框选）；未超过则保持点击语义，不显示框
+            if (!dragged) {
+                if (Math.abs(ev.clientX - downClientX) <= 5 && Math.abs(ev.clientY - downClientY) <= 5) return;
+                dragged = true;
+                // 确认拖动：清空选中（原 mousedown 时为非 Ctrl 的行为，移至此处）
+                if (!initialSelected) {
+                    this.selectedClipIds.clear();
+                    this._updateClipSelection();
+                    this._clearGapSelection();
+                    if (this.selectedMediaNames.size > 0) {
+                        this.selectedMediaNames.clear();
+                        this._renderMediaList();
+                    }
+                }
+            }
             curX = ev.clientX - tlRect.left;
             curY = ev.clientY - tlRect.top;
             const left = Math.min(curX, startX);
@@ -6280,11 +6654,26 @@ export class XiaozhuguangVideoEditor {
         const onUp = () => {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
-            // 选择框太小时（点击空白）→ 已清空选中，保持空
             if (box.parentNode) box.parentNode.removeChild(box);
             this._selectionBox = null;
-            // 仅更新选中态 class，不重建 DOM，避免松开鼠标时闪烁
-            this._updateClipSelection();
+            if (!dragged) {
+                // 点击空白（未拖动）：尝试选中点击处的轨道空隙
+                // 命中 → 选中空隙（清空片段选中）；未命中 → 清空选中（与原行为一致）
+                // Ctrl/Meta+点击空白：保留已有选中（原框选语义），不做空隙选中
+                if (!initialSelected) {
+                    this.selectedClipIds.clear();
+                    this._updateClipSelection();
+                    this._clearGapSelection();
+                    if (this.selectedMediaNames.size > 0) {
+                        this.selectedMediaNames.clear();
+                        this._renderMediaList();
+                    }
+                    this._trySelectGapAt(downClientX, downClientY, e);
+                }
+            } else {
+                // 仅更新选中态 class，不重建 DOM，避免松开鼠标时闪烁
+                this._updateClipSelection();
+            }
             this._renderProps();
         };
         window.addEventListener("mousemove", onMove);
@@ -6306,7 +6695,8 @@ export class XiaozhuguangVideoEditor {
         // 因为 _renderMediaList 内部会 innerHTML="" 把 box 一起清掉
         if (!e.ctrlKey && !e.metaKey) {
             this.selectedMediaNames.clear();
-            // 点媒体库空白处时清空时间线选中
+            // 点媒体库空白处时清空时间线选中（含轨道空隙选中）
+            this._clearGapSelection();
             if (this.selectedClipIds.size > 0) {
                 this.selectedClipIds.clear();
                 this._updateClipSelection();
@@ -6380,7 +6770,8 @@ export class XiaozhuguangVideoEditor {
         e.preventDefault();
         e.stopPropagation();
         this._pushHistory();  // 记录裁剪前状态，支持 Ctrl+Z 撤销
-        // 拖动手柄时自动选中该片段
+        // 拖动手柄时自动选中该片段（清空空隙选中，两者互斥）
+        this._clearGapSelection();
         if (!this.selectedClipIds.has(clip.id)) {
             this.selectedClipIds = new Set([clip.id]);
             this._updateClipSelection();
@@ -6751,7 +7142,7 @@ export class XiaozhuguangVideoEditor {
         if (total <= 0 || viewWidth <= 0) return;
         // 留 5% 边距，避免内容紧贴右边界
         let newZoom = (viewWidth * 0.95) / (total * 30);
-        newZoom = Math.max(0.1, Math.min(20, newZoom));
+        newZoom = Math.max(0.1, Math.min(100, newZoom));
         this._tlZoom = newZoom;
         this._tlScrollLeft = 0;
         this._clampScrollLeft();
@@ -6764,7 +7155,7 @@ export class XiaozhuguangVideoEditor {
         if (viewWidth <= 0) return;
         // 让 10 秒刚好铺满可视区：zoom = 可视宽 / (10s * 30px/s)
         let newZoom = viewWidth / (10 * 30);
-        newZoom = Math.max(0.1, Math.min(20, newZoom));
+        newZoom = Math.max(0.1, Math.min(100, newZoom));
         this._tlZoom = newZoom;
         // 以播放头为中心：播放头 X 位于视口正中，左右各 5 秒
         const playheadX = this._tlGlobalTime * this._getPxPerSec();
@@ -7741,6 +8132,8 @@ export class XiaozhuguangVideoEditor {
             this._updatePlayhead();
             this._updateTimeDisplay();
             this._autoScrollToPlayhead();
+            // 播放中同步选中播放头位置片段（激活轨道优先，未激活时最上层）
+            this._syncSelectionToPlayhead();
             // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
             this._checkAudioBoundary(prevGt, this._tlGlobalTime);
             // 音频循环终止条件：以时间线总时长为准，不调用 _advanceToNextClip（该函数为视频循环设计，会重置 _tlGlobalTime 导致播放头回跳）。
@@ -7795,6 +8188,8 @@ export class XiaozhuguangVideoEditor {
         this._tlGlobalTime = Math.max(0, globalTime);
         this._updatePlayhead();
         this._updateTimeDisplay();
+        // 播放头位置变化 → 同步选中该位置的片段（激活轨道优先，未激活时最上层片段）
+        this._syncSelectionToPlayhead();
         // 时间线无片段时仅更新播放头位置，不做片段查找
         const total = this._getTimelineTotalDuration();
         if (total <= 0) return;
@@ -7862,6 +8257,8 @@ export class XiaozhuguangVideoEditor {
         this._tlGlobalTime = Math.max(0, globalTime);
         this._updatePlayhead();
         this._updateTimeDisplay();
+        // 播放头位置变化 → 同步选中该位置的片段（激活轨道优先，未激活时最上层片段）
+        this._syncSelectionToPlayhead();
         if (this._scrubRafId) return;
         this._scrubRafId = requestAnimationFrame(() => {
             this._scrubRafId = null;
@@ -8068,6 +8465,8 @@ export class XiaozhuguangVideoEditor {
                         this._updatePlayhead();
                         this._updateTimeDisplay();
                         this._autoScrollToPlayhead();
+                        // 播放中同步选中播放头位置片段（激活轨道优先，未激活时最上层）
+                        this._syncSelectionToPlayhead();
                         // 持续预缓冲
                         this._fillPlaybackBuffer();
                     } else if (this._playbackBuffer.length === 0) {
@@ -8258,6 +8657,8 @@ export class XiaozhuguangVideoEditor {
             this._updatePlayhead();
             this._updateTimeDisplay();
             this._autoScrollToPlayhead();
+            // 播放中同步选中播放头位置片段（激活轨道优先，未激活时最上层）
+            this._syncSelectionToPlayhead();
             this._playbackRaf = requestAnimationFrame(loop);
         };
         this._playbackRaf = requestAnimationFrame(loop);
@@ -8280,6 +8681,8 @@ export class XiaozhuguangVideoEditor {
             this._updatePlayhead();
             this._updateTimeDisplay();
             this._autoScrollToPlayhead();
+            // 空隙推进期间同步选中（空隙处清空选中）
+            this._syncSelectionToPlayhead();
             requestAnimationFrame(check);
         };
         requestAnimationFrame(check);
@@ -8639,6 +9042,187 @@ export class XiaozhuguangVideoEditor {
                     el.classList.remove("xzg-ve-selected");
                 }
             }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  轨道空隙选中（单轨道操作）
+    //  点击轨道空白处选中两片段之间的空隙，Delete 后空隙后方片段前移贴合
+    // ═══════════════════════════════════════════════════════════
+
+    // 收集指定轨道上所有已定位片段（按时间排序），返回 [{clip, start, end}]
+    // 轨道归属与渲染规则一致：视频 track==="v2"→V2 否则 V1；音频 track==="a2"→A2 否则 A1
+    _getTrackClips(track) {
+        const arr = [];
+        for (const clip of this.timeline) {
+            const dur = clip.end - clip.start;
+            if (dur <= 0) continue;
+            if (clip.kind === "audio") {
+                if (clip.audioTlStart == null) continue;
+                const onA2 = clip.track === "a2";
+                if ((track === "a1" && !onA2) || (track === "a2" && onA2)) {
+                    arr.push({ clip, start: clip.audioTlStart, end: clip.audioTlStart + dur });
+                }
+            } else {
+                if (clip.tlStart == null) continue;
+                const onV2 = clip.track === "v2";
+                if ((track === "v1" && !onV2) || (track === "v2" && onV2)) {
+                    arr.push({ clip, start: clip.tlStart, end: clip.tlStart + dur });
+                }
+            }
+        }
+        arr.sort((a, b) => a.start - b.start);
+        return arr;
+    }
+
+    // 点击轨道空白处：尝试选中该位置的空隙（两片段之间 / 起点到首片段之间）
+    // 未命中空隙则保持清空选中（与原"点击空白清空选中"行为兼容）
+    _trySelectGapAt(clientX, clientY, e) {
+        // Ctrl/Meta+点击：保留已有选中（原框选语义），不做空隙选中
+        if (e && (e.ctrlKey || e.metaKey)) return;
+        if (!this._timeline) return;
+        const tlRect = this._timeline.getBoundingClientRect();
+        // 左侧 150px 功能区与 35px 刻度区不响应
+        if (clientX < tlRect.left + this._tlLeftPad) return;
+        if (clientY < tlRect.top + 35) return;
+        // 根据 Y 确定轨道（与 _yToTrack 相同的分区规则）
+        const relY = clientY - tlRect.top - 35;
+        const v2tH = this._tlV2TopHeight || 0;
+        const vH = this._tlVideoHeight || 0;
+        const aH = this._tlAudioHeight || 0;
+        const v1End = v2tH + vH;
+        const a1Start = v1End + 5;
+        const a1End = a1Start + aH;
+        let track = null;
+        if (relY < v2tH) track = "v2";
+        else if (relY < v1End) track = "v1";
+        else if (relY < a1Start) return;   // 5px 粗分割线：不响应
+        else if (relY < a1End) track = "a1";
+        else track = "a2";
+        // 加载器限定模式 / 双击轨道头视图模式下隐藏轨道不响应
+        const viewMode = this._tlViewMode || "both";
+        const isVideoTrack = track === "v1" || track === "v2";
+        if (isVideoTrack && (this._modeFilter === "audio" || viewMode === "audio")) return;
+        if (!isVideoTrack && (this._modeFilter === "video" || viewMode === "video")) return;
+        // X → 时间（与 _mouseXToGlobalTime 同参考系，不做磁吸）
+        const pxPerSec = this._getPxPerSec();
+        if (pxPerSec <= 0) return;
+        const x = clientX - (tlRect.left + this._tlLeftPad) + this._tlScrollLeft;
+        const t = Math.max(0, x / pxPerSec);
+        // 在该轨道上查找空隙
+        const clips = this._getTrackClips(track);
+        if (clips.length === 0) return;   // 空轨道无空隙
+        let gap = null;
+        // 前导空隙：0 → 首片段起点
+        if (t < clips[0].start && clips[0].start > 0) {
+            gap = { track, start: 0, end: clips[0].start };
+        } else {
+            // 中间空隙：片段 i 的 end → 片段 i+1 的 start
+            for (let i = 0; i < clips.length - 1; i++) {
+                if (t >= clips[i].end && t < clips[i + 1].start) {
+                    gap = { track, start: clips[i].end, end: clips[i + 1].start };
+                    break;
+                }
+            }
+        }
+        // 尾部空隙（最后片段之后）不可选：后方无片段，删除无意义
+        // 忽略半帧以内的极小空隙（浮点误差产生的假空隙）
+        const fps = this._getTimelineFps();
+        const minGap = fps > 0 ? 0.5 / fps : 0.001;
+        if (gap && gap.end - gap.start > minGap) {
+            this._selectedGap = gap;
+            this._renderGapSelection();
+            const tn = { v1: "V1", v2: "V2", a1: "A1", a2: "A2" }[track];
+            this._setStatus(`已选中 ${tn} 轨道空隙 ${_fmtTime(gap.start)} → ${_fmtTime(gap.end)}，按 Delete 删除并前移后方片段`);
+        }
+    }
+
+    // 渲染空隙选中框（金色虚线，与拖动预览框同风格）
+    // 每次渲染校验空隙仍然有效（片段拖动/删除后空隙可能消失或移位），过期则清空选中
+    _renderGapSelection() {
+        // 移除旧框
+        if (this._gapSelEl) { this._gapSelEl.remove(); this._gapSelEl = null; }
+        const gap = this._selectedGap;
+        if (!gap) return;
+        // 轨道隐藏（视图模式切换）时清空选中，避免不可见状态误删
+        const mode = this._tlViewMode || "both";
+        const isVideoTrack = gap.track === "v1" || gap.track === "v2";
+        const trackVisible = isVideoTrack ? (mode !== "audio") : (mode !== "video");
+        // 校验空隙与当前片段布局一致：边界必须精确对应某对相邻片段的交界（半帧容差）
+        const fps = this._getTimelineFps();
+        const eps = fps > 0 ? 0.5 / fps : 0.001;
+        const clips = this._getTrackClips(gap.track);
+        let valid = trackVisible && clips.length > 0;
+        if (valid) {
+            const near = (a, b) => Math.abs(a - b) <= eps;
+            let matched = false;
+            // 前导空隙：0 → 首片段起点
+            if (near(gap.start, 0) && near(gap.end, clips[0].start)) matched = true;
+            // 中间空隙：片段 i 的 end → 片段 i+1 的 start
+            for (let i = 0; i < clips.length - 1 && !matched; i++) {
+                if (near(clips[i].end, gap.start) && near(clips[i + 1].start, gap.end)) matched = true;
+            }
+            valid = matched;
+        }
+        if (!valid) { this._selectedGap = null; return; }
+        const trackEl = {
+            v1: this._tlTrack, v2: this._tlV2TopTrack,
+            a1: this._tlAudioTrack, a2: this._tlV2BotTrack,
+        }[gap.track];
+        if (!trackEl) return;
+        const pxPerSec = this._getPxPerSec();
+        if (pxPerSec <= 0) return;
+        const el = document.createElement("div");
+        el.className = "xzg-ve-gap-sel";
+        el.style.left = `${gap.start * pxPerSec}px`;
+        el.style.width = `${Math.max(4, (gap.end - gap.start) * pxPerSec)}px`;
+        trackEl.appendChild(el);
+        this._gapSelEl = el;
+    }
+
+    // 清空空隙选中（数据 + DOM）
+    _clearGapSelection() {
+        this._selectedGap = null;
+        if (this._gapSelEl) { this._gapSelEl.remove(); this._gapSelEl = null; }
+    }
+
+    // 删除选中空隙：该轨道上空隙后方（起点 ≥ 空隙终点）的片段整体前移贴合
+    // 单轨道操作：其他轨道（含配对音轨）不受影响
+    _deleteSelectedGap() {
+        const gap = this._selectedGap;
+        if (!gap) return;
+        const shift = gap.end - gap.start;
+        // 帧对齐量化（与 _clientXToTlStart 一致），半帧容差判定边界
+        const fps = this._getTimelineFps();
+        const q = (v) => (fps > 0 ? Math.round(v * fps) / fps : v);
+        const eps = fps > 0 ? 0.5 / fps : 0.001;
+        let moved = 0;
+        for (const clip of this.timeline) {
+            let pos = null;
+            let onTrack = false;
+            if (clip.kind === "audio") {
+                onTrack = (gap.track === "a1" && clip.track !== "a2") || (gap.track === "a2" && clip.track === "a2");
+                pos = clip.audioTlStart;
+            } else {
+                onTrack = (gap.track === "v1" && clip.track !== "v2") || (gap.track === "v2" && clip.track === "v2");
+                pos = clip.tlStart;
+            }
+            if (!onTrack || pos == null) continue;
+            // 仅移动起点在空隙终点之后（含恰好贴合）的片段
+            if (pos >= gap.end - eps) {
+                const newPos = Math.max(0, q(pos - shift));
+                if (clip.kind === "audio") clip.audioTlStart = newPos;
+                else clip.tlStart = newPos;
+                moved++;
+            }
+        }
+        const tn = { v1: "V1", v2: "V2", a1: "A1", a2: "A2" }[gap.track];
+        this._clearGapSelection();
+        if (moved > 0) {
+            this._saveTimelineSession();
+            this._setStatus(`已删除 ${tn} 轨道空隙（${_fmtTime(shift)}），${moved} 个片段前移贴合`);
+        } else {
+            this._setStatus(`空隙后方无片段，${tn} 轨道未变化`);
         }
     }
 

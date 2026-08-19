@@ -918,15 +918,91 @@ class XzgAudioWaveformViewer {
 
 const XZG_AUDIO_SAVE_TYPE = "XiaozhuguangAudioSave";
 
+// 判断 canvas 坐标是否命中某个音频保存节点的波形区域（命中返回 node，否则 null）
+function _xzgAudioSaveHitWaveform(canvasX, canvasY) {
+    const nodes = app.graph?.nodes || [];
+    for (const n of nodes) {
+        if (n.type !== XZG_AUDIO_SAVE_TYPE) continue;
+        const viewer = n._xzgWaveformViewer;
+        if (!viewer || !viewer._saveUrl) continue;
+        const nx = n.pos[0], ny = n.pos[1];
+        const ns = n.size || [0, 0];
+        if (canvasX < nx || canvasX > nx + ns[0]) continue;
+        if (canvasY < ny || canvasY > ny + ns[1]) continue;
+        const wy = viewer._drawY;
+        const wh = viewer._drawH;
+        const wH = viewer._widgetH || wh;
+        const areaBottom = wy + Math.max(wh, wH);
+        const localY = canvasY - ny;
+        if (wy > 0 && localY >= wy && localY <= areaBottom) return n;
+    }
+    return null;
+}
+
 app.registerExtension({
     name: "xiaozhuguang.audio_save",
     setup() {
-        // hook processContextMenu：右键波形区域时显示自定义保存菜单
-        if (window.LGraphCanvas?.prototype?.processContextMenu && !LGraphCanvas.prototype._xzgAudioSaveCtxPatched) {
+        // 1. window 捕获阶段 contextmenu：命中波形区就彻底拦截原生菜单（优先级最高）
+        window.addEventListener('contextmenu', (e) => {
+            const canvasEl = app.canvas?.canvas;
+            if (!canvasEl) return;
+            if (e.target !== canvasEl && !canvasEl.contains?.(e.target)) return;
+
+            const canvas = app.canvas;
+            let x, y;
+            if (canvas.convertEventToCanvasCoordinates) {
+                try {
+                    const p = canvas.convertEventToCanvasCoordinates(e);
+                    if (p) { x = p[0]; y = p[1]; }
+                } catch (_) {}
+            }
+            if (x === undefined || y === undefined) {
+                const rect = canvasEl.getBoundingClientRect();
+                x = (e.clientX - rect.left) / canvas.ds.scale - canvas.ds.offset[0];
+                y = (e.clientY - rect.top) / canvas.ds.scale - canvas.ds.offset[1];
+            }
+
+            const node = _xzgAudioSaveHitWaveform(x, y);
+            if (node) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                node._xzgWaveformViewer.onContextMenu(e.clientX, e.clientY);
+                return false;
+            }
+        }, true);
+
+        // 2. hook processMouseDown：右键命中波形区时返回 true，阻止 LiteGraph 继续派发
+        let LGraphCanvas = null;
+        try { if (typeof LGraphCanvas !== 'undefined' && LGraphCanvas?.prototype) LGraphCanvas = LGraphCanvas; } catch (_) {}
+        if (!LGraphCanvas) LGraphCanvas = window.LGraphCanvas || null;
+        if (!LGraphCanvas && window.LiteGraph?.LGraphCanvas) LGraphCanvas = window.LiteGraph.LGraphCanvas;
+        if (!LGraphCanvas && app.canvas?.constructor) LGraphCanvas = app.canvas.constructor;
+
+        if (LGraphCanvas?.prototype?.processMouseDown && !LGraphCanvas.prototype._xzgAudioSaveMousePatched) {
+            LGraphCanvas.prototype._xzgAudioSaveMousePatched = true;
+            const orig = LGraphCanvas.prototype.processMouseDown;
+            LGraphCanvas.prototype.processMouseDown = function (e) {
+                if (e.button === 2) {
+                    const cx = e.canvasX ?? e.x ?? 0;
+                    const cy = e.canvasY ?? e.y ?? 0;
+                    const node = _xzgAudioSaveHitWaveform(cx, cy);
+                    if (node) {
+                        e.preventDefault?.();
+                        e.stopPropagation?.();
+                        node._xzgWaveformViewer.onContextMenu(e.clientX ?? 0, e.clientY ?? 0);
+                        return true;
+                    }
+                }
+                return orig.apply(this, arguments);
+            };
+        }
+
+        // 3. hook processContextMenu（新版 LiteGraph）：命中波形区时返回 true 拦截原生
+        if (LGraphCanvas?.prototype?.processContextMenu && !LGraphCanvas.prototype._xzgAudioSaveCtxPatched) {
             LGraphCanvas.prototype._xzgAudioSaveCtxPatched = true;
             const origProcessContextMenu = LGraphCanvas.prototype.processContextMenu;
             LGraphCanvas.prototype.processContextMenu = function (node, e) {
-                // 如果点击的是音频保存节点的波形区域（含下方黑色区域），拦截并显示自定义菜单
                 if (node?._xzgWaveformViewer && node._xzgWaveformViewer._saveUrl) {
                     const viewer = node._xzgWaveformViewer;
                     const wy = viewer._drawY;
@@ -938,7 +1014,7 @@ app.registerExtension({
                     const localY = cy - node.pos[1];
                     if (wy > 0 && localY >= wy && localY <= areaBottom) {
                         viewer.onContextMenu(e?.clientX ?? 0, e?.clientY ?? 0);
-                        return; // 阻止原生菜单
+                        return true;
                     }
                 }
                 return origProcessContextMenu.apply(this, arguments);
@@ -986,6 +1062,9 @@ app.registerExtension({
             // ─── 创建波形组件 ──────────────────────────────────────
             let saveUrl = "";      // 后端返回的音频 URL（供右键下载）
             let savedFilename = "";
+            // 当前音频的落盘信息（供右键「发送到小珠光音频加载器」用）
+            let savedType = "output";   // "output"（保存模式）| "temp"（预览模式）
+            let savedSubfolder = "";
 
             const waveformViewer = new XzgAudioWaveformViewer({
                 node,
@@ -993,7 +1072,7 @@ app.registerExtension({
                     if (!saveUrl || !savedFilename) return;
                     const fmtWidget = node.widgets?.find(w => w.name === '格式');
                     const fmtVal = fmtWidget ? String(fmtWidget.value) : 'mp3';
-                    _xzgShowSaveMenu(cx, cy, saveUrl, savedFilename, fmtVal);
+                    _xzgShowSaveMenu(cx, cy, saveUrl, savedFilename, fmtVal, savedType, savedSubfolder);
                 },
                 onVolumeChange(vol) {
                     const volWidget = node.widgets?.find(w => w.name === '音量');
@@ -1260,6 +1339,8 @@ app.registerExtension({
                         `/view?filename=${encodeURIComponent(info.filename)}&type=${info.type}&subfolder=${encodeURIComponent(info.subfolder || '')}${app.getRandParam()}`
                     );
                     savedFilename = info.filename;
+                    savedType = info.type || "output";
+                    savedSubfolder = info.subfolder || "";
 
                     // 更新波形显示和播放信息（setSaveInfo 内部会绑定 <audio> src = saveUrl）
                     waveformViewer.setData(info.peaks, info.duration, info.sample_rate);
@@ -1276,6 +1357,8 @@ app.registerExtension({
                             // 刷新后避免伪 404 链接，只保留波形可视化
                             saveUrl: info.preview ? "" : saveUrl,
                             filename: info.preview ? "" : savedFilename,
+                            type: info.preview ? "" : (info.type || "output"),
+                            subfolder: info.preview ? "" : (info.subfolder || ""),
                         };
                         waveformWidget.value = JSON.stringify(saveData);
                     }
@@ -1306,6 +1389,10 @@ app.registerExtension({
                                 waveformViewer.setData(data.peaks, data.duration, data.sampleRate);
                                 if (data.saveUrl && data.filename) {
                                     waveformViewer.setSaveInfo(data.saveUrl, data.filename);
+                                    // 恢复落盘信息（右键「发送到音频加载器」需要 type/subfolder）
+                                    savedFilename = data.filename;
+                                    savedType = data.type || "output";
+                                    savedSubfolder = data.subfolder || "";
                                 }
                                 // 播放头默认在最开头
                                 if (data.duration > 0) {
@@ -1395,7 +1482,52 @@ app.registerExtension({
 // 右键保存菜单（拦截 ComfyUI 原生菜单，显示自定义格式列表）
 // ═══════════════════════════════════════════════════════════════════════
 
-function _xzgShowSaveMenu(cx, cy, url, filename, formatVal) {
+// ═══════════════════════════════════════════════════════════════════════
+// 发送到小珠光音频加载器（与图像保存节点的发送功能同构）
+// ═══════════════════════════════════════════════════════════════════════
+
+// 查找画布中所有小珠光音频加载器节点（不过滤绕过状态：用户可能就是想发给全部节点，绕过自己切换）
+function _xzgFindAudioLoaders() {
+    const loaders = [];
+    const nodes = app.graph?.nodes || [];
+    for (const n of nodes) {
+        if (n && n.type === "XiaozhuguangAudioLoader") {
+            loaders.push(n);
+        }
+    }
+    return loaders;
+}
+
+// 将音频发送到指定加载器节点：设置音频 widget 值并触发回调（内部会解码显示波形）
+function _xzgSendToAudioLoaderNode(loaderNode, annotatedName) {
+    const audioWidget = loaderNode.widgets?.find((w) => w.name === "音频");
+    if (!audioWidget) {
+        console.warn("[小珠光音频保存] 目标加载器缺少音频 widget，发送取消");
+        return;
+    }
+    audioWidget.value = annotatedName;
+    audioWidget.callback?.(annotatedName);
+    app.graph.setDirtyCanvas(true);
+}
+
+// 主入口：发送当前音频到画布中所有小珠光音频加载器
+//   annotatedName 形如 "a.mp3 [output]"（subfolder 非空时 "sub/a.mp3 [output]"）
+function _xzgSendToAudioLoader(annotatedName) {
+    if (!annotatedName) return;
+    const loaders = _xzgFindAudioLoaders();
+
+    if (loaders.length === 0) {
+        const msg = "未找到小珠光音频加载器节点，请先添加一个";
+        console.warn("[小珠光音频保存] " + msg);
+        alert(msg);
+        return;
+    }
+
+    for (const n of loaders) _xzgSendToAudioLoaderNode(n, annotatedName);
+}
+
+
+function _xzgShowSaveMenu(cx, cy, url, filename, formatVal, type, subfolder) {
     const old = document.querySelector('.xzg-audio-save-menu');
     if (old) old.remove();
 
@@ -1406,7 +1538,7 @@ function _xzgShowSaveMenu(cx, cy, url, filename, formatVal) {
 
     const menu = document.createElement('div');
     menu.className = 'xzg-audio-save-menu';
-    
+
     // 根据屏幕位置自动调整菜单位置
     let left = cx;
     let top = cy;
@@ -1428,12 +1560,37 @@ function _xzgShowSaveMenu(cx, cy, url, filename, formatVal) {
     item.onclick = async (e) => {
         e.stopPropagation();
         menu.remove();
-        
+
         // 使用统一的 downloadAudio（首次桌面，二次上次路径）
         await downloadAudio(url, filename);
     };
 
     menu.appendChild(item);
+
+    // 发送到音频加载器（所有音频都能发：保存模式 output、预览模式 temp 都支持）
+    if (filename && type) {
+        const sep = document.createElement('div');
+        sep.style.cssText = `height: 1px; background: #555; margin: 4px 0;`;
+        menu.appendChild(sep);
+
+        const sendItem = document.createElement('div');
+        sendItem.style.cssText = `padding: 6px 20px; cursor: pointer; font-size: 13px; color: #88ccff; background: transparent;`;
+        sendItem.innerHTML = `<span style="margin-right:6px;">➤</span>发送到音频加载器`;
+
+        sendItem.onmouseenter = () => { sendItem.style.background = '#444'; };
+        sendItem.onmouseleave = () => { sendItem.style.background = 'transparent'; };
+
+        sendItem.addEventListener('pointerdown', (e) => e.stopPropagation());
+        sendItem.onclick = (e) => {
+            e.stopPropagation();
+            menu.remove();
+            // 构建标注文件名：subfolder 非空时 "sub/a.mp3 [output]"，否则 "a.mp3 [output]"
+            let name = filename;
+            if (subfolder) name = subfolder + "/" + name;
+            _xzgSendToAudioLoader(name + " [" + type + "]");
+        };
+        menu.appendChild(sendItem);
+    }
 
     // 自动调整菜单位置（避免超出屏幕）
     document.body.appendChild(menu);

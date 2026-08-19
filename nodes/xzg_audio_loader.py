@@ -307,6 +307,50 @@ _xzg_decode_jobs_lock = threading.Lock()
 _XZG_DECODE_JOB_TTL = 120  # 完成后保留时间（秒）
 _XZG_DECODE_TIMEOUT = 600  # 解码超时（秒）
 
+# 波形峰值缓存：同一音频文件（input 已存在的）切换工作流/刷新页面时跳过重新解码
+# 键 = 绝对路径；值 = {mtime, size, peaks, duration, sample_rate, cached_at}
+# mtime+size 校验：文件被覆盖上传时自动失效
+_xzg_peaks_cache = {}
+_xzg_peaks_cache_lock = threading.Lock()
+_XZG_PEAKS_CACHE_MAX = 200  # 每条仅 500×2 个浮点数（约 8KB），200 条上限足够且内存可控
+
+
+def _xzg_get_cached_peaks(audio_path):
+    """读取峰值缓存；文件 mtime/size 变化则视为失效返回 None"""
+    key = os.path.abspath(audio_path)
+    try:
+        st = os.stat(key)
+    except OSError:
+        return None
+    with _xzg_peaks_cache_lock:
+        entry = _xzg_peaks_cache.get(key)
+        if not entry or entry['mtime'] != st.st_mtime or entry['size'] != st.st_size:
+            _xzg_peaks_cache.pop(key, None)
+            return None
+        entry['cached_at'] = time.time()  # 刷新时间用于 FIFO 淘汰
+        return {'peaks': entry['peaks'], 'duration': entry['duration'],
+                'sample_rate': entry['sample_rate']}
+
+
+def _xzg_store_peaks(audio_path, peaks, duration, sample_rate):
+    """写入峰值缓存（FIFO 淘汰最旧条目）"""
+    key = os.path.abspath(audio_path)
+    try:
+        st = os.stat(key)
+        mtime, size = st.st_mtime, st.st_size
+    except OSError:
+        return
+    with _xzg_peaks_cache_lock:
+        if len(_xzg_peaks_cache) >= _XZG_PEAKS_CACHE_MAX and key not in _xzg_peaks_cache:
+            oldest = min(_xzg_peaks_cache.items(), key=lambda kv: kv[1]['cached_at'])[0]
+            _xzg_peaks_cache.pop(oldest, None)
+        _xzg_peaks_cache[key] = {
+            'mtime': mtime, 'size': size,
+            'peaks': peaks, 'duration': duration,
+            'sample_rate': sample_rate,
+            'cached_at': time.time(),
+        }
+
 
 def _xzg_cleanup_old_jobs():
     """清理过期的解码任务"""
@@ -408,6 +452,9 @@ def _xzg_decode_audio_thread(audio_path, sample_rate, job_id, total_duration):
         waveform = torch.from_numpy(audio_np.astype(np.float32))
         peaks = generate_waveform_peaks(waveform, WAVEFORM_SAMPLES)
         actual_duration = waveform.shape[-1] / sample_rate
+
+        # 解码成功 → 写入峰值缓存（下次同文件免解码）
+        _xzg_store_peaks(audio_path, peaks, actual_duration, sample_rate)
 
         with _xzg_decode_jobs_lock:
             job = _xzg_decode_jobs.get(job_id)
@@ -586,8 +633,24 @@ if getattr(PromptServer, 'instance', None) is not None:
         info = probe_audio_info(audio_path)
         sr = info['sample_rate'] if info else 44100
 
+        # 峰值缓存命中：直接返回（此端点为旧版前端回退路径，同样免重复解码）
+        cached = _xzg_get_cached_peaks(audio_path)
+        if cached is not None:
+            return web.json_response({
+                "filename": filename,
+                "duration": cached['duration'],
+                "sample_rate": cached['sample_rate'],
+                "channels": info['channels'] if info else 2,
+                "peaks": cached['peaks'],
+            })
+
         waveform, _ = load_audio(audio_path, start_time=0.0, duration=None, sample_rate=sr)
         peaks = generate_waveform_peaks(waveform, WAVEFORM_SAMPLES)
+        decoded_duration = (waveform.shape[-1] / sr) if waveform is not None and waveform.shape[-1] > 0 else 0.0
+
+        # 解码成功 → 写入峰值缓存
+        if waveform is not None and waveform.shape[-1] > 0:
+            _xzg_store_peaks(audio_path, peaks, decoded_duration, sr)
 
         return web.json_response({
             "filename": filename,
@@ -616,6 +679,31 @@ if getattr(PromptServer, 'instance', None) is not None:
 
         # 清理旧任务
         _xzg_cleanup_old_jobs()
+
+        # 峰值缓存命中：直接返回已完成的 job，跳过 FFmpeg 解码线程
+        # （同一文件切换工作流/刷新页面时波形秒出）
+        cached = _xzg_get_cached_peaks(audio_path)
+        if cached is not None:
+            job_id = str(uuid.uuid4())
+            with _xzg_decode_jobs_lock:
+                _xzg_decode_jobs[job_id] = {
+                    'progress': 1.0,
+                    'decoded_time': cached['duration'],
+                    'total_duration': cached['duration'],
+                    'sample_rate': cached['sample_rate'],
+                    'done': True,
+                    'error': None,
+                    'peaks': cached['peaks'],
+                    'duration': cached['duration'],
+                    'created_at': time.time(),
+                    'finished_at': time.time(),
+                }
+            return web.json_response({
+                "job_id": job_id,
+                "total_duration": cached['duration'],
+                "sample_rate": cached['sample_rate'],
+                "cached": True,
+            })
 
         info = probe_audio_info(audio_path)
         sr = info['sample_rate'] if info else 44100

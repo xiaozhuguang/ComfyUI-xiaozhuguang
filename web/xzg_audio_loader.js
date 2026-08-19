@@ -1530,6 +1530,51 @@ async function fetchWaveformData(filename) {
     }
 }
 
+// 波形前端会话级缓存：模块级 Map，同一浏览器会话内切换工作流/重复选择同一音频
+// 时直接复用波形数据，跳过网络请求与解码等待（后端另有峰值缓存兜底，跨刷新生效）
+// 条目额外持久化「红蓝标记线范围 + 音量」：切换工作流恢复同一音频时原样还原；
+// 刷新浏览器 / 重启 ComfyUI 时模块重载缓存清空，自然重置为默认（100%、全范围）
+const _xzgWaveformCache = new Map(); // key: 音频 widget 值（如 "a.mp3 [input]"）→ {peaks, duration, range, volume}
+const _XZG_WAVEFORM_CACHE_MAX = 100;
+
+function _xzgWaveformCacheGet(filename) {
+    return _xzgWaveformCache.get(filename) || null;
+}
+
+function _xzgWaveformCacheSet(filename, peaks, duration, extra) {
+    if (!filename || !peaks || peaks.length === 0) return;
+    if (_xzgWaveformCache.size >= _XZG_WAVEFORM_CACHE_MAX && !_xzgWaveformCache.has(filename)) {
+        // FIFO：删除最早插入的键
+        _xzgWaveformCache.delete(_xzgWaveformCache.keys().next().value);
+    }
+    _xzgWaveformCache.set(filename, {
+        peaks,
+        duration: duration || 0,
+        range: extra?.range || null,     // {start, end} 红蓝标记线范围
+        volume: typeof extra?.volume === 'number' ? extra.volume : 1.0,
+    });
+}
+
+// 局部更新已有缓存条目（红蓝线拖动结束 / 音量调整时回写；条目不存在则忽略）
+function _xzgWaveformCacheUpdate(filename, patch) {
+    if (!filename) return;
+    const entry = _xzgWaveformCache.get(filename);
+    if (!entry) return;
+    if (patch?.range) entry.range = { start: patch.range.start, end: patch.range.end };
+    if (typeof patch?.volume === 'number') entry.volume = patch.volume;
+}
+
+function _xzgWaveformCacheInvalidate(plainName) {
+    // 清除与该文件名相关的缓存（含 "name [input]" 等带注记形式）
+    // 上传覆盖同名文件 / 快剪重复导出同名文件时调用
+    if (!plainName) return;
+    for (const key of Array.from(_xzgWaveformCache.keys())) {
+        if (key === plainName || key.startsWith(`${plainName} [`)) {
+            _xzgWaveformCache.delete(key);
+        }
+    }
+}
+
 // 带进度跟踪的波形获取：POST 启动解码 → 轮询进度 → 返回结果
 // 失败时自动回退到 fetchWaveformData
 const _XZG_MIN_DECODE_ANIM_MS = 300;
@@ -1760,12 +1805,22 @@ function bindAudioLoaderInteractions(node) {
                 durWidget.value = Math.round((end - start) * 100) / 100;
                 durWidget.callback?.(durWidget.value);
             }
+            // 红蓝标记线范围回写缓存（切换工作流恢复时还原位置）
+            const audioWidget = node.widgets?.find(w => w.name === "音频");
+            if (audioWidget?.value) {
+                _xzgWaveformCacheUpdate(audioWidget.value, { range: { start, end } });
+            }
         },
         onVolumeChange: (vol) => {
             const volWidget = node.widgets?.find(w => w.name === "音量");
             if (volWidget) {
                 volWidget.value = Math.round(vol * 100) / 100;
                 volWidget.callback?.(volWidget.value);
+            }
+            // 音量回写缓存（切换工作流恢复时保留；刷新/重启时缓存清空自然重置 100%）
+            const audioWidget = node.widgets?.find(w => w.name === "音频");
+            if (audioWidget?.value) {
+                _xzgWaveformCacheUpdate(audioWidget.value, { volume: vol });
             }
         },
         onRequestRedraw: () => node.setDirtyCanvas?.(true, true),
@@ -1843,6 +1898,8 @@ function bindAudioLoaderInteractions(node) {
         //       fallback 会把刚写入的新文件名覆盖回旧音频（视频加载器同样不刷新）
         const _applyFastcutAudio = (filename, type) => {
             if (!filename || !audioWidget) return;
+            // 快剪可能重复导出同名文件（覆盖旧文件）→ 清除对应缓存，强制重新解码
+            _xzgWaveformCacheInvalidate(filename);
             const annotated = `${filename} [${type || "output"}]`;
             audioWidget.value = annotated;
             audioWidget.callback?.(annotated);
@@ -2000,6 +2057,47 @@ function bindAudioLoaderInteractions(node) {
         }
         waveformViewer.setFilename(pureName);
 
+        // 前端会话缓存命中：直接复用波形（切换工作流恢复同一音频时秒出，
+        // 跳过解码动画与网络请求），并还原红蓝标记线范围与音量（会话内持久化；
+        // 刷新浏览器/重启 ComfyUI 时缓存清空，自然回到默认 100% + 全范围）
+        const cachedWave = _xzgWaveformCacheGet(filename);
+        if (cachedWave) {
+            waveformViewer.setData(cachedWave.peaks, cachedWave.duration);
+            const dur = cachedWave.duration || 0;
+            const startWidget = node.widgets?.find(w => w.name === "起始时间(秒)");
+            const durWidget = node.widgets?.find(w => w.name === "时长(秒)");
+            const volWidget = node.widgets?.find(w => w.name === "音量");
+            if (cachedWave.range && dur > 0) {
+                // 还原红蓝标记线（clamp 防御异常值）并同步隐藏 widgets
+                let start = Math.max(0, Math.min(dur - 0.01, cachedWave.range.start || 0));
+                let end = Math.max(start + 0.01, Math.min(dur, cachedWave.range.end || dur));
+                waveformViewer.setRange(start, end);
+                if (startWidget) {
+                    startWidget.value = Math.round(start * 100) / 100;
+                    startWidget._xzgMax = Math.max(0, dur - 0.01);
+                }
+                if (durWidget) {
+                    durWidget.value = Math.round((end - start) * 100) / 100;
+                    durWidget._xzgMax = Math.max(0.01, dur - start);
+                }
+            } else {
+                // 无范围记录（从未调整过）：与首次解码完成一致，重置 0/0
+                if (startWidget && dur > 0) startWidget._xzgMax = dur - 0.01;
+                if (durWidget && dur > 0) durWidget._xzgMax = dur;
+                if (startWidget) startWidget.value = 0;
+                if (durWidget) durWidget.value = 0;
+            }
+            // 还原音量（未记录则 100%；setData 已强制 1.0，此处覆盖为持久化值）
+            const vol = (typeof cachedWave.volume === 'number') ? cachedWave.volume : 1.0;
+            if (volWidget) volWidget.value = Math.round(vol * 100) / 100;
+            if (vol !== 1.0) {
+                waveformViewer.setVolume(vol); // 触发 onVolumeChange 同步 widget（值相同，回写缓存无害）
+            } else {
+                waveformViewer._applyVolume(1.0);
+            }
+            return;
+        }
+
         // 启动解码进度显示
         const animStart = Date.now();
         waveformViewer.startDecoding(0);
@@ -2028,6 +2126,8 @@ function bindAudioLoaderInteractions(node) {
         if (data) {
             waveformViewer.setData(data.peaks, data.duration);
             _syncWidgetsFromViewer();
+            // 解码成功 → 写入会话缓存（下次切换工作流秒出）
+            _xzgWaveformCacheSet(filename, data.peaks, data.duration);
         }
     }
 
@@ -2080,6 +2180,11 @@ function bindAudioLoaderInteractions(node) {
 
         const endVal = clampedDur > 0 ? Math.min(duration, clampedStart + clampedDur) : duration;
         waveformViewer.setRange(clampedStart, endVal);
+        // widget 直改范围 → 回写缓存（与拖动红蓝线一致，切换工作流可还原）
+        const audioWidgetForRange = node.widgets?.find(w => w.name === "音频");
+        if (audioWidgetForRange?.value && duration > 0) {
+            _xzgWaveformCacheUpdate(audioWidgetForRange.value, { range: { start: clampedStart, end: endVal } });
+        }
     };
 
     const syncVolumeFromWidget = () => {
@@ -2087,7 +2192,10 @@ function bindAudioLoaderInteractions(node) {
         if (volWidget) {
             // 刷新/重启 ComfyUI：音量一律重置为 100%，不再读取 widget 里的旧值
             volWidget.value = 1.0;
-            waveformViewer.setVolume(1.0);
+            // 直接赋值不触发 onVolumeChange——避免把缓存里的持久化音量污染为 1.0；
+            // 随后 loadWaveformForFile 缓存命中时会用持久化值覆盖（无缓存时保持 1.0）
+            waveformViewer.volume = 1.0;
+            waveformViewer._applyVolume(1.0);
         }
     };
 
@@ -2168,6 +2276,16 @@ function bindAudioLoaderInteractions(node) {
             // 节点执行直接获得波形数据 → 视为换新音频，音量重置为 100%
             waveformViewer.stopDecoding();
             waveformViewer.peaks = audioInfo.full_peaks;
+            // 执行结果包含完整波形 → 同步写入会话缓存（免二次解码，含执行时范围）
+            if (audioInfo.filename) {
+                const execStart = audioInfo.start_time || 0;
+                const execEnd = execStart + (audioInfo.duration || audioInfo.actual_duration || audioInfo.total_duration || 0);
+                _xzgWaveformCacheSet(audioInfo.filename, audioInfo.full_peaks,
+                    audioInfo.total_duration || audioInfo.duration || 0, {
+                        range: { start: execStart, end: execEnd },
+                        volume: 1.0, // 执行视为换新音频，音量重置 100%
+                    });
+            }
             waveformViewer.duration = audioInfo.total_duration;
             const start = audioInfo.start_time || 0;
             const end = start + (audioInfo.duration || audioInfo.actual_duration || audioInfo.total_duration);
@@ -2184,6 +2302,8 @@ function bindAudioLoaderInteractions(node) {
         if (files.length === 0) return;
         const uploaded = await uploadAudioFiles(files);
         if (uploaded.length > 0) {
+            // 上传可能覆盖同名旧文件 → 清除对应缓存，强制重新解码
+            uploaded.forEach(name => _xzgWaveformCacheInvalidate(name));
             const audioWidget = node.widgets?.find(w => w.name === "音频");
             if (audioWidget) {
                 await refreshAudioCombo(audioWidget, uploaded[0]);
