@@ -871,8 +871,12 @@ export class XiaozhuguangVideoEditor {
         if (this._matchShortcut(e, this._shortcutKeys.delete) || e.key === "Backspace") {
             const mediaSel = this.selectedMediaNames.size > 0;
             const clipSel = this.selectedClipIds.size > 0;
-            if (!mediaSel && !clipSel) return;
+            // 快剪编辑器打开期间，Delete/Backspace 一律拦截并阻止向 ComfyUI 画布传播：
+            // 从音频/视频加载器进入时，加载器节点仍处于画布选中状态，若快剪内无选中片段
+            // 直接 return 放行，事件会穿透到 LiteGraph 删除该节点（删光音轨所有音频后误删节点）
             e.preventDefault();
+            e.stopImmediatePropagation();
+            if (!mediaSel && !clipSel) return;
             this._pushHistory();
             // 删除选中的媒体（同步删除后端缓存文件，避免重新上传时生成 _1 文件）
             if (mediaSel) {

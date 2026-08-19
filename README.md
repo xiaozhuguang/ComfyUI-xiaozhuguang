@@ -651,6 +651,21 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.2.0 (2026-08-19)
+
+**🛡 修复：快剪内删光音轨所有音频后，误删音频/视频加载器节点（重要）**
+
+- **问题现象**：从「小珠光音频加载器」点「从快剪加载」进入快剪，在音轨上删除所有音频片段后，点确认时有一定概率导致**音频加载器节点从画布上被删除**
+- **根因**：快剪编辑器打开期间，它在 window 上以 **capture 阶段**注册了 keydown 监听（先于 ComfyUI 画布）。进入快剪时加载器节点仍处于画布选中状态。`_onKeyDown` 的 Delete/Backspace 分支中，当快剪内**没有选中片段/媒体**时走 `if (!mediaSel && !clipSel) return;` 直接放行——事件穿透到 LiteGraph，**删除当前选中的加载器节点**。因此「删光所有音频后习惯性再按一次 Delete（或删除最后一个后连按）」就会误删节点
+- **修复**：Delete/Backspace 分支改为**无论快剪内有无选中，一律先 `e.preventDefault()` + `e.stopImmediatePropagation()` 拦截**，之后才执行片段/媒体删除逻辑。快剪打开期间 Delete/Backspace 永远归属快剪，不再穿透到 ComfyUI 画布；快剪关闭后监听移除，画布删除节点功能不受任何影响
+- **验证方式**：Ctrl+F5 刷新 → 选中音频加载器节点 → 从快剪加载 → 快剪里删光所有音频 → 连续按多次 Delete/Backspace → 关闭快剪 → 节点完好保留
+
+**🗂 其他**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.1.0` 升至 `12.2.0`
+
+---
+
 ### V12.1.0 (2026-08-19)
 
 **📦 依赖管理大升级（pyproject.toml + requirements.txt 双清单）**
