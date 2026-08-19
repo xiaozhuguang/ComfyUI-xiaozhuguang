@@ -24,15 +24,17 @@ function _tr(zh) {
 const _PLACEHOLDER_ZH =
     "【小珠光文本框】\n" +
     "输出：text 原文 / text_zh_num 数字转中文\n" +
-    "规则：数字+量词→完整读数；第N→第N；4位+年→按位读；其余→按位读\n" +
-    "例：12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n" +
+    "规则：日期时间→整体转写；数字+量词→完整读数；第N→第N；4位+年→按位读；其余→按位读\n" +
+    "例：2023.4.16 21:08→二零二三年四月十六日九点零八分\n" +
+    "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n" +
     "《》→。  ……→。";
 
 const _PLACEHOLDER_EN =
     "[Xiaozhuguang Text Box]\n" +
     "Outputs: text (raw) / text_zh_num (digits → Chinese words)\n" +
-    "Rules: digit+unit → full reading; 第N → ordinal; 4digits+年 → year per digit; rest → per digit\n" +
-    "Ex: 12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n" +
+    "Rules: datetime→whole conversion; digit+unit→full reading; 第N→ordinal; 4digits+年→year per digit; rest→per digit\n" +
+    "Ex: 2023.4.16 21:08→二零二三年四月十六日九点零八分\n" +
+    "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n" +
     "《》→。  ……→。";
 
 function _placeholderForLang() {

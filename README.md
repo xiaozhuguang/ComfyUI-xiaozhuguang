@@ -651,6 +651,48 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.3.0 (2026-08-19)
+
+**📝 小珠光文本框：日期时间整体识别与中文转写（2023.4.16 21:08 → 二零二三年四月十六日九点零八分）**
+
+- **新增 Stage 0 整体正则**：优先匹配「日期时间整体」结构，避免被后面的 量词/单位、编号、乘积 等规则拆碎。支持 4 位年份 + 1–2 位月日 + `./-/.` 任意分隔符，以及 `[空格/T]` + `HH:MM`（分钟限定 2 位，避免误伤 16:9 这类比例）
+- **拆分 3 条正则**：
+  - `_DATETIME_RE`：同时包含日期 + 时间（`2023.4.16 21:08`）
+  - `_DATE_ONLY_RE`：纯日期（`2023-4-16`）
+  - `_TIME_ONLY_RE`：纯时间（`9:08`，分钟必须 2 位，防止匹配 `16:9`）
+- **年份按位读**：`2023 → 二零二三`、`2000 → 二零零零`
+- **月份 / 日期完整读数 + 不加 "零" 前缀**：`4月 → 四月`、`16日 → 十六日`；`1月/2月` 不会写成「零一月」
+- **小时 24 制 → 12 制读法**：`9点`、`21点 → 九点`、`13点 → 十三点`、`0点 → 零点`（不按 0-23 机械加「零」前缀）
+- **分钟规则**：`00分 → 整`；`1–9分 → 零X分`（`08分 → 零八分`）；`10–59分 → 完整读数 + 分`（`21分 → 二十一分`）
+- **示例输出**：`2023.4.16 21:08` → `二零二三年四月十六日九点零八分`
+- **placeholder 同步更新**：中英文 placeholder 追加日期时间转换示例与说明
+
+**🔊 音频节点：短横线音量手柄 — 换音频 / 刷新浏览器 / 重启 ComfyUI 一律重置为 100%**
+
+- **问题现象**：音量既存在于 `waveformViewer.volume`（实际播放增益），又被写入序列化（音频保存写入 `waveformWidget.value` JSON 的 `volume` 字段；两个节点的原生「音量」widget 落入 `widgets_values`），重载工作流后会按旧值恢复 —— 导致刷新浏览器 / 重启 ComfyUI / 切换音频文件后，音量一直停在之前的百分比
+- **修复思路**：关闭「音量持久化」，把音量视为纯运行时 UI 状态，只在用户**用手柄拖动期间**生效；一旦进入以下任意触发点，立即归零回 100%
+
+**音频加载器（xzg_audio_loader.js）**：
+- `syncVolumeFromWidget()`：不再读取 `volWidget.value` 历史值，改成强制 `volWidget.value = 1.0` + `viewer.setVolume(1.0)`
+- `_applyAudioWidgetStyles()`：音量 widget 样式初始化处无条件 `w.value = 1.0`（钉死写入 `widgets_values` 的值）
+- `onExecuted`（收到后端 `full_peaks` 出图波形）：末尾 `view.setVolume(1.0)` + 音量 widget 写回 `1.0`
+- 原已有双保险：`WaveformViewer.setData()` 内部硬重置 `volume = 1.0` + `_applyVolume(1.0)`；`_syncWidgetsFromViewer()` 把音量 widget 强制 `1.0`
+- 效果：下拉切音频 / 拖入上传 / 手动 `uploadAudioFiles` / F5 / 重启 ComfyUI / 工作流执行完成 → 音量全部回到 100%
+
+**音频保存（xzg_audio_save.js）**：
+- `WaveformViewer.setData()`：顶部加 `volume = 1.0` + `_applyVolume(1.0)`，设置波形时即重置
+- `onExecuted` 序列化 JSON：删除 `saveData.volume` 字段，不再把音量写回工作流；末尾显式把音量 widget 写回 `1.0`
+- `waveformWidget.callback`（工作流重载后 widget.value 变更触发）：不复用 `data.volume`，不用 `volWidget.value` 初始化，一律 `viewer.volume=1.0` + `viewer._applyVolume(1.0)` + `volW.value = 1.0`
+- `node.onConfigure`：同步 widget JSON 后再走一轮「强制 1.0」双保险
+- `w.name === '音量'` 样式分支：无条件 `w.value = 1.0` 钉死序列化
+
+**🗂 其他**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.2.0` 升至 `12.3.0`
+- 语法校验：`xzg_audio_save.js`、`xzg_audio_loader.js` 均通过 `node --check`；`xzg_text_box.py` 通过 Python AST 解析
+
+---
+
 ### V12.2.0 (2026-08-19)
 
 **🛡 修复：快剪内删光音轨所有音频后，误删音频/视频加载器节点（重要）**

@@ -2047,8 +2047,9 @@ function bindAudioLoaderInteractions(node) {
     const syncVolumeFromWidget = () => {
         const volWidget = node.widgets?.find(w => w.name === "音量");
         if (volWidget) {
-            const vol = Math.max(0, Math.min(3.0, volWidget.value || 0));
-            waveformViewer.setVolume(vol);
+            // 刷新/重启 ComfyUI：音量一律重置为 100%，不再读取 widget 里的旧值
+            volWidget.value = 1.0;
+            waveformViewer.setVolume(1.0);
         }
     };
 
@@ -2126,13 +2127,17 @@ function bindAudioLoaderInteractions(node) {
             audioInfo = output.ui.audio_info[0];
         }
         if (audioInfo && audioInfo.full_peaks) {
-            // 节点执行直接获得波形数据，停止解码进度显示
+            // 节点执行直接获得波形数据 → 视为换新音频，音量重置为 100%
             waveformViewer.stopDecoding();
             waveformViewer.peaks = audioInfo.full_peaks;
             waveformViewer.duration = audioInfo.total_duration;
             const start = audioInfo.start_time || 0;
             const end = start + (audioInfo.duration || audioInfo.actual_duration || audioInfo.total_duration);
             waveformViewer.setRange(start, end);
+            // 换新音频后：音量一律重置为 100%
+            waveformViewer.setVolume(1.0);
+            const volWidget = node.widgets?.find(w => w.name === "音量");
+            if (volWidget) volWidget.value = 1.0;
         }
     };
 
@@ -2235,6 +2240,10 @@ function _applyAudioWidgetStyles(node) {
             w._xzgMax = 3.0;
             w.hidden = true;
             w.computeSize = () => [0, 0];
+            // 新建节点 / 样式重载：音量一律强制 100%（刷新/重启 ComfyUI 不保留旧值）
+            // 注：viewer 的重置交给 onConfigure 里的 syncVolumeFromWidget()，
+            //     这里只把 widget 的序列化值钉死在 1.0
+            w.value = 1.0;
         }
     }
 }

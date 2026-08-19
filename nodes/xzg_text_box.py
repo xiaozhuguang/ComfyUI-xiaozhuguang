@@ -259,6 +259,84 @@ _ORDINAL_RE = re.compile(
 # 千/百/十/个 小单位
 _SMALL_UNITS = ["", "十", "百", "千"]
 
+# ────────────────────────────────────────────────────────────
+#  日期 / 时间 整体识别（优先于所有量词/序数/比率等规则）
+#    2023.4.16 21:08  →  二零二三年四月十六日九点零八分
+#    2023-04-16 09:08  →  二零二三年四月十六日九点零八分
+#    2023/4/16         →  二零二三年四月十六日
+#    21:08             →  九点零八分
+#    21:00             →  九点整
+#  关键读法规：
+#    · 年份 → 按位读（2023→二零二三）；整千年例外用完整读数（2000→两千年）
+#    · 月/日 → 完整读数（4→四，16→十六，10→十，20→二十）
+#    · 小时 → 24 制转 12 制，完整读数（21→九，12→十二，0→十二）
+#    · 分钟 → 完整读数；< 10 前置"零"（08→零八，5→零五）；00→"整"
+#  分隔符：日期分隔符 . / - 任意混合；时间分隔符 冒号
+# ────────────────────────────────────────────────────────────
+_DATETIME_SEP = r"[./\-]"
+# 日期 + 时间（完整）：YYYY.M.D HH:MM
+_DATETIME_RE = re.compile(
+    r"(?<!\d)"
+    r"(\d{4})" + _DATETIME_SEP + r"(\d{1,2})" + _DATETIME_SEP + r"(\d{1,2})"
+    r"[ T]"
+    r"(\d{1,2}):(\d{1,2})"
+    r"(?!\d)"
+)
+# 仅日期：YYYY.M.D
+_DATE_ONLY_RE = re.compile(
+    r"(?<!\d)"
+    r"(\d{4})" + _DATETIME_SEP + r"(\d{1,2})" + _DATETIME_SEP + r"(\d{1,2})"
+    r"(?!\d)"
+)
+# 仅时间：HH:MM（严格 2 位分钟 00-59，避免误伤 16:9 这种 A比B 比率格式）
+#   合法时间示例：09:08 / 21:08 / 9:05（小时可1~2位）；分钟强制 2 位 → 不匹配 "16:9"
+_TIME_ONLY_RE = re.compile(
+    r"(?<![\d:])"
+    r"(\d{1,2}):(\d{2})"
+    r"(?![\d:])"
+)
+
+
+def _zh_clock_hour(h24: int) -> str:
+    """24 制小时 → 12 制中文读数：
+       0/12 → 十二；1/13 → 一；9/21 → 九；11/23 → 十一
+    """
+    if not 0 <= h24 <= 24:  # 容忍 24
+        return _int_to_zh_full(h24)
+    m = h24 % 12
+    if m == 0:
+        return "十二"
+    return _int_to_zh_full(m)
+
+
+def _zh_clock_minute(mm: int) -> str:
+    """分钟 → 中文：00 → 整；1-9 → 零X分；10-59 → 完整读数+分"""
+    if mm == 0:
+        return "整"
+    s = _int_to_zh_full(mm)
+    if mm < 10:
+        return "零" + s + "分"
+    return s + "分"
+
+
+def _format_date_zh(y: int, m: int, d: int) -> str:
+    """年月日 → XXXX年XX月XX日"""
+    # 年份：4位按位读；整千年完整读数（2000→两千年）
+    y_str = str(y)
+    if y % 1000 == 0:
+        y_zh = _int_to_zh_full(y)
+        if y_zh.startswith("二千"):
+            y_zh = "两" + y_zh[1:]
+    else:
+        y_zh = _digits_to_zh_by_char(y_str)
+    m_zh = _int_to_zh_full(m)
+    d_zh = _int_to_zh_full(d)
+    return f"{y_zh}年{m_zh}月{d_zh}日"
+
+
+def _format_time_zh(hh: int, mm: int) -> str:
+    return f"{_zh_clock_hour(hh)}点{_zh_clock_minute(mm)}"
+
 
 def _int_to_zh_full(n: int) -> str:
     """把一个非负整数按中文完整读法写出（万级+个级，覆盖 0~9999_9999）。
@@ -419,7 +497,41 @@ def _digits_to_zh(text: str) -> str:
         zh = _int_to_zh_full(int(int_str))
         return _hold(prefix + zh + suffix)
 
-    stage1 = _ORDINAL_RE.sub(_ordinal_sub, text)
+    # ── 0) 日期 / 时间 整体识别（优先级最高，避免被量词/比率/序号拆散） ──
+    #    0a) 日期 + 时间：2023.4.16 21:08 → 二零二三年四月十六日九点零八分
+    def _datetime_sub(m: re.Match) -> str:
+        try:
+            y, mo, d, hh, mm = (int(x) for x in m.groups())
+            return _hold(_format_date_zh(y, mo, d) + _format_time_zh(hh, mm))
+        except ValueError:
+            return m.group(0)
+
+    stage0a = _DATETIME_RE.sub(_datetime_sub, text)
+
+    #    0b) 仅日期：2023.4.16 → 二零二三年四月十六日
+    def _date_sub(m: re.Match) -> str:
+        try:
+            y, mo, d = (int(x) for x in m.groups())
+            return _hold(_format_date_zh(y, mo, d))
+        except ValueError:
+            return m.group(0)
+
+    stage0b = _DATE_ONLY_RE.sub(_date_sub, stage0a)
+
+    #    0c) 仅时间：21:08 → 九点零八分（排除 16:9 等比率场景：前后无数字/冒号已由断言保证）
+    def _time_sub(m: re.Match) -> str:
+        try:
+            hh, mm = (int(x) for x in m.groups())
+            # 小时范围若超过 23 视为比率不处理（例如 123:456 不可能是时间，本正则已限 1-2 位数字，但 30:00 等仍可能）
+            if hh > 24 or mm > 59:
+                return m.group(0)
+            return _hold(_format_time_zh(hh, mm))
+        except ValueError:
+            return m.group(0)
+
+    stage0c = _TIME_ONLY_RE.sub(_time_sub, stage0b)
+
+    stage1 = _ORDINAL_RE.sub(_ordinal_sub, stage0c)
 
     # ── 1.5) 分数：带分数 优先（长匹配），再处理普通分数
     #           优先级高于连乘链（1/2x3 先匹配 1/2，再留 x3 给连乘处理）
@@ -576,8 +688,9 @@ class XiaozhuguangTextBox:
                     "placeholder":
                         "【小珠光文本框】\n"
                         "输出：text 原文 / text_zh_num 数字转中文\n"
-                        "规则：数字+量词→完整读数；第N→第N；4位+年→按位读；其余→按位读\n"
-                        "例：12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n"
+                        "规则：日期时间→整体转写；数字+量词→完整读数；第N→第N；4位+年→按位读；其余→按位读\n"
+                        "例：2023.4.16 21:08→二零二三年四月十六日九点零八分\n"
+                        "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n"
                         "《》→。  ……→。",
                 }),
             },

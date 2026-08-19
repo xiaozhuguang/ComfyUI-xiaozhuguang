@@ -374,6 +374,10 @@ class XzgAudioWaveformViewer {
         this.peaks = peaks || [];
         this.duration = duration || 0;
         this.sampleRate = sampleRate || 44100;
+        // 换音频（或初次设置波形）：音量一律重置为 100%
+        // （刷新浏览器 / 重启 ComfyUI / 换新出图音频 都应从 100% 开始）
+        this.volume = 1.0;
+        this._applyVolume(1.0);
         // 播放头默认在最开头
         if (this.duration > 0) {
             this.playbackTime = 0;
@@ -1035,6 +1039,7 @@ app.registerExtension({
                         try {
                             const data = JSON.parse(v);
                             if (data.peaks && data.duration) {
+                                // setData 内部会重置音量到 100%
                                 waveformViewer.setData(data.peaks, data.duration, data.sampleRate);
                                 if (data.saveUrl && data.filename) {
                                     waveformViewer.setSaveInfo(data.saveUrl, data.filename);
@@ -1045,14 +1050,12 @@ app.registerExtension({
                                 }
                                 node.setDirtyCanvas?.(true, true);
                             }
-                            // 恢复音量
-                            if (data.volume != null) {
-                                const vol = Math.max(0, Math.min(3.0, Number(data.volume)));
-                                waveformViewer.volume = vol;
-                                waveformViewer._applyVolume(vol);
-                                const volW = node.widgets?.find(w => w.name === '音量');
-                                if (volW) volW.value = vol;
-                            }
+                            // 音量：刷新/加载工作流后一律回到 100%，不复用旧值
+                            const defaultVol = 1.0;
+                            waveformViewer.volume = defaultVol;
+                            waveformViewer._applyVolume(defaultVol);
+                            const volW = node.widgets?.find(w => w.name === '音量');
+                            if (volW) volW.value = defaultVol;
                         } catch (e) {
                             // 解析失败忽略
                         }
@@ -1176,7 +1179,12 @@ app.registerExtension({
                     w._xzgMax = 3.0;
                     w.hidden = true;
                     w.computeSize = () => [0, 0];
-                    // widget 值变化时同步到 viewer（工作流重载/外部修改时触发）
+                    // 新建节点 / 重载：音量一律强制 100%（刷新/重启 ComfyUI 不保留旧值）
+                    w.value = 1.0;
+                    waveformViewer.volume = 1.0;
+                    waveformViewer._applyVolume(1.0);
+                    // widget 值变化时同步到 viewer（外部调用或回调手动触发时保证同步；
+                    //  但不按 w.value 初始化，始终强制 1.0）
                     const _origVolCb = w.callback;
                     w.callback = function(v) {
                         if (typeof _origVolCb === 'function') _origVolCb.apply(this, arguments);
@@ -1257,7 +1265,8 @@ app.registerExtension({
                     waveformViewer.setData(info.peaks, info.duration, info.sample_rate);
                     waveformViewer.setSaveInfo(saveUrl, savedFilename);
 
-                    // 序列化到 widget value（刷新后可恢复波形）
+                    // 序列化到 widget value（刷新后可恢复波形）：
+                    // 注意：不序列化 volume——刷新/重启 ComfyUI 时音量必须从 100% 开始。
                     if (waveformWidget && info.peaks && info.duration) {
                         const saveData = {
                             peaks: info.peaks,
@@ -1267,10 +1276,14 @@ app.registerExtension({
                             // 刷新后避免伪 404 链接，只保留波形可视化
                             saveUrl: info.preview ? "" : saveUrl,
                             filename: info.preview ? "" : savedFilename,
-                            // 音量（仅监听预览，不影响文件输出）
-                            volume: waveformViewer.volume,
                         };
                         waveformWidget.value = JSON.stringify(saveData);
+                    }
+
+                    // 执行完成 → 换新音频：音量 widget 强制重置为 100%（与 viewer 重置同步）
+                    const volW2 = node.widgets?.find(w => w.name === '音量');
+                    if (volW2) {
+                        volW2.value = 1.0;
                     }
 
                     node.setDirtyCanvas(true, true);
@@ -1289,6 +1302,7 @@ app.registerExtension({
                         try {
                             const data = JSON.parse(waveformWidget.value);
                             if (data.peaks && data.duration) {
+                                // setData 内部会把 volume 重置到 100%
                                 waveformViewer.setData(data.peaks, data.duration, data.sampleRate);
                                 if (data.saveUrl && data.filename) {
                                     waveformViewer.setSaveInfo(data.saveUrl, data.filename);
@@ -1298,20 +1312,12 @@ app.registerExtension({
                                     waveformViewer.playbackTime = 0;
                                 }
                             }
-                            // 恢复音量（优先使用序列化数据，其次用 widget 值）
-                            const restoredVol = (data.volume != null)
-                                ? Math.max(0, Math.min(3.0, Number(data.volume)))
-                                : null;
+                            // 音量：刷新/重启 ComfyUI 时一律从 100% 开始，不再恢复之前的 volume
                             const volWidget = node.widgets?.find(w => w.name === '音量');
-                            if (restoredVol != null) {
-                                waveformViewer.volume = restoredVol;
-                                waveformViewer._applyVolume(restoredVol);
-                                if (volWidget) volWidget.value = restoredVol;
-                            } else if (volWidget) {
-                                const vol = Math.max(0, Math.min(3.0, Number(volWidget.value) || 1.0));
-                                waveformViewer.volume = vol;
-                                waveformViewer._applyVolume(vol);
-                            }
+                            const defaultVol = 1.0;
+                            waveformViewer.volume = defaultVol;
+                            waveformViewer._applyVolume(defaultVol);
+                            if (volWidget) volWidget.value = defaultVol;
                         } catch (e) {
                             // 解析失败忽略
                         }
