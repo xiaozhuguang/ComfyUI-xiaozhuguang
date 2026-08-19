@@ -651,6 +651,30 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.2.1 (2026-08-19)
+
+**🔊 修复：小珠光音频加载器 — 点击虚线下（下半区分界线以下）偶发不播放音频**
+
+- **问题现象**：同一音频，有时点波形虚线下能立即播放/暂停，有时点同一个位置却完全没反应 — 呈现出「偶发不播放」。复现路径：拖完播放头立刻点虚线下、或者靠近左侧音量线/红色起始线/蓝色结束线的位置点虚线下，几乎必现
+- **根因 1 — 200ms 防误触守卫吞了整个虚线下点击**：`handleMouse` 入口对 `isDragging` 或「拖动播放头结束 200ms 内」做了全量拦截 `return true`，只要上一次操作是拖播放头，立刻点虚线下的 `pointerdown` 直接被吞，不走 `togglePlay`
+- **根因 2 — 起始/结束把手「全高度命中」判定**：红色 `startX`、蓝色 `endX` 两侧 ±14px（`handleWidth=14`）范围内，点击在虚线下也被判成 `dragType='start'/'end'` → 进入 `isDragging=true` 分支，pointerdown 不会调用 `togglePlay`，原 `_handleMouseUp` 也没有针对「没拖动」的兜底播放
+- **根因 3 — 左侧音量把手命中**：音量（尤其 100% 或更低）的水平线位于中下区域，点虚线下恰好落在 `Math.abs(localY - volY) ≤ 5` 且 `localX ∈ [pad, pad+40]` 时 → 被判 `dragType='volume'` → 同根因 2，无播放
+
+- **修复 1 — 防误触守卫缩小到「仅上半区」**：入口守卫改为 `!lowerHalf && (isDragging || _lastPlayheadEnd < 200ms)`，虚线下（分界线及以下）永远放行，防止拖完播放头后立刻点虚线下被吞
+
+- **修复 2 — 下半区远离把手 → 直接走播放/暂停**：把手命中之前新增分支：`lowerHalf && 距离 startX > handleWidth && 距离 endX > handleWidth` → 直接单单击 `togglePlay()` / 双击 `onUpload()`，**不进入 dragging 态**，杜绝「把手误判导致永远不播放」
+
+- **修复 3 — mouseup 兜底播放**：新增 `_dragStartedInLowerHalf` 标志，pointerdown 按下时记录是否位于虚线下（包括撞到音量把手的特殊情况 `'volume'`）。`_handleMouseUp` 末尾在 `!_dragMoved`（点击没有真正拖动，距离小于 `_dragThreshold`）且 `startedInLowerHalf` 时，补一次 `togglePlay()` —— 即便真的进入了 start/end/volume dragging 判定，只要是虚线下的「单击」，松开时也一定能播放
+
+- 行为一致性：虚线上（上半区）的拖动播放头、范围 start/end 把手、音量拖动手柄完全不变；上半区单点仍会跳转播放头不改变播放状态
+
+**🗂 其他**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 设为 `12.2.1`
+- 语法校验：`xzg_audio_loader.js` 通过 `node --check`
+
+---
+
 ### V12.3.0 (2026-08-19)
 
 **📝 小珠光文本框：日期时间整体识别与中文转写（2023.4.16 21:08 → 二零二三年四月十六日九点零八分）**

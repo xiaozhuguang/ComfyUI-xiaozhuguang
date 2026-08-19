@@ -1021,9 +1021,19 @@ class XiaozhuguangWaveformViewer {
             // 提前检测双击（在 200ms 防误触守卫之前），确保上半区双击上传不被拦截
             const _now = Date.now();
             const _isDoubleClick = (this._lastClickTime && _now - this._lastClickTime < 300);
-            // 播放头拖动进行中或刚结束(200ms内)：忽略新的按下，防止拖到界面外后误触发播放
-            // 但双击不拦截（用于上半区双击上传）
-            if (!_isDoubleClick && (this.isDragging || (this._lastPlayheadEnd && _now - this._lastPlayheadEnd < 200))) {
+
+            // 计算分区线（waveMid）：以上=拖动播放头/把手区，以下=播放/暂停区
+            const widgetY = this._drawY;
+            const widgetH = this._drawH;
+            const barPadY = 2;
+            const waveH = widgetH - barPadY * 2;
+            const waveMid = widgetY + barPadY + waveH / 3;
+            const lowerHalf = localY >= waveMid;
+
+            // 播放头拖动进行中或刚结束(200ms内)：防止拖到界面外后误触发 ——
+            // 但「虚线下点击」必须继续允许播放/暂停，否则用户调整播放头后
+            // 立刻点虚线下会被直接吞掉，出现「有时候不播放」的偶发体验
+            if (!_isDoubleClick && !lowerHalf && (this.isDragging || (this._lastPlayheadEnd && _now - this._lastPlayheadEnd < 200))) {
                 return true;
             }
             // 右键：弹出保存菜单
@@ -1071,9 +1081,6 @@ class XiaozhuguangWaveformViewer {
             const playX = this._getXFromTime(this.playbackTime || 0);
 
             const volY = this._getVolumeY(widgetY, widgetH);
-            const barPadY = 2;
-            const waveH = widgetH - barPadY * 2;
-            const waveMid = widgetY + barPadY + waveH / 3; // 上1/3处作为分区界限，以上=拖动跳转，以下=播放/暂停
 
             const handleWidth = 14;
             const volHandleHeight = 5;
@@ -1081,7 +1088,10 @@ class XiaozhuguangWaveformViewer {
             const w = this._drawW;
             const pad = this._getPad();
             let hitHandle = false;
-            let isUpperHalf = localY < waveMid; // 是否在分区线上方
+            // 命中「虚线下音量把手」的特殊情况：用户本意是点虚线下播放，
+            // 但音量线当前恰好落在点击位置附近 → 被判为 volume 拖动手柄
+            // 先记录下来，mouseup 处若没真正拖动，则补一次播放切换
+            let hitVolumeInLowerHalf = false;
 
             // 优先判断音量线（仅左侧一小段范围）
             const volLineLeft = pad;
@@ -1089,21 +1099,37 @@ class XiaozhuguangWaveformViewer {
             if (Math.abs(localY - volY) <= volHandleHeight && localX >= volLineLeft && localX <= volLineRight) {
                 this.dragType = 'volume';
                 hitHandle = true;
+                hitVolumeInLowerHalf = lowerHalf;
             }
-            // 然后判断蓝色（结束）标记（全高度范围可拖）
-            else if (Math.abs(localX - endX) <= handleWidth) {
+            // 然后判断蓝色（结束）标记 / 红色（起始）标记（全高度范围可拖）
+            // —— 但如果点击位于下半区且明显远离把手，绝不进入 start/end 拖拽态，
+            //    直接落到下面「下半区单击播放」分支，防止靠近两端时点击被当把手吞掉
+            else if (lowerHalf
+                && Math.abs(localX - endX) > handleWidth
+                && Math.abs(localX - startX) > handleWidth) {
+                // 下半区：远离把手 → 视为播放/暂停点击（避免进入把手拖拽后永不触发播放）
+                if (isDoubleClick) {
+                    if (this._clickTimer) {
+                        clearTimeout(this._clickTimer);
+                        this._clickTimer = null;
+                    }
+                    this.onUpload();
+                    return true;
+                }
+                this.togglePlay();
+                return true;
+            } else if (Math.abs(localX - endX) <= handleWidth) {
                 this.dragType = 'end';
                 hitHandle = true;
             } else if (Math.abs(localX - startX) <= handleWidth) {
                 this.dragType = 'start';
                 hitHandle = true;
-            } else if (isUpperHalf) {
+            } else if (!lowerHalf) {
                 // 上半区：拖动播放头模式
                 this.dragType = 'playhead';
                 hitHandle = true;
             } else {
-                // 下半区：双击上传文件，单击立即播放/暂停（按下即响应，无延迟）
-                // 不允许从音轨拖动移动节点
+                // 下半区其余区域（靠近把手 / 音量把手之外）：双击上传，单击立即播放/暂停
                 if (isDoubleClick) {
                     if (this._clickTimer) {
                         clearTimeout(this._clickTimer);
@@ -1114,11 +1140,10 @@ class XiaozhuguangWaveformViewer {
                 }
                 // 立即切换播放/暂停（按下即响应）
                 this.togglePlay();
-                // 返回 true：拦截事件，不允许从音轨拖动移动节点
                 return true;
             }
 
-            // 双击处理（下半区、音量、start/end标记）
+            // 双击处理（音量 / start / end / 上半区 playhead 双击）
             if (isDoubleClick) {
                 if (this._clickTimer) {
                     clearTimeout(this._clickTimer);
@@ -1144,6 +1169,8 @@ class XiaozhuguangWaveformViewer {
             this.dragStartVolume = this.volume;
             this.dragStartVolY = this._getVolumeY(widgetY, widgetH);
             this.dragPlayheadTime = this.playbackTime || 0;
+            // 记录：本次按下是否属于「虚线下」，用于 mouseup 时在「没拖动」的场景兜底播放
+            this._dragStartedInLowerHalf = lowerHalf && !hitVolumeInLowerHalf ? true : (hitVolumeInLowerHalf ? 'volume' : false);
             this._hitPlayheadHandle = hitHandle;
             if (this.dragType === 'playhead') {
                 // 上半区按下瞬间立即将播放头跳到点击位置
@@ -1268,10 +1295,13 @@ class XiaozhuguangWaveformViewer {
         if (!this.isDragging) return;
         this.isDragging = false;
         const wasDragging = this.dragType;
+        const startedInLowerHalf = this._dragStartedInLowerHalf;
+        const dragMoved = !!this._dragMoved;
         this.dragType = null;
         this._dragMoved = false;
         this._dragDirection = null;
         this._hitPlayheadHandle = false;
+        this._dragStartedInLowerHalf = false;
         if (this._clickTimer) {
             clearTimeout(this._clickTimer);
             this._clickTimer = null;
@@ -1283,6 +1313,14 @@ class XiaozhuguangWaveformViewer {
         }
         if (wasDragging === 'start' || wasDragging === 'end') {
             this._notifyChange();
+        }
+
+        // 虚线下点击兜底：按下时命中了把手（start/end/volume）但用户没有拖动 ——
+        // 这种情况属于「用户本意是点虚线下播放/暂停，误撞把手命中判定」。
+        // 只要拖动距离没超过阈值，mouseup 时就补一次播放切换，
+        // 彻底解决「有时候点虚线下不播放」的偶发现象。
+        if (!dragMoved && startedInLowerHalf) {
+            this.togglePlay();
         }
     }
 
