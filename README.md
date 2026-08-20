@@ -715,7 +715,7 @@ ComfyUI-xiaozhuguang/
 
 ---
 
-### V12.3.0 (2026-08-21)
+### V12.3.1 (2026-08-21)
 
 **📦 小珠光编组：背景色、背景出现动画、缓入缓出、UI 布局重整**
 
@@ -769,6 +769,9 @@ ComfyUI-xiaozhuguang/
 
 **🗂 其他**
 
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.2.3` 升至 `12.3.1`（Registry 侧 12.3.0 已被 2026-08-19 旧提交占用，本次通过 bump patch 版本完成新版本收录）
+- 语法校验：`xzg_group.js`、`xzg_audio_save.js`、`xzg_audio_loader.js`、`xzg_workflows.js` 均通过 `node --check`；`xzg_audiodit_loader.py`、`xzg_audiodit_tts.py`、`__init__.py` 通过 Python AST 解析
+- Release：GitHub Release v12.3.1 + publish_action.yml `push tags v*` 触发 → Comfy Registry 新版本 12.3.1 成功发布
 - 版本号统一：`pyproject.toml`、`extension.json` 从 `12.2.0` 升至 `12.3.0`
 - 语法校验：`xzg_audio_save.js`、`xzg_audio_loader.js` 均通过 `node --check`；`xzg_text_box.py` 通过 Python AST 解析
 
