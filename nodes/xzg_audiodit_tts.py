@@ -28,12 +28,13 @@ import torch.nn.functional as F
 # —— 依赖我们自己的离线加载器 ——
 from .xzg_audiodit_loader import (
     approx_duration_from_text,
+    is_audiodit_enabled,
     load_model_xzg,
+    model_names_or_default,
     normalize_text,
     numpy_audio_to_comfy,
     register_folder_xzg,
     resolve_device,
-    scan_local_models,
     tokenizer_names_or_default,
 )
 
@@ -54,8 +55,10 @@ from .xzg_longcat_model_cache import (
 
 logger = logging.getLogger("XiaozhuguangAudioDiT")
 
-# —— 启动时注册 folder_paths 目录（与原插件共享） ——
-register_folder_xzg()
+# —— 仅当明确启用时才注册 folder_paths 目录（与原插件共享） ——
+# 这样不使用 TTS 的用户完全不会触发 folder_paths / models 扫描
+if is_audiodit_enabled():
+    register_folder_xzg()
 
 
 # ---------------- Comfy 环境 / 进度条 ----------------
@@ -111,28 +114,10 @@ def comfy_audio_to_tensor(audio_dict: dict, target_sr: int) -> torch.Tensor:
     return torch.from_numpy(wav_np).unsqueeze(0)
 
 
-def _model_names_or_default() -> list[str]:
-    """扫描本地模型；若为空，给一个占位项并记录 warning（便于用户知道怎么放目录）。"""
-    names = scan_local_models()
-    if not names:
-        base = (
-            __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-            / "models"
-            / "audiodit"
-        )
-        try:
-            import folder_paths  # type: ignore
-            base = __import__("pathlib").Path(folder_paths.models_dir) / "audiodit"
-        except Exception:
-            pass
-        logger.warning(
-            "[小珠光AudioDiT] 未检测到任何本地模型。\n"
-            "请把模型目录放到: %s\n"
-            "常见的目录名示例: LongCat-AudioDiT-3.5B-bf16 / LongCat-AudioDiT-1B / ...",
-            base,
-        )
-        return ["（请先放入本地模型到 ComfyUI/models/audiodit/）"]
-    return names
+# 扫描委托到 xzg_audiodit_loader.model_names_or_default（与 tokenizer 共享 verbose 机制）。
+# 保持本文件内代码继续使用 _model_names_or_default 名字，避免改动面太大。
+def _model_names_or_default(verbose: bool = False) -> list[str]:
+    return model_names_or_default(verbose=verbose)
 
 
 def _interrupt_check():
@@ -234,6 +219,50 @@ def _concat_audio_segments(chunks: list[np.ndarray], pause: float, sr: int) -> n
     return np.concatenate(out_parts, axis=-1)
 
 
+# ---------------- 响度保护机制（输入输出音量相等，与 indextts 同类保护） ----------------
+# 零样本（无参考音频）时的固定归一化目标：-20 dBFS ≈ 0.1
+_LOUDNESS_TARGET_RMS = 10 ** (-20 / 20)
+# 单次增益钳制 ±12dB：防止把生成底噪放大成爆破音，或过度压低输出
+_LOUDNESS_MAX_GAIN_DB = 12.0
+# 防削波峰值上限
+_LOUDNESS_PEAK_LIMIT = 0.98
+
+
+def _compute_rms(wav) -> float:
+    """计算音频 RMS 响度。支持 np.ndarray / torch.Tensor；空/静音返回 0。"""
+    if isinstance(wav, torch.Tensor):
+        w = wav.detach().cpu().float().numpy().astype(np.float64)
+    else:
+        w = np.asarray(wav, dtype=np.float64)
+    if w.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(w * w)))
+
+
+def _match_loudness(wav: np.ndarray, target_rms: float) -> np.ndarray:
+    """响度保护：把生成音频 RMS 对齐到 target_rms（输入输出音量相等）。
+
+    - 增益钳制 ±12dB（防爆音/过度压低）
+    - 防削波：增益后峰值 > 0.98 时按峰值自动回退
+    - target_rms 无效或自身为静音时原样返回
+    """
+    if wav is None or wav.size == 0 or target_rms <= 0.0:
+        return wav
+    cur = _compute_rms(wav)
+    if cur < 1e-8:
+        return wav
+    gain = float(np.clip(
+        target_rms / cur,
+        10 ** (-_LOUDNESS_MAX_GAIN_DB / 20),
+        10 ** (_LOUDNESS_MAX_GAIN_DB / 20),
+    ))
+    out = wav.astype(np.float32) * gain
+    peak = float(np.max(np.abs(out)))
+    if peak > _LOUDNESS_PEAK_LIMIT:
+        out = out * (_LOUDNESS_PEAK_LIMIT / peak)
+    return out
+
+
 # ====================================================================
 # 1. 零样本 TTS（离线版）
 # ====================================================================
@@ -309,12 +338,41 @@ class XzgAudioDiTTTS:
                 "pause_between_segments": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.1,
                     "tooltip": "自动分句时各段之间的静音秒数。长文本分句拼接时使用。"}),
             },
+            "optional": {
+                "volume_protect": ("BOOLEAN", {"default": True,
+                    "tooltip": "响度保护：开启后每段输出统一归一化到 -20dB RMS，\n长文本多段拼接时段间音量一致，不忽大忽小。"}),
+            },
         }
 
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
     FUNCTION = "generate"
     CATEGORY = "xiaozhuguang"
+
+    @classmethod
+    def _enforce_enabled_and_prompt(cls, model_path: str, tokenizer: str) -> None:
+        """执行节点入口处才做的检查（启动阶段不做，避免刷屏）：
+        1) 明确设置 XZG_DISABLE_AUDIODIT=1 -> 错误提示用户已主动关闭
+        2) 模型/tokenizer 仍为占位项 -> verbose=True 触发一次性 info + 清晰报错
+        """
+        if not is_audiodit_enabled():
+            raise RuntimeError(
+                "[小珠光AudioDiT] 已通过环境变量 XZG_DISABLE_AUDIODIT=1 关闭。\n"
+                "如需使用 LongCat-AudioDiT TTS，请先取消该变量（或置为 0/off）后重启 ComfyUI。"
+            )
+        # 执行时 verbose=True：若缺失，这里才会第一次（且仅一次）打印 info 级提示
+        _model_names_or_default(verbose=True)
+        tokenizer_names_or_default(verbose=True)
+        if model_path.startswith("（请先放入"):
+            raise FileNotFoundError(
+                "[小珠光AudioDiT] 未选择任何可用模型。\n"
+                "请把 LongCat-AudioDiT 模型目录放到 ComfyUI/models/audiodit/ 后刷新节点列表。"
+            )
+        if tokenizer.startswith("（请先放入"):
+            raise FileNotFoundError(
+                "[小珠光AudioDiT] 未选择任何可用 tokenizer。\n"
+                "请把 UMT5 tokenizer 放到 ComfyUI/models/audiodit/umt5-base-tokenizer/ 后刷新节点列表。"
+            )
 
     def generate(
         self,
@@ -330,9 +388,11 @@ class XzgAudioDiTTTS:
         seed: int,
         unload_mode: str,
         pause_between_segments: float = 0.3,
+        volume_protect: bool = True,
     ) -> Tuple[dict]:
         cancel_event.clear()
         _interrupt_check()
+        XzgAudioDiTTTS._enforce_enabled_and_prompt(model_path, tokenizer)
 
         if not text.strip():
             raise ValueError("[小珠光AudioDiT] 文本不能为空。")
@@ -389,6 +449,9 @@ class XzgAudioDiTTTS:
                     seed=seg_seed,
                 )
             wav = output.waveform.squeeze().detach().cpu().numpy()
+            # 响度保护：每段归一化到固定 -20dB RMS，保证长文本段间音量一致
+            if volume_protect:
+                wav = _match_loudness(wav, _LOUDNESS_TARGET_RMS)
             chunks.append(wav)
             if pbar:
                 pbar.update_absolute(seg_idx + 1, total_segments + 1)
@@ -496,6 +559,10 @@ class XzgAudioDiTVoiceCloneTTS:
                 "pause_between_segments": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.1,
                     "tooltip": "自动分句时各段之间的静音秒数。长文本分句拼接时使用。"}),
             },
+            "optional": {
+                "volume_protect": ("BOOLEAN", {"default": True,
+                    "tooltip": "响度保护：输出 RMS 对齐参考音频 RMS（输入输出音量相等），\n同时长文本各段天然对齐到同一目标，段间音量一致。\n含 ±12dB 增益钳制与防削波保护。"}),
+            },
         }
 
     RETURN_TYPES = ("AUDIO",)
@@ -519,9 +586,12 @@ class XzgAudioDiTVoiceCloneTTS:
         seed: int,
         unload_mode: str,
         pause_between_segments: float = 0.3,
+        volume_protect: bool = True,
     ) -> Tuple[dict]:
         cancel_event.clear()
         _interrupt_check()
+        # 启动阶段不打印缺失警告，执行时才检查启用状态并一次性提示
+        XzgAudioDiTTTS._enforce_enabled_and_prompt(model_path, tokenizer)
 
         if not text.strip():
             raise ValueError("[小珠光LongCat] 目标文本不能为空。")
@@ -546,6 +616,10 @@ class XzgAudioDiTVoiceCloneTTS:
 
         logger.info("编码参考音频…")
         prompt_wav = comfy_audio_to_tensor(prompt_audio, sr).to(model.device)
+        # 响度保护：以参考音频 RMS 为目标（输入输出音量相等）
+        ref_rms = _compute_rms(prompt_wav) if volume_protect else 0.0
+        if volume_protect:
+            logger.info(f"响度保护已开启：输出将匹配参考音频 RMS={ref_rms:.4f}")
         prompt_duration = prompt_wav.shape[-1] / sr
         if prompt_duration > 30:
             logger.warning(
@@ -648,6 +722,9 @@ class XzgAudioDiTVoiceCloneTTS:
                     seed=seg_seed,
                 )
             wav = output.waveform.squeeze().detach().cpu().numpy()
+            # 响度保护：输出对齐参考音频 RMS（模型输出已剥离参考前缀，纯生成音频）
+            if volume_protect and ref_rms > 0:
+                wav = _match_loudness(wav, ref_rms)
             chunks.append(wav)
             if pbar:
                 pbar.update_absolute(seg_idx + 1, total_segments + 1)
@@ -789,6 +866,8 @@ if _V3:
                                    tooltip="每轮说话结束后追加的静音秒数。"),
                     IO.Float.Input("pause_between_segments", default=0.3, min=0.0, max=2.0, step=0.1,
                                    tooltip="同一段台词自动分句时，各段之间的静音秒数。"),
+                    IO.Boolean.Input("volume_protect", default=True,
+                                     tooltip="响度保护：每轮输出 RMS 对齐该说话人参考音频 RMS（输入输出音量相等）。\n含 ±12dB 增益钳制与防削波保护。"),
                 ],
                 outputs=[IO.Audio.Output("audio")],
             )
@@ -808,9 +887,12 @@ if _V3:
             unload_mode = inputs["unload_mode"]
             pause = float(inputs.get("pause_after_speaker", 0.4))
             pause_seg = float(inputs.get("pause_between_segments", 0.3))
+            volume_protect = bool(inputs.get("volume_protect", True))
 
             cancel_event.clear()
             _interrupt_check()
+            # 启动阶段不打印缺失警告，执行时才检查启用状态并一次性提示
+            XzgAudioDiTTTS._enforce_enabled_and_prompt(model_path, tokenizer)
             if dtype == "fp16":
                 logger.warning("多人对话走音色克隆路径，不支持 fp16；自动升级为 bf16。")
                 dtype = "bf16"
@@ -868,6 +950,8 @@ if _V3:
                 logger.info(f"第 {idx + 1}/{len(turns)} 轮，speaker_{speaker_0b + 1}: {line[:60]}{'…' if len(line) > 60 else ''}")
 
                 prompt_wav = comfy_audio_to_tensor(audios[speaker_0b], sr).to(model.device)
+                # 响度保护：该说话人的输出对齐其参考音频 RMS（输入输出音量相等）
+                turn_ref_rms = _compute_rms(prompt_wav) if volume_protect else 0.0
                 prompt_text_norm = normalize_text(refs[speaker_0b]) if refs[speaker_0b].strip() else ""
                 text_norm = normalize_text(line)
 
@@ -925,7 +1009,11 @@ if _V3:
                             guidance_method=guidance_method,
                             seed=turn_seed,
                         )
-                    turn_chunks.append(output.waveform.squeeze().detach().cpu().numpy())
+                    turn_wav_seg = output.waveform.squeeze().detach().cpu().numpy()
+                    # 响度保护：段输出对齐该说话人参考音频 RMS（模型输出已剥离参考前缀）
+                    if volume_protect and turn_ref_rms > 0:
+                        turn_wav_seg = _match_loudness(turn_wav_seg, turn_ref_rms)
+                    turn_chunks.append(turn_wav_seg)
 
                 # 该轮内部拼接
                 if len(turn_chunks) > 1:

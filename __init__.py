@@ -220,19 +220,34 @@ except Exception as _qwen_err:
 #   1) 严格离线扫描 ComfyUI/models/audiodit/ 下的本地模型目录（不显示 "xxx (auto download)" 虚项）
 #   2) 不会调用 huggingface_hub.snapshot_download；缺少模型/tokenizer 时给出清晰报错
 #   3) transformers / safetensors 等大依赖缺失时静默跳过，不影响其它节点
+#   4) 默认启用（老用户无感知，节点一直可见）。
+#      启动阶段「缺失模型/tokenizer」已从 WARNING 降级为「首次执行节点时 INFO 级一次性提示」，
+#      不用 TTS 的用户启动日志同样干净；若明确不需要此节点，可设置
+#      XZG_DISABLE_AUDIODIT=1 完全关闭（节点不注册、模块不导入）。
 _AUDIODIT_NODES: dict[str, tuple[type, str]] = {}
 try:
-    from .nodes.xzg_audiodit_tts import XzgAudioDiTVoiceCloneTTS
-    _AUDIODIT_NODES["XzgAudioDiTVoiceCloneTTS"] = (
-        XzgAudioDiTVoiceCloneTTS,
-        "小珠光 LongCat",
-    )
-except Exception as _audiodit_init_err:
-    print(
-        "[小珠光AudioDiT] 未启用 LongCat TTS 节点（可能缺少 transformers / safetensors 等依赖）：",
-        _audiodit_init_err,
-    )
-    _AUDIODIT_NODES = {}
+    from .nodes.xzg_audiodit_loader import is_audiodit_enabled
+    _AUDIODIT_ENABLED = is_audiodit_enabled()
+except Exception:
+    _AUDIODIT_ENABLED = True  # 读不到开关时按默认启用，兼容老用户
+
+if _AUDIODIT_ENABLED:
+    try:
+        from .nodes.xzg_audiodit_tts import XzgAudioDiTVoiceCloneTTS
+        _AUDIODIT_NODES["XzgAudioDiTVoiceCloneTTS"] = (
+            XzgAudioDiTVoiceCloneTTS,
+            "小珠光 LongCat",
+        )
+    except Exception as _audiodit_init_err:
+        # 导入失败（缺依赖/配置）：降级为 info 级，不用 WARNING 刷屏
+        import sys as _sys
+        print(
+            "[小珠光AudioDiT] 导入 TTS 节点失败（可能缺少 transformers / safetensors / torch 等依赖）：",
+            f"{_audiodit_init_err}",
+            file=_sys.stdout,
+        )
+        _AUDIODIT_NODES = {}
+# XZG_DISABLE_AUDIODIT=1 时：整个 AudioDiT 模块不导入，节点列表不出现，启动阶段完全静默
 
 
 # ============ 懒编码路由：右键保存真实分辨率图时，才临时编码全分辨率 PNG ============

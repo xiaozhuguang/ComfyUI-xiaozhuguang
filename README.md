@@ -715,7 +715,24 @@ ComfyUI-xiaozhuguang/
 
 ---
 
-### V12.3.0 (2026-08-19)
+### V12.3.0 (2026-08-21)
+
+**📦 小珠光编组：背景色、背景出现动画、缓入缓出、UI 布局重整**
+
+- **背景色独立控制（不遮挡节点）**：新增 `bgColor` 字段（rgba，默认透明），不写入 DOM 框体（overlay 在画布之上会遮挡节点），改为**挂载到 LiteGraph `onDrawBackground` 回调**（背景网格之后、连线和节点之前），直接在 graph 坐标空间按 `bounds` 绘制；绘制范围 `[b.x, b.y+18, w, h-18]` 不覆盖标题栏（避免透过半透明 headerBgColor 混色）；顶部两角直角、底部两角 8/scale 圆角匹配 DOM
+- **背景色跟随渐隐渐入**：透明度读取必须用 `getComputedStyle(el).opacity`（CSS transition 中 `el.style.opacity` 瞬间即终值，computed 才是每帧过渡值）；渐入时动画启动硬上限 700ms（`min(700, max(80, fadeInMs*0.4))`，避免渐入滑块最大 8000ms 时等比例等待长达数秒）
+- **背景持续重绘机制**：`updatePositions` 末尾几何 hash 检测（拖框体/resize/收纳）触发 setDirty；渐入+背景动画窗口用 rAF 循环 `_kickCanvasRepaint`；动画中 `_bgAnimRepainting` 防重入标记直到所有编组动画窗口过期
+- **8 种出现动画 + 缓入缓出**：缓动统一用 `easeInOutCubic`（先慢→中间快→结尾慢）。`none` 默认无；`wipedown/wipeup/wiperight/wipeleft` 四向卷帘；`centerout` 中心扩散；新增 `edgesin` 从外往内（左右两侧向中间并集 clip）；新增 `clockwipe` 时针旋转（12点方向顺时针扇形扫过，radius=对角线/2+1，极小进度用 lineTo 退化三角防 arc 起止角相同变整圆）
+- **出现动画播放时序**：渐入期间重叠启动（背景透明度跟随 domOp 由淡变实，视觉连续）；新建编组立即播放；设置弹窗选择动画立即预览 1 次；仅 fadeEnabled 编组 + bgColor 非透明时触发；`bgAnimation/bgAnimDuration` 序列化、快照回滚、应用到全部、localStorage 新建继承均覆盖
+- **设置面板 UI 调整**：背景设置区块新增「出现动画」下拉 + 「动画时长」0.2–5s 滑块；删除无用行距控件（单行标题固定 line-height:1）；边框渐入开关独立一行，「渐入时长」滑条移到开关下一行并加独立标签，切换时面板行宽不再抖动、布局不再跳动
+- **编组默认动画首次使用为「无」**，设置后 localStorage 记忆、新编组继承上次配置
+- **画布背景钩子健壮性**：`setupCanvasBgDraw` 以链式包装旧回调（兼容 ComfyUI 自身），初始化 canvas 未就绪时最多 60 次 100ms 重试
+
+**🔊 LongCat AudioDiT 节点默认启用开关修复**
+
+- **问题修复（重要）**：此前引入的 `XZG_ENABLE_AUDIODIT` 开关逻辑写反——只要不设环境变量节点就不可见，导致升级后用户画布上原有的 AudioDiT 节点全部消失、模型/tokenizer 缺失错误也无法触发
+- **切换为默认启用**：节点注册改为**始终注册**，只有环境变量 `XZG_DISABLE_AUDIODIT=1` 才关闭；模型缺失/目录为空的提示**延迟到首次执行**再打印 stderr（含 `[小珠光]` / `[Xiaozhuguang...]` 前缀），启动阶段保持静默
+- **未启用执行保护**：`IS_CHINESE? 中文 : 英文` 双语提示，引导用户设置正确的环境变量或卸载，避免 `resolve_model_path_xzg` 分支走到不存在的方法时抛笼统 ImportError/AttributeError
 
 **📝 小珠光文本框：日期时间整体识别与中文转写（2023.4.16 21:08 → 二零二三年四月十六日九点零八分）**
 

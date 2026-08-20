@@ -11,8 +11,7 @@ const AUDIO_EXTS = [
 ];
 const AUDIO_WAVEFORM_WIDGET_NAME = "xzg_audio_waveform";
 const AUDIO_CONTROLS_WIDGET_NAME = "xzg_audio_controls";
-const AUDIO_WAVEFORM_MIN_H = 40;
-const AUDIO_WAVEFORM_MAX_H = 120;
+const AUDIO_WAVEFORM_H = 120;   // 波形固定高度
 const AUDIO_CONTROLS_H = 0;
 
 // 音频下载 → 统一走 File System Access API（首次桌面，二次上次路径）
@@ -214,8 +213,10 @@ class XiaozhuguangWaveformViewer {
         this._lastPlayheadEnd = 0;
         // 显示模式：'full' 全览，'crop' 细节
         this._displayMode = 'full';
-        // 左右留白：确保标记三角形完全可见
+        // 左右留白：总边框区 14px = 4px #353535 边框条 + 10px 黑色间隔，均不属于波形有效区
         this._paddingX = 14;
+        // #353535 可见边框条宽度（绘制在边框区最外侧）
+        this._borderW = 4;
 
         // 绘制参数（由 drawOnNode 保存，供 handleMouse 使用）
         this._drawY = 0;
@@ -572,22 +573,32 @@ class XiaozhuguangWaveformViewer {
         if (!this._audioUrl || this.duration <= 0) return;
         if (this.isPlaying) {
             this._audio.pause();
-        } else {
-            this._ensureAudioGraph();
-            if (this._audioCtx && this._audioCtx.state === 'suspended') {
-                this._audioCtx.resume();
-            }
+            return;
+        }
+        this._ensureAudioGraph();
+        // 播放前先等 AudioContext 完全恢复，再启动播放（避免 play() 排队在挂起的上下文后面造成高延迟）
+        const startPlayback = () => {
             const startTime = this.startTime;
             const endTime = this.endTime;
             // 播放前同步到 playbackTime（始终从当前播放头位置开始播放）
             const targetTime = this.playbackTime || startTime;
-            if (targetTime < startTime || targetTime >= endTime - 0.05) {
-                this._audio.currentTime = startTime;
-                this.playbackTime = startTime;
-            } else {
-                this._audio.currentTime = targetTime;
+            let t = targetTime;
+            if (t < startTime || t >= endTime - 0.05) t = startTime;
+            // 仅当与当前位置差距明显时才 seek：相同位置强制 seek 会触发重新缓冲，带来明显延迟
+            if (Math.abs((this._audio.currentTime || 0) - t) > 0.05) {
+                try {
+                    this._audio.currentTime = t;
+                    this.playbackTime = t;
+                } catch (e) {
+                    // 音频未就绪时 seek 可能失败，忽略，仍尝试播放
+                }
             }
             this._audio.play().catch(e => console.warn("[小珠光] 播放失败:", e));
+        };
+        if (this._audioCtx && this._audioCtx.state === 'suspended') {
+            this._audioCtx.resume().then(startPlayback).catch(() => startPlayback());
+        } else {
+            startPlayback();
         }
     }
 
@@ -710,9 +721,34 @@ class XiaozhuguangWaveformViewer {
         const pad = this._getPad();
         const usableW = Math.max(1, w - pad * 2);
 
-        // 背景
+        // 背景：延伸到节点底边，左右下角带圆角（半径取 LiteGraph.ROUND_RADIUS，与节点本体完全一致）
+        const nodeBottom = Math.max(widgetY + h, (this._node?.size?.[1] || widgetY + h + 2));
+        const _r = (typeof LiteGraph !== 'undefined' && LiteGraph.ROUND_RADIUS) ? LiteGraph.ROUND_RADIUS : 8;
+        const bgRoundedPath = () => {
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(0, widgetY, w, nodeBottom - widgetY, [0, 0, _r, _r]);
+            } else {
+                ctx.rect(0, widgetY, w, nodeBottom - widgetY);
+            }
+        };
         ctx.fillStyle = '#000000';
-        ctx.fillRect(0, widgetY, w, h);
+        bgRoundedPath();
+        ctx.fill();
+
+        // 两侧边框区（总宽 pad=14px：最外 _borderW=4px #353535 + 内侧黑色）+ 下边缘 4px 横边，
+        // 全部裁剪到圆角路径内
+        if (pad > 0) {
+            ctx.save();
+            bgRoundedPath();
+            ctx.clip();
+            ctx.fillStyle = '#353535';
+            const bw = this._borderW || 4;
+            ctx.fillRect(0, widgetY, bw, nodeBottom - widgetY);          // 左外 4px
+            ctx.fillRect(w - bw, widgetY, bw, nodeBottom - widgetY);     // 右外 4px（内侧 pad-bw 为黑色背景）
+            ctx.fillRect(0, nodeBottom - 4, w, 4);   // 下边缘 4px 横边
+            ctx.restore();
+        }
 
         // 「从快剪加载」按钮（canvas 绘制；空状态/解码中也要可见可点）
         this._drawFastcutButton(ctx, widgetY, w);
@@ -1018,6 +1054,18 @@ class XiaozhuguangWaveformViewer {
         if (localY < widgetY || localY > widgetY + widgetH) return false;
 
         if (event.type === 'pointerdown' || event.type === 'mousedown') {
+            // 右下角 resize 手柄区（与波形底部重叠）：放行给 LiteGraph 调整节点尺寸，
+            // 避免此处点击/拖动被误判为播放/暂停导致无法拉伸节点宽度
+            const _nd = this._node;
+            if (_nd && _nd.size && localX >= _nd.size[0] - 14 && localY >= _nd.size[1] - 14) {
+                return false;
+            }
+            // 两侧最外 #353535 边框条（_borderW 宽度）：非交互区，不响应点击；
+            // 内侧黑色边框段允许播放/播放头拖动，仅拦最外层
+            const _bw = this._borderW || 4;
+            if (_bw > 0 && (localX < _bw || localX > this._drawW - _bw)) {
+                return false;
+            }
             // 提前检测双击（在 200ms 防误触守卫之前），确保上半区双击上传不被拦截
             const _now = Date.now();
             const _isDoubleClick = (this._lastClickTime && _now - this._lastClickTime < 300);
@@ -1092,6 +1140,10 @@ class XiaozhuguangWaveformViewer {
             // 但音量线当前恰好落在点击位置附近 → 被判为 volume 拖动手柄
             // 先记录下来，mouseup 处若没真正拖动，则补一次播放切换
             let hitVolumeInLowerHalf = false;
+            // 两侧边框条（x<pad 或 x>w-pad，含黑色10px段）：不参与把手命中检测。
+            // 否则 startX/endX 恰落在波形边缘（=pad / =w-pad），边框条点击会被判成
+            // 红/蓝标记拖拽，播放延迟到 mouseup 兜底才触发，与正常区域「按下即播」不一致
+            const inBorderStrip = localX < pad || localX > w - pad;
 
             // 优先判断音量线（仅左侧一小段范围）
             const volLineLeft = pad;
@@ -1102,11 +1154,12 @@ class XiaozhuguangWaveformViewer {
                 hitVolumeInLowerHalf = lowerHalf;
             }
             // 然后判断蓝色（结束）标记 / 红色（起始）标记（全高度范围可拖）
-            // —— 但如果点击位于下半区且明显远离把手，绝不进入 start/end 拖拽态，
+            // —— 但如果点击位于下半区且明显远离把手（或处于边框条），绝不进入 start/end 拖拽态，
             //    直接落到下面「下半区单击播放」分支，防止靠近两端时点击被当把手吞掉
             else if (lowerHalf
-                && Math.abs(localX - endX) > handleWidth
-                && Math.abs(localX - startX) > handleWidth) {
+                && (inBorderStrip
+                    || (Math.abs(localX - endX) > handleWidth
+                        && Math.abs(localX - startX) > handleWidth))) {
                 // 下半区：远离把手 → 视为播放/暂停点击（避免进入把手拖拽后永不触发播放）
                 if (isDoubleClick) {
                     if (this._clickTimer) {
@@ -1118,10 +1171,10 @@ class XiaozhuguangWaveformViewer {
                 }
                 this.togglePlay();
                 return true;
-            } else if (Math.abs(localX - endX) <= handleWidth) {
+            } else if (!inBorderStrip && Math.abs(localX - endX) <= handleWidth) {
                 this.dragType = 'end';
                 hitHandle = true;
-            } else if (Math.abs(localX - startX) <= handleWidth) {
+            } else if (!inBorderStrip && Math.abs(localX - startX) <= handleWidth) {
                 this.dragType = 'start';
                 hitHandle = true;
             } else if (!lowerHalf) {
@@ -1762,17 +1815,16 @@ function showAudioHelpDialog() {
 function bindAudioLoaderInteractions(node) {
     node.resizable = true;
     node.minWidth = 320;
-    node.minHeight = 186;   // 默认波形高度 120px（y≈58 + 120 + 8）
-    node.maxHeight = 200;
+    node.minHeight = 212;   // 波形固定 120px（y≈84 + 120 + 8），高度锁定最窄
 
     const origSetSize = node.setSize;
     node.setSize = function(size) {
         size[0] = Math.max(size[0], this.minWidth || 320);
-        size[1] = Math.max(size[1], this.minHeight || 186);
-        size[1] = Math.min(size[1], this.maxHeight || 200);
+        // 高度固定：初始用估算值，首次绘制后由 waveformWidget.draw 按实际 y 自校正为 _xzgFixedH
+        size[1] = this._xzgFixedH || this.minHeight || 212;
         return origSetSize?.apply(this, arguments);
     };
-    node.setSize([320, 186]);
+    node.setSize([320, 212]);
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
@@ -1959,18 +2011,25 @@ function bindAudioLoaderInteractions(node) {
         _xzgDrawW: 0,
         draw: function(ctx, node, width, y, H) {
             this._xzgDrawW = width;
-            const actualH = node.size[1] - y - 8;
-            const h = Math.max(AUDIO_WAVEFORM_MIN_H, Math.min(AUDIO_WAVEFORM_MAX_H, actualH));
-            waveformViewer.drawOnNode(ctx, y, width, h);
+            // 波形固定高度 120px，不随节点拉伸变化
+            waveformViewer.drawOnNode(ctx, y, width, AUDIO_WAVEFORM_H);
+            // 底部边框自校正：按实际布局 y 精确锁定节点高度（波形底 + 2px 紧贴边框），
+            // 消除估算 minHeight 与真实 widget 布局的偏差导致的底部留白
+            const targetH = Math.round(y + AUDIO_WAVEFORM_H + 2);
+            if (targetH > 60 && Math.abs(node.size[1] - targetH) > 0.5) {
+                node._xzgFixedH = targetH;
+                node.size[1] = targetH;
+                node.setDirtyCanvas?.(true, true);
+            }
         },
         mouse: function(event, [x, y], node) {
             return waveformViewer.handleMouse(event, x, y);
         },
         computeSize: function(width) {
-            return [width, AUDIO_WAVEFORM_MIN_H];
+            return [width, AUDIO_WAVEFORM_H];
         },
         computeLayoutSize: function(width) {
-            return { minHeight: AUDIO_WAVEFORM_MIN_H, minWidth: 0 };
+            return { minHeight: AUDIO_WAVEFORM_H, minWidth: 0 };
         },
     };
     node.widgets.push(waveformWidget);

@@ -51,6 +51,38 @@ logger.propagate = False
 # Suppress verbose transformers warnings about logits processors
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
+
+# ---------------------------------------------------------------- #
+#  功能开关：默认启用（兼容已在使用 LongCat TTS 的老用户，节点可见、工作流不破坏）。
+#  启动阶段「缺失模型/tokenizer」的 warning 已降级为「执行时才一次性 info 提示」
+#  （配合下面的 verbose 机制），对不用 TTS 的用户启动日志同样干净。
+#
+#  若明确不需要 TTS，不想让这个节点出现在列表里，可设置下面环境变量彻底关闭：
+#    set XZG_DISABLE_AUDIODIT=1        (Windows CMD)
+#    $env:XZG_DISABLE_AUDIODIT=1       (PowerShell)
+#    export XZG_DISABLE_AUDIODIT=1     (Linux/macOS)
+#  设置后：整个 AudioDiT 模块不导入，节点列表里完全不出现。
+# ---------------------------------------------------------------- #
+def is_audiodit_enabled() -> bool:
+    off = os.environ.get("XZG_DISABLE_AUDIODIT", "").strip().lower()
+    if off in {"1", "true", "yes", "on"}:
+        return False
+    return True
+
+
+# 单次警告记忆：避免 INPUT_TYPES 被反复调用时刷屏。
+# 对「模型/tokenizer 缺失」的提示改为执行时才打印（而不是每次扫描都 warning）。
+_MISS_WARNED: set[str] = set()
+
+
+def _warn_missing_once(kind: str, message: str) -> None:
+    """把缺失提示从 logger.warning 降级为「执行时才打印一次」的 info 级提示，
+    不污染不使用 TTS 用户的启动日志。"""
+    if kind in _MISS_WARNED:
+        return
+    _MISS_WARNED.add(kind)
+    logger.info(message)
+
 # ---------------------------------------------------------------- #
 #  模型目录（与原插件同用 folder_paths.models_dir / audiodit）
 # ---------------------------------------------------------------- #
@@ -199,23 +231,48 @@ def scan_local_tokenizers() -> list[str]:
     return names
 
 
-def tokenizer_names_or_default() -> list[str]:
+def tokenizer_names_or_default(verbose: bool = False) -> list[str]:
     """返回 tokenizer 下拉项。
 
-    - 有本地 tokenizer：返回所有扫描结果（不再插入 auto）
-    - 无任何 tokenizer：返回占位提示项（与模型列表一致的处理方式）
+    verbose=False（默认，启动/构建阶段）：空不打印 warning，只返回占位（避免启动刷屏）。
+    verbose=True（用户执行节点时）：空会打印一次性 info 提示。
     """
     names = scan_local_tokenizers()
     if not names:
         base = _get_models_base()
-        logger.warning(
-            "[小珠光AudioDiT] 未检测到任何 UMT5 tokenizer。\n"
-            "请把 tokenizer 文件放到: %s\n"
-            "（至少含 tokenizer_config.json + spiece.model 或 tokenizer.json）\n"
-            "或从 https://huggingface.co/google/umt5-base 下载整个仓库放入上述目录。",
-            base / _LOCAL_TOKENIZER_DIRNAME,
-        )
+        if verbose:
+            _warn_missing_once(
+                "tokenizer",
+                "[小珠光AudioDiT] 未检测到任何 UMT5 tokenizer。\n"
+                f"请把 tokenizer 文件放到: {base / _LOCAL_TOKENIZER_DIRNAME}\n"
+                "（至少含 tokenizer_config.json + spiece.model 或 tokenizer.json）\n"
+                "或从 https://huggingface.co/google/umt5-base 下载整个仓库放入上述目录。",
+            )
         return ["（请先放入 UMT5 tokenizer 到 ComfyUI/models/audiodit/）"]
+    return names
+
+
+def model_names_or_default(verbose: bool = False) -> list[str]:
+    """与 tokenizer_names_or_default 同构：扫描本地模型，空返回占位项。
+
+    启动阶段 verbose=False（静默）；执行节点时 verbose=True（一次性 info 提示缺失）。
+    """
+    names = scan_local_models()
+    if not names:
+        base = _get_models_base()
+        if verbose:
+            try:
+                import folder_paths  # type: ignore
+                base = Path(folder_paths.models_dir) / MODELS_FOLDER_NAME
+            except Exception:
+                pass
+            _warn_missing_once(
+                "model",
+                "[小珠光AudioDiT] 未检测到任何本地模型。\n"
+                f"请把模型目录放到: {base}\n"
+                "常见的目录名示例: LongCat-AudioDiT-3.5B-bf16 / LongCat-AudioDiT-1B / ...",
+            )
+        return ["（请先放入本地模型到 ComfyUI/models/audiodit/）"]
     return names
 
 

@@ -355,7 +355,7 @@ class XZGWorkflowsManager {
                 <div class="xzg-wf-dialog">
                     <div class="xzg-wf-dialog-title">${escapeAttr(title)}</div>
                     <div class="xzg-wf-dialog-body">
-                        <input type="text" class="xzg-wf-dialog-input" id="xzg-wf-dialog-input"
+                        <input type="${opts.password ? "password" : "text"}" class="xzg-wf-dialog-input" id="xzg-wf-dialog-input"
                             value="${escapeAttr(defaultValue)}" placeholder="${escapeAttr(opts.placeholder || "")}" />
                     </div>
                     <div class="xzg-wf-dialog-footer">
@@ -451,6 +451,7 @@ class XZGWorkflowsManager {
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
             <div class="xzg-wf-ctx-item" data-action="rename">✏️ ${xzgT('重命名','Rename')}</div>
+            <div class="xzg-wf-ctx-item" data-action="custom-usage">🔢 ${xzgT('自定义使用频率','Custom Usage Count')}</div>
             <div class="xzg-wf-ctx-item danger" data-action="delete-usage">🧹 ${xzgT('删除使用频率','Delete Usage')}</div>
             <div class="xzg-wf-ctx-item danger" data-action="delete">🗑️ ${xzgT('删除','Delete')}</div>
             <div class="xzg-wf-ctx-item xzg-wf-ctx-submenu" data-action="move">📁 ${xzgT('移动到分类','Move to Category')}</div>
@@ -499,6 +500,8 @@ class XZGWorkflowsManager {
                 
                 if (action === "rename") {
                     this.renameWorkflow(wf);
+                } else if (action === "custom-usage") {
+                    this.customWorkflowUsage(wf);
                 } else if (action === "delete-usage") {
                     this.deleteWorkflowUsage(wf);
                 } else if (action === "delete") {
@@ -3810,6 +3813,47 @@ class XZGWorkflowsManager {
         this.saveMeta();
         wf.useCount = 0;
         wf.lastUsed = 0;
+        this.renderWorkflowList();
+        if (this.renderCategories) this.renderCategories();
+    }
+
+    /** 自定义使用频率：密码验证后手动输入数值设置使用次数（不影响最近使用时间；设为 0 时一并清空） */
+    async customWorkflowUsage(wf) {
+        const path = wf && wf.path;
+        if (!path) return;
+
+        // 第一步：密码验证
+        const pwd = await this.showInputDialog(
+            xzgT('自定义使用频率 - 请输入密码', 'Custom Usage Count - Enter Password'),
+            "",
+            { password: true, placeholder: "******" }
+        );
+        if (pwd == null) return;
+        if (pwd !== "xiaozhuguang") {
+            alert(xzgT('密码错误，无法自定义使用频率。', 'Wrong password, cannot customize usage frequency.'));
+            return;
+        }
+
+        // 第二步：输入使用次数
+        const val = await this.showInputDialog(
+            xzgT(`设置「${wf.name}」的使用频率（使用次数）`, `Set usage frequency (use count) for "${wf.name}"`),
+            String(wf.useCount || 0),
+            { placeholder: xzgT('非负整数', 'Non-negative integer') }
+        );
+        if (val == null) return;
+
+        const n = parseInt(String(val).trim(), 10);
+        if (!Number.isFinite(n) || n < 0) {
+            alert(xzgT('请输入非负整数。', 'Please enter a non-negative integer.'));
+            return;
+        }
+
+        const meta = this.getWorkflowMeta(path);
+        meta.useCount = n;
+        if (n === 0) meta.lastUsed = 0;
+        this.saveMeta();
+        wf.useCount = n;
+        if (n === 0) wf.lastUsed = 0;
         this.renderWorkflowList();
         if (this.renderCategories) this.renderCategories();
     }
