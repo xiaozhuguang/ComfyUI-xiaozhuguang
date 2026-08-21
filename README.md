@@ -715,6 +715,30 @@ ComfyUI-xiaozhuguang/
 
 ---
 
+### V12.6.0 (2026-08-22)
+
+**📦 小珠光编组：边框/标题栏与节点、背景完全同步渲染（修复缩放时“边框先动后追平”的时间线抖动）**
+
+- **问题现象**：缩放/平移画布时，编组框的边框、标题栏（DOM overlay 层）先缩放到下一帧尺寸，随后才和背景、节点追平，肉眼可见「先动一下再对齐」的抖动/闪烁；即便把更新从 rAF 移到事件 handler 仍存在，因为 DOM 与 canvas 是两条渲染时间线
+- **根因**：DOM 层和 canvas 层在不同时刻更新——旧实现在独立 rAF 或 changeScale/changeOffset/processMouseMove/wheel 事件里直接写 `updatePositions()`（改 DOM 位置/尺寸），随后 canvas 才在下一帧 onDrawBackground 里按新 scale 重绘背景和节点，导致边框“领先”背景一帧
+- **编组同步渲染铁律**：`updatePositions()` 的**唯一调用点只能是 `onDrawBackground`**（由 `setupCanvasBgDraw` 挂载的 onDrawBackground 回调，先 `self.updatePositions()` 再 `self._drawGroupBackgrounds()`），绝对禁止在独立 rAF（原 `startSyncLoop`）或任何事件 handler 中提前写 DOM 尺寸；`syncNow` 统一只做 `app.canvas.setDirty(true, true)` 触发重绘，把“编组 DOM → 背景 → 节点”三件事锁在同一 canvas 渲染帧、同一 scale 值下一次性完成，视觉上零抖动
+- **渐隐/渐入同步策略升级：去掉移动渐隐，只做停止后的渐入**，配合确定性时间戳透明度计算——停止移动瞬间在 `fadeInStartNow = performance.now()` 记录同刻起点，`_fadeStart / _fadeDur / _fadeTarget` 写入编组对象，canvas 背景渐变与 DOM opacity 过渡按同一时间戳线性插值计算，不再读 `getComputedStyle`（避免 CSS transition 与重绘不同步导致的档位跳变），两者连续无级同步
+
+**⭐ 节点收藏：设置面板紧凑化 + 开关对齐 + 标签永不折行**
+
+- **新增「调入后自动关闭面板」开关**：开启时，点击或拖入收藏的节点到画布后面板自动折叠；关闭时保持展开，仍保留点击空白处/ESC 等原有关闭能力。持久化到 localStorage（`autoCloseAfterInsert`）
+- **开关右边缘对齐**：标签 span 用 `flex: 1 1 0` 占满剩余宽度，把 toggle 推到最右端，两行开关严格对齐（此前文字长度不同时开关位置前后错位）
+- **标签永不折行**：`white-space: nowrap` + `text-overflow: ellipsis` 兜底，未来再长的中文字符也不会在 210px 窄面板里折行
+- **布局紧凑化**：标题栏 padding `12/16px` → `6/16px` 并固定字号 13px；各行 gap `16px` → `6px`；内容区 padding `12px` → `8/12/10px`；使用频率行距 `12px` → `6px`；底部按钮区与按钮高度同步收紧；设置面板整体高度明显压缩
+
+**🗂 其他**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.5.0` 升至 `12.6.0`
+- 语法校验：`xzg_group.js`、`node_favorites.js` 通过 `node --check`
+- Release：GitHub Release v12.6.0 + publish_action.yml `push tags v*` 触发 → Comfy Registry 新版本 12.6.0 发布
+
+---
+
 ### V12.5.0 (2026-08-21)
 
 **🎬 视频加载器：预览视频自动重置为源视频 + 跳过帧数输出**

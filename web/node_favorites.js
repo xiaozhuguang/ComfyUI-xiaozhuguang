@@ -72,6 +72,7 @@ class Xiaozhuguang {
                 }
                 if (typeof parsed.useColorsEnabled !== "boolean") parsed.useColorsEnabled = true;
                 if (!parsed.activeBarColor) parsed.activeBarColor = "#FFD700";
+                if (typeof parsed.autoCloseAfterInsert !== "boolean") parsed.autoCloseAfterInsert = true;
                 return parsed;
             }
         } catch (e) {
@@ -84,7 +85,8 @@ class Xiaozhuguang {
             sortMode: "default",
             useColors: DEFAULT_USE_COLORS.map(x => ({ ...x })),
             useColorsEnabled: true,
-            activeBarColor: "#FFD700"
+            activeBarColor: "#FFD700",
+            autoCloseAfterInsert: true
         };
     }
 
@@ -144,6 +146,12 @@ class Xiaozhuguang {
                         </div>
                     </div>
                     <div class="nf-use-settings-section">
+                        <div class="nf-use-switch ${this.favorites.autoCloseAfterInsert !== false ? 'active' : ''}" id="nf-close-toggle">
+                            <span>${xzgT('调入后自动关闭面板', 'Auto-close panel')}</span>
+                            <span class="nf-use-toggle"><i></i></span>
+                        </div>
+                    </div>
+                    <div class="nf-use-settings-section">
                         <div class="nf-use-switch ${this.favorites.useColorsEnabled !== false ? 'active' : ''}" id="nf-use-toggle">
                             <span>${xzgT('根据使用频率变色', 'Color by usage frequency')}</span>
                             <span class="nf-use-toggle"><i></i></span>
@@ -169,6 +177,16 @@ class Xiaozhuguang {
                 useToggle.classList.toggle("active", on);
                 this.saveFavorites();
                 this.renderFavorites();
+            });
+        }
+
+        const closeToggle = dialog.querySelector("#nf-close-toggle");
+        if (closeToggle) {
+            closeToggle.addEventListener("click", () => {
+                const on = this.favorites.autoCloseAfterInsert === false;
+                this.favorites.autoCloseAfterInsert = on;
+                closeToggle.classList.toggle("active", on);
+                this.saveFavorites();
             });
         }
 
@@ -242,6 +260,7 @@ class Xiaozhuguang {
             this.favorites.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
             this.favorites.useColorsEnabled = true;
             this.favorites.activeBarColor = "#FFD700";
+            this.favorites.autoCloseAfterInsert = true;
             this.applyActiveBarColor("#FFD700");
             this.saveFavorites();
             dialog.remove();
@@ -303,7 +322,7 @@ class Xiaozhuguang {
                         } else {
                             self.addNodeToCanvasAt(self.draggingNodeType, offsetX, offsetY);
                         }
-                        self.collapsePanel();
+                        self.maybeCollapseAfterInsert();
                     }
                 }
                 self.removeDragPreview();
@@ -322,7 +341,7 @@ class Xiaozhuguang {
                         } else {
                             self.addWorkflowToCanvasAt(self.draggingWorkflowId, offsetX, offsetY);
                         }
-                        self.collapsePanel();
+                        self.maybeCollapseAfterInsert();
                     }
                 }
                 self.removeDragPreview();
@@ -1383,12 +1402,16 @@ class Xiaozhuguang {
                 max-width: 210px;
                 width: 210px;
             }
+            .nf-use-settings-dialog .nf-dialog-title {
+                padding: 6px 16px;
+                font-size: 13px;
+            }
             .nf-use-settings-dialog .nf-dialog-body {
                 display: flex;
                 flex-direction: column;
                 align-items: stretch;
-                gap: 16px;
-                padding: 12px;
+                gap: 6px;
+                padding: 8px 12px 10px;
             }
             .nf-use-settings-section { margin: 0; }
             .nf-active-bar-row {
@@ -1420,6 +1443,16 @@ class Xiaozhuguang {
                 width: auto;
                 flex-wrap: nowrap;
             }
+            .nf-use-switch > span:first-child {
+                flex: 1 1 0;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .nf-active-bar-row > span:first-child {
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
             .nf-use-toggle {
                 position: relative;
                 width: 40px;
@@ -1446,7 +1479,7 @@ class Xiaozhuguang {
                 display: flex;
                 align-items: center;
                 gap: 6px;
-                margin-top: 12px;
+                margin-top: 6px;
             }
             .nf-use-rank {
                 width: 18px;
@@ -1494,14 +1527,14 @@ class Xiaozhuguang {
             .nf-use-settings-footer {
                 display: flex;
                 justify-content: center;
-                padding: 10px 16px 14px;
+                padding: 8px 16px 10px;
             }
             .nf-use-settings-actions {
                 display: flex;
                 gap: 10px;
             }
             .nf-use-dialog-btn {
-                padding: 6px 12px;
+                padding: 4px 12px;
                 font-size: 13px;
                 font-weight: normal;
                 background: transparent;
@@ -2657,6 +2690,16 @@ class Xiaozhuguang {
             this.setPanelPosition(this._savedCollapsedPosition.left, this._savedCollapsedPosition.top);
             this.savePanelPosition();
             this._savedCollapsedPosition = null;
+        }
+    }
+
+    /**
+     * 调入收藏的节点/工作流到画布后，根据设置决定是否自动折叠面板。
+     * 开启「调入收藏后自动关闭面板」时折叠；关闭时保持面板展开（仍可点击空白处关闭）。
+     */
+    maybeCollapseAfterInsert() {
+        if (this.favorites.autoCloseAfterInsert !== false) {
+            this.collapsePanel();
         }
     }
 
@@ -4099,7 +4142,7 @@ class Xiaozhuguang {
                     } else {
                         self.addNodeToCanvas(dragInfo.type);
                     }
-                    self.collapsePanel();
+                    self.maybeCollapseAfterInsert();
                 }
 
                 dragInfo = null;

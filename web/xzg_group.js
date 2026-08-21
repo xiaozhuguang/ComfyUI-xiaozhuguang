@@ -652,7 +652,9 @@ const XZGGroup = {
             if (self._needRestore && self._pendingGroups && app?.graph?._nodes?.length) {
                 self.restoreGroups();
             }
-            self.updatePositions();
+            // 注意：updatePositions 只在 onDrawBackground（canvas 渲染帧）内调用，
+            // 让编组框“边框/标题栏”等 DOM 与背景、节点在同一帧、同一 scale 更新，
+            // 消除“DOM 提前缩放、canvas 后追”的不同步。边框动效仍由该渲染帧驱动。
             // 画布移动隐藏/渐入检测
             self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
@@ -670,8 +672,10 @@ const XZGGroup = {
         this._immediateSyncReady = true;
         const self = this;
 
-        // 同步更新，不再用 RAF 延迟，避免拖拽时编组框滞后
-        const syncNow = () => self.updatePositions();
+        // 缩放/平移/拖拽时不再直接写 DOM 尺寸（避免编组框“提前缩/滞后”），
+        // 仅请求重绘：由 canvas 绘制帧内（onDrawBackground）的 updatePositions
+        // 与节点在同一帧、同一 scale 更新，达到真正同步
+        const syncNow = () => { const c = app?.canvas; if (c) c.setDirty?.(true, true); };
 
         const tryHook = () => {
             const canvas = app?.canvas;
@@ -998,18 +1002,8 @@ const XZGGroup = {
         if (moved) {
             if (!this._canvasMoving) {
                 this._canvasMoving = true;
-                let maxFadeOut = 0;
-                for (const [gid, g] of Object.entries(this.groups)) {
-                    if (!g.fadeEnabled) continue;
-                    const el = this.groupEls[gid];
-                    if (!el) continue;
-                    const fadeDur = (g.fadeOutDuration || 0) / 1000;
-                    el.style.transition = `opacity ${fadeDur}s ease`;
-                    el.style.opacity = '0';
-                    maxFadeOut = Math.max(maxFadeOut, g.fadeOutDuration || 0);
-                }
-                // canvas 背景跟随 DOM 渐隐：持续触发重绘
-                if (maxFadeOut > 0) this._kickCanvasRepaint(maxFadeOut);
+                // 只渐入：画布移动时不做渐隐，编组（边框/背景）始终保持可见，
+                // 仅停止移动时在 else 分支做一次淡入
             }
             if (this._moveStopTimer) {
                 clearTimeout(this._moveStopTimer);
@@ -1021,6 +1015,7 @@ const XZGGroup = {
             const fadeDurMs = useFastFade ? 100 : null;
             let maxFadeIn = 0;
             let maxBgExtra = 0;
+            const fadeInStartNow = performance.now();
             for (const [gid, g] of Object.entries(this.groups)) {
                 if (!g.fadeEnabled) continue;
                 const el = this.groupEls[gid];
@@ -1029,6 +1024,10 @@ const XZGGroup = {
                 el.style.transition = `opacity ${fadeDur}s ease`;
                 el.style.opacity = '1';
                 const fadeInMs = fadeDurMs ?? g.fadeInDuration ?? 1000;
+                // 记录确定性渐入时间戳（与 DOM 过渡同一时刻起点），背景平滑无级淡入
+                g._fadeStart = fadeInStartNow;
+                g._fadeDur = fadeInMs;
+                g._fadeTarget = 1;
                 maxFadeIn = Math.max(maxFadeIn, fadeInMs);
                 // 背景出现动画：渐入早期（40%处，硬上限700ms）即启动，与渐入重叠推进。
                 // 背景透明度跟随边框渐入（domOp），重叠期卷帘由淡变实，视觉连续无空窗；
@@ -1058,19 +1057,26 @@ const XZGGroup = {
             if (!m) continue;
             const bgAlpha = m[1] === undefined ? 1 : parseFloat(m[1]);
             if (!(bgAlpha > 0)) continue;
-            // 跟随 DOM 编组的渐隐透明度（画布移动隐藏时同步消失）
-            // ⚠️ 必须用 getComputedStyle：CSS transition 动画中 el.style.opacity 瞬间即终值，
-            // computed style 才是每帧的实际过渡值，否则 canvas 背景不跟随渐入渐出
-            const el = this.groupEls[gid];
+            // 渐入/渐隐：基于确定性时间戳平滑计算透明度（不读取 DOM 过渡中间态，
+            // 避免 CSS transition 与 canvas 重绘不同步造成的档位跳变/闪动）。
+            // 起点（_fadeStart）与 DOM 框体的 opacity 过渡同刻记录，两者视觉同步。
             let domOp = 1;
-            if (el) {
-                const cs = getComputedStyle(el).opacity;
-                if (cs !== '') {
-                    domOp = parseFloat(cs);
-                    if (isNaN(domOp)) domOp = 1;
+            if (g._fadeStart !== undefined && g._fadeDur > 0) {
+                const t = Math.min(1, (now - g._fadeStart) / g._fadeDur);
+                const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
+                domOp = g._fadeTarget === 0 ? (1 - e) : e;
+                if (t >= 1) {
+                    if (g._fadeTarget === 0) {
+                        domOp = 0;
+                    } else {
+                        domOp = 1;
+                        delete g._fadeStart; // 完成后不再视为过渡中
+                    }
                 }
             }
             if (domOp <= 0.01) continue;
+            // 渐隐/渐入进行中（尚未稳定到 0/1）：纳入持续重绘循环保持平滑
+            if (domOp < 1) anyAnimating = true;
             const b = g.bounds;
             // 标题栏区域不绘制背景：标题栏颜色由 DOM 层的 headerBgColor 独立控制，
             // 避免 canvas 背景透过半透明标题栏混色影响标题栏观感
@@ -1163,10 +1169,16 @@ const XZGGroup = {
                     c.setDirty?.(true, true);
                     // 无编组仍在动画窗口内时停止（动画结束由 _bgAnimStart+dur 判定）
                     const now2 = performance.now();
-                    const still = Object.values(this.groups).some(g =>
-                        g.bgAnimation && g.bgAnimation !== 'none' &&
-                        g._bgAnimStart !== undefined &&
-                        now2 < g._bgAnimStart + Math.max(100, g.bgAnimDuration ?? 800) + 50);
+                    const still = Object.values(this.groups).some(g => {
+                        // 背景出现动画进行中
+                        if (g.bgAnimation && g.bgAnimation !== 'none' &&
+                            g._bgAnimStart !== undefined &&
+                            now2 < g._bgAnimStart + Math.max(100, g.bgAnimDuration ?? 800) + 50) return true;
+                        // DOM 渐隐/渐入进行中：按时间戳未完成时继续重绘保持平滑
+                        if (g._fadeStart !== undefined && g._fadeDur > 0 &&
+                            now2 < g._fadeStart + g._fadeDur + 20) return true;
+                        return false;
+                    });
                     if (still) {
                         requestAnimationFrame(tick);
                     } else {
@@ -1196,6 +1208,10 @@ const XZGGroup = {
         const prevFn = c.onDrawBackground;
         c.onDrawBackground = function(ctx, vis) {
             if (typeof prevFn === 'function') prevFn.call(this, ctx, vis);
+            // 在此与 canvas 同帧更新 DOM 框体位置/尺寸：此时 ds.scale 已是最新，
+            // 节点将在本次 render 内用同一 scale 绘制，编组框不再“提前缩/滞后”，
+            // 与节点、原生编组保持同一帧的缩放同步
+            self.updatePositions();
             self._drawGroupBackgrounds(this, ctx);
         };
         console.log('[小珠光编组] 画布背景绘制钩子已安装（节点下层）');
@@ -1753,7 +1769,7 @@ const XZGGroup = {
             return '#000000';
         })();
         modal.innerHTML = `
-            <div class="xzg-modal-drag-handle" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 8px 0;margin-bottom:12px;cursor:move;user-select:none;">
+            <div class="xzg-modal-drag-handle" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0 8px 0;margin-bottom:10px;cursor:move;user-select:none;">
                 <span style="color:#fff;font-size:16px;font-weight:600;">编组设置</span>
                 <div style="display:flex;align-items:center;gap:6px;cursor:default;">
                     <span style="color:#fff;font-size:12px;">快捷键</span>
@@ -1761,60 +1777,60 @@ const XZGGroup = {
                     <input class="xzg-set-shortcut" value="${curKey}" maxlength="1" style="width:40px;height:24px;padding:0 4px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;text-align:center;text-transform:uppercase;box-sizing:border-box;cursor:text;">
                 </div>
             </div>
-            <div style="margin-bottom:12px;">
-                <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:8px;font-weight:600;">标题栏设置</label>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+            <div style="margin-bottom:10px;">
+                <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:6px;font-weight:600;">标题栏设置</label>
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">名称</label>
-                    <input class="xzg-set-title" value="${group.title}" style="flex:1;height:28px;padding:0 8px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.08);border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box;">
+                    <input class="xzg-set-title" value="${group.title}" style="flex:1;height:24px;padding:0 8px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.08);border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box;">
                     <div style="width:72px;flex-shrink:0;"></div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">文字大小</label>
-                    <input class="xzg-set-fontsize" type="range" min="6" max="48" value="${group.fontSize || 20}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:28px;">
+                    <input class="xzg-set-fontsize" type="range" min="6" max="48" value="${group.fontSize || 20}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:24px;">
                         <span class="xzg-set-fs-val" style="color:#fff;font-size:12px;width:28px;text-align:left;">${group.fontSize || 20}</span>
                         <div class="xzg-title-color-swatch" style="width:22px;height:22px;border-radius:4px;cursor:pointer;background:${group.titleColor || '#FFD700'};border:1px solid rgba(255,255,255,0.2);flex-shrink:0;"></div>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">背景色</label>
-                    <div class="xzg-header-color-bar" style="flex:1;height:28px;border-radius:4px;cursor:pointer;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f);border:1px solid rgba(255,255,255,0.2);position:relative;">
+                    <div class="xzg-header-color-bar" style="flex:1;height:19px;border-radius:4px;cursor:pointer;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f);border:1px solid rgba(255,255,255,0.2);position:relative;">
                         <input class="xzg-set-headerbgcolor" type="color" value="${initHex}" style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;">
                     </div>
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-end;height:28px;">
-                        <button class="xzg-reset-headerbg" type="button" style="height:26px;padding:0 10px;background:#3a3a3a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1;">重置</button>
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-end;height:24px;">
+                        <button class="xzg-reset-headerbg" type="button" style="height:22px;padding:0 10px;background:#3a3a3a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1;">重置</button>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;">
                     <span style="color:#fff;font-size:12px;flex-shrink:0;width:72px;">透明度</span>
-                    <input class="xzg-set-headeropacity" type="range" min="0" max="100" value="${Math.round((group.headerBgColor || 'rgba(0,0,0,0.4)').replace(/^rgba?\([\d,.\s]+,\s*([\d.]+)\)$/,'$1') * 100)}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-headeropacity" type="range" min="0" max="100" value="${Math.round((group.headerBgColor || 'rgba(0,0,0,0.4)').replace(/^rgba?\([\d,.\s]+,\s*([\d.]+)\)$/,'$1') * 100)}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-header-opacity-val" style="color:#fff;font-size:12px;width:36px;text-align:left;">${Math.round((group.headerBgColor || 'rgba(0,0,0,0.4)').replace(/^rgba?\([\d,.\s]+,\s*([\d.]+)\)$/,'$1') * 100)}%</span>
                     </div>
                 </div>
             </div>
-            <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:12px;padding-top:0;"></div>
-            <div style="margin-bottom:12px;">
-                <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:8px;font-weight:600;">背景设置</label>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+            <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:10px;padding-top:0;"></div>
+            <div style="margin-bottom:10px;">
+                <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:6px;font-weight:600;">背景设置</label>
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">背景颜色</label>
-                    <div class="xzg-bg-color-bar" style="flex:1;height:28px;border-radius:4px;cursor:pointer;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f);border:1px solid rgba(255,255,255,0.2);position:relative;">
+                    <div class="xzg-bg-color-bar" style="flex:1;height:19px;border-radius:4px;cursor:pointer;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f);border:1px solid rgba(255,255,255,0.2);position:relative;">
                         <input class="xzg-set-bgcolor" type="color" value="${bgInitHex}" style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;">
                     </div>
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-end;height:28px;">
-                        <button class="xzg-reset-bg" type="button" style="height:26px;padding:0 10px;background:#3a3a3a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1;">重置</button>
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-end;height:24px;">
+                        <button class="xzg-reset-bg" type="button" style="height:22px;padding:0 10px;background:#3a3a3a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;cursor:pointer;white-space:nowrap;line-height:1;">重置</button>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;">
                     <span style="color:#fff;font-size:12px;flex-shrink:0;width:72px;">透明度</span>
-                    <input class="xzg-set-bgopacity" type="range" min="0" max="100" value="${Math.round(bgInitAlpha * 100)}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-bgopacity" type="range" min="0" max="100" value="${Math.round(bgInitAlpha * 100)}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-bg-opacity-val" style="color:#fff;font-size:12px;width:36px;text-align:left;">${Math.round(bgInitAlpha * 100)}%</span>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-top:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-top:6px;">
                     <span style="color:#fff;font-size:12px;flex-shrink:0;width:72px;">出现动画</span>
-                    <select class="xzg-set-bganim" style="flex:1;height:28px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#ffd700;font-size:12px;padding:0 6px;cursor:pointer;">
+                    <select class="xzg-set-bganim" style="flex:1;height:24px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#ffd700;font-size:12px;padding:0 6px;cursor:pointer;">
                         <option value="none"${(group.bgAnimation ?? 'none') === 'none' ? ' selected' : ''}>无</option>
                         <option value="wipedown"${group.bgAnimation === 'wipedown' ? ' selected' : ''}>卷帘 ↓ 下落</option>
                         <option value="wipeup"${group.bgAnimation === 'wipeup' ? ' selected' : ''}>卷帘 ↑ 上升</option>
@@ -1826,39 +1842,39 @@ const XZGGroup = {
                     </select>
                     <div style="width:72px;flex-shrink:0;"></div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-top:8px;">
+                <div class="xzg-bganim-duration-row" style="display:${group.bgAnimation && group.bgAnimation !== 'none' ? 'flex' : 'none'};align-items:center;gap:8px;height:24px;margin-top:6px;">
                     <span style="color:#fff;font-size:12px;flex-shrink:0;width:72px;">动画时长</span>
-                    <input class="xzg-set-bganimdur" type="range" min="200" max="5000" step="100" value="${group.bgAnimDuration ?? 800}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-bganimdur" type="range" min="200" max="5000" step="100" value="${group.bgAnimDuration ?? 800}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-bg-animdur-val" style="color:#fff;font-size:12px;width:36px;text-align:left;">${((group.bgAnimDuration ?? 800) / 1000).toFixed(1)}s</span>
                     </div>
                 </div>
             </div>
-            <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:12px;padding-top:0;"></div>
-            <div style="margin-bottom:12px;">
-                <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:8px;font-weight:600;">边框设置</label>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+            <div style="border-top:1px solid rgba(255,255,255,0.1);margin-bottom:10px;padding-top:0;"></div>
+            <div style="margin-bottom:10px;">
+                <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:6px;font-weight:600;">边框设置</label>
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框颜色</label>
-                    <div class="xzg-custom-color-trigger" style="flex:1;height:28px;border-radius:4px;cursor:pointer;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f);border:1px solid rgba(255,255,255,0.2);"></div>
+                    <div class="xzg-custom-color-trigger" style="flex:1;height:19px;border-radius:4px;cursor:pointer;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f);border:1px solid rgba(255,255,255,0.2);"></div>
                     <div style="width:72px;flex-shrink:0;"></div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框粗细</label>
-                    <input class="xzg-set-borderwidth" type="range" min="1" max="10" value="${group.borderWidth||2}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-borderwidth" type="range" min="1" max="10" value="${group.borderWidth||2}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-set-bw-val" style="color:#fff;font-size:12px;text-align:left;">${group.borderWidth||2}px</span>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框透明度</label>
-                    <input class="xzg-set-borderopacity" type="range" min="5" max="100" value="${Math.round((group.borderOpacity??1)*100)}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-borderopacity" type="range" min="5" max="100" value="${Math.round((group.borderOpacity??1)*100)}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-set-bo-val" style="color:#fff;font-size:12px;text-align:left;">${Math.round((group.borderOpacity??1)*100)}%</span>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框动画</label>
-                    <select class="xzg-set-effect" style="flex:1;height:28px;padding:0 8px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box;">
+                    <select class="xzg-set-effect" style="flex:1;height:24px;padding:0 8px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box;">
                         <option value="none" ${!group.effect||group.effect==='none'?'selected':''}>无</option>
                         <option value="rainbow" ${group.effect==='rainbow'?'selected':''}>渐变彩虹</option>
                         <option value="pulse" ${group.effect==='pulse'?'selected':''}>明暗呼吸</option>
@@ -1868,14 +1884,14 @@ const XZGGroup = {
                     </select>
                     <div style="width:72px;flex-shrink:0;"></div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;">
+                <div class="xzg-effect-speed-row" style="display:${group.effect && group.effect !== 'none' ? 'flex' : 'none'};align-items:center;gap:8px;height:24px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">动画速度</label>
-                    <input class="xzg-set-speed" type="range" min="1" max="10" value="${group.effectSpeed||3}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-speed" type="range" min="1" max="10" value="${group.effectSpeed||3}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-set-spd-val" style="color:#fff;font-size:12px;text-align:left;">${group.effectSpeed||3}</span>
                     </div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;height:28px;margin-top:8px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-top:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">边框渐入</label>
                     <button type="button" class="xzg-set-fade-toggle" data-checked="${group.fadeEnabled !== false ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 8px;background:transparent;border:none;cursor:pointer;">
                         <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${group.fadeEnabled !== false ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
@@ -1884,22 +1900,22 @@ const XZGGroup = {
                         <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${group.fadeEnabled !== false ? '#FFD700' : '#777'};min-width:20px;">${group.fadeEnabled !== false ? '开' : '关'}</span>
                     </button>
                 </div>
-                <div class="xzg-fade-duration-row" style="display:${group.fadeEnabled !== false ? 'flex' : 'none'};align-items:center;gap:8px;height:28px;">
+                <div class="xzg-fade-duration-row" style="display:${group.fadeEnabled !== false ? 'flex' : 'none'};align-items:center;gap:8px;height:24px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">渐入时长</label>
-                    <input class="xzg-set-fade-duration" type="range" min="100" max="8000" step="100" value="${group.fadeInDuration ?? 1000}" style="flex:1;height:28px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:28px;">
+                    <input class="xzg-set-fade-duration" type="range" min="100" max="8000" step="100" value="${group.fadeInDuration ?? 1000}" style="flex:1;height:24px;margin:0;">
+                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-set-fade-val" style="color:#fff;font-size:12px;text-align:left;">${(group.fadeInDuration ?? 1000) / 1000}s</span>
                     </div>
                 </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:space-between;padding-top:4px;">
                 <div style="display:flex;gap:8px;">
-                    <button class="xzg-set-help" type="button" style="height:28px;padding:0 12px;background:transparent;border:none;color:#FFD700;cursor:pointer;font-size:12px;font-weight:bold;">使用说明</button>
-                    <button class="xzg-set-apply-all" type="button" style="height:28px;padding:0 12px;background:#665500;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#FFD700;cursor:pointer;font-size:12px;" title="将颜色和动画应用到所有编组">应用到全部</button>
+                    <button class="xzg-set-help" type="button" style="height:24px;padding:0 12px;background:transparent;border:none;color:#FFD700;cursor:pointer;font-size:12px;font-weight:bold;">使用说明</button>
+                    <button class="xzg-set-apply-all" type="button" style="height:24px;padding:0 12px;background:#665500;border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:#FFD700;cursor:pointer;font-size:12px;" title="将颜色和动画应用到所有编组">应用到全部</button>
                 </div>
                 <div style="display:flex;gap:8px;">
-                    <button class="xzg-set-cancel" type="button" style="height:28px;padding:0 16px;background:#333;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">取消</button>
-                    <button class="xzg-set-apply" type="button" style="height:28px;padding:0 16px;background:#444;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">应用</button>
+                    <button class="xzg-set-cancel" type="button" style="height:24px;padding:0 16px;background:#333;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">取消</button>
+                    <button class="xzg-set-apply" type="button" style="height:24px;padding:0 16px;background:#444;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">应用</button>
                 </div>
             </div>
         `;
@@ -1957,8 +1973,13 @@ const XZGGroup = {
 
         // 边框动画下拉（实时预览）
         const effectSel = modal.querySelector('.xzg-set-effect');
+        const effectSpeedRow = modal.querySelector('.xzg-effect-speed-row');
+        const updateEffectSpeedRow = () => {
+            if (effectSpeedRow) effectSpeedRow.style.display = (group.effect && group.effect !== 'none') ? 'flex' : 'none';
+        };
         effectSel.addEventListener('change', () => {
             group.effect = effectSel.value;
+            updateEffectSpeedRow();
             self.updateGroupStyle(group.id);
         });
 
@@ -2143,6 +2164,10 @@ const XZGGroup = {
         const bgAnimSel = modal.querySelector('.xzg-set-bganim');
         const bgAnimDur = modal.querySelector('.xzg-set-bganimdur');
         const bgAnimDurVal = modal.querySelector('.xzg-bg-animdur-val');
+        const bgAnimDurRow = modal.querySelector('.xzg-bganim-duration-row');
+        const updateBgAnimDurRow = () => {
+            if (bgAnimDurRow) bgAnimDurRow.style.display = (group.bgAnimation && group.bgAnimation !== 'none') ? 'flex' : 'none';
+        };
         const previewBgAnim = () => {
             if (group.bgAnimation && group.bgAnimation !== 'none' && group.bgColor && group.bgColor !== 'rgba(0,0,0,0)') {
                 group._bgAnimStart = performance.now();
@@ -2154,6 +2179,7 @@ const XZGGroup = {
         if (bgAnimSel) {
             bgAnimSel.addEventListener('change', function() {
                 group.bgAnimation = this.value;
+                updateBgAnimDurRow();
                 previewBgAnim();
             });
         }
@@ -2354,21 +2380,21 @@ const XZGGroup = {
             overlay.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:100001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);';
             const box = document.createElement('div');
             box.style.cssText = 'background:#2a2a2a;border:1px solid #555;border-radius:10px;padding:24px 32px;max-width:1000px;box-shadow:0 8px 32px rgba(0,0,0,0.6);color:#ddd;font-size:14px;line-height:2;font-family:Arial,sans-serif;';
-            box.innerHTML = `<div style="font-size:16px;font-weight:bold;color:#FFD700;margin-bottom:12px;">小珠光编组功能使用说明</div>
+            box.innerHTML = `<div style="font-size:16px;font-weight:bold;color:#FFD700;margin-bottom:10px;">小珠光编组功能使用说明</div>
 <div style="color:#FFD700;font-weight:bold;">1、基本操作</div>
 选中节点 → Ctrl+G：创建编组框，包含所选节点<br>
 拖拽编组标题栏或边框：移动编组位置（框体与框内节点一起移动）<br>
 Ctrl+拖拽编组标题栏或边框：仅移动框体，框内节点不跟随<br>
 拖拽边框右下角：调整编组大小<br>
 编组可嵌套：编组框可以包含其他更小的编组框<br>
-<div style="color:#FFD700;font-weight:bold;margin-top:8px;">2、同级别反选模式</div>
+<div style="color:#FFD700;font-weight:bold;margin-top:6px;">2、同级别反选模式</div>
 2.1 点击标题栏左侧 1/5 区域，被点击的编组 开启，同一级别的其他编组全部 绕过<br>
 2.2 点击标题栏右侧 1/5 区域，被点击的编组 绕过，同一级别的其他编组全部 开启<br>
 2.3 普通点击标题栏：切换当前编组的绕过/开启状态；Ctrl 专用于「仅拖框体」，不触发绕过<br>
-<div style="color:#FFD700;font-weight:bold;margin-top:8px;">3、锁定/解锁编组</div>
+<div style="color:#FFD700;font-weight:bold;margin-top:6px;">3、锁定/解锁编组</div>
 点击标题栏 🔒 锁图标：锁定/解锁当前编组（锁定后无法拖动和调整大小）<br>
 Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
-<div style="color:#FFD700;font-weight:bold;margin-top:8px;">4、执行框内节点</div>
+<div style="color:#FFD700;font-weight:bold;margin-top:6px;">4、执行框内节点</div>
 按键盘 F 键：执行当前编组框内的所有节点`;
             overlay.appendChild(box);
             document.body.appendChild(overlay);
