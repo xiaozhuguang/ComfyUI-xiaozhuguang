@@ -1480,6 +1480,7 @@ function bindVideoLoaderInteractions(node) {
                 e.preventDefault?.();
                 e.stopPropagation?.();
                 // 直接用 getVideoUrl 解析文件名 + 类型，加载视频
+                _isPreviewLoaded = false;
                 player.load(getVideoUrl(textData));
                 // 如果是 input 类型，同步下拉列表
                 if (textData.includes(' [input]') || !textData.includes(' [')) {
@@ -1502,6 +1503,7 @@ function bindVideoLoaderInteractions(node) {
             videoWidget.callback = function (value) {
                 origCb?.apply(this, arguments);
                 const url = getVideoUrl(value);
+                _isPreviewLoaded = false;
                 player.load(url || "");
             };
             if (videoWidget.value) {
@@ -1660,6 +1662,55 @@ function bindVideoLoaderInteractions(node) {
             return 0;
         };
 
+        // ═══════════════════════════════════════════════════════════════════
+        // 预览视频重置机制：
+        //   工作流运行后，预览视频（转码后的临时文件）会覆盖播放器，
+        //   导致播放条总帧数变为处理后的帧数，与原视频不一致。
+        //   当分辨率/跳过帧/加载上限变化时，立即重载原视频，
+        //   播放条总帧数恢复为原视频总帧数，已有 setCustomSize/setLoadRange
+        //   机制会自动应用当前参数进行渲染。
+        // ═══════════════════════════════════════════════════════════════════
+        let _isPreviewLoaded = false;
+
+        const _resetToSourceVideo = () => {
+            if (!_isPreviewLoaded) return;
+            const vw = node.widgets?.find(w => w.name === "视频");
+            if (!vw?.value) return;
+
+            // 保存当前播放头位置（按帧数）
+            const fps = player._frameRate || 24;
+            const savedFrame = Math.round((player._currentTime || 0) * fps);
+
+            _isPreviewLoaded = false;
+            // 延迟一帧执行 load，确保拖动的 pointerup 事件先处理完毕，
+            // 避免页面重渲染导致数字输入框意外进入编辑模式
+            requestAnimationFrame(() => {
+                player.load(getVideoUrl(vw.value));
+            });
+
+            // 加载完成后重新应用参数并恢复播放头
+            const origOnLoaded = player.onLoadedMetadata;
+            player.onLoadedMetadata = function () {
+                try {
+                    syncCustomSize();
+                    _syncLoadRange();
+                    // 恢复播放头（clamp 到加载范围内）
+                    if (savedFrame > 0) {
+                        const skip = Math.max(0, parseInt(skipWidget?.value) || 0);
+                        const limit = Math.max(0, parseInt(limitWidget?.value) || 0);
+                        const total = player.getSourceTotalFrames ? player.getSourceTotalFrames() : 0;
+                        let end = total > 0 ? total : savedFrame + 1;
+                        if (limit > 0) end = Math.min(end, skip + limit);
+                        const targetFrame = Math.max(skip, Math.min(savedFrame, Math.max(skip, end - 1)));
+                        player.seek(targetFrame / fps);
+                    }
+                } finally {
+                    player.onLoadedMetadata = origOnLoaded;
+                    if (origOnLoaded) origOnLoaded.apply(this, arguments);
+                }
+            };
+        };
+
         const syncCustomSize = () => {
             const ratioW = node.widgets?.find(w => w.name === "视频比例");
             const ratioVal = ratioW?.value;
@@ -1764,6 +1815,7 @@ function bindVideoLoaderInteractions(node) {
         };
 
         _syncLoadRange = () => {
+            _resetToSourceVideo();
             updateWidgetBounds();
             const skip = Math.max(0, parseInt(skipWidget?.value) || 0);
             const limit = Math.max(0, parseInt(limitWidget?.value) || 0);
@@ -1827,6 +1879,7 @@ function bindVideoLoaderInteractions(node) {
             const url = `/view?${params.toString()}&rand=${Math.random()}`;
             console.warn("[小珠光视频加载器] (立即)加载预览视频到预览区: " + filename);
             player.load(url);
+            _isPreviewLoaded = true;
             node.setDirtyCanvas(true, true);
             if (promptId) _previewLoadedForPrompt.add(promptId);
             return true;

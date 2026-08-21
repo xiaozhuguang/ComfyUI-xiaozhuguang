@@ -630,6 +630,7 @@ class XiaozhuguangVideoLoader:
             "loaded_duration": loaded_duration,
             "loaded_width": new_w,
             "loaded_height": new_h,
+            "skip_frames": max(0, int(跳过帧数 or 0)),
             "filename": 视频,
         }
 
@@ -708,7 +709,6 @@ class XiaozhuguangVideoLoader:
                         "type": "temp",
                     }]
                 }
-                print(f"[小珠光视频加载器] 预览视频已生成: {preview_filename}")
         except Exception as e:
             print(f"[小珠光视频加载器] 预览视频生成异常: {e}")
 

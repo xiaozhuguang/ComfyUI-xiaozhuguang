@@ -140,54 +140,78 @@ function getButtonWidth(isTrue, settings) {
     return clamp(settings.btnWidth, 55, 300);
 }
 
-function getButtonRects(y, W, settings) {
+/**
+ * 计算布尔按钮布局矩形（参照小珠光选择器的边距/缩放算法）。
+ * - 左右各 6px 边距：availableW = W - 12
+ * - 顶部 4px、底部 8px 边距；节点高度空余时按钮等比放大填满，不足时等比缩小避免溢出
+ * - 节点宽度空余时按钮等比放大填满，不足时保持自然宽度（节点宽度自适应，不压缩按钮）
+ * - 按钮之间的比例关系（由 settings.widths / settings.btnWidth 决定）保持不变
+ * @param {number} y - 控件顶部 y 坐标
+ * @param {number} W - 节点宽度
+ * @param {object} settings - 节点设置
+ * @param {number} [availableH] - 可用高度（可选），大于自然高度时缩放按钮高度
+ */
+function getButtonRects(y, W, settings, availableH) {
     const gap = settings.btnGap;
     const btnH = settings.btnHeight;
-    const rects = [];
     const startY = y + 4;
+    const rects = [];
+    const availableW = Math.max(0, W - 12); // 左右各 6px 边距
+
+    // 高度自适应：参照选择器，按可用高度缩放按钮高度填满/压缩
+    let scaledBtnH = btnH;
+    let contentH = btnH;
+    if (availableH !== undefined) {
+        if (availableH > btnH) {
+            scaledBtnH = availableH; // 放大填满
+            contentH = availableH;
+        } else {
+            scaledBtnH = Math.max(10, availableH); // 缩小避免溢出
+            contentH = availableH;
+        }
+    }
 
     const falseW = getButtonWidth(false, settings);
     const trueW = getButtonWidth(true, settings);
-    const totalW = falseW + gap + trueW;
-    const startX = Math.max(6, (W - totalW) / 2);
+    const naturalTotalW = falseW + gap + trueW;
 
-    const invert = !!settings.invert;
-
-    if (!invert) {
-        rects[0] = {
-            x: startX,
-            y: startY,
-            w: falseW,
-            h: btnH,
-            value: false,
-        };
-        rects[1] = {
-            x: startX + falseW + gap,
-            y: startY,
-            w: trueW,
-            h: btnH,
-            value: true,
-        };
+    // 宽度自适应：节点够宽时等比放大填满，不够宽保持自然宽度
+    let scaledFalseW = falseW;
+    let scaledTrueW = trueW;
+    let rowWidth;
+    const totalGap = gap;
+    const naturalContentW = falseW + trueW;
+    const availableContentW = Math.max(0, availableW - totalGap);
+    if (availableContentW >= naturalContentW && naturalContentW > 0) {
+        const scale = availableContentW / naturalContentW;
+        scaledFalseW = falseW * scale;
+        scaledTrueW = trueW * scale;
+        rowWidth = availableW;
     } else {
-        rects[0] = {
-            x: startX,
-            y: startY,
-            w: trueW,
-            h: btnH,
-            value: true,
-        };
-        rects[1] = {
-            x: startX + trueW + gap,
-            y: startY,
-            w: falseW,
-            h: btnH,
-            value: false,
-        };
+        rowWidth = naturalTotalW;
     }
 
-    const contentW = totalW;
-    const contentH = btnH;
-    return { rects, contentW, contentH };
+    const rowStartX = Math.max(6, (W - rowWidth) / 2);
+    const invert = !!settings.invert;
+
+    const order = invert
+        ? [{ value: true, w: scaledTrueW }, { value: false, w: scaledFalseW }]
+        : [{ value: false, w: scaledFalseW }, { value: true, w: scaledTrueW }];
+
+    let curX = rowStartX;
+    for (let i = 0; i < order.length; i++) {
+        rects[i] = {
+            x: curX,
+            y: startY,
+            w: order[i].w,
+            h: scaledBtnH,
+            value: order[i].value,
+        };
+        curX += order[i].w + gap;
+    }
+
+    const contentW = availableW;
+    return { rects, contentW, contentH, heightScale: btnH > 0 ? scaledBtnH / btnH : 1 };
 }
 
 const DEFAULT_SETTINGS = {
@@ -197,7 +221,7 @@ const DEFAULT_SETTINGS = {
     btnHeight: 30,
     fontSize: 12,
     btnGap: 4,
-    fontColor: "#aaa",
+    fontColor: "#FFFFFF",
     inactiveColor: "#2a2a2a",
     widths: {},
     invert: false,
@@ -462,9 +486,12 @@ function openBoolSettingsPanel(node) {
         ns.invert = !!s.invert;
         Object.assign(s, ns);
         setNodeSettings(node, s);
-        const { contentW, contentH } = getButtonRects(0, node.size[0], s);
-        node.size[0] = Math.max(120, contentW + 12);
-        node.size[1] = Math.max(45, contentH + 28);
+        // 自由缩放模式：不强制修改节点尺寸，按钮在用户拖动的节点内自适应填满
+        // 仅确保不小于最小尺寸（一行时高度底线 58，与选择器一致）
+        if (node.size) {
+            if (node.size[0] < 120) node.size[0] = 120;
+            if (node.size[1] < 58) node.size[1] = 58;
+        }
         node.setDirtyCanvas(true, true);
     }
 
@@ -547,9 +574,20 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
-            this.resizable = false;
+            // 参照小珠光选择器：允许自由拖动节点大小
+            this.resizable = true;
             this.flags = this.flags || {};
-            this.flags.resizable = false;
+            this.flags.resizable = true;
+
+            // 拖动缩放时强制最小尺寸（与选择器一致：一行时高度底线 58）
+            const origOnResize = this.onResize;
+            this.onResize = function () {
+                if (origOnResize) origOnResize.apply(this, arguments);
+                if (this.size) {
+                    if (this.size[0] < 120) this.size[0] = 120;
+                    if (this.size[1] < 58) this.size[1] = 58;
+                }
+            };
 
             const settingsWidget = this.widgets?.find(w => w.name === "_xz_settings");
             if (settingsWidget) settingsWidget.hidden = true;
@@ -570,7 +608,10 @@ app.registerExtension({
 
                 draw(ctx, node, W, y, H) {
                     const settings = getNodeSettings(node, DEFAULT_SETTINGS);
-                    const { rects, contentH } = getButtonRects(y, W, settings);
+                    // 用节点实际高度计算可用高度（参照选择器），而非 H 参数
+                    const nodeH = node.size[1] || 0;
+                    const availH = Math.max(0, nodeH - y - 8);
+                    const { rects, contentH } = getButtonRects(y, W, settings, availH);
                     const currentValue = !!boolWidget.value;
 
                     for (let i = 0; i < rects.length; i++) {
@@ -596,51 +637,65 @@ app.registerExtension({
                         ctx.stroke();
 
                         const label = getDisplayLabel(r.value, settings.labels);
-                        ctx.fillStyle = settings.fontColor || "#aaa";
-                        ctx.font = `${settings.fontSize}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                        ctx.fillStyle = settings.fontColor || "#FFFFFF";
+                        // 字体大小限制不超出按钮高度（参照选择器）
+                        const effectiveFont = clamp(settings.fontSize || 12, 8, r.h * 0.85);
+                        ctx.font = `${effectiveFont}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
                         ctx.textAlign = "center";
-                        ctx.textBaseline = "middle";
-                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2);
+                        // 用实际字形度量精确垂直居中，避免大字体时偏上
+                        ctx.textBaseline = "alphabetic";
+                        const m = ctx.measureText(label);
+                        const ascent = m.actualBoundingBoxAscent || effectiveFont * 0.8;
+                        const descent = m.actualBoundingBoxDescent || effectiveFont * 0.2;
+                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + (ascent - descent) / 2);
                         ctx.restore();
                     }
 
+                    node._xzgBoolY = y;
                     node._xzgBoolH = contentH + 8;
                 },
 
                 mouse(event, pos, node) {
-                    if (event.type === "wheel") return false;
-                    if (event.type !== "mousedown" && event.type !== "pointerdown") return false;
-                    if (event.button !== 0 && event.type === "mousedown") return false;
-
-                    const settings = getNodeSettings(node, DEFAULT_SETTINGS);
-                    const W = node.size[0];
-                    const { rects } = getButtonRects(this.y || 0, W, settings);
-
-                    for (let i = 0; i < rects.length; i++) {
-                        const r = rects[i];
-                        if (!r) continue;
-                        if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
-                            pos[1] >= r.y && pos[1] <= r.y + r.h) {
-                            boolWidget.value = r.value;
-                            if (boolWidget.callback) {
-                                try { boolWidget.callback(r.value); } catch (e) {}
-                            }
-                            node.setDirtyCanvas(true, true);
-                            return true;
-                        }
-                    }
+                    // 点击检测由 node.onMouseDown 处理（覆盖整个节点区域），这里不再响应
                     return false;
                 },
 
                 computeSize(width) {
-                    const settings = getNodeSettings(node, DEFAULT_SETTINGS);
-                    const { contentH } = getButtonRects(0, width, settings);
-                    return [width, contentH + 8];
+                    // 返回极小值，不干预节点高度，让用户自由拖动（参照选择器）
+                    return [width, 4];
                 },
             });
 
             const custom = this.widgets.pop();
             this.widgets.splice(widgetIndex + 1, 0, custom);
+
+            // 节点级点击检测：覆盖整个节点区域，不受 computeSize 限制（参照选择器）
+            const _node = this;
+            _node.onMouseDown = function(event, pos) {
+                if (event.type === "wheel") return false;
+                if (event.button !== 0) return false;
+                const settings = getNodeSettings(_node, DEFAULT_SETTINGS);
+                const W = _node.size[0];
+                const yPos = _node._xzgBoolY !== undefined ? _node._xzgBoolY : 0;
+                const nodeH = _node.size[1] || 0;
+                const availH = Math.max(0, nodeH - yPos - 8);
+                const { rects } = getButtonRects(yPos, W, settings, availH);
+
+                for (let i = 0; i < rects.length; i++) {
+                    const r = rects[i];
+                    if (!r) continue;
+                    if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
+                        pos[1] >= r.y && pos[1] <= r.y + r.h) {
+                        boolWidget.value = r.value;
+                        if (boolWidget.callback) {
+                            try { boolWidget.callback(r.value); } catch (e) {}
+                        }
+                        _node.setDirtyCanvas(true, true);
+                        return true;
+                    }
+                }
+                return false;
+            };
 
             chainCallback(this, "getExtraMenuOptions", function(_, options) {
                 options.splice(0, 0, null, {
@@ -649,10 +704,14 @@ app.registerExtension({
                 });
             });
 
+            // 初始大小：用自然宽度计算（避免按钮被拉伸填满过宽的节点）
             const settings = getNodeSettings(this, DEFAULT_SETTINGS);
-            const { contentW, contentH } = getButtonRects(0, this.size[0], settings);
-            this.size[0] = Math.max(120, contentW + 12);
-            this.size[1] = Math.max(45, contentH + 28);
+            const falseW = getButtonWidth(false, settings);
+            const trueW = getButtonWidth(true, settings);
+            const naturalW = falseW + settings.btnGap + trueW + 12; // +12 左右边距
+            const { contentH } = getButtonRects(0, naturalW, settings);
+            this.size[0] = Math.max(120, naturalW);
+            this.size[1] = Math.max(58, contentH + 28);
         };
     },
 });

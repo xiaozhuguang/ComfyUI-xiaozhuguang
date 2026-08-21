@@ -256,7 +256,8 @@
       "1": { "name": "loaded_frame_count" },
       "2": { "name": "loaded_width" },
       "3": { "name": "loaded_height" },
-      "4": { "name": "filename" }
+      "4": { "name": "filename" },
+      "5": { "name": "skip_frames" }
     }
   },
   "XiaozhuguangVideoCombine": {

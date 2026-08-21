@@ -715,6 +715,36 @@ ComfyUI-xiaozhuguang/
 
 ---
 
+### V12.5.0 (2026-08-21)
+
+**🎬 视频加载器：预览视频自动重置为源视频 + 跳过帧数输出**
+
+- **问题现象**：工作流执行后，「预览视频」（执行后转码的临时文件）会覆盖播放器，导致播放条总帧数变为**处理后的帧数**（= 加载上限，而非原视频总帧数），此时拖动「跳过帧数/加载上限」控件，总长度不会恢复，用户看不到原视频后面的帧
+- **预览视频自动重置**：新增 `_isPreviewLoaded` 标志 + `_resetToSourceVideo()`；`_syncLoadRange`（跳过帧/加载上限变动时）、下拉切视频、拖入上传三个入口都会触发重置，重新 `player.load(原视频URL)`，总帧数恢复原视频全长，已有 `syncCustomSize()` / `setLoadRange` 机制自动应用当前渲染参数
+- **播放头保护**：重置前按 fps 保存当前帧号，重置加载完成后 `clamp(skip, savedFrame, end-1)` 回放到加载范围内对应帧，不会跳回 0；`requestAnimationFrame` 延迟一帧执行 load，避免数字输入框拖动后 pointerup 与重渲染冲突导致意外进入编辑模式
+- **视频信息读取节点新增第 6 输出「跳过帧数」**：`RETURN_TYPES` 扩展 `(FLOAT,INT,INT,INT,STRING,INT)`，第 6 口 `skip_frames` 从视频加载器写入的 `info.skip_frames` 读取（旧版加载器无此字段回退 0，`int()` 防御异常），方便下游节点精确对齐到「实际加载的第一帧」而非原视频第 0 帧
+- **中英双语翻译同步**：`locales/en/nodeDefs.json` + `locales/zh/nodeDefs.json` 为 `XiaozhuguangVideoInfoReader` 新增 `skip_frames / 跳过帧数` 第 5 输出口翻译（与 RETURN_NAMES index 5 一一对应）
+- **冗余日志清理**：删除 `xzg_video_loader.py` 预览视频生成成功后的 `print` 调试行，减少 stdout 刷屏
+
+**🔲 小珠光布尔：节点可自由拖拽大小 + 按钮等比自适应（参照小珠光选择器布局算法）**
+
+- **节点自由缩放**：`this.resizable = true` + `this.flags.resizable = true`；`onResize` 强制最小尺寸 `宽 120 / 高 58`（与选择器一行底线一致）；设置面板「应用」不再强行改回固定尺寸，仅兜底最小尺寸
+- **布局算法重写 `getButtonRects(y, W, settings, availableH)`**：左右各 **6px 边距** → `availableW = W-12`；顶部 4px / 底部 8px；`availableH > 自然 btnH` 时按钮等比放大填满，不足时缩小避免溢出；按钮间比例关系（`settings.widths` / `settings.btnWidth` 决定）始终保持不变
+- **宽度自适应**：节点够宽时按可用内容区比例放大两按钮（同一 scale 保持比例），不够宽时保持自然宽度不压缩（与选择器「宽度自适应」一致）
+- **默认字体默认白**：`DEFAULT_SETTINGS.fontColor` 从 `"#aaa"` 改为 `"#FFFFFF"`，与选择器默认字体色一致
+- **字体垂直居中精确化**：`ctx.textBaseline = 'alphabetic'` + `ctx.measureText` 取 `actualBoundingBoxAscent/Descent` 计算基线偏移 `(ascent-descent)/2`，大字体下不再偏上；字体大小 `clamp(8, settings.fontSize, r.h*0.85)` 防止超出按钮
+- **点击命中迁移到 `node.onMouseDown`**：原 `widget.mouse` 命中受 `computeSize` 返回高度限制（返回极小值后点击不到），改为 `onMouseDown` 覆盖整个节点区域；`widget.mouse` 仅放行事件；`widget.computeSize` 返回 `[width, 4]` 不干预节点高度，完全交给用户自由拖动
+- **初始尺寸用「自然宽度」计算**：`naturalW = falseW + gap + trueW + 12`，保证新建节点按钮不被拉得过宽，符合默认视觉
+- **最小高度底线 58**（一行），与小珠光选择器一致
+
+**🗂 其他**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.4.0` 升至 `12.5.0`
+- 语法校验：`xzg_boolean_selector.js`、`xzg_video_loader.js` 通过 `node --check`；`xzg_video_info_reader.py`、`xzg_video_loader.py`、`__init__.py` 通过 Python AST 解析
+- Release：GitHub Release v12.5.0 + publish_action.yml `push tags v*` 触发 → Comfy Registry 新版本 12.5.0 发布
+
+---
+
 ### V12.4.0 (2026-08-21)
 
 **🔀 小珠光编号切换：惰性求值（参考 easy-use anythingIndexSwitch）**

@@ -256,7 +256,8 @@
       "1": { "name": "帧数" },
       "2": { "name": "宽度" },
       "3": { "name": "高度" },
-      "4": { "name": "名称" }
+      "4": { "name": "名称" },
+      "5": { "name": "跳过帧数" }
     }
   },
   "XiaozhuguangVideoCombine": {

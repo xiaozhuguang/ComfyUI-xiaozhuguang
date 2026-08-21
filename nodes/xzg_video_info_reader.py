@@ -27,13 +27,14 @@ class XiaozhuguangVideoInfoReader:
 
     CATEGORY = "xiaozhuguang"
 
-    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "STRING")
+    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "STRING", "INT")
     RETURN_NAMES = (
         "帧率",
         "帧数",
         "宽度",
         "高度",
         "名称",
+        "跳过帧数",
     )
     FUNCTION = "get_video_info"
 
@@ -46,8 +47,15 @@ class XiaozhuguangVideoInfoReader:
         for key in keys:
             loaded_info.append(info.get(f"loaded_{key}", 0))
 
+        # 跳过帧数：加载器记录的已跳过的帧数（兼容旧版加载器未记录时回退 0）
+        skip_frames = info.get("skip_frames", 0)
+        try:
+            skip_frames = int(skip_frames)
+        except (TypeError, ValueError):
+            skip_frames = 0
+
         filename = str(info.get("filename", ""))
         # 去掉文件扩展名
         filename = os.path.splitext(filename)[0]
 
-        return (*loaded_info, filename)
+        return (*loaded_info, filename, skip_frames)
