@@ -22,6 +22,25 @@ const chainCallback = (object, property, callback) => {
     }
 }
 
+// ============================================================================
+// 会话级点缓存：切换工作流 / 更换图片均不丢失；仅刷新浏览器（模块重载）后清空
+// key: `${workflowKey}::${nodeId}`，value 与 info widget 的 JSON 同构
+// ============================================================================
+const POINTS_SESSION_CACHE = new Map();
+
+const getSessionWfKey = () => {
+    try {
+        const wfStore = app?.extensionManager?.workflow;
+        if (wfStore?.workflows && Array.isArray(wfStore.workflows) && typeof wfStore.isActive === 'function') {
+            const wf = wfStore.workflows.find(w => wfStore.isActive(w));
+            if (wf) return String(wf.path || wf.name || wf.id || "");
+        }
+    } catch (e) {}
+    return "";
+};
+
+const sessionCacheKey = (node) => `${getSessionWfKey()}::${node?.id}`;
+
 app.registerExtension({
     name: "Comfy.Xiaozhuguang.PointsEditor",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -116,7 +135,8 @@ app.registerExtension({
                 const ctx = canvas.getContext("2d");
 
                 const tracker = document.createElement("div");
-                tracker.style.cssText = "flex: 0 0 32px; width: 100%; background: #222; display: none; align-items: center; justify-content: space-between; padding: 0 8px; box-sizing: border-box; border-top: 1px solid #333; gap: 2px;";
+                // 始终占位 32px：多帧/单帧布局统一，避免切换时画布尺寸跳变
+                tracker.style.cssText = "flex: 0 0 32px; width: 100%; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; box-sizing: border-box; border-top: 1px solid #333; gap: 2px;";
 
                 const frameInfo = document.createElement("div");
                 frameInfo.style.cssText = "color: #ccc; font-family: monospace; font-size: 12px; min-width: 40px; text-align: center; user-select: none;";
@@ -128,7 +148,8 @@ app.registerExtension({
                 slider.max = "0";
                 slider.value = "0";
                 slider.step = "1";
-                slider.style.cssText = "flex: 1; height: 4px; cursor: pointer; accent-color: #e8c547;";
+                slider.disabled = true;
+                slider.style.cssText = "flex: 1; height: 4px; cursor: default; accent-color: #e8c547; opacity: 0.3; pointer-events: none;";
 
                 tracker.appendChild(frameInfo);
                 tracker.appendChild(slider);
@@ -188,25 +209,40 @@ app.registerExtension({
                     }, 50);
                 }
                 setTimeout(_ => {
-                    if (infoWidget && infoWidget.value) {
-                        try {
-                            const info = JSON.parse(infoWidget.value);
-                            if (Array.isArray(info.positive_coords)) {
-                                this.canvasWidget.positivePoints = info.positive_coords;
-                            }
-                            if (Array.isArray(info.negative_coords)) {
-                                this.canvasWidget.negativePoints = info.negative_coords;
-                            }
-                            if (Array.isArray(info.bbox)) {
-                                this.canvasWidget.bboxes = info.bbox;
-                            }
-                            if (typeof info.frame_index === 'number' && this.canvasWidget.slider) {
-                                this.canvasWidget.frameIndex = info.frame_index;
-                                this.canvasWidget.slider.value = info.frame_index;
-                                this.canvasWidget.frameInfo.innerText = `${info.frame_index + 1}/${this.canvasWidget.previewFrames.length}`;
-                            }
-                            this.redrawCanvas();
-                        } catch (e) {}
+                    // 恢复优先级：会话缓存（切工作流回来 / 撤销删除） > info widget（工作流文件保存的点）
+                    let data = null;
+                    try {
+                        const cached = POINTS_SESSION_CACHE.get(sessionCacheKey(this));
+                        if (cached) data = cached;
+                    } catch (e) {}
+                    if (!data && infoWidget && infoWidget.value) {
+                        try { data = JSON.parse(infoWidget.value); } catch (e) { data = null; }
+                    }
+                    if (data) {
+                        if (Array.isArray(data.positive_coords)) {
+                            this.canvasWidget.positivePoints = data.positive_coords.map(p => ({ x: p.x, y: p.y }));
+                        }
+                        if (Array.isArray(data.negative_coords)) {
+                            this.canvasWidget.negativePoints = data.negative_coords.map(p => ({ x: p.x, y: p.y }));
+                        }
+                        if (Array.isArray(data.bbox)) {
+                            this.canvasWidget.bboxes = data.bbox.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h }));
+                        }
+                        if (typeof data.frame_index === 'number' && this.canvasWidget.slider) {
+                            this.canvasWidget.frameIndex = data.frame_index;
+                            this.canvasWidget.slider.value = data.frame_index;
+                            this.canvasWidget.frameInfo.innerText = `${data.frame_index + 1}/${Math.max(1, this.canvasWidget.previewFrames.length)}`;
+                        }
+                        // 同步回 info widget：未执行前保存工作流也能带上点数据
+                        if (infoWidget) {
+                            infoWidget.value = JSON.stringify({
+                                positive_coords: this.canvasWidget.positivePoints,
+                                negative_coords: this.canvasWidget.negativePoints,
+                                bbox: this.canvasWidget.bboxes,
+                                frame_index: this.canvasWidget.frameIndex
+                            });
+                        }
+                        this.redrawCanvas();
                     }
                 }, 1)
 
@@ -231,26 +267,28 @@ app.registerExtension({
 
                 chainCallback(this, "onExecuted", function(message) {
                     if (message.preview && message.preview[0]) {
-                        const { preview_str, is_init } = message.preview[0];
+                        const { preview_str } = message.preview[0];
                         const previewData = JSON.parse(preview_str);
                         this.canvasWidget.previewFrames = previewData;
-                        if (is_init) {
-                            if (this.canvasWidget.frameIndex >= previewData.length - 1) {
-                                this.canvasWidget.frameIndex = 0;
-                                this.restoreState({ positivePoints: [], negativePoints: [], bboxes: [] });
-                                this.updateWidgetValue();
-                                this.canvasWidget.history = [];
-                                this.canvasWidget.historyIndex = -1;
-                                this.updateUndoRedoUI();
-                            }
-                        }
+                        // 不再因图像变化（is_init）重置点：换图/重跑仅更新预览，点与历史保留
                         if (previewData.length > 1) {
-                            this.canvasWidget.tracker.style.display = "flex";
+                            // 多帧：启用滑条
+                            slider.disabled = false;
+                            slider.style.opacity = "1";
+                            slider.style.pointerEvents = "";
+                            slider.style.cursor = "pointer";
                             slider.max = previewData.length - 1;
                             slider.value = this.canvasWidget.frameIndex;
                             this.canvasWidget.frameInfo.innerText = `${this.canvasWidget.frameIndex + 1}/${previewData.length}`;
                         } else {
-                            this.canvasWidget.tracker.style.display = "none";
+                            // 单帧：tracker 保持占位，禁用滑条，布局与多帧一致
+                            slider.disabled = true;
+                            slider.style.opacity = "0.3";
+                            slider.style.pointerEvents = "none";
+                            slider.style.cursor = "default";
+                            slider.max = 0;
+                            slider.value = 0;
+                            this.canvasWidget.frameInfo.innerText = previewData.length === 1 ? "1/1" : "0/0";
                         }
 
                         const img = new Image();
@@ -263,8 +301,11 @@ app.registerExtension({
 
                         if (previewData?.length > 0) {
                             if (this.canvasWidget.frameIndex >= previewData.length) {
-                                this.canvasWidget.frameIndex = 0;
-                                slider.value = 0;
+                                // 新预览帧数变少：钳制到最后一帧（保持查看位置，不重置点）
+                                this.canvasWidget.frameIndex = previewData.length - 1;
+                                slider.value = this.canvasWidget.frameIndex;
+                                this.canvasWidget.frameInfo.innerText = `${this.canvasWidget.frameIndex + 1}/${previewData.length}`;
+                                this.updateWidgetValue();
                             }
                             img.src = getRealURL(previewData[this.canvasWidget.frameIndex]);
                         }
@@ -346,6 +387,15 @@ app.registerExtension({
                             frame_index: frameIndex
                         }) : '';
                     }
+                    // 写入会话缓存（深拷贝）：换图 / 切工作流后不丢失，仅刷新浏览器清空
+                    try {
+                        POINTS_SESSION_CACHE.set(sessionCacheKey(this), {
+                            positive_coords: positivePoints.map(p => ({ x: p.x, y: p.y })),
+                            negative_coords: negativePoints.map(p => ({ x: p.x, y: p.y })),
+                            bbox: bboxes.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),
+                            frame_index: frameIndex
+                        });
+                    } catch (e) {}
                 }
 
                 // 坐标转换：屏幕像素 → 图像坐标（考虑 object-fit:contain 的留白）

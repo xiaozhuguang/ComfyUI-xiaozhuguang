@@ -3781,6 +3781,9 @@ class Xiaozhuguang {
             <div class="nf-cat-menu-item" data-action="rename" style="padding:8px 16px;cursor:pointer;color:#ddd;font-size:13px;display:flex;align-items:center;gap:8px;transition:background:0.15s;">
                 <span style="color:#2196F3;">✏️</span> 重命名
             </div>
+            <div class="nf-cat-menu-item" data-action="custom-usage" style="padding:8px 16px;cursor:pointer;color:#ddd;font-size:13px;display:flex;align-items:center;gap:8px;transition:background:0.15s;">
+                <span style="color:#9C27B0;">🔢</span> ${xzgT('自定义使用频率','Custom Usage Count')}
+            </div>
             <div class="nf-cat-menu-item" data-action="clear" style="padding:8px 16px;cursor:pointer;color:#ddd;font-size:13px;display:flex;align-items:center;gap:8px;transition:background:0.15s;">
                 <span style="color:#FF5722;">🗑</span> 清空使用频率${useCount > 0 ? ` (${useCount}次)` : ''}
             </div>
@@ -3800,6 +3803,8 @@ class Xiaozhuguang {
                     this.showRenameNodeDialog(nodeType);
                 } else if (el.dataset.action === "move") {
                     this.showMoveNodeCategoryDialog(nodeType);
+                } else if (el.dataset.action === "custom-usage") {
+                    this.customNodeUsage(nodeType);
                 } else if (el.dataset.action === "clear") {
                     if (useCount > 0 && confirm(xzgT('确定清空','Clear ') + `"${nodeName}"` + xzgT('的使用频率记录吗？',' usage frequency records?'))){
                         const n = this.favorites.nodes.find(x => x.type === nodeType);
@@ -3831,6 +3836,96 @@ class Xiaozhuguang {
             document.addEventListener("click", closeMenu);
             document.addEventListener("contextmenu", closeMenu);
         });
+    }
+
+    /** 自定义输入对话框，替代浏览器原生 prompt（与工作流管理一致的交互）。返回输入字符串；取消 / ESC / 点遮罩返回 null */
+    showNodeInputDialog(title, defaultValue = "", opts = {}) {
+        return new Promise((resolve) => {
+            const escapeAttr = (v) => String(v == null ? "" : v)
+                .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+                .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const dialog = document.createElement("div");
+            dialog.className = "nf-dialog-overlay";
+            dialog.innerHTML = `
+                <div class="nf-dialog">
+                    <div class="nf-dialog-title">${escapeAttr(title)}</div>
+                    <div class="nf-dialog-body">
+                        <input type="${opts.password ? "password" : "text"}" id="nf-custom-input"
+                            value="${escapeAttr(defaultValue)}" placeholder="${escapeAttr(opts.placeholder || "")}"
+                            style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #555;border-radius:4px;color:#ddd;margin-bottom:10px;box-sizing:border-box;" />
+                    </div>
+                    <div class="nf-dialog-footer">
+                        <button class="nf-btn nf-btn-cancel" id="nf-custom-cancel">${xzgT('取消','Cancel')}</button>
+                        <button class="nf-btn nf-btn-ok" id="nf-custom-ok">${xzgT('确认','Confirm')}</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+
+            const input = dialog.querySelector("#nf-custom-input");
+
+            const finish = (val) => {
+                document.removeEventListener("keydown", onKey, true);
+                dialog.remove();
+                resolve(val);
+            };
+            const onKey = (e) => {
+                if (e.key === "Escape") {
+                    e.preventDefault(); e.stopPropagation();
+                    finish(null);
+                } else if (e.key === "Enter") {
+                    e.preventDefault(); e.stopPropagation();
+                    finish(input.value);
+                }
+            };
+            document.addEventListener("keydown", onKey, true);
+
+            dialog.querySelector("#nf-custom-cancel").addEventListener("click", () => finish(null));
+            dialog.querySelector("#nf-custom-ok").addEventListener("click", () => finish(input.value));
+            dialog.addEventListener("mousedown", (e) => { if (e.target === dialog) finish(null); });
+
+            // 自动聚焦并全选，方便直接修改原值
+            input.focus();
+            input.select();
+        });
+    }
+
+    /** 自定义使用频率：密码验证后手动输入数值设置使用次数（不影响最近使用时间；设为 0 时一并清空）— 与工作流管理一致 */
+    async customNodeUsage(nodeType) {
+        const node = this.favorites.nodes.find(n => n.type === nodeType);
+        if (!node) return;
+        const displayName = node.displayName || node.type;
+
+        // 第一步：密码验证
+        const pwd = await this.showNodeInputDialog(
+            xzgT('自定义使用频率 - 请输入密码', 'Custom Usage Count - Enter Password'),
+            "",
+            { password: true, placeholder: "******" }
+        );
+        if (pwd == null) return;
+        if (pwd !== "xiaozhuguang") {
+            alert(xzgT('密码错误，无法自定义使用频率。', 'Wrong password, cannot customize usage frequency.'));
+            return;
+        }
+
+        // 第二步：输入使用次数
+        const val = await this.showNodeInputDialog(
+            xzgT(`设置「${displayName}」的使用频率（使用次数）`, `Set usage frequency (use count) for "${displayName}"`),
+            String(node.useCount || 0),
+            { placeholder: xzgT('非负整数', 'Non-negative integer') }
+        );
+        if (val == null) return;
+
+        const n = parseInt(String(val).trim(), 10);
+        if (!Number.isFinite(n) || n < 0) {
+            alert(xzgT('请输入非负整数。', 'Please enter a non-negative integer.'));
+            return;
+        }
+
+        node.useCount = n;
+        if (n === 0) node.lastUsed = 0;
+        this.saveFavorites();
+        this.renderFavorites();
     }
 
     // 语言切换时刷新面板内一次性构建的静态文案

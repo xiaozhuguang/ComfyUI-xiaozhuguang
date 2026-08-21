@@ -809,13 +809,14 @@ class XiaozhuguangNumberSwitch:
     小珠光编号切换
     通过选择器在多个任意类型数据之间切换输出
     选择器 0-49 对应输入口 值0~值49
+    值输入为惰性输入：仅计算被选中编号的上游工作流，其余编号的上游不执行
     """
 
     @classmethod
     def INPUT_TYPES(cls):
         optional = {}
         for i in range(50):
-            optional[f"value{i}"] = ("*", {})
+            optional[f"value{i}"] = ("*", {"lazy": True})
         return {
             "required": {
                 "select": ("INT", {"default": 0, "min": 0, "max": 49, "step": 1, "display": "number", "forceInput": True}),
@@ -828,8 +829,25 @@ class XiaozhuguangNumberSwitch:
     FUNCTION = "switch"
     CATEGORY = "xiaozhuguang"
 
+    def check_lazy_status(self, select, **kwargs):
+        # 参考 easy-use anythingIndexSwitch 的惰性实现：
+        # 连接但尚未求值的惰性输入，此时传入 None，返回 [key] 请求引擎只求值该编号的上游支路
+        # 未连接的输入不在 kwargs 中，不能请求，否则执行引擎会报 NodeInputError
+        # 已求值但值本身为 None 时引擎会过滤掉该请求（不会死循环），直接进入 switch
+        try:
+            select = min(max(int(select), 0), 49)
+        except (TypeError, ValueError):
+            return None
+        key = f"value{select}"
+        if key in kwargs and kwargs[key] is None:
+            return [key]
+        return None
+
     def switch(self, select, **kwargs):
-        select = min(max(select, 0), 49)
+        try:
+            select = min(max(int(select), 0), 49)
+        except (TypeError, ValueError):
+            select = 0
         val = kwargs.get(f"value{select}")
         return (val,)
 
