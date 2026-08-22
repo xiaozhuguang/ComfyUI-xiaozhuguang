@@ -193,6 +193,10 @@ app.registerExtension({
                     previewFrames: [],
                     clarity: 1.0,           // 修复 8: 前端知晓清晰度
                     MAX_HISTORY: 50,        // 修复 5: 限制历史数量
+                    // 性能优化：原图渲染的离屏缓存 + rAF 合并标记
+                    _baseCache: (() => { const c = document.createElement("canvas"); c.width = 1; c.height = 1; return c; })(),
+                    _baseKey: null,          // { image, w, h }：决定是否重建原图缓存
+                    _redrawScheduled: false,
                 };
 
                 const widget = this.addDOMWidget("canvas", "points_editor", container);
@@ -256,8 +260,12 @@ app.registerExtension({
                 widget.computeSize = (width) => [width, -1];
 
                 // 同步更新 container 高度——根据实际节点尺寸计算
+                // 性能优化：带守卫，值没变就不写样式，避免 onDrawForeground 每帧强制 reflow
+                let lastWidgetH = -1;
                 const syncContainerHeight = (size) => {
                     const h = calcWidgetHeight(size[1]);
+                    if (h === lastWidgetH) return;
+                    lastWidgetH = h;
                     container.style.height = h + 'px';
                 };
                 chainCallback(this, "onResize", syncContainerHeight);
@@ -397,6 +405,17 @@ app.registerExtension({
                         });
                     } catch (e) {}
                 }
+
+                // 性能优化：用 requestAnimationFrame 合并 mousemove 期间的多次重绘，一帧只画一次
+                this.scheduleRedraw = () => {
+                    const w = this.canvasWidget;
+                    if (w._redrawScheduled) return;
+                    w._redrawScheduled = true;
+                    requestAnimationFrame(() => {
+                        w._redrawScheduled = false;
+                        this.redrawCanvas();
+                    });
+                };
 
                 // 坐标转换：屏幕像素 → 图像坐标（考虑 object-fit:contain 的留白）
                 const getCoords = (e) => {
@@ -550,7 +569,7 @@ app.registerExtension({
                         }
                         w.movingItem.startX = coords.x;
                         w.movingItem.startY = coords.y;
-                        this.redrawCanvas();
+                        this.scheduleRedraw();
                         return;
                     }
 
@@ -562,7 +581,7 @@ app.registerExtension({
                     if (mode === 'box' && isDrawingBox && currentBox) {
                         currentBox.w = coords.x - currentBox.x;
                         currentBox.h = coords.y - currentBox.y;
-                        this.redrawCanvas();
+                        this.scheduleRedraw();
                     }
                 });
 
@@ -679,17 +698,12 @@ app.registerExtension({
             });
 
             nodeType.prototype.redrawCanvas = function() {
-                const { canvas, ctx, image, positivePoints, negativePoints, bboxes, currentBox, mode } = this.canvasWidget;
+                const { canvas, ctx, image, positivePoints, negativePoints, bboxes, currentBox, mode, _baseCache, _baseKey } = this.canvasWidget;
 
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                let pointSize = Math.max(2, Math.min(canvas.width, canvas.height) * 0.008);
-
-                if (image) {
-                    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-                } else {
-                    ctx.fillStyle = "transparent";
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                // 性能优化：无图像时画占位提示（文本绘制开销小，直接画一次即可）
+                if (!image) {
+                    if (this.canvasWidget._baseKey) this.canvasWidget._baseKey = null;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
                     ctx.fillStyle = "#ddd";
                     ctx.font = "34px sans-serif";
                     ctx.textAlign = "center";
@@ -706,6 +720,24 @@ app.registerExtension({
                     });
                     return;
                 }
+
+                // 性能优化：原图只在换图/换帧/改尺寸时才画进离屏 _baseCache
+                const keyChanged = !_baseKey || _baseKey.image !== image
+                    || _baseKey.w !== canvas.width || _baseKey.h !== canvas.height;
+                if (keyChanged) {
+                    _baseCache.width = canvas.width;
+                    _baseCache.height = canvas.height;
+                    const bctx = _baseCache.getContext("2d");
+                    bctx.clearRect(0, 0, canvas.width, canvas.height);
+                    bctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                    this.canvasWidget._baseKey = { image, w: canvas.width, h: canvas.height };
+                }
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                // 交互时只做一次快速 blit（离屏同尺寸，GPU 加速），无需再解码/缩放原图
+                ctx.drawImage(_baseCache, 0, 0);
+
+                let pointSize = Math.max(2, Math.min(canvas.width, canvas.height) * 0.008);
 
                 // 绘制边界框
                 ctx.lineWidth = 2;

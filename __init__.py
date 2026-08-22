@@ -537,7 +537,8 @@ class XiaozhuguangPointsEditor:
                 "info": ("STRING", {"default": "", "multiline": True}),
             },
             "optional": {
-                "preview_clarity": ("FLOAT", {"default": 1.0, "min": 0.05, "max": 1.0, "step": 0.05}),
+                # 预览像素量（单位：万像素）：100 = 100万像素(1MP)。原图总像素超过该值才等比缩放；0 = 不缩放，用原始尺寸
+                "preview_pixels": ("INT", {"default": 100, "min": 0, "max": 10000, "step": 1}),
             },
         }
 
@@ -547,14 +548,19 @@ class XiaozhuguangPointsEditor:
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
 
-    def execute(self, image, info, preview_clarity=1.0):
+    def execute(self, image, info, preview_pixels=100):
         positive_coords = None
         negative_coords = None
         bboxes_str = None
         frame_index = 0
 
-        needs_scaling = preview_clarity > 0 and preview_clarity < 1.0
-        scale_factor = 1.0 / preview_clarity if needs_scaling else 1.0
+        # 像素量语义：单位万像素，100 = 100万像素(1MP)。原图总像素超过 preview_pixels*10000 才等比缩至该像素量，否则保留原图（0 = 永不缩放）
+        _, height, width, _ = image.shape
+        orig_pixels = width * height
+        target_pixels = preview_pixels * 10000
+        needs_scaling = preview_pixels > 0 and orig_pixels > target_pixels
+        scale = ((target_pixels / orig_pixels) ** 0.5) if needs_scaling else 1.0
+        scale_factor = 1.0 / scale   # 预览坐标 → 原图坐标 的反向放大倍数
 
         if info != '':
             try:
@@ -598,15 +604,14 @@ class XiaozhuguangPointsEditor:
 
         preview_images = image
         if needs_scaling:
-            _, height, width, _ = image.shape
-            new_height = int(height * preview_clarity)
-            new_width = int(width * preview_clarity)
+            new_height = int(height * scale)
+            new_width = int(width * scale)
             pil_images = tensor_to_pil(image)
             resized_pil = [img.resize((new_width, new_height), Image.LANCZOS) for img in pil_images]
             preview_images = torch.from_numpy(np.stack([np.array(img).astype(np.float32) / 255.0 for img in resized_pil]))
 
         images_hash = hashlib.md5(preview_images.cpu().numpy().tobytes()).hexdigest()
-        rescale_hash = f"{images_hash}_{preview_clarity}"
+        rescale_hash = f"{images_hash}_{preview_pixels}"
 
         if 'last_images_hash' in self.state and self.state['last_images_hash'] == rescale_hash:
             preview_str = self.state['cached_preview']

@@ -7,6 +7,9 @@
  * 两套系统各自独立：
  *   - 视频加载器节点：只负责加载视频给下游
  *   - 快剪编辑器：独立全屏弹窗，渲染产物保存到 input/ 或 output/
+ *
+ * 是否在右上角功能区显示「快剪」由 ComfyUI 左下角「设置」控制
+ * （设置项：小珠光 · 右上角功能区显示「快剪」）。
  */
 import { app } from "../../scripts/app.js";
 import { XiaozhuguangVideoEditor } from "./xzg_video_editor.js";
@@ -14,7 +17,11 @@ import { XiaozhuguangVideoEditor } from "./xzg_video_editor.js";
 const BTN_ID = "xzg-quick-edit-btn";
 const GOLD = "#dcc85b";
 
+// 小珠光插件设置：右上角功能区是否显示「快剪」
+const SETTING_ID = "Xiaozhuguang.ShowQuickCutInTopMenu";
+
 let _editorInstance = null;
+let _btn = null;
 
 function findMenuContainer() {
     if (app.menu?.element) return app.menu.element;
@@ -77,12 +84,50 @@ function openEditor(options = {}) {
 // 暴露到 window 供视频加载器等外部调用
 window._xzgOpenVideoEditor = openEditor;
 
+// ── 小珠光设置：右上角功能区是否显示「快剪」 ──
+function getShowSetting() {
+    try {
+        const v = app.ui?.settings?.getSettingValue?.(SETTING_ID, true);
+        return v !== false;
+    } catch (e) {
+        return true;
+    }
+}
+
+function applyVisibility() {
+    if (!_btn) return;
+    _btn.style.display = getShowSetting() ? "" : "none";
+}
+
+function registerSetting() {
+    try {
+        const settings = app.ui?.settings;
+        if (!settings?.addSetting) {
+            console.warn("[小珠光] 当前前端不支持 app.ui.settings.addSetting，跳过快剪显示设置");
+            return;
+        }
+        settings.addSetting({
+            id: SETTING_ID,
+            name: "[小珠光] 右上角功能区显示「快剪」",
+            defaultValue: true,
+            type: "boolean",
+            onChange: () => applyVisibility(),
+        });
+    } catch (e) {
+        console.warn("[小珠光] 注册快剪显示设置失败:", e);
+    }
+}
+
 function tryInject(retries) {
     const container = findMenuContainer();
     if (container) {
-        if (document.getElementById(BTN_ID)) return; // 已注入
-        const btn = buildButton();
-        container.appendChild(btn);
+        if (document.getElementById(BTN_ID)) {
+            if (_btn) applyVisibility();
+            return;
+        }
+        _btn = buildButton();
+        container.appendChild(_btn);
+        applyVisibility();
         return;
     }
     if (retries < 20) {
@@ -92,6 +137,7 @@ function tryInject(retries) {
 
 function waitForApp() {
     if (app.canvas) {
+        registerSetting();
         tryInject(0);
         return;
     }

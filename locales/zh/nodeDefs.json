@@ -4,7 +4,7 @@
     "inputs": {
       "image": { "name": "图像" },
       "info": { "name": "信息" },
-      "preview_clarity": { "name": "预览清晰度" }
+      "preview_pixels": { "name": "预览像素量(万)" }
     },
     "outputs": {
       "0": { "name": "正面点坐标" },

@@ -4,7 +4,7 @@
     "inputs": {
       "image": { "name": "image" },
       "info": { "name": "info" },
-      "preview_clarity": { "name": "preview clarity" }
+      "preview_pixels": { "name": "preview pixels (10k)" }
     },
     "outputs": {
       "0": { "name": "positive coords" },
