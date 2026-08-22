@@ -443,5 +443,20 @@
     "outputs": {
       "0": { "name": "种子" }
     }
+  },
+  "XiaozhuguangBatchCount": {
+    "display_name": "小珠光批次计数",
+    "inputs": {
+      "批次": { "name": "批次" }
+    },
+    "outputs": {
+      "0": { "name": "整数" }
+    }
+  },
+  "XiaozhuguangBigDisplay": {
+    "display_name": "小珠光大字展示",
+    "inputs": {
+      "input": { "name": "输入" }
+    }
   }
 }

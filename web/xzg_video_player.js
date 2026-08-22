@@ -263,8 +263,7 @@ export class XiaozhuguangVideoPlayer {
 
         this._bottomBar = document.createElement("div");
         this._bottomBar.style.cssText =
-            "position:absolute;left:-1px;right:-1px;bottom:-1px;padding:0 0 4px;min-height:60px;" +
-            "background:linear-gradient(transparent 0%,rgba(0,0,0,0.5) 40%,rgba(0,0,0,0.9) 100%);" +
+            "position:absolute;left:-1px;right:-1px;bottom:-1px;padding:0 0 4px;" +
             "display:flex;flex-direction:column-reverse;pointer-events:auto;z-index:10;";
 
         // 时间显示行（紧贴播放条上方），左下角：时间码
@@ -294,7 +293,14 @@ export class XiaozhuguangVideoPlayer {
         // 播放条容器（离底部留空，避免贴近下边缘）
         this._progressContainer = document.createElement("div");
         this._progressContainer.style.cssText =
-            "margin-bottom:12px;pointer-events:auto;";
+            "margin-bottom:12px;position:relative;pointer-events:none;";
+
+        // 播放条阴影渐变层：绝对定位跟随播放条实际位置，上下各 5px，透明度 0-50-0
+        // pointer-events:none 纯视觉层，不影响底部拖动判定区
+        this._progressShade = document.createElement("div");
+        this._progressShade.style.cssText =
+            "position:absolute;left:-1px;right:-1px;pointer-events:none;" +
+            "background:linear-gradient(transparent 0%,rgba(0,0,0,0.5) 50%,transparent 100%);";
 
         // 暗色播放条轨道（红蓝区间外始终为暗色）
         this._progressBar = document.createElement("div");
@@ -402,6 +408,7 @@ export class XiaozhuguangVideoPlayer {
         this._progressBar.appendChild(this._blueFrameDisplay);
         this._progressBar.appendChild(this._progressFill);
         this._progressBar.appendChild(this._progressThumb);
+        this._progressContainer.appendChild(this._progressShade);
         this._progressContainer.appendChild(this._progressBar);
         // 标记条可拖拽
         this._loadRangeStart.addEventListener("pointerdown", this._onMarkerDown);
@@ -501,6 +508,11 @@ export class XiaozhuguangVideoPlayer {
             this._progressBar.style.height = barH + "px";
             const marginTop = Math.round((hitH - barH) / 2);
             this._progressBar.style.marginTop = marginTop + "px";
+            // 阴影渐变层跟随播放条实际位置：上下各 5px，保证阴影中心与播放条精确对齐
+            if (this._progressShade) {
+                this._progressShade.style.top = (marginTop - 5) + "px";
+                this._progressShade.style.height = (barH + 10) + "px";
+            }
             // 帧刻度：每帧 1px 竖线
             this._updateFrameTicks();
             // 进度条宽度变化后，重新定位红蓝帧号标签（像素定位需跟随 resize）

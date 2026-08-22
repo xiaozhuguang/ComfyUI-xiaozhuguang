@@ -198,6 +198,8 @@ from .nodes.xzg_atr import XiaozhuguangATR
 from .nodes.xzg_face_align import XiaozhuguangFaceAlign
 from .nodes.xzg_image_split_merge import XiaozhuguangImageSplitter, XiaozhuguangImageMerger
 from .nodes.xzg_seed import XiaozhuguangSeed
+from .nodes.xzg_batch_count import XiaozhuguangBatchCount
+from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -937,6 +939,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageSplitter": XiaozhuguangImageSplitter,
     "XiaozhuguangImageMerger": XiaozhuguangImageMerger,
     "XiaozhuguangSeed": XiaozhuguangSeed,
+    "XiaozhuguangBatchCount": XiaozhuguangBatchCount,
+    "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -976,6 +980,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageSplitter": "小珠光 IS (图像分割)",
     "XiaozhuguangImageMerger": "小珠光 IM (图像合并)",
     "XiaozhuguangSeed": "小珠光随机种子",
+    "XiaozhuguangBatchCount": "小珠光批次计数",
+    "XiaozhuguangBigDisplay": "小珠光大字展示",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"

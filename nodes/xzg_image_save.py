@@ -6,6 +6,15 @@ from PIL import Image
 import folder_paths
 from nodes import PreviewImage
 
+
+class AnyType(str):
+    """万能类型：允许 MASK 直接接到 images 输入点（方案B），执行时内部识别。"""
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+
+ANY_TYPE = AnyType("*")
+
 # 用于懒编码：执行时仅存原始像素(uint8)，右键保存真实分辨率图时才临时编码 PNG
 REAL_STORE = {}
 
@@ -38,13 +47,14 @@ class XiaozhuguangImageSave(PreviewImage):
     JPG保存使用与预览相同的压缩参数；PNG保存为全分辨率无损。
     右键菜单可下载真实分辨率PNG(懒编码)或压缩JPG。
     文件名固定为 xzg-save_序号，用户可通过 output_path 自定义输出文件夹。
-    支持保存/预览模式切换：保存模式输出文件到output目录，预览模式仅显示不保存。"""
+    支持保存/预览模式切换：保存模式输出文件到output目录，预览模式仅显示不保存。
+    images 输入点兼容 IMAGE 与 MASK（方案B）：接到 MASK 时自动识别单通道并转黑白 3 通道预览、保存为 PNG。"""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE",),
+                "images": (ANY_TYPE,),
             },
             "optional": {
                 "output_path": ("STRING", {"default": "", "multiline": False}),
@@ -109,6 +119,17 @@ class XiaozhuguangImageSave(PreviewImage):
             save_format = "PNG"
 
         for i, tensor in enumerate(images):
+            # 方案B：MASK（单通道 0~1）直接接 images 输入点，运行时识别并转黑白 3 通道
+            is_mask = (tensor.dim() == 2) or (tensor.dim() == 3 and tensor.shape[2] == 1)
+            if is_mask:
+                if tensor.dim() == 2:
+                    rgb = tensor.unsqueeze(-1).expand(-1, -1, 3)
+                else:
+                    rgb = tensor.expand(-1, -1, 3)
+                tensor = rgb
+                if batch_has_alpha is False:
+                    save_format = "PNG"  # 黑白遮罩建议无损 PNG
+
             h, w = tensor.shape[0], tensor.shape[1]
             has_alpha = (tensor.dim() == 3 and tensor.shape[2] == 4)
 

@@ -443,5 +443,20 @@
     "outputs": {
       "0": { "name": "SEED" }
     }
+  },
+  "XiaozhuguangBatchCount": {
+    "display_name": "Batch Count",
+    "inputs": {
+      "批次": { "name": "batch" }
+    },
+    "outputs": {
+      "0": { "name": "int" }
+    }
+  },
+  "XiaozhuguangBigDisplay": {
+    "display_name": "Big Display",
+    "inputs": {
+      "input": { "name": "input" }
+    }
   }
 }
