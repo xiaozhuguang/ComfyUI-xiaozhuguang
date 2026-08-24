@@ -39,7 +39,10 @@ class XiaozhuguangBigDisplay:
     OUTPUT_NODE = True
     OUTPUT_IS_LIST = ()
     DESCRIPTION = "大字展示：任意输入（文本/数字/整数）转为大字显示在节点上，与 showAnything 同样支持任意类型。"
-    IS_CHANGED = True
+    # 注意：这里不能用 IS_CHANGED = True（布尔量会被当作函数调用而报 "bool object is not callable"）
+    @classmethod
+    def IS_CHANGED(cls):
+        return True
 
     def execute(self, input=None):
         values = []

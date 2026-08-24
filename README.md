@@ -656,6 +656,12 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.11.1 (2026-08-24)
+
+**🐛 修复**
+
+- **大字展示（`XiaozhuguangBigDisplay`）`IS_CHANGED` 调用报错**：原为类属性 `IS_CHANGED = True`（布尔量），ComfyUI 在生成缓存签名时会把 `IS_CHANGED` 当作函数调用，触发 `'bool' object is not callable`，并在控制台打印 `[WARNING] WARNING: 'bool' object is not callable`。已改为返回 `True` 的 `@classmethod`，语义不变（始终刷新大字展示），并消除该警告
+
 ### V12.11.0 (2026-08-24)
 
 **⚡ 性能优化：帧优化 / 帧提取 惰性化 + 合并视频 内容级去重**
