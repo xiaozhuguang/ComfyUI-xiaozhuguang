@@ -90,6 +90,7 @@ class VideoDecoderInstance {
         this._displayedFrame = -1;
         this._renderRafId = null;
         this._onFrame = null;  // 帧渲染回调
+        this._playbackIter = null;  // 当前活跃的播放迭代器（canvases()），活跃期间禁止随机寻址渲染
         this._hasAudio = false;
     }
 
@@ -238,7 +239,43 @@ class VideoDecoderInstance {
     createPlaybackIterator(startTime = 0) {
         const sink = this._previewSink || this._canvasSink;
         if (!sink) return null;
-        return sink.canvases(startTime);
+        // 关键：取消遗留的 renderFrame 随机寻址渲染任务（RAF），
+        // 否则该任务会在迭代器创建后触发 sink.getCanvas() 与 canvases() 迭代器争抢
+        // 同一 sink（mediabunny 同一时刻只允许一个操作），导致迭代器失效、播放冻结
+        this.cancelPendingRender();
+        try {
+            const iter = sink.canvases(startTime);
+            this._playbackIter = iter;
+            return iter;
+        } catch (e) {
+            console.warn("[小珠光] 创建播放迭代器失败:", e && e.message);
+            this._playbackIter = null;
+            return null;
+        }
+    }
+
+    /**
+     * 关闭播放迭代器并释放 sink（切换片段/停止播放时必须调用，
+     * 否则旧迭代器占用 sink，后续 getCanvas 随机寻址渲染全部失败）
+     */
+    stopPlaybackIterator() {
+        if (this._playbackIter) {
+            try {
+                const r = this._playbackIter.return?.();
+                if (r && typeof r.then === "function") r.catch(() => {});
+            } catch (_) {}
+            this._playbackIter = null;
+        }
+    }
+
+    /**
+     * 取消待执行的随机寻址渲染任务（仅取消尚未触发的 RAF）
+     */
+    cancelPendingRender() {
+        if (this._renderRafId) {
+            cancelAnimationFrame(this._renderRafId);
+            this._renderRafId = null;
+        }
     }
 
     /**
@@ -334,7 +371,12 @@ class VideoDecoderInstance {
         }
 
         // 异步解码目标帧
-        this._scheduleRender(targetCanvas);
+        // 播放迭代器活跃期间跳过随机寻址渲染：同一 sink 不允许并发操作，
+        // 此时会触发 getCanvas() 与 canvases() 迭代器争抢，导致迭代器失效、播放冻结
+        // （播放期间画面由迭代器帧驱动，无需随机寻址）
+        if (!this._playbackIter) {
+            this._scheduleRender(targetCanvas);
+        }
     }
 
     /**
@@ -400,9 +442,56 @@ class VideoDecoderInstance {
         ctx.drawImage(srcCanvas, 0, 0, pw, ph);
     }
 
+    // 合成取帧：真正等待指定帧解码完成并绘制到 targetCanvas，返回是否成功。
+    // 与 renderFrame（fire-and-forget 后台调度）不同：本方法在 Promise resolve 时
+    // targetCanvas 内容已就绪，供多轨合成层直接绘制，避免"视频叠加黑屏/空帧"。
+    // 成功时返回表也更新 _displayedFrame/_targetFrame 保持一致。
+    async readFrameCached(frameNum, targetCanvas) {
+        if (!this._track || this._frameCount <= 0) return false;
+        const f = Math.max(0, Math.min(Math.round(frameNum), this._frameCount - 1));
+        if (!targetCanvas) return false;
+        // 播放迭代器活跃期间禁止随机寻址解码：同一 sink 同一时刻只允许一个操作，
+        // getCanvas() 与 canvases() 迭代器并发会导致迭代器失效、播放冻结。
+        // 此时返回 false（合成层对同实例底层帧将跳过，不崩溃；不同实例不受影响）。
+        if (this._playbackIter) return false;
+        // 缓存命中：直接绘制
+        const cached = this._cache.get(f);
+        if (cached) {
+            this._drawToCanvas(cached, targetCanvas);
+            this._displayedFrame = f;
+            return true;
+        }
+        // 未命中：真实验码到离屏画布并加入缓存
+        try {
+            const time = f / this._fps;
+            const canvas = await this.getCanvas(time);
+            if (!canvas) return false;
+            // 关键：先更新 targetFrame 再加入缓存。FrameCache 满时按"距 targetFrame 最远"淘汰，
+            // 若不更新 targetFrame（恒为0），播放中帧号递增的新帧会因"离0最远"被立刻淘汰，
+            // 导致每次 seek 都重新硬解码 → V1 底层播放卡顿。
+            this._targetFrame = f;
+            this._cache.targetFrame = f;
+            this._cache.add(f, canvas);
+            this._drawToCanvas(canvas, targetCanvas);
+            this._displayedFrame = f;
+            return true;
+        } catch (_e) {
+            return false;
+        }
+    }
+
+    // 纯同步读缓存帧：供播放渲染循环零等待取帧（纯 Map 读，不触发解码，不触碰 sink）。
+    // 命中返回缓存 canvas（只读，调用方仅作 drawImage 源）；未命中返回 null。
+    getCachedFrameSync(frameNum) {
+        if (!this._track || this._frameCount <= 0) return null;
+        const f = Math.max(0, Math.min(Math.round(frameNum), this._frameCount - 1));
+        return this._cache.get(f) || null;
+    }
+
     clearCache() { this._cache.clear(); this._displayedFrame = -1; }
 
     close() {
+        this.stopPlaybackIterator();
         if (this._renderRafId) cancelAnimationFrame(this._renderRafId);
         this._renderRafId = null;
         this._cache.clear();
@@ -494,6 +583,10 @@ class DecoderPool {
     }
 }
 
-// 全局单例
+// 全局单例（共享池：快剪编辑器等使用，资源按 filename 复用）
 export const decoderPool = new DecoderPool();
+
+// 视频加载器专用池：与共享池隔离，避免同一视频被快剪编辑器与加载器同时持有时，
+// mediabunny sink 同一时刻只允许一个操作导致并发争抢（表现为个别 mp4 播放黑屏/无声音）。
+export const loaderDecoderPool = new DecoderPool();
 export { VideoDecoderInstance, FrameCache };

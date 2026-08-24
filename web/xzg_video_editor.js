@@ -27,6 +27,9 @@ const API_THUMBS_FULL = "/xzg_video_editor_extract_thumbs_full";
 const API_PROBE_AND_THUMBS = "/xzg_video_editor_probe_and_thumbs";
 const API_RENDER = "/xzg_video_editor_render";
 
+// 快剪界面导出分辨率/帧率持久化键：编辑器导出时写入，silentRender（加载器快速导出）读取保持一致
+const XZG_VE_RENDER_SETTINGS_KEY = "xzg_ve_render_settings";
+
 // mediabunny 库加载状态（需在 HTML 中先加载 /extensions/xiaozhuguang/lib/mediabunny.min.mjs）
 let _mbLoaded = false;
 async function _ensureMediabunny() {
@@ -393,6 +396,7 @@ export class XiaozhuguangVideoEditor {
         // E14: 已移除 _pendingScrubX（<video> 架构残留）
         // 播放预缓冲队列
         this._playbackIterator = null;
+        this._playbackDecoder = null;  // 真正持有活跃播放迭代器的解码器（≠_currentDecoder，切换片段时序不同）
         this._playbackIteratorDone = false;  // 迭代器是否已结束（无更多帧）
         this._playbackBuffer = [];
         this._playbackBufferSize = 10;
@@ -1340,6 +1344,16 @@ export class XiaozhuguangVideoEditor {
         this._compositeBusy = false; // 多轨合成渲染防抖
         this._compositeV1Cache = null;   // 播放合成时缓存的 V1 底层帧
         this._compositeV1Pending = false; // V1 帧是否在途渲染
+        // ── OpenCut 式统一时钟多轨渲染状态 ──
+        this._playClockStart = 0;    // 统一时钟：本次播放起始墙钟时间
+        this._playClockGt = 0;       // 统一时钟：本次播放起始全局时间
+        // VideoCache 式预解码（参照 OpenCut）：clipId -> 该视频层预解码状态 { decoder, iterClip, busy }。
+        // 预解码迭代器把「未来窗口」的帧写入 decoder 的 FrameCache，播放/平滑前进读缓存零成本；
+        // 拖动大跳/倒带时才暂停预置 → 精确解码一帧 → 从新位置重建预取。渲染读缓存与预取可并发。
+        this._vcache = new Map();
+        this._vcacheWindowSec = 1.2;   // 预解码窗口（秒，按 fps 折算帧数），保证播放预取跟手又不过度解码
+        this._renderInFlight = false; // 统一渲染在途锁（最新优先，禁止并发争抢解码器）
+        this._renderPendingGt = null; // 渲染期见的新目标 gt（在途结束后接力绘制，保证跟手）
         this._tlInfo = root.querySelector(".xzg-ve-tl-info");
         this._previewEmpty = root.querySelector(".xzg-ve-preview-empty");
         // 加载遮罩元素引用（大视频加载进度显示）
@@ -1609,6 +1623,7 @@ export class XiaozhuguangVideoEditor {
                 }
                 _syncPortraitLock();
                 // 切换分辨率后预览即时按新比例 letterbox
+                if (typeof this._persistRenderRes === 'function') this._persistRenderRes();
                 if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
             };
         }
@@ -1617,11 +1632,13 @@ export class XiaozhuguangVideoEditor {
             wInput.oninput = () => {
                 if (presetsSel) presetsSel.value = "0";
                 _syncPortraitLock();
+                if (typeof this._persistRenderRes === 'function') this._persistRenderRes();
                 if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
             };
             hInput.oninput = () => {
                 if (presetsSel) presetsSel.value = "0";
                 _syncPortraitLock();
+                if (typeof this._persistRenderRes === 'function') this._persistRenderRes();
                 if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
             };
         }
@@ -1638,9 +1655,10 @@ export class XiaozhuguangVideoEditor {
                     // 自定义：启用输入框，保留原值供编辑
                     fpsInputEl.disabled = false;
                 }
+                if (typeof this._persistRenderRes === 'function') this._persistRenderRes();
             };
             // 输入框手动修改时，下拉自动切回"自定义"（避免与选择项不同步）
-            fpsInputEl.oninput = () => { if (fpsSel) fpsSel.value = "0"; };
+            fpsInputEl.oninput = () => { if (fpsSel) fpsSel.value = "0"; this._persistRenderRes(); };
         }
         // "使用竖屏分辨率"按钮仅作文字说明，点击由左侧方块承担
         const portraitBtn = root.querySelector(".xzg-ve-btn-portrait");
@@ -1676,6 +1694,7 @@ export class XiaozhuguangVideoEditor {
                     if (!matched) presetsSel.value = "0";
                 }
                 // 交换后预览按新分辨率比例重新 letterbox
+                if (typeof this._persistRenderRes === 'function') this._persistRenderRes();
                 if (typeof this._refreshCurrentFrame === 'function') this._refreshCurrentFrame();
             };
         }
@@ -5392,6 +5411,11 @@ export class XiaozhuguangVideoEditor {
         }
         // 磁吸参考集合：多选拖动时，其他选中片段也作为"已占用"区域，主片段吸附时跳过它们
         const snapSkipIds = isMultiDrag ? this.selectedClipIds : null;
+        // 多选拖动整体下限：组内最左片段碰到 0 时整组刹停，而不是让每个片段各自裁到 0（否则会互相挤压）。
+        //   delta = newTlStart - origTlStart，要求所有组员 g.origPos + delta >= 0 ⇒ delta >= -minGroupPos
+        //   即 newTlStart >= origTlStart - minGroupPos。单片段拖动时 minGroupPos = origTlStart ⇒ 下限 = 0（保持原行为）。
+        const minGroupPos = isMultiDrag ? Math.min(...group.map(g => g.origPos)) : origTlStart;
+        const tlMinBound = origTlStart - minGroupPos;  // ≥ 0
 
         const move = (ev) => {
             lastClientY = ev.clientY;
@@ -5449,7 +5473,7 @@ export class XiaozhuguangVideoEditor {
             this._clipDragged = true;
             // 按住 Alt：拖动速度降为原来的 20%（移动更精细）
             newTlStart = origTlStart + (ev.altKey ? dx * 0.2 : dx) / pxPerSec;
-            newTlStart = Math.max(0, newTlStart);
+            newTlStart = Math.max(tlMinBound, newTlStart);
 
             // 磁吸（仅在磁吸开启时生效）：片段左右边缘与时间轴起点(0)及其他片段边缘对齐
             if (this._magnetEnabled) {
@@ -5481,7 +5505,7 @@ export class XiaozhuguangVideoEditor {
                     }
                 }
             }
-            newTlStart = Math.max(0, newTlStart);
+            newTlStart = Math.max(tlMinBound, newTlStart);
             newTlStart = snapToFrame(newTlStart);
             } // end else (normal drag)
             // 拖动期间：本体片段已隐藏，在目标轨道显示金色虚线预览框
@@ -6076,7 +6100,7 @@ export class XiaozhuguangVideoEditor {
                     audioBuf = await this._decodeStandaloneAudio(clip.filename, clip.type);
                 } else {
                     // 视频文件：用 decoderPool 解码音轨
-                    const url = this._videoUrl(clip.filename, clip.type);
+                    const url = await this._decodeSource(clip.filename, clip.type);
                     const decoder = await decoderPool.get(clip.filename, clip.type, url);
                     if (!decoder || !decoder.hasAudio) return;
                     audioBuf = await decoder.decodeFullAudio();
@@ -6788,7 +6812,10 @@ export class XiaozhuguangVideoEditor {
         });
         const startX = e.clientX;
         const media = this.mediaLibrary.find(m => m.name === clip.filename);
-        const sourceDuration = media?.info?.duration || clip.sourceDuration || Infinity;
+        // 图片为静帧：源时长视为无限，向右可无限拉长。
+        // 不要用 clip.sourceDuration（图片创建时=placeholderDur=5）当上限，否则 maxDelta=0，右拉被钳死无法加长。
+        const isImgClip = _isImage(clip.filename) || media?.info?.is_image === true;
+        const sourceDuration = isImgClip ? Infinity : (media?.info?.duration || clip.sourceDuration || Infinity);
         // 拖动裁剪：隐藏本体 + 金色虚线预览框（与移动片段一致）
         let moved = false;
         let dragEl = null;            // 本体元素（拖动时隐藏）
@@ -6974,9 +7001,12 @@ export class XiaozhuguangVideoEditor {
                                     : (rightClip.tlStart != null ? rightClip.tlStart : 0);
 
         const leftMedia = this.mediaLibrary.find(m => m.name === leftClip.filename);
-        const leftSourceDur = leftMedia?.info?.duration || leftClip.sourceDuration || Infinity;
+        // 图片为静帧：源时长不限（不把 sourceDuration=placeholder=5 当上限）
+        const leftIsImg = _isImage(leftClip.filename) || leftMedia?.info?.is_image === true;
+        const leftSourceDur = leftIsImg ? Infinity : (leftMedia?.info?.duration || leftClip.sourceDuration || Infinity);
         const rightMedia = this.mediaLibrary.find(m => m.name === rightClip.filename);
-        const rightSourceDur = rightMedia?.info?.duration || rightClip.sourceDuration || Infinity;
+        const rightIsImg = _isImage(rightClip.filename) || rightMedia?.info?.is_image === true;
+        const rightSourceDur = rightIsImg ? Infinity : (rightMedia?.info?.duration || rightClip.sourceDuration || Infinity);
 
         const minDuration = 0.1;
         const leftDur0 = leftEnd0 - leftStart0;
@@ -7097,6 +7127,32 @@ export class XiaozhuguangVideoEditor {
             params.set("filename", filename);
         }
         return `/view?${params.toString()}`;
+    }
+
+    // 解码源切换：探测视频编码，若 WebCodecs 无法解码（如 HEVC），切换为后端兜底转码的 H.264 产物 URL。
+    // 仅在解码入口使用；图片/缩略图/纯音频走原始 _videoUrl，不受影响。
+    // 结果按 filename|type 缓存，同一文件只探测一次。解码器 key 仍用原始 filename|type，
+    // 保证 decoderPool 缓存/预加载判断不被破坏。
+    async _decodeSource(filename, type) {
+        const key = `${type || "input"}::${filename}`;
+        if (!this._decodeSrcPromise) this._decodeSrcPromise = new Map();
+        if (this._decodeSrcPromise.has(key)) return this._decodeSrcPromise.get(key);
+        const p = (async () => {
+            let url = this._videoUrl(filename, type);
+            try {
+                const resp = await api.fetchApi("/xzg_video_editor_ensure_h264", {
+                    method: "POST",
+                    body: JSON.stringify({ filename, type: type || "input" }),
+                });
+                const data = await resp.json();
+                if (data && data.transcoded && data.filename && data.subfolder) {
+                    url = this._videoUrl(data.filename, data.type || "input");
+                }
+            } catch (_) {}
+            return url;
+        })();
+        this._decodeSrcPromise.set(key, p);
+        return p;
     }
 
     // 时间线总时长（所有片段在时间轴上覆盖范围的最大末尾）
@@ -7569,6 +7625,8 @@ export class XiaozhuguangVideoEditor {
                 if (token !== this._loadClipToken) return;
                 // letterbox 模式：主 canvas 按目标分辨率比例 contain + 居中绘制图片（上下/左右黑边）
                 this._drawSourceToCanvas(img);
+                // 统一内核渲染当前时间点所有层（含跨轨穿透）
+                this._renderTimelineFrame(this._tlGlobalTime);
                 // 缓存图片元素供播放循环复用
                 this._imgElement = img;
                 this._currentImageEl = img;
@@ -7602,7 +7660,9 @@ export class XiaozhuguangVideoEditor {
             // 预解码音频缓冲并启动所有活跃音频片段（多源混音）
             try {
                 if (autoplay && this._tlPlaying) {
-                    this._startAudioOnlyPlaybackLoop(clip, localTime);
+                    // 统一时钟播放：音频片段与视频/图片一致走单一时钟 _startPlaybackLoop，
+                    // 逐 tick 的 _checkAudioBoundary 负责音频源启停，_renderTimelineFrame 对无视频层点清底。
+                    this._startPlaybackLoop();
                     this._startAudioPlayback();
                 }
                 this._updatePlayBtn(this._tlPlaying);
@@ -7620,7 +7680,7 @@ export class XiaozhuguangVideoEditor {
             // E4: 校验 token
             if (token !== this._loadClipToken) return;
             // 获取或创建该视频的解码器（池化复用，避免重复加载）
-            const url = this._videoUrl(clip.filename, clip.type);
+            const url = await this._decodeSource(clip.filename, clip.type);
             // 首次加载（缓存未命中）：不显示进度遮罩，后台静默加载
             // （上传时已预生成缩略图，拖到时间线时无需额外进度提示）
             const isCached = decoderPool.getCached(clip.filename, clip.type);
@@ -7656,10 +7716,8 @@ export class XiaozhuguangVideoEditor {
             // 渲染目标帧到离屏 canvas（decoder 会重置其 width/height = preview 尺寸）
             await decoder.renderFrame(targetFrame, this._offscreenCanvas, true);
             if (token !== this._loadClipToken) return;
-            // 多轨合成优先（V2 半透明露出 V1）；否则 Letterbox 贴到主 canvas
-            if (!this._renderCompositeFromSeek(this._offscreenCanvas, this._offscreenCanvas.width, this._offscreenCanvas.height)) {
-                this._drawSourceToCanvas(this._offscreenCanvas);
-            }
+            // 统一内核：渲染当前时间点所有可见层（含跨轨穿透），播放与 seek 共用
+            this._renderTimelineFrame(this._tlGlobalTime);
 
             // 若在播放，启动播放循环 + 音频
             if (autoplay && this._tlPlaying) {
@@ -7922,138 +7980,328 @@ export class XiaozhuguangVideoEditor {
         return this._layerCanvas;
     }
 
+    // 多轨合成用的独立层画布池：每层一个独占 canvas，杜绝多轨并发取帧写同一画布互相覆盖（错乱）。
+    _takeLayerCanvas() {
+        if (this._layerPool && this._layerPool.length) return this._layerPool.pop();
+        return document.createElement("canvas");
+    }
+    _releaseLayerCanvas(c) {
+        if (!c) return;
+        if (!this._layerPool) this._layerPool = [];
+        if (this._layerPool.length < 8) this._layerPool.push(c);
+    }
+
     // 渲染单个片段在某局部时间的一帧，返回 { src, srcW, srcH }（Promise；失败返回 null）
     async _renderLayerFrame(clip, localTime) {
         if (!clip) return null;
         const media = this.mediaLibrary.find(m => m.name === clip.filename && m.type === clip.type);
         const isImage = _isImage(clip.filename) || media?.info?.is_image === true;
         if (isImage) {
-            // 图片：若当前已加载同文件图片则直接复用
+            // 图片：优先复用当前主图（V2 上层场景）；否则独立加载该图片并缓存到 clip，
+            // 保证 V1 底层图片片段也能渲染出来（不依赖 this._imgElement 的单一加载态）。
             if (this._imgElement && this._imgLoadedFile === clip.filename) {
                 return { src: this._imgElement, srcW: this._imgElement.naturalWidth, srcH: this._imgElement.naturalHeight };
+            }
+            if (clip._layerImg && clip._layerImg.complete && clip._layerImg.naturalWidth > 0) {
+                return { src: clip._layerImg, srcW: clip._layerImg.naturalWidth, srcH: clip._layerImg.naturalHeight };
+            }
+            if (!clip._layerImgPromise) {
+                clip._layerImgPromise = new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => { clip._layerImg = img; resolve(true); };
+                    img.onerror = () => { resolve(false); };
+                    img.src = this._videoUrl(clip.filename, clip.type);
+                });
+            }
+            const ready = await clip._layerImgPromise;
+            if (ready && clip._layerImg) {
+                return { src: clip._layerImg, srcW: clip._layerImg.naturalWidth, srcH: clip._layerImg.naturalHeight };
             }
             return null;
         }
         try {
-            const decoder = await decoderPool.get(clip.filename, clip.type, this._videoUrl(clip.filename, clip.type), () => {});
+            const decoder = await decoderPool.get(clip.filename, clip.type, await this._decodeSource(clip.filename, clip.type), () => {});
             const fps = decoder.fps || 30;
-            const loc = Math.max(0, localTime - clip.start);
+            // 帧号为源视频的绝对帧号：localTime 已是绝对源时间（= clip.start + 时间轴偏移），
+            // 不能再减 clip.start，否则裁掉头部的片段播放时又会从源第 0 帧开始。
+            const loc = Math.max(0, localTime);
             const f = Math.max(0, Math.min(Math.round(loc * fps), Math.max(0, decoder.frameCount - 1)));
             const tmp = this._getLayerCanvas();
-            await decoder.renderFrame(f, tmp, true);
-            if (tmp.width > 0 && tmp.height > 0) {
+            // 用 readFrameCached：真正等待该帧解码完成并写入 tmp（resolve 时内容已就绪）。
+            // 不能用 renderFrame——它未命中缓存时只做后台 rAF 调度并立即返回，
+            // await 后 tmp 仍是空画布，导致多轨合成时视频底层(下层)画不出来/黑屏。
+            const ok = await decoder.readFrameCached(f, tmp);
+            if (ok && tmp.width > 0 && tmp.height > 0) {
                 return { src: tmp, srcW: tmp.width, srcH: tmp.height };
             }
         } catch (_) {}
         return null;
     }
 
-    // 多轨合成预览：渲染当前时间点 V1(底层)+V2(上层) 的合成帧（V2 半透明露出 V1）。
-    // 返回 true 表示已合成绘制；false 表示无需合成（由单层逻辑处理）。
-    async _renderCompositePreview(globalTime) {
+    // 判单层取帧：图片层走 _renderLayerFrame；视频层走缓存优先取帧。
+    // layerCanvas：该层独占画布，仅在视频层 seek 未命中需精确解码时使用（避免多发层共享画布互相覆盖）。
+    async _frameForLayer(layer, layerCanvas) {
+        const clip = layer?.clip;
+        if (!clip || clip.kind === "audio") return null;
+        const media = this.mediaLibrary.find(m => m.name === clip.filename && m.type === clip.type);
+        const isImage = _isImage(clip.filename) || media?.info?.is_image === true;
+        if (isImage) return this._renderLayerFrame(clip, layer.localTime);
+        return this._renderVideoLayerFrame(layer, layerCanvas);
+    }
+
+    // VideoCache 式取视频帧：渲染走「只读 FrameCache」——命中即零成本绘制（纯 Map 读，不触碰 sink）；
+    // 未命中播放路径显示最近帧顶住画面并后台预取追平，绝不在此停迭代器/await 硬解码（那是卡顿与起播黑屏根因）。
+    // 非播放（seek/拖帧/刷新）未命中才停预取迭代器→精确解码，且用最近帧兜底，消除“前拖/起播黑屏”。
+    // 返回 { src, srcW, srcH } 或 null；src 优先为缓存 canvas（只读源），解码路径为独立 layerCanvas。
+    async _renderVideoLayerFrame(layer, layerCanvas) {
+        const clip = layer?.clip;
+        if (!clip) return null;
+        try {
+            const decoder = await decoderPool.get(clip.filename, clip.type, await this._decodeSource(clip.filename, clip.type), () => {});
+            if (!decoder || !decoder._track || decoder.frameCount <= 0) return null;
+            const fps = decoder.fps || 30;
+            // 帧号为源视频的绝对帧号，layer.localTime 已是绝对源时间，不能再减 clip.start，
+            // 否则裁掉头部的片段播放时又从源第 0 帧开始。
+            const loc = Math.max(0, layer.localTime);
+            const target = Math.max(0, Math.min(Math.round(loc * fps), decoder.frameCount - 1));
+
+            // 播放路径：读缓存（零等待）。命中直接出帧；未命中最近帧顶住（不黑屏）+ 后台预取追平。
+            if (this._tlPlaying) {
+                const cached = decoder.getCachedFrameSync(target);
+                let src = null;
+                if (cached) {
+                    src = cached;
+                } else {
+                    const f = decoder._cache.findClosest(target);
+                    const c = f >= 0 ? decoder._cache.get(f) : null;
+                    src = c || null;
+                }
+                this._vcachePrefetch(clip, decoder, target);   // 后台追平（不阻塞本帧）
+                if (src) return { src, srcW: src.width, srcH: src.height };
+                return null;
+            }
+
+            // 非播放（seek/拖帧/刷新）：命中直接出；未命中停预取迭代器→精确解码进独有 layerCanvas；
+            // 解码期间/失败用最近帧顶住，避免“前拖/起播黑屏”。
+            const cached = decoder.getCachedFrameSync(target);
+            if (cached) return { src: cached, srcW: cached.width, srcH: cached.height };
+            await this._stopVcache(clip, decoder);
+            const ok = await decoder.readFrameCached(target, layerCanvas);
+            if (ok && layerCanvas.width > 0 && layerCanvas.height > 0) {
+                return { src: layerCanvas, srcW: layerCanvas.width, srcH: layerCanvas.height };
+            }
+            const f = decoder._cache.findClosest(target);
+            const nearest = f >= 0 ? decoder._cache.get(f) : null;
+            if (nearest) return { src: nearest, srcW: nearest.width, srcH: nearest.height };
+            return null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    // 预解码（fire-and-forget，单飞行）：把「target 之后一窗口」的顺序帧解入 decoder 的 FrameCache，
+    // 让播放渲染命中缓存、保持预取领先。播放期间【永不停止】迭代器（停止会摧毁预取优势并导致起播卡顿）。
+    // 仅当 无迭代器 / decoder 或 clip 变化 / 目标明显前跳超过窗口 时才重建迭代器。
+    // 铁律：预取领先量封顶 target+winFrames，领先已足时本次调用零拉帧——预取速率必须锁定为
+    // 播放速率，绝不按调用频率（RAF 60-100次/秒）多拉，否则领先量按解码速度膨胀并挤掉目标帧。
+    _vcachePrefetch(clip, decoder, targetFrame) {
+        if (!this._tlPlaying || !decoder) return;
+        let st = this._vcache.get(clip.id);
+        if (!st) { st = { decoder: null, iterClip: null, busy: false, topFilled: -1 }; this._vcache.set(clip.id, st); }
+        if (st.busy) return;
+        st.busy = true;
+        const fps = decoder.fps || 30;
+        const winFrames = Math.max(24, Math.round(this._vcacheWindowSec * fps));
+        (async () => {
+            try {
+                // 节拍锁定：领先量已足（迭代器有效且 topFilled ≥ target+窗口）时本次不拉帧。
+                // 否则预取会按 RAF 调用频率（60-100次/秒）每次多拉 1 帧，领先量按"解码速度"
+                // 而非"播放速度"膨胀；FrameCache 按"距 targetFrame 最远先淘汰"会把播放目标帧
+                // 挤出缓存，渲染未命中 findClosest 取到预取头附近的未来帧 → 画面渐进加速
+                // （时间码仍 1x，约 2-3 秒后开始，暂停再播重演）。
+                if (decoder._playbackIter && st.decoder === decoder && st.iterClip === clip.id &&
+                    st.topFilled >= targetFrame + winFrames) {
+                    // 仅刷新淘汰中心到当前播放目标，保护目标邻域
+                    decoder._targetFrame = targetFrame;
+                    decoder._cache.targetFrame = targetFrame;
+                    return;
+                }
+                // 需要重建：无迭代器 / 句柄或 clip 变了 / 预取已明显落后于目标（大前跳，如切换片段）
+                if (!decoder._playbackIter || st.decoder !== decoder || st.iterClip !== clip.id ||
+                    st.topFilled < targetFrame - winFrames) {
+                    decoder.stopPlaybackIterator();
+                    decoder.createPlaybackIterator(Math.max(0, (targetFrame - winFrames) / fps));
+                    st.decoder = decoder;
+                    st.iterClip = clip.id;
+                    st.topFilled = -1;
+                }
+                const it = decoder._playbackIter;
+                if (!it) return;
+                const fillTo = targetFrame + winFrames;
+                for (let guard = 0; guard < winFrames + 12 && decoder._playbackIter === it; guard++) {
+                    const r = await it.next();
+                    if (decoder._playbackIter !== it) break;
+                    if (r.done) break;
+                    const wc = r.value;
+                    if (!wc || !wc.canvas) continue;
+                    const f = Math.round((wc.timestamp || 0) * fps);
+                    if (f > st.topFilled) {
+                        const copy = document.createElement("canvas");
+                        copy.width = wc.canvas.width;
+                        copy.height = wc.canvas.height;
+                        copy.getContext("2d").drawImage(wc.canvas, 0, 0);
+                        // 淘汰中心锚定"当前播放目标帧"而非预取头：缓存优先保留正在显示/
+                        // 即将显示的邻域，预取头侧的未来帧先被淘汰，目标帧永不被挤出。
+                        decoder._targetFrame = targetFrame;
+                        decoder._cache.targetFrame = targetFrame;
+                        decoder._cache.add(f, copy);
+                        st.topFilled = f;
+                    }
+                    if (f >= fillTo) break;
+                }
+            } catch (_e) {
+                // 预取失败不影响渲染（下帧重试）
+            } finally {
+                st.busy = false;
+            }
+        })();
+    }
+
+    // 停掉某 video 层的预取迭代器，释放 sink；同时把该层 vcache 标记为非 busy，
+    // 使紧接着的 readFrameCached 能随机寻址解码（sink 单操作约束）。仅 seek/刷新（非播放）时调用。
+    async _stopVcache(clip, decoder) {
+        if (decoder && decoder._playbackIter) {
+            decoder.stopPlaybackIterator();
+        }
+        if (clip) {
+            const st = this._vcache.get(clip.id);
+            if (st) st.busy = false;
+        }
+    }
+
+    // 判断某全局时间点是否存在 V1(底)+V2(顶) 同时可见（需≥2 层且两轨都有）
+    _hasBothVideoLayers(globalTime) {
         const layers = this._getVideoLayersAt(globalTime);
         if (layers.length < 2) return false;
         const hasV1 = layers.some(l => l.track === "v1");
         const hasV2 = layers.some(l => l.track === "v2");
-        if (!(hasV1 && hasV2)) return false;
+        return hasV1 && hasV2;
+    }
+
+    // ═══ 统一多轨合成内核（OpenCut 式：任意可见视频层，从底到顶逐层叠加，穿透属性在
+    // _paintClipFrame 里按各 layer.clip 的 scale/opacity/crop/offset 自动生效）═══
+    // frameResolver(layer) → Promise<{src,srcW,srcH}|null>：为某层取帧（底层 V1 可走顺序缓存，
+    // 其余走 _renderLayerFrame）。播放路径要求 V1 用缓存以避免逐帧 seek，故取帧策略由调用方注入。
+    // 展示语义：任一帧解码期间【保留上一次画面】，全部就绪后一次性清底+逐层绘制，避免黑/画面摇摆。
+    // 返回 true 表示已合成绘制；false 表示无需合成（调用方走单层逻辑）。
+    async _composeLayersAt(globalTime, frameResolver) {
+        const layers = this._getVideoLayersAt(globalTime);
+        if (layers.length < 2) return false;
+        const frames = [];
+        let failedAll = true;
+        for (const layer of layers) {
+            let fr = null;
+            try { fr = frameResolver ? await frameResolver(layer) : null; } catch (_e) { fr = null; }
+            frames.push({ layer, frame: fr });
+            if (fr && fr.src) failedAll = false;
+        }
+        // 一层帧都没有就绪 → 本次不绘制（保留旧画面），避免整个黑屏
+        if (failedAll) return false;
+        return this._drawComposedFrames(frames);
+    }
+
+    // 统一绘制内核：清底 + 从底到顶逐层绘制，所有合成路径共用（杜绝多套"清底+循环"行为分裂）。
+    _drawComposedFrames(frames) {
+        if (!frames || !frames.length) return false;
+        if (!frames.some(({ frame }) => frame && frame.src)) return false;
         this._syncPreviewCanvasSize();
         const canvas = this._canvas;
         const ctx = canvas.getContext("2d");
         if (!ctx) return false;
         ctx.fillStyle = "#000";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        // 从底层到顶层逐层绘制
-        for (const layer of layers) {
-            const frame = await this._renderLayerFrame(layer.clip, layer.localTime);
-            if (frame) {
-                this._paintClipFrame(ctx, canvas.width, canvas.height, frame.src, frame.srcW, frame.srcH, layer.clip);
-            }
+        let painted = false;
+        for (const { layer, frame } of frames) {
+            if (!frame || !frame.src) continue;
+            // layer.clip 携带 scale/opacity/crop/offset，_paintClipFrame 内自动应用 → 上层透明/裁剪即穿透露出下层
+            this._paintClipFrame(ctx, canvas.width, canvas.height, frame.src, frame.srcW, frame.srcH, layer.clip);
+            painted = true;
         }
-        return true;
+        return painted;
     }
 
-    // 播放循环中的多轨合成：底层 V1 帧用缓存（异步节流更新），上层 V2 用当前帧，同步合成。
-    // 返回 true 表示已合成；false 表示无需合成（调用方走单层 Letterbox）。
-    _drawPlaybackComposite(v2Canvas, v2w, v2h) {
-        const gt = this._tlGlobalTime;
-        const layers = this._getVideoLayersAt(gt);
-        if (layers.length < 2) return false;
-        const hasV1 = layers.some(l => l.track === "v1");
-        const hasV2 = layers.some(l => l.track === "v2");
-        if (!(hasV1 && hasV2)) return false;
-        const v1Layer = layers.find(l => l.track === "v1");
-        // 异步节流更新 V1 底层帧缓存（不阻塞当前帧）
-        this._scheduleCompositeV1(v1Layer, gt);
-        // 若 V1 缓存尚未就绪，走完整合成（异步渲染 V1+V2），确保首帧也正确
-        if (!this._compositeV1Cache || !this._compositeV1Cache.frame) {
-            return this._renderCompositeFromSeek(v2Canvas, v2w, v2h);
-        }
-        // 用缓存 V1 + 当前 V2 帧同步合成
-        this._paintCompositeNow(v1Layer, v2Canvas, v2w, v2h);
-        return true;
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OpenCut 式统一时钟多轨渲染内核
+    // 单一渲染入口 _renderTimelineFrame(gt)：任意全局时间点，取当前点所有可见视频/图片层，
+    // 各自在对应 localTime 出帧，从底到顶统一合成。播放与 seek/拖动共用本内核，
+    // 不再有「单活跃片段 + 重叠打补丁」的切换/回拨/独立 V1 缓存逻辑。
+    // 视频层走「每片段独立顺序解码器 + 预取缓冲」（只由播放时钟推进），图片层直接取缓存。
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    // 异步渲染 V1 底层帧并缓存（同一时刻只允许一个在途，避免堆积）
-    _scheduleCompositeV1(v1Layer, gt) {
-        if (!v1Layer || this._compositeV1Pending) return;
-        this._compositeV1Pending = true;
-        this._renderLayerFrame(v1Layer.clip, v1Layer.localTime).then((frame) => {
-            if (frame) this._compositeV1Cache = { frame };
-        }).finally(() => {
-            this._compositeV1Pending = false;
-        });
-    }
-
-    // 同步合成绘制：底层 V1（用缓存帧）+ 上层 V2（当前帧）
-    _paintCompositeNow(v1Layer, v2Canvas, v2w, v2h) {
+    // 清空预览画布（空隙 / 纯音频区）
+    _clearPreviewCanvas() {
+        if (!this._canvas) return;
         this._syncPreviewCanvasSize();
-        const canvas = this._canvas;
-        const ctx = canvas.getContext("2d");
+        const ctx = this._canvas.getContext("2d");
         if (!ctx) return;
         ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        // 底层 V1
-        const v1 = this._compositeV1Cache ? this._compositeV1Cache.frame : null;
-        if (v1 && v1Layer) {
-            this._paintClipFrame(ctx, canvas.width, canvas.height, v1.src, v1.srcW, v1.srcH, v1Layer.clip);
-        }
-        // 上层 V2（当前播放片段）
-        this._paintClipFrame(ctx, canvas.width, canvas.height, v2Canvas, v2w, v2h, this._currentClip);
+        ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
     }
 
-    // seek/加载后的多轨合成：完整渲染 V1(底层)+V2(上层) 合成帧（不依赖缓存，可靠）。
-    // 返回 true 表示已触发合成（异步绘制）；false 表示无需合成。
-    _renderCompositeFromSeek(v2Canvas, v2w, v2h) {
-        const gt = this._tlGlobalTime;
-        const layers = this._getVideoLayersAt(gt);
-        if (layers.length < 2) return false;
-        const hasV1 = layers.some(l => l.track === "v1");
-        const hasV2 = layers.some(l => l.track === "v2");
-        if (!(hasV1 && hasV2)) return false;
-        const clipId = this._currentClip ? this._currentClip.id : null;
-        (async () => {
-            try {
-                this._syncPreviewCanvasSize();
-                const canvas = this._canvas;
-                const ctx = canvas.getContext("2d");
-                if (!ctx) return;
-                ctx.fillStyle = "#000";
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                for (const layer of layers) {
-                    let frame;
-                    if (layer.clip.id === clipId) {
-                        frame = { src: v2Canvas, srcW: v2w, srcH: v2h };
-                    } else {
-                        frame = await this._renderLayerFrame(layer.clip, layer.localTime);
-                    }
-                    if (frame) {
-                        this._paintClipFrame(ctx, canvas.width, canvas.height, frame.src, frame.srcW, frame.srcH, layer.clip);
-                    }
-                }
-            } catch (_) {
+    // 统一渲染：渲染全局时间 gt 处所有可见视频/图片层，从底到顶合成。
+    // 最新优先：若上一帧渲染仍在途，记录最新 gt 并在在途任务结束后接力绘制 → 保证跟手且不漏最新帧。
+    // 图片层与视频层并行取帧；任一帧未就绪则保留旧画面，避免黑屏/摇摆。
+    // 返回 true 表示已触发渲染；false 表示当前 gt 无视频层（调用方按语义处理空画面）。
+    async _renderTimelineFrame(gt) {
+        if (this._renderInFlight) { this._renderPendingGt = gt; return false; }
+        this._renderInFlight = true;
+        try {
+            // 播放态：只渲染当前 gt 一帧，绝不回读/排空 _renderPendingGt 追赶。
+            // 若在播放中靠「每 tick 写入的 pending + while 排空」，缓存热走后绘制速度会快于墙钟
+            // （每轮都显示最新 gt，解码多快就显示多快），导致播放过几秒逐渐加速、与 1x 音频脱节。
+            // 与 OpenCut 一致：每 tick 由同一时钟推进 gt，显示帧由 target=round(loc*fps)
+            // 从 gt 推导，天然按 1x 节拍走（重复 tick 落到同帧号=同一帧，不产生多余新帧）。
+            if (this._tlPlaying) {
+                await this._renderLayersOnce(gt);
+                return true;
             }
-        })();
+            // seek/拖动/刷新：可合并追赶最新 pending（只保留最新那次 seek，避免逐次拖动各自爆帧）
+            let cur = gt;
+            while (cur != null) {
+                await this._renderLayersOnce(cur);
+                cur = this._renderPendingGt; this._renderPendingGt = null;
+            }
+        } finally {
+            this._renderInFlight = false;
+            this._renderPendingGt = null;
+        }
         return true;
+    }
+
+    // 渲染单个全局时间点 gt 的所有可见视频/图片层并合成（播放与 seek 共用的单帧内核）。
+    // 无可见层则清空预览。有层但帧均未就绪（倒带重建迭代器 / 起播首帧解码中）→ 保留上一次画面，
+    // 避免倒带或起播时黑屏闪烁；真正的空隙/纯音频（无任何层）在此统一清底。
+    async _renderLayersOnce(gt) {
+        const layers = this._getVideoLayersAt(gt);
+        if (layers.length === 0) {
+            this._clearPreviewCanvas();
+            return;
+        }
+        // 与 OpenCut 的 VideoCache 一致：图片/视频层取帧统一为「读缓存为主 + 未命中才精解码」：
+        // 图片层即时取帧；视频层命中预取 FrameCache 则零成本，拖动/倒带跨窗口才精解码一帧。不再逐帧硬解。
+        // 每层配一个独占 canvas（视频层 seek 精确解码写入），多轨并发互不覆盖。
+        const targets = layers.map(() => this._takeLayerCanvas());
+        const jobs = layers.map((layer, i) =>
+            this._frameForLayer(layer, targets[i]).then(f => f || null).catch(() => null)
+        );
+        const results = await Promise.all(jobs);
+        const frames = [];
+        for (let i = 0; i < layers.length; i++) {
+            const f = results[i];
+            if (f && f.src) frames.push({ layer: layers[i], frame: f });
+        }
+        if (frames.length) this._drawComposedFrames(frames);
+        for (const c of targets) this._releaseLayerCanvas(c);
     }
 
     /**
@@ -8064,112 +8312,25 @@ export class XiaozhuguangVideoEditor {
      */
     _refreshCurrentFrame() {
         this._syncPreviewCanvasSize();
-        // 多轨合成：当前时间点存在 V1(底层)+V2(上层) 时，渲染合成帧（V2 半透明露出 V1）
+        // 统一内核：任何可见视频/图片层（不含纯音频）都由此渲染。
         const layers = this._getVideoLayersAt(this._tlGlobalTime);
-        const hasCompose = layers.length >= 2 && layers.some(l => l.track === "v1") && layers.some(l => l.track === "v2");
-        if (hasCompose) {
-            this._renderCompositePreview(this._tlGlobalTime);
+        if (layers.length > 0) {
+            this._renderTimelineFrame(this._tlGlobalTime);
             return;
         }
-        // 纯音频（无解码器，也无图片）→ 直接音乐符占位
+        // 纯音频（无视频层）→ 音乐符占位 / 纯黑
         const clip = this._currentClip;
-        if (!clip) return;
-        const media = this.mediaLibrary.find(m => m.name === clip.filename && m.type === clip.type);
-        const isAudioOnly = clip.kind === "audio" || media?.isAudio || media?.info?.audio_only === true;
-        const isImage = _isImage(clip.filename) || media?.info?.is_image === true;
-        if (isAudioOnly) {
-            this._clearCanvasForAudio();
-            return;
+        const found = this._findClipByGlobalTime(this._tlGlobalTime);
+        const c = found ? found.clip : clip;
+        if (!c) return;
+        const media = this.mediaLibrary.find(m => m.name === c.filename && m.type === c.type);
+        if (this._modeFilter === "audio") {
+            this._clearCanvasBlack();
+        } else {
+            const isAudioOnly = c.kind === "audio" || media?.isAudio || media?.info?.audio_only === true;
+            if (isAudioOnly) { this._clearCanvasForAudio(); return; }
+            this._clearPreviewCanvas();
         }
-        if (isImage && this._imgElement) {
-            this._drawSourceToCanvas(this._imgElement);
-            return;
-        }
-        if (this._currentDecoder && this._currentClip) {
-            const fps = this._currentDecoder.fps || 30;
-            const loc = this._tlGlobalTime - (this._getClipTlStart(this._currentClip) || 0);
-            const f = Math.max(0, Math.min(
-                Math.round(Math.max(0, loc) * fps),
-                Math.max(0, this._currentDecoder.frameCount - 1)
-            ));
-            // 先渲离屏再贴回来
-            this._currentDecoder.renderFrame(f, this._offscreenCanvas, true).then(() => {
-                if (this._offscreenCanvas.width > 0 && this._offscreenCanvas.height > 0) {
-                    this._drawSourceToCanvas(this._offscreenCanvas);
-                }
-            }).catch(() => {});
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-
-    // 纯音频片段的播放循环：用 RAF 推进 _tlGlobalTime，到达片段末尾切换下一个
-    _startAudioOnlyPlaybackLoop(clip, startLocalTime) {
-        this._stopPlaybackLoop();
-        if (!this._currentClip || this._currentClip.id !== clip.id) return;
-        const offset = this._getClipTlStart(clip);
-        const clampedStart = Math.min(startLocalTime, clip.end - 0.001);
-        this._playbackStartFrame = 0;
-        this._playbackStartTime = performance.now();
-        this._playbackStartGlobalTime = this._tlGlobalTime;
-        const clipId = clip.id;
-        const loop = () => {
-            if (!this._tlPlaying || !this._currentClip) {
-                this._playbackRaf = 0;
-                return;
-            }
-            // 多轨重叠切换：与视频/图片播放循环一致，每帧检查当前时间点是否有更高优先级片段（如V1/V2视频）。
-            // 音频加载器模式：跳过视频片段检测，仅处理音频
-            const activeNow = this._findClipByGlobalTime(this._tlGlobalTime);
-            if (this._modeFilter !== "audio" && activeNow && activeNow.clip.kind !== "audio" && activeNow.clip.id !== clipId) {
-                this._loadClipAtTime(activeNow.clip, activeNow.localTime, true);
-                return;
-            }
-            const now = performance.now();
-            const elapsedSec = (now - this._playbackStartTime) / 1000;
-            const prevGt = this._tlGlobalTime;
-            this._tlGlobalTime = this._playbackStartGlobalTime + elapsedSec;
-            this._updatePlayhead();
-            this._updateTimeDisplay();
-            this._autoScrollToPlayhead();
-            // 播放中同步选中播放头位置片段（激活轨道优先，未激活时最上层）
-            this._syncSelectionToPlayhead();
-            // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
-            this._checkAudioBoundary(prevGt, this._tlGlobalTime);
-            // 音频循环终止条件：以时间线总时长为准，不调用 _advanceToNextClip（该函数为视频循环设计，会重置 _tlGlobalTime 导致播放头回跳）。
-            // 所有音频源的启停由 _startAudioPlayback（每 3 帧调用一次）负责管理。
-            const total = this._getTimelineTotalDuration();
-            if (this._tlGlobalTime >= total - 0.001) {
-                this._tlPlaying = false;
-                this._updatePlayBtn(false);
-                this._stopPlaybackLoop();
-                this._stopAudio();
-                this._tlGlobalTime = total;
-                this._updatePlayhead();
-                this._updateTimeDisplay();
-                this._playbackRaf = 0;
-                return;
-            }
-            this._playbackRaf = requestAnimationFrame(loop);
-        };
-        this._playbackRaf = requestAnimationFrame(loop);
-    }
-
-    // 获取当前全局时间点所有活跃音频片段的最大结束时间（用于多源混音播放循环）
-    _getMaxAudioEndTime(gt) {
-        let maxEnd = 0;
-        for (let i = 0; i < this.timeline.length; i++) {
-            const c = this.timeline[i];
-            if (c.kind !== "audio") continue;
-            const dur = c.end - c.start;
-            if (dur <= 0) continue;
-            const cs = c.audioTlStart != null ? c.audioTlStart : 0;
-            const ce = cs + dur;
-            if (gt >= cs && gt < ce) {
-                maxEnd = Math.max(maxEnd, ce);
-            }
-        }
-        return maxEnd;
     }
 
     // 加载片段到预览区（仅在添加片段到空时间线时调用，用于首次显示画面）
@@ -8190,21 +8351,19 @@ export class XiaozhuguangVideoEditor {
         this._updateTimeDisplay();
         // 播放头位置变化 → 同步选中该位置的片段（激活轨道优先，未激活时最上层片段）
         this._syncSelectionToPlayhead();
-        // 时间线无片段时仅更新播放头位置，不做片段查找
         const total = this._getTimelineTotalDuration();
-        if (total <= 0) return;
-
-        const found = this._findClipByGlobalTime(this._tlGlobalTime);
-        if (!found) {
-            // 空隙处：清空 canvas 显示黑屏，停止当前解码与音频
-            this._clearCanvasForGap();
-            return;
+        // 播放中拖动播放头：把统一时钟基准重置到新位置，使播放从此处连续推进
+        if (this._tlPlaying) {
+            this._playClockStart = performance.now();
+            this._playClockGt = this._tlGlobalTime;
         }
-
-        // 纯音频片段：仅更新 canvas 占位，不调用视频解码
-        if (found.clip.kind === "audio") {
-            // 切换到该片段时清空 canvas 为音频占位，并预加载音频缓冲
-            if (!this._currentClip || this._currentClip.id !== found.clip.id) {
+        if (total <= 0) return;
+        const found = this._findClipByGlobalTime(this._tlGlobalTime);
+        // 纯音频点（无任何视频层）：音频占位；视频层由统一内核渲染（此处无视频层）
+        const vLayers = this._getVideoLayersAt(this._tlGlobalTime);
+        if (vLayers.length === 0) {
+            if (found && found.clip.kind === "audio" &&
+                (!this._currentClip || this._currentClip.id !== found.clip.id)) {
                 this._currentClip = found.clip;
                 this._currentDecoder = null;
                 this._clearCanvasForAudio();
@@ -8213,42 +8372,20 @@ export class XiaozhuguangVideoEditor {
                         this._audioBuffers[found.clip.id] = buf;
                     }
                 }).catch(e => console.warn("[小珠光] 音频预解码失败:", e));
+                return;
             }
-            return;
-        }
-
-        // 音频加载器模式：跳过视频帧解码，黑屏显示
-        if (this._modeFilter === "audio") {
-            if (!this._currentClip || this._currentClip.id !== found.clip.id) {
+            if (this._modeFilter === "audio" && found &&
+                (!this._currentClip || this._currentClip.id !== found.clip.id)) {
                 this._currentClip = found.clip;
                 this._currentDecoder = null;
                 this._clearCanvasBlack();
+            } else {
+                this._clearPreviewCanvas();
             }
             return;
         }
-
-        // 同一片段：直接解码目标帧（不重新加载解码器，避免闪烁）
-        // 图片片段无解码器：同一图片无需重新加载（画面保持不变）
-        if (this._currentClip && this._currentClip.id === found.clip.id && (this._currentDecoder || this._currentImageEl)) {
-            if (this._currentDecoder) {
-                const fps = this._currentDecoder.fps || 30;
-                const targetFrame = Math.max(0, Math.min(
-                    Math.round(found.localTime * fps),
-                    Math.max(0, this._currentDecoder.frameCount - 1)
-                ));
-                // renderFrame 内部带缓存 + 最近帧降级 + RAF 节流；渲到离屏再 letterbox 贴回
-                this._currentDecoder.renderFrame(targetFrame, this._offscreenCanvas, true);
-                if (this._offscreenCanvas.width > 0 && this._offscreenCanvas.height > 0) {
-                    // 多轨合成优先（V2 半透明露出 V1）；否则 Letterbox
-                    if (!this._renderCompositeFromSeek(this._offscreenCanvas, this._offscreenCanvas.width, this._offscreenCanvas.height)) {
-                        this._drawSourceToCanvas(this._offscreenCanvas);
-                    }
-                }
-            }
-            return;
-        }
-        // 切换片段：异步加载新解码器
-        this._loadClipAtTime(found.clip, found.localTime, this._tlPlaying);
+        // 统一内核：渲染当前 gt 处所有可见视频/图片层（含跨轨穿透），播放与 seek 共用。
+        this._renderTimelineFrame(this._tlGlobalTime);
     }
 
     // 拖动播放头时的 RAF 节流（合并 mousemove 到每帧一次）
@@ -8265,38 +8402,21 @@ export class XiaozhuguangVideoEditor {
             // 延迟读取 _tlGlobalTime，确保用最新值
             const gt = this._tlGlobalTime;
             const found = this._findClipByGlobalTime(gt);
-            if (!found) return;
-            // 纯音频片段：仅更新播放头位置，不调用视频解码
-            if (found.clip.kind === "audio") {
-                if (!this._currentClip || this._currentClip.id !== found.clip.id) {
+            // 纯音频点（无任何视频层）：音频占位；视频层由统一内核渲染
+            const vLayers = this._getVideoLayersAt(gt);
+            if (vLayers.length === 0) {
+                if (found && found.clip.kind === "audio" &&
+                    (!this._currentClip || this._currentClip.id !== found.clip.id)) {
                     this._currentClip = found.clip;
                     this._currentDecoder = null;
                     this._clearCanvasForAudio();
-                    this._decodeStandaloneAudio(found.clip.filename, found.clip.type).then(buf => {
-                        if (buf && this._currentClip && this._currentClip.id === found.clip.id) {
-                            this._audioBuffers[found.clip.id] = buf;
-                        }
-                    }).catch(e => console.warn("[小珠光] 音频预解码失败:", e));
+                } else {
+                    this._clearPreviewCanvas();
                 }
                 return;
             }
-            // 切换片段或同片段 seek
-            if (this._currentClip && this._currentClip.id === found.clip.id && this._currentDecoder) {
-                const fps = this._currentDecoder.fps || 30;
-                const targetFrame = Math.max(0, Math.min(
-                    Math.round(found.localTime * fps),
-                    Math.max(0, this._currentDecoder.frameCount - 1)
-                ));
-                this._currentDecoder.renderFrame(targetFrame, this._offscreenCanvas, true);
-                if (this._offscreenCanvas.width > 0 && this._offscreenCanvas.height > 0) {
-                    // 多轨合成优先（V2 半透明露出 V1）；否则 Letterbox
-                    if (!this._renderCompositeFromSeek(this._offscreenCanvas, this._offscreenCanvas.width, this._offscreenCanvas.height)) {
-                        this._drawSourceToCanvas(this._offscreenCanvas);
-                    }
-                }
-            } else {
-                this._loadClipAtTime(found.clip, found.localTime, false);
-            }
+            // 统一内核：拖动/seek 渲染当前 gt 所有可见层（含跨轨穿透）
+            this._renderTimelineFrame(gt);
         });
     }
 
@@ -8311,42 +8431,9 @@ export class XiaozhuguangVideoEditor {
         this._tlPlaying = !this._tlPlaying;
         if (this._tlPlaying) {
             this._updatePlayBtn(true);
-            // 先查找当前位置的片段，空隙处需启动空隙等待逻辑
-            const found = this._findClipByGlobalTime(this._tlGlobalTime);
-            if (found) {
-                // 纯音频片段：用独立播放循环（无视频解码）
-                if (found.clip.kind === "audio" || this._modeFilter === "audio") {
-                    if (this._currentClip && this._currentClip.id === found.clip.id) {
-                        // 同片段且音频缓冲已就绪：直接启动音频循环
-                        this._startAudioOnlyPlaybackLoop(found.clip, found.localTime);
-                        this._startAudioPlayback();
-                    } else {
-                        this._loadClipAtTime(found.clip, found.localTime, true);
-                    }
-                } else if (this._currentClip && this._currentClip.id === found.clip.id && (this._currentDecoder || this._currentImageEl)) {
-                    // 同一片段且解码器/图片已就绪：直接启动播放循环
-                    this._startPlaybackLoop();
-                    this._startAudioPlayback();
-                } else {
-                    // 切换到目标片段，加载完成后启动播放（_loadClipAtTime 内部启动播放循环）
-                    this._loadClipAtTime(found.clip, found.localTime, true);
-                }
-            } else {
-                // 空隙处：找下一个片段，启动空隙等待
-                const candidates = this.timeline
-                    .map(c => ({ clip: c, tlStart: this._getClipTlStart(c), dur: c.end - c.start }))
-                    .filter(x => x.dur > 0 && x.tlStart > this._tlGlobalTime - 0.001)
-                    .filter(x => !(this._modeFilter === "audio" && x.clip.kind !== "audio"))
-                    .sort((a, b) => a.tlStart - b.tlStart);
-                if (candidates.length > 0) {
-                    this._clearCanvasForGap();
-                    this._scheduleGapAdvance(candidates[0].tlStart, candidates[0].clip);
-                } else {
-                    // 末尾无后续片段：停止播放
-                    this._tlPlaying = false;
-                    this._updatePlayBtn(false);
-                }
-            }
+            // 统一时钟播放：不再按单片段切换加载，统一循环每 tick 渲染当前 gt 的所有可见层。
+            this._startPlaybackLoop();
+            this._startAudioPlayback();
         } else {
             this._updatePlayBtn(false);
             this._stopPlaybackLoop();
@@ -8354,143 +8441,47 @@ export class XiaozhuguangVideoEditor {
         }
     }
 
-    // rAF 驱动的播放循环：用播放迭代器 + 预缓冲队列
-    // E6/E8/E11: 闭包用捕获的 clip.id 做存活检查 + 限制追赶帧数 + 边界保护
-    // 帧率：按编辑器帧率输入框的设置（_getClipFps），与渲染输出一致
-    // 丢帧补帧：复用节点 Bresenham floor 规则 —— 输出第 k 帧 = floor(k × source_fps / target_fps)
-    //   降帧（src>dst）：跳过中间帧，只显示 floor 映射对应的源帧
-    //   升帧（src<dst）：重复显示前一帧，直到下一源帧的 floor 映射到达
-    //   视频时长不变（基于时间推进，不基于源帧数）
+    // rAF 驱动的统一播放循环（OpenCut 单时钟多轨模型）：
+    // 用一个共享时钟按墙钟推进全局时间，每 tick 调用 _renderTimelineFrame(gt) 渲染
+    // 当前时间点所有可见视频/图片层，从底到顶合成。不再按「单活跃片段」切换加载，
+    // 因此没有按帧切片段、重叠打补丁、逐片段 seek 等导致的不稳定。
+    // 视频/图片层取帧统一走「对当前时间随机取帧 + FrameCache」，与 OpenCut 的 VideoCache 一致。
     _startPlaybackLoop() {
         this._stopPlaybackLoop();
-        if (!this._currentClip) return;
-        // 图片片段：无解码器，用轻量循环推进时间线（画面保持静止）
-        if (!this._currentDecoder && this._currentImageEl) {
-            this._startImagePlaybackLoop();
-            return;
-        }
-        if (!this._currentDecoder) return;
-
-        const clip = this._currentClip;
-        const decoder = this._currentDecoder;
-        const clipId = clip.id;  // E6: 闭包捕获 clipId 用于存活检查
-        const targetFps = this._getClipFps(clip);  // 编辑器设置的目标帧率
-        const srcFps = decoder.fps || targetFps;   // 视频原始帧率
-        // 基于 tlStart/audioTlStart 计算片段全局偏移（正确处理空隙，音频用 audioTlStart）
-        const offset = this._getClipTlStart(clip);
-        const startLocalTime = clip.start + (this._tlGlobalTime - offset);
-        // E11: 边界保护 —— 起始位置超过片段末尾时 clamp
-        const clampedStart = Math.min(startLocalTime, clip.end - 0.001);
-        // 起始目标帧号（基于目标帧率）
-        const startTargetFrame = Math.max(0, Math.round(clampedStart * targetFps));
-
-        // 创建播放迭代器（从当前位置顺序解码，按视频原始帧率解码）
-        this._playbackIterator = decoder.createPlaybackIterator(clampedStart);
-        this._playbackIteratorDone = false;
-        this._playbackBuffer = [];
-        this._playbackStartFrame = startTargetFrame;
-        this._playbackStartTime = performance.now();
-        this._isBuffering = false;
-        this._lastShownFrame = null;  // 升帧率时重复显示的上一帧
-
-        // 启动预缓冲
-        this._fillPlaybackBuffer();
-
-        const frameDuration = 1000 / targetFps;  // 目标帧率下的每帧时长
-        let lastFrame = startTargetFrame;
-        let lastRafTime = performance.now();
+        const total = this._getTimelineTotalDuration();
+        const startGt = Math.min(Math.max(0, this._tlGlobalTime), Math.max(0, total));
+        this._playClockStart = performance.now();
+        this._playClockGt = startGt;
+        let lastT = performance.now();
+        let lastGt = startGt;
 
         const loop = () => {
-            // E6: 用捕获的 clipId 检查，切换片段后旧循环自动停止
-            if (!this._tlPlaying || !this._currentClip || this._currentClip.id !== clipId) {
-                this._playbackRaf = 0;
-                return;
-            }
-            // 多轨重叠切换：播放中每帧用 _findClipByGlobalTime 判定当前应显示的片段。
-            // 若更高优先级片段（如 V2 在 X 方向覆盖 V1）已接管当前时间点，立即切到它并让新循环接管；
-            // V2 时段结束回到 V1、或 V1 先于 V2 结束等交叉场景都会自动切换（剪辑软件叠放逻辑）。
-            // 纯音频命中不在此切换（无视频画面，交给结束/空隙逻辑处理）。
-            // 音频加载器模式：跳过视频片段检测
-            const activeNow = this._findClipByGlobalTime(this._tlGlobalTime);
-            if (this._modeFilter !== "audio" && activeNow && activeNow.clip.kind !== "audio" && activeNow.clip.id !== clipId) {
-                this._loadClipAtTime(activeNow.clip, activeNow.localTime, true);
-                return;
-            }
+            if (!this._tlPlaying) { this._playbackRaf = 0; return; }
             const now = performance.now();
-            // E8: 后台标签恢复时 RAF 间隔过大，重置计时避免快进追赶
-            const rafDelta = now - lastRafTime;
-            lastRafTime = now;
-            if (rafDelta > 500) {
-                this._playbackStartTime = now - (lastFrame - this._playbackStartFrame) * frameDuration;
+            // E8: 后台标签恢复时 RAF 间隔过大，重置基准避免快进追赶
+            if (now - lastT > 500) {
+                this._playClockStart = now - ((lastGt - this._playClockGt) * 1000);
             }
-            const elapsedMs = now - this._playbackStartTime;
-            const expectedFrame = this._playbackStartFrame + Math.floor(elapsedMs / frameDuration);
-            // E8: 限制单次追赶帧数，避免卡顿后画面跳跃
-            const framesToAdvance = Math.min(expectedFrame - lastFrame, 5);
+            const gt = this._playClockGt + ((now - this._playClockStart) / 1000);
+            lastT = now;
+            lastGt = gt;
             const prevGt = this._tlGlobalTime;
-
-            if (framesToAdvance > 0) {
-                for (let i = 0; i < framesToAdvance; i++) {
-                    // 当前目标帧号（0-based，基于目标帧率）
-                    const targetFrameIdx = lastFrame + 1;
-                    // 目标帧时间（片段内 localTime）已到达片段末尾：立即切换，不再绘制当前片段的帧。
-                    // 否则会把当前片段最后一帧多显示一帧（buffer 里 timestamp ≤ 末尾的帧被绘制后，
-                    // 切换要等下一轮 rAF / V1 异步加载完成），导致 V2→V1 交接延迟、时有时无。
-                    if (targetFrameIdx / targetFps >= clip.end) {
-                        this._advanceToNextClip();
-                        this._playbackRaf = 0;
-                        return;
-                    }
-                    // Bresenham floor 映射：目标第 k 帧对应源第 floor(k × srcFps / targetFps) 帧
-                    const srcFrameIdx = Math.floor(targetFrameIdx * srcFps / targetFps);
-                    // 源帧对应的时间点（秒）
-                    const srcVideoTime = srcFrameIdx / srcFps;
-                    // 从 buffer 取出所有早于 srcVideoTime 的帧，保留最后一个（跳过被丢弃的帧）
-                    let frame = this._lastShownFrame;
-                    while (this._playbackBuffer.length > 0 && this._playbackBuffer[0].timestamp <= srcVideoTime + 0.001) {
-                        frame = this._playbackBuffer.shift();
-                    }
-                    if (frame) {
-                        this._lastShownFrame = frame;
-                        // 多轨合成优先：当前时间点存在 V1+V2 时渲染合成帧（V2 半透明露出 V1）
-                        if (this._drawPlaybackComposite(frame.canvas, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height)) {
-                            // 合成帧已异步绘制，这里先不重复 Letterbox
-                        } else {
-                            // Letterbox 绘制到主 canvas（按目标分辨率 contain，两侧/上下黑边）
-                            this._drawSourceToCanvas(frame.canvas, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
-                        }
-                        // 更新全局时间：按目标帧率推进（与渲染输出一致）
-                        this._tlGlobalTime = offset + (targetFrameIdx / targetFps - clip.start);
-                        lastFrame++;
-                        this._updatePlayhead();
-                        this._updateTimeDisplay();
-                        this._autoScrollToPlayhead();
-                        // 播放中同步选中播放头位置片段（激活轨道优先，未激活时最上层）
-                        this._syncSelectionToPlayhead();
-                        // 持续预缓冲
-                        this._fillPlaybackBuffer();
-                    } else if (this._playbackBuffer.length === 0) {
-                        // buffer 为空且无上一帧：等待预缓冲
-                        break;
-                    }
-                }
-            }
-            // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
-            this._checkAudioBoundary(prevGt, this._tlGlobalTime);
-            // 超出片段出点 → 切换下一个片段
-            const localTime = clip.start + (this._tlGlobalTime - offset);
-            if (localTime >= clip.end) {
-                this._advanceToNextClip();
-                this._playbackRaf = 0;
-                return;
-            }
-            // 缓冲区为空且迭代器已结束（无更多帧可解码）：当前片段已播放完毕，切换下一个
-            // 不做循环播放：迭代器耗尽即结束，不再用 renderFrame 逐帧渲染后半段
-            if (this._playbackBuffer.length === 0 && this._playbackIteratorDone) {
-                this._tlGlobalTime = offset + (clip.end - clip.start);
+            this._tlGlobalTime = gt;
+            this._renderTimelineFrame(gt);   // 统一内核：当前 gt 所有层
+            this._checkAudioBoundary(prevGt, gt);
+            this._updatePlayhead();
+            this._updateTimeDisplay();
+            this._autoScrollToPlayhead();
+            this._syncSelectionToPlayhead();
+            // 已到（或超过）总时长 → 停止。总时长由最长轨道决定（音频尾部也计入）。
+            if (gt >= total - 0.001) {
+                this._tlGlobalTime = total;
                 this._updatePlayhead();
                 this._updateTimeDisplay();
-                this._advanceToNextClip();
+                this._tlPlaying = false;
+                this._updatePlayBtn(false);
+                this._stopPlaybackLoop();
+                this._stopAudio();
                 this._playbackRaf = 0;
                 return;
             }
@@ -8499,208 +8490,47 @@ export class XiaozhuguangVideoEditor {
         this._playbackRaf = requestAnimationFrame(loop);
     }
 
-    // 预缓冲：异步解码若干帧到队列
-    async _fillPlaybackBuffer() {
-        if (this._isBuffering || !this._tlPlaying) return;
-        if (!this._playbackIterator) return;
-        this._isBuffering = true;
-        try {
-            while (this._playbackBuffer.length < this._playbackBufferSize && this._tlPlaying) {
-                const result = await this._playbackIterator.next();
-                if (result.done) {
-                    this._playbackIteratorDone = true;
-                    console.warn(`[小珠光] 迭代器耗尽 clip=${this._currentClip?.filename} startLocalTime=${(this._currentClip?.start||0)} bufferLen=${this._playbackBuffer.length}`);
-                    break;
-                }
-                const wc = result.value;
-                if (wc && wc.canvas) {
-                    // 复制 canvas（避免 mediabunny 内部回收）
-                    const copy = document.createElement('canvas');
-                    copy.width = wc.canvas.width;
-                    copy.height = wc.canvas.height;
-                    copy.getContext('2d').drawImage(wc.canvas, 0, 0);
-                    this._playbackBuffer.push({ canvas: copy, timestamp: wc.timestamp });
-                }
-            }
-        } catch (e) {
-            console.error("[xzg-ve] 预缓冲失败:", e);
-        } finally {
-            this._isBuffering = false;
-        }
-    }
 
     _stopPlaybackLoop() {
         if (this._playbackRaf) {
             cancelAnimationFrame(this._playbackRaf);
             this._playbackRaf = 0;
         }
-        this._playbackIterator = null;
+        // 关键：显式关闭旧迭代器并释放 sink。
+        // 若仅置 null，mediabunny 的 canvases() 迭代器仍占用 sink，
+        // 后续合成层的 getCanvas() 随机寻址渲染会全部失败（V1 底层画面无法绘制），
+        // 且在途的 _fillPlaybackBuffer 会把旧片段的帧污染进新片段的播放缓冲，
+        // 导致新片段帧永远弹不出、播放头冻结在新片段头部。
+        if (this._playbackIterator) {
+            try {
+                const r = this._playbackIterator.return?.();
+                if (r && typeof r.then === "function") r.catch(() => {});
+            } catch (_) {}
+            this._playbackIterator = null;
+        }
+        if (this._playbackDecoder && typeof this._playbackDecoder.stopPlaybackIterator === "function") {
+            this._playbackDecoder.stopPlaybackIterator();
+        }
+        this._playbackDecoder = null;
+        this._compositeV1Cache = null;
         this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._isBuffering = false;
         this._lastShownFrame = null;
-    }
-
-    // 当前片段播放完毕，切换到下一个片段
-    // E2: 停止旧音频 + 新片段音频由 _loadClipAtTime 内部启动
-    _advanceToNextClip() {
-        if (!this._currentClip) return;
-        const clipDur = this._currentClip.end - this._currentClip.start;
-        const curTlStart = this._getClipTlStart(this._currentClip);
-        this._tlGlobalTime = curTlStart + clipDur;
-        if (!this._tlPlaying) return;
-
-        const curTlEnd = this._tlGlobalTime;
-        const total = this._getTimelineTotalDuration();
-
-        // 已到（或超过）总时长 → 停止。总时长由最长轨道决定：
-        // 即使 V1 视频早已播完，只要 A1 音频还延伸到末尾，就要播完 A1 才算完成。
-        if (curTlEnd >= total - 0.001) {
-            this._tlPlaying = false;
-            this._updatePlayBtn(false);
-            this._stopPlaybackLoop();
-            this._stopAudio();
-            this._tlGlobalTime = total;
-            this._updatePlayhead();
-            this._updateTimeDisplay();
-            return;
-        }
-
-        // 多轨重叠：当前片段结束后，此刻可能仍有其它片段在播
-        // （V2/V1 交叉覆盖、音频轨道延展）。用 _findClipByGlobalTime 判定
-        // curTlEnd 时刻真正应显示的片段，而不是按起始时间顺序找“下一个”，
-        // 否则会把早已开始且仍在延展的音频（如 A1）误当成“下一段”从片头重播，
-        // 导致播放头回跳、看起来像在循环。
-        const active = this._findClipByGlobalTime(curTlEnd);
-        if (active && active.clip.id !== this._currentClip.id) {
-            const next = active.clip;
-            // 纯音频接管（视频已播完，音频轨道仍在延展）：
-            // 用正确 localTime 续播，全局时间连续推进，播完 A1 才结束；
-            // 若切换到了不同音频片段，需重启音频源播放新片段
-            if (next.kind === "audio") {
-                this._stopPlaybackLoop();
-                this._currentClip = next;
-                this._currentDecoder = null;
-                this._currentImageEl = null;
-                this._clearCanvasForAudio();
-                this._startAudioOnlyPlaybackLoop(next, active.localTime);
-                this._updatePlayhead();
-                this._updateTimeDisplay();
-                this._startAudioPlayback();
-                return;
-            }
-            // 音频加载器模式：跳过视频片段接管，落入空隙逻辑
-            if (this._modeFilter !== "audio") {
-                // 视频接管（V2 结束瞬间 V1 已在播）：用正确 localTime 续播，避免从片头重播
-                this._updatePlayhead();
-                this._updateTimeDisplay();
-                this._loadClipAtTime(next, active.localTime, true);
-                return;
+        // VideoCache 预解码：停止播放时释放所有预取迭代器占用的 sink（不关闭 decoder，decoder 共享复用），
+        // 使接下来的 seek/单帧预览 readFrameCached 能随机寻址解码；同时清空预解码状态。
+        for (const st of this._vcache.values()) {
+            st.busy = false;
+            if (st.decoder && st.decoder._playbackIter) {
+                try { st.decoder.stopPlaybackIterator(); } catch (_) {}
             }
         }
+        this._vcache.clear();
+        // 与 OpenCut 一致：取帧走 VideoCache「读 FrameCache + 未命中才精解码」。
+        this._renderInFlight = false;
+        this._renderPendingGt = null;
+    }
 
-        // 真正的空隙：当前时间点无任何片段在播 → 黑屏等待，直到下一个片段起始
-        const candidates = this.timeline
-            .filter(c => c.id !== this._currentClip.id)
-            .map(c => ({ clip: c, tlStart: this._getClipTlStart(c), dur: c.end - c.start }))
-            .filter(x => x.dur > 0 && x.tlStart > curTlEnd + 0.001)
-            .filter(x => !(this._modeFilter === "audio" && x.clip.kind !== "audio"))
-            .sort((a, b) => a.tlStart - b.tlStart);
-
-        if (candidates.length > 0) {
-            this._clearCanvasForGap();
-            this._scheduleGapAdvance(candidates[0].tlStart, candidates[0].clip);
-        } else {
-            // 末尾无后续片段 → 停止
-            this._tlPlaying = false;
-            this._updatePlayBtn(false);
-            this._stopPlaybackLoop();
-            this._stopAudio();
-            this._tlGlobalTime = total;
-            this._updatePlayhead();
-            this._updateTimeDisplay();
-        }
-    }
-    // 图片播放循环：仅推进时间线，画面保持静止，到达片段末尾时加载下一个片段
-    _startImagePlaybackLoop() {
-        const clip = this._currentClip;
-        if (!clip) return;
-        const clipId = clip.id;
-        const offset = this._getClipTlStart(clip);
-        const clipEndGlobal = offset + (clip.end - clip.start);
-        let lastTime = performance.now();
-        const loop = () => {
-            if (!this._tlPlaying || !this._currentClip || this._currentClip.id !== clipId) {
-                this._playbackRaf = 0;
-                return;
-            }
-            // 多轨重叠切换：与视频播放循环一致，轮到更高优先级片段（V2 覆盖 V1）时立即切换
-            const activeNow = this._findClipByGlobalTime(this._tlGlobalTime);
-            if (activeNow && activeNow.clip.kind !== "audio" && activeNow.clip.id !== clipId) {
-                this._loadClipAtTime(activeNow.clip, activeNow.localTime, true);
-                return;
-            }
-            const now = performance.now();
-            const dt = (now - lastTime) / 1000;
-            lastTime = now;
-            const prevGt = this._tlGlobalTime;
-            this._tlGlobalTime += dt;
-            // 音频源管理：仅在音频片段边界变化时调用（片段开始/结束），避免频繁调用干扰音频线程
-            this._checkAudioBoundary(prevGt, this._tlGlobalTime);
-            // 到达片段末尾：停止并切换到下一个片段
-            if (this._tlGlobalTime >= clipEndGlobal - 0.001) {
-                this._tlGlobalTime = clipEndGlobal;
-                this._stopPlaybackLoop();
-                this._advanceToNextClip();
-                return;
-            }
-            this._updatePlayhead();
-            this._updateTimeDisplay();
-            this._autoScrollToPlayhead();
-            // 播放中同步选中播放头位置片段（激活轨道优先，未激活时最上层）
-            this._syncSelectionToPlayhead();
-            this._playbackRaf = requestAnimationFrame(loop);
-        };
-        this._playbackRaf = requestAnimationFrame(loop);
-    }
-    // 空隙期间黑屏等待，到达下一个片段起始时间后加载该片段
-    _scheduleGapAdvance(targetTlStart, nextClip) {
-        let lastTime = performance.now();
-        const check = () => {
-            if (!this._tlPlaying) return;
-            const now = performance.now();
-            const dt = (now - lastTime) / 1000;
-            lastTime = now;
-            // 空隙期间正常推进全局时间（播放循环已停止，需要手动推进）
-            this._tlGlobalTime = Math.min(targetTlStart, this._tlGlobalTime + dt);
-            if (this._tlGlobalTime >= targetTlStart - 0.001) {
-                this._tlGlobalTime = targetTlStart;
-                this._loadClipAtTime(nextClip, nextClip.start, true);
-                return;
-            }
-            this._updatePlayhead();
-            this._updateTimeDisplay();
-            this._autoScrollToPlayhead();
-            // 空隙推进期间同步选中（空隙处清空选中）
-            this._syncSelectionToPlayhead();
-            requestAnimationFrame(check);
-        };
-        requestAnimationFrame(check);
-    }
-    // 空隙处：清空 canvas 显示黑屏，停止当前解码与音频
-    _clearCanvasForGap() {
-        this._stopPlaybackLoop();
-        this._stopAudio();
-        if (this._canvas) {
-            const ctx = this._canvas.getContext("2d");
-            if (ctx) {
-                ctx.fillStyle = "#000";
-                ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
-            }
-        }
-        this._currentClip = null;
-        this._currentDecoder = null;
-    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 音频播放（基于 AudioContext + AudioBufferSink）
@@ -9645,6 +9475,8 @@ export class XiaozhuguangVideoEditor {
             }
             // 同步预览外观比例与 canvas 内部分辨率 = 首片段分辨率
             this._syncPreviewCanvasSize();
+            // 持久化到渲染设置，供 silentRender（加载器快速导出）保持一致
+            if (typeof this._persistRenderRes === 'function') this._persistRenderRes();
             // 如果此时已有渲染到 canvas 的当前帧（比如拖入后立即播放/seek），重新按目标比例 letterbox 画一次
             if (this._currentClip) this._refreshCurrentFrame();
         }
@@ -9701,15 +9533,18 @@ export class XiaozhuguangVideoEditor {
             renderOpts.add_time_stamp = this._addTimeStamp;
         }
         // 帧率 + 分辨率
+        let targetFps = 0;
         if (this.timeline.length > 0) {
-            const fps = this._getClipFps(this.timeline[0]);
-            if (fps > 0) renderOpts.target_fps = fps;
+            targetFps = this._getClipFps(this.timeline[0]);
+            if (targetFps > 0) renderOpts.target_fps = targetFps;
         }
         const wInput = this._root?.querySelector(".xzg-ve-render-w");
         const hInput = this._root?.querySelector(".xzg-ve-render-h");
         const tw = Math.max(0, Math.round(Number(wInput?.value || 0)));
         const th = Math.max(0, Math.round(Number(hInput?.value || 0)));
         if (tw > 0 && th > 0) { renderOpts.target_width = tw; renderOpts.target_height = th; }
+        // 持久化快剪界面分辨率/帧率，供 silentRender（加载器快速导出）保持一致
+        this._persistRenderRes();
 
         // 格式 + 质量/比特率
         const formatSel = this._root?.querySelector(".xzg-ve-format-select");
@@ -9734,6 +9569,19 @@ export class XiaozhuguangVideoEditor {
             isCustom,
             bitrateOrQuality: renderOpts.quality || renderOpts.audio_bitrate || "",
         };
+    }
+
+    // 把快剪界面当前的分辨率/帧率持久化，供 silentRender（加载器快速导出）保持一致
+    _persistRenderRes() {
+        const wInput = this._root?.querySelector(".xzg-ve-render-w");
+        const hInput = this._root?.querySelector(".xzg-ve-render-h");
+        const fpsInput = this._root?.querySelector(".xzg-ve-render-fps");
+        const tw = Math.max(0, Math.round(Number(wInput?.value || 0)));
+        const th = Math.max(0, Math.round(Number(hInput?.value || 0)));
+        const fps = Math.max(0, Number(fpsInput?.value || 0));
+        try {
+            localStorage.setItem(XZG_VE_RENDER_SETTINGS_KEY, JSON.stringify({ tw, th, fps }));
+        } catch (_) {}
     }
 
     async _render() {
@@ -9972,12 +9820,20 @@ async function _xzgVideoEditorSilentRender() {
     } catch (_) {}
 
     // 渲染参数：强制 default 模式（保存到 ComfyUI output 目录）
-    // 分辨率/帧率不传，让后端用源视频参数
+    // 分辨率/帧率跟随快剪界面设置（编辑器导出时持久化），无则后端用源视频参数
     const renderOpts = {
         timeline: tlData,
         use_default_output: true,
         output_mode: "default",
     };
+    try {
+        const rs = JSON.parse(localStorage.getItem(XZG_VE_RENDER_SETTINGS_KEY) || "{}");
+        const rw = Math.max(0, Math.round(Number(rs.tw || 0)));
+        const rh = Math.max(0, Math.round(Number(rs.th || 0)));
+        if (rw > 0 && rh > 0) { renderOpts.target_width = rw; renderOpts.target_height = rh; }
+        const rf = Math.max(0, Number(rs.fps || 0));
+        if (rf > 0) renderOpts.target_fps = rf;
+    } catch (_) {}
     if (audioOnly) {
         renderOpts.audio_only = true;
         renderOpts.audio_format = audioFormat;

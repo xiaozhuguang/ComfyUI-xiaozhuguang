@@ -25,6 +25,10 @@ python_paths.json
 # Log / temp
 _thumb_out2.txt
 custom-node-list.json
+_tmp_*.ps1
+_tmp_src/
+desktop.ini
+repro_*.json
 
 # Node.js deps
 node_modules/

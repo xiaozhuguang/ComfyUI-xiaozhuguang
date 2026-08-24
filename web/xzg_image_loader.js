@@ -32,6 +32,10 @@ function getMaskDataWidget(node) {
     return getWidgetByName(node, "mask_data");
 }
 
+function getCropDataWidget(node) {
+    return getWidgetByName(node, "crop_data");
+}
+
 function getUploadModeWidget(node) {
     return getWidgetByName(node, "upload_mode");
 }
@@ -316,7 +320,7 @@ async function xzgSaveImage(url, filename) {
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
-        "width:100%;min-width:0;min-height:200px;box-sizing:border-box;overflow:hidden;padding:6px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:4px 0;display:flex;flex-direction:row;gap:6px;z-index:10;position:relative;";
+        "width:100%;min-width:0;min-height:140px;box-sizing:border-box;overflow:hidden;padding:0;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:0;display:flex;flex-direction:row;gap:0;z-index:10;position:relative;";
     container.style.userSelect = "none";
     container.style.webkitUserSelect = "none";
     // 启用空格+拖动平移画布（DOM widget 默认会拦截 pointer 事件）
@@ -416,6 +420,62 @@ function createImgBatchUI(node) {
         contextMenu.style.display = "none";
     };
 
+    // 裁剪模式右键菜单：应用待选区 / 清空裁剪
+    const showCropContextMenu = (x, y) => {
+        contextMenu.innerHTML = "";
+        const makeItem = (label, color) => {
+            const item = document.createElement("div");
+            item.textContent = label;
+            item.style.cssText = `padding:6px 14px;cursor:pointer;white-space:nowrap;color:${color || "var(--input-text)"};`;
+            item.addEventListener("mouseenter", () => { item.style.background = "var(--comfy-input-bg)"; });
+            item.addEventListener("mouseleave", () => { item.style.background = ""; });
+            return item;
+        };
+        // 应用裁剪（绿）：与左侧"应用裁剪"按钮一致
+        const applyItem = makeItem(xzgT("应用裁剪", "Apply Crop"), "#66CC66");
+        applyItem.title = xzgT("以当前选区裁剪图片", "Crop image to current selection");
+        applyItem.addEventListener("click", () => {
+            hideContextMenu();
+            _applyCrop();
+        });
+        contextMenu.appendChild(applyItem);
+        if (_cropPending) {
+            // 清除选框（红）：与左侧"清除选框"按钮一致
+            const selItem = makeItem(xzgT("清除选框", "Clear Sel"), "#FF6B6B");
+            selItem.addEventListener("click", () => {
+                hideContextMenu();
+                _cropPending = null;
+                _cropSelStart = _cropSelCur = null;
+                _renderMaskOverlay();
+            });
+            contextMenu.appendChild(selItem);
+        }
+        if (_cropPending || cropRect) {
+            // 恢复原始（蓝）：与左侧"恢复原始"按钮一致
+            const clearItem = makeItem(xzgT("恢复原始", "Restore Original"), "#4A90E2");
+            clearItem.addEventListener("click", () => {
+                hideContextMenu();
+                cropRect = null;
+                _cropPending = null;
+                _commitCropToWidget();
+                _refreshCropPreview(); // 恢复原图显示
+                _renderMaskOverlay();
+                _updateSingleResLabel();
+            });
+            contextMenu.appendChild(clearItem);
+        }
+        contextMenu.style.left = `${x}px`;
+        contextMenu.style.top = `${y}px`;
+        contextMenu.style.display = "block";
+        const rect = contextMenu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            contextMenu.style.left = `${window.innerWidth - rect.width - 4}px`;
+        }
+        if (rect.bottom > window.innerHeight) {
+            contextMenu.style.top = `${window.innerHeight - rect.height - 4}px`;
+        }
+    };
+
     const dismissContextMenu = (e) => {
         if (contextMenu.style.display === "block" && !contextMenu.contains(e.target)) {
             hideContextMenu();
@@ -436,9 +496,9 @@ function createImgBatchUI(node) {
     let _maskLastPt = null;
     let _maskHoverPt = null;               // 鼠标在 overlay 上的 CSS 像素坐标，用于笔刷预览
     let _lastCursorZoom = 0;               // 缓存上次光标更新时的 zoom，避免频繁重建
-    let _altDragActive = false;            // Alt+左右拖动调整笔刷大小
-    let _altDragStartX = 0;                // Alt+拖动起始 X 坐标
-    let _altDragStartBrush = 0;            // Alt+拖动起始笔刷大小
+    let _altBrushActive = false;           // Alt+右键按下拖动：调整笔刷大小
+    let _altBrushStartX = 0;               // Alt+右键拖动起始 X 坐标
+    let _altBrushStartSize = 0;            // Alt+右键拖动起始笔刷大小
     let _maskOrigSize = null;               // 记录遮罩开启前的节点原始大小
     let _maskOrigCanvas = null;              // 记录遮罩开启前的画布状态 { scale, offset }
     let _maskImgZoom = 1;                    // 图片缩放倍率（1x~8x）
@@ -454,6 +514,23 @@ function createImgBatchUI(node) {
     // 遮罩原图真实尺寸（像素），用于映射绘制坐标
     let _maskImgNaturalW = 0;
     let _maskImgNaturalH = 0;
+
+    // ═══════════ 裁剪选区状态（仅单图模式可用，与遮罩同入口） ═══════════
+    let cropEnabled = false;            // 裁剪选区模式是否开启
+    let cropRect = null;                // 原图像素 { x, y, w, h }，null = 无裁剪
+    let _cropOrigSize = null;           // 记录裁剪开启前的节点原始大小
+    let _cropOrigCanvas = null;         // 记录裁剪开启前的画布状态 { scale, offset }
+    let _cropDrawing = false;           // 拖拽选择矩形中
+    let _cropSelStart = null;           // 选区起点（原图像素）
+    let _cropSelCur = null;             // 选区当前点（原图像素，拖拽中）
+    let _cropPending = null;            // 拖拽出的待应用选区（原图像素），右键「应用裁剪」或双击后才生效
+    let _cropResizeCorner = null;       // 正在拖动的裁剪框角（"tl"/"tr"/"bl"/"br"）或 null
+    let _cropResizeBase = null;         // 拖动角开始时待选框（原图像素），用于重算
+    let _cropResizeAnchorPos = null;    // 拖动角时固定的对角锚点（原图像素 [x,y]）
+    let _cropMove = false;              // 是否正在拖动裁剪框整体移动位置
+    let _cropMoveStart = null;          // 移动起点（原图像素 [x,y]）
+    let _cropMoveBase = null;           // 移动开始时待选框（原图像素 {x,y,w,h}）
+    let _cropAspect = null;             // 裁剪比例约束（如 9/16、16/9…），null = 自由比例
 
     const getImgNameFromEvent = (e) => {
         const cell = e.target.closest("[data-xzg-img-card]");
@@ -473,6 +550,11 @@ function createImgBatchUI(node) {
     container.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        // 裁剪模式下右键弹出「应用裁剪 / 清空裁剪」菜单
+        if (cropEnabled) {
+            showCropContextMenu(e.clientX, e.clientY);
+            return;
+        }
         const imgName = getImgNameFromEvent(e);
         if (imgName) {
             showContextMenu(e.clientX, e.clientY, imgName);
@@ -480,14 +562,64 @@ function createImgBatchUI(node) {
     });
 
     const sidebar = document.createElement("div");
-    sidebar.style.cssText = "display:flex;flex-direction:column;gap:2px;min-width:52px;width:52px;pointer-events:auto;";
+    // 宽度收缩为内容自适应（按钮已无边框无底色，固定 52px 纯属浪费），
+    // 让左侧按钮列尽量靠左、占位最少，图像预览区拿到最大宽度
+    sidebar.style.cssText = "display:flex;flex-direction:column;gap:2px;width:auto;min-width:0;flex:0 0 auto;pointer-events:auto;";
 
-    const mkBtn = (label, title) => {
+    // 画布态侧栏图标集（24 视口 / 1.8px 描边 / 圆角端点，stroke=currentColor 继承按钮前景色）
+    const ICON_STR = {
+        upload: '<svg viewBox="0 0 24 24"><path d="M12 17V6"/><path d="M6 11l6-6 6 6"/><path d="M4 19h16"/></svg>',
+        input: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="M9 13l3 3 3-3"/></svg>',
+        output: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 14V9"/><path d="M9 12l3-3 3 3"/></svg>',
+        del: '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>',
+        clear: '<svg viewBox="0 0 24 24"><path d="M19 5L9.5 14.5"/><path d="M8 19l-3 3"/><path d="M13 20.5l-4 4"/><path d="M6.5 8.5l.01 0"/><path d="M10 6l.01 0"/><path d="M15 17l-2 2"/><path d="M12.5 12.5L17 8"/></svg>',
+        mask: '<svg class="xzg-ic-mask" viewBox="0 0 24 24"><circle class="mr" cx="12" cy="12" r="9.5"/><path class="ml" d="M12 2.5 A9.5 9.5 0 0 1 21.5 12 A9.5 9.5 0 0 1 12 21.5 A4.75 4.75 0 0 1 12 12 A4.75 4.75 0 0 0 12 2.5 Z"/><circle class="o" cx="12" cy="12" r="9.5"/><circle class="er" cx="12" cy="16.75" r="1.15"/></svg>',
+        crop: '<svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>'
+    };
+
+    if (!document.getElementById("xzg-side-ic-style")) {
+        const _ics = document.createElement("style");
+        _ics.id = "xzg-side-ic-style";
+        _ics.textContent = `
+            .xzg-ic-btn{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;padding:4px 2px;box-sizing:border-box;border:none;background:transparent;border-radius:4px;cursor:pointer;color:var(--input-text);white-space:nowrap;}
+            .xzg-ic-btn:hover{filter:brightness(1.2);}
+            .xzg-ic-btn svg{width:20px;height:20px;flex:0 0 auto;display:block;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
+            .xzg-ic-btn .xzg-ic-g{display:inline-flex;}
+            .xzg-ic-btn .xzg-ic-lb{display:none;overflow:hidden;text-overflow:ellipsis;}
+            .xzg-edit .xzg-ic-btn{justify-content:center;}
+            .xzg-edit .xzg-ic-btn .xzg-ic-lb{display:inline;}
+            .xzg-edit .xzg-ic-btn .xzg-ic-g{display:none;}
+            :root{--xzg-mask-dark:#000000;--xzg-mask-light:#f5f5f5;}
+            [data-theme="light"]{--xzg-mask-dark:#000000;--xzg-mask-light:#fafafa;}
+            .xzg-ic-btn .xzg-ic-mask .o{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round;}
+            .xzg-ic-btn .xzg-ic-mask .ml{fill:var(--xzg-mask-light);stroke:none;}
+            .xzg-ic-btn .xzg-ic-mask .mr{fill:var(--xzg-mask-dark);stroke:none;}
+            .xzg-ic-btn .xzg-ic-mask .el{fill:var(--xzg-mask-dark);stroke:none;}
+            .xzg-ic-btn .xzg-ic-mask .er{fill:var(--xzg-mask-light);stroke:none;}
+        `;
+        document.head.appendChild(_ics);
+    }
+
+    const mkBtn = (label, title, iconKey) => {
         const b = document.createElement("button");
-        b.textContent = label;
         b.title = title || label;
-        b.style.cssText =
-            "padding:4px 2px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        b.className = "xzg-ic-btn";
+        if (iconKey) {
+            const g = document.createElement("span");
+            g.className = "xzg-ic-g";
+            g.innerHTML = ICON_STR[iconKey];
+            const lb = document.createElement("span");
+            lb.className = "xzg-ic-lb";
+            lb.textContent = label;
+            b.__lb = lb;
+            b.appendChild(g);
+            b.appendChild(lb);
+            b.style.cssText = "font-size:11px;line-height:1.4;width:100%;";
+        } else {
+            b.textContent = label;
+            b.style.cssText =
+                "font-size:11px;line-height:1.4;width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;";
+        }
         b.addEventListener("mouseenter", () => {
             b.style.filter = "brightness(1.2)";
         });
@@ -497,11 +629,11 @@ function createImgBatchUI(node) {
         return b;
     };
 
-    const uploadBtn = mkBtn(xzgT("上传", "Upload"), xzgT("上传图片（可多选）", "Upload images (multi-select)"));
-    const folderBtn = mkBtn(xzgT(".input", ".input"), xzgT("从input文件夹选择", "Select from input folder"));
-    const outputBtn = mkBtn(xzgT(".output", ".output"), xzgT("从output文件夹选择", "Select from output folder"));
-    const deleteBtn = mkBtn(xzgT("删除", "Delete"), xzgT("删除选中", "Delete selected"));
-    const clearBtn = mkBtn(xzgT("清空", "Clear"), xzgT("清空全部", "Clear all"));
+    const uploadBtn = mkBtn(xzgT("上传", "Upload"), xzgT("上传图片（可多选）", "Upload images (multi-select)"), "upload");
+    const folderBtn = mkBtn(xzgT(".input", ".input"), xzgT("从input文件夹选择", "Select from input folder"), "input");
+    const outputBtn = mkBtn(xzgT(".output", ".output"), xzgT("从output文件夹选择", "Select from output folder"), "output");
+    const deleteBtn = mkBtn(xzgT("删除", "Delete"), xzgT("删除选中", "Delete selected"), "del");
+    const clearBtn = mkBtn(xzgT("清空", "Clear"), xzgT("清空全部", "Clear all"), "clear");
 
     // 5个操作按钮包在组内，加大间距
     const actionGroup = document.createElement("div");
@@ -550,7 +682,7 @@ function createImgBatchUI(node) {
 
     const uploadModeBtn = document.createElement("button");
     uploadModeBtn.style.cssText =
-        "padding:4px 2px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
     uploadModeBtn.addEventListener("mouseenter", () => {
         uploadModeBtn.style.filter = "brightness(1.2)";
     });
@@ -586,7 +718,7 @@ function createImgBatchUI(node) {
     const updateUploadModeBtn = () => {
         uploadModeBtn.textContent = uploadMode === "append" ? xzgT("多图", "Multi") : xzgT("单图", "Single");
         uploadModeBtn.title = uploadMode === "append" ? xzgT("批量加载图片模式", "Batch Load Mode") : xzgT("单图加载模式", "Single Load Mode");
-        uploadModeBtn.style.border = "1px solid var(--border-color)";
+        uploadModeBtn.style.border = "none";
         uploadModeBtn.style.background = "transparent";
         uploadModeBtn.style.color = "#FF6B6B";
     };
@@ -594,7 +726,7 @@ function createImgBatchUI(node) {
 
     const modeBtn = document.createElement("button");
     modeBtn.style.cssText =
-        "padding:4px 2px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
     modeBtn.addEventListener("mouseenter", () => {
         modeBtn.style.filter = "brightness(1.2)";
     });
@@ -619,16 +751,14 @@ function createImgBatchUI(node) {
         modeBtn.textContent = isBatch ? xzgT("批次", "Batch") : xzgT("列表", "List");
         if (disabled) {
             modeBtn.title = isSingleMode ? xzgT("单图加载模式下不可用", "Not available in single mode") : "";
-            modeBtn.style.borderColor = "#666";
-            modeBtn.style.borderWidth = "1px";
-            modeBtn.style.borderStyle = "solid";
+            modeBtn.style.border = "none";
+            modeBtn.style.color = "#666";
             modeBtn.style.cursor = "default";
             modeBtn.style.opacity = "0.4";
         } else {
             modeBtn.title = isBatch ? xzgT("切换为列表模式", "Switch to List Mode") : xzgT("切换为批次模式", "Switch to Batch Mode");
-            modeBtn.style.borderColor = isBatch ? "#66CC66" : "#6699FF";
-            modeBtn.style.borderWidth = "1px";
-            modeBtn.style.borderStyle = "solid";
+            modeBtn.style.border = "none";
+            modeBtn.style.color = isBatch ? "#66CC66" : "#6699FF";
             modeBtn.style.cursor = "pointer";
             modeBtn.style.opacity = "1";
         }
@@ -663,17 +793,32 @@ function createImgBatchUI(node) {
     // ═══════════ 遮罩绘制工具栏（左侧面板，清空按钮下方） ═══════════
     const maskToolbar = document.createElement("div");
     maskToolbar.style.cssText = "display:none;flex-direction:column;gap:2px;width:100%;";
-    const _mkMaskBtn = (label, title) => {
+    const _mkMaskBtn = (label, title, iconKey) => {
         const b = document.createElement("button");
-        b.textContent = label;
         b.title = title || label;
-        b.style.cssText =
-            "padding:4px 2px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        if (iconKey) {
+            b.className = "xzg-ic-btn";
+            const g = document.createElement("span");
+            g.className = "xzg-ic-g";
+            g.innerHTML = ICON_STR[iconKey];
+            const lb = document.createElement("span");
+            lb.className = "xzg-ic-lb";
+            lb.textContent = label;
+            b.__lb = lb;
+            b.appendChild(g);
+            b.appendChild(lb);
+            b.style.cssText = "font-size:11px;line-height:1.4;width:100%;";
+        } else {
+            b.textContent = label;
+            // 编辑界面（遮罩/裁剪工具栏）保持原设计：文字居中
+            b.style.cssText =
+                "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        }
         b.addEventListener("mouseenter", () => { b.style.filter = "brightness(1.2)"; });
         b.addEventListener("mouseleave", () => { b.style.filter = ""; });
         return b;
     };
-    const maskToggleBtn = _mkMaskBtn(xzgT("遮罩:关", "Mask:Off"), xzgT("开启/关闭遮罩绘制模式（仅单图模式）", "Toggle mask drawing (single mode only)"));
+    const maskToggleBtn = _mkMaskBtn(xzgT("遮罩", "Mask"), xzgT("开启/关闭遮罩绘制模式（仅单图模式）", "Toggle mask drawing (single mode only)"), "mask");
     const maskBrushBtn = _mkMaskBtn(xzgT("画笔", "Brush"), xzgT("切换到画笔工具", "Switch to Brush"));
     const maskEraserBtn = _mkMaskBtn(xzgT("橡皮", "Eraser"), xzgT("切换到橡皮擦工具", "Switch to Eraser"));
     const maskClearBtn = _mkMaskBtn(xzgT("清空", "Clear"), xzgT("清除整个遮罩", "Clear mask"));
@@ -706,6 +851,69 @@ function createImgBatchUI(node) {
     maskToolbar.appendChild(maskEraserBtn);
     maskToolbar.appendChild(maskClearBtn);
     maskToolbar.appendChild(maskInvertBtn);
+
+    // 裁剪选区按钮（与遮罩同一工具栏，仅单图模式显示，互斥开启）
+    const cropToggleBtn = _mkMaskBtn(xzgT("裁剪", "Crop"), xzgT("开启/关闭裁剪选区（仅单图模式）", "Toggle crop region (single mode only)"), "crop");
+    const cropClearBtn = _mkMaskBtn(xzgT("恢复原始", "Restore Original"), xzgT("撤销裁剪，恢复原图", "Reset crop"));
+    // 清除当前待选框并解除拖选锁定，便于重新框选
+    const cropSelClearBtn = _mkMaskBtn(xzgT("清除选框", "Clear Sel"), xzgT("清除当前裁剪选框，可重新框选", "Clear current crop selection"));
+    // 应用裁剪：把当前选框正式应用到图片
+    const cropApplyBtn = _mkMaskBtn(xzgT("应用裁剪", "Apply Crop"), xzgT("应用当前裁剪选框", "Apply current crop region"));
+    // 比例裁剪下拉：自由 / 9:16 / 16:9 / 1:1 / 2:3 / 3:2 / 3:4 / 4:3
+    const _cropRatios = [["自由", null], ["9:16", 9 / 16], ["16:9", 16 / 9], ["1:1", 1], ["2:3", 2 / 3], ["3:2", 3 / 2], ["3:4", 3 / 4], ["4:3", 4 / 3]];
+    const cropRatioRow = document.createElement("div");
+    // 编辑界面保持原横向设计（标签+下拉框同行，对齐 hack 在 _refreshMaskToolbar 内）
+    cropRatioRow.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px 0;box-sizing:border-box;";
+    const cropRatioLabel = document.createElement("span");
+    cropRatioLabel.textContent = xzgT("裁剪比例", "Crop Ratio");
+    cropRatioLabel.style.cssText = "color:var(--input-text);font-size:11px;white-space:nowrap;flex-shrink:0;";
+    const cropRatioSelect = document.createElement("select");
+    cropRatioSelect.style.cssText =
+        "flex:1;min-width:0;background:var(--comfy-input-bg);color:#FFD700;font-weight:bold;border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;padding:4px 2px;box-sizing:border-box;outline:none;";
+    cropRatioSelect.style.boxShadow = "none";
+    _cropRatios.forEach(([label, ratio]) => {
+        const opt = document.createElement("option");
+        opt.textContent = label;
+        opt.value = ratio === null ? "free" : String(ratio);
+        opt.style.color = "#FFFFFF"; // 下拉列表选项白字
+        cropRatioSelect.appendChild(opt);
+    });
+    cropRatioSelect.value = "free"; // 默认为“自由”
+    // 统一刷新下拉选中值（依据当前 _cropAspect）
+    const refreshCropRatioUI = () => {
+        cropRatioSelect.value = _cropAspect === null || _cropAspect === undefined ? "free" : String(_cropAspect);
+    };
+    // 清除当前裁剪框（待选框 / 已应用裁剪）及选区与拖拽状态，切换到新比例重新框选
+    function _clearCropBox() {
+        _cropPending = null;
+        cropRect = null;
+        _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
+        _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
+        _cropSelStart = _cropSelCur = null;
+        _cropDrawing = false;
+    }
+    cropRatioSelect.addEventListener("change", (e) => {
+        e.stopPropagation();
+        const val = cropRatioSelect.value;
+        const ratio = val === "free" ? null : parseFloat(val);
+        _cropAspect = ratio; // null 即自由比例
+        refreshCropRatioUI();
+        // 无论切换到具体比例还是自由，都清除现有裁剪框，避免旧框在自由模式下残留
+        _clearCropBox();
+        _commitCropToWidget();
+        _resetImgZoom();
+        _refreshCropPreview();
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+    });
+    refreshCropRatioUI(); // 默认选中"自由"（_cropAspect 初始为 null）
+    cropRatioRow.appendChild(cropRatioLabel);
+    cropRatioRow.appendChild(cropRatioSelect);
+    maskToolbar.appendChild(cropToggleBtn);
+    maskToolbar.appendChild(cropApplyBtn);
+    maskToolbar.appendChild(cropClearBtn);
+    maskToolbar.appendChild(cropSelClearBtn);
+    maskToolbar.appendChild(cropRatioRow);
     actionGroup.appendChild(maskToolbar);
 
     // 统一的显示状态同步（只在这个函数里改 overlay/eventLayer 的 pointer-events/display，避免多改冲突）
@@ -715,7 +923,7 @@ function createImgBatchUI(node) {
         singleMaskOverlay.style.display = isSingle ? "block" : "none";
         singleMaskOverlay.style.pointerEvents = "none";
         // 事件层和笔刷预览仅在绘制模式开启时显示
-        const shouldEdit = isSingle && maskEnabled;
+        const shouldEdit = isSingle && (maskEnabled || cropEnabled);
         singleMaskEventLayer.style.display = shouldEdit ? "block" : "none";
         singleMaskEventLayer.style.pointerEvents = "none";
         if (!shouldEdit) {
@@ -734,23 +942,72 @@ function createImgBatchUI(node) {
     const _refreshMaskToolbar = () => {
         const isSingle = uploadMode === "replace";
         maskToolbar.style.display = isSingle ? "flex" : "none";
-        maskToggleBtn.textContent = maskEnabled ? xzgT("退出遮罩", "Exit Mask") : xzgT("遮罩:关", "Mask:Off");
-        maskToggleBtn.style.color = maskEnabled ? "#FF6B6B" : "var(--input-text)";
-        maskToggleBtn.style.borderColor = maskEnabled ? "#FF6B6B" : "var(--border-color)";
+        const editing = maskEnabled || cropEnabled;
+        // 编辑界面（遮罩/裁剪开启）：恢复原设计的固定 52px 侧栏 + 居中按钮；
+        // 画布态：侧栏内容自适应 + 开关按钮左对齐（预览区最大化）
+        sidebar.style.width = editing ? "52px" : "auto";
+        sidebar.style.minWidth = editing ? "52px" : "0";
+        sidebar.classList.toggle("xzg-edit", editing);
+        // 图标按钮的文字形态（lb）仅编辑态显示；画布态走图标
+        maskToggleBtn.__lb.textContent = maskEnabled ? xzgT("退出", "Exit") : xzgT("遮罩", "Mask");
+        // 遮罩切换按钮：取消边框与底色；编辑态文字金色、画布态图标用普通文字色
+        maskToggleBtn.style.border = "none";
+        maskToggleBtn.style.background = "transparent";
+        maskToggleBtn.style.color = editing ? "#FFD700" : "var(--input-text)";
+        maskToggleBtn.style.fontSize = maskEnabled ? "20px" : "12px";
+        maskToggleBtn.style.padding = "4px 0";
         maskBrushBtn.style.color = maskTool === "brush" ? "#66CC66" : "var(--input-text)";
         maskBrushBtn.style.borderColor = maskTool === "brush" ? "#66CC66" : "var(--border-color)";
         maskEraserBtn.style.color = maskTool === "eraser" ? "#FF6B6B" : "var(--input-text)";
         maskEraserBtn.style.borderColor = maskTool === "eraser" ? "#FF6B6B" : "var(--border-color)";
-        // 遮罩关闭时折叠调整按钮，开启时展开
+        cropToggleBtn.__lb.textContent = cropEnabled ? xzgT("退出", "Exit") : xzgT("裁剪", "Crop");
+        // 裁剪切换按钮：取消边框与底色；编辑态文字金色、画布态图标用普通文字色，上移4px
+        cropToggleBtn.style.border = "none";
+        cropToggleBtn.style.background = "transparent";
+        cropToggleBtn.style.color = editing ? "#FFD700" : "var(--input-text)";
+        cropToggleBtn.style.fontSize = cropEnabled ? "20px" : "12px";
+        cropToggleBtn.style.padding = "4px 0";
+        cropToggleBtn.style.marginTop = "-4px";
+        cropClearBtn.style.color = cropEnabled ? "#4A90E2" : "var(--input-text)"; // "恢复原始"：蓝色
+        cropClearBtn.style.borderColor = cropEnabled ? "#4A90E2" : "var(--border-color)";
+        cropSelClearBtn.style.color = cropEnabled ? "#FF6B6B" : "var(--input-text)"; // "清除选框"：红色
+        cropSelClearBtn.style.borderColor = cropEnabled ? "#FF6B6B" : "var(--border-color)";
+        // 画笔系列仅在遮罩开启时显示；进入裁剪模式时不显示遮罩按钮；遮罩与裁剪互斥
         const vis = maskEnabled ? "" : "none";
+        maskToggleBtn.style.display = cropEnabled ? "none" : "";
+        cropToggleBtn.style.display = maskEnabled ? "none" : "";
+        cropApplyBtn.style.display = (!cropEnabled || maskEnabled) ? "none" : "";
+        cropApplyBtn.style.color = cropEnabled && !maskEnabled ? "#66CC66" : "var(--input-text)"; // "应用裁剪"：绿色
+        cropApplyBtn.style.borderColor = cropEnabled && !maskEnabled ? "#66CC66" : "var(--border-color)";
         brushSizeRow.style.display = vis;
         maskBrushBtn.style.display = vis;
         maskEraserBtn.style.display = vis;
         maskClearBtn.style.display = vis;
         maskInvertBtn.style.display = vis;
-        // 遮罩开启时隐藏上传/.input/.output/删除/清空按钮及左下角单图/列表批次按钮，避免误操作
+        cropClearBtn.style.display = !cropEnabled ? "none" : "";
+        cropSelClearBtn.style.display = !cropEnabled ? "none" : "";
+        cropRatioRow.style.display = (!cropEnabled || maskEnabled) ? "none" : "";
+        if (cropEnabled && !maskEnabled) {
+            // 让「裁剪比例」标签左缘与「应用裁剪」等 4 字按钮的居中文字左缘精确对齐（编辑界面原设计）。
+            // 按钮文字左像素 = paddingLeft + (offsetWidth - paddingLeft - paddingRight - textW) / 2
+            const btn = cropApplyBtn;
+            const bw = btn.offsetWidth;
+            if (bw > 0) {
+                const cs = getComputedStyle(btn);
+                const pl = parseFloat(cs.paddingLeft) || 0;
+                const pr = parseFloat(cs.paddingRight) || 0;
+                let tw = 0;
+                try { const c = document.createElement("canvas").getContext("2d");
+                      c.font = `${cs.fontSize || "11px"} ${cs.fontFamily || "sans-serif"}`;
+                      tw = c.measureText(btn.textContent || "").width; } catch (_) {}
+                cropRatioRow.style.paddingLeft = Math.max(0, pl + (bw - pl - pr - tw) / 2) + "px";
+            }
+        } else {
+            cropRatioRow.style.paddingLeft = "";
+        }
+        // 开启编辑模式时隐藏上传/.input/.output/删除/清空按钮及左下角单图/列表批次按钮，避免误操作
         const actionBtns = [uploadBtn, folderBtn, outputBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn];
-        actionBtns.forEach(btn => { btn.style.display = maskEnabled ? "none" : ""; });
+        actionBtns.forEach(btn => { btn.style.display = editing ? "none" : ""; });
         _syncMaskLayerVisibility();
     };
 
@@ -760,7 +1017,9 @@ function createImgBatchUI(node) {
             xzgAlert(xzgT("遮罩绘制仅在单图模式下可用", "Mask drawing is only available in single image mode"));
             return;
         }
+        if (!maskEnabled) cropEnabled = false; // 互斥：开启遮罩即关闭裁剪
         maskEnabled = !maskEnabled;
+        _refreshCropPreview(); // 若退出裁剪预览（切换到遮罩），恢复原图显示
         // 开启遮罩时自动选中节点、调整大小、放大画布
         if (maskEnabled && app?.canvas) {
             app.canvas.selectNode(node);
@@ -773,6 +1032,7 @@ function createImgBatchUI(node) {
                     offset: [app.canvas.ds.offset[0], app.canvas.ds.offset[1]],
                 };
             }
+            _persistOrigNodeSize("xzg_mask_orig_size"); // 持久化原始大小，刷新后可恢复
             node.setSize([1280, 720]);
             // 缩放画布使节点充满屏幕
             const cw = app.canvas.canvas.width;
@@ -790,6 +1050,7 @@ function createImgBatchUI(node) {
             node.setSize(_maskOrigSize);
             _maskOrigSize = null;
             _resetImgZoom();
+            if (node.properties) delete node.properties.xzg_mask_orig_size; // 清除持久化标记
             if (_maskOrigCanvas && app?.canvas) {
                 app.canvas.ds.scale = _maskOrigCanvas.scale;
                 app.canvas.ds.offset[0] = _maskOrigCanvas.offset[0];
@@ -831,6 +1092,441 @@ function createImgBatchUI(node) {
         _commitMaskToWidget();
     });
 
+    // ═══════════ 裁剪选区：widget 读写 ═══════════
+    // 清除全部遮罩绘制数据（离屏 canvas + widget），打开裁剪模式时调用，防止裁剪/遮罩坐标系错位
+    function _clearMaskData() {
+        if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
+            maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
+        }
+        _maskBoundImageName = null;
+        const w = getMaskDataWidget(node);
+        if (w) { w.value = ""; w.callback?.(w.value); }
+        _renderMaskOverlay();
+    }
+    function _commitCropToWidget() {
+        const w = getCropDataWidget(node);
+        if (!w) return;
+        if (!cropRect) { w.value = ""; w.callback?.(w.value); return; }
+        w.value = JSON.stringify([cropRect.x, cropRect.y, cropRect.w, cropRect.h]);
+        w.callback?.(w.value);
+    }
+    function _loadCropFromWidget() {
+        const w = getCropDataWidget(node);
+        const s = w?.value;
+        if (s) {
+            try {
+                const a = JSON.parse(s);
+                if (Array.isArray(a) && a.length === 4) {
+                    cropRect = { x: Math.round(+a[0]), y: Math.round(+a[1]), w: Math.round(+a[2]), h: Math.round(+a[3]) };
+                    return;
+                }
+            } catch (_) {}
+        }
+        cropRect = null;
+    }
+
+    // ═══════════ 裁剪选区：事件（与遮罩相同入口、同一套坐标映射） ═══════════
+    function _cropPxFromEvent(e) {
+        const rect = singleImgContainer.getBoundingClientRect();
+        const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+        const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+        const px = (e.clientX - rect.left) / zoomX;
+        const py = (e.clientY - rect.top) / zoomY;
+        const innerPt = _containerPtToInner(px, py);
+        if (_isCropPreviewActive()) {
+            // 裁剪预览态：视窗显示的是裁剪结果（contain 居中），映射回原图坐标（支持继续裁剪）
+            const cw = singleImgContainer.clientWidth;
+            const ch = singleImgContainer.clientHeight;
+            if (cw <= 0 || ch <= 0 || cropRect.w <= 0 || cropRect.h <= 0) return null;
+            const s2 = Math.min(cw / cropRect.w, ch / cropRect.h);
+            const x2 = (cw - cropRect.w * s2) / 2;
+            const y2 = (ch - cropRect.h * s2) / 2;
+            const lx = innerPt.x - x2;
+            const ly = innerPt.y - y2;
+            // 超出裁剪画面（含黑边区域）不响应框选
+            if (lx < 0 || ly < 0 || lx > cropRect.w * s2 || ly > cropRect.h * s2) return null;
+            return { x: cropRect.x + lx / s2, y: cropRect.y + ly / s2 };
+        }
+        // 裁剪允许从图片外（黑边区）开始拖选：返回原图像素坐标，可超出图片边界（负值 / 超界均可）。
+        // 绘制与提交阶段都会 clamp 到图片范围，因此越界坐标安全无副作用。
+        const drect = _getImageDisplayRect();
+        if (drect.scale <= 0) return null;
+        return { x: (innerPt.x - drect.x) / drect.scale, y: (innerPt.y - drect.y) / drect.scale };
+    }
+    function _onCropPointerDown(e) {
+        if (!cropEnabled) return;
+        if (e.button !== 0) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+        // 有待选框时：优先响应"拖动 4 个角调整裁剪框"；未命中角则判定是否在框内——在框内则拖动整体移动，否则锁定
+        if (_cropPending) {
+            const corner = _cropHandleHit(e);
+            if (corner) {
+                try { if (singleImgContainer.setPointerCapture) singleImgContainer.setPointerCapture(e.pointerId); } catch (_) {}
+                _cropResizeCorner = corner;
+                _cropResizeBase = { x: _cropPending.x, y: _cropPending.y, w: _cropPending.w, h: _cropPending.h };
+                _cropResizeAnchorPos = _cropCornerPt(_cropResizeBase, _cropOpp(corner));
+                _renderMaskOverlay();
+            } else if (_cropPendingInPoint(e)) {
+                // 命中裁剪框内部：进入"拖动框整体移动位置"
+                try { if (singleImgContainer.setPointerCapture) singleImgContainer.setPointerCapture(e.pointerId); } catch (_) {}
+                const sp = _cropPxFromEvent(e);
+                _cropMove = true;
+                _cropMoveStart = sp ? { x: sp.x, y: sp.y } : null;
+                _cropMoveBase = { x: _cropPending.x, y: _cropPending.y, w: _cropPending.w, h: _cropPending.h };
+                _renderMaskOverlay();
+            }
+            return;
+        }
+        const pt = _cropPxFromEvent(e);
+        if (!pt) return;
+        try { if (singleImgContainer.setPointerCapture) singleImgContainer.setPointerCapture(e.pointerId); } catch (_) {}
+        _cropDrawing = true;
+        _cropSelStart = { x: pt.x, y: pt.y };
+        _cropSelCur = { x: pt.x, y: pt.y };
+        _renderMaskOverlay();
+    }
+    function _onCropPointerMove(e) {
+        if (!cropEnabled) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+        // 拖动裁剪框整体移动：以起点为基准累加位移，平移待选框
+        if (_cropMove) {
+            const sp = _cropPxFromEvent(e);
+            if (sp && _cropMoveStart && _cropMoveBase) {
+                const iw = _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+                const ih = _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+                let nx = _cropMoveBase.x + (sp.x - _cropMoveStart.x);
+                let ny = _cropMoveBase.y + (sp.y - _cropMoveStart.y);
+                // clamp 使待选框整体保持在图片边界内
+                nx = Math.max(0, Math.min(nx, iw - _cropMoveBase.w));
+                ny = Math.max(0, Math.min(ny, ih - _cropMoveBase.h));
+                _cropPending = { x: nx, y: ny, w: _cropMoveBase.w, h: _cropMoveBase.h };
+            }
+            _renderMaskOverlay();
+            return;
+        }
+        // 拖动裁剪框角：以固定对角为锚点重算待选框
+        if (_cropResizeCorner) {
+            // 用与渲染/命中同一坐标系（_cropBoxToContainer 的逆）映射拖动点，避免缩放态坐标系错乱
+            const cp = _cropContainerPt(e);
+            const pt = _cropContainerToPixel(cp);
+            if (pt) _applyCropResize(pt);
+            _renderMaskOverlay();
+            return;
+        }
+        if (!_cropDrawing) return;
+        const pt = _cropPxFromEvent(e);
+        if (pt) {
+            // 若有比例约束，按起点与当前点约束选区宽高比
+            const a = _cropAspectAdjust(_cropSelStart.x, _cropSelStart.y, pt.x, pt.y);
+            _cropSelCur = { x: a.x, y: a.y };
+        }
+        _renderMaskOverlay();
+    }
+    // ── 裁剪框角拖动：几何辅助 ──
+    // 双交点容器坐标（含预览态映射），与 _renderMaskOverlay 的坐标变换保持一致
+    function _cropOpp(c) { return { tl: "br", tr: "bl", bl: "tr", br: "tl" }[c] || "br"; }
+    function _cropCornerPt(box, c) {
+        return { tl: [box.x, box.y], tr: [box.x + box.w, box.y], bl: [box.x, box.y + box.h], br: [box.x + box.w, box.y + box.h] }[c];
+    }
+    // 鼠标所在容器坐标点
+    function _cropContainerPt(e) {
+        const rect = singleImgContainer.getBoundingClientRect();
+        const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+        const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+        return { x: (e.clientX - rect.left) / zoomX, y: (e.clientY - rect.top) / zoomY };
+    }
+    // 把待选框（原图像素）映射为容器坐标显示矩形
+    function _cropBoxToContainer(box) {
+        const cw = singleImgContainer.clientWidth, ch = singleImgContainer.clientHeight;
+        const rect = _getImageDisplayRect();
+        if (_isCropPreviewActive() && cropRect) {
+            const s2 = Math.min(cw / cropRect.w, ch / cropRect.h);
+            const x2 = (cw - cropRect.w * s2) / 2, y2 = (ch - cropRect.h * s2) / 2;
+            return {
+                X: x2 + (box.x - cropRect.x) * s2,
+                Y: y2 + (box.y - cropRect.y) * s2,
+                X2: x2 + (box.x + box.w - cropRect.x) * s2,
+                Y2: y2 + (box.y + box.h - cropRect.y) * s2,
+            };
+        }
+        const sc = rect.scale;
+        return { X: rect.x + box.x * sc, Y: rect.y + box.y * sc, X2: rect.x + (box.x + box.w) * sc, Y2: rect.y + (box.y + box.h) * sc };
+    }
+    // 容器坐标 → 原图像素（_cropBoxToContainer 的逆运算，用于角拖动，保证与渲染/命中同一坐标系）
+    function _cropContainerToPixel(pt) {
+        const cw = singleImgContainer.clientWidth, ch = singleImgContainer.clientHeight;
+        const rect = _getImageDisplayRect();
+        if (_isCropPreviewActive() && cropRect) {
+            const s2 = Math.min(cw / cropRect.w, ch / cropRect.h);
+            const x2 = (cw - cropRect.w * s2) / 2, y2 = (ch - cropRect.h * s2) / 2;
+            // 拖角时鼠标可能滑出裁剪画面边缘：clamp 到边框对应像素，保证拖动不中断
+            const maxX = x2 + cropRect.w * s2, maxY = y2 + cropRect.h * s2;
+            const bx = Math.max(x2, Math.min(pt.x, maxX));
+            const by = Math.max(y2, Math.min(pt.y, maxY));
+            if (s2 <= 0) return null;
+            return { x: cropRect.x + (bx - x2) / s2, y: cropRect.y + (by - y2) / s2 };
+        }
+        if (rect.scale <= 0) return null;
+        const ox = (pt.x - rect.x) / rect.scale, oy = (pt.y - rect.y) / rect.scale;
+        const iw = _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+        const ih = _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+        if (ox < 0 || oy < 0 || ox > iw || oy > ih) return null;
+        return { x: ox, y: oy };
+    }
+    // 命中检测：命中断选框的角则返回角名，否则 null
+    function _cropHandleHit(e) {
+        if (!_cropPending || _cropPending.w <= 0 || _cropPending.h <= 0) return null;
+        const p = _cropContainerPt(e);
+        const { X, Y, X2, Y2 } = _cropBoxToContainer(_cropPending);
+        const t = 13; // 命中阈值（容器像素）：略大于手柄尺寸，避免鼠标略偏即未命中而落入锁定分支
+        const hits = { tl: [X, Y], tr: [X2, Y], bl: [X, Y2], br: [X2, Y2] };
+        for (const k of ["tl", "tr", "bl", "br"]) {
+            const cx = hits[k][0], cy = hits[k][1];
+            if (Math.abs(p.x - cx) <= t && Math.abs(p.y - cy) <= t) return k;
+        }
+        return null;
+    }
+    // 命中检测：事件坐标是否落在待选框内部（不含角），用于"拖动框整体移动位置"
+    function _cropPendingInPoint(e) {
+        if (!_cropPending || _cropPending.w <= 0 || _cropPending.h <= 0) return false;
+        const p = _cropContainerPt(e);
+        const { X, Y, X2, Y2 } = _cropBoxToContainer(_cropPending);
+        const m = 8; // 内缩填充因子（容器像素），排除靠近边框（含四角命中带）的窄边区域
+        return p.x > X + m && p.x < X2 - m && p.y > Y + m && p.y < Y2 - m;
+    }
+    // 在选框四角绘制拖动手柄（绿色小方块）
+    function _drawCropHandles(ctx, X, Y, X2, Y2) {
+        const s = 8, off = s / 2;
+        ctx.save();
+        ctx.fillStyle = "#66CC66";
+        ctx.strokeStyle = "#111";
+        ctx.lineWidth = 1;
+        const pts = [[X, Y], [X2, Y], [X, Y2], [X2, Y2]];
+        for (const [px, py] of pts) {
+            ctx.fillRect(px - off, py - off, s, s);
+            ctx.strokeRect(px - off + 0.5, py - off + 0.5, s - 1, s - 1);
+        }
+        ctx.restore();
+    }
+    // 拖动角重算待选框：锚点（对角）固定，当前角移到鼠标位置
+    // 若有比例约束，把移动角调整为满足宽高比的点
+    function _cropAspectAdjust(ax, ay, mx, my) {
+        const r = _cropAspect;
+        if (!r) return { x: mx, y: my };
+        const dx = mx - ax, dy = my - ay;
+        const sx = dx >= 0 ? 1 : -1, sy = dy >= 0 ? 1 : -1;
+        // 以较长的边为主驱动，让另一条边满足比例，避免缩放趋零
+        if (Math.abs(dx) >= Math.abs(dy) * r) {
+            return { x: mx, y: ay + sx * (Math.abs(dx) / r) };
+        }
+        return { x: ax + sx * (Math.abs(dy) * r), y: my };
+    }
+    function _applyCropResize(pt) {
+        const c = _cropResizeCorner, a = _cropResizeAnchorPos;
+        const iw = _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+        const ih = _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+        const r = _cropAspect;
+        const MIN = 3; // 最小边（像素），与提交时的下限一致
+        // 移动角相对锚点的方向（由拖动开始时的角位置决定，拖动中不允许越过锚点反向）
+        const dirX = (c === "tr" || c === "br") ? 1 : -1;
+        const dirY = (c === "bl" || c === "br") ? 1 : -1;
+        // 防翻转：先把鼠标点钳制到锚点的正确一侧（至少留 MIN 距离）再做比例调整。
+        // 否则移动角越过对角锚点后，min/max 归一化会让选框跳到对侧；
+        // 固定比例时 _cropAspectAdjust 的符号推断还会把另一条边甩到反方向，加剧翻转
+        const mx = dirX > 0 ? Math.max(pt.x, a[0] + MIN) : Math.min(pt.x, a[0] - MIN);
+        const my = dirY > 0 ? Math.max(pt.y, a[1] + MIN) : Math.min(pt.y, a[1] - MIN);
+        const adj = _cropAspectAdjust(a[0], a[1], mx, my);
+        // 尺寸 = 移动角沿拖动方向到锚点的绝对距离（钳制后必为正且同侧）
+        let w = Math.abs(adj.x - a[0]);
+        let h = Math.abs(adj.y - a[1]);
+        // 图像边界：从锚点沿拖动方向可用的最大宽高
+        const maxW = Math.max(0, dirX > 0 ? iw - a[0] : a[0]);
+        const maxH = Math.max(0, dirY > 0 ? ih - a[1] : a[1]);
+        if (r) {
+            // 比例约束：边界钳制必须等比缩放，否则会破坏宽高比
+            const scale = Math.min(1, maxW / Math.max(w, 0.001), maxH / Math.max(h, 0.001));
+            w *= scale; h *= scale;
+        } else {
+            w = Math.min(w, maxW);
+            h = Math.min(h, maxH);
+        }
+        w = Math.max(MIN, w);
+        h = Math.max(MIN, h);
+        // 从锚点沿拖动方向展开出选框（锚点恒为选框的一个角，不翻转）
+        const x = dirX > 0 ? a[0] : a[0] - w;
+        const y = dirY > 0 ? a[1] : a[1] - h;
+        _cropPending = { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+    }
+    function _commitCropSelection() {
+        if (_cropSelStart && _cropSelCur) {
+            const iw = _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+            const ih = _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+            const x0 = Math.min(_cropSelStart.x, _cropSelCur.x);
+            const y0 = Math.min(_cropSelStart.y, _cropSelCur.y);
+            const x1 = Math.max(_cropSelStart.x, _cropSelCur.x);
+            const y1 = Math.max(_cropSelStart.y, _cropSelCur.y);
+            const cx = Math.max(0, Math.min(Math.round(x0), Math.round(iw)));
+            const cy = Math.max(0, Math.min(Math.round(y0), Math.round(ih)));
+            const cw = Math.max(1, Math.min(Math.round(x1), Math.round(iw)) - cx);
+            const ch = Math.max(1, Math.min(Math.round(y1), Math.round(ih)) - cy);
+            // 小于 3px 视为单击（如双击应用裁剪时的两次点击），不覆盖已有选区
+            if (cw >= 3 && ch >= 3) {
+                _cropPending = { x: cx, y: cy, w: cw, h: ch };
+            }
+        }
+        _cropSelStart = null; _cropSelCur = null;
+    }
+    // 应用裁剪：把待应用选区正式写到 cropRect 并持久化，视窗立即切换为裁剪结果
+    function _applyCrop() {
+        if (!_cropPending) return;
+        cropRect = _cropPending;
+        _cropPending = null;
+        _commitCropToWidget();
+        // 裁剪优先于遮罩：画面一旦被裁剪，旧遮罩立即作废（坐标系已变），
+        // 需在裁剪后的画面上重新绘制遮罩
+        _clearMaskData();
+        _resetImgZoom();
+        _refreshCropPreview(); // 视窗立即只显示裁剪画面（contain 自适应放大）
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+    }
+    // 裁剪结果预览机制见 _refreshCropPreview：把裁剪区域绘制到独立画布并隐藏原图，替代 transform 缩放方案
+    function _onCropPointerUp(e) {
+        if (!cropEnabled) return;
+        const wasResizing = _cropResizeCorner;
+        _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
+        if (_cropMove) { // 拖动框移动结束：保留已移动的待选框
+            _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
+            try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
+            _renderMaskOverlay();
+            return;
+        }
+        if (wasResizing) { // 拖动角结束：保留调整后的待选框
+            try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
+            _renderMaskOverlay();
+            return;
+        }
+        if (!_cropDrawing) return;
+        _cropDrawing = false;
+        try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
+        _commitCropSelection();
+        _renderMaskOverlay();
+    }
+
+    // ═══════════ 放大模式节点大小：持久化原始大小到 node.properties ═══════════
+    // 进入裁剪/遮罩模式会用 node.setSize([1280,720]) 放大节点，这会写入工作流。
+    // 把放大前的原始大小持久化到 node.properties，刷新后 onConfigure 据此恢复，
+    // 避免残留的放大值导致"刷新后节点无法还原原来大小"。
+    function _persistOrigNodeSize(key) {
+        if (!node || !node.size) return;
+        node.properties = node.properties || {};
+        node.properties[key] = [node.size[0], node.size[1]];
+    }
+    function _restoreOrigNodeSize(key) {
+        if (!node) return;
+        const saved = node.properties?.[key];
+        if (Array.isArray(saved) && saved.length === 2) {
+            const w = Number(saved[0]), h = Number(saved[1]);
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                node.setSize([w, h]);
+            }
+        }
+        if (node.properties) delete node.properties[key];
+    }
+
+    // 裁剪开关 / 清空（仅单图模式可用）
+    cropToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (uploadMode !== "replace") {
+            xzgAlert(xzgT("裁剪选区仅在单图模式下可用", "Crop region is only available in single image mode"));
+            return;
+        }
+        if (!cropEnabled && maskEnabled) maskEnabled = false; // 互斥：开启裁剪即关闭遮罩
+        cropEnabled = !cropEnabled;
+        // 打开裁剪模式：立即清除现有遮罩信息（裁剪与遮罩不同坐标系，避免残留错位）
+        if (cropEnabled) {
+            _clearMaskData();
+        }
+        if (cropEnabled && app?.canvas) {
+            app.canvas.selectNode(node);
+            if (!_cropOrigSize) _cropOrigSize = [node.size[0], node.size[1]];
+            if (!_cropOrigCanvas) _cropOrigCanvas = { scale: app.canvas.ds.scale, offset: [...app.canvas.ds.offset] };
+            _persistOrigNodeSize("xzg_crop_orig_size"); // 持久化原始大小，刷新后可恢复
+            node.setSize([1280, 720]);
+            const cw = app.canvas.canvas.width, ch = app.canvas.canvas.height;
+            const scale = Math.min(cw / 1280, ch / 720) * 0.95;
+            const nodeCenterX = node.pos[0] + 640, nodeCenterY = node.pos[1] + 360;
+            app.canvas.ds.scale = scale;
+            app.canvas.ds.offset[0] = cw / (2 * scale) - nodeCenterX;
+            app.canvas.ds.offset[1] = ch / (2 * scale) - nodeCenterY;
+            app.canvas.setDirty(true, true);
+        }
+        if (!cropEnabled && _cropOrigSize) {
+            node.setSize(_cropOrigSize);
+            _cropOrigSize = null;
+            _resetImgZoom();
+            if (node.properties) delete node.properties.xzg_crop_orig_size; // 清除持久化标记
+            if (_cropOrigCanvas && app?.canvas) {
+                app.canvas.ds.scale = _cropOrigCanvas.scale;
+                app.canvas.ds.offset[0] = _cropOrigCanvas.offset[0];
+                app.canvas.ds.offset[1] = _cropOrigCanvas.offset[1];
+                _cropOrigCanvas = null;
+            }
+            app.canvas.setDirty(true, true);
+        }
+        if (cropEnabled) {
+            _loadCropFromWidget();
+            if (cropRect) { // 已有裁剪时进入裁剪模式即显示裁剪结果
+                _resetImgZoom();
+                _refreshCropPreview();
+                _updateSingleResLabel();
+            }
+        }
+        if (!cropEnabled) { // 退出裁剪模式：恢复原图显示与分辨率标签
+            _refreshCropPreview();
+            _updateSingleResLabel();
+        }
+        _refreshMaskToolbar();
+        _renderMaskOverlay();
+    });
+    cropClearBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!cropEnabled) return;
+        cropRect = null;
+        _cropPending = null;
+        _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
+        _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
+        _cropSelStart = _cropSelCur = null;
+        _cropAspect = null;
+        refreshCropRatioUI();
+        _commitCropToWidget();
+        // 恢复原始 = 裁剪状态变化：遮罩是相对裁剪画面绘制的，一并清除
+        _clearMaskData();
+        _resetImgZoom(); // 清空后恢复整图显示
+        _refreshCropPreview();
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+    });
+
+    // 清除当前选框：仅移除待选框（_cropPending），保持已应用裁剪的状态不变
+    cropSelClearBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!cropEnabled) return;
+        _cropPending = null;
+        _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
+        _cropSelStart = _cropSelCur = null;
+        _renderMaskOverlay(); // 只刷新选框显示
+    });
+
+    // 应用裁剪按钮：直接把当前选框应用（等同右键"应用裁剪"）
+    cropApplyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!cropEnabled || !_cropPending) return;
+        _applyCrop();
+    });
+
     sidebar.addEventListener("dblclick", (e) => {
         if (e.target.closest("button")) return;
         e.preventDefault();
@@ -850,7 +1546,7 @@ function createImgBatchUI(node) {
 
     const grid = document.createElement("div");
     grid.style.cssText =
-        "display:grid;gap:2px;flex:1;min-width:0;min-height:0;overflow:hidden;background:transparent;padding:6px;border-radius:2px;align-content:center;justify-content:center;transition:opacity 0.3s ease;";
+        "display:grid;gap:2px;flex:1;min-width:0;min-height:0;overflow:hidden;background:transparent;padding:0;border-radius:2px;align-content:start;justify-content:start;transition:opacity 0.3s ease;";
     grid.style.userSelect = "none";
     grid.style.webkitUserSelect = "none";
     grid.classList.add("xzg-img-grid");
@@ -884,10 +1580,10 @@ function createImgBatchUI(node) {
 
     const emptyTip = document.createElement("div");
     emptyTip.style.cssText =
-        "flex:1;display:flex;align-items:center;justify-content:center;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;";
+        "flex:1;display:flex;align-items:flex-start;justify-content:flex-start;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;padding:6px 4px 4px;box-sizing:border-box;";
     emptyTip.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
-            <div style="text-align:center;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;">${xzgTh("小珠光图像加载器", "Xiaozhuguang Image Loader")}</div>
+            <div style="text-align:left;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;padding-left:12px;">${xzgTh("小珠光图像加载器", "Xiaozhuguang Image Loader")}</div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("📁 添加图片", "📁 Add Images")}</div>
@@ -912,6 +1608,13 @@ function createImgBatchUI(node) {
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
+                <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖌️ 遮罩 / 裁剪", "🖌️ Mask / Crop")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩：开启后手绘蒙版（画笔/橡皮）", "Mask: Draw mask (brush/eraser)")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("裁剪：框选裁剪区域，支持自由/固定比例", "Crop: Select crop region, free/fixed ratio")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩/裁剪开启后，点击【退出】返回", "After Start, click Exit to return")}</div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("💡 提示", "💡 Tips")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("缩略图大小根据节点大小自动调整", "Thumbnail size auto-adjusts to node size")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("拖动节点边缘可改变节点大小", "Drag node edge to resize")}</div>
@@ -930,7 +1633,7 @@ function createImgBatchUI(node) {
 
     const singleImgContainer = document.createElement("div");
     singleImgContainer.id = "xzg-single-img-container";
-    singleImgContainer.style.cssText = "flex:1;display:none;align-items:stretch;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;";
+    singleImgContainer.style.cssText = "flex:1;display:none;align-items:stretch;justify-content:center;min-width:0;min-height:100px;overflow:hidden;position:relative;width:100%;padding:0;box-sizing:border-box;";
     const singleImgEl = document.createElement("img");
     singleImgEl.style.cssText = "width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:1;";
     singleImgEl.draggable = false;
@@ -947,6 +1650,25 @@ function createImgBatchUI(node) {
     let _singleOrigW = 0, _singleOrigH = 0;
 
     function _updateSingleResLabel() {
+        // 存在裁剪选区：显示「真实输出分辨率」（原图像素），而非压缩预览图坐标尺寸。
+        // 前端选区坐标取自最长边3840的预览图，需按 原图宽/预览图宽 换算回原图坐标；
+        // 该比例在后端同样用于把预览坐标还原为原图像素，故标签与最终输出一致。
+        if (cropRect) {
+            let w = cropRect.w, h = cropRect.h;
+            if (_singleOrigW > 0) {
+                const pv = singleImgEl.naturalWidth || 0; // 当前预览图宽度
+                if (pv > 0) {
+                    const ratio = _singleOrigW / pv; // 原图/预览 等比缩放比
+                    if (ratio > 0 && Math.abs(ratio - 1) > 1e-9) {
+                        w = Math.round(cropRect.w * ratio);
+                        h = Math.round(cropRect.h * ratio);
+                    }
+                }
+            }
+            singleResLabel.textContent = `${w} × ${h}`;
+            singleResLabel.style.display = "flex";
+            return;
+        }
         // 优先使用原始分辨率；未取到时回退到压缩预览图的自然尺寸
         const iw = _singleOrigW || _maskImgNaturalW || singleImgEl.naturalWidth || 0;
         const ih = _singleOrigH || _maskImgNaturalH || singleImgEl.naturalHeight || 0;
@@ -1004,6 +1726,11 @@ function createImgBatchUI(node) {
     // 将 singleImgEl 和遮罩层移入包装层
     singleImgContainer.appendChild(singleImgInner);
     singleImgInner.appendChild(singleImgEl);
+    // 裁剪结果预览画布：应用裁剪后显示裁剪画面（object-fit:contain 自适应放大），替代原图
+    // 必须 absolute 定位（脱离文档流），否则会与原图在流内垂直堆叠、画布被挤到容器下方
+    const singleCropPreviewCanvas = document.createElement("canvas");
+    singleCropPreviewCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;display:none;z-index:2;";
+    singleImgInner.appendChild(singleCropPreviewCanvas);
     singleImgInner.appendChild(singleMaskOverlay);
     singleImgInner.appendChild(singleMaskEventLayer);
     singleImgInner.appendChild(singleBrushPreview);
@@ -1027,6 +1754,67 @@ function createImgBatchUI(node) {
         return { x, y, w, h, scale };
     }
 
+    // ═══════════ 裁剪结果预览 ═══════════
+    // 应用裁剪后，视窗内只显示裁剪画面：把裁剪区域绘制到独立画布并隐藏原图，
+    // 画布用 object-fit:contain 自适应放大，不依赖任何 transform 计算（确定性生效）
+    function _isCropPreviewActive() {
+        // 只要有裁剪选区（cropRect）就显示裁剪结果，与本会话是否处于裁剪编辑模式无关：
+        // 这样退出裁剪模式后，节点上加载的图像仍保持裁剪后的效果
+        return !!cropRect;
+    }
+    // 裁剪预览显示矩形（inner 布局坐标，与 _getImageDisplayRect 同一坐标系）：
+    // 视窗中裁剪画面按 object-fit:contain 居中铺满 inner，返回内嵌 scale 与起始偏移
+    function _cropPreviewDisplayRect() {
+        if (!cropRect || cropRect.w <= 0 || cropRect.h <= 0) return null;
+        const cw = singleImgContainer.clientWidth, ch = singleImgContainer.clientHeight;
+        if (cw <= 0 || ch <= 0) return null;
+        const s2 = Math.min(cw / cropRect.w, ch / cropRect.h);
+        if (s2 <= 0) return null;
+        const x2 = (cw - cropRect.w * s2) / 2, y2 = (ch - cropRect.h * s2) / 2;
+        return { s2, x2, y2, vw: cropRect.w * s2, vh: cropRect.h * s2 };
+    }
+    // 缓存：同图同选区避免高频 redraw 时重复绘制
+    let _lastCropPreviewKey = null;
+    function _refreshCropPreview() {
+        if (!_isCropPreviewActive()) {
+            _lastCropPreviewKey = null;
+            singleCropPreviewCanvas.style.display = "none";
+            singleImgEl.style.visibility = "";
+            return;
+        }
+        const key = (singleImgEl.dataset.previewKey || "") + "|" +
+            cropRect.x + "_" + cropRect.y + "_" + cropRect.w + "_" + cropRect.h;
+        if (_lastCropPreviewKey === key) return; // 同图同选区已绘制，跳过
+        // 直接读当前 img 的自然尺寸（必须已解码完成，避免画空白）
+        const iw = singleImgEl.naturalWidth || 0;
+        const ih = singleImgEl.naturalHeight || 0;
+        if (iw <= 0 || ih <= 0 || !singleImgEl.complete) return;
+        // 裁剪区域 clamp 到图像范围内（切图后 cropRect 可能越界）
+        const sx = Math.max(0, Math.min(cropRect.x, iw));
+        const sy = Math.max(0, Math.min(cropRect.y, ih));
+        const ex = Math.max(sx, Math.min(cropRect.x + cropRect.w, iw));
+        const ey = Math.max(sy, Math.min(cropRect.y + cropRect.h, ih));
+        const cw2 = ex - sx, ch2 = ey - sy;
+        if (cw2 < 1 || ch2 < 1) {
+            // 裁剪区域已完全越界：退回原图显示
+            singleCropPreviewCanvas.style.display = "none";
+            singleImgEl.style.visibility = "";
+            return;
+        }
+        _lastCropPreviewKey = key;
+        singleCropPreviewCanvas.width = cw2;
+        singleCropPreviewCanvas.height = ch2;
+        const cctx = singleCropPreviewCanvas.getContext("2d");
+        cctx.clearRect(0, 0, cw2, ch2);
+        try {
+            cctx.imageSmoothingEnabled = true;
+            cctx.imageSmoothingQuality = "high";
+            cctx.drawImage(singleImgEl, sx, sy, cw2, ch2, 0, 0, cw2, ch2);
+        } catch (_) {}
+        singleCropPreviewCanvas.style.display = "block";
+        singleImgEl.style.visibility = "hidden"; // 隐藏原图，视窗内只剩裁剪画面
+    }
+
     // 将容器坐标转换为 inner 坐标（基于当前 transform: translate(tx,ty) scale(zoom)）
     function _containerPtToInner(px, py) {
         const zoom = _maskImgZoom || 1;
@@ -1037,7 +1825,7 @@ function createImgBatchUI(node) {
     // 使用逐步计算方式：先算鼠标下图像点在 inner 坐标中的位置，再反推新 transform
     function _applyImgZoom(mx, my, delta) {
         const oldZoom = _maskImgZoom;
-        const newZoom = Math.max(1, Math.min(8, oldZoom * delta));
+        const newZoom = Math.max(0.1, Math.min(8, oldZoom * delta));
         const oldTx = _maskTx;
         const oldTy = _maskTy;
         // 步骤1：计算鼠标下方图像点在 inner 坐标中的位置
@@ -1064,6 +1852,14 @@ function createImgBatchUI(node) {
 
     // 把 overlay 上的坐标映射到离屏 canvas 的像素坐标
     function _overlayPtToOffscreen(px, py) {
+        // 裁剪预览态：视窗显示的是裁剪画面，把点击映射回「全图」离屏坐标。
+        // 离屏遮罩始终为全图尺寸，后端据此按 cropRect 同步裁剪，保证遮罩贴合裁剪后图像。
+        const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
+        if (cp) {
+            const lx = px - cp.x2, ly = py - cp.y2;
+            if (lx < 0 || ly < 0 || lx > cp.vw || ly > cp.vh) return null;
+            return { x: cropRect.x + lx / cp.s2, y: cropRect.y + ly / cp.s2 };
+        }
         const rect = _getImageDisplayRect();
         if (rect.scale <= 0) return null;
         const localX = px - rect.x;
@@ -1134,8 +1930,93 @@ function createImgBatchUI(node) {
         }
         const octx = singleMaskOverlay.getContext("2d");
         octx.clearRect(0, 0, cw, ch);
-        if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
         const rect = _getImageDisplayRect();
+
+        // 裁剪选区：金色实线框 + 半透明金色填充，框外区域压暗（仅单图模式绘制）
+        if (cropEnabled && rect.scale > 0 && _isCropPreviewActive()) {
+            // 裁剪结果预览态：视窗显示的就是裁剪画面，仅绘制新的待选框（相对裁剪画面的显示矩形，支持继续裁剪）
+            const s2 = Math.min(cw / cropRect.w, ch / cropRect.h);
+            const x2 = (cw - cropRect.w * s2) / 2;
+            const y2 = (ch - cropRect.h * s2) / 2;
+            const vw = cropRect.w * s2, vh = cropRect.h * s2;
+            const toX = (px) => x2 + (px - cropRect.x) * s2;
+            const toY = (py) => y2 + (py - cropRect.y) * s2;
+            let bx = null, by = null, bw = 0, bh = 0;
+            if (_cropDrawing && _cropSelStart && _cropSelCur) {
+                bx = Math.min(_cropSelStart.x, _cropSelCur.x);
+                by = Math.min(_cropSelStart.y, _cropSelCur.y);
+                bw = Math.abs(_cropSelCur.x - _cropSelStart.x);
+                bh = Math.abs(_cropSelCur.y - _cropSelStart.y);
+            } else if (_cropPending) {
+                bx = _cropPending.x; by = _cropPending.y; bw = _cropPending.w; bh = _cropPending.h;
+            }
+            if (bx !== null && bw > 0 && bh > 0) {
+                const X = Math.max(x2, toX(bx));
+                const Y = Math.max(y2, toY(by));
+                const X2 = Math.min(x2 + vw, toX(bx + bw));
+                const Y2 = Math.min(y2 + vh, toY(by + bh));
+                octx.save();
+                // evenodd 单次填充"外框-选框"环形压暗，避免四块矩形拼接处的抗锯齿缝隙（浅色线）
+                octx.fillStyle = "rgba(0,0,0,0.45)";
+                octx.beginPath();
+                octx.rect(x2, y2, vw, vh);
+                octx.rect(X, Y, Math.max(0, X2 - X), Math.max(0, Y2 - Y));
+                octx.fill("evenodd");
+                octx.restore();
+                octx.save();
+                octx.fillStyle = "rgba(102,204,102,0.15)";
+                octx.fillRect(X, Y, Math.max(0, X2 - X), Math.max(0, Y2 - Y));
+                octx.strokeStyle = "#66CC66";
+                octx.lineWidth = 2;
+                octx.strokeRect(X + 0.5, Y + 0.5, Math.max(0, X2 - X) - 1, Math.max(0, Y2 - Y) - 1);
+                octx.restore();
+                if (_cropPending) _drawCropHandles(octx, X, Y, X2, Y2);
+            }
+        } else if (cropEnabled && rect.scale > 0) {
+            const toX = (px) => rect.x + px * rect.scale;
+            const toY = (py) => rect.y + py * rect.scale;
+            let bx = null, by = null, bw = 0, bh = 0;
+            if (_cropDrawing && _cropSelStart && _cropSelCur) {
+                const dw = Math.abs(_cropSelCur.x - _cropSelStart.x);
+                const dh = Math.abs(_cropSelCur.y - _cropSelStart.y);
+                if (dw >= 3 || dh >= 3) { // 已拖出有效面积才显示新选框
+                    bx = Math.min(_cropSelStart.x, _cropSelCur.x);
+                    by = Math.min(_cropSelStart.y, _cropSelCur.y);
+                    bw = dw; bh = dh;
+                }
+            }
+            if (bx === null && _cropPending) { // 按下鼠标但未拖出：保留已有待选框，不让裁剪框消失
+                bx = _cropPending.x; by = _cropPending.y; bw = _cropPending.w; bh = _cropPending.h;
+            }
+            if (bx === null && cropRect) { // 已应用裁剪：保留已有裁剪框作为参考
+                bx = cropRect.x; by = cropRect.y; bw = cropRect.w; bh = cropRect.h;
+            }
+            if (bx !== null && bw > 0 && bh > 0) {
+                const X = Math.max(rect.x, toX(bx));
+                const Y = Math.max(rect.y, toY(by));
+                const X2 = Math.min(rect.x + rect.w, toX(bx + bw));
+                const Y2 = Math.min(rect.y + rect.h, toY(by + bh));
+                octx.save();
+                // evenodd 单次填充"外框-选框"环形压暗，避免四块矩形拼接处的抗锯齿缝隙（浅色线）
+                octx.fillStyle = "rgba(0,0,0,0.45)";
+                octx.beginPath();
+                octx.rect(rect.x, rect.y, rect.w, rect.h);
+                octx.rect(X, Y, Math.max(0, X2 - X), Math.max(0, Y2 - Y));
+                octx.fill("evenodd");
+                octx.restore();
+                octx.save();
+                octx.fillStyle = "rgba(102,204,102,0.15)";
+                octx.fillRect(X, Y, Math.max(0, X2 - X), Math.max(0, Y2 - Y));
+                octx.strokeStyle = "#66CC66";
+                octx.lineWidth = 2;
+                octx.strokeRect(X + 0.5, Y + 0.5, Math.max(0, X2 - X) - 1, Math.max(0, Y2 - Y) - 1);
+                octx.restore();
+                if (_cropPending && !_cropDrawing) _drawCropHandles(octx, X, Y, X2, Y2);
+            }
+        }
+
+        // 遮罩显示：非裁剪预览 → 绘制全图遮罩；裁剪预览 → 叠加在裁剪画面上（只画裁剪区域内）
+        if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
         octx.save();
         octx.imageSmoothingEnabled = true;
         octx.imageSmoothingQuality = "high";
@@ -1156,11 +2037,23 @@ function createImgBatchUI(node) {
             dd[i + 3] = Math.floor(v * 0.45); // A = 遮罩强度 * 半透明
         }
         tctx.putImageData(dst, 0, 0);
-        octx.drawImage(tmp, rect.x, rect.y, rect.w, rect.h);
-        // 再画一圈细边框，标识图像显示区域
-        octx.strokeStyle = "rgba(255,215,0,0.35)";
-        octx.lineWidth = 1;
-        octx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+        const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
+        if (cp) {
+            // 裁剪预览：只取裁剪区域内那份遮罩，映射到裁剪画面的显示矩形
+            const sx = Math.max(0, Math.min(cropRect.x, maskOffscreen.width));
+            const sy = Math.max(0, Math.min(cropRect.y, maskOffscreen.height));
+            const sw = Math.max(1, Math.min(cropRect.w, maskOffscreen.width - sx));
+            const sh = Math.max(1, Math.min(cropRect.h, maskOffscreen.height - sy));
+            octx.drawImage(tmp, sx, sy, sw, sh, cp.x2, cp.y2, cp.vw, cp.vh);
+            octx.strokeStyle = "rgba(255,215,0,0.35)";
+            octx.lineWidth = 1;
+            octx.strokeRect(cp.x2 + 0.5, cp.y2 + 0.5, cp.vw - 1, cp.vh - 1);
+        } else {
+            octx.drawImage(tmp, rect.x, rect.y, rect.w, rect.h);
+            octx.strokeStyle = "rgba(255,215,0,0.35)";
+            octx.lineWidth = 1;
+            octx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+        }
         octx.restore();
     }
 
@@ -1219,9 +2112,11 @@ function createImgBatchUI(node) {
         if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
         const tool = _maskRightErasing ? "eraser" : maskTool;
         const radius = Math.max(0.5, brushSize / 2);
-        // 显示层的笔刷大小要映射到离屏坐标：显示 scale → 离屏 scale 是 1/rect.scale
-        const rect = _getImageDisplayRect();
-        const offBrushR = Math.max(0.5, radius / (rect.scale || 1));
+        // 显示层的笔刷大小要映射到离屏坐标：裁剪预览态用裁剪画面的显示比例，
+        // 否则用整图显示比例，保证笔刷视觉大小与预览圆圈一致
+        const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
+        const dispScale = cp ? cp.s2 : (_getImageDisplayRect().scale || 1);
+        const offBrushR = Math.max(0.5, radius / dispScale);
 
         maskOffCtx.save();
         maskOffCtx.lineCap = "round";
@@ -1373,6 +2268,12 @@ function createImgBatchUI(node) {
         try { e.stopPropagation(); } catch (_) {}
     }, { capture: true, passive: false });
     singleImgContainer.addEventListener("gesturestart", _softKill, true);
+    // 遮罩开启时无条件拦截右键菜单：右键已用于擦除/Alt+右键调整笔刷，不弹「保存图片」等菜单
+    singleImgContainer.addEventListener("contextmenu", (e) => {
+        if (!maskEnabled) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+    }, true);
     singleImgContainer.addEventListener("contextmenu", _softKill, true);
     singleImgContainer.addEventListener("dragstart", _softKill, true);
     singleImgContainer.addEventListener("selectstart", _softKill, true);
@@ -1382,10 +2283,25 @@ function createImgBatchUI(node) {
         if (!maskEnabled) return;
         // 左键(0)画笔涂抹遮罩；右键(2)临时擦除遮罩；其它按键忽略
         if (e.button !== 0 && e.button !== 2) return;
+        // Alt+右键按下：进入「拖动调整笔刷大小」模式，不绘制也不擦除
+        if (e.button === 2 && e.altKey) {
+            try { e.preventDefault(); } catch (_) {}
+            try { e.stopPropagation(); } catch (_) {}
+            try { if (singleImgContainer.setPointerCapture) singleImgContainer.setPointerCapture(e.pointerId); } catch (_) {}
+            const rect = singleImgContainer.getBoundingClientRect();
+            _altBrushActive = true;
+            _maskDrawing = false;
+            _altBrushStartX = (e.clientX - rect.left) / (singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1);
+            _altBrushStartSize = brushSize;
+            singleImgContainer.style.cursor = "ew-resize";
+            return;
+        }
         _updateMaskCursor();
         // 判断是否点在遮罩事件层或 img 自身的矩形内（点击 sidebar 不触发）
+        // 裁剪预览态原图被隐藏，点击目标变成裁剪预览画布，必须一并放行，否则画遮罩无响应
         const path = e.composedPath ? e.composedPath() : [e.target];
         const hit = path.includes(singleMaskEventLayer) || path.includes(singleMaskOverlay) ||
+                    path.includes(singleCropPreviewCanvas) ||
                     e.target === singleImgEl || e.target === singleImgContainer;
         if (!hit) return;
         try { e.preventDefault(); } catch (_) {}
@@ -1433,6 +2349,12 @@ function createImgBatchUI(node) {
         _renderMaskOverlay();
     }
     function _onMaskPointerUp(e) {
+        // Alt+右键拖动调整笔刷：松开即结束
+        if (_altBrushActive) {
+            _altBrushActive = false;
+            try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
+            singleImgContainer.style.cursor = "crosshair";
+        }
         const wasDrawing = _maskDrawing;
         if (wasDrawing) {
             _maskDrawing = false;
@@ -1453,56 +2375,77 @@ function createImgBatchUI(node) {
     singleImgContainer.addEventListener("pointermove", _onMaskPointerMove, true);
     // hover / Alt+拖动调整笔刷大小
     singleImgContainer.addEventListener("pointermove", (e) => {
-        if (!maskEnabled || _maskDrawing) return;
+        if (!maskEnabled) return;
         const rect = singleImgContainer.getBoundingClientRect();
         const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
         const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
         const px = (e.clientX - rect.left) / zoomX;
         const py = (e.clientY - rect.top) / zoomY;
         const innerPt = _containerPtToInner(px, py);
-        // Alt+左右拖动调整笔刷大小
-        if (e.altKey) {
-            if (!_altDragActive) {
-                _altDragActive = true;
-                _altDragStartX = px;
-                _altDragStartBrush = brushSize;
+        // Alt+右键按下并拖动调整笔刷大小：直接在 move 里检测（右键按住 e.buttons&2 + Alt），
+        // 不依赖 pointerdown 是否到达，鲁棒性最高
+        const altRb = !!(e.altKey && (e.buttons & 2));
+        if (altRb) {
+            if (!_altBrushActive) {
+                _altBrushActive = true;
+                _altBrushStartX = px;
+                _altBrushStartSize = brushSize;
+                _maskDrawing = false;   // 若右键已开始擦除，强制中断，优先调整笔刷
+                _maskLastPt = null;
+                _maskRightErasing = false;
                 singleImgContainer.style.cursor = "ew-resize";
             }
-            const dx = px - _altDragStartX;
-            const newSize = Math.max(1, Math.min(200, Math.round(_altDragStartBrush + dx)));
+            const dx = px - _altBrushStartX;
+            const newSize = Math.max(1, Math.min(200, Math.round(_altBrushStartSize + dx)));
             if (newSize !== brushSize) {
                 brushSize = newSize;
-                brushSizeInput.value = String(brushSize);
-                brushSizeLabel.textContent = `${xzgT("笔刷", "Brush")}:${brushSize}`;
+                try {
+                    brushSizeInput.value = String(brushSize);
+                    brushSizeLabel.textContent = `${xzgT("笔刷", "Brush")}:${brushSize}`;
+                } catch (_) {}
                 _renderBrushPreview();
             }
             _maskHoverPt = { x: innerPt.x, y: innerPt.y };
             return;
         }
-        // Alt 松开，退出拖动模式
-        if (_altDragActive) {
-            _altDragActive = false;
+        // 右键或 Alt 已松开，退出笔刷调整模式
+        if (_altBrushActive) {
+            _altBrushActive = false;
             singleImgContainer.style.cursor = "crosshair";
         }
+        if (_maskDrawing) return;
         // 跟踪鼠标位置用于笔刷预览圆圈
         _maskHoverPt = { x: innerPt.x, y: innerPt.y };
         _renderBrushPreview();
     }, true);
-    // 鼠标离开时清除预览和 Alt 拖动状态
+    // 鼠标离开时清除预览和 Alt+右键拖动状态
     singleImgContainer.addEventListener("pointerleave", () => {
         _maskHoverPt = null;
-        _altDragActive = false;
+        _altBrushActive = false;
+        singleImgContainer.style.cursor = "crosshair";
         _renderBrushPreview();
     }, true);
     // Alt 键松开时退出拖动模式
     window.addEventListener("keyup", (e) => {
-        if (e.key === "Alt" && _altDragActive) {
-            _altDragActive = false;
+        if (e.key === "Alt" && _altBrushActive) {
+            _altBrushActive = false;
             if (singleImgContainer) singleImgContainer.style.cursor = "crosshair";
         }
     }, true);
     singleImgContainer.addEventListener("pointerup", _onMaskPointerUp, true);
     singleImgContainer.addEventListener("pointercancel", _onMaskPointerUp, true);
+    // 裁剪选区事件（与遮罩同一入口，捕获阶段统一处理）
+    singleImgContainer.addEventListener("pointerdown", _onCropPointerDown, true);
+    singleImgContainer.addEventListener("pointermove", _onCropPointerMove, true);
+    singleImgContainer.addEventListener("pointerup", _onCropPointerUp, true);
+    singleImgContainer.addEventListener("pointercancel", _onCropPointerUp, true);
+    // 裁剪模式右键：直接在裁剪容器上弹出「应用裁剪/清空裁剪」菜单（捕获阶段，避免被全局拦截）
+    singleImgContainer.addEventListener("contextmenu", (e) => {
+        if (!cropEnabled) return;
+        try { e.preventDefault(); } catch (_) {}
+        try { e.stopPropagation(); } catch (_) {}
+        showCropContextMenu(e.clientX, e.clientY);
+    }, true);
     // pointerleave 不一定要结算（滑出容器还在拖的话，保持 drawing，回来还能续画）
     // 只有 pointerup/cancel 才真正落盘。
 
@@ -1528,6 +2471,9 @@ function createImgBatchUI(node) {
         _resetImgZoom();
         _ensureOffscreenCanvasSize(curName, false);
         _loadMaskFromWidget(curName);
+        // 从 widget 加载裁剪数据，并刷新裁剪结果预览（load 后 naturalWidth 已更新）
+        _loadCropFromWidget();
+        _refreshCropPreview();
         _renderMaskOverlay();
         _updateMaskCursor();
     });
@@ -1549,6 +2495,11 @@ function createImgBatchUI(node) {
         }
         e.preventDefault();
         e.stopPropagation();
+        if (cropEnabled) {
+            // 裁剪模式下双击应用当前待选区裁剪
+            _applyCrop();
+            return;
+        }
         openUploadDialog();
     });
 
@@ -1572,8 +2523,8 @@ function createImgBatchUI(node) {
     });
 
     const onWheel = (e) => {
-        // 遮罩开启时，画布不再缩放，滚轮缩放图片本身
-        if (maskEnabled) {
+        // 遮罩/裁剪开启时，画布不再缩放，滚轮缩放图片本身
+        if (maskEnabled || cropEnabled) {
             e.preventDefault();
             e.stopPropagation();
             if (singleImgContainer.contains(e.target)) {
@@ -2295,6 +3246,10 @@ function createImgBatchUI(node) {
             lastClickedIndex = curIdx;
             lastNames = [...names];
             lastCardSize = cardSize;
+            // 从 widget 加载裁剪数据并刷新裁剪结果预览：即使不在裁剪模式，
+            // 存在裁剪选区时节点上显示的也是裁剪后的效果
+            _loadCropFromWidget();
+            _refreshCropPreview();
             _refreshMaskToolbar();
             _updateMaskCursor();
             return;
@@ -3118,6 +4073,19 @@ function createImgBatchUI(node) {
             _resetImgZoom();
             _renderMaskOverlay();
         },
+        clearCrop: () => {
+            cropRect = null;
+            _cropPending = null;
+            _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
+            _cropDrawing = false;
+            _cropSelStart = _cropSelCur = null;
+            // 同步清空持久化到 widget 的 crop_data，避免后端点裁上一张图的裁剪信息
+            _commitCropToWidget();
+            _resetImgZoom();
+            _refreshCropPreview();
+            _renderMaskOverlay();
+            _updateSingleResLabel();
+        },
         get isSingleMode() { return uploadMode === "replace"; },
     };
 }
@@ -3239,6 +4207,34 @@ app.registerExtension({
                         umWidget.value = "append";
                     }
                 }
+                // crop_data：同样兜底创建，缺失会导致裁剪选区无法写入/持久化
+                if (!getCropDataWidget(this)) {
+                    const cw = this.addWidget("string", "crop_data", "", null, { serialize: true });
+                    if (!cw) {
+                        this.widgets.push({
+                            name: "crop_data",
+                            type: "hidden",
+                            value: "",
+                            options: { serialize: true },
+                            hidden: true,
+                            computeSize: () => [0, 0],
+                            callback: null,
+                        });
+                    } else {
+                        cw.type = "hidden";
+                        cw.hidden = true;
+                        cw.computeSize = () => [0, 0];
+                        cw.options = cw.options || {};
+                        cw.options.serialize = true;
+                    }
+                } else {
+                    const cw = getCropDataWidget(this);
+                    cw.type = "hidden";
+                    cw.hidden = true;
+                    cw.computeSize = () => [0, 0];
+                    cw.options = cw.options || {};
+                    cw.options.serialize = true;
+                }
 
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
@@ -3302,6 +4298,7 @@ app.registerExtension({
                         if (value === wIndex._xzg_lastValue) return;
                         wIndex._xzg_lastValue = value;
                         _clearMaskIfImageChanged();
+                        ui.clearCrop?.();
                         ui.redraw(false);
                     };
                 }
@@ -3314,6 +4311,7 @@ app.registerExtension({
                         if (value === wList._xzg_lastValue) return;
                         wList._xzg_lastValue = value;
                         _clearMaskIfImageChanged(true);
+                        ui.clearCrop?.();
                         ui.updateModeBtn?.();
                         ui.redraw(true);
                     };
@@ -3516,6 +4514,25 @@ app.registerExtension({
                         maskWidget.value = data.properties.xzg_mask_data;
                     }
                 }
+                const cropWidget = getCropDataWidget(this);
+                if (cropWidget) {
+                    cropWidget.type = "hidden";
+                    cropWidget.hidden = true;
+                    cropWidget.computeSize = () => [0, 0];
+                    cropWidget.options = cropWidget.options || {};
+                    cropWidget.options.serialize = true;
+                    // 从 widgets_values 恢复裁剪数据
+                    if (data?.widgets_values && Array.isArray(data.widgets_values)) {
+                        const ci = this.widgets?.findIndex(w => w === cropWidget);
+                        if (ci >= 0 && data.widgets_values[ci] != null) {
+                            cropWidget.value = data.widgets_values[ci];
+                        }
+                    }
+                    // 从 properties 恢复（兜底，防止 widgets_values 被截断）
+                    if (data?.properties?.xzg_crop_data != null && !cropWidget.value) {
+                        cropWidget.value = data.properties.xzg_crop_data;
+                    }
+                }
                 const umWidget = getUploadModeWidget(this);
                 // 从 data.properties 恢复（最可靠，不受 widget 索引影响）
                 const propMode = data?.properties?.xzg_upload_mode;
@@ -3528,6 +4545,23 @@ app.registerExtension({
                     umWidget.options.serialize = true;
                     umWidget.value = restoredMode;
                 }
+                // 放大模式残留恢复：若工作流里存的是裁剪/遮罩放大后的尺寸(1280x720)，
+                // 且带原始大小标记，则恢复为原始大小并清理标记，避免刷新后节点无法还原大小
+                const _restoreWarpedNodeSize = (saved) => {
+                    if (Array.isArray(saved) && saved.length === 2 && this.size) {
+                        const w = Number(saved[0]), h = Number(saved[1]);
+                        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 &&
+                            Math.round(this.size[0]) === 1280 && Math.round(this.size[1]) === 720) {
+                            this.setSize([w, h]);
+                        }
+                    }
+                    if (this.properties) {
+                        delete this.properties.xzg_crop_orig_size;
+                        delete this.properties.xzg_mask_orig_size;
+                    }
+                };
+                _restoreWarpedNodeSize(data?.properties?.xzg_crop_orig_size);
+                _restoreWarpedNodeSize(data?.properties?.xzg_mask_orig_size);
                 if (this._xzgImgLoaderUI) {
                     // 先确保 upload_mode widget 值已恢复 → 再同步到闭包变量
                     this._xzgImgLoaderUI.syncUploadModeFromWidget?.();
@@ -3560,6 +4594,18 @@ app.registerExtension({
                 const maskWidget = getMaskDataWidget(this);
                 if (maskWidget && maskWidget.value) {
                     data.properties.xzg_mask_data = maskWidget.value;
+                }
+                // crop_data：同样显式保存到 properties
+                const cropWidget = getCropDataWidget(this);
+                if (cropWidget && cropWidget.value) {
+                    data.properties.xzg_crop_data = cropWidget.value;
+                }
+                // 放大模式残留标记：持久化原始节点大小，刷新后可恢复
+                if (this.properties?.xzg_crop_orig_size) {
+                    data.properties.xzg_crop_orig_size = this.properties.xzg_crop_orig_size;
+                }
+                if (this.properties?.xzg_mask_orig_size) {
+                    data.properties.xzg_mask_orig_size = this.properties.xzg_mask_orig_size;
                 }
                 return r;
             };

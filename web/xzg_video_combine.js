@@ -731,7 +731,8 @@ app.registerExtension({
                         ctx.fillText(dispVal, width - pad - 6, y + H / 2);
                     };
                     w.mouse = function(event, [x, y], node) {
-                        if (event.type === 'pointerdown') return false;
+                        // 拦截命中，阻止 ComfyUI 把点击交给原生逻辑弹输入框；pointerup 才会切换
+                        if (event.type === 'pointerdown') return true;
                         if (event.type === 'pointerup') {
                             this.value = (this.value === '预览') ? '保存' : '预览';
                             node.setDirtyCanvas?.(true, true);

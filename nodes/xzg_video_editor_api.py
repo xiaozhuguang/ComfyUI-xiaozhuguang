@@ -8,6 +8,7 @@ import re
 import time
 import json
 import shutil
+import hashlib
 import subprocess
 import folder_paths
 from datetime import datetime
@@ -540,6 +541,134 @@ def probe_video(filename, file_type):
         "frame_count": frame_count,
         "file_size": file_size,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  HEVC/不支持的编码 → H.264 懒触发兜底（解码源切换用）
+#  WebCodecs/mediabunny 解不了 HEVC 等编码，导致预览黑屏。
+#  本函数在「黑屏兜底」时被懒调用：先探测编码，仅对 WebCodecs 解不了的
+#  编码转成 H.264，原生可解的（h264 等)不转码、零开销。
+#  产物统一写到 input/fastcut-cache/h264/<原文件名>_h264.mp4，带时间戳哈希避免重复转码。
+# ═══════════════════════════════════════════════════════════════════════════
+# 定义快剪（编辑器）解码源转码缓存子目录（独立于视频加载器）
+XZG_VE_H264_SUBDIR = f"{XZG_VE_ROOT}/h264"
+
+# WebCodecs 原生可解的编码（白名单）。不在其中的编码（hevc/h265 等）需要转成 H.264。
+WEBCODECS_DECODABLE = {"h264", "vp8", "vp9", "av1", "mpeg4", "avc1"}
+
+# WebCodecs AudioDecoder 可解的音频编码（白名单）。mp3 不在其中（AudioDecoder 不支持），
+# 它的音轨无法被 mediabunny 解码 → 有画面没声音，同样需要转成 AAC。
+AUDIOCODECS_DECODABLE = {"aac", "mp4a", "opus", "flac", "vorbis", "pcm"}
+
+
+def _detect_stream_codecs(filename, file_type):
+    """用 ffmpeg -i 探测视频流与音频流编码名，返回 (video_codec, audio_codec) 小写字符串；失败为 None。"""
+    video_path, _ = resolve_path(filename, file_type)
+    if not os.path.isfile(video_path):
+        return None, None
+    try:
+        proc = subprocess.run([ffmpeg_path, "-i", video_path],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                              timeout=15, check=False)
+    except Exception:
+        return None, None
+    vcodec = acodec = None
+    for line in proc.stderr.decode(*ENCODE_ARGS).split('\n'):
+        m = re.search(r"Stream #.*Video: (\w+)", line)
+        if m and vcodec is None:
+            vcodec = m.group(1).lower()
+        m = re.search(r"Stream #.*Audio: (\w+)", line)
+        if m and acodec is None:
+            acodec = m.group(1).lower()
+    return vcodec, acodec
+
+
+def ensure_h264_for_decode(filename, file_type, force=False):
+    """懒触发叉底：若视频或音轨是 WebCodecs 解不了的编码，转成 H.264+AAC 并返回可播放文件信息。
+
+    返回 dict:
+      - transcoded: bool          是否发生转码（False = 原片 webcodecs 可解，直接用原片，零开销）
+      - filename: str             实际应传给解码器的文件名（原片或转码产物）
+      - subfolder: str            相对 input 的子目录（转码产物为 fastcut-cache/h264，原片为空）
+      - type: str                 都走 input
+      - codec: str|None           探测到的视频编码
+      - audio_codec: str|None     探测到的音频编码（无音轨为 None）
+      - transcoding: bool         是否触发了转码（供前端判读）
+    """
+    try:
+        codec, audio_codec = _detect_stream_codecs(filename, file_type)
+    except Exception:
+        codec = audio_codec = None
+    video_ok = (codec is None) or (codec in WEBCODECS_DECODABLE)
+    audio_ok = (audio_codec is None) or (audio_codec in AUDIOCODECS_DECODABLE)
+    # 视频与音轨都可解 → 用原片，不转码（懒触发：可解就不动）
+    if not force and video_ok and audio_ok:
+        return {"transcoded": False, "filename": filename, "subfolder": "",
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+
+    video_path, _ = resolve_path(filename, file_type)
+    if not os.path.isfile(video_path):
+        return {"transcoded": False, "filename": filename, "subfolder": "",
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+
+    # 生成转码缓存键（源绝对路径 + mtime，源变化可自动失效）
+    try:
+        fsize = os.path.getsize(video_path)
+        fmtime = os.path.getmtime(video_path)
+        h = hashlib.md5(f"{video_path}|{fsize}|{fmtime}".encode("utf-8")).hexdigest()[:10]
+    except Exception:
+        h = hashlib.md5(video_path.encode("utf-8")).hexdigest()[:10]
+    base = os.path.splitext(os.path.basename(filename))[0]
+    out_name = f"{_xzg_sanitize(base)}_{h}_h264.mp4"
+    out_rel = f"{XZG_VE_H264_SUBDIR}/{out_name}"
+
+    input_dir = folder_paths.get_input_directory()
+    out_abs = os.path.join(input_dir, *XZG_VE_H264_SUBDIR.split("/"), out_name)
+    os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+
+    # 缓存已存在 → 直接复用
+    if os.path.isfile(out_abs):
+        return {"transcoded": True, "filename": out_rel, "subfolder": XZG_VE_H264_SUBDIR,
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True}
+
+    # 选编码器：优先 h264_nvenc 硬编，否则 libx264 软编
+    enc = "libx264"
+    try:
+        if _xzg_ve_nvenc_available():
+            enc = "h264_nvenc"
+    except Exception:
+        enc = "libx264"
+    cmd = [ffmpeg_path, "-y", "-v", "error",
+           "-i", video_path,
+           "-c:v", enc, "-preset", "veryfast", "-crf", "20" if enc == "libx264" else None,
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+           "-c:a", "aac", "-ar", "44100", "-ac", "2"]
+    if enc == "h264_nvenc":
+        # NVENC 没有 -crf，用 -cq；-preset 换成 p提速
+        cmd = [ffmpeg_path, "-y", "-v", "error",
+               "-i", video_path,
+               "-c:v", enc, "-preset", "p5", "-cq", "20",
+               "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+               "-c:a", "aac", "-ar", "44100", "-ac", "2"]
+    cmd.append(out_abs)
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if proc.returncode != 0:
+            err = proc.stderr.decode(*ENCODE_ARGS)
+            print(f"[小珠光] H.264 转码失败: {filename}: {err[:300]}")
+            return {"transcoded": False, "filename": filename, "subfolder": "",
+                    "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+    except Exception as e:
+        print(f"[小珠光] H.264 转码异常: {filename}: {e}")
+        return {"transcoded": False, "filename": filename, "subfolder": "",
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+    if not os.path.isfile(out_abs):
+        return {"transcoded": False, "filename": filename, "subfolder": "",
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+
+    return {"transcoded": True, "filename": out_rel, "subfolder": XZG_VE_H264_SUBDIR,
+            "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True}
 
 
 def extract_frame(filename, file_type, time_sec, small=False,
@@ -1129,14 +1258,23 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
             )
         # contain 到目标分辨率
         parts.append(f"scale={base_w}:{base_h}:force_original_aspect_ratio=decrease")
-        # 大小缩放（scale）
+        # 大小缩放 + 移动居中。注意：scale>1（放大）时内容会超过画布，若仍用 pad 会因
+        # 「输出不能小于输入」报 Padded dimensions cannot be smaller than input dimensions，
+        # 必须改用 crop 取目标尺寸的观察窗口。
         sc = float(clip.get('scale', 1.0))
-        if abs(sc - 1.0) > 0.001 and sc > 0:
-            parts.append(f"scale=iw*{sc:g}:ih*{sc:g}")
-        # 移动 + 居中 pad（偏移像素）
         ox = float(clip.get('offsetX', 0.0))
         oy = float(clip.get('offsetY', 0.0))
-        parts.append(f"pad={base_w}:{base_h}:(ow-iw)/2+{ox:g}:(oh-ih)/2+{oy:g}:black")
+        zoom_in = sc is not None and sc > (1.0 + 1e-6)
+        if zoom_in:
+            # 放大：先覆盖到目标分辨率（兼容低于画布的小源），再按 sc 放大，
+            # 最后 crop 出画布大小的窗口；ox/oy 反向移动窗口以保持「内容右移/下移」语义与 pad 一致
+            parts.append(f"scale={base_w}:{base_h}:force_original_aspect_ratio=increase")
+            parts.append(f"scale=iw*{sc:g}:ih*{sc:g}")
+            parts.append(f"crop={base_w}:{base_h}:(iw-{base_w})/2-{ox:g}:(ih-{base_h})/2-{oy:g}")
+        else:
+            if abs(sc - 1.0) > 0.001 and sc > 0:
+                parts.append(f"scale=iw*{sc:g}:ih*{sc:g}")
+            parts.append(f"pad={base_w}:{base_h}:(ow-iw)/2+{ox:g}:(oh-ih)/2+{oy:g}:black")
         return ",".join(parts)
 
     def _vid_opacity(clip):
@@ -1672,6 +1810,18 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
             return web.json_response({"error": "filename required"}, status=400)
         info = probe_video(filename, file_type)
         return web.json_response(info)
+
+    @_xzg_ve_PS.instance.routes.post("/xzg_video_editor_ensure_h264")
+    @_xzg_ve_safe
+    async def xzg_video_editor_ensure_h264_route(request):
+        data = await request.json()
+        filename = data.get("filename", "")
+        file_type = data.get("type", "input")
+        force = bool(data.get("force", False))
+        if not filename:
+            return web.json_response({"error": "filename required"}, status=400)
+        result = ensure_h264_for_decode(filename, file_type, force=force)
+        return web.json_response(result)
 
     @_xzg_ve_PS.instance.routes.post("/xzg_video_editor_extract_frame")
     @_xzg_ve_safe

@@ -136,6 +136,50 @@ def _get_thumb_cache_key(filename, size):
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg"}
 
 
+def _parse_crop_data(crop_str):
+    """解析前端上传的裁剪矩形 JSON：形如 [x, y, w, h]（原图像素）。
+    无效输入返回 None（不裁剪）。"""
+    if not crop_str or not str(crop_str).strip():
+        return None
+    import json as _json
+    try:
+        v = _json.loads(str(crop_str))
+        if isinstance(v, (list, tuple)) and len(v) == 4:
+            x, y, w, h = [int(round(float(a))) for a in v]
+            if w > 0 and h > 0:
+                return (x, y, w, h)
+    except Exception:
+        pass
+    return None
+
+
+def _clamp_crop(crop, orig_w, orig_h):
+    """把裁剪矩形 clamp 到图片范围内，保证至少 1x1 有效。"""
+    x, y, w, h = crop
+    x = max(0, min(x, max(0, orig_w - 1)))
+    y = max(0, min(y, max(0, orig_h - 1)))
+    w = max(1, min(w, orig_w - x))
+    h = max(1, min(h, orig_h - y))
+    return (x, y, w, h)
+
+
+def _crop_tensor(img_t, crop, orig_w, orig_h):
+    """对 IMAGE 张量 (1, H, W, 3) 按原图像素矩形裁剪。"""
+    x, y, w, h = _clamp_crop(crop, orig_w, orig_h)
+    if x == 0 and y == 0 and w == orig_w and h == orig_h:
+        return img_t
+    pil = Image.fromarray((img_t[0].numpy() * 255).astype(np.uint8))
+    pil = pil.crop((x, y, x + w, y + h))
+    arr = np.array(pil).astype(np.float32) / 255.0
+    return torch.from_numpy(arr)[None,]
+
+
+def _crop_mask(mask_t, crop, orig_w, orig_h):
+    """对 3D 遮罩 (1, H, W) 按原图像素矩形裁剪。"""
+    x, y, w, h = _clamp_crop(crop, orig_w, orig_h)
+    return mask_t[:, y:y + h, x:x + w]
+
+
 def _normalize_annotated_filename(name: str) -> str:
     if not name:
         return name
@@ -411,6 +455,7 @@ class XiaozhuguangImageLoader:
             "hidden": {
                 "unique_id": "UNIQUE_ID",
                 "mask_data": ("STRING", {"default": ""}),
+                "crop_data": ("STRING", {"default": ""}),  # 裁剪矩形 [x,y,w,h]，仅单图模式使用
                 "upload_mode": ("STRING", {"default": "append"}),  # append=多图 / replace=单图，前端持久化用
             },
         }
@@ -421,7 +466,7 @@ class XiaozhuguangImageLoader:
     FUNCTION = "load_images"
     CATEGORY = "xiaozhuguang"
 
-    def load_images(self, image_list, index, batch_mode, unique_id=None, mask_data="", upload_mode="append"):
+    def load_images(self, image_list, index, batch_mode, unique_id=None, mask_data="", crop_data="", upload_mode="append"):
         # 调试：打印遮罩数据长度
         mask_len = len(mask_data) if mask_data else 0
         print(f"[小珠光图像加载器] mask_data 长度: {mask_len}, 前50字符: {str(mask_data)[:50]}")
@@ -434,7 +479,11 @@ class XiaozhuguangImageLoader:
         if not names:
             return ([], empty_mask)
 
+        # 裁剪矩形（仅单图/列表模式生效，作用于 index 指向的图）
+        crop = _parse_crop_data(crop_data)
+
         images = []
+        orig_sizes = []  # 每张图裁剪前的原始尺寸 (w, h)
         image_alphas = []  # 每张图的 alpha 通道（无 alpha 则 None），用于无用户遮罩时回退提取
         for name in names:
             try:
@@ -445,6 +494,7 @@ class XiaozhuguangImageLoader:
 
                 img = node_helpers.pillow(Image.open, image_path)
                 img = ImageOps.exif_transpose(img)
+                orig_sizes.append(img.size)  # (w, h)
                 # 在 convert("RGB") 之前提取 alpha 通道（与官方 LoadImage 一致）
                 alpha = img.getchannel('A') if 'A' in img.getbands() else None
                 image = img.convert("RGB")
@@ -494,6 +544,27 @@ class XiaozhuguangImageLoader:
                 print(f"[小珠光图像加载器] 遮罩解码失败: {e}")
                 return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
 
+        # 裁剪：对 index 指向的图生效，与 batch_mode 无关（兼容单图模式批次/列表）
+        # 仅当存在裁剪矩形且索引有效时应用
+        idx = max(0, min(int(index), len(images) - 1)) if images else 0
+        # 记录裁剪前后尺寸，供遮罩同步
+        crop_src_idx = None   # 被裁剪的图片索引
+        crop_orig_size = None # 该图片裁剪前的原始尺寸 (w, h)
+        if crop and images and 0 <= idx < len(images):
+            crop_orig_size = orig_sizes[idx]
+            ow, oh = crop_orig_size
+            # 前端裁剪坐标取自「最长边3840px」的压缩预览图（preview）。
+            # 原图最长边 >3840 时需把预览坐标按比例换算回原图像素，否则大图裁剪位置错位。
+            spr = max(ow, oh)
+            if spr > 3840:
+                ratio = spr / 3840.0
+                crop = (int(round(crop[0] * ratio)),
+                        int(round(crop[1] * ratio)),
+                        int(round(crop[2] * ratio)),
+                        int(round(crop[3] * ratio)))
+            images[idx] = _crop_tensor(images[idx], crop, ow, oh)
+            crop_src_idx = idx
+
         if batch_mode:
             if len(images) == 0:
                 return ([], torch.zeros((1, 64, 64), dtype=torch.float32))
@@ -529,10 +600,19 @@ class XiaozhuguangImageLoader:
             ref_h, ref_w = max_h, max_w
             idx = max(0, min(int(index), len(image_alphas) - 1)) if image_alphas else 0
             ref_alpha = image_alphas[idx] if 0 <= idx < len(image_alphas) else None
-            mask_out = _decode_mask(mask_data, ref_h, ref_w, ref_alpha)
-            # 批次模式下将遮罩扩展到与批次相同的数量 (N, H, W)
-            if batch.shape[0] > 1 and mask_out.shape[0] == 1:
-                mask_out = mask_out.repeat(batch.shape[0], 1, 1)
+            if crop_src_idx is not None and crop_orig_size is not None:
+                # 遮罩需与裁剪同步：先用原尺寸解码，再把裁剪区域裁出来
+                ow, oh = crop_orig_size
+                mask_full = _decode_mask(mask_data, oh, ow, ref_alpha)
+                mask_out = _crop_mask(mask_full, crop, ow, oh)
+                # 若裁剪后其它图被拉到批次尺寸，遮罩也需对齐（单图模式通常无需）
+                if batch.shape[0] > 1 and mask_out.shape[0] == 1:
+                    mask_out = mask_out.repeat(batch.shape[0], 1, 1)
+            else:
+                mask_out = _decode_mask(mask_data, ref_h, ref_w, ref_alpha)
+                # 批次模式下将遮罩扩展到与批次相同的数量 (N, H, W)
+                if batch.shape[0] > 1 and mask_out.shape[0] == 1:
+                    mask_out = mask_out.repeat(batch.shape[0], 1, 1)
             return ([batch], mask_out)
         else:
             # 列表模式：每张图独立放入列表，OUTPUT_IS_LIST 驱动下游 N 次执行
@@ -543,7 +623,13 @@ class XiaozhuguangImageLoader:
             else:
                 ref_h, ref_w = 64, 64
             ref_alpha = image_alphas[idx] if 0 <= idx < len(image_alphas) else None
-            mask_out = _decode_mask(mask_data, ref_h, ref_w, ref_alpha)
+            if crop_src_idx is not None and crop_orig_size is not None:
+                # 遮罩需与裁剪同步：先用原尺寸解码，再把裁剪区域裁出来
+                ow, oh = crop_orig_size
+                mask_full = _decode_mask(mask_data, oh, ow, ref_alpha)
+                mask_out = _crop_mask(mask_full, crop, ow, oh)
+            else:
+                mask_out = _decode_mask(mask_data, ref_h, ref_w, ref_alpha)
             return (images, mask_out)
 
 

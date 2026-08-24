@@ -25,11 +25,12 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import {
     downloadVideo,
     xzgTimestamp,
 } from "./xzg_save_utils.js";
-import { decoderPool } from "./xzg_frame_decoder.js";
+import { loaderDecoderPool } from "./xzg_frame_decoder.js";
 
 // mediabunny 库加载状态（懒加载）
 let _mbLoaded = false;
@@ -1066,6 +1067,30 @@ export class XiaozhuguangVideoPlayer {
         }
     }
 
+    // 解码源切换：探测视频编码，若 WebCodecs 无法解码（如 HEVC），切换为后端兜底转码的 H.264 产物 URL。
+    // 仅在解码入口使用；返回 null 表示原片可直接解码（零开销，沿用原 src）。
+    async _ensureDecodableUrl(filename, type, subfolder) {
+        try {
+            const resp = await api.fetchApi("/xzg/video_ensure_h264", {
+                method: "POST",
+                body: JSON.stringify({ filename, type: type || "input", subfolder: subfolder || "" }),
+            });
+            const data = await resp.json();
+            if (!(data && data.transcoded && data.filename)) return null;
+            const params = new URLSearchParams({ type: data.type || "input" });
+            const slashIdx = data.filename.lastIndexOf("/");
+            if (slashIdx >= 0) {
+                params.set("subfolder", data.filename.substring(0, slashIdx));
+                params.set("filename", data.filename.substring(slashIdx + 1));
+            } else {
+                params.set("filename", data.filename);
+            }
+            return `/view?${params.toString()}`;
+        } catch (_) {
+            return null;
+        }
+    }
+
     async _loadDecoderAsync(src) {
         // P1: 竞态 guard —— 每次 load 递增 token，异步完成后校验是否仍是最新
         const token = ++this._loadToken;
@@ -1075,13 +1100,19 @@ export class XiaozhuguangVideoPlayer {
             if (typeof VideoDecoder === 'undefined') {
                 throw new Error("当前浏览器不支持 WebCodecs，请使用 Chrome 94+/Edge 94+/Safari 16.4+");
             }
-            const { filename, type } = this._parseVideoUrl(src);
+            const { filename, type, subfolder } = this._parseVideoUrl(src);
             this._currentFilename = filename;
             this._currentType = type;
             // P2: filename 为空时（blob:/data: URL）使用 src 作为 key，避免池化串台
             const poolKey = filename || src;
             const poolType = filename ? type : "blob";
-            const decoder = await decoderPool.get(poolKey, poolType, src);
+            // 解码源切换：HEVC 等 WebCodecs 解不了的编码 → 用后端转码的 H.264 源（懒触发、有缓存）
+            let playSrc = src;
+            if (filename) {
+                const switched = await this._ensureDecodableUrl(filename, type, subfolder);
+                if (switched) playSrc = switched;
+            }
+            const decoder = await loaderDecoderPool.get(poolKey, poolType, playSrc);
             // P1: 校验 token，若期间又调用了 load 则放弃本次结果
             if (token !== this._loadToken) return;
             this._currentDecoder = decoder;
@@ -1165,7 +1196,10 @@ export class XiaozhuguangVideoPlayer {
         this._sourceFps = null;
         this._sourceTotalFrames = null;
         this._totalFrames = null;
-        // 停止播放
+        // 停止播放：加载新视频后进入暂停态。
+        // 若不重置 _isPlayingState（旧播放残留 true），后续 seek 恢复播放头时会触发
+        // _startAudioPlayback → 新视频只出声、画面静止（视频迭代器未启动）。
+        this._isPlayingState = false;
         this._stopPlaybackLoop();
         this._stopAudio();
         // 切换视频时必须清除旧音频缓冲，否则会播放上一个视频的声音
@@ -1446,6 +1480,12 @@ export class XiaozhuguangVideoPlayer {
         this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._isBuffering = false;
+        // 释放解码器上的播放迭代器：renderFrame/readFrameCached 在 _playbackIter 活跃时
+        // 跳过随机寻址渲染（防与 canvases() 迭代器争抢 sink）。停止播放后若不释放，
+        // _playbackIter 残留，后续拖动 seek 的画面更新被屏蔽（只有再次播放才刷新）。
+        if (this._currentDecoder && typeof this._currentDecoder.stopPlaybackIterator === "function") {
+            this._currentDecoder.stopPlaybackIterator();
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

@@ -1014,32 +1014,73 @@ const XZGGroup = {
             const useFastFade = !!this._flashGroupActive;
             const fadeDurMs = useFastFade ? 100 : null;
             let maxFadeIn = 0;
-            let maxBgExtra = 0;
             const fadeInStartNow = performance.now();
             for (const [gid, g] of Object.entries(this.groups)) {
                 if (!g.fadeEnabled) continue;
                 const el = this.groupEls[gid];
                 if (!el) continue;
-                const fadeDur = (fadeDurMs ?? g.fadeInDuration ?? 1000) / 1000;
-                el.style.transition = `opacity ${fadeDur}s ease`;
-                el.style.opacity = '1';
+                // 画布移动时编组框保持可见（不做渐隐，避免与节点缩放不同步）。
+                // 停止移动时从 opacity:0 开始渐入。边框与背景共用同一时间戳与同一
+                // easing（easeInOutCubic）：边框 opacity 由 _driveBorderFades 逐帧驱动，
+                // 背景由 _drawGroupBackgrounds 里的 domOp 按同一公式计算，二者逐帧严格同步。
+                // （不用 CSS transition，避免与 canvas 重绘各自 easing 不同步。）
                 const fadeInMs = fadeDurMs ?? g.fadeInDuration ?? 1000;
-                // 记录确定性渐入时间戳（与 DOM 过渡同一时刻起点），背景平滑无级淡入
+                el.style.transition = 'none';
+                el.style.opacity = '0';
                 g._fadeStart = fadeInStartNow;
                 g._fadeDur = fadeInMs;
                 g._fadeTarget = 1;
                 maxFadeIn = Math.max(maxFadeIn, fadeInMs);
-                // 背景出现动画：渐入早期（40%处，硬上限700ms）即启动，与渐入重叠推进。
-                // 背景透明度跟随边框渐入（domOp），重叠期卷帘由淡变实，视觉连续无空窗；
-                // 渐入时长可达 8000ms，若按比例等待会产生数秒死区
-                if (g.bgAnimation && g.bgAnimation !== 'none' && g.bgColor && g.bgColor !== 'rgba(0,0,0,0)') {
-                    g._bgAnimStart = performance.now() + Math.min(700, Math.max(80, Math.round(fadeInMs * 0.4)));
-                    maxBgExtra = Math.max(maxBgExtra, Math.max(100, g.bgAnimDuration ?? 800));
+            }
+            // canvas 背景跟随 DOM 渐入：持续触发重绘
+            this._kickCanvasRepaint(maxFadeIn);
+            // 边框/标题栏 DOM 逐帧渐入：与 canvas 背景同一时间戳+同一 easing，严格同步
+            this._driveBorderFades(maxFadeIn);
+        }
+    },
+
+    /* ── 边框/标题栏渐入驱动：与 canvas 背景共用同一时间戳与 easing（easeInOutCubic），
+        逐帧设置 DOM opacity，保证边框与背景渐入逐帧严格同步（不使用 CSS transition）。
+        采用“活跃循环”模型：只要还有任何渐入进行中（或刚结束需兜底复位）就继续跑，
+        随时可能被新触发的 _fadeStart 接手，避免长渐入 + 反复停移动时提前退出导致
+        边框停在 opacity:0 消失的概率性 bug ── */
+    _driveBorderFades(durationMs) {
+        if (this._fadeLoopActive) return; // 已有活跃循环，新触发的组由既有循环逐帧接管
+        this._fadeLoopActive = true;
+        const step = () => {
+            const now = performance.now();
+            let anyActive = false;
+            let anyDone = false;
+            for (const [gid, g] of Object.entries(this.groups)) {
+                if (!g.fadeEnabled) continue;
+                const el = this.groupEls[gid];
+                if (!el) continue;
+                if (g._fadeDur > 0 && g._fadeStart !== undefined) {
+                    // 进行中的渐入：逐帧按时间戳+同一 easing 计算，与背景严格同步
+                    const t = Math.min(1, (now - g._fadeStart) / g._fadeDur);
+                    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
+                    el.style.opacity = String(g._fadeTarget === 0 ? (1 - e) : e);
+                    if (t < 1) {
+                        anyActive = true;
+                    } else {
+                        delete g._fadeStart;
+                        // 这一帧刚完成，下一帧要兜底复位为最终值，防停在中间值
+                        anyDone = true;
+                    }
+                } else {
+                    // 无进行中渐入的编组：确保最终可见/隐藏（兜底复位，防止曾停在中途值）
+                    // 注：g.hidden 仅控制编组列表标签页显隐，不影响画布边框可见性
+                    el.style.opacity = g._fadeTarget === 0 ? '0' : '1';
                 }
             }
-            // canvas 背景跟随 DOM 渐入 + 背景动画：持续触发重绘
-            this._kickCanvasRepaint(maxFadeIn + maxBgExtra);
-        }
+            if (anyActive || anyDone) {
+                requestAnimationFrame(step);
+            } else {
+                // 完全空闲：没有任何渐入，停止循环
+                this._fadeLoopActive = false;
+            }
+        };
+        requestAnimationFrame(step);
     },
 
     /* ── 画布背景绘制：编组背景色画在 LiteGraph 节点下层（不遮挡节点） ── */
@@ -1085,22 +1126,6 @@ const XZGGroup = {
             const gh = b.h - 18;
             if (gh <= 0) continue;
 
-            // 背景出现动画（卷帘等）：在 DOM 渐入完成后接续播放
-            const anim = g.bgAnimation || 'none';
-            let prog = 1;
-            if (anim !== 'none' && g._bgAnimStart !== undefined) {
-                const dur = Math.max(100, g.bgAnimDuration ?? 800);
-                if (now < g._bgAnimStart) {
-                    prog = 0; // 等待渐入完成
-                } else {
-                    const t = Math.min(1, (now - g._bgAnimStart) / dur);
-                    // easeInOutCubic 缓入缓出：先慢 → 中间快 → 结尾慢
-                    prog = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-                }
-                if (prog < 1) anyAnimating = true;
-            }
-            if (prog <= 0) continue;
-
             // 圆角换算到 graph 空间，与 DOM 的 8px 屏幕圆角视觉一致
             let r = 8 / sc;
             r = Math.max(0, Math.min(r, b.w / 2, gh / 2));
@@ -1108,51 +1133,6 @@ const XZGGroup = {
             ctx.save();
             ctx.globalAlpha = ctx.globalAlpha * domOp * (lgc.editor_alpha ?? 1);
             ctx.fillStyle = rgba;
-            // 动画期间按进度裁剪显示区域（clip 保持圆角形状完整）
-            if (prog < 1) {
-                if (anim === 'clockwipe') {
-                    // 时针旋转：从12点钟方向顺时针扇形扫过
-                    const ccx = b.x + b.w / 2, ccy = gy + gh / 2;
-                    const crad = Math.sqrt(b.w * b.w + gh * gh) / 2 + 1;
-                    ctx.beginPath();
-                    ctx.moveTo(ccx, ccy);
-                    // canvas 角度：-π/2 为12点方向，顺时针为正方向
-                    if (prog >= 1 / 8) {
-                        ctx.arc(ccx, ccy, crad, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2, false);
-                    } else {
-                        // 极小进度时退化为窄三角，避免 arc 起止角相同导致整圆
-                        const a = -Math.PI / 2 + prog * Math.PI * 2;
-                        ctx.lineTo(ccx + crad * Math.cos(-Math.PI / 2), ccy + crad * Math.sin(-Math.PI / 2));
-                        ctx.lineTo(ccx + crad * Math.cos(a), ccy + crad * Math.sin(a));
-                    }
-                    ctx.closePath();
-                    ctx.clip();
-                } else {
-                    let cx = b.x, cy = gy, cw = b.w, ch = gh;
-                    if (anim === 'wipedown') { ch = gh * prog; }
-                    else if (anim === 'wipeup') { cy = gy + gh * (1 - prog); ch = gh * prog; }
-                    else if (anim === 'wiperight') { cw = b.w * prog; }
-                    else if (anim === 'wipeleft') { cx = b.x + b.w * (1 - prog); cw = b.w * prog; }
-                    else if (anim === 'centerout') { cw = b.w * prog; ch = gh * prog; cx = b.x + (b.w - cw) / 2; cy = gy + (gh - ch) / 2; }
-                    else if (anim === 'edgesin') {
-                        // 从外往内：左右两侧同时向中间展开
-                        const half = (b.w / 2) * prog;
-                        ctx.beginPath();
-                        ctx.rect(b.x, gy, half, gh);
-                        ctx.rect(b.x + b.w - half, gy, half, gh);
-                        ctx.clip();
-                        ctx.beginPath();
-                        if (ctx.roundRect) ctx.roundRect(b.x, gy, b.w, gh, [0, 0, r, r]);
-                        else ctx.rect(b.x, gy, b.w, gh);
-                        ctx.fill();
-                        ctx.restore();
-                        continue;
-                    }
-                    ctx.beginPath();
-                    ctx.rect(cx, cy, cw, ch);
-                    ctx.clip();
-                }
-            }
             ctx.beginPath();
             // 顶部两角紧贴标题栏底边（无圆角），底部两角与 DOM 框体圆角对齐
             if (ctx.roundRect) ctx.roundRect(b.x, gy, b.w, gh, [0, 0, r, r]);
@@ -1160,29 +1140,23 @@ const XZGGroup = {
             ctx.fill();
             ctx.restore();
         }
-        // 动画进行中：持续触发画布重绘直到动画自然结束
-        if (anyAnimating && !this._bgAnimRepainting) {
+        // 渐隐/渐入进行中：持续触发画布重绘直到过渡自然结束
+        if (anyAnimating && !this._fadeRepainting) {
             const c = app?.canvas;
             if (c) {
-                this._bgAnimRepainting = true;
+                this._fadeRepainting = true;
                 const tick = () => {
                     c.setDirty?.(true, true);
-                    // 无编组仍在动画窗口内时停止（动画结束由 _bgAnimStart+dur 判定）
                     const now2 = performance.now();
-                    const still = Object.values(this.groups).some(g => {
-                        // 背景出现动画进行中
-                        if (g.bgAnimation && g.bgAnimation !== 'none' &&
-                            g._bgAnimStart !== undefined &&
-                            now2 < g._bgAnimStart + Math.max(100, g.bgAnimDuration ?? 800) + 50) return true;
+                    const still = Object.values(this.groups).some(g =>
                         // DOM 渐隐/渐入进行中：按时间戳未完成时继续重绘保持平滑
-                        if (g._fadeStart !== undefined && g._fadeDur > 0 &&
-                            now2 < g._fadeStart + g._fadeDur + 20) return true;
-                        return false;
-                    });
+                        g._fadeStart !== undefined && g._fadeDur > 0 &&
+                        now2 < g._fadeStart + g._fadeDur + 20
+                    );
                     if (still) {
                         requestAnimationFrame(tick);
                     } else {
-                        this._bgAnimRepainting = false;
+                        this._fadeRepainting = false;
                         c.setDirty?.(true, true); // 最终帧
                     }
                 };
@@ -1396,8 +1370,6 @@ const XZGGroup = {
             borderWidth: last.borderWidth, borderOpacity: last.borderOpacity,
             headerBgColor: last.headerBgColor,
             bgColor: last.bgColor ?? 'rgba(0,0,0,0)',
-            bgAnimation: last.bgAnimation ?? 'none',
-            bgAnimDuration: last.bgAnimDuration ?? 800,
             titleColor: last.titleColor,
             fadeEnabled: last.fadeEnabled,
             fadeOutDuration: 0,
@@ -1413,12 +1385,6 @@ const XZGGroup = {
         });
 
         this.renderGroup(gid);
-        // 新建编组：背景出现动画立即播放（DOM 无渐隐状态，无需等待）
-        const ng = this.groups[gid];
-        if (ng && ng.bgAnimation && ng.bgAnimation !== 'none' && ng.bgColor && ng.bgColor !== 'rgba(0,0,0,0)') {
-            ng._bgAnimStart = performance.now();
-            this._kickCanvasRepaint(Math.max(100, ng.bgAnimDuration ?? 800));
-        }
         app.graph?.setDirtyCanvas?.(true, true);
         app.graph?.change?.();
         this.syncGroupsToExtra();
@@ -1673,8 +1639,6 @@ const XZGGroup = {
             borderWidth: 2, borderOpacity: 1,
             headerBgColor: 'rgba(0,0,0,0.4)',
             bgColor: 'rgba(0,0,0,0)',
-            bgAnimation: 'none',
-            bgAnimDuration: 800,
             titleColor: '#FFD700',
             fadeEnabled: true,
             fadeInDuration: 1000
@@ -1695,8 +1659,6 @@ const XZGGroup = {
                 borderWidth: group.borderWidth, borderOpacity: group.borderOpacity,
                 headerBgColor: group.headerBgColor,
                 bgColor: group.bgColor ?? 'rgba(0,0,0,0)',
-                bgAnimation: group.bgAnimation ?? 'none',
-                bgAnimDuration: group.bgAnimDuration ?? 800,
                 titleColor: group.titleColor,
                 fadeEnabled: group.fadeEnabled,
                 fadeInDuration: group.fadeInDuration
@@ -1717,8 +1679,6 @@ const XZGGroup = {
             titleColor: group.titleColor,
             headerBgColor: group.headerBgColor,
             bgColor: group.bgColor,
-            bgAnimation: group.bgAnimation,
-            bgAnimDuration: group.bgAnimDuration,
             colorHue: group.colorHue, colorSat: group.colorSat, colorLit: group.colorLit,
             effect: group.effect, effectSpeed: group.effectSpeed,
             borderWidth: group.borderWidth, borderOpacity: group.borderOpacity
@@ -1730,8 +1690,6 @@ const XZGGroup = {
                 titleColor: _snapshot.titleColor,
                 headerBgColor: _snapshot.headerBgColor,
                 bgColor: _snapshot.bgColor,
-                bgAnimation: _snapshot.bgAnimation,
-                bgAnimDuration: _snapshot.bgAnimDuration,
                 colorHue: _snapshot.colorHue, colorSat: _snapshot.colorSat, colorLit: _snapshot.colorLit,
                 effect: _snapshot.effect, effectSpeed: _snapshot.effectSpeed,
                 borderWidth: _snapshot.borderWidth, borderOpacity: _snapshot.borderOpacity
@@ -1826,27 +1784,6 @@ const XZGGroup = {
                     <input class="xzg-set-bgopacity" type="range" min="0" max="100" value="${Math.round(bgInitAlpha * 100)}" style="flex:1;height:24px;margin:0;">
                     <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
                         <span class="xzg-bg-opacity-val" style="color:#fff;font-size:12px;width:36px;text-align:left;">${Math.round(bgInitAlpha * 100)}%</span>
-                    </div>
-                </div>
-                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-top:6px;">
-                    <span style="color:#fff;font-size:12px;flex-shrink:0;width:72px;">出现动画</span>
-                    <select class="xzg-set-bganim" style="flex:1;height:24px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:#ffd700;font-size:12px;padding:0 6px;cursor:pointer;">
-                        <option value="none"${(group.bgAnimation ?? 'none') === 'none' ? ' selected' : ''}>无</option>
-                        <option value="wipedown"${group.bgAnimation === 'wipedown' ? ' selected' : ''}>卷帘 ↓ 下落</option>
-                        <option value="wipeup"${group.bgAnimation === 'wipeup' ? ' selected' : ''}>卷帘 ↑ 上升</option>
-                        <option value="wiperight"${group.bgAnimation === 'wiperight' ? ' selected' : ''}>卷帘 → 右展</option>
-                        <option value="wipeleft"${group.bgAnimation === 'wipeleft' ? ' selected' : ''}>卷帘 ← 左展</option>
-                        <option value="centerout"${group.bgAnimation === 'centerout' ? ' selected' : ''}>中心扩散</option>
-                        <option value="edgesin"${group.bgAnimation === 'edgesin' ? ' selected' : ''}>从外往内</option>
-                        <option value="clockwipe"${group.bgAnimation === 'clockwipe' ? ' selected' : ''}>时针旋转</option>
-                    </select>
-                    <div style="width:72px;flex-shrink:0;"></div>
-                </div>
-                <div class="xzg-bganim-duration-row" style="display:${group.bgAnimation && group.bgAnimation !== 'none' ? 'flex' : 'none'};align-items:center;gap:8px;height:24px;margin-top:6px;">
-                    <span style="color:#fff;font-size:12px;flex-shrink:0;width:72px;">动画时长</span>
-                    <input class="xzg-set-bganimdur" type="range" min="200" max="5000" step="100" value="${group.bgAnimDuration ?? 800}" style="flex:1;height:24px;margin:0;">
-                    <div style="width:72px;flex-shrink:0;display:flex;align-items:center;justify-content:flex-start;height:24px;">
-                        <span class="xzg-bg-animdur-val" style="color:#fff;font-size:12px;width:36px;text-align:left;">${((group.bgAnimDuration ?? 800) / 1000).toFixed(1)}s</span>
                     </div>
                 </div>
             </div>
@@ -2160,37 +2097,6 @@ const XZGGroup = {
             app.graph?.setDirtyCanvas?.(true, true);
         };
 
-        // 背景出现动画：选择/调整时长后立即预览播放一次
-        const bgAnimSel = modal.querySelector('.xzg-set-bganim');
-        const bgAnimDur = modal.querySelector('.xzg-set-bganimdur');
-        const bgAnimDurVal = modal.querySelector('.xzg-bg-animdur-val');
-        const bgAnimDurRow = modal.querySelector('.xzg-bganim-duration-row');
-        const updateBgAnimDurRow = () => {
-            if (bgAnimDurRow) bgAnimDurRow.style.display = (group.bgAnimation && group.bgAnimation !== 'none') ? 'flex' : 'none';
-        };
-        const previewBgAnim = () => {
-            if (group.bgAnimation && group.bgAnimation !== 'none' && group.bgColor && group.bgColor !== 'rgba(0,0,0,0)') {
-                group._bgAnimStart = performance.now();
-                self._kickCanvasRepaint(Math.max(100, group.bgAnimDuration ?? 800));
-            } else {
-                app.graph?.setDirtyCanvas?.(true, true);
-            }
-        };
-        if (bgAnimSel) {
-            bgAnimSel.addEventListener('change', function() {
-                group.bgAnimation = this.value;
-                updateBgAnimDurRow();
-                previewBgAnim();
-            });
-        }
-        if (bgAnimDur && bgAnimDurVal) {
-            bgAnimDur.addEventListener('input', function() {
-                const v = parseInt(this.value) || 800;
-                group.bgAnimDuration = v;
-                bgAnimDurVal.textContent = (v / 1000).toFixed(1) + 's';
-            });
-        }
-
         bgColorPicker.addEventListener('input', () => {
             // 透明度为0时选色，自动提升到30%让背景效果立即可见
             if (bgAlpha === 0) {
@@ -2242,8 +2148,6 @@ const XZGGroup = {
                 const b = parseInt(hex.slice(5,7),16);
                 return `rgba(${r},${g},${b},${bgAlpha})`;
             })();
-            targetGroup.bgAnimation = bgAnimSel ? bgAnimSel.value : (group.bgAnimation ?? 'none');
-            targetGroup.bgAnimDuration = parseInt(bgAnimDur?.value) || 800;
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
             targetGroup.fadeEnabled = fadeToggle.dataset.checked === 'true';
             targetGroup.fadeInDuration = parseInt(fadeDurR.value) || 1000;
@@ -2319,8 +2223,6 @@ const XZGGroup = {
             const bo = (parseInt(modal.querySelector('.xzg-set-borderopacity').value) || 100) / 100;
             const fadeEnabled = fadeToggle.dataset.checked === 'true';
             const fadeInDuration = parseInt(fadeDurR.value) || 1000;
-            const bgAnimation = bgAnimSel ? bgAnimSel.value : 'none';
-            const bgAnimDuration = parseInt(bgAnimDur?.value) || 800;
             const headerBgColor = (() => {
                 const hex = headerColorPicker.value;
                 const r = parseInt(hex.slice(1,3),16);
@@ -2342,8 +2244,6 @@ const XZGGroup = {
                 g2.borderWidth = bw; g2.borderOpacity = bo;
                 g2.headerBgColor = headerBgColor;
                 g2.bgColor = bodyBgColor;
-                g2.bgAnimation = bgAnimation;
-                g2.bgAnimDuration = bgAnimDuration;
                 g2.titleColor = titleColorPicker.value || '#FFD700';
                 g2.fadeEnabled = fadeEnabled;
                 g2.fadeInDuration = fadeInDuration;
@@ -3972,7 +3872,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (!app?.graph) return;
         const gd = {};
         for (const [id, g] of Object.entries(this.groups)) {
-            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', bgAnimation: g.bgAnimation ?? 'none', bgAnimDuration: g.bgAnimDuration ?? 800, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
+            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
         }
         app.graph.extra = app.graph.extra || {};
         app.graph.extra.xzgGroups = gd;
@@ -4211,7 +4111,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                         }
                         const gd = {};
                         for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', bgAnimation: g.bgAnimation ?? 'none', bgAnimDuration: g.bgAnimDuration ?? 800, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
+                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
                         }
                         if (Object.keys(gd).length) {
                             console.log('[小珠光编组] LGraph.serialize写入编组数据:', Object.keys(gd).length, '个');
@@ -4294,8 +4194,6 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                                 borderOpacity: g.borderOpacity,
                                 headerBgColor: g.headerBgColor,
                                 bgColor: g.bgColor,
-                                bgAnimation: g.bgAnimation,
-                                bgAnimDuration: g.bgAnimDuration,
                                 titleColor: g.titleColor,
                             };
                         }
@@ -4417,7 +4315,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         const serializeGroups = () => {
             const gd = {};
             for (const [id, g] of Object.entries(self.groups)) {
-                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', bgAnimation: g.bgAnimation ?? 'none', bgAnimDuration: g.bgAnimDuration ?? 800, titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
+                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000 };
             }
             return gd;
         };
@@ -4603,7 +4501,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     fontSize: 20, colorHue: 48, colorSat: 100, colorLit: 55,
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 1,
-                    headerBgColor: 'rgba(0,0,0,0.4)', bgColor: 'rgba(0,0,0,0)', bgAnimation: 'none', bgAnimDuration: 800, titleColor: '#FFD700',
+                    headerBgColor: 'rgba(0,0,0,0.4)', bgColor: 'rgba(0,0,0,0)', titleColor: '#FFD700',
                     fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 1000
                 };
             } else {
@@ -4622,8 +4520,6 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             if (g.fadeInDuration === undefined) g.fadeInDuration = 1000;
             if (g.hidden === undefined) g.hidden = false;
             if (g.bgColor === undefined) g.bgColor = 'rgba(0,0,0,0)';
-            if (g.bgAnimation === undefined) g.bgAnimation = 'none';
-            if (g.bgAnimDuration === undefined) g.bgAnimDuration = 800;
         }
         // 清理已持久化的删除标记：只保留此次恢复中仍然出现在任意数据源里的 ID
         // （如果 auto-save 已生效，group 不再出现于数据中，就可以从列表移除）

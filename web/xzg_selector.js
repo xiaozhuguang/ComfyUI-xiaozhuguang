@@ -163,7 +163,7 @@ function getButtonRects(y, W, settings, availableH) {
         }
         naturalRowWidth += (rowCount - 1) * gap;
 
-        // 按钮宽度：节点宽度足够时等比放大填满；不足时保持自然宽度，不压缩按钮（由节点宽度自适应）
+        // 按钮宽度：节点宽度足够时等比放大填满；不足时等比压缩按钮以适配宽度，避免标签溢出边界
         let scaledWidths = [];
         let rowWidth;
         if (naturalRowWidth > 0 && rowCount > 0) {
@@ -172,17 +172,22 @@ function getButtonRects(y, W, settings, availableH) {
             const availableContentW = Math.max(0, availableW - totalGap);
             if (availableContentW >= naturalContentW) {
                 // 节点够宽：放大按钮填满
-                const scale = availableContentW / naturalContentW;
+                const scale = naturalContentW > 0 ? availableContentW / naturalContentW : 1;
                 for (let i = rowStartIdx; i < rowEndIdx; i++) {
                     scaledWidths[i] = naturalWidths[i] * scale;
                 }
                 rowWidth = availableW;
             } else {
-                // 节点不够宽：保持按钮自然宽度，不压缩
+                // 节点不够宽：等比压缩按钮，使其适配 availableW，标签自动回到边界内
+                const scale = naturalContentW > 0 ? availableContentW / naturalContentW : 1;
                 for (let i = rowStartIdx; i < rowEndIdx; i++) {
-                    scaledWidths[i] = naturalWidths[i];
+                    scaledWidths[i] = Math.max(20, naturalWidths[i] * scale);
                 }
-                rowWidth = naturalRowWidth;
+                // 用实际缩放后的宽度重算行宽，避免最小值钳制导致二次溢出
+                rowWidth = totalGap;
+                for (let i = rowStartIdx; i < rowEndIdx; i++) {
+                    rowWidth += scaledWidths[i];
+                }
             }
         } else {
             for (let i = rowStartIdx; i < rowEndIdx; i++) {

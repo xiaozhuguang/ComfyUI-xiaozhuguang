@@ -1,10 +1,39 @@
 import os
 import sys
+import shutil
 import subprocess
 
-_ffmpeg_bin = r"E:\ComfyUI-aki-XZG\ffmpeg\bin"
-if os.path.isdir(_ffmpeg_bin) and _ffmpeg_bin not in os.environ.get('PATH', ''):
-    os.environ['PATH'] = _ffmpeg_bin + os.pathsep + os.environ.get('PATH', '')
+
+def _ensure_ffmpeg_path():
+    """把可用的 ffmpeg 目录加入 PATH，保证 subprocess 能按名字找到 ffmpeg。
+
+    优先级：
+      1) imageio-ffmpeg 自带静态 ffmpeg（随插件 requirements 自动安装，跨平台，无外部依赖）
+      2) 系统 PATH 里已有的 ffmpeg
+      3) ComfyUI 目录下的 ffmpeg/bin（老用户本机手动放置，兼容保留）
+    """
+    exe = None
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        exe = get_ffmpeg_exe()
+    except Exception:
+        try:
+            exe = shutil.which("ffmpeg")
+        except Exception:
+            exe = None
+
+    candidates = []
+    if exe:
+        d = os.path.dirname(os.path.abspath(exe))
+        candidates.append(d)
+    # ComfyUI 目录 ffmpeg/bin 兼容兜底
+    for p in (r"E:\ComfyUI-aki-XZG\ffmpeg\bin", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ffmpeg", "bin")):
+        if os.path.isdir(p):
+            candidates.append(p)
+
+    for d in candidates:
+        if d not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
 
 
 def _patch_subprocess_encoding():
@@ -28,6 +57,7 @@ def _patch_subprocess_encoding():
 
 
 _patch_subprocess_encoding()
+_ensure_ffmpeg_path()
 
 
 # ---------- 通用：小珠光 aiohttp 路由 handler 安全装饰器 ----------

@@ -853,7 +853,142 @@ def _xzg_cleanup_video_sessions():
                     pass
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# HEVC → H.264 兜底转码（视频加载器/播放器专用，与快剪编辑器 couplings 独立）
+# WebCodecs 对 HEVC/H.265 等编码解码支持不足会导致播放器黑屏/无画面。
+# 仅对 WebCodecs 解不了的编码懒触发转码为 H.264；原生可解（h264 等）不转码、零开销。
+# 产物统一写到 input/xzg-h264/<原文件名>_<hash>_h264.mp4，独立于快剪的 fastcut-cache/h264 目录。
+# ═══════════════════════════════════════════════════════════════════════════
+XZG_LOADER_H264_SUBDIR = "xzg-h264"
+
+# WebCodecs 原生可解的编码（白名单）。不在其中的编码（hevc/h265 等）需要转成 H.264。
+WEBCODECS_DECODABLE = {"h264", "vp8", "vp9", "av1", "mpeg4", "avc1"}
+
+# WebCodecs AudioDecoder 可解的音频编码（白名单）。mp3 不在其中（AudioDecoder 不支持），
+# 它的音轨无法被 mediabunny 解码 → 有画面没声音，同样需要转成 AAC。
+AUDIOCODECS_DECODABLE = {"aac", "mp4a", "opus", "flac", "vorbis", "pcm"}
+
+
+def _xzg_loader_abs(filename, file_type="input", subfolder=""):
+    """把文件名(+subfolder)解析为绝对路径。temp 类型走临时目录，其余走 input 目录。"""
+    base = folder_paths.get_temp_directory() if file_type == "temp" else folder_paths.get_input_directory()
+    rel = []
+    if subfolder:
+        sf = _xzg_secure_subfolder(subfolder)
+        if sf:
+            rel.append(sf)
+    rel.append(filename or "")
+    return os.path.join(base, *rel)
+
+
+def _xzg_detect_stream_codecs(filename, file_type="input", subfolder=""):
+    """用 ffmpeg -i 探测视频流与音频流编码名，返回 (video_codec, audio_codec) 小写字符串；失败为 (None, None)。"""
+    video_path = _xzg_loader_abs(filename, file_type, subfolder)
+    if not os.path.isfile(video_path):
+        return None, None
+    try:
+        proc = subprocess.run([ffmpeg_path, "-i", video_path],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                              timeout=15, check=False)
+    except Exception:
+        return None, None
+    vcodec = acodec = None
+    for line in proc.stderr.decode(*ENCODE_ARGS).split('\n'):
+        m = re.search(r"Stream #.*Video: (\w+)", line)
+        if m and vcodec is None:
+            vcodec = m.group(1).lower()
+        m = re.search(r"Stream #.*Audio: (\w+)", line)
+        if m and acodec is None:
+            acodec = m.group(1).lower()
+    return vcodec, acodec
+
+
+def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=False):
+    """懒触发兜底：若视频或音轨是 WebCodecs 解不了的编码（如 HEVC / MP3），转成 H.264+AAC 并返回可播放文件信息。
+
+    返回 dict:
+      - transcoded: bool    是否发生转码（False = 原片 webcodecs 可解，直接用原片，零开销）
+      - filename: str       实际应传给解码器的文件名（原片或转码产物，转码产物为 xzg-h264/xxx.mp4）
+      - subfolder: str      相对 input 的子目录
+      - type: str           都走 input（转码产物）
+      - codec: str|None     探测到的视频编码
+      - audio_codec: str|None 探测到的音频编码（无音轨为 None）
+      - transcoding: bool   是否触发了转码（供前端判读）
+    """
+    try:
+        codec, audio_codec = _xzg_detect_stream_codecs(filename, file_type, subfolder)
+    except Exception:
+        codec = audio_codec = None
+    video_ok = (codec is None) or (codec in WEBCODECS_DECODABLE)
+    audio_ok = (audio_codec is None) or (audio_codec in AUDIOCODECS_DECODABLE)
+    # 视频与音轨都可解 → 用原片，不转码（懒触发：可解就不动）
+    if not force and video_ok and audio_ok:
+        return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
+                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+
+    video_path = _xzg_loader_abs(filename, file_type, subfolder)
+    if not os.path.isfile(video_path):
+        return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
+                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+
+    # 生成转码缓存键（源绝对路径 + 大小 + mtime，源变化可自动失效）
+    try:
+        h = hashlib.md5(
+            f"{video_path}|{os.path.getsize(video_path)}|{os.path.getmtime(video_path)}".encode("utf-8")
+        ).hexdigest()[:10]
+    except Exception:
+        h = hashlib.md5(video_path.encode("utf-8")).hexdigest()[:10]
+    base = os.path.splitext(os.path.basename(filename))[0]
+    out_name = f"{base}_{h}_h264.mp4"
+    out_rel = f"{XZG_LOADER_H264_SUBDIR}/{out_name}"
+    out_abs = os.path.join(folder_paths.get_input_directory(), XZG_LOADER_H264_SUBDIR, out_name)
+    os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+
+    # 缓存已存在 → 直接复用
+    if os.path.isfile(out_abs):
+        return {"transcoded": True, "filename": out_rel, "subfolder": XZG_LOADER_H264_SUBDIR,
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True}
+
+    cmd = [ffmpeg_path, "-y", "-v", "error",
+           "-i", video_path,
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+           "-c:a", "aac", "-ar", "44100", "-ac", "2", out_abs]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if proc.returncode != 0:
+            err = proc.stderr.decode(*ENCODE_ARGS)
+            print(f"[小珠光视频加载器] H.264 转码失败: {filename}: {err[:300]}")
+            return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
+                    "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+    except Exception as e:
+        print(f"[小珠光视频加载器] H.264 转码异常: {filename}: {e}")
+        return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
+                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+    if not os.path.isfile(out_abs):
+        return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
+                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+
+    return {"transcoded": True, "filename": out_rel, "subfolder": XZG_LOADER_H264_SUBDIR,
+            "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True}
+
+
 if getattr(_xzg_PS, 'instance', None) is not None:
+
+    @_xzg_PS.instance.routes.post("/xzg/video_ensure_h264")
+    @_xzg_safe_handler
+    async def xzg_video_ensure_h264(request):
+        """视频加载器/播放器解码源兜底：探测编码，若 WebCodecs 解不了则返回 H.264 转码产物信息。"""
+        data = await request.json()
+        filename = data.get("filename", "")
+        file_type = data.get("type", "input")
+        subfolder = data.get("subfolder", "")
+        force = bool(data.get("force", False))
+        if not filename:
+            return _xzg_web2.json_response({"error": "filename required"}, status=400)
+        result = ensure_h264_for_loader(filename, file_type, subfolder, force=force)
+        return _xzg_web2.json_response(result)
 
     @_xzg_PS.instance.routes.post("/xzg/video_upload_start")
     @_xzg_safe_handler
