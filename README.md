@@ -656,6 +656,14 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.9.0 (2026-08-24)
+
+**🎬 化神级合并视频节点：修复「文件名前缀含子目录时只能保存、无法预览」**
+
+- 文件名前缀若含目录嵌套（如 `xzg_video/xxx` 而非 `xxx`），后端会把视频正确保存到 `output/xzg_video/xxx_00001.mp4`，但返回给 UI 的 `subfolder` 此前被错误置空，导致前端 `/view` 无法定位子目录文件而预览失败
+- 修复：`folder_paths.get_save_image_path` 返回结构中的真实子目录（第 4 位）被正确捕获并透传给前端；同时修正了元组解包顺序（上版误把第 3 位的整数计数器当子目录，导致 `TypeError: expected str, bytes or os.PathLike object, not int`）
+- 保存与预览现在统一从同一条结果路径读取，文件名前缀为纯文件名时行为与旧版完全一致，无回归
+
 ### V12.8.0 (2026-08-24)
 
 > 📚 **重点参考**：化神级视频编辑器（快剪/加载器）的 WebCodecs 解码、统一时钟多轨播放、MediaBunny 集成思路，参考了 [OpenCut-app/OpenCut](https://github.com/OpenCut-app/OpenCut) 项目的实现。

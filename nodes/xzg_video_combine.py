@@ -429,12 +429,13 @@ class XiaozhuguangVideoCombine:
         base_dir = (_safe_dir('get_output_directory', 'output') if 模式 == "保存"
                     else _safe_dir('get_temp_directory',   'temp'))
 
-        # 输出目录固定为 base_dir（不再支持自定义子目录，避免 /view 路径解析问题）
+        # 输出根目录固定为 base_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
+        # get_save_image_path 会解析出 subfolder 并把文件写到 output_dir/subfolder 下
         output_dir = base_dir
-        subfolder = ""
 
-        # 获取可用的文件计数器
-        full_output_folder, filename, _, _, _ = folder_paths.get_save_image_path(
+        # 获取可用的文件计数器（full_output_folder 已包含前缀内的子目录）。
+        # 返回顺序：full_output_folder, filename, counter, subfolder, filename_prefix
+        full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
             文件名前缀, output_dir
         )
 
