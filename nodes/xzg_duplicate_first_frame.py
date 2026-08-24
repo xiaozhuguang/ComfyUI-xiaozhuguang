@@ -26,7 +26,8 @@ class XiaozhuguangDuplicateFirstFrame:
 
     @classmethod
     def IS_CHANGED(cls, image, multi_fill=False):
-        return float("NaN")
+        # 纯函数：前置输入未变则直接使用 ComfyUI 缓存，不重算
+        return None
 
     def execute(self, image, multi_fill=False):
         batch_count = image.shape[0]
@@ -51,7 +52,5 @@ class XiaozhuguangDuplicateFirstFrame:
                 result = torch.cat([result] + back_dup, dim=0)
 
         out_batch = result.shape[0]
-        mode = "多参补帧" if multi_fill else "标准补帧"
-        print(f'[小珠光帧优化] [{mode}] 输入 {batch_count} 帧, 前补 {front_fill} 帧, 后补 {back_fill} 帧, 输出 {out_batch} 帧')
 
         return (result, out_batch, batch_count, front_fill, back_fill, first_frame, last_frame)

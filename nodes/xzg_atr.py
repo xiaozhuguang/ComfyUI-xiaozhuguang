@@ -1,7 +1,5 @@
-
 import torch
 import numpy as np
-from PIL import Image
 import cv2
 
 
@@ -28,7 +26,7 @@ class XiaozhuguangATR:
     RETURN_NAMES = ("restored_image",)
     FUNCTION = "restore_image"
 
-    def _restore_single_image(self, original_pil, processed_pil, crop_info, blur_amount, mask_expand, single_mask=None):
+    def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None):
         original_coords = crop_info["original_coords"]
         padded_size = crop_info["padded_size"]
         original_image_size = crop_info["original_image_size"]
@@ -39,24 +37,29 @@ class XiaozhuguangATR:
 
         crop_width = original_coords[2] - original_coords[0]
         crop_height = original_coords[3] - original_coords[1]
-        resized_processed = processed_pil.resize((crop_width, crop_height), Image.LANCZOS)
+        x1, y1 = original_coords[0], original_coords[1]
 
-        restored_image = original_pil.copy()
-        if padded_size != (original_image_size[0], original_image_size[1]):
-            restored_image = Image.new("RGB", padded_size, fill_color)
-            orig_region = (
-                pad_left,
-                pad_top,
-                pad_left + original_image_size[0],
-                pad_top + original_image_size[1]
+        resized_processed = cv2.resize(
+            proc_np, (crop_width, crop_height), interpolation=cv2.INTER_LANCZOS4
+        )
+
+        ow, oh = original_image_size
+        if tuple(padded_size) == (ow, oh):
+            restored = orig_np.copy()
+        else:
+            padded_w, padded_h = padded_size
+            restored = np.full(
+                (padded_h, padded_w, 3),
+                np.asarray(fill_color, dtype=np.uint8),
+                dtype=np.uint8
             )
-            restored_image.paste(original_pil, orig_region)
+            restored[pad_top:pad_top + oh, pad_left:pad_left + ow] = orig_np
 
-        padded_original = restored_image.copy()
+        padded_original = restored.copy()
 
         if single_mask is not None:
-            restored_image = self._apply_mask_blend(
-                restored_image,
+            restored = self._apply_mask_blend(
+                restored,
                 resized_processed,
                 padded_original,
                 original_coords,
@@ -65,10 +68,10 @@ class XiaozhuguangATR:
                 mask_expand
             )
         else:
-            restored_image.paste(resized_processed, original_coords[:2])
+            restored[y1:y1 + crop_height, x1:x1 + crop_width] = resized_processed
             if blur_amount > 0 or mask_expand != 0:
-                restored_image = self._apply_bbox_edge_blur(
-                    restored_image,
+                restored = self._apply_bbox_edge_blur(
+                    restored,
                     padded_original,
                     original_coords,
                     blur_amount,
@@ -76,14 +79,9 @@ class XiaozhuguangATR:
                 )
 
         if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
-            restored_image = restored_image.crop((
-                pad_left,
-                pad_top,
-                pad_left + original_image_size[0],
-                pad_top + original_image_size[1]
-            ))
+            restored = restored[pad_top:pad_top + oh, pad_left:pad_left + ow]
 
-        return restored_image
+        return restored
 
     def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask_expand, mask=None):
         batch_size = original_image.shape[0]
@@ -93,57 +91,43 @@ class XiaozhuguangATR:
         else:
             crop_infos = [crop_box] * batch_size
 
-        output_images = []
+        orig8 = np.clip(original_image.cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        proc8 = np.clip(processed_image.cpu().numpy() * 255, 0, 255).astype(np.uint8)
 
+        mask8 = None
+        mask_batched = False
+        if mask is not None:
+            m = np.clip(mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
+            if m.ndim == 4:  # (B,H,W,1)：去掉单通道
+                m = m[..., 0]
+            mask_batched = m.ndim == 3  # (B,H,W)；否则 (H,W) 单遮罩
+            mask8 = m
+
+        output_images = []
         for i in range(batch_size):
-            single_original = original_image[i]
-            single_processed = processed_image[i]
+            orig_np = orig8[i] if i < orig8.shape[0] else orig8[0]
+            proc_np = proc8[i] if i < proc8.shape[0] else proc8[0]
             crop_info = crop_infos[i] if i < len(crop_infos) else crop_infos[0]
 
-            orig_np = np.clip(single_original.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            original_pil = Image.fromarray(orig_np)
-
-            proc_np = np.clip(single_processed.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            processed_pil = Image.fromarray(proc_np)
-
             single_mask = None
-            if mask is not None:
-                if len(mask.shape) == 3:
-                    single_mask = mask[i] if i < mask.shape[0] else mask[0]
-                else:
-                    single_mask = mask
+            if mask8 is not None:
+                single_mask = mask8[i] if mask_batched else mask8
 
-            restored_image = self._restore_single_image(
-                original_pil, processed_pil, crop_info,
-                blur_amount, mask_expand, single_mask
+            restored = self._restore_single_image(
+                orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask
             )
-
-            img_tensor = np.array(restored_image).astype(np.float32) / 255.0
-            output_images.append(img_tensor)
+            output_images.append(restored.astype(np.float32) / 255.0)
 
         output_image = torch.from_numpy(np.stack(output_images, axis=0))
-
         return (output_image,)
 
-    def _apply_mask_blend(self, restored_image, resized_processed, original_image, crop_coords, input_mask, blur_amount, mask_expand):
-        restored_np = np.array(restored_image)
-        processed_np = np.array(resized_processed)
-        original_np = np.array(original_image)
-
+    def _apply_mask_blend(self, restored_np, processed_np, original_np, crop_coords, input_mask, blur_amount, mask_expand):
         x1, y1, x2, y2 = crop_coords
         crop_width = x2 - x1
         crop_height = y2 - y1
 
-        if torch.is_tensor(input_mask):
-            mask_np = np.clip(input_mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            if len(mask_np.shape) > 2:
-                mask_np = mask_np[0] if mask_np.shape[0] == 1 else mask_np[:, :, 0]
-        else:
-            mask_np = input_mask
-
-        pil_mask = Image.fromarray(mask_np, mode='L')
-        resized_mask = pil_mask.resize((crop_width, crop_height), Image.LANCZOS)
-        mask_np = np.array(resized_mask)
+        # input_mask 已是 (H,W) uint8，resize 到裁剪尺寸
+        mask_np = cv2.resize(input_mask, (crop_width, crop_height), interpolation=cv2.INTER_LANCZOS4)
 
         if mask_expand != 0:
             abs_expand = abs(mask_expand)
@@ -160,16 +144,16 @@ class XiaozhuguangATR:
         mask_float = mask_np.astype(np.float32) / 255.0
         mask_3ch = np.stack([mask_float] * 3, axis=-1)
 
-        original_crop = original_np[y1:y2, x1:x2]
-        blended_crop = (processed_np * mask_3ch + original_crop * (1 - mask_3ch)).astype(np.uint8)
+        original_crop = original_np[y1:y2, x1:x2].astype(np.float32)
+        blended_crop = (
+            processed_np.astype(np.float32) * mask_3ch
+            + original_crop * (1 - mask_3ch)
+        ).astype(np.uint8)
         restored_np[y1:y2, x1:x2] = blended_crop
 
-        return Image.fromarray(restored_np)
+        return restored_np
 
-    def _apply_bbox_edge_blur(self, restored_image, original_image, crop_coords, blur_amount, mask_expand):
-        restored_np = np.array(restored_image)
-        original_np = np.array(original_image)
-
+    def _apply_bbox_edge_blur(self, restored_np, original_np, crop_coords, blur_amount, mask_expand):
         x1, y1, x2, y2 = crop_coords
         img_h, img_w = restored_np.shape[:2]
 
@@ -191,9 +175,12 @@ class XiaozhuguangATR:
         mask_float = bbox_mask.astype(np.float32) / 255.0
         mask_3ch = np.stack([mask_float] * 3, axis=-1)
 
-        result_np = (restored_np * mask_3ch + original_np * (1 - mask_3ch)).astype(np.uint8)
+        result = (
+            restored_np.astype(np.float32) * mask_3ch
+            + original_np.astype(np.float32) * (1 - mask_3ch)
+        ).astype(np.uint8)
 
-        return Image.fromarray(result_np)
+        return result
 
 
 NODE_CLASS_MAPPINGS = {

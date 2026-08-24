@@ -458,5 +458,14 @@
     "inputs": {
       "input": { "name": "输入" }
     }
+  },
+  "XiaozhuguangMaskInvert": {
+    "display_name": "小珠光反转遮罩极速版",
+    "inputs": {
+      "mask": { "name": "遮罩" }
+    },
+    "outputs": {
+      "0": { "name": "遮罩" }
+    }
   }
 }

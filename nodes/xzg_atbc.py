@@ -2,7 +2,6 @@
 import math
 import torch
 import numpy as np
-from PIL import Image, ImageOps
 import cv2
 import re
 
@@ -17,7 +16,7 @@ class XiaozhuguangATBC:
             "required": {
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
-                "resize_mode": (["NaN", "lanczos", "nearest-exact", "bilinear", "bicubic"], {"default": "lanczos"}),
+                "resize_mode": (["lanczos", "nearest-exact", "bilinear", "bicubic"], {"default": "lanczos"}),
             },
             "optional": {
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
@@ -169,25 +168,31 @@ class XiaozhuguangATBC:
             smoothed.append((x0, y0, x1, y1))
         return smoothed
 
-    def _compute_crop_box(self, pil_image, pil_mask, Box_grow_factor, ratio, startup_threshold):
-        pil_mask = pil_mask.convert('L')
-        bbox = pil_mask.getbbox()
-        if bbox is None:
-            bbox = (0, 0, pil_image.width, pil_image.height)
+    def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold):
+        """根据 mask（numpy 灰度图 (H,W)）计算裁剪框，返回 (crop_x1,crop_y1,crop_x2,crop_y2), best_aspect_ratio"""
+        coords = np.argwhere(mask_np > 0)
+        if coords.shape[0] == 0:
+            bbox = (0, 0, width, height)
+        else:
+            x1 = int(coords[:, 1].min())
+            y1 = int(coords[:, 0].min())
+            x2 = int(coords[:, 1].max()) + 1
+            y2 = int(coords[:, 0].max()) + 1
+            bbox = (x1, y1, x2, y2)
 
         x1, y1, x2, y2 = bbox
         bbox_width = x2 - x1
         bbox_height = y2 - y1
 
-        image_area = pil_image.width * pil_image.height
+        image_area = width * height
         bbox_area = bbox_width * bbox_height
         area_ratio = bbox_area / image_area
 
         skip_ratio_and_grow = area_ratio >= startup_threshold
 
         if skip_ratio_and_grow:
-            crop_x1, crop_y1, crop_x2, crop_y2 = 0, 0, pil_image.width, pil_image.height
-            best_aspect_ratio = (pil_image.width, pil_image.height)
+            crop_x1, crop_y1, crop_x2, crop_y2 = 0, 0, width, height
+            best_aspect_ratio = (width, height)
         else:
             if ratio != "auto":
                 width_ratio, height_ratio = map(int, ratio.split(":"))
@@ -196,23 +201,17 @@ class XiaozhuguangATBC:
                 best_aspect_ratio = self._find_best_aspect_ratio(bbox_width, bbox_height)
             width_ratio, height_ratio = best_aspect_ratio
 
-            if width_ratio >= height_ratio:
-                base_size = max(bbox_width, math.ceil(bbox_height * width_ratio / height_ratio))
-            else:
-                base_size = max(bbox_height, math.ceil(bbox_width * height_ratio / width_ratio))
-
-            target_size = int(math.ceil(base_size * Box_grow_factor))
-
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
 
             if width_ratio >= height_ratio:
-                half_width = target_size // 2
+                half_width = math.ceil(max(bbox_width, bbox_height * width_ratio / height_ratio) * Box_grow_factor / 2)
                 half_height = int(half_width * height_ratio / width_ratio)
             else:
-                half_height = target_size // 2
+                half_height = math.ceil(max(bbox_height, bbox_width * height_ratio / width_ratio) * Box_grow_factor / 2)
                 half_width = int(half_height * width_ratio / height_ratio)
 
+            # 解析式已逼近最终尺寸（Box_grow>=1 通常已覆盖 bbox），此兜底仅防 int 舍入差 1 像素
             while half_width * 2 < bbox_width or half_height * 2 < bbox_height:
                 if width_ratio >= height_ratio:
                     half_width += 1
@@ -228,54 +227,54 @@ class XiaozhuguangATBC:
 
         return (crop_x1, crop_y1, crop_x2, crop_y2), best_aspect_ratio
 
-    def _process_single_image(self, pil_image, pil_mask, resize_mode, megapixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255)):
+    _CV2_INTERP = {
+        "lanczos": cv2.INTER_LANCZOS4,
+        "nearest-exact": cv2.INTER_NEAREST,
+        "bilinear": cv2.INTER_LINEAR,
+        "bicubic": cv2.INTER_CUBIC,
+    }
+
+    def _process_single_image(self, img, mask, resize_mode, megapixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255)):
+        # img: (H,W,3) uint8，mask: (H,W) uint8 —— 用 numpy/vc2( C 实现) 替代 PIL，大幅提速
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
 
         pad_left = max(0, -crop_x1)
         pad_top = max(0, -crop_y1)
-        pad_right = max(0, crop_x2 - pil_image.width)
-        pad_bottom = max(0, crop_y2 - pil_image.height)
+        pad_right = max(0, crop_x2 - img.shape[1])
+        pad_bottom = max(0, crop_y2 - img.shape[0])
 
+        padded_w = img.shape[1]
+        padded_h = img.shape[0]
         if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
-            pil_image = ImageOps.expand(pil_image, (pad_left, pad_top, pad_right, pad_bottom), fill=fill_color)
-            pil_mask = ImageOps.expand(pil_mask, (pad_left, pad_top, pad_right, pad_bottom), fill=0)
+            padded_w = padded_w + pad_left + pad_right
+            padded_h = padded_h + pad_top + pad_bottom
+            img_p = np.full((padded_h, padded_w, 3), fill_color, dtype=np.uint8)
+            mask_p = np.zeros((padded_h, padded_w), dtype=np.uint8)
+            img_p[pad_top:pad_top + img.shape[0], pad_left:pad_left + img.shape[1]] = img
+            mask_p[pad_top:pad_top + img.shape[0], pad_left:pad_left + img.shape[1]] = mask
+            img, mask = img_p, mask_p
             crop_x1 += pad_left
             crop_y1 += pad_top
             crop_x2 += pad_left
             crop_y2 += pad_top
 
         crop_box = (crop_x1, crop_y1, crop_x2, crop_y2)
-        cropped_image = pil_image.crop(crop_box)
-        cropped_mask = pil_mask.crop(crop_box)
+        cropped_image = img[crop_y1:crop_y2, crop_x1:crop_x2]
+        cropped_mask = mask[crop_y1:crop_y2, crop_x1:crop_x2]
 
         crop_width = crop_x2 - crop_x1
         crop_height = crop_y2 - crop_y1
         actual_aspect_ratio = (crop_width, crop_height)
 
-        if resize_mode == "NaN":
-            resized_image = cropped_image
-            resized_mask = cropped_mask
-            if divisible_by > 1:
-                width, height = cropped_image.size
-                new_width = ((width + divisible_by - 1) // divisible_by) * divisible_by
-                new_height = ((height + divisible_by - 1) // divisible_by) * divisible_by
-                if new_width != width or new_height != height:
-                    resized_image = cropped_image.resize((new_width, new_height), Image.LANCZOS)
-                    resized_mask = cropped_mask.resize((new_width, new_height), Image.LANCZOS)
-        else:
-            target_dimensions = self._calculate_target_dimensions(megapixels, actual_aspect_ratio, divisible_by)
-            resample_filter = {
-                "lanczos": Image.LANCZOS,
-                "nearest-exact": Image.NEAREST,
-                "bilinear": Image.BILINEAR,
-                "bicubic": Image.BICUBIC
-            }.get(resize_mode, Image.LANCZOS)
-            resized_image = cropped_image.resize(target_dimensions, resample_filter)
-            resized_mask = cropped_mask.resize(target_dimensions, resample_filter)
+        target_dimensions = self._calculate_target_dimensions(megapixels, actual_aspect_ratio, divisible_by)
+        target_width, target_height = target_dimensions
+        interp = self._CV2_INTERP.get(resize_mode, cv2.INTER_LANCZOS4)
+        resized_image = cv2.resize(cropped_image, (target_width, target_height), interpolation=interp)
+        resized_mask = cv2.resize(cropped_mask, (target_width, target_height), interpolation=interp)
 
         crop_info = {
             "original_coords": crop_box,
-            "padded_size": (pil_image.width, pil_image.height),
+            "padded_size": (padded_w, padded_h),
             "original_image_size": (original_width, original_height),
             "pad_info": (pad_left, pad_top, pad_right, pad_bottom),
             "fill_color": fill_color
@@ -293,52 +292,31 @@ class XiaozhuguangATBC:
 
         fill_color_rgb = self._hex_to_rgb(fill_color)
 
-        pil_images = []
-        pil_masks = []
-
-        for i in range(batch_size):
-            single_image = image[i] if i < image_batch_size else image[0]
-            if len(mask.shape) == 3:
-                single_mask = mask[i] if i < mask_batch_size else mask[0]
-            else:
-                single_mask = mask
-
-            img_np = np.clip(single_image.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            pil_image = Image.fromarray(img_np)
-
-            mask_np = np.clip(single_mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            if len(mask_np.shape) > 2:
-                mask_np = mask_np[:, :, 0]
-            pil_mask = Image.fromarray(mask_np, mode='L')
-
-            pil_images.append(pil_image)
-            pil_masks.append(pil_mask)
+        # (B) 一次性整批转换，避免逐帧 cpu/numpy 多层拷贝
+        img8 = np.clip(image.cpu().numpy() * 255, 0, 255).astype(np.uint8)  # (B,H,W,3)
+        mask8 = np.clip(mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        if mask8.ndim == 4:  # (B,H,W,1)：去掉单通道
+            mask8 = mask8[..., 0]
+        mask_batched = mask8.ndim == 3  # (B,H,W)；否则 (H,W) 单遮罩
 
         if sum_mask and batch_size > 1:
-            sum_mask_tensor = torch.zeros_like(mask[0] if len(mask.shape) == 3 else mask)
-            for i in range(batch_size):
-                if len(mask.shape) == 3:
-                    single_mask = mask[i] if i < mask_batch_size else mask[0]
-                else:
-                    single_mask = mask
-                sum_mask_tensor = sum_mask_tensor + single_mask
-            sum_mask_tensor = torch.clamp(sum_mask_tensor, 0.0, 1.0)
-            sum_mask_np = np.clip(sum_mask_tensor.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            if len(sum_mask_np.shape) > 2:
-                sum_mask_np = sum_mask_np[:, :, 0]
-            sum_pil_mask = Image.fromarray(sum_mask_np, mode='L')
+            if mask_batched:
+                sum_mask_np = np.clip(mask8[:min(mask_batch_size, batch_size)].astype(np.float32).sum(axis=0), 0, 255).astype(np.uint8)
+            else:
+                sum_mask_np = mask8
             unified_crop_coords, _ = self._compute_crop_box(
-                pil_images[0], sum_pil_mask, Box_grow_factor, ratio, startup_threshold
+                sum_mask_np, img8.shape[2], img8.shape[1], Box_grow_factor, ratio, startup_threshold
             )
             crop_boxes = [unified_crop_coords] * batch_size
             smooth_aspect_ratio = None
         else:
             crop_boxes = []
             aspect_ratios = []
+            img_w = img8.shape[2]
+            img_h = img8.shape[1]
             for i in range(batch_size):
-                crop_coords, ar = self._compute_crop_box(
-                    pil_images[i], pil_masks[i], Box_grow_factor, ratio, startup_threshold
-                )
+                m_i = mask8[i] if mask_batched else mask8
+                crop_coords, ar = self._compute_crop_box(m_i, img_w, img_h, Box_grow_factor, ratio, startup_threshold)
                 crop_boxes.append(crop_coords)
                 aspect_ratios.append(ar)
             if ratio != "auto":
@@ -355,16 +333,18 @@ class XiaozhuguangATBC:
         crop_infos = []
 
         for i in range(batch_size):
+            img_i = img8[i] if i < image_batch_size else img8[0]
+            m_i = mask8[i] if mask_batched else mask8
             resized_image, resized_mask, crop_info = self._process_single_image(
-                pil_images[i], pil_masks[i], resize_mode,
+                img_i, m_i, resize_mode,
                 megapixels, divisible_by,
                 original_width, original_height,
                 crop_boxes[i],
                 fill_color_rgb
             )
 
-            img_tensor = np.array(resized_image).astype(np.float32) / 255.0
-            mask_tensor = np.array(resized_mask).astype(np.float32) / 255.0
+            img_tensor = resized_image.astype(np.float32) / 255.0
+            mask_tensor = resized_mask.astype(np.float32) / 255.0
 
             output_images.append(img_tensor)
             output_masks.append(mask_tensor)

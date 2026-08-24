@@ -27,7 +27,8 @@ class XiaozhuguangFrameExtract:
 
     @classmethod
     def IS_CHANGED(cls, image=None, mask=None, front_fill=0, back_fill=0):
-        return float("NaN")
+        # 纯函数：输入未变（含 front_fill/back_fill 等参数）则直接使用缓存，不重算
+        return None
 
     def execute(self, image=None, mask=None, front_fill=0, back_fill=0):
         has_image = image is not None
@@ -59,7 +60,6 @@ class XiaozhuguangFrameExtract:
         if start >= end or start >= batch_count:
             empty = torch.zeros(1, img_h, img_w, 3, dtype=image.dtype if has_image else torch.float32)
             empty_mask = torch.zeros(1, img_h, img_w, dtype=torch.float32)
-            print(f'[小珠光帧提取] 提取范围无效: 前补={front_fill}, 后补={back_fill}, 总帧数={batch_count}')
             return (empty, empty_mask)
 
         if start < 0:
@@ -70,8 +70,6 @@ class XiaozhuguangFrameExtract:
         out_image = None
         if has_image:
             out_image = image[start:end].clone()
-            out_batch = out_image.shape[0]
-            print(f'[小珠光帧提取] 图像: 输入 {batch_count} 帧, 去前补 {front_fill} 帧, 去后补 {back_fill} 帧, 输出 {out_batch} 帧')
         else:
             out_image = torch.zeros(end - start, img_h, img_w, 3, dtype=torch.float32)
 
@@ -87,7 +85,6 @@ class XiaozhuguangFrameExtract:
                 out_mask = torch.zeros(1, mask_in.shape[1], mask_in.shape[2], dtype=mask_in.dtype)
             else:
                 out_mask = mask_in[m_start:m_end].clone()
-            print(f'[小珠光帧提取] 遮罩: 输入 {mask_batch} 帧, 输出 {out_mask.shape[0]} 帧')
         else:
             out_mask = torch.zeros(end - start, img_h, img_w, dtype=torch.float32)
 

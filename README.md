@@ -656,6 +656,24 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.11.0 (2026-08-24)
+
+**⚡ 性能优化：帧优化 / 帧提取 惰性化 + 合并视频 内容级去重**
+
+- **帧优化（`XiaozhuguangDuplicateFirstFrame`）惰性化**：移除强制每次重算的 `IS_CHANGED→NaN`，前置图像输入未变时直接命中 ComfyUI 输入缓存，不再重复计算；同时移除控制台 `print`
+- **帧提取（`XiaozhuguangFrameExtract`）惰性化**：同样改为默认缓存（含 `front_fill`/`back_fill` 参数变化时才重算），并移除全部控制台 `print`
+- **合并视频（`XiaozhuguangVideoCombine`）内容级惰性去重**：即使上游每次重新生成相同内容的帧，只要送入的图像/音频内容（SHA-256 指纹）与各项参数均未变且上次文件仍在，就直接复用上次编码文件、跳过 `export_to_video`——不再重新编码、不再出现编码读条、不新增编号文件
+- 修复 `xzg_video_combine.py` 中遗留的无用变量
+
+**✨ 新增节点**
+
+- **小珠光反转遮罩极速版**（`XiaozhuguangMaskInvert`）：一键反转遮罩
+- **小珠光图像-蒙版预览**（`XiaozhuguangImageMaskPreview`）：图像与蒙版同框预览
+
+**🔧 其它优化**
+
+- **ATBC（智能裁剪）/ ATR（图像回贴）**：采用 A+B+C 组合优化——用 cv2 批量处理（PIL 替换为 numpy+cv2），整批 image/mask 各一次转 numpy，消除逐帧多层临时数组；`_compute_crop_box` 的 while 循环改为解析式计算；MASK 按实际维度稳健处理（仅在 `ndim==4` 时去通道，通过 `mask_batched` 决定是否按帧索引，单遮罩直接广播复用，避免 IndexError）
+
 ### V12.10.0 (2026-08-24)
 
 **🎬 视频加载 / 视频保存（共享播放器）：修复「加载上限截断视频后，单次播放仍会播完整段声音」**

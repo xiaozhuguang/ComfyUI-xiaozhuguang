@@ -458,5 +458,14 @@
     "inputs": {
       "input": { "name": "input" }
     }
+  },
+  "XiaozhuguangMaskInvert": {
+    "display_name": "Mask Invert",
+    "inputs": {
+      "mask": { "name": "mask" }
+    },
+    "outputs": {
+      "0": { "name": "mask" }
+    }
   }
 }

@@ -6,6 +6,7 @@
 
 import os
 import sys
+import hashlib
 import subprocess
 import json
 import re
@@ -173,6 +174,30 @@ def _get_ffmpeg_path():
 
 
 ffmpeg_path = _get_ffmpeg_path()
+
+
+# ---------- 合并视频的节点级惰性去重 ----------
+# 即使上游每次都重跑（产出内容相同），只要送入的图像/音频内容未变，
+# 就复用上次编码好的文件、跳过重新编码（不再读条）。
+# 以 unique_id 为键，仅缓存指纹(小)与文件路径(小)，不持有大张量，避免内存占用。
+_xzg_vc_dedup = {}
+
+
+def _media_fingerprint(obj):
+    """为图像 tensor / 音频 dict 生成轻量内容指纹，用于惰性去重。"""
+    if obj is None:
+        return None
+    if isinstance(obj, torch.Tensor):
+        if obj.numel() == 0:
+            return ("empty",)
+        t = obj.detach().to("cpu").contiguous()
+        h = hashlib.sha256(t.numpy().tobytes()).hexdigest()
+        return (tuple(t.shape), str(t.dtype), h)
+    if isinstance(obj, dict):
+        wf = obj.get("waveform")
+        sr = obj.get("sample_rate")
+        return (str(sr), _media_fingerprint(wf))
+    return str(obj)
 
 
 # 视频格式定义（参考 VHS video_formats 目录的 JSON 配置）
@@ -423,6 +448,15 @@ class XiaozhuguangVideoCombine:
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,
                       模式, 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
+        # 惰性去重：输入内容(图像/音频)与各项参数未变，且上次文件仍存在时，直接复用，跳过重新编码
+        sig = (unique_id, 帧率, 文件名前缀, 格式, CRF, 模式)
+        img_fp = _media_fingerprint(图像)
+        aud_fp = _media_fingerprint(音频)
+        prev = _xzg_vc_dedup.get(sig)
+        if (prev is not None and prev[0] == img_fp and prev[1] == aud_fp
+                and os.path.isfile(prev[2])):
+            return prev[3]
+
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
@@ -466,10 +500,7 @@ class XiaozhuguangVideoCombine:
             audio=音频,
         )
 
-        # 返回相对路径用于 UI 显示
-        relative_path = os.path.join(subfolder, file) if subfolder else file
-
-        return {
+        ui = {
             "result": (),
             "ui": {
                 "videos": [{
@@ -482,6 +513,9 @@ class XiaozhuguangVideoCombine:
                 "output_dir": output_dir,
             }
         }
+        # 记录本次输出，供下次内容未变时惰性复用
+        _xzg_vc_dedup[sig] = (img_fp, aud_fp, file_path, ui)
+        return ui
 
 
 # 获取输出目录和临时目录路径的 API 端点
