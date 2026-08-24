@@ -1509,12 +1509,17 @@ export class XiaozhuguangVideoPlayer {
         }
         if (!this._fullAudioBuffer) return;
         const localTime = this._currentTime;
+        // 音频播放时长必须严格限定到（可能被加载上限截断的）画面结束点，否则截断后
+        // 画面提前停、声音却一路播完。endTime 与画面播放结束共用 _computeEndFrame()。
+        const fps = this._frameRate || this._currentDecoder.fps || 24;
+        const endTime = this._computeEndFrame() / fps;
+        const playLen = Math.max(endTime - localTime, 0.001);
         this._stopAudioSource();
         try {
             this._audioSource = this._audioCtx.createBufferSource();
             this._audioSource.buffer = this._fullAudioBuffer;
             this._audioSource.connect(this._audioGain);
-            this._audioSource.start(0, localTime);
+            this._audioSource.start(0, localTime, playLen);
             this._audioPlayStartOffset = localTime;
             this._audioPlayStartTime = this._audioCtx.currentTime;
         } catch (e) {

@@ -1,6 +1,6 @@
 {
   "name": "ComfyUI-xiaozhuguang",
-  "version": "12.9.0",
+  "version": "12.10.0",
   "description": "小珠光 - ComfyUI节点美化增强插件，提供节点收藏、工作流管理、主题美化、田字格对齐、视觉编组、文本框（数字转中文）等功能",
   "author": "xiaozhuguang",
   "license": "MIT",
