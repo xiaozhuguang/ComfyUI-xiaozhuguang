@@ -1546,7 +1546,7 @@ function createImgBatchUI(node) {
 
     const grid = document.createElement("div");
     grid.style.cssText =
-        "display:grid;gap:2px;flex:1;min-width:0;min-height:0;overflow:hidden;background:transparent;padding:0;border-radius:2px;align-content:start;justify-content:start;transition:opacity 0.3s ease;";
+        "display:grid;gap:2px;flex:1;min-width:0;min-height:0;overflow:hidden;background:transparent;padding:0;border-radius:2px;align-content:center;justify-content:center;transition:opacity 0.3s ease;";
     grid.style.userSelect = "none";
     grid.style.webkitUserSelect = "none";
     grid.classList.add("xzg-img-grid");
@@ -2770,7 +2770,7 @@ function createImgBatchUI(node) {
                 const card = c.querySelector(":scope > div");
                 if (card) {
                     card.style.transition = "none";
-                    card.style.borderColor = "var(--border-color)";
+                    card.style.borderColor = "transparent";
                 }
             });
         }
@@ -2862,7 +2862,7 @@ function createImgBatchUI(node) {
             allCards.forEach((c, ci) => {
                 const card = c.querySelector(":scope > div");
                 if (card) {
-                    card.style.borderColor = ci === clickedIndex ? getSelColor() : "var(--border-color)";
+                    card.style.borderColor = ci === clickedIndex ? getSelColor() : "transparent";
                 }
             });
 
@@ -2933,7 +2933,7 @@ function createImgBatchUI(node) {
                 cards.forEach((c, i) => {
                     const card = c.querySelector(":scope > div");
                     if (card) {
-                        card.style.borderColor = selectedIndexes.includes(i) ? color : "var(--border-color)";
+                        card.style.borderColor = selectedIndexes.includes(i) ? color : "transparent";
                     }
                 });
             } else if (mode === "sort" && dragSortState) {
@@ -3101,7 +3101,7 @@ function createImgBatchUI(node) {
                     cards.forEach((c) => {
                         const card = c.querySelector(":scope > div");
                         if (card) {
-                            card.style.borderColor = "var(--border-color)";
+                            card.style.borderColor = "transparent";
                         }
                     });
                 }
@@ -3119,7 +3119,7 @@ function createImgBatchUI(node) {
                         const card = c.querySelector(":scope > div");
                         if (card) {
                             const isSelected = selectedIndexes.includes(i);
-                            card.style.borderColor = isSelected ? color : "var(--border-color)";
+                            card.style.borderColor = isSelected ? color : "transparent";
                         }
                     });
                 } else if (e.ctrlKey || e.metaKey) {
@@ -3137,7 +3137,7 @@ function createImgBatchUI(node) {
                         const card = c.querySelector(":scope > div");
                         if (card) {
                             const isSelected = selectedIndexes.includes(i);
-                            card.style.borderColor = isSelected ? color : "var(--border-color)";
+                            card.style.borderColor = isSelected ? color : "transparent";
                         }
                     });
                 } else {
@@ -3150,7 +3150,7 @@ function createImgBatchUI(node) {
                     cards.forEach((c, i) => {
                         const card = c.querySelector(":scope > div");
                         if (card) {
-                            card.style.borderColor = i === clickedIndex ? color : "var(--border-color)";
+                            card.style.borderColor = i === clickedIndex ? color : "transparent";
                         }
                     });
                     if (app?.canvas) app.canvas.setDirty(true, true);
@@ -3272,7 +3272,7 @@ function createImgBatchUI(node) {
                 const card = cell.querySelector(":scope > div");
                 if (card) {
                     const isSelected = selectedIndexes.includes(i);
-                    card.style.borderColor = isSelected ? getSelColor() : "var(--border-color)";
+                    card.style.borderColor = isSelected ? getSelColor() : "transparent";
                 }
             });
             return;
@@ -3307,8 +3307,8 @@ function createImgBatchUI(node) {
 
             const card = document.createElement("div");
             card.style.cssText = `position:relative;border-radius:2px;border:1px solid ${
-                isSelected ? getSelColor() : "var(--border-color)"
-            };background:rgba(128,128,128,0.4);width:100%;height:100%;overflow:hidden;box-sizing:border-box;`;
+                isSelected ? getSelColor() : "transparent"
+            };background:#000;width:100%;height:100%;overflow:hidden;box-sizing:border-box;`;
 
             const thumbEl = document.createElement("img");
             thumbEl.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;display:block;transition:opacity 0.15s ease;";
