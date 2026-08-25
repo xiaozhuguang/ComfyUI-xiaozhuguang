@@ -39,9 +39,10 @@ class XiaozhuguangBigDisplay:
     OUTPUT_NODE = True
     OUTPUT_IS_LIST = ()
     DESCRIPTION = "大字展示：任意输入（文本/数字/整数）转为大字显示在节点上，与 showAnything 同样支持任意类型。"
-    # 注意：这里不能用 IS_CHANGED = True（布尔量会被当作函数调用而报 "bool object is not callable"）
+    # 注意：不能用 IS_CHANGED = True（布尔量会被当作函数调用而报 "bool object is not callable"）
+    # 且必须接收节点输入（ComfyUI 会把 input 等作为关键字参数传入），始终返回 True 以刷新大字展示
     @classmethod
-    def IS_CHANGED(cls):
+    def IS_CHANGED(cls, *args, **kwargs):
         return True
 
     def execute(self, input=None):

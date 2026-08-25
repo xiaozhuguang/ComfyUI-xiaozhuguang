@@ -14,31 +14,13 @@ const DEFAULT_CFG = {
     fontColor: "#ffffff",
     bgEnabled: false,
     bgColor: "#2a2a2a",
-    bgOpacity: 0.9,
     borderRadius: 6,
     bgPadding: 8,
     textAlign: "center", // left / center / right
+    vAlign: "center",   // 上下对齐：top / center / bottom
     lineHeight: 1.1,
     bold: false,
-    glowEnabled: false,
-    glowColor: "#4CAF50",
-    glowSize: 12,
 };
-const CFG_KEY = "xzg_last_bigdisplay_config";
-
-function loadCfg(defaults) {
-    try {
-        const s = localStorage.getItem(CFG_KEY);
-        if (s) {
-            const c = JSON.parse(s);
-            if (c && typeof c === "object") return { ...defaults, ...c };
-        }
-    } catch (e) {}
-    return { ...defaults };
-}
-function saveCfg(c) {
-    try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
-}
 
 app.registerExtension({
     name: "ComfyUI.xiaozhuguang.big_display",
@@ -49,20 +31,51 @@ app.registerExtension({
         // 保留正常标题栏显示（隐藏可能导致空白异常，用户选择正常展示节点名）
         nodeType.collapsable = false;
 
-        // 右键菜单：配置大字样式
-        nodeType.prototype.addMenuOptions = function (menuOptions) {
-            const opts = (this._menuHandle?.addMenuOptions
-                ? this._menuHandle.addMenuOptions
-                : null);
-            if (opts) opts.call(this, menuOptions);
+        // 右键菜单：配置大字样式（getExtraMenuOptions 是 ComfyUI/LiteGraph 标准菜单钩子）
+        {
+            const origGetExtra = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+                // 屏蔽其他默认菜单项，只保留本节点的自定义菜单
+                options.length = 0;
+                // 复制当前展示的文本
+                options.push({
+                    content: `<span style="color:#FFD700;">${xzgT("复制文本", "Copy Text")}</span>`,
+                    callback: () => {
+                        const txt = (this._texts || []).join("\n");
+                        this.copyTextToClipboard(txt);
+                    },
+                });
+                // 金色文字，置于菜单最上方
+                options.push(null, {
+                    content: `<span style="color:#FFD700;">${xzgT("大字样式设置…", "Big Text Style…")}</span>`,
+                    callback: () => this._openStyleDialog(),
+                });
+            };
+        }
 
-            menuOptions.push(null);
-            menuOptions.push({
-                content: xzgT("大字样式设置…", "Big Text Style…"),
-                callback: () => this._openStyleDialog(),
-            });
-            return menuOptions;
-        };
+        // 对齐图标：typeKey 区分 textAlign(横线) / vAlign(竖线)，value 决定对齐边
+        // 横线组：上短下长，靠左/居中/靠右；竖线组：长短不一，顶/中/底对齐
+        function xzgAlignIcon(typeKey, value) {
+            const L = (x1, y1, x2, y2) =>
+                `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+            let inner;
+            if (typeKey === "textAlign") {
+                if (value === "left")
+                    inner = L(3, 5, 7, 5) + L(3, 10.5, 13, 10.5) + L(3, 16, 21, 16);
+                else if (value === "right")
+                    inner = L(17, 5, 21, 5) + L(11, 10.5, 21, 10.5) + L(3, 16, 21, 16);
+                else
+                    inner = L(9, 5, 15, 5) + L(6, 10.5, 18, 10.5) + L(3, 16, 21, 16);
+            } else {
+                if (value === "top")
+                    inner = L(6, 3, 6, 11) + L(12, 3, 12, 17) + L(18, 3, 18, 21);
+                else if (value === "bottom")
+                    inner = L(6, 13, 6, 21) + L(12, 7, 12, 21) + L(18, 3, 18, 21);
+                else
+                    inner = L(6, 7, 6, 15) + L(12, 5, 12, 19) + L(18, 3, 18, 21);
+            }
+            return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${inner}</svg>`;
+        }
 
         // 右键大字样式设置对话框
         nodeType.prototype._openStyleDialog = function () {
@@ -70,37 +83,81 @@ app.registerExtension({
             const cfg = { ...(this._cfg || DEFAULT_CFG) };
 
             const wrap = document.createElement("div");
-            wrap.style.cssText = "position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);";
+            wrap.style.cssText = "position:fixed;inset:0;z-index:99999;background:transparent;";
             const box = document.createElement("div");
-            box.style.cssText = "background:#222;border:1px solid #444;border-radius:8px;padding:16px 18px;min-width:300px;color:#fff;font-family:'Microsoft YaHei',Arial,sans-serif;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,0.6);";
+            box.style.cssText = "position:fixed;left:66vw;top:50%;transform:translateY(-50%);background:#222;border:1px solid #444;border-radius:8px;width:268px;box-sizing:border-box;padding:8px 12px 10px;color:#fff;font-family:'Microsoft YaHei',Arial,sans-serif;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,0.6);";
             box.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-                    <b style="color:#ff8c00;font-size:14px;">${xzgT("大字样式设置", "Big Text Style")}</b>
-                    <span id="xz-bd-close" style="cursor:pointer;color:#aaa;font-size:16px;">✕</span>
+                <div id="xz-bd-title" style="display:flex;justify-content:space-between;align-items:center;height:18px;margin-bottom:8px;cursor:move;user-select:none;">
+                    <b style="color:#FFD700;font-size:13px;line-height:1;">${xzgT("大字样式设置", "Big Text Style")}</b>
+                    <span id="xz-bd-close" style="cursor:pointer;color:#aaa;font-size:15px;line-height:1;">✕</span>
                 </div>
             `;
 
+            // 面板拖动：按住面板顶部/标题任意处即可拖动（交互控件与关闭按钮除外）
+            (function () {
+                const dragState = { on: false };
+                const canDrag = (e) => {
+                    const el = e.target;
+                    if (!el || !el.closest) return false;
+                    if (el.closest("input,button,select,#xz-bd-close")) return false;
+                    // 仅允许从标题栏及其上方内边距区域发起拖动，空白正文不触发
+                    const titleRect = box.querySelector("#xz-bd-title").getBoundingClientRect();
+                    return e.clientY <= titleRect.bottom;
+                };
+                box.addEventListener("mousedown", (e) => {
+                    if (e.button !== 0 || !canDrag(e)) return;
+                    // 先记录含 transform 的视觉位置，再清除垂直居中的 transform，
+                    // 最后用记录的 left/top 定位，保证拖动起始位置不跳变
+                    const rect = box.getBoundingClientRect();
+                    const visLeft = rect.left, visTop = rect.top;
+                    box.style.transform = "none";
+                    box.style.position = "fixed";
+                    box.style.left = visLeft + "px";
+                    box.style.top = visTop + "px";
+                    box.style.margin = "0";
+                    let startX = e.clientX, startY = e.clientY;
+                    let ox = rect.left, oy = rect.top;
+                    dragState.on = true;
+                    const onMove = (ev) => {
+                        if (!dragState.on) return;
+                        box.style.left = ox + (ev.clientX - startX) + "px";
+                        box.style.top = oy + (ev.clientY - startY) + "px";
+                    };
+                    const onUp = () => {
+                        dragState.on = false;
+                        window.removeEventListener("mousemove", onMove);
+                        window.removeEventListener("mouseup", onUp);
+                    };
+                    window.addEventListener("mousemove", onMove);
+                    window.addEventListener("mouseup", onUp);
+                });
+            })();
+
             const rows = [
-                { key: "fontSize", label: xzgT("字号", "Font Size"), type: "range", min: 12, max: 200, step: 1 },
+                { key: "textAlign", label: xzgT("左右对齐", "H-Align"), type: "align", options: [
+                    { value: "left", label: xzgT("左", "L") },
+                    { value: "center", label: xzgT("中", "C") },
+                    { value: "right", label: xzgT("右", "R") },
+                ] },
+                { key: "vAlign", label: xzgT("上下对齐", "V-Align"), type: "align", options: [
+                    { value: "top", label: xzgT("上", "T") },
+                    { value: "center", label: xzgT("中", "C") },
+                    { value: "bottom", label: xzgT("下", "B") },
+                ] },
+                { key: "fontSize", label: xzgT("字号", "Font Size"), type: "number", min: 4, max: 200, step: 1 },
                 { key: "fontColor", label: xzgT("文字颜色", "Text Color"), type: "color" },
                 { key: "bgEnabled", label: xzgT("显示背景", "Background"), type: "checkbox" },
                 { key: "bgColor", label: xzgT("背景颜色", "BG Color"), type: "color" },
-                { key: "bgOpacity", label: xzgT("背景透明度", "BG Opacity"), type: "range", min: 0, max: 1, step: 0.05 },
-                { key: "roundedCorner", label: xzgT("圆角", "Corner Radius"), type: "range", min: 0, max: 24, step: 1 },
                 { key: "padding", label: xzgT("内边距", "Padding"), type: "range", min: 0, max: 40, step: 1 },
                 { key: "bold", label: xzgT("加粗", "Bold"), type: "checkbox" },
-                { key: "glowEnabled", label: xzgT("发光", "Glow"), type: "checkbox" },
-                { key: "glowColor", label: xzgT("发光颜色", "Glow Color"), type: "color" },
-                { key: "glowSize", label: xzgT("发光强度", "Glow Size"), type: "range", min: 1, max: 60, step: 1 },
-                { key: "letterSpacing", label: xzgT("字间距", "Letter Spacing"), type: "range", min: -10, max: 40, step: 1 },
             ];
 
             const inputs = {};
             for (const r of rows) {
                 const div = document.createElement("div");
-                div.style.cssText = "display:flex;align-items:center;gap:10px;margin:8px 0;";
+                div.style.cssText = "display:flex;align-items:center;gap:8px;margin:6px 0;";
                 const lab = document.createElement("span");
-                lab.style.cssText = "width:96px;text-align:right;color:#ccc;flex-shrink:0;";
+                lab.style.cssText = "width:78px;text-align:left;color:#ccc;flex-shrink:0;white-space:nowrap;";
                 lab.textContent = r.label;
                 div.appendChild(lab);
                 let inp;
@@ -109,17 +166,52 @@ app.registerExtension({
                     inp.type = "range";
                     inp.min = r.min; inp.max = r.max; inp.step = r.step;
                     inp.value = cfg[r.key] ?? (r.min + (r.max - r.min) / 2);
-                    inp.style.cssText = "flex:1;accent-color:#ff8c00;";
+                    inp.style.cssText = "flex:1;accent-color:#FFD700;";
                 } else if (r.type === "checkbox") {
                     inp = document.createElement("input");
                     inp.type = "checkbox";
                     inp.checked = !!cfg[r.key];
-                    inp.style.cssText = "accent-color:#ff8c00;transform:scale(1.2);";
+                    inp.style.cssText = "accent-color:#FFD700;transform:scale(1.2);";
+                } else if (r.type === "number") {
+                    inp = document.createElement("input");
+                    inp.type = "number";
+                    inp.min = r.min; inp.max = r.max; inp.step = r.step || 1;
+                    inp.value = cfg[r.key] ?? r.min;
+                    inp.style.cssText = "flex:1;min-width:0;background:#1a1a1a;border:1px solid #555;border-radius:4px;color:#fff;padding:4px 8px;";
                 } else if (r.type === "color") {
                     inp = document.createElement("input");
                     inp.type = "color";
                     inp.value = cfg[r.key] || "#ffffff";
                     inp.style.cssText = "width:42px;height:24px;border:none;background:none;cursor:pointer;";
+                } else if (r.type === "align") {
+                    // 对齐三键图标：点击选择，金色高亮当前项
+                    inp = document.createElement("div");
+                    inp.style.cssText = "flex:1;display:flex;gap:4px;";
+                    let curIdx = r.options.findIndex((o) => o.value === cfg[r.key]);
+                    if (curIdx < 0) curIdx = 0;
+                    inp._alignVal = () => (r.options[curIdx] ? r.options[curIdx].value : "");
+                    const paint = () => {
+                        [...inp.children].forEach((bb, j) => {
+                            const on = j === curIdx;
+                            bb.style.color = on ? "#FFD700" : "#cfcfcf";
+                            bb.style.borderColor = on ? "#FFD700" : "#555";
+                            bb.style.background = on ? "#332d1a" : "#2a2a2a";
+                        });
+                    };
+                    r.options.forEach((o, i) => {
+                        const b = document.createElement("button");
+                        b.type = "button";
+                        b.style.cssText = "flex:1;height:30px;display:flex;align-items:center;justify-content:center;background:#2a2a2a;border:1px solid #555;border-radius:4px;cursor:pointer;padding:0;";
+                        b.title = o.label;
+                        b.innerHTML = xzgAlignIcon(r.key, o.value);
+                        b.addEventListener("click", () => {
+                            curIdx = i;
+                            paint();
+                            apply();
+                        });
+                        inp.appendChild(b);
+                    });
+                    paint();
                 }
                 if (r.type === "range" && r.min >= 1) inp.step = r.step || 1;
                 inputs[r.key] = inp;
@@ -127,8 +219,8 @@ app.registerExtension({
                 box.appendChild(div);
             }
 
-            // 对齐命名到 cfg 实际字段（roundedCorner→borderRadius, padding→bgPadding, letterSpacing 可选）
-            const alias = { roundedCorner: "borderRadius", padding: "bgPadding" };
+            // 对齐命名到 cfg 实际字段（padding→bgPadding）
+            const alias = { padding: "bgPadding" };
 
             const apply = () => {
                 for (const r of rows) {
@@ -136,15 +228,16 @@ app.registerExtension({
                     const target = alias[r.key] || r.key;
                     if (r.type === "checkbox") cfg[target] = v.checked;
                     else if (r.type === "color") cfg[target] = v.value;
+                    else if (r.type === "align") cfg[target] = v._alignVal();
                     else {
                         const num = parseFloat(v.value);
                         cfg[target] = Number.isFinite(num) ? num : cfg[target];
                     }
                 }
                 node._cfg = cfg;
-                saveCfg(cfg);
-                node.setDirtyCanvas?.(true, true);
+                // 标记工作流为已修改，保存工作流时随该节点持久化
                 app.graph?.setDirtyCanvas(true, true);
+                node.setDirtyCanvas?.(true, true);
             };
 
             for (const r of rows) {
@@ -155,10 +248,10 @@ app.registerExtension({
             }
 
             const btns = document.createElement("div");
-            btns.style.cssText = "display:flex;justify-content:flex-end;gap:10px;margin-top:14px;";
+            btns.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:10px;";
             const ok = document.createElement("button");
             ok.textContent = xzgT("确定", "OK");
-            ok.style.cssText = "padding:6px 16px;background:#ff8c00;border:none;border-radius:4px;color:#000;font-weight:600;cursor:pointer;";
+            ok.style.cssText = "padding:6px 16px;background:#FFD700;border:none;border-radius:4px;color:#000;font-weight:600;cursor:pointer;";
             const cancel = document.createElement("button");
             cancel.textContent = xzgT("取消", "Cancel");
             cancel.style.cssText = "padding:6px 16px;background:#3a3a3a;border:1px solid #555;border-radius:4px;color:#fff;cursor:pointer;";
@@ -179,7 +272,8 @@ app.registerExtension({
         const origCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = origCreated?.apply(this, arguments);
-            this._cfg = loadCfg(DEFAULT_CFG);
+            // 每个节点用独立的配置（默认值副本），由 onConfigure/onSerialize 随工作流持久化
+            this._cfg = { ...DEFAULT_CFG };
             this._texts = [];
             this.properties = this.properties || {};
             this.color = "#1a1a1a";
@@ -191,15 +285,19 @@ app.registerExtension({
         const origConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             const r = origConfigure?.apply(this, arguments);
-            this._cfg = loadCfg(this._cfg || DEFAULT_CFG);
-            // 从恢复的工作流读取已显示文本（若有）
+            // 从恢复的工作流读取该节点的配置与已显示文本
             const wv = this.widgets_values;
             try {
                 if (wv && typeof wv === "object" && wv.length > 0) {
-                    const first = wv.find((x) => x && x.texts);
-                    if (first && Array.isArray(first.texts)) this._texts = first.texts;
+                    const first = wv.find((x) => x && (x.texts || x.cfg));
+                    if (first) {
+                        if (Array.isArray(first.texts)) this._texts = first.texts;
+                        if (first.cfg && typeof first.cfg === "object")
+                            this._cfg = { ...DEFAULT_CFG, ...first.cfg };
+                    }
                 }
             } catch (e) {}
+            if (!this._cfg) this._cfg = { ...DEFAULT_CFG };
             return r;
         };
 
@@ -208,7 +306,7 @@ app.registerExtension({
             const r = origSerialize?.apply(this, arguments);
             try {
                 if (!o.widgets_values) o.widgets_values = [];
-                o.widgets_values.push({ texts: this._texts || [] });
+                o.widgets_values.push({ texts: this._texts || [], cfg: { ...this._cfg } });
             } catch (e) {}
             return r;
         };
@@ -221,6 +319,44 @@ app.registerExtension({
             this._texts = Array.isArray(texts) ? texts : [texts];
             this.setDirtyCanvas?.(true, true);
             return r;
+        };
+
+        // 复制文本到剪贴板，返回是否成功
+        nodeType.prototype.copyTextToClipboard = function (text) {
+            const txt = (text ?? "").toString();
+            if (!txt) return false;
+            const done = (ok, silent) => {
+                if (ok) {
+                    if (!silent && app?.extensionManager?.toast)
+                        app.extensionManager.toast.add({ title: "已复制", message: "", type: "success", life: 2 });
+                } else {
+                    if (app?.extensionManager?.toast)
+                        app.extensionManager.toast.add({ title: "复制失败", message: "", type: "error", life: 3 });
+                }
+            };
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(txt).then(() => done(true)).catch(() => fallback());
+                    return true;
+                }
+                fallback();
+                return true;
+            } catch (e) {
+                fallback();
+                return true;
+            }
+            function fallback() {
+                const ta = document.createElement("textarea");
+                ta.value = txt;
+                ta.style.cssText = "position:fixed;top:-999px;left:-999px;opacity:0;";
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                let ok = false;
+                try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+                document.body.removeChild(ta);
+                done(ok);
+            }
         };
 
         // 大字绘制
@@ -238,13 +374,11 @@ app.registerExtension({
             ctx.save();
             // 背景
             if (cfg.bgEnabled && cfg.bgColor && cfg.bgColor !== "transparent") {
-                ctx.globalAlpha = cfg.bgOpacity ?? 1;
                 ctx.fillStyle = cfg.bgColor;
-                const br = cfg.borderRadius ?? 6;
+                const br = 6; // 圆角内置固定 6，无滑条
                 ctx.beginPath();
                 ctx.roundRect(1, 1, w - 2, h - 2, Math.min(br, 16));
                 ctx.fill();
-                ctx.globalAlpha = 1;
             }
 
             // 注：不再绘制"整个节点"的外圈绿色虚线框，仅保留下方文字内容区的绿框。
@@ -276,63 +410,68 @@ app.registerExtension({
                 ctx.setLineDash([]);
             }
 
-            // 字号双向缩放：以基准 fontSize 试测量文本块，横向/纵向分别算"填满内容区"的缩放比，
-            // 取两者的较小值（保证宽高都不溢出）。节点拉大→字放大，节点缩小→字减小，自由由节点尺寸决定。
-            const baseFonts = Array.from({ length: lines.length }, () => ({
-                w: 0, asc: fontSize, desc: fontSize * 0.15,
-            }));
-            let fs = fontSize;
-            {
-                const measure = (f) => {
-                    ctx.font = `${weight} ${f}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "SimHei", Arial, sans-serif`;
-                    return lines.map((ln) => {
-                        const m = ctx.measureText(ln);
-                        return {
-                            w: m.width,
-                            asc: m.actualBoundingBoxAscent || f,
-                            desc: m.actualBoundingBoxDescent || f * 0.15,
-                        };
-                    });
-                };
-                let m = measure(fs);
-                const availW = contentW;
-                const lineH = fs * (cfg.lineHeight || 1.1);
-                const asc = (m[0] && m[0].asc) || fs;
-                const desc = (m[m.length - 1] && m[m.length - 1].desc) || fs * 0.15;
-                const blockH = asc + (lines.length - 1) * lineH + desc;
-                const availH = contentH;
-
-                // 横向：填满内容区可用的放大/缩小比
-                const maxWidth = m.reduce((mx, x) => Math.max(mx, x.w), 0);
-                let scaleX = maxWidth > 0 ? availW / maxWidth : 1;
-                // 纵向：填满内容区可用的放大/缩小比
-                let scaleY = blockH > 0 ? availH / blockH : 1;
-                // 取交集（较小者），保证宽、高都不溢出；>1 时即放大，<1 时即缩小
-                let scale = Math.min(scaleX, scaleY);
-                if (scale > 0 && Math.abs(scale - 1) > 0.001) {
-                    fs = Math.max(4, fs * scale);   // 双向自由缩放，不设上限；节点越大字越大，节点越小字越小
+            // ── 自动换行 + 双向缩放 ──────────────────────────────────
+            // 先按当前字号把每行文本按内容区宽度自动换行，再横向/纵向分别算"填满内容区"的缩放比
+            // 并取较小值（宽高都不溢出）。节点拉大→字变大，节点缩小→字变小，超宽自动换行、不高设定上限。
+            const fontStyleStr = (f) => `${weight} ${f}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "SimHei", Arial, sans-serif`;
+            const wrapLine = (str, maxW) => {
+                // 贪婪软换行：以空格为优先断点，中文/无空格时按字符硬断，保证行宽不超 maxW
+                if (str.length === 0) return [""];
+                const n = str.length;
+                const out = [];
+                let start = 0;
+                while (start < n) {
+                    // 二分最长前缀 [start, mid)，使其宽度不超过 maxW
+                    let lo = start, hi = n;
+                    while (lo < hi) {
+                        const mid = Math.floor((lo + hi + 1) / 2);
+                        if (ctx.measureText(str.slice(start, mid)).width <= maxW) lo = mid;
+                        else hi = mid - 1;
+                    }
+                    const end = lo;
+                    if (end === n) { out.push(str.slice(start)); break; }
+                    // [start,end) 放得下而再往后放不下：优先在空格处断行
+                    let cut = -1;
+                    for (let k = end; k > start; k--) {
+                        const ch = str[k - 1];
+                        if (ch === " " || ch === "\t" || ch === "\u3000") { cut = k - 1; break; }
+                    }
+                    if (cut >= 0) {
+                        out.push(str.slice(start, cut));
+                        start = cut + 1;
+                        while (start < n && /\s/.test(str[start])) start++;
+                    } else {
+                        // 无空格可断：在前缀末端硬断（保证至少前进一个字符，避免死循环）
+                        const e = (end === start) ? start + 1 : end;
+                        out.push(str.slice(start, e));
+                        start = e;
+                    }
                 }
-                ctx.font = `${weight} ${fs}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "SimHei", Arial, sans-serif`;
-                baseFonts.length = 0;
-                for (const ln of lines) {
-                    const mm = ctx.measureText(ln);
-                    baseFonts.push({
-                        w: mm.width,
-                        asc: mm.actualBoundingBoxAscent || fs,
-                        desc: mm.actualBoundingBoxDescent || fs * 0.15,
-                    });
-                }
-            }
+                return out;
+            };
 
+            // 字号直接采用填写的数值（不缩放自适应），仅按内容区宽度自动换行
+            const fs = Math.max(4, Math.round(fontSize) || DEFAULT_CFG.fontSize);
+            let wrapped = [];
+
+            // 按最终字号把每行文本自动换行一次，得到与字号匹配的行集与指标
+            ctx.font = fontStyleStr(fs);
+            for (const ln of lines) wrapped.push(...wrapLine(ln, contentW));
+            const wm = wrapped.map((lw) => ctx.measureText(lw));
             const lineHeight = fs * (cfg.lineHeight || 1.1);
-            const firstAscent = baseFonts[0] ? baseFonts[0].asc : fs;
-            const lastDescent = baseFonts[baseFonts.length - 1] ? baseFonts[baseFonts.length - 1].desc : fs * 0.15;
-            const totalBlockH = lines.length > 1
-                ? firstAscent + (lines.length - 1) * lineHeight + lastDescent
+            const firstAscent = wm[0] ? (wm[0].actualBoundingBoxAscent || fs) : fs;
+            const lastDescent = wm[wm.length - 1] ? (wm[wm.length - 1].actualBoundingBoxDescent || fs * 0.15) : fs * 0.15;
+            const totalBlockH = wrapped.length > 1
+                ? firstAscent + (wrapped.length - 1) * lineHeight + lastDescent
                 : firstAscent + lastDescent;
 
-            // 文字垂直居中于内容区
-            const startY = contentTopExact + (contentH - totalBlockH) / 2 + firstAscent;
+            // 文字的起点 Y：按上下对齐（vAlign）计算（上对齐 top / 居中 center / 下对齐 bottom）
+            const vAlign = cfg.vAlign || "center";
+            let blockTop;
+            if (vAlign === "top") blockTop = contentTopExact;
+            else if (vAlign === "bottom") blockTop = contentTopExact + Math.max(0, contentH - totalBlockH);
+            else blockTop = contentTopExact + (contentH - totalBlockH) / 2;
+            const startY = blockTop + firstAscent;
 
             // 裁剪：从内容区顶部开始强制裁剪，确保文字绝不画入输入端口区域
             ctx.save();
@@ -346,7 +485,7 @@ app.registerExtension({
             // 底部状态提示（极小时才显示执行来源）
             const showHint = (this._texts || []).length > 1;
 
-            lines.forEach((line, i) => {
+            wrapped.forEach((line, i) => {
                 const y = startY + i * lineHeight;
                 if (y - firstAscent > h) return;
                 // textAlign 已设为 align，canvas 的 x 按对齐语义定位：
@@ -356,15 +495,6 @@ app.registerExtension({
                 else if (align === "right") x = w - pad;
                 else x = w / 2;
 
-                if (cfg.glowEnabled) {
-                    ctx.save();
-                    ctx.shadowColor = cfg.glowColor;
-                    ctx.shadowBlur = cfg.glowSize * 2;
-                    ctx.globalAlpha = 0.15;
-                    ctx.fillStyle = cfg.fontColor;
-                    ctx.fillText(line, x, y);
-                    ctx.restore();
-                }
                 ctx.fillStyle = cfg.fontColor;
                 ctx.fillText(line, x, y);
             });

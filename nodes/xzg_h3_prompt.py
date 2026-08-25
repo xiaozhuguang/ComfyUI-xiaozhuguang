@@ -952,14 +952,24 @@ class XiaozhuguangNinimaxH3Prompt:
         )
         if not _xzg_is_model_valid(llm) or storage_unloaded:
             reloaded = False
+            reload_error = None
             if _XZG_QwenStorage is not None and _XZG_QwenStorage.settings is not None:
                 print("[小珠光 H3] 模型已卸载，自动重新加载...")
                 try:
                     llm = _XZG_QwenStorage.load(_XZG_QwenStorage.settings)
                     reloaded = True
                 except Exception as e:
+                    reload_error = e
                     print(f"[小珠光 H3] 自动重新加载失败: {type(e).__name__}: {e}")
             if not reloaded:
+                if reload_error is not None:
+                    raise RuntimeError(
+                        "Model is invalid (closed/unloaded) and auto-reload failed. "
+                        "Please re-run the Qwen Model Loader to reload the model.\n"
+                        f"自动重载失败原因：{type(reload_error).__name__}: {reload_error}\n"
+                        "提示：若使用 BSAI H3 Model Loader，请关闭本节点的 'unload_after' 选项，"
+                        "或将 Qwen Model Loader 节点重新执行后再运行本节点。"
+                    ) from reload_error
                 raise RuntimeError(
                     "Model is invalid (closed/unloaded). "
                     "Please re-run the Qwen Model Loader to reload the model.\n"
