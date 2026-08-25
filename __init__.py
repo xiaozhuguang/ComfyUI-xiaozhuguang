@@ -232,6 +232,7 @@ from .nodes.xzg_batch_count import XiaozhuguangBatchCount
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
+from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -574,7 +575,7 @@ class XiaozhuguangPointsEditor:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT")
+    RETURN_TYPES = ("STRING", "STRING", "BOXES", "INT")
     RETURN_NAMES = ("positive_coords", "negative_coords", "bbox", "frame_index")
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
@@ -583,7 +584,7 @@ class XiaozhuguangPointsEditor:
     def execute(self, image, info, preview_pixels=100):
         positive_coords = None
         negative_coords = None
-        bboxes_str = None
+        bboxes = []
         frame_index = 0
 
         # 像素量语义：单位万像素，100 = 100万像素(1MP)。原图总像素超过 preview_pixels*10000 才等比缩至该像素量，否则保留原图（0 = 永不缩放）
@@ -627,7 +628,8 @@ class XiaozhuguangPointsEditor:
                             h = i['h']
                         bbox_list.append([x, y, x + w, y + h])
 
-                bboxes_str = json.dumps(bbox_list, ensure_ascii=False)
+                # 输出结构化列表：每个框一个元素 [x1, y1, x2, y2]，像素坐标取整
+                bboxes = [[round(v) for v in box] for box in bbox_list]
 
                 if positive_coords is not None:
                     positive_coords = json.dumps(positive_coords, ensure_ascii=False)
@@ -662,7 +664,7 @@ class XiaozhuguangPointsEditor:
             "result": (
                 positive_coords if positive_coords is not None else "[]",
                 negative_coords if negative_coords is not None else "[]",
-                bboxes_str if bboxes_str is not None else "[]",
+                bboxes,
                 frame_index,
             )
         }
@@ -980,6 +982,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
+    "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -1023,6 +1026,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBigDisplay": "小珠光大字展示",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
+    "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"

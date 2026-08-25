@@ -467,9 +467,6 @@ class XiaozhuguangImageLoader:
     CATEGORY = "xiaozhuguang"
 
     def load_images(self, image_list, index, batch_mode, unique_id=None, mask_data="", crop_data="", upload_mode="append"):
-        # 调试：打印遮罩数据长度
-        mask_len = len(mask_data) if mask_data else 0
-        print(f"[小珠光图像加载器] mask_data 长度: {mask_len}, 前50字符: {str(mask_data)[:50]}")
         # 空图或无效输入时返回空遮罩（3D 形状匹配官方 LoadImage 默认值）
         empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
         if not image_list or not image_list.strip():

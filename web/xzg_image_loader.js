@@ -4256,7 +4256,8 @@ app.registerExtension({
                     origSetSize([w, h]);
                 };
 
-                this.addDOMWidget("xzg_img_loader", "customwidget", ui.container);
+                // hideOnZoom:false —— 画布缩小到细节阈值以下时仍显示图片预览，避免被灰色占位矩形替代（与内置图像/视频预览组件一致）
+                this.addDOMWidget("xzg_img_loader", "customwidget", ui.container, { hideOnZoom: false });
 
                 // 容器 margin 区域落在 dom-widget 包裹器内，包裹器无滚轮转发，
                 // 导致上传按钮上方约 4-10px 区域滚轮失效。给父元素也绑定滚轮转发。

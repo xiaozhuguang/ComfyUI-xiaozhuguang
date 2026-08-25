@@ -467,5 +467,27 @@
     "outputs": {
       "0": { "name": "mask" }
     }
+  },
+  "XiaozhuguangImageScaleByAspectRatioV2": {
+    "display_name": "Xiaozhuguang Image Scale (Speed)",
+    "inputs": {
+      "aspect_ratio": { "name": "aspect ratio" },
+      "宽度": { "name": "width" },
+      "高度": { "name": "height" },
+      "fit": { "name": "fit" },
+      "method": { "name": "method" },
+      "round_to_multiple": { "name": "round to multiple" },
+      "scale_to_side": { "name": "scale to side" },
+      "scale_to_length": { "name": "scale to length" },
+      "background_color": { "name": "background color" },
+      "image": { "name": "image" },
+      "mask": { "name": "mask" }
+    },
+    "outputs": {
+      "0": { "name": "image" },
+      "1": { "name": "mask" },
+      "2": { "name": "width" },
+      "3": { "name": "height" }
+    }
   }
 }

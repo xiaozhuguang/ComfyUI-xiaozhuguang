@@ -467,5 +467,27 @@
     "outputs": {
       "0": { "name": "遮罩" }
     }
+  },
+  "XiaozhuguangImageScaleByAspectRatioV2": {
+    "display_name": "小珠光图片缩放高速版",
+    "inputs": {
+      "aspect_ratio": { "name": "宽高比" },
+      "宽度": { "name": "宽度" },
+      "高度": { "name": "高度" },
+      "fit": { "name": "适配模式" },
+      "method": { "name": "插值方法" },
+      "round_to_multiple": { "name": "对齐倍数" },
+      "scale_to_side": { "name": "缩放边" },
+      "scale_to_length": { "name": "缩放长度" },
+      "background_color": { "name": "背景颜色" },
+      "image": { "name": "图像" },
+      "mask": { "name": "遮罩" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "遮罩" },
+      "2": { "name": "宽度" },
+      "3": { "name": "高度" }
+    }
   }
 }

@@ -156,9 +156,11 @@ app.registerExtension({
                 container.appendChild(tracker);
 
                 slider.addEventListener("input", (e) => {
-                    const frameIndex = parseInt(e.target.value);
-                    this.canvasWidget.frameIndex = frameIndex;
-                    this.canvasWidget.frameInfo.innerText = `${frameIndex + 1}/${this.canvasWidget.previewFrames.length}`;
+                    // 帧号 0..总帧数：v=0 第1帧，v=总帧数显示最后一帧画面（30帧时 0..30，0/30、29/30、30/30）
+                    const v = parseInt(e.target.value);
+                    this.canvasWidget.frameIndex = v;
+                    const idx = Math.min(v, Math.max(0, this.canvasWidget.previewFrames.length - 1));
+                    this.canvasWidget.frameInfo.innerText = `${v}/${this.canvasWidget.previewFrames.length}`;
                     this.updateWidgetValue();
 
                     const img = new Image();
@@ -168,7 +170,7 @@ app.registerExtension({
                         canvas.height = img.height;
                         this.redrawCanvas();
                     };
-                    img.src = getRealURL(this.canvasWidget.previewFrames[frameIndex]);
+                    img.src = getRealURL(this.canvasWidget.previewFrames[idx]);
                 });
 
                 this.canvasWidget = {
@@ -235,7 +237,7 @@ app.registerExtension({
                         if (typeof data.frame_index === 'number' && this.canvasWidget.slider) {
                             this.canvasWidget.frameIndex = data.frame_index;
                             this.canvasWidget.slider.value = data.frame_index;
-                            this.canvasWidget.frameInfo.innerText = `${data.frame_index + 1}/${Math.max(1, this.canvasWidget.previewFrames.length)}`;
+                            this.canvasWidget.frameInfo.innerText = `${data.frame_index}/${Math.max(1, this.canvasWidget.previewFrames.length)}`;
                         }
                         // 同步回 info widget：未执行前保存工作流也能带上点数据
                         if (infoWidget) {
@@ -285,9 +287,9 @@ app.registerExtension({
                             slider.style.opacity = "1";
                             slider.style.pointerEvents = "";
                             slider.style.cursor = "pointer";
-                            slider.max = previewData.length - 1;
-                            slider.value = this.canvasWidget.frameIndex;
-                            this.canvasWidget.frameInfo.innerText = `${this.canvasWidget.frameIndex + 1}/${previewData.length}`;
+                            slider.max = previewData.length;
+                            slider.value = Math.min(this.canvasWidget.frameIndex, previewData.length);
+                            this.canvasWidget.frameInfo.innerText = `${Math.min(this.canvasWidget.frameIndex, previewData.length)}/${previewData.length}`;
                         } else {
                             // 单帧：tracker 保持占位，禁用滑条，布局与多帧一致
                             slider.disabled = true;
@@ -296,7 +298,8 @@ app.registerExtension({
                             slider.style.cursor = "default";
                             slider.max = 0;
                             slider.value = 0;
-                            this.canvasWidget.frameInfo.innerText = previewData.length === 1 ? "1/1" : "0/0";
+                            this.canvasWidget.frameIndex = 0;
+                            this.canvasWidget.frameInfo.innerText = previewData.length === 1 ? "0/1" : "0/0";
                         }
 
                         const img = new Image();
@@ -308,14 +311,13 @@ app.registerExtension({
                         };
 
                         if (previewData?.length > 0) {
-                            if (this.canvasWidget.frameIndex >= previewData.length) {
-                                // 新预览帧数变少：钳制到最后一帧（保持查看位置，不重置点）
-                                this.canvasWidget.frameIndex = previewData.length - 1;
-                                slider.value = this.canvasWidget.frameIndex;
-                                this.canvasWidget.frameInfo.innerText = `${this.canvasWidget.frameIndex + 1}/${previewData.length}`;
-                                this.updateWidgetValue();
+                            if (this.canvasWidget.frameIndex > previewData.length) {
+                                // 新预览帧数变少：钳制到顶端（保持查看位置，不重置点）。画面索引取 min(v, 总帧数-1) →
+                                this.canvasWidget.frameIndex = previewData.length;
                             }
-                            img.src = getRealURL(previewData[this.canvasWidget.frameIndex]);
+                            slider.value = Math.min(this.canvasWidget.frameIndex, previewData.length);
+                            this.canvasWidget.frameInfo.innerText = `${Math.min(this.canvasWidget.frameIndex, previewData.length)}/${previewData.length}`;
+                            img.src = getRealURL(previewData[Math.min(this.canvasWidget.frameIndex, previewData.length - 1)]);
                         }
                     }
                 });
@@ -386,13 +388,15 @@ app.registerExtension({
 
                 this.updateWidgetValue = () => {
                     const { positivePoints, negativePoints, bboxes, image, frameIndex } = this.canvasWidget;
+                    // 输出真实帧索引：UI 帧号 clamp 到 [0, 总帧数-1]
+                    const realIdx = Math.min(frameIndex, Math.max(0, this.canvasWidget.previewFrames.length - 1));
                     const info_widget = this._infoWidget;
                     if (info_widget) {
                         info_widget.value = image ? JSON.stringify({
                             positive_coords: positivePoints,
                             negative_coords: negativePoints,
                             bbox: bboxes,
-                            frame_index: frameIndex
+                            frame_index: realIdx
                         }) : '';
                     }
                     // 写入会话缓存（深拷贝）：换图 / 切工作流后不丢失，仅刷新浏览器清空
@@ -401,7 +405,7 @@ app.registerExtension({
                             positive_coords: positivePoints.map(p => ({ x: p.x, y: p.y })),
                             negative_coords: negativePoints.map(p => ({ x: p.x, y: p.y })),
                             bbox: bboxes.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })),
-                            frame_index: frameIndex
+                            frame_index: realIdx
                         });
                     } catch (e) {}
                 }
