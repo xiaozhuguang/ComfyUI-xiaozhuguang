@@ -28,6 +28,22 @@ function getBatchModeWidget(node) {
     return getWidgetByName(node, "batch_mode");
 }
 
+function getBatchAlignWidget(node) {
+    return getWidgetByName(node, "batch_align");
+}
+
+function getMaxImagesWidget(node) {
+    return getWidgetByName(node, "max_images");
+}
+
+// 获取默认的加载上限：>0 时最多显示/加载前 N 张，0 表示无限制
+function getMaxImagesLimit(node) {
+    const w = getWidgetByName(node, "max_images");
+    let v = parseInt(w?.value, 10);
+    if (isNaN(v) || v < 0) v = 0;
+    return v;
+}
+
 function getMaskDataWidget(node) {
     return getWidgetByName(node, "mask_data");
 }
@@ -583,7 +599,7 @@ function createImgBatchUI(node) {
         _ics.textContent = `
             .xzg-ic-btn{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;padding:4px 2px;box-sizing:border-box;border:none;background:transparent;border-radius:4px;cursor:pointer;color:var(--input-text);white-space:nowrap;}
             .xzg-ic-btn:hover{filter:brightness(1.2);}
-            .xzg-ic-btn svg{width:20px;height:20px;flex:0 0 auto;display:block;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
+            .xzg-ic-btn svg{width:var(--xzg-ic-size, 20px);height:var(--xzg-ic-size, 20px);flex:0 0 auto;display:block;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
             .xzg-ic-btn .xzg-ic-g{display:inline-flex;}
             .xzg-ic-btn .xzg-ic-lb{display:none;overflow:hidden;text-overflow:ellipsis;}
             .xzg-edit .xzg-ic-btn{justify-content:center;}
@@ -596,6 +612,10 @@ function createImgBatchUI(node) {
             .xzg-ic-btn .xzg-ic-mask .mr{fill:var(--xzg-mask-dark);stroke:none;}
             .xzg-ic-btn .xzg-ic-mask .el{fill:var(--xzg-mask-dark);stroke:none;}
             .xzg-ic-btn .xzg-ic-mask .er{fill:var(--xzg-mask-light);stroke:none;}
+            /* 上限输入框隐藏 number 上下箭头 */
+            .xzg-max-img-input::-webkit-inner-spin-button,
+            .xzg-max-img-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+            .xzg-max-img-input{-moz-appearance:textfield;appearance:textfield;}
         `;
         document.head.appendChild(_ics);
     }
@@ -680,9 +700,50 @@ function createImgBatchUI(node) {
         redraw(true);
     }
 
+    // 加载图片上限输入框：仅多图（append）模式显示，位于“多图”标签上方，0/无输入表示无限制
+    const maxImgInput = document.createElement("input");
+    maxImgInput.className = "xzg-max-img-input";
+    maxImgInput.type = "text";
+    maxImgInput.inputMode = "numeric";
+    maxImgInput.autocomplete = "off";
+    // 显示辅助：0 或空显示无穷符号 ∞，否则显示数字
+    const setMaxImgDisplay = () => {
+        const w = getMaxImagesWidget(node);
+        const v = parseInt(w?.value, 10);
+        const num = isNaN(v) ? 0 : Math.max(0, v);
+        maxImgInput.value = num > 0 ? String(num) : "∞";
+    };
+    setMaxImgDisplay();
+    maxImgInput.title = xzgT("加载图片上限，0/∞ 表示无限制", "Max images to load, 0/∞ = unlimited");
+    maxImgInput.style.cssText =
+        "width:calc(var(--xzg-ui-font,11px) + 11px);max-width:100%;flex:0 0 auto;margin-left:2px;box-sizing:border-box;padding:0;font-size:var(--xzg-ui-font,11px);line-height:1.4;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:transparent;border:none;border-radius:0;outline:none;text-align:center;cursor:text;";
+    // 输入框交互不冒泡，避免触发节点/侧边栏拖动
+    maxImgInput.addEventListener("pointerdown", (e) => e.stopPropagation());
+    maxImgInput.addEventListener("mousedown", (e) => e.stopPropagation());
+    maxImgInput.addEventListener("click", (e) => e.stopPropagation());
+    // 聚焦时全选，便于直接输入新数字替换 ∞ 或旧值
+    maxImgInput.addEventListener("focus", () => maxImgInput.select());
+    maxImgInput.addEventListener("change", () => {
+        const w = getMaxImagesWidget(node);
+        if (!w) return;
+        // ∞、空字符串、0 一律视为无限制（0）
+        let v = parseInt(maxImgInput.value.replace("∞", "").trim(), 10);
+        if (isNaN(v) || v < 0) v = 0;
+        w.value = v;
+        w.callback?.(v);
+        setMaxImgDisplay();
+        // 上限变化后刷新预览区，使其与后端输出（前 N 张）联动
+        redraw(true);
+    });
+
+    const updateMaxImgInput = () => {
+        setMaxImgDisplay();
+        maxImgInput.style.display = uploadMode === "append" ? "" : "none";
+    };
+
     const uploadModeBtn = document.createElement("button");
     uploadModeBtn.style.cssText =
-        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:var(--xzg-ui-font,11px);line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
     uploadModeBtn.addEventListener("mouseenter", () => {
         uploadModeBtn.style.filter = "brightness(1.2)";
     });
@@ -721,12 +782,13 @@ function createImgBatchUI(node) {
         uploadModeBtn.style.border = "none";
         uploadModeBtn.style.background = "transparent";
         uploadModeBtn.style.color = "#FF6B6B";
+        updateMaxImgInput();
     };
     updateUploadModeBtn();
 
     const modeBtn = document.createElement("button");
     modeBtn.style.cssText =
-        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:var(--xzg-ui-font,11px);line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
     modeBtn.addEventListener("mouseenter", () => {
         modeBtn.style.filter = "brightness(1.2)";
     });
@@ -770,6 +832,7 @@ function createImgBatchUI(node) {
                 card.style.borderColor = color;
             }
         });
+        updateAlignBtn();
     };
     
     modeBtn.onclick = (e) => {
@@ -784,10 +847,59 @@ function createImgBatchUI(node) {
         updateModeBtn();
     };
 
+    // 批次对齐方式标签切换：裁剪（默认，居中裁剪多出部分）/ 留边（letterbox，黑色填充补齐）
+    // 仅在批次模式下显示，列表/单图模式下隐藏
+    const alignBtn = document.createElement("button");
+    alignBtn.style.cssText = modeBtn.style.cssText;
+    alignBtn.addEventListener("mouseenter", () => {
+        alignBtn.style.filter = "brightness(1.2)";
+    });
+    alignBtn.addEventListener("mouseleave", () => {
+        alignBtn.style.filter = "";
+    });
+
+    const updateAlignBtn = () => {
+        const wBatch = getBatchModeWidget(node);
+        const isBatch = wBatch?.value === true;
+        // 非批次模式：用 visibility 隐藏而非 display:none，始终保留占位，
+        // 避免“留边/裁剪”出现时把上方“多图/批次”按钮顶得上下移动
+        alignBtn.style.visibility = isBatch ? "visible" : "hidden";
+        if (!isBatch) return;
+        const w = getBatchAlignWidget(node);
+        const isLetterbox = w?.value === true;
+        const names = parseNameList(getImageListWidget(node)?.value || "");
+        const singleImg = names.length <= 1;
+        const isSingleMode = uploadMode === "replace";
+        const disabled = singleImg || isSingleMode;
+        alignBtn.textContent = isLetterbox ? xzgT("留边", "Letterbox") : xzgT("裁剪", "Crop");
+        if (disabled) {
+            alignBtn.title = isSingleMode ? xzgT("单图加载模式下不可用", "Not available in single mode") : "";
+            alignBtn.style.color = "#666";
+            alignBtn.style.cursor = "default";
+            alignBtn.style.opacity = "0.4";
+        } else {
+            alignBtn.title = isLetterbox ? xzgT("切换为裁剪对齐（居中裁剪多出部分）", "Switch to Crop (center crop)") : xzgT("切换为留边对齐（黑色填充补齐）", "Switch to Letterbox (black bars)");
+            alignBtn.style.color = isLetterbox ? "#FFD700" : "#6699FF";
+            alignBtn.style.cursor = "pointer";
+            alignBtn.style.opacity = "1";
+        }
+    };
+
+    alignBtn.onclick = (e) => {
+        e.stopPropagation();
+        const w = getBatchAlignWidget(node);
+        if (!w) return;
+        w.value = !w.value;
+        w.callback?.(w.value);
+        updateAlignBtn();
+    };
+
     const bottomGroup = document.createElement("div");
     bottomGroup.style.cssText = "display:flex;flex-direction:column;gap:2px;width:100%;margin-top:auto;";
+    bottomGroup.appendChild(maxImgInput);
     bottomGroup.appendChild(uploadModeBtn);
     bottomGroup.appendChild(modeBtn);
+    bottomGroup.appendChild(alignBtn);
     sidebar.appendChild(bottomGroup);
 
     // ═══════════ 遮罩绘制工具栏（左侧面板，清空按钮下方） ═══════════
@@ -1006,8 +1118,11 @@ function createImgBatchUI(node) {
             cropRatioRow.style.paddingLeft = "";
         }
         // 开启编辑模式时隐藏上传/.input/.output/删除/清空按钮及左下角单图/列表批次按钮，避免误操作
-        const actionBtns = [uploadBtn, folderBtn, outputBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn];
+        const actionBtns = [uploadBtn, folderBtn, outputBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn, alignBtn, maxImgInput];
         actionBtns.forEach(btn => { btn.style.display = editing ? "none" : ""; });
+        // 编辑态结束恢复 display 后，重新同步“留边/裁剪”的占位可见性与“上限”输入框
+        updateAlignBtn();
+        updateMaxImgInput();
         _syncMaskLayerVisibility();
     };
 
@@ -1529,6 +1644,7 @@ function createImgBatchUI(node) {
 
     sidebar.addEventListener("dblclick", (e) => {
         if (e.target.closest("button")) return;
+        if (e.target.closest("input")) return;
         e.preventDefault();
         e.stopPropagation();
         openUploadDialog();
@@ -2603,7 +2719,10 @@ function createImgBatchUI(node) {
     const resizeObserver = new ResizeObserver(() => {
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         resizeRaf = requestAnimationFrame(() => {
-            const names = parseNameList(getImageListWidget(node)?.value || "");
+            const allNames = parseNameList(getImageListWidget(node)?.value || "");
+            // 加载上限联动：自适应尺寸按"实际显示的前 N 张"计算，避免缩略图被隐藏图片挤压变小
+            const limit = getMaxImagesLimit(node);
+            const names = limit > 0 ? allNames.slice(0, limit) : allNames;
             if (names.length > 0) {
                 let availW = grid.clientWidth - 12;
                 let availH = grid.clientHeight - 12;
@@ -3168,7 +3287,10 @@ function createImgBatchUI(node) {
     });
 
     const redraw = (forceFull = false) => {
-        const names = parseNameList(getImageListWidget(node)?.value);
+        const allNames = parseNameList(getImageListWidget(node)?.value);
+        // 加载上限联动：预览区与后端输出保持一致，>0 时仅显示前 N 张
+        const limit = getMaxImagesLimit(node);
+        const names = limit > 0 ? allNames.slice(0, limit) : allNames;
         const cardSize = getCardSize(node);
         const idx = getIndex(node);
 
@@ -4057,8 +4179,11 @@ function createImgBatchUI(node) {
     return {
         container,
         grid,
+        sidebar,
         redraw,
         updateModeBtn,
+        updateAlignBtn,
+        updateMaxImgInput,
         updateUploadModeBtn,
         resizeObserver,
         _updateLabelScale: updateLabelScale,
@@ -4150,6 +4275,18 @@ app.registerExtension({
                     batchWidget.type = "hidden";
                     batchWidget.hidden = true;
                     batchWidget.computeSize = () => [0, 0];
+                }
+                const batchAlignWidget = getBatchAlignWidget(this);
+                if (batchAlignWidget) {
+                    batchAlignWidget.type = "hidden";
+                    batchAlignWidget.hidden = true;
+                    batchAlignWidget.computeSize = () => [0, 0];
+                }
+                const maxImagesWidget = getMaxImagesWidget(this);
+                if (maxImagesWidget) {
+                    maxImagesWidget.type = "hidden";
+                    maxImagesWidget.hidden = true;
+                    maxImagesWidget.computeSize = () => [0, 0];
                 }
                 let maskWidget = getMaskDataWidget(this);
                 // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
@@ -4478,6 +4615,18 @@ app.registerExtension({
                     batchWidget.hidden = true;
                     batchWidget.computeSize = () => [0, 0];
                 }
+                const batchAlignWidget = getBatchAlignWidget(this);
+                if (batchAlignWidget) {
+                    batchAlignWidget.type = "hidden";
+                    batchAlignWidget.hidden = true;
+                    batchAlignWidget.computeSize = () => [0, 0];
+                }
+                const maxImagesWidget = getMaxImagesWidget(this);
+                if (maxImagesWidget) {
+                    maxImagesWidget.type = "hidden";
+                    maxImagesWidget.hidden = true;
+                    maxImagesWidget.computeSize = () => [0, 0];
+                }
                 let maskWidget = getMaskDataWidget(this);
                 // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
                 if (!maskWidget) {
@@ -4568,6 +4717,8 @@ app.registerExtension({
                     this._xzgImgLoaderUI.syncUploadModeFromWidget?.();
                     this._xzgImgLoaderUI.redraw(true);
                     this._xzgImgLoaderUI.updateModeBtn?.();
+                    // 恢复 max_images widget 值后同步到“上限”输入框
+                    this._xzgImgLoaderUI.updateMaxImgInput?.();
                 }
                 return r;
             };
@@ -4640,6 +4791,16 @@ app.registerExtension({
                 const r = origOnResize?.apply(this, arguments);
                 if (this._xzgAutoFitting) return r;
                 const self = this;
+                // 画布态图标随节点高度放大：20px 起点、上限 40px，节点越高图标越大
+                // （编辑态图标本为 display:none，仅画布态图标受影响）
+                if (self._xzgImgLoaderUI?.sidebar) {
+                    const h = (Array.isArray(size) ? size[1] : undefined) || self.size?.[1] || 300;
+                    const ic = Math.round(Math.min(32, Math.max(18, h / 22)));
+                    self._xzgImgLoaderUI.sidebar.style.setProperty("--xzg-ic-size", ic + "px");
+                    // 底部控件（多图/单图、列表/批次、列表数量）字号随节点高度缩放：11px 起点、上限 22px
+                    const fz = Math.round(Math.min(22, Math.max(11, h / 32)));
+                    self._xzgImgLoaderUI.sidebar.style.setProperty("--xzg-ui-font", fz + "px");
+                }
                 if (self._xzgResizeTimer) clearTimeout(self._xzgResizeTimer);
                 self._xzgResizeTimer = setTimeout(() => {
                     self._xzgResizeTimer = null;

@@ -229,6 +229,8 @@ from .nodes.xzg_face_align import XiaozhuguangFaceAlign
 from .nodes.xzg_image_split_merge import XiaozhuguangImageSplitter, XiaozhuguangImageMerger
 from .nodes.xzg_seed import XiaozhuguangSeed
 from .nodes.xzg_batch_count import XiaozhuguangBatchCount
+from .nodes.xzg_list_count import XiaozhuguangListCount
+from .nodes.xzg_image_from_list import XiaozhuguangImageFromList
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
@@ -979,6 +981,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageMerger": XiaozhuguangImageMerger,
     "XiaozhuguangSeed": XiaozhuguangSeed,
     "XiaozhuguangBatchCount": XiaozhuguangBatchCount,
+    "XiaozhuguangListCount": XiaozhuguangListCount,
+    "XiaozhuguangImageFromList": XiaozhuguangImageFromList,
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
@@ -1023,6 +1027,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageMerger": "小珠光 IM (图像合并)",
     "XiaozhuguangSeed": "小珠光随机种子",
     "XiaozhuguangBatchCount": "小珠光批次计数",
+    "XiaozhuguangListCount": "小珠光列表计数",
+    "XiaozhuguangImageFromList": "小珠光从列表获取图像",
     "XiaozhuguangBigDisplay": "小珠光大字展示",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",

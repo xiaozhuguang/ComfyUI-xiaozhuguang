@@ -270,13 +270,8 @@ app.registerExtension({
                 sw.draw = function (ctx, n, widget_width, y, H) {
                     const btnH = H || 24;
                     const pad = 6;  // 左右边距
+                    // 不画整块铺底：按钮之外(两侧边缘)直接透出节点底色(主题渐变)
                     const innerW = widget_width - pad * 2;
-                    // 先抹平 litegraph 画的默认 number widget 背景（颜色取节点背景，确保三行底色一致）
-                    const bg = n.bgcolor || n.color || "#2a2a2a";
-                    ctx.save();
-                    ctx.fillStyle = bg;
-                    ctx.fillRect(0, y, widget_width, btnH);
-                    ctx.restore();
                     // 自定义圆角矩形 + 边框（与下方按钮未选中态一致）
                     ctx.save();
                     ctx.fillStyle = "#2a2a2a";
@@ -363,19 +358,13 @@ app.registerExtension({
                     const ctrlWidget = n._xzgControlWidget;
                     const currentMode = ctrlWidget?.value || "fixed";
 
+                    // 不画整块铺底：按钮之外(缝隙/边缘)直接透出节点底色(主题渐变)
                     const pad = 6;  // 左右边距
                     const innerW = widget_width - pad * 2;
                     const gap = 4;
                     const btnW = (innerW - gap) / 2;
                     const btnH = 24;
                     const totalH = 52;
-
-                    // 先抹平 litegraph 可能画的默认 widget 背景，避免不同类型叠加色不一致
-                    const bg = n.bgcolor || n.color || "#2a2a2a";
-                    ctx.save();
-                    ctx.fillStyle = bg;
-                    ctx.fillRect(0, y, widget_width, totalH);
-                    ctx.restore();
 
                     ctx.save();
                     modeOrder.forEach((mode, i) => {
@@ -402,9 +391,9 @@ app.registerExtension({
                         _xzgRoundRect(ctx, bx, by, btnW, btnH, 4);
                         ctx.fill();
 
-                        // 边框
+                        // 边框：线宽统一为 1px(选中态若加粗会使按钮外边界外拓、整体显大 1~2px)
                         ctx.strokeStyle = selected ? color : "#555";
-                        ctx.lineWidth = selected ? 2 : 1;
+                        ctx.lineWidth = 1;
                         _xzgRoundRect(ctx, bx, by, btnW, btnH, 4);
                         ctx.stroke();
 
@@ -658,17 +647,12 @@ app.registerExtension({
                     this._width = widget_width;
                     this.hitAreas = {};
 
+                    // 不画整块铺底：按钮之外(缝隙/边缘)直接透出节点底色(主题渐变)
                     const pad = 6;  // 左右边距
                     const innerW = widget_width - pad * 2;
                     const gap = 4;
                     const btnW = (innerW - gap) / 2;
                     const btnH = 24;
-
-                    // 先抹平 litegraph 可能画的默认 widget 背景，统一用 #2a2a2a 确保底色一致
-                    ctx.save();
-                    ctx.fillStyle = "#2a2a2a";
-                    ctx.fillRect(0, y, widget_width, btnH);
-                    ctx.restore();
 
                     ctx.save();
                     actionLabels.forEach((labelFn, i) => {
@@ -875,9 +859,9 @@ app.registerExtension({
                 node.getWidgetOnPos = function (x, y, includeDisabled, ...rest) {
                     const lx = x - node.pos[0];
                     const ly = y - node.pos[1];
-                    // 考虑左右 padding=6px，只在真实内容区内命中
+                    // 命中检测与按钮真实绘制范围一致(两侧各减 6px pad)，避免边缘误命中/盲点
                     const left = 6;
-                    const right = node.size[0] - 6;
+                    const right = (node.size && node.size[0]) - 6;
                     // 模式选择器区域
                     if (modeSelector && typeof modeSelector.y === "number") {
                         if (ly >= modeSelector.y && ly <= modeSelector.y + 52 && lx >= left && lx <= right) {

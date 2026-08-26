@@ -637,6 +637,14 @@ export class XiaozhuguangVideoEditor {
             document.removeEventListener("contextmenu", this._onContextMenu);
             this._onContextMenu = null;
         }
+        // 回收 _initCtxMenu 挂的全局 hideAll 监听（历史版本从不移除，document/window 捕获层会累积）
+        if (this._ctxMenuHideAll) {
+            document.removeEventListener("mousedown", this._ctxMenuHideAll, true);
+            document.removeEventListener("contextmenu", this._ctxMenuHideAll, true);
+            window.removeEventListener("blur", this._ctxMenuHideAll);
+            window.removeEventListener("resize", this._ctxMenuHideAll);
+            this._ctxMenuHideAll = null;
+        }
         // 预览缩放监听 & ResizeObserver 清理
         if (this._previewResizeObserver) {
             try { this._previewResizeObserver.disconnect(); } catch (_) {}
@@ -1967,16 +1975,17 @@ export class XiaozhuguangVideoEditor {
 
         // 捕获阶段 mousedown：若事件源自菜单内部（颜色项），放行让它走自己的 handler；
         // 否则（点击空白/其他片段）隐藏菜单
-        const hideAll = (e) => {
+        // 挂到实例引用并在 close() 配对回收，避免每次打开编辑器都重复 add、document/window 捕获层累积
+        this._ctxMenuHideAll = (e) => {
             // e.target 可能是非 Node（如 window 的 blur/resize），contains 会抛错，需先判断
             const t = e && e.target;
             if (t && t.nodeType === 1 && menu.contains(t)) return;
             this._hideCtxMenu();
         };
-        document.addEventListener("mousedown", hideAll, true);
-        document.addEventListener("contextmenu", hideAll, true);
-        window.addEventListener("blur", hideAll);
-        window.addEventListener("resize", hideAll);
+        document.addEventListener("mousedown", this._ctxMenuHideAll, true);
+        document.addEventListener("contextmenu", this._ctxMenuHideAll, true);
+        window.addEventListener("blur", this._ctxMenuHideAll);
+        window.addEventListener("resize", this._ctxMenuHideAll);
         menu.addEventListener("contextmenu", (e) => e.preventDefault());
     }
 

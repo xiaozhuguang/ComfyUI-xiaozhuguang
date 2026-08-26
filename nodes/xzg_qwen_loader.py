@@ -249,10 +249,29 @@ def _xzg_get_free_vram_bytes():
     return None
 
 
+# 记录每个模型上次成功加载的 GPU 层数。
+# 用于“运行中断/卸载后再次重载”时的兜底：若此时空闲显存读数偏低（旧显存尚未完全归还 /
+# torch 缓存未释放等），避免把 GPU 层数压到接近 0（绝大部分层掉到 CPU）而长时间卡住。
+_LAST_GOOD_GPU_LAYERS = {}
+
+
 def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
-    """根据可用显存自动调整 GPU 层数，防止 OOM 导致段错误。"""
+    """根据可用显存自动调整 GPU 层数，防止 OOM 导致段错误。
+
+    兜底逻辑：先释放 PyTorch 缓存块让 free 读数更真实；若本次算出的层数少于该模型
+    上次成功加载的层数（通常因中断/卸载后 free 读数偏低），则复用上次成功值，
+    避免模型整体掉到 CPU 推理而长时间无反应。
+    """
     if n_gpu_layers != -1:
         return n_gpu_layers, None
+
+    # 释放 ComfyUI/PyTorch 缓存的显存块，让 cudaMemGetInfo 的 free 接近真实空闲。
+    # llama 的显存不由 torch 管理，若不清 torch 缓存块，free 会被 torch 预留块压低，
+    # 触发误判“显存不足”而降层。
+    try:
+        mm.soft_empty_cache()
+    except Exception:
+        pass
 
     free_vram = _xzg_get_free_vram_bytes()
     if free_vram is None:
@@ -269,6 +288,10 @@ def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
     model_gb = model_size / 1024 ** 3
     mmproj_gb = mmproj_size / 1024 ** 3
     kv_gb = kv_cache_estimate / 1024 ** 3
+
+    est_layers_per_gb = 64 / 21.8
+    est_total_layers = max(1, int(model_size / (1024 ** 3) * est_layers_per_gb))
+
     print(
         f"[小珠光 ModelLoader] VRAM 检测: "
         f"可用={free_vram_gb:.1f}GB, "
@@ -277,27 +300,42 @@ def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
     )
 
     if total_needed <= free_vram:
+        _LAST_GOOD_GPU_LAYERS[model_path] = est_total_layers
         return n_gpu_layers, None
 
     available_for_model = free_vram - safety_margin - mmproj_size - kv_cache_estimate
     if available_for_model <= 0:
-        return 0, (
+        adjusted_layers = 0
+        message = (
             f"显存严重不足！可用 VRAM={free_vram_gb:.1f}GB，"
             f"模型需要约={total_needed / 1024**3:.1f}GB。\n"
             f"已将 GPU 层数设为 0（纯 CPU 推理），速度会很慢。"
         )
+    else:
+        ratio = available_for_model / model_size if model_size > 0 else 0
+        adjusted_layers = max(1, int(est_total_layers * ratio))
+        message = (
+            f"显存不足，无法全部加载到 GPU！\n"
+            f"  可用 VRAM: {free_vram_gb:.1f}GB\n"
+            f"  模型大小: {model_gb:.1f}GB + mmproj: {mmproj_gb:.2f}GB\n"
+            f"  GPU层数从 -1（全部）自动调整为 {adjusted_layers}（部分 offload 到 CPU）"
+        )
 
-    ratio = available_for_model / model_size if model_size > 0 else 0
-    est_layers_per_gb = 64 / 21.8
-    est_total_layers = max(1, int(model_size / (1024**3) * est_layers_per_gb))
-    adjusted_layers = max(1, int(est_total_layers * ratio))
+    # ── 兜底：本次算出的层数明显少于该模型上次成功值（通常因中断/卸载后 free 偏低）──
+    known_good = _LAST_GOOD_GPU_LAYERS.get(model_path)
+    if known_good is not None and adjusted_layers < known_good:
+        print(
+            f"[小珠光 ModelLoader] 兜底：空闲显存读数偏低，"
+            f"复用该模型上次成功加载的 GPU 层数 {known_good}（避免整体掉到 CPU 推理）。"
+        )
+        return known_good, (
+            f"检测到空闲显存读数偏低，已复用上次成功加载的 GPU 层数 {known_good}，"
+            f"避免模型整体掉到 CPU 推理而长时间卡顿。\n"
+            f"（若更换了更大的显存占用场景后仍 OOM，请手动下调 gpu_layers）"
+        )
 
-    return adjusted_layers, (
-        f"显存不足，无法全部加载到 GPU！\n"
-        f"  可用 VRAM: {free_vram_gb:.1f}GB\n"
-        f"  模型大小: {model_gb:.1f}GB + mmproj: {mmproj_gb:.2f}GB\n"
-        f"  GPU层数从 -1（全部）自动调整为 {adjusted_layers}（部分 offload 到 CPU）"
-    )
+    _LAST_GOOD_GPU_LAYERS[model_path] = adjusted_layers
+    return adjusted_layers, message
 
 
 def _xzg_is_model_valid(llm):

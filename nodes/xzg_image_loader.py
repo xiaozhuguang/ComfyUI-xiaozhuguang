@@ -451,6 +451,8 @@ class XiaozhuguangImageLoader:
                 "image_list": ("STRING", {"default": ""}),
                 "index": ("INT", {"default": 0, "min": 0, "max": 999999}),
                 "batch_mode": ("BOOLEAN", {"default": True, "label_on": "批次", "label_off": "列表"}),
+                "batch_align": ("BOOLEAN", {"default": False, "label_on": "留边", "label_off": "裁剪"}),
+                "max_images": ("INT", {"default": 0, "min": 0, "max": 999999, "step": 1}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -466,7 +468,7 @@ class XiaozhuguangImageLoader:
     FUNCTION = "load_images"
     CATEGORY = "xiaozhuguang"
 
-    def load_images(self, image_list, index, batch_mode, unique_id=None, mask_data="", crop_data="", upload_mode="append"):
+    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, unique_id=None, mask_data="", crop_data="", upload_mode="append"):
         # 空图或无效输入时返回空遮罩（3D 形状匹配官方 LoadImage 默认值）
         empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
         if not image_list or not image_list.strip():
@@ -502,6 +504,16 @@ class XiaozhuguangImageLoader:
             except Exception:
                 continue
 
+        # 加载图片上限：max_images>0 时最多加载前 N 张（默认 0 表示无限制），对批次/列表模式均生效
+        try:
+            limit = int(max_images)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            images = images[:limit]
+            orig_sizes = orig_sizes[:limit]
+            image_alphas = image_alphas[:limit]
+
         # 解析遮罩数据
         # 语义约定：白色(255 / 1.0) = 用户绘制过的区域；黑色(0 / 0.0) = 未绘制区域
         # 无用户遮罩数据时，从图片 alpha 通道提取（与官方 LoadImage 行为一致）：
@@ -524,20 +536,30 @@ class XiaozhuguangImageLoader:
                         print(f"[小珠光图像加载器] alpha 遮罩提取失败: {e}")
                 return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
             try:
+                import base64
                 # 支持 "data:image/png;base64,xxx" 格式或纯 base64
                 if mask_str.startswith("data:"):
-                    import base64
                     _, b64part = mask_str.split(",", 1)
-                    raw = base64.b64decode(b64part)
                 else:
-                    import base64
-                    raw = base64.b64decode(mask_str)
+                    b64part = mask_str
+                # 容错修复：工作流 JSON 保存/载入/复制往返可能丢失 '=' 填充或混入空白/引号，
+                # 这里只保留合法 base64 字符并按长度补齐填充，避免 Incorrect padding
+                b64part = "".join(ch for ch in str(b64part).strip() if ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+                b64part += "=" * ((4 - len(b64part) % 4) % 4)
+                # 1) 过滤/补齐后只剩填充或空 → 用户从未画过遮罩（常见 data: 前缀后空、只有脏字符），不告警
+                if not b64part or b64part.strip("=") == "":
+                    return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
+                raw = base64.b64decode(b64part)
+                # 2) 解码后字节过小（<8 字节的 PNG 签名也不够）→ 无效脏数据，不告警
+                if len(raw) < 8:
+                    return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
                 mask_pil = Image.open(io.BytesIO(raw)).convert("L")
                 if mask_pil.size != (ref_w, ref_h):
                     mask_pil = mask_pil.resize((ref_w, ref_h), Image.LANCZOS)
                 arr = np.array(mask_pil).astype(np.float32) / 255.0
                 return torch.from_numpy(arr).unsqueeze(0)  # (1, H, W) — 3D
             except Exception as e:
+                # 3) 真正的解码失败（有完整 base64 payload 也解出足量字节，但 PIL 无法识别），才打印告警
                 print(f"[小珠光图像加载器] 遮罩解码失败: {e}")
                 return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
 
@@ -566,8 +588,17 @@ class XiaozhuguangImageLoader:
             if len(images) == 0:
                 return ([], torch.zeros((1, 64, 64), dtype=torch.float32))
 
-            max_h = max(img.shape[1] for img in images)
-            max_w = max(img.shape[2] for img in images)
+            # 目标尺寸：批次内所有图最长边的最大值，以第一张图的宽高比为基准
+            first_h, first_w = images[0].shape[1], images[0].shape[2]
+            max_long = max(max(img.shape[1], img.shape[2]) for img in images)
+            if first_w >= first_h:
+                max_w = max_long
+                max_h = max(1, int(round(max_long * first_h / first_w)))
+            else:
+                max_h = max_long
+                max_w = max(1, int(round(max_long * first_w / first_h)))
+
+            use_letterbox = bool(batch_align)
 
             resized = []
             for img in images:
@@ -577,16 +608,27 @@ class XiaozhuguangImageLoader:
                     resized.append(img)
                     continue
 
-                scale = max(max_h / h, max_w / w)
-                new_h = int(round(h * scale))
-                new_w = int(round(w * scale))
-
                 img_pil = Image.fromarray((img[0].numpy() * 255).astype(np.uint8))
-                img_pil = img_pil.resize((new_w, new_h), Image.LANCZOS)
-
-                left = (new_w - max_w) // 2
-                top = (new_h - max_h) // 2
-                img_pil = img_pil.crop((left, top, left + max_w, top + max_h))
+                if use_letterbox:
+                    # letterbox 留边：等比缩放至完全放入 max_w×max_h，四周用黑色填充补齐
+                    scale = min(max_h / h, max_w / w)
+                    new_h = max(1, int(round(h * scale)))
+                    new_w = max(1, int(round(w * scale)))
+                    img_pil = img_pil.resize((new_w, new_h), Image.LANCZOS)
+                    canvas = Image.new("RGB", (max_w, max_h), (0, 0, 0))
+                    left = (max_w - new_w) // 2
+                    top = (max_h - new_h) // 2
+                    canvas.paste(img_pil, (left, top))
+                    img_pil = canvas
+                else:
+                    # 裁剪对齐（默认）：等比放大铺满 max_w×max_h，居中裁剪超出的长边
+                    scale = max(max_h / h, max_w / w)
+                    new_h = int(round(h * scale))
+                    new_w = int(round(w * scale))
+                    img_pil = img_pil.resize((new_w, new_h), Image.LANCZOS)
+                    left = (new_w - max_w) // 2
+                    top = (new_h - max_h) // 2
+                    img_pil = img_pil.crop((left, top, left + max_w, top + max_h))
 
                 arr = np.array(img_pil).astype(np.float32) / 255.0
                 tensor = torch.from_numpy(arr)[None,]

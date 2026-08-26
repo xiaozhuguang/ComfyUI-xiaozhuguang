@@ -951,6 +951,16 @@ class XiaozhuguangNinimaxH3Prompt:
             _XZG_QwenStorage is not None and _XZG_QwenStorage.unloaded
         )
         if not _xzg_is_model_valid(llm) or storage_unloaded:
+            # 诊断日志：区分“settings 为 None / loader 未在本进程成功加载 / 后端仍是旧代码”等场景
+            _storage_settings = (
+                _XZG_QwenStorage.settings if _XZG_QwenStorage is not None else None
+            )
+            print(
+                "[小珠光 H3] 检测到模型失效："
+                f"llm类型={type(llm).__name__ if llm is not None else 'None'}, "
+                f"storage_settings缓存={'有' if _storage_settings is not None else '无'}, "
+                f"storage_unloaded={storage_unloaded}"
+            )
             reloaded = False
             reload_error = None
             if _XZG_QwenStorage is not None and _XZG_QwenStorage.settings is not None:
