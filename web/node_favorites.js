@@ -723,7 +723,7 @@ class Xiaozhuguang {
                 position: fixed;
                 top: 100px;
                 right: 10px;
-                width: 460px;
+                width: 660px;
                 height: 70vh;
                 background: rgba(30, 30, 30, 0.95);
                 border: 1px solid #444;
@@ -1077,7 +1077,7 @@ class Xiaozhuguang {
 
             .nf-split-container {
                 display: flex;
-                gap: 10px;
+                gap: 0;
                 flex: 1;
                 overflow: hidden;
             }
@@ -1102,6 +1102,7 @@ class Xiaozhuguang {
 
             .nf-right-col {
                 flex: 1;
+                min-width: 350px;
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;

@@ -1621,7 +1621,7 @@ class XZGWorkflowsManager {
                 overflow: hidden;
             }
             .xzg-wf-left-col {
-                width: 80px;
+                width: 160px;
                 border-right: 1px solid var(--border-color, #444);
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
                 flex-shrink: 0;

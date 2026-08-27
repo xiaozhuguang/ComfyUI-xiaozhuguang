@@ -1,4 +1,4 @@
-# ComfyUI 小珠光插件
+﻿# ComfyUI 小珠光插件
 
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
@@ -656,6 +656,23 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.21.0 (2026-08-27)
+
+**🎨 UI 优化：节点收藏器与工作流管理器初始布局尺寸调整**
+
+- **节点收藏器面板**（首次安装无保存宽度时）：
+  - 面板总宽 `460px` → `660px`，给左右两列更充裕的展示空间
+  - 左列分类栏固定初始宽度 `300px`（配合 `width:660px - min-width:350px` 的右列，实现左定宽右弹性）
+  - 右列收藏列表新增 `min-width: 350px`，避免被过度压缩
+  - 两列之间的分割 `gap: 10px` → `0`，配合分割栏紧凑布局
+- **工作流管理器左栏**（首次安装无保存宽度时）：
+  - 分类栏初始宽度 `80px` → `160px`，更贴近日常使用需求（中文分类名不再挤成一列）
+  - 拖拽调节范围仍保持 `[80, 500]px`，已有保存宽度的用户不受影响
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.20.0` 升至 `12.21.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.21.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.21.0）
 ### V12.20.0 (2026-08-27)
 
 **☁️ 面板几何（位置/尺寸）纳入云持久化**
@@ -1548,3 +1565,4 @@ ComfyUI-xiaozhuguang/
 ---
 
 > 💡 如有问题或建议，欢迎在 GitHub 提 Issue 或 PR。
+
