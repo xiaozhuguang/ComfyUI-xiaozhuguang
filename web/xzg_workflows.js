@@ -113,8 +113,17 @@ class XZGWorkflowsManager {
         });
     }
 
+    // 小珠光侧边栏标签按钮选择器（兼容新旧前端：旧版 class，1.51.9 起为 data-testid）
+    _xzgTabBtnSel() {
+        return '.xiaozhuguang-workflows-tab-button, [data-testid="xiaozhuguang-workflows-tab-button"], [data-tab-id="xiaozhuguang-workflows"]';
+    }
+    // 官方「工作流」侧边栏标签按钮选择器（兼容新旧前端）
+    _officialWfBtnSel() {
+        return '.workflows-tab-button, [data-testid="workflows-tab-button"]';
+    }
+
     setIconGold() {
-        const btn = document.querySelector('.xiaozhuguang-workflows-tab-button');
+        const btn = document.querySelector(this._xzgTabBtnSel());
         if (!btn) return false;
         const icon = btn.querySelector('.side-bar-button-icon');
         if (!icon) return false;
@@ -188,8 +197,8 @@ class XZGWorkflowsManager {
     }
 
     moveButtonBeforeWorkflows() {
-        const ourBtn = document.querySelector('.xiaozhuguang-workflows-tab-button');
-        const wfBtn = document.querySelector('.workflows-tab-button');
+        const ourBtn = document.querySelector(this._xzgTabBtnSel());
+        const wfBtn = document.querySelector(this._officialWfBtnSel());
         if (!ourBtn || !wfBtn) return false;
         if (ourBtn.previousElementSibling === wfBtn) return true;
         const parent = wfBtn.parentElement;
@@ -435,8 +444,7 @@ class XZGWorkflowsManager {
             console.warn('[小珠光] 使用官方API切换侧边栏失败，尝试备用方案:', e);
         }
         
-        const tabBtn = document.querySelector('[data-tab-id="xiaozhuguang-workflows"]') || 
-                       document.querySelector('.xiaozhuguang-workflows-tab-button');
+        const tabBtn = document.querySelector(this._xzgTabBtnSel());
         if (tabBtn) {
             tabBtn.click();
         }
@@ -1259,17 +1267,20 @@ class XZGWorkflowsManager {
     injectStyles() {
         const style = document.createElement("style");
         const css = `
-            .xiaozhuguang-workflows-tab-button .side-bar-button-icon {
+            .xiaozhuguang-workflows-tab-button .side-bar-button-icon,
+            [data-testid="xiaozhuguang-workflows-tab-button"] .side-bar-button-icon {
                 color: #FFD700 !important;
                 display: flex;
                 align-items: center;
                 justify-content: center;
             }
-            .xiaozhuguang-workflows-tab-button .side-bar-button-icon svg {
+            .xiaozhuguang-workflows-tab-button .side-bar-button-icon svg,
+            [data-testid="xiaozhuguang-workflows-tab-button"] .side-bar-button-icon svg {
                 width: 20px;
                 height: 20px;
             }
-            .xiaozhuguang-workflows-tab-button.active .side-bar-button-icon {
+            .xiaozhuguang-workflows-tab-button.active .side-bar-button-icon,
+            [data-testid="xiaozhuguang-workflows-tab-button"].active .side-bar-button-icon {
                 color: #FFD700 !important;
             }
             .xzg-wf-panel {
@@ -2562,6 +2573,17 @@ class XZGWorkflowsManager {
     }
 
     _setOfficialWorkflowButtonsHidden(hidden) {
+        // 兜底：夺舍模式下绝不隐藏小珠光自己的工作流标签按钮。
+        // 若被误隐藏（此前版本 bug 或按钮重渲染），强制恢复显示。
+        const xzgBtn = document.querySelector(this._xzgTabBtnSel());
+        if (xzgBtn && hidden && xzgBtn.style.display === "none") {
+            if (xzgBtn.dataset.xzgHidden !== undefined) {
+                xzgBtn.style.display = xzgBtn.dataset.xzgHidden;
+                delete xzgBtn.dataset.xzgHidden;
+            } else {
+                xzgBtn.style.display = "";
+            }
+        }
         const targets = this._findOfficialWorkflowButtons();
         targets.forEach(el => {
             if (hidden) {
@@ -2581,19 +2603,23 @@ class XZGWorkflowsManager {
         const keywords = ["workflow", "工作流"];
         const xzgContainer = this.container;
         const xzgPanel = this._panelEl;
+        const xzgBtn = document.querySelector(this._xzgTabBtnSel());
         const isXzg = (el) => {
             if (!el) return false;
-            if (el.classList && (
-                el.classList.contains("xiaozhuguang-workflows-tab-button") ||
-                el.classList.contains("xiaozhuguang-workflows")
+            // 候选元素自身或其任意祖先带小珠光特征 → 跳过。
+            // 必须用 closest() 检查祖先链：侧边栏候选可能命中到按钮的内层元素。
+            // 兼容新旧前端：1.51.9 起按钮标识为 data-testid 而非类名。
+            if (el.closest && el.closest(
+                ".xiaozhuguang-workflows-tab-button, [data-testid='xiaozhuguang-workflows-tab-button'], .xiaozhuguang-workflows"
             )) return true;
+            if (xzgBtn && (el === xzgBtn || el.contains(xzgBtn))) return true;
             if (xzgContainer && xzgContainer.contains(el)) return true;
             if (xzgPanel && xzgPanel.contains(el)) return true;
             return false;
         };
         const candidates = new Set();
         // 确定性目标：官方「工作流」侧边栏标签按钮（位于小珠光标签正下方）
-        const wfTab = document.querySelector(".workflows-tab-button");
+        const wfTab = document.querySelector(this._officialWfBtnSel());
         if (wfTab) candidates.add(wfTab);
         // 仅在侧边栏区域内扫描，避免误伤画布上方的工作流切换标签
         document.querySelectorAll(
@@ -2606,6 +2632,17 @@ class XZGWorkflowsManager {
         });
         candidates.forEach(el => {
             if (isXzg(el)) return;
+            // 官方「工作流」标签按钮：类名或 data-testid 即确证，无需依赖文本匹配
+            // （纯图标模式下按钮文本可能为空，关键词会漏判）
+            if (el.classList && el.classList.contains("workflows-tab-button")) {
+                out.push(el);
+                return;
+            }
+            if (el.hasAttribute && el.hasAttribute("data-testid") &&
+                el.getAttribute("data-testid") === "workflows-tab-button") {
+                out.push(el);
+                return;
+            }
             const t = (el.textContent || "").trim().toLowerCase();
             if (keywords.some(k => t.includes(k))) out.push(el);
         });
