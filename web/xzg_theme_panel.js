@@ -1,5 +1,6 @@
 
 import { xzgT } from "./xzg_i18n.js";
+import { cloudSave } from "./xzg_cloud_store.js";
 
 window.XZGThemePanel = {
     panel: null,
@@ -2447,16 +2448,30 @@ window.XZGThemePanel = {
         const NOTES_KEY = "xiaozhuguang.notes";
 
         const prefixes = ["xzg_", "xzg-", "xiaozhuguang.", "xz_"];
-        const extraKeys = ["comfyui_xiaozhuguang"];
+        const extraKeys = ["comfyui_xiaozhuguang", "xzg_workflows_meta"];
         let ls = {};
         if (includeXzg) {
+            // 优先从实例内存导出（云存储生效时本地可能没最新数据）
+            if (window.xiaozhuguangFavorites && typeof window.xiaozhuguangFavorites.favorites === "object") {
+                try {
+                    ls["comfyui_xiaozhuguang"] = JSON.stringify(window.xiaozhuguangFavorites.favorites);
+                } catch (e) {}
+            }
+            if (window.XZGWorkflows && typeof window.XZGWorkflows.meta === "object") {
+                try {
+                    ls["xzg_workflows_meta"] = JSON.stringify(window.XZGWorkflows.meta);
+                } catch (e) {}
+            }
+            // 兜底遍历 localStorage（覆盖实例导出不到的其他键）
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
                 if (!k) continue;
                 // 备注单独处理（根据 includeNotes 决定）
                 if (!includeNotes && k === NOTES_KEY) continue;
                 if (prefixes.some(p => k.startsWith(p)) || extraKeys.includes(k)) {
-                    try { ls[k] = localStorage.getItem(k); } catch (e) {}
+                    if (!ls[k]) { // 实例已经导出则不覆盖
+                        try { ls[k] = localStorage.getItem(k); } catch (e) {}
+                    }
                 }
             }
         } else if (includeNotes) {
@@ -2617,6 +2632,43 @@ window.XZGThemePanel = {
                     try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
                 }
                 importedXzg = true;
+            }
+            // 云存储同步：收藏 / 工作流元数据除写本地外，还要推送到云端并刷新实例与面板，
+            // 否则云优先加载会在刷新时用旧云端数据覆盖刚导入的配置。
+            if (obj.localStorage && typeof obj.localStorage === "object") {
+                // 收藏
+                const favRaw = obj.localStorage["comfyui_xiaozhuguang"];
+                if (typeof favRaw === "string") {
+                    try {
+                        const fav = JSON.parse(favRaw);
+                        if (fav && typeof fav === "object") {
+                            const inst = window.xiaozhuguangFavorites;
+                            if (inst && typeof inst._normalizeFavorites === "function") {
+                                inst.favorites = inst._normalizeFavorites(fav);
+                                try { inst.persistLocal(); } catch (e) {}
+                                if (typeof inst.renderFavorites === "function") inst.renderFavorites();
+                            }
+                            cloudSave("comfyui_xiaozhuguang", fav).catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+                // 工作流元数据
+                const wfRaw = obj.localStorage["xzg_workflows_meta"];
+                if (typeof wfRaw === "string") {
+                    try {
+                        const meta = JSON.parse(wfRaw);
+                        if (meta && typeof meta === "object") {
+                            const inst = window.XZGWorkflows;
+                            if (inst && typeof inst._normalizeMeta === "function") {
+                                inst.meta = inst._normalizeMeta(meta);
+                                inst.sortMode = inst.meta.sortMode || "default";
+                                try { inst.persistLocal(); } catch (e) {}
+                                if (typeof inst.renderWorkflowList === "function") inst.renderWorkflowList();
+                            }
+                            cloudSave("xzg_workflows_meta", meta).catch(() => {});
+                        }
+                    } catch (e) {}
+                }
             }
             if (obj.favoritesPreviews && window.xiaozhuguangFavorites &&
                 typeof window.xiaozhuguangFavorites._saveAllPreviewImages === "function") {

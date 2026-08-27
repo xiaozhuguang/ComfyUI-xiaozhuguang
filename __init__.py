@@ -516,6 +516,71 @@ except Exception as _e:
     print("[xiaozhuguang] 注册 /xzg_save_real 路由失败:", _e)
 
 
+# ============ 小珠光云存储 API：让收藏/工作流元数据跨浏览器会话持久化 ============
+# 云平台（晨羽等）浏览器 localStorage 无法跨会话持久化，
+# 这里把数据写到 ComfyUI 用户目录磁盘，前端优先读写这里，localStorage 仅做离线兜底。
+try:
+    import json as _cloud_json
+
+    def _xzg_cloud_store_dir():
+        try:
+            base = folder_paths.get_user_directory()
+        except Exception:
+            base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_data")
+        d = os.path.join(base, "xiaozhuguang")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _xzg_cloud_safe_key(key):
+        # 仅允许 [A-Za-z0-9_.-]，防止路径穿越
+        if not isinstance(key, str):
+            return None
+        key = key.strip()
+        if not key or len(key) > 128:
+            return None
+        if not key.replace('.', '').replace('-', '').replace('_', '').isalnum():
+            return None
+        return key
+
+    @_xzg_save_real_routes.get("/xzg_cloud_store")
+    @xzg_safe_handler
+    async def xzg_cloud_store_get(request):
+        key = _xzg_cloud_safe_key(request.rel_url.query.get("key", ""))
+        if not key:
+            return web.json_response({"error": "invalid key"}, status=400)
+        path = os.path.join(_xzg_cloud_store_dir(), key + ".json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = _cloud_json.load(f)
+            return web.json_response({"key": key, "data": data, "found": True})
+        except FileNotFoundError:
+            return web.json_response({"key": key, "data": None, "found": False})
+        except Exception as e:
+            return web.json_response({"key": key, "data": None, "found": False, "error": str(e)})
+
+    @_xzg_save_real_routes.post("/xzg_cloud_store")
+    @xzg_safe_handler
+    async def xzg_cloud_store_post(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+        key = _xzg_cloud_safe_key(body.get("key"))
+        if not key:
+            return web.json_response({"error": "invalid key"}, status=400)
+        data = body.get("data")
+        path = os.path.join(_xzg_cloud_store_dir(), key + ".json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                _cloud_json.dump(data, f, ensure_ascii=False, indent=2)
+            return web.json_response({"ok": True})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+except Exception as _cloud_err:
+    print("[xiaozhuguang] 注册 /xzg_cloud_store 路由失败:", _cloud_err)
+
+
 # ============ 小珠光快剪编辑器 API ============
 # 路由注册在 xzg_video_editor_api.py 内部完成（和 xzg_video_loader.py 一样的方式）
 # 这里只需导入该模块，触发路由注册

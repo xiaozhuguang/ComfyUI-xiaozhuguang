@@ -2,9 +2,36 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
 import { xzgT } from "./xzg_i18n.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 const STORAGE_KEY = "xzg_workflows_meta";
 const PLUGIN_NAME = xzgT('工作流','Workflow');
+// 小珠光设置：是否启用「工作流管理器」侧边栏（云平台/本地可随时开关）
+const SETTING_ENABLED = "xiaozhuguang.EnableWorkflows";
+
+function isWorkflowsEnabled() {
+    try {
+        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+    } catch (e) {
+        return true;
+    }
+}
+
+function registerWorkflowsSetting() {
+    try {
+        const settings = app?.ui?.settings;
+        if (!settings?.addSetting) return;
+        settings.addSetting({
+            id: SETTING_ENABLED,
+            name: "[小珠光] 启用「工作流管理器」",
+            defaultValue: true,
+            type: "boolean",
+            onChange: (v) => workflowsInstance?.setEnabled(!!v),
+        });
+    } catch (e) {
+        console.warn("[小珠光] 注册工作流管理器设置失败:", e);
+    }
+}
 const SETTING_TOGGLE_SHORTCUT = "xzg_wf_toggle_shortcut";
 const ACCENT_KEY = "xzg_wf_accent";
 // 使用频率配色默认值（按阈值升序）：超过 N 次时，工作流名称与图标显示对应颜色
@@ -38,35 +65,74 @@ class XZGWorkflowsManager {
         this._loadQueue = [];
 
         this.init();
+        // 云平台持久化：初始化后异步从云端拉取元数据，服务端有则覆盖本地
+        this.syncFromCloud();
     }
 
     loadMeta() {
         try {
             const data = localStorage.getItem(STORAGE_KEY);
             if (data) {
-                this.meta = JSON.parse(data);
+                this.meta = this._normalizeMeta(JSON.parse(data));
             }
         } catch (e) {
             console.warn("[小珠光] 加载工作流元数据失败:", e);
         }
-        if (!this.meta.workflows) this.meta.workflows = {};
-        if (!this.meta.categories) this.meta.categories = [];
-        if (!this.meta.sortMode) this.meta.sortMode = "default";
-        // 兼容旧版：name 排序模式已移除，回退到 default
-        if (this.meta.sortMode === "name") this.meta.sortMode = "default";
-        if (!Array.isArray(this.meta.useColors) || this.meta.useColors.length === 0) {
-            this.meta.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
-        }
-        if (typeof this.meta.useColorsEnabled !== "boolean") this.meta.useColorsEnabled = true;
+        this.meta = this._normalizeMeta(this.meta || {});
         this.sortMode = this.meta.sortMode || "default";
     }
 
-    saveMeta() {
+    /** 归一化工作流元数据（补齐旧版缺失字段/默认值） */
+    _normalizeMeta(m) {
+        if (!m || typeof m !== "object") m = {};
+        if (!m.workflows) m.workflows = {};
+        if (!m.categories) m.categories = [];
+        if (!m.sortMode) m.sortMode = "default";
+        // 兼容旧版：name 排序模式已移除，回退到 default
+        if (m.sortMode === "name") m.sortMode = "default";
+        if (!Array.isArray(m.useColors) || m.useColors.length === 0) {
+            m.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
+        }
+        if (typeof m.useColorsEnabled !== "boolean") m.useColorsEnabled = true;
+        return m;
+    }
+
+    /** 仅写入本地 localStorage（云端同步分离，避免回写时触发再上传） */
+    persistLocal() {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(this.meta));
         } catch (e) {
             console.warn("[小珠光] 保存工作流元数据失败:", e);
         }
+    }
+
+    /** 从云端拉取工作流元数据（服务端有则覆盖本地并刷新列表） */
+    async syncFromCloud() {
+        try {
+            const cloud = await cloudLoad(STORAGE_KEY, { fallbackValue: null });
+            if (cloud && typeof cloud === "object") {
+                this.meta = this._normalizeMeta(cloud);
+                this.sortMode = this.meta.sortMode || "default";
+                this.persistLocal();
+                if (this.container) this.renderWorkflowList();
+            }
+        } catch (e) {
+            console.warn("[小珠光] 从云同步工作流元数据失败:", e);
+        }
+    }
+
+    saveMeta() {
+        this.persistLocal();
+        this._queueCloudSave();
+    }
+
+    /** 防抖写入云端，避免频繁操作触发大量请求 */
+    _queueCloudSave() {
+        if (this._cloudSaveTimer) clearTimeout(this._cloudSaveTimer);
+        this._cloudSaveTimer = setTimeout(() => {
+            this._cloudSaveTimer = null;
+            cloudSave(STORAGE_KEY, this.meta).catch(() => {});
+        }, 600);
     }
 
     getWorkflowMeta(path) {
@@ -86,11 +152,16 @@ class XZGWorkflowsManager {
         this.initialized = true;
 
         try {
+            registerWorkflowsSetting();
+            this.enabled = isWorkflowsEnabled();
+            if (!this.enabled) return; // 设置里关闭了工作流管理器：不注入监听、不注册侧边栏
+
             this.loadMeta();
             this.setupKeyboardListener();
             this.setupDragDrop();
             this.setupSidebarAutoClose();
             this.waitForExtensionManager().then(() => {
+                if (!this.enabled) return;
                 this.registerSidebarTab();
                 // 提前初始化夺舍模式：刷新后即使面板未打开，也能立即隐藏官方按钮并建立 Observer
                 this.initPossessMode();
@@ -98,6 +169,73 @@ class XZGWorkflowsManager {
         } catch (e) {
             console.error("[小珠光] 工作流初始化失败:", e);
         }
+    }
+
+    /** 设置项变更时调用：启用/停用工作流管理器（立即生效） */
+    setEnabled(v) {
+        v = !!v;
+        if (v === this.enabled) return;
+        this.enabled = v;
+        if (v) {
+            this.enableWorkflows();
+        } else {
+            this.disableWorkflows();
+        }
+    }
+
+    /** 重新启用工作流管理器：恢复监听、注册/恢复侧边栏入口 */
+    enableWorkflows() {
+        this.loadMeta();
+        this.setupKeyboardListener();
+        this.setupDragDrop();
+        this.setupSidebarAutoClose();
+        if (!this._tabRegistered) {
+            this.waitForExtensionManager().then(() => {
+                if (!this.enabled) return;
+                this.registerSidebarTab();
+                this.initPossessMode();
+            });
+            return;
+        }
+        // 已注册过侧边栏：恢复显示 tab 按钮，并重渲染面板内容
+        const btn = document.querySelector(this._xzgTabBtnSel());
+        if (btn && btn.dataset.xzgHidden !== undefined) {
+            btn.style.display = btn.dataset.xzgHidden;
+            delete btn.dataset.xzgHidden;
+        }
+        this.initPossessMode();
+        if (this._panelEl && !this._panelEl.parentNode) {
+            // 面板容器被清空时重新渲染（尽量）
+            try {
+                const render = () => {
+                    if (!this.enabled || !this._panelEl) return;
+                    this.createPanel(this._panelEl);
+                    this.loadWorkflows();
+                    this.observePanelOpen();
+                    this.onPanelOpen();
+                };
+                render();
+            } catch (e) {}
+        }
+    }
+
+    /** 停用工作流管理器：移除全局监听、隐藏侧边栏入口、停止 observer（立即生效） */
+    disableWorkflows() {
+        this.removeKeyboardListener();
+        this.removeDragDropListeners();
+        this.removeSidebarAutoClose();
+        // 隐藏侧边栏 tab 按钮（保留，便于再次启用时恢复）
+        const btn = document.querySelector(this._xzgTabBtnSel());
+        if (btn && btn.style.display !== "none") {
+            btn.dataset.xzgHidden = btn.style.display || "";
+            btn.style.display = "none";
+        }
+        // 恢复夺舍：官方工作流按钮恢复可见，并断开 observer
+        if (this._possessObserver) { this._possessObserver.disconnect(); this._possessObserver = null; }
+        if (this._panelObserver) { this._panelObserver.disconnect(); this._panelObserver = null; }
+        try { this._setOfficialWorkflowButtonsHidden(false); } catch (e) {}
+        // 断开侧边栏金色/排序 observer
+        if (this._sidebarIconObserver) { this._sidebarIconObserver.disconnect(); this._sidebarIconObserver = null; }
     }
 
     waitForExtensionManager() {
@@ -144,6 +282,8 @@ class XZGWorkflowsManager {
     }
 
     registerSidebarTab() {
+        if (this._tabRegistered) return;   // 已注册过：避免重复注入（启用/停用来回切换时）
+        this._tabRegistered = true;
         try {
             app.extensionManager.registerSidebarTab({
                 id: "xiaozhuguang-workflows",
@@ -158,6 +298,7 @@ class XZGWorkflowsManager {
                     el.style.display = 'flex';
                     el.style.flexDirection = 'column';
                     el.style.overflow = 'hidden';
+                    if (!this.enabled) return;   // 停用状态下不渲染面板内容
 
                     this.createPanel(el);
                     this.loadWorkflows();
@@ -188,6 +329,7 @@ class XZGWorkflowsManager {
                 observer.disconnect();
             }
         });
+        this._sidebarIconObserver = observer;   // 保存，便于停用时 disconnect
 
         observer.observe(sidebar, { childList: true, subtree: true });
 
@@ -408,14 +550,16 @@ class XZGWorkflowsManager {
     }
 
     setupKeyboardListener() {
-        document.addEventListener("keydown", (e) => {
+        if (this._keyboardInstalled) return;
+        const self = this;
+        const handler = (e) => {
             const activeEl = document.activeElement;
             const tagName = activeEl?.tagName;
             if (tagName === "INPUT" || tagName === "TEXTAREA" || activeEl?.isContentEditable) {
                 return;
             }
 
-            const shortcut = this.getShortcut();
+            const shortcut = self.getShortcut();
             if (!shortcut || !shortcut.key) return;
 
             const key = e.key.toLowerCase();
@@ -428,8 +572,19 @@ class XZGWorkflowsManager {
 
             e.preventDefault();
             e.stopPropagation();
-            this.toggleSidebarTab();
-        });
+            self.toggleSidebarTab();
+        };
+        this._keyboardHandler = handler;
+        this._keyboardInstalled = true;
+        document.addEventListener("keydown", handler);
+    }
+
+    removeKeyboardListener() {
+        if (this._keyboardHandler) {
+            document.removeEventListener("keydown", this._keyboardHandler);
+        }
+        this._keyboardHandler = null;
+        this._keyboardInstalled = false;
     }
 
     toggleSidebarTab() {
@@ -828,18 +983,19 @@ class XZGWorkflowsManager {
     }
 
     setupDragDrop() {
+        if (this._dragInstalled) return;
         const self = this;
 
-        document.addEventListener("dragover", (e) => {
+        const onDragOver = (e) => {
             if (e.dataTransfer.types && e.dataTransfer.types.includes("application/xzg-workflow-path") && self.draggedWorkflow) {
                 e.preventDefault();
                 e.stopPropagation();
                 e.dataTransfer.dropEffect = "copy";
                 self.updateDragPreview(e.clientX, e.clientY, self.draggedWorkflow.name);
             }
-        }, true);
+        };
 
-        document.addEventListener("drop", (e) => {
+        const onDrop = (e) => {
             if (e.dataTransfer.types && e.dataTransfer.types.includes("application/xzg-workflow-path")) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -856,11 +1012,29 @@ class XZGWorkflowsManager {
                 }
                 self.removeDragPreview();
             }
-        }, true);
+        };
 
-        document.addEventListener("dragend", () => {
+        const onDragEnd = () => {
             self.removeDragPreview();
-        }, true);
+        };
+
+        this._dragOverHandler = onDragOver;
+        this._dropHandler = onDrop;
+        this._dragEndHandler = onDragEnd;
+        this._dragInstalled = true;
+        document.addEventListener("dragover", onDragOver, true);
+        document.addEventListener("drop", onDrop, true);
+        document.addEventListener("dragend", onDragEnd, true);
+    }
+
+    removeDragDropListeners() {
+        if (this._dragOverHandler) document.removeEventListener("dragover", this._dragOverHandler, true);
+        if (this._dropHandler) document.removeEventListener("drop", this._dropHandler, true);
+        if (this._dragEndHandler) document.removeEventListener("dragend", this._dragEndHandler, true);
+        this._dragOverHandler = null;
+        this._dropHandler = null;
+        this._dragEndHandler = null;
+        this._dragInstalled = false;
     }
 
     /** 判断点击位置是否落在某个节点上（用于区分「空白画布」与「节点」） */
@@ -951,6 +1125,7 @@ class XZGWorkflowsManager {
         this._sidebarAutoCloseInstalled = true;
 
         const install = () => {
+            if (!this.enabled) return;   // 已停用则不再挂载
             const canvasEl = app.canvas && app.canvas.canvas;
             if (!canvasEl) {
                 setTimeout(install, 200);
@@ -958,6 +1133,7 @@ class XZGWorkflowsManager {
             }
 
             const onPointer = (e) => {
+                if (!this.enabled) return;
                 try {
                     if (this._isPointerOnNode(e)) return;        // 点击节点：放行
                     this.hideAllFloatingMenus();                // 空白画布：先清理浮层
@@ -967,10 +1143,21 @@ class XZGWorkflowsManager {
                 } catch (_) {}
             };
 
+            this._sidebarPointerHandler = onPointer;
+            this._sidebarPointerTarget = canvasEl;
             canvasEl.addEventListener("pointerdown", onPointer, true);
         };
 
         install();
+    }
+
+    removeSidebarAutoClose() {
+        if (this._sidebarPointerHandler && this._sidebarPointerTarget) {
+            this._sidebarPointerTarget.removeEventListener("pointerdown", this._sidebarPointerHandler, true);
+        }
+        this._sidebarPointerHandler = null;
+        this._sidebarPointerTarget = null;
+        this._sidebarAutoCloseInstalled = false;
     }
 
     /** 关闭工作流管理侧边栏标签 */

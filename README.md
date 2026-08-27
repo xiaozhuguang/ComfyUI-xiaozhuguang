@@ -656,6 +656,27 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.19.0 (2026-08-27)
+
+**☁️ 云平台持久化：收藏节点与工作流元数据从浏览器 localStorage 改为服务端存储**
+
+云平台（晨羽智云等）浏览器 localStorage 无法跨会话持久化（刷新/换设备即丢）。本次为「小珠光节点收藏器」和「小珠光工作流管理器」增加服务端持久化：
+
+- 新增后端 API `GET/POST /xzg_cloud_store`，数据以 JSON 写入 ComfyUI 用户目录 `user/xiaozhuguang/` 磁盘，含路径穿越防护与安全装饰器
+- 新增前端通用云存储模块 `web/xzg_cloud_store.js`（`cloudLoad`/`cloudSave`）：读取优先「服务端 → 本地 localStorage → 默认值」；服务端无数据时自动把本地推上去实现首次上云；服务端不可用时静默回落本地兜底
+- 收藏数据（`comfyui_xiaozhuguang`）、工作流元数据（`xzg_workflows_meta`）统一改为云优先读写，防抖 600ms 落云，本地仍保留一份兜底
+- 主题面板「导出/导入」适配云存储：导出优先取运行实例内存的最新数据，导入除写本地外还会推送到云端并同步刷新收藏器/工作流面板，避免刷新后被旧云端数据覆盖
+
+**🔧 修复：右上角功能区「快剪」设置项不显示**
+
+- `xzg_video_editor_launcher.js` 修正设置项 ID 前缀（`Xiaozhuguang.` → `xiaozhuguang.`），与其余小珠光设置同组显示
+- `registerSetting` 增加 `addSetting` 未就绪时的延迟重试与去重标记，避免注册失败后永久缺失
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.18.0` 升至 `12.19.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.19.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.19.0）
+
 ### V12.18.0 (2026-08-27)
 
 **📦 依赖修复：补全 requirements.txt（git 安装缺 Qwen 依赖）**

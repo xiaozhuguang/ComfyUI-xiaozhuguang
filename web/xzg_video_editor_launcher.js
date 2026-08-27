@@ -18,10 +18,11 @@ const BTN_ID = "xzg-quick-edit-btn";
 const GOLD = "#dcc85b";
 
 // 小珠光插件设置：右上角功能区是否显示「快剪」
-const SETTING_ID = "Xiaozhuguang.ShowQuickCutInTopMenu";
+const SETTING_ID = "xiaozhuguang.ShowQuickCutInTopMenu";
 
 let _editorInstance = null;
 let _btn = null;
+let _settingRegistered = false;   // 快剪设置已成功注册的标记（避免重复注册）
 
 function findMenuContainer() {
     if (app.menu?.element) return app.menu.element;
@@ -100,11 +101,12 @@ function applyVisibility() {
 }
 
 function registerSetting() {
+    if (_settingRegistered) return true;
     try {
         const settings = app.ui?.settings;
         if (!settings?.addSetting) {
-            console.warn("[小珠光] 当前前端不支持 app.ui.settings.addSetting，跳过快剪显示设置");
-            return;
+            // addSetting 尚不可用：返回 false 由调用方延迟重试
+            return false;
         }
         settings.addSetting({
             id: SETTING_ID,
@@ -113,8 +115,11 @@ function registerSetting() {
             type: "boolean",
             onChange: () => applyVisibility(),
         });
+        _settingRegistered = true;
+        return true;
     } catch (e) {
         console.warn("[小珠光] 注册快剪显示设置失败:", e);
+        return true;
     }
 }
 
@@ -137,8 +142,16 @@ function tryInject(retries) {
 
 function waitForApp() {
     if (app.canvas) {
-        registerSetting();
         tryInject(0);
+        // 触发一次性注入：「快剪」按钮 + 设置项注册（设置项若 addSetting 未就绪则延迟重试）
+        if (!registerSetting()) {
+            let tries = 0;
+            const retry = () => {
+                if (registerSetting()) return;
+                if (tries++ < 40) setTimeout(retry, 300);
+            };
+            setTimeout(retry, 300);
+        }
         return;
     }
     setTimeout(waitForApp, 200);

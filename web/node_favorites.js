@@ -2,10 +2,37 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 window.pinyinPro = { pinyin: pinyinPro };
 
 const STORAGE_KEY = "comfyui_xiaozhuguang";
 const SETTING_TOGGLE_SHORTCUT = "xiaozhuguang.ToggleShortcut";
+// 小珠光设置：是否启用「节点收藏器」面板（云平台/本地可随时开关）
+const SETTING_ENABLED = "xiaozhuguang.EnableNodeFavorites";
+
+function isNodeFavoritesEnabled() {
+    try {
+        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+    } catch (e) {
+        return true;
+    }
+}
+
+function registerNodeFavoritesSetting() {
+    try {
+        const settings = app?.ui?.settings;
+        if (!settings?.addSetting) return;
+        settings.addSetting({
+            id: SETTING_ENABLED,
+            name: "[小珠光] 启用「节点收藏器」",
+            defaultValue: true,
+            type: "boolean",
+            onChange: (v) => nodeFavoritesInstance?.setEnabled(!!v),
+        });
+    } catch (e) {
+        console.warn("[小珠光] 注册节点收藏器设置失败:", e);
+    }
+}
 // 使用频率配色默认值（按阈值升序）：超过 N 次时，节点名称显示对应颜色
 const DEFAULT_USE_COLORS = [
     { threshold: 10,  color: "#60ce7f" },
@@ -35,59 +62,72 @@ class Xiaozhuguang {
         this._previewToken = 0;
 
         this.init();
+        // 云平台持久化：初始化后异步从云端拉取收藏，服务端有则覆盖本地
+        this.syncFromCloud();
     }
 
     loadFavorites() {
         try {
             const data = localStorage.getItem(STORAGE_KEY);
-            if (data) {
-                const parsed = JSON.parse(data);
-                if (!parsed.categories) {
-                    parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), order: 0 }];
-                }
-                parsed.categories.forEach((c, i) => {
-                    if (c.order === undefined) c.order = i;
-                });
-                if (!parsed.nodes) {
-                    parsed.nodes = [];
-                }
-                if (!parsed.workflows) {
-                    parsed.workflows = [];
-                }
-                if (!parsed.sortMode) {
-                    parsed.sortMode = "default";
-                }
-                parsed.nodes.forEach((n, i) => {
-                    if (n.order === undefined) n.order = Date.now() + i;
-                    if (n.useCount === undefined) n.useCount = 0;
-                    if (n.lastUsed === undefined) n.lastUsed = 0;
-                });
-                parsed.workflows.forEach((w, i) => {
-                    if (w.useCount === undefined) w.useCount = 0;
-                    if (w.lastUsed === undefined) w.lastUsed = 0;
-                    if (w.addedAt === undefined) w.addedAt = Date.now() + i;
-                });
-                if (!parsed.useColors || !Array.isArray(parsed.useColors) || parsed.useColors.length === 0) {
-                    parsed.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
-                }
-                if (typeof parsed.useColorsEnabled !== "boolean") parsed.useColorsEnabled = true;
-                if (!parsed.activeBarColor) parsed.activeBarColor = "#FFD700";
-                if (typeof parsed.autoCloseAfterInsert !== "boolean") parsed.autoCloseAfterInsert = true;
-                return parsed;
-            }
+            if (data) return this._normalizeFavorites(JSON.parse(data));
         } catch (e) {
             console.error("加载收藏失败:", e);
         }
-        return {
-            categories: [{ id: "default", name: xzgT('默认收藏','Default Favorites'), order: 0 }],
-            nodes: [],
-            workflows: [],
-            sortMode: "default",
-            useColors: DEFAULT_USE_COLORS.map(x => ({ ...x })),
-            useColorsEnabled: true,
-            activeBarColor: "#FFD700",
-            autoCloseAfterInsert: true
-        };
+        return this._normalizeFavorites(null);
+    }
+
+    /** 归一化收藏数据（补齐旧版缺失字段/默认值） */
+    _normalizeFavorites(parsed) {
+        if (!parsed || typeof parsed !== "object") parsed = {};
+        if (!parsed.categories) {
+            parsed.categories = [{ id: "default", name: xzgT('默认收藏','Default Favorites'), order: 0 }];
+        }
+        parsed.categories.forEach((c, i) => {
+            if (c.order === undefined) c.order = i;
+        });
+        if (!parsed.nodes) parsed.nodes = [];
+        if (!parsed.workflows) parsed.workflows = [];
+        if (!parsed.sortMode) parsed.sortMode = "default";
+        parsed.nodes.forEach((n, i) => {
+            if (n.order === undefined) n.order = Date.now() + i;
+            if (n.useCount === undefined) n.useCount = 0;
+            if (n.lastUsed === undefined) n.lastUsed = 0;
+        });
+        parsed.workflows.forEach((w, i) => {
+            if (w.useCount === undefined) w.useCount = 0;
+            if (w.lastUsed === undefined) w.lastUsed = 0;
+            if (w.addedAt === undefined) w.addedAt = Date.now() + i;
+        });
+        if (!parsed.useColors || !Array.isArray(parsed.useColors) || parsed.useColors.length === 0) {
+            parsed.useColors = DEFAULT_USE_COLORS.map(x => ({ ...x }));
+        }
+        if (typeof parsed.useColorsEnabled !== "boolean") parsed.useColorsEnabled = true;
+        if (!parsed.activeBarColor) parsed.activeBarColor = "#FFD700";
+        if (typeof parsed.autoCloseAfterInsert !== "boolean") parsed.autoCloseAfterInsert = true;
+        return parsed;
+    }
+
+    /** 仅写入本地 localStorage（云端同步分离，避免回写时触发再上传） */
+    persistLocal() {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(this.favorites));
+        } catch (e) {
+            console.error("保存收藏失败:", e);
+        }
+    }
+
+    /** 从云端拉取收藏数据（服务端有则覆盖本地并刷新面板） */
+    async syncFromCloud() {
+        try {
+            const cloud = await cloudLoad(STORAGE_KEY, { fallbackValue: null });
+            if (cloud && typeof cloud === "object") {
+                this.favorites = this._normalizeFavorites(cloud);
+                this.persistLocal();
+                if (this.panel) this.renderFavorites();
+            }
+        } catch (e) {
+            console.warn("[小珠光] 从云同步收藏失败:", e);
+        }
     }
 
     /** 应用选中分类左侧色条颜色（通过 CSS 变量 --nf-active-bar） */
@@ -97,11 +137,17 @@ class Xiaozhuguang {
     }
 
     saveFavorites() {
-        try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(this.favorites));
-        } catch (e) {
-            console.error("保存收藏失败:", e);
-        }
+        this.persistLocal();
+        this._queueCloudSave();
+    }
+
+    /** 防抖写入云端，避免频繁操作触发大量请求 */
+    _queueCloudSave() {
+        if (this._cloudSaveTimer) clearTimeout(this._cloudSaveTimer);
+        this._cloudSaveTimer = setTimeout(() => {
+            this._cloudSaveTimer = null;
+            cloudSave(STORAGE_KEY, this.favorites).catch(() => {});
+        }, 600);
     }
 
     /** 根据使用次数返回着色等级与颜色（阈值/颜色均可在设置面板自定义） */
@@ -284,10 +330,16 @@ class Xiaozhuguang {
 
         try {
             this.injectCSS();
+            registerNodeFavoritesSetting();
+            this.enabled = isNodeFavoritesEnabled();
+            if (!this.enabled) return; // 设置里关闭了收藏器：不注入监听、不创建面板
+
             this.setupKeyboardListener();
             this.setupDragDrop();
             this.waitForCanvasReady().then(() => {
+                // 标题节点（XiaozhuguangTitle）创建补丁：与收藏器无关，始终执行
                 this._patchXiaozhuguangTitleCreate();
+                if (!this.enabled) return;
                 this.createPanel();
                 this.extendNodeMenu();
                 this.extendCanvasMenu();
@@ -298,16 +350,61 @@ class Xiaozhuguang {
         }
     }
 
+    /** 设置项变更时调用：启用/停用收藏器（立即生效） */
+    setEnabled(v) {
+        v = !!v;
+        if (v === this.enabled) return;
+        this.enabled = v;
+        if (v) {
+            this.enableFavorites();
+        } else {
+            this.disableFavorites();
+        }
+    }
+
+    /** 重新启用收藏器：恢复监听、重建面板 */
+    enableFavorites() {
+        this.setupKeyboardListener();
+        this.setupDragDrop();
+        this.waitForCanvasReady().then(() => {
+            if (!this.enabled) return;
+            this.createPanel();
+            if (!this._ctxMenuPatched) {
+                this._ctxMenuPatched = true;
+                this.extendNodeMenu();
+                this.extendCanvasMenu();
+                this.extendGroupMenu();
+            }
+        });
+    }
+
+    /** 停用收藏器：移除全局监听、清掉面板与拖拽预览（立即生效） */
+    disableFavorites() {
+        this.removeKeyboardListener();
+        this.removeDragDropListeners();
+        if (this.panel) {
+            this.panel.remove();
+            this.panel = null;
+            this.searchInput = null;
+            this.favoritesList = null;
+            this.categoryList = null;
+            this.notesTextarea = null;
+            this.notesCount = null;
+        }
+        if (this._previewEl) this._previewEl.remove();
+    }
+
     setupDragDrop() {
+        if (this._dragInstalled) return;
         const self = this;
 
-        document.addEventListener("mousemove", (e) => {
+        const onMove = (e) => {
             if (self.draggingNodeType || self.draggingWorkflowId) {
                 self.updateDragPreview(e.clientX, e.clientY);
             }
-        });
+        };
 
-        document.addEventListener("mouseup", (e) => {
+        const onUp = (e) => {
             if (self.draggingNodeType) {
                 const canvas = app.canvas;
                 if (canvas && canvas.canvas) {
@@ -347,7 +444,21 @@ class Xiaozhuguang {
                 self.removeDragPreview();
                 self.draggingWorkflowId = null;
             }
-        });
+        };
+
+        this._dragMoveHandler = onMove;
+        this._dragUpHandler = onUp;
+        this._dragInstalled = true;
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    }
+
+    removeDragDropListeners() {
+        if (this._dragMoveHandler) document.removeEventListener("mousemove", this._dragMoveHandler);
+        if (this._dragUpHandler) document.removeEventListener("mouseup", this._dragUpHandler);
+        this._dragMoveHandler = null;
+        this._dragUpHandler = null;
+        this._dragInstalled = false;
     }
 
     updateDragPreview(x, y, name = "") {
@@ -527,9 +638,9 @@ class Xiaozhuguang {
     }
 
     setupKeyboardListener() {
+        if (this._keyboardInstalled) return;
         const self = this;
-
-        document.addEventListener("keydown", function handler(e) {
+        const handler = (e) => {
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) {
                 return;
             }
@@ -555,7 +666,18 @@ class Xiaozhuguang {
             e.preventDefault();
             e.stopPropagation();
             self.togglePanel();
-        });
+        };
+        this._keyboardHandler = handler;
+        this._keyboardInstalled = true;
+        document.addEventListener("keydown", handler);
+    }
+
+    removeKeyboardListener() {
+        if (this._keyboardHandler) {
+            document.removeEventListener("keydown", this._keyboardHandler);
+        }
+        this._keyboardHandler = null;
+        this._keyboardInstalled = false;
     }
 
     async waitForCanvasReady() {
@@ -2886,6 +3008,7 @@ class Xiaozhuguang {
     }
 
     async addFavorite(node, categoryId = "default") {
+        if (!this.enabled) return;
         if (this.isNodeFavorited(node.type)) {
             return;
         }
@@ -2923,6 +3046,7 @@ class Xiaozhuguang {
     }
 
     async removeFavorite(nodeType) {
+        if (!this.enabled) return;
         this.favorites.nodes = this.favorites.nodes.filter(n => n.type !== nodeType);
         this.saveFavorites();
         this.renderFavorites();
