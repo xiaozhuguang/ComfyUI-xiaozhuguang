@@ -925,6 +925,14 @@ class XiaozhuguangImageSaveNode {
         const node = this;
         const w = this.addCustomWidget(new XzgImageSaveWidget("xzg_image_save", this));
         this.canvasWidget = w;
+        // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，
+        // 一旦大于节点实际宽度，图像绘制/交互命中区就会溢出节点、且随属性面板开/关变化。
+        // 这里把 width 改为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+        Object.defineProperty(w, 'width', {
+            configurable: true,
+            get() { return node.size?.[0] || 250; },
+            set(_) { /* 忽略外部写入，防止图像区溢出节点 */ },
+        });
         // 文本控件(output_path, filename_prefix)在上方，图像控件在下方
         if (this.widgets) {
             this.widgets = [...this.widgets.filter(x => x !== w), w];

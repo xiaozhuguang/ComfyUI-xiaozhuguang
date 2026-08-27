@@ -4394,7 +4394,15 @@ app.registerExtension({
                 };
 
                 // hideOnZoom:false —— 画布缩小到细节阈值以下时仍显示图片预览，避免被灰色占位矩形替代（与内置图像/视频预览组件一致）
-                this.addDOMWidget("xzg_img_loader", "customwidget", ui.container, { hideOnZoom: false });
+                const _xzgImgDomWidget = this.addDOMWidget("xzg_img_loader", "customwidget", ui.container, { hideOnZoom: false });
+                // 修复（同「视频/音频」栏）：ComfyUI 会把 DOM widget 的 width 写成面板侧行宽度，
+                // 画布侧 DOM 宿主宽度 = width - margin*2，一旦大于节点实际宽度，图片预览区/按钮栏就会
+                // 溢出节点、且随属性面板开/关变化。这里把 width 改为只读访问器，始终跟随节点实际宽度。
+                Object.defineProperty(_xzgImgDomWidget, 'width', {
+                    configurable: true,
+                    get() { return _nodeSelf.size?.[0] || 0; },
+                    set(_) { /* 忽略外部写入，防止预览区溢出节点 */ },
+                });
 
                 // 容器 margin 区域落在 dom-widget 包裹器内，包裹器无滚轮转发，
                 // 导致上传按钮上方约 4-10px 区域滚轮失效。给父元素也绑定滚轮转发。

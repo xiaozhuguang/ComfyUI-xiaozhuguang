@@ -69,6 +69,11 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
 }
 
 function _xzgDrawWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     const pad = 16;
     const r = 6;
@@ -118,6 +123,11 @@ function _xzgWidgetNumberClickOnly(event, [x, y], node) {
 }
 
 function _xzgDrawComboWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     const pad = 16, r = 6;
     const w = width - pad * 2;
@@ -713,11 +723,15 @@ class XiaozhuguangWaveformViewer {
     // ── 在节点画布上绘制波形 ──
     drawOnNode(ctx, widgetY, widgetW, widgetH) {
         this._drawY = widgetY;
-        this._drawH = widgetH;
-        this._drawW = widgetW;
+        // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+        // 强制把波形绘制限制在节点实际边界内，避免音轨超出节点
+        const nodeW = this._node?.size?.[0];
+        const nodeH = this._node?.size?.[1];
+        this._drawW = (nodeW != null && nodeW > 0) ? Math.max(1, Math.min(widgetW, nodeW)) : widgetW;
+        this._drawH = (nodeH != null && nodeH > 0) ? Math.max(1, Math.min(widgetH, Math.max(0, nodeH - widgetY))) : widgetH;
 
-        const w = widgetW;
-        const h = widgetH;
+        const w = this._drawW;
+        const h = this._drawH;
         const pad = this._getPad();
         const usableW = Math.max(1, w - pad * 2);
 
@@ -853,17 +867,6 @@ class XiaozhuguangWaveformViewer {
         ctx.lineTo(pad + volLineW, volY);
         ctx.stroke();
 
-        // 分区线：上1/3处半透明白线，以上=拖动跳转，以下=播放/暂停
-        const divY = widgetY + barPadY + waveH / 3;
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(pad, divY);
-        ctx.lineTo(w - pad, divY);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
         // 标记线
         if (this.duration > 0) {
             // 起始标记线（红色）
@@ -931,10 +934,10 @@ class XiaozhuguangWaveformViewer {
         const timeX = pad + 2 + volTextW + 6;
         ctx.fillText(timeText, timeX, widgetY + 3);
         const timeTextW = ctx.measureText(timeText).width;
-        // 循环/单次播放图标（时间码后面，高度对齐，暗白色小符号）
+        // 循环/单次播放图标（时间码后面，高度对齐，金色小符号）
         const loopSym = this._loopPlayback ? '⇆' : '→';
         const loopX = timeX + timeTextW + 8;
-        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.fillStyle = '#FFD700';
         ctx.font = '7px sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
@@ -944,7 +947,7 @@ class XiaozhuguangWaveformViewer {
         // 小字注释（循环图标右侧）
         ctx.fillStyle = 'rgba(255,255,255,0.35)';
         ctx.font = '5px sans-serif';
-        ctx.fillText('线上拖动跳转 线下播放/暂停', loopX + loopW + 6, widgetY + 4);
+        ctx.fillText('单击音频轨道播放/双击音频轨道上传/拖动播放头移动位置', loopX + loopW + 6, widgetY + 4);
 
         // 显示模式切换按钮（右上角）
         const btnW = 22;
@@ -1130,7 +1133,7 @@ class XiaozhuguangWaveformViewer {
 
             const volY = this._getVolumeY(widgetY, widgetH);
 
-            const handleWidth = 14;
+            const handleWidth = 10;
             const volHandleHeight = 5;
             const volLineW = 40; // 音量线长度
             const w = this._drawW;
@@ -1140,9 +1143,9 @@ class XiaozhuguangWaveformViewer {
             // 但音量线当前恰好落在点击位置附近 → 被判为 volume 拖动手柄
             // 先记录下来，mouseup 处若没真正拖动，则补一次播放切换
             let hitVolumeInLowerHalf = false;
-            // 两侧边框条（x<pad 或 x>w-pad，含黑色10px段）：不参与把手命中检测。
-            // 否则 startX/endX 恰落在波形边缘（=pad / =w-pad），边框条点击会被判成
-            // 红/蓝标记拖拽，播放延迟到 mouseup 兜底才触发，与正常区域「按下即播」不一致
+            // 两侧黑色填充/边框区标记（x<pad 或 x>w-pad）。红/蓝标记恰好落在波形边缘
+            // （=pad / =w-pad），允许从这里的黑色扩展段也命中把手（见下方分支），
+            // 避免「从黑边拖起变成播放头」；只有明显远离把手时才回落播放/播放头
             const inBorderStrip = localX < pad || localX > w - pad;
 
             // 优先判断音量线（仅左侧一小段范围）
@@ -1153,36 +1156,24 @@ class XiaozhuguangWaveformViewer {
                 hitHandle = true;
                 hitVolumeInLowerHalf = lowerHalf;
             }
-            // 然后判断蓝色（结束）标记 / 红色（起始）标记（全高度范围可拖）
-            // —— 但如果点击位于下半区且明显远离把手（或处于边框条），绝不进入 start/end 拖拽态，
-            //    直接落到下面「下半区单击播放」分支，防止靠近两端时点击被当把手吞掉
-            else if (lowerHalf
-                && (inBorderStrip
-                    || (Math.abs(localX - endX) > handleWidth
-                        && Math.abs(localX - startX) > handleWidth))) {
-                // 下半区：远离把手 → 视为播放/暂停点击（避免进入把手拖拽后永不触发播放）
-                if (isDoubleClick) {
-                    if (this._clickTimer) {
-                        clearTimeout(this._clickTimer);
-                        this._clickTimer = null;
-                    }
-                    this.onUpload();
-                    return true;
-                }
-                this.togglePlay();
-                return true;
-            } else if (!inBorderStrip && Math.abs(localX - endX) <= handleWidth) {
-                this.dragType = 'end';
+            // 然后按命中区判定可拖拽对象（全高度范围可拖，虚线上/下规则统一）：
+            //  1) 红/蓝裁剪标记（含两侧黑色区）
+            //  2) 白色播放头（±14px，靠命中区控制）
+            //  其余位置一律单击播放/暂停（双击上传）
+            else if (Math.abs(localX - startX) <= handleWidth
+                || Math.abs(localX - endX) <= handleWidth) {
+                // 红/蓝裁剪标记：允许在两侧黑色区/边框条内命中，优先识别为把手，
+                // 从黑边即可拖动红/蓝标记；选区很窄时两条线同时命中则就近选取，
+                // 避免 end 恒占先导致红色 start 永远点不到
+                this.dragType = Math.abs(localX - startX) <= Math.abs(localX - endX) ? 'start' : 'end';
                 hitHandle = true;
-            } else if (!inBorderStrip && Math.abs(localX - startX) <= handleWidth) {
-                this.dragType = 'start';
-                hitHandle = true;
-            } else if (!lowerHalf) {
-                // 上半区：拖动播放头模式
+            } else if (Math.abs(localX - playX) <= 14) {
+                // 白色播放头：仅靠近命中区（±14px）才拖播放头，虚线上/下方均生效；
+                // 远离播放头则落入下面「单击播放」分支
                 this.dragType = 'playhead';
                 hitHandle = true;
             } else {
-                // 下半区其余区域（靠近把手 / 音量把手之外）：双击上传，单击立即播放/暂停
+                // 其余区域（虚线上方/下方统一）：双击上传，单击立即播放/暂停
                 if (isDoubleClick) {
                     if (this._clickTimer) {
                         clearTimeout(this._clickTimer);
@@ -1735,9 +1726,9 @@ function showAudioHelpDialog() {
             <div style="margin-bottom: 12px;">
                 <div style="font-weight: bold; color: #FFD700; margin-bottom: 4px;">▶️ 播放控制</div>
                 <ul style="margin: 0; padding-left: 18px;">
-                    <li>音轨上 1/3 处有半透明白色虚线分界</li>
-                    <li>分界线上方（上 1/3）：点击跳转、拖动调整播放头、双击上传</li>
-                    <li>分界线下方（下 2/3）：单击播放 / 暂停、双击上传</li>
+                    <li>单击任意位置：播放 / 暂停</li>
+                    <li>双击：上传音频</li>
+                    <li>白色播放头（±14px）：拖动调整播放进度</li>
                     <li>音轨区域不允许拖动移动节点</li>
                     <li>循环/单次：时间码右侧小符号 ⇆ / → 点击切换</li>
                 </ul>
@@ -2433,7 +2424,20 @@ function bindAudioLoaderInteractions(node) {
 }
 
 function _applyAudioWidgetStyles(node) {
+    // 这些绘制栏会随属性面板开/关改变绘制宽度（同「视频」栏修复）：
+    // ComfyUI 会把 widget.width 写成面板侧行宽度，导致行绘制/交互命中区超出节点。
+    // 统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
     for (const w of node.widgets || []) {
+        if (!w._xzgWidthFixed) {
+            w._xzgWidthFixed = true;
+            try {
+                Object.defineProperty(w, 'width', {
+                    configurable: true,
+                    get() { return node.size?.[0] || 0; },
+                    set(_) { /* 忽略外部写入，防止行绘制/命中区溢出节点 */ },
+                });
+            } catch (_) {}
+        }
         if (w.name === AUDIO_WAVEFORM_WIDGET_NAME) continue;
         if (w.name === '音频') {
             w.draw = _xzgDrawComboWidget;

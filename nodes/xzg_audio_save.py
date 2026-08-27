@@ -377,19 +377,23 @@ class XiaozhuguangAudioSave:
             }
 
         # 保存模式：输出到 output 目录
-        base_dir = _safe_dir('get_output_directory', 'output')
-        output_dir = base_dir
-        subfolder = ""
+        output_dir = _safe_dir('get_output_directory', 'output')
 
-        # 文件名：前缀_序号.扩展名（自动递增避免覆盖）
-        ext = AUDIO_FORMATS[格式]["extension"]
-        filename_base = f"{文件名前缀}"
-        
-        max_counter = 0
+        # 文件名前缀可含子目录（如 "123123/123123"，或 "a/b/c" 多级嵌套），
+        # get_save_image_path 会解析出 subfolder、自动创建父目录并返回文件所在目录，
+        # 与视频保存（xzg_video_combine）保持一致。
+        # 返回：full_output_folder, filename(前缀), counter, subfolder, filename_prefix
+        full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
+            文件名前缀, output_dir
+        )
+
+        # 计算下一个可用计数器（按实际扩展名扫描目标目录，避免 get_save_image_path
+        # 基于 .png 的计数与该格式不符）
         import re
-        matcher = re.compile(f"{re.escape(filename_base)}_(\\d+)\\D*\\.{ext}$", re.IGNORECASE)
+        max_counter = 0
+        matcher = re.compile(f"{re.escape(filename)}_(\\d+)\\D*\\.{ext}$", re.IGNORECASE)
         try:
-            for existing_file in os.listdir(output_dir):
+            for existing_file in os.listdir(full_output_folder):
                 match = matcher.fullmatch(existing_file)
                 if match:
                     file_counter = int(match.group(1))
@@ -399,8 +403,8 @@ class XiaozhuguangAudioSave:
             pass
 
         counter = max_counter + 1
-        filename = f"{filename_base}_{counter:05d}.{ext}"
-        filepath = os.path.join(output_dir, filename)
+        filename = f"{filename}_{counter:05d}.{ext}"
+        filepath = os.path.join(full_output_folder, filename)
 
         # 保存文件
         save_audio_to_file(waveform, sample_rate, filepath, format_name=格式, quality=quality_val)

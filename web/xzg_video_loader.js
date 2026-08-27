@@ -166,6 +166,11 @@ function _xzgWidgetNumberWithResetMouse(event, [x, y], node) {
 }
 
 function _xzgDrawWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     // 记录 LiteGraph 实际计算的 y/H，供激光线等需要精确定位的元素使用
     // 解决节点 resize 后硬编码 yOffset 导致位置错乱的问题
@@ -232,6 +237,11 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
 
 // combo / button 同款圆角风格
 function _xzgDrawComboWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     this._xzgLastY = y;
     this._xzgLastH = H;
@@ -425,6 +435,11 @@ function _xzgShowComboDropdown(widget, node, event) {
 }
 
 function _xzgDrawButtonWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     const pad = 16, r = 6;
     const w = width - pad * 2;
     ctx.fillStyle = '#2a2a2a';
@@ -642,8 +657,23 @@ function _updateRatioWidgets(node) {
 
 // 统一应用所有 widget 的样式（圆角、颜色、重置按钮等），可重复调用
 function _applyWidgetStyles(node) {
+    // 这些栏会随属性面板开/关改变绘制宽度（同「视频」栏修复）：
+    // ComfyUI 会把 widget.width 写成面板侧行宽度，导致行绘制/交互命中区超出节点。
+    // 这里统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+    const _XRG_WIDGET_NAME_FIX = {
+        '强制帧率': 1, '视频比例': 1, '自定义宽度': 1,
+        '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1,
+    };
     for (const w of node.widgets || []) {
         if (w.name === VIDEO_PREVIEW_WIDGET_NAME) continue;
+        if (_XRG_WIDGET_NAME_FIX[w.name] && !w._xzgWidthFixed) {
+            w._xzgWidthFixed = true;
+            Object.defineProperty(w, 'width', {
+                configurable: true,
+                get() { return node.size?.[0] || 0; },
+                set(_) { /* 忽略外部写入，防止行绘制/命中区溢出节点 */ },
+            });
+        }
         if (w.name === '强制帧率') {
             w._xzgValueColor = '#FFD700';
             w._xzgShowReset = true;
@@ -1357,6 +1387,15 @@ function bindVideoLoaderInteractions(node) {
     previewWidget.computeLayoutSize = function () {
         return { minHeight: VIDEO_PREVIEW_MIN_H, minWidth: 0 };
     };
+    // 修复：ComfyUI（属性面板/线性模式渲染等）会把 DOM widget 的 width 写成
+    // 面板侧行宽度（如 368px），而画布侧 DOM 宿主宽度 = widget.width - margin*2，
+    // 一旦该值大于节点实际宽度，预览区就会溢出节点（随属性面板开/关变化）。
+    // 这里把 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+    Object.defineProperty(previewWidget, 'width', {
+        configurable: true,
+        get() { return node.size?.[0] || 0; },
+        set(_) { /* 忽略外部写入，防止预览区溢出节点 */ },
+    });
     previewWidget.onRemove = () => {
         player.destroy();
         fileInput.remove();

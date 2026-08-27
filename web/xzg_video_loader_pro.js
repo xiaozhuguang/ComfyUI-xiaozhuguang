@@ -10,6 +10,11 @@ import { XiaozhuguangVideoEditor } from "./xzg_video_editor.js";
 
 // 与「上传视频」按钮完全一致的绘制风格（圆角 r=6, 底色 #2a2a2a, 边框 #444）
 function _xzgDrawButtonWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     const pad = 16, r = 6;
     const w = width - pad * 2;
     ctx.fillStyle = '#2a2a2a';

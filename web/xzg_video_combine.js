@@ -76,6 +76,11 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
 }
 
 function _xzgDrawWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     const pad = 16;
     const r = 6;
@@ -101,6 +106,11 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
 
 // combo / button 同款圆角风格
 function _xzgDrawComboWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     const pad = 16, r = 6;
     const w = width - pad * 2;
@@ -482,6 +492,15 @@ app.registerExtension({
             previewWidget.computeLayoutSize = function () {
                 return { minHeight: VIDEO_PREVIEW_MIN_H, minWidth: 0 };
             };
+            // 修复：ComfyUI（属性面板/线性模式渲染等）会把 DOM widget 的 width 写成
+            // 面板侧行宽度，而画布侧 DOM 宿主宽度 = widget.width - margin*2，
+            // 一旦该值大于节点实际宽度，预览区就会溢出节点（随属性面板开/关变化）。
+            // 这里把 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+            Object.defineProperty(previewWidget, 'width', {
+                configurable: true,
+                get() { return node.size?.[0] || 0; },
+                set(_) { /* 忽略外部写入，防止预览区溢出节点 */ },
+            });
 
             previewWidget.onRemove = () => {
                 player.destroy();
@@ -651,6 +670,19 @@ app.registerExtension({
 
             // 统一渲染风格：combo 用圆角 draw；所有 widget 加双语 label / value 显示
             for (const w of this.widgets || []) {
+                // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，
+                // 一旦大于节点实际宽度，行绘制/交互命中区就会溢出节点、且随属性面板开/关变化。
+                // 这里把 width 改为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+                if (w.name !== VIDEO_PREVIEW_WIDGET_NAME && !w._xzgWidthFixed) {
+                    w._xzgWidthFixed = true;
+                    try {
+                        Object.defineProperty(w, 'width', {
+                            configurable: true,
+                            get() { return node.size?.[0] || 0; },
+                            set(_) { /* 忽略外部写入，防止行溢出节点 */ },
+                        });
+                    } catch (_) {}
+                }
                 // 给每个 widget 绑定动态双语 label（随语言切换）
                 if (w.name === '帧率' || w.name === '文件名前缀' || w.name === '格式' || w.name === 'CRF' || w.name === '模式') {
                     w._xzgLabel = () => _tr(w.name);
@@ -673,6 +705,10 @@ app.registerExtension({
                     if (!w._xzgValueColor) w._xzgValueColor = '#fff';
                 } else if (w.name === 'CRF') {
                     w.draw = function(ctx, node, width, y, H) {
+                        // 属性面板 reflow 时防止溢出节点
+                        const _nW = node?.size?.[0], _nH = node?.size?.[1];
+                        if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+                        if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
                         this._xzgDrawW = width;
                         const pad = 16, r = 6;
                         const wr = width - pad * 2;
@@ -708,6 +744,10 @@ app.registerExtension({
                     w.options.values = ["保存", "预览"];
                     w._xzgDisplayVal = (v) => _tr(String(v));
                     w.draw = function(ctx, nd, width, y, H) {
+                        // 属性面板 reflow 时防止溢出节点
+                        const _nW = nd?.size?.[0], _nH = nd?.size?.[1];
+                        if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+                        if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
                         this._xzgDrawW = width;
                         const pad = 16, r = 6, wr = width - pad * 2;
                         ctx.fillStyle = '#2a2a2a';

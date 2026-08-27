@@ -58,6 +58,11 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
 }
 
 function _xzgDrawWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     const pad = 16, r = 6, w = width - pad * 2;
     ctx.fillStyle = '#2a2a2a';
@@ -80,6 +85,11 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
 
 // combo 下拉样式
 function _xzgDrawComboWidget(ctx, node, width, y, H) {
+    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
     this._xzgDrawW = width;
     const pad = 16, r = 6, w = width - pad * 2;
     ctx.fillStyle = '#2a2a2a';
@@ -564,11 +574,15 @@ class XzgAudioWaveformViewer {
 
     drawOnNode(ctx, widgetY, widgetW, widgetH) {
         this._drawY = widgetY;
-        this._drawH = widgetH;
-        this._drawW = widgetW;
+        // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
+        // 强制把波形绘制限制在节点实际边界内，避免音轨超出节点
+        const nodeW = this._node?.size?.[0];
+        const nodeH = this._node?.size?.[1];
+        this._drawW = (nodeW != null && nodeW > 0) ? Math.max(1, Math.min(widgetW, nodeW)) : widgetW;
+        this._drawH = (nodeH != null && nodeH > 0) ? Math.max(1, Math.min(widgetH, Math.max(0, nodeH - widgetY))) : widgetH;
 
-        const w = widgetW;
-        const h = widgetH;
+        const w = this._drawW;
+        const h = this._drawH;
         const pad = this._getPad();
         const usableW = Math.max(1, w - pad * 2);
 
@@ -642,21 +656,10 @@ class XzgAudioWaveformViewer {
         ctx.lineTo(pad + volLineW, volY);
         ctx.stroke();
 
-        // 分区线：上1/3处半透明白线，以上=拖动跳转，以下=播放/暂停
-        const divY = widgetY + barPadY + waveH / 3;
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(pad, divY);
-        ctx.lineTo(w - pad, divY);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
         // 音量显示（左上角）+ 时间码（紧邻音量右侧）
         const volText = `音量${Math.round(this.volume * 100)}`;
         const timeStartX = pad + 2;
-        const hintText = '线上拖动跳转 线下播放/暂停 双击音量线重置';
+        const hintText = '单击音频轨道播放/双击音量线重置/拖动播放头移动位置';
         if (this.duration > 0 && this._saveUrl) {
             // 音量文字
             ctx.fillStyle = 'rgba(255,255,255,0.8)';
@@ -674,10 +677,10 @@ class XzgAudioWaveformViewer {
             ctx.font = '6px sans-serif';
             ctx.fillText(timeStr, timeX, widgetY + 3);
             const timeW = ctx.measureText(timeStr).width;
-            // 循环/单次播放图标（时间码后面，高度对齐，暗白色小符号）
+            // 循环/单次播放图标（时间码后面，高度对齐，金色小符号）
             const loopSym = this._loopPlayback ? '⇆' : '→';
             const loopX = timeX + timeW + 8;
-            ctx.fillStyle = 'rgba(255,255,255,0.55)';
+            ctx.fillStyle = '#FFD700';
             ctx.font = '7px sans-serif';
             ctx.fillText(loopSym, loopX, widgetY + 2);
             const loopW = ctx.measureText(loopSym).width;
@@ -805,9 +808,6 @@ class XzgAudioWaveformViewer {
             const widgetY = this._drawY;
             const widgetH = this._drawH;
             const barPadY = 2;
-            const waveH = widgetH - barPadY * 2;
-            const waveMid = widgetY + barPadY + waveH / 3;
-            const isUpperHalf = y < waveMid;
 
             // 优先判断音量线（左侧一小段范围，与加载器一致）
             const pad = this._getPad();
@@ -837,8 +837,11 @@ class XzgAudioWaveformViewer {
                 return true;
             }
 
-            if (isUpperHalf) {
-                // 上半区：播放头拖动模式
+            // 白色播放头：仅靠近命中区（±_handleWidth）才拖播放头，全高度生效；
+            // 远离播放头则按单击播放/暂停（与加载器规则一致）
+            const playX = this._getPlayX();
+            if (Math.abs(x - playX) <= this._handleWidth) {
+                // 播放头拖动模式
                 this.dragType = 'playhead';
                 this.isDragging = true;
                 this._dragMoved = false;
@@ -858,8 +861,7 @@ class XzgAudioWaveformViewer {
                 }
                 this._node.setDirtyCanvas?.(true, true);
             } else {
-                // 下半区：单击立即播放/暂停（按下即响应，无延迟）
-                // 不进入拖动模式，允许节点正常拖动
+                // 单击立即播放/暂停（按下即响应，无延迟）
                 this.togglePlay();
                 return false;
             }
@@ -1192,6 +1194,18 @@ app.registerExtension({
             let qualityWidget = null;
 
             for (const w of this.widgets || []) {
+                // 这些绘制栏会随属性面板开/关改变绘制宽度（同「视频」栏修复）：
+                // 统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+                if (!w._xzgWidthFixed) {
+                    w._xzgWidthFixed = true;
+                    try {
+                        Object.defineProperty(w, 'width', {
+                            configurable: true,
+                            get() { return node.size?.[0] || 0; },
+                            set(_) { /* 忽略外部写入，防止行绘制/命中区溢出节点 */ },
+                        });
+                    } catch (_) {}
+                }
                 if (w.name === '格式') {
                     formatWidget = w;
                     // 格式：combo 下拉样式（参考视频保存节点）
@@ -1212,6 +1226,10 @@ app.registerExtension({
                     w.options.values = ["保存", "预览"];
                     w.draw = function(ctx, nd, width, y, H) {
                         this._xzgDrawW = width;
+                        // 边界钳制（属性面板 reflow 时防止溢出节点）
+                        const _nW = nd?.size?.[0], _nH = nd?.size?.[1];
+                        if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+                        if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
                         const pad = 16, r = 6, wr = width - pad * 2;
                         ctx.fillStyle = '#2a2a2a';
                         ctx.beginPath();
@@ -1266,6 +1284,10 @@ app.registerExtension({
                     w.draw = function(ctx, nd, width, y, H) {
                         if (_isLossless()) {
                             // 无损格式：灰显，显示"无损"
+                            // 边界钳制（属性面板 reflow 时防止溢出节点）
+                            const _nW = nd?.size?.[0], _nH = nd?.size?.[1];
+                            if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+                            if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
                             this._xzgDrawW = width;
                             const pad = 16, r = 6, wr = width - pad * 2;
                             ctx.fillStyle = '#222';

@@ -668,6 +668,15 @@ app.registerExtension({
 
             const custom = this.widgets.pop();
             this.widgets.splice(widgetIndex + 1, 0, custom);
+            // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，
+            // 一旦大于节点实际宽度，选项绘制/交互命中区就会溢出节点、且随属性面板开/关变化。
+            // 这里把 width 改为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+            const _xzgBoolNode = this;
+            Object.defineProperty(custom, 'width', {
+                configurable: true,
+                get() { return _xzgBoolNode?.size?.[0] || 0; },
+                set(_) { /* 忽略外部写入，防止布尔选项溢出节点 */ },
+            });
 
             // 节点级点击检测：覆盖整个节点区域，不受 computeSize 限制（参照选择器）
             const _node = this;

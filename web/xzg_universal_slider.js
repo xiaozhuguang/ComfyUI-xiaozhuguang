@@ -793,7 +793,7 @@ function setupSlider(node) {
     /* ══════════════════════════════════════════
      *  注册 Canvas 自定义 Widget
      * ══════════════════════════════════════════ */
-    node.addCustomWidget({
+    const _xzgUsUiWidget = node.addCustomWidget({
         name: "xzg_us_ui",
         type: "xzg_universal_slider",
 
@@ -1034,6 +1034,14 @@ function setupSlider(node) {
         computeSize(width) {
             return [width, 22];
         },
+    });
+    // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，
+    // 一旦大于节点实际宽度，滑条轨道/交互命中区就会溢出节点、且随属性面板开/关变化。
+    // 这里把 width 改为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
+    Object.defineProperty(_xzgUsUiWidget, 'width', {
+        configurable: true,
+        get() { return node.size?.[0] || 250; },
+        set(_) { /* 忽略外部写入，防止滑条溢出节点 */ },
     });
 
     /* 监听外部值变化 */
