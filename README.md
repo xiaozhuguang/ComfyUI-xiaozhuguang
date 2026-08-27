@@ -656,6 +656,22 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.17.0 (2026-08-27)
+
+**🔧 修复：夺舍模式误隐藏小珠光工作流按钮（前端 1.51.9 兼容）**
+
+前端更新至 1.51.9 后，侧边栏按钮标识由 class 变为 `data-testid`，导致夺舍模式把小珠光自己的工作流按钮误判为官方按钮而隐藏。本次统一补全两套选择器（class 与 data-testid）：
+
+- 新增 `_xzgTabBtnSel` / `_officialWfBtnSel` 选择器辅助方法，兼容新旧前端按钮定位
+- `_findOfficialWorkflowButtons` 补全 `data-testid` 兼容：`isXzg` 用 `closest()` 检查祖先链，官方按钮识别同时支持 class 与 `data-testid="workflows-tab-button"`
+- `_setOfficialWorkflowButtonsHidden` 增加兜底：夺舍模式下强制恢复小珠光按钮显示
+- 完全向后兼容低版本前端：低版本仍走 class 分支，行为不变
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.16.0` 升至 `12.17.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.17.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.17.0）
+
 ### V12.16.0 (2026-08-27)
 
 **🔧 统一修复：属性面板开关导致节点元素溢出（widget.width 污染）**
