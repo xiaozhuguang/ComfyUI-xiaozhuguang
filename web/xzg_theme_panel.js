@@ -1,6 +1,6 @@
 
 import { xzgT } from "./xzg_i18n.js";
-import { cloudSave } from "./xzg_cloud_store.js";
+import { cloudSave, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 window.XZGThemePanel = {
     panel: null,
@@ -2669,6 +2669,9 @@ window.XZGThemePanel = {
                         }
                     } catch (e) {}
                 }
+                // 面板几何（位置/尺寸，位于 xiaozhuguang.* / xzg_* 前缀，已随上面循环写入本地）——
+                // 一并推送云端，避免刷新后旧云端几何覆盖刚导入的几何。
+                cloudUIQueueGeometry();
             }
             if (obj.favoritesPreviews && window.xiaozhuguangFavorites &&
                 typeof window.xiaozhuguangFavorites._saveAllPreviewImages === "function") {

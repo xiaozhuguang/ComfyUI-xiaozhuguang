@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
-import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 window.pinyinPro = { pinyin: pinyinPro };
 
 const STORAGE_KEY = "comfyui_xiaozhuguang";
@@ -1804,7 +1804,9 @@ class Xiaozhuguang {
         `;
     }
 
-    createPanel() {
+    async createPanel() {
+        // 先同步云端面板几何（位置/尺寸），保证创建面板时读到的是云端持久化的值
+        await cloudUIInit();
         if (document.getElementById("node-favorites-panel")) {
             this.panel = document.getElementById("node-favorites-panel");
             this.searchInput = this.panel.querySelector("#nf-search-input");
@@ -2519,6 +2521,7 @@ class Xiaozhuguang {
                 document.body.style.userSelect = "";
                 localStorage.setItem("xiaozhuguang.PanelWidth", this.panel.offsetWidth);
                 this.savePanelPosition();
+                cloudUIQueueGeometry();
             }
         });
     }
@@ -2565,6 +2568,7 @@ class Xiaozhuguang {
                 document.body.style.userSelect = "";
                 localStorage.setItem("xiaozhuguang.PanelHeight", this.panel.offsetHeight);
                 this.savePanelPosition();
+                cloudUIQueueGeometry();
             }
         });
     }
@@ -2599,6 +2603,7 @@ class Xiaozhuguang {
             if (isSplitResizing) {
                 isSplitResizing = false;
                 localStorage.setItem("xiaozhuguang.SplitWidth", leftCol.offsetWidth);
+                cloudUIQueueGeometry();
             }
         });
     }
@@ -2618,6 +2623,7 @@ class Xiaozhuguang {
             left: rect.left,
             top: rect.top
         }));
+        cloudUIQueueGeometry();
     }
 
     loadPanelPosition() {

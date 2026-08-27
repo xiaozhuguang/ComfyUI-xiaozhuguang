@@ -82,3 +82,76 @@ export function cloudSave(key, data) {
         body: JSON.stringify({ key, data }),
     }).catch(() => { /* 服务端失败则依赖 localStorage */ });
 }
+
+// ----------------------------------------------------------------------------
+// 面板几何 UI 态（收藏面板位置/尺寸、工作流左侧栏宽度）云持久化
+//
+// 背景：面板位置/尺寸之前只写各自的 localStorage 键（xiaozhuguang.* 、xzg_*），
+// 未纳入收藏/工作流 JSON，云平台上刷新/换分配即丢。这里把它们集中收集到
+// 服务端一个键 xzg_ui_state 下，localStorage 的原始键仍作为本地兜底。
+// ----------------------------------------------------------------------------
+const UI_KEY = "xzg_ui_state";
+// 需要云持久化的面板几何键（节点收藏器 + 工作流管理器）
+const UI_GEOMETRY_KEYS = [
+    "xiaozhuguang.PanelPos",
+    "xiaozhuguang.PanelWidth",
+    "xiaozhuguang.PanelHeight",
+    "xiaozhuguang.SplitWidth",
+    "xzg_wf_left_col_width",
+];
+
+let _uiInit = null;
+
+/** 拉取云端面板几何态并写入对应 localStorage 键（云优先）。首次上云时把本地几何推上去。返回 Promise。 */
+export function cloudUIInit() {
+    if (_uiInit) return _uiInit;
+    _uiInit = (async () => {
+        try {
+            const url = api.apiURL("/xzg_cloud_store?key=" + encodeURIComponent(UI_KEY));
+            const r = await _fetchJson(url);
+            const remote = (r && r.found && r.data && typeof r.data === "object") ? r.data : null;
+            if (remote) {
+                let wrote = false;
+                for (const k of UI_GEOMETRY_KEYS) {
+                    if (Object.prototype.hasOwnProperty.call(remote, k) && remote[k] !== undefined) {
+                        const v = remote[k];
+                        localSet(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+                        wrote = true;
+                    }
+                }
+                // 云端为空则把本地首次上云
+                if (!wrote) pushGeometryToCloud();
+            } else {
+                pushGeometryToCloud();
+            }
+        } catch (e) {
+            // 服务端不可用：保留本地
+        }
+    })();
+    return _uiInit;
+}
+
+function readGeometryMap() {
+    const map = {};
+    for (const k of UI_GEOMETRY_KEYS) {
+        const v = localGet(k);
+        if (v != null) map[k] = v;
+    }
+    return map;
+}
+
+function pushGeometryToCloud() {
+    const map = readGeometryMap();
+    if (Object.keys(map).length) cloudSave(UI_KEY, map).catch(() => {});
+}
+
+let _uiTimer = null;
+
+/** 在某个面板几何键写完后调用：收集全部几何键推送到云端（防抖）。 */
+export function cloudUIQueueGeometry() {
+    if (_uiTimer) clearTimeout(_uiTimer);
+    _uiTimer = setTimeout(() => {
+        _uiTimer = null;
+        pushGeometryToCloud();
+    }, 400);
+}

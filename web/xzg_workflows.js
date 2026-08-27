@@ -2,7 +2,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
 import { xzgT } from "./xzg_i18n.js";
-import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 const STORAGE_KEY = "xzg_workflows_meta";
 const PLUGIN_NAME = xzgT('工作流','Workflow');
@@ -2937,10 +2937,13 @@ class XZGWorkflowsManager {
         let isResizing = false;
         let startX, startWidth;
 
-        const savedWidth = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
-        if (savedWidth && savedWidth >= 80 && savedWidth <= 500) {
-            leftCol.style.width = savedWidth + "px";
-        }
+        // 先同步云端左侧栏宽度，再读取本地回放
+        cloudUIInit().then(() => {
+            const savedWidth = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
+            if (savedWidth && savedWidth >= 80 && savedWidth <= 500) {
+                leftCol.style.width = savedWidth + "px";
+            }
+        });
 
         handle.addEventListener("mousedown", (e) => {
             isResizing = true;
@@ -2959,6 +2962,7 @@ class XZGWorkflowsManager {
             if (isResizing) {
                 isResizing = false;
                 localStorage.setItem("xzg_wf_left_col_width", leftCol.offsetWidth.toString());
+                cloudUIQueueGeometry();
             }
         });
     }
