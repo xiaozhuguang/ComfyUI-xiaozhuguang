@@ -1,1 +1,30 @@
+# ============================================================
+# 小珠光 (ComfyUI-xiaozhuguang) 依赖清单
+# 安装：pip install -r requirements.txt
+# ============================================================
+
+# ---------- 必需依赖 ----------
+# 缺少时插件无法启动，或核心节点（视频加载/快剪、Qwen、TTS）不可用
+torch
+torchvision
+numpy
+Pillow
+opencv-python
+# Qwen3-VL 系列模型需要 transformers >= 4.57.1（Qwen3VLForConditionalGeneration）
+transformers>=4.57.1
+qwen-vl-utils
 imageio-ffmpeg>=0.5.1
+safetensors
+librosa
+llama-cpp-python
+# qwenVL 节点 4bit / 8bit 量化加载需要（fp16 / fp32 不需要）
+bitsandbytes
+
+# ---------- 可选依赖（按需安装，缺失不影响插件启动和其它节点） ----------
+# huggingface_hub      # 模型自动下载；缺失时需手动下载模型到 models 目录
+# einops               # LongCat AudioDiT TTS 建模；缺失时 TTS 推理报错
+# mediapipe            # Face Align 人脸检测（优先方案）；缺失降级到 insightface / 整图兜底
+# insightface          # Face Align 人脸检测（备选方案）；缺失降级到整图兜底
+# onnxruntime          # insightface 推理后端；缺失则 insightface 不可用
+# flash-attn           # LongCat 注意力加速；缺失自动回退到 PyTorch SDPA
+# sageattention        # LongCat 选择 SageAttention 模式时必需；缺失时该模式会提示安装，默认模式不受影响

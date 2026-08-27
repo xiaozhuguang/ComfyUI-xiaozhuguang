@@ -656,6 +656,19 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.18.0 (2026-08-27)
+
+**📦 依赖修复：补全 requirements.txt（git 安装缺 Qwen 依赖）**
+
+- `requirements.txt` 曾被精简为仅 `imageio-ffmpeg>=0.5.1`，导致通过 **git clone 安装**（如晨羽智云）时，ComfyUI Manager 按 `requirements.txt` 安装依赖而漏装 Qwen 相关包（`transformers>=4.57.1`、`qwen-vl-utils`、`llama-cpp-python`、`bitsandbytes` 等），QwenLoader / qwenVL 节点报"未安装 / 依赖缺失"
+- 本次补全 `requirements.txt` 必需依赖清单，与 `pyproject.toml` 的 `dependencies` 对齐，并保留可选依赖说明注释；git 安装用户执行 `pip install -r requirements.txt` 即可装上
+- Comfy Registry 安装不受影响（一直读取 `pyproject.toml` 的完整依赖）
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.17.0` 升至 `12.18.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.18.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.18.0）
+
 ### V12.17.0 (2026-08-27)
 
 **🔧 修复：夺舍模式误隐藏小珠光工作流按钮（前端 1.51.9 兼容）**
