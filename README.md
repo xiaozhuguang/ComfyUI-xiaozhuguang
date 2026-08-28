@@ -671,7 +671,7 @@ ComfyUI-xiaozhuguang/
 
 **🎬 合并视频：预览模式修复重启后显示「暂无视频」**
 
-- （`nodes/xzg_video_combine.py`）预览不再写入会被 ComfyUI 启动时清空的 temp 目录，改为写入持久的 `output/preview/<节点id>/` 子目录（按节点 id 隔离，一个工作流里多个「预览」节点各自独占目录、互不干扰；每个节点只保留自己最新一份），返回 `type="output"`，重启后预览仍可正常显示，与官方 SaveVideo 持久输出行为对齐
+- （`nodes/xzg_video_combine.py`）预览不再写入会被 ComfyUI 启动时清空的 temp 目录，改为写入持久的 `output/preview/` 子目录（只保留最新一份，避免累积），返回 `type="output"`，重启后预览仍可正常显示，与官方 SaveVideo 持久输出行为对齐
 
 **🏷️ 版本号 / 发布**
 

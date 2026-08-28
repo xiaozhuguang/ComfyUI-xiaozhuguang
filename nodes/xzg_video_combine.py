@@ -462,18 +462,13 @@ class XiaozhuguangVideoCombine:
 
         # 保存/预览都写入持久的 output 目录：
         #   保存 → output 根目录下
-        #   预览 → output/preview/<节点id>/ 子目录（以节点 id 隔离，多个"预览"节点
-        #           各自独占目录、互不干扰，不会互相覆盖或清除），且只保留本节点最新一份
+        #   预览 → output/preview/ 子目录（只保留最新一份，避免累积）
         # 原因：预览若写入 temp，ComfyUI 每次启动会清空 temp，重启后旧预览地址失效
         # 显示"暂无视频"，切换到保存重跑才恢复；写入 output 则重启后仍可正常预览。
         base_dir = _safe_dir('get_output_directory', 'output')
         output_dir = base_dir
-        if 模式 == "保存":
-            prefix_for_path = 文件名前缀
-        else:
-            node_folder = str(unique_id or 0)
-            prefix_for_path = os.path.join(
-                "preview", node_folder, 文件名前缀.strip("/\\"))
+        prefix_for_path = 文件名前缀 if 模式 == "保存" else (
+            os.path.join("preview", 文件名前缀.strip("/\\")))
 
         # 获取可用的文件计数器（full_output_folder 已包含前缀内的子目录）。
         # 返回顺序：full_output_folder, filename, counter, subfolder, filename_prefix
