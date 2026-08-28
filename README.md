@@ -656,7 +656,7 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
-### V12.23.0 (2026-08-28)
+### V13.0.0 (2026-08-28)
 
 **🔤 小珠光文本框：中文朗读输出（`text_zh_num`，`text` 原文不变）优化**
 
@@ -669,15 +669,32 @@ ComfyUI-xiaozhuguang/
 
 - （`web/xzg_audio_loader.js`）时间码右侧新增 `时长XX:XX`，若被红/蓝裁剪则显示裁剪后的时长，否则为总时长
 
-**🎬 合并视频：预览模式修复重启后显示「暂无视频」**
+**🎬 视频播放器 / 解码器：修复首帧黑屏**
 
-- （`nodes/xzg_video_combine.py`）预览不再写入会被 ComfyUI 启动时清空的 temp 目录，改为写入持久的 `output/preview/` 子目录（只保留最新一份，避免累积），返回 `type="output"`，重启后预览仍可正常显示，与官方 SaveVideo 持久输出行为对齐
+- （`web/xzg_frame_decoder.js`）取帧带时间容错：`time=0` 边界处部分视频首帧 PTS 非 0 取不到帧（首帧黑屏、播放一次后才正常），改为逐级小偏移重试，且复用 mediabunny「二次确认」路径
+- 新增 `renderFrameAwait`：真正等待首帧解码绘制完成后再显示，替代原先只调度不等待的 `renderFrame`
+- （`web/xzg_video_player.js`）对齐 VHS：使用原生 `<video>` 的节点加载时不弹转圈动画，加载期间保留上一帧画面，消除「读条」观感
+
+**🎞️ 视频加载器**
+
+- **跳过帧数 / 帧数上限 支持上游连线输入**（`web/xzg_video_loader.js`）：拖拽红/蓝杠或参数变化时写回上游控件（PrimitiveNode / 同名 widget）并触发其回调，红蓝头联动正确；`_resolveLinkedValue` 优先读取连线值（widget 转 input 后自身 value 不更新）
+- 修复「合成覆盖预览只盖一瞬间又变回默认比例」：`onLoadedMetadata` 只应用加载范围（`_applyLoadRange`），不再触发 `_resetToSourceVideo` 把刚盖上的预览重置回原视频；参数真正变化时才由 `_syncLoadRange` 重置
+- 预览 widget 设为 `serialize=false`：文件名仅作显示产物，不独立持久化/进入缓存，避免与「视频」下拉框值发散
+
+**🎬 合并视频**
+
+- **预览跨浏览器刷新持久化**（`web/xzg_video_combine.js`）：输出信息写入 localStorage（key = 节点 id），刷新后仍能恢复上次预览（对齐 VHS 刷新后仍有输出）；不再写入 `node.properties`，避免并入图/extra_pnginfo 改变缓存签名导致每次重编码
+- 预览 widget 设为 `serialize=false`（对齐官方 audioUI 范式）：文件名每次执行都变化，一旦进入 widgets_values/extra_pnginfo 就会改变节点缓存签名 →「上游输入未变时仍被判定为变化 → 每次都重编码合成」
+- URL 去掉随机数 + 输出 key（filename|type|subfolder）去重：同名文件（输入未变）不再重复下载/转圈读条；输入真变了文件名变 → 正常刷新预览
+
+**🗑️ 移除「视频加载器 Pro」节点**
+
+- 删除 `nodes/xzg_video_loader_pro.py`、`web/xzg_video_loader_pro.js`（含其前端注册引用），功能以普通视频加载器为准
 
 **🏷️ 版本号 / 发布**
 
-- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.22.0` 升至 `12.23.0`
-- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.23.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.23.0）
-
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.22.0` 升至 `13.0.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v13.0.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 13.0.0）
 ### V12.22.0 (2026-08-27)
 
 **🐛 修复：获取控件值节点与「输出到队列」兼容性**

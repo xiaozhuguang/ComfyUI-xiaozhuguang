@@ -6,7 +6,6 @@
 
 import os
 import sys
-import hashlib
 import subprocess
 import json
 import re
@@ -174,30 +173,6 @@ def _get_ffmpeg_path():
 
 
 ffmpeg_path = _get_ffmpeg_path()
-
-
-# ---------- 合并视频的节点级惰性去重 ----------
-# 即使上游每次都重跑（产出内容相同），只要送入的图像/音频内容未变，
-# 就复用上次编码好的文件、跳过重新编码（不再读条）。
-# 以 unique_id 为键，仅缓存指纹(小)与文件路径(小)，不持有大张量，避免内存占用。
-_xzg_vc_dedup = {}
-
-
-def _media_fingerprint(obj):
-    """为图像 tensor / 音频 dict 生成轻量内容指纹，用于惰性去重。"""
-    if obj is None:
-        return None
-    if isinstance(obj, torch.Tensor):
-        if obj.numel() == 0:
-            return ("empty",)
-        t = obj.detach().to("cpu").contiguous()
-        h = hashlib.sha256(t.numpy().tobytes()).hexdigest()
-        return (tuple(t.shape), str(t.dtype), h)
-    if isinstance(obj, dict):
-        wf = obj.get("waveform")
-        sr = obj.get("sample_rate")
-        return (str(sr), _media_fingerprint(wf))
-    return str(obj)
 
 
 # 视频格式定义（参考 VHS video_formats 目录的 JSON 配置）
@@ -448,43 +423,21 @@ class XiaozhuguangVideoCombine:
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,
                       模式, 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
-        # 惰性去重：输入内容(图像/音频)与各项参数未变，且上次文件仍存在时，直接复用，跳过重新编码
-        sig = (unique_id, 帧率, 文件名前缀, 格式, CRF, 模式)
-        img_fp = _media_fingerprint(图像)
-        aud_fp = _media_fingerprint(音频)
-        prev = _xzg_vc_dedup.get(sig)
-        if (prev is not None and prev[0] == img_fp and prev[1] == aud_fp
-                and os.path.isfile(prev[2])):
-            return prev[3]
-
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
-        # 保存/预览都写入持久的 output 目录：
-        #   保存 → output 根目录下
-        #   预览 → output/preview/ 子目录（只保留最新一份，避免累积）
-        # 原因：预览若写入 temp，ComfyUI 每次启动会清空 temp，重启后旧预览地址失效
-        # 显示"暂无视频"，切换到保存重跑才恢复；写入 output 则重启后仍可正常预览。
-        base_dir = _safe_dir('get_output_directory', 'output')
+        base_dir = (_safe_dir('get_output_directory', 'output') if 模式 == "保存"
+                    else _safe_dir('get_temp_directory',   'temp'))
+
+        # 输出根目录固定为 base_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
+        # get_save_image_path 会解析出 subfolder 并把文件写到 output_dir/subfolder 下
         output_dir = base_dir
-        prefix_for_path = 文件名前缀 if 模式 == "保存" else (
-            os.path.join("preview", 文件名前缀.strip("/\\")))
 
         # 获取可用的文件计数器（full_output_folder 已包含前缀内的子目录）。
         # 返回顺序：full_output_folder, filename, counter, subfolder, filename_prefix
         full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
-            prefix_for_path, output_dir
+            文件名前缀, output_dir
         )
-
-        # 预览模式只保留最新一份：先清掉同前缀的旧预览文件
-        extension = VIDEO_FORMATS[格式]["extension"]
-        if 模式 == "预览":
-            try:
-                for existing_file in os.listdir(full_output_folder):
-                    if existing_file.startswith(filename) and existing_file.endswith("." + extension):
-                        os.remove(os.path.join(full_output_folder, existing_file))
-            except Exception:
-                pass
 
         # 计算下一个可用的计数器
         max_counter = 0
@@ -500,6 +453,7 @@ class XiaozhuguangVideoCombine:
             pass
         counter = max_counter + 1
 
+        extension = VIDEO_FORMATS[格式]["extension"]
         file = f"{filename}_{counter:05}.{extension}"
         file_path = os.path.join(full_output_folder, file)
 
@@ -518,15 +472,13 @@ class XiaozhuguangVideoCombine:
                 "videos": [{
                     "filename": file,
                     "subfolder": subfolder,
-                    "type": "output",
+                    "type": "output" if 模式 == "保存" else "temp",
                     "format": 格式,
                     "frame_rate": 帧率,
                 }],
                 "output_dir": output_dir,
             }
         }
-        # 记录本次输出，供下次内容未变时惰性复用
-        _xzg_vc_dedup[sig] = (img_fp, aud_fp, file_path, ui)
         return ui
 
 

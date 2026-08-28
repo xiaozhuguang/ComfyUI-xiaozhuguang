@@ -313,6 +313,18 @@ const VIDEO_PREVIEW_MIN_H = 100;
 // executed 事件到达时无条件写入（即使节点已销毁），切回 tab 重建节点后从此读取恢复
 const _xzgVideoOutputCache = new Map();
 
+// 跨浏览器刷新的持久化恢复：写入 localStorage（key = 节点 id）。
+// 关键：绝不写入 node.properties / widget 序列化 —— 那会并入图/extra_pnginfo/签名，
+// 破坏「上游未变时不重编码」的缓存命中。localStorage 不进 prompt，因此不影响缓存。
+// 这样刷新后仍能恢复上次视频预览（对齐 VHS 刷新后仍有输出），又不牺牲缓存惰性。
+const _xzgOutStoreKey = (nodeId) => `xzg_video_combine_out_${nodeId}`;
+function _xzgPersistOutput(nodeId, info) {
+    try { localStorage.setItem(_xzgOutStoreKey(nodeId), JSON.stringify(info)); } catch (e) { /* 忽略存储失败 */ }
+}
+function _xzgLoadPersistedOutput(nodeId) {
+    try { return JSON.parse(localStorage.getItem(_xzgOutStoreKey(nodeId))); } catch (e) { return null; }
+}
+
 function getVideoUrl(filename, type, subfolder) {
     if (!filename) return "";
     const params = new URLSearchParams({
@@ -320,7 +332,10 @@ function getVideoUrl(filename, type, subfolder) {
         type: type || "output",
     });
     if (subfolder) params.set("subfolder", subfolder);
-    return `/view?${params.toString()}&rand=${Math.random()}`;
+    // 注意：这里不带随机数（rand）。刷新到最新内容靠「文件名自增」天然实现——
+    // 内容/输入变了文件名必变 → URL 变化 → 重新加载；同名文件（输入未变）则返回
+    // 缓存命中项，避免每次渲染/恢复都因 URL 不同而强制重新下载、转圈读条。
+    return `/view?${params.toString()}`;
 }
 
 function _extractFilename(url) {
@@ -357,6 +372,7 @@ app.registerExtension({
                 info.frame_rate = v.frame_rate;
             }
             _xzgVideoOutputCache.set(localId, info);
+            _xzgPersistOutput(localId, info); // 跨刷新持久化，刷新后仍能恢复预览
         });
     },
     getCustomWidgets() {
@@ -476,13 +492,21 @@ app.registerExtension({
                         const type = v.type || "output";
                         const subfolder = v.subfolder || "";
                         if (!filename) { player.load(""); return; }
+                        // 同 key 不重载（与 onExecuted / onConfigure 共用 player._lastAppliedKey）：
+                        // 恢复/渲染时同名文件不再强制重新下载，消除无谓转圈读条。
+                        const key = `${filename}|${type}|${subfolder}`;
+                        if (player._lastAppliedKey === key) return;
+                        player._lastAppliedKey = key;
+                        // 关键：只在「同一会话内」由真实执行事件写入模块级 cache 时才拉流。
+                        // 浏览器刷新后反序列化会触发 setValue，此时模块 cache 为空但 properties 里
+                        // 有旧文件 —— 若直接 load 就会一进界面就转圈读条（对齐 VHS，configure 不拉流）。
+                        if (!_xzgVideoOutputCache.get(String(node.id))) return;
                         const url = getVideoUrl(filename, type, subfolder);
-                        if (url && url !== player.src) {
+                        if (url) {
                             const info = { filename, type, subfolder };
                             player._videoInfo = info;
-                            // 同步 properties，保证后续序列化/重建可恢复
-                            node.properties = node.properties || {};
-                            node.properties._xzgVideoOutput = info;
+                            // 注意：不再把文件名写进 node.properties —— 那会并入图/extra_pnginfo，
+                            // 改变缓存签名导致每次运行都重编码。预览恢复只走模块级 _xzgVideoOutputCache。
                             player.load(url);
                         }
                     },
@@ -501,6 +525,13 @@ app.registerExtension({
                 get() { return node.size?.[0] || 0; },
                 set(_) { /* 忽略外部写入，防止预览区溢出节点 */ },
             });
+
+            // 关键修复：预览为「纯展示」widget，禁止序列化进 prompt/图（getValue 返回的
+            // 文件名每次执行都变化，一旦进入 widgets_values/extra_pnginfo 就会改变 ComfyUI
+            // 节点缓存签名，导致「上游输入未变时仍被判定为变化 → 每次都重编码合成」）。
+            // 对齐官方 audioUI 的 `serialize=false` 范式，使节点缓存可命中、输入不变不再读条。
+            previewWidget.serialize = false;
+            if (previewWidget.options) previewWidget.options.serialize = false;
 
             previewWidget.onRemove = () => {
                 player.destroy();
@@ -527,25 +558,25 @@ app.registerExtension({
                 requestAnimationFrame(() => {
                     player.resize();
                     if (player._destroyed) return;
-                    // 切 tab 重建 / 加载工作流后恢复视频预览
-                    // 优先级 1：模块级全局 cache（executed 事件写入，跨节点重建稳定）
-                    // 优先级 2：node.properties（工作流保存/加载场景兜底）
-                    const saved = _xzgVideoOutputCache.get(String(node.id))
-                                 || node.properties?._xzgVideoOutput;
+                    // 切 tab 重建 / 加载工作流 / 浏览器刷新后恢复视频预览。
+                    // 取值优先级：本会话模块 cache（真实执行）→ localStorage 持久化（跨刷新）→ 旧 properties 兜底。
+                    // 有可用的持久化输出就恢复加载（对齐 VHS 刷新后仍有图）；播放器加载动画已隐藏，不会转圈。
+                    const moduleCached = _xzgVideoOutputCache.get(String(node.id));
+                    const saved = moduleCached || _xzgLoadPersistedOutput(String(node.id)) || node.properties?._xzgVideoOutput;
                     if (saved && saved.filename) {
                         const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}`;
-                        if (player._lastAppliedKey !== key) {
-                            player._lastAppliedKey = key;
-                            player._videoInfo = saved;
-                            if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
-                            const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
-                            if (url) {
-                                const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
-                                if (visible) {
-                                    player.load(url);
-                                } else {
-                                    player._pendingVideoUrl = url;
-                                }
+                        // 同 key 恢复时跳过重复加载（避免无谓网络解码）
+                        if (player._lastAppliedKey === key) return;
+                        player._lastAppliedKey = key;
+                        player._videoInfo = saved;
+                        if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
+                        const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
+                        if (url) {
+                            const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
+                            if (visible) {
+                                player.load(url);
+                            } else {
+                                player._pendingVideoUrl = url;
                             }
                         }
                     }
@@ -581,13 +612,15 @@ app.registerExtension({
                     // 关键：先无条件写入模块级全局 cache
                     // 切 tab 重建节点后，onConfigure/ResizeObserver 从此读取恢复预览
                     _xzgVideoOutputCache.set(String(node.id), info);
-                    // 同步 properties（工作流保存/加载场景兜底）
-                    node.properties = node.properties || {};
-                    node.properties._xzgVideoOutput = info;
+                    _xzgPersistOutput(String(node.id), info); // 跨刷新持久化
                     // player 已销毁时只存信息，等重建后由 onConfigure 恢复
                     if (player._destroyed) return;
-                    // 去重：同一视频不重复加载（onExecuted 与 api 事件可能同时触发）
-                    const key = `${info.filename}|${info.type || ""}|${info.subfolder || ""}`;
+                    // 去重：仅当输出 key（filename|type|subfolder）真变化时才重新加载，
+                    // 与 VHS VideoCombine 前端一致（对返回参数做内容 diff）。
+                    // - 同一次执行 onExecuted 与 api executed 重复触发 → key 相同 → 跳过
+                    // - 后端缓存命中返回同一文件（输入未变）→ key 相同 → 跳过，不再无谓读条
+                    // - 输入/内容真变了，后端重编码生成新文件名 → key 变化 → 重新加载刷新预览
+                    const key = `${info.filename}|${info.type}|${info.subfolder}`;
                     if (player._lastAppliedKey === key) return;
                     player._lastAppliedKey = key;
                     player._videoInfo = info;
@@ -644,12 +677,13 @@ app.registerExtension({
                         player.seek(player._currentTime || 0);
                         player._updateSurfaceSize?.();
                     } else {
-                        // player 无视频但有缓存记录：从模块级 cache / properties 恢复
-                        // （覆盖 onConfigure 恢复时机遗漏的场景）
-                        const saved = _xzgVideoOutputCache.get(String(node.id))
-                                     || node.properties?._xzgVideoOutput;
+                        // player 无视频但有缓存记录：模块 cache / localStorage 持久化 / 旧 properties 兜底，
+                        // 恢复加载（覆盖 onConfigure 恢复时机遗漏的场景）；播放器加载动画已隐藏，不转圈。
+                        const moduleCached = _xzgVideoOutputCache.get(String(node.id));
+                        const saved = moduleCached || _xzgLoadPersistedOutput(String(node.id)) || node.properties?._xzgVideoOutput;
                         if (saved && saved.filename) {
                             const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}`;
+                            player._videoInfo = saved;
                             if (player._lastAppliedKey !== key) {
                                 player._lastAppliedKey = key;
                                 player._videoInfo = saved;

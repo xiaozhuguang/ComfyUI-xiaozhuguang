@@ -380,6 +380,85 @@ class VideoDecoderInstance {
     }
 
     /**
+     * 带时间容错的取帧：目标时间点解不出帧时，向正方向逐级小偏移重试。
+     * 用于首帧（time=0）等边界场景 —— 部分视频首帧 PTS 不为 0（如从 0.033s 开始），
+     * 精确 time=0 处取不到帧，导致首帧黑屏、播放一次后才正常。
+     *
+     * 关键：必须复用 this.getCanvas()（含 mediabunny "二次确认"）而非直接调 sink.getCanvas()。
+     * mediabunny 首次 getCanvas 返回的可能是占位/空白帧，需再次调用同时间点才拿到真帧；
+     * 直接调 sink.getCanvas() 会把占位帧当成功结果绘制 → 依旧黑屏。
+     *
+     * 偏移量尽量小（毫秒级起步），确保命中的仍是目标帧附近的画面，避免帧错位。
+     * @param {number} time - 目标时间（秒）
+     * @returns {Promise<{canvas: HTMLCanvasElement, offset: number}|null>}
+     */
+    async _getCanvasWithTolerance(time) {
+        const fps = this._fps > 0 ? this._fps : 30;
+        const offsets = [0, 0.0001, 0.001, 0.005, 0.5 / fps, 1 / fps];
+        for (const off of offsets) {
+            const canvas = await this.getCanvas(time + off);
+            if (canvas) return { canvas, offset: off };
+        }
+        return null;
+    }
+
+    /**
+     * 渲染指定帧并等待真正绘制完成（区别于 renderFrame 的 fire-and-forget 调度）。
+     * 供加载后首帧等"必须画出来"的场景使用；内部对 time=0 等边界做时间容错。
+     * @param {number} frameNum - 帧号
+     * @param {HTMLCanvasElement} targetCanvas - 目标 canvas
+     * @returns {Promise<boolean>} 是否成功绘制
+     */
+    async renderFrameAwait(frameNum, targetCanvas) {
+        if (!this._track || this._frameCount <= 0) return false;
+        if (!targetCanvas) return false;
+        // 播放迭代器活跃期间禁止随机寻址解码（同一 sink 同一时刻只允许一个操作）
+        if (this._playbackIter) return false;
+        const f = Math.max(0, Math.min(Math.round(frameNum), this._frameCount - 1));
+        this._targetFrame = f;
+        this._cache.targetFrame = f;
+        this._onFrame = targetCanvas;
+
+        // 缓存命中：直接绘制
+        const cached = this._cache.get(f);
+        if (cached) {
+            this._drawToCanvas(cached, targetCanvas);
+            this._displayedFrame = f;
+            return true;
+        }
+
+        // 未命中：真正解码等待完成（带时间容错）
+        try {
+            const base = f / this._fps;
+            const got = await this._getCanvasWithTolerance(base);
+            if (got && got.canvas) {
+                if (got.offset === 0) this._cache.add(f, got.canvas);
+                this._drawToCanvas(got.canvas, targetCanvas);
+                this._displayedFrame = f;
+                return true;
+            }
+        } catch (_) { /* 落到迭代器兜底 */ }
+
+        // 最终兜底：getCanvas 随机寻址对个别视频首帧持续失败（首帧 PTS 非 0 / 关键帧结构特殊），
+        // 此时用播放迭代器顺序解码取首帧 —— 与播放走同一条 canvases() 路径，能稳定拿到首帧。
+        try {
+            const iter = this.createPlaybackIterator(f / this._fps);
+            if (!iter) return false;
+            try {
+                const r = await iter.next();
+                if (r.done || !r.value || !r.value.canvas) return false;
+                this._drawToCanvas(r.value.canvas, targetCanvas);
+                this._displayedFrame = f;
+                return true;
+            } finally {
+                this.stopPlaybackIterator();
+            }
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /**
      * 调度异步解码（RAF 节流，避免堆积）
      */
     _scheduleRender(targetCanvas) {
@@ -407,15 +486,15 @@ class VideoDecoderInstance {
         const frameToDecode = this._targetFrame;
         try {
             const time = frameToDecode / this._fps;
-            const canvas = await this.getCanvas(time);
+            // 带时间容错取帧：time=0 等边界处部分视频取不到帧（首帧 PTS 非 0）→ 黑屏，
+            // 逐级小偏移重试覆盖此类场景；正常视频首次精确命中（offset=0），零开销。
+            const got = await this._getCanvasWithTolerance(time);
+            const canvas = got ? got.canvas : null;
             if (canvas) {
-                this._cache.add(frameToDecode, canvas);
+                if (got.offset === 0) this._cache.add(frameToDecode, canvas);
                 if (frameToDecode === this._targetFrame) {
-                    const c = this._cache.get(frameToDecode);
-                    if (c) {
-                        this._drawToCanvas(c, targetCanvas);
-                        this._displayedFrame = frameToDecode;
-                    }
+                    this._drawToCanvas(canvas, targetCanvas);
+                    this._displayedFrame = frameToDecode;
                 }
             }
         } catch (e) {

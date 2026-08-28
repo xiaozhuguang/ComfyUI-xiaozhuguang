@@ -1094,7 +1094,9 @@ export class XiaozhuguangVideoPlayer {
     async _loadDecoderAsync(src) {
         // P1: 竞态 guard —— 每次 load 递增 token，异步完成后校验是否仍是最新
         const token = ++this._loadToken;
-        if (this._loadingSpinner) this._loadingSpinner.style.display = "flex";
+        // 对齐 VHS：使用原生 <video> 的节点加载时不弹转圈（即便每次都在 reload 也不显示"读条"）。
+        // 加载期间保留上一帧画面，避免黑屏 + 转圈动画造成的"读条"观感。
+        if (this._loadingSpinner) this._loadingSpinner.style.display = "none";
         try {
             await _ensureMediabunny();
             if (typeof VideoDecoder === 'undefined') {
@@ -1148,9 +1150,16 @@ export class XiaozhuguangVideoPlayer {
             this._videoSurface.style.display = "block";
             this._updateSurfaceSize();
             // 渲染首帧
+            // 修复首帧黑屏：renderFrame 是 fire-and-forget（只调度 RAF、不等待解码绘制完成），
+            // 且部分视频在 time=0 处取不到帧（首帧 PTS 非 0）→ 偶发"首帧黑屏、播放一次后正常"。
+            // 改用 renderFrameAwait 真正等待绘制完成（内部带 time=0 时间容错）；不存在时回退旧逻辑。
             const startFrame = this._skipFrames > 0 ? this._skipFrames : 0;
             const targetFrame = Math.max(0, Math.min(startFrame, Math.max(0, decoder.frameCount - 1)));
-            await decoder.renderFrame(targetFrame, this._canvas, true);
+            if (typeof decoder.renderFrameAwait === "function") {
+                await decoder.renderFrameAwait(targetFrame, this._canvas);
+            } else {
+                await decoder.renderFrame(targetFrame, this._canvas, true);
+            }
             if (token !== this._loadToken) return;
             this._currentTime = targetFrame / (this._frameRate || 24);
             this._updateDisplay();

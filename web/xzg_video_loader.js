@@ -1044,6 +1044,35 @@ async function uploadVideoFiles(files, onProgress) {
     return uploaded;
 }
 
+// 把值写回「跳过帧数/帧数上限/自定义宽高」控件：
+// 若控件已转为 input（有上游连线），同步写回上游 PrimitiveNode / 同名 widget 并触发其 callback，
+// 保证红蓝头、预览比例等联动正确；无连线时直接写回本节点 widget。
+function _xzgWriteLinkedValue(node, inputName, value) {
+    const inp = node.inputs?.find(x => x.name === inputName);
+    if (inp && inp.link != null) {
+        const graph = node.graph;
+        const link = graph?.links?.[inp.link];
+        if (link) {
+            const originNode = graph.getNodeById(link.origin_id);
+            if (originNode && originNode.widgets) {
+                const pw = (originNode.type === "PrimitiveNode")
+                    ? originNode.widgets[0]
+                    : originNode.widgets.find(x => x.name === inputName);
+                if (pw) {
+                    pw.value = value;
+                    if (typeof pw.callback === "function") pw.callback(value);
+                    return;
+                }
+            }
+        }
+    }
+    const w = node.widgets?.find(x => x.name === inputName);
+    if (w) {
+        w.value = value;
+        if (typeof w.callback === "function") w.callback(value);
+    }
+}
+
 async function refreshVideoCombo(videoWidget, selectName) {
     try {
         const resp = await api.fetchApi("/object_info/XiaozhuguangVideoLoader");
@@ -1244,13 +1273,18 @@ function bindVideoLoaderInteractions(node) {
 
     // 在 rAF 回调执行前，先声明引用，让 onLoadedMetadata 可安全调用
     let _syncLoadRange = null;
+    // 仅应用加载范围（红蓝头定位），不重置回原视频
+    let _applyLoadRange = null;
 
     const player = new XiaozhuguangVideoPlayer({
         container: playerContainer,
         onDblClick: triggerUpload,
         onLoadedMetadata: () => {
             updateVideoInfoLabels();
-            _syncLoadRange?.();
+            // 只同步红蓝头，不触发 _resetToSourceVideo：
+            // 预览视频（合成覆盖）加载完成后若走 _syncLoadRange 会立即把刚盖上的预览重置回原视频，
+            // 导致"合成视频只盖一瞬间又显示默认比例"。参数变化时才由 _syncLoadRange 重置。
+            _applyLoadRange?.();
         },
         onSourceFpsDetected: (fps) => {
             if (typeof fps === "number" && fps > 0) {
@@ -1265,12 +1299,11 @@ function bindVideoLoaderInteractions(node) {
             if (!url) return;
             XiaozhuguangVideoPlayer.downloadVideo(url, _extractFilename(url));
         },
-        // 拖拽红杠 → 更新跳过帧数
+        // 拖拽红杠 → 更新跳过帧数（支持上游连线输入：写回上游控件）
         onLoadRangeStartDrag: (value, isEnd) => {
             const skipWidget = node.widgets?.find(w => w.name === "跳过帧数");
             if (!skipWidget) return;
-            skipWidget.value = value;
-            if (skipWidget.callback) skipWidget.callback(value);
+            _xzgWriteLinkedValue(node, "跳过帧数", value);
             if (!isEnd) {
                 _xzgShowLaserLine(skipWidget, node);
             } else {
@@ -1278,12 +1311,11 @@ function bindVideoLoaderInteractions(node) {
             }
             node.setDirtyCanvas?.(true, true);
         },
-        // 拖拽蓝杠 → 更新帧数上限
+        // 拖拽蓝杠 → 更新帧数上限（支持上游连线输入：写回上游控件）
         onLoadRangeEndDrag: (value, isEnd) => {
             const limitWidget = node.widgets?.find(w => w.name === "帧数上限");
             if (!limitWidget) return;
-            limitWidget.value = value;
-            if (limitWidget.callback) limitWidget.callback(value);
+            _xzgWriteLinkedValue(node, "帧数上限", value);
             if (!isEnd) {
                 _xzgShowLaserLine(limitWidget, node);
             } else {
@@ -1384,6 +1416,10 @@ function bindVideoLoaderInteractions(node) {
             }
         },
     });
+    // 与视频保存节点一致：DOM 预览 widget 的文件名只是显示产物（来源于权威的"视频"下拉框），
+    // 不序列化，避免其作为独立字段持久化/进入缓存，防止与下拉框值发散。
+    previewWidget.serialize = false;
+    if (previewWidget.options) previewWidget.options.serialize = false;
     previewWidget.computeLayoutSize = function () {
         return { minHeight: VIDEO_PREVIEW_MIN_H, minWidth: 0 };
     };
@@ -1732,11 +1768,12 @@ function bindVideoLoaderInteractions(node) {
             player.onLoadedMetadata = function () {
                 try {
                     syncCustomSize();
-                    _syncLoadRange();
+                    // 这里已是"重置后重新加载原视频"，只需应用加载范围，避免再次重置
+                    _applyLoadRange?.();
                     // 恢复播放头（clamp 到加载范围内）
                     if (savedFrame > 0) {
-                        const skip = Math.max(0, parseInt(skipWidget?.value) || 0);
-                        const limit = Math.max(0, parseInt(limitWidget?.value) || 0);
+                        const skip = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
+                        const limit = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
                         const total = player.getSourceTotalFrames ? player.getSourceTotalFrames() : 0;
                         let end = total > 0 ? total : savedFrame + 1;
                         if (limit > 0) end = Math.min(end, skip + limit);
@@ -1795,11 +1832,16 @@ function bindVideoLoaderInteractions(node) {
             const origPwCb = pw.callback;
             pw.callback = function (value) {
                 origPwCb?.apply(this, arguments);
-                syncCustomSize();
+                // 宽高 → 同步预览比例；跳过/上限 → 同步加载范围（红蓝头）
+                if (inputName === "跳过帧数" || inputName === "帧数上限") {
+                    _syncLoadRange?.();
+                } else {
+                    syncCustomSize();
+                }
             };
         };
         const _hookAllUpstream = () => {
-            ["自定义宽度", "自定义高度"].forEach(name => {
+            ["自定义宽度", "自定义高度", "跳过帧数", "帧数上限"].forEach(name => {
                 const inp = node.inputs?.find(x => x.name === name);
                 if (!inp || !inp.link) return;
                 const graph = node.graph;
@@ -1813,8 +1855,9 @@ function bindVideoLoaderInteractions(node) {
             // 仅处理 input 侧变化（side === 1 为 input，LiteGraph 约定）
             if (side === 1) {
                 const inp = this.inputs?.[slot];
-                if (inp && (inp.name === "自定义宽度" || inp.name === "自定义高度")) {
-                    setTimeout(() => { _hookAllUpstream(); syncCustomSize(); }, 0);
+                if (inp && (inp.name === "自定义宽度" || inp.name === "自定义高度" ||
+                            inp.name === "跳过帧数" || inp.name === "帧数上限")) {
+                    setTimeout(() => { _hookAllUpstream(); syncCustomSize(); _syncLoadRange?.(); }, 0);
                 }
             }
         };
@@ -1823,7 +1866,7 @@ function bindVideoLoaderInteractions(node) {
         const origOnAfterGraphConfigured = node.onAfterGraphConfigured;
         node.onAfterGraphConfigured = function () {
             origOnAfterGraphConfigured?.apply(this, arguments);
-            setTimeout(() => { _hookAllUpstream(); syncCustomSize(); }, 0);
+            setTimeout(() => { _hookAllUpstream(); syncCustomSize(); _syncLoadRange?.(); }, 0);
         };
 
         syncCustomSize();
@@ -1836,7 +1879,8 @@ function bindVideoLoaderInteractions(node) {
             const totalFrames = typeof player.getSourceTotalFrames === "function"
                 ? player.getSourceTotalFrames()
                 : (player._sourceTotalFrames || 0);
-            const skipVal = parseInt(skipWidget?.value) || 0;
+            // 支持上游连线输入：优先读取连线值（widget 转 input 后自身 value 不更新）
+            const skipVal = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
             if (totalFrames > 0) {
                 // 跳过帧数最大值 = 原始帧数 - 1
                 if (skipWidget) skipWidget._xzgMax = totalFrames - 1;
@@ -1853,14 +1897,22 @@ function bindVideoLoaderInteractions(node) {
             }
         };
 
-        _syncLoadRange = () => {
-            _resetToSourceVideo();
+        // 仅应用加载范围（红蓝头定位），不重置回原视频。
+        // 用于视频/预览加载完成后的 onLoadedMetadata —— 预览（合成覆盖）加载完成后若走
+        // _syncLoadRange 会立即把刚盖上的预览重置回原视频（"只盖一瞬间"）。参数变化时才重置。
+        _applyLoadRange = () => {
             updateWidgetBounds();
-            const skip = Math.max(0, parseInt(skipWidget?.value) || 0);
-            const limit = Math.max(0, parseInt(limitWidget?.value) || 0);
+            // 支持上游连线输入：优先读取连线值（widget 转 input 后自身 value 不更新）
+            const skip = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
+            const limit = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
             if (typeof player.setLoadRange === "function") {
                 player.setLoadRange(skip, limit);
             }
+        };
+        _syncLoadRange = () => {
+            // 参数变化（用户交互 / 上游变化）：先重置回原视频再应用加载范围
+            _resetToSourceVideo();
+            _applyLoadRange();
         };
         if (limitWidget) {
             const origLimitCb = limitWidget.callback;
