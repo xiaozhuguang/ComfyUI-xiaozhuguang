@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════
 //  小珠光视角锁定 V4 · 顶部菜单栏集成
 //  记录/恢复画布缩放与坐标，5个槽位
 //  存储方案：graph.extra（随工作流持久化）+ localStorage 备份
@@ -884,8 +884,17 @@ function init() {
 
     // 快捷键 1~5
     document.addEventListener("keydown", (e) => {
-        const tag = (e.target?.tagName || "").toLowerCase();
-        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        // 放行所有可编辑上下文，避免劫持其它插件的文本框输入数字键。
+        // contenteditable（自定义编辑器）的 tag 是 div/span，需额外判断。
+        const et = e.target;
+        const tag = et?.tagName ? et.tagName.toLowerCase() : "";
+        const editable =
+            tag === "input" || tag === "textarea" || tag === "select" ||
+            tag === "contenteditable" ||
+            et?.isContentEditable ||
+            et?.getAttribute?.("contenteditable") === "true" ||
+            !!(et && et.closest && et.closest('[contenteditable="true"]'));
+        if (editable) return;
         if (e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
         if (e.key >= "1" && e.key <= "5") {
             const idx = parseInt(e.key) - 1;

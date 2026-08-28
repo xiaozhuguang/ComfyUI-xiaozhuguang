@@ -656,6 +656,18 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V13.0.2 (2026-08-28)
+
+**🔒 视角锁定：修复劫持文本框数字键**
+
+- （`web/xzg_viewport_lock.js`）快捷键 `1-5` 的 keydown 监听原先只放行 `input / textarea / select`，遇到使用 `contenteditable` 实现的自定义文本框（tag 为 `div`/`span`）时会 `preventDefault()` 劫持数字键，导致部分其它插件的文本框无法输入 `12345`。
+- 改为放行**所有可编辑上下文**：`input / textarea / select / contenteditable`、`isContentEditable`、以及焦点在 `contenteditable` 内部子元素（`closest('[contenteditable="true"]')`）。
+- 画布空白处 `1-5` 快捷恢复视角功能保持不变。
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `13.0.1` 升至 `13.0.2`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v13.0.2` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 13.0.2）
 ### V13.0.1 (2026-08-28)
 
 **🖼️ 图像对比节点 Bug 修复**（`nodes/xzg_image_compare.py`、`web/xzg_image_compare.js`）
