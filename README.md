@@ -1,4 +1,4 @@
-# ComfyUI 小珠光插件
+﻿# ComfyUI 小珠光插件
 
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
@@ -656,6 +656,18 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V13.0.1 (2026-08-28)
+
+**🖼️ 图像对比节点 Bug 修复**（`nodes/xzg_image_compare.py`、`web/xzg_image_compare.js`）
+
+- **RGBA 输入兼容**：后端 JPG 保存前丢弃 alpha 通道，避免 4 通道（RGBA）保存为 JPG 时透明区域合成到黑色背景，出现「半张黑图」
+- **大图异步加载刷新**：前端所有 `new Image()` 路径（首图 / 点击切换 A / 点击切换 B）均添加 `onload → setDirtyCanvas(true, true)`，防止 6400px 级大图/慢加载时 naturalWidth 仍为 0 跳过绘制，导致图片迟迟不显示/显示不全，必须晃动鼠标才刷新
+- **鼠标越界裁剪修复**：`sourceWidth/destWidth` 裁剪偏移用 `clamp(cropOffset, 0, targetW)` 限制，鼠标进入右侧留白区时不再 `cropOffset > targetW` → B 图横向拉伸变形
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `13.0.0` 升至 `13.0.1`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v13.0.1` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 13.0.1）
 ### V13.0.0 (2026-08-28)
 
 **🔤 小珠光文本框：中文朗读输出（`text_zh_num`，`text` 原文不变）优化**

@@ -68,6 +68,10 @@ class XiaozhuguangImageCompare(PreviewImage):
 
             # 转回 numpy/PIL 并保存为 JPG（比 WebP 快很多）
             img = img.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            # 防御：输入若为 RGBA(4 通道) 且原样保存为 JPG，透明区域会合成到黑色背景 → "半张黑图"。
+            # JPG 不支持 alpha，直接丢弃 alpha 通道。
+            if img.ndim == 3 and img.shape[-1] > 3:
+                img = img[..., :3]
             pil_img = Image.fromarray((img * 255).clip(0, 255).astype(np.uint8))
 
             import random

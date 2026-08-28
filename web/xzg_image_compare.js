@@ -64,6 +64,13 @@ class XzgImageCompareWidget {
             if (!sel.img) {
                 const img = new Image();
                 img.src = sel.url;
+                // 图片异步解码完成后主动重绘：
+                // 否则大图(6400px)/慢加载时首帧绘制 naturalWidth 还是 0 直接跳过绘制，
+                // 且加载完成后没有 setDirtyCanvas 触发重绘 → 图片迟迟不显示/显示不全，
+                // 要动一下鼠标或画布才刷新出来。
+                img.onload = () => {
+                    if (this.node) this.node.setDirtyCanvas?.(true, true);
+                };
                 sel.img = img;
             }
             sel.selected = true;
@@ -167,6 +174,9 @@ class XzgImageCompareWidget {
                             if (!clicked.img) {
                                 const newImg = new Image();
                                 newImg.src = clicked.url;
+                                newImg.onload = () => {
+                                    if (this.node) this.node.setDirtyCanvas?.(true, true);
+                                };
                                 clicked.img = newImg;
                             }
                         } else if (!clicked.name.startsWith("A") && this.selected[1] !== clicked) {
@@ -176,6 +186,9 @@ class XzgImageCompareWidget {
                             if (!clicked.img) {
                                 const newImg = new Image();
                                 newImg.src = clicked.url;
+                                newImg.onload = () => {
+                                    if (this.node) this.node.setDirtyCanvas?.(true, true);
+                                };
                                 clicked.img = newImg;
                             }
                         }
@@ -252,9 +265,12 @@ class XzgImageCompareWidget {
         const sourceX = 0;
         const sourceY = 0;
         const cropOffset = cropX != null ? cropX - destX : 0;
-        const sourceWidth = cropX != null ? Math.max(0, cropOffset) * widthMultiplier : imgW;
+        // 限制裁剪偏移在 [0, targetW]：鼠标进入图片右侧留白区时 cropOffset 会超过图片宽度，
+        // 若直接用会导致 sourceWidth > imgW（源图被 clamp 但目标宽度不变）→ B 图横向拉伸变形。
+        const clampOffset = cropX != null ? Math.min(Math.max(cropOffset, 0), targetW) : 0;
+        const sourceWidth = cropX != null ? clampOffset * widthMultiplier : imgW;
         const sourceHeight = imgH;
-        const destWidth = cropX != null ? Math.max(0, cropOffset) : targetW;
+        const destWidth = cropX != null ? clampOffset : targetW;
         const destHeight = targetH;
 
         ctx.save();
