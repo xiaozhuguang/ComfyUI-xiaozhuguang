@@ -2927,6 +2927,70 @@ window.XZGThemeManager = {
                     return;
                 }
 
+                // 大字文本展示节点：主题只作用在标题栏。
+                // 正文（文字显示区）完全由节点自行绘制，主题一律不绘制、不覆盖，
+                // 因此无论绘制先后，正文区域都不会被主题渐变或底色盖住。
+                if (node.type === "XiaozhuguangBigDisplay") {
+                    if (!node._xzgGradient) {
+                        origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
+                        return;
+                    }
+                    const _LG = typeof LiteGraph !== 'undefined' ? LiteGraph : null;
+                    const _th = _LG?.NODE_TITLE_HEIGHT || 30;
+                    const _w = size[0], _h = size[1];
+                    const _r = node.borderRadius || _LG?.NODE_CORNER_RADIUS || 8;
+                    const _cfg = node._xzgGradient;
+                    const _titlePts = self._titleGradPts(_w, _th);
+                    const _sym = self.degToSymbol(_cfg.titleDirection || _cfg.direction);
+                    const [_x1, _y1, _x2, _y2] = _titlePts[_sym] || _titlePts['↓'];
+                    const _useT = _cfg.useTitleGradient && _cfg.titleStops && _cfg.titleStops.length > 0;
+                    const _gradSrc = _useT ? _cfg.titleStops : (_cfg.stops || []);
+                    const _grad = ctx.createLinearGradient(_x1, _y1, _x2, _y2);
+                    (_gradSrc.length ? _gradSrc : [{ p: 0, color: '#333' }, { p: 1, color: '#333' }])
+                        .forEach(s => _grad.addColorStop(s.p, s.color));
+
+                    // 仅把主题渐变画到标题栏并绘制标题文字；正文用节点默认底色兜底（不透明），再交给节点 onDrawBackground 绘制文字
+                    ctx.save();
+                    try {
+                        // 先画整个节点外框的圆角（不含渐变的底色）作为正文背景，避免正文镂空透明
+                        ctx.beginPath();
+                        if (ctx.roundRect) ctx.roundRect(0, -_th, _w, _h + _th, _r);
+                        else ctx.rect(0, -_th, _w, _h + _th);
+                        ctx.fillStyle = (node.bgcolor && node.bgcolor !== 'transparent') ? node.bgcolor : '#1a1a1a';
+                        ctx.fill();
+
+                        // 仅在标题栏区域叠上主题渐变
+                        ctx.beginPath();
+                        if (ctx.roundRect) ctx.roundRect(0, -_th, _w, _th, [_r, _r, 0, 0]);
+                        else ctx.rect(0, -_th, _w, _th);
+                        ctx.fillStyle = _grad;
+                        ctx.fill();
+
+                        const _title = node.getTitle ? node.getTitle() : (node.title || '');
+                        if (_title) {
+                            const _fs = _cfg.fontSize || _LG?.NODE_TEXT_SIZE || 14;
+                            const _color = _cfg.titleText || '#ffffff';
+                            const _align = _cfg.textAlign || 'left';
+                            ctx.font = `${_fs}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+                            ctx.fillStyle = _color;
+                            ctx.textBaseline = 'middle';
+                            let _textX = 10;
+                            if (_align === 'center') { ctx.textAlign = 'center'; _textX = _w / 2; }
+                            else if (_align === 'right') { ctx.textAlign = 'right'; _textX = _w - 10; }
+                            else ctx.textAlign = 'left';
+                            ctx.fillText(_title, _textX, -_th / 2);
+                        }
+                    } finally { ctx.restore(); }
+
+                    // ⚠️ 关键：makeDrawShapeWrapper 中我们直接 return 跳过了 origFn，但
+                    // LiteGraph 原本会在节点绘制流程中调用 node.onDrawBackground（大字文字在这里画）。
+                    // 必须显式补调，否则开启主题后正文文字永远不会被绘制（表现为"正文透明/什么都没有"）。
+                    try { if (typeof node.onDrawBackground === 'function') node.onDrawBackground(ctx); }
+                    catch (e) { console.warn('[小珠光主题] BigDisplay onDrawBackground 调用异常', e); }
+
+                    return;
+                }
+
                 if (!node._xzgGradient) {
                     origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                     return;
@@ -3137,6 +3201,13 @@ window.XZGThemeManager = {
         nodes.forEach(node => {
             if (node.type === "XiaozhuguangTitle") return;
             node._xzgGradient = { ...cfg };
+            if (node.type === "XiaozhuguangBigDisplay") {
+                // 大字文本展示节点：仅标题栏允许主题，正文区域保持节点默认的背景/透明度，
+                // 不设置 node.color/bgcolor。标题栏主题已由 makeDrawShapeWrapper 在画布上绘制，
+                // 这里绝不能再调用 applyGradientToDOMNode —— 它会把不透明主题渐变铺到节点 DOM
+                // 内层上，盖住画布绘制的正文文字（表现为文字区域变透明/无内容）。
+                return;
+            }
             node.color = colors.color1;
             node.bgcolor = colors.color1;
             this.applyGradientToDOMNode(node);
@@ -3151,7 +3222,14 @@ window.XZGThemeManager = {
 
     applyGradientToDOMNode(node) {
         if (!node || !node._xzgGradient) return;
-        
+        // 大字展示节点：正文完全由画布绘制，DOM 层任何主题渐变/透明都会盖住文字。
+        // 一律跳过 DOM 操作，标题栏主题交给 makeDrawShapeWrapper 画布绘制。
+        // 另外必须清理历史遗留的 DOM 样式（之前调用可能把 inner/body 背景设为渐变或透明）。
+        if (node.type === "XiaozhuguangBigDisplay") {
+            this.removeGradientFromDOMNode(node);
+            return;
+        }
+
         const graphCanvas = document.getElementById("graph-canvas");
         if (!graphCanvas) return;
 
@@ -3566,6 +3644,12 @@ window.XZGThemeManager = {
         const nodes = app.graph._nodes || app.graph.nodes;
         if (!nodes) return;
         nodes.forEach(node => {
+            // 大字展示节点：每次重绘都主动清除可能残留的 DOM 主题样式，
+            // 避免 observer、onAdded 等把不透明 DOM 渐变再盖到正文上。
+            if (node.type === "XiaozhuguangBigDisplay") {
+                this.removeGradientFromDOMNode(node);
+                return;
+            }
             if (node._xzgGradient) {
                 this.applyGradientToDOMNode(node);
             }

@@ -10,7 +10,8 @@ const _NODE_TYPE = "XiaozhuguangBigDisplay";
 
 // 每项文本的大字配置（右键设置可调）
 const DEFAULT_CFG = {
-    fontSize: 40,        // 基准字号（图像空间）
+    fontSize: 40,        // 基准字号（图像空间），自适应开启时作为最大字号上限
+    autoFit: false,      // 文字大小自适应：开启后字号自动放大/缩小以尽量填满内容区
     fontColor: "#ffffff",
     bgEnabled: false,
     bgColor: "#2a2a2a",
@@ -145,6 +146,7 @@ app.registerExtension({
                     { value: "bottom", label: xzgT("下", "B") },
                 ] },
                 { key: "fontSize", label: xzgT("字号", "Font Size"), type: "number", min: 4, max: 200, step: 1 },
+                { key: "autoFit", label: xzgT("自适应字号", "Auto Size"), type: "checkbox" },
                 { key: "fontColor", label: xzgT("文字颜色", "Text Color"), type: "color" },
                 { key: "bgEnabled", label: xzgT("显示背景", "Background"), type: "checkbox" },
                 { key: "bgColor", label: xzgT("背景颜色", "BG Color"), type: "color" },
@@ -372,7 +374,13 @@ app.registerExtension({
             if (lines.length === 0) lines.push(xzgT("等待输入…", "Awaiting input…"));
 
             ctx.save();
-            // 背景
+            // 节点默认主体底色（非主题）：主题模式下级联主题绘制会跳过本节点主体填充，
+            // 这里用节点自身 bgcolor 兜底铺满正文区，避免主题下正文区域变成全透明、文字悬空。
+            const _bodyBg = (this.bgcolor && this.bgcolor !== "transparent") ? this.bgcolor : "#1a1a1a";
+            ctx.fillStyle = _bodyBg;
+            ctx.fillRect(0, 0, w, h);
+
+            // 可选的背景框
             if (cfg.bgEnabled && cfg.bgColor && cfg.bgColor !== "transparent") {
                 ctx.fillStyle = cfg.bgColor;
                 const br = 6; // 圆角内置固定 6，无滑条
@@ -450,17 +458,53 @@ app.registerExtension({
                 return out;
             };
 
-            // 字号直接采用填写的数值（不缩放自适应），仅按内容区宽度自动换行
-            const fs = Math.max(4, Math.round(fontSize) || DEFAULT_CFG.fontSize);
+            // ── 字号计算：固定字号 或 自适应 ─────────────────────────
+            // 先按给定字号把每行文本按内容区宽度自动换行，再衡量整块文本高度。
+            let fs;
             let wrapped = [];
+            let wm = [];
+            let lineHeight, firstAscent, lastDescent;
 
-            // 按最终字号把每行文本自动换行一次，得到与字号匹配的行集与指标
-            ctx.font = fontStyleStr(fs);
-            for (const ln of lines) wrapped.push(...wrapLine(ln, contentW));
-            const wm = wrapped.map((lw) => ctx.measureText(lw));
-            const lineHeight = fs * (cfg.lineHeight || 1.1);
-            const firstAscent = wm[0] ? (wm[0].actualBoundingBoxAscent || fs) : fs;
-            const lastDescent = wm[wm.length - 1] ? (wm[wm.length - 1].actualBoundingBoxDescent || fs * 0.15) : fs * 0.15;
+            const measureAt = (f) => {
+                ctx.font = fontStyleStr(f);
+                const wl = [];
+                for (const ln of lines) wl.push(...wrapLine(ln, contentW));
+                const mm = wl.map((lw) => ctx.measureText(lw));
+                const lh = f * (cfg.lineHeight || 1.1);
+                const fa = mm[0] ? (mm[0].actualBoundingBoxAscent || f) : f;
+                const ld = mm[mm.length - 1] ? (mm[mm.length - 1].actualBoundingBoxDescent || f * 0.15) : f * 0.15;
+                const blkH = wl.length > 1 ? fa + (wl.length - 1) * lh + ld : fa + ld;
+                return { wl, mm, lh, fa, ld, blkH };
+            };
+
+            if (cfg.autoFit) {
+                // 自适应：字号在 [4, 用户填写的字号] 区间内二分查找，
+                // 找能放下整块文本且不超高内容区的最大字号。
+                // 字号单调：越大→每行越宽越高→换行越多→整块越高，故可用二分。
+                // 节点缩小→字变小；节点拉大→字变大并被用户设定的字号上限封顶。
+                const maxF = Math.max(4, Math.round(fontSize) || DEFAULT_CFG.fontSize);
+                const minF = 4;
+                let bestF = minF;
+                let bestM = measureAt(minF);
+                let lo = minF, hi = maxF;
+                while (lo <= hi) {
+                    const mid = Math.floor((lo + hi) / 2);
+                    const m = measureAt(mid);
+                    if (m.blkH <= contentH) { bestF = mid; bestM = m; lo = mid + 1; }
+                    else hi = mid - 1;
+                }
+                fs = bestF;
+                wrapped = bestM.wl; wm = bestM.mm; lineHeight = bestM.lh;
+                firstAscent = bestM.fa; lastDescent = bestM.ld;
+            } else {
+                // 固定字号：直接采用填写的数值，仅按内容区宽度自动换行
+                const f = Math.max(4, Math.round(fontSize) || DEFAULT_CFG.fontSize);
+                const m = measureAt(f);
+                fs = f;
+                wrapped = m.wl; wm = m.mm; lineHeight = m.lh;
+                firstAscent = m.fa; lastDescent = m.ld;
+            }
+
             const totalBlockH = wrapped.length > 1
                 ? firstAscent + (wrapped.length - 1) * lineHeight + lastDescent
                 : firstAscent + lastDescent;

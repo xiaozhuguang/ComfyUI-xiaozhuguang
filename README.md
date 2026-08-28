@@ -656,6 +656,23 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V13.0.3 (2026-08-29)
+
+**🔤 小珠光大字文本展示节点：新增「自适应字号」与正文底色兜底**
+
+- （`web/xzg_big_display.js`）右键设置新增「自适应字号」（autoFit，复选框）：开启后字号在 `[4, 用户填写的字号]` 区间内二分查找能放下整块文本且不超高内容区的最大字号，尽量填满内容区；节点缩小 → 字变小，节点拉大 → 字变大并被用户设定的字号封顶。
+- 新增正文底色兜底：节点自身 `bgcolor`（透明时回退 `#1a1a1a`）铺满正文区，避免主题模式下正文区域全透明、文字悬空。
+
+**🎨 主题美化：大字展示节点主题仅作用标题栏，正文不再被覆盖**
+
+- （`web/xzg_theme.js`）`XiaozhuguangBigDisplay` 节点主题渐变只绘制在标题栏，正文（文字显示区）完全由节点自行绘制，主题一律不绘制、不覆盖正文区域。
+- `makeDrawShapeWrapper` 对大字节点显式补调 `node.onDrawBackground`，避免开启主题后正文文字永远不会被绘制（正文透明/无内容）。
+- `applyGradientToDOMNode` / 重绘逻辑对大字节点一律跳过 DOM 主题样式，并清理历史遗留的 DOM 渐变，避免不透明 DOM 渐变盖住画布绘制的正文文字。
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `13.0.2` 升至 `13.0.3`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v13.0.3` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 13.0.3）
 ### V13.0.2 (2026-08-28)
 
 **🔒 视角锁定：修复劫持文本框数字键**
