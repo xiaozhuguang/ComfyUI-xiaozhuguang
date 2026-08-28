@@ -460,18 +460,31 @@ class XiaozhuguangVideoCombine:
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
-        base_dir = (_safe_dir('get_output_directory', 'output') if 模式 == "保存"
-                    else _safe_dir('get_temp_directory',   'temp'))
-
-        # 输出根目录固定为 base_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
-        # get_save_image_path 会解析出 subfolder 并把文件写到 output_dir/subfolder 下
+        # 保存/预览都写入持久的 output 目录：
+        #   保存 → output 根目录下
+        #   预览 → output/preview/ 子目录（只保留最新一份，避免累积）
+        # 原因：预览若写入 temp，ComfyUI 每次启动会清空 temp，重启后旧预览地址失效
+        # 显示"暂无视频"，切换到保存重跑才恢复；写入 output 则重启后仍可正常预览。
+        base_dir = _safe_dir('get_output_directory', 'output')
         output_dir = base_dir
+        prefix_for_path = 文件名前缀 if 模式 == "保存" else (
+            os.path.join("preview", 文件名前缀.strip("/\\")))
 
         # 获取可用的文件计数器（full_output_folder 已包含前缀内的子目录）。
         # 返回顺序：full_output_folder, filename, counter, subfolder, filename_prefix
         full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
-            文件名前缀, output_dir
+            prefix_for_path, output_dir
         )
+
+        # 预览模式只保留最新一份：先清掉同前缀的旧预览文件
+        extension = VIDEO_FORMATS[格式]["extension"]
+        if 模式 == "预览":
+            try:
+                for existing_file in os.listdir(full_output_folder):
+                    if existing_file.startswith(filename) and existing_file.endswith("." + extension):
+                        os.remove(os.path.join(full_output_folder, existing_file))
+            except Exception:
+                pass
 
         # 计算下一个可用的计数器
         max_counter = 0
@@ -487,7 +500,6 @@ class XiaozhuguangVideoCombine:
             pass
         counter = max_counter + 1
 
-        extension = VIDEO_FORMATS[格式]["extension"]
         file = f"{filename}_{counter:05}.{extension}"
         file_path = os.path.join(full_output_folder, file)
 
@@ -506,7 +518,7 @@ class XiaozhuguangVideoCombine:
                 "videos": [{
                     "filename": file,
                     "subfolder": subfolder,
-                    "type": "output" if 模式 == "保存" else "temp",
+                    "type": "output",
                     "format": 格式,
                     "frame_rate": 帧率,
                 }],

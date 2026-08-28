@@ -448,6 +448,30 @@ def _digits_to_zh_by_char(text: str) -> str:
     return "".join(out)
 
 
+def _strip_non_numeric_spaces(text: str) -> str:
+    """删除文字之间的空格，仅保留数字（ASCII 0-9）之间的空格。
+
+    例：'你好 世界'    → '你好世界'
+        '12 个'        → '12个'
+        '3 × 4'        → '3×4'
+        '11 22'        → '11 22'（两位数字之间保留，避免拆散数字）
+    """
+    if not text:
+        return text
+    ascii_digits = "0123456789"
+    out = []
+    for i, ch in enumerate(text):
+        if ch == " ":
+            prev_is_digit = i > 0 and text[i - 1] in ascii_digits
+            next_is_digit = i + 1 < len(text) and text[i + 1] in ascii_digits
+            if prev_is_digit and next_is_digit:
+                out.append(ch)  # 数字之间的空格保留
+            # 其余空格丢弃
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _digits_to_zh(text: str) -> str:
     """把字符串中 0-9 转为中文数字：
       - 乘积/分辨率（1280x720, 3×4, 1x2x3）→ A乘以B 完整读数
@@ -469,6 +493,12 @@ def _digits_to_zh(text: str) -> str:
     text = text.replace("《", "。").replace("》", "。")
     text = text.replace("……", "。")
     text = text.replace("+", "加")
+    # 用户指定：淼 → 邈（仅转中文输出，text 原文不受影响）
+    text = text.replace("淼", "邈")
+    # 用户指定：去掉所有间隔号 ・（达・芬奇→达芬奇、张・芬奇→张芬奇 等，仅转中文输出，text 原文不受影响）
+    text = text.replace("・", "")
+    # 用户指定：保留数字之间的空格，其余空格删除（仅转中文输出，text 原文不受影响）
+    text = _strip_non_numeric_spaces(text)
 
     MARK_HEAD = "\uE000"  # Unicode Private Use 起始
     MARK_TAIL = "\uE001"
@@ -646,6 +676,9 @@ def _digits_to_zh(text: str) -> str:
         return _hold(base + zh_unit)
 
     stage3 = _QUANTIFIER_RE.sub(_quant_sub, stage2b)
+
+    # ── 3.5) 用户指定：删除非乘法位置的 *（乘法链的 * 已在 stage2 转成"乘以"并被占位保护） ──
+    stage3 = stage3.replace("*", "")
 
     # ── 4) 剩余数字（纯编号/代码/串号）按位读 ──
     stage4 = _digits_to_zh_by_char(stage3)

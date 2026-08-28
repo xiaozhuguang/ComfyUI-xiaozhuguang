@@ -925,7 +925,9 @@ class XiaozhuguangWaveformViewer {
         };
         const curTime = fmt(this.playbackTime || this.startTime);
         const rangeStr = `${fmt(this.startTime)}-${fmt(this.endTime)}`;
-        const timeText = `${curTime} / ${rangeStr}`;
+        // 时长：若被红/蓝裁剪（start/end 标记），显示裁剪后的时长；否则即总时长
+        const durLabel = fmt(Math.max(0, this.endTime - this.startTime));
+        const timeText = `${curTime} / ${rangeStr} 时长${durLabel}`;
         const volTextW = ctx.measureText(volText).width;
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
         ctx.font = '6px sans-serif';

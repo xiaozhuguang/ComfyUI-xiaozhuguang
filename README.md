@@ -656,6 +656,28 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.23.0 (2026-08-28)
+
+**🔤 小珠光文本框：中文朗读输出（`text_zh_num`，`text` 原文不变）优化**
+
+- **`淼` → `邈`**（`nodes/xzg_text_box.py`）：避免 LongCat AudioDiT 等 TTS 读错
+- **通用去除间隔号 `・`**：`达・芬奇`→`达芬奇`、`张・芬奇`→`张芬奇` 等
+- **空格策略**：保留数字之间的空格（避免拆散数字），删除文字之间/数字与文字之间的空格（`你好 世界`→`你好世界`）
+- **`*` 只在非乘法位置删除**：`1920*1080` 仍读「一九二零乘以一零八零」，单独出现的 `*` 删除
+
+**🎵 音频加载器：时间码增加「时长」显示**
+
+- （`web/xzg_audio_loader.js`）时间码右侧新增 `时长XX:XX`，若被红/蓝裁剪则显示裁剪后的时长，否则为总时长
+
+**🎬 合并视频：预览模式修复重启后显示「暂无视频」**
+
+- （`nodes/xzg_video_combine.py`）预览不再写入会被 ComfyUI 启动时清空的 temp 目录，改为写入持久的 `output/preview/` 子目录（只保留最新一份，避免累积），返回 `type="output"`，重启后预览仍可正常显示，与官方 SaveVideo 持久输出行为对齐
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.22.0` 升至 `12.23.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.23.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.23.0）
+
 ### V12.22.0 (2026-08-27)
 
 **🐛 修复：获取控件值节点与「输出到队列」兼容性**
