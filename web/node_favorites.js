@@ -601,12 +601,10 @@ class Xiaozhuguang {
         const outputNodes = this.getOutputNodes(selectedNodes);
         if (!outputNodes.length) return;
 
-        const rgthree = window.rgthree;
-        if (rgthree && typeof rgthree.queueOutputNodes === "function") {
-            rgthree.queueOutputNodes(outputNodes);
-            return;
-        }
-
+        // 不再委托 rgthree.queueOutputNodes：其 recursiveAddNodes 在「输出节点不在默认执行链
+        // prompt.output 里」时无空节点保护，会抛 Cannot read properties of undefined (reading
+        // 'inputs') 并触发 ComfyUI 全局「执行失败」弹窗（晨羽智云等装有 rgthree 的平台必现）。
+        // 统一走下方自有 hook（有 currentNode 空保护）。
         const nodeIds = outputNodes.map((n) => n.id);
         const origApiQueuePrompt = api.queuePrompt;
         let hookInstalled = false;

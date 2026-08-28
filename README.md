@@ -1,4 +1,4 @@
-﻿# ComfyUI 小珠光插件
+# ComfyUI 小珠光插件
 
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
@@ -656,6 +656,23 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V12.22.0 (2026-08-27)
+
+**🐛 修复：获取控件值节点与「输出到队列」兼容性**
+
+- **`获取控件值` 节点默认值兜底**（`nodes/xzg_get_widget.py`）：
+  - 首次执行时，目标节点某个输入（如 WanAnimatePlus LoraSelectMulti 的 `model`）因上游不在「获取控件值」节点可达链，被 ComfyUI 的 prompt 剪枝从 dynprompt inputs 中移除，导致误报「找不到控件」。
+  - 新增 `_lookup_default_input()`：从目标节点 `INPUT_TYPES` 定义读取该控件的默认值兜底输出，重跑后目标节点补全即读到真实值，避免首次执行误报。
+- **`获取控件值` 节点宽度溢出修复**（`web/xzg_get_widget.js`）：
+  - 把 DOM select 宿主的 `widget.width` 定义为只读访问器（返回节点实际宽度），忽略属性面板写入的 368px，防止联动下拉/列表超出节点边界（与视频/音频加载器修复一致）。
+- **「输出到队列」不再委托 `rgthree.queueOutputNodes`**（`web/node_favorites.js`、`web/xzg_group.js`）：
+  - 该函数内部 `recursiveAddNodes` 在「输出节点不在默认执行链 prompt.output 里」时无空节点保护，会抛 `Cannot read properties of undefined (reading 'inputs')` 并触发 ComfyUI 全局「执行失败」弹窗（晨羽智云等装有 rgthree 的平台必现）。
+  - 统一改走自有 hook（自带 `currentNode` 空保护），保证在 rgthree 环境稳定执行。
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `12.21.0` 升至 `12.22.0`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v12.22.0` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 12.22.0）
 ### V12.21.0 (2026-08-27)
 
 **🎨 UI 优化：节点收藏器与工作流管理器初始布局尺寸调整**

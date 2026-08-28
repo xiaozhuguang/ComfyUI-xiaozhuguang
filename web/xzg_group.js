@@ -503,12 +503,8 @@ const XZGGroup = {
         const outputNodes = this.getOutputNodes(nodes);
         if (!outputNodes.length) return false;
 
-        const rgthree = window.rgthree;
-        if (rgthree && typeof rgthree.queueOutputNodes === "function") {
-            rgthree.queueOutputNodes(outputNodes);
-            return true;
-        }
-
+        // 不再委托 rgthree.queueOutputNodes：其 recursiveAddNodes 无空节点保护，输出节点不在默认
+        // 执行链 prompt.output 时会抛 inputs undefined 并触发全局「执行失败」弹窗。走自有 hook。
         const nodeIds = outputNodes.map((n) => n.id);
         const origApiQueuePrompt = api.queuePrompt;
         let hookInstalled = false;

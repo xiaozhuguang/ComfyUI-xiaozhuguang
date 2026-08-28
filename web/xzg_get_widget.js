@@ -226,6 +226,14 @@ app.registerExtension({
                 },
             });
 
+            // 同「视频/音频加载器」修复：属性面板会把 widget.width 写成面板侧行宽度（如 368px），
+            // 导致 DOM select 宿主宽度超出节点。将 width 定义为只读访问器，始终跟随节点实际宽度。
+            Object.defineProperty(domWidget, 'width', {
+                configurable: true,
+                get() { return node.size?.[0] || 0; },
+                set(_) { /* 忽略外部写入，防止列表/下拉超出节点边界 */ },
+            });
+
             const added = node.widgets.pop();
             node.widgets.splice(widgetIndex + 1, 0, added);
 
