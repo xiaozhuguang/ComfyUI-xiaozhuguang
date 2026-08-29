@@ -546,23 +546,12 @@ const XZGGroup = {
         document.addEventListener('keydown', function h(e) {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
 
-            // F 键：执行鼠标所在编组的输出节点
-            if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === 'f') {
-                const gid = self.getGroupAtMouse();
-                if (gid) {
-                    e.preventDefault();
-                    e.stopPropagation(); e.stopImmediatePropagation();
-                    self.queueGroupOutputNodes(gid);
-                    return;
-                }
-            }
-
-            // Ctrl+? 新建编组
+            // Ctrl+? 新建编组（弹出官方/小珠光选项，避免吞掉官方编组）
             const k = self.shortcutKey || 'g';
             if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === k.toLowerCase()) {
                 e.preventDefault();
                 e.stopPropagation(); e.stopImmediatePropagation();
-                self.createGroupFromSelection();
+                self.showGroupTypeMenu(e);
                 return;
             }
 
@@ -1282,6 +1271,84 @@ const XZGGroup = {
     },
 
     /* ── 创建编组 ── */
+
+    /** 创建 ComfyUI 原生编组（LGraphGroup）包裹选中节点 */
+    createNativeGroupFromSelection() {
+        const c = app?.canvas;
+        if (!c?.selected_nodes) return;
+        const sel = Object.values(c.selected_nodes).filter(n => n?.pos && typeof n.pos[0] === 'number');
+        if (sel.length < 1) return;
+
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const n of sel) {
+            const x = n.pos[0], y = n.pos[1];
+            const w = n.size?.[0] || 100;
+            const h = n.size?.[1] || 80;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x + w > maxX) maxX = x + w;
+            if (y + h > maxY) maxY = y + h;
+        }
+        const pad = 24;
+        const group = new LiteGraph.LGraphGroup();
+        group.title = "Group";
+        group.pos = [minX - pad, minY - pad - 24];
+        group.size = [maxX - minX + pad * 2, maxY - minY + pad * 2 + 24];
+        app.graph.add(group);
+        app.graph.setDirtyCanvas(true, true);
+    },
+
+    /** Ctrl+G 弹出编组类型选择菜单（官方编组 / 小珠光编组） */
+    showGroupTypeMenu(e) {
+        const old = document.getElementById('xzg-group-type-menu');
+        if (old) old.remove();
+
+        const menu = document.createElement('div');
+        menu.id = 'xzg-group-type-menu';
+        // 屏幕中央显示（键盘事件无鼠标坐标）
+        const mx = window.innerWidth / 2 - 90;
+        const my = window.innerHeight / 2 - 60;
+        menu.style.cssText = `position:fixed;left:${mx}px;top:${my}px;z-index:99999;background:#2a2a2a;border:1px solid #555;border-radius:8px;padding:6px 0;min-width:180px;box-shadow:0 6px 20px rgba(0,0,0,0.6);font-family:system-ui,sans-serif;`;
+
+        const items = [
+            { label: '📦 官方编组', action: 'native' },
+            { label: '✨ 小珠光编组', action: 'xzg' },
+        ];
+
+        const self = this;
+        for (const item of items) {
+            const div = document.createElement('div');
+            div.style.cssText = 'padding:10px 16px;cursor:pointer;color:#e0e0e0;font-size:14px;';
+            div.textContent = item.label;
+            div.onmouseenter = () => { div.style.background = '#3a3a3a'; };
+            div.onmouseleave = () => { div.style.background = 'transparent'; };
+            div.onclick = () => {
+                menu.remove();
+                if (item.action === 'native') self.createNativeGroupFromSelection();
+                else self.createGroupFromSelection();
+            };
+            menu.appendChild(div);
+        }
+
+        document.body.appendChild(menu);
+
+        // 点击菜单外任意区域（含画布）或按 Esc 关闭
+        const close = (ev) => {
+            if (menu.contains(ev.target)) return;
+            cleanup();
+        };
+        const onKey = (ev) => {
+            if (ev.key === 'Escape') cleanup();
+        };
+        const cleanup = () => {
+            menu.remove();
+            window.removeEventListener('pointerdown', close, true);
+            window.removeEventListener('keydown', onKey, true);
+        };
+        window.addEventListener('pointerdown', close, true);
+        window.addEventListener('keydown', onKey, true);
+    },
+
     createGroupFromSelection() {
         const c = app?.canvas;
         if (!c?.selected_nodes) { alert('[小珠光编组] 请框选节点'); return; }

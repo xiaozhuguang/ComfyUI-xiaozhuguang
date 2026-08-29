@@ -434,8 +434,8 @@ window.XZGMenuHide = {
 
                 function XZGContextMenu(options, opts) {
                     let filteredOptions = options;
+                    let menuType = null;
                     try {
-                        let menuType = null;
 
                         if (opts && opts.event) {
                             const e = opts.event;
@@ -466,10 +466,9 @@ window.XZGMenuHide = {
                             }
                         }
 
-                        if (!menuType) {
-                            if (opts && opts.parentMenu) {
-                                menuType = self._lastMenuType || 'canvas';
-                            }
+                        // 子菜单：继承父菜单类型（仅当父菜单是画布/节点菜单时才过滤）
+                        if (!menuType && opts?.parentMenu?._xzgMenuType) {
+                            menuType = opts.parentMenu._xzgMenuType;
                         }
 
                         if (!menuType) {
@@ -486,10 +485,8 @@ window.XZGMenuHide = {
                             }
                         }
 
-                        if (!menuType) {
-                            menuType = self._lastMenuType || 'canvas';
-                        }
-
+                        // 关键：无法确定为画布/节点菜单时（如工作流标签右键、侧边栏菜单、对话框菜单等），不过滤
+                        // 此前 fallback 到 _lastMenuType||'canvas' 会误把标签菜单当画布菜单过滤，导致右键失效
                         if (menuType) {
                             self._lastMenuType = menuType;
                             self._collectItems(options, menuType);
@@ -500,6 +497,7 @@ window.XZGMenuHide = {
                     }
 
                     const instance = new origContextMenu(filteredOptions, opts);
+                    if (menuType) instance._xzgMenuType = menuType;
                     return instance;
                 }
 
@@ -515,6 +513,22 @@ window.XZGMenuHide = {
                 LiteGraph.ContextMenu = XZGContextMenu;
             }
 
+            // 记录上次右键是否在画布上：用于区分画布/节点菜单 vs 工作流标签/侧边栏等非画布菜单
+            if (!self._ctxMenuTargetListenerInstalled) {
+                self._ctxMenuTargetListenerInstalled = true;
+                window.addEventListener('contextmenu', (e) => {
+                    const target = e.target;
+                    const canvasEl = app?.canvas?.canvas;
+                    const graphCanvasEl = document.getElementById('graphCanvas');
+                    self._lastCtxMenuOnCanvas = !!(
+                        target === canvasEl ||
+                        (graphCanvasEl && (target === graphCanvasEl || target.closest('#graphCanvas'))) ||
+                        target.classList?.contains('graphcanvas') ||
+                        target.closest?.('.graphcanvas')
+                    );
+                }, true);
+            }
+
             self._startDOMObserver();
         };
 
@@ -523,6 +537,7 @@ window.XZGMenuHide = {
 
     _domObserver: null,
     _lastMenuType: 'canvas',
+    _lastCtxMenuOnCanvas: false,
 
     _startDOMObserver() {
         if (this._domObserver) return;
@@ -533,6 +548,9 @@ window.XZGMenuHide = {
             const processMenu = (menuEl) => {
                 if (!menuEl || seenMenus.has(menuEl)) return;
                 seenMenus.add(menuEl);
+                // 仅处理画布/节点右键菜单；跳过工作流标签、侧边栏、对话框等非画布菜单，
+                // 避免误隐藏标签右键条目导致"右键失效"
+                if (!self._lastCtxMenuOnCanvas) return;
                 self._collectFromDOM(menuEl);
                 self._hideFromDOM(menuEl);
                 requestAnimationFrame(() => {

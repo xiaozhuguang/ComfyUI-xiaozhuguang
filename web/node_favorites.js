@@ -575,78 +575,11 @@ class Xiaozhuguang {
         localStorage.setItem(SETTING_TOGGLE_SHORTCUT, JSON.stringify(shortcut));
     }
 
-    getOutputNodes(nodes) {
-        if (!nodes || !nodes.length) return [];
-        return nodes.filter((n) => {
-            return n.mode != LiteGraph.NEVER && n.constructor?.nodeData?.output_node;
-        });
-    }
-
-    recursiveAddQueueNodes(nodeId, oldOutput, newOutput) {
-        let currentId = String(nodeId);
-        let currentNode = oldOutput[currentId];
-        if (newOutput[currentId] == null && currentNode) {
-            newOutput[currentId] = currentNode;
-            for (const inputValue of Object.values(currentNode.inputs || [])) {
-                if (Array.isArray(inputValue)) {
-                    this.recursiveAddQueueNodes(inputValue[0], oldOutput, newOutput);
-                }
-            }
-        }
-        return newOutput;
-    }
-
-    async queueSelectedOutputNodes() {
-        const selectedNodes = Object.values(app.canvas.selected_nodes || {});
-        const outputNodes = this.getOutputNodes(selectedNodes);
-        if (!outputNodes.length) return;
-
-        // 不再委托 rgthree.queueOutputNodes：其 recursiveAddNodes 在「输出节点不在默认执行链
-        // prompt.output 里」时无空节点保护，会抛 Cannot read properties of undefined (reading
-        // 'inputs') 并触发 ComfyUI 全局「执行失败」弹窗（晨羽智云等装有 rgthree 的平台必现）。
-        // 统一走下方自有 hook（有 currentNode 空保护）。
-        const nodeIds = outputNodes.map((n) => n.id);
-        const origApiQueuePrompt = api.queuePrompt;
-        let hookInstalled = false;
-
-        const hook = async function (index, prompt, ...args) {
-            if (prompt.output) {
-                const oldOutput = prompt.output;
-                let newOutput = {};
-                for (const queueNodeId of nodeIds) {
-                    nodeFavoritesInstance.recursiveAddQueueNodes(queueNodeId, oldOutput, newOutput);
-                }
-                prompt.output = newOutput;
-            }
-            api.queuePrompt = origApiQueuePrompt;
-            return origApiQueuePrompt.call(api, index, prompt, ...args);
-        };
-
-        try {
-            api.queuePrompt = hook;
-            hookInstalled = true;
-            await app.queuePrompt(0);
-        } catch (e) {
-            console.error("[小珠光] 排队选中输出节点失败:", e);
-        } finally {
-            if (hookInstalled) {
-                api.queuePrompt = origApiQueuePrompt;
-            }
-        }
-    }
-
     setupKeyboardListener() {
         if (this._keyboardInstalled) return;
         const self = this;
         const handler = (e) => {
             if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) {
-                return;
-            }
-
-            if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey && e.key.toLowerCase() === "d") {
-                e.preventDefault();
-                e.stopPropagation();
-                self.queueSelectedOutputNodes();
                 return;
             }
 

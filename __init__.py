@@ -581,6 +581,62 @@ except Exception as _cloud_err:
     print("[xiaozhuguang] 注册 /xzg_cloud_store 路由失败:", _cloud_err)
 
 
+# ============ 小珠光自定义快捷键 API ============
+# 快捷键配置持久化在插件目录下的 xzg_shortcuts.json，跟插件绑定，
+# 同一台服务器上所有浏览器/会话共享，解决云端环境浏览器 localStorage 丢失问题。
+try:
+    _xzg_shortcuts_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.json")
+
+    @_xzg_save_real_routes.get("/xzg/shortcuts")
+    @xzg_safe_handler
+    async def xzg_shortcuts_get(request):
+        try:
+            with open(_xzg_shortcuts_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return web.json_response({"shortcuts": data.get("shortcuts", []), "found": True})
+        except FileNotFoundError:
+            return web.json_response({"shortcuts": [], "found": False})
+        except Exception as e:
+            return web.json_response({"shortcuts": [], "found": False, "error": str(e)})
+
+    @_xzg_save_real_routes.post("/xzg/shortcuts")
+    @xzg_safe_handler
+    async def xzg_shortcuts_post(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad request"}, status=400)
+        shortcuts = body.get("shortcuts", [])
+        if not isinstance(shortcuts, list):
+            return web.json_response({"error": "shortcuts must be a list"}, status=400)
+        # 校验每条快捷键结构
+        cleaned = []
+        for s in shortcuts:
+            if not isinstance(s, dict):
+                continue
+            key = (s.get("key") or "").strip()
+            if not key:
+                continue
+            cleaned.append({
+                "key": key,
+                "ctrl": bool(s.get("ctrl", False)),
+                "shift": bool(s.get("shift", False)),
+                "alt": bool(s.get("alt", False)),
+                "meta": bool(s.get("meta", False)),
+                "action": s.get("action", "queue_prompt"),
+                "label": s.get("label", ""),
+            })
+        try:
+            with open(_xzg_shortcuts_file, "w", encoding="utf-8") as f:
+                json.dump({"shortcuts": cleaned}, f, ensure_ascii=False, indent=2)
+            return web.json_response({"ok": True, "count": len(cleaned)})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+except Exception as _sc_err:
+    print("[xiaozhuguang] 注册 /xzg/shortcuts 路由失败:", _sc_err)
+
+
 # ============ 小珠光快剪编辑器 API ============
 # 路由注册在 xzg_video_editor_api.py 内部完成（和 xzg_video_loader.py 一样的方式）
 # 这里只需导入该模块，触发路由注册

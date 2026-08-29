@@ -2534,6 +2534,23 @@ window.XZGThemePanel = {
             }
         }
 
+        // 导出自定义快捷键（后端存储 xzg_shortcuts.json）
+        let shortcuts = null;
+        if (includeXzg) {
+            try {
+                const fetchFn = (typeof api !== "undefined" && api?.fetchApi) ? api.fetchApi.bind(api) : fetch;
+                const resp = await fetchFn("/xzg/shortcuts", { method: "GET", cache: "no-store" });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (Array.isArray(data.shortcuts) && data.shortcuts.length > 0) {
+                        shortcuts = data.shortcuts;
+                    }
+                }
+            } catch (e) {
+                console.warn("[XZG] Failed to export shortcuts:", e);
+            }
+        }
+
         const cfg = {
             format: "xiaozhuguang-config",
             version: 4,
@@ -2542,7 +2559,8 @@ window.XZGThemePanel = {
             localStorage: ls,
             notes: notesTop,
             favoritesPreviews: favoritesPreviews,
-            comfySettings: comfySettings
+            comfySettings: comfySettings,
+            shortcuts: shortcuts
         };
         const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -2568,12 +2586,13 @@ window.XZGThemePanel = {
 
         // 先检测此文件是否包含两类可选模块（用于弹窗显示复选框）
         const hasComfy = !!(obj.comfySettings && typeof obj.comfySettings === "object" && Object.keys(obj.comfySettings).length > 0);
-        // hasXzg：只要文件包含 localStorage / notes / favoritesPreviews / workflowUsage 之一，就视为包含小珠光配置
+        // hasXzg：只要文件包含 localStorage / notes / favoritesPreviews / workflowUsage / shortcuts 之一，就视为包含小珠光配置
         const hasXzg = !!(
             (obj.localStorage && typeof obj.localStorage === "object" && Object.keys(obj.localStorage).length > 0) ||
             (obj.notes && typeof obj.notes === "object" && Array.isArray(obj.notes.groups)) ||
             (obj.favoritesPreviews && Array.isArray(obj.favoritesPreviews) && obj.favoritesPreviews.length > 0) ||
-            (obj.workflowUsage && typeof obj.workflowUsage === "object" && Object.keys(obj.workflowUsage).length > 0)
+            (obj.workflowUsage && typeof obj.workflowUsage === "object" && Object.keys(obj.workflowUsage).length > 0) ||
+            (Array.isArray(obj.shortcuts) && obj.shortcuts.length > 0)
         );
         const hasNotes = !!(
             (obj.notes && typeof obj.notes === "object") ||
@@ -2691,6 +2710,26 @@ window.XZGThemePanel = {
                     localStorage.setItem("xzg_workflows_meta", JSON.stringify(meta));
                     importedXzg = true;
                 } catch (e) {}
+            }
+            // 导入自定义快捷键（写入后端 xzg_shortcuts.json）
+            if (Array.isArray(obj.shortcuts) && obj.shortcuts.length > 0) {
+                try {
+                    const fetchFn = (typeof api !== "undefined" && api?.fetchApi) ? api.fetchApi.bind(api) : fetch;
+                    const resp = await fetchFn("/xzg/shortcuts", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ shortcuts: obj.shortcuts })
+                    });
+                    if (resp.ok) {
+                        // 同步刷新内存中的快捷键
+                        if (window.xzgShortcuts && typeof window.xzgShortcuts.load === "function") {
+                            try { await window.xzgShortcuts.load(); } catch (e) {}
+                        }
+                        importedXzg = true;
+                    }
+                } catch (e) {
+                    console.warn("[XZG] Failed to import shortcuts:", e);
+                }
             }
         }
 

@@ -2743,18 +2743,31 @@ class XZGWorkflowsManager {
 
     _applyPossessMode(on) {
         this._setOfficialWorkflowButtonsHidden(on);
-        // 官方 UI 可能晚于本扩展渲染，用防抖的 MutationObserver 兜底持续隐藏，
-        // 并在 DOM 变动停止后做一次最终隐藏，避免按钮残留可见
-        if (!this._possessObserver) {
-            this._possessObserver = new MutationObserver(() => {
-                const cur = localStorage.getItem("xzg_possess_mode") === "1";
-                if (this._possessTimer) clearTimeout(this._possessTimer);
-                this._possessTimer = setTimeout(() => {
-                    this._setOfficialWorkflowButtonsHidden(cur);
-                }, 120);
-            });
-            if (document.body) {
-                this._possessObserver.observe(document.body, { childList: true, subtree: true });
+        // 夺舍模式开启时才创建 MutationObserver 兜底隐藏官方按钮；
+        // 关闭时立即断开并销毁 observer，避免常驻 observer 在工作流执行等
+        // 大量 DOM 变动期间频繁触发，潜在干扰顶部工作流标签的渲染/右键。
+        if (on) {
+            if (!this._possessObserver) {
+                this._possessObserver = new MutationObserver(() => {
+                    const cur = localStorage.getItem("xzg_possess_mode") === "1";
+                    if (!cur) return; // 二次校验：关闭后不再处理
+                    if (this._possessTimer) clearTimeout(this._possessTimer);
+                    this._possessTimer = setTimeout(() => {
+                        this._setOfficialWorkflowButtonsHidden(cur);
+                    }, 120);
+                });
+                if (document.body) {
+                    this._possessObserver.observe(document.body, { childList: true, subtree: true });
+                }
+            }
+        } else {
+            if (this._possessObserver) {
+                this._possessObserver.disconnect();
+                this._possessObserver = null;
+            }
+            if (this._possessTimer) {
+                clearTimeout(this._possessTimer);
+                this._possessTimer = null;
             }
         }
     }
@@ -3725,6 +3738,54 @@ class XZGWorkflowsManager {
         }
     }
 
+    /**
+     * 重命名后同步更新已打开的工作流（标签名 + 保存路径）。
+     * 否则顶部标签仍显示旧名，保存时会按旧路径再生成一个文件，造成重复。
+     * @param {string} oldXzgPath  小珠光格式旧路径，如 "folder/name"
+     * @param {string} newXzgPath  小珠光格式新路径，如 "folder/newname"
+     * @param {string} newName     新文件名（不含扩展名）
+     * @param {string} [folder]    新分类目录（小珠光格式，空串=未分类）
+     */
+    _syncOpenWorkflowAfterRename(oldXzgPath, newXzgPath, newName, folder) {
+        const wfStore = app.extensionManager?.workflow;
+        if (!wfStore?.openWorkflows) return;
+        const oldFull = "workflows/" + oldXzgPath + ".json";
+        const newFull = "workflows/" + newXzgPath + ".json";
+        const newDir = "workflows" + (folder ? "/" + folder : "");
+        // 直接修改原对象属性：activeWorkflow 是 openWorkflows 中同一对象的引用，
+        // 替换数组会导致 activeWorkflow 仍指向旧对象，标签不更新。
+        for (const w of wfStore.openWorkflows) {
+            if (w.path === oldFull) {
+                w.path = newFull;
+                w.filename = newName;
+                w.fullFilename = newName + ".json";
+                w.directory = newDir;
+            }
+        }
+    }
+
+    /**
+     * 分类（文件夹）重命名后，批量同步该文件夹下所有已打开工作流的路径。
+     */
+    _syncOpenWorkflowsAfterFolderRename(oldFolder, newFolder) {
+        const wfStore = app.extensionManager?.workflow;
+        if (!wfStore?.openWorkflows) return;
+        const oldPrefix = "workflows/" + oldFolder + "/";
+        const newPrefix = "workflows/" + newFolder + "/";
+        // 直接修改原对象属性（同 _syncOpenWorkflowAfterRename）
+        for (const w of wfStore.openWorkflows) {
+            if (!w.path || !w.path.startsWith(oldPrefix)) continue;
+            w.path = newPrefix + w.path.slice(oldPrefix.length);
+            // directory 也需要同步：旧目录去掉 oldPrefix 部分后拼到新目录上
+            if (w.directory) {
+                const oldDirPrefix = "workflows/" + oldFolder;
+                if (w.directory.startsWith(oldDirPrefix)) {
+                    w.directory = "workflows/" + newFolder + w.directory.slice(oldDirPrefix.length);
+                }
+            }
+        }
+    }
+
     async renameWorkflow(wf) {
         const newName = await this.showInputDialog("重命名工作流", wf.name);
         if (!newName || newName === wf.name) return;
@@ -3754,6 +3815,9 @@ class XZGWorkflowsManager {
             await this.loadWorkflows();
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
+            // 同步已打开的工作流标签名与保存路径，避免保存时生成旧名称重复文件
+            const folderName = wf.folder === "未分类" ? "" : wf.folder;
+            this._syncOpenWorkflowAfterRename(oldPath, newPath, newName, folderName);
         } catch (e) {
             alert(xzgT('重命名失败: ','Rename failed: ') + e.message);
         }
@@ -3791,6 +3855,20 @@ class XZGWorkflowsManager {
                     console.warn("[小珠光] 同步删除原生工作流失败:", e);
                 }
                 try { await wfStore.loadWorkflows(); } catch (e) {}
+
+                // 删除后若该工作流在顶部标签中打开，自动关闭对应标签，
+                // 避免用户在已删除的标签上再次保存导致文件重生。
+                if (typeof wfStore.closeWorkflow === "function" && Array.isArray(wfStore.openWorkflows)) {
+                    const officialPath = 'workflows/' + wf.path + '.json';
+                    const openWf = wfStore.openWorkflows.find(w => w.path === officialPath);
+                    if (openWf) {
+                        try {
+                            await wfStore.closeWorkflow(openWf);
+                        } catch (e1) {
+                            try { await wfStore.closeWorkflow(officialPath); } catch (e2) {}
+                        }
+                    }
+                }
             }
 
             await this.loadWorkflows();
@@ -3875,6 +3953,11 @@ class XZGWorkflowsManager {
             await this.loadWorkflows();
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
+            // 同步该文件夹下所有已打开工作流的路径与标签名
+            const oldFolder = cat.path;
+            const lastSlashIdx = oldFolder.lastIndexOf("/");
+            const newFolderPath = lastSlashIdx >= 0 ? oldFolder.slice(0, lastSlashIdx + 1) + newName : newName;
+            this._syncOpenWorkflowsAfterFolderRename(oldFolder, newFolderPath);
         } catch (e) {
             let msg = e.message || String(e);
             if (msg.includes("already exists") || msg.includes("409")) msg = "已存在同名分类，请换一个名称";
@@ -3913,6 +3996,17 @@ class XZGWorkflowsManager {
             await this.loadWorkflows();
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
+
+            // 删除分类后，关闭该文件夹下所有已打开的工作流标签，避免保存重生
+            if (wfStore && typeof wfStore.closeWorkflow === "function" && Array.isArray(wfStore.openWorkflows)) {
+                const folderPrefix = "workflows/" + cat.path + "/";
+                const toClose = wfStore.openWorkflows.filter(w => w.path && w.path.startsWith(folderPrefix));
+                for (const w of toClose) {
+                    try { await wfStore.closeWorkflow(w); } catch (e1) {
+                        try { await wfStore.closeWorkflow(w.path); } catch (e2) {}
+                    }
+                }
+            }
         } catch (e) {
             alert(xzgT('删除分类失败: ','Failed to delete category: ') + e.message);
         }
