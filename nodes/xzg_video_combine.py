@@ -469,7 +469,9 @@ class XiaozhuguangVideoCombine:
         ui = {
             "result": (),
             "ui": {
-                "videos": [{
+                # 单数 video：前端 parseNodeOutput 以数组键名作为 mediaType，
+                # isVideo 检查 mediaType==="video"（单数），复数 videos 会退化为依赖文件名后缀识别。
+                "video": [{
                     "filename": file,
                     "subfolder": subfolder,
                     "type": "output" if 模式 == "保存" else "temp",

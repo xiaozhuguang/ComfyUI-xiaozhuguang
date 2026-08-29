@@ -275,8 +275,15 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                     # 全分辨率 PNG（无损）；RGBA 保留 alpha 通道（透明背景）
                     Image.fromarray(real_np).save(full_path, "PNG")
                 else:
-                    # 压缩 JPG（使用已合成到棋盘格背景并转为 RGB 的图像，避免 RGBA 保存失败）
-                    jpg_pil.save(full_path, "JPEG", quality=quality, optimize=True)
+                    # JPG 输出使用原图全分辨率（预览的 3840/6400 降采样仅用于画布防卡顿，不影响输出尺寸）
+                    full_pil = Image.fromarray(real_np)
+                    if full_pil.mode != "RGB":
+                        if full_pil.mode == "RGBA":
+                            _cell = max(16, min(40, max(w, h) // 32))
+                            full_pil = _xzg_composite_checkerboard(full_pil, cell=_cell)
+                        else:
+                            full_pil = full_pil.convert("RGB")
+                    full_pil.save(full_path, "JPEG", quality=quality, optimize=True)
 
                 # 仅当非绝对路径时才提供 saved 信息给前端直接下载
                 # 绝对路径无法通过 ComfyUI /view 路由下载（会拼接 output 目录），
@@ -306,5 +313,15 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
             })
             counter += 1
 
-        result = {"ui": {"xzg_preview": entries, "saved": saved}}
+        # 兼容前端媒体管理（媒体资产）：节点输出必须含标准 ui.images 才会被登记/展示。
+        # 保存模式 → 实际保存到 output 的文件(type=output)；预览模式 → 临时预览(type=temp)。
+        if is_preview_mode:
+            images_ui = [
+                {"filename": e["filename"], "subfolder": e["subfolder"], "type": e["type"]}
+                for e in entries
+            ]
+        else:
+            images_ui = saved
+
+        result = {"ui": {"xzg_preview": entries, "saved": saved, "images": images_ui}}
         return result

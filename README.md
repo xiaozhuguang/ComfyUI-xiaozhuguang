@@ -1,4 +1,4 @@
-﻿# ComfyUI 小珠光插件
+# ComfyUI 小珠光插件
 
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
@@ -656,6 +656,23 @@ ComfyUI-xiaozhuguang/
 
 ## 📋 更新日志
 
+### V13.0.4 (2026-08-29)
+
+**🖼️ 小珠光图像保存 / 化神级：媒体资产显示 + JPG 全分辨率输出 + 画面拖动**
+
+- **媒体资产显示**（`nodes/xzg_image_save.py`、`nodes/xzg_image_save_custom.py`）：节点输出补充标准 `ui.images` 字段（保存模式=实际输出文件 type=output，预览模式=临时预览 type=temp），使生成图片出现在 ComfyUI 媒体管理「已生成」列表中，与原生 SaveImage 行为一致
+- **JPG 输出恢复原图全分辨率**：此前 JPG 保存复用了降采样预览图（3840/6400 长边），导致原图 8000px 等大尺寸输出被缩小。修复为 JPG 输出从原始 `real_np` 全分辨率编码；预览（3840/6400 降采样 JPG）仅用于画布防卡顿，不影响输出尺寸；PNG 输出一直是全分辨率
+- **画面拖动移动节点**（`web/xzg_image_save.js`）：在画面区域按下并拖动可直接移动节点；单击画面区域触发上一张/网格切换/下一张（多图时），单击网格缩略图回到单图显示
+- **修复节点上一大一小两张重复预览**：加 `ui.images` 后新前端自动追加 `$$canvas-image-preview` 虚拟预览 widget（全分辨率输出图），叠在自定义画布（降采样预览）之上。修复为 `onDrawBackground` 中清空 `this.imgs` 并移除该 widget，自定义画布预览（3840 防卡顿）不受影响
+
+**🎬 小珠光合并视频：媒体资产显示**
+
+- （`nodes/xzg_video_combine.py`）输出键从 `videos`（复数）改为 `video`（单数）。前端 `parseNodeOutput` 以数组键名作为 `mediaType`，`isVideo` 检查 `mediaType==="video"`（单数），复数形式退化为依赖文件名后缀识别，导致媒体资产视频过滤器不显示。前端自定义播放器本身兼容 `ui?.videos || ui?.video`，无需改 JS
+
+**🏷️ 版本号 / 发布**
+
+- 版本号统一：`pyproject.toml`、`extension.json` 从 `13.0.3` 升至 `13.0.4`
+- Release / Registry：由 `.github/workflows/publish_action.yml` 在推送 `v13.0.4` tag 时自动创建 GitHub Release + 发布到 Comfy Registry（版本 13.0.4）
 ### V13.0.3 (2026-08-29)
 
 **🔤 小珠光大字文本展示节点：新增「自适应字号」与正文底色兜底**

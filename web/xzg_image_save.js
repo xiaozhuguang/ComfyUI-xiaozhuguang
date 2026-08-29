@@ -808,25 +808,38 @@ class XzgImageSaveWidget {
     }
 
     mouse(event, pos, node) {
-        if (event.type === "pointerdown" && event.button === 0) {
-            // 双击检测
-            const now = performance.now();
-            const isDouble = this._lastClickPos &&
-                (now - this._lastClickT) < 300 &&
-                Math.abs(pos[0] - this._lastClickPos[0]) < 8 &&
-                Math.abs(pos[1] - this._lastClickPos[1]) < 8;
-            this._lastClickT = now;
-            this._lastClickPos = [pos[0], pos[1]];
+        // 说明：ComfyUI 0.3.x 新前端中，画面区域由 getWidgetOnPos 返回 null 直接走节点分支
+        // （左键按下/拖动 = 原生移动节点），此处 widget.mouse 已不再被调用；
+        // 保留返回 false 以防旧前端路径回退时仍能正常放行节点拖动。
+        return false;
+    }
 
-            for (const [key, area] of Object.entries(this.hitAreas)) {
-                const [bx, by, bw, bh] = area.bounds;
-                if (pos[0] >= bx && pos[0] <= bx + bw && pos[1] >= by && pos[1] <= by + bh) {
-                    if (isDouble && area.onDouble) { area.onDouble(event, pos, node, area); return true; }
-                    if (!isDouble && area.onDown) { area.onDown(event, pos, node, area); return true; }
-                }
+    // 命中测试：返回 pos（节点相对坐标）命中的 hitArea，未命中返回 null
+    hitTest(pos) {
+        for (const [key, area] of Object.entries(this.hitAreas)) {
+            const [bx, by, bw, bh] = area.bounds;
+            if (pos[0] >= bx && pos[0] <= bx + bw && pos[1] >= by && pos[1] <= by + bh) {
+                return area;
             }
-            return true;
         }
+        return null;
+    }
+
+    // 单击触发（由 node.onMouseUp 在“无拖动”时调用）：
+    // 命中翻页/网格切换/网格点选/按钮行等区域时执行其 onDown（双击区域优先 onDouble）
+    fireClick(pos, node) {
+        const now = performance.now();
+        const isDouble = this._lastClickPos &&
+            (now - this._lastClickT) < 300 &&
+            Math.abs(pos[0] - this._lastClickPos[0]) < 8 &&
+            Math.abs(pos[1] - this._lastClickPos[1]) < 8;
+        this._lastClickT = now;
+        this._lastClickPos = [pos[0], pos[1]];
+
+        const area = this.hitTest(pos);
+        if (!area) return false;
+        if (isDouble && area.onDouble) { area.onDouble(null, pos, node, area); return true; }
+        if (!isDouble && area.onDown) { area.onDown(null, pos, node, area); return true; }
         return false;
     }
 }
@@ -919,6 +932,57 @@ class XiaozhuguangImageSaveNode {
     }
     onMouseLeave(e, pos) {
         if (this.canvasWidget) { this.canvasWidget._mousePos = null; this.setDirtyCanvas(true, true); }
+        this._xzgClick = null;
+        this._xzgClickCleanup?.();
+    }
+
+    // 左键在画面区域命中区按下：记录按下位置并挂接 window 监听，但不吞事件 →
+    // 让新前端走原生节点拖动；单击（松开无位移）动作在 window pointerup 中触发。
+    // （新前端 CanvasPointer.up 对纯单击提前返回，node.onMouseUp 只在拖动结束时才被调用，
+    //   因此单击动作必须通过 window 级监听在松开时判定。）
+    onMouseDown(e, pos) {
+        if (e && e.button === 0 && this.canvasWidget) {
+            this._xzgClickCleanup?.();
+            const area = this.canvasWidget.hitTest(pos);
+            if (area) {
+                this._xzgClick = { nodePos: pos, cx: e.clientX, cy: e.clientY, pointerId: e.pointerId };
+                this._xzgTrackClick();
+            } else {
+                this._xzgClick = null;
+            }
+        }
+        return false;
+    }
+
+    // window 级监听：位移≥4px 判定为拖动（取消单击）；松开无位移则触发命中区动作（翻页/网格切换/点选/按钮行）
+    _xzgTrackClick() {
+        const node = this;
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', onUp, true);
+            node._xzgClickCleanup = null;
+        };
+        const onMove = (e) => {
+            const click = node._xzgClick;
+            if (!click || e.pointerId !== click.pointerId) return;
+            if (Math.hypot(e.clientX - click.cx, e.clientY - click.cy) >= 4) {
+                node._xzgClick = null;
+                cleanup();
+            }
+        };
+        const onUp = (e) => {
+            const click = node._xzgClick;
+            cleanup();
+            if (!click || e.pointerId !== click.pointerId) return;
+            node._xzgClick = null;
+            if (node.canvasWidget) node.canvasWidget.fireClick(click.nodePos, node);
+        };
+        window.addEventListener('pointermove', onMove, true);
+        window.addEventListener('pointerup', onUp, true);
+        this._xzgClickCleanup = cleanup;
     }
 
     onNodeCreated() {
@@ -945,10 +1009,11 @@ class XiaozhuguangImageSaveNode {
                 const lx = x - node.pos[0];
                 const ly = y - node.pos[1];
                 const titleH = (typeof LiteGraph !== 'undefined' && LiteGraph.NODE_TITLE_HEIGHT) || 30;
-                // 仅在图像控件区域内返回 canvasWidget，文本控件区域回退到原始查找逻辑
+                // 画面区域不当作“控件”命中：返回 null → 新前端 _processNodeClick 走节点分支，
+                // 左键按下/拖动即原生移动节点；单击动作由 onMouseDown/onMouseUp/fireClick 处理。
                 const imgStartY = node.canvasWidget?._startY ?? titleH;
                 if (lx >= 0 && lx <= node.size[0] - 12 && ly >= imgStartY && ly <= node.size[1] - 12) {
-                    if (node.canvasWidget) return node.canvasWidget;
+                    return null;
                 }
                 // 文本控件区域：调用原始 getWidgetOnPos 查找文本 widget
                 return origGetWidgetOnPos(x, y, includeDisabled, ...rest);
@@ -973,6 +1038,7 @@ class XiaozhuguangImageSaveNode {
         return `
             <p>小珠光图像保存节点，支持保存/预览模式切换，保存图像为 JPG(压缩) 或 PNG(无损)，并显示压缩预览。</p>
             <ul>
+                <li><strong>画面拖动</strong>：在画面区域按下并拖动可直接移动节点；单击画面区域触发上一张/网格切换/下一张（多图时），单击网格缩略图回到单图显示。</li>
                 <li><strong>保存/预览</strong>：切换模式。保存模式输出文件到output目录；预览模式仅显示不保存（可替代小珠光图像预览）。</li>
                 <li><strong>JPG/PNG</strong>：切换保存格式（仅保存模式有效）。JPG使用压缩参数(与预览一致)，PNG为全分辨率无损。</li>
                 <li><strong>减少卡顿</strong>：开启后预览压缩为最长边3840px的JPG（质量85）；关闭(极速流畅)：最长边6400px的JPG（质量80）。</li>
@@ -1129,7 +1195,23 @@ app.registerExtension({
             const _origDrawBackground = nodeType.prototype.onDrawBackground;
             nodeType.prototype.onDrawBackground = function (ctx, canvas) {
                 this.__xzgSanitizeInputs?.call(this);
-                return _origDrawBackground ? _origDrawBackground.call(this, ctx, canvas) : undefined;
+                const ret = _origDrawBackground ? _origDrawBackground.call(this, ctx, canvas) : undefined;
+                // 阻止新前端自动追加 $$canvas-image-preview 虚拟预览：
+                // 节点输出含 ui.images 后，unsafeUpdatePreviews 会设置 this.imgs 并触发
+                // showCanvasImagePreview，在自定义画布之上再叠一个全分辨率输出预览，
+                // 导致节点上出现一大一小两张图。自定义画布预览（canvasWidget，降采样JPG防卡顿）不受影响。
+                if (this.imgs && this.imgs.length) this.imgs = [];
+                if (this.widgets) {
+                    const vi = this.widgets.findIndex(w => w && w.name === "$$canvas-image-preview");
+                    if (vi >= 0) {
+                        const w = this.widgets[vi];
+                        if (w && typeof w.onRemove === "function") {
+                            try { w.onRemove(); } catch (_) {}
+                        }
+                        this.widgets.splice(vi, 1);
+                    }
+                }
+                return ret;
             };
 
             nodeType.prototype.onMouseMove = function (e, pos) {
@@ -1138,6 +1220,16 @@ app.registerExtension({
 
             nodeType.prototype.onMouseLeave = function (e, pos) {
                 proto.onMouseLeave.call(this, e, pos);
+            };
+
+            nodeType.prototype.onMouseDown = function (e, pos) {
+                return proto.onMouseDown.call(this, e, pos);
+            };
+
+            // v3：单击动作在 window 级 pointerup 中判定，需要把 _xzgTrackClick 一并暴露到节点原型，
+            // 否则 onMouseDown 调用 this._xzgTrackClick() 会抛 TypeError，中断节点拖动分支。
+            nodeType.prototype._xzgTrackClick = function () {
+                return proto._xzgTrackClick.call(this);
             };
 
             nodeType.prototype.getHelp = function () {
