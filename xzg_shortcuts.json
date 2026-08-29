@@ -1,0 +1,31 @@
+{
+  "shortcuts": [
+    {
+      "key": "D",
+      "ctrl": true,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "queue_prompt",
+      "label": "Ctrl+D"
+    },
+    {
+      "key": "D",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "queue_selected",
+      "label": "D"
+    },
+    {
+      "key": "F",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "queue_group_at_mouse",
+      "label": "F"
+    }
+  ]
+}

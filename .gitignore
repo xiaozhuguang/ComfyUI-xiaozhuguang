@@ -21,7 +21,6 @@ comfyui-state.png
 
 # Local config
 python_paths.json
-xzg_shortcuts.json
 
 # Log / temp
 _thumb_out2.txt
