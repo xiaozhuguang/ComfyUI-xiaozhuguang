@@ -22,6 +22,10 @@ window.XZGMenuHide = {
         this.loadConfig();
         this.loadEnabled();
         this.hookMenus();
+        this._setupMenuRightClick();
+        // 从后端云存储异步拉取并覆盖本地，实现“同一台服务器任意浏览器共享配置”。
+        // 配错/失败时静默保留本地 localStorage 兜底。
+        this.cloudLoad();
     },
 
     loadEnabled() {
@@ -34,6 +38,7 @@ window.XZGMenuHide = {
         this._enabled = enabled;
         try { localStorage.setItem('xzg-menu-hide-enabled', enabled ? 'true' : 'false'); } catch(e) {}
         this._applyHideToOpenMenus();
+        this._cloudPush();
     },
 
     isEnabled() {
@@ -54,6 +59,54 @@ window.XZGMenuHide = {
         try {
             localStorage.setItem('xzg-menu-hide', JSON.stringify(this.config));
         } catch(e) {}
+        this._cloudPush();
+    },
+
+    // ---------- 后端云持久化（复用 /xzg_cloud_store，key=menuhide） ----------
+    // 云端为权威配置：初始化时优先拉取而代之；每次本地修改后异步推送到云端，
+    // 同一台 ComfyUI 服务器上的任意浏览器 / 会话共享同一份隐藏配置，解决云端环境
+    // localStorage 无法跨会话持久化的问题。push 一律静默失败，不影响本地功能。
+
+    async cloudLoad() {
+        try {
+            const resp = await fetch('/xzg_cloud_store?key=menuhide', { credentials: 'same-origin' });
+            if (!resp.ok) return;
+            const json = await resp.json();
+            if (!json || !json.found || json.data == null) return;
+            const d = json.data;
+            if (d && typeof d.config === 'object') {
+                this.config = Object.assign({ canvas: {}, node: {} }, d.config);
+                try { localStorage.setItem('xzg-menu-hide', JSON.stringify(this.config)); } catch(e) {}
+            }
+            if (typeof d.enabled === 'boolean') {
+                this._enabled = d.enabled;
+                try { localStorage.setItem('xzg-menu-hide-enabled', d.enabled ? 'true' : 'false'); } catch(e) {}
+            }
+            this._applyHideToOpenMenus();
+            // 若隐藏面板正处于显示状态，拉取完成后再渲染一次列表以反映最新云端配置
+            if (window.xzgThemePanel && window.xzgThemePanel._refreshMenuListUI) {
+                window.xzgThemePanel._refreshMenuListUI();
+            }
+        } catch(e) { /* 云端不可达时静默，保留本地配置 */ }
+    },
+
+    _cloudPush() {
+        if (this._cloudTimer) clearTimeout(this._cloudTimer);
+        this._cloudTimer = setTimeout(() => {
+            this._cloudTimer = null;
+            this._cloudPushNow();
+        }, 400);
+    },
+
+    async _cloudPushNow() {
+        try {
+            await fetch('/xzg_cloud_store', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'menuhide', data: { config: this.config, enabled: this._enabled } }),
+            });
+        } catch(e) { /* 静默 */ }
     },
 
     isHidden(menuType, content) {
@@ -61,7 +114,15 @@ window.XZGMenuHide = {
         const map = this.config[menuType];
         if (!map) return false;
         const key = this._normalizeKey(content);
-        return !!map[key];
+        if (map[key]) return true;
+        // 强归一化兜底：忽略空白 / 全角差异，保证面板勾选状态与真实隐藏一致
+        const strongKey = this._strongKey(key);
+        if (strongKey) {
+            for (const k in map) {
+                if (this._strongKey(k) === strongKey) return true;
+            }
+        }
+        return false;
     },
 
     setHidden(menuType, content, hidden) {
@@ -82,6 +143,15 @@ window.XZGMenuHide = {
         this.config = { canvas: {}, node: {} };
         this.saveConfig();
         this._applyHideToOpenMenus();
+    },
+
+    reload() {
+        // 从本地(localStorage)重新载入配置并同步到云端，供主题面板“导入配置”在写回后刷新内存实例，
+        // 避免内存仍是旧配置导致导入不生效、或被旧云端数据覆盖。
+        this.loadConfig();
+        this.loadEnabled();
+        this._applyHideToOpenMenus();
+        this._cloudPush();
     },
 
     _applyHideToOpenMenus() {
@@ -123,6 +193,17 @@ window.XZGMenuHide = {
             .replace(/\u00A0/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
+    },
+
+    // 强归一化：小写 + 去除所有空白（含全角空格、NBSP、零宽字符、软连字符等）。
+    // 用于去重 / 搜索 / 隐藏匹配 / isHidden，让“视觉相同但因空格或不可见字符而有细微差异”的
+    // 菜单项合并为同一键，避免勾选后因子串匹配被中间空格切断而隐藏失败、或搜索搜不到。
+    _strongKey(text) {
+        if (text == null) return '';
+        let s = String(text);
+        s = s.replace(/<[^>]*>/g, '');
+        s = s.replace(/[\s\u00AD\u180E\u200B-\u200F\u2028-\u202F\u2060-\u2064\uFEFF]+/g, '');
+        return s.toLowerCase();
     },
 
     _translationCache: null,
@@ -280,6 +361,15 @@ window.XZGMenuHide = {
             }
         } catch(e) {}
 
+        // 5. 强归一化匹配（忽略所有空白与全角/零宽差异），保证视觉相同的菜单项都能被搜索到
+        try {
+            const itemStrong = this._strongKey(itemText);
+            const searchStrong = this._strongKey(searchNorm);
+            if (itemStrong && searchStrong && itemStrong.includes(searchStrong)) {
+                return true;
+            }
+        } catch(e) {}
+
         return false;
     },
 
@@ -288,14 +378,15 @@ window.XZGMenuHide = {
         const list = this._collectedItems[menuType];
         if (!list) return;
 
-        const existing = new Set(list);
+        const existing = new Set(list.map(it => this._strongKey(it)));
         let changed = false;
 
         const addItem = (opt) => {
             if (!opt || opt === null) return;
             const key = this._normalizeKey(opt);
-            if (!key || existing.has(key)) return;
-            existing.add(key);
+            const sk = this._strongKey(key);
+            if (!key || !sk || existing.has(sk)) return;
+            existing.add(sk);
             list.push(key);
             changed = true;
 
@@ -539,6 +630,157 @@ window.XZGMenuHide = {
     _lastMenuType: 'canvas',
     _lastCtxMenuOnCanvas: false,
 
+    // 在画布/节点右键菜单上，对某个菜单项“鼠标中键点击”弹出“隐藏此菜单项”按钮，点击即隐藏。
+    // 这是最方便、且不干扰右键菜单本身的操作方式（右键会关闭原生菜单，因此改用中键）。
+    _menuRightClickInstalled: false,
+
+    _setupMenuRightClick() {
+        if (this._menuRightClickInstalled) return;
+        this._menuRightClickInstalled = true;
+        const self = this;
+
+        const removePopup = () => {
+            const p = document.getElementById('xzg-menu-hide-popup');
+            if (p) p.remove();
+        };
+
+        // 点击弹窗区域时阻止事件穿透到画布/LiteGraph，避免“点弹窗按钮导致原生菜单被关闭”。
+        // 挂在 window 捕获阶段（最先执行）：stopImmediatePropagation 让画布任何“点击外部关闭菜单”的
+        // mousedown/mouseup/pointerdown 监听都收不到，菜单得以保持打开。
+        // 注意：不要 preventDefault mousedown/mouseup，那会抑制浏览器派发 click，导致按钮 click 隐藏逻辑不触发。
+        const blockPopupLeak = (e) => {
+            if (e.target && e.target.closest && e.target.closest('#xzg-menu-hide-popup')) {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
+        };
+        window.addEventListener('mousedown', blockPopupLeak, true);
+        window.addEventListener('mouseup', blockPopupLeak, true);
+        window.addEventListener('pointerdown', blockPopupLeak, true);
+        window.addEventListener('pointerup', blockPopupLeak, true);
+        window.addEventListener('contextmenu', (e) => {
+            if (e.target && e.target.closest && e.target.closest('#xzg-menu-hide-popup')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+            }
+        }, true);
+
+        // 左键点击别处 / 滚动 / 滚轮 / Esc 时关闭弹层。
+        // 注意：中键（button 1）按下后松开也会派发 click，这里需忽略中键的 click，
+        // 且点击落在弹层自身（如“隐藏此菜单项”按钮）时也不关闭，交由按钮逻辑处理。
+        document.addEventListener('click', (e) => {
+            if (e.button === 1) return;
+            if (e.target && e.target.closest && e.target.closest('#xzg-menu-hide-popup')) return;
+            removePopup();
+        }, true);
+        document.addEventListener('wheel', removePopup, true);
+        document.addEventListener('scroll', removePopup, true);
+        document.addEventListener('keydown', (e) => { if (!e.repeat && e.key === 'Escape') removePopup(); }, true);
+
+        // 判定是否画布/节点右键菜单项。不依赖 _lastCtxMenuOnCanvas（桌面版 ComfyUI 画布 id/class 是
+        // graph-canvas / lgraphcanvas，右键还可能被悬浮层截获，导致该标志不置位而误判非画布菜单）。
+        // 改为按菜单自身 class 判定：.litecontextmenu / .litegraph-contextmenu 正是 LiteGraph 画布/节点
+        // 菜单专用容器；工作流标签 / 侧边栏等用的是 .context-menu / .comfyui-menu，不会被误判。
+        const isCanvasLike = (menuEl) => Boolean(
+            menuEl && (
+                menuEl._xzgMenuType ||
+                menuEl.classList?.contains('litecontextmenu') ||
+                menuEl.classList?.contains('litegraph-contextmenu') ||
+                self._lastCtxMenuOnCanvas
+            )
+        );
+
+        // 在 pointerdown（鼠标中键）捕获阶段截获条目文字。此时菜单仍挂在 DOM 上，可正常读取。
+        // 原生菜单因右键而关闭发生在更晚的 mousedown/contextmenu，而中键不会关闭菜单、不会触发浏览器右键菜单，
+        // 因此选中键作为触发键，不干扰右键菜单的其它操作用途。
+        // 同时挂到 window 与 document 的捕获阶段：window 先于 document 触发，可抵抗
+        // 上游在 window/document 捕获里 stopPropagation 导致 document 监听收不到情况。
+        const onRightDown = (e) => {
+            if (e.button !== 1) return; // 仅鼠标中键（button 1）
+
+            const entry = e.target && e.target.closest
+                ? e.target.closest('.litemenu-entry, .context-menu-item, .lite-menu-item, .menu-item, [class*="menu-entry"], [class*="menu-item"]')
+                : null;
+            if (!entry) return;
+
+            const menuEl = entry.closest('.litecontextmenu, .context-menu, .litegraph-contextmenu, [class*="lite-menu"]');
+            if (!isCanvasLike(menuEl)) return; // 非画布/节点菜单，不劫持
+
+            // 阻止系统/ComfyUI 对本次右键的默认处理（浏览器原生右键菜单 / 画布重开新菜单）
+            e.preventDefault();
+            e.stopPropagation();
+
+            const text = entry.textContent?.trim() || entry.innerText?.trim();
+            if (!text) return;
+            const key = self._normalizeKey(text);
+            if (!key) return;
+
+            // 同一次右键只会触发一个 pointerdown，这里仅对极短间隔内的重复事件去重
+            const dup = document.getElementById('xzg-menu-hide-popup');
+            if (dup && dup._xzgTime && (Date.now() - dup._xzgTime) < 200) return;
+
+            removePopup();
+            const popup = document.createElement('div');
+            popup.id = 'xzg-menu-hide-popup';
+            popup.style.cssText = 'position:fixed;z-index:2147483000;min-width:150px;max-width:240px;' +
+                'background:#1a1a1a;border:1px solid #444;border-radius:6px;padding:4px;' +
+                'box-shadow:0 4px 14px rgba(0,0,0,.45);font-size:12px;font-family:inherit;';
+
+            const label = document.createElement('div');
+            label.style.cssText = 'color:#aaa;padding:3px 6px;margin-bottom:2px;overflow:hidden;' +
+                'text-overflow:ellipsis;white-space:nowrap;';
+            label.textContent = text;
+            label.title = text;
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = '隐藏此菜单项';
+            btn.style.cssText = 'display:block;width:100%;text-align:left;' +
+                'background:none;border:none;color:#FFD700;font-weight:bold;font-size:12px;' +
+                'padding:5px 6px;cursor:pointer;border-radius:4px;';
+            btn.addEventListener('mouseenter', () => { btn.style.background = '#2a2a2a'; });
+            btn.addEventListener('mouseleave', () => { btn.style.background = 'none'; });
+            btn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                ev.preventDefault();
+                // 开启隐藏功能并记录配置。菜单份属类型由挂钩阶段(filterOptions)可靠写入
+                // menuEl._xzgMenuType，这里只按该类型写入，避免 canvas / node 两表被写成一模一样，
+                // 导致主题面板切换“画布菜单 / 节点菜单”标签时隐藏列表不随类型变化。
+                self.setEnabled(true);
+                const menuType = menuEl._xzgMenuType || self._lastMenuType || 'canvas';
+                self.setHidden(menuType, key, true);
+                // 菜单可能在按钮点击瞬间刚渲染/重建，下一帧与稍后再补几次隐藏，确保对应当前打开的菜单生效。
+                requestAnimationFrame(() => self._applyHideToOpenMenus());
+                setTimeout(() => self._applyHideToOpenMenus(), 150);
+                setTimeout(() => self._applyHideToOpenMenus(), 400);
+                if (window.xzgThemePanel && window.xzgThemePanel._menuListVisible) {
+                    window.xzgThemePanel._refreshMenuListUI?.();
+                }
+                // 视觉反馈：按钮变绿说明 setHidden 已真正执行，方便与“隐藏没匹配上”问题区分。
+                btn.textContent = '已隐藏';
+                btn.style.color = '#7CFC00';
+                setTimeout(() => { btn.textContent = text; }, 250);
+                const menuRoot = entry.closest('.litecontextmenu, .litegraph-contextmenu, .context-menu, [class*="lite-menu"]') || entry.parentElement;
+                console.info('[小珠光] 已隐藏菜单项 => key:', key, '| 容器class:', menuRoot?.className || '', '| itemHTML:', entry.outerHTML.slice(0, 300));
+                setTimeout(() => removePopup(), 600);
+            });
+
+            popup.appendChild(label);
+            popup.appendChild(btn);
+            popup._xzgTime = Date.now();
+            document.body.appendChild(popup);
+
+            const x = Math.min(e.clientX, window.innerWidth - popup.offsetWidth - 8);
+            const y = Math.min(e.clientY, window.innerHeight - popup.offsetHeight - 8);
+            popup.style.left = Math.max(0, x) + 'px';
+            popup.style.top = Math.max(0, y) + 'px';
+        };
+
+        window.addEventListener('pointerdown', onRightDown, true);
+        document.addEventListener('pointerdown', onRightDown, true);
+    },
+
     _startDOMObserver() {
         if (this._domObserver) return;
         const self = this;
@@ -548,19 +790,22 @@ window.XZGMenuHide = {
             const processMenu = (menuEl) => {
                 if (!menuEl || seenMenus.has(menuEl)) return;
                 seenMenus.add(menuEl);
+                // 隐藏必须在任意时机可执行：菜单容器先挂载、条目随后才填充，因此要多次重试。
+                // 且不能依赖画布标志(_lastCtxMenuOnCanvas)——桌面版该标志可能始终为 false，
+                // 若把重试包进该判断内，条目填充后就不会被二次隐藏，造成“重开菜单又回来”。
+                const tryHide = () => { if (self._enabled) self._hideFromDOM(menuEl); };
+                tryHide();
+                requestAnimationFrame(tryHide);
+                setTimeout(tryHide, 60);
+                setTimeout(tryHide, 180);
+                if (!self._lastCtxMenuOnCanvas) return;
                 // 仅处理画布/节点右键菜单；跳过工作流标签、侧边栏、对话框等非画布菜单，
                 // 避免误隐藏标签右键条目导致"右键失效"
-                if (!self._lastCtxMenuOnCanvas) return;
+                menuEl._xzgMenuType = self._lastMenuType || 'canvas';
                 self._collectFromDOM(menuEl);
-                self._hideFromDOM(menuEl);
-                requestAnimationFrame(() => {
-                    self._collectFromDOM(menuEl);
-                    self._hideFromDOM(menuEl);
-                });
-                setTimeout(() => {
-                    self._collectFromDOM(menuEl);
-                    self._hideFromDOM(menuEl);
-                }, 50);
+                tryHide();
+                requestAnimationFrame(() => { self._collectFromDOM(menuEl); tryHide(); });
+                setTimeout(() => { self._collectFromDOM(menuEl); tryHide(); }, 50);
             };
 
             const findMenu = (el) => {
@@ -622,12 +867,13 @@ window.XZGMenuHide = {
 
         if (collected.length > 0 && this._collectedItems[menuType]) {
             const list = this._collectedItems[menuType];
-            const existing = new Set(list);
+            const existing = new Set(list.map(it => this._strongKey(it)));
             let changed = false;
             collected.forEach(text => {
                 const key = this._cleanText(text.replace(/<[^>]*>/g, '')).trim();
-                if (key && !existing.has(key)) {
-                    existing.add(key);
+                const sk = this._strongKey(key);
+                if (key && sk && !existing.has(sk)) {
+                    existing.add(sk);
                     list.push(key);
                     changed = true;
                 }
@@ -648,14 +894,14 @@ window.XZGMenuHide = {
         const allHiddenKeys = new Set();
         for (const menuType of ['canvas', 'node']) {
             const hiddenMap = this.config[menuType] || {};
-            Object.keys(hiddenMap).forEach(key => allHiddenKeys.add(key));
+            Object.keys(hiddenMap).forEach(key => allHiddenKeys.add(this._strongKey(key)));
         }
         if (allHiddenKeys.size === 0) return;
 
         const hideItem = (item) => {
             const text = item.textContent?.trim() || item.innerText?.trim();
             if (!text) return;
-            const key = this._cleanText(text.replace(/<[^>]*>/g, '')).trim();
+            const key = this._strongKey(text);
             if (!key) return;
 
             for (const hiddenKey of allHiddenKeys) {
@@ -674,8 +920,10 @@ window.XZGMenuHide = {
             if (el.children && el.children.length === 0) {
                 const text = el.textContent?.trim();
                 if (text && text.length > 0 && text.length < 50) {
+                    const strongText = this._strongKey(text);
+                    if (!strongText) return;
                     for (const hiddenKey of allHiddenKeys) {
-                        if (text === hiddenKey || text.includes(hiddenKey) || hiddenKey.includes(text)) {
+                        if (strongText === hiddenKey || strongText.includes(hiddenKey) || hiddenKey.includes(strongText)) {
                             let parent = el.parentElement;
                             for (let i = 0; i < 5 && parent; i++) {
                                 if (parent.tagName === 'LI' || 

@@ -2950,13 +2950,28 @@ class XZGWorkflowsManager {
         let isResizing = false;
         let startX, startWidth;
 
-        // 先同步云端左侧栏宽度，再读取本地回放
-        cloudUIInit().then(() => {
-            const savedWidth = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
-            if (savedWidth && savedWidth >= 80 && savedWidth <= 500) {
-                leftCol.style.width = savedWidth + "px";
+        // 恢复左侧栏宽度：专用云端键(独立持久化，不受共享几何/ComfyUI原生侧栏影响)
+        // > 旧的共享左栏宽度键(localStorage 兼容) > 默认 160
+        const restoreWidth = async () => {
+            let width = null;
+            try {
+                const cloud = await cloudLoad("xzg_wf_panel_width", { fallbackValue: null });
+                if (cloud && typeof cloud === "object" && typeof cloud.width === "number") {
+                    width = cloud.width;
+                }
+            } catch (e) {}
+            if (width == null) {
+                const saved = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
+                if (saved && saved >= 80 && saved <= 500) width = saved;
             }
-        });
+            if (width != null && width >= 80 && width <= 500) {
+                leftCol.style.width = width + "px";
+                localStorage.setItem("xzg_wf_left_col_width", width.toString());
+            }
+        };
+        // 兼容旧部署：仍跑一次共享几何云同步（不影响独立键，仅回放既有几何键）
+        cloudUIInit().then(() => restoreWidth());
+        restoreWidth();
 
         handle.addEventListener("mousedown", (e) => {
             isResizing = true;
@@ -2975,6 +2990,8 @@ class XZGWorkflowsManager {
             if (isResizing) {
                 isResizing = false;
                 localStorage.setItem("xzg_wf_left_col_width", leftCol.offsetWidth.toString());
+                // 写入专用云端键，保证云端环境每次打开都恢复用户自定的宽度
+                cloudSave("xzg_wf_panel_width", { width: leftCol.offsetWidth }).catch(() => {});
                 cloudUIQueueGeometry();
             }
         });

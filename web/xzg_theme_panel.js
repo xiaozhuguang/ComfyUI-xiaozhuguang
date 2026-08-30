@@ -346,17 +346,8 @@ window.XZGThemePanel = {
                         <button type="button" class="xzg-menu-tab active" data-menu-tab="canvas">${xzgT('画布菜单','Canvas Menu')}</button>
                         <button type="button" class="xzg-menu-tab" data-menu-tab="node">${xzgT('节点菜单','Node Menu')}</button>
                     </div>
-                    <div class="xzg-menu-search-box">
-                        <input type="text" id="xzg-menu-search-input" placeholder="${xzgT('🔍 搜索菜单项...','🔍 Search menu items...')}" />
-                        <button type="button" class="xzg-menu-search-clear" id="xzg-menu-search-clear" title="${xzgT('清除搜索','Clear search')}" style="display: none;">✕</button>
-                    </div>
-                    <div class="xzg-menu-hide-toolbar">
-                        <button type="button" id="xzg-menu-refresh-btn" class="xzg-menu-tool-btn">${xzgT('刷新列表','Refresh List')}</button>
-                        <button type="button" id="xzg-menu-selectall-btn" class="xzg-menu-tool-btn">${xzgT('隐藏全部','Hide All')}</button>
-                        <button type="button" id="xzg-menu-unselectall-btn" class="xzg-menu-tool-btn">${xzgT('显示全部','Show All')}</button>
-                    </div>
                     <div class="xzg-menu-hide-list" id="xzg-menu-hide-list">
-                        <div class="xzg-menu-empty-tip">${xzgT('点击「刷新列表」加载菜单项','Click "Refresh List" to load menu items')}<br><span style="font-size:11px;color:#888;">${xzgT('提示：先在画布上右键一次再刷新','Tip: right-click on canvas once before refreshing')}</span></div>
+                        <div class="xzg-menu-empty-tip">${xzgT('当前没有已隐藏的菜单','No hidden menus currently')}</div>
                     </div>
                     <button type="button" id="xzg-menu-reset-btn" class="xzg-menu-reset-btn">${xzgT('恢复所有隐藏菜单','Restore All Hidden Menus')}</button>
                 </div>
@@ -963,63 +954,40 @@ window.XZGThemePanel = {
         const menuHideControls = panel.querySelector("#xzg-menu-hide-controls");
         const menuHideList = panel.querySelector("#xzg-menu-hide-list");
         const menuTabs = panel.querySelectorAll(".xzg-menu-tab");
-        const menuRefreshBtn = panel.querySelector("#xzg-menu-refresh-btn");
-        const menuSelectAllBtn = panel.querySelector("#xzg-menu-selectall-btn");
-        const menuUnselectAllBtn = panel.querySelector("#xzg-menu-unselectall-btn");
         const menuResetBtn = panel.querySelector("#xzg-menu-reset-btn");
-        const menuSearchInput = panel.querySelector("#xzg-menu-search-input");
-        const menuSearchClear = panel.querySelector("#xzg-menu-search-clear");
 
         let currentMenuTab = 'canvas';
-        let currentMenuSearch = '';
-
-        const updateMenuSearchClearVisibility = () => {
-            if (menuSearchClear && menuSearchInput) {
-                menuSearchClear.style.display = menuSearchInput.value ? '' : 'none';
-            }
-        };
 
         const renderMenuList = () => {
             if (!window.XZGMenuHide || !menuHideList) return;
             const mh = window.XZGMenuHide;
             const hiddenMap = mh.config[currentMenuTab] || {};
-            const items = mh._collectedItems?.[currentMenuTab] || [];
+            const keys = Object.keys(hiddenMap);
 
-            if (items.length === 0) {
-                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('点击「刷新列表」加载菜单项','Click "Refresh List" to load menu items') + '<br><span style="font-size:11px;color:#888;">' + xzgT('提示：先在画布上右键一次再刷新','Tip: right-click on canvas once before refreshing') + '</span></div>';
-                return;
-            }
-
-            let filteredItems = items;
-            if (currentMenuSearch) {
-                const searchLower = currentMenuSearch.toLowerCase();
-                filteredItems = items.filter(item => mh._searchMatch(item, searchLower));
-            }
-
-            if (filteredItems.length === 0) {
-                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('没有匹配的菜单项','No matching menu items') + '</div>';
+            if (keys.length === 0) {
+                menuHideList.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('当前没有已隐藏的菜单','No hidden menus currently') + '</div>';
                 return;
             }
 
             let html = '';
-            filteredItems.forEach(item => {
-                const isHidden = !!hiddenMap[item];
+            keys.forEach(item => {
                 const displayName = item.length > 28 ? item.substring(0, 28) + '...' : item;
                 html += `
-                    <label class="xzg-menu-item" title="${item.replace(/"/g, '&quot;')}">
-                        <input type="checkbox" data-menu-item="${item.replace(/"/g, '&quot;')}" ${isHidden ? 'checked' : ''}>
+                    <div class="xzg-menu-item" title="${item.replace(/"/g, '&quot;')}">
                         <span>${displayName}</span>
-                    </label>
+                        <button type="button" class="xzg-menu-unhide-btn" data-menu-item="${item.replace(/"/g, '&quot;')}">${xzgT('恢复','Restore')}</button>
+                    </div>
                 `;
             });
             menuHideList.innerHTML = html;
 
-            menuHideList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-                cb.addEventListener('change', (e) => {
-                    const item = cb.dataset.menuItem;
-                    const checked = cb.checked;
+            menuHideList.querySelectorAll('.xzg-menu-unhide-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const item = btn.dataset.menuItem;
                     if (window.XZGMenuHide) {
-                        window.XZGMenuHide.setHidden(currentMenuTab, item, checked);
+                        window.XZGMenuHide.setHidden(currentMenuTab, item, false);
+                        renderMenuList();
                     }
                 });
             });
@@ -1106,38 +1074,6 @@ window.XZGThemePanel = {
             });
         }
 
-        if (menuRefreshBtn) {
-            menuRefreshBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (window.XZGMenuHide) {
-                    window.XZGMenuHide.collectCurrentMenu(currentMenuTab);
-                    renderMenuList();
-                }
-            });
-        }
-
-        if (menuSelectAllBtn) {
-            menuSelectAllBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!window.XZGMenuHide) return;
-                const mh = window.XZGMenuHide;
-                const items = mh._collectedItems?.[currentMenuTab] || [];
-                items.forEach(item => mh.setHidden(currentMenuTab, item, true));
-                renderMenuList();
-            });
-        }
-
-        if (menuUnselectAllBtn) {
-            menuUnselectAllBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!window.XZGMenuHide) return;
-                const mh = window.XZGMenuHide;
-                const items = mh._collectedItems?.[currentMenuTab] || [];
-                items.forEach(item => mh.setHidden(currentMenuTab, item, false));
-                renderMenuList();
-            });
-        }
-
         if (menuResetBtn) {
             menuResetBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -1145,31 +1081,6 @@ window.XZGThemePanel = {
                 if (confirm(xzgT('确定要恢复所有被隐藏的菜单项吗？','Sure to restore all hidden menu items?'))) {
                     window.XZGMenuHide.resetAll();
                     renderMenuList();
-                }
-            });
-        }
-
-        if (menuSearchInput) {
-            menuSearchInput.addEventListener('input', (e) => {
-                e.stopPropagation();
-                currentMenuSearch = e.target.value;
-                renderMenuList();
-                updateMenuSearchClearVisibility();
-            });
-            menuSearchInput.addEventListener('click', (e) => e.stopPropagation());
-            menuSearchInput.addEventListener('pointerdown', (e) => e.stopPropagation());
-            menuSearchInput.addEventListener('mousedown', (e) => e.stopPropagation());
-        }
-
-        if (menuSearchClear) {
-            menuSearchClear.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (menuSearchInput) {
-                    menuSearchInput.value = '';
-                    currentMenuSearch = '';
-                    renderMenuList();
-                    updateMenuSearchClearVisibility();
-                    menuSearchInput.focus();
                 }
             });
         }
@@ -2710,6 +2621,26 @@ window.XZGThemePanel = {
                     localStorage.setItem("xzg_workflows_meta", JSON.stringify(meta));
                     importedXzg = true;
                 } catch (e) {}
+            }
+            // 菜单隐藏配置：写回本地后刷新实例并推送云端，避免内存仍为旧值 / 被旧云端数据覆盖
+            if (obj.localStorage && obj.localStorage["xzg-menu-hide"] !== undefined) {
+                try {
+                    const MH = window.XZGMenuHide;
+                    if (MH) {
+                        if (typeof MH.reload === "function") {
+                            MH.reload();
+                        } else {
+                            MH.loadConfig();
+                            MH.loadEnabled();
+                            if (MH._applyHideToOpenMenus) MH._applyHideToOpenMenus();
+                            if (MH._cloudPush) MH._cloudPush();
+                        }
+                        if (this._refreshMenuListUI) this._refreshMenuListUI();
+                        importedXzg = true;
+                    }
+                } catch (e) {
+                    console.warn("[XZG] Failed to import menu hide config:", e);
+                }
             }
             // 导入自定义快捷键（写入后端 xzg_shortcuts.json）
             if (Array.isArray(obj.shortcuts) && obj.shortcuts.length > 0) {

@@ -35,6 +35,16 @@ const DEFAULT_SHORTCUT = { key: "t", ctrl: false, alt: false, shift: false, meta
 
 let isArrowModeActive = false;
 let arrows = [];
+// ============ 箭头持久化（按工作流级别，参考小珠光编组持久化方式）============
+// 当前活动工作流的箭头标识，用于检测工作流切换，实现“按工作流隔离”
+let _arrowActiveKey = null;
+// 各工作流箭头内存缓存：key -> {version, arrows}
+const _arrowCache = new Map();
+// 加载工作流时暂存的新数据：{ key, data }，供 configure / 轮询兜底恢复
+let _arrowPendingLoad = null;
+// 是否需要把当前工作流箭头写入 localStorage 备份（刷新后恢复）
+let _arrowBackupDirty = false;
+const ARROW_BACKUP_PREFIX = "xzg_arrow_backup_";
 let currentArrow = null;
 let isDrawing = false;
 let startPoint = null;
@@ -3903,53 +3913,274 @@ function syncArrowsToExtra() {
     if (!app?.graph) return;
     try {
         if (!app.graph.extra) app.graph.extra = {};
-        if (arrows.length > 0) {
-            app.graph.extra[EXTENSION_KEY] = {
-                version: 3,
-                arrows: arrows.map(a => {
-                    const obj = {
-                        start: { x: a.start.x, y: a.start.y },
-                        end: { x: a.end.x, y: a.end.y },
-                        color: a.color,
-                        lineWidth: a.lineWidth,
-                        arrowSize: a.arrowSize,
-                        opacity: a.opacity,
-                        type: a.type || "arrow",
-                        mode: a.mode || "border",
-                        borderRadius: a.borderRadius || 0,
-                        lineStyle: a.lineStyle || "solid",
-                        animType: a.animType || "none",
-                        animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
-                        animCount: a.animCount !== undefined ? a.animCount : 5,
-                        animSize: a.animSize !== undefined ? a.animSize : 50,
-                        smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
-                        closed: a.closed !== undefined ? a.closed : arrowSettings.closed,
-                        pacmanDots: a.pacmanDots !== undefined ? a.pacmanDots : arrowSettings.pacmanDots,
-                        pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
-                        pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio
-                    };
-                    if (a.rotation !== undefined) obj.rotation = a.rotation;
-                    if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
-                    if (a.control) obj.control = { x: a.control.x, y: a.control.y };
-                    return obj;
-                })
-            };
+        const data = makeArrowExtraData();
+        if (data.arrows.length > 0) {
+            app.graph.extra[EXTENSION_KEY] = data;
         } else if (app.graph.extra && app.graph.extra[EXTENSION_KEY]) {
             delete app.graph.extra[EXTENSION_KEY];
         }
-        // 缓存当前工作流引用到 graph 对象上
-        // 确保 configure 执行前能找到正确的工作流来保存箭头
+        // 标记需要把当前工作流备份写入 localStorage（由轮询 / 卸载时落盘）
+        _arrowBackupDirty = true;
+        // 缓存当前工作流引用到 graph 对象上（configure 兜底）
         try {
-            const wfStore = app?.extensionManager?.workflow;
-            if (wfStore?.workflows && Array.isArray(wfStore.workflows)) {
-                const currentWf = wfStore.workflows.find(w => typeof wfStore.isActive === 'function' && wfStore.isActive(w));
-                if (currentWf) {
-                    app.graph._arrowWorkflow = currentWf;
-                }
-            }
+            app.graph._arrowWorkflow = arrowActiveWorkflow();
         } catch (e) {}
     } catch (e) {}
 }
+
+/** 将全局 arrows 序列化为持久化结构（与 syncArrowsToExtra 保持字段一致） */
+function makeArrowExtraData() {
+    return {
+        version: 3,
+        arrows: arrows.map(a => {
+            const obj = {
+                start: { x: a.start.x, y: a.start.y },
+                end: { x: a.end.x, y: a.end.y },
+                color: a.color,
+                lineWidth: a.lineWidth,
+                arrowSize: a.arrowSize,
+                opacity: a.opacity,
+                type: a.type || "arrow",
+                mode: a.mode || "border",
+                borderRadius: a.borderRadius || 0,
+                lineStyle: a.lineStyle || "solid",
+                animType: a.animType || "none",
+                animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
+                animCount: a.animCount !== undefined ? a.animCount : 5,
+                animSize: a.animSize !== undefined ? a.animSize : 50,
+                smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
+                closed: a.closed !== undefined ? a.closed : arrowSettings.closed,
+                pacmanDots: a.pacmanDots !== undefined ? a.pacmanDots : arrowSettings.pacmanDots,
+                pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
+                pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio
+            };
+            if (a.rotation !== undefined) obj.rotation = a.rotation;
+            if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
+            if (a.control) obj.control = { x: a.control.x, y: a.control.y };
+            return obj;
+        })
+    };
+}
+
+/** 从持久化结构恢复 arrows 到全局状态（参考小珠光编组 restoreGroups） */
+function applyArrowExtraData(data) {
+    arrows = [];
+    history = [];
+    currentHistoryIndex = -1;
+    const savedArrows = data?.arrows;
+    if (savedArrows && Array.isArray(savedArrows) && savedArrows.length > 0) {
+        arrows = savedArrows.map(a => ({
+            start: { x: a.start.x, y: a.start.y },
+            end: { x: a.end.x, y: a.end.y },
+            color: a.color || "#FF5555",
+            lineWidth: a.lineWidth || 3,
+            arrowSize: a.arrowSize || 10,
+            opacity: a.opacity !== undefined ? a.opacity : 1.0,
+            type: a.type || "arrow",
+            mode: a.mode || "border",
+            borderRadius: a.borderRadius || 0,
+            lineStyle: a.lineStyle || "solid",
+            animType: a.animType || "none",
+            animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
+            animCount: a.animCount !== undefined ? a.animCount : 5,
+            animSize: a.animSize !== undefined ? a.animSize : 50,
+            smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
+            closed: a.closed !== undefined ? a.closed : arrowSettings.closed,
+            pacmanDots: a.pacmanDots !== undefined ? a.pacmanDots : arrowSettings.pacmanDots,
+            pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
+            pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio,
+            rotation: a.rotation !== undefined ? a.rotation : 0,
+            ...(a.points ? { points: a.points.map(p => ({ x: p.x, y: p.y })) } : {}),
+            ...(a.control ? { control: { x: a.control.x, y: a.control.y } } : {})
+        }));
+    }
+    recordInitialState();
+    renderArrows();
+    updateToolbarState();
+}
+
+// ============ 按工作流级别的箭头持久化辅助（参考小珠光编组持久化）============
+/** 获取当前活动工作流对象（兼容不同版本前端 store API） */
+function arrowActiveWorkflow() {
+    try {
+        const wfStore = app?.extensionManager?.workflow;
+        if (!wfStore) return null;
+        // 部分版本直接暴露 activeWorkflow
+        if (wfStore.activeWorkflow && typeof wfStore.activeWorkflow === 'object') {
+            const aw = wfStore.activeWorkflow;
+            if (aw.path !== undefined || aw.name !== undefined || aw.id !== undefined) {
+                return aw;
+            }
+        }
+        // 兜底：遍历 workflows / openWorkflows，用 isActive 判断
+        const pool = wfStore.workflows || wfStore.openWorkflows || [];
+        if (Array.isArray(pool)) {
+            return pool.find(w => w && typeof wfStore.isActive === 'function' && wfStore.isActive(w)) || null;
+        }
+    } catch (e) {}
+    return null;
+}
+
+/**
+ * 未保存工作流的对象级唯一 key 分配：
+ * 新建未保存工作流没有 path，且 name/id 在创建瞬间可能是多个流共用的默认值，
+ * 若用它们当 key 会造成 key 碰撞，导致上一个流的箭头泄漏进新建空白流。
+ * 这里用 WeakMap 为该对象分配一个生命周期内稳定且全局唯一的 key：
+ * 新建=新对象→全新 key→箭头自然为空；来回切换同对象→同 key→正确恢复。
+ */
+const _arrowWfUid = new WeakMap();
+let _arrowWfUidSeq = 0;
+
+/**
+ * 由工作流对象生成稳定的持久化 key。
+ * 已保存工作流优先用 path（跨刷新生效）；未保存工作流用对象级唯一 id，避免碰撞泄漏。
+ */
+function arrowWorkflowKey(wf) {
+    if (!wf) return null;
+    if (typeof wf.path === 'string' && wf.path) return "p:" + wf.path;
+    let uid = _arrowWfUid.get(wf);
+    if (uid === undefined) {
+        uid = "u:" + (++_arrowWfUidSeq) + ":" + Math.random().toString(36).slice(2, 10);
+        _arrowWfUid.set(wf, uid);
+    }
+    return uid;
+}
+
+function currentArrowWorkflowKey() {
+    return arrowWorkflowKey(arrowActiveWorkflow());
+}
+
+function readArrowBackup(key) {
+    if (!key) return null;
+    try {
+        const s = localStorage.getItem(ARROW_BACKUP_PREFIX + key);
+        return s ? JSON.parse(s) : null;
+    } catch (e) { return null; }
+}
+
+function writeArrowBackup(key, data) {
+    if (!key) return;
+    try { localStorage.setItem(ARROW_BACKUP_PREFIX + key, JSON.stringify(data)); } catch (e) {}
+}
+
+function removeArrowBackup(key) {
+    if (!key) return;
+    try { localStorage.removeItem(ARROW_BACKUP_PREFIX + key); } catch (e) {}
+}
+
+/** 把当前全局箭头 flush 到指定工作流 key（写内存缓存；已保存工作流额外写 localStorage 备份） */
+function flushCurrentArrowsToKey(key) {
+    if (!key) return;
+    const data = makeArrowExtraData();
+    _arrowCache.set(key, data);
+    // 仅路径工作流（跨刷新可恢复）写 localStorage；未保存工作流只留内存，避免会话内键无限累积
+    if (key.startsWith("p:")) {
+        if (data.arrows.length > 0) writeArrowBackup(key, data);
+        else removeArrowBackup(key);
+    }
+}
+
+/**
+ * 从某个工作流 key 加载箭头到全局状态。
+ * freshData !== undefined 且非 null 时以它为准（工作流文件/内存中的最新内容）；
+ * 否则回退到内存缓存 / localStorage 备份（本会话绘制但未落文件的场景）。
+ */
+function loadArrowsFromSource(key, freshData) {
+    const backup = (key && (readArrowBackup(key) || _arrowCache.get(key))) || null;
+    const data = (freshData !== undefined && freshData !== null) ? freshData : backup;
+    if (data && typeof data === 'object' && Array.isArray(data.arrows) && key) {
+        _arrowCache.set(key, data);
+    }
+    applyArrowExtraData(data);
+}
+
+/**
+ * 处理工作流切换：flush 旧工作流箭头，加载新工作流箭头。
+ * @param key        目标工作流 key；null 或无标识时不动当前状态（切换瞬间前端可能短暂报 null）
+ * @param freshData  权威新数据（configure / loadGraphData 带来）；undefined 表示走缓存/备份
+ * @param trusted    是否链路权威：只在新前端确认切换（configure/loadGraphData）或轮询确认后才提交。
+ *                   否则不 flush 不清空，静默等待确认，避免切换瞬时 key 抖动导致“画一遍后误清”。
+ */
+/**
+ * 对覆盖层执行一次渐入（先隐藏再淡入），用于平滑掩盖切换/加载时的残留。
+ * @param {number} ms 渐入时长（毫秒）
+ */
+function arrowFadeInOnce(ms) {
+    const el = canvasElement;
+    if (!el) return;
+    const dur = Math.max(ms || 0, 0) / 1000;
+    el.style.transition = 'opacity 0s';
+    el.style.opacity = '0';
+    // 强制重排，确保 opacity:0 真正生效后再进入渐入
+    void el.offsetWidth;
+    el.style.transition = `opacity ${dur}s ease`;
+    el.style.opacity = '1';
+}
+
+/**
+ * 切换提交后立即重绘一次，并强制一次最短渐入（掩盖切换残留）。
+ * 即使未开启渐入也默认应用 0.5s；开启时用设置值但同样保证最短 0.5s。
+ */
+function scheduleArrowRedrawAfterSwitch() {
+    renderArrows();
+    const durMs = arrowSettings.fadeInEnabled
+        ? Math.max(arrowSettings.fadeInDuration || 1000, 500)
+        : 500;
+    arrowFadeInOnce(durMs);
+}
+
+function handleArrowWorkflowSwitch(key, freshData, trusted) {
+    // 关键防御：无工作流标识（切换瞬间前端短暂上报 null）时绝不动当前箭头，防止旧内容被误清后消失
+    if (!key) return;
+    const oldKey = _arrowActiveKey;
+    if (key === oldKey) {
+        if (freshData !== undefined && freshData !== null && trusted) {
+            loadArrowsFromSource(key, freshData);
+        }
+        return;
+    }
+    // 非权威路径（仅靠轮询检测到 key 变化）需先经过确认缓冲，避免瞬时 key 抖动造成闪烁
+    if (!trusted) return;
+    if (oldKey) flushCurrentArrowsToKey(oldKey);
+    loadArrowsFromSource(key, freshData);
+    _arrowActiveKey = key;
+    // 切换完成后多帧延迟重绘，覆盖仍可能滞留在旧变换上的内容
+    scheduleArrowRedrawAfterSwitch();
+}
+
+/** 若箭头有变动，则把当前工作流备份写入 localStorage（刷新后恢复用） */
+function persistArrowBackupIfNeeded() {
+    if (!_arrowBackupDirty) return;
+    _arrowBackupDirty = false;
+    const key = currentArrowWorkflowKey() || _arrowActiveKey;
+    if (!key) return;
+    const data = makeArrowExtraData();
+    _arrowCache.set(key, data);
+    if (data.arrows.length > 0) writeArrowBackup(key, data);
+    else removeArrowBackup(key);
+}
+
+/** 轮询检测活动工作流变化，底层前端不触发 loadGraphData/configure 时也能按工作流切换箭头 */
+function pollArrowWorkflow() {
+    try {
+        const key = currentArrowWorkflowKey();
+        const pending = _arrowPendingLoad; _arrowPendingLoad = null;
+
+        // 权威路径：configure/loadGraphData 携带了明确的新数据，直接信任并提交
+        if (pending && pending.key === key) {
+            handleArrowWorkflowSwitch(key, pending.data, true);
+        } else if (key && key !== _arrowActiveKey) {
+            // 轮询路径：检测到新的非空工作流 key 立即提交。
+            // 不在此确认等待——否则切换后仍长时间显示旧工作流内容；
+            // 瞬时 null / key 抖动带来的误清已由 handleArrowWorkflowSwitch 的 null 防护拦截。
+            handleArrowWorkflowSwitch(key, undefined, true);
+        }
+        persistArrowBackupIfNeeded();
+    } catch (e) {}
+}
+
+/** 轮询间隔：越小切换响应越快（越小系统占用略增，250ms 平衡） */
+const ARROW_SWITCH_POLL_MS = 250;
 
 /** 设置持久化 */
 function setupPersistence() {
@@ -3961,37 +4192,9 @@ function setupPersistence() {
         LGraph.prototype.serialize = function () {
             const data = origSerialize.apply(this, arguments);
             if (!data.extra) data.extra = {};
-            if (arrows.length > 0) {
-                data.extra[EXTENSION_KEY] = {
-                    version: 3,
-                    arrows: arrows.map(a => {
-                        const obj = {
-                            start: { x: a.start.x, y: a.start.y },
-                            end: { x: a.end.x, y: a.end.y },
-                            color: a.color,
-                            lineWidth: a.lineWidth,
-                            arrowSize: a.arrowSize,
-                            opacity: a.opacity,
-                            type: a.type || "arrow",
-                            mode: a.mode || "border",
-                            borderRadius: a.borderRadius || 0,
-                            lineStyle: a.lineStyle || "solid",
-                            animType: a.animType || "none",
-                            animSpeed: a.animSpeed || 1,
-                            animCount: a.animCount || 5,
-                            animSize: a.animSize !== undefined ? a.animSize : 50,
-                            smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
-                            closed: a.closed !== undefined ? a.closed : arrowSettings.closed,
-                            pacmanDots: a.pacmanDots !== undefined ? a.pacmanDots : arrowSettings.pacmanDots,
-                            pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
-                            pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio
-                        };
-                        if (a.rotation !== undefined) obj.rotation = a.rotation;
-                        if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
-                        if (a.control) obj.control = { x: a.control.x, y: a.control.y };
-                        return obj;
-                    })
-                };
+            const arrowData = makeArrowExtraData();
+            if (arrowData.arrows.length > 0) {
+                data.extra[EXTENSION_KEY] = arrowData;
             } else {
                 delete data.extra[EXTENSION_KEY];
             }
@@ -3999,16 +4202,61 @@ function setupPersistence() {
         };
     }
 
-    // 2) loadGraphData 补丁：不做清除（由 configure 补丁负责保存旧箭头和恢复新箭头）
-    //    如果在这里清除 arrows，configure 的 BEFORE 逻辑就无法检测到 arrows.length > 0
-    //    导致旧工作流的箭头不会被保存
-    if (app) {
+    // 2) loadGraphData 补丁：暂存新工作流的箭头数据，供 configure / 轮询兜底恢复，
+    //    不在此清除 arrows，保证 configure 的 BEFORE 仍能检测到旧工作流箭头（参考小珠光编组方案2）
+    if (app?.loadGraphData) {
         const origLoadGraphData = app.loadGraphData.bind(app);
         app.loadGraphData = async function (graphData, ...args) {
+            try {
+                // 开始加载工作流的瞬间立即隐藏旧覆盖层，消除切换时的残留
+                if (canvasElement) {
+                    canvasElement.style.transition = 'opacity 0s';
+                    canvasElement.style.opacity = '0';
+                }
+                _arrowPendingLoad = {
+                    key: currentArrowWorkflowKey(),
+                    data: (graphData?.extra && graphData.extra[EXTENSION_KEY]) || null
+                };
+            } catch (e) {}
             const result = await origLoadGraphData(graphData, ...args);
             return result;
         };
     }
+
+    // 2.5) graphToPrompt 补丁（方案1·保存）：把箭头写入最终序列化输出的 workflow.extra，
+    //      确保 Ctrl+S / 保存工作流文件时箭头真正随工作流保存（参考小珠光编组方案1）
+    (function installGraphToPromptHook() {
+        if (app?.graphToPrompt) {
+            const origGraphToPrompt = app.graphToPrompt;
+            app.graphToPrompt = async function (...args) {
+                const result = await origGraphToPrompt.apply(this, args);
+                try {
+                    if (result?.workflow) {
+                        result.workflow.extra = result.workflow.extra || {};
+                        const data = makeArrowExtraData();
+                        if (data.arrows.length > 0) {
+                            result.workflow.extra[EXTENSION_KEY] = data;
+                        } else {
+                            delete result.workflow.extra[EXTENSION_KEY];
+                        }
+                        // 同步回 graph.extra，让其他读取方保持一致
+                        syncArrowsToExtra();
+                    }
+                } catch (e) {}
+                return result;
+            };
+        } else {
+            if (typeof window !== 'undefined' && !window._xzgArrowGTPInit) {
+                window._xzgArrowGTPInit = true;
+                const timer = setInterval(() => {
+                    if (app?.graphToPrompt) {
+                        clearInterval(timer);
+                        installGraphToPromptHook();
+                    }
+                }, 200);
+            }
+        }
+    })();
 
     // 3) configure 补丁：
     //    BEFORE origConfigure: 用 graph._arrowWorkflow 缓存的引用保存当前箭头到旧工作流
@@ -4056,57 +4304,25 @@ function setupPersistence() {
 
             const result = origConfigure.apply(this, arguments);
 
-            // AFTER: 清除箭头，从新数据恢复
-            arrows = [];
-            history = [];
-            currentHistoryIndex = -1;
-
-            const savedArrows = data?.extra?.[EXTENSION_KEY]?.arrows;
-            if (savedArrows && Array.isArray(savedArrows) && savedArrows.length > 0) {
-                arrows = savedArrows.map(a => ({
-                    start: { x: a.start.x, y: a.start.y },
-                    end: { x: a.end.x, y: a.end.y },
-                    color: a.color || "#FF5555",
-                    lineWidth: a.lineWidth || 3,
-                    arrowSize: a.arrowSize || 10,
-                    opacity: a.opacity !== undefined ? a.opacity : 1.0,
-                    type: a.type || "arrow",
-                    mode: a.mode || "border",
-                    borderRadius: a.borderRadius || 0,
-                    lineStyle: a.lineStyle || "solid",
-                    animType: a.animType || "none",
-                    animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
-                    animCount: a.animCount !== undefined ? a.animCount : 5,
-                    animSize: a.animSize !== undefined ? a.animSize : 50,
-                    smoothness: a.smoothness !== undefined ? a.smoothness : arrowSettings.smoothness,
-                    closed: a.closed !== undefined ? a.closed : arrowSettings.closed,
-                    pacmanDots: a.pacmanDots !== undefined ? a.pacmanDots : arrowSettings.pacmanDots,
-                    pacmanSize: a.pacmanSize !== undefined ? a.pacmanSize : arrowSettings.pacmanSize,
-                    pacmanDotRatio: a.pacmanDotRatio !== undefined ? a.pacmanDotRatio : arrowSettings.pacmanDotRatio,
-                    rotation: a.rotation !== undefined ? a.rotation : 0,
-                    ...(a.points ? { points: a.points.map(p => ({ x: p.x, y: p.y })) } : {}),
-                    ...(a.control ? { control: { x: a.control.x, y: a.control.y } } : {})
-                }));
-            }
+            // AFTER: 按工作流切换恢复箭头。
+            // 优先用 configure 自带的 data.extra；否则回退到 loadGraphData 暂存 / 内存缓存 / localStorage 备份
+            const pending = _arrowPendingLoad; _arrowPendingLoad = null;
+            const key = currentArrowWorkflowKey() || (pending && pending.key) || (this._arrowWorkflow && arrowWorkflowKey(this._arrowWorkflow)) || null;
+            const fresh = data?.extra?.[EXTENSION_KEY] !== undefined ? data.extra[EXTENSION_KEY] : (pending ? pending.data : undefined);
+            handleArrowWorkflowSwitch(key, fresh, true);
 
             // 更新当前工作流引用为新的 active workflow
             try {
-                const wfStore = app?.extensionManager?.workflow;
-                if (wfStore?.workflows && Array.isArray(wfStore.workflows)) {
-                    const currentWf = wfStore.workflows.find(w => typeof wfStore.isActive === 'function' && wfStore.isActive(w));
-                    if (currentWf) {
-                        this._arrowWorkflow = currentWf;
-                    }
-                }
+                const currentWf = arrowActiveWorkflow();
+                if (currentWf) this._arrowWorkflow = currentWf;
             } catch (e) {}
-
-            recordInitialState();
-            renderArrows();
-            updateToolbarState();
 
             return result;
         };
     }
+
+    // 4) 轮询：检测活动工作流切换，底层前端不触发 configure/loadGraphData 时也能按工作流隔离箭头
+    setInterval(pollArrowWorkflow, ARROW_SWITCH_POLL_MS);
 }
 
 // ============================================================================
@@ -6028,13 +6244,18 @@ function initializeArrowSystem(litegraphCanvas) {
     let lastTransformStr = "";
     let _arrowCanvasMoving = false;
     let _arrowMoveStopTimer = null;
-    transformTrackerCleanup = createTransformTracker(() => {
+    const transformTrackerCleanup = createTransformTracker(() => {
         const transform = getTransform();
         const transformStr = `${transform.scale},${transform.offsetX},${transform.offsetY}`;
         const moved = transformStr !== lastTransformStr;
         if (moved) {
             lastTransformStr = transformStr;
-            renderArrows();
+            // 铁律：不在此直接渲染箭头（独立 rAF 若先于 canvas 帧用新 scale 绘制，
+            // 大数据量快速缩放时会出现“箭头先缩、节点后追”的不同步）。
+            // 仅请求画布重绘，由 onDrawBackground 内的 renderArrows 与节点
+            // 同一渲染帧、同一 scale 更新，与节点缩放严格同步。
+            const cv = window.app?.canvas || window.LiteGraph?.LGraphCanvas?.active_canvas;
+            if (cv?.setDirty) cv.setDirty(true, true);
         }
         // 渐入检测
         if (arrowSettings.fadeInEnabled && canvasElement) {
@@ -6066,6 +6287,9 @@ function initializeArrowSystem(litegraphCanvas) {
     // 设置 LiteGraph 画布箭头点击检测（模式未激活时也可点击箭头弹出面板）
     setupLiteGraphArrowClick();
 
+    // 让箭头与画布逐帧重绘同步：切换/移动/缩放时箭头始终和节点同一变换，杜绝残影与错位
+    patchCanvasArrowRedrawSync();
+
     // 设置双击画布关闭面板
     setupCanvasDoubleClick();
 
@@ -6091,9 +6315,10 @@ function initializeArrowSystem(litegraphCanvas) {
         }, true);
     }
 
-    // 页面关闭/刷新前确保箭头数据已同步到 graph.extra
+    // 页面关闭/刷新前确保箭头数据已同步到 graph.extra 并落盘当前工作流备份
     window.addEventListener('beforeunload', function () {
         syncArrowsToExtra();
+        persistArrowBackupIfNeeded();
     });
 
     // 记录初始状态
@@ -6132,6 +6357,24 @@ function createTransformTracker(onChange) {
 // ============================================================================
 // 全局 API：供编组拖动时移动箭头
 // ============================================================================
+
+/**
+ * 让箭头在画布每次重绘后同步绘制一遍：
+ * 箭头覆盖层使用与节点完全相同的当前变换，切换/缩放/平移的动画过程中二者逐帧对齐，
+ * 从根本上消除“残影”“错位→移动”。仅在画布真正重绘（脏帧）时才会触发，空闲不额外开销。
+ */
+let _arrowCanvasSyncInstalled = false;
+function patchCanvasArrowRedrawSync() {
+    const cv = window.app?.canvas || window.LiteGraph?.LGraphCanvas?.active_canvas;
+    if (!cv) { setTimeout(patchCanvasArrowRedrawSync, 200); return; }
+    if (_arrowCanvasSyncInstalled) return;
+    _arrowCanvasSyncInstalled = true;
+    const orig = cv.onDrawBackground;
+    cv.onDrawBackground = function () {
+        try { if (typeof orig === "function") orig.apply(this, arguments); } catch (e) {}
+        try { renderArrows(); } catch (e) {}
+    };
+}
 
 /**
  * 计算箭头的中心点（图坐标）
