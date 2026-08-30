@@ -274,15 +274,21 @@ async function saveShortcuts(list) {
 /** 全局 keydown 监听（capture 阶段，优先于输入框判断） */
 function onKeyDown(e) {
     if (!shortcuts.length) return;
-    // 在输入框/文本域/可编辑元素中不触发，避免干扰打字
+    // 快捷键设置对话框打开时，把键盘完全交给对话框的捕获逻辑（onCaptureKey），
+    // 避免这里抢先处理导致"无法捕获 / 添加快捷键"。
+    if (document.getElementById("xzg-shortcuts-dialog")) return;
+    // 输入框 / 文本域 / 可编辑元素内：不触发动作，避免干扰打字；
+    // 但仍拦截已配置快捷键的浏览器默认行为（如 Ctrl+D 收藏当前页），避免误触弹出收藏框。
     const tag = (e.target?.tagName || "").toUpperCase();
-    if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
+    const inField = tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable;
 
     for (const s of shortcuts) {
         if (!matchShortcut(e, s)) continue;
         const handler = ACTION_HANDLERS[s.action];
         if (!handler) continue;
+        // 匹配到快捷键：先阻止浏览器默认行为（如 Ctrl+D 收藏当前页）
         e.preventDefault();
+        if (inField) return; // 输入框内只拦截默认行为，不触发动作
         e.stopImmediatePropagation();
         handler();
         return;

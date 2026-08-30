@@ -34,3 +34,6 @@ repro_*.json
 # Node.js deps
 node_modules/
 web/node_modules/
+
+# Arrow tool runtime data
+xzg_arrows/

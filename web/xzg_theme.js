@@ -1120,6 +1120,38 @@ window.XZGThemeManager = {
     border-radius: 3px;
 }
 
+.xzg-menu-tab.xzg-menu-tab-help {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 5px 10px;
+}
+.xzg-menu-hide-help {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 12px;
+    color: #ccc;
+    font-size: 12px;
+    line-height: 1.8;
+    min-height: 0;
+}
+.xzg-menu-help-title {
+    color: #FFD700;
+    font-weight: bold;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+.xzg-menu-help-block {
+    margin-bottom: 10px;
+}
+.xzg-menu-help-step {
+    margin-bottom: 6px;
+}
+.xzg-menu-help-step b {
+    color: #FFD700;
+}
+
 .xzg-menu-item {
     display: flex;
     align-items: center;

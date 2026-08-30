@@ -345,9 +345,20 @@ window.XZGThemePanel = {
                     <div class="xzg-menu-hide-tabs">
                         <button type="button" class="xzg-menu-tab active" data-menu-tab="canvas">${xzgT('画布菜单','Canvas Menu')}</button>
                         <button type="button" class="xzg-menu-tab" data-menu-tab="node">${xzgT('节点菜单','Node Menu')}</button>
+                        <button type="button" class="xzg-menu-tab xzg-menu-tab-help" data-menu-tab="help">${xzgT('使用说明','Help')}</button>
                     </div>
                     <div class="xzg-menu-hide-list" id="xzg-menu-hide-list">
                         <div class="xzg-menu-empty-tip">${xzgT('当前没有已隐藏的菜单','No hidden menus currently')}</div>
+                    </div>
+                    <div class="xzg-menu-hide-help" id="xzg-menu-hide-help" style="display:none;">
+                        <div class="xzg-menu-help-title">${xzgT('菜单隐藏使用说明','Menu Hide Guide')}</div>
+                        <div class="xzg-menu-help-block">
+                            <div class="xzg-menu-help-step"><b>1.</b> ${xzgT('在画布空白处右键打开「画布菜单」；在节点上右键打开「节点菜单」。','Right-click empty canvas for the canvas menu; right-click a node for the node menu.')}</div>
+                            <div class="xzg-menu-help-step"><b>2.</b> ${xzgT('在想要隐藏的菜单项上，按下鼠标中键（滚轮）。','Press the middle mouse button (wheel) on the item you want to hide.')}</div>
+                            <div class="xzg-menu-help-step"><b>3.</b> ${xzgT('菜单项旁会弹出「隐藏此菜单项」按钮，点击即可隐藏该项。','A "Hide this item" button pops up; click it to hide the item.')}</div>
+                            <div class="xzg-menu-help-step"><b>4.</b> ${xzgT('已隐藏的菜单项会显示在上方「画布菜单 / 节点菜单」列表中，点击「恢复」可取消隐藏。','Hidden items are listed above under Canvas Menu / Node Menu; click "Restore" to unhide.')}</div>
+                            <div class="xzg-menu-help-step"><b>5.</b> ${xzgT('「恢复所有隐藏菜单」可一键还原全部。','"Restore All Hidden Menus" resets everything at once.')}</div>
+                        </div>
                     </div>
                     <button type="button" id="xzg-menu-reset-btn" class="xzg-menu-reset-btn">${xzgT('恢复所有隐藏菜单','Restore All Hidden Menus')}</button>
                 </div>
@@ -953,6 +964,7 @@ window.XZGThemePanel = {
         const menuHideBtn = panel.querySelector("#xzg-menu-hide-btn");
         const menuHideControls = panel.querySelector("#xzg-menu-hide-controls");
         const menuHideList = panel.querySelector("#xzg-menu-hide-list");
+        const menuHelp = panel.querySelector("#xzg-menu-hide-help");
         const menuTabs = panel.querySelectorAll(".xzg-menu-tab");
         const menuResetBtn = panel.querySelector("#xzg-menu-reset-btn");
 
@@ -960,6 +972,7 @@ window.XZGThemePanel = {
 
         const renderMenuList = () => {
             if (!window.XZGMenuHide || !menuHideList) return;
+            if (currentMenuTab === 'help') return; // 使用说明页不渲染列表
             const mh = window.XZGMenuHide;
             const hiddenMap = mh.config[currentMenuTab] || {};
             const keys = Object.keys(hiddenMap);
@@ -1069,7 +1082,11 @@ window.XZGThemePanel = {
                     currentMenuTab = tab.dataset.menuTab;
                     menuTabs.forEach(t => t.classList.remove('active'));
                     tab.classList.add('active');
-                    renderMenuList();
+                    const isHelp = currentMenuTab === 'help';
+                    if (menuHideList) menuHideList.style.display = isHelp ? 'none' : '';
+                    if (menuHelp) menuHelp.style.display = isHelp ? '' : 'none';
+                    if (menuResetBtn) menuResetBtn.style.display = isHelp ? 'none' : '';
+                    if (!isHelp) renderMenuList();
                 });
             });
         }

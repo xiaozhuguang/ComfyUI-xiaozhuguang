@@ -17,12 +17,15 @@
        1926年   → 一九二六年      2024年   → 二零二四年
        2000年   → 两千年（整千年）   5000年   → 五千年（整千年）
        3年      → 三年（<4位仍用完整读数）
+       中文口语时间 6点15分 → 六点十五分（完整读数，非按位）
   4) 书名号《》→ 句号。；省略号…… → 句号。
-  5) 其他场景（纯数字、代码、分辨率如 1280x720、串号等）按位逐字符转换：
-       12    → 一二
-       1280  → 一二八零
+  5) 其他场景（纯数字、代码、分辨率如 1280x720、串号等）：
+       6 位以内整数 → 完整读数（62→六十二，720→七百二十，1280→一千二百八十）
+       数字 + 分辨率 → 数字按位读（720分辨率→七二零分辨率）
+       7 位及以上 / 含小数点 → 按位逐字符转换（13812345678→一三八…，1.72→一点七二）
   6) 映射：0→零, 1→一, 2→二, 3→三, 4→四, 5→五, 6→六, 7→七, 8→八, 9→九
   7) 仅识别替换 0-9、小数点；其他字符（中文/英文/标点/负号等）保持原样
+  8) 米 的口语读法（身高/长度习惯）：1.72米 → 一米七二（仅"米"单位 + 小数，整数按完整读、小数按位读）
 """
 
 import re
@@ -297,6 +300,22 @@ _TIME_ONLY_RE = re.compile(
 )
 
 
+# 仅中文口语时间：X点Y分（如 6点15分 → 六点十五分）
+# 冒号时间（21:08）走 _TIME_ONLY_RE；这里是中文写法。
+# 注意"分"有强歧义（720分辨率），因此必须有完整"数字+点+数字+分"结构才匹配，
+# 且小时/分钟做范围校验，超范围视为普通文本不处理。
+_ZH_TIME_RE = re.compile(
+    r"(?<!\d)"
+    r"(\d{1,2})点(\d{1,2})分"
+    r"(?!\d)"
+)
+
+# 剩余未匹配数字：整数（可带小数），用于 stage4 兜底
+_REMAIN_NUM_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")  # 仅 ASCII 数字，避免匹配占位符中的全角数字
+# 分辨率后缀例外：数字 + 分辨率 → 数字按位读（720分辨率→七二零分辨率）
+_RESOLUTION_RE = re.compile(r"([0-9]+)分辨率")
+
+
 def _zh_clock_hour(h24: int) -> str:
     """24 制小时 → 12 制中文读数：
        0/12 → 十二；1/13 → 一；9/21 → 九；11/23 → 十一
@@ -448,25 +467,40 @@ def _digits_to_zh_by_char(text: str) -> str:
     return "".join(out)
 
 
-def _strip_non_numeric_spaces(text: str) -> str:
-    """删除文字之间的空格，仅保留数字（ASCII 0-9）之间的空格。
+def _is_cjk_char(ch: str) -> bool:
+    """判断字符是否为 CJK 汉字（常用区 + 扩展A + 兼容表意 + 扩展B-G）。"""
+    if not ch:
+        return False
+    cp = ord(ch)
+    return (
+        (0x4E00 <= cp <= 0x9FFF) or    # CJK 统一表意文字
+        (0x3400 <= cp <= 0x4DBF) or    # 扩展 A
+        (0xF900 <= cp <= 0xFAFF) or    # 兼容表意文字
+        (0x20000 <= cp <= 0x2FA1F)     # 扩展 B-G
+    )
 
-    例：'你好 世界'    → '你好世界'
-        '12 个'        → '12个'
-        '3 × 4'        → '3×4'
-        '11 22'        → '11 22'（两位数字之间保留，避免拆散数字）
+
+def _strip_non_numeric_spaces(text: str) -> str:
+    """仅删除中文文字（汉字）之间的多余空格；
+    数字之间、英文字母之间以及中/英/数字混合处的空格均保留。
+
+    例：'你好 世界'      → '你好世界'
+        'Hello World'   → 'Hello World'
+        '11 22'         → '11 22'
+        '3 × 4'         → '3 × 4'
+        '12 个'         → '12 个'
+        '中文 abc'      → '中文 abc'
     """
     if not text:
         return text
-    ascii_digits = "0123456789"
     out = []
     for i, ch in enumerate(text):
         if ch == " ":
-            prev_is_digit = i > 0 and text[i - 1] in ascii_digits
-            next_is_digit = i + 1 < len(text) and text[i + 1] in ascii_digits
-            if prev_is_digit and next_is_digit:
-                out.append(ch)  # 数字之间的空格保留
-            # 其余空格丢弃
+            prev = text[i - 1] if i > 0 else ""
+            nxt = text[i + 1] if i + 1 < len(text) else ""
+            if _is_cjk_char(prev) and _is_cjk_char(nxt):
+                continue  # 中文文字之间的多余空格删除
+            out.append(ch)  # 其余空格保留
         else:
             out.append(ch)
     return "".join(out)
@@ -561,7 +595,19 @@ def _digits_to_zh(text: str) -> str:
 
     stage0c = _TIME_ONLY_RE.sub(_time_sub, stage0b)
 
-    stage1 = _ORDINAL_RE.sub(_ordinal_sub, stage0c)
+    #    0d) 仅中文时间：6点15分 → 六点十五分（口语时间写法，须完整"X点Y分"结构）
+    def _zh_time_sub(m: re.Match) -> str:
+        try:
+            hh, mm = (int(x) for x in m.groups())
+            if hh > 24 or mm > 59:
+                return m.group(0)
+            return _hold(_format_time_zh(hh, mm))
+        except ValueError:
+            return m.group(0)
+
+    stage0d = _ZH_TIME_RE.sub(_zh_time_sub, stage0c)
+
+    stage1 = _ORDINAL_RE.sub(_ordinal_sub, stage0d)
 
     # ── 1.5) 分数：带分数 优先（长匹配），再处理普通分数
     #           优先级高于连乘链（1/2x3 先匹配 1/2，再留 x3 给连乘处理）
@@ -669,6 +715,16 @@ def _digits_to_zh(text: str) -> str:
 
         # 英文缩写 → 中文单位名（cm→厘米、kg→千克…），未命中则保留原单位
         zh_unit = _UNIT_TO_ZH.get(unit, unit)
+        # ── 米 的口语读法（身高/长度习惯）：1.72米 → 一米七二
+        #    仅当 单位=米、数字为小数、整数部分>0（0.5米 仍读"零点五米"）；带负号时走通用读法
+        if unit == "米" and not sign and "." in num_str:
+            _int_part, _frac_part = num_str.split(".", 1)
+            if _int_part and int(_int_part) > 0 and _frac_part:
+                _int_zh = _int_to_zh_full(int(_int_part))
+                if _int_part == "2":
+                    _int_zh = "两"  # 2.05米 → 两米零五
+                _frac_zh = _digits_to_zh_by_char(_frac_part)
+                return _hold(_int_zh + zh_unit + _frac_zh)
         if unit == "%":
             return _hold("百分之" + base)
         if unit == "‰":
@@ -680,8 +736,22 @@ def _digits_to_zh(text: str) -> str:
     # ── 3.5) 用户指定：删除非乘法位置的 *（乘法链的 * 已在 stage2 转成"乘以"并被占位保护） ──
     stage3 = stage3.replace("*", "")
 
-    # ── 4) 剩余数字（纯编号/代码/串号）按位读 ──
-    stage4 = _digits_to_zh_by_char(stage3)
+    # ── 3.6) 分辨率后缀例外：数字 + 分辨率 → 数字按位读（720分辨率→七二零分辨率） ──
+    def _resolution_sub(m: re.Match) -> str:
+        num = m.group(1)
+        return _hold(_digits_to_zh_by_char(num) + "分辨率")
+
+    stage3b = _RESOLUTION_RE.sub(_resolution_sub, stage3)
+
+    # ── 4) 剩余数字：6 位以内整数 → 完整读数（62→六十二，720→七百二十，1280→一千二百八十）；
+    #        7 位及以上 / 含小数点 → 按位读（13812345678→按位，1.72→一点七二） ──
+    def _remain_sub(m: re.Match) -> str:
+        ds = m.group(0)
+        if "." not in ds and len(ds) <= 6:
+            return _int_to_zh_full(int(ds))
+        return _digits_to_zh_by_char(ds)
+
+    stage4 = _REMAIN_NUM_RE.sub(_remain_sub, stage3b)
 
     # ── 5) 还原占位符 ──
     slot_pat = re.compile(
@@ -721,9 +791,12 @@ class XiaozhuguangTextBox:
                     "placeholder":
                         "【小珠光文本框】\n"
                         "输出：text 原文 / text_zh_num 数字转中文\n"
-                        "规则：日期时间→整体转写；数字+量词→完整读数；第N→第N；4位+年→按位读；其余→按位读\n"
+                        "规则：日期时间→整体转写；中文时间(6点15分)→完整读数；数字+量词→完整读数；第N→第N；4位+年→按位读；6位以内数字→完整读数(720→七百二十)；其余→按位读\n"
                         "例：2023.4.16 21:08→二零二三年四月十六日九点零八分\n"
                         "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n"
+                        "6点15分→六点十五分  21:08→九点零八分\n"
+                        "1.72米→一米七二  3.14kg→三点一四千克\n"
+                        "720→七百二十  720分辨率→七二零分辨率\n"
                         "《》→。  ……→。",
                 }),
             },
