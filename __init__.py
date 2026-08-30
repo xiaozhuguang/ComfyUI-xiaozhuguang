@@ -586,6 +586,17 @@ except Exception as _cloud_err:
 # 同一台服务器上所有浏览器/会话共享，解决云端环境浏览器 localStorage 丢失问题。
 try:
     _xzg_shortcuts_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.json")
+    _xzg_shortcuts_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.default.json")
+
+    # 全新安装：用户配置不存在时，从默认配置复制一份
+    # 更新插件：用户配置已存在则不覆盖，保留用户自定义快捷键
+    if not os.path.exists(_xzg_shortcuts_file) and os.path.exists(_xzg_shortcuts_default):
+        try:
+            import shutil
+            shutil.copy2(_xzg_shortcuts_default, _xzg_shortcuts_file)
+            print("[xiaozhuguang] 已从默认配置初始化 xzg_shortcuts.json")
+        except Exception as _init_err:
+            print("[xiaozhuguang] 初始化快捷键配置失败:", _init_err)
 
     @_xzg_save_real_routes.get("/xzg/shortcuts")
     @xzg_safe_handler
