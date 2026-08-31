@@ -2950,28 +2950,32 @@ class XZGWorkflowsManager {
         let isResizing = false;
         let startX, startWidth;
 
-        // 恢复左侧栏宽度：专用云端键(独立持久化，不受共享几何/ComfyUI原生侧栏影响)
-        // > 旧的共享左栏宽度键(localStorage 兼容) > 默认 160
-        const restoreWidth = async () => {
-            let width = null;
+        // 恢复左侧栏宽度（无跳变）：
+        // 1) 同步先应用 localStorage 宽度 → 打开面板首帧即为正确宽度，避免先渲染 CSS 默认 160px 再异步跳变
+        // 2) 异步云覆盖：专用云端键(独立持久化)优先；无则沿用共享几何云同步回写后的本地值
+        const applyWidth = (w) => {
+            w = parseInt(w);
+            if (!(w >= 80 && w <= 500)) return;
+            leftCol.style.width = w + "px";
+            localStorage.setItem("xzg_wf_left_col_width", w.toString());
+        };
+        const saved = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
+        if (saved && saved >= 80 && saved <= 500) applyWidth(saved);
+
+        const restoreFromCloud = async () => {
             try {
                 const cloud = await cloudLoad("xzg_wf_panel_width", { fallbackValue: null });
                 if (cloud && typeof cloud === "object" && typeof cloud.width === "number") {
-                    width = cloud.width;
+                    applyWidth(cloud.width);
+                    return;
                 }
             } catch (e) {}
-            if (width == null) {
-                const saved = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
-                if (saved && saved >= 80 && saved <= 500) width = saved;
-            }
-            if (width != null && width >= 80 && width <= 500) {
-                leftCol.style.width = width + "px";
-                localStorage.setItem("xzg_wf_left_col_width", width.toString());
-            }
+            const s2 = parseInt(localStorage.getItem("xzg_wf_left_col_width"));
+            if (s2 && s2 >= 80 && s2 <= 500) applyWidth(s2);
         };
-        // 兼容旧部署：仍跑一次共享几何云同步（不影响独立键，仅回放既有几何键）
-        cloudUIInit().then(() => restoreWidth());
-        restoreWidth();
+        // 兼容旧部署：共享几何云同步完成后再恢复一次（cloudLoad 对同 key 并发去重，不产生额外请求）
+        cloudUIInit().then(() => restoreFromCloud());
+        restoreFromCloud();
 
         handle.addEventListener("mousedown", (e) => {
             isResizing = true;

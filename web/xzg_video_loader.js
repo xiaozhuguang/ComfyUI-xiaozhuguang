@@ -1501,7 +1501,9 @@ function bindVideoLoaderInteractions(node) {
             // 用后端返回的原始宽高/帧数更新标签
             updateVideoInfoLabels();
             // 视频加载完成后更新控件边界约束（跳过帧数 max、帧数上限 min/max）
-            _syncLoadRange?.();
+            // 用 _applyLoadRange 而非 _syncLoadRange：执行后若预览视频已加载（_loadPreviewFromOutput），
+            // _syncLoadRange 内的 _resetToSourceVideo 会把刚盖上的预览重置回原视频，导致预览闪烁/丢失
+            _applyLoadRange?.();
         }
     };
 

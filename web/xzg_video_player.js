@@ -1114,7 +1114,18 @@ export class XiaozhuguangVideoPlayer {
                 const switched = await this._ensureDecodableUrl(filename, type, subfolder);
                 if (switched) playSrc = switched;
             }
-            const decoder = await loaderDecoderPool.get(poolKey, poolType, playSrc);
+            // 预览解码分辨率：优先全分辨率（4320 覆盖 ≤4K，消除降采样锯齿）。
+            // 原因：mediabunny 的 CanvasSink 降采样质量较差，把 4K 提前缩到 720p/1080p 后预览再放大
+            // 显示会出现明显锯齿；全分辨率解码后由浏览器将大 canvas 平滑缩小到节点尺寸，彻底消除
+            // 降采样伪影（显示端始终是"缩小"）。
+            // 但 4K 全分辨率解码在低配/大文件/WebCodecs 资源受限场景可能失败，失败时自动降级到
+            // 1280 低分辨率保底显示，避免预览丢失（出现"双击上传视频"空态）。
+            const PREVIEW_SIDES = [4320, 1280];
+            let lastError = null;
+            let loaded = false;
+            for (const maxPreviewSide of PREVIEW_SIDES) {
+                try {
+            const decoder = await loaderDecoderPool.get(poolKey, poolType, playSrc, null, 0, maxPreviewSide);
             // P1: 校验 token，若期间又调用了 load 则放弃本次结果
             if (token !== this._loadToken) return;
             this._currentDecoder = decoder;
@@ -1149,6 +1160,9 @@ export class XiaozhuguangVideoPlayer {
             this._placeholder.style.display = "none";
             this._videoSurface.style.display = "block";
             this._updateSurfaceSize();
+            // P6b: 高分辨率(全分辨率)解码时按内存预算收紧播放预缓冲帧数，防止 4K 帧把缓冲撑爆
+            const _frameBytes = (this._canvas.width || 1) * (this._canvas.height || 1) * 4;
+            this._playbackBufferSize = Math.max(2, Math.min(10, Math.floor((200 * 1024 * 1024) / Math.max(_frameBytes, 1))));
             // 渲染首帧
             // 修复首帧黑屏：renderFrame 是 fire-and-forget（只调度 RAF、不等待解码绘制完成），
             // 且部分视频在 time=0 处取不到帧（首帧 PTS 非 0）→ 偶发"首帧黑屏、播放一次后正常"。
@@ -1170,6 +1184,17 @@ export class XiaozhuguangVideoPlayer {
             // 触发 onLoadedMetadata 回调
             this.onLoadedMetadata?.(this);
             this._updateSurfaceSize();
+                    loaded = true;
+                    break;
+                } catch (e) {
+                    lastError = e;
+                    if (token !== this._loadToken) return;
+                    console.warn("[小珠光] 预览解码失败（分辨率上限 " + maxPreviewSide + "），自动降级重试:", e);
+                }
+            }
+            if (!loaded) {
+                throw lastError || new Error("预览解码失败");
+            }
         } catch (e) {
             if (token !== this._loadToken) return;
             console.error("[小珠光] Canvas 解码加载失败:", e);

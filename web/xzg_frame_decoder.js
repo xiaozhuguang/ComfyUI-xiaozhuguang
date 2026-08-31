@@ -60,6 +60,10 @@ class FrameCache {
     }
 
     clear() { this._map.clear(); }
+
+    // 动态调整缓存上限：高分辨率解码时主动降低帧数上限，避免缓存总内存失控。
+    // targetFrame 淘汰逻辑不变，仅受 _maxSize 约束。
+    setMaxSize(maxSize) { this._maxSize = Math.max(1, maxSize); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -192,6 +196,12 @@ class VideoDecoderInstance {
                 fit: 'contain',
             });
         }
+
+        // 高分辨率解码时按"总内存预算"收紧帧缓存上限，防止 4K 等高清预览把缓存撑爆
+        // （默认总预算约 240MB，分辨率越高缓存帧数越少；视频加载器播放走独立缓冲不受影响）
+        const frameBytes = this.previewWidth * this.previewHeight * 4 || 1;
+        const cacheMax = Math.max(2, Math.min(MAX_CACHE_SIZE, Math.floor(240 * 1024 * 1024 / frameBytes)));
+        this._cache.setMaxSize(cacheMax);
 
         // 音频轨道
         try {
@@ -593,7 +603,7 @@ class DecoderPool {
         this._loading = new Map();    // key -> Promise（防止重复加载）
     }
 
-    _key(filename, type) { return `${filename}|${type || "input"}`; }
+    _key(filename, type, maxPreviewSide = 1280) { return `${filename}|${type || "input"}|${maxPreviewSide}`; }
 
     /**
      * 获取或创建解码器（带缓存，避免重复加载）
@@ -603,8 +613,8 @@ class DecoderPool {
      * @param {(receivedBytes:number, totalBytes:number)=>void} [onProgress] - 加载进度回调（仅首次加载触发）
      * @param {number} [knownTotal] - 已知文件总字节数（probe 获取）
      */
-    async get(filename, type, videoUrl, onProgress = null, knownTotal = 0) {
-        const key = this._key(filename, type);
+    async get(filename, type, videoUrl, onProgress = null, knownTotal = 0, maxPreviewSide = 1280) {
+        const key = this._key(filename, type, maxPreviewSide);
         if (this._decoders.has(key)) {
             return this._decoders.get(key);
         }
@@ -613,12 +623,16 @@ class DecoderPool {
         }
         const promise = (async () => {
             const decoder = new VideoDecoderInstance();
-            await decoder.openFromUrl(videoUrl, 1280, onProgress, knownTotal);
+            await decoder.openFromUrl(videoUrl, maxPreviewSide, onProgress, knownTotal);
             this._decoders.set(key, decoder);
             this._loading.delete(key);
             return decoder;
         })();
         this._loading.set(key, promise);
+        // 失败时清理 _loading 残留，避免失败 key 永久驻留导致后续永远无法重新解码（配合加载器降级重试）
+        promise.catch(() => {
+            if (this._loading.get(key) === promise) this._loading.delete(key);
+        });
         return promise;
     }
 
