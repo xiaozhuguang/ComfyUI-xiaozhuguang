@@ -235,6 +235,8 @@ from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
 from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
+# —— Star Upscale 2.6（完全集成自 ComfyUI-TopazStarlight，显示名 star_upscale）——
+from .nodes.xzg_star_upscale import StarUpscale
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -1143,6 +1145,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
     "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
+    "StarUpscale": StarUpscale,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -1189,6 +1192,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
+    "StarUpscale": "star_upscale",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"
