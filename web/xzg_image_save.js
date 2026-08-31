@@ -852,7 +852,10 @@ class XiaozhuguangImageSaveNode {
     }
 
     onExecuted(output) {
-        const imgs = output.xzg_preview || [];
+        // xzg_preview 现已包裹为 {images:[...]}（避免核心把 temp 预览图也登记为媒体资产），
+        // 同时兼容旧的裸数组形态；此处做防御性解析，任何形态都不会清空画布展示。
+        const raw = output?.xzg_preview;
+        const imgs = Array.isArray(raw?.images) ? raw.images : (Array.isArray(raw) ? raw : []);
         const imagesToShow = imgs.map((d, i) => ({
             name: String(i + 1),
             selected: i === 0,
@@ -1390,7 +1393,7 @@ function _xzgDirBrowserEnsureDlg() {
         "position: fixed", "top: 50%", "left: 50%", "transform: translate(-50%, -50%)",
         "width: 420px", "height: 360px", `background: ${BG}`, `border: 1px solid ${BORDER}`,
         "border-radius: 4px", "box-shadow: 0 6px 20px rgba(0,0,0,0.6)",
-        "display: none", "flex-direction: column", "z-index: 100000",
+        "display: none", "flex-direction: column", "z-index: 1000001",
         "font-family: Arial, sans-serif", `color: ${TEXT}`, "overflow: hidden",
         "user-select: none",
     ].join(";");
@@ -1500,7 +1503,13 @@ function _xzgDirBrowserEnsureDlg() {
 
     // ── 设置区：输出模式单选(默认/另存为/自定义) + 自定义前缀 + 日期戳 + 时间戳 开关 ──
     const settingsRow = document.createElement("div");
-    settingsRow.style.cssText = `display:flex;align-items:center;gap:8px;padding:4px 10px;border-top:1px solid #333;background:${BG3};flex-wrap:wrap;`;
+    settingsRow.style.cssText = `display:flex;flex-direction:column;gap:6px;padding:4px 10px;border-top:1px solid #333;background:${BG3};`;
+    // 第①行：非自定义模式（默认输出 + 另存为）
+    const modeRow = document.createElement("div");
+    modeRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
+    // 第②行：自定义目录 + 自定义前缀 + 日期戳 + 时间戳（与默认输出分行）
+    const customRow = document.createElement("div");
+    customRow.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
     // 输出模式：三个单选按钮（使用同一个 radio group name）
     //   "default"  → 默认输出（ComfyUI output 目录）
     //   "saveas"   → 另存为（通过浏览器下载对话框保存）
@@ -1523,9 +1532,13 @@ function _xzgDirBrowserEnsureDlg() {
     const { label: defaultRadioLabel, radio: defaultRadio } = makeRadio("default", xzgT("默认输出 output", "Default Output"));
     const { label: saveAsRadioLabel, radio: saveAsRadio } = makeRadio("saveas", xzgT("另存为", "Save As"));
     const { label: customRadioLabel, radio: customRadio } = makeRadio("custom", xzgT("自定义目录", "Custom Dir"));
-    settingsRow.appendChild(defaultRadioLabel);
-    settingsRow.appendChild(saveAsRadioLabel);
-    settingsRow.appendChild(customRadioLabel);
+    settingsRow.appendChild(modeRow);
+    settingsRow.appendChild(customRow);
+    // 第①行：默认输出 + 另存为（非自定义模式）
+    modeRow.appendChild(defaultRadioLabel);
+    modeRow.appendChild(saveAsRadioLabel);
+    // 第②行：自定义目录 + 自定义前缀 + 日期戳 + 时间戳
+    customRow.appendChild(customRadioLabel);
     // 自定义前缀
     const prefixLabel = document.createElement("label");
     prefixLabel.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;white-space:nowrap;";
@@ -1535,7 +1548,7 @@ function _xzgDirBrowserEnsureDlg() {
     prefixInput.value = "xzg-save";
     prefixInput.style.cssText = "background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:2px;padding:2px 6px;font-size:11px;width:110px;";
     prefixLabel.appendChild(prefixInput);
-    settingsRow.appendChild(prefixLabel);
+    customRow.appendChild(prefixLabel);
     // 日期戳开关
     const dateToggle = document.createElement("label");
     dateToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
@@ -1546,7 +1559,7 @@ function _xzgDirBrowserEnsureDlg() {
     const dateText = document.createElement("span");
     dateText.textContent = xzgT("日期戳", "Date Stamp");
     dateToggle.appendChild(dateText);
-    settingsRow.appendChild(dateToggle);
+    customRow.appendChild(dateToggle);
     // 时间戳开关
     const timeToggle = document.createElement("label");
     timeToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;";
@@ -1557,7 +1570,7 @@ function _xzgDirBrowserEnsureDlg() {
     const timeText = document.createElement("span");
     timeText.textContent = xzgT("时间戳", "Time Stamp");
     timeToggle.appendChild(timeText);
-    settingsRow.appendChild(timeToggle);
+    customRow.appendChild(timeToggle);
 
     // 读取当前选中的输出模式（"default" | "saveas" | "custom"）
     const _xzgGetOutputMode = () => {
@@ -1608,6 +1621,7 @@ function _xzgDirBrowserEnsureDlg() {
     dlg._defaultCheck = defaultRadio;  // 向后兼容：旧代码读 dlg._defaultCheck.checked 时，default=true 等同于 mode="default"
     dlg._defaultRadio = defaultRadio;
     dlg._saveAsRadio = saveAsRadio;
+    dlg._saveAsLabel = saveAsRadioLabel;  // 「另存为」仅快剪导出有意义，图像节点隐藏
     dlg._customRadio = customRadio;
     dlg._getOutputMode = _xzgGetOutputMode;
     dlg._setOutputMode = _xzgSetOutputMode;
@@ -2028,6 +2042,11 @@ function _xzgDirBrowserHide() {
 async function _xzgShowDirBrowser(node) {
     const dlg = _xzgDirBrowserEnsureDlg();
     _xzgDirBrowserState.targetNode = node;
+
+    // 「另存为」仅对快剪导出（通过 fakeNode._xzgOutputModeWidget 接入）有意义：
+    // 图像保存节点在后端执行，无法弹出浏览器另存为对话框，故隐藏该选项。
+    const isEditor = !!(node && node._xzgOutputModeWidget && node._xzgOutputModeWidget.name === "output_mode");
+    if (dlg._saveAsLabel) dlg._saveAsLabel.style.display = isEditor ? "" : "none";
     let widget = null;
     if (node && node.widgets) {
         widget = node.widgets.find(w => w.name === "base_dir");

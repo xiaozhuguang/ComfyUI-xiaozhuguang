@@ -542,7 +542,7 @@ LongCat 原插件 `nodes/loader.py` 的三条联网路径：
 
 ## ⌨️ 自定义快捷键
 
-后端持久化的快捷键系统，配置存储于插件目录 `xzg_shortcuts.json`，换浏览器、换服务器不丢失。
+后端持久化的快捷键系统，配置存储于 ComfyUI 用户目录 `user/xiaozhuguang/xzg_shortcuts.json`（位于插件目录之外，更新 / 整体替换插件不会丢失快捷键），换浏览器、换服务器不丢失。升级后首次启动会自动把旧版插件目录下的 `xzg_shortcuts.json` 迁移过来。
 
 ### 打开配置
 

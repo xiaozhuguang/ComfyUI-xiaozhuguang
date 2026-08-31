@@ -196,10 +196,23 @@ class XiaozhuguangImageSave(PreviewImage):
                 }
                 saved.append(saved_info)
 
+            # 媒体资产只应登记实际产物：保存模式登记 output 文件，预览模式登记 temp 预览。
+            # 因此 xzg_preview 条目的 filename/subfolder/type 在保存模式下指向 output 文件。
+            # 否则核心 enrich_output_with_assets 会把未引用的 temp 预览图也登记为媒体资产，
+            # 导致「保存模式 + 预览模式」并存时媒体资产多出冗余预览图。
+            if saved_info is not None:
+                disp_filename = saved_info["filename"]
+                disp_subfolder = saved_info["subfolder"]
+                disp_type = saved_info["type"]
+            else:
+                disp_filename = preview_fname
+                disp_subfolder = ""
+                disp_type = "temp"
+
             entries.append({
-                "filename": preview_fname,
-                "subfolder": "",
-                "type": "temp",
+                "filename": disp_filename,
+                "subfolder": disp_subfolder,
+                "type": disp_type,
                 "real_token": token,
                 "real_index": i,
                 "real_width": int(w),

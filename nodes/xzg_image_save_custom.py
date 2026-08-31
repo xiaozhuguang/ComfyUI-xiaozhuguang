@@ -254,12 +254,8 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
             else:
                 jpg_pil = compressed_pil
 
-            # 保存压缩 JPG 预览到临时目录（画布显示，始终 JPG）
-            preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
-            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
-
-            # 保存到输出目录（仅保存模式；RGBA 已强制 PNG）
-            saved_info = None
+            # 保存模式下先确定真实输出文件名（含前缀/序号），预览名与之一致，便于媒体资产显示对应文件名
+            real_stem = None
             if not is_preview_mode:
                 while True:
                     fname = f"{resolved_prefix}{prefix_sep}{counter:05d}"
@@ -270,7 +266,20 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                     if not os.path.exists(full_path):
                         break
                     counter += 1
+                real_stem = os.path.splitext(os.path.basename(full_path))[0]
 
+            # 保存压缩 JPG 预览到临时目录（画布显示，始终 JPG）
+            # 绝对路径场景下实际文件不在 output/、/view 无法服务，媒体资产展示的即这张预览图，
+            # 故预览名复用真实输出文件名（前缀/序号一致）
+            if real_stem is not None:
+                preview_fname = f"{real_stem}.jpg"
+            else:
+                preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
+            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
+
+            # 保存到输出目录（仅保存模式；RGBA 已强制 PNG）
+            saved_info = None
+            if not is_preview_mode:
                 if save_format == "PNG":
                     # 全分辨率 PNG（无损）；RGBA 保留 alpha 通道（透明背景）
                     Image.fromarray(real_np).save(full_path, "PNG")
@@ -296,10 +305,23 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                     }
                     saved.append(saved_info)
 
+            # 媒体资产只应登记实际产物：非绝对路径保存模式登记 output 文件，预览/绝对路径登记 temp 预览。
+            # 因此 xzg_preview 条目的 filename/subfolder/type 在保存模式下指向 output 文件。
+            # 否则核心 enrich_output_with_assets 会把未引用的 temp 预览图也登记为媒体资产，
+            # 导致「保存模式 + 预览模式」并存时媒体资产多出冗余预览图。
+            if saved_info is not None:
+                disp_filename = saved_info["filename"]
+                disp_subfolder = saved_info["subfolder"]
+                disp_type = saved_info["type"]
+            else:
+                disp_filename = preview_fname
+                disp_subfolder = ""
+                disp_type = "temp"
+
             entries.append({
-                "filename": preview_fname,
-                "subfolder": "",
-                "type": "temp",
+                "filename": disp_filename,
+                "subfolder": disp_subfolder,
+                "type": disp_type,
                 "real_token": token,
                 "real_index": i,
                 "real_width": int(w),
@@ -315,13 +337,16 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
 
         # 兼容前端媒体管理（媒体资产）：节点输出必须含标准 ui.images 才会被登记/展示。
         # 保存模式 → 实际保存到 output 的文件(type=output)；预览模式 → 临时预览(type=temp)。
-        if is_preview_mode:
-            images_ui = [
-                {"filename": e["filename"], "subfolder": e["subfolder"], "type": e["type"]}
-                for e in entries
-            ]
-        else:
+        # base_dir 为绝对路径时实际文件在 output/ 之外，/view 无法服务，saved 为空，
+        # 退回临时预览图(type=temp, 可被 /view 服务) 仍能在媒体资产中展示生成结果。
+        preview_ui = [
+            {"filename": e["filename"], "subfolder": e["subfolder"], "type": e["type"]}
+            for e in entries
+        ]
+        if not is_preview_mode and saved:
             images_ui = saved
+        else:
+            images_ui = preview_ui
 
         result = {"ui": {"xzg_preview": entries, "saved": saved, "images": images_ui}}
         return result

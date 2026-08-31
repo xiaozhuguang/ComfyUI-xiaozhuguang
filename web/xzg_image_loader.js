@@ -716,7 +716,7 @@ function createImgBatchUI(node) {
     setMaxImgDisplay();
     maxImgInput.title = xzgT("加载图片上限，0/∞ 表示无限制", "Max images to load, 0/∞ = unlimited");
     maxImgInput.style.cssText =
-        "width:calc(var(--xzg-ui-font,11px) + 11px);max-width:100%;flex:0 0 auto;margin-left:2px;box-sizing:border-box;padding:0;font-size:var(--xzg-ui-font,11px);line-height:1.4;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:transparent;border:none;border-radius:0;outline:none;text-align:center;cursor:text;";
+        "width:calc(var(--xzg-ui-font,10px) + 11px);max-width:100%;flex:0 0 auto;margin-left:2px;box-sizing:border-box;padding:0;font-size:var(--xzg-ui-font,10px);line-height:1.4;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:transparent;border:none;border-radius:0;outline:none;text-align:center;cursor:text;";
     // 输入框交互不冒泡，避免触发节点/侧边栏拖动
     maxImgInput.addEventListener("pointerdown", (e) => e.stopPropagation());
     maxImgInput.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -743,7 +743,7 @@ function createImgBatchUI(node) {
 
     const uploadModeBtn = document.createElement("button");
     uploadModeBtn.style.cssText =
-        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:var(--xzg-ui-font,11px);line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        "padding:1px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:var(--xzg-ui-font,10px);line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
     uploadModeBtn.addEventListener("mouseenter", () => {
         uploadModeBtn.style.filter = "brightness(1.2)";
     });
@@ -771,6 +771,7 @@ function createImgBatchUI(node) {
             }
         }
         updateUploadModeBtn();
+        updateModeBtn();
         _refreshMaskToolbar();
         _updateMaskCursor();
         redraw(true);
@@ -788,7 +789,7 @@ function createImgBatchUI(node) {
 
     const modeBtn = document.createElement("button");
     modeBtn.style.cssText =
-        "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:var(--xzg-ui-font,11px);line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
+        "padding:1px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:var(--xzg-ui-font,10px);line-height:1.4;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
     modeBtn.addEventListener("mouseenter", () => {
         modeBtn.style.filter = "brightness(1.2)";
     });
@@ -804,11 +805,11 @@ function createImgBatchUI(node) {
     const updateModeBtn = () => {
         const w = getBatchModeWidget(node);
         const isBatch = w?.value === true;
-        const names = parseNameList(getImageListWidget(node)?.value || "");
-        const singleImg = names.length <= 1;
-        // 单图加载模式时也禁用
+        // 仅单图加载模式禁用；多图模式下即使未加载图片也允许切换列表/批次
         const isSingleMode = uploadMode === "replace";
-        const disabled = singleImg || isSingleMode;
+        const disabled = isSingleMode;
+        // 单图模式下隐藏批次/列表按钮（visibility 隐藏以保持布局稳定）
+        modeBtn.style.visibility = isSingleMode ? "hidden" : "visible";
         
         modeBtn.textContent = isBatch ? xzgT("批次", "Batch") : xzgT("列表", "List");
         if (disabled) {
@@ -837,8 +838,6 @@ function createImgBatchUI(node) {
     
     modeBtn.onclick = (e) => {
         e.stopPropagation();
-        const names = parseNameList(getImageListWidget(node)?.value || "");
-        if (names.length <= 1) return; // 单图时禁止切换
         if (uploadMode === "replace") return; // 单图加载模式时禁止切换
         const w = getBatchModeWidget(node);
         if (!w) return;
@@ -861,25 +860,17 @@ function createImgBatchUI(node) {
     const updateAlignBtn = () => {
         const wBatch = getBatchModeWidget(node);
         const isBatch = wBatch?.value === true;
-        // 非批次模式：用 visibility 隐藏而非 display:none，始终保留占位，
-        // 避免“留边/裁剪”出现时把上方“多图/批次”按钮顶得上下移动
-        alignBtn.style.visibility = isBatch ? "visible" : "hidden";
-        if (!isBatch) return;
-        const w = getBatchAlignWidget(node);
-        const isLetterbox = w?.value === true;
         const names = parseNameList(getImageListWidget(node)?.value || "");
         const singleImg = names.length <= 1;
-        const isSingleMode = uploadMode === "replace";
-        const disabled = singleImg || isSingleMode;
+        const w = getBatchAlignWidget(node);
+        const isLetterbox = w?.value === true;
+        // 无论显示与否都先写入文案，使隐藏态也占用与显示态一致的高度，杜绝切换批次时菜单位移
         alignBtn.textContent = isLetterbox ? xzgT("留边", "Letterbox") : xzgT("裁剪", "Crop");
-        if (disabled) {
-            alignBtn.title = isSingleMode ? xzgT("单图加载模式下不可用", "Not available in single mode") : "";
-            alignBtn.style.color = "#666";
-            alignBtn.style.cursor = "default";
-            alignBtn.style.opacity = "0.4";
-        } else {
-            alignBtn.title = isLetterbox ? xzgT("切换为裁剪对齐（居中裁剪多出部分）", "Switch to Crop (center crop)") : xzgT("切换为留边对齐（黑色填充补齐）", "Switch to Letterbox (black bars)");
-            alignBtn.style.color = isLetterbox ? "#FFD700" : "#6699FF";
+        alignBtn.title = isLetterbox ? xzgT("切换为裁剪对齐（居中裁剪多出部分）", "Switch to Crop (center crop)") : xzgT("切换为留边对齐（黑色填充补齐）", "Switch to Letterbox (black bars)");
+        // 批次模式下仅加载多张图时显示裁剪/留边；其余情况用 visibility 隐藏（占位保留）
+        alignBtn.style.visibility = isBatch && !singleImg ? "visible" : "hidden";
+        if (isBatch && !singleImg) {
+            alignBtn.style.color = "#FFD700";
             alignBtn.style.cursor = "pointer";
             alignBtn.style.opacity = "1";
         }
@@ -895,7 +886,7 @@ function createImgBatchUI(node) {
     };
 
     const bottomGroup = document.createElement("div");
-    bottomGroup.style.cssText = "display:flex;flex-direction:column;gap:2px;width:100%;margin-top:auto;";
+    bottomGroup.style.cssText = "display:flex;flex-direction:column;gap:0;width:100%;margin-top:auto;";
     bottomGroup.appendChild(maxImgInput);
     bottomGroup.appendChild(uploadModeBtn);
     bottomGroup.appendChild(modeBtn);
@@ -4805,8 +4796,8 @@ app.registerExtension({
                     const h = (Array.isArray(size) ? size[1] : undefined) || self.size?.[1] || 300;
                     const ic = Math.round(Math.min(32, Math.max(18, h / 22)));
                     self._xzgImgLoaderUI.sidebar.style.setProperty("--xzg-ic-size", ic + "px");
-                    // 底部控件（多图/单图、列表/批次、列表数量）字号随节点高度缩放：11px 起点、上限 22px
-                    const fz = Math.round(Math.min(22, Math.max(11, h / 32)));
+                    // 底部控件（多图/单图、列表/批次、列表数量）字号固定为 10px，不随节点高度缩放
+                    const fz = 10;
                     self._xzgImgLoaderUI.sidebar.style.setProperty("--xzg-ui-font", fz + "px");
                 }
                 if (self._xzgResizeTimer) clearTimeout(self._xzgResizeTimer);

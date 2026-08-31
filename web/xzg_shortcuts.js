@@ -244,16 +244,19 @@ function matchShortcut(e, s) {
     );
 }
 
-/** 从后端加载快捷键 */
+/** 从后端加载快捷键（返回后端实际配置，失败时返回 null 而不是清空） */
 async function loadShortcuts() {
     try {
-        const res = await api.fetchApi(SHORTCUTS_API);
+        // no-store：避免 GET 被浏览器缓存，确保总是读到后端最新配置
+        const res = await api.fetchApi(SHORTCUTS_API, { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        shortcuts = Array.isArray(data.shortcuts) ? data.shortcuts : [];
+        const list = Array.isArray(data.shortcuts) ? data.shortcuts : [];
+        shortcuts = list;
+        return list;
     } catch (e) {
         console.warn("[小珠光快捷键] 加载失败:", e);
-        shortcuts = [];
+        return null;
     }
 }
 
@@ -295,10 +298,15 @@ function onKeyDown(e) {
     }
 }
 
-/** 创建设置对话框 */
-function openSettingsDialog() {
+/** 创建设置对话框（打开时总是从后端重新拉取真实配置，避免使用启动时缓存的空/旧列表） */
+async function openSettingsDialog() {
     const existing = document.getElementById("xzg-shortcuts-dialog");
     if (existing) { existing.remove(); }
+
+    // 打开对话框前强制刷新一次后端配置，拿到权威数据再构建编辑列表。
+    // 若后端拉取失败则回退到内存缓存；无论何种情况都不允许在"没读到真实配置"时清空后端文件。
+    const fresh = await loadShortcuts();
+    const base = (fresh !== null) ? fresh : shortcuts;
 
     const overlay = document.createElement("div");
     overlay.id = "xzg-shortcuts-dialog";
@@ -308,7 +316,7 @@ function openSettingsDialog() {
     dialog.style.cssText = "background:#2a2a2a;color:#e0e0e0;border-radius:10px;padding:24px;width:560px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5);border:1px solid #444;";
 
     // 编辑中的列表（副本）
-    let editing = shortcuts.map(s => ({ ...s }));
+    let editing = base.map(s => ({ ...s }));
 
     function render() {
         const rowsHtml = editing.map((s, i) => `
@@ -409,6 +417,11 @@ function openSettingsDialog() {
 
         // 保存
         dialog.querySelector("#xzg-sc-save").onclick = async () => {
+            // 安全护栏：本次刷新后端失败 且 列表为空时，禁止保存，避免把真实配置误清空。
+            if (editing.length === 0 && fresh === null) {
+                alert("无法连接到服务器读取当前快捷键配置，为防止数据丢失已取消保存，请稍后重试。");
+                return;
+            }
             try {
                 await saveShortcuts(editing);
                 overlay.remove();

@@ -582,21 +582,45 @@ except Exception as _cloud_err:
 
 
 # ============ 小珠光自定义快捷键 API ============
-# 快捷键配置持久化在插件目录下的 xzg_shortcuts.json，跟插件绑定，
+# 快捷键配置持久化在 <ComfyUI>/user/xiaozhuguang/xzg_shortcuts.json，
+# 位于插件目录之外，更新/整体替换插件目录时不会丢失；
 # 同一台服务器上所有浏览器/会话共享，解决云端环境浏览器 localStorage 丢失问题。
 try:
-    _xzg_shortcuts_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.json")
     _xzg_shortcuts_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.default.json")
+    # 旧版（历史版本）将配置存在插件目录下，需迁移到 user/xiaozhuguang 下
+    _xzg_shortcuts_legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.json")
 
-    # 全新安装：用户配置不存在时，从默认配置复制一份
-    # 更新插件：用户配置已存在则不覆盖，保留用户自定义快捷键
-    if not os.path.exists(_xzg_shortcuts_file) and os.path.exists(_xzg_shortcuts_default):
+    def _xzg_shortcuts_dir():
         try:
-            import shutil
-            shutil.copy2(_xzg_shortcuts_default, _xzg_shortcuts_file)
-            print("[xiaozhuguang] 已从默认配置初始化 xzg_shortcuts.json")
-        except Exception as _init_err:
-            print("[xiaozhuguang] 初始化快捷键配置失败:", _init_err)
+            base = folder_paths.get_user_directory()
+        except Exception:
+            base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_data")
+        d = os.path.join(base, "xiaozhuguang")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    _xzg_shortcuts_file = os.path.join(_xzg_shortcuts_dir(), "xzg_shortcuts.json")
+
+    def _xzg_shortcuts_init():
+        import shutil
+        # 1. 迁移旧版插件目录下的配置到 user/xiaozhuguang（保留用户自定义快捷键）
+        if not os.path.exists(_xzg_shortcuts_file) and os.path.exists(_xzg_shortcuts_legacy):
+            try:
+                shutil.move(_xzg_shortcuts_legacy, _xzg_shortcuts_file)
+                print("[xiaozhuguang] 已将快捷键配置迁移至 user/xiaozhuguang/xzg_shortcuts.json")
+                return
+            except Exception as _mig_err:
+                print("[xiaozhuguang] 迁移快捷键配置失败:", _mig_err)
+        # 2. 全新安装：user 下配置不存在时，从默认配置复制一份
+        # 更新插件：user 下配置已存在则不覆盖，保留用户自定义快捷键
+        if not os.path.exists(_xzg_shortcuts_file) and os.path.exists(_xzg_shortcuts_default):
+            try:
+                shutil.copy2(_xzg_shortcuts_default, _xzg_shortcuts_file)
+                print("[xiaozhuguang] 已从默认配置初始化 user/xiaozhuguang/xzg_shortcuts.json")
+            except Exception as _init_err:
+                print("[xiaozhuguang] 初始化快捷键配置失败:", _init_err)
+
+    _xzg_shortcuts_init()
 
     @_xzg_save_real_routes.get("/xzg/shortcuts")
     @xzg_safe_handler
