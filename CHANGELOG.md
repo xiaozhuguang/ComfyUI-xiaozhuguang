@@ -1,6 +1,6 @@
 # 更新日志
 
-## v14.0.6 (2026-09-01)
+## v14.0.7 (2026-09-01)
 
 ### 修复
 
@@ -14,7 +14,7 @@
 
 ### 变更
 
-- pyproject.toml / extension.json 版本提升至 14.0.6
+- pyproject.toml / extension.json 版本提升至 14.0.7
 
 ---
 
