@@ -9,7 +9,7 @@ Single-engine support (2026-08-31):
 Engine is chosen per model_id. Each engine uses its bundled ffmpeg (binstar).
 Astra-family models require >= 9 input frames (short-clip path is broken).
 """
-import os, subprocess, sys, shutil
+import os, subprocess, sys, shutil, tempfile, uuid
 from pathlib import Path
 
 # 本文件位于 <ComfyUI>/custom_nodes/ComfyUI-xiaozhuguang/nodes/star_pipeline.py
@@ -32,7 +32,64 @@ MODEL_ENGINE = {
 ASTRA_MODELS = ('astra', 'astrahq', 'astrasharp', 'astrafast')
 MIN_FRAMES_ASTRA = 9   # Astra 家族最短帧数 (两版引擎均验证: <9 帧走坏路径)
 
-NS_ENC = '-c:v h264_nvenc -profile:v high -pix_fmt yuv420p -g 30 -preset p7 -tune hq -rc constqp -qp 18 -rc-lookahead 20 -spatial_aq 1 -aq-strength 15 -b:v 0 -bf 0'
+# ── h264 编码器自动选择：优先硬件 nvenc（要求能真正加载 libnvidia-encode.so），
+#    不可用时回退软件 libx264（跨平台 / 云镜像稳定）。结果按 ffmpeg 路径缓存。
+#    注意：h264_nvenc 能被 `-encoders` 列出 ≠ .so 能加载（晨羽云 这类镜像即如此），
+#    因此必须做一次真实短编码探测才能判定可用性。
+_ENC_CACHE: dict = {}
+
+
+def _probe_encoder(exe, enc):
+    """用 16x16 灰帧做一次 1s 真实编码，验证该编码器确实能跑通。"""
+    exe = str(exe)
+    out = os.path.join(tempfile.gettempdir(),
+                       f'xzg_enc_{uuid.uuid4().hex[:8]}.mp4')
+    try:
+        cmd = [exe, '-y', '-loglevel', 'error',
+               '-f', 'lavfi', '-i', 'color=c=gray:s=16x16:d=1',
+               '-c:v', enc, '-pix_fmt', 'yuv420p', '-t', '1', out]
+        r = subprocess.run(cmd, capture_output=True)
+        return r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0
+    except Exception:
+        return False
+    finally:
+        try:
+            if os.path.isfile(out):
+                os.remove(out)
+        except OSError:
+            pass
+
+
+def _resolve_h264_encoder(exe):
+    """返回该 ffmpeg 实际可用的 h264 编码器名：优先 nvenc，失败回退 libx264。"""
+    exe = str(exe)
+    if exe in _ENC_CACHE:
+        return _ENC_CACHE[exe]
+    enc = 'h264_nvenc' if _probe_encoder(exe, 'h264_nvenc') else 'libx264'
+    _ENC_CACHE[exe] = enc
+    return enc
+
+
+def _h264_encode_args(exe, qp):
+    """生成该 ffmpeg 的 h264 编码参数（-c:v ...）：nvenc 用硬件参数，否则软件。"""
+    enc = _resolve_h264_encoder(exe)
+    if enc == 'h264_nvenc':
+        return ['-c:v', 'h264_nvenc', '-preset', 'p7', '-tune', 'hq',
+                '-rc', 'constqp', '-qp', str(qp), '-pix_fmt', 'yuv420p']
+    # 软件退路：crf 语义与 constqp qp 近似（值越小越无损）
+    return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(qp),
+            '-pix_fmt', 'yuv420p']
+
+
+def _ns_encode_string(exe):
+    """神经服务器 --ffmpeg-encoding 用参数串：按实际编码器返回对应配置。"""
+    enc = _resolve_h264_encoder(exe)
+    if enc == 'h264_nvenc':
+        return ('-c:v h264_nvenc -profile:v high -pix_fmt yuv420p -g 30 -preset p7 '
+                '-tune hq -rc constqp -qp 18 -rc-lookahead 20 -spatial_aq 1 '
+                '-aq-strength 15 -b:v 0 -bf 0')
+    return ('-c:v libx264 -profile:v high -pix_fmt yuv420p -g 30 '
+            '-crf 18 -preset veryfast')
 
 # ffmpeg 运行冒烟检测结果缓存 (避免每次调用都起子进程)
 _FFMPEG_PROBE_CACHE: dict = {}
@@ -142,13 +199,12 @@ def _node_ffmpeg():
 
 
 def write_frames_to_video(frames_uint8, fps, path, qp=14):
-    """frames_uint8: (B,H,W,3) uint8 RGB -> h264 mp4 (nvenc, high quality)."""
+    """frames_uint8: (B,H,W,3) uint8 RGB -> h264 mp4 (优先 nvenc，无则软件 libx264)."""
     ffmpeg, _ = _node_ffmpeg()
     b, h, w, c = frames_uint8.shape
     cmd = [ffmpeg, '-y', '-loglevel', 'error',
            '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{w}x{h}', '-r', str(fps), '-i', '-',
-           '-c:v', 'h264_nvenc', '-preset', 'p7', '-tune', 'hq',
-           '-rc', 'constqp', '-qp', str(qp), '-pix_fmt', 'yuv420p', path]
+           ] + _h264_encode_args(ffmpeg, qp) + [path]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     _, err = p.communicate(input=frames_uint8.tobytes())
     if p.returncode != 0:
@@ -202,7 +258,7 @@ def run_upscale(in_path, out_path, scale, frames, w, h, strength=1.0, model_id='
            '--output-width', str(ow),
            '--output-height', str(oh),
            '--upscale-factor', str(scale),
-           '--ffmpeg-encoding', NS_ENC]
+           '--ffmpeg-encoding', _ns_encode_string(ffmpeg)]
     log('  [StarUpscale] 开始处理 ...')
     proc = subprocess.Popen(cmd, env=env, cwd=str(Path(eng['ns']).parent),
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
