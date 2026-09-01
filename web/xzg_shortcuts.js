@@ -280,8 +280,9 @@ function onKeyDown(e) {
     // 快捷键设置对话框打开时，把键盘完全交给对话框的捕获逻辑（onCaptureKey），
     // 避免这里抢先处理导致"无法捕获 / 添加快捷键"。
     if (document.getElementById("xzg-shortcuts-dialog")) return;
-    // 输入框 / 文本域 / 可编辑元素内：不触发动作，避免干扰打字；
-    // 但仍拦截已配置快捷键的浏览器默认行为（如 Ctrl+D 收藏当前页），避免误触弹出收藏框。
+    // 输入框 / 文本域 / 可编辑元素内：不触发动作，避免干扰打字。
+    // 注意：裸键（如 D、F，无任何修饰键）必须完全放行，不能 preventDefault，
+    // 否则会把字符输入也拦截掉，导致输入框里打不出 D / F。
     const tag = (e.target?.tagName || "").toUpperCase();
     const inField = tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable;
 
@@ -289,9 +290,16 @@ function onKeyDown(e) {
         if (!matchShortcut(e, s)) continue;
         const handler = ACTION_HANDLERS[s.action];
         if (!handler) continue;
-        // 匹配到快捷键：先阻止浏览器默认行为（如 Ctrl+D 收藏当前页）
+        // 输入框内：
+        // - 裸键（无修饰键）：完全放行，交给输入框正常输入字符；
+        // - 带修饰键的组合（如 Ctrl+D）：仍阻止浏览器默认行为（如收藏当前页），但不触发动作。
+        if (inField) {
+            if (!s.ctrl && !s.shift && !s.alt && !s.meta) continue;
+            e.preventDefault();
+            return;
+        }
+        // 画布 / 非输入区域：匹配到快捷键，阻止默认行为并触发动作
         e.preventDefault();
-        if (inField) return; // 输入框内只拦截默认行为，不触发动作
         e.stopImmediatePropagation();
         handler();
         return;
