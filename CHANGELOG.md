@@ -1,4 +1,20 @@
 # 更新日志
+## v14.1.0 (2026-09-02)
+
+### 新增
+
+- **BrushNet 复刻节点：`CutForInpaint` / `BlendInpaint`**（`nodes/xzg_brushnet_inpaint.py`）
+  - 完全复刻自 [ComfyUI-BrushNet](https://github.com/nullquant/ComfyUI-BrushNet)（MIT License），算法逐字一致，仅依赖 torch / torchvision（本插件已有）
+  - `CutForInpaint`：以 mask 区域为中心裁剪出指定 width×height 画布窗口，输出 IMAGE + MASK + VECTOR（origin 裁剪坐标）
+  - `BlendInpaint`：把 inpaint 结果按高斯模糊后的 mask 软融合回原图；可选 `origin` 输入时按裁剪坐标原位贴回（与 CutForInpaint 配对使用）
+  - 典型流程：`CutForInpaint` 裁出画布 → 局部采样 → `BlendInpaint` 融合回原图
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.0
+
+---
+
 ## v14.0.11 (2026-09-02)
 
 ### 修复

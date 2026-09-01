@@ -691,6 +691,19 @@ ComfyUI-xiaozhuguang/
 ---
 
 ## 📋 更新日志
+### V14.1.0 (2026-09-02)
+
+**🖌️ 新增 BrushNet 复刻节点：CutForInpaint / BlendInpaint**（`nodes/xzg_brushnet_inpaint.py`）
+
+- 完全复刻自 ComfyUI-BrushNet（MIT License），算法逐字一致，仅依赖 torch / torchvision
+- `CutForInpaint`：以 mask 区域为中心裁剪指定画布窗口，输出 IMAGE + MASK + VECTOR（裁剪坐标）
+- `BlendInpaint`：把 inpaint 结果按高斯模糊 mask 软融合回原图，可选 origin 原位贴回
+- 典型流程：CutForInpaint 裁画布 → 局部采样 → BlendInpaint 融合回原图
+
+**🏷️ 版本号 / 发布**
+
+- 版本号：`pyproject.toml` / `extension.json` 升至 `14.1.0`，推送 `v14.1.0` tag 触发 GitHub Actions 自动创建 Release + 发布到 Comfy Registry
+
 ### V14.0.11 (2026-09-02)
 
 **↔️ 小珠光箭头：新工作流串台 / 关闭残留 / 显示时机修复**（`web/xzg_arrow_tool.js`）

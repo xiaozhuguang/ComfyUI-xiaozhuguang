@@ -239,6 +239,8 @@ from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
 from .nodes.xzg_vfi import XiaozhuguangVFI
 # —— Star Upscale 2.6（完全集成自 ComfyUI-TopazStarlight，显示名 star_upscale）——
 from .nodes.xzg_star_upscale import StarUpscale
+# —— 小珠光 BrushNet 复刻节点（CutForInpaint / BlendInpaint，完全复刻自 ComfyUI-BrushNet，仅依赖 torch/torchvision）——
+from .nodes.xzg_brushnet_inpaint import BlendInpaint, CutForInpaint
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -1149,6 +1151,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
     "XiaozhuguangVFI": XiaozhuguangVFI,
     "StarUpscale": StarUpscale,
+    "BlendInpaint": BlendInpaint,
+    "CutForInpaint": CutForInpaint,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -1197,6 +1201,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
     "XiaozhuguangVFI": "小珠光VFI防丢帧",
     "StarUpscale": "star_upscale",
+    "BlendInpaint": "Blend Inpaint",
+    "CutForInpaint": "Cut For Inpaint",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"
