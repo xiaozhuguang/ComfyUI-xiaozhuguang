@@ -44,6 +44,15 @@ const _arrowCache = new Map();
 let _arrowPendingLoad = null;
 // 是否需要把当前工作流箭头写入 localStorage 备份（刷新后恢复）
 let _arrowBackupDirty = false;
+// 当前全局 arrows 是否已落盘到 _arrowActiveKey 对应的工作流。
+// 用于避免工作流切换过渡期“轮询用空箭头覆盖旧工作流已保存箭头”导致旧图形丢失。
+let _arrowFlushed = false;
+// 延迟显示（等节点渲染完成）的切换令牌：快速连续切换时递增，旧 rAF 链据此取消
+let _arrowSwitchToken = 0;
+// 新打开工作流时固定延迟显示（等画布节点/视图完全加载稳定）；切换 tab 不延迟
+let _lastLoadNewOpen = false;         // 最近一次加载是否为"新打开工作流"
+let _newOpenHoldHide = false;         // 新打开延迟期间强制保持隐藏（拦截 transformTracker 的 150ms 提前渐入）
+const ARROW_NEW_OPEN_DELAY_MS = 3000; // 新打开工作流的显示延迟（毫秒）
 const ARROW_BACKUP_PREFIX = "xzg_arrow_backup_";
 let currentArrow = null;
 let isDrawing = false;
@@ -130,6 +139,8 @@ function applyToSelectedArrows(prop, val) {
     for (const idx of selIndices) {
         arrows[idx][prop] = val;
     }
+    // 属性被修改：标记尚未落盘
+    _arrowFlushed = false;
     return true;
 }
 
@@ -3337,6 +3348,8 @@ function finishBezierDrawing() {
 // ============================================================================
 
 function recordState(actionName) {
+    // 用户修改了箭头：标记尚未落盘，切换工作流时需重新 flush
+    _arrowFlushed = false;
     if (currentHistoryIndex < history.length - 1) {
         history = history.slice(0, currentHistoryIndex + 1);
     }
@@ -3359,6 +3372,7 @@ function performUndo() {
     if (currentHistoryIndex <= 0) return false;
     currentHistoryIndex--;
     arrows = JSON.parse(history[currentHistoryIndex]);
+    _arrowFlushed = false;
     syncSelectionAfterChange();
     renderArrows();
     updateToolbarState();
@@ -3369,6 +3383,7 @@ function performRedo() {
     if (currentHistoryIndex >= history.length - 1) return false;
     currentHistoryIndex++;
     arrows = JSON.parse(history[currentHistoryIndex]);
+    _arrowFlushed = false;
     syncSelectionAfterChange();
     renderArrows();
     updateToolbarState();
@@ -3997,6 +4012,8 @@ function applyArrowExtraData(data) {
     recordInitialState();
     renderArrows();
     updateToolbarState();
+    // 已按来源（工作流数据/备份）恢复箭头：视为已落盘，避免过渡期重复 flush 误覆盖
+    _arrowFlushed = true;
 }
 
 // ============ 按工作流级别的箭头持久化辅助（参考小珠光编组持久化）============
@@ -4078,6 +4095,7 @@ function flushCurrentArrowsToKey(key) {
         if (data.arrows.length > 0) writeArrowBackup(key, data);
         else removeArrowBackup(key);
     }
+    _arrowFlushed = true;
 }
 
 /**
@@ -4086,8 +4104,17 @@ function flushCurrentArrowsToKey(key) {
  * 否则回退到内存缓存 / localStorage 备份（本会话绘制但未落文件的场景）。
  */
 function loadArrowsFromSource(key, freshData) {
-    const backup = (key && (readArrowBackup(key) || _arrowCache.get(key))) || null;
-    const data = (freshData !== undefined && freshData !== null) ? freshData : backup;
+    let data;
+    if (freshData === null || freshData === undefined) {
+        // 该工作流 content 无箭头：
+        // - 已保存工作流重开时，备份保留着上次绘制的箭头 → 恢复（保留绘图）
+        // - 新建/复用同路径的临时工作流，残留备份已由 store 钩子在创建时清除 → 无备份可恢复 → 清空
+        data = (key && (readArrowBackup(key) || _arrowCache.get(key))) || null;
+    } else if (freshData !== undefined) {
+        data = freshData;
+    } else {
+        data = (key && (readArrowBackup(key) || _arrowCache.get(key))) || null;
+    }
     if (data && typeof data === 'object' && Array.isArray(data.arrows) && key) {
         _arrowCache.set(key, data);
     }
@@ -4121,15 +4148,82 @@ function arrowFadeInOnce(ms) {
  * 切换提交后立即重绘一次，并强制一次最短渐入（掩盖切换残留）。
  * 即使未开启渐入也默认应用 0.5s；开启时用设置值但同样保证最短 0.5s。
  */
-function scheduleArrowRedrawAfterSwitch() {
-    renderArrows();
-    const durMs = arrowSettings.fadeInEnabled
-        ? Math.max(arrowSettings.fadeInDuration || 1000, 500)
-        : 500;
-    arrowFadeInOnce(durMs);
+function scheduleArrowRedrawAfterSwitch(delayMs) {
+    // 等画布视图就绪后再显示箭头：打开工作流时画布会做视图适配（fit view / 恢复保存的 ds），
+    // transform 会从旧值变化到目标值。若在适配完成前显示，箭头会先以错误大小出现、随后随画布缩放。
+    // 策略：先隐藏；transform 变化过 → 等变化后连续稳定若干帧再显示；
+    //       transform 从未变化（切换等无适配场景）→ 等基础时间后显示；总超时强制兜底。
+    // 新打开工作流（delayMs 有值）→ 固定延迟 delayMs 再显示，期间 _newOpenHoldHide 置位，
+    // 拦截 transformTracker 的 150ms 提前渐入，保证画布完全稳定后才出现绘图。
+    const el = canvasElement;
+    if (el) el.style.opacity = "0";
+    const token = ++_arrowSwitchToken;
+    const t0 = Date.now();
+    // 立即接管 holdHide：延迟链置位（拦截 transformTracker 提前渐入），切换/新建链立即解除
+    const isDelayed = typeof delayMs === 'number' && delayMs > 0;
+    _newOpenHoldHide = isDelayed;
+    if (isDelayed) {
+        const tryShow = () => {
+            if (token !== _arrowSwitchToken) return;   // 已由更新的加载链接管，holdHide 由新链管理
+            if (Date.now() - t0 >= delayMs) {
+                _newOpenHoldHide = false;
+                renderArrows();
+                const durMs = arrowSettings.fadeInEnabled
+                    ? Math.max(arrowSettings.fadeInDuration || 1000, 500)
+                    : 500;
+                arrowFadeInOnce(durMs);
+                return;
+            }
+            requestAnimationFrame(tryShow);
+        };
+        requestAnimationFrame(tryShow);
+        return;
+    }
+    const getSig = () => {
+        const t = getTransform();
+        return (t.scale * 100000 | 0) + ',' + (t.offsetX * 1000 | 0) + ',' + (t.offsetY * 1000 | 0);
+    };
+    const startSig = getSig();
+    let lastSig = startSig;
+    let stableFrames = 0;
+    let changedOnce = false;
+    const NO_CHANGE_MS = 400;       // 无适配场景（切换）基础等待
+    const STABLE_AFTER_CHANGE = 5;  // 适配后需连续稳定 5 帧
+    const TIMEOUT_MS = 4000;        // 总超时兜底
+    const tryShow = () => {
+        if (token !== _arrowSwitchToken) return;   // 已发起新一轮切换，取消本链
+        const sig = getSig();
+        if (sig !== lastSig) {
+            lastSig = sig;
+            stableFrames = 0;
+            if (sig !== startSig) changedOnce = true;
+        } else {
+            stableFrames++;
+        }
+        const elapsed = Date.now() - t0;
+        let ready = false;
+        if (changedOnce) {
+            ready = stableFrames >= STABLE_AFTER_CHANGE;   // 适配完成后已稳定
+        } else {
+            ready = elapsed >= NO_CHANGE_MS;               // 无适配场景（切换）
+        }
+        if (ready || elapsed > TIMEOUT_MS) {
+            renderArrows();
+            const durMs = arrowSettings.fadeInEnabled
+                ? Math.max(arrowSettings.fadeInDuration || 1000, 500)
+                : 500;
+            arrowFadeInOnce(durMs);
+            return;
+        }
+        requestAnimationFrame(tryShow);
+    };
+    requestAnimationFrame(tryShow);
 }
 
 function handleArrowWorkflowSwitch(key, freshData, trusted) {
+    // 读取并消费"最近一次加载是否为新打开工作流"标记（configure/poll 设置），供延迟显示用
+    const newOpen = _lastLoadNewOpen;
+    _lastLoadNewOpen = false;
     // 关键防御：无工作流标识（切换瞬间前端短暂上报 null）时绝不动当前箭头，防止旧内容被误清后消失
     if (!key) return;
     const oldKey = _arrowActiveKey;
@@ -4141,11 +4235,15 @@ function handleArrowWorkflowSwitch(key, freshData, trusted) {
     }
     // 非权威路径（仅靠轮询检测到 key 变化）需先经过确认缓冲，避免瞬时 key 抖动造成闪烁
     if (!trusted) return;
-    if (oldKey) flushCurrentArrowsToKey(oldKey);
+    // 当前箭头已在 configure 阶段落盘到旧工作流时，不再用（可能已被清空的）当前箭头覆盖，
+    // 避免“新建工作流时先把旧图形落盘、随后又被空箭头覆盖而丢失”
+    if (oldKey && !_arrowFlushed) flushCurrentArrowsToKey(oldKey);
     loadArrowsFromSource(key, freshData);
     _arrowActiveKey = key;
-    // 切换完成后多帧延迟重绘，覆盖仍可能滞留在旧变换上的内容
-    scheduleArrowRedrawAfterSwitch();
+    // 切换完成后多帧延迟重绘，覆盖仍可能滞留在旧变换上的内容。
+    // 新打开工作流（首次从磁盘/列表加载）→ 固定延迟 ARROW_NEW_OPEN_DELAY_MS 再显示；
+    // 切换 tab / 新建 → 用 changedOnce 稳定检测快速显示。
+    scheduleArrowRedrawAfterSwitch(newOpen ? ARROW_NEW_OPEN_DELAY_MS : undefined);
 }
 
 /** 若箭头有变动，则把当前工作流备份写入 localStorage（刷新后恢复用） */
@@ -4158,6 +4256,7 @@ function persistArrowBackupIfNeeded() {
     _arrowCache.set(key, data);
     if (data.arrows.length > 0) writeArrowBackup(key, data);
     else removeArrowBackup(key);
+    _arrowFlushed = true;
 }
 
 /** 轮询检测活动工作流变化，底层前端不触发 loadGraphData/configure 时也能按工作流切换箭头 */
@@ -4168,11 +4267,13 @@ function pollArrowWorkflow() {
 
         // 权威路径：configure/loadGraphData 携带了明确的新数据，直接信任并提交
         if (pending && pending.key === key) {
+            _lastLoadNewOpen = !!(pending && pending.newOpen);
             handleArrowWorkflowSwitch(key, pending.data, true);
         } else if (key && key !== _arrowActiveKey) {
             // 轮询路径：检测到新的非空工作流 key 立即提交。
             // 不在此确认等待——否则切换后仍长时间显示旧工作流内容；
             // 瞬时 null / key 抖动带来的误清已由 handleArrowWorkflowSwitch 的 null 防护拦截。
+            _lastLoadNewOpen = false;
             handleArrowWorkflowSwitch(key, undefined, true);
         }
         persistArrowBackupIfNeeded();
@@ -4213,9 +4314,24 @@ function setupPersistence() {
                     canvasElement.style.transition = 'opacity 0s';
                     canvasElement.style.opacity = '0';
                 }
+                // 捕获真实目标工作流（前端 loadGraphData 的第4个参数 r：
+                // 切换已有 tab 时是目标工作流对象；新建工作流时为 undefined/路径字符串）。
+                // configure 阶段 activeWorkflow 尚未切换（在 afterLoadNewGraph 里才切），
+                // 直接读 activeWorkflow 会拿到旧工作流，导致 key 错位、箭头串台。
+                let targetWf = null;
+                try {
+                    const r = args && args.length >= 3 ? args[2] : undefined;
+                    if (r && typeof r === 'object' && (r.path !== undefined || r.name !== undefined || r.id !== undefined)) {
+                        targetWf = r;
+                    }
+                } catch (e) {}
                 _arrowPendingLoad = {
-                    key: currentArrowWorkflowKey(),
-                    data: (graphData?.extra && graphData.extra[EXTENSION_KEY]) || null
+                    key: targetWf ? arrowWorkflowKey(targetWf) : currentArrowWorkflowKey(),
+                    data: (graphData?.extra && graphData.extra[EXTENSION_KEY]) || null,
+                    targetWf: targetWf || null,
+                    // 新打开工作流（插件缓存中尚无该 key 的绘图记录）→ 延迟显示等画布稳定；
+                    // 切换 tab（缓存已有）→ 快速显示。用插件自身缓存判定，不依赖 ComfyUI 内部时序。
+                    newOpen: !!(targetWf && !_arrowCache.has(arrowWorkflowKey(targetWf)))
                 };
             } catch (e) {}
             const result = await origLoadGraphData(graphData, ...args);
@@ -4257,6 +4373,80 @@ function setupPersistence() {
             }
         }
     })();
+
+    // 2.6) 工作流 store 钩子：关闭 / 删除 / 新建工作流时清理箭头临时数据。
+    //      修复：关闭未保存工作流（如 Unsaved Workflow (2)）后再新建同名工作流时，
+    //      旧工作流的箭头缓存 / localStorage 备份残留，轮询恢复会把旧图形带进新工作流（串台）。
+    (function installWorkflowStoreHooks() {
+        let installed = false;
+        // onlyTemporary=true 时仅清理未保存的临时工作流；
+        // 已保存工作流（isTemporary=false）不清理备份，保证重新打开时绘图保留
+        const clearArrowsFor = (wf, onlyTemporary) => {
+            try {
+                if (!wf) return;
+                if (onlyTemporary && !wf.isTemporary) return;
+                const key = arrowWorkflowKey(wf);
+                if (!key) return;
+                _arrowCache.delete(key);
+                removeArrowBackup(key);
+            } catch (e) {}
+        };
+        const tryInstall = () => {
+            try {
+                const extWf = app?.extensionManager?.workflow;
+                if (!extWf) return false;
+                if (installed) return true;
+                // 兼容 Vue ref 包装（reactive 解包不到时）：取 .value 下的真实 store
+                const wfStore = (extWf && extWf.value && typeof extWf.value === 'object') ? extWf.value : extWf;
+                if (!wfStore || typeof wfStore !== 'object') return false;
+                const wrap = (fnName, mode, onlyTemporary) => {
+                    const orig = wfStore[fnName];
+                    if (typeof orig !== 'function') return false;
+                    if (wfStore['__xzgArrowWrap_' + fnName]) return true;
+                    // 保留原方法的同步/异步性：createNewTemporary 等是同步方法，
+                    // 包成 async 会把返回值变成 Promise，破坏前端同步调用
+                    const isAsync = orig.constructor && orig.constructor.name === 'AsyncFunction';
+                    const doClean = (result, args) => {
+                        // mode 'arg'：关闭/删除时传入的工作流是第一个参数；
+                        // mode 'return'：新建时返回的就是新工作流对象
+                        clearArrowsFor(mode === 'return' ? result : args[0], onlyTemporary);
+                    };
+                    if (isAsync) {
+                        wfStore[fnName] = async function (...args) {
+                            const result = await orig.apply(this, args);
+                            doClean(result, args, onlyTemporary);
+                            return result;
+                        };
+                    } else {
+                        wfStore[fnName] = function (...args) {
+                            const result = orig.apply(this, args);
+                            doClean(result, args, onlyTemporary);
+                            return result;
+                        };
+                    }
+                    wfStore['__xzgArrowWrap_' + fnName] = true;
+                    return true;
+                };
+                let ok = true;
+                // 关闭：仅清理未保存的临时工作流（已保存的保留备份，重开恢复绘图）
+                ok = wrap('closeWorkflow', 'arg', true) && ok;
+                // 删除：总是清理（删除=明确丢弃）
+                ok = wrap('deleteWorkflow', 'arg', false) && ok;
+                // 新建临时：总是清理同路径残留（防新建同名串台）
+                ok = wrap('createNewTemporary', 'return', false) && ok;
+                // createTemporary 可能复用已保存工作流：仅清理临时新建的
+                ok = wrap('createTemporary', 'return', true) && ok;
+                if (ok) installed = true;
+                return ok;
+            } catch (e) { return false; }
+        };
+        if (!tryInstall()) {
+            const timer = setInterval(() => {
+                if (tryInstall()) clearInterval(timer);
+            }, 200);
+        }
+    })();
+
 
     // 3) configure 补丁：
     //    BEFORE origConfigure: 用 graph._arrowWorkflow 缓存的引用保存当前箭头到旧工作流
@@ -4307,9 +4497,50 @@ function setupPersistence() {
             // AFTER: 按工作流切换恢复箭头。
             // 优先用 configure 自带的 data.extra；否则回退到 loadGraphData 暂存 / 内存缓存 / localStorage 备份
             const pending = _arrowPendingLoad; _arrowPendingLoad = null;
-            const key = currentArrowWorkflowKey() || (pending && pending.key) || (this._arrowWorkflow && arrowWorkflowKey(this._arrowWorkflow)) || null;
+            // 真实目标 key：优先用 loadGraphData 捕获的目标工作流（避免 activeWorkflow 滞后）
+            const realKey = (pending && pending.targetWf) ? arrowWorkflowKey(pending.targetWf) : null;
+            const key = realKey || currentArrowWorkflowKey() || (pending && pending.key) || (this._arrowWorkflow && arrowWorkflowKey(this._arrowWorkflow)) || null;
             const fresh = data?.extra?.[EXTENSION_KEY] !== undefined ? data.extra[EXTENSION_KEY] : (pending ? pending.data : undefined);
-            handleArrowWorkflowSwitch(key, fresh, true);
+            // 标记本次加载是否为"新打开工作流"（延迟显示用）：pending.newOpen 已在 loadGraphData 补丁
+            // 里按"插件缓存是否已有该 key"判定；无 pending（纯轮询）时为 false（快速显示）。
+            _lastLoadNewOpen = !!(pending && pending.newOpen);
+
+            // ===== 修复“新建工作流出现旧图形（串台）” =====
+            // configure 的 data 是“正在加载的工作流”的权威箭头来源（fresh=null 表示该工作流无箭头）。
+            // 若等到轮询（250ms）才提交切换，前端 afterLoadNewGraph 里 rootGraph.serialize()
+            // 会把仍残留的旧工作流箭头写进新工作流初始内容，导致新 tab 出现旧图形。
+            // 因此在 configure 阶段立即提交：先把当前全局箭头落盘回旧工作流，再按 fresh 恢复。
+            if (fresh !== undefined) {
+                const prevKey = _arrowActiveKey;
+                // 1) 当前箭头落盘回它所属的工作流（尚未落盘或仍有新箭头时）
+                if (prevKey && (!_arrowFlushed || arrows.length > 0)) {
+                    flushCurrentArrowsToKey(prevKey);
+                }
+                // 2) 按 configure 权威数据恢复（fresh=null → content 无箭头）：
+                //    - 重新打开已保存工作流（realKey 有值）→ 恢复其备份（保留绘图）
+                //    - 新建工作流（无真实目标）→ 直接清空，绝不恢复旧备份（防串台）
+                if (fresh === null) {
+                    if (realKey) {
+                        loadArrowsFromSource(key, null);
+                    } else {
+                        applyArrowExtraData(null);
+                    }
+                } else {
+                    loadArrowsFromSource(key, fresh);
+                }
+                // 3) 提交活动工作流标识；仅在真正切换时做渐入
+                if (key && key !== prevKey) {
+                    _arrowActiveKey = key;
+                    const newOpen = _lastLoadNewOpen;
+                    _lastLoadNewOpen = false;
+                    scheduleArrowRedrawAfterSwitch(newOpen ? ARROW_NEW_OPEN_DELAY_MS : undefined);
+                } else if (key) {
+                    _arrowActiveKey = key;
+                    _lastLoadNewOpen = false;
+                }
+            } else {
+                handleArrowWorkflowSwitch(key, fresh, true);
+            }
 
             // 更新当前工作流引用为新的 active workflow
             try {
@@ -6272,10 +6503,12 @@ function initializeArrowSystem(litegraphCanvas) {
                 // 画布停止移动后延迟触发渐入
                 _arrowMoveStopTimer = setTimeout(() => {
                     _arrowCanvasMoving = false;
+                    _arrowMoveStopTimer = null;
+                    // 新打开工作流延迟显示期间强制保持隐藏，避免提前渐入打断延迟
+                    if (_newOpenHoldHide) return;
                     const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
                     canvasElement.style.transition = `opacity ${fadeDur}s ease`;
                     canvasElement.style.opacity = '1';
-                    _arrowMoveStopTimer = null;
                 }, 150);
             }
         }
