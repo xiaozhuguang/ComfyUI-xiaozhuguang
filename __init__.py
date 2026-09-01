@@ -235,6 +235,8 @@ from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
 from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
+# —— 小珠光VFI（合并自 ComfyUI-GIMM-VFI 的模型加载 + 插值；依赖宿主插件，内部惰性导入）——
+from .nodes.xzg_vfi import XiaozhuguangVFI
 # —— Star Upscale 2.6（完全集成自 ComfyUI-TopazStarlight，显示名 star_upscale）——
 from .nodes.xzg_star_upscale import StarUpscale
 
@@ -1145,6 +1147,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
     "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
+    "XiaozhuguangVFI": XiaozhuguangVFI,
     "StarUpscale": StarUpscale,
 }
 # 可选大依赖节点：只有导入成功才加入映射
@@ -1192,6 +1195,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
+    "XiaozhuguangVFI": "小珠光VFI防丢帧",
     "StarUpscale": "star_upscale",
 }
 if XiaozhuguangQwenVLInstruct is not None:
