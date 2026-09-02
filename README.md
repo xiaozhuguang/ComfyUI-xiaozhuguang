@@ -691,6 +691,17 @@ ComfyUI-xiaozhuguang/
 ---
 
 ## 📋 更新日志
+### V14.1.1 (2026-09-02)
+
+**↔️ 小珠光箭头：新打开工作流"先错后对"修复**（`web/xzg_arrow_tool.js`）
+
+- 根因：延迟期隐藏标志设置过晚，画布 150ms 渐入在节点适配完成前触发，用未适配的 transform 先绘制出错误内容
+- 修复：加载开始即置位延迟期隐藏，onDrawBackground 延迟期不绘制，画布稳定后一次性绘制正确内容
+
+**🏷️ 版本号 / 发布**
+
+- 版本号：`pyproject.toml` / `extension.json` 升至 `14.1.1`，推送 `v14.1.1` tag 触发 GitHub Actions 自动创建 Release + 发布到 Comfy Registry
+
 ### V14.1.0 (2026-09-02)
 
 **🖌️ 新增 BrushNet 复刻节点：CutForInpaint / BlendInpaint**（`nodes/xzg_brushnet_inpaint.py`）

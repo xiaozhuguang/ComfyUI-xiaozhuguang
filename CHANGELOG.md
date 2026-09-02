@@ -1,4 +1,18 @@
 # 更新日志
+## v14.1.1 (2026-09-02)
+
+### 修复
+
+- **小珠光箭头：新打开工作流"先绘制错误位置/大小内容、节点出现后再绘制正确"**（`web/xzg_arrow_tool.js`）
+  - 根因：延迟期强制隐藏标志（`_newOpenHoldHide`）设置过晚，transformTracker 的 150ms 渐入在 configure 完成前触发、把 opacity 设回 1，onDrawBackground 用尚未适配的 transform 先绘制出错误位置/大小的内容
+  - 修复：loadGraphData 加载开始即置位延迟期隐藏标志，从源头拦截 150ms 提前渐入；onDrawBackground 在延迟期不绘制箭头，画布节点 / 视图稳定后一次性绘制正确内容，杜绝"先错后对"
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.1
+
+---
+
 ## v14.1.0 (2026-09-02)
 
 ### 新增

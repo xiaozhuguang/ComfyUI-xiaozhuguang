@@ -4333,6 +4333,11 @@ function setupPersistence() {
                     // 切换 tab（缓存已有）→ 快速显示。用插件自身缓存判定，不依赖 ComfyUI 内部时序。
                     newOpen: !!(targetWf && !_arrowCache.has(arrowWorkflowKey(targetWf)))
                 };
+                // 提前置位延迟期强制隐藏：transformTracker 的 150ms 渐入可能在 configure 完成前
+                // 触发（此时 schedule 的 holdHide 尚未设置），会把 opacity 设回 1，
+                // 导致 onDrawBackground 用未适配的 transform 先绘制出错误位置/大小的内容。
+                // 从加载一开始就置位，配合 schedule 3s 后解除，整段加载期保持隐藏。
+                if (_arrowPendingLoad.newOpen) _newOpenHoldHide = true;
             } catch (e) {}
             const result = await origLoadGraphData(graphData, ...args);
             return result;
@@ -6605,7 +6610,8 @@ function patchCanvasArrowRedrawSync() {
     const orig = cv.onDrawBackground;
     cv.onDrawBackground = function () {
         try { if (typeof orig === "function") orig.apply(this, arguments); } catch (e) {}
-        try { renderArrows(); } catch (e) {}
+        // 新打开工作流延迟显示期间不绘制：避免用尚未适配的 transform 先渲染出错误位置/大小的内容
+        try { if (!_newOpenHoldHide) renderArrows(); } catch (e) {}
     };
 }
 
