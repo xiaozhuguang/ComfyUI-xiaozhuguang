@@ -690,7 +690,22 @@ ComfyUI-xiaozhuguang/
 
 ---
 
-## 📋 更新日志
+## 📋 更新日志### V14.1.3 (2026-09-03)
+
+**🖥️ 新增：小珠光系统监控悬浮窗**（`nodes/xzg_monitor.py` + `web/xzg_monitor.js`）
+
+- 提供 `/xzg/system_monitor_stats` 接口，实时返回 GPU / CPU / 内存状态
+- 前端自动加载可拖拽悬浮窗，每秒轮询展示
+
+**🧰 新增：节点工具与组合辅助功能**
+
+- 新增节点工具、组合工具、设备码工具及内部工具子包，并注册相应节点与接口
+- 主题面板增强，节点收藏面板细节优化
+
+**🏷️ 版本号 / 发布**
+
+- 版本号：`pyproject.toml` / `extension.json` 升至 `14.1.3`，推送 `v14.1.3` tag 触发 GitHub Actions 自动创建 Release + 发布到 Comfy Registry
+
 ### V14.1.2 (2026-09-02)
 
 **⚙️ GitHub Actions 发布流程：消除 Node.js 20 弃用警告**

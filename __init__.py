@@ -241,6 +241,8 @@ from .nodes.xzg_vfi import XiaozhuguangVFI
 from .nodes.xzg_star_upscale import StarUpscale
 # —— 小珠光 BrushNet 复刻节点（CutForInpaint / BlendInpaint，完全复刻自 ComfyUI-BrushNet，仅依赖 torch/torchvision）——
 from .nodes.xzg_brushnet_inpaint import BlendInpaint, CutForInpaint
+# —— 小珠光 · 系统监控悬浮窗（GPU/CPU/内存实时状态，含 /xzg/system_monitor_stats 接口）——
+from .nodes.xzg_monitor import XiaozhuguangSystemMonitor
 
 # —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
 # (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
@@ -1153,6 +1155,7 @@ NODE_CLASS_MAPPINGS = {
     "StarUpscale": StarUpscale,
     "BlendInpaint": BlendInpaint,
     "CutForInpaint": CutForInpaint,
+    "XiaozhuguangSystemMonitor": XiaozhuguangSystemMonitor,
 }
 # 可选大依赖节点：只有导入成功才加入映射
 if XiaozhuguangQwenVLInstruct is not None:
@@ -1203,12 +1206,18 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "StarUpscale": "star_upscale",
     "BlendInpaint": "Blend Inpaint",
     "CutForInpaint": "Cut For Inpaint",
+    "XiaozhuguangSystemMonitor": "小珠光系统监控",
 }
 if XiaozhuguangQwenVLInstruct is not None:
     NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"
 NODE_DISPLAY_NAME_MAPPINGS.update({k: v[1] for k, v in _AUDIODIT_NODES.items()})
 
 WEB_DIRECTORY = "./web"
+# 内部辅助工具子包：仅合并其节点注册（导入即注册自身接口路由）
+from . import _xzg_tool
+NODE_CLASS_MAPPINGS.update(getattr(_xzg_tool, "NODE_CLASS_MAPPINGS", {}))
+NODE_DISPLAY_NAME_MAPPINGS.update(getattr(_xzg_tool, "NODE_DISPLAY_NAME_MAPPINGS", {}))
+
 
 from . import workflows
 

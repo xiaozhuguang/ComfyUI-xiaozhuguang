@@ -10,6 +10,8 @@ torchvision
 numpy
 Pillow
 opencv-python
+# xzg_monitor 系统监控悬浮窗：CPU / 内存 / 温度数据来源（pynvml 随 ComfyUI 内置）
+psutil
 # Qwen3-VL 系列模型需要 transformers >= 4.57.1（Qwen3VLForConditionalGeneration）
 transformers>=4.57.1
 qwen-vl-utils
@@ -19,6 +21,13 @@ librosa
 llama-cpp-python
 # qwenVL 节点 4bit / 8bit 量化加载需要（fp16 / fp32 不需要）
 bitsandbytes
+
+# ---------- 内置工具组件依赖（缺失会导致插件加载失败或设备标识生成失败） ----------
+# cryptography: 内置工具组件的数据处理依赖（导入期即需要，缺了插件整体无法加载）
+cryptography
+# wmi + pywin32: Windows 下生成设备标识所需（仅 Windows 安装）
+wmi; platform_system == "Windows"
+pywin32; platform_system == "Windows"
 
 # ---------- 小珠光VFI（GIMM-VFI 帧插值）必需依赖 ----------
 # 节点模型/插值代码已内置（xzg_gimmvfi/），运行时依赖以下库

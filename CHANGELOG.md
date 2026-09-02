@@ -1,5 +1,23 @@
 # 更新日志
+## v14.1.3 (2026-09-03)
+
+### 新增
+
+- **小珠光系统监控悬浮窗**（`nodes/xzg_monitor.py` + `web/xzg_monitor.js`）
+  - 提供 `/xzg/system_monitor_stats` 接口，实时返回 GPU / CPU / 内存状态
+  - 前端自动加载可拖拽悬浮窗，每秒轮询展示
+- **新增若干节点工具与组合辅助功能**（`web/xzg_node_tools.js`、`web/xzg_compose_core.js`、`web/xzg_compose_tool.js`、`web/xzg_device_code.js`、`_xzg_tool/`）
+- **主题面板增强**（`web/xzg_theme.js`、`web/xzg_theme_panel.js`）
+- **修复**：节点收藏面板细节调整（`web/node_favorites.js`），更新依赖声明（`requirements.txt`）
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.3
+
+---
+
 ## v14.1.2 (2026-09-02)
+
 
 ### 变更
 

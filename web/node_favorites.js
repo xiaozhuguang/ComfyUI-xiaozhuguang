@@ -8084,7 +8084,7 @@ app.registerExtension({
 
                 fontSizeInput.addEventListener("input", (e) => {
                     const val = parseFloat(e.target.value);
-                    if (!isNaN(val) && val >= 8 && val <= 200) {
+                    if (!isNaN(val) && val >= 8 && val <= 500) {
                         updateFontSize(val);
                         if (val <= 100) {
                             slider.value = val;
@@ -8678,7 +8678,7 @@ app.registerExtension({
                         return;
                     }
                     const val = parseFloat(fontSizeInput.value);
-                    if (!isNaN(val) && val >= 8 && val <= 200) {
+                    if (!isNaN(val) && val >= 8 && val <= 500) {
                         updateFontSize(val);
                     } else {
                         fontSizeInput.value = p.fontSize;

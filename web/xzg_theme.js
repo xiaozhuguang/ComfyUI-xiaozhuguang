@@ -36,6 +36,11 @@ window.XZGThemeManager = {
     _wpDB: null,
     _wpDBReady: false,
     _wpPendingSave: null,
+    // 节点执行高亮（颜色）
+    nodeHighlightActive: false,
+    nodeHighlightHooked: false,
+    _runningNodeId: null,
+    nodeHighlightColor: '#22FF22',
 
     init() {
         // 从 localStorage 恢复连线高亮状态
@@ -48,6 +53,16 @@ window.XZGThemeManager = {
             const hlAnimTypeSaved = localStorage.getItem('xzg-link-highlight-anim-type');
             if (hlAnimTypeSaved) {
                 this.linkHighlightAnimType = hlAnimTypeSaved;
+            }
+            // 节点执行高亮，默认关闭
+            const nhSaved = localStorage.getItem('xzg-node-highlight');
+            if (nhSaved === 'true') {
+                this.nodeHighlightActive = true;
+            }
+            // 节点高亮颜色
+            const nhColor = localStorage.getItem('xzg-node-highlight-color');
+            if (nhColor) {
+                this.nodeHighlightColor = nhColor;
             }
             // 连线动画（星芒效果），默认关闭
             const animSaved = localStorage.getItem('xzg-link-anim');
@@ -121,6 +136,7 @@ window.XZGThemeManager = {
         this.hookSerialize();
         this._initWallpaperDB();
         this.initWallpaper();
+        this._ensureNodeHighlightHook();
     },
 
     injectPanelStyles() {
@@ -823,6 +839,12 @@ window.XZGThemeManager = {
     gap: 7px;
     margin-top: 0;
     margin-bottom: 6px;
+}
+
+#xzg-node-highlight-color-text:focus {
+    border-color: #555 !important;
+    outline: none !important;
+    box-shadow: none !important;
 }
 
 .xzg-anim-type-btn {
@@ -1817,6 +1839,136 @@ window.XZGThemeManager = {
             }
         }
         return this.linkHighlightActive;
+    },
+
+    toggleNodeHighlight() {
+        this.nodeHighlightActive = !this.nodeHighlightActive;
+        try {
+            localStorage.setItem('xzg-node-highlight', this.nodeHighlightActive ? 'true' : 'false');
+        } catch(e) {}
+        if (window.app) {
+            if (app.canvas?.setDirty) {
+                app.canvas.setDirty(true, true);
+            } else if (app.graph?.setDirtyCanvas) {
+                app.graph.setDirtyCanvas(true, true);
+            }
+        }
+        return this.nodeHighlightActive;
+    },
+
+    setNodeHighlightColor(color) {
+        this.nodeHighlightColor = color;
+        try { localStorage.setItem('xzg-node-highlight-color', color); } catch(e) {}
+        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    },
+
+    _ensureNodeHighlightHook() {
+        if (this.nodeHighlightHooked) return;
+        this.nodeHighlightHooked = true;
+        const self = this;
+        const proto = LGraphCanvas.prototype;
+        if (!proto || typeof proto.drawNode !== 'function') return;
+
+        const origDrawNode = proto.drawNode;
+        proto.drawNode = function (node, ctx, ...args) {
+            // 屏蔽原生“运行中”绿色高亮环，避免与本插件高亮重叠露底
+            let patchedRunning = false;
+            if (self.nodeHighlightActive && node && node.strokeStyles && typeof node.strokeStyles.running === 'function') {
+                self._nativeRunningStroke = node.strokeStyles.running;
+                node.strokeStyles.running = () => null;
+                patchedRunning = true;
+            }
+            origDrawNode.call(this, node, ctx, ...args);
+            if (patchedRunning) {
+                node.strokeStyles.running = self._nativeRunningStroke;
+                self._nativeRunningStroke = null;
+            }
+            if (!self.nodeHighlightActive) return;
+            let saved = false;
+            try {
+                const currentRunningId = app.runningNodeId || self._runningNodeId;
+                if (!currentRunningId || currentRunningId.toString() !== node.id.toString()) return;
+
+                ctx.save();
+                saved = true;
+                const shape = node._shape || LiteGraph.BOX_SHAPE;
+                const isCollapsed = !!(node.flags && node.flags.collapsed) || !!node.collapsed;
+                const titleHeight = LiteGraph.NODE_TITLE_HEIGHT || 30;
+                const width = isCollapsed
+                    ? (node._collapsed_width || LiteGraph.NODE_COLLAPSED_WIDTH || (node.size && node.size[0]) || 140)
+                    : ((node.size && node.size[0]) || 140);
+                const height = isCollapsed
+                    ? titleHeight
+                    : ((node.size && node.size[1]) || 60);
+                const bounds = isCollapsed
+                    ? { x: 0, y: -titleHeight, w: width, h: titleHeight }
+                    : { x: 0, y: -titleHeight, w: width, h: height + titleHeight };
+                const pad = 7;
+                const buildPath = (p) => {
+                    ctx.beginPath();
+                    if (shape === LiteGraph.CIRCLE_SHAPE) {
+                        const radius = Math.max(2, Math.max(bounds.w, bounds.h) * 0.5 + p);
+                        ctx.arc(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, radius, 0, Math.PI * 2);
+                    } else {
+                        const x = bounds.x - p;
+                        const y = bounds.y - p;
+                        const w = bounds.w + p * 2;
+                        const h = bounds.h + p * 2;
+                        if (ctx.roundRect) ctx.roundRect(x, y, w, h, 12);
+                        else ctx.rect(x, y, w, h);
+                    }
+                };
+
+                // 颜色（支持逗号分隔的渐变）
+                const colors = (self.nodeHighlightColor || '#22FF22')
+                    .split(',')
+                    .map(s => s.trim())
+                    .filter(Boolean);
+                if (colors.length > 1) {
+                    const gw = (node.size && node.size[0]) || 140;
+                    const gh = (node.size && node.size[1]) || 60;
+                    const grad = ctx.createLinearGradient(0, 0, gw, gh);
+                    colors.forEach((c, i) => grad.addColorStop(i / (colors.length - 1), c));
+                    ctx.strokeStyle = grad;
+                } else {
+                    ctx.strokeStyle = colors[0] || '#22FF22';
+                }
+
+                buildPath(pad);
+                ctx.globalAlpha = 0.15;
+                ctx.lineWidth = 12;
+                ctx.stroke();
+                ctx.globalAlpha = 0.5;
+                ctx.lineWidth = 6;
+                ctx.stroke();
+                // 最亮内边框内收 2px，避免盖住节点内容
+                buildPath(pad - 2);
+                ctx.globalAlpha = 0.9;
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            } catch(e) {
+            } finally {
+                if (saved) ctx.restore();
+            }
+        };
+
+        // 跟踪当前执行节点
+        if (window.app?.api) {
+            app.api.addEventListener('executing', (e) => {
+                const detail = e?.detail || {};
+                const nodeId = detail.display_node
+                    ?? detail.displayNode
+                    ?? detail.node_id
+                    ?? detail.nodeId
+                    ?? (typeof detail.node === 'object' ? detail.node?.id : detail.node)
+                    ?? null;
+                self._runningNodeId = nodeId === undefined || nodeId === null ? null : nodeId.toString();
+                if (app.canvas) app.canvas.setDirty(true, true);
+            });
+            app.api.addEventListener('execution_start', () => { self._runningNodeId = null; });
+            app.api.addEventListener('execution_success', () => { self._runningNodeId = null; });
+            app.api.addEventListener('execution_interrupted', () => { self._runningNodeId = null; });
+        }
     },
 
     toggleLinkAnim() {

@@ -389,6 +389,25 @@ window.XZGThemePanel = {
                     <p style="margin-top:8px;font-size:11px;color:#888;text-align:center;">${xzgT('拖拽可调整顺序，从节点拉出连线时搜索框顶部显示','Drag to reorder; shown atop the search box when dragging a link from a node')}</p>
                 </div>
             </div>
+            <div class="xzg-theme-separator"></div>
+            <div class="xzg-node-highlight-section">
+                <div class="xzg-link-highlight-section xzg-node-highlight-header" style="padding:0 9px 0;">
+                    <span class="xzg-swatch-label">${xzgT('节点执行高亮','Node Highlight')}</span>
+                    <button type="button" id="xzg-node-highlight-btn" class="xzg-toggle-switch xzg-node-highlight-toggle" data-checked="false" title="${xzgT('开启后，运行中的节点显示高亮框','Show a highlight box on the running node')}">
+                        <span class="xzg-toggle-slider"></span>
+                        <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
+                    </button>
+                </div>
+                <div id="xzg-node-highlight-options" style="display:none;padding:0 9px 9px;">
+                    <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">${xzgT('高亮颜色','Highlight Color')}</span>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <input type="color" id="xzg-node-highlight-color" value="#22FF22" title="${xzgT('单色快捷选择','Quick pick single color')}" style="width:24px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
+                            <input type="text" id="xzg-node-highlight-color-text" value="#22FF22" placeholder="#22FF22" title="${xzgT('支持逗号分隔的渐变，如 #FF0000,#FFFF00','Comma-separated gradient, e.g. #FF0000,#FFFF00')}" style="flex:1;min-width:0;background:#2a2a2a;color:#ddd;border:1px solid #555;border-radius:4px;padding:2px 6px;font-size:11px;font-family:monospace;">
+                        </div>
+                    </div>
+                </div>
+            </div>
         `;
 
         this.panel = panel;
@@ -809,6 +828,58 @@ window.XZGThemePanel = {
                 }
             }
         }
+
+        // 节点执行高亮开关（含颜色与呼吸动画选项）
+        const nodeHighlightBtn = panel.querySelector("#xzg-node-highlight-btn");
+        const nodeHighlightOptions = panel.querySelector("#xzg-node-highlight-options");
+        const nodeHighlightColorInput = panel.querySelector("#xzg-node-highlight-color");
+        const nodeHighlightColorText = panel.querySelector("#xzg-node-highlight-color-text");
+        const syncNodeHighlightUI = () => {
+            if (!window.XZGThemeManager) return;
+            const tm = window.XZGThemeManager;
+            if (nodeHighlightOptions) nodeHighlightOptions.style.display = tm.nodeHighlightActive ? "block" : "none";
+            if (nodeHighlightColorInput) nodeHighlightColorInput.value = (tm.nodeHighlightColor || "#22FF22").split(",")[0].trim() || "#22FF22";
+            if (nodeHighlightColorText) nodeHighlightColorText.value = tm.nodeHighlightColor || "#22FF22";
+        };
+
+        if (nodeHighlightBtn) {
+            nodeHighlightBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    const active = window.XZGThemeManager.toggleNodeHighlight();
+                    nodeHighlightBtn.setAttribute("data-checked", active ? "true" : "false");
+                    const label = nodeHighlightBtn.querySelector(".xzg-toggle-label");
+                    if (label) label.textContent = active ? xzgT("开","On") : xzgT("关","Off");
+                    syncNodeHighlightUI();
+                }
+            });
+        }
+
+        if (nodeHighlightColorInput) {
+            nodeHighlightColorInput.addEventListener("input", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setNodeHighlightColor(e.target.value);
+                    if (nodeHighlightColorText) nodeHighlightColorText.value = e.target.value;
+                }
+            });
+        }
+
+        if (nodeHighlightColorText) {
+            nodeHighlightColorText.addEventListener("change", (e) => {
+                e.stopPropagation();
+                const v = (e.target.value || "").trim();
+                const parts = v.split(",").map(s => s.trim()).filter(Boolean);
+                if (!parts.length || !parts.every(p => /^#([0-9a-fA-F]{6})$/.test(p))) return;
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setNodeHighlightColor(parts.join(","));
+                    if (nodeHighlightColorInput) nodeHighlightColorInput.value = parts[0];
+                }
+            });
+            nodeHighlightColorText.addEventListener("keydown", (e) => e.stopPropagation());
+        }
+
+        syncNodeHighlightUI();
 
         // 壁纸文件上传
         if (wallpaperUploadBtn && wallpaperFileInput) {
