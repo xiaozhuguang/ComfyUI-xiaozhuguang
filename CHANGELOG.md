@@ -1,4 +1,19 @@
 # 更新日志
+## v14.1.2 (2026-09-02)
+
+### 变更
+
+- **GitHub Actions 发布流程：升级 action 版本，消除 Node.js 20 弃用警告**（`.github/workflows/publish_action.yml`）
+  - `actions/checkout@v4` → `v5`（release / publish-node 两处）
+  - `softprops/action-gh-release@v2` → `v3.0.3`
+  - 说明：`actions/setup-python@v5` 警告来自 Comfy 官方 `Comfy-Org/publish-node-action` 第三方 action 内部，无法在本仓库修改消除
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.2
+
+---
+
 ## v14.1.1 (2026-09-02)
 
 ### 修复

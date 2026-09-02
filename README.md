@@ -691,6 +691,17 @@ ComfyUI-xiaozhuguang/
 ---
 
 ## 📋 更新日志
+### V14.1.2 (2026-09-02)
+
+**⚙️ GitHub Actions 发布流程：消除 Node.js 20 弃用警告**
+
+- 升级 `actions/checkout@v4 → v5`、`softprops/action-gh-release@v2 → v3.0.3`
+- （`setup-python` 警告来自 Comfy 官方第三方 action 内部，无法在本仓库修改）
+
+**🏷️ 版本号 / 发布**
+
+- 版本号：`pyproject.toml` / `extension.json` 升至 `14.1.2`，推送 `v14.1.2` tag 触发 GitHub Actions 自动创建 Release + 发布到 Comfy Registry
+
 ### V14.1.1 (2026-09-02)
 
 **↔️ 小珠光箭头：新打开工作流"先错后对"修复**（`web/xzg_arrow_tool.js`）
