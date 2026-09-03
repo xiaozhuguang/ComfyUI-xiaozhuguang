@@ -1,5 +1,11 @@
 {
   "nodeCategories": {
     "xiaozhuguang": "Xiaozhuguang"
+  },
+  "Device": "Device",
+  "Toggle": "Toggles",
+  "settingsCategories": {
+    "Device": "Device",
+    "Toggle": "Toggles"
   }
 }

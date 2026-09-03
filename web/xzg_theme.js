@@ -41,6 +41,10 @@ window.XZGThemeManager = {
     nodeHighlightHooked: false,
     _runningNodeId: null,
     nodeHighlightColor: '#22FF22',
+    // 呼吸动画开关 + 周期（秒）+ 基础描边粗细（px）
+    nodeHighlightBreath: false,
+    nodeHighlightBreathPeriod: 2.0,
+    nodeHighlightWidth: 3,
 
     init() {
         // 从 localStorage 恢复连线高亮状态
@@ -64,6 +68,13 @@ window.XZGThemeManager = {
             if (nhColor) {
                 this.nodeHighlightColor = nhColor;
             }
+            // 节点高亮呼吸动画 + 周期 + 描边粗细
+            const nhBreath = localStorage.getItem('xzg-node-highlight-breath');
+            if (nhBreath === 'true') this.nodeHighlightBreath = true;
+            const nhPeriod = parseFloat(localStorage.getItem('xzg-node-highlight-breath-period'));
+            if (!isNaN(nhPeriod) && nhPeriod > 0) this.nodeHighlightBreathPeriod = nhPeriod;
+            const nhWidth = parseInt(localStorage.getItem('xzg-node-highlight-width'), 10);
+            if (!isNaN(nhWidth) && nhWidth > 0) this.nodeHighlightWidth = nhWidth;
             // 连线动画（星芒效果），默认关闭
             const animSaved = localStorage.getItem('xzg-link-anim');
             if (animSaved === 'true') {
@@ -1862,6 +1873,28 @@ window.XZGThemeManager = {
         if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
     },
 
+    setNodeHighlightBreath(v) {
+        this.nodeHighlightBreath = !!v;
+        try { localStorage.setItem('xzg-node-highlight-breath', this.nodeHighlightBreath ? 'true' : 'false'); } catch(e) {}
+        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    },
+
+    setNodeHighlightBreathPeriod(sec) {
+        const v = parseFloat(sec);
+        if (isNaN(v) || v <= 0) return;
+        this.nodeHighlightBreathPeriod = v;
+        try { localStorage.setItem('xzg-node-highlight-breath-period', String(v)); } catch(e) {}
+        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    },
+
+    setNodeHighlightWidth(w) {
+        const v = parseInt(w, 10);
+        if (isNaN(v) || v <= 0) return;
+        this.nodeHighlightWidth = v;
+        try { localStorage.setItem('xzg-node-highlight-width', String(v)); } catch(e) {}
+        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    },
+
     _ensureNodeHighlightHook() {
         if (this.nodeHighlightHooked) return;
         this.nodeHighlightHooked = true;
@@ -1935,17 +1968,30 @@ window.XZGThemeManager = {
                 }
 
                 buildPath(pad);
-                ctx.globalAlpha = 0.15;
-                ctx.lineWidth = 12;
-                ctx.stroke();
-                ctx.globalAlpha = 0.5;
-                ctx.lineWidth = 6;
-                ctx.stroke();
-                // 最亮内边框内收 2px，避免盖住节点内容
-                buildPath(pad - 2);
-                ctx.globalAlpha = 0.9;
-                ctx.lineWidth = 3;
-                ctx.stroke();
+                // 呼吸动画：明暗正弦起伏（关闭时为恒定 1）。
+                // 幅度收窄到 0.6~1.0，避免暗到接近全透明造成"熄灭"式闪烁；
+                // 开启时在本次绘制结束请求下一帧重绘，与 ComfyUI 渲染循环同节奏自持，消除独立 rAF 竞争导致的丢帧。
+                const wBase = Math.max(1, self.nodeHighlightWidth || 3);
+                const breathing = self.nodeHighlightBreath
+                    ? (0.8 + 0.2 * Math.sin((performance.now() / 1000) / Math.max(0.1, self.nodeHighlightBreathPeriod) * Math.PI * 2))
+                    : 1;
+                // 分层描边：粗细按基础宽度 wBase 等比缩放，内层内收避免盖住节点内容
+                const layers = [
+                    { inset: 0, lw: wBase * 4, alpha: 0.15 },
+                    { inset: 0, lw: wBase * 2, alpha: 0.5 },
+                    { inset: 2, lw: wBase, alpha: 0.9 },
+                ];
+                for (const lay of layers) {
+                    buildPath(pad - lay.inset);
+                    ctx.globalAlpha = lay.alpha * breathing;
+                    ctx.lineWidth = lay.lw;
+                    ctx.stroke();
+                }
+                // 自持重绘：仅当呼吸开启时请求下一帧，驱动动画且与 ComfyUI 渲染循环同步
+                if (self.nodeHighlightBreath) {
+                    if (app.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+                    else if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+                }
             } catch(e) {
             } finally {
                 if (saved) ctx.restore();

@@ -1,5 +1,11 @@
 {
   "nodeCategories": {
     "xiaozhuguang": "小珠光"
+  },
+  "Device": "设备授权",
+  "Toggle": "功能开关",
+  "settingsCategories": {
+    "Device": "设备授权",
+    "Toggle": "功能开关"
   }
 }

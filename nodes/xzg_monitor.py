@@ -7,20 +7,24 @@
 
 数据来源：
   - GPU：优先 pynvml（ComfyUI 环境已内置），失败时回退 nvidia-smi
-  - CPU 使用率：与 Crystools 插件同款方案 —— 专用守护线程按 1 秒稳定节奏调用
-    非阻塞 psutil.cpu_percent()（interval=None），避免短时间窗在 Windows 上虚高 100%
+  - CPU 使用率：Windows 下读取 PDH 性能计数器 \Processor Information(_Total)\% Processor Utility
+    （任务管理器「性能」页同款计数器，考虑睿频、可能超过 100%），由系统性能计数器引擎
+    实时计算，稳定可靠；非 Windows 或 PDH 不可用时回退 psutil.cpu_percent(interval=1)。
   - CPU 温度：Windows 下通过 WMI（MSAcpi_ThermalZoneTemperature）获取，
     多数主板不暴露该数据，取不到时返回 None，前端整行隐藏
   - 内存：psutil
 """
 
 import asyncio
+import ctypes
 import json
 import os
 import subprocess
 import threading
 import time
 import warnings
+
+from ctypes import wintypes
 
 import psutil
 from aiohttp import web
@@ -146,23 +150,110 @@ def _gpu_stats():
 # CPU / 内存采集
 # ---------------------------------------------------------------------------
 
-# 后台采样线程：与 Crystools 插件相同的 CPU 读取方式 ——
-# 非阻塞 psutil.cpu_percent()（interval=None）在专用守护线程里以稳定 1 秒节奏
-# 调用，测量窗口固定约 1s。此前用 interval=0.5 阻塞采样，在 Windows 上
-# GetSystemTimes 计时粒度粗，短时间窗偶发把 CPU 虚高算成 100%，此处已修复。
+# CPU 利用率后台采样线程。
+# 数据源：Windows 上使用 PDH 性能计数器 \Processor Information(_Total)\% Processor Utility，
+# 即任务管理器「性能」页同款计数器（考虑睿频、可能超过 100%），由系统性能计数器引擎实时计算。
+# 此前用 psutil.cpu_percent()（基于 GetSystemTimes 自算）在高线程数（如 96 线程）、
+# 后台任务繁忙的环境下偶发把 CPU 虚高算成 100%（idle 增量偶发归零导致），故改 PDH。
 _cpu_util = {"value": 0.0}
 
 
-def _cpu_sampler_loop():
-    # 预热基线：首次调用只建立基准并丢弃其返回值，避免冷启动读到伪值（100%）
+# --- PDH（Performance Data Helper）ctypes 声明，仅 Windows ---
+_PDH_FMT_DOUBLE = 0x00000200
+if os.name == "nt":
     try:
-        psutil.cpu_percent(interval=None)
+        _PDH = ctypes.WinDLL("pdh.dll")
+        _PDH.PdhOpenQueryW.restype = wintypes.LONG
+        _PDH.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        _PDH.PdhAddEnglishCounterW.restype = wintypes.LONG
+        _PDH.PdhAddEnglishCounterW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        _PDH.PdhCollectQueryData.restype = wintypes.LONG
+        _PDH.PdhCollectQueryData.argtypes = [wintypes.HANDLE]
+        _PDH.PdhGetFormattedCounterValue.restype = wintypes.LONG
+        _PDH.PdhGetFormattedCounterValue.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        _PDH.PdhCloseQuery.restype = wintypes.LONG
+        _PDH.PdhCloseQuery.argtypes = [wintypes.HANDLE]
+        _PDH_OK = True
     except Exception:
-        pass
+        _PDH = None
+        _PDH_OK = False
+else:
+    _PDH = None
+    _PDH_OK = False
+
+
+class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
+    """PDH_FMT_COUNTERVALUE：CStatus + double 值。"""
+    _fields_ = [
+        ("CStatus", wintypes.DWORD),
+        ("doubleValue", wintypes.DOUBLE),
+    ]
+
+
+class _PdhCpuSampler:
+    """读取 \Processor Information(_Total)\% Processor Utility（任务管理器「性能」页同款计数器）。"""
+
+    def __init__(self):
+        self._pdh = _PDH
+        self._query = None
+        self._counter = None
+        self.ok = False
+        if not _PDH_OK:
+            return
+        try:
+            q = wintypes.HANDLE()
+            if self._pdh.PdhOpenQueryW(None, 0, ctypes.byref(q)) != 0:
+                return
+            h = wintypes.HANDLE()
+            path = r"\Processor Information(_Total)\% Processor Utility"
+            if self._pdh.PdhAddEnglishCounterW(q, path, 0, ctypes.byref(h)) != 0:
+                self._pdh.PdhCloseQuery(q)
+                return
+            self._query, self._counter = q, h
+            self._pdh.PdhCollectQueryData(q)  # 首次调用只建立基线
+            self.ok = True
+        except Exception:
+            self.ok = False
+
+    def read(self):
+        """返回当前 1s 窗口平均 CPU 利用率；睿频时可能超过 100%（与任务管理器一致）。"""
+        if not self.ok:
+            return None
+        try:
+            v = _PDH_FMT_COUNTERVALUE()
+            t = wintypes.DWORD()
+            if self._pdh.PdhCollectQueryData(self._query) != 0:
+                return None
+            if self._pdh.PdhGetFormattedCounterValue(
+                self._counter, _PDH_FMT_DOUBLE, ctypes.byref(t), ctypes.byref(v)
+            ) != 0:
+                return None
+            if v.CStatus != 0:
+                return None
+            return max(0.0, v.doubleValue)
+        except Exception:
+            return None
+
+    def close(self):
+        try:
+            if self._query is not None and self._pdh is not None:
+                self._pdh.PdhCloseQuery(self._query)
+        except Exception:
+            pass
+        self._query = self._counter = None
+        self.ok = False
+
+
+def _cpu_sampler_loop():
+    pdh_sampler = _PdhCpuSampler() if _PDH_OK else None
     while True:
         time.sleep(1.0)
         try:
-            _cpu_util["value"] = psutil.cpu_percent(interval=None)
+            val = pdh_sampler.read() if pdh_sampler else None
+            if val is None:
+                # PDH 不可用/读取失败：回退 psutil 阻塞式 1s（自带完整测量窗口）
+                val = psutil.cpu_percent(interval=1)
+            _cpu_util["value"] = val
         except Exception:
             _cpu_util["value"] = 0.0
 

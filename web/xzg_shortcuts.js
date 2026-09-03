@@ -454,6 +454,19 @@ function injectSettingsButton() {
     const xzgItems = document.querySelectorAll('[data-setting-id^="xiaozhuguang."]');
     if (xzgItems.length === 0) return;
     const lastItem = xzgItems[xzgItems.length - 1];
+    // —— 「其他」分组：分隔线 + 纯文字标题（对齐 EasyUse 排版）——
+    const anchorEl = lastItem.nextSibling;
+    if (!document.getElementById("xzg-settings-heading-other")) {
+        const divider = document.createElement("div");
+        divider.className = "my-8 border-t border-border-default";
+        divider.id = "xzg-settings-heading-other-divider";
+        const head = document.createElement("h3");
+        head.className = "text-base";
+        head.id = "xzg-settings-heading-other";
+        head.textContent = "其他";
+        lastItem.parentNode.insertBefore(divider, anchorEl);
+        lastItem.parentNode.insertBefore(head, anchorEl);
+    }
     const wrapper = document.createElement("div");
     wrapper.className = "setting-item mb-3";
     wrapper.id = "xzg-shortcuts-setting-btn";
@@ -469,7 +482,7 @@ function injectSettingsButton() {
         </div>
     `;
     wrapper.querySelector("button").onclick = () => openSettingsDialog();
-    lastItem.parentNode.insertBefore(wrapper, lastItem.nextSibling);
+    lastItem.parentNode.insertBefore(wrapper, anchorEl);
 }
 
 function startSettingsObserver() {

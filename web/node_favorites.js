@@ -8,7 +8,7 @@ window.pinyinPro = { pinyin: pinyinPro };
 const STORAGE_KEY = "comfyui_xiaozhuguang";
 const SETTING_TOGGLE_SHORTCUT = "xiaozhuguang.ToggleShortcut";
 // 小珠光设置：是否启用「节点收藏器」面板（云平台/本地可随时开关）
-const SETTING_ENABLED = "xiaozhuguang.EnableNodeFavorites";
+const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableNodeFavorites";
 
 function isNodeFavoritesEnabled() {
     try {

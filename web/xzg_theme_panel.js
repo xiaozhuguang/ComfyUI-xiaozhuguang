@@ -406,6 +406,26 @@ window.XZGThemePanel = {
                             <input type="text" id="xzg-node-highlight-color-text" value="#22FF22" placeholder="#22FF22" title="${xzgT('支持逗号分隔的渐变，如 #FF0000,#FFFF00','Comma-separated gradient, e.g. #FF0000,#FFFF00')}" style="flex:1;min-width:0;background:#2a2a2a;color:#ddd;border:1px solid #555;border-radius:4px;padding:2px 6px;font-size:11px;font-family:monospace;">
                         </div>
                     </div>
+
+                    <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">${xzgT('呼吸动画','Breathing')}</span>
+                        <button type="button" id="xzg-node-highlight-breath-btn" class="xzg-toggle-switch xzg-node-highlight-breath-toggle" data-checked="false" title="${xzgT('开启后，高亮框明暗起伏（呼吸灯）','Breathing pulse on the highlight box')}">
+                            <span class="xzg-toggle-slider"></span>
+                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
+                        </button>
+                    </div>
+
+                    <div class="xzg-link-highlight-section" id="xzg-node-highlight-breath-row" style="display:none;">
+                        <span class="xzg-swatch-label">${xzgT('呼吸周期','Breath Periodic')}</span>
+                        <input type="range" id="xzg-node-highlight-breath-period" min="0.3" max="5" step="0.1" value="2" style="flex:1;accent-color:#FFD700;">
+                        <span id="xzg-node-highlight-breath-period-val" style="min-width:34px;text-align:right;font-size:11px;color:#FFD700;">2.0s</span>
+                    </div>
+
+                    <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">${xzgT('描边粗细','Stroke Width')}</span>
+                        <input type="range" id="xzg-node-highlight-width" min="1" max="12" step="1" value="3" style="flex:1;accent-color:#FFD700;">
+                        <span id="xzg-node-highlight-width-val" style="min-width:34px;text-align:right;font-size:11px;color:#FFD700;">3px</span>
+                    </div>
                 </div>
             </div>
         `;
@@ -834,12 +854,28 @@ window.XZGThemePanel = {
         const nodeHighlightOptions = panel.querySelector("#xzg-node-highlight-options");
         const nodeHighlightColorInput = panel.querySelector("#xzg-node-highlight-color");
         const nodeHighlightColorText = panel.querySelector("#xzg-node-highlight-color-text");
+        const nodeHighlightBreathBtn = panel.querySelector("#xzg-node-highlight-breath-btn");
+        const nodeHighlightBreathRow = panel.querySelector("#xzg-node-highlight-breath-row");
+        const nodeHighlightBreathPeriod = panel.querySelector("#xzg-node-highlight-breath-period");
+        const nodeHighlightBreathPeriodVal = panel.querySelector("#xzg-node-highlight-breath-period-val");
+        const nodeHighlightWidth = panel.querySelector("#xzg-node-highlight-width");
+        const nodeHighlightWidthVal = panel.querySelector("#xzg-node-highlight-width-val");
         const syncNodeHighlightUI = () => {
             if (!window.XZGThemeManager) return;
             const tm = window.XZGThemeManager;
             if (nodeHighlightOptions) nodeHighlightOptions.style.display = tm.nodeHighlightActive ? "block" : "none";
             if (nodeHighlightColorInput) nodeHighlightColorInput.value = (tm.nodeHighlightColor || "#22FF22").split(",")[0].trim() || "#22FF22";
             if (nodeHighlightColorText) nodeHighlightColorText.value = tm.nodeHighlightColor || "#22FF22";
+            if (nodeHighlightBreathBtn) {
+                nodeHighlightBreathBtn.setAttribute("data-checked", tm.nodeHighlightBreath ? "true" : "false");
+                const breathLabel = nodeHighlightBreathBtn.querySelector(".xzg-toggle-label");
+                if (breathLabel) breathLabel.textContent = tm.nodeHighlightBreath ? xzgT("开","On") : xzgT("关","Off");
+            }
+            if (nodeHighlightBreathRow) nodeHighlightBreathRow.style.display = tm.nodeHighlightBreath ? "block" : "none";
+            if (nodeHighlightBreathPeriod) nodeHighlightBreathPeriod.value = tm.nodeHighlightBreathPeriod || 2;
+            if (nodeHighlightBreathPeriodVal) nodeHighlightBreathPeriodVal.textContent = (tm.nodeHighlightBreathPeriod || 2).toFixed(1) + "s";
+            if (nodeHighlightWidth) nodeHighlightWidth.value = tm.nodeHighlightWidth || 3;
+            if (nodeHighlightWidthVal) nodeHighlightWidthVal.textContent = (tm.nodeHighlightWidth || 3) + "px";
         };
 
         if (nodeHighlightBtn) {
@@ -877,6 +913,38 @@ window.XZGThemePanel = {
                 }
             });
             nodeHighlightColorText.addEventListener("keydown", (e) => e.stopPropagation());
+        }
+
+        if (nodeHighlightBreathBtn) {
+            nodeHighlightBreathBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (window.XZGThemeManager) {
+                    window.XZGThemeManager.setNodeHighlightBreath(!window.XZGThemeManager.nodeHighlightBreath);
+                    syncNodeHighlightUI();
+                }
+            });
+        }
+        if (nodeHighlightBreathPeriod) {
+            const updateBreathPeriod = () => {
+                const v = parseFloat(nodeHighlightBreathPeriod.value);
+                if (window.XZGThemeManager && !isNaN(v) && v > 0) {
+                    window.XZGThemeManager.setNodeHighlightBreathPeriod(v);
+                    if (nodeHighlightBreathPeriodVal) nodeHighlightBreathPeriodVal.textContent = v.toFixed(1) + "s";
+                }
+            };
+            nodeHighlightBreathPeriod.addEventListener("input", updateBreathPeriod);
+            nodeHighlightBreathPeriod.addEventListener("change", updateBreathPeriod);
+        }
+        if (nodeHighlightWidth) {
+            const updateWidth = () => {
+                const v = parseInt(nodeHighlightWidth.value, 10);
+                if (window.XZGThemeManager && !isNaN(v) && v > 0) {
+                    window.XZGThemeManager.setNodeHighlightWidth(v);
+                    if (nodeHighlightWidthVal) nodeHighlightWidthVal.textContent = v + "px";
+                }
+            };
+            nodeHighlightWidth.addEventListener("input", updateWidth);
+            nodeHighlightWidth.addEventListener("change", updateWidth);
         }
 
         syncNodeHighlightUI();

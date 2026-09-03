@@ -18,7 +18,7 @@ const BTN_ID = "xzg-quick-edit-btn";
 const GOLD = "#dcc85b";
 
 // 小珠光插件设置：右上角功能区是否显示「快剪」
-const SETTING_ID = "xiaozhuguang.ShowQuickCutInTopMenu";
+const SETTING_ID = "xiaozhuguang.Toggle.ShowQuickCutInTopMenu";
 
 let _editorInstance = null;
 let _btn = null;

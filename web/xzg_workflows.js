@@ -7,7 +7,7 @@ import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_c
 const STORAGE_KEY = "xzg_workflows_meta";
 const PLUGIN_NAME = xzgT('工作流','Workflow');
 // 小珠光设置：是否启用「工作流管理器」侧边栏（云平台/本地可随时开关）
-const SETTING_ENABLED = "xiaozhuguang.EnableWorkflows";
+const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableWorkflows";
 
 function isWorkflowsEnabled() {
     try {

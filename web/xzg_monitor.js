@@ -7,11 +7,17 @@ import { app } from "../../../scripts/app.js";
  * - 页面加载后自动在右下角（避开 ComfyUI 底部功能区）显示半透明、可拖拽的监控悬浮窗
  * - 每秒轮询 /xzg/system_monitor_stats 展示 GPU/CPU/内存状态
  * - 工作流中添加 XZG_Monitor 节点后，其“显示悬浮窗”开关可控制本窗显示/隐藏
- * - 拖动位置持久记忆（localStorage），右键电池按钮可设置显示项目与面板底色
+ * - 拖动位置持久记忆（localStorage），右键电池按钮可设置显示项目（面板固定带底色）
  */
 
 const XZG_API = "/xzg/system_monitor_stats";
 const XZG_NODE_TYPE = "XiaozhuguangSystemMonitor";
+// 小珠光设置：是否启用 GPU/CPU 监控（设置 → xiaozhuguang → 功能开关 可开关）
+const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableMonitor";
+// 防重复加载：本插件在当前 ComfyUI 版本可能被重复挂载加载，
+// 用全局标志保证只创建一个监控实例（浮窗 + 顶部按钮 + 设置注册），
+// 否则设置开关只能控制其中一个实例。
+const MONITOR_SINGLETON = "__xzgSystemMonitorActive";
 const XZG_STORE_KEY = "xzg-float-state-v1";
 // 位置方案版本号：改为「右下角默认」后升到 2，旧方案保存的位置被忽略
 const XZG_POS_VER = 2;
@@ -24,14 +30,16 @@ const XZG_DISPLAY_DEFAULT = {
   cpu_util: true,
   cpu_temp: true,
   mem_used: true,
-  panel_bg: false,
+  panel_bg: true,
 };
 let _display = loadDisplay();
 let _menuEl = null; // 右键设置菜单
 
 function loadDisplay() {
   try {
-    return { ...XZG_DISPLAY_DEFAULT, ...(JSON.parse(localStorage.getItem(XZG_DISPLAY_KEY) || "{}")) };
+    const s = { ...XZG_DISPLAY_DEFAULT, ...(JSON.parse(localStorage.getItem(XZG_DISPLAY_KEY) || "{}")) };
+    s.panel_bg = true; // 面板始终带底色，不再提供"不带底色"选项
+    return s;
   } catch (e) {
     return { ...XZG_DISPLAY_DEFAULT };
   }
@@ -53,6 +61,18 @@ function fmtMem(mb) {
   if (mb == null || isNaN(mb)) return "--";
   if (mb >= 1024) return (mb / 1024).toFixed(1) + "G";
   return Math.round(mb) + "M";
+}
+
+// 显存/内存对简写：5.1G/48.0G → 5/48（取整，不显示单位）；
+// 任一项 < 1G 或缺失时回退逐项显示
+function fmtMemPair(usedMb, totalMb) {
+  const u = usedMb == null || isNaN(usedMb) ? null : usedMb;
+  const t = totalMb == null || isNaN(totalMb) ? null : totalMb;
+  if (u == null && t == null) return "--";
+  if (u != null && t != null && u >= 1024 && t >= 1024) {
+    return `${Math.round(u / 1024)}/${Math.round(t / 1024)}`;
+  }
+  return `${u == null ? "--" : fmtMem(u)}/${t == null ? "--" : fmtMem(t)}`;
 }
 
 function fmtTemp(v) {
@@ -155,6 +175,11 @@ const XZG_CSS = `
 // ---------------------------------------------------------------------------
 
 function createFloatWindow() {
+  // 幂等：已存在实例时直接复用（「设置 onChange」与「setup」两条创建路径可能先后触发，
+  // 复用可避免出现两个 #xzg-float 导致重复轮询/重复 UI）
+  if (window.__xzgFloat) {
+    return window.__xzgFloat;
+  }
   const style = document.createElement("style");
   style.textContent = XZG_CSS;
   document.head.appendChild(style);
@@ -165,7 +190,7 @@ function createFloatWindow() {
 
   const root = document.createElement("div");
   root.id = "xzg-float";
-  if (_display.panel_bg) root.classList.add("xzg-bg");
+  root.classList.add("xzg-bg"); // 面板始终带底色
   // 仅当位置由当前方案（右下角默认）保存过才应用记忆；开启“保持默认”时始终用默认位置
   if (store.posVer === XZG_POS_VER) {
     if (store.left) root.style.left = store.left;
@@ -240,7 +265,7 @@ function createFloatWindow() {
       }
       if (_display.gpu_vram) {
         rows.push(`<div class="xzg-row"><span class="xzg-label">显存</span>${bar(vramPct, null)}
-          <span class="xzg-val">${fmtMem(g.vram_used_mb)}/${fmtMem(g.vram_total_mb)}</span></div>`);
+          <span class="xzg-val">${fmtMemPair(g.vram_used_mb, g.vram_total_mb)}</span></div>`);
       }
       if (_display.gpu_power && g.power_w != null && !isNaN(g.power_w)) {
         rows.push(`<div class="xzg-row"><span class="xzg-label">功耗</span><span class="xzg-bar"></span>
@@ -273,7 +298,7 @@ function createFloatWindow() {
     if (!_display.mem_used) return "";
     const rows = [];
     rows.push(`<div class="xzg-row"><span class="xzg-label">占用</span>${bar(mem.percent, null)}
-      <span class="xzg-val">${fmtMem(mem.used_mb)}/${fmtMem(mem.total_mb)}</span></div>`);
+      <span class="xzg-val">${fmtMemPair(mem.used_mb, mem.total_mb)}</span></div>`);
     return `<div class="xzg-sec"><div class="xzg-sec-t">内存</div>${rows.join("")}</div>`;
   }
 
@@ -308,8 +333,20 @@ function createFloatWindow() {
   }
 
   document.body.appendChild(root);
-  setInterval(poll, 1000);
-  poll();
+  // 轮询控制：支持「设置 → 功能开关」随时停止/恢复
+  let timer = null;
+  function start() {
+    if (timer) return;
+    timer = setInterval(poll, 1000);
+    poll();
+  }
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+  start();
 
   return {
     root,
@@ -318,8 +355,10 @@ function createFloatWindow() {
       if (_lastData) render(_lastData);
     },
     applyPanelBg() {
-      root.classList.toggle("xzg-bg", !!_display.panel_bg);
+      root.classList.add("xzg-bg"); // 面板始终带底色
     },
+    start,
+    stop,
   };
 }
 
@@ -373,22 +412,6 @@ function showContextMenu(btn) {
     });
     menu.appendChild(row);
   });
-  // 分隔线 + 面板底色开关
-  const sep = document.createElement("div");
-  sep.style.cssText = "height:1px;background:rgba(255,255,255,0.10);margin:4px 6px;";
-  menu.appendChild(sep);
-  const bgRow = document.createElement("div");
-  bgRow.className = "xzg-menu-it" + (_display.panel_bg ? " on" : "");
-  bgRow.innerHTML = `<span class="xzg-menu-box">${_display.panel_bg ? "✓" : ""}</span><span>面板底色</span>`;
-  bgRow.addEventListener("click", (e) => {
-    e.stopPropagation();
-    _display.panel_bg = !_display.panel_bg;
-    saveDisplay();
-    bgRow.classList.toggle("on", _display.panel_bg);
-    bgRow.querySelector(".xzg-menu-box").textContent = _display.panel_bg ? "✓" : "";
-    if (_float && _float.applyPanelBg) _float.applyPanelBg();
-  });
-  menu.appendChild(bgRow);
   document.body.appendChild(menu);
   const r = btn.getBoundingClientRect();
   menu.style.left = Math.max(4, r.right - menu.offsetWidth) + "px";
@@ -449,7 +472,9 @@ function buildMenuButton() {
 
 function injectMenuButton(retries) {
   const container = findMenuContainer();
-  if (container) {
+  // 仅当容器已挂载到文档时注入；否则等下一次重试，
+  // 否则 append 到 detached 容器会因 getElementById 探测不到而重复注入多个按钮
+  if (container && container.isConnected) {
     if (!document.getElementById(XZG_BTN_ID)) {
       _menuBtn = buildMenuButton();
       container.appendChild(_menuBtn);
@@ -463,12 +488,67 @@ function injectMenuButton(retries) {
 }
 
 // ---------------------------------------------------------------------------
+// 设置项：启用/关闭 GPU/CPU 监控（与节点收藏器/工作流管理器同机制）
+// ---------------------------------------------------------------------------
+
+function isMonitorEnabled() {
+  try {
+    return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+  } catch (e) {
+    return true;
+  }
+}
+
+function registerMonitorSetting() {
+  try {
+    const settings = app?.ui?.settings;
+    if (!settings?.addSetting) return;
+    settings.addSetting({
+      id: SETTING_ENABLED,
+      name: "[小珠光] 启用「GPU/CPU 监控」",
+      defaultValue: true,
+      type: "boolean",
+      onChange: (v) => setMonitorEnabled(!!v),
+    });
+  } catch (e) {
+    console.warn("[小珠光] 注册 GPU/CPU 监控设置失败:", e);
+  }
+}
+
+/** 设置项变更时调用：立即启用/关闭监控（顶部电池按钮 + 轮询） */
+function setMonitorEnabled(v) {
+  v = !!v;
+  if (v) {
+    // 启用：创建/恢复浮窗轮询 + 注入顶部电池按钮
+    if (!_float) {
+      window.__xzgFloat = createFloatWindow();
+      _float = window.__xzgFloat;
+    } else {
+      _float.root.style.display = _floatHidden ? "none" : "";
+      _float.start();
+    }
+    injectMenuButton(0);
+  } else {
+    // 关闭：移除所有顶部电池按钮 + 停止轮询 + 隐藏所有浮窗（关闭监控）
+    document.querySelectorAll("#" + XZG_BTN_ID).forEach((b) => b.remove());
+    _menuBtn = null;
+    document.querySelectorAll("#xzg-float").forEach((f) => {
+      f.style.display = "none";
+    });
+    if (_float) _float.stop();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 注册扩展
 // ---------------------------------------------------------------------------
 
 app.registerExtension({
   name: "Xiaozhuguang.SystemMonitor",
   setup() {
+    // 防重复加载：同一页面只允许一个实例创建浮窗/按钮/注册设置
+    if (window[MONITOR_SINGLETON]) return;
+    window[MONITOR_SINGLETON] = true;
     // 右键菜单：点击菜单外 / Esc 关闭
     document.addEventListener("mousedown", (e) => {
       if (_menuEl && !_menuEl.contains(e.target) && e.target.id !== XZG_BTN_ID) closeContextMenu();
@@ -476,6 +556,9 @@ app.registerExtension({
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeContextMenu();
     });
+    // 注册「功能开关」设置项（与节点收藏器/工作流管理器同机制）
+    registerMonitorSetting();
+    if (!isMonitorEnabled()) return; // 设置里关闭了监控：不创建浮窗、不注入顶部按钮、不轮询
     window.__xzgFloat = createFloatWindow();
     _float = window.__xzgFloat;
     injectMenuButton(0);
