@@ -68,8 +68,17 @@ jobs:
           echo "Updated pyproject.toml version to $VERSION"
           cat pyproject.toml | grep "^version ="
 
-      - name: Publish Custom Node
-        uses: Comfy-Org/publish-node-action@main
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
-          skip_checkout: true
+          python-version: '3.11'
+
+      - name: Install comfy-cli
+        run: pip install comfy-cli
+
+      - name: Publish Custom Node
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+        run: |
+          comfy --skip-prompt --no-enable-telemetry env
+          comfy node publish --token "$REGISTRY_TOKEN"
