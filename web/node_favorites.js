@@ -1017,7 +1017,9 @@ class Xiaozhuguang {
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
-                flex-shrink: 0;
+                flex-shrink: 1;
+                min-width: 0;
+                max-width: 46%;
             }
 
             .nf-split-handle {
@@ -1033,7 +1035,7 @@ class Xiaozhuguang {
 
             .nf-right-col {
                 flex: 1;
-                min-width: 350px;
+                min-width: 0;
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
@@ -1194,6 +1196,7 @@ class Xiaozhuguang {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
+                gap: 8px;
                 padding: 4px 0 8px 0;
                 font-weight: bold;
                 color: #aaa;
@@ -1206,11 +1209,21 @@ class Xiaozhuguang {
                 display: flex;
                 align-items: center;
                 gap: 8px;
+                min-width: 0;
+                overflow: hidden;
+                flex-shrink: 1;
+            }
+
+            .nf-fav-header-left > span:first-child {
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
 
             .nf-sort-btns {
                 display: flex;
                 gap: 4px;
+                flex-shrink: 0;
             }
 
             .nf-sort-btn {

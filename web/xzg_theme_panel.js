@@ -103,6 +103,7 @@ window.XZGThemePanel = {
             </div>
             <div class="xzg-top-tabs">
                 <button type="button" class="xzg-top-tab active" data-top-tab="theme">${xzgT('主题','Theme')}</button>
+                <button type="button" class="xzg-top-tab" data-top-tab="themeplus">${xzgT('主题+','Theme+')}</button>
                 <button type="button" class="xzg-top-tab" data-top-tab="menuhide">${xzgT('菜单隐藏','Menu Hide')}</button>
                 <button type="button" class="xzg-top-tab" data-top-tab="quicknodes">${xzgT('快速节点','Quick Nodes')}</button>
             </div>
@@ -213,6 +214,41 @@ window.XZGThemePanel = {
                         </div>
                         <p class="xzg-presets-tip">${xzgT('左键应用，右键保存当前设置','Left-click apply, right-click save current')}</p>
                     </div>
+                    </div>
+
+                    <!-- <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">连线颜色</span>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <button type="button" class="xzg-color-swatch xzg-linkcolor-swatch" data-color="linkColor" style="background-color: ${this.defaults.linkColor};width:18px;height:18px;min-width:18px;border-radius:3px;" title="连线颜色"></button>
+                            <button type="button" id="xzg-link-color-btn" class="xzg-toggle-switch xzg-link-color-toggle" data-checked="false" title="开启后，所有连线使用自定义颜色">
+                                <span class="xzg-toggle-slider"></span>
+                                <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
+                            </button>
+                        </div>
+                    </div> -->
+
+                    <!-- <div class="xzg-link-highlight-section">
+                        <span class="xzg-swatch-label">连线动画</span>
+                        <button type="button" id="xzg-link-laser-btn" class="xzg-toggle-switch xzg-link-laser-toggle" data-checked="false" title="开启后，连线显示动画效果">
+                            <span class="xzg-toggle-slider"></span>
+                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
+                        </button>
+                    </div>
+
+                    <div class="xzg-link-highlight-section" id="xzg-anim-type-section" style="display:none;">
+                        <span class="xzg-swatch-label" style="font-size:11px;color:#888;">动画风格</span>
+                        <div style="display:flex;gap:3px;">
+                            <button type="button" class="xzg-anim-type-btn active" data-anim="flow" title="流光溢彩">✦</button>
+                            <button type="button" class="xzg-anim-type-btn" data-anim="gradient" title="颜色渐变">◆</button>
+                            <button type="button" class="xzg-anim-type-btn" data-anim="breath" title="亮度呼吸">●</button>
+                            <button type="button" class="xzg-anim-type-btn" data-anim="glow" title="辉光">☀</button>
+                        </div>
+                    </div> -->
+
+                </div>
+            </div>
+            <div class="xzg-tab-content" data-tab-content="themeplus" style="display:none;">
+                <div class="xzg-theme-content">
 
                     <div class="xzg-theme-separator"></div>
 
@@ -306,37 +342,55 @@ window.XZGThemePanel = {
                                 </div>
                             </div>
                         </div>
-                    </div>
-
-                    <!-- <div class="xzg-link-highlight-section">
-                        <span class="xzg-swatch-label">连线颜色</span>
-                        <div style="display:flex;align-items:center;gap:6px;">
-                            <button type="button" class="xzg-color-swatch xzg-linkcolor-swatch" data-color="linkColor" style="background-color: ${this.defaults.linkColor};width:18px;height:18px;min-width:18px;border-radius:3px;" title="连线颜色"></button>
-                            <button type="button" id="xzg-link-color-btn" class="xzg-toggle-switch xzg-link-color-toggle" data-checked="false" title="开启后，所有连线使用自定义颜色">
+                    <div class="xzg-theme-separator"></div>
+                    <div class="xzg-node-highlight-section">
+                        <div class="xzg-link-highlight-section xzg-node-highlight-header">
+                            <span class="xzg-swatch-label">${xzgT('节点执行高亮','Node Highlight')}</span>
+                            <button type="button" id="xzg-node-highlight-btn" class="xzg-toggle-switch xzg-node-highlight-toggle" data-checked="false" title="${xzgT('开启后，运行中的节点显示高亮框','Show a highlight box on the running node')}">
                                 <span class="xzg-toggle-slider"></span>
                                 <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                             </button>
                         </div>
-                    </div> -->
+                        <div id="xzg-node-highlight-options" style="display:none;">
+                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-preset-row">
+                                <span class="xzg-swatch-label">${xzgT('预设','Presets')}</span>
+                                <select id="xzg-node-highlight-preset-select" title="${xzgT('渐变彩色预设','Gradient presets')}" style="flex:1;min-width:0;background:#2a2a2a;color:#ddd;border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 4px;font-size:11px;">
+                                    <option value="custom1">${xzgT('自定义单色','Custom Single')}</option>
+                                    <option value="fire">${xzgT('火','Fire')}</option>
+                                    <option value="cyber">${xzgT('赛博','Cyber')}</option>
+                                    <option value="ocean">${xzgT('海洋','Ocean')}</option>
+                                    <option value="rainbow">${xzgT('彩虹','Rainbow')}</option>
+                                </select>
+                            </div>
+                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-color-row" style="display:none;">
+                                <span class="xzg-swatch-label">${xzgT('自定义颜色','Custom Color')}</span>
+                                <div style="display:flex;align-items:center;gap:6px;flex:1;">
+                                    <input type="color" id="xzg-node-highlight-color-1" value="#22FF22" title="${xzgT('颜色','Color')}" style="width:30px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
+                                </div>
+                            </div>
 
-                    <!-- <div class="xzg-link-highlight-section">
-                        <span class="xzg-swatch-label">连线动画</span>
-                        <button type="button" id="xzg-link-laser-btn" class="xzg-toggle-switch xzg-link-laser-toggle" data-checked="false" title="开启后，连线显示动画效果">
-                            <span class="xzg-toggle-slider"></span>
-                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
-                        </button>
-                    </div>
 
-                    <div class="xzg-link-highlight-section" id="xzg-anim-type-section" style="display:none;">
-                        <span class="xzg-swatch-label" style="font-size:11px;color:#888;">动画风格</span>
-                        <div style="display:flex;gap:3px;">
-                            <button type="button" class="xzg-anim-type-btn active" data-anim="flow" title="流光溢彩">✦</button>
-                            <button type="button" class="xzg-anim-type-btn" data-anim="gradient" title="颜色渐变">◆</button>
-                            <button type="button" class="xzg-anim-type-btn" data-anim="breath" title="亮度呼吸">●</button>
-                            <button type="button" class="xzg-anim-type-btn" data-anim="glow" title="辉光">☀</button>
+                            <div class="xzg-link-highlight-section">
+                                <span class="xzg-swatch-label">${xzgT('呼吸动画','Breathing')}</span>
+                                <button type="button" id="xzg-node-highlight-breath-btn" class="xzg-toggle-switch xzg-node-highlight-breath-toggle" data-checked="false" title="${xzgT('开启后，高亮框明暗起伏（呼吸灯）','Breathing pulse on the highlight box')}">
+                                    <span class="xzg-toggle-slider"></span>
+                                    <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
+                                </button>
+                            </div>
+
+                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-breath-row" style="display:none;">
+                                <span class="xzg-swatch-label">${xzgT('呼吸周期','Breath Periodic')}</span>
+                                <input type="range" id="xzg-node-highlight-breath-period" min="0.3" max="5" step="0.1" value="2" style="flex:1;accent-color:#FFD700;">
+                                <span id="xzg-node-highlight-breath-period-val" style="flex:0 0 44px;text-align:right;font-size:11px;color:#FFD700;">2.0s</span>
+                            </div>
+
+                            <div class="xzg-link-highlight-section">
+                                <span class="xzg-swatch-label">${xzgT('描边粗细','Stroke Width')}</span>
+                                <input type="range" id="xzg-node-highlight-width" min="1" max="12" step="1" value="3" style="flex:1;accent-color:#FFD700;">
+                                <span id="xzg-node-highlight-width-val" style="flex:0 0 44px;text-align:right;font-size:11px;color:#FFD700;">3px</span>
+                            </div>
                         </div>
-                    </div> -->
-
+                    </div>
                 </div>
             </div>
             </div>
@@ -389,45 +443,7 @@ window.XZGThemePanel = {
                     <p style="margin-top:8px;font-size:11px;color:#888;text-align:center;">${xzgT('拖拽可调整顺序，从节点拉出连线时搜索框顶部显示','Drag to reorder; shown atop the search box when dragging a link from a node')}</p>
                 </div>
             </div>
-            <div class="xzg-theme-separator"></div>
-            <div class="xzg-node-highlight-section">
-                <div class="xzg-link-highlight-section xzg-node-highlight-header" style="padding:0 9px 0;">
-                    <span class="xzg-swatch-label">${xzgT('节点执行高亮','Node Highlight')}</span>
-                    <button type="button" id="xzg-node-highlight-btn" class="xzg-toggle-switch xzg-node-highlight-toggle" data-checked="false" title="${xzgT('开启后，运行中的节点显示高亮框','Show a highlight box on the running node')}">
-                        <span class="xzg-toggle-slider"></span>
-                        <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
-                    </button>
-                </div>
-                <div id="xzg-node-highlight-options" style="display:none;padding:0 9px 9px;">
-                    <div class="xzg-link-highlight-section">
-                        <span class="xzg-swatch-label">${xzgT('高亮颜色','Highlight Color')}</span>
-                        <div style="display:flex;align-items:center;gap:6px;">
-                            <input type="color" id="xzg-node-highlight-color" value="#22FF22" title="${xzgT('单色快捷选择','Quick pick single color')}" style="width:24px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
-                            <input type="text" id="xzg-node-highlight-color-text" value="#22FF22" placeholder="#22FF22" title="${xzgT('支持逗号分隔的渐变，如 #FF0000,#FFFF00','Comma-separated gradient, e.g. #FF0000,#FFFF00')}" style="flex:1;min-width:0;background:#2a2a2a;color:#ddd;border:1px solid #555;border-radius:4px;padding:2px 6px;font-size:11px;font-family:monospace;">
-                        </div>
-                    </div>
 
-                    <div class="xzg-link-highlight-section">
-                        <span class="xzg-swatch-label">${xzgT('呼吸动画','Breathing')}</span>
-                        <button type="button" id="xzg-node-highlight-breath-btn" class="xzg-toggle-switch xzg-node-highlight-breath-toggle" data-checked="false" title="${xzgT('开启后，高亮框明暗起伏（呼吸灯）','Breathing pulse on the highlight box')}">
-                            <span class="xzg-toggle-slider"></span>
-                            <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
-                        </button>
-                    </div>
-
-                    <div class="xzg-link-highlight-section" id="xzg-node-highlight-breath-row" style="display:none;">
-                        <span class="xzg-swatch-label">${xzgT('呼吸周期','Breath Periodic')}</span>
-                        <input type="range" id="xzg-node-highlight-breath-period" min="0.3" max="5" step="0.1" value="2" style="flex:1;accent-color:#FFD700;">
-                        <span id="xzg-node-highlight-breath-period-val" style="min-width:34px;text-align:right;font-size:11px;color:#FFD700;">2.0s</span>
-                    </div>
-
-                    <div class="xzg-link-highlight-section">
-                        <span class="xzg-swatch-label">${xzgT('描边粗细','Stroke Width')}</span>
-                        <input type="range" id="xzg-node-highlight-width" min="1" max="12" step="1" value="3" style="flex:1;accent-color:#FFD700;">
-                        <span id="xzg-node-highlight-width-val" style="min-width:34px;text-align:right;font-size:11px;color:#FFD700;">3px</span>
-                    </div>
-                </div>
-            </div>
         `;
 
         this.panel = panel;
@@ -852,26 +868,37 @@ window.XZGThemePanel = {
         // 节点执行高亮开关（含颜色与呼吸动画选项）
         const nodeHighlightBtn = panel.querySelector("#xzg-node-highlight-btn");
         const nodeHighlightOptions = panel.querySelector("#xzg-node-highlight-options");
-        const nodeHighlightColorInput = panel.querySelector("#xzg-node-highlight-color");
-        const nodeHighlightColorText = panel.querySelector("#xzg-node-highlight-color-text");
+        const nodeHighlightColorInput = panel.querySelector("#xzg-node-highlight-color-1");
         const nodeHighlightBreathBtn = panel.querySelector("#xzg-node-highlight-breath-btn");
         const nodeHighlightBreathRow = panel.querySelector("#xzg-node-highlight-breath-row");
         const nodeHighlightBreathPeriod = panel.querySelector("#xzg-node-highlight-breath-period");
         const nodeHighlightBreathPeriodVal = panel.querySelector("#xzg-node-highlight-breath-period-val");
         const nodeHighlightWidth = panel.querySelector("#xzg-node-highlight-width");
         const nodeHighlightWidthVal = panel.querySelector("#xzg-node-highlight-width-val");
+        const applySwatches = (tm) => {
+            const el = panel.querySelector("#xzg-node-highlight-color-1");
+            if (el) {
+                el.style.display = "";
+                const parts = ((tm && tm.nodeHighlightColor) || "#22FF22").split(",").map(s => s.trim()).filter(Boolean);
+                el.value = parts[0] || "#22FF22";
+            }
+        };
         const syncNodeHighlightUI = () => {
             if (!window.XZGThemeManager) return;
             const tm = window.XZGThemeManager;
+            if (nodeHighlightBtn) {
+                nodeHighlightBtn.setAttribute("data-checked", tm.nodeHighlightActive ? "true" : "false");
+                const nodeLabel = nodeHighlightBtn.querySelector(".xzg-toggle-label");
+                if (nodeLabel) nodeLabel.textContent = tm.nodeHighlightActive ? xzgT("开","On") : xzgT("关","Off");
+            }
             if (nodeHighlightOptions) nodeHighlightOptions.style.display = tm.nodeHighlightActive ? "block" : "none";
-            if (nodeHighlightColorInput) nodeHighlightColorInput.value = (tm.nodeHighlightColor || "#22FF22").split(",")[0].trim() || "#22FF22";
-            if (nodeHighlightColorText) nodeHighlightColorText.value = tm.nodeHighlightColor || "#22FF22";
+            applySwatches(tm);
             if (nodeHighlightBreathBtn) {
                 nodeHighlightBreathBtn.setAttribute("data-checked", tm.nodeHighlightBreath ? "true" : "false");
                 const breathLabel = nodeHighlightBreathBtn.querySelector(".xzg-toggle-label");
                 if (breathLabel) breathLabel.textContent = tm.nodeHighlightBreath ? xzgT("开","On") : xzgT("关","Off");
             }
-            if (nodeHighlightBreathRow) nodeHighlightBreathRow.style.display = tm.nodeHighlightBreath ? "block" : "none";
+            if (nodeHighlightBreathRow) nodeHighlightBreathRow.style.display = tm.nodeHighlightBreath ? "flex" : "none";
             if (nodeHighlightBreathPeriod) nodeHighlightBreathPeriod.value = tm.nodeHighlightBreathPeriod || 2;
             if (nodeHighlightBreathPeriodVal) nodeHighlightBreathPeriodVal.textContent = (tm.nodeHighlightBreathPeriod || 2).toFixed(1) + "s";
             if (nodeHighlightWidth) nodeHighlightWidth.value = tm.nodeHighlightWidth || 3;
@@ -891,28 +918,65 @@ window.XZGThemePanel = {
             });
         }
 
-        if (nodeHighlightColorInput) {
-            nodeHighlightColorInput.addEventListener("input", (e) => {
-                e.stopPropagation();
-                if (window.XZGThemeManager) {
-                    window.XZGThemeManager.setNodeHighlightColor(e.target.value);
-                    if (nodeHighlightColorText) nodeHighlightColorText.value = e.target.value;
-                }
-            });
+        const syncFromSwatches = () => {
+            if (!window.XZGThemeManager) return;
+            const el = panel.querySelector("#xzg-node-highlight-color-1");
+            if (el) window.XZGThemeManager.setNodeHighlightColor(el.value);
+        };
+        {
+            const el = panel.querySelector("#xzg-node-highlight-color-1");
+            if (el) {
+                el.addEventListener("input", (e) => { e.stopPropagation(); syncFromSwatches(); if (nodeHighlightPresetSelect) syncPresetSelect(); });
+                el.addEventListener("change", (e) => { e.stopPropagation(); syncFromSwatches(); if (nodeHighlightPresetSelect) syncPresetSelect(); });
+            }
         }
 
-        if (nodeHighlightColorText) {
-            nodeHighlightColorText.addEventListener("change", (e) => {
+        // 渐变彩色预设下拉框
+        const nodeHighlightPresetSelect = panel.querySelector("#xzg-node-highlight-preset-select");
+        const nodeHighlightPresetMap = {
+            fire: "#FF0000,#FFFF00",
+            cyber: "#00FFFF,#FF00FF",
+            ocean: "#0000FF,#00FFFF",
+            rainbow: "#FF0000,#FFFF00,#00FF00,#00FFFF,#0000FF,#FF00FF",
+        };
+        if (nodeHighlightPresetSelect) {
+            const syncPresetSelect = () => {
+                const tm = window.XZGThemeManager;
+                const cur = ((tm && tm.nodeHighlightColor) || "").replace(/\s+/g, "").toLowerCase();
+                const parts = cur.split(",").filter(Boolean);
+                let matched = "custom1";
+                for (const k of Object.keys(nodeHighlightPresetMap)) {
+                    if (cur === nodeHighlightPresetMap[k].toLowerCase()) { matched = k; break; }
+                }
+                nodeHighlightPresetSelect.value = matched;
+                applySwatches(tm);
+                const cr = panel.querySelector("#xzg-node-highlight-color-row");
+                if (cr) cr.style.display = matched === "custom1" ? "" : "none";
+            };
+            nodeHighlightPresetSelect.addEventListener("change", (e) => {
                 e.stopPropagation();
-                const v = (e.target.value || "").trim();
-                const parts = v.split(",").map(s => s.trim()).filter(Boolean);
-                if (!parts.length || !parts.every(p => /^#([0-9a-fA-F]{6})$/.test(p))) return;
-                if (window.XZGThemeManager) {
-                    window.XZGThemeManager.setNodeHighlightColor(parts.join(","));
-                    if (nodeHighlightColorInput) nodeHighlightColorInput.value = parts[0];
+                const v = e.target.value;
+                const cr = panel.querySelector("#xzg-node-highlight-color-row");
+                if (v === "custom1") {
+                    if (cr) cr.style.display = "";
+                    const tm = window.XZGThemeManager;
+                    if (tm) {
+                        const el = panel.querySelector("#xzg-node-highlight-color-1");
+                        if (el) {
+                            tm.setNodeHighlightColor(el.value);
+                            applySwatches(tm);
+                            el.focus();
+                        }
+                    }
+                    return;
+                }
+                if (cr) cr.style.display = "none";
+                if (window.XZGThemeManager && nodeHighlightPresetMap[v]) {
+                    window.XZGThemeManager.setNodeHighlightColor(nodeHighlightPresetMap[v]);
+                    syncNodeHighlightUI();
                 }
             });
-            nodeHighlightColorText.addEventListener("keydown", (e) => e.stopPropagation());
+            syncPresetSelect();
         }
 
         if (nodeHighlightBreathBtn) {
@@ -1192,7 +1256,7 @@ window.XZGThemePanel = {
         let savedTab = 'theme';
         try {
             const t = localStorage.getItem('xzg-theme-panel-tab');
-            if (t === 'menuhide' || t === 'theme' || t === 'quicknodes') savedTab = t;
+            if (t === 'menuhide' || t === 'theme' || t === 'quicknodes' || t === 'themeplus') savedTab = t;
         } catch(e) {}
 
         if (savedTab === 'menuhide' || savedTab === 'quicknodes') {

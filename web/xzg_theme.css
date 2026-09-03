@@ -694,3 +694,40 @@
     font-size: 12px;
     color: #ddd;
 }
+/* ===== 下拉框/输入框：选中、聚焦时不显示浏览器默认高亮边框（黑/白框），保留原生下拉箭头 ===== */
+.xzg-theme-panel select,
+.xzg-theme-panel input,
+#node-favorites-panel select,
+#node-favorites-panel input,
+.xzg-wf-dialog-overlay select,
+.xzg-wf-dialog-overlay input {
+    outline: none !important;
+    box-shadow: none !important;
+}
+.xzg-theme-panel select,
+#node-favorites-panel select,
+.xzg-wf-dialog-overlay select {
+    border: 1px solid transparent !important;
+}
+.xzg-theme-panel select:focus,
+.xzg-theme-panel select:active,
+.xzg-theme-panel input:focus,
+.xzg-theme-panel input:active,
+#node-favorites-panel select:focus,
+#node-favorites-panel select:active,
+#node-favorites-panel input:focus,
+#node-favorites-panel input:active,
+.xzg-wf-dialog-overlay select:focus,
+.xzg-wf-dialog-overlay select:active,
+.xzg-wf-dialog-overlay input:focus,
+.xzg-wf-dialog-overlay input:active {
+    outline: none !important;
+    box-shadow: none !important;
+    border-color: transparent !important;
+}
+.xzg-theme-panel select option,
+#node-favorites-panel select option,
+.xzg-wf-dialog-overlay select option {
+    background: #2a2a2a;
+    color: #ddd;
+}

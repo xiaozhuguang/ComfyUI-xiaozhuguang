@@ -852,6 +852,14 @@ window.XZGThemeManager = {
     margin-bottom: 6px;
 }
 
+#xzg-node-highlight-options .xzg-swatch-label {
+    display: inline-block;
+    width: 60px;
+    min-width: 60px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    text-align: left;
+}
 #xzg-node-highlight-color-text:focus {
     border-color: #555 !important;
     outline: none !important;
@@ -1341,6 +1349,33 @@ window.XZGThemeManager = {
     font-size: 12px;
     color: #ddd;
 }
+
+            /* 下拉框：细边框（浅灰不显黑），选中/聚焦时稍亮提示，保留原生下拉箭头 */
+            .xzg-theme-panel select,
+            #node-favorites-panel select,
+            .xzg-wf-dialog-overlay select {
+                outline: none !important;
+                box-shadow: none !important;
+                border: 1px solid rgba(255, 255, 255, 0.18) !important;
+            }
+            .xzg-theme-panel select:focus,
+            .xzg-theme-panel select:active,
+            .xzg-theme-panel input:focus,
+            .xzg-theme-panel input:active,
+            #node-favorites-panel select:focus,
+            #node-favorites-panel select:active,
+            .xzg-wf-dialog-overlay select:focus,
+            .xzg-wf-dialog-overlay select:active {
+                outline: none !important;
+                box-shadow: none !important;
+                border-color: rgba(255, 255, 255, 0.35) !important;
+            }
+            .xzg-theme-panel select option,
+            #node-favorites-panel select option,
+            .xzg-wf-dialog-overlay select option {
+                background: #2a2a2a;
+                color: #ddd;
+            }
         `;
         
         this.panelStyleElement = document.createElement("style");
@@ -1957,35 +1992,71 @@ window.XZGThemeManager = {
                     .split(',')
                     .map(s => s.trim())
                     .filter(Boolean);
-                if (colors.length > 1) {
+                const solidColor = colors[0] || '#22FF22';
+                const isGradient = colors.length > 1;
+                let strokeStyle = solidColor;
+                if (isGradient) {
                     const gw = (node.size && node.size[0]) || 140;
                     const gh = (node.size && node.size[1]) || 60;
                     const grad = ctx.createLinearGradient(0, 0, gw, gh);
                     colors.forEach((c, i) => grad.addColorStop(i / (colors.length - 1), c));
-                    ctx.strokeStyle = grad;
-                } else {
-                    ctx.strokeStyle = colors[0] || '#22FF22';
+                    strokeStyle = grad;
                 }
 
-                buildPath(pad);
                 // 呼吸动画：明暗正弦起伏（关闭时为恒定 1）。
-                // 幅度收窄到 0.6~1.0，避免暗到接近全透明造成"熄灭"式闪烁；
+                // 幅度覆盖 0~1（全透明 → 100%）：sin=-1 时 alpha 归零淡出，sin=+1 时完全亮起；
                 // 开启时在本次绘制结束请求下一帧重绘，与 ComfyUI 渲染循环同节奏自持，消除独立 rAF 竞争导致的丢帧。
                 const wBase = Math.max(1, self.nodeHighlightWidth || 3);
                 const breathing = self.nodeHighlightBreath
-                    ? (0.8 + 0.2 * Math.sin((performance.now() / 1000) / Math.max(0.1, self.nodeHighlightBreathPeriod) * Math.PI * 2))
+                    ? (0.5 + 0.5 * Math.sin((performance.now() / 1000) / Math.max(0.1, self.nodeHighlightBreathPeriod) * Math.PI * 2))
                     : 1;
-                // 分层描边：粗细按基础宽度 wBase 等比缩放，内层内收避免盖住节点内容
-                const layers = [
-                    { inset: 0, lw: wBase * 4, alpha: 0.15 },
-                    { inset: 0, lw: wBase * 2, alpha: 0.5 },
-                    { inset: 2, lw: wBase, alpha: 0.9 },
-                ];
-                for (const lay of layers) {
-                    buildPath(pad - lay.inset);
-                    ctx.globalAlpha = lay.alpha * breathing;
-                    ctx.lineWidth = lay.lw;
+                if (isGradient) {
+                    // 渐变彩色霓虹框（参考 ComfyUI-HAIGC-Extension）：环境光晕 + 渐变主体 + 白色核心
+                    ctx.save();
+                    ctx.lineJoin = 'round';
+                    ctx.lineCap = 'round';
+                    const blurScale = Math.max(1, wBase / 3);
+                    // 环境光晕：以首色向外发光
+                    buildPath(pad);
+                    ctx.strokeStyle = solidColor;
+                    ctx.shadowColor = solidColor;
+                    ctx.shadowBlur = 26 * blurScale;
+                    ctx.globalAlpha = 0.45 * breathing;
+                    ctx.lineWidth = wBase * 4.5;
                     ctx.stroke();
+                    // 渐变主体
+                    buildPath(pad);
+                    ctx.strokeStyle = strokeStyle;
+                    ctx.shadowColor = solidColor;
+                    ctx.shadowBlur = 12 * blurScale;
+                    ctx.globalAlpha = 0.9 * breathing;
+                    ctx.lineWidth = wBase * 2;
+                    ctx.stroke();
+                    // 白色核心：更醒目
+                    buildPath(pad);
+                    ctx.strokeStyle = '#FFFFFF';
+                    ctx.shadowColor = '#FFFFFF';
+                    ctx.shadowBlur = 6 * blurScale;
+                    ctx.globalAlpha = 1.0 * breathing;
+                    ctx.lineWidth = Math.max(1, wBase * 0.6);
+                    ctx.stroke();
+                    ctx.restore();
+                } else {
+                    // 单色：保持原有分层描边
+                    const layers = [
+                        { inset: 0, lw: wBase * 4, alpha: 0.15 },
+                        { inset: 0, lw: wBase * 2, alpha: 0.5 },
+                        { inset: 2, lw: wBase, alpha: 0.9 },
+                    ];
+                    ctx.strokeStyle = solidColor;
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                    for (const lay of layers) {
+                        buildPath(pad - lay.inset);
+                        ctx.globalAlpha = lay.alpha * breathing;
+                        ctx.lineWidth = lay.lw;
+                        ctx.stroke();
+                    }
                 }
                 // 自持重绘：仅当呼吸开启时请求下一帧，驱动动画且与 ComfyUI 渲染循环同步
                 if (self.nodeHighlightBreath) {

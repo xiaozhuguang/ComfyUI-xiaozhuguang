@@ -191,6 +191,8 @@ function createFloatWindow() {
   const root = document.createElement("div");
   root.id = "xzg-float";
   root.classList.add("xzg-bg"); // 面板始终带底色
+  // 之前点电池按钮隐藏过浮窗：刷新后仍保持隐藏（否则会以空内容的小胶囊形态出现）
+  if (hidden) root.style.display = "none";
   // 仅当位置由当前方案（右下角默认）保存过才应用记忆；开启“保持默认”时始终用默认位置
   if (store.posVer === XZG_POS_VER) {
     if (store.left) root.style.left = store.left;

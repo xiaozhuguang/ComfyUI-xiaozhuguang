@@ -1624,7 +1624,8 @@ class XZGWorkflowsManager {
                 width: 160px;
                 border-right: 1px solid var(--border-color, #444);
                 background: var(--comfy-input-bg, rgba(40, 40, 40, 0.5));
-                flex-shrink: 0;
+                flex-shrink: 1;
+                min-width: 0;
                 display: flex;
                 flex-direction: column;
                 min-height: 0;
@@ -1766,6 +1767,8 @@ class XZGWorkflowsManager {
                 border-radius: 1px;
             }
             .xzg-wf-cat-label {
+                flex: 1;
+                min-width: 0;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -1796,7 +1799,7 @@ class XZGWorkflowsManager {
                 flex: 1;
                 display: flex;
                 flex-direction: column;
-                min-width: 300px;
+                min-width: 180px;
                 min-height: 0;
             }
             .xzg-wf-list-header {
@@ -1817,6 +1820,14 @@ class XZGWorkflowsManager {
                 font-size: 14px;
                 font-weight: bold;
                 color: var(--xzg-wf-accent, #FFD700);
+                min-width: 0;
+                overflow: hidden;
+                flex-shrink: 1;
+            }
+            .xzg-wf-list-title > span:first-child {
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             .xzg-wf-count {
                 font-size: 12px;
@@ -1825,6 +1836,7 @@ class XZGWorkflowsManager {
             .xzg-wf-sort-btns {
                 display: flex;
                 gap: 3px;
+                flex-shrink: 0;
             }
             .xzg-wf-sort-btn {
                 padding: 4px 9px;
