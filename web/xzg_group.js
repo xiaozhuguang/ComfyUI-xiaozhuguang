@@ -780,13 +780,14 @@ const XZGGroup = {
                 header.style.paddingRight = (6 * scale) + 'px';
                 header.style.paddingTop = padV + 'px';
                 header.style.paddingBottom = padV + 'px';
-                header.style.background = showTitle ? (g.headerBgColor || 'rgba(0,0,0,0.4)') : 'transparent';
+                // 标题栏背景：一键隐藏标题栏时透明（透出 canvas 整体背景），否则用 headerBgColor（含标题为空场景）
+                header.style.background = g.headerHidden ? 'transparent' : (g.headerBgColor || 'rgba(0,0,0,0.4)');
             }
             const span = el.querySelector('.xzg-group-title-text');
             if (span) {
                 span.style.fontSize = fs + 'px';
                 span.style.color = g.titleColor || '#FFD700';
-                span.style.display = showTitle ? '' : 'none';
+                span.style.display = (showTitle && !g.headerHidden) ? '' : 'none';
             }
             const delBtn = el.querySelector('.xzg-delete-btn');
             if (delBtn) {
@@ -805,8 +806,12 @@ const XZGGroup = {
             }
             ['xzg-left-fifth-icon', 'xzg-right-fifth-icon'].forEach(cls => {
                 const icon = el.querySelector('.' + cls);
-                if (icon) icon.style.fontSize = (12 * scale) + 'px';
+                if (icon) { icon.style.fontSize = (12 * scale) + 'px'; icon.style.display = g.headerHidden ? 'none' : ''; }
             });
+            const lfEl = el.querySelector('.xzg-left-fifth');
+            const rfEl = el.querySelector('.xzg-right-fifth');
+            if (lfEl) { lfEl.style.borderRight = g.headerHidden ? '1px solid transparent' : ''; lfEl.style.background = g.headerHidden ? 'transparent' : 'rgba(255,255,255,0.04)'; }
+            if (rfEl) { rfEl.style.borderLeft = g.headerHidden ? '1px solid transparent' : ''; rfEl.style.background = g.headerHidden ? 'transparent' : 'rgba(255,255,255,0.04)'; }
             ['xzg-border-left', 'xzg-border-right'].forEach(cls => {
                 const be = el.querySelector('.' + cls);
                 if (be) be.style.top = headerHeight + 'px';
@@ -1107,8 +1112,17 @@ const XZGGroup = {
             // 标题栏区域不绘制背景：标题栏颜色由 DOM 层的 headerBgColor 独立控制，
             // 避免 canvas 背景透过半透明标题栏混色影响标题栏观感
             // DOM 内容区顶部 = b.y + 18（标题栏基准高度 18，graph 空间，与字号无关）
-            const gy = b.y + 18;
-            const gh = b.h - 18;
+            // 一键隐藏标题栏：背景从顶部整体绘制（含标题栏区域），标题栏 DOM 背景透明透出，消除分界线
+            // 一键隐藏标题栏：背景从顶部整体绘制；大字号时编组框上移 extraTop，背景同步上移覆盖，避免顶部透明带
+            let topExtra = 0;
+            if (g.headerHidden) {
+                const fsH = (g.fontSize || 20) * sc;
+                const baseH = 18 * sc;
+                const hH = Math.max(baseH, fsH + 4 * sc);
+                topExtra = (hH - baseH) / sc;
+            }
+            const gy = g.headerHidden ? (b.y - topExtra) : (b.y + 18);
+            const gh = g.headerHidden ? (b.h + topExtra) : (b.h - 18);
             if (gh <= 0) continue;
 
             // 圆角换算到 graph 空间，与 DOM 的 8px 屏幕圆角视觉一致
@@ -1120,7 +1134,7 @@ const XZGGroup = {
             ctx.fillStyle = rgba;
             ctx.beginPath();
             // 顶部两角紧贴标题栏底边（无圆角），底部两角与 DOM 框体圆角对齐
-            if (ctx.roundRect) ctx.roundRect(b.x, gy, b.w, gh, [0, 0, r, r]);
+            if (ctx.roundRect) ctx.roundRect(b.x, gy, b.w, gh, g.headerHidden ? [r, r, r, r] : [0, 0, r, r]);
             else ctx.rect(b.x, gy, b.w, gh);
             ctx.fill();
             ctx.restore();
@@ -1436,7 +1450,8 @@ const XZGGroup = {
             titleColor: last.titleColor,
             fadeEnabled: last.fadeEnabled,
             fadeOutDuration: 0,
-            fadeInDuration: last.fadeInDuration
+            fadeInDuration: last.fadeInDuration,
+            headerHidden: false
         };
 
         // 标记节点归入新编组（同时保留节点在其他编组中的归属）
@@ -1490,15 +1505,15 @@ const XZGGroup = {
         const showTitle = (group.title || '').trim() !== '';
         const headerHeight = Math.max(18 * scale, fs + 4 * scale);
         el.innerHTML = `
-            <div class="xzg-group-header" style="display:flex;align-items:center;padding:0;background:${showTitle ? (group.headerBgColor || 'rgba(0,0,0,0.4)') : 'transparent'};border-radius:7px 7px 0 0;cursor:pointer;user-select:none;pointer-events:auto;height:${headerHeight}px;box-sizing:border-box;overflow:visible;z-index:4;">
-                <div class="xzg-left-fifth" title="点击此区域：该编组开启，同级其他全部绕过" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-right:1px solid rgba(255,255,255,0.1);position:relative;">
-                    <span class="xzg-left-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">◀</span>
+            <div class="xzg-group-header" style="display:flex;align-items:center;padding:0;background:${group.headerHidden ? 'transparent' : (group.headerBgColor || 'rgba(0,0,0,0.4)')};border-radius:7px 7px 0 0;cursor:pointer;user-select:none;pointer-events:auto;height:${headerHeight}px;box-sizing:border-box;overflow:visible;z-index:4;">
+                <div class="xzg-left-fifth" title="点击此区域：该编组开启，同级其他全部绕过" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:${group.headerHidden ? 'transparent' : 'rgba(255,255,255,0.04)'};border-right:${group.headerHidden ? '1px solid transparent' : '1px solid rgba(255,255,255,0.1)'};position:relative;">
+                    <span class="xzg-left-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;${group.headerHidden ? 'display:none;' : ''}">◀</span>
                 </div>
                 <div style="flex:1 1 auto;min-width:0;overflow:hidden;padding:0;display:flex;align-items:center;justify-content:center;height:100%;">
-                    <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:1;overflow:hidden;text-overflow:ellipsis;${showTitle ? '' : 'display:none;'}">${showTitle ? group.title : ''}</span>
+                    <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:1;overflow:hidden;text-overflow:ellipsis;${(!showTitle || group.headerHidden) ? 'display:none;' : ''}">${showTitle ? group.title : ''}</span>
                 </div>
-                <div class="xzg-right-fifth" title="点击此区域：该编组绕过，同级其他全部开启" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:rgba(255,255,255,0.04);border-left:1px solid rgba(255,255,255,0.1);position:relative;">
-                    <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;">▶</span>
+                <div class="xzg-right-fifth" title="点击此区域：该编组绕过，同级其他全部开启" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:${group.headerHidden ? 'transparent' : 'rgba(255,255,255,0.04)'};border-left:${group.headerHidden ? '1px solid transparent' : '1px solid rgba(255,255,255,0.1)'};position:relative;">
+                    <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;${group.headerHidden ? 'display:none;' : ''}">▶</span>
                 </div>
                 <button class="xzg-lock-btn" title="锁定/解锁编组，Ctrl+鼠标左键锁定/解锁所有编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;line-height:1;display:flex;align-items:center;"><svg viewBox="0 0 16 16" width="${Math.round(headerHeight * 0.55)}" height="${Math.round(headerHeight * 0.55)}"><path d="M4 7V5a4 4 0 018 0v2h1v7H3V7h1zm2 0h4V5a2 2 0 00-4 0v2z" fill="currentColor"/></svg></button>
                 <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;font-size:${headerHeight * 0.7}px;color:hsla(48,100%,55%,0.5);line-height:1;display:flex;align-items:center;">×</button>
@@ -1704,7 +1719,8 @@ const XZGGroup = {
             bgColor: 'rgba(0,0,0,0)',
             titleColor: '#FFD700',
             fadeEnabled: true,
-            fadeInDuration: 1000
+            fadeInDuration: 1000,
+            headerHidden: false
         };
         try {
             const saved = localStorage.getItem('xzg_last_title_config');
@@ -1744,7 +1760,8 @@ const XZGGroup = {
             bgColor: group.bgColor,
             colorHue: group.colorHue, colorSat: group.colorSat, colorLit: group.colorLit,
             effect: group.effect, effectSpeed: group.effectSpeed,
-            borderWidth: group.borderWidth, borderOpacity: group.borderOpacity
+            borderWidth: group.borderWidth, borderOpacity: group.borderOpacity,
+            headerHidden: group.headerHidden
         };
         const revertSnapshot = () => {
             Object.assign(group, {
@@ -1755,7 +1772,8 @@ const XZGGroup = {
                 bgColor: _snapshot.bgColor,
                 colorHue: _snapshot.colorHue, colorSat: _snapshot.colorSat, colorLit: _snapshot.colorLit,
                 effect: _snapshot.effect, effectSpeed: _snapshot.effectSpeed,
-                borderWidth: _snapshot.borderWidth, borderOpacity: _snapshot.borderOpacity
+                borderWidth: _snapshot.borderWidth, borderOpacity: _snapshot.borderOpacity,
+                headerHidden: _snapshot.headerHidden
             });
             // 重建 DOM 恢复视觉状态
             this.rebuildGroupEl(group);
@@ -1800,6 +1818,16 @@ const XZGGroup = {
             </div>
             <div style="margin-bottom:10px;">
                 <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:6px;font-weight:600;">标题栏设置</label>
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
+                    <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">一键隐藏标题栏</label>
+                    <button type="button" class="xzg-set-header-hidden-toggle" data-checked="${group.headerHidden ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 8px;background:transparent;border:none;cursor:pointer;" title="${'开启后标题栏背景与填充色一致，隐藏三角/竖杠，保留锁定与删除'}">
+                        <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${group.headerHidden ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
+                            <span class="xzg-fade-toggle-thumb" style="position:absolute;left:${group.headerHidden ? '14px' : '2px'};top:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.2s;"></span>
+                        </span>
+                        <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${group.headerHidden ? '#FFD700' : '#777'};min-width:20px;">${group.headerHidden ? '开' : '关'}</span>
+                    </button>
+                    <div style="width:72px;flex-shrink:0;"></div>
+                </div>
                 <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">名称</label>
                     <input class="xzg-set-title" value="${group.title}" style="flex:1;height:24px;padding:0 8px;background:#2a2a2a;border:1px solid rgba(255,255,255,0.08);border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box;">
@@ -2031,6 +2059,30 @@ const XZGGroup = {
             updateFadeToggle(!isOn);
         });
 
+        // 一键隐藏标题栏开关
+        const headerHiddenToggle = modal.querySelector('.xzg-set-header-hidden-toggle');
+        if (headerHiddenToggle) {
+            const updateHeaderHiddenToggle = (enabled) => {
+                headerHiddenToggle.dataset.checked = enabled ? 'true' : 'false';
+                const track = headerHiddenToggle.querySelector('.xzg-fade-toggle-track');
+                const thumb = headerHiddenToggle.querySelector('.xzg-fade-toggle-thumb');
+                const label = headerHiddenToggle.querySelector('.xzg-fade-toggle-label');
+                if (track) track.style.background = enabled ? '#dcc85b' : '#a855f7';
+                if (thumb) thumb.style.left = enabled ? '14px' : '2px';
+                if (label) { label.textContent = enabled ? '开' : '关'; label.style.color = enabled ? '#FFD700' : '#777'; }
+            };
+            headerHiddenToggle.addEventListener('click', () => {
+                const isOn = headerHiddenToggle.dataset.checked === 'true';
+                const next = !isOn;
+                updateHeaderHiddenToggle(next);
+                // 实时预览：立即应用并刷新编组视觉（背景/三角/竖杠/标题/左右1/5），无需关闭弹窗
+                group.headerHidden = next;
+                self.updatePositions();
+                const _c = app?.canvas;
+                if (_c) _c.setDirty?.(true, true);
+            });
+        }
+
         // 渐入时间滑块
         const fadeDurR = modal.querySelector('.xzg-set-fade-duration');
         const fadeDurV = modal.querySelector('.xzg-set-fade-val');
@@ -2047,9 +2099,8 @@ const XZGGroup = {
             const v = parseInt(fsR.value) || 20;
             fsV.textContent = v;
             group.fontSize = v;
-            const span = self.groupEls[group.id]?.querySelector('.xzg-group-title-text');
-            const sc = app?.canvas?.ds?.scale || 1;
-            if (span) span.style.fontSize = (v * sc) + 'px';
+            // 实时预览标题栏大小：完整刷新（标题栏高度/编组框上移增高/锁定删除按钮/文字大小）
+            self.updatePositions();
         });
 
         // 文字颜色 - 隐藏颜色选择器
@@ -2118,7 +2169,8 @@ const XZGGroup = {
             const b = parseInt(hex.slice(5,7),16);
             const rgba = `rgba(${r},${g},${b},${headerAlpha})`;
             group.headerBgColor = rgba;
-            if (headerEl) headerEl.style.background = rgba;
+            // 一键隐藏标题栏开启时：预览无效果（header 背景保持透明透出画布背景）
+            if (headerEl) headerEl.style.background = group.headerHidden ? 'transparent' : rgba;
         };
 
         headerColorPicker.addEventListener('input', updateHeaderBg);
@@ -2213,6 +2265,7 @@ const XZGGroup = {
             })();
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
             targetGroup.fadeEnabled = fadeToggle.dataset.checked === 'true';
+            if (headerHiddenToggle) targetGroup.headerHidden = headerHiddenToggle.dataset.checked === 'true';
             targetGroup.fadeInDuration = parseInt(fadeDurR.value) || 1000;
             if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
 
@@ -2223,28 +2276,10 @@ const XZGGroup = {
                 localStorage.setItem('xzg_shortcut', sk);
             }
 
-            // 标题为空时：重建 header 以隐藏文字；否则只更新文本
+            // 视觉属性可能变化（标题/颜色/一键隐藏标题栏等），重建 header 使所有变化一次生效
             const el = this.groupEls[targetGroup.id];
             if (el) {
-                if (!newTitle) {
-                    this.rebuildGroupEl(targetGroup);
-                } else {
-                    delete el._xzgRefs;
-                    const sc = app?.canvas?.ds?.scale || 1;
-                    const span = el.querySelector('.xzg-group-title-text');
-                    if (span) {
-                        span.textContent = targetGroup.title;
-                        span.style.fontSize = (targetGroup.fontSize * sc) + 'px';
-                        span.style.color = targetGroup.titleColor;
-                        span.style.display = '';
-                    }
-                    const header = el.querySelector('.xzg-group-header');
-                    if (header) {
-                        header.style.height = Math.max(18 * sc, targetGroup.fontSize * sc + 4 * sc) + 'px';
-                        header.style.background = targetGroup.headerBgColor || 'rgba(0,0,0,0.4)';
-                    }
-                    this.updateGroupStyle(targetGroup.id);
-                }
+                this.rebuildGroupEl(targetGroup);
             }
 
             // 标记工作流已修改，触发保存
@@ -2605,10 +2640,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     refs.title.style.color = g.titleColor || '#FFD700';
                 }
             }
-            if (refs.leftFifth) refs.leftFifth.style.borderRightColor = `hsla(${h},${s}%,${l}%,0.2)`;
-            if (refs.leftFifthIcon) refs.leftFifthIcon.style.color = `hsla(${h},${s}%,${l}%,0.45)`;
-            if (refs.rightFifth) refs.rightFifth.style.borderLeftColor = `hsla(${h},${s}%,${l}%,0.2)`;
-            if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = `hsla(${h},${s}%,${l}%,0.45)`;
+            if (refs.leftFifth) refs.leftFifth.style.borderRightColor = g.headerHidden ? 'transparent' : `hsla(${h},${s}%,${l}%,0.2)`;
+            if (refs.leftFifthIcon) refs.leftFifthIcon.style.color = g.headerHidden ? 'transparent' : `hsla(${h},${s}%,${l}%,0.45)`;
+            if (refs.rightFifth) refs.rightFifth.style.borderLeftColor = g.headerHidden ? 'transparent' : `hsla(${h},${s}%,${l}%,0.2)`;
+            if (refs.rightFifthIcon) refs.rightFifthIcon.style.color = g.headerHidden ? 'transparent' : `hsla(${h},${s}%,${l}%,0.45)`;
             if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${Math.min(bo + 0.1, 1)})`;
             if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${s}%,${l}%,${bo})`);
             if (refs.lockBtn) refs.lockBtn.style.color = g.locked ? '#f44336' : `hsla(${h},${s}%,${l}%,0.35)`;
@@ -4257,6 +4292,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                                 headerBgColor: g.headerBgColor,
                                 bgColor: g.bgColor,
                                 titleColor: g.titleColor,
+                                headerHidden: g.headerHidden,
                             };
                         }
 
@@ -4564,7 +4600,8 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     effect: 'none', effectSpeed: 3,
                     borderWidth: 2, borderOpacity: 1,
                     headerBgColor: 'rgba(0,0,0,0.4)', bgColor: 'rgba(0,0,0,0)', titleColor: '#FFD700',
-                    fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 1000
+                    fadeEnabled: true, fadeOutDuration: 0, fadeInDuration: 1000,
+                    headerHidden: false
                 };
             } else {
                 this.groups[gid].nodeIds = nids;
@@ -4582,6 +4619,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             if (g.fadeInDuration === undefined) g.fadeInDuration = 1000;
             if (g.hidden === undefined) g.hidden = false;
             if (g.bgColor === undefined) g.bgColor = 'rgba(0,0,0,0)';
+            if (g.headerHidden === undefined) g.headerHidden = false;
         }
         // 清理已持久化的删除标记：只保留此次恢复中仍然出现在任意数据源里的 ID
         // （如果 auto-save 已生效，group 不再出现于数据中，就可以从列表移除）
