@@ -241,6 +241,19 @@ const ACTION_HANDLERS = {
 
     /** 打开选中节点的遮罩编辑器（Comfy.MaskEditor.OpenMaskEditor） */
     open_mask_editor: () => executeCommand("Comfy.MaskEditor.OpenMaskEditor"),
+
+    /** 同步预览：对选中的小珠光视频节点输出做同步预览（无选中时预览全部视频节点） */
+    sync_preview: () => {
+        try {
+            if (typeof window.xzgSyncPreview?.previewSelection === "function") {
+                window.xzgSyncPreview.previewSelection();
+            } else {
+                console.warn("[小珠光快捷键] 同步预览模块未加载");
+            }
+        } catch (e) {
+            console.warn("[小珠光快捷键] 同步预览失败:", e);
+        }
+    },
 };
 
 
@@ -255,6 +268,7 @@ const ACTION_LABELS = {
     resize_selected_nodes: "调整选中节点大小 (Resize Selected Nodes)",
     collapse_selected: "折叠/展开选中节点 (Collapse Selected)",
     open_mask_editor: "打开选中节点遮罩编辑器 (Open Mask Editor)",
+    sync_preview: "同步预览选中的视频 (Sync Preview)",
 };
 
 // 快捷键配置（运行时）
@@ -387,6 +401,15 @@ async function openSettingsDialog() {
     const fresh = await loadShortcuts();
     const base = (fresh !== null) ? fresh : shortcuts;
 
+    // 编辑中的列表：以"全部可用动作"为基准默认全展示（与已设置快捷键一致的展示方式），
+    // 已配置的动作带快捷键，未配置的动作显示"未设置"
+    const byAction = {};
+    for (const s of base) byAction[s.action] = s;
+    let editing = Object.keys(ACTION_LABELS).map(action => {
+        const s = byAction[action];
+        return s ? { ...s } : { action, key: "", ctrl: false, shift: false, alt: false, meta: false, label: "" };
+    });
+
     const overlay = document.createElement("div");
     overlay.id = "xzg-shortcuts-dialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;";
@@ -394,35 +417,30 @@ async function openSettingsDialog() {
     const dialog = document.createElement("div");
     dialog.style.cssText = "background:#2a2a2a;color:#e0e0e0;border-radius:10px;padding:24px;width:560px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5);border:1px solid #444;";
 
-    // 编辑中的列表（副本）
-    let editing = base.map(s => ({ ...s }));
+    // 正在捕获快捷键的动作索引（-1 表示未在捕获）
+    let capturingIdx = -1;
 
     function render() {
-        const rowsHtml = editing.map((s, i) => `
+        const rowsHtml = editing.map((s, i) => {
+            const capturing = (capturingIdx === i);
+            return `
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px;background:#333;border-radius:6px;">
                 <span style="flex:1;font-size:14px;">${ACTION_LABELS[s.action] || s.action}</span>
-                <span style="background:#1a1a1a;padding:4px 10px;border-radius:4px;font-family:monospace;font-size:13px;min-width:80px;text-align:center;">${shortcutToText(s)}</span>
-                <button data-act="del" data-idx="${i}" style="background:#c0392b;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;">删除</button>
+                <span data-act="key" data-idx="${i}" title="点击设置快捷键" style="background:${s.key ? "#1a1a1a" : "#232323"};padding:4px 10px;border-radius:4px;font-family:monospace;font-size:13px;min-width:80px;text-align:center;cursor:pointer;border:1px solid ${capturing ? "#dcc85b" : "transparent"};">${s.key ? shortcutToText(s) : "未设置"}</span>
+                <button data-act="set" data-idx="${i}" style="background:${capturing ? "#e67e22" : "#2980b9"};color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;">${capturing ? "按组合键..." : "设置"}</button>
+                <button data-act="del" data-idx="${i}" style="background:#c0392b;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;${s.key ? "" : "opacity:.4;cursor:not-allowed;"}" ${s.key ? "" : "disabled"}>清除</button>
             </div>
-        `).join("");
+        `;
+        }).join("");
 
         dialog.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                 <h3 style="margin:0;font-size:18px;">小珠光 · 自定义快捷键</h3>
                 <button id="xzg-sc-close" style="background:transparent;color:#999;border:none;font-size:20px;cursor:pointer;">&times;</button>
             </div>
-            <p style="font-size:12px;color:#999;margin:0 0 16px;">配置保存在服务器端（插件目录），所有浏览器共享。原生 Ctrl+Enter 不受影响，以下为追加快捷键。</p>
-            <div id="xzg-sc-list">${rowsHtml || '<p style="color:#888;font-size:13px;text-align:center;padding:16px;">暂无自定义快捷键</p>'}</div>
-            <div style="margin-top:16px;padding-top:16px;border-top:1px solid #444;">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-                    <select id="xzg-sc-action" style="background:#1a1a1a;color:#e0e0e0;border:1px solid #555;border-radius:4px;padding:6px;font-size:13px;">
-                        ${Object.entries(ACTION_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
-                    </select>
-                    <button id="xzg-sc-capture" style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:6px 14px;cursor:pointer;font-size:13px;">按下快捷键...</button>
-                    <button id="xzg-sc-add" style="background:#27ae60;color:#fff;border:none;border-radius:4px;padding:6px 14px;cursor:pointer;font-size:13px;" disabled>添加</button>
-                </div>
-                <p id="xzg-sc-hint" style="font-size:12px;color:#888;margin:0;">点击"按下快捷键..."然后按组合键</p>
-            </div>
+            <p style="font-size:12px;color:#999;margin:0 0 16px;">配置保存在服务器端（插件目录），所有浏览器共享。以下为全部可用快捷键，未设置的显示"未设置"，点击"设置"后按组合键即可绑定。</p>
+            <div id="xzg-sc-list">${rowsHtml}</div>
+            <p id="xzg-sc-hint" style="font-size:12px;color:#888;margin:12px 0 0;">点击某行右侧的"设置"或快捷键文本，然后按下组合键（如 Ctrl+F）进行绑定。</p>
             <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
                 <button id="xzg-sc-cancel" style="background:#555;color:#fff;border:none;border-radius:4px;padding:8px 20px;cursor:pointer;font-size:13px;">取消</button>
                 <button id="xzg-sc-save" style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:8px 20px;cursor:pointer;font-size:13px;">保存</button>
@@ -430,85 +448,75 @@ async function openSettingsDialog() {
         `;
 
         // 事件绑定
-        dialog.querySelector("#xzg-sc-close").onclick = () => overlay.remove();
-        dialog.querySelector("#xzg-sc-cancel").onclick = () => overlay.remove();
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+        dialog.querySelector("#xzg-sc-close").onclick = () => { cleanupCapture(); overlay.remove(); };
+        dialog.querySelector("#xzg-sc-cancel").onclick = () => { cleanupCapture(); overlay.remove(); };
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) { cleanupCapture(); overlay.remove(); } });
 
-        // 删除
-        dialog.querySelectorAll("[data-act=del]").forEach(btn => {
-            btn.onclick = () => {
-                const idx = parseInt(btn.dataset.idx);
-                editing.splice(idx, 1);
-                render();
-            };
-        });
-
-        // 捕获快捷键
-        let captured = null;
-        const captureBtn = dialog.querySelector("#xzg-sc-capture");
-        const addBtn = dialog.querySelector("#xzg-sc-add");
-        const hint = dialog.querySelector("#xzg-sc-hint");
-
-        function onCaptureKey(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            const sc = eventToShortcut(e);
-            if (!sc) return;
-            captured = sc;
-            captureBtn.textContent = shortcutToText(sc);
-            captureBtn.style.background = "#27ae60";
-            addBtn.disabled = false;
-            hint.textContent = "已捕获，点击添加";
-            dialog.removeEventListener("keydown", onCaptureKey, true);
-        }
-
-        captureBtn.onclick = () => {
-            captured = null;
-            captureBtn.textContent = "请按快捷键...";
-            captureBtn.style.background = "#e67e22";
-            addBtn.disabled = true;
-            hint.textContent = "现在按下组合键（如 Ctrl+D）";
-            dialog.addEventListener("keydown", onCaptureKey, true);
-        };
-
-        addBtn.onclick = () => {
-            if (!captured) return;
-            const action = dialog.querySelector("#xzg-sc-action").value;
-            // 检查重复
-            const dup = editing.findIndex(s => matchShortcut(
-                { key: captured.key, ctrlKey: captured.ctrl, shiftKey: captured.shift, altKey: captured.alt, metaKey: captured.meta },
-                s
-            ));
-            if (dup >= 0) {
-                hint.textContent = "该快捷键已存在，请勿重复添加";
-                hint.style.color = "#e74c3c";
-                return;
-            }
-            editing.push({ ...captured, action, label: shortcutToText(captured) });
-            captured = null;
-            captureBtn.textContent = "按下快捷键...";
-            captureBtn.style.background = "#2980b9";
-            addBtn.disabled = true;
-            hint.textContent = "点击\"按下快捷键...\"然后按组合键";
-            hint.style.color = "#888";
-            render();
-        };
-
-        // 保存
+        // 保存：只保存已设置的快捷键（未设置的动作不写入后端，重新打开仍显示"未设置"）
         dialog.querySelector("#xzg-sc-save").onclick = async () => {
+            const toSave = editing.filter(s => s.key);
             // 安全护栏：本次刷新后端失败 且 列表为空时，禁止保存，避免把真实配置误清空。
-            if (editing.length === 0 && fresh === null) {
+            if (toSave.length === 0 && fresh === null) {
                 alert("无法连接到服务器读取当前快捷键配置，为防止数据丢失已取消保存，请稍后重试。");
                 return;
             }
             try {
-                await saveShortcuts(editing);
+                await saveShortcuts(toSave);
+                cleanupCapture();
                 overlay.remove();
             } catch (e) {
                 alert("保存失败: " + e.message);
             }
         };
+
+        // 点击"设置"或快捷键文本 → 进入该动作的捕获模式
+        dialog.querySelectorAll("[data-act=set], [data-act=key]").forEach(el => {
+            el.onclick = () => {
+                capturingIdx = parseInt(el.dataset.idx);
+                render();
+            };
+        });
+
+        // 清除该动作的快捷键
+        dialog.querySelectorAll("[data-act=del]").forEach(btn => {
+            btn.onclick = () => {
+                const it = editing[parseInt(btn.dataset.idx)];
+                it.key = ""; it.label = "";
+                it.ctrl = false; it.shift = false; it.alt = false; it.meta = false;
+                render();
+            };
+        });
     }
+
+    // 捕获快捷键（dialog 常驻监听，仅捕获模式下生效）
+    function onCaptureKey(e) {
+        if (capturingIdx < 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const sc = eventToShortcut(e);
+        if (!sc) return;
+        // 检查该组合键是否已被其它动作占用
+        const dup = editing.findIndex((s, i) => i !== capturingIdx && s.key && matchShortcut(
+            { key: sc.key, ctrlKey: sc.ctrl, shiftKey: sc.shift, altKey: sc.alt, metaKey: sc.meta }, s));
+        if (dup >= 0) {
+            const hint = dialog.querySelector("#xzg-sc-hint");
+            hint.textContent = "该快捷键已被「" + (ACTION_LABELS[editing[dup].action] || editing[dup].action) + "」占用";
+            hint.style.color = "#e74c3c";
+            return;
+        }
+        const it = editing[capturingIdx];
+        it.key = sc.key; it.ctrl = sc.ctrl; it.shift = sc.shift; it.alt = sc.alt; it.meta = sc.meta;
+        it.label = shortcutToText(sc);
+        capturingIdx = -1;
+        const hint = dialog.querySelector("#xzg-sc-hint");
+        hint.textContent = "已绑定为 " + it.label;
+        hint.style.color = "#27ae60";
+        render();
+    }
+    // 捕获监听挂在 window（capture）上：与焦点无关，按键必然经过 window 从而被捕获；
+    // 全局 onKeyDown 检测到对话框存在时已放行，不会抢先处理。
+    const cleanupCapture = () => window.removeEventListener("keydown", onCaptureKey, true);
+    window.addEventListener("keydown", onCaptureKey, true);
 
     render();
     overlay.appendChild(dialog);

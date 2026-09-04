@@ -609,6 +609,39 @@ try:
 
     _xzg_shortcuts_file = os.path.join(_xzg_shortcuts_dir(), "xzg_shortcuts.json")
 
+    def _xzg_shortcuts_merge_defaults():
+        # 将默认配置中用户缺失的新快捷键并入现有配置（不覆盖用户自定义）
+        if not os.path.exists(_xzg_shortcuts_file) or not os.path.exists(_xzg_shortcuts_default):
+            return
+        try:
+            with open(_xzg_shortcuts_file, "r", encoding="utf-8") as f:
+                cur = json.load(f)
+            with open(_xzg_shortcuts_default, "r", encoding="utf-8") as f:
+                dft = json.load(f)
+            if not isinstance(cur, dict) or not isinstance(dft, dict):
+                return
+            cur_list = cur.get("shortcuts", [])
+            dft_list = dft.get("shortcuts", [])
+            if not isinstance(cur_list, list) or not isinstance(dft_list, list):
+                return
+            existing_actions = {s.get("action") for s in cur_list if isinstance(s, dict)}
+            added = []
+            for d in dft_list:
+                if not isinstance(d, dict):
+                    continue
+                action = d.get("action")
+                if action and action not in existing_actions:
+                    cur_list.append(d)
+                    existing_actions.add(action)
+                    added.append(action)
+            if added:
+                cur["shortcuts"] = cur_list
+                with open(_xzg_shortcuts_file, "w", encoding="utf-8") as f:
+                    json.dump(cur, f, ensure_ascii=False, indent=2)
+                print("[xiaozhuguang] 已为新快捷键补充默认配置:", added)
+        except Exception as _merge_err:
+            print("[xiaozhuguang] 合并默认快捷键失败:", _merge_err)
+
     def _xzg_shortcuts_init():
         import shutil
         # 1. 迁移旧版插件目录下的配置到 user/xiaozhuguang（保留用户自定义快捷键）
@@ -616,7 +649,6 @@ try:
             try:
                 shutil.move(_xzg_shortcuts_legacy, _xzg_shortcuts_file)
                 print("[xiaozhuguang] 已将快捷键配置迁移至 user/xiaozhuguang/xzg_shortcuts.json")
-                return
             except Exception as _mig_err:
                 print("[xiaozhuguang] 迁移快捷键配置失败:", _mig_err)
         # 2. 全新安装：user 下配置不存在时，从默认配置复制一份
@@ -627,6 +659,8 @@ try:
                 print("[xiaozhuguang] 已从默认配置初始化 user/xiaozhuguang/xzg_shortcuts.json")
             except Exception as _init_err:
                 print("[xiaozhuguang] 初始化快捷键配置失败:", _init_err)
+        # 3. 已有用户配置：把默认配置里用户缺失的新快捷键并入（如新版本的默认 G 键）
+        _xzg_shortcuts_merge_defaults()
 
     _xzg_shortcuts_init()
 

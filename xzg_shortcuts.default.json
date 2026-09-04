@@ -89,6 +89,15 @@
       "meta": false,
       "action": "open_mask_editor",
       "label": "W"
+    },
+    {
+      "key": "F",
+      "ctrl": true,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "sync_preview",
+      "label": "Ctrl+F"
     }
   ]
 }

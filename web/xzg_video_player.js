@@ -63,6 +63,10 @@ export class XiaozhuguangVideoPlayer {
         this.onLoadRangeEndDrag = options.onLoadRangeEndDrag || null;
         this.onSourceFpsDetected = options.onSourceFpsDetected || null;
         this.placeholderText = options.placeholderText ?? "🎬 双击加载视频";
+        // 视频在容器内的适配模式：contain(默认/保持比例留边) | cover(铺满裁剪) | fill(拉伸)
+        this._fitMode = options.fit || "contain";
+        // 是否显示播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）；ui:false 时隐藏
+        this._showUi = options.ui !== false;
 
         this._canvas = null;          // Canvas 渲染目标（替代 <video>）
         this._currentDecoder = null;  // 当前 VideoDecoderInstance
@@ -425,6 +429,9 @@ export class XiaozhuguangVideoPlayer {
         this._bottomBar.appendChild(timeRow);
         this._bottomBar.appendChild(this._buttonRow);
         this._controlsLayer.appendChild(this._bottomBar);
+        if (!this._showUi) {
+            this._bottomBar.style.display = "none";
+        }
 
         this._videoSurface.appendChild(this._controlsLayer);
         this._stage.appendChild(this._videoSurface);
@@ -477,14 +484,22 @@ export class XiaozhuguangVideoPlayer {
         const el = this.container;
         const containerW = el.clientWidth || el.offsetWidth || 320;
         const containerH = el.clientHeight || el.offsetHeight || 240;
-        // 优先使用自定义比例，否则用视频原始比例
-        const ratio = this._customRatio || this._videoRatio || 16 / 9;
 
-        let w = containerW;
-        let h = containerW / ratio;
-        if (h > containerH) {
+        let w;
+        let h;
+        if (this._fitMode === "cover") {
+            // 铺满模式：画面填满整个容器（按容器比例裁剪边缘）
+            w = containerW;
             h = containerH;
-            w = containerH * ratio;
+        } else {
+            // 优先使用自定义比例，否则用视频原始比例
+            const ratio = this._customRatio || this._videoRatio || 16 / 9;
+            w = containerW;
+            h = containerW / ratio;
+            if (h > containerH) {
+                h = containerH;
+                w = containerH * ratio;
+            }
         }
 
         // 尺寸取整，避免亚像素渲染导致视频边缘漏底
@@ -1375,6 +1390,12 @@ export class XiaozhuguangVideoPlayer {
 
     _applyVideoFit() {
         if (!this._canvas) return;
+        if (this._fitMode === "cover") {
+            // 铺满模式：surface 已等于容器尺寸，画面裁剪填满
+            this._canvas.style.objectFit = "cover";
+            this._canvas.style.objectPosition = "center";
+            return;
+        }
         if (!this._customRatio || !this._videoRatio) {
             this._canvas.style.objectFit = "fill";
             this._canvas.style.objectPosition = "center";
