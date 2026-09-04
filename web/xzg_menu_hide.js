@@ -84,8 +84,8 @@ window.XZGMenuHide = {
             }
             this._applyHideToOpenMenus();
             // 若隐藏面板正处于显示状态，拉取完成后再渲染一次列表以反映最新云端配置
-            if (window.xzgThemePanel && window.xzgThemePanel._refreshMenuListUI) {
-                window.xzgThemePanel._refreshMenuListUI();
+            if (window.XZGThemePanel && window.XZGThemePanel._refreshMenuListUI) {
+                window.XZGThemePanel._refreshMenuListUI();
             }
         } catch(e) { /* 云端不可达时静默，保留本地配置 */ }
     },
@@ -754,8 +754,8 @@ window.XZGMenuHide = {
                 requestAnimationFrame(() => self._applyHideToOpenMenus());
                 setTimeout(() => self._applyHideToOpenMenus(), 150);
                 setTimeout(() => self._applyHideToOpenMenus(), 400);
-                if (window.xzgThemePanel && window.xzgThemePanel._menuListVisible) {
-                    window.xzgThemePanel._refreshMenuListUI?.();
+                if (window.XZGThemePanel && window.XZGThemePanel._menuListVisible) {
+                    window.XZGThemePanel._refreshMenuListUI?.();
                 }
                 // 视觉反馈：按钮变绿说明 setHidden 已真正执行，方便与“隐藏没匹配上”问题区分。
                 btn.textContent = '已隐藏';
@@ -880,8 +880,8 @@ window.XZGMenuHide = {
             });
             if (changed) {
                 list.sort();
-                if (window.xzgThemePanel && window.xzgThemePanel._menuListVisible) {
-                    window.xzgThemePanel._refreshMenuListUI?.();
+                if (window.XZGThemePanel && window.XZGThemePanel._menuListVisible) {
+                    window.XZGThemePanel._refreshMenuListUI?.();
                 }
             }
         }

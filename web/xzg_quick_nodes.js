@@ -22,11 +22,10 @@ class XZGQuickNodes {
                 return JSON.parse(data);
             }
         } catch (e) {
-            console.warn("[小珠光] 加载快速节点配置失败:", e);
+            console.warn("[小珠光] 加载快速连线配置失败:", e);
         }
         return {
-            hideDefaultMenu: false,
-            textColor: "#FFD700"
+            hideDefaultMenu: false
         };
     }
 
@@ -34,7 +33,7 @@ class XZGQuickNodes {
         try {
             localStorage.setItem(CONFIG_KEY, JSON.stringify(this.config));
         } catch (e) {
-            console.warn("[小珠光] 保存快速节点配置失败:", e);
+            console.warn("[小珠光] 保存快速连线配置失败:", e);
         }
     }
 
@@ -47,13 +46,17 @@ class XZGQuickNodes {
         return !!this.config.hideDefaultMenu;
     }
 
-    setTextColor(color) {
-        this.config.textColor = color;
-        this.saveConfig();
+    setNodeColor(nodeType, color) {
+        const node = this.quickNodes.find(n => n.type === nodeType);
+        if (node) {
+            node.color = color || "#FFD700";
+            this.saveQuickNodes();
+        }
     }
 
-    getTextColor() {
-        return this.config.textColor || "#FFD700";
+    getNodeColor(nodeType) {
+        const node = this.quickNodes.find(n => n.type === nodeType);
+        return node?.color || "#FFD700";
     }
 
     loadQuickNodes() {
@@ -66,7 +69,7 @@ class XZGQuickNodes {
                 }
             }
         } catch (e) {
-            console.warn("[小珠光] 加载快速节点失败:", e);
+            console.warn("[小珠光] 加载快速连线失败:", e);
         }
         return [];
     }
@@ -75,7 +78,7 @@ class XZGQuickNodes {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(this.quickNodes));
         } catch (e) {
-            console.warn("[小珠光] 保存快速节点失败:", e);
+            console.warn("[小珠光] 保存快速连线失败:", e);
         }
     }
 
@@ -91,7 +94,8 @@ class XZGQuickNodes {
         this.quickNodes.push({
             type: nodeType,
             title: title,
-            order: Date.now()
+            order: Date.now(),
+            color: "#FFD700"
         });
         this.saveQuickNodes();
         return true;
@@ -232,7 +236,7 @@ class XZGQuickNodes {
                 
                 const header = document.createElement("div");
                 header.className = "xzg-quick-nodes-header";
-                header.textContent = xzgT('快速节点','Quick Nodes');
+                header.textContent = xzgT('快速连线','Quick Links');
                 section.appendChild(header);
 
                 const list = document.createElement("div");
@@ -403,12 +407,12 @@ class XZGQuickNodes {
 
                 if (menu?.root) {
                     const entries = menu.root.querySelectorAll('.litemenu-entry');
-                    const quickTitles = quickNodes.map(n => n.title);
-                    const textColor = self.getTextColor();
+                    const colorByTitle = {};
+                    quickNodes.forEach(n => { colorByTitle[n.title] = n.color || "#FFD700"; });
                     entries.forEach(entry => {
                         const text = entry.textContent?.trim();
-                        if (quickTitles.includes(text)) {
-                            entry.style.color = textColor;
+                        if (colorByTitle[text]) {
+                            entry.style.color = colorByTitle[text];
                         }
                     });
                 }
@@ -438,7 +442,7 @@ class XZGQuickNodes {
             const isQuick = self.isQuickNode(nodeType);
             
             const quickNodeOption = {
-                content: isQuick ? '<span style="color:#FFD700;">⭐ ' + xzgT('从快速节点移除','Remove from Quick Nodes') + '</span>' : '<span style="color:#FFD700;">☆ ' + xzgT('添加到快速节点','Add to Quick Nodes') + '</span>',
+                content: isQuick ? '<span style="color:#FFD700;">⭐ ' + xzgT('从快速连线移除','Remove from Quick Links') + '</span>' : '<span style="color:#FFD700;">☆ ' + xzgT('添加到快速连线','Add to Quick Links') + '</span>',
                 callback: () => {
                     if (isQuick) {
                         self.removeQuickNode(nodeType);

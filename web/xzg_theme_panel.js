@@ -105,7 +105,7 @@ window.XZGThemePanel = {
                 <button type="button" class="xzg-top-tab active" data-top-tab="theme">${xzgT('主题','Theme')}</button>
                 <button type="button" class="xzg-top-tab" data-top-tab="themeplus">${xzgT('主题+','Theme+')}</button>
                 <button type="button" class="xzg-top-tab" data-top-tab="menuhide">${xzgT('菜单隐藏','Menu Hide')}</button>
-                <button type="button" class="xzg-top-tab" data-top-tab="quicknodes">${xzgT('快速节点','Quick Nodes')}</button>
+                <button type="button" class="xzg-top-tab" data-top-tab="quicknodes">${xzgT('快速连线','Quick Links')}</button>
             </div>
             <div class="xzg-tab-content" data-tab-content="theme">
             <div class="xzg-picker-section">
@@ -419,26 +419,19 @@ window.XZGThemePanel = {
             </div>
             <div class="xzg-tab-content" data-tab-content="quicknodes" style="display:none;">
                 <div class="xzg-menu-hide-full">
-                    <div class="xzg-quick-nodes-count">${xzgT('已添加','Added')} <span id="xzg-quick-count">0</span> / 20 ${xzgT('个快速节点','quick nodes')}</div>
+                    <div class="xzg-quick-nodes-count">${xzgT('已添加','Added')} <span id="xzg-quick-count">0</span> / 20 ${xzgT('个快速连线','quick links')}</div>
                     <div class="xzg-quick-setting-row">
                         <span>${xzgT('夺舍模式','Possession Mode')}</span>
-                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="${xzgT('夺舍模式：开启后，连线菜单只显示快速节点','Possession mode: when on, link menu shows only quick nodes')}">
+                        <button type="button" id="xzg-quick-hide-default-btn" class="xzg-toggle-switch" data-checked="false" title="${xzgT('夺舍模式：开启后，连线菜单只显示快速连线','Possession mode: when on, link menu shows only quick links')}">
                             <span class="xzg-toggle-slider"></span>
                             <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
                         </button>
-                    </div>
-                    <div class="xzg-quick-setting-row">
-                        <span>${xzgT('文字颜色','Text Color')}</span>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <input type="color" id="xzg-quick-text-color" value="#FFD700" style="width:24px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
-                            <span id="xzg-quick-text-color-value" style="font-size:12px;color:#888;">#FFD700</span>
-                        </div>
                     </div>
                     <div class="xzg-menu-hide-toolbar" style="margin-bottom:6px;">
                         <button type="button" class="xzg-menu-tool-btn" id="xzg-quick-clear-btn">${xzgT('清空全部','Clear All')}</button>
                     </div>
                     <div class="xzg-menu-hide-list" id="xzg-quick-nodes-list">
-                        <div class="xzg-menu-empty-tip">${xzgT('暂无快速节点','No quick nodes yet')}<br><span style="font-size:11px;">${xzgT('右键节点可添加到快速节点','Right-click a node to add to quick nodes')}</span></div>
+                        <div class="xzg-menu-empty-tip">${xzgT('暂无快速连线','No quick links yet')}<br><span style="font-size:11px;">${xzgT('右键节点可添加到快速连线','Right-click a node to add to quick links')}</span></div>
                     </div>
                     <p style="margin-top:8px;font-size:11px;color:#888;text-align:center;">${xzgT('拖拽可调整顺序，从节点拉出连线时搜索框顶部显示','Drag to reorder; shown atop the search box when dragging a link from a node')}</p>
                 </div>
@@ -495,7 +488,7 @@ window.XZGThemePanel = {
             self.hide();
         });
 
-        // 统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题等所有模块）
+        // 统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速连线 / 隐藏菜单 / 主题等所有模块）
         const configExportBtn = panel.querySelector("#xzg-theme-export-btn");
         const configImportBtn = panel.querySelector("#xzg-theme-import-btn");
         const configImportFile = panel.querySelector("#xzg-theme-import-file");
@@ -1311,11 +1304,11 @@ window.XZGThemePanel = {
 
         this._menuListVisible = true;
         this._refreshMenuListUI = () => {
-            if (this._menuListVisible && panel.style.display !== 'none') {
-                const menuContent = panel.querySelector('.xzg-tab-content[data-tab-content="menuhide"]');
-                if (menuContent && menuContent.style.display !== 'none') {
-                    renderMenuList();
-                }
+            // 无条件更新隐藏列表 DOM：即使面板当前折叠/未显示，也先把列表渲染成最新，
+            // 这样隐藏菜单项后下次打开面板(show)时无需手动切换“画布/节点”标签即显示最新隐藏项。
+            // 面板未创建时 _menuListVisible 为 false，此处直接跳过。
+            if (this._menuListVisible) {
+                renderMenuList();
             }
         };
 
@@ -1328,7 +1321,7 @@ window.XZGThemePanel = {
             countEl.textContent = quickNodes.length;
 
             if (quickNodes.length === 0) {
-                listEl.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('暂无快速节点','No quick nodes yet') + '<br><span style="font-size:11px;">' + xzgT('右键节点可添加到快速节点','Right-click a node to add to quick nodes') + '</span></div>';
+                listEl.innerHTML = '<div class="xzg-menu-empty-tip">' + xzgT('暂无快速连线','No quick links yet') + '<br><span style="font-size:11px;">' + xzgT('右键节点可添加到快速连线','Right-click a node to add to quick links') + '</span></div>';
                 return;
             }
 
@@ -1359,6 +1352,22 @@ window.XZGThemePanel = {
                 info.appendChild(type);
 
                 item.appendChild(info);
+
+                // 每个快速连线独立色块：点击可选择该快速连线的菜单颜色
+                const colorBox = document.createElement('input');
+                colorBox.type = 'color';
+                colorBox.className = 'xzg-quick-node-color';
+                colorBox.value = node.color || '#FFD700';
+                colorBox.title = xzgT('设置该快速连线的菜单颜色','Set this quick link menu color');
+                colorBox.style.cssText = 'width:24px;height:24px;border:none;background:none;cursor:pointer;padding:0;flex:none;';
+                colorBox.addEventListener('click', (e) => e.stopPropagation());
+                colorBox.addEventListener('input', (e) => {
+                    e.stopPropagation();
+                    if (window.XZGQuickNodes) {
+                        window.XZGQuickNodes.setNodeColor(node.type, e.target.value);
+                    }
+                });
+                item.appendChild(colorBox);
 
                 const removeBtn = document.createElement('button');
                 removeBtn.className = 'xzg-quick-node-remove-btn';
@@ -1416,7 +1425,7 @@ window.XZGThemePanel = {
         if (quickClearBtn) {
             quickClearBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                if (window.XZGQuickNodes && confirm(xzgT('确定要清空所有快速节点吗？','Sure to clear all quick nodes?'))) {
+                if (window.XZGQuickNodes && confirm(xzgT('确定要清空所有快速连线吗？','Sure to clear all quick links?'))) {
                     const nodes = window.XZGQuickNodes.getQuickNodeList();
                     nodes.forEach(n => window.XZGQuickNodes.removeQuickNode(n.type));
                     renderQuickNodesList();
@@ -1446,23 +1455,6 @@ window.XZGThemePanel = {
             });
         }
 
-        const quickTextColorInput = panel.querySelector('#xzg-quick-text-color');
-        const quickTextColorValue = panel.querySelector('#xzg-quick-text-color-value');
-        if (quickTextColorInput && quickTextColorValue) {
-            if (window.XZGQuickNodes) {
-                const color = window.XZGQuickNodes.getTextColor();
-                quickTextColorInput.value = color;
-                quickTextColorValue.textContent = color.toUpperCase();
-            }
-            quickTextColorInput.addEventListener('input', (e) => {
-                const color = e.target.value;
-                quickTextColorValue.textContent = color.toUpperCase();
-                if (window.XZGQuickNodes) {
-                    window.XZGQuickNodes.setTextColor(color);
-                }
-            });
-        }
-
         window.XZGThemePanel = window.XZGThemePanel || {};
         window.XZGThemePanel.refreshQuickNodesTab = () => {
             if (panel.style.display !== 'none') {
@@ -1474,11 +1466,6 @@ window.XZGThemePanel = {
                         quickHideDefaultBtn.setAttribute("data-checked", checked ? "true" : "false");
                         const label = quickHideDefaultBtn.querySelector(".xzg-toggle-label");
                         if (label) label.textContent = checked ? xzgT("开","On") : xzgT("关","Off");
-                    }
-                    if (quickTextColorInput && quickTextColorValue && window.XZGQuickNodes) {
-                        const color = window.XZGQuickNodes.getTextColor();
-                        quickTextColorInput.value = color;
-                        quickTextColorValue.textContent = color.toUpperCase();
                     }
                 }
             }
@@ -2055,6 +2042,10 @@ window.XZGThemePanel = {
         if (!this.panel) this.create();
         this.isVisible = true;
         this.panel.style.display = "block";
+        // 打开面板时兜底刷新菜单隐藏列表，避免隐藏菜单项后重新打开仍显示旧列表
+        try {
+            if (this._refreshMenuListUI) this._refreshMenuListUI();
+        } catch (e) {}
         
         const rect = this.panel.getBoundingClientRect();
         let left, top;
@@ -2472,7 +2463,7 @@ window.XZGThemePanel = {
                     <div class="xzg-modal-body">
                         <label class="xzg-modal-checkbox">
                             <input type="checkbox" id="xzg-export-include-xzg" checked />
-                            <span>${xzgT('包含小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速节点 / 记事本）', 'Include Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick nodes / notepad)')}</span>
+                            <span>${xzgT('包含小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速连线 / 记事本）', 'Include Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick links / notepad)')}</span>
                         </label>
                         <label class="xzg-modal-checkbox">
                             <input type="checkbox" id="xzg-export-include-comfy" checked />
@@ -2533,7 +2524,7 @@ window.XZGThemePanel = {
                     <div class="xzg-modal-body">
                         <label class="xzg-modal-checkbox" style="${hasXzg ? '' : 'opacity:0.5;pointer-events:none;'}">
                             <input type="checkbox" id="xzg-import-include-xzg" ${hasXzg ? 'checked' : 'disabled'} />
-                            <span>${xzgT('导入小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速节点 / 记事本）', 'Import Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick nodes / notepad)')}</span>
+                            <span>${xzgT('导入小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速连线 / 记事本）', 'Import Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick links / notepad)')}</span>
                         </label>
                         ${xzgHint}
                         ${comfyCheckbox}
@@ -2567,7 +2558,7 @@ window.XZGThemePanel = {
         });
     },
 
-    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速节点 / 隐藏菜单 / 主题 / 备注 / ComfyUI设置 等所有模块） ======
+    // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速连线 / 隐藏菜单 / 主题 / 备注 / ComfyUI设置 等所有模块） ======
     async exportAllConfig() {
         // 1) 先弹导出选项，等用户确认各模块的勾选
         const opt = await this.showExportDialog();
