@@ -134,6 +134,17 @@ function getNativeGroupNodes(group) {
 }
 
 // 动作映射：action id -> 执行函数
+/** 执行官方命令（封装 extensionManager.command.execute，失败时告警） */
+function executeCommand(commandId) {
+    try {
+        if (app.extensionManager?.command?.execute) {
+            app.extensionManager.command.execute(commandId);
+        }
+    } catch (e) {
+        console.warn(`[小珠光快捷键] 执行命令 ${commandId} 失败:`, e);
+    }
+}
+
 const ACTION_HANDLERS = {
     queue_prompt: () => {
         try {
@@ -191,12 +202,59 @@ const ACTION_HANDLERS = {
             console.warn("[小珠光快捷键] 执行编组节点失败:", e);
         }
     },
+
+    /** 官方中断（Comfy.Interrupt 命令，等价于菜单栏"中断"按钮） */
+    interrupt: () => {
+        try {
+            if (app.extensionManager?.command?.execute) {
+                app.extensionManager.command.execute("Comfy.Interrupt");
+            } else if (typeof api?.interrupt === "function") {
+                api.interrupt();
+            }
+        } catch (e) {
+            console.warn("[小珠光快捷键] 中断执行失败:", e);
+        }
+    },
+
+    /** 清除待处理任务（Comfy.ClearPendingTasks 命令，等价于队列面板"清空队列"） */
+    clear_pending_tasks: () => {
+        try {
+            if (app.extensionManager?.command?.execute) {
+                app.extensionManager.command.execute("Comfy.ClearPendingTasks");
+            }
+        } catch (e) {
+            console.warn("[小珠光快捷键] 清除待处理任务失败:", e);
+        }
+    },
+
+    /** 将选区转换为子图（Comfy.Graph.ConvertToSubgraph） */
+    convert_to_subgraph: () => executeCommand("Comfy.Graph.ConvertToSubgraph"),
+
+    /** 忽略/取消忽略选中节点（Comfy.Canvas.ToggleSelectedNodes.Bypass） */
+    bypass_selected: () => executeCommand("Comfy.Canvas.ToggleSelectedNodes.Bypass"),
+
+    /** 调整选中节点大小（Comfy.Canvas.Resize） */
+    resize_selected_nodes: () => executeCommand("Comfy.Canvas.Resize"),
+
+    /** 折叠/展开选中节点（Comfy.Canvas.ToggleSelectedNodes.Collapse） */
+    collapse_selected: () => executeCommand("Comfy.Canvas.ToggleSelectedNodes.Collapse"),
+
+    /** 打开选中节点的遮罩编辑器（Comfy.MaskEditor.OpenMaskEditor） */
+    open_mask_editor: () => executeCommand("Comfy.MaskEditor.OpenMaskEditor"),
 };
+
 
 const ACTION_LABELS = {
     queue_prompt: "执行工作流 (Queue Prompt)",
     queue_selected: "执行选中节点 (Queue Selected)",
     queue_group_at_mouse: "执行鼠标所在编组节点 (Queue Group)",
+    interrupt: "中断 (Interrupt)",
+    clear_pending_tasks: "清除待处理任务 (Clear Pending Tasks)",
+    convert_to_subgraph: "选区转换为子图 (Convert to Subgraph)",
+    bypass_selected: "忽略/取消忽略选中节点 (Bypass Selected)",
+    resize_selected_nodes: "调整选中节点大小 (Resize Selected Nodes)",
+    collapse_selected: "折叠/展开选中节点 (Collapse Selected)",
+    open_mask_editor: "打开选中节点遮罩编辑器 (Open Mask Editor)",
 };
 
 // 快捷键配置（运行时）
@@ -283,8 +341,21 @@ function onKeyDown(e) {
     // 输入框 / 文本域 / 可编辑元素内：不触发动作，避免干扰打字。
     // 注意：裸键（如 D、F，无任何修饰键）必须完全放行，不能 preventDefault，
     // 否则会把字符输入也拦截掉，导致输入框里打不出 D / F。
-    const tag = (e.target?.tagName || "").toUpperCase();
-    const inField = tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable;
+    // 输入法（IME）组合中：完全放行，避免拦截拼音输入与候选词选择。
+    if (e.isComposing) return;
+    // 输入区判定：input / textarea / select / contenteditable / ComfyUI 属性值(.property_value)，
+    // 通过 closest 向上覆盖输入元素内部的子节点（PrimeVue 等封装组件），
+    // contenteditable 祖先需处于真正可编辑状态（排除 contenteditable="false"）。
+    const t = e.target;
+    let inField = false;
+    if (t) {
+        const ce = t.closest("[contenteditable]");
+        inField = !!(
+            t.closest("input, textarea, select, .property_value") ||
+            t.isContentEditable ||
+            (ce && ce.isContentEditable)
+        );
+    }
 
     for (const s of shortcuts) {
         if (!matchShortcut(e, s)) continue;

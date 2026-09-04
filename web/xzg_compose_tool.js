@@ -153,6 +153,15 @@ function dropPreviewWidget(n) {
 function shrinkNodeToContent(node) {
   if (!node || !node.widgets || !isTargetNode(node)) return;
   if (!node.size || typeof node.computeSize !== "function") return;
+  // 已初始化(收缩过一次)的节点:完全尊重用户手动调整的大小,
+  // 不再每 200ms 强制收缩(否则用户拖大后会被立刻拉回最小)。
+  if (node.__xzgSizeInit) return;
+  // 用户正在拖动该节点的 resize 手柄时暂停收缩。
+  // 否则每 200ms 的收缩会与手动调整右下角大小互相打架,表现为"拖动时跳动"。
+  try {
+    const canvas = app.canvas;
+    if (canvas && canvas.resizing_node === node) return;
+  } catch (err) { /* 静默 */ }
   // 仅在高度变化后才重新评估,平时轮询零布局开销
   const key = `${node.size[0]}x${node.size[1]}`;
   if (node.__xzgSizeKey === key) return;
@@ -186,6 +195,8 @@ function shrinkNodeToContent(node) {
   } finally {
     for (let j = saved.length - 1; j >= 0; j--) ws.splice(saved[j].i, 0, saved[j].item);
   }
+  // 收缩完成 → 标记已初始化,之后轮询尊重用户尺寸
+  node.__xzgSizeInit = true;
 }
 
 function shrinkTargetNodes() {
@@ -195,6 +206,91 @@ function shrinkTargetNodes() {
     for (const n of nodes) shrinkNodeToContent(n);
   } catch (err) {
     // 静默,下一轮再试
+  }
+}
+
+// ---------- 加密节点默认外观修复 ----------
+// 混淆核心在 LG_Lock_Local.onNodeCreated 里把节点 bgcolor 硬编码为深红 "#6f0c0c"
+// (运行时拼接,故源码里搜不到该色值)。需求:加密节点默认应为"无色"——即保持
+// ComfyUI 默认节点外观(renderingBgColor 回退到 NODE_DEFAULT_BGCOLOR)。
+// 这里在轮询里兜底:只要 bgcolor 仍是该插件默认红就清空恢复默认;
+// 用户手动设置的其它颜色(如 node_colors 预设)不受影响。
+const _PLUGIN_DEFAULT_BGCOLOR = "#6f0c0c";
+function restoreNodeDefaultColor(node) {
+  if (!node || !isTargetNode(node)) return;
+  try {
+    if (node.bgcolor === _PLUGIN_DEFAULT_BGCOLOR) {
+      node.bgcolor = undefined;
+      const graph = node.graph || app.canvas.graph;
+      if (graph && typeof graph.setDirtyCanvas === "function") graph.setDirtyCanvas(true, true);
+    }
+  } catch (err) {
+    // 静默
+  }
+}
+
+function restoreTargetNodeColors() {
+  try {
+    const graph = app.canvas && app.canvas.graph;
+    const nodes = (graph && graph._nodes) || [];
+    for (const n of nodes) restoreNodeDefaultColor(n);
+  } catch (err) {
+    // 静默,下一轮再试
+  }
+}
+
+// ---------- 加密节点"默认无色"源头修复(onNodeCreated 层面) ----------
+// 场景:切换/加载工作流时,节点被创建 → 混淆核心的 onNodeCreated 立即把 bgcolor
+// 染成插件默认红 #6f0c0c,而 200ms 轮询要等下一拍才清掉,导致"先红后无色"闪一下。
+// 这里直接包装 LG_Lock_Local.prototype.onNodeCreated:原始逻辑执行完(染红之后)
+// 立即同步清掉默认红,加载即无色,不经过轮询。轮询的 restoreTargetNodeColors
+// 保留作兜底(覆盖绕过 onNodeCreated 的极端路径)。
+function installColorFix() {
+  try {
+    const ctor = LiteGraph.registered_node_types["LG_Lock_Local"];
+    if (!ctor || !ctor.prototype || ctor.prototype.__xzgColorFixInstalled) return;
+    const proto = ctor.prototype;
+    const orig = proto.onNodeCreated;
+    if (typeof orig !== "function") return;
+    proto.onNodeCreated = function (...args) {
+      let ret;
+      try {
+        ret = orig.apply(this, args);
+      } catch (err) {
+        // 原始 onNodeCreated 异常不影响节点创建,继续
+      }
+      try {
+        if (this.bgcolor === _PLUGIN_DEFAULT_BGCOLOR) this.bgcolor = undefined;
+      } catch (err) {
+        // 静默
+      }
+      return ret;
+    };
+    // 加载/切换工作流走 configure 路径,同样会把保存过的默认红恢复到节点上,
+    // 因此也在 configure 后立即清掉,保证"加载即无色",不留闪红窗口。
+    const origConf = proto.configure;
+    if (typeof origConf === "function") {
+      proto.configure = function (...args) {
+        let ret;
+        try {
+          ret = origConf.apply(this, args);
+        } catch (err) {
+          // 原始 configure 异常继续
+        }
+        try {
+          if (this.bgcolor === _PLUGIN_DEFAULT_BGCOLOR) this.bgcolor = undefined;
+          // configure 加载的节点:尊重序列化中保存的节点尺寸(用户拖过的宽度/高度),
+          // 标记为"已初始化",让 shrinkNodeToContent 不再强制收缩。
+          this.__xzgSizeInit = true;
+        } catch (err) {
+          // 静默
+        }
+        return ret;
+      };
+    }
+    proto.__xzgColorFixInstalled = true;
+  } catch (err) {
+    // 静默,下一轮重试
   }
 }
 
@@ -851,6 +947,8 @@ setInterval(() => {
   suppressPreviewLayout();
   suppressHiddenSeed();
   shrinkTargetNodes();
+  installColorFix();
+  restoreTargetNodeColors();
   snapshotProtectedApi();
   watchdogProtectedApi();
   installClipboardHook();

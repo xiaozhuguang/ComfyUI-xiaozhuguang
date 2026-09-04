@@ -26,6 +26,69 @@
       "meta": false,
       "action": "queue_group_at_mouse",
       "label": "F"
+    },
+    {
+      "key": "Z",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "interrupt",
+      "label": "Z"
+    },
+    {
+      "key": "X",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "clear_pending_tasks",
+      "label": "X"
+    },
+    {
+      "key": "E",
+      "ctrl": true,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "convert_to_subgraph",
+      "label": "Ctrl+E"
+    },
+    {
+      "key": "A",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "bypass_selected",
+      "label": "A"
+    },
+    {
+      "key": "R",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "resize_selected_nodes",
+      "label": "R"
+    },
+    {
+      "key": "E",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "collapse_selected",
+      "label": "E"
+    },
+    {
+      "key": "W",
+      "ctrl": false,
+      "shift": false,
+      "alt": false,
+      "meta": false,
+      "action": "open_mask_editor",
+      "label": "W"
     }
   ]
 }

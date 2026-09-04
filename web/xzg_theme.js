@@ -1955,7 +1955,26 @@ window.XZGThemeManager = {
             let saved = false;
             try {
                 const currentRunningId = app.runningNodeId || self._runningNodeId;
-                if (!currentRunningId || currentRunningId.toString() !== node.id.toString()) return;
+                if (!currentRunningId) return;
+                // 支持子图：执行ID形如"容器id:内部id"（可多层）。父图匹配容器节点；子图视图匹配内部节点。
+                const runningStr = currentRunningId.toString();
+                const pathParts = runningStr.split(':').filter(Boolean);
+                if (pathParts.length === 0) return;
+                const rootGraph = app.rootGraph || app.graph;
+                let curGraph = rootGraph;
+                let isRunning = false;
+                for (let i = 0; i < pathParts.length; i++) {
+                    if (!curGraph) break;
+                    if (node.graph === curGraph) {
+                        isRunning = node.id.toString() === pathParts[i];
+                        break;
+                    }
+                    const container = curGraph.getNodeById(parseInt(pathParts[i], 10));
+                    const isSub = container && (typeof container.isSubgraphNode === 'function' ? container.isSubgraphNode() : !!container.subgraph);
+                    if (!container || !isSub || !container.subgraph) break;
+                    curGraph = container.subgraph;
+                }
+                if (!isRunning) return;
 
                 ctx.save();
                 saved = true;
