@@ -11,6 +11,7 @@ const _LABEL_MAP = {
     "强制帧率": "Force FPS",
     "视频": "Video",
     "视频比例": "Aspect Ratio",
+    "比例模式": "Ratio Mode",
     "自定义宽度": "Custom Width",
     "自定义高度": "Custom Height",
     "跳过帧数": "Skip Frames",
@@ -25,6 +26,9 @@ const _LABEL_MAP = {
     "横屏16:9": "Landscape 16:9",
     "横屏4:3": "Landscape 4:3",
     "等比1:1": "Square 1:1",
+    "裁剪(crop)": "Crop",
+    "拉伸(fill)": "Stretch (Fill)",
+    "留边(letterbox)": "Letterbox",
     "长边": "Long Edge",
     "短边": "Short Edge",
     "宽度": "Width",
@@ -494,7 +498,7 @@ function _xzgShowLaserLine(widget, node) {
         const lastH = widget._xzgLastH ?? 20;
         const yOffset = (lastY != null)
             ? (lastY + lastH / 2)
-            : ((widget.name === '跳过帧数') ? 197 : 222);
+            : ((widget.name === '跳过帧数') ? 217 : 242);
         const sy = (node.pos[1] + offset[1] + yOffset) * scale + canvasRect.top;
         return { x1: valueX, y1: sy };
     };
@@ -661,7 +665,7 @@ function _applyWidgetStyles(node) {
     // ComfyUI 会把 widget.width 写成面板侧行宽度，导致行绘制/交互命中区超出节点。
     // 这里统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
     const _XRG_WIDGET_NAME_FIX = {
-        '强制帧率': 1, '视频比例': 1, '自定义宽度': 1,
+        '强制帧率': 1, '视频比例': 1, '比例模式': 1, '自定义宽度': 1,
         '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1,
     };
     for (const w of node.widgets || []) {
@@ -693,6 +697,14 @@ function _applyWidgetStyles(node) {
             w.options.values = ["自定义比例", "原始比例", "竖屏9:16", "竖屏3:4", "横屏16:9", "横屏4:3", "等比1:1"];
             w._xzgDisplayVal = (v) => _tr(String(v));
             w.label = _tr("视频比例");
+        } else if (w.name === '比例模式') {
+            w.draw = _xzgDrawComboWidget;
+            w.mouse = _xzgFpsComboMouse;
+            w.value = String(w.value ?? "裁剪(crop)");
+            w.options = w.options || {};
+            w.options.values = ["裁剪(crop)", "拉伸(fill)", "留边(letterbox)"];
+            w._xzgDisplayVal = (v) => _tr(String(v));
+            w.label = _tr("比例模式");
         } else if (w.name === '上传视频') {
             w.draw = _xzgDrawButtonWidget;
             w.label = _tr("上传视频");

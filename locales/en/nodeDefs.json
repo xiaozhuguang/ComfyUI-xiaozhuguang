@@ -224,6 +224,7 @@
       "视频": { "name": "video" },
       "强制帧率": { "name": "force fps" },
       "视频比例": { "name": "aspect ratio" },
+      "比例模式": { "name": "ratio mode" },
       "自定义宽度": { "name": "custom width" },
       "自定义高度": { "name": "custom height" },
       "跳过帧数": { "name": "skip frames" },

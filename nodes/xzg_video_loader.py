@@ -16,6 +16,13 @@ from comfy.utils import ProgressBar
 
 VIDEO_EXTENSIONS = {'webm', 'mp4', 'mkv', 'gif', 'mov', 'avi', 'flv', 'wmv', 'm4v', 'mpg', 'mpeg', 'ts'}
 
+# 比例变化处理模式：crop=覆盖缩放+中心裁剪(无黑边) / fill=直接拉伸铺满(画面变形) / letterbox=等比缩小+黑边补齐
+FIT_MODE_MAP = {
+    "裁剪(crop)": "crop",
+    "拉伸(fill)": "fill",
+    "留边(letterbox)": "letterbox",
+}
+
 BIGMAX = int(1e9)
 DIMMAX = 16384
 ENCODE_ARGS = ['utf-8', 'replace']
@@ -271,7 +278,7 @@ def _build_framerate_filters(force_rate, source_fps):
 
 def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                            custom_width, custom_height, downscale_ratio=8,
-                           aspect_ratio=None, ratio_mode=1, ratio_dim=0):
+                           aspect_ratio=None, ratio_mode=1, ratio_dim=0, fit_mode="crop"):
     args_input = ["-i", video]
     args_dummy = [ffmpeg_path] + args_input + ['-c', 'copy', '-frames:v', '1', "-f", "null", "-"]
     size_base = None
@@ -375,10 +382,17 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
         src_ar = size_base[0] / size_base[1]
         dst_ar = size[0] / size[1]
         if abs(src_ar - dst_ar) < 0.01:
-            # 宽高比一致 → 仅缩放
+            # 宽高比一致 → 仅缩放（三种模式等价）
             vfilters.append(f"scale={size[0]}:{size[1]}")
+        elif fit_mode == "fill":
+            # 拉伸填充：直接缩放到目标尺寸，画面比例变形
+            vfilters.append(f"scale={size[0]}:{size[1]}")
+        elif fit_mode == "letterbox":
+            # 留边：等比缩小到完全容纳目标框，剩余区域用黑边补齐
+            vfilters.append(f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease")
+            vfilters.append(f"pad={size[0]}:{size[1]}:(ow-iw)/2:(oh-ih)/2:color=black")
         else:
-            # 宽高比不同 → 缩放到覆盖目标比例后裁剪（无黑边填充）
+            # 裁剪（默认）：覆盖放大后中心裁剪，无黑边
             vfilters.append(f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=increase")
             vfilters.append(f"crop={size[0]}:{size[1]}")
         vfilters.append("setsar=1")
@@ -521,6 +535,7 @@ class XiaozhuguangVideoLoader:
                 "视频": (sorted(files),),
                 "强制帧率": ("FLOAT", {"default": 0, "min": 0, "max": 240, "step": 0.001}),
                 "视频比例": (["自定义比例", "原始比例", "竖屏9:16", "竖屏3:4", "横屏16:9", "横屏4:3", "等比1:1"], {"default": "自定义比例"}),
+                "比例模式": (["裁剪(crop)", "拉伸(fill)", "留边(letterbox)"], {"default": "裁剪(crop)"}),
                 "自定义宽度": ("INT", {"default": 0, "min": 0, "max": DIMMAX, "step": 8}),
                 "自定义高度": ("INT", {"default": 0, "min": 0, "max": DIMMAX, "step": 8}),
                 "跳过帧数": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1}),
@@ -537,7 +552,7 @@ class XiaozhuguangVideoLoader:
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = True
 
-    def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 自定义宽度=0, 自定义高度=0,
+    def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, unique_id=None):
         强制帧率 = int(强制帧率)
         video_path = folder_paths.get_annotated_filepath(视频)
@@ -556,6 +571,8 @@ class XiaozhuguangVideoLoader:
             ratio_dim = 0
             cw, ch = 自定义宽度, 自定义高度
 
+        fit_mode = FIT_MODE_MAP.get(比例模式, "crop")
+
         gen = ffmpeg_frame_generator(
             video=video_path,
             force_rate=强制帧率,
@@ -567,6 +584,7 @@ class XiaozhuguangVideoLoader:
             aspect_ratio=视频比例,
             ratio_mode=ratio_mode,
             ratio_dim=ratio_dim,
+            fit_mode=fit_mode,
         )
 
         info = next(gen)
@@ -651,6 +669,11 @@ class XiaozhuguangVideoLoader:
             if new_w != src_w or new_h != src_h:
                 if abs(src_ar - dst_ar) < 0.01:
                     vf_parts.append(f"scale={new_w}:{new_h}")
+                elif fit_mode == "fill":
+                    vf_parts.append(f"scale={new_w}:{new_h}")
+                elif fit_mode == "letterbox":
+                    vf_parts.append(f"scale={new_w}:{new_h}:force_original_aspect_ratio=decrease")
+                    vf_parts.append(f"pad={new_w}:{new_h}:(ow-iw)/2:(oh-ih)/2:color=black")
                 else:
                     vf_parts.append(f"scale={new_w}:{new_h}:force_original_aspect_ratio=increase")
                     vf_parts.append(f"crop={new_w}:{new_h}")
@@ -721,7 +744,7 @@ class XiaozhuguangVideoLoader:
         return {"result": result, "ui": preview_ui}
 
     @classmethod
-    def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 自定义宽度=0, 自定义高度=0,
+    def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, **kwargs):
         try:
             path = folder_paths.get_annotated_filepath(视频)
@@ -729,7 +752,7 @@ class XiaozhuguangVideoLoader:
         except Exception:
             file_hash = "0"
         # 将所有影响输出的参数纳入变化检测，避免参数变化时被缓存跳过
-        return f"{file_hash}|{强制帧率}|{视频比例}|{自定义宽度}|{自定义高度}|{帧数上限}|{跳过帧数}"
+        return f"{file_hash}|{强制帧率}|{视频比例}|{比例模式}|{自定义宽度}|{自定义高度}|{帧数上限}|{跳过帧数}"
 
     @classmethod
     def VALIDATE_INPUTS(cls, 视频, **kwargs):
