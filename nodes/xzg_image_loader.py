@@ -136,8 +136,12 @@ def _get_thumb_cache_key(filename, size):
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg"}
 
 
-def _parse_crop_data(crop_str):
-    """解析前端上传的裁剪矩形 JSON：形如 [x, y, w, h]（原图像素）。
+def _parse_crop_data(crop_str, image_name=None):
+    """解析前端上传的裁剪矩形 JSON。
+    支持两种格式：
+    1. 旧格式：[x, y, w, h]（原图像素），直接返回
+    2. 新格式：{ "图片名1": [x,y,w,h], "图片名2": [x,y,w,h], ... }
+       按 image_name 从映射中提取对应图片的裁剪区域（每张图独立维护裁剪）。
     无效输入返回 None（不裁剪）。"""
     if not crop_str or not str(crop_str).strip():
         return None
@@ -145,9 +149,26 @@ def _parse_crop_data(crop_str):
     try:
         v = _json.loads(str(crop_str))
         if isinstance(v, (list, tuple)) and len(v) == 4:
+            # 旧格式：纯数组，直接返回（兼容旧工作流）
             x, y, w, h = [int(round(float(a))) for a in v]
             if w > 0 and h > 0:
                 return (x, y, w, h)
+        if isinstance(v, dict) and image_name:
+            # 新格式：映射，按当前图片名提取
+            # 尝试精确匹配，然后尝试去掉 [output]/[input]/[temp] 后缀匹配
+            names_to_try = [image_name]
+            base_name = image_name
+            for suffix in [" [output]", " [input]", " [temp]", "[output]", "[input]", "[temp]"]:
+                if base_name.endswith(suffix):
+                    base_name = base_name[:-len(suffix)]
+                    break
+            if base_name != image_name:
+                names_to_try.append(base_name)
+            for name in names_to_try:
+                if name in v and isinstance(v[name], (list, tuple)) and len(v[name]) == 4:
+                    x, y, w, h = [int(round(float(a))) for a in v[name]]
+                    if w > 0 and h > 0:
+                        return (x, y, w, h)
     except Exception:
         pass
     return None
@@ -479,7 +500,10 @@ class XiaozhuguangImageLoader:
             return ([], empty_mask)
 
         # 裁剪矩形（仅单图/列表模式生效，作用于 index 指向的图）
-        crop = _parse_crop_data(crop_data)
+        # 先确定当前图片索引，再按图片名从映射格式中提取对应裁剪区域
+        _tmp_idx = max(0, min(int(index), len(names) - 1)) if names else 0
+        _cur_img_name = names[_tmp_idx] if names and 0 <= _tmp_idx < len(names) else None
+        crop = _parse_crop_data(crop_data, _cur_img_name)
 
         images = []
         orig_sizes = []  # 每张图裁剪前的原始尺寸 (w, h)

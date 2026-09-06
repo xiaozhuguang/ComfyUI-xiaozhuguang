@@ -547,6 +547,7 @@ function createImgBatchUI(node) {
     let _cropMoveStart = null;          // 移动起点（原图像素 [x,y]）
     let _cropMoveBase = null;           // 移动开始时待选框（原图像素 {x,y,w,h}）
     let _cropAspect = null;             // 裁剪比例约束（如 9/16、16/9…），null = 自由比例
+    let _cropByImage = {};               // 图片名 -> [x,y,w,h]，每张图独立维护裁剪区域，切换图片不丢失
 
     const getImgNameFromEvent = (e) => {
         const cell = e.target.closest("[data-xzg-img-card]");
@@ -1212,22 +1213,55 @@ function createImgBatchUI(node) {
     function _commitCropToWidget() {
         const w = getCropDataWidget(node);
         if (!w) return;
-        if (!cropRect) { w.value = ""; w.callback?.(w.value); return; }
-        w.value = JSON.stringify([cropRect.x, cropRect.y, cropRect.w, cropRect.h]);
+        const curName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        // 保存当前图片的裁剪区域到映射（每张图独立维护，切换图片不丢失已有裁剪）
+        if (curName) {
+            if (cropRect) {
+                _cropByImage[curName] = [cropRect.x, cropRect.y, cropRect.w, cropRect.h];
+            } else {
+                delete _cropByImage[curName];
+            }
+        }
+        // widget 保存映射格式：{ "__cur": "当前图片名", "图片名1": [x,y,w,h], ... }
+        // 后端按当前图片名从映射中提取裁剪区域；前端 _loadCropFromWidget 兼容旧格式（纯数组）
+        const payload = { __cur: curName || "" };
+        for (const k in _cropByImage) payload[k] = _cropByImage[k];
+        w.value = JSON.stringify(payload);
         w.callback?.(w.value);
+        // 标记工作流已修改，确保切换工作流/保存时 crop_data widget 的最新值被序列化
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
     }
     function _loadCropFromWidget() {
         const w = getCropDataWidget(node);
         const s = w?.value;
-        if (s) {
-            try {
-                const a = JSON.parse(s);
-                if (Array.isArray(a) && a.length === 4) {
-                    cropRect = { x: Math.round(+a[0]), y: Math.round(+a[1]), w: Math.round(+a[2]), h: Math.round(+a[3]) };
-                    return;
+        const curName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        if (!s) { cropRect = null; return; }
+        try {
+            const v = JSON.parse(s);
+            if (Array.isArray(v) && v.length === 4) {
+                // 旧格式：纯数组 [x,y,w,h]，视为当前图片的裁剪区域
+                cropRect = { x: Math.round(+v[0]), y: Math.round(+v[1]), w: Math.round(+v[2]), h: Math.round(+v[3]) };
+                if (curName) _cropByImage[curName] = [cropRect.x, cropRect.y, cropRect.w, cropRect.h];
+                return;
+            }
+            if (v && typeof v === 'object' && !Array.isArray(v)) {
+                // 新格式：映射 { 图片名: [x,y,w,h], ... }，按当前图片名加载
+                _cropByImage = {};
+                for (const key in v) {
+                    if (key === '__cur') continue;
+                    if (Array.isArray(v[key]) && v[key].length === 4) {
+                        _cropByImage[key] = v[key];
+                    }
                 }
-            } catch (_) {}
-        }
+                if (curName && _cropByImage[curName]) {
+                    const a = _cropByImage[curName];
+                    cropRect = { x: Math.round(+a[0]), y: Math.round(+a[1]), w: Math.round(+a[2]), h: Math.round(+a[3]) };
+                } else {
+                    cropRect = null;
+                }
+                return;
+            }
+        } catch (_) {}
         cropRect = null;
     }
 
@@ -3330,6 +3364,14 @@ function createImgBatchUI(node) {
                 // 切图时重置原始分辨率，异步获取真实尺寸更新分辨率标签
                 _singleOrigW = 0;
                 _singleOrigH = 0;
+                // 切图时重置裁剪拖拽状态（但不清空 cropRect/_cropByImage）：
+                // 裁剪区域按图片名独立保存在 _cropByImage 中，切换图片后
+                // 下方 _loadCropFromWidget() 会按新图片名从映射中加载对应裁剪区域，
+                // 图片没变时裁剪不丢失，切换回之前裁剪过的图时裁剪自动恢复。
+                _cropPending = null;
+                _cropSelStart = _cropSelCur = null;
+                _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
+                _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
                 _xzgFetchOriginalSize(name).then((info) => {
                     if (info && singleImgEl.dataset.previewKey === name) {
                         _singleOrigW = info.width;
