@@ -107,6 +107,39 @@ def is_safe_path(base_dir, target_path):
     return os.path.commonpath([target_path, base_dir]) == base_dir
 
 
+def set_file_readonly(file_path, readonly):
+    """设置/取消文件只读属性，跨平台兼容（Windows 用 API，Linux/Mac 用 chmod）。"""
+    if not os.path.exists(file_path):
+        return False
+    try:
+        if os.name == 'nt':
+            import ctypes
+            FILE_ATTRIBUTE_READONLY = 0x01
+            FILE_ATTRIBUTE_NORMAL = 0x80
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(file_path)
+            if attrs == -1:
+                return False
+            if readonly:
+                new_attrs = attrs | FILE_ATTRIBUTE_READONLY
+            else:
+                new_attrs = attrs & ~FILE_ATTRIBUTE_READONLY
+                if new_attrs == 0:
+                    new_attrs = FILE_ATTRIBUTE_NORMAL
+            result = ctypes.windll.kernel32.SetFileAttributesW(file_path, new_attrs)
+            return result != 0
+        else:
+            import stat
+            current = os.stat(file_path).st_mode
+            if readonly:
+                new_mode = current & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+            else:
+                new_mode = current | stat.S_IWUSR
+            os.chmod(file_path, new_mode)
+            return True
+    except Exception:
+        return False
+
+
 def build_tree(base_dir, current_dir=""):
     tree = []
     full_dir = os.path.join(base_dir, current_dir) if current_dir else base_dir
@@ -284,6 +317,8 @@ async def rename_workflow(request):
         os.makedirs(new_dir, exist_ok=True)
 
     try:
+        # 若文件被设为只读，先解除只读属性，否则 os.rename 会失败
+        set_file_readonly(old_path, False)
         os.rename(old_path, new_path)
         return web.json_response({"success": True, "oldPath": old_name, "newPath": new_name})
     except Exception as e:
@@ -312,6 +347,36 @@ async def get_workflow(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+@_xzg_routes_var.post("/xzg/workflows/set-readonly")
+@xzg_safe_handler
+async def set_workflow_readonly(request):
+    workflows_dir = get_workflows_directory()
+    try:
+        json_data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = json_data.get("name", "")
+    readonly = bool(json_data.get("readonly", False))
+
+    if not name:
+        return web.json_response({"error": "name is required"}, status=400)
+
+    file_path = os.path.abspath(os.path.join(workflows_dir, name + ".json"))
+
+    if not is_safe_path(workflows_dir, file_path):
+        return web.json_response({"error": "Access denied"}, status=403)
+
+    if not os.path.exists(file_path):
+        return web.json_response({"error": "Workflow not found"}, status=404)
+
+    success = set_file_readonly(file_path, readonly)
+    if success:
+        return web.json_response({"success": True, "readonly": readonly})
+    else:
+        return web.json_response({"error": "Failed to set file read-only attribute"}, status=500)
+
+
 @_xzg_routes_var.delete("/xzg/workflows/{name:.+}")
 @xzg_safe_handler
 async def delete_workflow(request):
@@ -328,6 +393,8 @@ async def delete_workflow(request):
 
     try:
         # 删除改回收站：先移入 __trash，可恢复，避免永久丢失
+        # 若文件被设为只读，先解除只读属性，否则 shutil.move 会失败
+        set_file_readonly(file_path, False)
         ts = time.strftime("%Y%m%d_%H%M%S")
         base = os.path.basename(file_path)
         trash_item = os.path.join(get_trash_directory(), f"{ts}__{base}")
@@ -524,6 +591,8 @@ async def move_workflow(request):
         os.makedirs(new_dir, exist_ok=True)
 
     try:
+        # 若文件被设为只读，先解除只读属性，否则 os.rename 会失败
+        set_file_readonly(old_file_path, False)
         os.rename(old_file_path, new_file_path)
         return web.json_response({"success": True, "oldPath": old_path, "newPath": new_path})
     except Exception as e:

@@ -141,7 +141,8 @@ class XZGWorkflowsManager {
                 useCount: 0,
                 lastUsed: Date.now(), // 新工作流默认最近使用时间=创建时间，排在最近排序列表顶部
                 categoryId: null,
-                createdAt: Date.now()
+                createdAt: Date.now(),
+                readOnly: false
             };
         }
         return this.meta.workflows[path];
@@ -613,6 +614,7 @@ class XZGWorkflowsManager {
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
         menu.innerHTML = `
+            <div class="xzg-wf-ctx-item" data-action="toggle-readonly">🔒 ${xzgT('切换只读','Toggle Read-only')}</div>
             <div class="xzg-wf-ctx-item" data-action="rename">✏️ ${xzgT('重命名','Rename')}</div>
             <div class="xzg-wf-ctx-item" data-action="custom-usage">🔢 ${xzgT('自定义使用频率','Custom Usage Count')}</div>
             <div class="xzg-wf-ctx-item danger" data-action="delete-usage">🧹 ${xzgT('删除使用频率','Delete Usage')}</div>
@@ -661,7 +663,9 @@ class XZGWorkflowsManager {
                 const action = item.dataset.action;
                 this.hideAllFloatingMenus();
                 
-                if (action === "rename") {
+                if (action === "toggle-readonly") {
+                    this.toggleWorkflowReadOnly(wf);
+                } else if (action === "rename") {
                     this.renameWorkflow(wf);
                 } else if (action === "custom-usage") {
                     this.customWorkflowUsage(wf);
@@ -693,6 +697,29 @@ class XZGWorkflowsManager {
             document.addEventListener("mousedown", closeHandler);
             document.addEventListener("keydown", keyHandler);
         }, 0);
+    }
+
+    /** 切换工作流只读属性：标记后禁止删除/重命名/移动分类，且文件本身设为只读（无法覆盖保存） */
+    async toggleWorkflowReadOnly(wf) {
+        const meta = this.getWorkflowMeta(wf.path);
+        meta.readOnly = !meta.readOnly;
+        this.saveMeta();
+        this.renderWorkflowList();
+
+        // 同步设置文件系统只读属性：只读后 ComfyUI Ctrl+S 无法覆盖保存
+        try {
+            const res = await api.fetchApi("/xzg/workflows/set-readonly", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: wf.path, readonly: meta.readOnly })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                console.warn("[小珠光] 设置文件只读属性失败:", err.error || res.status);
+            }
+        } catch (e) {
+            console.warn("[小珠光] 设置文件只读属性失败:", e);
+        }
     }
 
     hideMoveSubmenu() {
@@ -1918,6 +1945,18 @@ class XZGWorkflowsManager {
                 color: var(--fg-muted, #888);
                 margin-top: 3px;
             }
+            /* 只读工作流：名称变灰、图标金色 */
+            .xzg-wf-item.xzg-wf-item-readonly .xzg-wf-item-name {
+                color: var(--fg-muted, #999) !important;
+                opacity: 0.75;
+            }
+            .xzg-wf-item.xzg-wf-item-readonly .xzg-wf-item-icon {
+                color: #FFD700 !important;
+            }
+            .xzg-wf-readonly-tag {
+                color: #FFD700;
+                font-weight: 600;
+            }
             .xzg-wf-empty {
                 padding: 40px 20px;
                 text-align: center;
@@ -2677,6 +2716,7 @@ class XZGWorkflowsManager {
                         <li><b>${xzgT('定位分类', 'Locate Category')}</b>：${xzgT('单击工作流项左侧的四个圆点图标，左侧分类树会自动展开并高亮其所属分类', 'Click the four-dot icon on the left of a workflow; the category tree auto-expands and highlights its category')}</li>
                         <li><b>${xzgT('右键菜单', 'Right-click Menu')}</b>：
                             <ul>
+                                <li>🔒 ${xzgT('切换只读：标记后禁止删除/重命名/移动，防止误操作', 'Toggle Read-only: when marked, delete/rename/move are blocked to prevent accidents')}</li>
                                 <li>✏️ ${xzgT('重命名：修改显示名称，保留你手工加的编号前缀', 'Rename: change the display name, keeping any manual numbering prefix')}</li>
                                 <li>🗑️ ${xzgT('删除：移入回收站，可恢复', 'Delete: moved to recycle bin, recoverable')}</li>
                                 <li>📁 ${xzgT('移动到分类：在子菜单中选择目标文件夹或「未分类」', 'Move to Category: choose a target folder or "Uncategorized" in the submenu')}</li>
@@ -3368,6 +3408,9 @@ class XZGWorkflowsManager {
         item.draggable = true;
         item.dataset.path = wf.path;
 
+        const wfMeta = this.getWorkflowMeta(wf.path);
+        if (wfMeta.readOnly) item.classList.add("xzg-wf-item-readonly");
+
         const useInfo = this.getUseLevel(wf.useCount || 0);
         if (this.meta.useColorsEnabled !== false && useInfo.level > 0) {
             item.classList.add("xzg-wf-use-l" + useInfo.level);
@@ -3392,7 +3435,7 @@ class XZGWorkflowsManager {
             </span>
             <div class="xzg-wf-item-info">
                 <div class="xzg-wf-item-name"></div>
-                <div class="xzg-wf-item-meta">${useCountText}</div>
+                <div class="xzg-wf-item-meta">${useCountText}${wfMeta.readOnly ? ' · <span class="xzg-wf-readonly-tag">🔒 只读</span>' : ''}</div>
             </div>
         `;
 
@@ -3820,6 +3863,10 @@ class XZGWorkflowsManager {
     }
 
     async renameWorkflow(wf) {
+        if (this.getWorkflowMeta(wf.path).readOnly) {
+            alert(xzgT('该工作流已设为只读，无法重命名。请先右键取消只读。', 'This workflow is read-only. Right-click to disable read-only first.'));
+            return;
+        }
         const newName = await this.showInputDialog("重命名工作流", wf.name);
         if (!newName || newName === wf.name) return;
 
@@ -3857,6 +3904,10 @@ class XZGWorkflowsManager {
     }
 
     async deleteWorkflow(wf) {
+        if (this.getWorkflowMeta(wf.path).readOnly) {
+            alert(xzgT('该工作流已设为只读，无法删除。请先右键取消只读。', 'This workflow is read-only. Right-click to disable read-only first.'));
+            return;
+        }
         if (!confirm(xzgT(`确定要删除工作流「${wf.name}」吗？`, `Delete workflow "${wf.name}"?`))) return;
 
         try {
@@ -4047,6 +4098,10 @@ class XZGWorkflowsManager {
 
     async moveWorkflowToFolder(wf, targetFolder) {
         if (!wf) return;
+        if (this.getWorkflowMeta(wf.path).readOnly) {
+            alert(xzgT('该工作流已设为只读，无法移动分类。请先右键取消只读。', 'This workflow is read-only. Right-click to disable read-only first.'));
+            return;
+        }
         
         const currentFolder = wf.folder === "未分类" ? "" : wf.folder;
         const target = targetFolder || "";

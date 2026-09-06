@@ -1,4 +1,26 @@
-# 更新日志
+## v15.0.4 (2026-09-06)
+
+### 新增
+
+- **工作流管理器：右键切换工作流只读属性**（`web/xzg_workflows.js` + `workflows.py`）
+  - 右键菜单新增「🔒 切换只读」项，点击即时切换
+  - 只读工作流列表显示：名称变灰、左侧图标变金色、meta 行显示「🔒 只读」金色标签
+  - 只读保护：禁止删除、禁止重命名、禁止移动分类，操作时弹出提示
+  - 不影响：打开/加载工作流、使用频率计数、搜索排序
+- **工作流文件系统只读属性**（`workflows.py`）
+  - 切换只读后同步设置 .json 文件的操作系统只读属性
+  - Windows 用 SetFileAttributesW 设置 FILE_ATTRIBUTE_READONLY，Linux/Mac 用 chmod -w
+  - 文件只读后 ComfyUI 按 Ctrl+S 覆盖保存会失败，从根本上防止误覆盖
+  - 新增 POST /xzg/workflows/set-readonly API
+  - 删除/重命名/移动工作流时后端自动先解除只读属性，确保操作成功
+  - 元数据 readOnly 字段随本地/云端持久化
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.4
+
+---
+
 ## v15.0.3 (2026-09-06)
 
 ### 优化
