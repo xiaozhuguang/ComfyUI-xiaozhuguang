@@ -40,13 +40,18 @@ _ENC_CACHE: dict = {}
 
 
 def _probe_encoder(exe, enc):
-    """用 16x16 灰帧做一次 1s 真实编码，验证该编码器确实能跑通。"""
+    """用灰帧做一次 1s 真实编码，验证该编码器确实能跑通。
+
+    注意帧尺寸必须 >= NVENC 最小支持值 (128x128)；用 256x256 才能同时验证 nvenc
+    (16x16 会被 nvenc 拒绝, 报 Frame Dimension less than the minimum supported value,
+    导致 nvenc 被误判不可用、错误回退到 libx264)。
+    """
     exe = str(exe)
     out = os.path.join(tempfile.gettempdir(),
                        f'xzg_enc_{uuid.uuid4().hex[:8]}.mp4')
     try:
         cmd = [exe, '-y', '-loglevel', 'error',
-               '-f', 'lavfi', '-i', 'color=c=gray:s=16x16:d=1',
+               '-f', 'lavfi', '-i', 'color=c=gray:s=256x256:d=1',
                '-c:v', enc, '-pix_fmt', 'yuv420p', '-t', '1', out]
         r = subprocess.run(cmd, capture_output=True)
         return r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0
@@ -265,11 +270,18 @@ def run_upscale(in_path, out_path, scale, frames, w, h, strength=1.0, model_id='
                             encoding='utf-8', errors='replace')
     bar = _make_terminal_bar(frames, model_id)
     pbar_cur = [0]
+    # 保留引擎输出末尾若干行 (不论是否被过滤), 失败时随异常一起抛出, 便于定位真正原因
+    _TAIL = 40
+    tail = []
     try:
         _check_interrupt()
         for line in proc.stdout:
             _check_interrupt()
             line = line.rstrip()
+            if line:
+                tail.append(line)
+                if len(tail) > _TAIL:
+                    del tail[:len(tail) - _TAIL]
             if line and _want_log(line):
                 log('  [StarUpscale] ' + line)
             cur = _parse_progress(line, frames)
@@ -293,7 +305,14 @@ def run_upscale(in_path, out_path, scale, frames, w, h, strength=1.0, model_id='
                 proc.kill()
     proc.wait()
     if proc.returncode != 0:
-        raise RuntimeError(f'neuroserver failed (exit {proc.returncode})')
+        if tail:
+            log('')
+            log('  [StarUpscale] ---- 引擎输出末尾 (exit %d) ----' % proc.returncode)
+            for _l in tail:
+                log('    ' + _l)
+        raise RuntimeError(
+            f'neuroserver failed (exit {proc.returncode})\n'
+            f'--- 引擎输出末尾 {len(tail)} 行 ---\n' + '\n'.join(tail))
     if not os.path.isfile(out_path):
         raise RuntimeError('neuroserver produced no output file')
 

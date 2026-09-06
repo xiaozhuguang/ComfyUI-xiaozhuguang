@@ -56,8 +56,6 @@ class StarUpscale:
                              "default": "2X",
                              "tooltip": "模型原生整数倍（星光只支持 1X/2X/3X/4X）：输出 = 输入×倍数，不重采样。"
                                         "1X=只增强不放大；模型输出上限 4K（输入已达 4K 时更高倍数会被引擎封顶）"}),
-                "细节": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 1.5, "step": 0.1,
-                                   "tooltip": "细节增强力度：0.7柔和 / 1.0默认 / 1.3细节最猛"}),
                 "输出长边": ("INT", {"default": 0, "min": 0, "max": 7680, "step": 1,
                                      "tooltip": "可选：原生倍数放大完成后，把输出长边对齐到该像素值（只缩小不放大，0=不限制保持原样）。"
                                                 "例：2X 放大的 3840 长边配 2160 → 缩小到 2K；若原生输出已小于该值则保持不动。"}),
@@ -69,7 +67,7 @@ class StarUpscale:
     FUNCTION = "run"
     CATEGORY = "Star Upscale"
 
-    def run(self, 图像, 帧率, 放大倍数, 细节, 输出长边, unique_id=None):
+    def run(self, 图像, 帧率, 放大倍数, 输出长边, unique_id=None):
         b, h, w, c = 图像.shape
         if c != 3:
             raise ValueError(f'Star Upscale expects RGB images, got {c} channels')
@@ -90,13 +88,13 @@ class StarUpscale:
         in_video = os.path.join(tmp, f'star_in_{tag}.mp4')
         out_video = os.path.join(tmp, f'star_out_{tag}.mp4')
         try:
-            print(f'[StarUpscale] {b}帧 {w}x{h} -> {ow}x{oh} ({放大倍数} 原生) 细节{细节} fps={fps}')
+            print(f'[StarUpscale] {b}帧 {w}x{h} -> {ow}x{oh} ({放大倍数} 原生) 细节1.0 fps={fps}')
             write_frames_to_video(frames, fps, in_video, _INPUT_ENCODE_Q)
             pbar = ProgressBar(b, node_id=unique_id) if (_HAS_PBAR and b > 0) else None
             def _on_progress(cur, total):
                 if pbar is not None:
                     pbar.update_absolute(min(cur, total), total)
-            run_upscale(in_video, out_video, scale, b, w, h, 细节, model_id,
+            run_upscale(in_video, out_video, scale, b, w, h, 1.0, model_id,
                         max_gpu_mem=_auto_max_gpu_mem(), on_progress=_on_progress)
             out_frames = read_video_to_frames(out_video)
             tensor = torch.from_numpy(out_frames.astype(np.float32) / 255.0)

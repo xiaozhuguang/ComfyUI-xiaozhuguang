@@ -1335,6 +1335,18 @@ export class XiaozhuguangVideoPlayer {
         // P5: 若正在播放，重置音频位置以保持同步
         if (this._isPlayingState) {
             this._startAudioPlayback();
+            // 播放中 seek：重置播放循环基准，从新位置继续
+            // （否则循环按旧基准推进 expectedFrame，会覆盖 seek 结果，导致对齐/拖动进度条失效）
+            const fps = this._frameRate || 24;
+            this._playbackStartFrame = Math.max(0, Math.round(target * fps));
+            this._playbackStartTime = performance.now();
+            this._playbackLastFrame = this._playbackStartFrame - 1;
+            try {
+                this._playbackIterator = this._currentDecoder.createPlaybackIterator(target);
+                this._playbackIteratorDone = false;
+                this._playbackBuffer = [];
+                this._fillPlaybackBuffer();
+            } catch (_) {}
         }
         if (this._scrubRafId) return;
         this._scrubRafId = requestAnimationFrame(() => {
@@ -1433,7 +1445,7 @@ export class XiaozhuguangVideoPlayer {
         // P16: 变速播放：frameDuration 除以速率
         const rate = this._playbackRate || 1;
         const frameDuration = 1000 / fps / rate;
-        let lastFrame = startFrame;
+        this._playbackLastFrame = startFrame;
         let lastRafTime = performance.now();
         const loop = () => {
             if (!this._isPlayingState || !this._currentDecoder) {
@@ -1446,11 +1458,11 @@ export class XiaozhuguangVideoPlayer {
             lastRafTime = now;
             if (rafDelta > 500) {
                 // 后台恢复：重置起始时间，跳到当前应播放的帧
-                this._playbackStartTime = now - (lastFrame - this._playbackStartFrame) * frameDuration;
+                this._playbackStartTime = now - (this._playbackLastFrame - this._playbackStartFrame) * frameDuration;
             }
             const elapsedMs = now - this._playbackStartTime;
             const expectedFrame = this._playbackStartFrame + Math.floor(elapsedMs / frameDuration);
-            const framesToAdvance = Math.min(expectedFrame - lastFrame, 5); // P17: 限制单次追赶帧数
+            const framesToAdvance = Math.min(expectedFrame - this._playbackLastFrame, 5); // P17: 限制单次追赶帧数
             if (framesToAdvance > 0) {
                 for (let i = 0; i < framesToAdvance; i++) {
                     if (this._playbackBuffer.length > 0) {
@@ -1458,7 +1470,7 @@ export class XiaozhuguangVideoPlayer {
                         const ctx = this._canvas.getContext('2d');
                         ctx.drawImage(frame.canvas, 0, 0, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
                         this._currentTime = frame.timestamp;
-                        lastFrame++;
+                        this._playbackLastFrame++;
                         this._fillPlaybackBuffer();
                     } else {
                         break;
@@ -1481,7 +1493,7 @@ export class XiaozhuguangVideoPlayer {
                     this._playbackBuffer = [];
                     this._playbackStartTime = performance.now();
                     this._playbackStartFrame = this._skipFrames;
-                    lastFrame = this._skipFrames;
+                    this._playbackLastFrame = this._skipFrames;
                     this._fillPlaybackBuffer();
                     this._startAudioPlayback();
                 } else {

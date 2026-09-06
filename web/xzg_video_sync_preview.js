@@ -46,7 +46,7 @@ function nodeHasVideo(node) {
     return false;
 }
 
-/** 从节点取视频 { url, name }，取不到返回 null */
+/** 从节点取视频 { url, name, skipFrames?, frameLimit? }，取不到返回 null */
 function getVideoFromNode(node) {
     const p = node && node._xzgVideoPlayer;
     if (!p) return null;
@@ -55,10 +55,27 @@ function getVideoFromNode(node) {
         src = getVideoUrl(p._videoInfo.filename, p._videoInfo.type, p._videoInfo.subfolder);
     }
     if (!src) return null;
-    return { url: src, name: _extractFilename(src) };
+    const item = { url: src, name: _extractFilename(src) };
+    // 携带节点播放器已应用的加载范围（跳过帧数/帧数上限）：
+    // 对比预览创建的是全新播放器，不传的话会播放完整视频，与节点内裁剪后预览不一致
+    if (typeof p._skipFrames === "number" && p._skipFrames > 0) item.skipFrames = p._skipFrames;
+    if (typeof p._frameLimit === "number" && p._frameLimit > 0) item.frameLimit = p._frameLimit;
+    return item;
 }
 
-/** 收集当前选中的视频节点（保留画布选中顺序；兼容 Map/Set/对象三种形态） */
+/** 按画布位置排序：x 升序（左→右），x 相同按 y 升序（上→下） */
+function _sortByCanvasPos(nodes) {
+    return [...nodes].sort((a, b) => {
+        const ax = (a.pos && a.pos[0]) || 0;
+        const bx = (b.pos && b.pos[0]) || 0;
+        if (ax !== bx) return ax - bx;
+        const ay = (a.pos && a.pos[1]) || 0;
+        const by = (b.pos && b.pos[1]) || 0;
+        return ay - by;
+    });
+}
+
+/** 收集当前选中的视频节点（按画布位置排序；兼容 Map/Set/对象三种形态） */
 function getSelectedVideoNodes() {
     const sel = app?.canvas?.selected_nodes;
     const out = [];
@@ -73,12 +90,12 @@ function getSelectedVideoNodes() {
             if (n && nodeHasVideo(n)) out.push(n);
         }
     }
-    return out;
+    return _sortByCanvasPos(out);
 }
 
-/** 画布上所有有视频的节点 */
+/** 画布上所有有视频的节点（按画布位置排序） */
 function getAllVideoNodes() {
-    return (app?.graph?._nodes || []).filter((n) => nodeHasVideo(n));
+    return _sortByCanvasPos((app?.graph?._nodes || []).filter((n) => nodeHasVideo(n)));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -167,7 +184,7 @@ function _ensureStyle() {
     }
     .xzg-sp-cell {
         position: relative; display: flex; flex-direction: column;
-        background: #1a1a1a; border: 1px solid #3f3f3f; border-radius: 8px;
+        background: #000; border: 1px solid #3f3f3f; border-radius: 8px;
         overflow: hidden;
         min-width: 0;
     }
@@ -178,7 +195,7 @@ function _ensureStyle() {
     }
     .xzg-sp-player {
         position: relative; flex: 1; min-height: 0;
-        background: #000;
+        background: #000 !important; /* 覆盖播放器 _buildDOM 设置的 inline 灰色 #1a1a1a，视频缩小后填充区为黑色 */
     }
     .xzg-sp-ctrl {
         display: flex; align-items: center; gap: 8px;
@@ -229,6 +246,8 @@ function _ensureStyle() {
         background: #dcc85b; color: #222; font-size: 10px;
         padding: 2px 4px; border-radius: 3px; white-space: nowrap;
     }
+    /* 划像区域内禁用元素原生拖拽/文本选中，防止按住拖动时出现禁用光标 */
+    .xzg-sp-wipe, .xzg-sp-wipe * { -webkit-user-drag: none; user-select: none; }
     `;
     document.head.appendChild(st);
 }
@@ -283,6 +302,10 @@ function openSyncPreview(items) {
             onPause: () => syncPause(),
         });
         player.setMuted(true); // 多视频同播默认静音，避免声音混杂
+        // 应用节点加载范围（跳过帧数/帧数上限）：对比播放器与节点内预览保持相同的裁剪
+        if (it.skipFrames || it.frameLimit) {
+            try { player.setLoadRange(it.skipFrames || 0, it.frameLimit || 0); } catch (_) {}
+        }
         players.push({ player, url: it.url, holder, cell });
     }
     win.appendChild(grid);
@@ -321,6 +344,9 @@ function openSyncPreview(items) {
         _swapped = s;
         // 交换 players 顺序：并排左右 与 划像底层/上层 都随之对调
         [players[0], players[1]] = [players[1], players[0]];
+        // 同步交换累计平移：_holderT 与 players 索引一一对应，
+        // 基线重录（recordHolderBase）依赖它反推布局矩形，错位会导致缩放锚点错乱
+        [_holderT[0], _holderT[1]] = [_holderT[1], _holderT[0]];
         // 统一让 players[0] 的格子排在前（左侧）
         grid.insertBefore(players[0].cell, players[1].cell);
         if (wipeMode) setWipeMode(true); // 划像模式：重新布置底层/上层
@@ -379,9 +405,33 @@ function openSyncPreview(items) {
     scrubRange.addEventListener("change", () => {
         _scrubbing = false;
     });
+    // 多视频同步播放：定期以主视频为基准软对齐各播放器时间。
+    // 各播放器独立 RAF 循环，掉帧/解码延迟会各自累积漂移（不同帧率视频尤其明显），
+    // 这里用低频率 seek 校正，抵消漂移；偏差低于阈值不打扰（避免频繁跳帧）。
+    let _lastAlignAt = 0;
+    const ALIGN_INTERVAL = 500;   // 对齐检查间隔（ms）
+    const ALIGN_THRESHOLD = 0.08; // 偏差阈值（秒），低于此不打扰（避免频繁跳帧）
+    const alignPlayers = (now) => {
+        if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
+        _lastAlignAt = now;
+        const main = pickMain();
+        const master = main.player.currentTime;
+        if (!isFinite(master)) return;
+        for (const p of players) {
+            if (p === main) continue;
+            const d = p.player.duration;
+            if (!d || !isFinite(d) || d <= 0) continue;
+            const ct = p.player.currentTime || 0;
+            if (Math.abs(ct - master) > ALIGN_THRESHOLD) {
+                try { p.player.seek(Math.max(0, Math.min(master, d))); } catch (_) {}
+            }
+        }
+    };
     // 播放中每帧平滑刷新进度条（拖动时暂停刷新；仅数值变化时写入 DOM，避免无谓开销）
     const scrubTick = () => {
+        const now = performance.now();
         if (!_scrubbing) {
+            alignPlayers(now);
             const main = pickMain();
             const d = main.player.duration;
             if (d && isFinite(d) && d > 0) {
@@ -512,13 +562,11 @@ function openSyncPreview(items) {
     };
     wipeBtn.addEventListener("click", () => setWipeMode(!wipeMode));
 
-    // 划像拖动：分界线拖动 + 画面任意位置按住左键拖动 均可划像。
-    // 点击（不拖动）仍由播放器正常处理播放/暂停；拖动超过阈值才进入划像。
+    // 划像交互：鼠标悬停位置即分界线位置（无需按住左键）；左键单击仍由播放器处理播放/暂停。
+    // 分界线本身也支持按住拖动微调。
     let _wiping = false;          // 分界线拖动中
-    let _wipeDrag = false;        // 任意位置拖动判定中
-    let _wipeDragged = false;     // 是否已确认为拖动（超过阈值）
-    let _wipeDownX = 0, _wipeDownY = 0;
     let _wipeX = 50;              // 划像位置（0-100，未缩放坐标，相对 wipe 宽度）
+    let _downX = 0, _downY = 0, _downMoved = false; // 按住移动判定：拖动后抑制 click，避免误触播放/暂停
     // 分界线定位到 clip 边界的实际视觉位置：clip 边界 = 未缩放 X% 处经窗格缩放/平移后的位置
     const updateDividerPos = () => {
         const W = wipe.clientWidth;
@@ -530,7 +578,11 @@ function openSyncPreview(items) {
     const updateWipe = (e) => {
         const r = wipe.getBoundingClientRect();
         if (!r.width) return;
-        let x = ((e.clientX - r.left) / r.width) * 100;
+        // 鼠标指向的内容在本地坐标中的比例（消除缩放与平移的影响）：
+        // clip-path 的 inset 百分比相对未缩放内容坐标，直接取容器比例会在放大/平移后错位
+        const t0 = _holderT[0] || { x: 0, y: 0 };
+        const s = _zoomScale || 1;
+        let x = ((e.clientX - r.left - t0.x) / (r.width * s)) * 100;
         x = Math.max(0, Math.min(100, x));
         _wipeX = x;
         wipe.style.setProperty("--wipe", x + "%"); // clip-path 用它（相对窗格本地坐标）
@@ -541,28 +593,37 @@ function openSyncPreview(items) {
         e.preventDefault();
         e.stopPropagation();
         _wiping = true;
+        _downX = e.clientX; _downY = e.clientY;
+        _downMoved = false;
         updateWipe(e);
     });
-    wipe.addEventListener("mousedown", (e) => {
-        if (e.button !== 0) return;
-        _wipeDownX = e.clientX; _wipeDownY = e.clientY;
-        _wipeDragged = false;
-        _wipeDrag = true;
+    // 单击分界线 = 播放/暂停（悬停划像下鼠标总在分界线上，单击即点在分界线上；
+    // 拖动分界线后 click 已被 onWipeUp 抑制，不会误触播放）
+    wipeDivider.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (playing) pauseAll(); else playAll();
     });
-    const onWipeMove = (e) => {
-        if (_wiping) { updateWipe(e); return; }
-        if (!_wipeDrag) return;
-        if (!_wipeDragged) {
-            // 超过阈值才判定为拖动（区分点击）
-            if (Math.abs(e.clientX - _wipeDownX) < 4 && Math.abs(e.clientY - _wipeDownY) < 4) return;
-            _wipeDragged = true;
-        }
+    // 悬停划像：鼠标在画面上移动，分界线跟随（无需按住左键）；左键单击由播放器处理播放/暂停
+    const onWipeHover = (e) => {
+        if (!_downMoved && Math.abs(e.clientX - _downX) + Math.abs(e.clientY - _downY) > 4) _downMoved = true;
+        if (_wiping) return; // 分界线拖动中由 onWipeMove 接管
         updateWipe(e);
     };
+    wipe.addEventListener("mousemove", onWipeHover);
+    wipe.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        _downX = e.clientX; _downY = e.clientY;
+        _downMoved = false;
+    });
+    const onWipeMove = (e) => {
+        if (!_wiping) return;
+        if (!_downMoved && Math.abs(e.clientX - _downX) + Math.abs(e.clientY - _downY) > 4) _downMoved = true;
+        updateWipe(e); // 分界线按住拖动：跟手
+    };
     const onWipeUp = () => {
+        if (_wiping && _downMoved) _suppressClick = true; // 拖动分界线/画面后抑制 click，避免误触播放/暂停
         _wiping = false;
-        if (_wipeDrag && _wipeDragged) _suppressClick = true; // 划像拖动后抑制 click，避免误触发播放/暂停
-        _wipeDrag = false;
+        _downMoved = false;
     };
     window.addEventListener("mousemove", onWipeMove, true);
     window.addEventListener("mouseup", onWipeUp, true);
@@ -600,11 +661,21 @@ function openSyncPreview(items) {
         zoomBtn.textContent = "🔍 " + Math.round(_zoomScale * 100) + "%";
     };
     const recordHolderBase = () => {
-        _holderBase = players.map(p => {
+        // 记录各窗格的“布局矩形”（消除 holder 自身 transform 的影响）：
+        // 视觉矩形 = 布局矩形经 translate(t)+scale(s) 后，反推可得布局矩形。
+        // 始终记录布局矩形可保证基线不被缩放/平移污染，缩放锚点计算长期自洽。
+        _holderBase = players.map((p, i) => {
             const r = p.holder.getBoundingClientRect();
-            return { left: r.left, top: r.top, width: r.width, height: r.height };
+            const t = _holderT[i] || { x: 0, y: 0 };
+            const s = _zoomScale || 1;
+            return {
+                left: r.left - t.x,
+                top: r.top - t.y,
+                width: s > 0 ? r.width / s : r.width,
+                height: s > 0 ? r.height / s : r.height,
+            };
         });
-        _holderT = players.map(() => ({ x: 0, y: 0 }));
+        // 不重置 _holderT：保留现有缩放/平移状态，锚点依赖 基线+平移+倍率 的自洽关系
     };
     const applyZoomAll = (factor) => {
         // 基线失效（未记录/尺寸为 0）时即时重录，确保每个窗格都能被同步缩放
@@ -620,15 +691,13 @@ function openSyncPreview(items) {
             const holder = players[i].holder;
             const b = _holderBase[i];
             const t = _holderT[i] || { x: 0, y: 0 };
-            // 锚点在屏幕上的位置（各窗格统一相对比例）
-            const mX = b.left + (b.width * rx / 100);
-            const mY = b.top + (b.height * ry / 100);
-            // 锚点对应的内容点（缩放前，相对窗格未缩放左上角）
-            const cX = (mX - b.left - t.x) / sOld;
-            const cY = (mY - b.top - t.y) / sOld;
-            // 缩放后保持该内容点不动
-            const nX = mX - b.left - cX * sNew;
-            const nY = mY - b.top - cY * sNew;
+            // 锚点内容坐标：窗格内 rx%/ry% 处的内容点（相对窗格未缩放左上角）。
+            // 鼠标所在窗格中该点即鼠标指向的内容点，因此缩放即以鼠标位置为锚点。
+            const cX = b.width * rx / 100;
+            const cY = b.height * ry / 100;
+            // 缩放后保持该内容点位于其缩放前的屏幕位置不动（b.left + t.x + cX*sOld）
+            const nX = t.x + cX * (sOld - sNew);
+            const nY = t.y + cY * (sOld - sNew);
             _holderT[i] = { x: nX, y: nY };
             holder.style.transformOrigin = "0 0";
             holder.style.transform = "translate(" + nX + "px," + nY + "px) scale(" + sNew + ")";
@@ -652,21 +721,19 @@ function openSyncPreview(items) {
     win.addEventListener("wheel", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        // 锚点 = 鼠标所在窗格内的相对位置（各窗格统一；鼠标在空白处用中心）
+        // 锚点 = 鼠标所在窗格内的相对位置（各窗格统一；鼠标在空白处用中心）。
+        // 用布局矩形（基线）判断所在窗格：缩放后窗格视觉溢出会盖住相邻窗格，
+        // 若用 getBoundingClientRect 视觉矩形判断，鼠标会被误判到视觉上层的相邻窗格，
+        // 导致真正鼠标所在的窗格锚点错乱、逐次累积漂移。
         let rx = 50, ry = 50;
         for (let i = 0; i < players.length; i++) {
-            const r = players[i].holder.getBoundingClientRect();
-            if (r.width > 0 && e.clientX >= r.left && e.clientX <= r.right &&
-                e.clientY >= r.top && e.clientY <= r.bottom) {
-                const b = _holderBase[i];
-                if (b && b.width > 0 && b.height > 0) {
-                    const t = _holderT[i] || { x: 0, y: 0 };
-                    rx = ((e.clientX - b.left - t.x) / (b.width * _zoomScale)) * 100;
-                    ry = ((e.clientY - b.top - t.y) / (b.height * _zoomScale)) * 100;
-                } else {
-                    rx = ((e.clientX - r.left) / r.width) * 100;
-                    ry = ((e.clientY - r.top) / r.height) * 100;
-                }
+            const b = _holderBase[i];
+            if (b && b.width > 0 && b.height > 0 &&
+                e.clientX >= b.left && e.clientX <= b.left + b.width &&
+                e.clientY >= b.top && e.clientY <= b.top + b.height) {
+                const t = _holderT[i] || { x: 0, y: 0 };
+                rx = ((e.clientX - b.left - t.x) / (b.width * _zoomScale)) * 100;
+                ry = ((e.clientY - b.top - t.y) / (b.height * _zoomScale)) * 100;
                 rx = Math.max(0, Math.min(100, rx));
                 ry = Math.max(0, Math.min(100, ry));
                 break;
