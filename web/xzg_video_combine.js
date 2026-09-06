@@ -19,7 +19,7 @@ const _LABEL_MAP = {
     "保存": "Save",
     "预览": "Preview",
     // CRF 注释翻译
-    "数值越大质量越差 默认19": "Higher = lower quality, default 19",
+    "数值越大质量越差 默认16": "Higher = lower quality, default 16",
 };
 
 function _tr(zh) {
@@ -769,7 +769,7 @@ app.registerExtension({
                         ctx.fillStyle = '#555';
                         ctx.font = '10px sans-serif';
                         ctx.textAlign = 'right';
-                        ctx.fillText(_tr('数值越大质量越差 默认19'), width - pad - 6 - vw - 10, y + H / 2);
+                        ctx.fillText(_tr('数值越大质量越差 默认16'), width - pad - 6 - vw - 10, y + H / 2);
                     };
                 } else if (w.name === '模式') {
                     // 模式：保存/预览 切换开关（与音频保存一致）

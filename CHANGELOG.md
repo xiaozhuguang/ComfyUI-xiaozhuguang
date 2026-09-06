@@ -1,4 +1,25 @@
 # 更新日志
+## v15.0.3 (2026-09-06)
+
+### 优化
+
+- **小珠光视频保存节点：MP4 编码质量提升，消除块状马赛克伪影**(`nodes/xzg_video_combine.py` + `web/xzg_video_combine.js`)
+  - 默认 CRF 从 19 降至 16（越低画质越好）
+  - 新增 `-preset slow`：更慢的压缩速度换更高压缩效率
+  - 新增 `-tune film`：优化胶片/视频内容的压缩策略
+  - 新增 `-aq-mode 3`：自适应量化，减少平坦区域块效应
+  - 前端 CRF 注释文字同步更新为默认 16
+- **小珠光视频加载器：scale 缩放滤镜默认从 bicubic 改为 lanczos**(`nodes/xzg_video_loader.py`)
+  - 8 处尺寸缩放滤镜全部添加 `:flags=lanczos`
+  - 缩小时抗混叠能力更强、高频细节保留更好
+  - 覆盖帧提取与预览转码两条路径、三种 fit 模式（crop/fill/letterbox）
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.3
+
+---
+
 ## v14.1.3 (2026-09-03)
 
 ### 新增

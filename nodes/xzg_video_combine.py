@@ -182,7 +182,10 @@ VIDEO_FORMATS = {
         "main_pass": [
             "-n", "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
-            "-crf", "19",
+            "-crf", "16",
+            "-preset", "slow",
+            "-tune", "film",
+            "-aq-mode", "3",
             "-vf", "scale=out_color_matrix=bt709",
             "-color_range", "tv", "-colorspace", "bt709",
             "-color_primaries", "bt709", "-color_trc", "bt709",
@@ -273,14 +276,14 @@ def _build_main_pass(format_name, crf):
 
 
 def export_to_video(image_tensors, output_file, frame_rate, format="mp4",
-                    audio=None, crf=19):
+                    audio=None, crf=16):
     """将图像 tensor 列表导出为视频文件
 
     完全参考 VHS 的实现：
     - 视频帧通过生成器协程逐帧写入 ffmpeg stdin
     - 音频采用第二次 ffmpeg 调用，通过 stdin 传入 f32le PCM 数据
     - 使用 -c:v copy 避免视频重新编码
-    - crf：0-51 CRF 值，越低画质越好（文件越大），默认 19
+    - crf：0-51 CRF 值，越低画质越好（文件越大），默认 16
     """
     if ffmpeg_path is None:
         raise RuntimeError("FFmpeg is required but not found")
@@ -401,7 +404,7 @@ class XiaozhuguangVideoCombine:
                 "帧率": ("FLOAT", {"default": 8, "min": 1, "step": 1}),
                 "文件名前缀": ("STRING", {"default": "xzg_video"}),
                 "格式": (["mp4", "webm", "gif"], {"default": "mp4"}),
-                "CRF": ("INT", {"default": 19, "min": 0, "max": 51, "step": 1}),
+                "CRF": ("INT", {"default": 16, "min": 0, "max": 51, "step": 1}),
                 "模式": (["保存", "预览"], {"default": "保存"}),
             },
             "optional": {

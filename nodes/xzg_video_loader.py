@@ -383,17 +383,17 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
         dst_ar = size[0] / size[1]
         if abs(src_ar - dst_ar) < 0.01:
             # 宽高比一致 → 仅缩放（三种模式等价）
-            vfilters.append(f"scale={size[0]}:{size[1]}")
+            vfilters.append(f"scale={size[0]}:{size[1]}:flags=lanczos")
         elif fit_mode == "fill":
             # 拉伸填充：直接缩放到目标尺寸，画面比例变形
-            vfilters.append(f"scale={size[0]}:{size[1]}")
+            vfilters.append(f"scale={size[0]}:{size[1]}:flags=lanczos")
         elif fit_mode == "letterbox":
             # 留边：等比缩小到完全容纳目标框，剩余区域用黑边补齐
-            vfilters.append(f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease")
+            vfilters.append(f"scale={size[0]}:{size[1]}:flags=lanczos:force_original_aspect_ratio=decrease")
             vfilters.append(f"pad={size[0]}:{size[1]}:(ow-iw)/2:(oh-ih)/2:color=black")
         else:
             # 裁剪（默认）：覆盖放大后中心裁剪，无黑边
-            vfilters.append(f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=increase")
+            vfilters.append(f"scale={size[0]}:{size[1]}:flags=lanczos:force_original_aspect_ratio=increase")
             vfilters.append(f"crop={size[0]}:{size[1]}")
         vfilters.append("setsar=1")
     else:
@@ -668,14 +668,14 @@ class XiaozhuguangVideoLoader:
             vf_parts = []
             if new_w != src_w or new_h != src_h:
                 if abs(src_ar - dst_ar) < 0.01:
-                    vf_parts.append(f"scale={new_w}:{new_h}")
+                    vf_parts.append(f"scale={new_w}:{new_h}:flags=lanczos")
                 elif fit_mode == "fill":
-                    vf_parts.append(f"scale={new_w}:{new_h}")
+                    vf_parts.append(f"scale={new_w}:{new_h}:flags=lanczos")
                 elif fit_mode == "letterbox":
-                    vf_parts.append(f"scale={new_w}:{new_h}:force_original_aspect_ratio=decrease")
+                    vf_parts.append(f"scale={new_w}:{new_h}:flags=lanczos:force_original_aspect_ratio=decrease")
                     vf_parts.append(f"pad={new_w}:{new_h}:(ow-iw)/2:(oh-ih)/2:color=black")
                 else:
-                    vf_parts.append(f"scale={new_w}:{new_h}:force_original_aspect_ratio=increase")
+                    vf_parts.append(f"scale={new_w}:{new_h}:flags=lanczos:force_original_aspect_ratio=increase")
                     vf_parts.append(f"crop={new_w}:{new_h}")
                 vf_parts.append("setsar=1")
             # 帧率滤镜：降帧用 select（与帧提取一致），升帧用 fps round=down（预览可接受末帧重复）
