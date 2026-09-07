@@ -1945,11 +1945,7 @@ class XZGWorkflowsManager {
                 color: var(--fg-muted, #888);
                 margin-top: 3px;
             }
-            /* 只读工作流：名称变灰、图标金色 */
-            .xzg-wf-item.xzg-wf-item-readonly .xzg-wf-item-name {
-                color: var(--fg-muted, #999) !important;
-                opacity: 0.75;
-            }
+            /* 只读工作流：名称保持原色不变暗，仅图标金色 + 只读标签标记 */
             .xzg-wf-item.xzg-wf-item-readonly .xzg-wf-item-icon {
                 color: #FFD700 !important;
             }
