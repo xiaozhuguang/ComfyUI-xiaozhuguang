@@ -1983,8 +1983,22 @@ function bindVideoLoaderInteractions(node) {
             const params = new URLSearchParams({ filename, type, subfolder });
             const url = `/view?${params.toString()}&rand=${Math.random()}`;
             console.warn("[小珠光视频加载器] (立即)加载预览视频到预览区: " + filename);
+            // 保存原视频总帧数/帧率：预览视频(输出片段)帧数 < 原视频，load() 会重置 _sourceTotalFrames，
+            // 导致红蓝杠位置被错误 clamp（如跳过100+上限240，蓝杠应在340却被压到240）。
+            const savedSourceTotalFrames = player._sourceTotalFrames;
+            const savedSourceFps = player._sourceFps;
             player.load(url);
             _isPreviewLoaded = true;
+            // 预览视频解码完成后恢复原视频总帧数/帧率，确保加载范围标记基于原视频计算
+            const origOnLoadedPreview = player.onLoadedMetadata;
+            player.onLoadedMetadata = function () {
+                if (savedSourceTotalFrames) player._sourceTotalFrames = savedSourceTotalFrames;
+                if (savedSourceFps) player._sourceFps = savedSourceFps;
+                player._updateLoadRangeMarkers();
+                player._updateRangeDisplay();
+                player.onLoadedMetadata = origOnLoadedPreview;
+                if (origOnLoadedPreview) origOnLoadedPreview.apply(this, arguments);
+            };
             node.setDirtyCanvas(true, true);
             if (promptId) _previewLoadedForPrompt.add(promptId);
             return true;
