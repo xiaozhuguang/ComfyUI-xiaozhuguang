@@ -25,6 +25,8 @@ bitsandbytes
 # ---------- 内置工具组件依赖（缺失会导致插件加载失败或设备标识生成失败） ----------
 # cryptography: 内置工具组件的数据处理依赖（导入期即需要，缺了插件整体无法加载）
 cryptography
+# pycryptodome: 内置工具组件的 AES 加解密依赖（Crypto.Cipher.AES / Crypto.Util.Padding，导入期即需要，缺了插件整体无法加载）
+pycryptodome
 # wmi + pywin32: Windows 下生成设备标识所需（仅 Windows 安装）
 wmi; platform_system == "Windows"
 pywin32; platform_system == "Windows"

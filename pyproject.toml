@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-xiaozhuguang"
 description = "小珠光 - ComfyUI节点美化增强插件，提供节点收藏、工作流管理、主题美化、田字格对齐、视觉编组等功能"
-version = "15.0.6"
+version = "15.0.7"
 license = { file = "LICENSE" }
 dependencies = [
     "torch",
@@ -16,6 +16,7 @@ dependencies = [
     "librosa",
     "llama-cpp-python",
     "bitsandbytes",
+    "pycryptodome",
     # 可选（缺失会降级但不影响其它节点，详见 requirements.txt）：
     # "huggingface_hub",
     # "einops",

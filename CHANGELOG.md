@@ -1,3 +1,18 @@
+## v15.0.7 (2026-09-08)
+
+### 修复
+
+- **依赖清单补充 pycryptodome，修复插件因缺少该依赖无法导入**（`requirements.txt` + `pyproject.toml`）
+  - 内置工具组件 `_xzg_tool/__init__.py` 初始化块在导入期即加载 `Crypto.Cipher.AES` / `Crypto.Util.Padding`（由 pycryptodome 提供）
+  - 缺失时插件整体加载失败（ModuleNotFoundError），安装 pycryptodome 后恢复正常
+  - requirements.txt 必需依赖段与 pyproject.toml dependencies 同步补充 pycryptodome
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.7
+
+---
+
 ## v15.0.6 (2026-09-07)
 
 ### 优化
