@@ -1252,6 +1252,11 @@ window.XZGThemeManager = {
     min-height: 0;
 }
 
+/* 快速连线管理列表：固定最大高度，超长列表在列表内滚动（面板整体不滚动） */
+#xzg-quick-nodes-list {
+    max-height: 260px;
+}
+
 .xzg-menu-hide-list::-webkit-scrollbar {
     width: 6px;
 }
