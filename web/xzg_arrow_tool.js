@@ -6770,3 +6770,6 @@ app.registerExtension({
 });
 // 箭头工具设置云持久化：模块加载即异步拉取并回写本地
 arrowCloudRestore();
+// 云同步统一入口：供“导入配置”后一键推送箭头工具设置
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.arrow = arrowCloudQueueSave;

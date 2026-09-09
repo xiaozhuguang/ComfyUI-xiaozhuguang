@@ -4725,3 +4725,6 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 };
 
 app.registerExtension({ name: 'ComfyUI.xiaozhuguang.group', setup() { XZGGroup.init(); window.XZGGroup = XZGGroup; } });
+// 云同步统一入口：供“导入配置”后一键推送编组设置
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.group = () => { try { window.XZGGroup?._queueCloudSave?.(); } catch (e) {} };

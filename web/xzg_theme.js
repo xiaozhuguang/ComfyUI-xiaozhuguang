@@ -4799,3 +4799,6 @@ window.XZGThemeManager = {
     }
     tryRegister();
 })();
+// 云同步统一入口：供主题面板“导入配置”后一键推送全部云化设置
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.theme = () => { try { window.XZGThemeManager?._queueThemeCloudSave?.(); } catch (e) {} };

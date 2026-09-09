@@ -59,6 +59,9 @@ app.registerExtension({
             }
         }
         alignCloudRestore();
+        // 供主题面板“导入配置”后一键推送天工对齐设置
+        window.__xzgCloudPush = window.__xzgCloudPush || {};
+        window.__xzgCloudPush.align = alignQueueSave;
 
         function formatShortcut(sc) {
             const parts = [];

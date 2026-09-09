@@ -2933,6 +2933,13 @@ window.XZGThemePanel = {
                 }
             }
         }
+        // 云同步推送：导入写回本地后，把本次云化模块的设置一并推上云，
+        // 避免刷新时“云优先覆盖”用旧云端数据覆盖刚导入的配置。
+        if (window.__xzgCloudPush && typeof window.__xzgCloudPush === "object") {
+            for (const _k in window.__xzgCloudPush) {
+                try { window.__xzgCloudPush[_k](); } catch (e) {}
+            }
+        }
 
         // ============ 3) 导入备注即使没勾选XZG也允许单独生效（因此 notes 独立）===========
         // 最终 importedXzg 只反映非 notes 的模块；而 importedNotes 单独记录
@@ -3453,3 +3460,6 @@ window.XZGThemePanel = {
         }
     } catch (e) {}
 })();
+// 云同步统一入口：供“导入配置”后一键推送主题面板设置
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.themePanel = () => { try { window.XZGThemePanel?._queueThemePanelCloudSave?.(); } catch (e) {} };

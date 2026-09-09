@@ -8935,3 +8935,7 @@ app.registerExtension({
 
 // 收藏器设置云持久化：模块加载即异步拉取并回写本地
 favCloudRestore();
+// 云同步统一入口：供“导入配置”后一键推送收藏器/标题设置
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.favorites = favQueueSave;
+window.__xzgCloudPush.title = titleQueueSave;

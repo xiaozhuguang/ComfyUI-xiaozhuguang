@@ -533,3 +533,6 @@ app.registerExtension({
         xzgQuickNodes.init();
     }
 });
+// 云同步统一入口：供“导入配置”后一键推送快速连线设置
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.quickNodes = () => { try { window.XZGQuickNodes?._queueCloudSave?.(); } catch (e) {} };

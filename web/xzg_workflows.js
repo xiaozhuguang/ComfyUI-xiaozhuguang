@@ -4377,3 +4377,6 @@ app.registerExtension({
         } catch (e) {}
     }
 });
+// 云同步统一入口：供“导入配置”后一键推送工作流面板设置（夺舍模式/强调色/快捷键）
+window.__xzgCloudPush = window.__xzgCloudPush || {};
+window.__xzgCloudPush.wfSettings = () => { try { window.XZGWorkflows?._queueWfSettingsSave?.(); } catch (e) {} };
