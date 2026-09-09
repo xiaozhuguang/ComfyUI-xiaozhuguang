@@ -53,6 +53,34 @@ function maybePushSidebar() {
     }, 500);
 }
 
+/** 把本地聚合键 xzg_comfy_sidebar_state 展开写回官方裸键（导入 / 云端缓存落地后使用），返回是否发生变更 */
+function expandCloudKeyToLocal() {
+    const raw = localStorage.getItem(COMFY_SIDEBAR_STATE_KEY);
+    if (!raw) return false;
+    let obj = null;
+    try { obj = JSON.parse(raw); } catch (e) { return false; }
+    if (!obj || typeof obj !== "object") return false;
+    let changed = false;
+    for (const k in obj) {
+        if (typeof obj[k] === "string" && isSidebarKey(k)) {
+            if (localStorage.getItem(k) !== obj[k]) {
+                try { localStorage.setItem(k, obj[k]); changed = true; } catch (e) {}
+            }
+        }
+    }
+    return changed;
+}
+
+/** 侧边栏数据被外部改变（云回写 / 导入）后，同会话自动刷新一次让官方 Splitter 按新宽度重建（防循环） */
+function requestSidebarReloadOnce() {
+    if (document.readyState === "complete" && !sessionStorage.getItem("xzg_sidebar_reloaded")) {
+        sessionStorage.setItem("xzg_sidebar_reloaded", "1");
+        setTimeout(() => location.reload(), 300);
+        return true;
+    }
+    return false;
+}
+
 async function cloudRestoreSidebar() {
     try {
         const s = await cloudLoad(COMFY_SIDEBAR_STATE_KEY, { fallbackValue: null });
@@ -68,12 +96,7 @@ async function cloudRestoreSidebar() {
             if (changed) {
                 // 回写后更新指纹，避免本模块自己触发一次无谓上云
                 _lastFingerprint = fingerprint(collectSidebarKeys());
-                // 官方 Splitter 初始化早于云回写（读的是旧宽度），不会自动重排；
-                // 同会话内自动刷新一次，让官方组件按云端宽度重建（sessionStorage 标记防循环）
-                if (document.readyState === "complete" && !sessionStorage.getItem("xzg_sidebar_reloaded")) {
-                    sessionStorage.setItem("xzg_sidebar_reloaded", "1");
-                    setTimeout(() => location.reload(), 300);
-                }
+                requestSidebarReloadOnce();
                 return;
             }
         }
@@ -84,10 +107,43 @@ async function cloudRestoreSidebar() {
     }
 }
 
-// 模块加载即拉取（尽早回写，赶在官方 Splitter 初始化前写回本地）
+// 模块加载：先展开本地聚合键到官方裸键（覆盖「导入后刷新」/「换设备本地已有云端缓存」场景），
+// 再异步拉云（cloudLoad 回写裸键；Splitter 未初始化则直接生效，已初始化则自动刷新一次）
+if (expandCloudKeyToLocal()) {
+    _lastFingerprint = fingerprint(collectSidebarKeys());
+    requestSidebarReloadOnce();
+}
 cloudRestoreSidebar();
+
+/** 定时兜底：聚合键展开 + 变化检测上云（覆盖导入后 60s 内的补同步） */
+function periodicSidebarCheck() {
+    if (expandCloudKeyToLocal()) {
+        _lastFingerprint = fingerprint(collectSidebarKeys());
+        requestSidebarReloadOnce();
+    }
+    maybePushSidebar();
+}
 
 // 事件驱动 + 兜底：拖动 splitter 松手 / 窗口失焦 / 每 60s 定时检测，变化即防抖上云
 document.addEventListener("mouseup", maybePushSidebar, true);
 window.addEventListener("blur", maybePushSidebar);
-setInterval(maybePushSidebar, 60000);
+setInterval(periodicSidebarCheck, 60000);
+
+// 导入配置后立即展开裸键并上云（importAllConfig includeXzg 分支末尾统一调用 __xzgCloudPush）
+if (typeof window !== "undefined") {
+    window.__xzgCloudPush = window.__xzgCloudPush || {};
+    window.__xzgCloudPush.comfySidebar = () => {
+        if (expandCloudKeyToLocal()) {
+            _lastFingerprint = fingerprint(collectSidebarKeys());
+            // 用户主动导入属新动作：清除防循环标记，允许再次自动刷新应用新宽度
+            try { sessionStorage.removeItem("xzg_sidebar_reloaded"); } catch (e) {}
+            // 先立即上云（把导入值覆盖到云端），等推送完成再刷新，
+            // 避免刷新后 cloudLoad 被旧云端值覆盖导入结果
+            cloudSave(COMFY_SIDEBAR_STATE_KEY, collectSidebarKeys())
+                .catch(() => {})
+                .finally(() => requestSidebarReloadOnce());
+        } else {
+            maybePushSidebar();
+        }
+    };
+}
