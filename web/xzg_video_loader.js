@@ -1600,6 +1600,21 @@ function bindVideoLoaderInteractions(node) {
         } else {
             this._currentFile = "";
         }
+        // 换新视频（URL 与当前播放源不同）时：若自定义宽高由外部整数连线驱动
+        // （本体 widget 值为 0，未手填），未运行前应默认显示新视频的原始比例，
+        // 而不是沿用上一次记录的自定义比例（300x711 等旧值）。
+        // 本体 widget 有手填值时保留用户设置；运行后由后端 video_info 重新覆盖。
+        if (url && url !== player.src) {
+            const _wLocal = node.widgets?.find(w => w.name === "自定义宽度");
+            const _hLocal = node.widgets?.find(w => w.name === "自定义高度");
+            const _wLocalVal = _wLocal ? (Number(_wLocal.value) || 0) : 0;
+            const _hLocalVal = _hLocal ? (Number(_hLocal.value) || 0) : 0;
+            const _wLinked = _resolveLinkedValue("自定义宽度");
+            const _hLinked = _resolveLinkedValue("自定义高度");
+            if ((_wLinked > 0 || _hLinked > 0) && _wLocalVal === 0 && _hLocalVal === 0) {
+                try { player.setCustomSize(0, 0); } catch (_) { }
+            }
+        }
         return _origPlayerLoad(url);
     };
 
