@@ -1,4 +1,8 @@
 import { app } from "../../scripts/app.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+
+// 天工对齐偏好云存储防抖计时器（颜色/间距/快捷键合并一个云键）
+let _alignCloudTimer = null;
 
 // 小珠光 - 田字格对齐面板 (Alt+A)
 app.registerExtension({
@@ -14,6 +18,47 @@ app.registerExtension({
 
         const DEFAULT_SHORTCUT = { key: "a", alt: true, ctrl: false, shift: false, meta: false };
         let SHORTCUT = JSON.parse(localStorage.getItem("xiaozhuguang.tian.shortcut") || "null") || { ...DEFAULT_SHORTCUT };
+
+        // 云持久化：对齐偏好（颜色/间距/快捷键）合并一个云键，本地先写兜底、异步以服务端为准覆盖
+        const ALIGN_STATE_KEY = "xzg_align_state";
+        function alignQueueSave() {
+            if (_alignCloudTimer) clearTimeout(_alignCloudTimer);
+            _alignCloudTimer = setTimeout(() => {
+                _alignCloudTimer = null;
+                cloudSave(ALIGN_STATE_KEY, {
+                    themeColor: THEME_COLOR,
+                    vGap: V_GAP,
+                    hGap: H_GAP,
+                    shortcut: SHORTCUT
+                }).catch(() => {});
+            }, 500);
+        }
+        async function alignCloudRestore() {
+            try {
+                const s = await cloudLoad(ALIGN_STATE_KEY, { fallbackValue: null });
+                if (!s || typeof s !== "object") return;
+                if (typeof s.themeColor === "string" && /^#[0-9a-fA-F]{6}$/.test(s.themeColor)) {
+                    THEME_COLOR = s.themeColor;
+                    localStorage.setItem("xiaozhuguang.tian.themeColor", s.themeColor);
+                    applyThemeToVisuals();
+                }
+                if (typeof s.vGap === "number" && s.vGap >= 10 && s.vGap <= 500) {
+                    V_GAP = s.vGap;
+                    localStorage.setItem("xiaozhuguang.tian.vGap", String(s.vGap));
+                }
+                if (typeof s.hGap === "number" && s.hGap >= 10 && s.hGap <= 500) {
+                    H_GAP = s.hGap;
+                    localStorage.setItem("xiaozhuguang.tian.hGap", String(s.hGap));
+                }
+                if (s.shortcut && typeof s.shortcut === "object" && s.shortcut.key) {
+                    SHORTCUT = s.shortcut;
+                    localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(s.shortcut));
+                }
+            } catch (e) {
+                console.warn("[小珠光] 从云同步对齐设置失败:", e);
+            }
+        }
+        alignCloudRestore();
 
         function formatShortcut(sc) {
             const parts = [];
@@ -526,6 +571,7 @@ app.registerExtension({
             THEME_COLOR = hex;
             localStorage.setItem("xiaozhuguang.tian.themeColor", hex);
             applyThemeToVisuals();
+            alignQueueSave();
         }
 
         // --- 颜色设置菜单 ---
@@ -673,6 +719,7 @@ app.registerExtension({
                 if (val > 500) val = 500;
                 V_GAP = val;
                 localStorage.setItem("xiaozhuguang.tian.vGap", val);
+                alignQueueSave();
                 vGapSlider.value = val;
                 vGapNum.value = val;
             }
@@ -683,6 +730,7 @@ app.registerExtension({
                     vGapSlider.value = numVal;
                     V_GAP = numVal;
                     localStorage.setItem("xiaozhuguang.tian.vGap", numVal);
+                    alignQueueSave();
                 }
             });
             vGapNum.addEventListener("blur", () => applyVGap(vGapNum.value));
@@ -741,6 +789,7 @@ app.registerExtension({
                 if (val > 500) val = 500;
                 H_GAP = val;
                 localStorage.setItem("xiaozhuguang.tian.hGap", val);
+                alignQueueSave();
                 hGapSlider.value = val;
                 hGapNum.value = val;
             }
@@ -751,6 +800,7 @@ app.registerExtension({
                     hGapSlider.value = numVal;
                     H_GAP = numVal;
                     localStorage.setItem("xiaozhuguang.tian.hGap", numVal);
+                    alignQueueSave();
                 }
             });
             hGapNum.addEventListener("blur", () => applyHGap(hGapNum.value));
@@ -812,6 +862,7 @@ app.registerExtension({
                 if (save && tempShortcut && tempShortcut.key) {
                     SHORTCUT = { ...tempShortcut };
                     localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(SHORTCUT));
+                    alignQueueSave();
                 }
                 shortcutDisplay.textContent = formatShortcut(SHORTCUT);
                 tempShortcut = null;
@@ -864,6 +915,7 @@ app.registerExtension({
                 applyHGap(DEFAULT_H_GAP);
                 SHORTCUT = { ...DEFAULT_SHORTCUT };
                 localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(SHORTCUT));
+                alignQueueSave();
                 shortcutDisplay.textContent = formatShortcut(SHORTCUT);
                 updateSwatchSelection();
                 hideColorMenu();

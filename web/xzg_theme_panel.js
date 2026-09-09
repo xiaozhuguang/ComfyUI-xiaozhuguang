@@ -1,6 +1,9 @@
 
 import { xzgT } from "./xzg_i18n.js";
-import { cloudSave, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
+import { cloudLoad, cloudSave, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
+
+// 主题面板设置云存储键（预设/快捷键/最近色/标签页）
+const THEME_PANEL_STATE_KEY = "xzg_theme_panel_state";
 
 window.XZGThemePanel = {
     panel: null,
@@ -25,6 +28,8 @@ window.XZGThemePanel = {
     // 缓存最近使用颜色 (最多12个)
     recentColors: [],
     maxRecentColors: 12,
+    // 主题面板设置云持久化
+    _themePanelCloudTimer: null,
 
     defaults: {
         color1: "#e49c00",
@@ -1227,6 +1232,7 @@ window.XZGThemePanel = {
             });
 
             try { localStorage.setItem('xzg-theme-panel-tab', tabName); } catch(e) {}
+            this._queueThemePanelCloudSave();
 
             if (tabName === 'menuhide') {
                 if (window.XZGMenuHide) {
@@ -2202,6 +2208,7 @@ window.XZGThemePanel = {
 
     saveShortcut(shortcut) {
         localStorage.setItem("xzg_theme_shortcut", JSON.stringify(shortcut));
+        this._queueThemePanelCloudSave();
     },
 
     updateShortcutDisplay() {
@@ -2334,6 +2341,58 @@ window.XZGThemePanel = {
 
     savePresets(presets) {
         localStorage.setItem("xzg_theme_presets", JSON.stringify(presets));
+        this._queueThemePanelCloudSave();
+    },
+
+    // ====== 主题面板设置（预设/快捷键/最近色/标签页）云持久化 ======
+    _collectThemePanelState() {
+        let tab = "theme";
+        try { tab = localStorage.getItem('xzg-theme-panel-tab') || "theme"; } catch(e) {}
+        return {
+            presets: this.getPresets(),
+            shortcut: this.getShortcut(),
+            recentColors: Array.isArray(this.recentColors) ? this.recentColors : [],
+            tab: tab
+        };
+    },
+
+    _queueThemePanelCloudSave() {
+        if (this._themePanelCloudTimer) clearTimeout(this._themePanelCloudTimer);
+        const self = this;
+        this._themePanelCloudTimer = setTimeout(() => {
+            this._themePanelCloudTimer = null;
+            cloudSave(THEME_PANEL_STATE_KEY, self._collectThemePanelState()).catch(() => {});
+        }, 500);
+    },
+
+    async _cloudRestoreThemePanel() {
+        try {
+            const s = await cloudLoad(THEME_PANEL_STATE_KEY, { fallbackValue: null });
+            if (!s || typeof s !== "object") return;
+            let changed = false;
+            if (Array.isArray(s.presets) && s.presets.length === 5) {
+                try { localStorage.setItem("xzg_theme_presets", JSON.stringify(s.presets)); changed = true; } catch(e) {}
+            }
+            if (s.shortcut && typeof s.shortcut === "object" && s.shortcut.key) {
+                try { localStorage.setItem("xzg_theme_shortcut", JSON.stringify(s.shortcut)); changed = true; } catch(e) {}
+            }
+            if (Array.isArray(s.recentColors)) {
+                this.recentColors = s.recentColors.slice(0, this.maxRecentColors || 12);
+                try { localStorage.setItem("xzg_recent_colors", JSON.stringify(this.recentColors)); changed = true; } catch(e) {}
+            }
+            if (s.tab === "theme" || s.tab === "themeplus" || s.tab === "menuhide" || s.tab === "quicknodes") {
+                try { localStorage.setItem('xzg-theme-panel-tab', s.tab); changed = true; } catch(e) {}
+            }
+            if (!changed) return;
+            // 面板已打开时刷新相关 UI
+            if (this.panel) {
+                this.updateShortcutDisplay();
+                this.renderPresets();
+                this.updateRecentDisplay();
+            }
+        } catch (e) {
+            console.warn("[小珠光] 从云同步主题面板设置失败:", e);
+        }
     },
 
     // ====== ComfyUI 设置（含快捷键）导出导入辅助方法 ======
@@ -3224,6 +3283,7 @@ window.XZGThemePanel = {
         try {
             localStorage.setItem("xzg_recent_colors", JSON.stringify(this.recentColors));
         } catch (e) {}
+        this._queueThemePanelCloudSave();
     },
 
     updateRecentDisplay() {
@@ -3382,3 +3442,14 @@ window.XZGThemePanel = {
         }
     }
 };
+
+// 主题面板设置（预设/快捷键/最近色/标签页）云持久化：模块加载即异步拉取并回写本地
+(function xzgThemePanelCloudRestore() {
+    try {
+        if (window.XZGThemePanel && window.XZGThemePanel._cloudRestoreThemePanel) {
+            window.XZGThemePanel._cloudRestoreThemePanel();
+        } else {
+            setTimeout(xzgThemePanelCloudRestore, 100);
+        }
+    } catch (e) {}
+})();

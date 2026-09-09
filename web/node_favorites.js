@@ -3,6 +3,82 @@ import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
 import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
+
+// ====== 收藏器设置云持久化 ======
+// xzg_favorites_state：分组备注/标题预设/上次标题颜色/上次标题字号/选择器对话框位置
+const FAV_STATE_KEY = "xzg_favorites_state";
+// xzg_title_state：上次标题配置（与编组工具共用，新建标题节点默认样式）
+const TITLE_STATE_KEY = "xzg_title_state";
+
+let _favCloudTimer = null;
+
+function _favLocalGet(key, d) {
+    try { const r = localStorage.getItem(key); return r !== null ? r : d; } catch (e) { return d; }
+}
+
+function _favCollectState() {
+    let dialogPos = null;
+    try { dialogPos = JSON.parse(localStorage.getItem("xz_selector_dialog_pos") || "null"); } catch (e) {}
+    let notes = null;
+    try {
+        const raw = localStorage.getItem("xiaozhuguang.notes");
+        if (raw) notes = JSON.parse(raw);
+    } catch (e) {}
+    let titlePresets = null;
+    try {
+        const raw = localStorage.getItem("xzg_title_presets");
+        if (raw) titlePresets = JSON.parse(raw);
+    } catch (e) {}
+    let lastTitleColor = _favLocalGet("xzg_last_title_color", null);
+    let lastTitleFontSize = _favLocalGet("xzg_last_title_font_size", null);
+    if (lastTitleFontSize !== null) lastTitleFontSize = Number(lastTitleFontSize);
+    return { notes, titlePresets, lastTitleColor, lastTitleFontSize, dialogPos };
+}
+
+function favQueueSave() {
+    if (_favCloudTimer) clearTimeout(_favCloudTimer);
+    _favCloudTimer = setTimeout(() => {
+        _favCloudTimer = null;
+        cloudSave(FAV_STATE_KEY, _favCollectState()).catch(() => {});
+    }, 500);
+}
+
+function titleQueueSave() {
+    if (_favCloudTimer) clearTimeout(_favCloudTimer);
+    _favCloudTimer = setTimeout(() => {
+        _favCloudTimer = null;
+        let config = null;
+        try { const raw = localStorage.getItem("xzg_last_title_config"); if (raw) config = JSON.parse(raw); } catch (e) {}
+        cloudSave(TITLE_STATE_KEY, { config }).catch(() => {});
+    }, 500);
+}
+
+async function favCloudRestore() {
+    try {
+        const set = (k, v) => { try { localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } catch (e) {} };
+        let changed = false;
+        const s = await cloudLoad(FAV_STATE_KEY, { fallbackValue: null });
+        if (s && typeof s === "object") {
+            if (s.notes && typeof s.notes === "object") { set("xiaozhuguang.notes", s.notes); changed = true; }
+            if (Array.isArray(s.titlePresets) && s.titlePresets.length === 5) { set("xzg_title_presets", s.titlePresets); changed = true; }
+            if (typeof s.lastTitleColor === "string") { set("xzg_last_title_color", s.lastTitleColor); changed = true; }
+            if (typeof s.lastTitleFontSize === "number") { set("xzg_last_title_font_size", String(s.lastTitleFontSize)); changed = true; }
+            if (s.dialogPos && typeof s.dialogPos === "object") { set("xz_selector_dialog_pos", s.dialogPos); changed = true; }
+        }
+        const t = await cloudLoad(TITLE_STATE_KEY, { fallbackValue: null });
+        if (t && typeof t === "object" && t.config && typeof t.config === "object") {
+            set("xzg_last_title_config", t.config);
+            changed = true;
+        }
+        if (!changed) return;
+        // 面板已打开时刷新备注显示
+        if (window.xiaozhuguangFavorites && typeof window.xiaozhuguangFavorites.loadNotes === "function") {
+            window.xiaozhuguangFavorites.loadNotes();
+        }
+    } catch (e) {
+        console.warn("[小珠光] 从云同步收藏器设置失败:", e);
+    }
+}
 window.pinyinPro = { pinyin: pinyinPro };
 
 const STORAGE_KEY = "comfyui_xiaozhuguang";
@@ -2367,6 +2443,7 @@ class Xiaozhuguang {
             }
             this.notesData.activeId = this._notesActiveId;
             localStorage.setItem("xiaozhuguang.notes", JSON.stringify(this.notesData));
+            favQueueSave();
         } catch (e) {
             console.warn("[小珠光] 保存备注失败:", e);
         }
@@ -6165,6 +6242,7 @@ app.registerExtension({
                                 left: rect.left,
                                 top: rect.top
                             }));
+                            favQueueSave();
                         } catch (e) {}
                     }
                 });
@@ -6272,6 +6350,7 @@ app.registerExtension({
                 try {
                     localStorage.setItem(TITLE_CONFIG_KEY, JSON.stringify(config));
                 } catch (e) {}
+                titleQueueSave();
             }
 
             function loadLastTitleConfig(defaults) {
@@ -7217,6 +7296,7 @@ app.registerExtension({
                     } else {
                         p.fontColor = hex;
                         localStorage.setItem('xzg_last_title_color', hex);
+                        favQueueSave();
                         refreshTextareaVisuals();
                     }
                     drawSV();
@@ -7589,11 +7669,12 @@ app.registerExtension({
                     return [null, null, null, null, null];
                 };
 
-                const saveTitlePresets = (presets) => {
-                    try {
-                        localStorage.setItem("xzg_title_presets", JSON.stringify(presets));
-                    } catch (e) {}
-                };
+    const saveTitlePresets = (presets) => {
+        try {
+            localStorage.setItem("xzg_title_presets", JSON.stringify(presets));
+        } catch (e) {}
+        favQueueSave();
+    };
 
                 const renderTitlePresets = () => {
                     const presets = getTitlePresets();
@@ -7640,6 +7721,7 @@ app.registerExtension({
                     if (preset.fontColor !== undefined) {
                         p.fontColor = preset.fontColor;
                         localStorage.setItem('xzg_last_title_color', preset.fontColor);
+                        favQueueSave();
                         if (activeColorTarget === "font") {
                             initFromColor(preset.fontColor);
                         }
@@ -7935,6 +8017,7 @@ app.registerExtension({
                     const s = parseFloat(size) || 16;
                     p.fontSize = s;
                     localStorage.setItem('xzg_last_title_font_size', s);
+                    favQueueSave();
                     const nr = getNodeViewportRect(node);
                     const scale = nr ? nr.scale : 1;
                     ta.style.fontSize = s * scale + "px";
@@ -8849,3 +8932,6 @@ app.registerExtension({
         }
     }
 });
+
+// 收藏器设置云持久化：模块加载即异步拉取并回写本地
+favCloudRestore();

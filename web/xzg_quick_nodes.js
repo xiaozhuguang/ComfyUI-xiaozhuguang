@@ -1,15 +1,21 @@
 import { app } from "../../scripts/app.js";
 import { xzgT } from "./xzg_i18n.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 
 const STORAGE_KEY = "xzg_quick_nodes";
 const CONFIG_KEY = "xzg_quick_nodes_config";
 const MAX_QUICK_NODES = 20;
+// 云持久化键：列表 + 配置合并为一个 JSON
+const CLOUD_STATE_KEY = "xzg_quick_nodes_state";
 
 class XZGQuickNodes {
     constructor() {
         this.quickNodes = this.loadQuickNodes();
         this.config = this.loadConfig();
+        this._cloudSaveTimer = null;
+        // 云持久化：先本地同步，再异步以服务端为准覆盖
+        this._cloudRestore();
         this.initialized = false;
         this.originalShowSearchBox = null;
         this.originalShowConnectionMenu = null;
@@ -34,6 +40,51 @@ class XZGQuickNodes {
             localStorage.setItem(CONFIG_KEY, JSON.stringify(this.config));
         } catch (e) {
             console.warn("[小珠光] 保存快速连线配置失败:", e);
+        }
+        this._queueCloudSave();
+    }
+
+    // ====== 快速连线云持久化（列表 + 配置合并为一个云键） ======
+    _queueCloudSave() {
+        if (this._cloudSaveTimer) clearTimeout(this._cloudSaveTimer);
+        const self = this;
+        this._cloudSaveTimer = setTimeout(() => {
+            this._cloudSaveTimer = null;
+            cloudSave(CLOUD_STATE_KEY, { nodes: self.quickNodes, config: self.config }).catch(() => {});
+        }, 500);
+    }
+
+    _persistLocalFromCloud(state) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state.nodes));
+            localStorage.setItem(CONFIG_KEY, JSON.stringify(state.config));
+        } catch (e) {}
+    }
+
+    async _cloudRestore() {
+        try {
+            const state = await cloudLoad(CLOUD_STATE_KEY, { fallbackValue: null });
+            if (!state || typeof state !== "object") return;
+            let changed = false;
+            if (Array.isArray(state.nodes)) {
+                const nodes = state.nodes.filter(n => n && n.type);
+                if (nodes.length || this.quickNodes.length) {
+                    this.quickNodes = nodes;
+                    changed = true;
+                }
+            }
+            if (state.config && typeof state.config === "object") {
+                this.config = Object.assign({}, { hideDefaultMenu: false }, state.config);
+                changed = true;
+            }
+            if (!changed) return;
+            this._persistLocalFromCloud({ nodes: this.quickNodes, config: this.config });
+            // 若主题面板已打开快速连线页，刷新列表与开关
+            if (window.XZGThemePanel?.refreshQuickNodesTab) {
+                window.XZGThemePanel.refreshQuickNodesTab();
+            }
+        } catch (e) {
+            console.warn("[小珠光] 从云同步快速连线失败:", e);
         }
     }
 
@@ -80,6 +131,7 @@ class XZGQuickNodes {
         } catch (e) {
             console.warn("[小珠光] 保存快速连线失败:", e);
         }
+        this._queueCloudSave();
     }
 
     isQuickNode(nodeType) {

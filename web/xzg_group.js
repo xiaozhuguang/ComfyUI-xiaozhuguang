@@ -6,6 +6,12 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+
+// 编组设置云存储键（快捷键/开关面板快捷键/画布移动隐藏/面板位置宽度）
+const XZG_GROUP_STATE_KEY = "xzg_group_state";
+// 标题配置云存储键（与节点收藏器共用：新建标题节点时的默认样式）
+const XZG_TITLE_STATE_KEY = "xzg_title_state";
 
 const MODE_ALWAYS = 0;
 const MODE_BYPASS = 4;
@@ -25,6 +31,10 @@ const _XZG_NODE_DRAG_SESSION = {
 
 const XZGGroup = {
     initialized: false,
+    // 编组设置云持久化
+    _groupCloudTimer: null,
+    _groupTitleTimer: null,
+    _groupCloudStarted: false,
     groups: {},       // groupId → {id, title, nodeIds, bypassed, bounds, fontSize}
     groupEls: {},
     overlay: null,
@@ -50,6 +60,9 @@ const XZGGroup = {
             }
         } catch(e) {}
         console.log('[小珠光编组] 初始化 ✓');
+
+        // 云持久化：本地先同步生效，再异步以服务端为准覆盖
+        this._cloudRestore();
 
         this.injectStyles();
         this.createOverlay();
@@ -536,6 +549,66 @@ const XZGGroup = {
                 api.queuePrompt = origApiQueuePrompt;
             }
         }
+    },
+
+    /* ── 云持久化（编组设置 + 标题配置） ── */
+    _collectGroupState() {
+        const get = (k, d) => { try { const r = localStorage.getItem(k); return r !== null ? r : d; } catch(e) { return d; } };
+        let pos = null, width = null;
+        try { pos = JSON.parse(localStorage.getItem('xzg_toggle_panel_pos') || 'null'); } catch(e) {}
+        try { width = parseInt(localStorage.getItem('xzg_toggle_panel_width'), 10) || null; } catch(e) {}
+        return {
+            shortcut: get('xzg_shortcut', 'g'),
+            toggleShortcut: this.getToggleShortcut(),
+            moveHide: get('xzg_group_move_hide', 'false'),
+            panelPos: pos,
+            panelWidth: width
+        };
+    },
+
+    _queueCloudSave() {
+        if (this._groupCloudTimer) clearTimeout(this._groupCloudTimer);
+        const self = this;
+        this._groupCloudTimer = setTimeout(() => {
+            this._groupCloudTimer = null;
+            cloudSave(XZG_GROUP_STATE_KEY, self._collectGroupState()).catch(() => {});
+        }, 500);
+    },
+
+    _persistGroupLocal(s) {
+        const set = (k, v) => { try { localStorage.setItem(k, v); } catch(e) {} };
+        if (typeof s.shortcut === 'string') set('xzg_shortcut', s.shortcut);
+        if (s.toggleShortcut && typeof s.toggleShortcut === 'object' && s.toggleShortcut.key) set('xzg_toggle_shortcut', JSON.stringify(s.toggleShortcut));
+        if (s.moveHide === 'true' || s.moveHide === 'false') set('xzg_group_move_hide', s.moveHide);
+        if (s.panelPos && typeof s.panelPos === 'object') set('xzg_toggle_panel_pos', JSON.stringify(s.panelPos));
+        if (typeof s.panelWidth === 'number') set('xzg_toggle_panel_width', String(s.panelWidth));
+    },
+
+    async _cloudRestore() {
+        if (this._groupCloudStarted) return;
+        this._groupCloudStarted = true;
+        try {
+            const s = await cloudLoad(XZG_GROUP_STATE_KEY, { fallbackValue: null });
+            if (!s || typeof s !== 'object') return;
+            this._persistGroupLocal(s);
+            // 重读内存态，本次会话立即生效
+            this.shortcutKey = localStorage.getItem('xzg_shortcut') || 'g';
+            this.toggleShortcut = this.getToggleShortcut();
+            this.canvasMoveHideActive = localStorage.getItem('xzg_group_move_hide') === 'true';
+        } catch (e) {
+            console.warn('[小珠光编组] 从云同步设置失败:', e);
+        }
+    },
+
+    _queueTitleCloudPush() {
+        if (this._groupTitleTimer) clearTimeout(this._groupTitleTimer);
+        const self = this;
+        this._groupTitleTimer = setTimeout(() => {
+            this._groupTitleTimer = null;
+            let config = null;
+            try { const raw = localStorage.getItem('xzg_last_title_config'); if (raw) config = JSON.parse(raw); } catch(e) {}
+            cloudSave(XZG_TITLE_STATE_KEY, { config }).catch(() => {});
+        }, 500);
     },
 
     /* ── 快捷键 ── */
@@ -1744,6 +1817,7 @@ const XZGGroup = {
             };
             localStorage.setItem('xzg_last_title_config', JSON.stringify(cfg));
         } catch (e) {}
+        this._queueTitleCloudPush();
     },
 
     /* ── 设置弹窗 ── */
@@ -2274,6 +2348,7 @@ const XZGGroup = {
             if (sk && sk.length === 1 && /[a-z]/.test(sk)) {
                 this.shortcutKey = sk;
                 localStorage.setItem('xzg_shortcut', sk);
+                this._queueCloudSave();
             }
 
             // 视觉属性可能变化（标题/颜色/一键隐藏标题栏等），重建 header 使所有变化一次生效
@@ -3084,6 +3159,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     left: parseInt(panel.style.left),
                     top: parseInt(panel.style.top)
                 }));
+                this._queueCloudSave();
             } catch(e) {}
             document.removeEventListener("mousemove", onMove);
             document.removeEventListener("mouseup", onUp);
@@ -3137,6 +3213,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 document.removeEventListener("pointermove", onMove);
                 document.removeEventListener("pointerup", onUp);
                 localStorage.setItem('xzg_toggle_panel_width', panel.offsetWidth);
+                this._queueCloudSave();
             };
             document.addEventListener("pointermove", onMove);
             document.addEventListener("pointerup", onUp);
@@ -3250,6 +3327,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     saveToggleShortcut(shortcut) {
         localStorage.setItem('xzg_toggle_shortcut', JSON.stringify(shortcut));
         this.toggleShortcut = shortcut;
+        this._queueCloudSave();
     },
 
     showToggleShortcutDialog() {

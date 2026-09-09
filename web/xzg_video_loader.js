@@ -921,6 +921,29 @@ async function _xzgUploadOneChunk(sessionId, chunkIndex, chunkOffset, chunkBlob)
     throw new Error(`分块 ${chunkIndex} 上传失败（已重试 ${_XZG_VIDEO_RETRY} 次）`);
 }
 
+// 小文件上传：使用 XHR（upload.onprogress 提供真实字节进度，fetch 无进度事件）
+function _xzgUploadSmallFile(file, onBytes) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const body = new FormData();
+        body.append("image", file);
+        body.append("overwrite", "true");
+        body.append("type", "input");
+        xhr.open("POST", api.apiURL("/upload/image"));
+        xhr.upload.onprogress = (ev) => {
+            if (ev.lengthComputable) onBytes?.(ev.loaded, ev.total);
+        };
+        xhr.onload = () => {
+            let data = null;
+            try { data = JSON.parse(xhr.responseText); } catch (_) { /* 非 JSON 响应 */ }
+            resolve({ status: xhr.status, data });
+        };
+        xhr.onerror = () => reject(new Error("网络错误"));
+        xhr.onabort = () => reject(new Error("上传已取消"));
+        xhr.send(body);
+    });
+}
+
 // 并发上传所有分块
 async function _xzgUploadAllChunks(file, sessionId, onProgress) {
     const totalChunks = Math.ceil(file.size / _XZG_VIDEO_CHUNK_SIZE);
@@ -931,7 +954,8 @@ async function _xzgUploadAllChunks(file, sessionId, onProgress) {
         chunks.push({ index: i, offset, blob: file.slice(offset, end) });
     }
 
-    let completed = 0;
+    // 进度按字节累计（而非块数）：最后一块往往远小于 20MB，按块数会导致进度跳变/不准确
+    let uploadedBytes = 0;
     let queueIdx = 0;
     const finalResult = { filename: null };
 
@@ -940,8 +964,8 @@ async function _xzgUploadAllChunks(file, sessionId, onProgress) {
         while (queueIdx < chunks.length) {
             const chunk = chunks[queueIdx++];
             const result = await _xzgUploadOneChunk(sessionId, chunk.index, chunk.offset, chunk.blob);
-            completed++;
-            if (onProgress) onProgress(completed, totalChunks);
+            uploadedBytes += chunk.blob.size;
+            if (onProgress) onProgress(uploadedBytes, file.size);
             if (result.status === "done") {
                 finalResult.filename = result.filename;
             }
@@ -971,6 +995,8 @@ async function _xzgUploadAllChunks(file, sessionId, onProgress) {
 
 async function uploadVideoFiles(files, onProgress) {
     const uploaded = [];
+    const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+    let doneBytes = 0;
     for (const file of files) {
         try {
             // 1GB 限制
@@ -985,16 +1011,13 @@ async function uploadVideoFiles(files, onProgress) {
             let filename = null;
 
             if (file.size <= _XZG_VIDEO_CHUNK_SIZE) {
-                // 小文件：走标准上传端点
-                const body = new FormData();
-                body.append("image", file);
-                body.append("overwrite", "true");
-                body.append("type", "input");
-                const resp = await api.fetchApi("/upload/image", { method: "POST", body });
-                if (resp.status === 200) {
-                    const data = await resp.json();
-                    if (data && data.name) filename = data.name;
-                } else if (resp.status === 413) {
+                // 小文件：走标准上传端点（XHR 以获得真实字节进度）
+                const res = await _xzgUploadSmallFile(file, (loaded) => {
+                    if (onProgress) onProgress(doneBytes + Math.min(loaded, file.size), totalBytes);
+                });
+                if (res.status === 200) {
+                    if (res.data && res.data.name) filename = res.data.name;
+                } else if (res.status === 413) {
                     _xzgVideoAlert(
                         `视频 "${file.name}" 超过服务器上传限制，请使用分块上传。`,
                         "上传失败"
@@ -1003,7 +1026,7 @@ async function uploadVideoFiles(files, onProgress) {
             } else {
                 // 大文件：分块上传
                 const totalChunks = Math.ceil(file.size / _XZG_VIDEO_CHUNK_SIZE);
-                if (onProgress) onProgress(0, totalChunks);
+                if (onProgress) onProgress(doneBytes, totalBytes);
 
                 // 启动会话
                 const startResp = await api.fetchApi("/xzg/video_upload_start", {
@@ -1028,9 +1051,9 @@ async function uploadVideoFiles(files, onProgress) {
                 const startData = await startResp.json();
                 const sessionId = startData.session_id;
 
-                // 并发上传所有分块
-                filename = await _xzgUploadAllChunks(file, sessionId, (completed, total) => {
-                    if (onProgress) onProgress(completed, total);
+                // 并发上传所有分块（进度按字节）
+                filename = await _xzgUploadAllChunks(file, sessionId, (done, total) => {
+                    if (onProgress) onProgress(doneBytes + done, totalBytes);
                 });
 
                 if (!filename) {
@@ -1045,6 +1068,7 @@ async function uploadVideoFiles(files, onProgress) {
             if (filename) {
                 uploaded.push(filename);
             }
+            doneBytes += file.size;
         } catch (e) {
             console.warn("[小珠光] 视频上传失败:", e);
             _xzgVideoAlert(
@@ -1066,15 +1090,33 @@ function _xzgWriteLinkedValue(node, inputName, value) {
         const link = graph?.links?.[inp.link];
         if (link) {
             const originNode = graph.getNodeById(link.origin_id);
-            if (originNode && originNode.widgets) {
-                const pw = (originNode.type === "PrimitiveNode")
-                    ? originNode.widgets[0]
-                    : originNode.widgets.find(x => x.name === inputName);
+            if (originNode) {
+                const ws = originNode.widgets || [];
+                // 1) 同名 widget；2) PrimitiveNode 标准位置 widgets[0]
+                let pw = ws.find(x => x.name === inputName);
+                if (!pw && originNode.type === "PrimitiveNode") pw = ws[0];
                 if (pw) {
                     pw.value = value;
                     if (typeof pw.callback === "function") pw.callback(value);
+                    // 同步序列化值数组与首个 widget（easy int 等节点值实际生效位置）
+                    if (originNode.widgets_values && originNode.widgets_values.length > 0) {
+                        originNode.widgets_values[0] = value;
+                    }
+                    if (ws[0] && ws[0] !== pw) {
+                        ws[0].value = value;
+                        if (typeof ws[0].callback === "function") ws[0].callback(value);
+                    }
                     return;
                 }
+                // 3) 无同名 widget：写首个 widget 与序列化数组
+                if (ws[0]) {
+                    ws[0].value = value;
+                    if (typeof ws[0].callback === "function") ws[0].callback(value);
+                }
+                if (originNode.widgets_values && originNode.widgets_values.length > 0) {
+                    originNode.widgets_values[0] = value;
+                }
+                return;
             }
         }
     }
@@ -1222,21 +1264,45 @@ function bindVideoLoaderInteractions(node) {
     };
     playerContainer.addEventListener('wheel', _xzgForwardWheel, { passive: false });
 
-    const showUploadProgress = (visible, completed, total) => {
+    // 注入上传进度条"加载中"流动条纹动画（全局仅一次）
+    if (!document.getElementById("xzg-video-loader-stripes-style")) {
+        const _stripeStyle = document.createElement("style");
+        _stripeStyle.id = "xzg-video-loader-stripes-style";
+        _stripeStyle.textContent =
+            "@keyframes xzg-progress-stripes { 0% { background-position: 0 0; } 100% { background-position: 28px 0; } }";
+        document.head.appendChild(_stripeStyle);
+    }
+
+    // 上传/加载进度覆盖层：
+    //   phase 为 "loading" 时表示上传已完成、正在加载视频（进度条转流动条纹，无百分比），
+    //   避免"进度条在 100% 卡住"的误解；其余阶段按字节显示真实进度。
+    const showUploadProgress = (visible, completed, total, phase) => {
         if (visible) {
             uploadOverlay.style.display = "flex";
-            if (total > 0) {
-                const pct = Math.round((completed / total) * 100);
+            if (phase === "loading") {
+                uploadTitle.textContent = "上传完成，正在加载视频...";
+                uploadBarFill.style.background = "repeating-linear-gradient(45deg,#8a6d0e 0 10px,#FFD700 10px 20px)";
+                uploadBarFill.style.width = "100%";
+                uploadBarFill.style.animation = "xzg-progress-stripes 0.5s linear infinite";
+                uploadPct.textContent = "";
+            } else if (total > 0) {
+                const pct = Math.min(100, Math.max(0, Math.round((completed / total) * 100)));
                 uploadTitle.textContent = "上传视频中...";
+                uploadBarFill.style.background = "";
                 uploadBarFill.style.width = pct + "%";
+                uploadBarFill.style.animation = "";
                 uploadPct.textContent = `${pct}%`;
             } else {
                 uploadTitle.textContent = "准备上传...";
+                uploadBarFill.style.background = "";
                 uploadBarFill.style.width = "0%";
+                uploadBarFill.style.animation = "";
                 uploadPct.textContent = "";
             }
         } else {
             uploadOverlay.style.display = "none";
+            uploadBarFill.style.background = "";
+            uploadBarFill.style.animation = "";
         }
     };
 
@@ -1287,11 +1353,46 @@ function bindVideoLoaderInteractions(node) {
     let _syncLoadRange = null;
     // 仅应用加载范围（红蓝头定位），不重置回原视频
     let _applyLoadRange = null;
+    // 上传→加载流程标志：上传完成后的"正在加载视频"遮罩由播放器加载完成/失败回调关闭
+    let _uploadLoadingActive = false;
+    let _uploadFlowToken = 0;
+    // 最近一次执行的源视频信息（后端 video_info）：预览加载恢复原视频帧数时的兜底
+    let _lastExecutedInfo = null;
+    // 以下函数在 rAF 回调内定义（需要时用），这里先声明引用：
+    // - updateWidgetBounds：控件 min/max 边界约束（onExecuted 在 bind 作用域，直接调用
+    //   rAF 内的 const 会抛 ReferenceError —— TDZ/作用域错误，会导致 onExecuted 中断，
+    //   setLoadRange(后端 skip/limit) 不执行，红蓝条仍用前端旧值）
+    // - _loadPreviewFromOutput：执行后加载预览视频覆盖预览区（onExecuted 内直接调用，
+    //   不依赖 api.addEventListener 的 executed 事件——新版前端该事件可能分发到与插件
+    //   import 的 api 不同的实例，导致预览不加载）
+    let _loadPreviewFromOutput = null;
+    let updateWidgetBounds = null;
+
+    // "比例模式"（裁剪/拉伸/留边）→ 播放器画面适配模式
+    // 留边(letterbox) → contain：预览区直接显示完整画面+黑边（surface 背景 #000），
+    // 而不是像裁剪模式那样铺满裁剪；拉伸(fill) → fill；裁剪(crop) → cover。
+    const _ratioModeToFit = () => {
+        const mw = node.widgets?.find(w => w.name === "比例模式");
+        const mode = String(mw?.value || "裁剪(crop)");
+        if (mode === "拉伸(fill)") return "fill";
+        if (mode === "留边(letterbox)") return "contain";
+        return "cover";
+    };
+    const _applyRatioModeFit = () => {
+        if (typeof player?.setFitMode !== "function") return;
+        player.setFitMode(_ratioModeToFit());
+    };
 
     const player = new XiaozhuguangVideoPlayer({
         container: playerContainer,
+        fit: _ratioModeToFit(),
         onDblClick: triggerUpload,
         onLoadedMetadata: () => {
+            // 上传流程触发的加载完成 → 关闭"正在加载视频"遮罩
+            if (_uploadLoadingActive) {
+                _uploadLoadingActive = false;
+                showUploadProgress(false);
+            }
             updateVideoInfoLabels();
             // 只同步红蓝头，不触发 _resetToSourceVideo：
             // 预览视频（合成覆盖）加载完成后若走 _syncLoadRange 会立即把刚盖上的预览重置回原视频，
@@ -1335,8 +1436,54 @@ function bindVideoLoaderInteractions(node) {
             }
             node.setDirtyCanvas?.(true, true);
         },
+        // 上传流程触发的加载失败 → 同样关闭遮罩（播放器内部已展示错误信息）
+        onError: () => {
+            if (_uploadLoadingActive) {
+                _uploadLoadingActive = false;
+                showUploadProgress(false);
+            }
+        },
     });
     node._xzgVideoPlayer = player;
+
+    // UE（easy int 等）节点加载时异步恢复值（widgets_values 被清空转移至 widgets_values_named），
+    // 红蓝杠初始读到 0。延迟轮询刷新加载范围，直至值稳定。
+    const _ueRefreshLoadRange = () => {
+        try {
+            // 用户正在拖红蓝杠/进度条时不打扰（拖动本身会写回上游并更新位置）
+            if (player._isDraggingMarker || player._isDragging) return;
+            // UE（easy int 等）值异步恢复场景：自定义宽高的外部连线值恢复后补同步预览比例。
+            // 预览视频已加载时跳过——运行后比例由后端权威值（video_info/预览视频）驱动，
+            // 避免把后端实际值覆盖回前端读到的旧值。
+            if (!player._previewLoaded) {
+                const _cw = _resolveLinkedValue("自定义宽度");
+                const _ch = _resolveLinkedValue("自定义高度");
+                const _sizeKey = _cw + "x" + _ch;
+                if (_sizeKey !== node._xzgLastSyncedSize) {
+                    node._xzgLastSyncedSize = _sizeKey;
+                    if (typeof syncCustomSize === "function") syncCustomSize();
+                }
+            }
+            const _s = _resolveLinkedValue("跳过帧数");
+            const _l = _resolveLinkedValue("帧数上限");
+            if (_s !== player._skipFrames || _l !== player._frameLimit) {
+                // 仅初始化阶段（UE 值异步恢复，player 尚为 0/0）立即修正，避免加载后红蓝条错位；
+                // 运行前修改输入值：不自动跳红蓝条，等待运行工作流后由 onExecuted 的 _applyLoadRange 更新
+                if (player._skipFrames === 0 || player._frameLimit === 0) {
+                    player.setLoadRange(_s, _l);
+                    _applyLoadRange?.();
+                }
+            }
+        } catch (_) {}
+    };
+    // 持续轮询（1s）：上游输入值（easy int 等）随时被修改时，红蓝条无需刷新浏览器即可刷新
+    const _uePoll = () => {
+        _ueRefreshLoadRange();
+        setTimeout(_uePoll, 1000);
+    };
+    // 延迟首次执行：等 bind 函数同步代码完成，避免引用未初始化的 const
+    setTimeout(_uePoll, 500);
+
 
     // 阻止拖放视频到预览区时浏览器默认打开新窗口
     const _onDragOver = (e) => {
@@ -1379,6 +1526,64 @@ function bindVideoLoaderInteractions(node) {
             }
         }
     }, { capture: true });
+
+    // 追踪外部连线输入的值：当 widget 被转为 input 时，
+    // 通过 graph.links 追溯到上游节点（通常是 PrimitiveNode）读取其 widget 值
+    function _resolveLinkedValue(inputName) {
+    // 先检查对应的 input 是否有连线 → 有连线时优先从连线追溯
+    const inp = node.inputs?.find(x => x.name === inputName);
+    if (inp && inp.link != null) {
+    const graph = node.graph;
+    if (graph && graph.links) {
+        const link = graph.links[inp.link];
+        if (link) {
+            const originNode = graph.getNodeById(link.origin_id);
+            if (originNode) {
+                const _toNum = (v) => {
+                    if (v === undefined || v === null || v === "") return null;
+                    const n = Number(v);
+                    return isNaN(n) ? null : n;
+                };
+                const _srcWidgets = originNode.widgets || [];
+                // 1) 同名 widget（任意上游节点）
+                let _pw = _srcWidgets.find(x => x.name === inputName);
+                let _n = _pw ? _toNum(_pw.value) : null;
+                if (_n !== null) return _n;
+                // 2) PrimitiveNode 标准位置 widgets[0]
+                if (originNode.type === "PrimitiveNode") {
+                    _n = _srcWidgets[0] ? _toNum(_srcWidgets[0].value) : null;
+                    if (_n !== null) return _n;
+                }
+                // 3) 序列化值数组 widgets_values（easy int 等通用数值节点）
+                const _srcVals = originNode.widgets_values || [];
+                for (let _i = 0; _i < _srcVals.length; _i++) {
+                    _n = _toNum(_srcVals[_i]);
+                    if (_n !== null) return _n;
+                }
+                // 3.5) UE 命名序列化值 widgets_values_named（Easy-Use 等 UE 节点的权威存储，加载后 widgets_values 会被清空转移到此处）
+                const _srcNamed = originNode.widgets_values_named;
+                if (_srcNamed && typeof _srcNamed === "object") {
+                    for (const _k of Object.keys(_srcNamed)) {
+                        _n = _toNum(_srcNamed[_k]);
+                        if (_n !== null) return _n;
+                    }
+                }
+                // 4) 任意节点 widgets 中第一个非空数值（兜底）
+                for (let _i = 0; _i < _srcWidgets.length; _i++) {
+                    _n = _toNum(_srcWidgets[_i].value);
+                    if (_n !== null) return _n;
+                }
+            }
+        }
+    }
+    }
+    // 无连线 → 使用 widget 自身值
+    const w = node.widgets?.find(x => x.name === inputName);
+    if (w) return Number(w.value) || 0;
+    return 0;
+}
+
+
 
     const uploadBtn = node.addWidget("button", "上传视频", "upload", triggerUpload);
     uploadBtn.options.serialize = false;
@@ -1479,6 +1684,11 @@ function bindVideoLoaderInteractions(node) {
     node.onExecuted = function (output) {
         origOnExecuted?.apply(this, arguments);
         if (!output || !player) return;
+        // 执行后立即加载预览视频覆盖预览区（ComfyUI 内置 executed 处理会调用 node.onExecuted，
+        // 一定触发；api.addEventListener 的 executed 事件在新版前端可能分发到不同 api 实例，
+        // 不能作为唯一路径）。output 即 ui 数据（含 video_preview/video_info）。
+        // 去重 key 用文件名区分：同一输出文件不重复加载，新执行产生新文件则重新加载。
+        _loadPreviewFromOutput?.(output, "executed-" + ((output?.video_preview?.[0]?.filename) || ""));
         // ComfyUI onExecuted output 结构：{ result: [...], ui: {...} }
         // video_info 是返回值数组的第三个元素（index 2）
         const result = output.result || output;
@@ -1486,12 +1696,40 @@ function bindVideoLoaderInteractions(node) {
         if (Array.isArray(result)) {
             vi = result[2];
         } else if (result && typeof result === "object") {
-            vi = result.xzg_video_info || result.video_info || null;
+            // 新版后端把权威 video_info 以"数组包 dict"放入 ui 返回（与 video_preview 同构；
+            // ComfyUI 会把 ui 内顶层 dict 键化为键名数组、顶层字符串拆为字符数组，值均丢失）；
+            // 兼容旧格式字符串/dict，旧后端则从返回值数组 result[2] 读取
+            const rawVi = result.video_info || result.xzg_video_info || null;
+            let viTmp = null;
+            if (Array.isArray(rawVi) && rawVi.length > 0 && rawVi[0] && typeof rawVi[0] === "object") {
+                viTmp = rawVi[0];
+            } else if (typeof rawVi === "string") {
+                try { viTmp = JSON.parse(rawVi); } catch (_) { viTmp = null; }
+            } else if (rawVi && typeof rawVi === "object" && !Array.isArray(rawVi)) {
+                viTmp = rawVi;
+            }
+            vi = viTmp;
         }
         if (vi) {
+            // 缓存源视频信息（预览加载恢复原视频帧数时的兜底）
+            // 同时缓存后端权威 skip_frames/frame_limit：预览视频覆盖预览区后，
+            // _applyLoadRange 以此为准设置红蓝条，避免被前端读值（外部 easy int 等
+            // widgets_values 异步迁移）或旧值覆盖，保证蓝条位置 = 红条 + 上限（如跳过100+上限200 → 蓝条300）
+            _lastExecutedInfo = {
+                source_frame_count: typeof vi.source_frame_count === "number" ? vi.source_frame_count : 0,
+                source_fps: typeof vi.source_fps === "number" ? vi.source_fps : 0,
+                skip_frames: typeof vi.skip_frames === "number" ? vi.skip_frames : 0,
+                frame_limit: typeof vi.frame_limit === "number" ? vi.frame_limit : 0,
+            };
             const fps = vi.source_fps || vi.loaded_fps;
             if (typeof fps === "number" && fps > 0) {
                 player.applyBackendFps(Math.round(fps));
+            }
+            // 原视频真实帧数（后端探测，权威值）优先写入：
+            // setTotalFrames(loaded_frame_count) 在 _sourceTotalFrames 为 null 时（原视频尚未加载完即运行）
+            // 会用"处理后帧数"顶替，导致红蓝杠基于预览帧数错位（如跳过100+上限240，蓝杠被压到240）。
+            if (typeof vi.source_frame_count === "number" && vi.source_frame_count > 0) {
+                player._sourceTotalFrames = vi.source_frame_count;
             }
             // 记录原视频分辨率（供视频编辑器继承：自定义宽高为0时用此值）
             const sw = vi.source_width, sh = vi.source_height;
@@ -1512,30 +1750,47 @@ function bindVideoLoaderInteractions(node) {
             }
             // 用后端返回的原始宽高/帧数更新标签
             updateVideoInfoLabels();
-            // 视频加载完成后更新控件边界约束（跳过帧数 max、帧数上限 min/max）
-            // 用 _applyLoadRange 而非 _syncLoadRange：执行后若预览视频已加载（_loadPreviewFromOutput），
-            // _syncLoadRange 内的 _resetToSourceVideo 会把刚盖上的预览重置回原视频，导致预览闪烁/丢失
-            _applyLoadRange?.();
+            // 运行后以后端权威值为准设置加载范围（红蓝条）：
+            // 外部 easy int 等连线输入在 ComfyUI 机制下前端读值不可靠（widgets_values 异步迁移），
+            // 必须等运行工作流后由后端实际使用的 skip/limit 更新，预览视频覆盖预览区时才正确。
+            if (typeof vi.skip_frames === "number" && typeof vi.frame_limit === "number") {
+                updateWidgetBounds?.();
+                player.setLoadRange(Math.max(0, vi.skip_frames), Math.max(0, vi.frame_limit));
+            } else {
+                // 旧后端无 frame_limit 时回退：从控件/连线读值
+                _applyLoadRange?.();
+            }
         }
     };
 
     fileInput.addEventListener("change", async (e) => {
         const files = Array.from(e.target.files || []).filter(f => isVideoFilename(f.name));
         if (files.length === 0) return;
-        // 显示进度覆盖层
-        const hasLargeFile = files.some(f => f.size > _XZG_VIDEO_CHUNK_SIZE);
-        if (hasLargeFile) showUploadProgress(true, 0, 0);
-        const uploaded = await uploadVideoFiles(files, (completed, total) => {
-            showUploadProgress(true, completed, total);
+        // 上传进度覆盖层：小文件也显示真实字节进度（此前仅大文件可见，导致"看不到进度条"）
+        const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+        const flowToken = ++_uploadFlowToken;
+        _uploadLoadingActive = true;
+        showUploadProgress(true, 0, totalBytes);
+        const uploaded = await uploadVideoFiles(files, (done, total) => {
+            if (flowToken !== _uploadFlowToken) return;
+            showUploadProgress(true, done, total);
         });
-        showUploadProgress(false);
+        if (flowToken !== _uploadFlowToken) return; // 已被新一次上传流程接管
         if (uploaded.length > 0) {
             const videoWidget = node.widgets?.find(w => w.name === "视频");
             if (videoWidget) {
+                // 上传完成 → 进入"正在加载视频"阶段：刷新列表 + 播放器解码可能耗时
+                // （含 HEVC 等编码的后端转码），期间不关闭遮罩，避免"100% 卡很久/无反馈"
+                showUploadProgress(true, totalBytes, totalBytes, "loading");
                 await refreshVideoCombo(videoWidget, uploaded[0]);
+                if (flowToken !== _uploadFlowToken) return;
                 player.load(getVideoUrl(videoWidget.value));
+                // 遮罩由播放器 onLoadedMetadata/onError 关闭（_uploadLoadingActive 匹配时）
+                return;
             }
         }
+        _uploadLoadingActive = false;
+        showUploadProgress(false);
         fileInput.value = "";
         node.setDirtyCanvas?.(true, true);
     });
@@ -1585,7 +1840,10 @@ function bindVideoLoaderInteractions(node) {
         return origProcessDrop?.apply(this, arguments);
     };
 
-    requestAnimationFrame(() => {
+    // 用 setTimeout 而非 requestAnimationFrame：后台/最小化的标签页 rAF 会被浏览器暂停，
+    // 导致初始化不完整（预览加载、事件注册等不生效，运行工作流后预览区不更新）。
+    // setTimeout 在后台同样执行，且 0ms 与"下一帧初始化"语义等价。
+    setTimeout(() => {
         const videoWidget = node.widgets?.find(w => w.name === "视频");
         if (videoWidget) {
             const origCb = videoWidget.callback;
@@ -1719,37 +1977,6 @@ function bindVideoLoaderInteractions(node) {
         const wWidget = node.widgets?.find(w => w.name === "自定义宽度");
         const hWidget = node.widgets?.find(w => w.name === "自定义高度");
 
-        // 追踪外部连线输入的值：当 widget 被转为 input 时，
-        // 通过 graph.links 追溯到上游节点（通常是 PrimitiveNode）读取其 widget 值
-        const _resolveLinkedValue = (inputName) => {
-            // 先检查对应的 input 是否有连线 → 有连线时优先从连线追溯
-            const inp = node.inputs?.find(x => x.name === inputName);
-            if (inp && inp.link != null) {
-                const graph = node.graph;
-                if (graph && graph.links) {
-                    const link = graph.links[inp.link];
-                    if (link) {
-                        const originNode = graph.getNodeById(link.origin_id);
-                        if (originNode) {
-                            // PrimitiveNode（ComfyUI widget→input 转换节点）：读其 widget 值
-                            if (originNode.type === "PrimitiveNode" && originNode.widgets) {
-                                const pw = originNode.widgets[0];
-                                if (pw) return Number(pw.value) || 0;
-                            }
-                            // 其他节点：尝试匹配同名的输出 widget 值
-                            if (originNode.widgets) {
-                                const pw = originNode.widgets.find(x => x.name === inputName);
-                                if (pw) return Number(pw.value) || 0;
-                            }
-                        }
-                    }
-                }
-            }
-            // 无连线 → 使用 widget 自身值
-            const w = node.widgets?.find(x => x.name === inputName);
-            if (w) return Number(w.value) || 0;
-            return 0;
-        };
 
         // ═══════════════════════════════════════════════════════════════════
         // 预览视频重置机制：
@@ -1774,6 +2001,7 @@ function bindVideoLoaderInteractions(node) {
             // 延迟一帧执行 load，确保拖动的 pointerup 事件先处理完毕，
             // 避免页面重渲染导致数字输入框意外进入编辑模式
             requestAnimationFrame(() => {
+                player.setPreviewLoaded(false);
                 player.load(getVideoUrl(vw.value));
             });
 
@@ -1880,7 +2108,7 @@ function bindVideoLoaderInteractions(node) {
         const origOnAfterGraphConfigured = node.onAfterGraphConfigured;
         node.onAfterGraphConfigured = function () {
             origOnAfterGraphConfigured?.apply(this, arguments);
-            setTimeout(() => { _hookAllUpstream(); syncCustomSize(); _syncLoadRange?.(); }, 0);
+            setTimeout(() => { _hookAllUpstream(); syncCustomSize(); _syncLoadRange?.(); _applyRatioModeFit(); }, 0);
         };
 
         syncCustomSize();
@@ -1888,7 +2116,7 @@ function bindVideoLoaderInteractions(node) {
         const skipWidget = node.widgets?.find(w => w.name === "跳过帧数");
 
         // 更新控件的 min/max 边界约束
-        const updateWidgetBounds = () => {
+        updateWidgetBounds = () => {
             if (!skipWidget && !limitWidget) return;
             const totalFrames = typeof player.getSourceTotalFrames === "function"
                 ? player.getSourceTotalFrames()
@@ -1916,9 +2144,21 @@ function bindVideoLoaderInteractions(node) {
         // _syncLoadRange 会立即把刚盖上的预览重置回原视频（"只盖一瞬间"）。参数变化时才重置。
         _applyLoadRange = () => {
             updateWidgetBounds();
-            // 支持上游连线输入：优先读取连线值（widget 转 input 后自身 value 不更新）
-            const skip = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
-            const limit = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
+            // 预览视频已加载（运行工作流后）：优先用后端权威 video_info 的 skip/limit。
+            // 外部整数输入（easy int 等）时前端读值不可靠（widgets_values 异步迁移），
+            // 且后端对越界值做过 clamp；预览加载完成后若被 _applyLoadRange 用前端旧值覆盖，
+            // 会导致红蓝条与真实输出不一致（如跳过100+上限200，蓝条应300却被压在200/50）。
+            let skip, limit;
+            if (_isPreviewLoaded && _lastExecutedInfo
+                && typeof _lastExecutedInfo.skip_frames === "number"
+                && typeof _lastExecutedInfo.frame_limit === "number") {
+                skip = Math.max(0, _lastExecutedInfo.skip_frames);
+                limit = Math.max(0, _lastExecutedInfo.frame_limit);
+            } else {
+                // 支持上游连线输入：优先读取连线值（widget 转 input 后自身 value 不更新）
+                skip = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
+                limit = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
+            }
             if (typeof player.setLoadRange === "function") {
                 player.setLoadRange(skip, limit);
             }
@@ -1957,6 +2197,19 @@ function bindVideoLoaderInteractions(node) {
             };
         }
         _updateRatioWidgets(node);
+        // 比例模式（裁剪/拉伸/留边）变化时同步播放器适配模式：
+        // 留边(letterbox) 直接用本体/外部宽高即可在预览区看到正确黑边，无需等运行后 temp 视频
+        const ratioModeWidget = node.widgets?.find(w => w.name === "比例模式");
+        if (ratioModeWidget) {
+            const origRmCb = ratioModeWidget.callback;
+            ratioModeWidget.callback = function (value) {
+                origRmCb?.apply(this, arguments);
+                _applyRatioModeFit();
+                // 模式切换后 surface 尺寸规则可能变化（铺满 vs 等比留边），重新计算
+                player._updateSurfaceSize?.();
+            };
+        }
+        _applyRatioModeFit();
 
         // ═══════════════════════════════════════════════════════════════════
         // 工作流执行后自动加载预览视频到预览区（立即加载策略）
@@ -1969,7 +2222,7 @@ function bindVideoLoaderInteractions(node) {
 
         let _previewLoadedForPrompt = new Set();  // 记录已经加载过 preview 的 prompt_id，避免重复
 
-        const _loadPreviewFromOutput = (output, promptId) => {
+        _loadPreviewFromOutput = (output, promptId) => {
             if (promptId && _previewLoadedForPrompt.has(promptId)) return false;
             if (!output) return false;
             const previewList = output?.video_preview;
@@ -1978,6 +2231,19 @@ function bindVideoLoaderInteractions(node) {
             const filename = preview?.filename;
             if (!filename) return false;
 
+            // 新版后端把权威 video_info 以"数组包 dict"放入 ui 返回（output.video_info[0]），
+            // 预览视频覆盖预览区后用它更新正确比例；兼容旧格式字符串/dict
+            // （不兼容 ComfyUI 键化/拆字符数组的格式，其值已丢失）
+            const _executedViRaw = output?.video_info || output?.xzg_video_info || null;
+            let _executedVi = null;
+            if (Array.isArray(_executedViRaw) && _executedViRaw.length > 0
+                && _executedViRaw[0] && typeof _executedViRaw[0] === "object") {
+                _executedVi = _executedViRaw[0];
+            } else if (typeof _executedViRaw === "string") {
+                try { _executedVi = JSON.parse(_executedViRaw); } catch (_) { _executedVi = null; }
+            } else if (_executedViRaw && typeof _executedViRaw === "object" && !Array.isArray(_executedViRaw)) {
+                _executedVi = _executedViRaw;
+            }
             const subfolder = preview?.subfolder || "";
             const type = preview?.type || "temp";
             const params = new URLSearchParams({ filename, type, subfolder });
@@ -1985,8 +2251,11 @@ function bindVideoLoaderInteractions(node) {
             console.warn("[小珠光视频加载器] (立即)加载预览视频到预览区: " + filename);
             // 保存原视频总帧数/帧率：预览视频(输出片段)帧数 < 原视频，load() 会重置 _sourceTotalFrames，
             // 导致红蓝杠位置被错误 clamp（如跳过100+上限240，蓝杠应在340却被压到240）。
-            const savedSourceTotalFrames = player._sourceTotalFrames;
-            const savedSourceFps = player._sourceFps;
+            // 播放器尚未记录帧数时（原视频未加载完即运行）用最近一次执行的 video_info 兜底。
+            const savedSourceTotalFrames = player._sourceTotalFrames
+                || (_lastExecutedInfo ? _lastExecutedInfo.source_frame_count : 0) || 0;
+            const savedSourceFps = player._sourceFps
+                || (_lastExecutedInfo ? _lastExecutedInfo.source_fps : 0) || 0;
             player.load(url);
             _isPreviewLoaded = true;
             // 预览视频解码完成后恢复原视频总帧数/帧率，确保加载范围标记基于原视频计算
@@ -1994,6 +2263,27 @@ function bindVideoLoaderInteractions(node) {
             player.onLoadedMetadata = function () {
                 if (savedSourceTotalFrames) player._sourceTotalFrames = savedSourceTotalFrames;
                 if (savedSourceFps) player._sourceFps = savedSourceFps;
+                // 预览视频覆盖预览区后，用后端权威宽高覆盖 _customRatio 更新正确比例：
+                // 自定义宽高等由外部整数输入（easy int 等）提供时，前端读值不可靠
+                // （widgets_values 异步迁移），且 executed 消息不含返回值数组、onExecuted 可能
+                // 拿不到 video_info；预览视频本身就是按最终参数转码的，其宽高即最终输出比例，
+                // 覆盖后预览区比例与输出一致（参考版本通过临时视频覆盖预览区驱动比例）。
+                let _pw = null, _ph = null;
+                if (_executedVi && typeof _executedVi.loaded_width === "number" && typeof _executedVi.loaded_height === "number"
+                    && _executedVi.loaded_width > 0 && _executedVi.loaded_height > 0) {
+                    _pw = _executedVi.loaded_width;
+                    _ph = _executedVi.loaded_height;
+                }
+                const _dec = player._currentDecoder;
+                if ((!_pw || !_ph) && _dec && _dec.width && _dec.height) {
+                    _pw = _dec.width;
+                    _ph = _dec.height;
+                }
+                if (_pw && _ph) {
+                    player.setCustomSize(_pw, _ph);
+                }
+                // 预览视频已加载：切换到预览坐标（播放起点=0，终点=预览帧数），避免 seek 到预览文件中间/末尾导致播放瞬间结束
+                player.setPreviewLoaded(true);
                 player._updateLoadRangeMarkers();
                 player._updateRangeDisplay();
                 player.onLoadedMetadata = origOnLoadedPreview;

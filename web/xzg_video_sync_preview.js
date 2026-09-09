@@ -297,6 +297,7 @@ function openSyncPreview(items) {
             placeholderText: "加载中...",
             fit: "contain", // 保持原比例、不裁剪，在播放区域内居中最大化
             ui: false, // 隐藏播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）
+            exclusiveDecoder: true, // 多视频同时 seek 对比：每个播放器独立解码，避免共享解码器渲染状态互相抢占
             // 点击任一视频画面切换播放/暂停时，同步所有视频（与左下角按钮一致：从暂停处继续）
             onPlay: () => syncResume(),
             onPause: () => syncPause(),
@@ -332,6 +333,8 @@ function openSyncPreview(items) {
 
     let playing = false;
     const playPauseBtn = mkBtn("▶ 播放", "播放全部（从头开始）", "xzg-sp-btn-primary");
+    const prevFrameBtn = mkBtn("◀ 上一帧", "上一帧（快捷键 ←）");
+    const nextFrameBtn = mkBtn("下一帧 ▶", "下一帧（快捷键 →）");
     const restartBtn = mkBtn("⏮ 回到开头", "全部回到开头重新播放");
     const muteBtn = mkBtn("🔇", "静音开关（默认静音）");
     const zoomBtn = mkBtn("🔍 100%", "滚轮缩放视频，点击重置（所有视频同步缩放）");
@@ -412,6 +415,7 @@ function openSyncPreview(items) {
     const ALIGN_INTERVAL = 500;   // 对齐检查间隔（ms）
     const ALIGN_THRESHOLD = 0.08; // 偏差阈值（秒），低于此不打扰（避免频繁跳帧）
     const alignPlayers = (now) => {
+        if (!playing) return; // 暂停时不强制对齐：避免逐帧浏览时各播放器帧位被拉回主时间
         if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
         _lastAlignAt = now;
         const main = pickMain();
@@ -498,6 +502,32 @@ function openSyncPreview(items) {
         } finally { _syncing = false; }
         if (playing) syncPlayFromStart();
     };
+    // 逐帧浏览：先暂停全部，然后各视频同步跳到「主视频当前帧号 ± delta」对应的帧。
+    // 以帧号（而非时间）为同步基准：对比场景下第 N 帧画面才有可比性；
+    // 各播放器按自己的帧率 seek 到第 N 帧，帧率不同也能逐帧对齐。
+    const stepFrame = (delta) => {
+        _syncing = true;
+        try {
+            for (const p of players) p.player.pause();
+        } finally { _syncing = false; }
+        playing = false;
+        playPauseBtn.textContent = "▶ 播放";
+        statusEl.textContent = "已暂停";
+        const main = pickMain();
+        const mfps = main.player.getFrameRate ? main.player.getFrameRate() : (main.player._frameRate || 24);
+        const target = Math.round((main.player.currentTime || 0) * mfps) + delta;
+        for (const p of players) {
+            const pfps = p.player.getFrameRate ? p.player.getFrameRate() : (p.player._frameRate || 24);
+            const skip = p.player._skipFrames || 0;
+            let end = 0;
+            try { end = p.player._computeEndFrame ? p.player._computeEndFrame() : 0; } catch (_) {}
+            if (!end || end <= 0) end = p.player.getSourceTotalFrames ? p.player.getSourceTotalFrames() : 0;
+            const f = end > 0 ? Math.max(skip, Math.min(target, end)) : Math.max(0, target);
+            try { p.player.seek(f / pfps); } catch (_) {}
+        }
+    };
+    prevFrameBtn.addEventListener("click", () => stepFrame(-1));
+    nextFrameBtn.addEventListener("click", () => stepFrame(1));
 
     playPauseBtn.addEventListener("click", () => {
         if (playing) pauseAll(); else playAll();
@@ -631,6 +661,8 @@ function openSyncPreview(items) {
     overlay._xzgWipeUp = onWipeUp;
 
     ctrl.appendChild(playPauseBtn);
+    ctrl.appendChild(prevFrameBtn);
+    ctrl.appendChild(nextFrameBtn);
     ctrl.appendChild(restartBtn);
     ctrl.appendChild(muteBtn);
     ctrl.appendChild(zoomBtn);
@@ -865,9 +897,24 @@ function openSyncPreview(items) {
         }
     });
 
-    // Esc 关闭
+    // Esc 关闭；←/→ 逐帧浏览（焦点在输入控件时不响应，避免干扰进度条等）
     const onKey = (e) => {
-        if (e.key === "Escape") closeSyncPreview();
+        if (e.key === "Escape") {
+            closeSyncPreview();
+            return;
+        }
+        const t = e.target;
+        const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+        if (typing) return;
+        if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            e.stopPropagation();
+            stepFrame(-1);
+        } else if (e.key === "ArrowRight") {
+            e.preventDefault();
+            e.stopPropagation();
+            stepFrame(1);
+        }
     };
     overlay._xzgOnKey = onKey;
     document.addEventListener("keydown", onKey, true);

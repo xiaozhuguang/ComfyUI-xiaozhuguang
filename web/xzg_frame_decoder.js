@@ -637,6 +637,24 @@ class DecoderPool {
     }
 
     /**
+     * 创建独立解码器实例（不入池、不共享）。
+     * 用于「多个播放器同时 seek/渲染」的场景（如同步对比预览）：
+     * 池化共享时同一 decoder 的渲染状态（_renderRafId/_targetFrame/_displayedFrame）是单例，
+     * 并发渲染请求会互相抢占，导致部分播放器画面不更新（表现为左侧动、右侧静止）。
+     * 调用方负责在销毁时 close()。
+     */
+    async getExclusive(filename, type, videoUrl, maxPreviewSide = 1280) {
+        const decoder = new VideoDecoderInstance();
+        try {
+            await decoder.openFromUrl(videoUrl, maxPreviewSide);
+        } catch (e) {
+            try { decoder.close(); } catch (_) {}
+            throw e;
+        }
+        return decoder;
+    }
+
+    /**
      * 预加载解码器（不阻塞，后台加载）
      */
     preload(filename, type, videoUrl) {

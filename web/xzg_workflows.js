@@ -34,6 +34,8 @@ function registerWorkflowsSetting() {
 }
 const SETTING_TOGGLE_SHORTCUT = "xzg_wf_toggle_shortcut";
 const ACCENT_KEY = "xzg_wf_accent";
+// 工作流面板设置云存储键（夺舍模式/强调色/面板开关快捷键）
+const WF_SETTINGS_KEY = "xzg_wf_settings";
 // 使用频率配色默认值（按阈值升序）：超过 N 次时，工作流名称与图标显示对应颜色
 const DEFAULT_USE_COLORS = [
     { threshold: 10,  color: "#60ce7f" },
@@ -63,6 +65,9 @@ class XZGWorkflowsManager {
         this.draggedWorkflow = null;
         this._loading = false;
         this._loadQueue = [];
+        // 工作流面板设置（夺舍/强调色/快捷键）云持久化
+        this._wfSettingsCloudTimer = null;
+        this._wfSettingsCloudStarted = false;
 
         this.init();
         // 云平台持久化：初始化后异步从云端拉取元数据，服务端有则覆盖本地
@@ -133,6 +138,57 @@ class XZGWorkflowsManager {
             this._cloudSaveTimer = null;
             cloudSave(STORAGE_KEY, this.meta).catch(() => {});
         }, 600);
+    }
+
+    // ====== 工作流面板设置（夺舍模式/强调色/快捷键）云持久化 ======
+    _collectWfSettings() {
+        let shortcut = null;
+        try {
+            const st = localStorage.getItem(SETTING_TOGGLE_SHORTCUT);
+            if (st) shortcut = JSON.parse(st);
+        } catch (e) {}
+        return {
+            possessMode: localStorage.getItem("xzg_possess_mode") === "1",
+            accent: localStorage.getItem(ACCENT_KEY) || "#FFD700",
+            shortcut: shortcut || { key: "`", ctrl: false, alt: false, shift: false, meta: false }
+        };
+    }
+
+    _queueWfSettingsSave() {
+        if (this._wfSettingsCloudTimer) clearTimeout(this._wfSettingsCloudTimer);
+        const self = this;
+        this._wfSettingsCloudTimer = setTimeout(() => {
+            this._wfSettingsCloudTimer = null;
+            cloudSave(WF_SETTINGS_KEY, self._collectWfSettings()).catch(() => {});
+        }, 500);
+    }
+
+    async _cloudRestoreWfSettings() {
+        if (this._wfSettingsCloudStarted) return;
+        this._wfSettingsCloudStarted = true;
+        try {
+            const s = await cloudLoad(WF_SETTINGS_KEY, { fallbackValue: null });
+            if (!s || typeof s !== "object") return;
+            if (typeof s.possessMode === "boolean") {
+                const v = s.possessMode ? "1" : "0";
+                if (localStorage.getItem("xzg_possess_mode") !== v) {
+                    try { localStorage.setItem("xzg_possess_mode", v); } catch (e) {}
+                    document.querySelectorAll(".xzg-wf-possess-flag").forEach(el => el.classList.toggle("active", s.possessMode));
+                    this._applyPossessMode(s.possessMode);
+                }
+            }
+            if (typeof s.accent === "string" && /^#[0-9a-fA-F]{3,8}$/.test(s.accent)) {
+                if (localStorage.getItem(ACCENT_KEY) !== s.accent) {
+                    this.applyAccentColor(s.accent);
+                }
+            }
+            if (s.shortcut && typeof s.shortcut === "object" && s.shortcut.key) {
+                try { localStorage.setItem(SETTING_TOGGLE_SHORTCUT, JSON.stringify(s.shortcut)); } catch (e) {}
+                this.updateShortcutDisplay();
+            }
+        } catch (e) {
+            console.warn("[小珠光] 从云同步工作流设置失败:", e);
+        }
     }
 
     getWorkflowMeta(path) {
@@ -364,6 +420,7 @@ class XZGWorkflowsManager {
 
     saveShortcut(shortcut) {
         localStorage.setItem(SETTING_TOGGLE_SHORTCUT, JSON.stringify(shortcut));
+        this._queueWfSettingsSave();
     }
 
     updateShortcutDisplay() {
@@ -2390,6 +2447,7 @@ class XZGWorkflowsManager {
         if (!color) color = "#FFD700";
         document.documentElement.style.setProperty("--xzg-wf-accent", color);
         try { localStorage.setItem(ACCENT_KEY, color); } catch (e) {}
+        this._queueWfSettingsSave();
     }
 
     showSettingsDialog() {
@@ -2780,6 +2838,8 @@ class XZGWorkflowsManager {
         const on = localStorage.getItem("xzg_possess_mode") === "1";
         document.querySelectorAll(".xzg-wf-possess-flag").forEach(el => el.classList.toggle("active", on));
         this._applyPossessMode(on);
+        // 云持久化：本地先同步生效，再异步以服务端为准覆盖
+        this._cloudRestoreWfSettings();
     }
 
     togglePossessMode() {
@@ -2787,6 +2847,7 @@ class XZGWorkflowsManager {
         localStorage.setItem("xzg_possess_mode", on ? "1" : "0");
         document.querySelectorAll(".xzg-wf-possess-flag").forEach(el => el.classList.toggle("active", on));
         this._applyPossessMode(on);
+        this._queueWfSettingsSave();
     }
 
     _applyPossessMode(on) {

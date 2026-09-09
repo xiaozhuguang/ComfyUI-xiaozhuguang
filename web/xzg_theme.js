@@ -1,5 +1,9 @@
 
 import { xzgT } from "./xzg_i18n.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+
+// 主题状态云存储键：连线高亮/执行节点高亮/连线动画/壁纸小状态
+const THEME_STATE_KEY = "xzg_theme_state";
 
 window.XZGThemeManager = {
     currentNodes: [],
@@ -45,6 +49,9 @@ window.XZGThemeManager = {
     nodeHighlightBreath: false,
     nodeHighlightBreathPeriod: 2.0,
     nodeHighlightWidth: 3,
+    // 主题状态云持久化
+    _themeCloudTimer: null,
+    _themeCloudRestored: false,
 
     init() {
         // 从 localStorage 恢复连线高亮状态
@@ -148,6 +155,103 @@ window.XZGThemeManager = {
         this._initWallpaperDB();
         this.initWallpaper();
         this._ensureNodeHighlightHook();
+        // 云持久化：保留上面的同步本地恢复，再异步以服务端为准覆盖
+        this._cloudRestoreTheme();
+    },
+
+    // ====== 主题状态云持久化（连线高亮/节点高亮/连线动画/壁纸小状态） ======
+    _collectThemeState() {
+        return {
+            linkHighlightActive: !!this.linkHighlightActive,
+            linkHighlightAnimType: this.linkHighlightAnimType || 'none',
+            nodeHighlightActive: !!this.nodeHighlightActive,
+            nodeHighlightColor: this.nodeHighlightColor || '#22FF22',
+            nodeHighlightBreath: !!this.nodeHighlightBreath,
+            nodeHighlightBreathPeriod: this.nodeHighlightBreathPeriod || 2.0,
+            nodeHighlightWidth: this.nodeHighlightWidth || 3,
+            linkAnimActive: !!this.linkAnimActive,
+            linkAnimType: this.linkAnimType || 'sparkle',
+            linkAnimSpeed: this.linkAnimSpeed || 1.0,
+            wallpaperActive: !!this.wallpaperActive,
+            wallpaperType: this.wallpaperType || 'image',
+            wallpaperOpacity: (typeof this.wallpaperOpacity === 'number') ? this.wallpaperOpacity : 0.5,
+            wallpaperFit: this.wallpaperFit || 'cover'
+        };
+    },
+
+    _queueThemeCloudSave() {
+        if (this._themeCloudTimer) clearTimeout(this._themeCloudTimer);
+        const self = this;
+        this._themeCloudTimer = setTimeout(() => {
+            this._themeCloudTimer = null;
+            cloudSave(THEME_STATE_KEY, self._collectThemeState()).catch(() => {});
+        }, 500);
+    },
+
+    /** 把内存态写回各 localStorage 键，保证离线/下次同步 init 读取一致 */
+    _persistThemeLocalKeys() {
+        const set = (k, v) => { try { localStorage.setItem(k, v); } catch(e) {} };
+        set('xzg-link-highlight', this.linkHighlightActive ? 'true' : 'false');
+        set('xzg-link-highlight-anim-type', this.linkHighlightAnimType || 'none');
+        set('xzg-node-highlight', this.nodeHighlightActive ? 'true' : 'false');
+        set('xzg-node-highlight-color', this.nodeHighlightColor || '#22FF22');
+        set('xzg-node-highlight-breath', this.nodeHighlightBreath ? 'true' : 'false');
+        set('xzg-node-highlight-breath-period', String(this.nodeHighlightBreathPeriod || 2.0));
+        set('xzg-node-highlight-width', String(this.nodeHighlightWidth || 3));
+        set('xzg-link-anim', this.linkAnimActive ? 'true' : 'false');
+        set('xzg-link-anim-type', this.linkAnimType || 'sparkle');
+        set('xzg-link-anim-speed', String(this.linkAnimSpeed || 1.0));
+        set('xzg-wallpaper-active', this.wallpaperActive ? 'true' : 'false');
+        set('xzg-wallpaper-type', this.wallpaperType || 'image');
+        set('xzg-wallpaper-opacity', String((typeof this.wallpaperOpacity === 'number') ? this.wallpaperOpacity : 0.5));
+        set('xzg-wallpaper-fit', this.wallpaperFit || 'cover');
+    },
+
+    async _cloudRestoreTheme() {
+        if (this._themeCloudRestored) return;
+        this._themeCloudRestored = true;
+        try {
+            const s = await cloudLoad(THEME_STATE_KEY, { fallbackValue: null });
+            if (!s || typeof s !== "object") return;
+            const wpWasActive = this.wallpaperActive;
+            const wpWasOpacity = this.wallpaperOpacity;
+            const wpWasFit = this.wallpaperFit;
+            if (typeof s.linkHighlightActive === "boolean") this.linkHighlightActive = s.linkHighlightActive;
+            if (typeof s.linkHighlightAnimType === "string") this.linkHighlightAnimType = s.linkHighlightAnimType;
+            if (typeof s.nodeHighlightActive === "boolean") this.nodeHighlightActive = s.nodeHighlightActive;
+            if (typeof s.nodeHighlightColor === "string") this.nodeHighlightColor = s.nodeHighlightColor;
+            if (typeof s.nodeHighlightBreath === "boolean") this.nodeHighlightBreath = s.nodeHighlightBreath;
+            if (typeof s.nodeHighlightBreathPeriod === "number" && s.nodeHighlightBreathPeriod > 0) this.nodeHighlightBreathPeriod = s.nodeHighlightBreathPeriod;
+            if (typeof s.nodeHighlightWidth === "number" && s.nodeHighlightWidth > 0) this.nodeHighlightWidth = s.nodeHighlightWidth;
+            if (typeof s.linkAnimActive === "boolean") this.linkAnimActive = s.linkAnimActive;
+            if (typeof s.linkAnimType === "string") this.linkAnimType = s.linkAnimType;
+            if (typeof s.linkAnimSpeed === "number" && s.linkAnimSpeed > 0) this.linkAnimSpeed = s.linkAnimSpeed;
+            if (typeof s.wallpaperActive === "boolean") this.wallpaperActive = s.wallpaperActive;
+            if (typeof s.wallpaperType === "string") this.wallpaperType = s.wallpaperType;
+            if (typeof s.wallpaperOpacity === "number") this.wallpaperOpacity = s.wallpaperOpacity;
+            if (typeof s.wallpaperFit === "string") this.wallpaperFit = s.wallpaperFit;
+            this._persistThemeLocalKeys();
+            // 重新应用壁纸（图片数据不进云，本地有才显示）
+            if (this.wallpaperActive && this.wallpaperData && (wpWasActive !== this.wallpaperActive || wpWasOpacity !== this.wallpaperOpacity || wpWasFit !== this.wallpaperFit)) {
+                this._wpBgDrawCache = null;
+                this._renderWallpaperToBgCanvas();
+            }
+            if (this.wallpaperActive !== wpWasActive) {
+                this._wpBgDrawCache = null;
+                if (this.wallpaperActive && this.wallpaperData) {
+                    this.initWallpaper();
+                } else if (!this.wallpaperActive) {
+                    this._setCanvasTransparent(false);
+                    if (this._wpBgCanvas && this._wpBgCtx) {
+                        this._wpBgCtx.clearRect(0, 0, this._wpBgCanvas.width, this._wpBgCanvas.height);
+                    }
+                }
+            }
+            // 强制重绘，drawLink/节点高亮 hook 读取最新字段并自动启动动画循环
+            if (app?.canvas?.setDirty) app.canvas.setDirty(true, true);
+        } catch (e) {
+            console.warn("[小珠光主题] 从云同步主题状态失败:", e);
+        }
     },
 
     injectPanelStyles() {
@@ -1884,6 +1988,7 @@ window.XZGThemeManager = {
                 app.graph.setDirtyCanvas(true, true);
             }
         }
+        this._queueThemeCloudSave();
         return this.linkHighlightActive;
     },
 
@@ -1899,6 +2004,7 @@ window.XZGThemeManager = {
                 app.graph.setDirtyCanvas(true, true);
             }
         }
+        this._queueThemeCloudSave();
         return this.nodeHighlightActive;
     },
 
@@ -1906,12 +2012,14 @@ window.XZGThemeManager = {
         this.nodeHighlightColor = color;
         try { localStorage.setItem('xzg-node-highlight-color', color); } catch(e) {}
         if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+        this._queueThemeCloudSave();
     },
 
     setNodeHighlightBreath(v) {
         this.nodeHighlightBreath = !!v;
         try { localStorage.setItem('xzg-node-highlight-breath', this.nodeHighlightBreath ? 'true' : 'false'); } catch(e) {}
         if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+        this._queueThemeCloudSave();
     },
 
     setNodeHighlightBreathPeriod(sec) {
@@ -1920,6 +2028,7 @@ window.XZGThemeManager = {
         this.nodeHighlightBreathPeriod = v;
         try { localStorage.setItem('xzg-node-highlight-breath-period', String(v)); } catch(e) {}
         if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+        this._queueThemeCloudSave();
     },
 
     setNodeHighlightWidth(w) {
@@ -1928,6 +2037,7 @@ window.XZGThemeManager = {
         this.nodeHighlightWidth = v;
         try { localStorage.setItem('xzg-node-highlight-width', String(v)); } catch(e) {}
         if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+        this._queueThemeCloudSave();
     },
 
     _ensureNodeHighlightHook() {
@@ -2130,6 +2240,7 @@ window.XZGThemeManager = {
                 app.graph.setDirtyCanvas(true, true);
             }
         }
+        this._queueThemeCloudSave();
         return this.linkAnimActive;
     },
 
@@ -2141,6 +2252,7 @@ window.XZGThemeManager = {
         if (window.app?.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
+        this._queueThemeCloudSave();
     },
 
     setLinkHighlightAnimType(type) {
@@ -2151,6 +2263,7 @@ window.XZGThemeManager = {
         if (window.app?.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
+        this._queueThemeCloudSave();
     },
 
     setLinkAnimSpeed(speed) {
@@ -2160,6 +2273,7 @@ window.XZGThemeManager = {
         try {
             localStorage.setItem('xzg-link-anim-speed', String(v));
         } catch(e) {}
+        this._queueThemeCloudSave();
     },
 
     toggleLinkLaser() {
@@ -4494,6 +4608,7 @@ window.XZGThemeManager = {
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
+        this._queueThemeCloudSave();
     },
 
     _setCanvasTransparent(transparent) {
@@ -4542,6 +4657,7 @@ window.XZGThemeManager = {
         } else {
             this._applyWallpaper();
         }
+        this._queueThemeCloudSave();
     },
 
     setWallpaperOpacity(opacity) {
@@ -4554,6 +4670,7 @@ window.XZGThemeManager = {
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
+        this._queueThemeCloudSave();
     },
 
     setWallpaperFit(fit) {
@@ -4566,6 +4683,7 @@ window.XZGThemeManager = {
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
+        this._queueThemeCloudSave();
     },
 
     clearWallpaper() {
@@ -4594,6 +4712,7 @@ window.XZGThemeManager = {
         if (app.canvas?.setDirty) {
             app.canvas.setDirty(true, true);
         }
+        this._queueThemeCloudSave();
     },
 
     waitForComfyUI() {

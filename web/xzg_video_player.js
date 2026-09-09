@@ -67,6 +67,9 @@ export class XiaozhuguangVideoPlayer {
         this._fitMode = options.fit || "contain";
         // 是否显示播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）；ui:false 时隐藏
         this._showUi = options.ui !== false;
+        // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
+        // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
+        this._exclusiveDecoder = !!options.exclusiveDecoder;
 
         this._canvas = null;          // Canvas 渲染目标（替代 <video>）
         this._currentDecoder = null;  // 当前 VideoDecoderInstance
@@ -111,6 +114,7 @@ export class XiaozhuguangVideoPlayer {
         this._frameRate = 24;
         this._totalFrames = null; // 后端实际加载的帧数（优先使用）
         this._sourceTotalFrames = null; // 原始视频的总帧数（不受帧率调整影响）
+        this._previewLoaded = false; // 预览视频已加载（转码从 skip 帧开始，播放用预览坐标，起点=0）
         this._sourceFps = null;    // 原始视频帧率（decoder.fps）
         this._fpsDetected = false;
         this._resizeObserver = null;
@@ -122,6 +126,7 @@ export class XiaozhuguangVideoPlayer {
         this._markerDragEndFrame = 0;
         // 循环/单次播放：false=单次（播放到蓝杠停止），true=循环（蓝杠→红杠重新开始）
         this._loopPlayback = false;
+        this._playbackEnded = false; // 自然播放结束后，下次 play() 从头重播
         this._loopBtn = null;
         // 静音状态
         this._muted = false;
@@ -485,21 +490,16 @@ export class XiaozhuguangVideoPlayer {
         const containerW = el.clientWidth || el.offsetWidth || 320;
         const containerH = el.clientHeight || el.offsetHeight || 240;
 
-        let w;
-        let h;
-        if (this._fitMode === "cover") {
-            // 铺满模式：画面填满整个容器（按容器比例裁剪边缘）
-            w = containerW;
+        // 三种模式（裁剪/拉伸/留边）surface 都按目标宽高比例等比缩放，模拟输出画面：
+        // 输出视频宽高 = 自定义宽高（或预设比例），裁剪/拉伸/留边只改变画面内容
+        // （objectFit cover/fill/contain），不改变画面外框比例。铺满容器是错误行为——
+        // 会按容器比例而非目标比例显示（如自定义 300x711 竖屏，容器 16:9 时画面会变横）。
+        const ratio = this._customRatio || this._videoRatio || 16 / 9;
+        let w = containerW;
+        let h = containerW / ratio;
+        if (h > containerH) {
             h = containerH;
-        } else {
-            // 优先使用自定义比例，否则用视频原始比例
-            const ratio = this._customRatio || this._videoRatio || 16 / 9;
-            w = containerW;
-            h = containerW / ratio;
-            if (h > containerH) {
-                h = containerH;
-                w = containerH * ratio;
-            }
+            w = containerH * ratio;
         }
 
         // 尺寸取整，避免亚像素渲染导致视频边缘漏底
@@ -562,7 +562,8 @@ export class XiaozhuguangVideoPlayer {
         const dur = this.duration;
         if (!this._canvas || dur <= 0) return;
         const fps = this._frameRate || 24;
-        const totalFrames = Math.round(dur * fps);
+        // 播放条始终显示所有帧（原视频总帧数），红蓝杠只标注位置
+        const totalFrames = this.getSourceTotalFrames() || Math.round(dur * fps);
         if (totalFrames <= 1) return;
         const bar = this._progressBar;
         if (!bar) return;
@@ -598,6 +599,9 @@ export class XiaozhuguangVideoPlayer {
 
     // 更新红蓝条对应的帧数显示
     // 红=起点（跳过帧数 _skipFrames），蓝=终点（_computeEndFrame 计算结果）
+    // 注意：预览视频（合成覆盖）加载后，_computeEndFrame 返回的是预览文件坐标（0 起算的帧数），
+    // 而蓝标签/蓝条显示在源坐标进度条上，终点帧号必须加上红条偏移（skip + 预览帧数），
+    // 例如跳过100帧+上限200帧 → 预览文件200帧，蓝标签应显示300而非200。
     _updateRangeDisplay() {
         const dur = this.duration;
         if (!this._redFrameDisplay || !this._canvas || dur <= 0) {
@@ -607,7 +611,17 @@ export class XiaozhuguangVideoPlayer {
         }
         const fps = this._frameRate || 24;
         const startFrame = this._skipFrames;
-        const endFrame = this._computeEndFrame();
+        let endFrame;
+        if (this._previewLoaded) {
+            // 预览已加载：显示源坐标终点 = 红条 + 预览文件实际帧数（预览文件即最终输出片段）
+            const previewFrames = this.getTotalFrames() || 0;
+            const sourceTotal = this.getSourceTotalFrames() || 0;
+            endFrame = previewFrames > 0
+                ? Math.min(startFrame + previewFrames, sourceTotal)
+                : startFrame + this._frameLimit;
+        } else {
+            endFrame = this._computeEndFrame();
+        }
 
         // 红色标签：起点帧号（0-based，与主帧数显示一致）
         this._redFrameDisplay.textContent = this._fpsDetected
@@ -661,7 +675,12 @@ export class XiaozhuguangVideoPlayer {
             const sourceTotalFrames = this.getSourceTotalFrames();
             const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(dur * fps));
             const endFrame = this._computeEndFrame();
-            const curFrameIdx = Math.min(Math.floor(cur * fps), endFrame);
+            // 预览模式：播放条显示所有帧，进度换算到源坐标（起点=skip），红蓝杠只标注位置
+            const base = this._previewLoaded ? this._skipFrames : 0;
+            const maxFrame = this._previewLoaded
+                ? Math.min(this._skipFrames + (this.getTotalFrames() || 0), totalFrames)
+                : endFrame;
+            const curFrameIdx = Math.min(Math.floor(cur * fps) + base, maxFrame);
             // 进度条按帧数等分：分母用 totalFrames，使最右侧（curFrameIdx=totalFrames）对应 100%
             const pct = totalFrames > 0 ? (curFrameIdx / totalFrames) * 100 : 0;
             const startPct = this._getStartPct();
@@ -679,7 +698,8 @@ export class XiaozhuguangVideoPlayer {
                     this._frameDisplay.textContent = `${curFrameIdx} / ${totalFrames}`;
                 }
             }
-            this._timeDisplay.textContent = `${this._formatTime(cur)} / ${this._formatTime(dur)}`;
+            // 时间显示与源坐标一致：预览播放从 skip 开始
+            this._timeDisplay.textContent = `${this._formatTime(cur + base / fps)} / ${this._formatTime(totalFrames / fps)}`;
             this._updateRangeDisplay();
         }
     }
@@ -757,7 +777,11 @@ export class XiaozhuguangVideoPlayer {
         const sourceTotalFrames = this.getSourceTotalFrames();
         const totalFrames = sourceTotalFrames || this._totalFrames || Math.max(1, Math.round(dur * fps));
         const endFrame = this._computeEndFrame();
-        const frameIdx = Math.max(this._skipFrames, Math.min(Math.floor(ratio * totalFrames), endFrame));
+        // 预览模式：拖动范围 = [skip, min(skip+预览帧数, 源帧数)]，坐标统一为源帧号
+        const maxFrame = this._previewLoaded
+            ? Math.min(this._skipFrames + (this.getTotalFrames() || 0), totalFrames)
+            : endFrame;
+        const frameIdx = Math.max(this._skipFrames, Math.min(Math.floor(ratio * totalFrames), maxFrame));
         // 进度条按帧数等分：分母用 totalFrames
         const pct = totalFrames > 0 ? (frameIdx / totalFrames) * 100 : 0;
         if (this._progressFill) {
@@ -769,8 +793,9 @@ export class XiaozhuguangVideoPlayer {
             this._progressThumb.style.left = pct + "%";
             this._progressThumb.style.display = "none";
         }
-        const curTime = frameIdx / fps;
-        this._timeDisplay.textContent = `${this._formatTime(curTime)} / ${this._formatTime(dur)}`;
+        // 预览模式：源帧号 → 预览文件时间（减去 skip）
+        const curTime = this._previewLoaded ? (frameIdx - this._skipFrames) / fps : frameIdx / fps;
+        this._timeDisplay.textContent = `${this._formatTime(frameIdx / fps)} / ${this._formatTime(totalFrames / fps)}`;
         if (this._frameDisplay) {
             if (!this._fpsDetected) this._frameDisplay.textContent = "";
             else this._frameDisplay.textContent = `${frameIdx} / ${totalFrames}`;
@@ -846,6 +871,10 @@ export class XiaozhuguangVideoPlayer {
     // 加载范围终点（0-based 帧号，最大 = totalFrames）
     // 注意：此值为"进度条位置/显示帧号"，实际解码帧索引最大为 totalFrames-1
     _computeEndFrame() {
+        // 预览视频已加载：播放终点 = 预览文件实际帧数（转码从 skip 帧开始，坐标从 0 起算）
+        if (this._previewLoaded) {
+            return this.getTotalFrames() || 0;
+        }
         const totalFrames = this.getSourceTotalFrames();
         if (!totalFrames) return 0;
         if (this._frameLimit > 0) {
@@ -869,11 +898,12 @@ export class XiaozhuguangVideoPlayer {
         }
         if (this._canvas) {
             const fps = this._frameRate || 24;
-            const seekTime = this._skipFrames / fps;
+            const seekTime = this._previewLoaded ? 0 : (this._skipFrames / fps);
             this.seek(seekTime);
             const dur = this.duration || 0;
             if (this._timeDisplay) {
-                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(dur)}`;
+                const srcTotal = this.getSourceTotalFrames() || Math.max(1, Math.round(dur * fps));
+                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(srcTotal / fps)}`;
             }
             if (this._frameDisplay) {
                 if (!this._fpsDetected) {
@@ -1140,7 +1170,11 @@ export class XiaozhuguangVideoPlayer {
             let loaded = false;
             for (const maxPreviewSide of PREVIEW_SIDES) {
                 try {
-            const decoder = await loaderDecoderPool.get(poolKey, poolType, playSrc, null, 0, maxPreviewSide);
+            // 独占解码：池化共享时同一 decoder 的 _renderRafId/_targetFrame/_displayedFrame 为单例状态，
+            // 多个播放器连续 seek 时后一个的渲染请求会被前一个抢占（表现为左侧动、右侧静止）
+            const decoder = this._exclusiveDecoder
+                ? await loaderDecoderPool.getExclusive(poolKey, poolType, playSrc, maxPreviewSide)
+                : await loaderDecoderPool.get(poolKey, poolType, playSrc, null, 0, maxPreviewSide);
             // P1: 校验 token，若期间又调用了 load 则放弃本次结果
             if (token !== this._loadToken) return;
             this._currentDecoder = decoder;
@@ -1286,15 +1320,19 @@ export class XiaozhuguangVideoPlayer {
             this._skipFrames = Math.max(0, totalFrames - 1);
         }
         const cur = this._currentTime;
-        const startTime = this._skipFrames / fps;
+        // 预览视频坐标：起点=0（文件本身已从 skip 帧开始）
+        const startTime = this._previewLoaded ? 0 : (this._skipFrames / fps);
         const endFrame = this._computeEndFrame();
         const endTime = endFrame / fps;
         // P11: 若 startTime > endTime（无效范围），直接从 0 播放到末尾
         const effectiveStart = startTime <= endTime ? startTime : 0;
         // 播放结束或位置越界时回到起点（含裁剪起点 _skipFrames）
-        // 容差 0.05s：避免浮点精度导致 cur 略小于 endTime 时误判为未结束
-        if (cur < effectiveStart || cur >= endTime - 0.05) {
+        // 仅当播放头已精确到达末尾（cur >= endTime，1e-6 仅吸收浮点误差）才从头：
+        // 暂停在末尾附近（含逐帧浏览到倒数第 1~N 帧）后点击播放应「接着播」，
+        // 若用帧时长作容差，末尾几帧会被误判为已播完而跳回起点（对比预览中表现为左侧从头）
+        if (this._playbackEnded || cur < effectiveStart || cur >= endTime - 1e-6) {
             this.seek(effectiveStart);
+            this._playbackEnded = false;
         }
         this._isPlayingState = true;
         this._startPlaybackLoop();
@@ -1328,6 +1366,7 @@ export class XiaozhuguangVideoPlayer {
     // seek：RAF 节流 + 最近帧降级（拖动跟手，不卡顿）
     seek(time) {
         if (!this._canvas || !this._currentDecoder) return;
+        this._playbackEnded = false;
         const dur = this.duration;
         const target = Math.max(0, Math.min(time, dur));
         this._currentTime = target;
@@ -1400,28 +1439,34 @@ export class XiaozhuguangVideoPlayer {
         this._updateSurfaceSize();
     }
 
+    // 设置画面适配模式：cover(裁剪铺满) | fill(拉伸变形) | contain(留边/完整画面)
+    // 由加载器把"比例模式"（裁剪/拉伸/留边）映射后传入，保证预览区与输出一致：
+    // 留边(letterbox) 时预览区直接显示完整画面+黑边，而不是裁剪。
+    setFitMode(mode) {
+        const m = mode === "fill" ? "fill" : (mode === "contain" ? "contain" : "cover");
+        if (this._fitMode === m) return;
+        this._fitMode = m;
+        this._applyVideoFit();
+        this._updateSurfaceSize();
+    }
+
     _applyVideoFit() {
         if (!this._canvas) return;
         if (this._fitMode === "cover") {
-            // 铺满模式：surface 已等于容器尺寸，画面裁剪填满
+            // 裁剪铺满：画面按容器比例裁剪边缘
             this._canvas.style.objectFit = "cover";
             this._canvas.style.objectPosition = "center";
             return;
         }
-        if (!this._customRatio || !this._videoRatio) {
+        if (this._fitMode === "fill") {
+            // 拉伸变形：画面拉伸填满 surface（surface 已等于容器）
             this._canvas.style.objectFit = "fill";
             this._canvas.style.objectPosition = "center";
             return;
         }
-        const src_ar = this._videoRatio;
-        const dst_ar = this._customRatio;
-        if (Math.abs(src_ar - dst_ar) < 0.01) {
-            this._canvas.style.objectFit = "fill";
-            this._canvas.style.objectPosition = "center";
-        } else {
-            this._canvas.style.objectFit = "cover";
-            this._canvas.style.objectPosition = "center";
-        }
+        // contain/留边：完整画面等比缩放，surface 背景（#000）即黑边
+        this._canvas.style.objectFit = "contain";
+        this._canvas.style.objectPosition = "center";
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1486,14 +1531,15 @@ export class XiaozhuguangVideoPlayer {
                 (this._playbackBuffer.length === 0 && this._playbackIteratorDone && !this._isBuffering)) {
                 if (this._loopPlayback) {
                     // P3: 循环回到起点时重建迭代器和清空 buffer，避免第二轮卡死
-                    const startTime = this._skipFrames / fps;
+                    const startTime = this._previewLoaded ? 0 : (this._skipFrames / fps);
                     this._currentTime = startTime;
                     this._playbackIterator = decoder.createPlaybackIterator(startTime);
                     this._playbackIteratorDone = false;
                     this._playbackBuffer = [];
                     this._playbackStartTime = performance.now();
-                    this._playbackStartFrame = this._skipFrames;
-                    this._playbackLastFrame = this._skipFrames;
+                    const sf = this._previewLoaded ? 0 : this._skipFrames;
+                    this._playbackStartFrame = sf;
+                    this._playbackLastFrame = sf;
                     this._fillPlaybackBuffer();
                     this._startAudioPlayback();
                 } else {
@@ -1501,6 +1547,7 @@ export class XiaozhuguangVideoPlayer {
                     this._currentTime = endTime;
                     this._updateProgressDisplay(endTime, this.duration);
                     this._isPlayingState = false;
+                    this._playbackEnded = true;
                     this._onEndedEvt();
                     this._playbackRaf = 0;
                     return;
@@ -1664,6 +1711,14 @@ export class XiaozhuguangVideoPlayer {
         return this._frameRate || 24;
     }
 
+    setPreviewLoaded(flag) {
+        this._previewLoaded = !!flag;
+        if (this._previewLoaded) {
+            // 切换到预览坐标后，播放头复位到预览文件开头
+            this.seek(0);
+        }
+    }
+
     getTotalFrames() {
         if (this._totalFrames) return this._totalFrames;
         const dur = this.duration;
@@ -1715,7 +1770,14 @@ export class XiaozhuguangVideoPlayer {
         }
         const startFrame = this._skipFrames;
         let endFrame;
-        if (this._frameLimit > 0) {
+        if (this._previewLoaded) {
+            // 预览已加载：蓝条按源坐标定位 = 红条 + 预览文件实际帧数（与 _updateRangeDisplay 一致），
+            // 避免蓝条停在预览帧数（如跳过100+上限200 → 蓝条在300而非200）
+            const previewFrames = this.getTotalFrames() || 0;
+            endFrame = previewFrames > 0
+                ? Math.min(startFrame + previewFrames, totalSourceFrames)
+                : startFrame + this._frameLimit;
+        } else if (this._frameLimit > 0) {
             endFrame = Math.min(startFrame + this._frameLimit, totalSourceFrames);
         } else {
             endFrame = totalSourceFrames;
@@ -1821,7 +1883,10 @@ export class XiaozhuguangVideoPlayer {
             this._audioGain = null;
             this._audioSource = null;
         }
-        // 释放当前解码器引用（池化管理，不主动销毁）
+        // 释放当前解码器引用（池化管理，不主动销毁；独占解码器需主动 close 防泄漏）
+        if (this._exclusiveDecoder && this._currentDecoder) {
+            try { this._currentDecoder.close(); } catch (_) {}
+        }
         this._currentDecoder = null;
         if (this._dblClickTimer) {
             clearTimeout(this._dblClickTimer);

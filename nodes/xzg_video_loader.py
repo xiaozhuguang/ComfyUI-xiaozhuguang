@@ -278,7 +278,8 @@ def _build_framerate_filters(force_rate, source_fps):
 
 def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                            custom_width, custom_height, downscale_ratio=8,
-                           aspect_ratio=None, ratio_mode=1, ratio_dim=0, fit_mode="crop"):
+                           aspect_ratio=None, ratio_mode=1, ratio_dim=0, fit_mode="crop",
+                           progress_cb=None):
     args_input = ["-i", video]
     args_dummy = [ffmpeg_path] + args_input + ['-c', 'copy', '-frames:v', '1', "-f", "null", "-"]
     size_base = None
@@ -406,10 +407,13 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     # ffmpeg 报告的 duration 可能有偏差（如 30/16=1.875 报为 1.88），导致帧数多/少 1
     # 正确方式：source_frames = round(fps_base × duration)，再按比例计算目标帧数
     source_frame_count = round(fps_base * duration) if fps_base > 0 else 0
+    # 跳过帧：-ss seek 后实际可输出的帧数上限 = 剩余源帧数，
+    # 否则进度上限偏大（跳过帧数越多，进度条越到不了 100%）
+    remaining_frames = max(0, source_frame_count - skip_frames) if skip_frames > 0 else source_frame_count
     if force_rate and fps_base > 0:
-        yieldable_frames = source_frame_count * force_rate / fps_base
+        yieldable_frames = remaining_frames * force_rate / fps_base
     else:
-        yieldable_frames = source_frame_count
+        yieldable_frames = remaining_frames
     if frame_load_cap > 0:
         yieldable_frames = min(yieldable_frames, frame_load_cap)
 
@@ -429,8 +433,16 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
             args_all_frames += ["-vsync", "0"]
     args_all_frames += ["-f", "rawvideo", "-"]
 
-    pbar = ProgressBar(int(yieldable_frames)) if yieldable_frames > 0 else None
+    # 进度改为回调上报（由调用方统一驱动阶段化进度条），不再内部创建 ProgressBar，
+    # 这样 yieldable<=0（探测异常）时也始终有进度条显示
     frames_added = 0
+
+    def _report(done, total):
+        if progress_cb is not None:
+            try:
+                progress_cb(done, total)
+            except Exception:
+                pass
 
     try:
         with subprocess.Popen(args_all_frames, stdout=subprocess.PIPE) as proc:
@@ -469,8 +481,9 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                         break
                     yield prev_frame
                     frames_added += 1
-                    if pbar is not None:
-                        pbar.update_absolute(frames_added, int(yieldable_frames))
+                    _report(frames_added, max(1, int(yieldable_frames)))
+                # 对账：实际帧数 < 预估（VFR/seek 误差）时进度收口到 100%，避免停在中间
+                _report(frames_added, max(1, frames_added))
             else:
                 # 降帧/直通：select 滤镜已选择帧，直接 yield
                 current_bytes = bytearray(bpi)
@@ -489,8 +502,7 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                         if prev_frame is not None:
                             yield prev_frame
                             frames_added += 1
-                            if pbar is not None:
-                                pbar.update_absolute(frames_added, int(yieldable_frames))
+                            _report(frames_added, max(1, int(yieldable_frames)))
                         prev_frame = np.frombuffer(current_bytes,
                                                    dtype=np.dtype(np.uint16).newbyteorder("<")
                                                    ).reshape(size[1], size[0], 4) / 65535.0
@@ -500,8 +512,9 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                 if prev_frame is not None:
                     yield prev_frame
                     frames_added += 1
-                    if pbar is not None:
-                        pbar.update_absolute(frames_added, int(yieldable_frames))
+                    _report(frames_added, max(1, int(yieldable_frames)))
+                # 对账：实际帧数 < 预估（VFR/seek 误差）时进度收口到 100%，避免停在中间
+                _report(frames_added, max(1, frames_added))
     except BrokenPipeError:
         try:
             err = proc.stderr.read().decode(*ENCODE_ARGS)
@@ -573,6 +586,19 @@ class XiaozhuguangVideoLoader:
 
         fit_mode = FIT_MODE_MAP.get(比例模式, "crop")
 
+        # 执行进度：阶段化千分比（读帧 0-600 / 堆叠 600-650 / 音频 650-750 / 预览转码 750-950 / 完成 1000）。
+        # 此前进度条只有"读帧"阶段：读完后 np.stack / 音频提取 / 预览转码全部无进度 → "100% 卡很久"；
+        # yieldable 探测偏差 → 进度到不了 100%；yieldable<=0 → 不显示进度条。
+        pbar = ProgressBar(1000)
+        pbar.update_absolute(0, 1000)
+
+        def progress_cb(done, total):
+            try:
+                pct = min(1.0, max(0.0, done / max(1, total)))
+                pbar.update_absolute(int(600 * pct), 1000)
+            except Exception:
+                pass
+
         gen = ffmpeg_frame_generator(
             video=video_path,
             force_rate=强制帧率,
@@ -585,6 +611,7 @@ class XiaozhuguangVideoLoader:
             ratio_mode=ratio_mode,
             ratio_dim=ratio_dim,
             fit_mode=fit_mode,
+            progress_cb=progress_cb,
         )
 
         info = next(gen)
@@ -600,11 +627,13 @@ class XiaozhuguangVideoLoader:
 
         if not frames:
             raise RuntimeError("No frames decoded from video")
+        pbar.update_absolute(600, 1000)  # 读帧完成
 
         channels = 4 if alpha else 3
         image_tensor = torch.from_numpy(
             np.stack(frames).astype(np.float32)
         ).view(-1, new_h, new_w, channels)
+        pbar.update_absolute(650, 1000)  # 帧堆叠/张量转换完成
 
         loaded_fps = 1.0 / target_frame_time if target_frame_time > 0 else src_fps
         loaded_count = image_tensor.shape[0]
@@ -612,6 +641,7 @@ class XiaozhuguangVideoLoader:
 
         audio_start = 跳过帧数 / src_fps if src_fps > 0 else 0.0
         audio_duration = loaded_duration if loaded_duration > 0 else None
+        pbar.update_absolute(700, 1000)  # 正在提取音频
         waveform, sr = extract_audio(
             video_path,
             start_time=audio_start,
@@ -636,6 +666,7 @@ class XiaozhuguangVideoLoader:
                 "waveform": waveform.unsqueeze(0),
                 "sample_rate": AUDIO_SAMPLE_RATE,
             }
+        pbar.update_absolute(750, 1000)  # 音频就绪
 
         video_info = {
             "source_fps": src_fps,
@@ -649,6 +680,7 @@ class XiaozhuguangVideoLoader:
             "loaded_width": new_w,
             "loaded_height": new_h,
             "skip_frames": max(0, int(跳过帧数 or 0)),
+            "frame_limit": max(0, int(帧数上限 or 0)),
             "filename": 视频,
         }
 
@@ -719,19 +751,57 @@ class XiaozhuguangVideoLoader:
                     "-c:a", "aac", "-b:a", "128k",
                     preview_path]
 
-            proc = subprocess.run(cmd, capture_output=True, timeout=120)
+            # 实时进度：解析 ffmpeg -progress 的 out_time（750→950），转码阶段不再"卡在 100%"
+            # -progress 必须位于输出文件之前，否则 ffmpeg 会将其解析为新的输出文件
+            cmd = cmd[:-1] + ["-progress", "pipe:1", cmd[-1]]
+            _progress_target = loaded_duration if loaded_duration and loaded_duration > 0 else 1.0
+            _last_pct = 750
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for _raw in proc.stdout:
+                _line = _raw.decode('utf-8', 'replace').strip()
+                _t = None
+                if _line.startswith('out_time_us='):
+                    try:
+                        _t = int(_line.split('=', 1)[1]) / 1000000.0
+                    except Exception:
+                        _t = None
+                elif _line.startswith('out_time_ms='):
+                    try:
+                        _t = int(_line.split('=', 1)[1]) / 1000.0
+                    except Exception:
+                        _t = None
+                if _t is None or _progress_target <= 0:
+                    continue
+                _ratio = min(1.0, max(0.0, _t / _progress_target))
+                _cur = int(750 + _ratio * 200)
+                if _cur > _last_pct:
+                    _last_pct = _cur
+                    pbar.update_absolute(_cur, 1000)
+            try:
+                proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            _err = proc.stderr.read().decode(*ENCODE_ARGS)
             if proc.returncode != 0:
-                err = proc.stderr.decode(*ENCODE_ARGS)
-                print(f"[小珠光视频加载器] 预览视频转码失败 (rc={proc.returncode}): {err[:500]}")
+                print(f"[小珠光视频加载器] 预览视频转码失败 (rc={proc.returncode}): {_err[:500]}")
             elif os.path.isfile(preview_path):
                 # ui 字段的值必须是数组（ComfyUI 的约定，参考 videos 字段格式）
+                # 权威 video_info 以"数组包 dict"形式放入 ui（与 video_preview 同构）：
+                # ComfyUI 会把 ui 内顶层 dict 键化为键名数组、顶层字符串拆为字符数组（值均丢失），
+                # 只有"数组内的 dict"原样保留。前端 output.video_info[0] 即还原的 dict。
+                # 用途：executed 消息只携带 ui 字段（不含返回值数组 result），且自定义宽高等
+                # 由外部整数输入（easy int 等）提供时前端读值不可靠（widgets_values 异步迁移），
+                # 必须由后端实际加载的宽高/帧数/跳过上限驱动预览比例与红蓝条更新。
                 preview_ui = {
                     "video_preview": [{
                         "filename": preview_filename,
                         "subfolder": "",
                         "type": "temp",
-                    }]
+                    }],
+                    "video_info": [video_info],
                 }
+            pbar.update_absolute(950, 1000)  # 预览视频就绪
         except Exception as e:
             print(f"[小珠光视频加载器] 预览视频生成异常: {e}")
 
@@ -741,6 +811,7 @@ class XiaozhuguangVideoLoader:
         else:
             result = (image_tensor, audio, video_info)
 
+        pbar.update_absolute(1000, 1000)
         return {"result": result, "ui": preview_ui}
 
     @classmethod

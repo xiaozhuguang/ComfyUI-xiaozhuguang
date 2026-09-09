@@ -13,6 +13,7 @@
 
 import { app } from "../../scripts/app.js";
 import { xzgT } from "./xzg_i18n.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 // ============================================================================
 // 常量
@@ -26,6 +27,8 @@ const STORAGE_SETTINGS_KEY = "xiaozhuguang.arrow.settings";
 const STORAGE_SHORTCUT_KEY = "xiaozhuguang.arrow.shortcut";
 const STORAGE_POSITION_KEY = "xiaozhuguang.arrow.position";
 const STORAGE_SIZE_KEY = "xiaozhuguang.arrow.size";
+// 箭头工具设置云存储键（设置/快捷键/位置/尺寸合并一个云键）
+const ARROW_STATE_KEY = "xzg_arrow_state";
 
 const DEFAULT_SHORTCUT = { key: "t", ctrl: false, alt: false, shift: false, meta: false };
 
@@ -4565,6 +4568,61 @@ function setupPersistence() {
 // 设置持久化
 // ============================================================================
 
+// ====== 箭头工具设置云持久化（设置/快捷键/位置/尺寸合并一个云键） ======
+let _arrowCloudTimer = null;
+let _arrowCloudRestored = false;
+
+function arrowCloudCollect() {
+    const get = (k, d) => { try { const r = localStorage.getItem(k); return r !== null ? r : d; } catch(e) { return d; } };
+    let pos = null, size = null;
+    try { pos = JSON.parse(localStorage.getItem(STORAGE_POSITION_KEY) || 'null'); } catch(e) {}
+    try { size = JSON.parse(localStorage.getItem(STORAGE_SIZE_KEY) || 'null'); } catch(e) {}
+    return {
+        settings: get(STORAGE_SETTINGS_KEY, null),
+        shortcut: get(STORAGE_SHORTCUT_KEY, null),
+        position: pos,
+        size: size
+    };
+}
+
+function arrowCloudQueueSave() {
+    if (_arrowCloudTimer) clearTimeout(_arrowCloudTimer);
+    _arrowCloudTimer = setTimeout(() => {
+        _arrowCloudTimer = null;
+        cloudSave(ARROW_STATE_KEY, arrowCloudCollect()).catch(() => {});
+    }, 500);
+}
+
+async function arrowCloudRestore() {
+    if (_arrowCloudRestored) return;
+    _arrowCloudRestored = true;
+    try {
+        const s = await cloudLoad(ARROW_STATE_KEY, { fallbackValue: null });
+        if (!s || typeof s !== "object") return;
+        const set = (k, v) => { try { localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } catch(e) {} };
+        if (s.settings && typeof s.settings === "object") set(STORAGE_SETTINGS_KEY, s.settings);
+        if (s.shortcut && typeof s.shortcut === "object" && s.shortcut.key) set(STORAGE_SHORTCUT_KEY, s.shortcut);
+        if (s.position && typeof s.position === "object" && typeof s.position.top === "number" && typeof s.position.left === "number") set(STORAGE_POSITION_KEY, s.position);
+        if (s.size && typeof s.size === "object" && typeof s.size.width === "number") set(STORAGE_SIZE_KEY, s.size);
+        // 重载内存态
+        loadSettings();
+        loadShortcut();
+        // 工具栏已打开则直接应用云端位置/尺寸
+        if (toolbarElement) {
+            if (s.position && typeof s.position.top === "number" && typeof s.position.left === "number") {
+                toolbarElement.style.top = s.position.top + "px";
+                toolbarElement.style.left = s.position.left + "px";
+                toolbarElement.style.right = "auto";
+            }
+            if (s.size && typeof s.size.width === "number") {
+                toolbarElement.style.width = s.size.width + "px";
+            }
+        }
+    } catch (e) {
+        console.warn("[小珠光] 从云同步箭头工具设置失败:", e);
+    }
+}
+
 function loadSettings() {
     try {
         const saved = localStorage.getItem(STORAGE_SETTINGS_KEY);
@@ -4599,6 +4657,7 @@ function saveSettings() {
     try {
         localStorage.setItem(STORAGE_SETTINGS_KEY, JSON.stringify(arrowSettings));
     } catch (e) {}
+    arrowCloudQueueSave();
 }
 
 // 恢复默认设置
@@ -4764,6 +4823,7 @@ function saveShortcut(s) {
     try {
         localStorage.setItem(STORAGE_SHORTCUT_KEY, JSON.stringify(shortcut));
     } catch (e) {}
+    arrowCloudQueueSave();
 }
 
 function formatShortcut(sc) {
@@ -4793,6 +4853,7 @@ function savePosition(top, left) {
     try {
         localStorage.setItem(STORAGE_POSITION_KEY, JSON.stringify({ top, left }));
     } catch (e) {}
+    arrowCloudQueueSave();
 }
 
 function loadSize() {
@@ -4812,6 +4873,7 @@ function saveSize(width) {
     try {
         localStorage.setItem(STORAGE_SIZE_KEY, JSON.stringify({ width }));
     } catch (e) {}
+    arrowCloudQueueSave();
 }
 
 // 使用说明弹窗
@@ -6706,3 +6768,5 @@ app.registerExtension({
         waitForCanvasAndInitialize();
     }
 });
+// 箭头工具设置云持久化：模块加载即异步拉取并回写本地
+arrowCloudRestore();
