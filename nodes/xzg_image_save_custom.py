@@ -12,7 +12,6 @@ import os
 import re
 import random
 import numpy as np
-import torch
 from PIL import Image
 from datetime import datetime
 import folder_paths
@@ -77,7 +76,7 @@ def _resolve_template(template: str, context: dict) -> str:
 
 class XiaozhuguangImageSaveCustom(PreviewImage):
     """小珠光图像保存-自定义输出
-    保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)。
+    保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)；磁盘/右键 JPG 质量统一为 90，预览 JPG 固定 80。
     与小珠光图像保存完全相似的显示体验，但 output_path / filename_prefix 支持
     {date} {time} {datetime} {workflow} {node_id} {format} 模板变量，
     可按日期/工作流名自动分文件夹，文件名带时间戳。
@@ -117,7 +116,8 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                     prompt=None, extra_pnginfo=None, unique_id=None):
 
         max_side = 3840 if reduce_lag else 6400
-        quality = 85 if reduce_lag else 80
+        preview_quality = 80   # 画布预览 JPG 质量（固定，防卡顿优先）
+        save_quality = 90      # 磁盘 JPG 与右键懒编码 JPG 质量（统一）
 
         # 兼容老工作流的中文值
         mode_norm = "Preview" if str(mode) in ("预览", "Preview", "preview") else "Save"
@@ -233,15 +233,13 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
             real_np = (tensor.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             REAL_STORE[token].append(real_np)
 
-            # GPU 加速压缩（仅做一次，用于预览和 JPG 保存）
-            img = tensor.unsqueeze(0).permute(0, 3, 1, 2)
+            # 压缩预览图：全分辨率像素用 Lanczos 降采样（PIL LANCZOS，质量优于 bicubic）
+            compressed_pil = Image.fromarray(real_np)
             if max(w, h) > max_side:
                 ratio = max_side / max(w, h)
-                new_w = int(w * ratio)
-                new_h = int(h * ratio)
-                img = torch.nn.functional.interpolate(img, size=(new_h, new_w), mode='bicubic', align_corners=False)
-            img = img.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            compressed_pil = Image.fromarray((img * 255).clip(0, 255).astype(np.uint8))
+                new_w = max(1, int(w * ratio))
+                new_h = max(1, int(h * ratio))
+                compressed_pil = compressed_pil.resize((new_w, new_h), Image.LANCZOS)
 
             # 预览始终为 JPG（减少卡顿）：RGBA 合成到棋盘格背景后转 RGB（Photoshop 风格透明指示）
             if compressed_pil.mode != "RGB":
@@ -275,7 +273,7 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                 preview_fname = f"{real_stem}.jpg"
             else:
                 preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
-            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=quality, optimize=True)
+            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=preview_quality, optimize=True)
 
             # 保存到输出目录（仅保存模式；RGBA 已强制 PNG）
             saved_info = None
@@ -292,7 +290,7 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                             full_pil = _xzg_composite_checkerboard(full_pil, cell=_cell)
                         else:
                             full_pil = full_pil.convert("RGB")
-                    full_pil.save(full_path, "JPEG", quality=quality, optimize=True)
+                    full_pil.save(full_path, "JPEG", quality=save_quality, optimize=True)
 
                 # 仅当非绝对路径时才提供 saved 信息给前端直接下载
                 # 绝对路径无法通过 ComfyUI /view 路由下载（会拼接 output 目录），

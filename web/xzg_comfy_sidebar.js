@@ -94,9 +94,10 @@ async function cloudRestoreSidebar() {
                 }
             }
             if (changed) {
-                // 回写后更新指纹，避免本模块自己触发一次无谓上云
+                // 回写后更新指纹，避免本模块自己触发一次无谓上云；
+                // 不自动刷新：Splitter 未初始化会直接读新值，已初始化则本地已就位、下次刷新自然生效，
+                // 避免打开页面/切换工作流时被强制重载打断
                 _lastFingerprint = fingerprint(collectSidebarKeys());
-                requestSidebarReloadOnce();
                 return;
             }
         }
@@ -108,18 +109,16 @@ async function cloudRestoreSidebar() {
 }
 
 // 模块加载：先展开本地聚合键到官方裸键（覆盖「导入后刷新」/「换设备本地已有云端缓存」场景），
-// 再异步拉云（cloudLoad 回写裸键；Splitter 未初始化则直接生效，已初始化则自动刷新一次）
+// 再异步拉云（cloudLoad 回写裸键；Splitter 未初始化则直接生效，已初始化则本地就位下次自然生效）
 if (expandCloudKeyToLocal()) {
     _lastFingerprint = fingerprint(collectSidebarKeys());
-    requestSidebarReloadOnce();
 }
 cloudRestoreSidebar();
 
-/** 定时兜底：聚合键展开 + 变化检测上云（覆盖导入后 60s 内的补同步） */
+/** 定时兜底：聚合键展开 + 变化检测上云（覆盖导入后 60s 内的补同步；展开不触发刷新） */
 function periodicSidebarCheck() {
     if (expandCloudKeyToLocal()) {
         _lastFingerprint = fingerprint(collectSidebarKeys());
-        requestSidebarReloadOnce();
     }
     maybePushSidebar();
 }
@@ -128,6 +127,27 @@ function periodicSidebarCheck() {
 document.addEventListener("mouseup", maybePushSidebar, true);
 window.addEventListener("blur", maybePushSidebar);
 setInterval(periodicSidebarCheck, 60000);
+
+/** 页面关闭/刷新前同步推送最新宽度（sendBeacon keepalive），
+ *  兜住防抖窗口内被刷新/切换打断的最后一次拖动，保证下次打开恢复的是用户最后拖动的宽度 */
+function pushSidebarSync() {
+    try {
+        const map = collectSidebarKeys();
+        // 同步更新本地聚合键：刷新后模块加载 expand 会以聚合键为准展开裸键，
+        // 若不更新，聚合键仍是旧值，会把用户最后拖动的宽度覆盖成旧云端值（表现为「固定宽度」）
+        try { localStorage.setItem(COMFY_SIDEBAR_STATE_KEY, JSON.stringify(map)); } catch (e) {}
+        const body = JSON.stringify({ key: COMFY_SIDEBAR_STATE_KEY, data: map });
+        if (navigator.sendBeacon) {
+            navigator.sendBeacon("/xzg_cloud_store", new Blob([body], { type: "application/json" }));
+        } else {
+            const x = new XMLHttpRequest();
+            x.open("POST", "/xzg_cloud_store", false);
+            x.setRequestHeader("Content-Type", "application/json");
+            x.send(body);
+        }
+    } catch (e) {}
+}
+window.addEventListener("pagehide", pushSidebarSync);
 
 // 导入配置后立即展开裸键并上云（importAllConfig includeXzg 分支末尾统一调用 __xzgCloudPush）
 if (typeof window !== "undefined") {

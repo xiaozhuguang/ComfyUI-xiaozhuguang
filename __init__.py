@@ -299,7 +299,7 @@ if _AUDIODIT_ENABLED:
 try:
     from server import PromptServer
     from aiohttp import web
-    from .nodes.xzg_image_save import REAL_STORE
+    from .nodes.xzg_image_save import REAL_STORE, _xzg_composite_checkerboard
 
     _xzg_save_real_routes = getattr(PromptServer, 'instance', None)
     if _xzg_save_real_routes is not None:
@@ -326,6 +326,19 @@ try:
         except Exception:
             return web.json_response({"error": "bad index"}, status=400)
 
+        # 格式与质量：统一按保存模式逻辑编码全分辨率文件（png 无损 / jpg 有损 quality）
+        # 预览模式与保存模式右键下载行为一致，仅差是否落盘
+        fmt = str(data.get("format", "png") or "png").lower()
+        if fmt == "jpeg":
+            fmt = "jpg"
+        if fmt not in ("png", "jpg"):
+            fmt = "png"
+        try:
+            quality = int(data.get("quality", 90))
+        except Exception:
+            quality = 80
+        quality = max(1, min(100, quality))
+
         store = REAL_STORE.get(token)
         if not store or index < 0 or index >= len(store):
             return web.json_response({"error": "not found"}, status=404)
@@ -335,8 +348,22 @@ try:
             return web.json_response({"error": "already served"}, status=404)
 
         output_dir = _safe_dir("get_temp_directory", "temp")
-        fname = "xzg_real_" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12)) + ".png"
-        Image.fromarray(arr).save(os.path.join(output_dir, fname), "PNG")
+        ext = "png" if fmt == "png" else "jpg"
+        fname = "xzg_real_" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(12)) + "." + ext
+        pil_img = Image.fromarray(arr)
+        if fmt == "png":
+            # 全分辨率无损 PNG（RGBA 保留 alpha 通道）
+            pil_img.save(os.path.join(output_dir, fname), "PNG")
+        else:
+            # 全分辨率 JPG：与节点保存逻辑一致（JPG 不支持 alpha，RGBA 合成棋盘格后转 RGB）
+            if pil_img.mode != "RGB":
+                if pil_img.mode == "RGBA":
+                    w, h = pil_img.size
+                    cell = max(16, min(40, max(w, h) // 32))
+                    pil_img = _xzg_composite_checkerboard(pil_img, cell=cell)
+                else:
+                    pil_img = pil_img.convert("RGB")
+            pil_img.save(os.path.join(output_dir, fname), "JPEG", quality=quality, optimize=True)
 
         # 不销毁数据，允许重复保存（内存由 REAL_STORE 的 100 条上限自动清理）
 

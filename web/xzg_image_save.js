@@ -56,7 +56,9 @@ function _xzgImgSaveEnsureCtxMenu() {
         if (!w) return;
         const imgs = w._value?.images || [];
         const cur = imgs[w.currentIndex] || imgs[0];
-        if (cur) downloadJpgImage(cur);
+        if (!cur) return;
+        // 与节点磁盘 JPG 保存质量保持一致：统一 90（预览 JPG 固定 80，仅用于画布显示）
+        downloadJpgImage(cur, { quality: 90 });
     });
     menu.appendChild(jpgItem);
 
@@ -523,15 +525,13 @@ class XzgImageSaveWidget {
                 idx++;
             }
 
-            // JPG/PNG 切换（预览模式下灰显且不可点击；RGBA 图像强制 PNG 并灰显）
+            // JPG/PNG 切换（预览模式下也可切换：作为右键保存格式选择器；RGBA 图像强制 PNG 并灰显）
             if (formatWidget) {
                 ctx.textAlign = "center";
-                const v = String(modeWidget?.value || "Save");
-                const isPreview = (v === "预览" || v === "Preview" || v === "preview");
                 // 批次中任一图含 alpha 通道时强制 PNG（JPG 无法保留透明度）
                 const hasAlpha = (this._value?.images || []).some(d => d.has_alpha);
                 if (hasAlpha) formatWidget.value = "PNG";
-                const disabled = isPreview || hasAlpha;
+                const disabled = hasAlpha;
                 ctx.fillStyle = disabled ? "#555555" : "#aaaaaa";
                 ctx.fillText(formatWidget.value || "JPG", colW * idx + colW / 2, y + btnH / 2);
                 if (!disabled) {

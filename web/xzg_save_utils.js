@@ -200,14 +200,17 @@ export async function downloadAudio(url, filename) {
  * 通过 token 和 index 从后端获取真实分辨率图片 URL
  * @param {{ real_token: string, real_index?: number }[]} imgData - 单元素数组或含 token/index 的对象
  */
-export async function xzgGetRealUrl(imgData) {
+export async function xzgGetRealUrl(imgData, opts = {}) {
     if (!imgData || !imgData.real_token) return null;
 
     try {
+        const body = { token: imgData.real_token, index: imgData.real_index };
+        if (opts.format) body.format = opts.format;
+        if (opts.quality != null) body.quality = opts.quality;
         const resp = await api.fetchApi("/xzg_save_real", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index }),
+            body: JSON.stringify(body),
         });
         if (!resp.ok) return null;
         const info = await resp.json();
@@ -250,11 +253,32 @@ export async function downloadLazyImage(imgData) {
 }
 
 /**
- * 下载 JPG（直接使用压缩预览图，无需懒编码）
+ * 下载 JPG（与保存模式逻辑一致：全分辨率 quality 压缩；仅差是否落盘）
+ * 优先级：
+ *   1) 保存模式下已保存到 output 目录的 JPG → 直接引用，无需懒编码
+ *   2) 否则懒编码获取全分辨率 JPG（不再使用画布上的降采样预览图）
  */
-export async function downloadLazyJpg(imgData) {
-    if (!imgData || !imgData.url) return;
-    await downloadJpgImage(imgData.url, `xzg-save-${xzgTimestamp()}.jpg`);
+export async function downloadLazyJpg(imgData, opts = {}) {
+    if (!imgData) return;
+
+    // 1) 优先：output 目录已有 JPG 文件，直接构造 /view URL 下载（全分辨率，与懒编码结果一致）
+    if (imgData.saved_filename && imgData.saved_type) {
+        const savedUrl = api.apiURL(
+            `/view?filename=${encodeURIComponent(imgData.saved_filename)}`
+            + `&type=${encodeURIComponent(imgData.saved_type)}`
+            + `&subfolder=${encodeURIComponent(imgData.saved_subfolder || "")}`
+            + `${app.getRandParam()}`
+        );
+        await downloadJpgImage(savedUrl, imgData.saved_filename || `xzg-save-${xzgTimestamp()}.jpg`);
+        return;
+    }
+
+    // 2) 回退：懒编码获取全分辨率 JPG（quality 与节点 JPG 保存参数一致）
+    const quality = (opts.quality != null) ? opts.quality : 90;
+    let url = imgData.real_url || await xzgGetRealUrl(imgData, { format: "jpg", quality });
+    if (url) {
+        await downloadJpgImage(url, `xzg-save-${xzgTimestamp()}.jpg`);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

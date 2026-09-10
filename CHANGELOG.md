@@ -1,361 +1,382 @@
-## v15.0.14 (2026-09-10)
-
-### 变更
-
-- **小珠光帧优化节点：移除后补帧 / 首帧 / 尾帧输出端**（`nodes/xzg_duplicate_first_frame.py`）
-  - 仅移除输出端口，内部补帧计算不变（前补帧公式、多参补帧尾补到 73 帧逻辑原样保留）
-- **小珠光帧提取节点：移除后补帧输入口及相关功能，新增「原始帧数」输入口**（`nodes/xzg_frame_extract.py`）
-  - 前补帧 N：裁剪掉最前面的 N 张图像
-  - 原始帧数 M：踢掉前补帧后，从第 N+1 张起获取 M 张图像（超出末尾自动钳制；默认 99999 时等价于踢掉前补帧后全部保留）
-  - 端口顺序：原始帧数置于前补帧上方
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 15.0.14
-
----
-
-## v15.0.7 (2026-09-08)
-
-### 修复
-
-- **依赖清单补充 pycryptodome，修复插件因缺少该依赖无法导入**（`requirements.txt` + `pyproject.toml`）
-  - 内置工具组件 `_xzg_tool/__init__.py` 初始化块在导入期即加载 `Crypto.Cipher.AES` / `Crypto.Util.Padding`（由 pycryptodome 提供）
-  - 缺失时插件整体加载失败（ModuleNotFoundError），安装 pycryptodome 后恢复正常
-  - requirements.txt 必需依赖段与 pyproject.toml dependencies 同步补充 pycryptodome
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 15.0.7
-
----
-
-## v15.0.6 (2026-09-07)
-
-### 优化
-
-- **工作流管理器：只读工作流名称不再变暗**（`web/xzg_workflows.js`）
-  - 切换只读后，工作流名称保持原色，不再变灰、不再降低透明度
-  - 只读标识保留：🔒 只读金色标签 + 左侧图标金色，辨识依旧清晰
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 15.0.6
-
----
-
-## v15.0.5 (2026-09-06)
-
-### 修复
-
-- **小珠光图片加载器：裁剪区域与图片名称绑定保存，修复切换图片时旧裁剪被错误应用的 bug**（`web/xzg_image_loader.js` + `nodes/xzg_image_loader.py`）
-  - crop_data widget 从纯数组 `[x,y,w,h]` 改为映射格式 `{"图片名": [x,y,w,h], ...}`
-  - 前端新增 `_cropByImage` 映射，每张图独立维护裁剪区域
-  - 切换图片时从映射中加载对应图片的裁剪区域，图片没变时裁剪不丢失
-  - 切换回之前裁剪过的图片时，裁剪区域自动恢复
-  - 后端 `_parse_crop_data()` 支持映射格式，按当前图片名提取裁剪区域
-  - 完全兼容旧格式（纯数组），旧工作流无需迁移
-  - `_commitCropToWidget()` 提交后标记 graph dirty，确保切换工作流时最新值被序列化
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 15.0.5
-
----
-
-## v15.0.4 (2026-09-06)
-
-### 新增
-
-- **工作流管理器：右键切换工作流只读属性**（`web/xzg_workflows.js` + `workflows.py`）
-  - 右键菜单新增「🔒 切换只读」项，点击即时切换
-  - 只读工作流列表显示：名称变灰、左侧图标变金色、meta 行显示「🔒 只读」金色标签
-  - 只读保护：禁止删除、禁止重命名、禁止移动分类，操作时弹出提示
-  - 不影响：打开/加载工作流、使用频率计数、搜索排序
-- **工作流文件系统只读属性**（`workflows.py`）
-  - 切换只读后同步设置 .json 文件的操作系统只读属性
-  - Windows 用 SetFileAttributesW 设置 FILE_ATTRIBUTE_READONLY，Linux/Mac 用 chmod -w
-  - 文件只读后 ComfyUI 按 Ctrl+S 覆盖保存会失败，从根本上防止误覆盖
-  - 新增 POST /xzg/workflows/set-readonly API
-  - 删除/重命名/移动工作流时后端自动先解除只读属性，确保操作成功
-  - 元数据 readOnly 字段随本地/云端持久化
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 15.0.4
-
----
-
-## v15.0.3 (2026-09-06)
-
-### 优化
-
-- **小珠光视频保存节点：MP4 编码质量提升，消除块状马赛克伪影**(`nodes/xzg_video_combine.py` + `web/xzg_video_combine.js`)
-  - 默认 CRF 从 19 降至 16（越低画质越好）
-  - 新增 `-preset slow`：更慢的压缩速度换更高压缩效率
-  - 新增 `-tune film`：优化胶片/视频内容的压缩策略
-  - 新增 `-aq-mode 3`：自适应量化，减少平坦区域块效应
-  - 前端 CRF 注释文字同步更新为默认 16
-- **小珠光视频加载器：scale 缩放滤镜默认从 bicubic 改为 lanczos**(`nodes/xzg_video_loader.py`)
-  - 8 处尺寸缩放滤镜全部添加 `:flags=lanczos`
-  - 缩小时抗混叠能力更强、高频细节保留更好
-  - 覆盖帧提取与预览转码两条路径、三种 fit 模式（crop/fill/letterbox）
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 15.0.3
-
----
-
-## v14.1.3 (2026-09-03)
-
-### 新增
-
-- **小珠光系统监控悬浮窗**（`nodes/xzg_monitor.py` + `web/xzg_monitor.js`）
-  - 提供 `/xzg/system_monitor_stats` 接口，实时返回 GPU / CPU / 内存状态
-  - 前端自动加载可拖拽悬浮窗，每秒轮询展示
-- **新增若干节点工具与组合辅助功能**（`web/xzg_node_tools.js`、`web/xzg_compose_core.js`、`web/xzg_compose_tool.js`、`web/xzg_device_code.js`、`_xzg_tool/`）
-- **主题面板增强**（`web/xzg_theme.js`、`web/xzg_theme_panel.js`）
-- **修复**：节点收藏面板细节调整（`web/node_favorites.js`），更新依赖声明（`requirements.txt`）
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.1.3
-
----
-
-## v14.1.2 (2026-09-02)
-
-
-### 变更
-
-- **GitHub Actions 发布流程：升级 action 版本，消除 Node.js 20 弃用警告**（`.github/workflows/publish_action.yml`）
-  - `actions/checkout@v4` → `v5`（release / publish-node 两处）
-  - `softprops/action-gh-release@v2` → `v3.0.3`
-  - 说明：`actions/setup-python@v5` 警告来自 Comfy 官方 `Comfy-Org/publish-node-action` 第三方 action 内部，无法在本仓库修改消除
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.1.2
-
----
-
-## v14.1.1 (2026-09-02)
-
-### 修复
-
-- **小珠光箭头：新打开工作流"先绘制错误位置/大小内容、节点出现后再绘制正确"**（`web/xzg_arrow_tool.js`）
-  - 根因：延迟期强制隐藏标志（`_newOpenHoldHide`）设置过晚，transformTracker 的 150ms 渐入在 configure 完成前触发、把 opacity 设回 1，onDrawBackground 用尚未适配的 transform 先绘制出错误位置/大小的内容
-  - 修复：loadGraphData 加载开始即置位延迟期隐藏标志，从源头拦截 150ms 提前渐入；onDrawBackground 在延迟期不绘制箭头，画布节点 / 视图稳定后一次性绘制正确内容，杜绝"先错后对"
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.1.1
-
----
-
-## v14.1.0 (2026-09-02)
-
-### 新增
-
-- **BrushNet 复刻节点：`CutForInpaint` / `BlendInpaint`**（`nodes/xzg_brushnet_inpaint.py`）
-  - 完全复刻自 [ComfyUI-BrushNet](https://github.com/nullquant/ComfyUI-BrushNet)（MIT License），算法逐字一致，仅依赖 torch / torchvision（本插件已有）
-  - `CutForInpaint`：以 mask 区域为中心裁剪出指定 width×height 画布窗口，输出 IMAGE + MASK + VECTOR（origin 裁剪坐标）
-  - `BlendInpaint`：把 inpaint 结果按高斯模糊后的 mask 软融合回原图；可选 `origin` 输入时按裁剪坐标原位贴回（与 CutForInpaint 配对使用）
-  - 典型流程：`CutForInpaint` 裁出画布 → 局部采样 → `BlendInpaint` 融合回原图
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.1.0
-
----
-
-## v14.0.11 (2026-09-02)
-
-### 修复
-
-- **小珠光箭头（`web/xzg_arrow_tool.js`）：新工作流串台 / 关闭残留 / 已保存丢失 / 显示时机** 系列回归修复
-  - 新建工作流偶发出现上一工作流图形（画圆 → 新建 Unsaved Workflow (2)/(3) 概率串台）：configure 阶段立即提交切换 + 清除临时缓存，杜绝前端 `rootGraph.serialize()` 把残留旧图形写进新工作流
-  - 关闭未保存工作流后新建同名 tab 旧箭头重现：关闭 / 删除工作流时同步清理插件内存缓存与 localStorage 备份，新建同名工作流不再从备份恢复旧图形
-  - 已保存工作流重开绘图丢失：关闭仅清临时、保存保留、重开按需恢复备份，绘图内容完整保留在工作流里
-  - 绘图显示时机：切换 tab 快速显示；**新打开工作流延迟 3 秒**等画布节点 / 视图完全加载稳定后再显示绘图，杜绝"先以错误大小显示、随后随画布缩放"
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.0.11
-
----
-
-## v14.0.10 (2026-09-01)
-
-### 修复
-
-- **快捷键 D / F 裸键在输入框内被拦截，导致无法输入 D / F**（`web/xzg_shortcuts.js`）
-  - 修复前：只要匹配到已配置快捷键（含 D、F 裸键）就无条件 `preventDefault()`，输入框内打字也被拦截，D / F 打不进去
-  - 修复后：输入框 / 文本域 / 可编辑元素内的裸键（无任何修饰键）完全放行，正常输入字符；带修饰键的组合（如 Ctrl+D）仍阻止浏览器默认行为（防误触收藏框）但不触发动作；画布上快捷键行为不变
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.0.10
-
----
-
-## v14.0.7 (2026-09-01)
-
-### 修复
-
-- **视频加载器 4K 高清预览偶发丢失 / 回退「双击上传视频」空态**（`web/xzg_video_loader.js`、`web/xzg_video_player.js`、`web/xzg_frame_decoder.js`）
-  - 执行后不再把已加载的预览重置回原视频（`_applyLoadRange` 替代 `_syncLoadRange`），消除预览闪烁 / 丢失
-  - 预览解码优先全分辨率（覆盖 4K，消除降采样锯齿），解码失败自动降级重试
-  - 高分辨率解码按内存预算动态收紧帧缓存上限，防止 4K 预览撑爆浏览器内存
-  - 解码池失败时清理残留状态，后续可正常重新解码
-- **工作流管理器左侧栏「分类」列宽度打开时跳变**（`web/xzg_workflows.js`）
-  - 打开面板首帧即按本地存储宽度渲染，异步云宽度再兜底覆盖，不再先渲染默认宽度再跳变
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.0.7
-
----
-
-## v14.0.5 (2026-08-31)
-
-### 修复
-
-- **快捷键配置丢失（整体替换插件目录后归零）**（`nodes/../__init__.py`）
-  - 快捷键配置从插件目录 `xzg_shortcuts.json` **迁移到 ComfyUI 用户目录 `user/xiaozhuguang/xzg_shortcuts.json`**，位于插件目录之外——无论 git pull 还是整体替换 / 重装插件目录，快捷键都不再丢失
-  - 升级后首次启动自动把旧版插件目录下的配置文件迁移至新位置，用户快捷键原样保留
-  - 全新安装时依旧仅从 `xzg_shortcuts.default.json` 复制一份，绝不覆盖用户已保存的配置
-- **快捷键设置对话框偶发显示为空 / 误清空配置**（`web/xzg_shortcuts.js`）
-  - 打开「配置快捷键」对话框时强制重新拉取后端最新配置，不再依赖启动时的一次性内存缓存
-  - `GET /xzg/shortcuts` 增加 `no-store` 防止被浏览器缓存读到旧值
-  - 后端加载失败时不再清空内存列表（返回 `null` 兜底到现有缓存）
-  - 新增保存安全护栏：当「本次刷新后端失败 且 列表为空」时禁止保存并提示，杜绝把真实快捷配置误写为空
-- **图像保存节点「另存为」选项误显示**（`web/xzg_image_save.js`、`nodes/xzg_image_save_custom.py`）
-  - 「另存为」仅在快剪导出时显示，图像保存节点对话框中隐藏
-  - 输出设置拆为两行：第①行默认输出 + 另存为；第②行自定义目录 + 自定义前缀 + 日期戳 + 时间戳
-  - 「选择保存目录」对话框 `z-index` 提升至 1000001，避免被快剪全屏弹层（999999）遮挡无法操作
-  - 绝对路径输出场景：媒体资产展示复用真实输出文件名的临时预览图（`{前缀-序号}.jpg`），文件名与实际保存一致
-  - 媒体资产只登记实际产物：保存模式下指向 `output` 文件，避免「保存模式 + 预览模式」并存时出现冗余预览图
-- **图像加载器底部控件样式/显示逻辑**（`web/xzg_image_loader.js`）
-  - 底部控件（多图/单图、列表/批次、列表数量）字号固定为 10px，不再随节点高度缩放，布局稳定不位移
-  - 单图加载模式下隐藏「批次/列表」切换；批次模式下仅在加载多张图时显示「裁剪/留边」
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.0.5
-
----
-
-## v14.0.4 (2026-08-30)
-
-### 新功能
-
-- **文本框数字转中文优化**（`nodes/xzg_text_box.py`）
-  - 中文口语时间：`6点15分` → `六点十五分`（此前"六点一五分"）
-  - 身高/长度口语读法：`1.72米` → `一米七二`
-  - 纯数字完整读数：`62` → `六十二`、`720` → `七百二十`（6 位以内整数）
-  - 分辨率后缀例外：`720分辨率` → `七二零分辨率`（数字按位读，不误伤普通数字）
-- **菜单隐藏面板新增「使用说明」标签页**
-  - 画布菜单 / 节点菜单标签右侧新增「使用说明」，5 步说明鼠标中键隐藏与恢复操作
-  - 样式优化：字号 12px、行高 1.8、无外高亮框、撑满面板不留白不出现滚动条
-- **快捷键 Ctrl+D 交互改进**（`web/xzg_shortcuts.js`）
-  - 屏蔽浏览器默认 Ctrl+D（收藏当前页），误触不再弹出收藏框
-  - 设置对话框打开时放手键盘给对话框捕获，可正常添加 / 设置快捷键
-  - 输入框内匹配到快捷键仅拦截浏览器默认行为、不触发动作
-
-### 修复
-
-- 快捷键设置对话框内按键无法正常捕获 / 添加快捷键的问题
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.0.4
-
----
-
-## v14.0.3 (2026-08-30)
-
-### 变更
-
-- 版本号提升至 14.0.3 并重新发布，递增 Comfy Registry 版本编号（代码与 14.0.1 一致）
-- pyproject.toml / extension.json 版本提升至 14.0.3
-
----
-
-## v14.0.2 (2026-08-30)
-
-### 变更
-
-- 版本号提升至 14.0.2 并重新发布，递增 Comfy Registry 版本编号（代码与 14.0.1 一致）
-- pyproject.toml / extension.json 版本提升至 14.0.2
-
----
-
-## v14.0.1 (2026-08-30)
-
-### 新功能
-
-- **菜单隐藏（鼠标中键直选）**
-  - 在任意画布菜单 / 节点菜单项上用鼠标中键点击，弹窗一键隐藏该菜单项
-  - 主题面板新增「菜单隐藏」页：仅展示已隐藏的菜单项，支持逐个「恢复」，彻底砍掉原先的搜索框/刷新列表/隐藏全部/显示全部
-  - 修复菜单项因空白/全角字符差异导致的重复条目与隐藏失效；画布与节点两类菜单配置清晰区分、切换标签即时联动
-
-- **配置后端云持久化（云端换浏览器不丢失）**
-  - 菜单隐藏配置、工作流管理器左侧栏宽度写入后端（`/xzg_cloud_store`，存储于 ComfyUI 用户目录磁盘），云端环境跨会话 / 跨浏览器共享
-  - 工作流管理器左侧栏宽度改用专用云端键独立持久化，不再受 ComfyUI 原生侧栏 / 共享几何键影响而重置默认
-  - 主题导出 / 导入纳入菜单隐藏配置，刷新内存实例并同步云端
-
-### 修复
-
-- 菜单隐藏：部分菜单项隐藏后重开又出现（强归一化匹配 + DOM 观察器无条件重试）
-- 中键隐藏后菜单立即关闭、重开隐藏项复现等问题
-
-### 变更
-
-- pyproject.toml / extension.json 版本提升至 14.0.1
-
----
-
-## v14.0.0 (2026-08-30)
-
-### 新功能
-
-- **自定义快捷键系统（后端持久化）**
-  - 新增快捷键配置面板，支持自定义按键组合绑定动作
-  - 配置存储于插件目录 `xzg_shortcuts.json`，换浏览器/换服务器不丢失
-  - 支持动作：执行全图、执行选中节点、执行鼠标所在编组
-  - 设置面板"配置快捷键"入口，支持捕获按键、增删保存
-  - 主题导出/导入包含快捷键配置，可跨机器备份恢复
-
-- **Ctrl+G 编组类型选择**
-  - 按 Ctrl+G 弹出选项菜单，可选择创建"官方编组"或"小珠光编组"
-  - 不再吞掉官方编组快捷键，两种编组方式都可通过 Ctrl+G 访问
-  - 菜单屏幕中央显示，点击空白处或按 Esc 关闭
-
-- **D 键执行选中节点（自研，替代 rgthree）**
-  - 移除对 rgthree 插件的依赖，小珠光自行实现执行选中节点
-  - 选中非静音节点时执行节点及上游依赖，无选中时回退执行全图
-  - 修复种子随机化（control_after_generate）正常生效
-  - 修复节点校验断链（字符串 ID 连接、嵌套数组连接正确识别）
-
-- **F 键执行编组内节点（支持双编组）**
-  - 支持小珠光编组和 ComfyUI 原生编组
-  - 原生编组通过画布坐标检测，鼠标所在编组内节点执行
-
-### 修复
-
-- 工作流管理器重命名后，顶部标签名和保存路径同步更新
-- 删除工作流/分类后，自动关闭对应顶部标签，避免保存重生旧文件
-- 修复工作流标签右键菜单偶尔失效的问题
-- 移除硬编码 D 键/F 键及相关死代码（getOutputNodes、recursiveAddQueueNodes、queueSelectedOutputNodes）
-
-### 变更
-
-- pyproject.toml 版本提升至 14.0.0
-
----
-
-## v13.0.4
-
-- 历史版本，请参考 GitHub Releases
+## v15.0.15 (2026-09-11)
+
+### 变更
+
+- **小珠光图像保存 / 图像保存-化神级：右键保存行为统一为保存模式逻辑**（`__init__.py` + `nodes/xzg_image_save.py` + `nodes/xzg_image_save_custom.py` + `web/xzg_image_save.js` + `web/xzg_save_utils.js`）
+  - 懒编码路由 `/xzg_save_real` 支持 format(png/jpg)+quality，预览模式与保存模式右键下载完全一致（PNG 全分辨率无损 / JPG 全分辨率），唯一区别为是否落盘
+  - 画布预览 JPG 质量固定 80；磁盘保存与右键 JPG 质量统一 90；reduce_lag 仅控制预览降采样上限（3840/6400px）
+  - 预览降采样改用 PIL Lanczos（替代 torch bicubic），并移除 PIL fromarray mode 参数（兼容 Pillow 13）
+  - 预览模式下 JPG/PNG 开关可切换，作为右键保存格式选择器（含 alpha 通道时仍强制 PNG）
+
+### 优化
+
+- **系统侧边栏：云恢复不再自动刷新页面**（`web/xzg_comfy_sidebar.js`）
+  - 打开页面/切换工作流不被强制重载打断；页面关闭/刷新前 sendBeacon 同步推送最后一次拖动的宽度，下次打开恢复最新值
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.15
+
+---
+
+## v15.0.14 (2026-09-10)
+
+### 变更
+
+- **小珠光帧优化节点：移除后补帧 / 首帧 / 尾帧输出端**（`nodes/xzg_duplicate_first_frame.py`）
+  - 仅移除输出端口，内部补帧计算不变（前补帧公式、多参补帧尾补到 73 帧逻辑原样保留）
+- **小珠光帧提取节点：移除后补帧输入口及相关功能，新增「原始帧数」输入口**（`nodes/xzg_frame_extract.py`）
+  - 前补帧 N：裁剪掉最前面的 N 张图像
+  - 原始帧数 M：踢掉前补帧后，从第 N+1 张起获取 M 张图像（超出末尾自动钳制；默认 99999 时等价于踢掉前补帧后全部保留）
+  - 端口顺序：原始帧数置于前补帧上方
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.14
+
+---
+
+## v15.0.7 (2026-09-08)
+
+### 修复
+
+- **依赖清单补充 pycryptodome，修复插件因缺少该依赖无法导入**（`requirements.txt` + `pyproject.toml`）
+  - 内置工具组件 `_xzg_tool/__init__.py` 初始化块在导入期即加载 `Crypto.Cipher.AES` / `Crypto.Util.Padding`（由 pycryptodome 提供）
+  - 缺失时插件整体加载失败（ModuleNotFoundError），安装 pycryptodome 后恢复正常
+  - requirements.txt 必需依赖段与 pyproject.toml dependencies 同步补充 pycryptodome
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.7
+
+---
+
+## v15.0.6 (2026-09-07)
+
+### 优化
+
+- **工作流管理器：只读工作流名称不再变暗**（`web/xzg_workflows.js`）
+  - 切换只读后，工作流名称保持原色，不再变灰、不再降低透明度
+  - 只读标识保留：🔒 只读金色标签 + 左侧图标金色，辨识依旧清晰
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.6
+
+---
+
+## v15.0.5 (2026-09-06)
+
+### 修复
+
+- **小珠光图片加载器：裁剪区域与图片名称绑定保存，修复切换图片时旧裁剪被错误应用的 bug**（`web/xzg_image_loader.js` + `nodes/xzg_image_loader.py`）
+  - crop_data widget 从纯数组 `[x,y,w,h]` 改为映射格式 `{"图片名": [x,y,w,h], ...}`
+  - 前端新增 `_cropByImage` 映射，每张图独立维护裁剪区域
+  - 切换图片时从映射中加载对应图片的裁剪区域，图片没变时裁剪不丢失
+  - 切换回之前裁剪过的图片时，裁剪区域自动恢复
+  - 后端 `_parse_crop_data()` 支持映射格式，按当前图片名提取裁剪区域
+  - 完全兼容旧格式（纯数组），旧工作流无需迁移
+  - `_commitCropToWidget()` 提交后标记 graph dirty，确保切换工作流时最新值被序列化
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.5
+
+---
+
+## v15.0.4 (2026-09-06)
+
+### 新增
+
+- **工作流管理器：右键切换工作流只读属性**（`web/xzg_workflows.js` + `workflows.py`）
+  - 右键菜单新增「🔒 切换只读」项，点击即时切换
+  - 只读工作流列表显示：名称变灰、左侧图标变金色、meta 行显示「🔒 只读」金色标签
+  - 只读保护：禁止删除、禁止重命名、禁止移动分类，操作时弹出提示
+  - 不影响：打开/加载工作流、使用频率计数、搜索排序
+- **工作流文件系统只读属性**（`workflows.py`）
+  - 切换只读后同步设置 .json 文件的操作系统只读属性
+  - Windows 用 SetFileAttributesW 设置 FILE_ATTRIBUTE_READONLY，Linux/Mac 用 chmod -w
+  - 文件只读后 ComfyUI 按 Ctrl+S 覆盖保存会失败，从根本上防止误覆盖
+  - 新增 POST /xzg/workflows/set-readonly API
+  - 删除/重命名/移动工作流时后端自动先解除只读属性，确保操作成功
+  - 元数据 readOnly 字段随本地/云端持久化
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.4
+
+---
+
+## v15.0.3 (2026-09-06)
+
+### 优化
+
+- **小珠光视频保存节点：MP4 编码质量提升，消除块状马赛克伪影**(`nodes/xzg_video_combine.py` + `web/xzg_video_combine.js`)
+  - 默认 CRF 从 19 降至 16（越低画质越好）
+  - 新增 `-preset slow`：更慢的压缩速度换更高压缩效率
+  - 新增 `-tune film`：优化胶片/视频内容的压缩策略
+  - 新增 `-aq-mode 3`：自适应量化，减少平坦区域块效应
+  - 前端 CRF 注释文字同步更新为默认 16
+- **小珠光视频加载器：scale 缩放滤镜默认从 bicubic 改为 lanczos**(`nodes/xzg_video_loader.py`)
+  - 8 处尺寸缩放滤镜全部添加 `:flags=lanczos`
+  - 缩小时抗混叠能力更强、高频细节保留更好
+  - 覆盖帧提取与预览转码两条路径、三种 fit 模式（crop/fill/letterbox）
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 15.0.3
+
+---
+
+## v14.1.3 (2026-09-03)
+
+### 新增
+
+- **小珠光系统监控悬浮窗**（`nodes/xzg_monitor.py` + `web/xzg_monitor.js`）
+  - 提供 `/xzg/system_monitor_stats` 接口，实时返回 GPU / CPU / 内存状态
+  - 前端自动加载可拖拽悬浮窗，每秒轮询展示
+- **新增若干节点工具与组合辅助功能**（`web/xzg_node_tools.js`、`web/xzg_compose_core.js`、`web/xzg_compose_tool.js`、`web/xzg_device_code.js`、`_xzg_tool/`）
+- **主题面板增强**（`web/xzg_theme.js`、`web/xzg_theme_panel.js`）
+- **修复**：节点收藏面板细节调整（`web/node_favorites.js`），更新依赖声明（`requirements.txt`）
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.3
+
+---
+
+## v14.1.2 (2026-09-02)
+
+
+### 变更
+
+- **GitHub Actions 发布流程：升级 action 版本，消除 Node.js 20 弃用警告**（`.github/workflows/publish_action.yml`）
+  - `actions/checkout@v4` → `v5`（release / publish-node 两处）
+  - `softprops/action-gh-release@v2` → `v3.0.3`
+  - 说明：`actions/setup-python@v5` 警告来自 Comfy 官方 `Comfy-Org/publish-node-action` 第三方 action 内部，无法在本仓库修改消除
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.2
+
+---
+
+## v14.1.1 (2026-09-02)
+
+### 修复
+
+- **小珠光箭头：新打开工作流"先绘制错误位置/大小内容、节点出现后再绘制正确"**（`web/xzg_arrow_tool.js`）
+  - 根因：延迟期强制隐藏标志（`_newOpenHoldHide`）设置过晚，transformTracker 的 150ms 渐入在 configure 完成前触发、把 opacity 设回 1，onDrawBackground 用尚未适配的 transform 先绘制出错误位置/大小的内容
+  - 修复：loadGraphData 加载开始即置位延迟期隐藏标志，从源头拦截 150ms 提前渐入；onDrawBackground 在延迟期不绘制箭头，画布节点 / 视图稳定后一次性绘制正确内容，杜绝"先错后对"
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.1
+
+---
+
+## v14.1.0 (2026-09-02)
+
+### 新增
+
+- **BrushNet 复刻节点：`CutForInpaint` / `BlendInpaint`**（`nodes/xzg_brushnet_inpaint.py`）
+  - 完全复刻自 [ComfyUI-BrushNet](https://github.com/nullquant/ComfyUI-BrushNet)（MIT License），算法逐字一致，仅依赖 torch / torchvision（本插件已有）
+  - `CutForInpaint`：以 mask 区域为中心裁剪出指定 width×height 画布窗口，输出 IMAGE + MASK + VECTOR（origin 裁剪坐标）
+  - `BlendInpaint`：把 inpaint 结果按高斯模糊后的 mask 软融合回原图；可选 `origin` 输入时按裁剪坐标原位贴回（与 CutForInpaint 配对使用）
+  - 典型流程：`CutForInpaint` 裁出画布 → 局部采样 → `BlendInpaint` 融合回原图
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.1.0
+
+---
+
+## v14.0.11 (2026-09-02)
+
+### 修复
+
+- **小珠光箭头（`web/xzg_arrow_tool.js`）：新工作流串台 / 关闭残留 / 已保存丢失 / 显示时机** 系列回归修复
+  - 新建工作流偶发出现上一工作流图形（画圆 → 新建 Unsaved Workflow (2)/(3) 概率串台）：configure 阶段立即提交切换 + 清除临时缓存，杜绝前端 `rootGraph.serialize()` 把残留旧图形写进新工作流
+  - 关闭未保存工作流后新建同名 tab 旧箭头重现：关闭 / 删除工作流时同步清理插件内存缓存与 localStorage 备份，新建同名工作流不再从备份恢复旧图形
+  - 已保存工作流重开绘图丢失：关闭仅清临时、保存保留、重开按需恢复备份，绘图内容完整保留在工作流里
+  - 绘图显示时机：切换 tab 快速显示；**新打开工作流延迟 3 秒**等画布节点 / 视图完全加载稳定后再显示绘图，杜绝"先以错误大小显示、随后随画布缩放"
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.0.11
+
+---
+
+## v14.0.10 (2026-09-01)
+
+### 修复
+
+- **快捷键 D / F 裸键在输入框内被拦截，导致无法输入 D / F**（`web/xzg_shortcuts.js`）
+  - 修复前：只要匹配到已配置快捷键（含 D、F 裸键）就无条件 `preventDefault()`，输入框内打字也被拦截，D / F 打不进去
+  - 修复后：输入框 / 文本域 / 可编辑元素内的裸键（无任何修饰键）完全放行，正常输入字符；带修饰键的组合（如 Ctrl+D）仍阻止浏览器默认行为（防误触收藏框）但不触发动作；画布上快捷键行为不变
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.0.10
+
+---
+
+## v14.0.7 (2026-09-01)
+
+### 修复
+
+- **视频加载器 4K 高清预览偶发丢失 / 回退「双击上传视频」空态**（`web/xzg_video_loader.js`、`web/xzg_video_player.js`、`web/xzg_frame_decoder.js`）
+  - 执行后不再把已加载的预览重置回原视频（`_applyLoadRange` 替代 `_syncLoadRange`），消除预览闪烁 / 丢失
+  - 预览解码优先全分辨率（覆盖 4K，消除降采样锯齿），解码失败自动降级重试
+  - 高分辨率解码按内存预算动态收紧帧缓存上限，防止 4K 预览撑爆浏览器内存
+  - 解码池失败时清理残留状态，后续可正常重新解码
+- **工作流管理器左侧栏「分类」列宽度打开时跳变**（`web/xzg_workflows.js`）
+  - 打开面板首帧即按本地存储宽度渲染，异步云宽度再兜底覆盖，不再先渲染默认宽度再跳变
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.0.7
+
+---
+
+## v14.0.5 (2026-08-31)
+
+### 修复
+
+- **快捷键配置丢失（整体替换插件目录后归零）**（`nodes/../__init__.py`）
+  - 快捷键配置从插件目录 `xzg_shortcuts.json` **迁移到 ComfyUI 用户目录 `user/xiaozhuguang/xzg_shortcuts.json`**，位于插件目录之外——无论 git pull 还是整体替换 / 重装插件目录，快捷键都不再丢失
+  - 升级后首次启动自动把旧版插件目录下的配置文件迁移至新位置，用户快捷键原样保留
+  - 全新安装时依旧仅从 `xzg_shortcuts.default.json` 复制一份，绝不覆盖用户已保存的配置
+- **快捷键设置对话框偶发显示为空 / 误清空配置**（`web/xzg_shortcuts.js`）
+  - 打开「配置快捷键」对话框时强制重新拉取后端最新配置，不再依赖启动时的一次性内存缓存
+  - `GET /xzg/shortcuts` 增加 `no-store` 防止被浏览器缓存读到旧值
+  - 后端加载失败时不再清空内存列表（返回 `null` 兜底到现有缓存）
+  - 新增保存安全护栏：当「本次刷新后端失败 且 列表为空」时禁止保存并提示，杜绝把真实快捷配置误写为空
+- **图像保存节点「另存为」选项误显示**（`web/xzg_image_save.js`、`nodes/xzg_image_save_custom.py`）
+  - 「另存为」仅在快剪导出时显示，图像保存节点对话框中隐藏
+  - 输出设置拆为两行：第①行默认输出 + 另存为；第②行自定义目录 + 自定义前缀 + 日期戳 + 时间戳
+  - 「选择保存目录」对话框 `z-index` 提升至 1000001，避免被快剪全屏弹层（999999）遮挡无法操作
+  - 绝对路径输出场景：媒体资产展示复用真实输出文件名的临时预览图（`{前缀-序号}.jpg`），文件名与实际保存一致
+  - 媒体资产只登记实际产物：保存模式下指向 `output` 文件，避免「保存模式 + 预览模式」并存时出现冗余预览图
+- **图像加载器底部控件样式/显示逻辑**（`web/xzg_image_loader.js`）
+  - 底部控件（多图/单图、列表/批次、列表数量）字号固定为 10px，不再随节点高度缩放，布局稳定不位移
+  - 单图加载模式下隐藏「批次/列表」切换；批次模式下仅在加载多张图时显示「裁剪/留边」
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.0.5
+
+---
+
+## v14.0.4 (2026-08-30)
+
+### 新功能
+
+- **文本框数字转中文优化**（`nodes/xzg_text_box.py`）
+  - 中文口语时间：`6点15分` → `六点十五分`（此前"六点一五分"）
+  - 身高/长度口语读法：`1.72米` → `一米七二`
+  - 纯数字完整读数：`62` → `六十二`、`720` → `七百二十`（6 位以内整数）
+  - 分辨率后缀例外：`720分辨率` → `七二零分辨率`（数字按位读，不误伤普通数字）
+- **菜单隐藏面板新增「使用说明」标签页**
+  - 画布菜单 / 节点菜单标签右侧新增「使用说明」，5 步说明鼠标中键隐藏与恢复操作
+  - 样式优化：字号 12px、行高 1.8、无外高亮框、撑满面板不留白不出现滚动条
+- **快捷键 Ctrl+D 交互改进**（`web/xzg_shortcuts.js`）
+  - 屏蔽浏览器默认 Ctrl+D（收藏当前页），误触不再弹出收藏框
+  - 设置对话框打开时放手键盘给对话框捕获，可正常添加 / 设置快捷键
+  - 输入框内匹配到快捷键仅拦截浏览器默认行为、不触发动作
+
+### 修复
+
+- 快捷键设置对话框内按键无法正常捕获 / 添加快捷键的问题
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.0.4
+
+---
+
+## v14.0.3 (2026-08-30)
+
+### 变更
+
+- 版本号提升至 14.0.3 并重新发布，递增 Comfy Registry 版本编号（代码与 14.0.1 一致）
+- pyproject.toml / extension.json 版本提升至 14.0.3
+
+---
+
+## v14.0.2 (2026-08-30)
+
+### 变更
+
+- 版本号提升至 14.0.2 并重新发布，递增 Comfy Registry 版本编号（代码与 14.0.1 一致）
+- pyproject.toml / extension.json 版本提升至 14.0.2
+
+---
+
+## v14.0.1 (2026-08-30)
+
+### 新功能
+
+- **菜单隐藏（鼠标中键直选）**
+  - 在任意画布菜单 / 节点菜单项上用鼠标中键点击，弹窗一键隐藏该菜单项
+  - 主题面板新增「菜单隐藏」页：仅展示已隐藏的菜单项，支持逐个「恢复」，彻底砍掉原先的搜索框/刷新列表/隐藏全部/显示全部
+  - 修复菜单项因空白/全角字符差异导致的重复条目与隐藏失效；画布与节点两类菜单配置清晰区分、切换标签即时联动
+
+- **配置后端云持久化（云端换浏览器不丢失）**
+  - 菜单隐藏配置、工作流管理器左侧栏宽度写入后端（`/xzg_cloud_store`，存储于 ComfyUI 用户目录磁盘），云端环境跨会话 / 跨浏览器共享
+  - 工作流管理器左侧栏宽度改用专用云端键独立持久化，不再受 ComfyUI 原生侧栏 / 共享几何键影响而重置默认
+  - 主题导出 / 导入纳入菜单隐藏配置，刷新内存实例并同步云端
+
+### 修复
+
+- 菜单隐藏：部分菜单项隐藏后重开又出现（强归一化匹配 + DOM 观察器无条件重试）
+- 中键隐藏后菜单立即关闭、重开隐藏项复现等问题
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 14.0.1
+
+---
+
+## v14.0.0 (2026-08-30)
+
+### 新功能
+
+- **自定义快捷键系统（后端持久化）**
+  - 新增快捷键配置面板，支持自定义按键组合绑定动作
+  - 配置存储于插件目录 `xzg_shortcuts.json`，换浏览器/换服务器不丢失
+  - 支持动作：执行全图、执行选中节点、执行鼠标所在编组
+  - 设置面板"配置快捷键"入口，支持捕获按键、增删保存
+  - 主题导出/导入包含快捷键配置，可跨机器备份恢复
+
+- **Ctrl+G 编组类型选择**
+  - 按 Ctrl+G 弹出选项菜单，可选择创建"官方编组"或"小珠光编组"
+  - 不再吞掉官方编组快捷键，两种编组方式都可通过 Ctrl+G 访问
+  - 菜单屏幕中央显示，点击空白处或按 Esc 关闭
+
+- **D 键执行选中节点（自研，替代 rgthree）**
+  - 移除对 rgthree 插件的依赖，小珠光自行实现执行选中节点
+  - 选中非静音节点时执行节点及上游依赖，无选中时回退执行全图
+  - 修复种子随机化（control_after_generate）正常生效
+  - 修复节点校验断链（字符串 ID 连接、嵌套数组连接正确识别）
+
+- **F 键执行编组内节点（支持双编组）**
+  - 支持小珠光编组和 ComfyUI 原生编组
+  - 原生编组通过画布坐标检测，鼠标所在编组内节点执行
+
+### 修复
+
+- 工作流管理器重命名后，顶部标签名和保存路径同步更新
+- 删除工作流/分类后，自动关闭对应顶部标签，避免保存重生旧文件
+- 修复工作流标签右键菜单偶尔失效的问题
+- 移除硬编码 D 键/F 键及相关死代码（getOutputNodes、recursiveAddQueueNodes、queueSelectedOutputNodes）
+
+### 变更
+
+- pyproject.toml 版本提升至 14.0.0
+
+---
+
+## v13.0.4
+
+- 历史版本，请参考 GitHub Releases
