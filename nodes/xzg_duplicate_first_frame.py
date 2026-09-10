@@ -19,8 +19,8 @@ class XiaozhuguangDuplicateFirstFrame:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "INT", "INT", "INT", "INT", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("image", "frame_count", "original_count", "front_fill", "back_fill", "first_frame", "last_frame")
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "INT")
+    RETURN_NAMES = ("image", "frame_count", "original_count", "front_fill")
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
 
@@ -33,7 +33,7 @@ class XiaozhuguangDuplicateFirstFrame:
         batch_count = image.shape[0]
         if batch_count == 0:
             empty = torch.zeros(1, 1, 1, 3, dtype=image.dtype)
-            return (empty, 0, 0, 0, 0, empty, empty)
+            return (empty, 0, 0, 0)
 
         front_fill = math.ceil(batch_count / 4) * 4 + 5 - batch_count
 
@@ -53,4 +53,4 @@ class XiaozhuguangDuplicateFirstFrame:
 
         out_batch = result.shape[0]
 
-        return (result, out_batch, batch_count, front_fill, back_fill, first_frame, last_frame)
+        return (result, out_batch, batch_count, front_fill)

@@ -5588,12 +5588,6 @@ app.registerExtension({
                         out.name = xzgT("原始帧数", "original count");
                     } else if (out.name === "front_fill") {
                         out.name = xzgT("前补帧", "front fill");
-                    } else if (out.name === "back_fill") {
-                        out.name = xzgT("后补帧", "back fill");
-                    } else if (out.name === "first_frame") {
-                        out.name = xzgT("首帧", "first frame");
-                    } else if (out.name === "last_frame") {
-                        out.name = xzgT("尾帧", "last frame");
                     }
                 }
             }
@@ -5603,9 +5597,6 @@ app.registerExtension({
                     if (n === "frame_count") return xzgT("实际帧数", "frame count");
                     if (n === "original_count") return xzgT("原始帧数", "original count");
                     if (n === "front_fill") return xzgT("前补帧", "front fill");
-                    if (n === "back_fill") return xzgT("后补帧", "back fill");
-                    if (n === "first_frame") return xzgT("首帧", "first frame");
-                    if (n === "last_frame") return xzgT("尾帧", "last frame");
                     return n;
                 });
             }
@@ -5634,12 +5625,6 @@ app.registerExtension({
                             out.label = xzgT("原始帧数", "original count");
                         } else if (out.name === "front_fill") {
                             out.label = xzgT("前补帧", "front fill");
-                        } else if (out.name === "back_fill") {
-                            out.label = xzgT("后补帧", "back fill");
-                        } else if (out.name === "first_frame") {
-                            out.label = xzgT("首帧", "first frame");
-                        } else if (out.name === "last_frame") {
-                            out.label = xzgT("尾帧", "last frame");
                         }
                     }
                 }
@@ -5657,8 +5642,8 @@ app.registerExtension({
                 if (nodeData.inputs.front_fill) {
                     nodeData.inputs.front_fill.name = xzgT("前补帧", "front fill");
                 }
-                if (nodeData.inputs.back_fill) {
-                    nodeData.inputs.back_fill.name = xzgT("后补帧", "back fill");
+                if (nodeData.inputs.fetch_count) {
+                    nodeData.inputs.fetch_count.name = xzgT("原始帧数", "original frame count");
                 }
                 if (nodeData.inputs.mask) {
                     nodeData.inputs.mask.name = xzgT("遮罩", "mask");
@@ -5690,8 +5675,8 @@ app.registerExtension({
                             inp.label = xzgT("图像", "image");
                         } else if (inp.name === "front_fill") {
                             inp.label = xzgT("前补帧", "front fill");
-                        } else if (inp.name === "back_fill") {
-                            inp.label = xzgT("后补帧", "back fill");
+                        } else if (inp.name === "fetch_count") {
+                            inp.label = xzgT("原始帧数", "original frame count");
                         } else if (inp.name === "mask") {
                             inp.label = xzgT("遮罩", "mask");
                         }

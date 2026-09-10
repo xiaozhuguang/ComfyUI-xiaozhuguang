@@ -187,18 +187,15 @@
       "0": { "name": "image" },
       "1": { "name": "frame count" },
       "2": { "name": "original count" },
-      "3": { "name": "front fill" },
-      "4": { "name": "back fill" },
-      "5": { "name": "first frame" },
-      "6": { "name": "last frame" }
+      "3": { "name": "front fill" }
     }
   },
   "XiaozhuguangFrameExtract": {
     "display_name": "Xiaozhuguang Frame Extract",
     "inputs": {
       "image": { "name": "image" },
+      "fetch_count": { "name": "original frame count" },
       "front_fill": { "name": "front fill" },
-      "back_fill": { "name": "back fill" },
       "mask": { "name": "mask" }
     },
     "outputs": {

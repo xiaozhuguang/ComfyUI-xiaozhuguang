@@ -5,7 +5,8 @@ class XiaozhuguangFrameExtract:
     """
     小珠光帧提取
     从补帧后的批量图像/遮罩中提取原始内容
-    去掉前补帧和后补帧，保留中间的原始帧
+    前补帧 N：裁剪掉最前面的 N 张图像
+    原始帧数 M：踢掉前补帧后，从第 N+1 张起获取 M 张图像
     支持仅图像、仅遮罩、或两者同时输入
     """
 
@@ -15,8 +16,8 @@ class XiaozhuguangFrameExtract:
             "optional": {
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
+                "fetch_count": ("INT", {"default": 99999, "min": 0, "max": 99999, "step": 1, "forceInput": True}),
                 "front_fill": ("INT", {"default": 0, "min": 0, "max": 99999, "step": 1, "forceInput": True}),
-                "back_fill": ("INT", {"default": 0, "min": 0, "max": 99999, "step": 1, "forceInput": True}),
             },
         }
 
@@ -26,11 +27,11 @@ class XiaozhuguangFrameExtract:
     CATEGORY = "xiaozhuguang"
 
     @classmethod
-    def IS_CHANGED(cls, image=None, mask=None, front_fill=0, back_fill=0):
-        # 纯函数：输入未变（含 front_fill/back_fill 等参数）则直接使用缓存，不重算
+    def IS_CHANGED(cls, image=None, mask=None, fetch_count=99999, front_fill=0):
+        # 纯函数：输入未变（含 front_fill/fetch_count 等参数）则直接使用缓存，不重算
         return None
 
-    def execute(self, image=None, mask=None, front_fill=0, back_fill=0):
+    def execute(self, image=None, mask=None, fetch_count=99999, front_fill=0):
         has_image = image is not None
         has_mask = mask is not None
 
@@ -55,17 +56,24 @@ class XiaozhuguangFrameExtract:
             return (empty, empty_mask)
 
         start = front_fill
-        end = batch_count - back_fill
+        count = fetch_count
 
-        if start >= end or start >= batch_count:
+        if count <= 0 or start >= batch_count:
             empty = torch.zeros(1, img_h, img_w, 3, dtype=image.dtype if has_image else torch.float32)
             empty_mask = torch.zeros(1, img_h, img_w, dtype=torch.float32)
             return (empty, empty_mask)
 
         if start < 0:
             start = 0
+
+        end = start + count
         if end > batch_count:
             end = batch_count
+
+        if end <= start:
+            empty = torch.zeros(1, img_h, img_w, 3, dtype=image.dtype if has_image else torch.float32)
+            empty_mask = torch.zeros(1, img_h, img_w, dtype=torch.float32)
+            return (empty, empty_mask)
 
         out_image = None
         if has_image:
