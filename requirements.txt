@@ -40,6 +40,10 @@ timm
 cupy-cuda12x>=13.3.0
 huggingface_hub       # 模型缺失时自动从 HuggingFace 下载
 
+# ---------- 视频水印检测（原独立插件 Comfyui-Video-Watermark-Detection-xzg 已并入） ----------
+ultralytics           # YOLO 水印检测推理（Loader 懒加载，仅水印节点需要）
+lap                   # 追踪链路线性分配（ultralytics 依赖项，显式声明防缺失）
+
 # ---------- 可选依赖（按需安装，缺失不影响插件启动和其它节点） ----------
 # huggingface_hub      # 模型自动下载；缺失时需手动下载模型到 models 目录
 # einops               # LongCat AudioDiT TTS 建模；缺失时 TTS 推理报错

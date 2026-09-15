@@ -36,7 +36,7 @@ class BlendInpaint:
                     },
                 }
 
-    CATEGORY = "inpaint"
+    CATEGORY = "xiaozhuguang"
     RETURN_TYPES = ("IMAGE","MASK",)
     RETURN_NAMES = ("image","MASK",)
 
@@ -129,7 +129,7 @@ class CutForInpaint:
                      },
                 }
 
-    CATEGORY = "inpaint"
+    CATEGORY = "xiaozhuguang"
     RETURN_TYPES = ("IMAGE","MASK","VECTOR",)
     RETURN_NAMES = ("image","mask","origin",)
 

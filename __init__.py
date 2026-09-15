@@ -1264,9 +1264,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
     "XiaozhuguangVFI": "小珠光VFI防丢帧",
-    "StarUpscale": "star_upscale",
-    "BlendInpaint": "Blend Inpaint",
-    "CutForInpaint": "Cut For Inpaint",
+    "StarUpscale": "小珠光star_upscale",
+    "BlendInpaint": "小珠光局部重绘（融合）",
+    "CutForInpaint": "小珠光局部重绘（裁剪）",
     "XiaozhuguangSystemMonitor": "小珠光系统监控",
 }
 if XiaozhuguangQwenVLInstruct is not None:
@@ -1278,6 +1278,20 @@ WEB_DIRECTORY = "./web"
 from . import _xzg_tool
 NODE_CLASS_MAPPINGS.update(getattr(_xzg_tool, "NODE_CLASS_MAPPINGS", {}))
 NODE_DISPLAY_NAME_MAPPINGS.update(getattr(_xzg_tool, "NODE_DISPLAY_NAME_MAPPINGS", {}))
+
+# ============ 视频水印检测（原独立插件 Comfyui-Video-Watermark-Detection-xzg 已并入） ============
+# 缺失 ultralytics 等依赖时静默跳过，不影响其它节点加载
+try:
+    from . import _xzg_watermark
+    NODE_CLASS_MAPPINGS.update(getattr(_xzg_watermark, "NODE_CLASS_MAPPINGS", {}))
+    NODE_DISPLAY_NAME_MAPPINGS.update(getattr(_xzg_watermark, "NODE_DISPLAY_NAME_MAPPINGS", {}))
+except Exception as _xzg_wm_err:
+    import sys as _xzg_wm_sys
+    print(
+        "[小珠光视频水印] 导入节点失败（可能缺少 ultralytics / lap 等依赖）：",
+        f"{_xzg_wm_err}",
+        file=_xzg_wm_sys.stdout,
+    )
 
 
 from . import workflows

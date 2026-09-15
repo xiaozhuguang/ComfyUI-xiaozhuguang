@@ -429,8 +429,17 @@ class XiaozhuguangVideoCombine:
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
-        base_dir = (_safe_dir('get_output_directory', 'output') if 模式 == "保存"
-                    else _safe_dir('get_temp_directory',   'temp'))
+        is_save = (模式 == "保存")
+        if is_save:
+            # 保存模式：写入 output/（可含用户前缀子目录），返回 type="output"
+            base_dir = _safe_dir('get_output_directory', 'output')
+            prefix = 文件名前缀
+        else:
+            # 预览模式：写入持久化 output/preview/<节点id>/ 子目录（而非 temp，temp 重启即清，
+            # 会导致「重启后文件消失 ↔ 前端判定内容未变不重载」的死循环）。返回 type="output"。
+            base_dir = _safe_dir('get_output_directory', 'output')
+            node_id = str(unique_id) if unique_id else (文件名前缀 or "preview")
+            prefix = os.path.join("preview", node_id, 文件名前缀 or "xzg_video")
 
         # 输出根目录固定为 base_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
         # get_save_image_path 会解析出 subfolder 并把文件写到 output_dir/subfolder 下
@@ -439,7 +448,7 @@ class XiaozhuguangVideoCombine:
         # 获取可用的文件计数器（full_output_folder 已包含前缀内的子目录）。
         # 返回顺序：full_output_folder, filename, counter, subfolder, filename_prefix
         full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
-            文件名前缀, output_dir
+            prefix, output_dir
         )
 
         # 计算下一个可用的计数器
@@ -469,6 +478,22 @@ class XiaozhuguangVideoCombine:
             audio=音频,
         )
 
+        # 预览模式：清理本子目录内的旧同前缀文件（只保留最新），避免累积。
+        # 每次真实重跑都会因计数器递增而生成新文件名 → 前端 key 变化 → 触发重载刷新预览；
+        # 输入未变时节点不会被重跑，文件保持不变 → 前端判定未变化不再读条（保持惰性）。
+        if not is_save:
+            try:
+                for old_name in os.listdir(full_output_folder):
+                    if old_name == file:
+                        continue
+                    if matcher.fullmatch(old_name):
+                        try:
+                            os.remove(os.path.join(full_output_folder, old_name))
+                        except OSError:
+                            pass
+            except Exception:
+                pass
+
         ui = {
             "result": (),
             "ui": {
@@ -477,7 +502,9 @@ class XiaozhuguangVideoCombine:
                 "video": [{
                     "filename": file,
                     "subfolder": subfolder,
-                    "type": "output" if 模式 == "保存" else "temp",
+                    # 保存模式输出到 output，返回 "output"；预览模式也写入持久化的
+                    # output/preview/<节点id>/ 子目录，故同样返回 "output"（文件跨重启存在）。
+                    "type": "output",
                     "format": 格式,
                     "frame_rate": 帧率,
                 }],

@@ -1151,7 +1151,7 @@ export class XiaozhuguangVideoPlayer {
             this._currentFilename = filename;
             this._currentType = type;
             // P2: filename 为空时（blob:/data: URL）使用 src 作为 key，避免池化串台
-            const poolKey = filename || src;
+            const poolKey = filename ? (subfolder ? `${subfolder}/${filename}` : filename) : src;
             const poolType = filename ? type : "blob";
             // 解码源切换：HEVC 等 WebCodecs 解不了的编码 → 用后端转码的 H.264 源（懒触发、有缓存）
             let playSrc = src;

@@ -1,0 +1,12 @@
+# 小珠光·视频水印检测 定制 ByteTrack 配置（由 nodes.py _infer 引用）
+# 目标：多水印/字幕同屏时让编号尽量稳定，降低 ID switch（跟踪互窜）。
+# 基线为 ultralytics 默认 bytetrack.yaml，仅收紧下列参数；字段名与默认配置保持一致，
+# 若未来 ultralytics 改字段导致加载失败，_infer 会自动回退到内置默认配置。
+
+tracker_type: bytetrack # 跟踪后端：固定 bytetrack
+track_high_thresh: 0.3 # 一阶段匹配阈值（默认0.25）：略提高，高置信检测才参与首轮匹配，轨迹更干净
+track_low_thresh: 0.1 # 二阶段低分匹配阈值（默认0.1，保持）
+new_track_thresh: 0.4 # 无匹配时开新轨迹的阈值（默认0.25）：提高，减少碎轨/误开新编号
+track_buffer: 16 # 丢失轨迹保留帧数（默认30）：缩短，避免长时间模糊重关联到别的目标；断号交给节点层严格重连补回
+match_thresh: 0.65 # 关联代价阈值（默认0.8，越小越严格）：要求更高 IoU 才续同一编号，抑制靠近时换号
+fuse_score: True # 匹配代价融合检测分数（默认True，保持）：弱检测更难抢编号

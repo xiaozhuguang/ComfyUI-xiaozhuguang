@@ -27,7 +27,13 @@ xzg_shortcuts.json
 _thumb_out2.txt
 custom-node-list.json
 _tmp_*.ps1
+_tmp_*.py
 _tmp_src/
+_tmp_probe*.py
+_repro_*.py
+_k[0-9]*.py
+*.bak_*
+.trae/
 desktop.ini
 repro_*.json
 
@@ -37,3 +43,8 @@ web/node_modules/
 
 # Arrow tool runtime data
 xzg_arrows/
+
+# 视频水印检测：已下线的 SAM3 代码包/备份/资源（本地保留，不随仓库分发）
+_xzg_watermark/_xzg_sam3/
+_xzg_watermark/assets/
+_xzg_watermark/nodes.py.bak

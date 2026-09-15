@@ -1800,6 +1800,10 @@ function bindVideoLoaderInteractions(node) {
                 await refreshVideoCombo(videoWidget, uploaded[0]);
                 if (flowToken !== _uploadFlowToken) return;
                 player.load(getVideoUrl(videoWidget.value));
+                // 上传新视频后根据当前「视频比例」重新推导预览比例：
+                // 清除上一次执行残留的 loadVideo 自定义比例（_customRatio），
+                // 避免新视频仍按上一个视频的宽高比显示（自定义/原始比例下回退到新视频本身比例）
+                node._xzgSyncCustomSize?.();
                 // 遮罩由播放器 onLoadedMetadata/onError 关闭（_uploadLoadingActive 匹配时）
                 return;
             }
@@ -1867,6 +1871,7 @@ function bindVideoLoaderInteractions(node) {
                 const url = getVideoUrl(value);
                 _isPreviewLoaded = false;
                 player.load(url || "");
+                node._xzgSyncCustomSize?.();
             };
             if (videoWidget.value) {
                 player.load(getVideoUrl(videoWidget.value));
@@ -1913,6 +1918,7 @@ function bindVideoLoaderInteractions(node) {
                     videoWidget.callback?.(annotated);
                 } else {
                     player.load(getVideoUrl(annotated));
+                    node._xzgSyncCustomSize?.();
                 }
             };
 

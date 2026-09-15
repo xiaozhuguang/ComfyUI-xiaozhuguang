@@ -1,13 +1,9 @@
 # 图像-蒙版预览（穿透合成·极速版，纯透出，不保存预览）
-# 在 comfyui-kjnodes 的 ImageAndMaskPreview 基础上做速度优化，并**始终内置穿透模式**：
-# 直接返回合成图像，不做任何预览保存。
-#   1) 合成阶段弃用 comfy_extras.nodes_mask.composite —— 该通用函数会做
-#      冗余的全幅 source bilinear 插值(resize_source=True) + repeat_to_batch_size
-#      + inverse_mask + 多次逐点运算；而本场景(同尺寸图像上叠纯色蒙版)等价于
-#      一次 alpha 混合：image*(1-a) + color*a。
-#   2) 不再用 `.expand().clone()` 物化一份完整 BxHxWx3 的纯色张量再逐通道写值，
-#      改用一个 (1,1,1,3) 的颜色张量直接广播参与混合。
-# 结果与 ImageAndMaskPreview 数学等价，但大幅减少张量分配与算子数量。
+# 始终内置穿透模式：直接返回合成图像，不做任何预览保存。
+#   1) 合成阶段不做全幅源图插值、批次对齐、多次逐点运算——
+#      本场景(同尺寸图像上叠纯色蒙版)就是一次 alpha 混合：image*(1-a) + color*a。
+#   2) 不物化整幅 BxHxWx3 纯色张量再逐通道写值，
+#      用一个 (1,1,1,3) 的颜色张量直接广播参与混合，大幅减少张量分配与算子数量。
 import torch
 import torch.nn.functional as F
 from PIL import ImageColor
@@ -92,7 +88,7 @@ class XiaozhuguangImageMaskPreview:
 
     始终内置穿透模式：无论输入为何，都直接返回合成图像，不做任何预览保存。
     仅连接遮罩时：遮罩转灰度 RGB 输出；仅连接图像时：原样透传；
-    两者都有时：用单次 alpha 混合 image*(1-a)+color*a 替代通用 composite。"""
+    两者都有时：单次 alpha 混合 image*(1-a)+color*a 输出合成图。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -116,8 +112,7 @@ class XiaozhuguangImageMaskPreview:
     DESCRIPTION = """始终内置穿透模式：直接返回合成结果，不保存预览。
     仅图像：原样透传；仅遮罩：灰度 RGB 输出；两者都有：把遮罩按 mask_color/mask_opacity
     叠加到图像上合成。invert_mask 开启时反转遮罩后再生效。mask_color 支持 RGB/RGBA/Hex，
-    支持每色透明度。相比 kjnodes 同名节点，合成用单次 alpha 混合替代通用 composite，
-    速度更快、零预览磁盘开销。"""
+    支持每色透明度。合成用单次 alpha 混合实现，速度快、零预览磁盘开销。"""
 
     def execute(self, mask_opacity, mask_color, invert_mask, image=None, mask=None):
         if mask is not None and image is None:
@@ -140,7 +135,7 @@ class XiaozhuguangImageMaskPreview:
                 # 单次 fma 式 alpha 混合，等价 composite 结果
                 composite = image * (1.0 - alpha) + color_rgb * alpha
         else:
-            # 两者都空：错误提示（与 kjnodes 不同，这里不抛未定义变量）
+            # 两者都空：明确报错提示
             raise ValueError("[小珠光] 图像-蒙版预览缺少输入：image 与 mask 至少连接一个")
 
         return (composite,)

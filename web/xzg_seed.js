@@ -210,7 +210,7 @@ app.registerExtension({
 
             const node = this;
 
-            // 隐藏原生 control_after_generate combo widget（参考 KJNodes 的 hideWidgetForGood 模式）
+            // 隐藏原生 control_after_generate combo widget（直接移出布局与渲染）
             // 不 splice — 保留在 widgets 数组中确保 afterQueued 回调和序列化仍由 ComfyUI 原生处理
             // 只做彻底隐藏：改 type + computeSize + 空 draw + hidden + 处理 linkedWidgets
             const hideWidgetForGood = (w, suffix = '') => {

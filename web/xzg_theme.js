@@ -1,9 +1,56 @@
 
 import { xzgT } from "./xzg_i18n.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+import { api } from "../../scripts/api.js";
 
 // 主题状态云存储键：连线高亮/执行节点高亮/连线动画/壁纸小状态
 const THEME_STATE_KEY = "xzg_theme_state";
+
+// ===== 运行节点高亮的“按图归属”修复（对齐官方 ComfyUI）=====
+// 官方做法：执行/已执行事件（executing/executed）都携带 prompt_id，ComfyUI 把“正在执行/高亮”
+// 定位到 *发起该次执行的那个工作流图*（通过 prompt_id→graph 归属解析），而不是在当前激活图里
+// 按裸 node_id 去找。下述是官方实现要点：
+//   - `executed` 事件：getNodeByExecutionId(this.rootGraph, executionId) 只在当前根图里解析；
+//   - 执行态/节点输出按 prompt_id 对应到 queuedJobs[prompt_id].workflow（发起图）做记录。
+// 我们之前用全局 _runningNodeId（只存 node_id、不存图）并在“当前激活图”里解析，于是 A 流执行
+// 1 号节点时切到 B 流，B 里同 id 的 1 号节点也被画上运行高亮（跨工作流串台）。
+// 修复：入队/点 Run 时记录「prompt_id → 发起该次执行的 rootGraph 实例」（下面 _xzgPromptOwnerGraph），
+// 收到 executing 事件时把 {ownerGraph, nodeId} 存进 self._runningJob；绘制时动态判定
+// ownerGraph 是否等于“当前激活图”，是才画高亮 —— 切图/后台执行都会自然被排除，绝不串台。
+const _xzgPromptOwnerGraph = new Map();
+let _xzgPromptOwnerWrapped = false;
+// 最近一次 Run 的发起图（app.graph）。executing 事件 detail 只带裸节点 id、不带 prompt_id，
+// 归属图以此兜底，用于跨工作流防串台（与 xzg_video_combine 的 _xzgRunningGraph 同思路）。
+let _xzgRunOwnerGraph = null;
+// 运行高亮调试开关（仅用于排查，默认关闭）
+window.__xzgHighlightDebug = false;
+
+// 包装 app.queuePrompt：入队后拿到服务端返回的 prompt_id，登记该次执行归属哪个图实例。
+// 幂等：只包一次，避免重复包装拉长调用链。
+function _xzgWrapQueueForRunningOwner() {
+    if (_xzgPromptOwnerWrapped) return;
+    const app = window.app;
+    if (!app || typeof app.queuePrompt !== 'function') return;
+    _xzgPromptOwnerWrapped = true;
+    const orig = app.queuePrompt.bind(app);
+    app.queuePrompt = function (...args) {
+        // 发起时刻的激活图 = 本次执行的归属图（点 Run/Queue 时 app.graph 就是当前图）。
+        // 注意用 app.graph 而非 app.rootGraph：节点所在图 node.graph 与 app.graph 同引用
+        // （已由 xzg_video_combine 的运行高亮/输出归属验证），而 rootGraph 在该前端可能是
+        // 另一包装实例，引用不等会把同一工作流的运行高亮也误判为"他图"而全部吞掉。
+        const ownerGraph = app.graph;
+        _xzgRunOwnerGraph = ownerGraph;
+        const ret = orig(...args);
+        if (ret && typeof ret.then === 'function') {
+            ret.then((res) => {
+                const pid = res && res.prompt_id;
+                if (pid != null) _xzgPromptOwnerGraph.set(String(pid), ownerGraph);
+            }).catch(() => {});
+        }
+        return ret;
+    };
+}
+// ===== 运行节点高亮归属修复（结束）=====
 
 window.XZGThemeManager = {
     currentNodes: [],
@@ -247,8 +294,10 @@ window.XZGThemeManager = {
                     }
                 }
             }
-            // 强制重绘，drawLink/节点高亮 hook 读取最新字段并自动启动动画循环
-            if (app?.canvas?.setDirty) app.canvas.setDirty(true, true);
+            // 强制重绘，drawLink/节点高亮 hook 读取最新字段并自动启动动画循环。
+            // 用 window.app 而非裸 app：本模块是 ES module，裸 app 依赖全局绑定 window.app，
+            // 若此刻尚未赋值则抛 ReferenceError("app is not defined")，被外层 catch 吞掉导致云状态恢复静默失效。
+            if (window.app?.canvas?.setDirty) window.app.canvas.setDirty(true, true);
         } catch (e) {
             console.warn("[小珠光主题] 从云同步主题状态失败:", e);
         }
@@ -2069,13 +2118,23 @@ window.XZGThemeManager = {
             if (!self.nodeHighlightActive) return;
             let saved = false;
             try {
-                const currentRunningId = app.runningNodeId || self._runningNodeId;
-                if (!currentRunningId) return;
+                // 归属判定（动态，随当前激活图变化）：仅当该执行由“当前激活图”发起才画运行高亮，
+            // 后台/他图执行一律不画 —— 消除 A 流执行、切到 B 流时 B 里同 id 节点被高亮（串台）。
+            // 判断用“节点所在图 node.graph 是否等于发起图 ownerGraph”，而不用 app.rootGraph 的
+            // 引用相等性：后者在多数构建中不稳定/未定义，会导致同一工作流内也恒不相等、高亮被吞。
+            const job = self._runningJob;
+            if (!job) return;
+            if (job.ownerGraph && node.graph !== job.ownerGraph) return;
+            const currentRunningId = app.runningNodeId || job.nodeId;
+            if (!currentRunningId) return;
                 // 支持子图：执行ID形如"容器id:内部id"（可多层）。父图匹配容器节点；子图视图匹配内部节点。
                 const runningStr = currentRunningId.toString();
                 const pathParts = runningStr.split(':').filter(Boolean);
                 if (pathParts.length === 0) return;
-                const rootGraph = app.rootGraph || app.graph;
+                // 起始图必须用 app.graph（与 node.graph 同引用，已由 xzg_video_combine 验证），
+                // 不能用 app.rootGraph：后者的引用可能与本节点所在图不同，导致 2136 行
+                // node.graph===curGraph 恒为假、被误当"子图容器"走 getNodeById 而全部失败。
+                const rootGraph = app.graph;
                 let curGraph = rootGraph;
                 let isRunning = false;
                 for (let i = 0; i < pathParts.length; i++) {
@@ -2088,6 +2147,14 @@ window.XZGThemeManager = {
                     const isSub = container && (typeof container.isSubgraphNode === 'function' ? container.isSubgraphNode() : !!container.subgraph);
                     if (!container || !isSub || !container.subgraph) break;
                     curGraph = container.subgraph;
+                }
+                // [调试·高亮] 记录本次节点是否命中运行高亮判定
+                if (window.app && window.__xzgHighlightDebug) {
+                    console.warn("[小珠光高亮] draw", node.type, "id=" + node.id,
+                        "nodeGraph===app.graph=" + (node.graph === window.app.graph),
+                        "ownerGraph匹配=" + (!job.ownerGraph || node.graph === job.ownerGraph),
+                        "curGraph===nodeGraph=" + (curGraph === node.graph),
+                        "running=" + currentRunningId, "pathParts=" + pathParts.join(','), "isRunning=" + isRunning);
                 }
                 if (!isRunning) return;
 
@@ -2204,22 +2271,58 @@ window.XZGThemeManager = {
         };
 
         // 跟踪当前执行节点
-        if (window.app?.api) {
-            app.api.addEventListener('executing', (e) => {
-                const detail = e?.detail || {};
-                const nodeId = detail.display_node
-                    ?? detail.displayNode
-                    ?? detail.node_id
-                    ?? detail.nodeId
-                    ?? (typeof detail.node === 'object' ? detail.node?.id : detail.node)
-                    ?? null;
-                self._runningNodeId = nodeId === undefined || nodeId === null ? null : nodeId.toString();
-                if (app.canvas) app.canvas.setDirty(true, true);
-            });
-            app.api.addEventListener('execution_start', () => { self._runningNodeId = null; });
-            app.api.addEventListener('execution_success', () => { self._runningNodeId = null; });
-            app.api.addEventListener('execution_interrupted', () => { self._runningNodeId = null; });
-        }
+        _xzgWrapQueueForRunningOwner();
+        // 事件源：优先用导入的 api（scripts/api.js 单例，与 xzg_video_combine 已验证使用的
+        // 是同一事件源、其上 executing/executed 均正常派发），也兼容 app.api。两个若不是同一
+        // 实例，则都挂；用 emitter 上的 _xzgHLBound 标记去重，避免重复设置 _runningJob。
+        const execHandler = (e) => {
+            // 本前端 executing 事件 detail 是【裸节点 id】（dispatchCustomEvent('executing',
+            // t.data.display_node || t.data.node)，字符串/数字/null），不是对象。
+            // executed 事件 detail 才是 {node, display_node, prompt_id, output} 对象。
+            // 这里对两种形态都兼容，且必须直接取 detail 本体，否则对象式解构取到 undefined。
+            const detail = e?.detail;
+            let nodeId = null;
+            let promptId = null;
+            if (detail == null) {
+                nodeId = null;
+            } else if (typeof detail === 'object') {
+                nodeId = detail.node ?? detail.display_node ?? detail.node_id ?? detail.nodeId ?? null;
+                promptId = detail.prompt_id ?? detail.promptId ?? null;
+            } else {
+                nodeId = detail; // 裸节点 id
+            }
+            // 归属判定：优先按 prompt_id→发起图，其次用最近一次 Run 的发起图兜底。
+            // 发起图不是本节点所在图时不高亮（防跨工作流串台）。
+            let ownerGraph = null;
+            if (promptId != null) ownerGraph = _xzgPromptOwnerGraph.get(String(promptId)) || null;
+            if (ownerGraph == null) ownerGraph = _xzgRunOwnerGraph;
+            self._runningJob = {
+                ownerGraph,
+                nodeId: nodeId === undefined || nodeId === null ? null : nodeId.toString(),
+            };
+            // [调试·高亮] executing 事件体
+            if (window.__xzgHighlightDebug) {
+                console.warn("[小珠光高亮] executing detail=", detail, "=> nodeId=", self._runningJob.nodeId,
+                    "ownerGraph=" + (ownerGraph ? "set" : "null"), "promptId=" + promptId);
+            }
+            // 兼容旧字段（某些调用点仍读 _runningNodeId）
+            self._runningNodeId = self._runningJob.nodeId;
+            if (window.app?.canvas) window.app.canvas.setDirty(true, true);
+        };
+        const resetRunning = () => {
+            self._runningJob = null;
+            self._runningNodeId = null;
+        };
+        const bindEmitter = (emitter) => {
+            if (!emitter || emitter._xzgHLBound) return;
+            emitter._xzgHLBound = true;
+            emitter.addEventListener('executing', execHandler);
+            emitter.addEventListener('execution_start', resetRunning);
+            emitter.addEventListener('execution_success', resetRunning);
+            emitter.addEventListener('execution_interrupted', resetRunning);
+        };
+        bindEmitter(api);
+        if (window.app?.api && window.app.api !== api) bindEmitter(window.app.api);
     },
 
     toggleLinkAnim() {
