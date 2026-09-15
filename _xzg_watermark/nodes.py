@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Comfyui-Video-Watermark-Detection-xzg —— 视频水印检测（手工跟踪版）
+Comfyui-Video-Watermark-Detection-xzg —— 视频遮罩手工跟踪（原视频水印检测，手工跟踪版）
 
 只保留「手工跟踪」模式：
 1. 视窗内逐轨道打关键帧（矩形框 / 手绘多边形），帧间线性插值生成逐帧遮罩；
@@ -17,15 +17,22 @@ Comfyui-Video-Watermark-Detection-xzg —— 视频水印检测（手工跟踪�
   widgets_values 错位由前端 onConfigure 迁移钩子自动重映射，
   regions_data（手工标注）不受影响。
 """
+import os
 import time
 import json
+import random
 import hashlib
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+import folder_paths
 
 MANUAL_MODEL_NAME = "手工跟踪"
+
+# 预览结果缓存：key=(视频内容哈希,帧数,宽,高,max_side,max_frames) -> {files, idx, vid}
+# 同视频重复"点击加载视频"直接复用已落盘文件（秒回）；temp 被清理时按文件存在性自动失效
+_PREVIEW_CACHE = {}
 
 # =====================================================================
 # 参数说明的唯一知识源（Single Source of Truth）
@@ -177,27 +184,60 @@ def _dilate_time(masks, k):
 
 def _build_preview(image, max_side=1280, max_frames=12):
     """视频预览：均匀采样帧（<=max_frames 帧，含首尾）缩放到长边 <= max_side，
-    供前端视窗播放 / 拖动并打关键帧。帧多时采样，避免全量发送拖慢预览。"""
-    from .. import tensor_to_pil, save_images_for_preview
+    供前端视窗播放 / 拖动并打关键帧。手工跟踪模式传 max_frames=总帧数（逐帧精确打点）。
+
+    性能（点击加载视频慢的根治）：
+    1) 结果缓存：同视频（内容哈希+帧数+尺寸）重复加载直接复用已落盘文件，秒回；
+       缓存文件被 ComfyUI 清理 temp 后自动失效重建。
+    2) JPEG（质量 80）替代 PNG：预览编码快 5~10 倍、体积小 5~10 倍（仅预览用途）。
+    3) 逐帧流式处理：边转换/缩放/落盘/算哈希边丢弃，不再物化整栈 float32 大张量
+      （千帧视频原实现会临时占用数 GB 内存）。
+    4) 缩放用 cv2.INTER_AREA（SIMD 优化的区域平均下采样，速度快且抗混叠，
+       比 PIL LANCZOS 快数倍）；全程 uint8 处理，不再经过 float32 转换。
+    vid 为逐帧 uint8 字节流增量 md5：同视频同算法稳定、换视频必变。
+    前端仅用它做会话内「是否换了视频」检测（标注持久化在 regions_data 控件值里，
+    与 video_id 无关），因此缩放/编码算法变更不影响已有工作流的标注。"""
+    from .. import tensor_to_pil
     from PIL import Image as _PILImage
     B = int(image.shape[0])
     if B > max_frames:
         idx = sorted(set(int(round(i * (B - 1) / (max_frames - 1))) for i in range(max_frames)))
-        sel = image[idx]
     else:
         idx = list(range(B))
-        sel = image
-    pil_list = tensor_to_pil(sel)
-    w, h = pil_list[0].size
-    scale = max_side / max(w, h) if max(w, h) > max_side else 1.0
-    if scale < 1.0:
-        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        pil_list = [im.resize((nw, nh), _PILImage.LANCZOS) for im in pil_list]
-    t = torch.from_numpy(np.stack([np.array(im).astype(np.float32) / 255.0 for im in pil_list]))
-    # 视频特征：用「采样并缩放后的帧」做 hash，作为视频唯一标识。
-    # 同一视频重复执行哈希不变，换成不同视频则必不同 —— 前端据此判断"切换了视频"而清空标注。
-    vid = hashlib.md5(t.cpu().numpy().tobytes()).hexdigest()
-    return save_images_for_preview(t, prefix="xzg_wmdet_"), idx, vid
+
+    # 缓存命中：同视频直接复用已落盘的预览文件（temp 被清理则自动失效重建）
+    W, H = int(image.shape[2]), int(image.shape[1])
+    cache_key = (_video_id(image), B, W, H, max_side, max_frames)
+    out_dir = folder_paths.get_temp_directory()
+    cached = _PREVIEW_CACHE.get(cache_key)
+    if cached and all(os.path.exists(os.path.join(out_dir, f["filename"])) for f in cached["files"]):
+        return cached["files"], cached["idx"], cached["vid"]
+
+    w0, h0 = W, H
+    scale = max_side / max(w0, h0) if max(w0, h0) > max_side else 1.0
+    nw, nh = (max(1, int(w0 * scale)), max(1, int(h0 * scale))) if scale < 1.0 else (w0, h0)
+
+    # 逐帧流式：转换 → 缩放 → 哈希增量 → JPEG 落盘，单帧临时对象即弃
+    hasher = hashlib.md5()
+    files = []
+    os.makedirs(out_dir, exist_ok=True)
+    token = "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(8))
+    for j, fi in enumerate(idx):
+        arr = np.asarray(tensor_to_pil(image[fi:fi + 1])[0], dtype=np.uint8)
+        if scale < 1.0:
+            # 区域平均下采样：SIMD 优化，比 LANCZOS 快数倍，且下采样场景抗混叠质量好
+            arr = cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
+        hasher.update(arr.tobytes())
+        fname = f"xzg_wmdet_{token}_{j}.jpg"
+        _PILImage.fromarray(arr).save(os.path.join(out_dir, fname), "JPEG", quality=80)
+        files.append({"filename": fname, "subfolder": "", "type": "temp"})
+    vid = hasher.hexdigest()
+
+    _PREVIEW_CACHE[cache_key] = {"files": files, "idx": idx, "vid": vid}
+    if len(_PREVIEW_CACHE) > 24:  # 防无界增长：超出保留最近的 24 个视频
+        for k in list(_PREVIEW_CACHE.keys())[:-24]:
+            _PREVIEW_CACHE.pop(k, None)
+    return files, idx, vid
 
 
 def _video_id(image):
@@ -220,7 +260,7 @@ def _video_id(image):
 
 
 class VideoWatermarkDetector:
-    """视频水印检测节点（手工跟踪版）：批量帧输入 -> 逐帧遮罩 + 合并遮罩。"""
+    """视频遮罩手工跟踪节点（显示名）：批量帧输入 -> 逐帧遮罩（检测图输出已取消）。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -241,10 +281,10 @@ class VideoWatermarkDetector:
         }
 
     OUTPUT_NODE = True  # 标记为输出节点，rgtree/右键"仅执行到本节点"等功能可用
-    RETURN_TYPES = ("IMAGE", "MASK")
-    RETURN_NAMES = ("检测图", "逐帧遮罩")
+    RETURN_TYPES = ("MASK",)
+    RETURN_NAMES = ("逐帧遮罩",)
     FUNCTION = "detect"
-    CATEGORY = "xzg/视频水印检测"
+    CATEGORY = "xzg/视频遮罩手工跟踪"
     DESCRIPTION = ""  # 悬停不弹使用说明（说明走前端视窗「使用说明」按钮）
 
     def detect(self, image, model_name=MANUAL_MODEL_NAME,
@@ -315,73 +355,23 @@ class VideoWatermarkDetector:
         if temporal_dilate > 0:
             masks = _dilate_time(masks, int(temporal_dilate) | 1)
 
-        # ---- 2) 合并遮罩：全视频水印活动区域（union）----
-        merged = np.maximum.reduce(masks)   # 向量化合并（等效逐帧 max）
+        # ---- 2) 遮罩转张量（检测分辨率=原尺寸，无需缩放）----
+        # from_numpy 直用 masks（省一次整栈拷贝）；.float().div_(255) 原地归一化（省一次中间张量）
+        mask_tensor = torch.from_numpy(masks).float().div_(255.0)   # [n,H,W]
 
-        # ---- 3) 遮罩转张量（检测分辨率=原尺寸，无需缩放）----
-        mask_tensor = torch.from_numpy(np.stack(masks)).float() / 255.0   # [n,H,W]
-        merged_tensor = torch.from_numpy(merged).float().unsqueeze(0) / 255.0  # [1,H,W]
-
-        # ---- 4) 可视化输出：原帧 + 多轨彩色框（矩形 / 多边形）----
-        arr_m = (image.clamp(0.0, 1.0) * 255.0).round().cpu().numpy().astype(np.uint8)
-        from PIL import Image, ImageDraw as _ID
-        TRACK_RGB = [(59,130,246),(34,197,94),(234,179,8),(168,85,247),(249,115,22),(6,182,212),(236,72,153),(156,163,175)]
-        sf = [int(x) for x in sample_idx] if sample_idx else []
-        viz_list = []
-        for t in range(arr_m.shape[0]):
-            img = Image.fromarray(arr_m[t])
-            d = _ID.Draw(img)
-            for tid_str, kf_pv in (manual_kf or {}).items():
-                try: tid = int(tid_str)
-                except: continue
-                if not isinstance(kf_pv, dict): continue
-                col = TRACK_RGB[(tid-1) % len(TRACK_RGB)]
-                kf_actual = { sf[int(k)]: [b for b in v if isinstance(b, dict)]
-                              for k, v in kf_pv.items() if int(k) < len(sf) }
-                keys = sorted(kf_actual.keys())
-                if not keys: continue
-                single = len(keys) == 1
-                if t in kf_actual and kf_actual[t]:
-                    boxes_here = kf_actual[t]
-                elif single:
-                    boxes_here = kf_actual[keys[0]]
-                else:
-                    a = max([k for k in keys if k <= t], default=None)
-                    b = min([k for k in keys if k >= t], default=None)
-                    boxes_here = []
-                    if a is not None and b is not None and a != b and kf_actual[a] and kf_actual[b]:
-                        ra, rb = kf_actual[a][0], kf_actual[b][0]
-                        tt = (t - a) / (b - a)
-                        pa = ra.get("poly") if isinstance(ra, dict) else None
-                        pb = rb.get("poly") if isinstance(rb, dict) else None
-                        if (isinstance(pa, list) and isinstance(pb, list)
-                                and len(pa) == len(pb) and len(pa) >= 3):
-                            pb = _align_poly(pb, pa)   # 绕向/起点对齐，防中间帧翻转
-                            boxes_here = [{'poly': [[pa[i][0] + (pb[i][0] - pa[i][0]) * tt,
-                                                     pa[i][1] + (pb[i][1] - pa[i][1]) * tt]
-                                                    for i in range(len(pa))]}]
-                        else:
-                            boxes_here = [{'x1': ra['x1']+(rb['x1']-ra['x1'])*tt, 'y1': ra['y1']+(rb['y1']-ra['y1'])*tt,
-                                           'x2': ra['x2']+(rb['x2']-ra['x2'])*tt, 'y2': ra['y2']+(rb['y2']-ra['y2'])*tt}]
-                for r in boxes_here:
-                    if isinstance(r, dict) and r.get("poly") and isinstance(r["poly"], list) and len(r["poly"]) >= 3:
-                        d.polygon([(p[0] * W, p[1] * H) for p in r["poly"]], outline=col, width=2)
-                    else:
-                        x1c = int(max(0, min(W, r['x1']*W))); y1c = int(max(0, min(H, r['y1']*H)))
-                        x2c = int(max(0, min(W, r['x2']*W))); y2c = int(max(0, min(H, r['y2']*H)))
-                        if x2c > x1c and y2c > y1c:
-                            d.rectangle([x1c, y1c, x2c, y2c], outline=col, width=2)
-            viz_list.append(np.asarray(img))
-        viz_tensor = torch.from_numpy(np.stack(viz_list)).float() / 255.0
+        # 检测图（可视化 IMAGE）输出已按需求取消：原来占执行耗时的
+        # 全帧 uint8 转换 / np.stack / float32 归一化（约 2/3 内存开销）整体删除，
+        # 关键帧插值结果仍由前端预览视窗承担展示职责。
 
         print(f"[视频水印检测] 完成: {n}帧, 模式=manual(手工跟踪), "
               f"耗时 {time.time() - t_start:.2f}s")
-        # 预览帧数：手工跟踪取全部帧（逐帧精确打点追踪）
-        preview, sample_idx_out, vid = _build_preview(image, max_frames=int(image.shape[0]))
+        # 预览帧数：手工跟踪取全部帧（逐帧精确打点追踪）；
+        # 长边压到 768（仅前端视窗显示用，关键帧为归一化坐标，输出遮罩始终按原始分辨率计算）
+        preview, sample_idx_out, vid = _build_preview(image, max_side=768, max_frames=int(image.shape[0]))
         return {
             "ui": {"preview": [{"preview_str": json.dumps({"frames": preview, "sample_idx": sample_idx_out, "video_id": vid}, ensure_ascii=False),
                                 "is_init": True}]},
-            "result": (viz_tensor, mask_tensor),
+            "result": (mask_tensor,),
         }
 
 
@@ -390,5 +380,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VideoWatermarkDetector": "小珠光视频水印检测",
+    "VideoWatermarkDetector": "小珠光视频遮罩手工跟踪",
 }

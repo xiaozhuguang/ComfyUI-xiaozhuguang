@@ -2117,6 +2117,7 @@ window.XZGThemeManager = {
             }
             if (!self.nodeHighlightActive) return;
             let saved = false;
+            let barRedraw = false;
             try {
                 // 归属判定（动态，随当前激活图变化）：仅当该执行由“当前激活图”发起才画运行高亮，
             // 后台/他图执行一律不画 —— 消除 A 流执行、切到 B 流时 B 里同 id 节点被高亮（串台）。
@@ -2160,6 +2161,7 @@ window.XZGThemeManager = {
 
                 ctx.save();
                 saved = true;
+                barRedraw = true;
                 const shape = node._shape || LiteGraph.BOX_SHAPE;
                 const isCollapsed = !!(node.flags && node.flags.collapsed) || !!node.collapsed;
                 const titleHeight = LiteGraph.NODE_TITLE_HEIGHT || 30;
@@ -2187,6 +2189,27 @@ window.XZGThemeManager = {
                         else ctx.rect(x, y, w, h);
                     }
                 };
+
+                // 只在节点外部绘制高亮与光晕：用 evenodd 裁剪挖空节点内部区域，
+                // 防止 shadowBlur 内向光晕盖住节点内容（尤其是执行进度条）。
+                try {
+                    const _clipW = Math.max(1, self.nodeHighlightWidth || 3);
+                    const clipMargin = pad + _clipW * 5 + 60;
+                    ctx.beginPath();
+                    if (shape === LiteGraph.CIRCLE_SHAPE) {
+                        const outerR = Math.max(2, Math.max(bounds.w, bounds.h) * 0.5 + clipMargin);
+                        ctx.arc(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, outerR, 0, Math.PI * 2);
+                        const innerR = Math.max(2, Math.max(bounds.w, bounds.h) * 0.5);
+                        ctx.arc(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, innerR, 0, Math.PI * 2);
+                    } else if (ctx.roundRect) {
+                        ctx.roundRect(bounds.x - clipMargin, bounds.y - clipMargin, bounds.w + clipMargin * 2, bounds.h + clipMargin * 2, 12);
+                        ctx.roundRect(bounds.x, bounds.y, bounds.w, bounds.h, 10);
+                    } else {
+                        ctx.rect(bounds.x - clipMargin, bounds.y - clipMargin, bounds.w + clipMargin * 2, bounds.h + clipMargin * 2);
+                        ctx.rect(bounds.x, bounds.y, bounds.w, bounds.h);
+                    }
+                    ctx.clip('evenodd');
+                } catch (e) {}
 
                 // 颜色（支持逗号分隔的渐变）
                 const colors = (self.nodeHighlightColor || '#22FF22')
@@ -2267,6 +2290,20 @@ window.XZGThemeManager = {
             } catch(e) {
             } finally {
                 if (saved) ctx.restore();
+            }
+            // 执行进度条保底重绘：必须在 finally 的 restore 之后（此时 evenodd 裁剪已解除、
+            // globalAlpha 已复位）。高亮描边/光晕以及主题渐变节点的 alpha=0 隐藏都可能影响
+            // 原生进度条（drawNodeShape 末尾的 drawProgressBar），这里最后以完全不透明再画
+            // 一次，保证视频加载器等耗时节点的加载进度条始终可见。
+            if (barRedraw) {
+                try {
+                    if (typeof node.drawProgressBar === 'function' && node.progress) {
+                        const _barGa = ctx.globalAlpha;
+                        ctx.globalAlpha = 1;
+                        node.drawProgressBar(ctx);
+                        ctx.globalAlpha = _barGa;
+                    }
+                } catch (_) {}
             }
         };
 
@@ -3593,6 +3630,14 @@ window.XZGThemeManager = {
                     
                     // 3. Redraw title background to hide any original title text that was drawn with alpha=1
                     ctx.globalAlpha = 1;
+                    // 进度条补画：origFn 在 globalAlpha=0 下执行，会把原生执行进度条
+                    // （drawNodeShape 末尾的 drawProgressBar，视频加载器等耗时节点的加载进度）
+                    // 一并隐藏。这里以正常透明度补画一次，保证主题渐变节点的执行进度条可见。
+                    try {
+                        if (typeof node.drawProgressBar === 'function' && node.progress) {
+                            node.drawProgressBar(ctx);
+                        }
+                    } catch (_) {}
                     if (useTitleGradient) {
                         const [tx1, ty1, tx2, ty2] = titlePts[titleDirSym] || titlePts['↓'];
                         const titleGrad = ctx.createLinearGradient(tx1, ty1, tx2, ty2);

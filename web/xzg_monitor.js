@@ -1,11 +1,14 @@
 // 注意：本 ComfyUI 版本(0.33.3)扩展实际挂载在 /extensions/<节点目录名>/js/...，
 // 故需 3 级 ../ 才能回到站点根目录 /scripts/app.js
 import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 
 /**
  * 悬浮窗系统监控（xiaozhuguang）
  * - 页面加载后自动在右下角（避开 ComfyUI 底部功能区）显示半透明、可拖拽的监控悬浮窗
  * - 每秒轮询 /xzg/system_monitor_stats 展示 GPU/CPU/内存状态
+ * - 工作流运行计时：execution_start 开始计时，成功/出错/中断停止；显示工作流名称，
+ *   支持历史记录查询（localStorage 持久化，最近 5 条，可清空）
  * - 工作流中添加 XZG_Monitor 节点后，其“显示悬浮窗”开关可控制本窗显示/隐藏
  * - 拖动位置持久记忆（localStorage），右键电池按钮可设置显示项目（面板固定带底色）
  */
@@ -30,6 +33,8 @@ const XZG_DISPLAY_DEFAULT = {
   cpu_util: true,
   cpu_temp: true,
   mem_used: true,
+  run_timer: true,
+  hist_open: false,
   panel_bg: true,
 };
 let _display = loadDisplay();
@@ -141,6 +146,9 @@ const XZG_CSS = `
   transition:width .4s ease,background .4s ease;background:#52c41a;}
 #xzg-float .xzg-val{text-align:right;color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap;}
 #xzg-float .xzg-note{color:#8b8f9a;text-align:center;padding:10px 0;}
+/* 运行历史：隐藏滚动条（鼠标滚轮仍可滚动） */
+#xzg-run-hist{scrollbar-width:none;-ms-overflow-style:none;}
+#xzg-run-hist::-webkit-scrollbar{display:none;width:0;height:0;}
 /* 顶部栏横置电池按钮：金色外框 + 绿色电量 */
 .xzg-batt{position:relative;display:inline-block;width:24px;height:13px;flex:none;
   border:1.5px solid #d4af37;border-radius:3px;box-shadow:0 0 6px rgba(212,175,55,0.5);
@@ -169,6 +177,106 @@ const XZG_CSS = `
 .xzg-menu-it.on{color:#ffd76a;}
 .xzg-menu-it.on .xzg-menu-box{border-color:#d4af37;background:rgba(212,175,55,0.20);color:#ffd76a;}
 `;
+
+// ---------------------------------------------------------------------------
+// 工作流运行计时（事件驱动；历史记录 localStorage 持久化）
+// ---------------------------------------------------------------------------
+
+const XZG_RUN_HISTORY_KEY = "xzg-run-history-v1";
+const XZG_RUN_HISTORY_MAX = 5; // 最多保留 5 条运行记录
+// 运行状态（模块级：事件监听始终注册，历史记录与浮窗显隐/监控开关无关）
+const _run = { running: false, name: "", startTs: 0 };
+let _onRunChange = null; // 浮窗创建后注入：运行状态变化时立即刷新 UI（无需等下一次轮询）
+
+function loadRunHistory() {
+  try {
+    const list = JSON.parse(localStorage.getItem(XZG_RUN_HISTORY_KEY) || "[]");
+    return Array.isArray(list) ? list.slice(0, XZG_RUN_HISTORY_MAX) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveRunHistory(list) {
+  try {
+    localStorage.setItem(XZG_RUN_HISTORY_KEY, JSON.stringify(list.slice(0, XZG_RUN_HISTORY_MAX)));
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function fmtDur(ms) {
+  const s = Math.max(0, Math.floor((ms || 0) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const p = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${p(m)}:${p(sec)}` : `${p(m)}:${p(sec)}`;
+}
+
+function fmtClock(ts) {
+  const d = new Date(ts || Date.now());
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// 当前工作流名称：多来源解析；取不到时返回空串（UI 只显示计时，不显示"未命名工作流"占位）
+function resolveWorkflowName() {
+  try {
+    const wf = app.workflowManager?.activeWorkflow;
+    if (wf?.name) return String(wf.name).replace(/\.json$/i, "");
+  } catch (e) {
+    /* ignore */
+  }
+  try {
+    if (app.graph?.extra?.workflow_name) return String(app.graph.extra.workflow_name);
+  } catch (e) {
+    /* ignore */
+  }
+  return "";
+}
+
+// 显示用工作流名：空 / 旧记录里的"未命名工作流"占位 → 不显示名称
+function displayName(name) {
+  const s = String(name || "").trim();
+  return !s || s === "未命名工作流" ? "" : s;
+}
+
+function startRun() {
+  if (_run.running) return;
+  _run.running = true;
+  _run.name = resolveWorkflowName(); // 起跑时冻结工作流名
+  _run.startTs = Date.now();
+  if (_onRunChange) _onRunChange();
+}
+
+function stopRun(status) {
+  if (!_run.running) return;
+  _run.running = false;
+  const end = Date.now();
+  const list = loadRunHistory();
+  list.unshift({ name: _run.name, start: _run.startTs, end, dur: Math.max(0, end - _run.startTs), status });
+  saveRunHistory(list);
+  _run.startTs = 0;
+  if (_onRunChange) _onRunChange();
+}
+
+function registerRunEvents() {
+  // 工作流开始：每个 prompt 启动时触发
+  api.addEventListener("execution_start", () => startRun());
+  // 兜底：错过 execution_start（如页面刷新时恰在执行中）以首个执行节点为起点
+  api.addEventListener("executing", (e) => {
+    if (e?.detail?.node && !_run.running) startRun();
+  });
+  // 工作流停止：成功 / 出错 / 中断
+  api.addEventListener("execution_success", () => stopRun("完成"));
+  api.addEventListener("execution_error", () => stopRun("出错"));
+  api.addEventListener("execution_interrupted", () => stopRun("中断"));
+  // 页面关闭时仍在运行：记一条"中断"，避免历史里悬空
+  window.addEventListener("beforeunload", () => {
+    if (_run.running) stopRun("中断");
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 悬浮窗
@@ -205,6 +313,119 @@ function createFloatWindow() {
   root.innerHTML = `<div class="xzg-bd"></div>`;
 
   const body = root.querySelector(".xzg-bd");
+  // 结构：运行计时区（含可折叠历史）+ 监控数据区。
+  // render() 只刷新数据区；计时区独立持久，避免每秒重建导致展开状态/文本跳动。
+  body.innerHTML = `<div class="xzg-sec" id="xzg-timer-sec" style="cursor:pointer;"></div>
+    <div id="xzg-run-hist" style="display:none;max-height:150px;overflow-y:auto;"></div>
+    <div id="xzg-stats"></div>`;
+  const statsEl = body.querySelector("#xzg-stats");
+
+  // ---- 运行计时区 ----
+  const timerSec = body.querySelector("#xzg-timer-sec");
+  const histEl = body.querySelector("#xzg-run-hist");
+  function renderTimerSec() {
+    if (!_display.run_timer) {
+      timerSec.style.display = "none";
+      histEl.style.display = "none";
+      return;
+    }
+    timerSec.style.display = "";
+    // 只显示计时：去掉「运行计时/运行中/空闲」文案与工作流名占位。
+    // 左侧依次为：三角（▼已展开历史 / ▶已收起）+ 状态圆点（绿=运行中，灰=空闲）；计时 20px 白色
+    const open = histEl.style.display !== "none";
+    const tri = open ? `<span style="color:#9db2ff">▼</span>` : `<span style="color:#9db2ff">▶</span>`;
+    const dot = _run.running ? `<span style="color:#52c41a">●</span>` : `<span style="color:#6b7280">●</span>`;
+    const timerStyle = `font-size:20px;color:#fff;font-variant-numeric:tabular-nums;line-height:1.3;`;
+    if (_run.running) {
+      const nm = displayName(_run.name);
+      const nameHtml = nm ? `<span class="xzg-label" title="${esc(_run.name)}">${esc(nm)}</span>` : "";
+      timerSec.innerHTML = `<div class="xzg-row" style="grid-template-columns:${nm ? "auto auto 1fr auto" : "auto auto 1fr"};gap:6px;">
+        ${tri}${dot}${nameHtml}
+        <span class="xzg-val" style="${timerStyle}">${fmtDur(Date.now() - _run.startTs)}</span></div>`;
+    } else {
+      const last = loadRunHistory()[0];
+      if (last) {
+        const nm = displayName(last.name);
+        const nameHtml = nm ? `<span class="xzg-label" title="${esc(nm)} · 上次运行 ${fmtClock(last.start)}">${esc(nm)}</span>` : "";
+        timerSec.innerHTML = `<div class="xzg-row" style="grid-template-columns:${nm ? "auto auto 1fr auto" : "auto auto 1fr"};gap:6px;">
+          ${tri}${dot}${nameHtml}
+          <span class="xzg-val" style="${timerStyle}" title="上次运行 ${fmtClock(last.start)}">${fmtDur(last.dur)}</span></div>`;
+      } else {
+        timerSec.innerHTML = `<div class="xzg-row" style="grid-template-columns:auto auto 1fr;gap:6px;">${tri}${dot}
+          <span class="xzg-val" style="${timerStyle}">00:00</span></div>`;
+      }
+    }
+  }
+  function renderHistory() {
+    const list = loadRunHistory();
+    if (!list.length) {
+      histEl.innerHTML = `<div class="xzg-note" style="padding:4px 0;">暂无历史记录</div>`;
+      return;
+    }
+    histEl.innerHTML = list.map((r) => {
+      const icon = r.status === "完成" ? `<span style="color:#52c41a">✔</span>`
+        : r.status === "出错" ? `<span style="color:#f5222d">✖</span>`
+        : `<span style="color:#faad14">⏹</span>`;
+      const nm = displayName(r.name);
+      return `<div class="xzg-row" style="grid-template-columns:auto 1fr auto;">
+        <span>${icon}</span>
+        <span class="xzg-label" title="${esc(nm || fmtClock(r.start))}">${esc(nm || fmtClock(r.start))}</span>
+        <span class="xzg-val">${fmtDur(r.dur)}</span></div>`;
+    }).join("") + `<div id="xzg-run-hist-clear" style="text-align:right;padding:2px 4px;cursor:pointer;color:#8b8f9a;font-size:11px;">清空记录</div>`;
+    const clr = histEl.querySelector("#xzg-run-hist-clear");
+    if (clr) clr.addEventListener("click", (e) => {
+      e.stopPropagation();
+      saveRunHistory([]);
+      renderHistory();
+      renderTimerSec();
+    });
+  }
+  // 展开/收起历史：按悬浮窗在屏幕中的位置自动决定扩展方向——
+  //   下方空间够 → 正常向下扩展；
+  //   下方不够且上方更宽裕 → 临时改「底部锚定」，窗口内容向上扩展（收起时还原定位）；
+  //   两侧都不够 → 向下扩展并压缩历史区高度。
+  let _preExpandPos = null;
+  const setHistOpen = (open) => {
+    histEl.style.display = open ? "" : "none";
+    histEl.style.maxHeight = "150px";
+    if (open) {
+      const rect = root.getBoundingClientRect();
+      const grow = Math.min(150, histEl.scrollHeight || 150); // 历史区实际需要的高度
+      const below = window.innerHeight - rect.bottom - 8;      // 窗口下方可用空间
+      const above = rect.top - 8;                              // 窗口上方可用空间
+      if (below < grow) {
+        if (above > below) {
+          _preExpandPos = { top: root.style.top, bottom: root.style.bottom };
+          root.style.top = "auto";
+          root.style.bottom = Math.max(8, window.innerHeight - rect.bottom) + "px";
+        } else {
+          histEl.style.maxHeight = Math.max(60, below) + "px";
+        }
+      }
+    } else if (_preExpandPos) {
+      root.style.top = _preExpandPos.top;
+      root.style.bottom = _preExpandPos.bottom;
+      _preExpandPos = null;
+    }
+  };
+  // 点击计时区头：展开/收起历史（状态记忆）
+  timerSec.addEventListener("click", () => {
+    const open = histEl.style.display !== "none";
+    setHistOpen(!open);
+    _display.hist_open = !open;
+    saveDisplay();
+    if (!open) renderHistory();
+    renderTimerSec(); // 同步三角方向（▶/▼）
+  });
+  if (_display.hist_open) {
+    renderHistory();
+    setTimeout(() => { setHistOpen(true); }, 0); // 布局就绪后再按位置决定扩展方向
+  }
+  // 运行状态变化时由事件层立即回调刷新（启动/结束无需等下一次轮询）
+  _onRunChange = () => {
+    renderTimerSec();
+    if (_display.hist_open) renderHistory();
+  };
 
   // ---- 拖拽（无标题栏，整窗可拖动） ----
   let dragging = false;
@@ -308,18 +529,19 @@ function createFloatWindow() {
   function render(data) {
     _lastData = data;
     try {
-      body.innerHTML =
+      statsEl.innerHTML =
         renderGpu(data) +
         renderCpu(data.cpu || {}) +
         renderMem(data.mem || {});
+      renderTimerSec(); // 运行中时随轮询刷新已用时长
     } catch (e) {
       // 渲染出错时显示提示，避免内容区静默空白
-      body.innerHTML = `<div class="xzg-note">⚠ 渲染出错: ${esc(e && e.message ? e.message : e)}</div>`;
+      statsEl.innerHTML = `<div class="xzg-note">⚠ 渲染出错: ${esc(e && e.message ? e.message : e)}</div>`;
     }
   }
 
   function renderOffline() {
-    body.innerHTML = `<div class="xzg-note">⚠ 连接后端失败，等待重试…</div>`;
+    statsEl.innerHTML = `<div class="xzg-note">⚠ 连接后端失败，等待重试…</div>`;
   }
 
   async function poll() {
@@ -399,6 +621,7 @@ function showContextMenu(btn) {
     { key: "cpu_util", label: "CPU 使用率" },
     { key: "cpu_temp", label: "CPU 温度" },
     { key: "mem_used", label: "内存占用" },
+    { key: "run_timer", label: "运行计时" },
   ];
   items.forEach((it) => {
     const row = document.createElement("div");
@@ -560,6 +783,8 @@ app.registerExtension({
     });
     // 注册「功能开关」设置项（与节点收藏器/工作流管理器同机制）
     registerMonitorSetting();
+    // 工作流运行计时：事件监听始终注册（历史记录与浮窗显隐/监控开关无关）
+    registerRunEvents();
     if (!isMonitorEnabled()) return; // 设置里关闭了监控：不创建浮窗、不注入顶部按钮、不轮询
     window.__xzgFloat = createFloatWindow();
     _float = window.__xzgFloat;

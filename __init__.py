@@ -233,6 +233,7 @@ from .nodes.xzg_list_count import XiaozhuguangListCount
 from .nodes.xzg_image_from_list import XiaozhuguangImageFromList
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
+from .nodes.xzg_color_match_fast import XiaozhuguangColorMatchFast
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
 from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
 # —— 小珠光VFI（合并自 ComfyUI-GIMM-VFI 的模型加载 + 插值；依赖宿主插件，内部惰性导入）——
@@ -1210,6 +1211,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageFromList": XiaozhuguangImageFromList,
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
+    "XiaozhuguangColorMatchFast": XiaozhuguangColorMatchFast,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
     "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
     "XiaozhuguangVFI": XiaozhuguangVFI,
@@ -1261,6 +1263,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageFromList": "小珠光从列表获取图像",
     "XiaozhuguangBigDisplay": "小珠光大字展示",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
+    "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
     "XiaozhuguangVFI": "小珠光VFI防丢帧",

@@ -1618,6 +1618,31 @@ function bindVideoLoaderInteractions(node) {
         return _origPlayerLoad(url);
     };
 
+    // 换新视频后（上传/下拉切换/快剪加载）重算预览比例：
+    // - 视频比例为预设比例（16:9 等）→ 照常应用预设
+    // - 自定义宽高由外部连线驱动（本体 widget 未手填）→ 属"上次残留输入"，
+    //   未运行工作流前应显示新视频的原始比例，而不是沿用旧连线宽高比
+    // - 本体 widget 手填值 → 保留用户设置（沿用 syncCustomSize）
+    const applyRatioForNewVideo = () => {
+        const rw = node.widgets?.find(w => w.name === "视频比例");
+        const rv = rw?.value;
+        if (rv && rv !== "自定义比例" && rv !== "原始比例") {
+            node._xzgSyncCustomSize?.();
+            return;
+        }
+        const _wLocal = node.widgets?.find(w => w.name === "自定义宽度");
+        const _hLocal = node.widgets?.find(w => w.name === "自定义高度");
+        const _wLocalVal = _wLocal ? (Number(_wLocal.value) || 0) : 0;
+        const _hLocalVal = _hLocal ? (Number(_hLocal.value) || 0) : 0;
+        const _wLinked = _resolveLinkedValue("自定义宽度");
+        const _hLinked = _resolveLinkedValue("自定义高度");
+        if ((_wLinked > 0 || _hLinked > 0) && _wLocalVal === 0 && _hLocalVal === 0) {
+            player.setCustomSize(0, 0); // 清除残留连线宽高，未运行前显示新视频原始比例
+        } else {
+            node._xzgSyncCustomSize?.();
+        }
+    };
+
     // 视频播放区域下方的小字描述
     const hintText = document.createElement("div");
     hintText.textContent = _tr("单击视频播放或暂停/双击视频上传");
@@ -1800,10 +1825,9 @@ function bindVideoLoaderInteractions(node) {
                 await refreshVideoCombo(videoWidget, uploaded[0]);
                 if (flowToken !== _uploadFlowToken) return;
                 player.load(getVideoUrl(videoWidget.value));
-                // 上传新视频后根据当前「视频比例」重新推导预览比例：
-                // 清除上一次执行残留的 loadVideo 自定义比例（_customRatio），
-                // 避免新视频仍按上一个视频的宽高比显示（自定义/原始比例下回退到新视频本身比例）
-                node._xzgSyncCustomSize?.();
+                // 上传新视频后重算预览比例：外部连线驱动的残留宽高未运行前
+                // 回退为新视频原始比例（详见 applyRatioForNewVideo）
+                applyRatioForNewVideo();
                 // 遮罩由播放器 onLoadedMetadata/onError 关闭（_uploadLoadingActive 匹配时）
                 return;
             }
@@ -1871,7 +1895,7 @@ function bindVideoLoaderInteractions(node) {
                 const url = getVideoUrl(value);
                 _isPreviewLoaded = false;
                 player.load(url || "");
-                node._xzgSyncCustomSize?.();
+                applyRatioForNewVideo();
             };
             if (videoWidget.value) {
                 player.load(getVideoUrl(videoWidget.value));
@@ -1918,7 +1942,7 @@ function bindVideoLoaderInteractions(node) {
                     videoWidget.callback?.(annotated);
                 } else {
                     player.load(getVideoUrl(annotated));
-                    node._xzgSyncCustomSize?.();
+                    applyRatioForNewVideo();
                 }
             };
 

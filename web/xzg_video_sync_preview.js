@@ -7,7 +7,8 @@ import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
  * 功能：
  * - 在画布上「合并视频」等带视频预览的节点右键菜单中增加「同步预览」；
  *   点击（选中）一个视频节点右键，或多选（框选）多个视频节点后右键，
- *   选择「同步预览」后，这些节点输出的视频从头一起播放，并自动开启循环播放。
+ *   选择「同步预览」后，这些节点输出的视频加载完成后暂停在开头，
+ *   由用户点击播放开始（播放时从头一起播放，并自动开启循环播放）。
  * - 画布空白处右键，当存在选中的视频节点时提供「同步预览选中视频」。
  * - 供快捷键 G（xiaozhuguang 设置中可配置）调用：对当前选中的视频节点同步预览，
  *   无选中时预览画布上全部视频节点。
@@ -466,7 +467,7 @@ function openSyncPreview(items) {
             statusEl.textContent = "▶ 播放中（自动循环）";
         } finally { _syncing = false; }
     };
-    // 从头一起播放：seek 0 + play（仅初次自动播放和"回到开头"使用）
+    // 从头一起播放：seek 0 + play（"回到开头"重新播放时使用）
     const syncPlayFromStart = () => {
         if (_syncing) return;
         _syncing = true;
@@ -858,8 +859,8 @@ function openSyncPreview(items) {
         if (readyCount >= players.length) {
             forceStarted = true;
             applyGridLayout(); // 全部就绪后按比例重排
-            statusEl.textContent = "▶ 播放中（自动循环）";
-            syncPlayFromStart(); // 初次打开：从头一起播放
+            statusEl.textContent = "已暂停（点击播放开始）";
+            // 保持暂停：进入对比界面停在开头，由用户手动开始
         } else {
             statusEl.textContent = "加载中... (" + readyCount + "/" + players.length + ")";
         }
@@ -868,16 +869,15 @@ function openSyncPreview(items) {
         if (forceStarted) return;
         forceStarted = true;
         applyGridLayout(); // 超时兜底：用已加载的比例重排
-        statusEl.textContent = "已开始播放（部分视频仍在加载）";
-        syncPlayFromStart(); // 超时兜底：从头一起播放
+        statusEl.textContent = "已暂停（部分视频仍在加载）";
+        // 超时兜底同样不自动播放
     }, 8000);
 
     for (const p of players) {
         p.player.onLoadedMetadata = () => {
             readyCount++;
             if (forceStarted) {
-                p.player.seek(0);
-                p.player.play();
+                p.player.seek(0); // 后就位的视频停在开头，保持暂停
             } else {
                 tryStart();
             }

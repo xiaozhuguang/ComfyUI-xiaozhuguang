@@ -879,7 +879,7 @@ app.registerExtension({
 })
 
 /* ============================================================================
- * 视频水印检测 - 区域标注视窗
+ * 视频遮罩手工跟踪（原视频水印检测）- 区域标注视窗
  * 挂在「已被验证能加载」的 xzg_points_editor 模块内（复用其 import/chainCallback/getRealURL）。
  * 原因：独立模块 xzg_watermark_detect.js 在本 fork 的前端预加载中被丢弃（vite:preloadError），
  * 导致它从未执行；而点编辑器作为早期文件已进入预加载清单，可稳定加载。
@@ -901,8 +901,15 @@ function wm_ensureViewer(node) {
         container.style.cssText = "position: relative; width: 100%; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
 
         const toolbar = document.createElement("div");
-        toolbar.style.cssText = "flex: 0 0 28px; width: 100%; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 6px; box-sizing: border-box; border-bottom: 1px solid #333; z-index: 10;";
+        // 加高 8px（28→36）：容纳加大 4px 后的「点击加载视频」行，避免文字贴边
+        toolbar.style.cssText = "flex: 0 0 36px; width: 100%; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 6px; box-sizing: border-box; border-bottom: 1px solid #333; z-index: 10;";
         container.appendChild(toolbar);
+        // 工具栏（点击加载视频这一栏）屏蔽浏览器原生右键菜单；
+        // 轨道数字等自带右键菜单的元素会 stopPropagation，不受影响
+        toolbar.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
 
         let tStyle = document.getElementById("xzg-wmdet-title-css");
         if (!tStyle) { tStyle = document.createElement("style"); tStyle.id = "xzg-wmdet-title-css"; document.head.appendChild(tStyle); }
@@ -916,40 +923,158 @@ function wm_ensureViewer(node) {
 .xzg-wmdet-ft-manual{color:#cba46c;animation:none;font-size:14px;font-weight:600;}
 @keyframes xzgWmdetSweep{0%{background-position:130% 0;}100%{background-position:-30% 0;}}`;
         const trackBar = document.createElement("div");
-        trackBar.style.cssText = "display:flex;align-items:center;gap:4px;margin-left:10px;";
+        trackBar.style.cssText = "display:flex;align-items:center;gap:6px;margin-left:10px;";
         const trackBtns = [];
+        let trackUnlocked = new Set([1]); // 已解锁轨道：默认仅 1；点任意占位槽可单独增加该数字的分类（中间可留空）
         for (let t = 1; t <= 8; t++) {
             (function(t){
                 const b = document.createElement("div");
-                b.style.cssText = "width:14px;height:14px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:3px;font-size:14px;font-weight:700;user-select:none;border:1px solid transparent;position:relative;font-variant-numeric:tabular-nums;";
+                // 随工具栏整体放大：框 14→20px、数字 14→18px，间隙 4→6px
+                b.style.cssText = "width:20px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;user-select:none;border:1px solid transparent;position:relative;font-variant-numeric:tabular-nums;";
                 b.innerText = String(t);
                 // 选中圆点：当前选中轨道数字的高亮框下方的小圆点提醒（与数字同一中心）
                 const dot = document.createElement("div");
                 dot.style.cssText = "position:absolute;left:0;right:0;margin:0 auto;bottom:-5px;width:4px;height:4px;border-radius:50%;display:none;";
                 b.appendChild(dot);
                 b._dot = dot;
-                b.onclick = (e) => { e.stopPropagation(); state.trackId = t; refreshTrackBtns(); drawKfBar(); redraw(); };
+                // 已解锁：点击切换到该轨道；占位槽：点击单独增加该数字的分类
+                b.onclick = (e) => {
+                    e.stopPropagation();
+                    trackUnlocked.add(t);
+                    state.trackId = t;
+                    refreshTrackBtns();
+                    drawKfBar();
+                    redraw();
+                };
+                // 右键轨道数字：删除当前分类（轨道 1 不可删；删除后数字消失，可用「+」再加回）
+                if (t > 1) b.addEventListener("contextmenu", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    showBarMenu(e.clientX, e.clientY, [
+                        {
+                            label: "删除当前分类",
+                            fn: () => {
+                                if (state.manualKeyframes[t]) delete state.manualKeyframes[t];
+                                trackUnlocked.delete(t);  // 数字消失；点该槽位的「+」可单独加回
+                                if (state.trackId === t) state.trackId = 1;
+                                writeData();
+                                redraw();           // redraw 内部会 drawKfBar，三角随之消失
+                                refreshTrackBtns(); // 轨道边框/选中状态同步
+                            },
+                        },
+                    ]);
+                });
                 trackBar.appendChild(b); trackBtns.push(b);
             })(t);
         }
-        // 轨道 8 后面的操作提示（随 trackBar 一起在手工跟踪模式显示/隐藏）
-        const trackHint = document.createElement("span");
-        trackHint.style.cssText = "color:#888;font-size:12px;margin-left:6px;user-select:none;white-space:nowrap;";
-        trackHint.innerText = "左键画跟踪框，右键删除跟踪框";
-        trackBar.appendChild(trackHint);
+        // 占位槽即「+」：显示加号，点击解锁该数字的轨道（无独立 + 按钮）
+        // 一键扩展关键帧：把当前颜色分类的最左关键帧复制到第一帧、最右关键帧复制到最后一帧，
+        // 使遮罩覆盖视频全程（首尾之外无需再手动画框）
+        const extendBtn = document.createElement("div");
+        extendBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;color:#cba46c;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;";
+        extendBtn.innerText = "一键扩展";
+        extendBtn.title = "将当前颜色分类的关键帧扩展到首尾：最左关键帧复制到第一帧，最右关键帧复制到最后一帧";
+        extendBtn.onmouseover = () => { extendBtn.style.backgroundColor = "#333"; };
+        extendBtn.onmouseout = () => { extendBtn.style.backgroundColor = "transparent"; };
+        extendBtn.onclick = (e) => {
+            e.stopPropagation();
+            const nf = state.frames.length;
+            if (nf < 2) return;                                   // 不足两帧无需扩展
+            const km = state.manualKeyframes[state.trackId];
+            if (!km) return;
+            const kfs = Object.keys(km).map(Number)
+                .filter(f => Array.isArray(km[f]) && km[f].length)
+                .sort((a, b) => a - b);
+            if (!kfs.length) return;                              // 当前轨道没有关键帧
+            const first = kfs[0], last = kfs[kfs.length - 1];
+            let changed = false;
+            // 扩展产生的关键帧打标记：播放条上用小一号三角区分（仅会话内有效）
+            state.extKf = state.extKf || {};
+            if (first !== 0) { km[0] = JSON.parse(JSON.stringify(km[first])); state.extKf[state.trackId + ":0"] = true; changed = true; }
+            if (last !== nf - 1) { km[nf - 1] = JSON.parse(JSON.stringify(km[last])); state.extKf[state.trackId + ":" + (nf - 1)] = true; changed = true; }
+            if (changed) {
+                writeData();
+                redraw();
+                refreshTrackBtns();
+            }
+        };
+        trackBar.appendChild(extendBtn);
+        // 仅显示当前分类：激活后播放条三角与画布画框只显示当前颜色轨道。
+        // 文案/配色随状态切换：激活=当前分类色的单色文案；关闭=按 1-8 轨道色逐字对应的多彩文案
+        let _solo = false;
+        const soloBtn = document.createElement("div");
+        soloBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:1px solid transparent;box-sizing:border-box;";
+        soloBtn.title = "仅显示当前颜色分类的关键帧与画框（再次点击恢复显示全部分类）";
+        const SOLO_TEXT_ON = "仅显示当前颜色关键帧";
+        const SOLO_TEXT_OFF = "显示全部颜色关键帧";
+        const refreshSoloBtn = () => {
+            if (_solo) {
+                const c = TRACK_COLORS[(state.trackId - 1) % TRACK_COLORS.length];
+                soloBtn.innerHTML = `<span style="color:${c}">${SOLO_TEXT_ON}</span>`;
+                soloBtn.style.borderColor = c;
+                soloBtn.style.backgroundColor = "rgba(255,255,255,0.08)";
+            } else {
+                soloBtn.innerHTML = SOLO_TEXT_OFF.split("").map((ch, i) =>
+                    `<span style="color:${TRACK_COLORS[i % TRACK_COLORS.length]}">${ch}</span>`).join("");
+                soloBtn.style.borderColor = "#555";
+                soloBtn.style.backgroundColor = "transparent";
+            }
+        };
+        soloBtn.onclick = (e) => {
+            e.stopPropagation();
+            _solo = !_solo;
+            refreshSoloBtn();
+            redraw(); // redraw 内部会 drawKfBar，播放条三角与画布同步刷新
+        };
+        soloBtn.onmouseover = () => { if (!_solo) soloBtn.style.backgroundColor = "#333"; };
+        soloBtn.onmouseout = () => { if (!_solo) soloBtn.style.backgroundColor = "transparent"; };
+        // 注意：此处不能立即调用 refreshSoloBtn()——state/TRACK_COLORS 尚未初始化（定义在后方），
+        // 立即执行会抛错并中断整个视窗创建。初始填充由稍后的 applySwitch→refreshTrackBtns 完成
+        trackBar.appendChild(soloBtn);
         toolbar.appendChild(trackBar);
+        // 从已有数据推导已解锁轨道（加载含多轨道标注的工作流时自动点亮对应数字）
+        const syncTrackUnlockedFromData = () => {
+            try {
+                const kfsAll = state.manualKeyframes || {};
+                Object.keys(kfsAll).forEach(tidStr => {
+                    const t = Number(tidStr);
+                    if (t >= 1 && t <= 8 && Object.values(kfsAll[t] || {}).some(fr => Array.isArray(fr) && fr.length)) {
+                        trackUnlocked.add(t);
+                    }
+                });
+            } catch (e) {}
+        };
         const refreshTrackBtns = () => {
+            syncTrackUnlockedFromData();
+            refreshSoloBtn(); // solo 激活时，文案颜色跟随当前选中的分类色
             trackBtns.forEach((b, idx) => {
                 const tid = idx + 1;
                 const c = TRACK_COLORS[idx];
                 const kfsAll = state.manualKeyframes || {};
                 const kfs = kfsAll[tid] || {};
                 const hasBox = Object.values(kfs).some(fr => Array.isArray(fr) && fr.length);
-                b.style.color = c;
-                b.style.borderColor = hasBox ? c : "transparent";
+                const unlocked = trackUnlocked.has(tid); // 未解锁的槽位显示为「+」
+                b.title = unlocked ? `轨道 ${tid}` : `点击增加轨道 ${tid}`;
+                b.innerText = unlocked ? String(tid) : "+";
+                b.style.fontSize = "18px";
                 b.style.background = "transparent";
-                b.style.fontSize = "14px";
-                if (b._dot) { b._dot.style.display = (tid === state.trackId) ? "block" : "none"; b._dot.style.background = c; }
+                b.style.borderStyle = unlocked ? "solid" : "dashed";
+                if (unlocked) {
+                    b.style.color = c;
+                    // 仅选中轨道画边框（轨道色），不带辉光；未选中一律无边框
+                    const selected = tid === state.trackId;
+                    b.style.borderColor = selected ? c : "transparent";
+                    b.style.boxShadow = "none";
+                    b.style.cursor = "pointer";
+                    b.style.pointerEvents = "auto";
+                } else {
+                    // 占位槽：淡色「+」+ 虚线边，点击解锁该数字
+                    b.style.color = "#6b7280";
+                    b.style.borderColor = "rgba(255,255,255,0.12)";
+                    b.style.cursor = "pointer";
+                    b.style.pointerEvents = "auto";
+                }
+                if (b._dot) { b._dot.style.display = (unlocked && tid === state.trackId) ? "block" : "none"; b._dot.style.background = c; }
             });
             trackBar.style.display = (state.mode === "manual") ? "flex" : "none";
             refreshToolBtn();
@@ -957,7 +1082,7 @@ function wm_ensureViewer(node) {
 
         // 标注工具切换：▭ 框选 / ✎ 手绘（仅手工跟踪模式显示）
         const toolBtn = document.createElement("div");
-        toolBtn.style.cssText = "height:18px;min-width:52px;padding:0 6px;display:flex;align-items:center;justify-content:center;gap:3px;cursor:pointer;border-radius:3px;font-size:14px;font-weight:700;user-select:none;border:1px solid transparent;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
+        toolBtn.style.cssText = "height:26px;min-width:68px;padding:0 8px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;user-select:none;border:1px solid transparent;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
         toolBtn.title = "标注工具：框选 / 手绘";
         toolbar.insertBefore(toolBtn, trackBar);
         const refreshToolBtn = () => {
@@ -969,7 +1094,7 @@ function wm_ensureViewer(node) {
                 toolBtn.innerHTML = "<span>✎</span> 手绘";
             } else {
                 // 长方形框图标（宽>高），与文字同为块级 flex 项，保证垂直居中
-                toolBtn.innerHTML = '<svg style="display:block;flex-shrink:0" width="12" height="10" viewBox="0 0 12 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="9" height="7" rx="1"/></svg><span style="display:block;line-height:10px">框选</span>';
+                toolBtn.innerHTML = '<svg style="display:block;flex-shrink:0" width="16" height="13" viewBox="0 0 12 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="9" height="7" rx="1"/></svg><span style="display:block;line-height:13px">框选</span>';
             }
         };
         toolBtn.onclick = (e) => { e.stopPropagation(); state.tool = (state.tool === "rect") ? "brush" : "rect"; refreshToolBtn(); redraw(); };
@@ -983,16 +1108,18 @@ function wm_ensureViewer(node) {
         toolbar.appendChild(right);
 
         const hint = document.createElement("div");
-        hint.style.cssText = "color: #777; font-size: 14px; user-select: none; display: none; white-space: nowrap;";
+        hint.style.cssText = "color: #777; font-size: 16px; user-select: none; display: none; white-space: nowrap;";
         hint.innerText = "左键框选";
         right.appendChild(hint);
 
 
         // 「引入上游图片」按钮：手动执行当前节点（含上游）引入画面（切换模式不再自动引入）
         const runBtn = document.createElement("div");
-        runBtn.style.cssText = "height: 20px; min-width: 64px; padding: 0 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #d8d8d8; font-size: 14px; font-weight: 400; user-select: none; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;";
+        // 加高 8px（20→28）、文字加大 4px（14→18，⏎ 符号随字号等比变大）
+        runBtn.style.cssText = "height: 28px; min-width: 64px; padding: 0 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #d8d8d8; font-size: 18px; font-weight: 400; user-select: none; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;";
         runBtn.innerHTML = '<span style="font-weight:700">点击加载视频⏎</span>';
         runBtn.title = "执行当前节点（含上游），预览检测画面";
+        // 点击加载视频：不清空已画标注（持久化方案——同视频重复执行保留标注）
         runBtn.onclick = (e) => { e.stopPropagation(); startProgress(); runUpstream(); };
         // 颜色/文字跟随模式：手工跟踪=暗金+短文案（旧自动检测模式的荧光绿分支已下线，仅保留防御）
         const updateRunBtn = () => {
@@ -1000,7 +1127,9 @@ function wm_ensureViewer(node) {
             runBtn.style.display = "flex";
             runBtn.style.color = (m === "filter") ? "#3ef558" : "#cba46c";
             runBtn.innerHTML = (m === "filter")
-                ? '<span style="font-weight:700">点击加载视频⏎</span><span style="color:#888;font-weight:400;margin-left:10px">1、不操作为全域跟踪 2、点击加载时候，画方框为限定区域跟踪</span>'
+                ? '<span style="font-weight:700">点击加载视频⏎</span>'
+                  + '<span style="color:#888;font-weight:400;margin-left:20px">1、不操作为全域跟踪</span>'
+                  + '<span style="color:#888;font-weight:400;margin-left:20px">2、点击加载时候，画方框为限定区域跟踪</span>'
                 : '<span style="font-weight:700">点击加载视频⏎</span>';
         };
 
@@ -1069,34 +1198,67 @@ function wm_ensureViewer(node) {
         }
         toolbar.insertBefore(runBtn, toolbar.firstChild);
 
-        // 说明书按钮：位于「点击加载视频」左侧，点击弹出使用说明（样式与工作流管理器说明书一致）
+        // 说明书按钮：位于「点击加载视频」左侧，笔记本图标（缩小占用空间），点击弹出使用说明
         const helpBtn = document.createElement("div");
-        helpBtn.style.cssText = "background:none;border:none;color:#FFD700;cursor:pointer;font-size:12px;font-weight:bold;user-select:none;white-space:nowrap;flex-shrink:0;padding:0 2px;margin-left:2px;";
-        helpBtn.textContent = "使用说明";
-        helpBtn.title = "本节点使用说明";
+        helpBtn.style.cssText = "background:none;border:none;color:#FFD700;cursor:pointer;user-select:none;white-space:nowrap;flex-shrink:0;padding:0 2px;margin-right:8px;display:flex;align-items:center;justify-content:center;";
+        helpBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>';
+        helpBtn.title = "使用说明";
         helpBtn.onmouseover = () => { helpBtn.style.color = "#FFA500"; };
         helpBtn.onmouseout = () => { helpBtn.style.color = "#FFD700"; };
         helpBtn.onclick = (e) => { e.stopPropagation(); try { showWmDetHelp(); } catch (err) { console.error("[小珠光][水印] showWmDetHelp 错误:", err); } };
         toolbar.insertBefore(helpBtn, runBtn);
 
         const clearBtn = document.createElement("div");
-        clearBtn.style.cssText = "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; font-size: 14px; user-select: none; flex-shrink: 0;";
-        clearBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
-        clearBtn.title = "清除所有标注区域";
+        // 小垃圾桶：仅删除当前颜色分类（当前轨道）的关键帧
+        const clearCurBtn = document.createElement("div");
+        clearCurBtn.style.cssText = "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; user-select: none; flex-shrink: 0;";
+        clearCurBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
+        clearCurBtn.title = "删除当前颜色分类的关键帧";
+        clearCurBtn.onmouseover = () => { clearCurBtn.style.backgroundColor = "#333"; };
+        clearCurBtn.onmouseout = () => { clearCurBtn.style.backgroundColor = "transparent"; };
+        clearCurBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (state.manualKeyframes[state.trackId]) {
+                delete state.manualKeyframes[state.trackId];
+                writeData();
+                redraw();
+                refreshTrackBtns();
+            }
+        };
+        clearBtn.style.cssText = "width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; font-size: 18px; user-select: none; flex-shrink: 0;";
+        clearBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
+        clearBtn.title = "删除全部标注（所有分类的关键帧 + 检测/排除区）";
         clearBtn.onmouseover = () => { clearBtn.style.backgroundColor = "#333"; };
         clearBtn.onmouseout = () => { clearBtn.style.backgroundColor = "transparent"; };
-        clearBtn.onclick = (e) => { e.stopPropagation(); state.detectRegions = []; state.excludeRegions = []; state.manualKeyframes = {}; writeData(); redraw(); refreshTrackBtns(); };
+        clearBtn.onclick = (e) => {
+            e.stopPropagation();
+            state.detectRegions = [];
+            state.excludeRegions = [];
+            state.manualKeyframes = {};
+            trackUnlocked = new Set([1]); // 除轨道 1 外，其他分类的数字一并收回
+            state.trackId = 1;
+            writeData();
+            redraw();
+            refreshTrackBtns();
+        };
         right.appendChild(clearBtn);
+        right.insertBefore(clearCurBtn, clearBtn); // 小垃圾桶在大垃圾桶左侧
 
         hint.innerText = "左键框选 (检测区)";
 
-        // 帧控制栏（帧号 + 滑块）
+        // 帧控制栏（帧号 + 滑块）：加高 15px（52→67），为播放条后续优化预留空间
         const tracker = document.createElement("div");
-        tracker.style.cssText = "flex: 0 0 52px; width: 100%; background: #222; position:relative; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid #333; gap: 4px;";
+        tracker.style.cssText = "flex: 0 0 67px; width: 100%; background: #222; position:relative; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid #333; gap: 4px;";
         container.appendChild(tracker);
+        // 播放条区域屏蔽浏览器原生右键菜单（三角的关键帧菜单已自行 preventDefault，
+        // 其余位置右键静默忽略，避免误触浏览器菜单打断标注节奏）
+        tracker.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
 
         const frameInfo = document.createElement("div");
-        frameInfo.style.cssText = "color: #ccc; font-family: monospace; font-size: 14px; min-width: 44px; text-align: center; user-select: none;";
+        frameInfo.style.cssText = "color: #ccc; font-family: monospace; font-size: 14px; min-width: 44px; text-align: right; user-select: none;";
         frameInfo.innerText = "0/0";
         tracker.appendChild(frameInfo);
 
@@ -1131,7 +1293,9 @@ function wm_ensureViewer(node) {
         tracker.appendChild(slider);
         // 播放条刻度层：覆盖滑块区域，绘制 0..N 刻度竖线与关键帧竖杠（pointer-events:none 不挡滑块拖动）
         const kfBar = document.createElement("div");
-        kfBar.style.cssText = "position:absolute;left:0;top:0;height:100%;pointer-events:none;z-index:3;";
+        // z-index 7 高于点击判定区(6)：关键帧三角需要可点击（pointer-events:auto），
+        // 层内其余元素仍 pointer-events:none，拖动换帧不受影响
+        kfBar.style.cssText = "position:absolute;left:0;top:0;height:100%;pointer-events:none;z-index:7;";
         tracker.appendChild(kfBar);
         // 播放条拖动判定区：覆盖滑块区域（不含播放/暂停按钮与左侧帧显示），点击/拖动换算为帧值
         const hitzone = document.createElement("div");
@@ -1431,10 +1595,14 @@ function wm_ensureViewer(node) {
                 state.detectRegions.forEach(r => drawRegionBox(r, "#22c55e", null, "检测"));
                 // 手工跟踪：多轨关键帧
                 if (state.mode === "manual") {
+                    // try/catch 防御：插值等异常不得中断 redraw，否则拖动画框的实时预览段
+                    //（在函数末尾）永远执行不到，表现为"拖动时无预览、松手才出框"
+                    try {
                     const kfsAll = state.manualKeyframes || {};
                     const f = state.frameIdx;
                     Object.keys(kfsAll).forEach(tidStr => {
                         const tid = Number(tidStr);
+                        if (_solo && tid !== state.trackId) return; // 仅显示当前分类：其他轨道不画
                         const kfs = kfsAll[tidStr] || {};
                         const keys = Object.keys(kfs).map(Number).filter(k => Array.isArray(kfs[k]) && kfs[k].length).sort((a,b)=>a-b);
                         if (!keys.length) return;
@@ -1467,6 +1635,7 @@ function wm_ensureViewer(node) {
                             }
                         }
                     });
+                    } catch (e) { console.warn("[小珠光][水印] 关键帧绘制异常(已跳过,不影响预览):", e); }
                 }
                 if (state.drawing) {
                     // state.drawing 是图像像素坐标，drawRegionBox 按归一化 0~1 绘制，
@@ -1510,6 +1679,92 @@ function wm_ensureViewer(node) {
             return 8;
         };
 
+        // ---- 播放条右键菜单（关键帧三角 / 播放头共用）----
+        let _barMenuEl = null;
+        const closeBarMenu = () => { if (_barMenuEl) { _barMenuEl.remove(); _barMenuEl = null; } };
+        const showBarMenu = (x, y, items) => {
+            closeBarMenu();
+            const menu = document.createElement("div");
+            menu.style.cssText = "position:fixed;z-index:100000;min-width:130px;padding:4px;background:rgba(24,26,33,0.97);border:1px solid rgba(255,255,255,0.16);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.55);color:#e8e8e8;font:13px/1.4 sans-serif;user-select:none;";
+            items.forEach(({ label, fn }) => {
+                const it = document.createElement("div");
+                it.style.cssText = "padding:6px 12px;border-radius:5px;cursor:pointer;white-space:nowrap;";
+                it.innerText = label;
+                it.addEventListener("mouseenter", () => { it.style.background = "rgba(255,255,255,0.08)"; });
+                it.addEventListener("mouseleave", () => { it.style.background = "transparent"; });
+                it.addEventListener("click", (ev) => { ev.stopPropagation(); closeBarMenu(); fn(); });
+                menu.appendChild(it);
+            });
+            document.body.appendChild(menu);
+            const r = menu.getBoundingClientRect();
+            menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + "px";
+            menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + "px";
+            _barMenuEl = menu;
+        };
+        // 关键帧三角菜单：删除 / 复制到当前播放头（按三角所属轨道 tid 操作）
+        const showKfMenu = (x, y, fr, tid) => showBarMenu(x, y, [
+            {
+                label: "删除关键帧",
+                fn: () => {
+                    const km = state.manualKeyframes[tid];
+                    if (km && km[fr]) {
+                        delete km[fr];
+                        writeData();
+                        redraw();          // redraw 内部会 drawKfBar，三角随之消失
+                        refreshTrackBtns(); // 轨道按钮的关键帧描边状态同步
+                    }
+                },
+            },
+            {
+                label: "复制关键帧到播放头",
+                fn: () => {
+                    const km = state.manualKeyframes[tid];
+                    const src = km ? km[fr] : null;
+                    if (!src || !src.length) return;               // 该三角无关键帧数据
+                    if (state.frameIdx === fr) return;             // 播放头就在此帧，无需复制
+                    km[state.frameIdx] = JSON.parse(JSON.stringify(src)); // 深拷贝框数据到播放头所在帧
+                    writeData();
+                    redraw();   // 播放头位置立即出现复制来的框
+                    refreshTrackBtns();
+                },
+            },
+        ]);
+        // 点击菜单外任意处关闭
+        document.addEventListener("mousedown", (e) => { if (_barMenuEl && !_barMenuEl.contains(e.target)) closeBarMenu(); });
+
+        // ---- 关键帧拖动：按住三角左右移动，松手落位 ----
+        // 拖动状态放在节点闭包层：拖动过程中 showFrame→redraw 会重建三角元素，
+        // 状态不能挂在元素上，否则重建即丢
+        let _kfDrag = null; // { trackId, from, cur }
+        // 与播放条拖拽（setFrameFromX）同一套坐标换算：thumb 中心落在 [r, 宽-r]
+        const kfFrameAtX = (clientX) => {
+            const nf = state.frames.length;
+            const rect = slider.getBoundingClientRect();
+            const w = rect.width;
+            if (w <= 0 || nf < 1) return -1;
+            const r = 8;
+            const frac = (clientX - rect.left - r) / (w - 2 * r);
+            return Math.max(0, Math.min(nf - 1, Math.round(frac * (nf - 1))));
+        };
+        window.addEventListener("mousemove", (e) => {
+            if (!_kfDrag) return;
+            const to = kfFrameAtX(e.clientX);
+            if (to < 0 || to === _kfDrag.cur) return;
+            const km = state.manualKeyframes[_kfDrag.trackId];
+            if (!km) return;
+            const data = km[_kfDrag.cur];
+            if (!data) { _kfDrag = null; return; }
+            delete km[_kfDrag.cur];
+            km[to] = data;   // 目标位置已有关键帧时直接覆盖
+            _kfDrag.cur = to;
+            showFrame(to);   // 播放头、帧号、画面跟随拖动位置
+        });
+        window.addEventListener("mouseup", () => {
+            if (!_kfDrag) return;
+            if (_kfDrag.cur !== _kfDrag.from) writeData(); // 位置有变化才持久化
+            _kfDrag = null;
+        });
+
         const drawKfBar = () => {
             const nf = (state.frames || []).length;
             // 以滑块 content box 为基准（补偿可能的 border/padding），
@@ -1519,6 +1774,8 @@ function wm_ensureViewer(node) {
             if (!w) { kfBar.innerHTML = ""; requestAnimationFrame(() => drawKfBar()); return; }
             kfBar.style.left = left + "px";
             kfBar.style.right = Math.max(0, tracker.clientWidth - left - w) + "px";
+            // 点击判定区左边界与滑条左缘保持同步（帧号文本宽度变化会推移滑条位置）
+            hitzone.style.left = left + "px";
             // 播放头 thumb 中心只落在 [r, 宽-r] 区间（原生 range 行为），
             // 横条/竖杠按同一坐标系摆放，才能与播放头竖条一一对齐
             const r = getThumbRadius();
@@ -1532,17 +1789,73 @@ function wm_ensureViewer(node) {
             const barLeft = Math.max(0, Math.min(w - 2, posX(0)));
             bar.style.cssText = `position:absolute;left:${barLeft}px;top:calc(50% - 2px);width:${Math.max(4, barW)}px;height:4px;border-radius:2px;background:#5f5f5f;`;
             frag.appendChild(bar);
-            // 关键帧标记：只显示当前选中轨道的关键帧三角，颜色为该轨道颜色
+            // 关键帧标记：仅显示当前分类时只画当前轨道三角，否则画全部轨道（各自轨道色）。
+            // 同一帧被多个分类标记时，三角按层上下排列（每层 13px），避免互相遮挡
             if (nf > 0) {
                 const kfsAll = state.manualKeyframes || {};
-                const tid = state.trackId;
-                const kfs = kfsAll[tid] || {};
-                const color = TRACK_COLORS[(tid-1) % TRACK_COLORS.length];
+                const tierAt = {}; // fr -> 该帧已占用的层号
+                const tids = _solo ? [state.trackId] : Object.keys(kfsAll).map(Number).sort((a, b) => a - b);
+                tids.forEach(tid => {
+                    const kfs = kfsAll[tid] || {};
+                    const color = TRACK_COLORS[(tid-1) % TRACK_COLORS.length];
                 Object.keys(kfs).map(Number).forEach(fr => {
+                    const tier = tierAt[fr] || 0;
+                    tierAt[fr] = tier + 1;
                     if (!Array.isArray(kfs[fr]) || !kfs[fr].length) return;
-                    const mark = document.createElement("div");
-                    mark.style.cssText = `position:absolute;left:${posX(fr) - 5}px;top:0;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:8px solid ${color};`;
-                    frag.appendChild(mark);
+                    // 点击热区仅包住三角（16×16，四周留少量余量），不向下延伸到播放条区域，
+                    // 避免误触发：三角下方仍走播放条的拖拽换帧判定
+                    const hit = document.createElement("div");
+                    hit.style.cssText = `position:absolute;left:${posX(fr) - 8}px;top:${tier * 13}px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:auto;`;
+                    hit.title = `第 ${fr} 帧关键帧（点击跳转 / 拖动移动 / 右键菜单）`;
+                    // 按住左键开始拖动：移动中播放头与画面跟随，松手落位并持久化
+                    hit.addEventListener("mousedown", (e) => {
+                        if (e.button !== 0) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        _kfDrag = { trackId: tid, from: fr, cur: fr };
+                    });
+                    // 扩展（一键扩展复制到首尾）的关键帧用小一号三角，与手画的关键帧区分
+                    const ext = !!(state.extKf && state.extKf[tid + ":" + fr]);
+                    const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    mark.setAttribute("width", ext ? "11" : "14");
+                    mark.setAttribute("height", ext ? "9" : "12");
+                    mark.setAttribute("viewBox", ext ? "0 0 11 9" : "0 0 14 12");
+                    mark.style.cssText = "display:block;flex-shrink:0;margin-top:1px;";
+                    // 高亮规则：播放头停在关键帧帧号上（三角形正下方）→ 白边高亮；
+                    // 鼠标悬停 → 同样高亮；两者都不满足 → 纯色无边框。
+                    // showFrame → redraw → drawKfBar 会随播放头移动自动刷新
+                    const active = fr === state.frameIdx;
+                    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                    path.setAttribute("d", ext ? "M1 1 L10 1 L5.5 8 Z" : "M1 1 L13 1 L7 11 Z");
+                    path.setAttribute("fill", color);
+                    path.setAttribute("stroke", "#ffffff");
+                    path.setAttribute("stroke-width", active ? "1.5" : "0");
+                    path.setAttribute("stroke-linejoin", "round");
+                    if (active) mark.style.filter = "drop-shadow(0 0 3px #ffffff)";
+                    mark.appendChild(path);
+                    hit.addEventListener("mouseenter", () => {
+                        path.setAttribute("stroke-width", "1.5");
+                        mark.style.filter = "drop-shadow(0 0 3px #ffffff)";
+                    });
+                    hit.addEventListener("mouseleave", () => {
+                        // 移开鼠标后：若播放头仍停在该帧则保持高亮，否则恢复无边框
+                        const stillActive = fr === state.frameIdx;
+                        path.setAttribute("stroke-width", stillActive ? "1.5" : "0");
+                        mark.style.filter = stillActive ? "drop-shadow(0 0 3px #ffffff)" : "";
+                    });
+                    hit.appendChild(mark);
+                    hit.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        showFrame(fr);
+                    });
+                    // 右键三角：弹出关键帧菜单（删除 / 复制到播放头）
+                    hit.addEventListener("contextmenu", (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showKfMenu(e.clientX, e.clientY, fr, tid);
+                    });
+                    frag.appendChild(hit);
+                });
                 });
             }
             kfBar.innerHTML = "";
@@ -1584,38 +1897,18 @@ function wm_ensureViewer(node) {
         // 整个帧栏点击/拖动跳转：点空白处按 x 比例跳帧
 
         // ---- 框选交互 ----
+        // 拖动画框的重绘节流：高频 pointermove 合并到每帧一次，拖动预览更流畅
+        let _drawRAF = null;
+        const scheduleRedraw = () => {
+            if (_drawRAF) return;
+            _drawRAF = requestAnimationFrame(() => { _drawRAF = null; redraw(); });
+        };
         canvasWrapper.addEventListener('pointerdown', (e) => {
             stopPlay();
             if (!state.image) return;
             if (state.mode === 'off') return;   // 关：禁用框选
-            if (e.button === 2) {
-                // 右键：删除该位置下的一个标注框
-                const c = toImg(e);
-                const L = calcLayout();
-                if (state.mode === "manual") {
-                    // 跨所有轨道删除：点中框所属「颜色/轨道」当前帧的那一个框，
-                    // 不需要先激活该轨道颜色。从最后画的（最上层）向前匹配。
-                    const tids = Object.keys(state.manualKeyframes || {}).map(Number).sort((a, b) => b - a);
-                    let removed = false;
-                    for (const tid of tids) {
-                        const km = state.manualKeyframes[tid] || {};
-                        const kfs = Array.isArray(km[state.frameIdx]) ? km[state.frameIdx] : [];
-                        for (let i = kfs.length - 1; i >= 0; i--) {
-                            if (hitTestBox(kfs[i], c.x, c.y, L)) {
-                                kfs.splice(i, 1);
-                                removed = true;
-                                break;
-                            }
-                        }
-                        if (removed) break;
-                    }
-                } else {
-                    const idxD = state.detectRegions.findIndex(r => c.x >= r.x1 * L.imgW && c.x <= r.x2 * L.imgW && c.y >= r.y1 * L.imgH && c.y <= r.y2 * L.imgH);
-                    if (idxD >= 0) state.detectRegions.splice(idxD, 1);
-                }
-                writeData(); redraw(); refreshTrackBtns();
-                return;
-            }
+            // 右键框体删除已移除：删除关键帧统一走「右键播放条三角 → 删除关键帧」，
+            // 避免两处删除入口（画布右键按框删除 / 播放条按帧删除）语义混淆
             if (e.button !== 0) return;
             try { canvasWrapper.setPointerCapture(e.pointerId); } catch (_) {}
             const c = toImg(e);
@@ -1647,7 +1940,7 @@ function wm_ensureViewer(node) {
             const c = toImg(e);
             state.drawing.x2 = c.x;
             state.drawing.y2 = c.y;
-            redraw();
+            scheduleRedraw();
         });
 
         canvasWrapper.addEventListener('pointerup', (e) => {
@@ -1817,8 +2110,8 @@ function wm_ensureViewer(node) {
                 const pd = (pd0 && pd0.frames) ? pd0.frames : pd0;
                 if (pd0 && pd0.sample_idx) state.sampleIdx = pd0.sample_idx;
                 if (pd && pd.length > 0) {
-                    // 载入「新视频」时自动清空区域框：用后端下发的 video_id（视频特征哈希）判断，
-                    // 仅当源视频确实发生变化时清理（同一视频重复执行视频 id 不变，不清空，避免丢失标注）
+                    // 载入「新视频」时才清空区域框：用后端下发的 video_id（视频特征哈希）判断，
+                    // 仅当源视频变化时清理；排队/快捷键 D 重复执行同一视频不清，保留已画标注
                     const newKey = (pd0 && pd0.video_id) ? pd0.video_id : (pd[0] ? String(pd[0]).split(/[/\\?]/).pop() : '');
                     if (newKey && state.srcKey && newKey !== state.srcKey) clearRegions();
                     if (newKey) state.srcKey = newKey;
@@ -1840,6 +2133,27 @@ function wm_ensureViewer(node) {
                     slider.style.pointerEvents = pd.length < 2 ? "none" : "";
                     slider.style.cursor = pd.length < 2 ? "default" : "pointer";
                     frameInfo.innerText = `0/${Math.max(0, pd.length - 1)}`;
+                    // 帧号文本宽度固定：按最大帧号位数预留（如 120 帧 → "i/120" 最多 7 字符）。
+                    // 否则 38/120 → 100/120 两位变三位时文本变宽，挤压 flex:1 的滑条，
+                    // 导致右侧播放条在拖动过程中变窄/位移。monospace 下 1ch = 一个字符宽。
+                    const digits = String(Math.max(0, pd.length - 1)).length;
+                    frameInfo.style.minWidth = `max(44px, ${(2 * digits + 1)}ch)`;
+                    // 修复：加载视频后播放头默认不显示、要拖动一次才出现。
+                    // 播放头由 ::-webkit-slider-thumb 伪元素绘制，仅用 JS 改 max/value
+                    // 不会触发伪元素重绘（布局克隆/时序问题），首次拖动的值变化才触发原生重绘。
+                    // 同步 display 往返 + 强制 reflow 让浏览器立即重绘滑块；
+                    // 同时补画播放条横条/关键帧标记（onExecuted 原本不触发 drawKfBar，
+                    // 若首帧 onload 时布局未稳定，横条会缺席到下一次 resize 才补上）。
+                    requestAnimationFrame(() => {
+                        slider.style.display = "none";
+                        void slider.offsetHeight;   // 强制 reflow
+                        slider.style.display = "";
+                        try { drawKfBar(); } catch (e) {}
+                    });
+                    // 横条缺失修复：加载瞬间前端布局可能尚未稳定，drawKfBar 会以过期的
+                    // slider.clientWidth 画出几乎零宽的横条，之后无尺寸变化就不再重画
+                    //（拖动才会经 redraw→drawKfBar 补上）。这里错峰多次重画兜底。
+                    [120, 300, 700].forEach((t) => setTimeout(() => { try { drawKfBar(); } catch (e) {} }, t));
                 }
             } catch (e) {}
         });
@@ -1850,9 +2164,9 @@ function wm_ensureViewer(node) {
         // 并按布局结果统一克隆定位/定尺寸。此处不再写 container.style.height
         //（旧 syncH 双写高度 + 定位随缩放换算，是"节点下方死区"的根源）。
         const MIN_PREVIEW_H = 220;
-        // 最小宽度按手工跟踪模式整行标签不被裁切计算：
-        // 点击加载视频⏎(~114) + 框选/手绘(~55) + 轨道1-8(margin10+112+间隙28=150) + 关+垃圾桶(90) + 工具栏内边距(12) ≈ 421，留缓冲取 440
-        const MIN_NODE_W = 440;
+        // 最小宽度按手工跟踪模式整行标签不被裁切计算（一键扩展/显示全部颜色关键帧同步加大到 18px 后放宽）：
+        // 笔记本图标(~24) + 点击加载视频⏎18px(~150) + 框选/手绘(~85) + 轨道1-8(20px框×8+间隙6×7+margin10=212) + 一键扩展18px(~92) + 显示全部颜色关键帧18px(~182) + 垃圾桶×2(50) + 工具栏内边距(12) ≈ 807，留缓冲取 815
+        const MIN_NODE_W = 815;
         // 本 DOM widget 顶部 y：优先用 LiteGraph 绘制时记录的 widget.y；
         // 否则自己累加前面可见 widget 的 computeSize 高度回退。（仅用于一次性初始尺寸）
         const measureTop = (sizeW) => {
@@ -1888,13 +2202,18 @@ function wm_ensureViewer(node) {
             try {
                 const ro = new ResizeObserver(() => { try { syncSize(); } catch (e) {} });
                 ro.observe(canvasWrapper);
+                // 播放条几何自愈：tracker/滑块任何尺寸变化（执行后前端重排版、字体加载、
+                // 帧号文本变宽等）都立即重画横条/关键帧标记，横条不再依赖拖动来“补画”
+                const ro2 = new ResizeObserver(() => { try { drawKfBar(); } catch (e) {} });
+                ro2.observe(tracker);
+                ro2.observe(slider);
             } catch (e) {}
         }
         applySwitch();
         // 布局稳定后补画一次播放条横条/竖杠（首次布局宽为 0 时可能被跳过）
         setTimeout(() => { try { drawKfBar(); } catch (e) {} }, 250);
         // 延迟兜底：ComfyUI 加载工作流时 widget 值晚于 onNodeCreated 填充，
-        // 到点再同步一次，确保视窗画出与后端一致的检测/排除框
+        // 到点再同步一次，确保视窗画出与后端一致的标注（持久化方案：刷新后恢复已画框）
         setTimeout(() => { try { readData(); applySwitch(); } catch (e) {} }, 450);
         console.log("[小珠光][水印] 视窗创建完成");
     } catch (err) {
@@ -1916,7 +2235,7 @@ function showWmDetHelp() {
     dialog.style.cssText = "background:#1c1c1e;border:1px solid #3a3a3c;border-radius:10px;width:640px;max-width:90vw;max-height:82vh;box-shadow:0 12px 40px rgba(0,0,0,.5);display:flex;flex-direction:column;overflow:hidden;font-family:inherit;";
     dialog.innerHTML = `
         <div style="padding:14px 18px;border-bottom:1px solid #333;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
-            <div style="font-size:15px;font-weight:bold;color:#FFD700;">小珠光视频水印检测 · 使用说明</div>
+            <div style="font-size:15px;font-weight:bold;color:#FFD700;">小珠光视频遮罩手工跟踪 · 使用说明</div>
             <button class="xzg-wmdet-help-close" style="background:none;border:none;color:#999;font-size:20px;cursor:pointer;padding:0 4px;line-height:1;flex-shrink:0;">×</button>
         </div>
         <div class="xzg-wmdet-help-body" style="padding:16px 20px;overflow-y:auto;color:#d8d8d8;font-size:13px;line-height:1.7;">
@@ -1930,10 +2249,11 @@ function showWmDetHelp() {
             <h4>手工跟踪</h4>
             <ul>
                 <li>1、轨道 1-8 各自颜色不同，先选轨道再画框；可选「方框」或「涂抹（手绘）」画目标轮廓</li>
-                <li>2、右键删除当前帧该轨道的框</li>
+                <li>2、右键播放条上的三角可删除/跳转该关键帧（画布上右键框体不再删除）</li>
                 <li>3、在某一颜色分类，在播放头不同进度位置画框，自动跟踪过渡。若当前颜色分类，只画一个框，则代表全帧遮罩。</li>
-                <li>4、播放条上方三角标记定位关键帧</li>
+                <li>4、播放条上方三角标记定位关键帧，点击三角播放头即跳转到该帧</li>
                 <li>5、切换不同颜色分类，可跟踪多个目标</li>
+                <li>6、「一键扩展」把当前颜色分类的最左/最右关键帧分别复制到第一帧和最后一帧，遮罩覆盖视频全程</li>
             </ul>
 
             <h4>参数（手工跟踪）</h4>

@@ -391,6 +391,21 @@
       "0": { "name": "还原图像" }
     }
   },
+  "BlendInpaint": {
+    "display_name": "小珠光局部重绘（融合）",
+    "inputs": {
+      "inpaint": { "name": "重绘图像" },
+      "original": { "name": "原始图像" },
+      "mask": { "name": "遮罩" },
+      "feather": { "name": "羽化", "tooltip": "接缝羽化半径，0=硬边" },
+      "expand": { "name": "扩展", "tooltip": "遮罩扩展：正值接缝向外扩，负值向内缩" },
+      "origin": { "name": "裁剪原点" }
+    },
+    "outputs": {
+      "0": { "name": "融合图像" },
+      "1": { "name": "羽化遮罩" }
+    }
+  },
   "XiaozhuguangFaceAlign": {
     "display_name": "小珠光 Face Align (人脸对齐)",
     "inputs": {
@@ -486,6 +501,18 @@
       "1": { "name": "遮罩" },
       "2": { "name": "宽度" },
       "3": { "name": "高度" }
+    }
+  },
+  "XiaozhuguangColorMatchFast": {
+    "display_name": "小珠光颜色匹配高速版",
+    "inputs": {
+      "image": { "name": "图像" },
+      "reference": { "name": "参考图像" },
+      "模式": { "name": "模式" },
+      "强度": { "name": "强度" }
+    },
+    "outputs": {
+      "0": { "name": "图像" }
     }
   }
 }

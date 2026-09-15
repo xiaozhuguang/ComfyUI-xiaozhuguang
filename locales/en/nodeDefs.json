@@ -391,6 +391,21 @@
       "0": { "name": "restored image" }
     }
   },
+  "BlendInpaint": {
+    "display_name": "Xiaozhuguang Inpaint Blend",
+    "inputs": {
+      "inpaint": { "name": "inpaint image" },
+      "original": { "name": "original image" },
+      "mask": { "name": "mask" },
+      "feather": { "name": "feather", "tooltip": "Seam feather radius, 0 = hard edge" },
+      "expand": { "name": "expand", "tooltip": "Mask expand: positive moves seam outward, negative shrinks inward" },
+      "origin": { "name": "crop origin" }
+    },
+    "outputs": {
+      "0": { "name": "blended image" },
+      "1": { "name": "feathered mask" }
+    }
+  },
   "XiaozhuguangFaceAlign": {
     "display_name": "Xiaozhuguang Face Align",
     "inputs": {
@@ -486,6 +501,18 @@
       "1": { "name": "mask" },
       "2": { "name": "width" },
       "3": { "name": "height" }
+    }
+  },
+  "XiaozhuguangColorMatchFast": {
+    "display_name": "XZG Color Match Fast",
+    "inputs": {
+      "image": { "name": "image" },
+      "reference": { "name": "reference" },
+      "模式": { "name": "mode" },
+      "强度": { "name": "strength" }
+    },
+    "outputs": {
+      "0": { "name": "image" }
     }
   }
 }

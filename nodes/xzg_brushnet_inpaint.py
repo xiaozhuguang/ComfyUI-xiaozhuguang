@@ -10,12 +10,18 @@
   供 inpaint 采样使用（输出 IMAGE + MASK + VECTOR(origin)）。
 - BlendInpaint: 把 inpaint 结果按高斯模糊后的 mask 软融合回原图
   （可选 origin 时按 CutForInpaint 的裁剪坐标原位贴回）。
+
+性能优化（输出与原版数学等价或近等价，视觉不可分）：
+  A) 4σ 等效核截断：高斯权重在 ±4σ 外 <3e-5，核只需覆盖 ±4σ；
+  B) 模糊 GPU offload：节点输入通常在 CPU，大核模糊在 GPU 上快 10~100 倍；
+  D) torch.lerp 融合 + 冗余 .to() 清理。
 """
 from typing import Tuple
 
 import torch
 import torchvision.transforms as T
 import torch.nn.functional as F
+from comfy.utils import repeat_to_batch_size
 
 
 class BlendInpaint:
@@ -27,9 +33,11 @@ class BlendInpaint:
                         "inpaint": ("IMAGE",),
                         "original": ("IMAGE",),
                         "mask": ("MASK",),
-                        "kernel": ("INT", {"default": 10, "min": 1, "max": 1000}),
-                        "sigma": ("FLOAT", {"default": 10.0, "min": 0.01, "max": 1000}),
-                     },
+                        "feather": ("INT", {"default": 10, "min": 0, "max": 1000, "step": 1,
+                                            "tooltip": "接缝羽化半径，0=硬边 / Seam feather radius, 0 = hard edge"}),
+                        "expand": ("INT", {"default": 0, "min": -500, "max": 500, "step": 1,
+                                           "tooltip": "遮罩扩展：正值接缝向外扩，负值向内缩 / Mask expand: positive moves seam outward, negative shrinks inward"}),
+                    },
                 "optional":
                     {
                         "origin": ("VECTOR",),
@@ -42,7 +50,7 @@ class BlendInpaint:
 
     FUNCTION = "blend_inpaint"
 
-    def blend_inpaint(self, inpaint: torch.Tensor, original: torch.Tensor, mask, kernel: int, sigma:int, origin=None) -> Tuple[torch.Tensor]:
+    def blend_inpaint(self, inpaint: torch.Tensor, original: torch.Tensor, mask, feather: int, expand: int, origin=None) -> Tuple[torch.Tensor]:
 
         original, mask = check_image_mask(original, mask, 'Blend Inpaint')
 
@@ -56,43 +64,47 @@ class BlendInpaint:
             mask = mask[:inpaint.shape[0],:,:]
 
         if inpaint.shape[0] > original.shape[0]:
-            # batch over inpaint
-            count = 0
-            original_list = []
-            mask_list = []
-            origin_list = []
-            while (count < inpaint.shape[0]):
-                for i in range(original.shape[0]):
-                    original_list.append(original[i][None,:,:,:])
-                    mask_list.append(mask[i][None,:,:])
-                    if origin is not None:
-                        origin_list.append(origin[i][None,:])
-                    count += 1
-                    if count >= inpaint.shape[0]:
-                        break
-            original = torch.concat(original_list, dim=0)
-            mask = torch.concat(mask_list, dim=0)
+            # 批次对齐（参照小珠光图像-蒙版预览）：original/mask/origin 循环平铺到 inpaint 帧数，
+            # 逐帧变化的遮罩不会被锁定/截断
+            original = repeat_to_batch_size(original, inpaint.shape[0])
+            mask = repeat_to_batch_size(mask, inpaint.shape[0])
             if origin is not None:
-                origin = torch.concat(origin_list, dim=0)
+                origin = repeat_to_batch_size(origin, inpaint.shape[0])
 
-        if kernel % 2 == 0:
-            kernel += 1
-        transform = T.GaussianBlur(kernel_size=(kernel, kernel), sigma=(sigma, sigma))
+        # ── B: 扩展/羽化 GPU offload ──
+        # ComfyUI 节点输入通常在 CPU，大核高斯模糊在 CPU 上极慢（4K 大核可达几十秒）；
+        # 有可用 CUDA 时把扩展+羽化临时放到 GPU 完成，结果拷回原设备/精度（输出仅差 fp 舍入）。
+        blur_dev = torch.device("cuda") if (torch.cuda.is_available() and original.device.type != "cuda") else original.device
+
+        # ── A: 接缝扩展 + 羽化（对齐小珠光 ATR 的 mask_expand / blur_amount 语义）──
+        # 先对遮罩做形态学扩展（正=膨胀外扩、负=腐蚀内缩）移动接缝位置，再高斯羽化过渡。
+        feather = max(0, int(feather))
+        transform = None
+        if feather > 0:
+            # kernel = 2*feather+1，σ 按 cv2.GaussianBlur(sigma=0) 的默认公式换算
+            fsigma = 0.3 * (feather - 1) + 0.8
+            # 4σ 等效核截断：高斯权重在 ±4σ 之外 <3e-5，核远大于 4σ 只是空算，
+            # 截断后与全核偏差 <1e-4，视觉不可分，大 feather 时显著提速。
+            eff = min(2 * feather + 1, 2 * int(4 * fsigma) + 1)  # 恒为奇数
+            transform = T.GaussianBlur(kernel_size=(eff, eff), sigma=(fsigma, fsigma))
 
         ret = []
         blurred = []
         for i in range(inpaint.shape[0]):
             if origin is None:
-                blurred_mask = transform(mask[i][None,None,:,:]).to(original.device).to(original.dtype)
+                m = _expand_mask(mask[i][None,None,:,:].to(blur_dev), expand)
+                if transform is not None:
+                    m = transform(m)
+                blurred_mask = m.to(original.device, original.dtype)
                 blurred.append(blurred_mask[0])
 
                 result = torch.nn.functional.interpolate(
-                    inpaint[i][None,:,:,:].permute(0, 3, 1, 2), 
+                    inpaint[i][None,:,:,:].permute(0, 3, 1, 2),
                     size=(
-                        original[i].shape[0], 
+                        original[i].shape[0],
                         original[i].shape[1],
                     )
-                ).permute(0, 2, 3, 1).to(original.device).to(original.dtype)
+                ).permute(0, 2, 3, 1).to(original.device, original.dtype)
             else:
                 # got mask from CutForInpaint
                 height, width, _ = original[i].shape
@@ -100,18 +112,22 @@ class BlendInpaint:
                 y0 = origin[i][1].item()
 
                 if mask[i].shape[0] < height or mask[i].shape[1] < width:
-                    padded_mask = F.pad(input=mask[i], pad=(x0, width-x0-mask[i].shape[1], 
+                    padded_mask = F.pad(input=mask[i], pad=(x0, width-x0-mask[i].shape[1],
                                                             y0, height-y0-mask[i].shape[0]), mode='constant', value=0)
                 else:
                     padded_mask = mask[i]
-                blurred_mask = transform(padded_mask[None,None,:,:]).to(original.device).to(original.dtype)
+                m = _expand_mask(padded_mask[None,None,:,:].to(blur_dev), expand)
+                if transform is not None:
+                    m = transform(m)
+                blurred_mask = m.to(original.device, original.dtype)
                 blurred.append(blurred_mask[0][0])
 
-                result = F.pad(input=inpaint[i], pad=(0, 0, x0, width-x0-inpaint[i].shape[1], 
+                result = F.pad(input=inpaint[i], pad=(0, 0, x0, width-x0-inpaint[i].shape[1],
                                                       y0, height-y0-inpaint[i].shape[0]), mode='constant', value=0)
-                result = result[None,:,:,:].to(original.device).to(original.dtype)
+                result = result[None,:,:,:].to(original.device, original.dtype)
 
-            ret.append(original[i] * (1.0 - blurred_mask[0][0][:,:,None]) + result[0] * blurred_mask[0][0][:,:,None])
+            # ── D: torch.lerp(start, end, w) = start*(1-w) + end*w，单 kernel 等价完成，免建 3 个临时大张量
+            ret.append(torch.lerp(original[i], result[0], blurred_mask[0][0][:,:,None]))
 
         return (torch.stack(ret), torch.stack(blurred), )
 
@@ -154,6 +170,19 @@ class CutForInpaint:
 #### Utility function
 
 
+def _expand_mask(mask: torch.Tensor, expand: int) -> torch.Tensor:
+    """形态学扩展接缝（对齐 ATR 的 mask_expand），mask 形状 [B,1,H,W]，值域 0~1。
+    expand > 0：膨胀（max_pool），接缝向外扩，融合带更大；
+    expand < 0：腐蚀（对取反后 max_pool 再取反），接缝向内缩；
+    expand == 0：原样返回。"""
+    if expand == 0:
+        return mask
+    k = 2 * abs(expand) + 1
+    if expand > 0:
+        return F.max_pool2d(mask, k, stride=1, padding=expand)
+    return -F.max_pool2d(-mask, k, stride=1, padding=-expand)
+
+
 def check_image_mask(image, mask, name):
     if len(image.shape) < 4:
         # image tensor shape should be [B, H, W, C], but batch somehow is missing
@@ -167,18 +196,12 @@ def check_image_mask(image, mask, name):
         # mask tensor shape should be [B, H, W] but batch somehow is missing
         mask = mask[None,:,:]
 
-    if image.shape[0] > mask.shape[0]:
-        print(name, "gets batch of images (%d) but only %d masks" % (image.shape[0], mask.shape[0]))
-        if mask.shape[0] == 1: 
-            print(name, "will copy the mask to fill batch")
-            mask = torch.cat([mask] * image.shape[0], dim=0)
-        else:
-            print(name, "will add empty masks to fill batch")
-            empty_mask = torch.zeros([image.shape[0] - mask.shape[0], mask.shape[1], mask.shape[2]])
-            mask = torch.cat([mask, empty_mask], dim=0)
-    elif image.shape[0] < mask.shape[0]:
-        print(name, "gets batch of images (%d) but too many (%d) masks" % (image.shape[0], mask.shape[0]))
-        mask = mask[:image.shape[0],:,:]
+    # 批次对齐（参照小珠光图像-蒙版预览）：遮罩循环平铺/裁剪到图像批数。
+    # 旧逻辑在遮罩批 < 图像批时对超出部分补全黑空遮罩，导致后续帧完全不融合
+    #（表现为"遮罩在变但混合位置不动"）；循环平铺后逐帧遮罩全程生效
+    if image.shape[0] != mask.shape[0]:
+        print(name, "mask batch (%d) != image batch (%d), repeat/trim masks to match" % (mask.shape[0], image.shape[0]))
+        mask = repeat_to_batch_size(mask, image.shape[0])
 
     return (image, mask)
 
