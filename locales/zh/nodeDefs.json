@@ -181,13 +181,15 @@
     "display_name": "小珠光帧优化",
     "inputs": {
       "image": { "name": "图像" },
-      "multi_fill": { "name": "多参补帧" }
+      "multi_fill": { "name": "多参补帧" },
+      "mask": { "name": "遮罩" }
     },
     "outputs": {
       "0": { "name": "图像" },
       "1": { "name": "实际帧数" },
       "2": { "name": "原始帧数" },
-      "3": { "name": "前补帧" }
+      "3": { "name": "前补帧" },
+      "4": { "name": "遮罩" }
     }
   },
   "XiaozhuguangFrameExtract": {
@@ -217,6 +219,24 @@
   },
   "XiaozhuguangVideoLoader": {
     "display_name": "小珠光视频加载器",
+    "inputs": {
+      "视频": { "name": "视频" },
+      "强制帧率": { "name": "强制帧率" },
+      "视频比例": { "name": "视频比例" },
+      "比例模式": { "name": "比例模式" },
+      "自定义宽度": { "name": "自定义宽度" },
+      "自定义高度": { "name": "自定义高度" },
+      "跳过帧数": { "name": "跳过帧数" },
+      "帧数上限": { "name": "帧数上限" }
+    },
+    "outputs": {
+      "0": { "name": "图像" },
+      "1": { "name": "音频" },
+      "2": { "name": "视频信息" }
+    }
+  },
+  "XiaozhuguangVideoLoaderLM": {
+    "display_name": "小珠光视频加载低内存版",
     "inputs": {
       "视频": { "name": "视频" },
       "强制帧率": { "name": "强制帧率" },
@@ -513,6 +533,43 @@
     },
     "outputs": {
       "0": { "name": "图像" }
+    }
+  },
+  "XiaozhuguangColorAdjust": {
+    "display_name": "小珠光颜色调整",
+    "description": "颜色调整极速版：亮度/对比度/饱和度（精度 0.01），支持批次图像输入输出。纯张量逐元素运算整批一次算完，无循环无 PIL；三参数全默认时零拷贝直通。处理顺序：亮度 → 对比度 → 饱和度。",
+    "inputs": {
+      "图像": { "name": "图像" },
+      "亮度": { "name": "亮度", "tooltip": "亮度偏移：0=不变，正数提亮，负数压暗（-1~1，步进 0.01）" },
+      "对比度": { "name": "对比度", "tooltip": "对比度系数：1=不变，>1 增强，<1 降低，0=纯灰（0~3，步进 0.01）" },
+      "饱和度": { "name": "饱和度", "tooltip": "饱和度系数：1=不变，>1 增艳，<1 去色，0=纯灰度（0~3，步进 0.01）" }
+    },
+    "outputs": {
+      "0": { "name": "图像" }
+    }
+  },
+  "XiaozhuguangImageMaskPreview": {
+    "display_name": "小珠光图像-蒙版预览",
+    "description": "始终内置穿透模式：直接返回合成结果，不保存预览。仅图像原样透传；仅遮罩输出灰度；两者都有时按填充模式合成（纯色/马赛克/彩色马赛克），mask_opacity 控制混合强度，渐变遮罩同样支持。",
+    "inputs": {
+      "image": { "name": "图像" },
+      "mask": { "name": "遮罩" },
+      "mask_opacity": { "name": "遮罩不透明度", "tooltip": "遮罩区域混合强度 0~1，渐变遮罩同样支持" },
+      "mask_color": { "name": "遮罩颜色", "tooltip": "RGB (255,255,255) 或 RGBA (255,255,255,128) 或 Hex (#RRGGBB / #RRGGBBAA)；纯色模式下也支持每色透明度" },
+      "invert_mask": { "name": "反转遮罩" },
+      "fill_mode": {
+        "name": "填充模式",
+        "tooltip": "纯色=mask_color 纯色叠加；马赛克=遮罩区域图像像素化；彩色马赛克=固定彩色块（每块颜色由块位置决定，跨帧稳定不闪烁）",
+        "options": {
+          "纯色": { "text": "纯色" },
+          "马赛克": { "text": "马赛克" },
+          "彩色马赛克": { "text": "彩色马赛克" }
+        }
+      },
+      "mosaic_block": { "name": "马赛克块大小", "tooltip": "马赛克/彩色马赛克的块大小（像素），仅这两种模式生效" }
+    },
+    "outputs": {
+      "0": { "name": "合成图像" }
     }
   }
 }

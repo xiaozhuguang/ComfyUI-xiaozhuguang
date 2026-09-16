@@ -70,6 +70,19 @@ export class XiaozhuguangVideoPlayer {
         // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
         // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
         this._exclusiveDecoder = !!options.exclusiveDecoder;
+        // 低内存版选项（小珠光视频加载低内存版专用，默认关闭不影响既有播放器）：
+        // - decoderPool：自带 LRU 上限的独立解码器池（B2，切换视频自动释放旧解码器）
+        // - streamSource：流式打开（B3，UrlSource 按 Range 拉取，整文件不驻留内存）
+        // - audioMode:'stream'：音频流式按需解码（B1，不再整段 PCM 驻留）
+        this._decoderPool = options.decoderPool || loaderDecoderPool;
+        this._streamSource = !!options.streamSource;
+        this._audioMode = options.audioMode === "stream" ? "stream" : "full";
+        this._streamIter = null;
+        this._streamQueue = [];
+        this._streamSources = [];
+        this._streamTimer = null;
+        this._streamDone = false;
+        this._streamPulling = false;
 
         this._canvas = null;          // Canvas 渲染目标（替代 <video>）
         this._currentDecoder = null;  // 当前 VideoDecoderInstance
@@ -812,9 +825,14 @@ export class XiaozhuguangVideoPlayer {
         if (this._progressShine) {
             this._progressShine.style.display = "block";
         }
-        // Canvas 架构：暂停播放循环
+        // 拖动播放头 = 立即完全暂停（画面+声音+进度刷新）。
+        // 之前只停播放循环、未复位 _isPlayingState：拖动中每次 seek 都会走 seek 的
+        // "播放中"分支，反复重启音频播放与解码迭代器——表现为拖动时声音继续、
+        // 画面卡顿不跟手（用户反馈"如果还在继续播放就会出问题"即此）。
+        this._isPlayingState = false;
         this._stopPlaybackLoop();
         this._stopAudio();
+        this._stopProgressRaf();
         this._savedLoop = this._loopPlayback;
         this._seekByClientX(e.clientX);
         if (!this._dragOverlay) {
@@ -828,6 +846,19 @@ export class XiaozhuguangVideoPlayer {
         this._dragOverlay.addEventListener("pointerup", this._onProgressUp);
         this._dragOverlay.addEventListener("pointercancel", this._onProgressUp);
         window.addEventListener("mouseup", this._onProgressUp);
+        // 兜底修复"偶尔拖动播放条后预览区无响应"：此前鼠标拖到浏览器窗口外松开时，
+        // overlay 上的 pointerup 与 window mouseup 都收不到 → overlay 与 _isDragging
+        // 残留，全屏透明层罩住预览区，后续点击/拖动全部落空。指针捕获保证 up 必达，
+        // window 级 pointerup/pointercancel/blur 再兜一层（alt-tab、切窗口也能复位）。
+        try { e.target.setPointerCapture?.(e.pointerId); } catch (_) {}
+        window.addEventListener("pointerup", this._onProgressUp);
+        window.addEventListener("pointercancel", this._onProgressUp);
+        window.addEventListener("blur", this._onDragBlur);
+    };
+
+    _onDragBlur = () => {
+        // 拖拽中途窗口失焦（alt-tab/切窗口）：立即复位拖拽状态，防止 overlay 残留
+        if (this._isDragging) this._cleanupDrag();
     };
 
     _onProgressMove = (e) => {
@@ -849,6 +880,9 @@ export class XiaozhuguangVideoPlayer {
             this._dragOverlay.remove();
         }
         window.removeEventListener("mouseup", this._onProgressUp);
+        window.removeEventListener("pointerup", this._onProgressUp);
+        window.removeEventListener("pointercancel", this._onProgressUp);
+        window.removeEventListener("blur", this._onDragBlur);
         if (this._savedLoop !== undefined) {
             this._loopPlayback = this._savedLoop;
             this._savedLoop = undefined;
@@ -932,9 +966,12 @@ export class XiaozhuguangVideoPlayer {
         this._markerDragStartFrame = this._skipFrames;
         this._markerDragEndFrame = this._computeEndFrame();
 
-        // Canvas 架构：暂停播放循环
+        // 与播放头拖拽一致：红蓝条拖拽期间完全暂停（复位 _isPlayingState，
+        // 防止拖动中每次 seek 反复重启音频/迭代器）
+        this._isPlayingState = false;
         this._stopPlaybackLoop();
         this._stopAudio();
+        this._stopProgressRaf();
         this._savedLoop = this._loopPlayback;
 
         if (!this._markerDragOverlay) {
@@ -1173,8 +1210,8 @@ export class XiaozhuguangVideoPlayer {
             // 独占解码：池化共享时同一 decoder 的 _renderRafId/_targetFrame/_displayedFrame 为单例状态，
             // 多个播放器连续 seek 时后一个的渲染请求会被前一个抢占（表现为左侧动、右侧静止）
             const decoder = this._exclusiveDecoder
-                ? await loaderDecoderPool.getExclusive(poolKey, poolType, playSrc, maxPreviewSide)
-                : await loaderDecoderPool.get(poolKey, poolType, playSrc, null, 0, maxPreviewSide);
+                ? await this._decoderPool.getExclusive(poolKey, poolType, playSrc, maxPreviewSide, { stream: this._streamSource })
+                : await this._decoderPool.get(poolKey, poolType, playSrc, null, 0, maxPreviewSide, { stream: this._streamSource });
             // P1: 校验 token，若期间又调用了 load 则放弃本次结果
             if (token !== this._loadToken) return;
             this._currentDecoder = decoder;
@@ -1228,6 +1265,12 @@ export class XiaozhuguangVideoPlayer {
             this._updateDisplay();
             this._updateLoadRangeMarkers();
             this._updateRangeDisplay();
+            // 加载期间用户拖动过播放条：补上被延迟的 seek（见 seek 无解码器分支）
+            if (this._pendingSeekTime != null) {
+                const _pst = this._pendingSeekTime;
+                this._pendingSeekTime = null;
+                this.seek(_pst);
+            }
             // P4: 后台预解码音频（不阻塞首帧渲染），避免首次播放时音频延迟
             this._preloadAudio(decoder);
             // 触发 onLoadedMetadata 回调
@@ -1257,6 +1300,8 @@ export class XiaozhuguangVideoPlayer {
 
     // P4: 后台预解码音频，首次播放时直接使用，无延迟
     async _preloadAudio(decoder) {
+        // 低内存版（B1）：音频改为播放时流式调度，不做整段预解码（数百 MB PCM 不驻留）
+        if (this._audioMode === "stream") return;
         if (!decoder || !decoder.hasAudio) return;
         if (this._fullAudioBuffer || this._audioDecoding) return;
         this._audioDecoding = true;
@@ -1290,6 +1335,7 @@ export class XiaozhuguangVideoPlayer {
         this._audioDecoding = false;
         this._stopProgressRaf();
         this._resetProgress();
+        this._pendingSeekTime = null;
         if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
         if (this._loadRangeEnd) this._loadRangeEnd.style.display = "none";
         if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
@@ -1365,7 +1411,14 @@ export class XiaozhuguangVideoPlayer {
 
     // seek：RAF 节流 + 最近帧降级（拖动跟手，不卡顿）
     seek(time) {
-        if (!this._canvas || !this._currentDecoder) return;
+        if (!this._canvas) return;
+        // 解码器未就绪（视频加载中/失败重建）：记住目标位置，解码完成后补 seek。
+        // 此前直接 return——加载完成前拖动播放条会被静默吞掉，表现为预览区无响应。
+        if (!this._currentDecoder) {
+            this._pendingSeekTime = Math.max(0, time);
+            this._currentTime = this._pendingSeekTime;
+            return;
+        }
         this._playbackEnded = false;
         const dur = this.duration;
         const target = Math.max(0, Math.min(time, dur));
@@ -1618,6 +1671,11 @@ export class XiaozhuguangVideoPlayer {
     async _startAudioPlayback() {
         if (!this._currentDecoder || !this._currentDecoder.hasAudio) return;
         this._ensureAudioContext();
+        // 低内存版（B1）：流式音频——不整段解码 PCM 驻留，按 WebAudio 时钟前视调度
+        if (this._audioMode === "stream") {
+            this._streamAudioStart(this._currentTime);
+            return;
+        }
         if (!this._fullAudioBuffer) {
             this._fullAudioBuffer = await this._currentDecoder.decodeFullAudio();
         }
@@ -1642,10 +1700,85 @@ export class XiaozhuguangVideoPlayer {
     }
 
     _stopAudioSource() {
+        if (this._audioMode === "stream") {
+            this._stopStreamAudio();
+            return;
+        }
         if (this._audioSource) {
             try { this._audioSource.stop(); } catch (_) {}
             this._audioSource = null;
         }
+    }
+
+    // ── 流式音频（B1）：前视调度 ────────────────────────────────────────────
+    // 原理：以 WebAudio 时钟锚点把"媒体时间↔ctx时间"线性对应；pump 每 150ms
+    // 检查未来 1s 内未调度的音频，从解码器 AudioBufferSink 逐段拉取并调度，
+    // 任意时刻内存中只有 ~1s 的 PCM + 小排队队列，与视频时长无关。
+    _streamAudioStart(localTime) {
+        if (!this._currentDecoder || !this._currentDecoder.hasAudio) return;
+        this._ensureAudioContext();
+        this._stopStreamAudio();
+        const fps = this._frameRate || this._currentDecoder.fps || 24;
+        this._streamEndMedia = this._computeEndFrame() / fps;
+        this._streamAnchorCtx = this._audioCtx.currentTime + 0.08;
+        this._streamAnchorMedia = Math.max(0, localTime);
+        this._streamQueue = [];
+        this._streamDone = false;
+        this._streamIter = this._currentDecoder.openAudioIterator(this._streamAnchorMedia);
+        this._streamTimer = setInterval(() => { this._streamAudioPump(); }, 150);
+        this._streamAudioPump();
+    }
+
+    async _streamAudioPump() {
+        if (this._audioMode !== "stream" || !this._isPlayingState) return;
+        if (this._streamPulling || this._streamDone) return;
+        if (!this._streamIter || !this._audioCtx) return;
+        this._streamPulling = true;
+        try {
+            const lookahead = this._audioCtx.currentTime + 1.0;
+            // 1) 调度队列里未越界、且按锚点换算后落入前视窗口的音频段
+            while (this._streamQueue.length) {
+                const item = this._streamQueue[0];
+                if (item.timestamp > this._streamEndMedia) { this._streamDone = true; break; }
+                const when = this._streamAnchorCtx + (item.timestamp - this._streamAnchorMedia);
+                if (when > lookahead) break;
+                this._streamQueue.shift();
+                try {
+                    const src = this._audioCtx.createBufferSource();
+                    src.buffer = item.buffer;
+                    src.connect(this._audioGain);
+                    src.start(Math.max(when, this._audioCtx.currentTime));
+                    this._streamSources.push(src);
+                    src.onended = () => {
+                        const i = this._streamSources.indexOf(src);
+                        if (i >= 0) this._streamSources.splice(i, 1);
+                    };
+                } catch (_) {}
+            }
+            // 2) 补拉数据（维持 ~16 段排队，覆盖数秒前视窗口）
+            while (!this._streamDone && this._streamQueue.length < 16) {
+                const next = await this._streamIter.next();
+                if (next.done) { this._streamDone = true; break; }
+                const w = next.value;
+                if (!w?.buffer) continue;
+                this._streamQueue.push({ buffer: w.buffer, timestamp: w.timestamp });
+                if (w.timestamp > this._streamEndMedia) { this._streamDone = true; break; }
+            }
+        } finally {
+            this._streamPulling = false;
+        }
+    }
+
+    _stopStreamAudio() {
+        if (this._streamTimer) { clearInterval(this._streamTimer); this._streamTimer = null; }
+        for (const s of (this._streamSources || [])) {
+            try { s.stop(); } catch (_) {}
+        }
+        this._streamSources = [];
+        this._streamQueue = [];
+        this._streamIter = null;
+        this._streamDone = false;
+        this._streamPulling = false;
     }
 
     _stopAudio() {
@@ -1872,6 +2005,7 @@ export class XiaozhuguangVideoPlayer {
         // Canvas 架构清理
         this._stopPlaybackLoop();
         this._stopAudio();
+        this._stopStreamAudio();
         this._stopProgressRaf();
         if (this._scrubRafId) {
             cancelAnimationFrame(this._scrubRafId);

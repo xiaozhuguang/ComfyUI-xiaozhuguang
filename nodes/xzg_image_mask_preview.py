@@ -55,6 +55,57 @@ def _color_to_rgba(color_string: str):
     return (0, 0, 0, 255)
 
 
+def _mosaic_image(image, block: int):
+    """把整幅图像马赛克化：缩小到 1/block 再用最近邻放大回原尺寸（纯 tensor，GPU 可用）。
+    image: (B,H,W,C) -> (B,H,W,C)"""
+    b, h, w, c = image.shape
+    block = max(2, int(block))
+    bh = max(1, h // block)
+    bw = max(1, w // block)
+    small = F.interpolate(
+        image.permute(0, 3, 1, 2),
+        size=(bh, bw),
+        mode="bilinear",
+        align_corners=False,
+    )
+    big = F.interpolate(small, size=(h, w), mode="nearest")
+    return big.permute(0, 2, 3, 1)
+
+
+def _colored_mosaic_image(image, block: int):
+    """固定彩色马赛克：每块颜色由块坐标的确定性散列生成（同一块永远同一颜色，
+    跨帧/跨批次稳定不闪烁），与图像内容无关。低分辨率色块网格最近邻放大回原尺寸。
+    image: (B,H,W,C) -> (B,H,W,C)"""
+    b, h, w, c = image.shape
+    block = max(2, int(block))
+    bh = max(1, h // block)
+    bw = max(1, w // block)
+    device = image.device
+    rows = torch.arange(bh, device=device).view(-1, 1)
+    cols = torch.arange(bw, device=device).view(1, -1)
+    # int64 确定性散列（乘大素数取模）→ HSV 构造，保证每块都是彩色
+    hue = ((rows * 73856093 + cols * 19349663) % 1000003).float() / 1000003.0
+    sat = 0.45 + 0.45 * ((rows * 83492791 + cols * 33180797 + 17) % 999983).float() / 999983.0
+    val = 0.55 + 0.35 * ((rows * 15485863 + cols * 2971215073 + 53) % 99991).float() / 99991.0
+    # HSV -> RGB（向量化）
+    h6 = hue * 6.0
+    i = torch.floor(h6).long() % 6
+    f = h6 - torch.floor(h6)
+    p = val * (1.0 - sat)
+    q = val * (1.0 - sat * f)
+    t = val * (1.0 - sat * (1.0 - f))
+    r = torch.where(i == 0, val, torch.where(i == 1, q, torch.where(i == 2, p, torch.where(i == 3, p, torch.where(i == 4, t, p)))))
+    g = torch.where(i == 0, t, torch.where(i == 1, val, torch.where(i == 2, q, torch.where(i == 3, p, torch.where(i == 4, p, q)))))
+    b_ = torch.where(i == 0, p, torch.where(i == 1, p, torch.where(i == 2, t, torch.where(i == 3, val, torch.where(i == 4, q, p)))))
+    small = torch.stack([r, g, b_], dim=-1).unsqueeze(0).expand(b, bh, bw, 3)
+    big = F.interpolate(
+        small.permute(0, 3, 1, 2).to(image.dtype),
+        size=(h, w),
+        mode="nearest",
+    )
+    return big.permute(0, 2, 3, 1)
+
+
 def _mask_to_alpha(mask, mask_opacity, alpha_factor, invert, image):
     """把输入 mask 转成与 image 空间尺寸、批次一致的 alpha (B,H,W)。"""
     if mask.ndim == 2:
@@ -97,6 +148,9 @@ class XiaozhuguangImageMaskPreview:
                 "mask_opacity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "mask_color": ("STRING", {"default": "255, 255, 255", "tooltip": "RGB (255,255,255) 或 RGBA (255,255,255,128) 或 Hex (#RRGGBB / #RRGGBBAA)"}),
                 "invert_mask": ("BOOLEAN", {"default": False, "label_on": "反转", "label_off": "不反转"}),
+                # 追加在末尾：旧工作流的 widgets_values 按序对齐不受影响
+                "fill_mode": (["纯色", "马赛克", "彩色马赛克"], {"default": "纯色", "tooltip": "遮罩区域的填充内容：纯色=mask_color；马赛克=遮罩区域图像像素化；彩色马赛克=固定彩色块（每块颜色由块位置决定，跨帧稳定不闪烁）。均按 mask_opacity 渐变混合"}),
+                "mosaic_block": ("INT", {"default": 16, "min": 2, "max": 512, "step": 1, "tooltip": "马赛克块大小（像素）。仅填充模式=马赛克时生效"}),
             },
             "optional": {
                 "image": ("IMAGE",),
@@ -110,13 +164,15 @@ class XiaozhuguangImageMaskPreview:
     CATEGORY = "xiaozhuguang"
     OUTPUT_NODE = False
     DESCRIPTION = """始终内置穿透模式：直接返回合成结果，不保存预览。
-    仅图像：原样透传；仅遮罩：灰度 RGB 输出；两者都有：把遮罩按 mask_color/mask_opacity
-    叠加到图像上合成。invert_mask 开启时反转遮罩后再生效。mask_color 支持 RGB/RGBA/Hex，
-    支持每色透明度。合成用单次 alpha 混合实现，速度快、零预览磁盘开销。"""
+    仅图像：原样透传；仅遮罩：灰度 RGB 输出；两者都有：按 fill_mode 把遮罩区域
+    合成到图像上——纯色=mask_color 纯色叠加；马赛克=遮罩区域图像像素化；彩色马赛克=
+    固定彩色块（每块颜色由块位置决定，跨帧稳定不闪烁）。块大小由 mosaic_block 控制。
+    invert_mask 开启时反转遮罩后再生效，mask_opacity 控制混合强度（渐变遮罩同样支持）。
+    马赛克/彩色马赛克模式下 mask_color 的 alpha 不参与。"""
 
-    def execute(self, mask_opacity, mask_color, invert_mask, image=None, mask=None):
+    def execute(self, mask_opacity, mask_color, invert_mask, fill_mode="纯色", mosaic_block=16, image=None, mask=None):
         if mask is not None and image is None:
-            # 仅遮罩：转灰度 RGB 输出
+            # 仅遮罩：转灰度 RGB 输出（马赛克模式无图像可像素化，保持灰度输出）
             composite = mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
         elif image is not None:
             # 仅图像 或 图像+遮罩
@@ -125,15 +181,22 @@ class XiaozhuguangImageMaskPreview:
             if mask is None:
                 composite = image                     # 仅图像：直接透传，零拷贝
             else:
-                # 极小张量分配：颜色只有一个 (1,1,1,3)，非整幅 BxHxWx3
-                color_rgb = torch.tensor(
-                    [r / 255.0, g / 255.0, b / 255.0],
-                    dtype=image.dtype,
-                    device=image.device,
-                ).view(1, 1, 1, 3)
                 alpha = _mask_to_alpha(mask, mask_opacity, alpha_factor, invert_mask, image).unsqueeze(-1)  # (B,H,W,1)
+                if fill_mode == "马赛克":
+                    # 马赛克：填充内容 = 像素化后的图像本身（mask_color 不参与）
+                    fill = _mosaic_image(image, mosaic_block).to(image.dtype)
+                elif fill_mode == "彩色马赛克":
+                    # 固定彩色马赛克：块颜色由块坐标决定，与图像内容无关
+                    fill = _colored_mosaic_image(image, mosaic_block).to(image.dtype)
+                else:
+                    # 纯色：极小张量分配，颜色只有一个 (1,1,1,3)
+                    fill = torch.tensor(
+                        [r / 255.0, g / 255.0, b / 255.0],
+                        dtype=image.dtype,
+                        device=image.device,
+                    ).view(1, 1, 1, 3)
                 # 单次 fma 式 alpha 混合，等价 composite 结果
-                composite = image * (1.0 - alpha) + color_rgb * alpha
+                composite = image * (1.0 - alpha) + fill * alpha
         else:
             # 两者都空：明确报错提示
             raise ValueError("[小珠光] 图像-蒙版预览缺少输入：image 与 mask 至少连接一个")

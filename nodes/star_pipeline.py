@@ -116,13 +116,15 @@ def _probe_ffmpeg(exe):
 
 
 def _resolve_ffprobe(ffmpeg_path):
-    """由 ffmpeg 路径推断同名 ffprobe (大小写无关), 兜底用 PATH 上的 ffprobe."""
+    """由 ffmpeg 路径推断同名 ffprobe (大小写无关), 兜底用 PATH 上的 ffprobe.
+    都找不到时返回 None —— imageio-ffmpeg 只带 ffmpeg 不带 ffprobe,
+    调用方必须能处理 None（不得把不存在的路径传给 subprocess）."""
     dp = Path(ffmpeg_path)
     cand = dp.with_name('ffprobe.exe')
     if cand.is_file():
         return str(cand)
     p = shutil.which('ffprobe')
-    return p if p else str(cand)
+    return p if p else None
 
 
 def _ffmpeg_for(model_id):
@@ -186,17 +188,27 @@ def engine_info(model_id='slp-26'):
 
 def _node_ffmpeg():
     """节点自用 ffmpeg (写临时视频/读回输出): 优先全功能版 (软解h264 + nvenc).
-    binstar 是 1.7.1 引擎特供 (禁软解, 带 tvai_up), 不能用于节点读写.
+    binstar 是 1.7.1 引擎特供 (禁软解, 带 tvai_up), 不能用于节点读写 —— 它没有
+    软件 h264 解码器, 在无可用 Intel 核显的机器上解码会回退 h264_qsv 并因
+    "Error creating a MFX session" 直接崩溃 (RTX 5090 纯独显机型实测)。
+    因此节点读写候选绝不能包含 binstar; 兜底补 imageio-ffmpeg 全功能静态版。
     候选先做运行冒烟检测, 自动跳过缺 DLL 的损坏构建."""
     cand = [
         _ENGINE / 'bin' / 'ffmpeg.exe',
         _COMFY_ROOT.parent / 'ffmpeg' / 'bin' / 'ffmpeg.exe',   # ComfyUI-aki 自带全功能版
-        _ENGINE / 'binstar' / 'ffmpeg.exe',
         Path(r'D:\APP\ffmpeg\bin\ffmpeg.exe'),
     ]
     for c in cand:
         if c.is_file() and _probe_ffmpeg(c):
             return str(c), _resolve_ffprobe(c)
+    # imageio-ffmpeg 静态全功能版（随插件 requirements 安装，软件解码齐全，跨平台）
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe as _ii_ffmpeg
+        ii = _ii_ffmpeg()
+        if ii and Path(ii).is_file() and _probe_ffmpeg(ii):
+            return str(ii), _resolve_ffprobe(ii)
+    except Exception:
+        pass
     w = shutil.which('ffmpeg')
     if w and _probe_ffmpeg(w):
         return w, _resolve_ffprobe(w)
@@ -385,25 +397,48 @@ def _check_interrupt():
     model_management.throw_exception_if_processing_interrupted()
 
 
-def read_video_to_frames(path):
+def read_video_to_frames(path, width=None, height=None):
     """mp4 -> (B,H,W,3) uint8 RGB numpy array.
 
     解码到临时 raw 文件再读回, 不走 stdout 管道——超大原始数据经管道传给父进程时,
     Windows 下易触发 "[out#0/rawvideo] Error submitting a packet to the muxer:
     Broken pipe" 一类的管道断裂导致读取失败。
+    width/height: 调用方已知输出尺寸时直接传入（跳过探测）。imageio-ffmpeg
+    不带 ffprobe，未传尺寸时探测会退化为解析 `ffmpeg -i` 的 stderr。
     """
     import numpy as np
     ffmpeg, ffprobe = _node_ffmpeg()
-    probe = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'v:0',
-                            '-show_entries', 'stream=width,height',
-                            '-of', 'csv=p=0', path], capture_output=True, text=True)
-    w, h = probe.stdout.strip().split(',')
-    w, h = int(w), int(h)
+    w = int(width) if width else None
+    h = int(height) if height else None
+    if not w or not h:
+        if ffprobe:
+            probe = subprocess.run([ffprobe, '-v', 'error', '-select_streams', 'v:0',
+                                    '-show_entries', 'stream=width,height',
+                                    '-of', 'csv=p=0', path], capture_output=True, text=True)
+            if probe.returncode == 0 and ',' in probe.stdout:
+                try:
+                    w, h = probe.stdout.strip().split(',')
+                    w, h = int(w), int(h)
+                except Exception:
+                    w = h = None
+        if not w or not h:
+            # 无 ffprobe（imageio-ffmpeg）: 解析 `ffmpeg -i` 的 stderr 中的 WxH
+            p = subprocess.run([ffmpeg, '-hide_banner', '-i', path],
+                               capture_output=True, text=True, errors='replace')
+            m = _re.search(r'(\d{2,5})x(\d{2,5})', p.stderr or '')
+            if not m:
+                raise RuntimeError('无法探测视频尺寸: ffprobe 缺失且 ffmpeg 输出解析失败')
+            w, h = int(m.group(1)), int(m.group(2))
     raw_path = path + '.raw'
     try:
-        p = subprocess.run([ffmpeg, '-loglevel', 'error', '-y', '-i', path,
-                            '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw_path],
-                           capture_output=True)
+        cmd = [ffmpeg, '-loglevel', 'error', '-y', '-i', path,
+               '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw_path]
+        p = subprocess.run(cmd, capture_output=True)
+        if p.returncode != 0 and b'qsv' in p.stderr[:2000]:
+            # 特供/受限构建把 h264 解码指到 QSV 且 MFX 会话不可用 → 显式强制软件解码重试
+            p = subprocess.run([ffmpeg, '-loglevel', 'error', '-y', '-c:v', 'h264', '-i', path,
+                                '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw_path],
+                               capture_output=True)
         if p.returncode != 0:
             raise RuntimeError(f'ffmpeg decode failed: {p.stderr.decode(errors="replace")[:300]}')
         raw = np.fromfile(raw_path, dtype=np.uint8)

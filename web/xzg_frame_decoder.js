@@ -152,6 +152,30 @@ class VideoDecoderInstance {
     }
 
     /**
+     * 流式打开（低内存版 B3）：不把整个文件抓进内存 Blob，改用 mediabunny UrlSource
+     * 按 HTTP Range 按需拉取（支持随机寻址 seek，内存占用与视频时长无关）。
+     * UrlSource 打开失败（服务端不支持 Range 等）时自动回退整文件加载。
+     * 注意：此路径无字节级进度回调（UrlSource 内部拉取），进度条走"加载中"遮罩。
+     */
+    async openFromUrlStream(url, maxPreviewSide = 1280) {
+        this.close();
+        const mb = window.mb;
+        if (!mb || !mb.UrlSource) {
+            console.warn("[xzg-decoder] mediabunny 无 UrlSource，回退整文件加载");
+            return await this.openFromUrl(url, maxPreviewSide);
+        }
+        try {
+            const src = new mb.UrlSource(url);
+            this._input = new mb.Input({ source: src, formats: mb.ALL_FORMATS });
+            return await this._finishOpen(maxPreviewSide);
+        } catch (e) {
+            console.warn("[xzg-decoder] UrlSource 流式打开失败，回退整文件加载:", e?.message || e);
+            this.close();
+            return await this.openFromUrl(url, maxPreviewSide);
+        }
+    }
+
+    /**
      * 从 Blob 加载视频（内部）
      */
     async _openBlob(blob, maxPreviewSide) {
@@ -160,6 +184,15 @@ class VideoDecoderInstance {
 
         const src = new mb.BlobSource(new File([blob], "video.mp4", { type: blob.type }));
         this._input = new mb.Input({ source: src, formats: mb.ALL_FORMATS });
+        return await this._finishOpen(maxPreviewSide);
+    }
+
+    /**
+     * 打开公共尾部：轨道探测 / 元数据 / sink 构建（Blob 与流式路径共用）
+     * 前置条件：this._input 已就绪
+     */
+    async _finishOpen(maxPreviewSide) {
+        const mb = window.mb;
         const vt = await this._input.getPrimaryVideoTrack();
         if (!vt) throw new Error("未找到视频轨道");
         this._track = vt;
@@ -343,6 +376,23 @@ class VideoDecoderInstance {
             return buf;
         } catch (e) {
             console.error("[xzg-decoder] 解码音频失败:", e);
+            return null;
+        }
+    }
+
+    /**
+     * 打开音频流式迭代器（低内存版 B1）：从 startTime 起逐 AudioBuffer 拉取，
+     * 不整段解码驻留内存。返回异步迭代器（{buffer, timestamp}），失败返回 null。
+     * 注意：同一 decoder 的 sink 是单例，重复调用会重置到新起点。
+     */
+    openAudioIterator(startTime) {
+        if (!this._hasAudio || !this._audioTrack) return null;
+        try {
+            if (this._audioBufferSink) { try { this._audioBufferSink.close(); } catch (_) {} }
+            const sink = new window.mb.AudioBufferSink(this._audioTrack);
+            this._audioBufferSink = sink;
+            return sink.buffers(startTime);
+        } catch (_) {
             return null;
         }
     }
@@ -598,12 +648,31 @@ class VideoDecoderInstance {
 // 解码器池：管理多个视频的解码器实例（key = filename|type）
 // ═══════════════════════════════════════════════════════════════════════════
 class DecoderPool {
-    constructor() {
-        this._decoders = new Map();  // key -> VideoDecoderInstance
+    // maxSize > 0 时启用 LRU 淘汰（默认 0 = 不限制，保持既有池行为不变）：
+    // 超出上限时关闭并移除最久未使用的解码器，释放其 Blob/帧缓存/音频缓冲
+    constructor(maxSize = 0) {
+        this._maxSize = maxSize;
+        this._decoders = new Map();  // key -> VideoDecoderInstance（Map 插入序 = LRU 序）
         this._loading = new Map();    // key -> Promise（防止重复加载）
     }
 
     _key(filename, type, maxPreviewSide = 1280) { return `${filename}|${type || "input"}|${maxPreviewSide}`; }
+
+    // LRU 触达：重新插入标记最近使用；超限淘汰最久未用（close 释放资源）
+    _touch(key) {
+        if (!this._decoders.has(key)) return;
+        const dec = this._decoders.get(key);
+        this._decoders.delete(key);
+        this._decoders.set(key, dec);
+        if (this._maxSize > 0) {
+            while (this._decoders.size > this._maxSize) {
+                const oldestKey = this._decoders.keys().next().value;
+                const oldest = this._decoders.get(oldestKey);
+                try { oldest.close(); } catch (_) {}
+                this._decoders.delete(oldestKey);
+            }
+        }
+    }
 
     /**
      * 获取或创建解码器（带缓存，避免重复加载）
@@ -612,10 +681,12 @@ class DecoderPool {
      * @param {string} videoUrl
      * @param {(receivedBytes:number, totalBytes:number)=>void} [onProgress] - 加载进度回调（仅首次加载触发）
      * @param {number} [knownTotal] - 已知文件总字节数（probe 获取）
+     * @param {object} [opts] - { stream:boolean } 低内存版：流式打开（UrlSource，不驻留整文件）
      */
-    async get(filename, type, videoUrl, onProgress = null, knownTotal = 0, maxPreviewSide = 1280) {
+    async get(filename, type, videoUrl, onProgress = null, knownTotal = 0, maxPreviewSide = 1280, opts = null) {
         const key = this._key(filename, type, maxPreviewSide);
         if (this._decoders.has(key)) {
+            this._touch(key);
             return this._decoders.get(key);
         }
         if (this._loading.has(key)) {
@@ -623,9 +694,14 @@ class DecoderPool {
         }
         const promise = (async () => {
             const decoder = new VideoDecoderInstance();
-            await decoder.openFromUrl(videoUrl, maxPreviewSide, onProgress, knownTotal);
+            if (opts && opts.stream) {
+                await decoder.openFromUrlStream(videoUrl, maxPreviewSide);
+            } else {
+                await decoder.openFromUrl(videoUrl, maxPreviewSide, onProgress, knownTotal);
+            }
             this._decoders.set(key, decoder);
             this._loading.delete(key);
+            this._touch(key);
             return decoder;
         })();
         this._loading.set(key, promise);
@@ -643,10 +719,14 @@ class DecoderPool {
      * 并发渲染请求会互相抢占，导致部分播放器画面不更新（表现为左侧动、右侧静止）。
      * 调用方负责在销毁时 close()。
      */
-    async getExclusive(filename, type, videoUrl, maxPreviewSide = 1280) {
+    async getExclusive(filename, type, videoUrl, maxPreviewSide = 1280, opts = null) {
         const decoder = new VideoDecoderInstance();
         try {
-            await decoder.openFromUrl(videoUrl, maxPreviewSide);
+            if (opts && opts.stream) {
+                await decoder.openFromUrlStream(videoUrl, maxPreviewSide);
+            } else {
+                await decoder.openFromUrl(videoUrl, maxPreviewSide);
+            }
         } catch (e) {
             try { decoder.close(); } catch (_) {}
             throw e;
@@ -669,7 +749,10 @@ class DecoderPool {
      * 获取已缓存的解码器（无则返回 null）
      */
     getCached(filename, type) {
-        return this._decoders.get(this._key(filename, type)) || null;
+        const key = this._key(filename, type);
+        if (!this._decoders.has(key)) return null;
+        this._touch(key);
+        return this._decoders.get(key);
     }
 
     /**
@@ -700,4 +783,10 @@ export const decoderPool = new DecoderPool();
 // 视频加载器专用池：与共享池隔离，避免同一视频被快剪编辑器与加载器同时持有时，
 // mediabunny sink 同一时刻只允许一个操作导致并发争抢（表现为个别 mp4 播放黑屏/无声音）。
 export const loaderDecoderPool = new DecoderPool();
+
+// 创建带 LRU 上限的独立解码器池（低内存版用：仅保留最近 N 个解码器，
+// 切换视频自动释放旧解码器的文件缓冲/帧缓存/音频资源）
+export function createDecoderPool(maxSize = 0) {
+    return new DecoderPool(maxSize);
+}
 export { VideoDecoderInstance, FrameCache };

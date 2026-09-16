@@ -1,6 +1,29 @@
 import { app } from "../../scripts/app.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
 
+// ── 设置项：启用/关闭「视频对比（同步预览）」（设置 → xiaozhuguang）──
+const SETTING_VIDEO_COMPARE = "xiaozhuguang.Toggle.EnableVideoCompare";
+function isVideoCompareEnabled() {
+    try {
+        return app?.ui?.settings?.getSettingValue?.(SETTING_VIDEO_COMPARE, true) !== false;
+    } catch (e) {
+        return true;
+    }
+}
+function registerVideoCompareSetting() {
+    try {
+        const settings = app?.ui?.settings;
+        if (!settings?.addSetting) return;
+        settings.addSetting({
+            id: SETTING_VIDEO_COMPARE,
+            name: "[小珠光] 启用「视频对比（同步预览）」",
+            defaultValue: true,
+            type: "boolean",
+            onChange: (v) => { if (!v) closeSyncPreview(); },
+        });
+    } catch (e) {}
+}
+
 /**
  * 小珠光 · 视频节点同步预览
  *
@@ -255,6 +278,7 @@ function _ensureStyle() {
 
 /** items: [{ url, name }]，全部从头一起播放、自动循环 */
 function openSyncPreview(items) {
+    if (!isVideoCompareEnabled()) return false;
     if (!Array.isArray(items) || items.length === 0) return false;
     _ensureStyle();
     closeSyncPreview();
@@ -942,6 +966,7 @@ function previewNodes(nodes) {
 
 /** 快捷键入口：当前选中的视频节点；无选中时预览画布全部视频节点 */
 function previewSelection() {
+    if (!isVideoCompareEnabled()) return false;
     let nodes = getSelectedVideoNodes();
     if (nodes.length === 0) nodes = getAllVideoNodes();
     if (nodes.length === 0) {
@@ -966,7 +991,7 @@ function patchContextMenus() {
     const origNodeMenu = LGC.prototype.getNodeMenuOptions;
     LGC.prototype.getNodeMenuOptions = function (node) {
         const options = origNodeMenu ? origNodeMenu.apply(this, arguments) : [];
-        if (Array.isArray(options) && nodeHasVideo(node)) {
+        if (Array.isArray(options) && isVideoCompareEnabled() && nodeHasVideo(node)) {
             options.unshift({
                 content: "<span style='color:#dcc85b;font-weight:600'>▶ 同步预览</span>",
                 callback: () => {
@@ -984,7 +1009,7 @@ function patchContextMenus() {
     const origCanvasMenu = LGC.prototype.getCanvasMenuOptions;
     LGC.prototype.getCanvasMenuOptions = function () {
         const options = origCanvasMenu ? origCanvasMenu.apply(this, arguments) : [];
-        if (Array.isArray(options) && getSelectedVideoNodes().length > 0) {
+        if (Array.isArray(options) && isVideoCompareEnabled() && getSelectedVideoNodes().length > 0) {
             options.push(null);
             options.push({
                 content: "<span style='color:#dcc85b;font-weight:600'>▶ 同步预览选中视频</span>",
@@ -1002,6 +1027,7 @@ function patchContextMenus() {
 app.registerExtension({
     name: "xiaozhuguang.video_sync_preview",
     async setup() {
+        registerVideoCompareSetting();
         patchContextMenus();
     },
 });

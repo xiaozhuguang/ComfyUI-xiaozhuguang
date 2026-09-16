@@ -1,8 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
+import { createDecoderPool } from "./xzg_frame_decoder.js";
 import { xzgLang } from "./xzg_i18n.js";
 import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
+
+// 低内存版专用解码器池（B2）：LRU 上限 2，切换视频自动释放最久未用解码器的
+// 文件缓冲/帧缓存/音频资源；与共享池/快剪池完全隔离，不影响原版加载器。
+const lmDecoderPool = createDecoderPool(2);
 
 // ═══════════════════════════════════════════════════════════════════════
 // 双语标签翻译映射
@@ -438,7 +443,7 @@ function _xzgShowComboDropdown(widget, node, event) {
     setTimeout(repairIfTampered, 50);
 }
 
-function _xzgDrawButtonWidget(ctx, node, width, y, H) {
+export function _xzgDrawButtonWidget(ctx, node, width, y, H) {
     // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
     // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
     const _nW = node?.size?.[0], _nH = node?.size?.[1];
@@ -660,7 +665,7 @@ function _updateRatioWidgets(node) {
 }
 
 // 统一应用所有 widget 的样式（圆角、颜色、重置按钮等），可重复调用
-function _applyWidgetStyles(node) {
+export function _applyWidgetStyles(node) {
     // 这些栏会随属性面板开/关改变绘制宽度（同「视频」栏修复）：
     // ComfyUI 会把 widget.width 写成面板侧行宽度，导致行绘制/交互命中区超出节点。
     // 这里统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
@@ -730,7 +735,7 @@ function _applyWidgetStyles(node) {
     }
 }
 
-function _xzgCreateNumberWidget(node, inputName, inputData) {
+export function _xzgCreateNumberWidget(node, inputName, inputData) {
     const opts = inputData[1] || {};
     const w = {
         name: inputName,
@@ -753,7 +758,7 @@ function _xzgCreateNumberWidget(node, inputName, inputData) {
 // 自定义 combo widget：从源头创建，绕过 ComfyUI 原生 combo 渲染
 // 完全使用小珠光圆角风格 draw + 自定义 DOM 下拉列表
 // type 设为 'xzg_combo' 而非 'combo'，防止 LiteGraph processNodeWidgets 识别为原生 combo 弹出 <select>
-function _xzgCreateComboWidget(node, inputName, inputData) {
+export function _xzgCreateComboWidget(node, inputName, inputData) {
     const values = Array.isArray(inputData[0]) ? inputData[0] : [];
     const opts = inputData[1] || {};
     const w = {
@@ -1145,7 +1150,7 @@ async function refreshVideoCombo(videoWidget, selectName) {
     } catch (_) {}
 }
 
-function bindVideoLoaderInteractions(node) {
+export function bindVideoLoaderInteractions(node, isLM = false) {
     node.resizable = true;
     node.minWidth = 300;
     node.minHeight = 500;
@@ -1234,6 +1239,10 @@ function bindVideoLoaderInteractions(node) {
         "opacity:0;";
     fastcutBtn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从快剪加载</span>';
     playerContainer.appendChild(fastcutBtn);
+
+    // 暴露预览区容器与快剪按钮，供派生节点（如达芬奇导入节点）在浏览区内追加/并排按钮
+    node._xzgPreviewContainer = playerContainer;
+    node._xzgFastcutBtn = fastcutBtn;
 
     // 鼠标进入预览区时显示按钮，离开时隐藏
     // playerContainer 本身 pointer-events:none，通过子元素冒泡的 mouseover/mouseout 监听
@@ -1387,6 +1396,9 @@ function bindVideoLoaderInteractions(node) {
         container: playerContainer,
         fit: _ratioModeToFit(),
         onDblClick: triggerUpload,
+        // 低内存版（小珠光视频加载低内存版）：B2 LRU 解码器池 / B3 流式打开。
+        // 音频维持与原版一致的整段解码（音频 PCM 占比小，流式调度反而引入断续风险）
+        ...(isLM ? { decoderPool: lmDecoderPool, streamSource: true } : {}),
         onLoadedMetadata: () => {
             // 上传流程触发的加载完成 → 关闭"正在加载视频"遮罩
             if (_uploadLoadingActive) {
@@ -2418,7 +2430,13 @@ app.registerExtension({
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "XiaozhuguangVideoLoader") {
+        // 低内存版（XiaozhuguangVideoLoaderLM）复用全部前端交互，
+        // 仅播放器选项不同（LRU 池/流式打开/流式音频），见 bindVideoLoaderInteractions 的 isLM
+        const isLM = nodeData.name === "XiaozhuguangVideoLoaderLM";
+        if (nodeData.name !== "XiaozhuguangVideoLoader" && !isLM) {
+            return;
+        }
+        {
             // 强制帧率：强制走自定义 number widget，从源头避免原生 combo 列表
             if (nodeData.input?.required?.["强制帧率"]) {
                 nodeData.input.required["强制帧率"][1].widgetType = "XZGFLOAT";
@@ -2445,7 +2463,7 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = origOnNodeCreated?.apply(this, arguments);
-                bindVideoLoaderInteractions(this);
+                bindVideoLoaderInteractions(this, isLM);
                 _xzgPatchCanvasPrompt();
                 _applyWidgetStyles(this);
                 if (this.outputs) {

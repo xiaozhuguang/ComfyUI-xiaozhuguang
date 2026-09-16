@@ -871,19 +871,39 @@ function hookWorkflowLoad() {
 
 // ─── 初始化 ───
 
+// ── 设置项：启用/关闭「视角锁定（缩放恢复画布定位）」（设置 → xiaozhuguang）──
+const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableViewportLock";
+function isViewportLockEnabled() {
+    try {
+        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+    } catch (e) {
+        return true;
+    }
+}
+function registerViewportLockSetting() {
+    try {
+        const settings = app?.ui?.settings;
+        if (!settings?.addSetting) return;
+        settings.addSetting({
+            id: SETTING_ENABLED,
+            name: "[小珠光] 启用「视角锁定（缩放恢复画布定位）」",
+            defaultValue: true,
+            type: "boolean",
+            onChange: (v) => setViewportLockEnabled(!!v),
+        });
+    } catch (e) {}
+}
+
+let featureEnabled = true;
+let featureStarted = false;
+let refreshTimer = null;
+
 function init() {
     if (initialized) return;
     initialized = true;
-    console.log("[小珠光] V4 初始化开始");
-
-    reloadSlotsForCurrentWorkflow();
-    hookWorkflowLoad();
-    tryInjectLoop(0);
-    buildSlotPanel();
-    setInterval(refreshSlots, 500);
-
-    // 快捷键 1~5
+    // 全局监听只注册一次，内部以 featureEnabled 门控（开关切换不重复注册）
     document.addEventListener("keydown", (e) => {
+        if (!featureEnabled) return;
         // 放行所有可编辑上下文，避免劫持其它插件的文本框输入数字键。
         // contenteditable（自定义编辑器）的 tag 是 div/span，需额外判断。
         const et = e.target;
@@ -912,18 +932,52 @@ function init() {
 
     // 点击空白收起
     document.addEventListener("mousedown", (e) => {
-        if (!expanded) return;
+        if (!featureEnabled || !expanded) return;
         if (menuBtn?.contains(e.target)) return;
         if (slotPanel?.contains(e.target)) return;
         setExpanded(false);
     }, true);
 
+    registerViewportLockSetting();
+    if (isViewportLockEnabled()) startFeature();
+}
+
+/** 启动功能主体（注入按钮/面板/槽位刷新）；disable→enable 循环可重复调用 */
+function startFeature() {
+    if (featureStarted) return;
+    featureStarted = true;
+    featureEnabled = true;
+    console.log("[小珠光] V4 初始化开始");
+
+    reloadSlotsForCurrentWorkflow();
+    hookWorkflowLoad();
+    tryInjectLoop(0);
+    buildSlotPanel();
+    refreshTimer = setInterval(refreshSlots, 500);
+
     // 持续 hook graph
     let hookRetries = 0;
     const hookTimer = setInterval(() => {
+        if (!featureEnabled) return;
         hookWorkflowLoad();
         if (++hookRetries > 60) clearInterval(hookTimer);
     }, 500);
+}
+
+/** 设置开关回调：关闭时拆除 UI（保留持久化数据），开启时重建 */
+function setViewportLockEnabled(v) {
+    v = !!v;
+    if (v === featureEnabled) return;
+    featureEnabled = v;
+    if (v) {
+        startFeature();
+    } else {
+        setExpanded(false);
+        if (menuBtn) { menuBtn.remove(); menuBtn = null; }
+        if (slotPanel) { slotPanel.remove(); slotPanel = null; }
+        if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+        featureStarted = false;
+    }
 }
 
 // 注入样式

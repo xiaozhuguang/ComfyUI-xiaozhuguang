@@ -96,7 +96,7 @@ class StarUpscale:
                     pbar.update_absolute(min(cur, total), total)
             run_upscale(in_video, out_video, scale, b, w, h, 1.0, model_id,
                         max_gpu_mem=_auto_max_gpu_mem(), on_progress=_on_progress)
-            out_frames = read_video_to_frames(out_video)
+            out_frames = read_video_to_frames(out_video, ow, oh)
             tensor = torch.from_numpy(out_frames.astype(np.float32) / 255.0)
             # 输出长边控制：原生倍数放大完成后，长边大于目标则缩小对齐（只缩小不放大）
             if 输出长边 > 0:

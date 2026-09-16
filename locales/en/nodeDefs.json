@@ -181,13 +181,15 @@
     "display_name": "Xiaozhuguang Frame Optimization",
     "inputs": {
       "image": { "name": "image" },
-      "multi_fill": { "name": "multi fill" }
+      "multi_fill": { "name": "multi fill" },
+      "mask": { "name": "mask" }
     },
     "outputs": {
       "0": { "name": "image" },
       "1": { "name": "frame count" },
       "2": { "name": "original count" },
-      "3": { "name": "front fill" }
+      "3": { "name": "front fill" },
+      "4": { "name": "mask" }
     }
   },
   "XiaozhuguangFrameExtract": {
@@ -226,6 +228,24 @@
       "自定义高度": { "name": "custom height" },
       "跳过帧数": { "name": "skip frames" },
       "帧数上限": { "name": "max frames" }
+    },
+    "outputs": {
+      "0": { "name": "image" },
+      "1": { "name": "audio" },
+      "2": { "name": "video info" }
+    }
+  },
+  "XiaozhuguangVideoLoaderLM": {
+    "display_name": "Xiaozhuguang Video Loader (Low Memory)",
+    "inputs": {
+      "视频": { "name": "video" },
+      "强制帧率": { "name": "force fps" },
+      "视频比例": { "name": "aspect ratio" },
+      "比例模式": { "name": "fit mode" },
+      "自定义宽度": { "name": "custom width" },
+      "自定义高度": { "name": "custom height" },
+      "跳过帧数": { "name": "skip frames" },
+      "帧数上限": { "name": "frame limit" }
     },
     "outputs": {
       "0": { "name": "image" },
@@ -513,6 +533,43 @@
     },
     "outputs": {
       "0": { "name": "image" }
+    }
+  },
+  "XiaozhuguangColorAdjust": {
+    "display_name": "XZG Color Adjust",
+    "description": "Fast color adjust: brightness / contrast / saturation (step 0.01), batch image in/out. Pure tensor elementwise ops over the whole batch at once, no loops no PIL; passthrough with zero copy when all params are default. Order: brightness → contrast → saturation.",
+    "inputs": {
+      "图像": { "name": "image" },
+      "亮度": { "name": "brightness", "tooltip": "Brightness offset: 0 = unchanged, positive brightens, negative darkens (-1~1, step 0.01)" },
+      "对比度": { "name": "contrast", "tooltip": "Contrast factor: 1 = unchanged, >1 stronger, <1 weaker, 0 = flat gray (0~3, step 0.01)" },
+      "饱和度": { "name": "saturation", "tooltip": "Saturation factor: 1 = unchanged, >1 vivid, <1 desaturated, 0 = grayscale (0~3, step 0.01)" }
+    },
+    "outputs": {
+      "0": { "name": "image" }
+    }
+  },
+  "XiaozhuguangImageMaskPreview": {
+    "display_name": "XZG Image-Mask Preview",
+    "description": "Always passthrough: returns the composite directly without saving previews. Image-only passes through; mask-only outputs grayscale; with both, the masked region is composited (solid color / mosaic / colored mosaic) and mask_opacity controls blend strength (gradient masks supported).",
+    "inputs": {
+      "image": { "name": "image" },
+      "mask": { "name": "mask" },
+      "mask_opacity": { "name": "mask opacity", "tooltip": "Blend strength of the masked region 0~1; gradient masks supported" },
+      "mask_color": { "name": "mask color", "tooltip": "RGB (255,255,255) or RGBA (255,255,255,128) or Hex (#RRGGBB / #RRGGBBAA); per-channel alpha applies in solid mode" },
+      "invert_mask": { "name": "invert mask" },
+      "fill_mode": {
+        "name": "fill mode",
+        "tooltip": "Solid = overlay mask_color; Mosaic = pixelate the image inside the mask; Color mosaic = fixed colored blocks (color determined by block position, stable across frames)",
+        "options": {
+          "纯色": { "text": "Solid" },
+          "马赛克": { "text": "Mosaic" },
+          "彩色马赛克": { "text": "Color Mosaic" }
+        }
+      },
+      "mosaic_block": { "name": "mosaic block size", "tooltip": "Block size in pixels for mosaic / color mosaic; only applies to those modes" }
+    },
+    "outputs": {
+      "0": { "name": "composite" }
     }
   }
 }

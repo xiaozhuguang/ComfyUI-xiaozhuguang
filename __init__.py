@@ -212,6 +212,8 @@ from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 from .nodes.xzg_video_loader import XiaozhuguangVideoLoader
+from .nodes.xzg_video_loader_lm import XiaozhuguangVideoLoaderLM
+from .nodes.xzg_video_loader_davinci import XiaozhuguangVideoLoaderDaVinci
 from .nodes.xzg_audio_loader import XiaozhuguangAudioLoader
 from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
@@ -234,6 +236,7 @@ from .nodes.xzg_image_from_list import XiaozhuguangImageFromList
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_color_match_fast import XiaozhuguangColorMatchFast
+from .nodes.xzg_color_adjust import XiaozhuguangColorAdjust
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
 from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
 # —— 小珠光VFI（合并自 ComfyUI-GIMM-VFI 的模型加载 + 插值；依赖宿主插件，内部惰性导入）——
@@ -1189,6 +1192,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
     "XiaozhuguangVideoLoader": XiaozhuguangVideoLoader,
+    "XiaozhuguangVideoLoaderLM": XiaozhuguangVideoLoaderLM,
+    "XiaozhuguangVideoLoaderDaVinci": XiaozhuguangVideoLoaderDaVinci,
     "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
@@ -1212,6 +1217,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangColorMatchFast": XiaozhuguangColorMatchFast,
+    "XiaozhuguangColorAdjust": XiaozhuguangColorAdjust,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
     "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
     "XiaozhuguangVFI": XiaozhuguangVFI,
@@ -1241,6 +1247,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFrameExtract": "小珠光帧提取",
     "XiaozhuguangImageLoader": "小珠光图像加载器",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
+    "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",
+    "XiaozhuguangVideoLoaderDaVinci": "小珠光视频加载-达芬奇",
     "XiaozhuguangAudioLoader": "小珠光音频加载器",
     "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
     "XiaozhuguangVideoCombine": "小珠光合并视频",
@@ -1264,6 +1272,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBigDisplay": "小珠光大字展示",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
+    "XiaozhuguangColorAdjust": "小珠光颜色调整",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
     "XiaozhuguangVFI": "小珠光VFI防丢帧",

@@ -75,12 +75,14 @@ def _box_to_px(r, W, H):
 
 
 def _poly_to_px(poly, W, H):
-    """归一化 [[x,y],...] -> 像素浮点点列；非法 / 少于 3 点返回 None。"""
+    """归一化 [[x,y],...] -> 像素浮点点列；非法 / 少于 3 点返回 None。
+    不做 [0,W]x[0,H] 逐顶点钳制：前端手绘允许画进黑边（轨迹绕到图像外侧
+    以完整覆盖边角），逐顶点钳制会让贴边笔迹变形、顶点间连线切掉角部；
+    超界顶点交由 cv2.fillPoly 光栅化时按画布边界自然裁剪，遮罩不会越界。"""
     if not isinstance(poly, (list, tuple)) or len(poly) < 3:
         return None
     try:
-        pts = [(max(0.0, min(float(W), float(p[0]) * W)),
-                max(0.0, min(float(H), float(p[1]) * H))) for p in poly]
+        pts = [(float(p[0]) * W, float(p[1]) * H) for p in poly]
     except Exception:
         return None
     return pts

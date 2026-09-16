@@ -674,12 +674,22 @@ app.registerExtension({
 
                     const { mode, isDrawingBox, currentBox } = w;
                     if (mode === 'box' && isDrawingBox && currentBox) {
+                        // 外边缘封闭：允许从黑边起笔/收笔，但最终换算时把超出图像
+                        // 范围的部分钳制回图像边缘（黑边部分不计入实际框体）
+                        const _iw = w.image ? w.image.width : 0;
+                        const _ih = w.image ? w.image.height : 0;
+                        const _bx1 = Math.min(currentBox.x, currentBox.x + currentBox.w);
+                        const _by1 = Math.min(currentBox.y, currentBox.y + currentBox.h);
+                        const _bx2 = Math.max(currentBox.x, currentBox.x + currentBox.w);
+                        const _by2 = Math.max(currentBox.y, currentBox.y + currentBox.h);
                         const box = {
-                            x: Math.min(currentBox.x, currentBox.x + currentBox.w),
-                            y: Math.min(currentBox.y, currentBox.y + currentBox.h),
-                            w: Math.abs(currentBox.w),
-                            h: Math.abs(currentBox.h)
+                            x: Math.max(0, Math.min(_bx1, _iw)),
+                            y: Math.max(0, Math.min(_by1, _ih)),
+                            w: 0,
+                            h: 0
                         };
+                        box.w = Math.max(0, Math.min(_bx2, _iw)) - box.x;
+                        box.h = Math.max(0, Math.min(_by2, _ih)) - box.y;
                         if (box.w > 5 && box.h > 5) {
                             w.bboxes.push(box);
                             this.addToHistory();
@@ -839,10 +849,20 @@ app.registerExtension({
                 }
 
                 if (currentBox) {
+                    // 实时预览框同样在外边缘封闭：黑边内的拖拽段不显示框体，
+                    // 预览框始终与最终换算结果一致（钳制在图像范围内）
+                    const _iw = image ? image.width : 0;
+                    const _ih = image ? image.height : 0;
+                    const _bx1 = Math.min(currentBox.x, currentBox.x + currentBox.w);
+                    const _by1 = Math.min(currentBox.y, currentBox.y + currentBox.h);
+                    const _cx1 = Math.max(0, Math.min(_bx1, _iw));
+                    const _cy1 = Math.max(0, Math.min(_by1, _ih));
+                    const _cx2 = Math.max(0, Math.min(_bx1 + Math.abs(currentBox.w), _iw));
+                    const _cy2 = Math.max(0, Math.min(_by1 + Math.abs(currentBox.h), _ih));
                     ctx.strokeStyle = "#0ff";
                     ctx.lineWidth = 2;
                     ctx.setLineDash([5, 5]);
-                    ctx.strokeRect(L.imgLeft + currentBox.x * L.scale, L.imgTop + currentBox.y * L.scale, currentBox.w * L.scale, currentBox.h * L.scale);
+                    ctx.strokeRect(L.imgLeft + _cx1 * L.scale, L.imgTop + _cy1 * L.scale, (_cx2 - _cx1) * L.scale, (_cy2 - _cy1) * L.scale);
                     ctx.setLineDash([]);
                 }
 
@@ -918,9 +938,9 @@ function wm_ensureViewer(node) {
 .xzg-wmdet-t-filter{background:linear-gradient(120deg,#3ef558 30%,#000000 50%,#3ef558 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:xzgWmdetSweep 4.5s linear infinite;}
 .xzg-wmdet-t-manual{background:linear-gradient(120deg,#cba46c 30%,#000000 50%,#cba46c 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:xzgWmdetSweep 4.5s linear infinite;}
 .xzg-wmdet-run-gold{color:#d8d8d8;animation:none;font-weight:400;}
-.xzg-wmdet-ft-off{color:#e53935;animation:none;font-size:14px;font-weight:600;}
-.xzg-wmdet-ft-filter{color:#3ef558;animation:none;font-size:14px;font-weight:600;}
-.xzg-wmdet-ft-manual{color:#cba46c;animation:none;font-size:14px;font-weight:600;}
+.xzg-wmdet-ft-off{color:#e53935;animation:none;font-size:14px;font-weight:400;}
+.xzg-wmdet-ft-filter{color:#3ef558;animation:none;font-size:14px;font-weight:400;}
+.xzg-wmdet-ft-manual{color:#cba46c;animation:none;font-size:14px;font-weight:400;}
 @keyframes xzgWmdetSweep{0%{background-position:130% 0;}100%{background-position:-30% 0;}}`;
         const trackBar = document.createElement("div");
         trackBar.style.cssText = "display:flex;align-items:center;gap:6px;margin-left:10px;";
@@ -930,7 +950,7 @@ function wm_ensureViewer(node) {
             (function(t){
                 const b = document.createElement("div");
                 // 随工具栏整体放大：框 14→20px、数字 14→18px，间隙 4→6px
-                b.style.cssText = "width:20px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;user-select:none;border:1px solid transparent;position:relative;font-variant-numeric:tabular-nums;";
+                b.style.cssText = "width:20px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:400;user-select:none;border:1px solid transparent;position:relative;font-variant-numeric:tabular-nums;";
                 b.innerText = String(t);
                 // 选中圆点：当前选中轨道数字的高亮框下方的小圆点提醒（与数字同一中心）
                 const dot = document.createElement("div");
@@ -968,56 +988,47 @@ function wm_ensureViewer(node) {
             })(t);
         }
         // 占位槽即「+」：显示加号，点击解锁该数字的轨道（无独立 + 按钮）
-        // 一键扩展关键帧：把当前颜色分类的最左关键帧复制到第一帧、最右关键帧复制到最后一帧，
-        // 使遮罩覆盖视频全程（首尾之外无需再手动画框）
-        const extendBtn = document.createElement("div");
-        extendBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;color:#cba46c;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;";
-        extendBtn.innerText = "一键扩展";
-        extendBtn.title = "将当前颜色分类的关键帧扩展到首尾：最左关键帧复制到第一帧，最右关键帧复制到最后一帧";
-        extendBtn.onmouseover = () => { extendBtn.style.backgroundColor = "#333"; };
-        extendBtn.onmouseout = () => { extendBtn.style.backgroundColor = "transparent"; };
-        extendBtn.onclick = (e) => {
-            e.stopPropagation();
+        // 一键扩展关键帧：把指定颜色分类的最左关键帧复制到第一帧、最右关键帧复制到最后一帧，
+        // 使遮罩覆盖视频全程（首尾之外无需再手动画框）。
+        // 入口：右键播放条关键帧三角 → 菜单项（不在工具栏直接显示按钮）
+        const extendTrackToEdges = (tid) => {
             const nf = state.frames.length;
             if (nf < 2) return;                                   // 不足两帧无需扩展
-            const km = state.manualKeyframes[state.trackId];
+            const km = state.manualKeyframes[tid];
             if (!km) return;
             const kfs = Object.keys(km).map(Number)
                 .filter(f => Array.isArray(km[f]) && km[f].length)
                 .sort((a, b) => a - b);
-            if (!kfs.length) return;                              // 当前轨道没有关键帧
+            if (!kfs.length) return;                              // 该轨道没有关键帧
             const first = kfs[0], last = kfs[kfs.length - 1];
             let changed = false;
             // 扩展产生的关键帧打标记：播放条上用小一号三角区分（仅会话内有效）
             state.extKf = state.extKf || {};
-            if (first !== 0) { km[0] = JSON.parse(JSON.stringify(km[first])); state.extKf[state.trackId + ":0"] = true; changed = true; }
-            if (last !== nf - 1) { km[nf - 1] = JSON.parse(JSON.stringify(km[last])); state.extKf[state.trackId + ":" + (nf - 1)] = true; changed = true; }
+            if (first !== 0) { km[0] = JSON.parse(JSON.stringify(km[first])); state.extKf[tid + ":0"] = true; changed = true; }
+            if (last !== nf - 1) { km[nf - 1] = JSON.parse(JSON.stringify(km[last])); state.extKf[tid + ":" + (nf - 1)] = true; changed = true; }
             if (changed) {
                 writeData();
                 redraw();
                 refreshTrackBtns();
             }
         };
-        trackBar.appendChild(extendBtn);
         // 仅显示当前分类：激活后播放条三角与画布画框只显示当前颜色轨道。
         // 文案/配色随状态切换：激活=当前分类色的单色文案；关闭=按 1-8 轨道色逐字对应的多彩文案
         let _solo = false;
         const soloBtn = document.createElement("div");
-        soloBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:1px solid transparent;box-sizing:border-box;";
+        soloBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:18px;font-weight:400;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:none;box-sizing:border-box;";
         soloBtn.title = "仅显示当前颜色分类的关键帧与画框（再次点击恢复显示全部分类）";
-        const SOLO_TEXT_ON = "仅显示当前颜色关键帧";
-        const SOLO_TEXT_OFF = "显示全部颜色关键帧";
+        const SOLO_TEXT_ON = "显示当前";
+        const SOLO_TEXT_OFF = "显示全部";
         const refreshSoloBtn = () => {
             if (_solo) {
                 const c = TRACK_COLORS[(state.trackId - 1) % TRACK_COLORS.length];
                 soloBtn.innerHTML = `<span style="color:${c}">${SOLO_TEXT_ON}</span>`;
-                soloBtn.style.borderColor = c;
-                soloBtn.style.backgroundColor = "rgba(255,255,255,0.08)";
+                soloBtn.style.backgroundColor = "#4a4a4e";
             } else {
                 soloBtn.innerHTML = SOLO_TEXT_OFF.split("").map((ch, i) =>
                     `<span style="color:${TRACK_COLORS[i % TRACK_COLORS.length]}">${ch}</span>`).join("");
-                soloBtn.style.borderColor = "#555";
-                soloBtn.style.backgroundColor = "transparent";
+                soloBtn.style.backgroundColor = "#3a3a3c";
             }
         };
         soloBtn.onclick = (e) => {
@@ -1026,12 +1037,113 @@ function wm_ensureViewer(node) {
             refreshSoloBtn();
             redraw(); // redraw 内部会 drawKfBar，播放条三角与画布同步刷新
         };
-        soloBtn.onmouseover = () => { if (!_solo) soloBtn.style.backgroundColor = "#333"; };
-        soloBtn.onmouseout = () => { if (!_solo) soloBtn.style.backgroundColor = "transparent"; };
+        soloBtn.onmouseover = () => { if (!_solo) soloBtn.style.backgroundColor = "#4a4a4e"; };
+        soloBtn.onmouseout = () => { if (!_solo) soloBtn.style.backgroundColor = "#3a3a3c"; };
         // 注意：此处不能立即调用 refreshSoloBtn()——state/TRACK_COLORS 尚未初始化（定义在后方），
         // 立即执行会抛错并中断整个视窗创建。初始填充由稍后的 applySwitch→refreshTrackBtns 完成
         trackBar.appendChild(soloBtn);
+        // 播放控制按钮组：◀ 上一帧 | ▶ 播放/暂停 | ▶ 下一帧（位于 显示全部/显示当前 之后）。
+        // 步进按钮支持长按连步：按下立即步进，400ms 后以 80ms 间隔连续步进，松开停止。
+        // 按钮尺寸 22px（较初版 20px 放大 2px）
+        const mkCtrlBtn = (label, title) => {
+            const btn = document.createElement("div");
+            // ←/→ 箭头字形在字体 em 框内偏上，包一层 span 下移 1px 实现视觉垂直居中
+            btn.innerHTML = '<span style="display:block;line-height:1;transform:translateY(-1px)">' + label + '</span>';
+            btn.title = title;
+            btn.style.cssText = "height:20px;min-width:20px;padding:0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:13px;color:#ccc;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:none;box-sizing:border-box;";
+            btn.onmouseover = () => { btn.style.backgroundColor = "#4a4a4e"; };
+            btn.onmouseout = () => { btn.style.backgroundColor = "#3a3a3c"; };
+            return btn;
+        };
+        const mkStepBtn = (label, delta, title) => {
+            const btn = mkCtrlBtn(label, title + "（长按可连步）");
+            let _holdTO = null, _holdIV = null;
+            const stepOnce = () => {
+                const nf = state.frames.length;
+                if (!nf) return;
+                const to = Math.max(0, Math.min(nf - 1, (state.frameIdx || 0) + delta));
+                if (to !== state.frameIdx) showFrame(to); // 精准逐帧：播放头/画面/帧号同步
+            };
+            const stopStep = () => {
+                if (_holdTO) { clearTimeout(_holdTO); _holdTO = null; }
+                if (_holdIV) { clearInterval(_holdIV); _holdIV = null; }
+            };
+            btn.onmouseout = () => { btn.style.backgroundColor = "#3a3a3c"; stopStep(); };
+            btn.onmousedown = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                stepOnce();
+                _holdTO = setTimeout(() => { _holdIV = setInterval(stepOnce, 80); }, 400);
+            };
+            window.addEventListener("mouseup", stopStep);
+            return btn;
+        };
+        // 中间播放/暂停：正向/反向两个按钮（互斥），从当前帧逐帧前进/后退（100ms/帧），
+        // 播到末帧/首帧自动停止并复位图标；停在端点时再按则从另一端开始。
+        // 按钮排列：◀ 上一帧 | ◀ 反向播放 | ▶ 正向播放 | ▶ 下一帧
+        let _playIV = null, _playDir = 0;
+        const mkPlayBtn = (dir) => {
+            const fwd = dir > 0;
+            const btn = mkCtrlBtn(fwd ? "▶" : "◀", fwd ? "正向播放" : "反向播放");
+            btn._icon = fwd ? "▶" : "◀";
+            btn._title = fwd ? "正向播放" : "反向播放";
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                if (_playIV && _playDir === dir) { stopPlay(); return; } // 同方向再按=暂停
+                stopPlay();                                              // 反方向按下=切换方向
+                const nf = state.frames.length;
+                if (!nf) return;
+                if (fwd && (state.frameIdx || 0) >= nf - 1) showFrame(0);        // 末帧正向→从头播
+                if (!fwd && (state.frameIdx || 0) <= 0) showFrame(nf - 1);       // 首帧反向→从末尾播
+                _playDir = dir;
+                playBtns.forEach(b => { b.textContent = b._icon; b.title = b._title; });
+                btn.textContent = "❚❚";
+                btn.title = fwd ? "暂停（正向播放中）" : "暂停（反向播放中）";
+                _playIV = setInterval(() => {
+                    const nf2 = state.frames.length;
+                    if (!nf2) { stopPlay(); return; }
+                    const next = (state.frameIdx || 0) + dir;
+                    if (next < 0 || next > nf2 - 1) { stopPlay(); return; } // 到端点自动停
+                    showFrame(next);
+                }, 100);
+            };
+            return btn;
+        };
+        const playFwdBtn = mkPlayBtn(1);
+        const playRevBtn = mkPlayBtn(-1);
+        const playBtns = [playFwdBtn, playRevBtn];
+        const stopPlay = () => {
+            if (_playIV) { clearInterval(_playIV); _playIV = null; }
+            _playDir = 0;
+            playBtns.forEach(b => { b.textContent = b._icon; b.title = b._title; });
+        };
+        trackBar.appendChild(mkStepBtn("←", -1, "上一帧"));
+        trackBar.appendChild(playRevBtn);
+        trackBar.appendChild(playFwdBtn);
+        trackBar.appendChild(mkStepBtn("→", 1, "下一帧"));
         toolbar.appendChild(trackBar);
+        // 键盘 ← / → 精准逐帧：仅当鼠标悬停在本预览面板内时生效（pointerenter/leave 维护标记），
+        // 避免抢占 ComfyUI 画布与其他节点的按键；输入类元素聚焦时忽略。
+        // 注意：ComfyUI 前端的"跳转上/下一个节点"快捷键监听在 window 捕获/冒泡阶段，
+        // 必须在 window 捕获阶段最先拦截（stopImmediatePropagation）才能屏蔽它
+        let _panelHover = false;
+        container.addEventListener("pointerenter", () => { _panelHover = true; });
+        container.addEventListener("pointerleave", () => { _panelHover = false; });
+        window.addEventListener("keydown", (e) => {
+            if (!_panelHover) return;
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+            const ae = document.activeElement;
+            if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+            e.preventDefault();
+            e.stopImmediatePropagation(); // 阻止 ComfyUI 的节点跳转快捷键
+            stopPlay(); // 手动步进时停止正/反向自动播放
+            const nf = state.frames.length;
+            if (!nf) return;
+            const delta = e.key === "ArrowLeft" ? -1 : 1;
+            const to = Math.max(0, Math.min(nf - 1, (state.frameIdx || 0) + delta));
+            if (to !== state.frameIdx) showFrame(to);
+        }, true);
         // 从已有数据推导已解锁轨道（加载含多轨道标注的工作流时自动点亮对应数字）
         const syncTrackUnlockedFromData = () => {
             try {
@@ -1082,7 +1194,9 @@ function wm_ensureViewer(node) {
 
         // 标注工具切换：▭ 框选 / ✎ 手绘（仅手工跟踪模式显示）
         const toolBtn = document.createElement("div");
-        toolBtn.style.cssText = "height:26px;min-width:68px;padding:0 8px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border-radius:4px;font-size:18px;font-weight:700;user-select:none;border:1px solid transparent;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
+        toolBtn.style.cssText = "height:20px;min-width:64px;padding:0 8px;margin-left:4px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:18px;font-weight:400;user-select:none;border:none;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
+        toolBtn.onmouseover = () => { toolBtn.style.backgroundColor = "#4a4a4e"; };
+        toolBtn.onmouseout = () => { toolBtn.style.backgroundColor = "#3a3a3c"; };
         toolBtn.title = "标注工具：框选 / 手绘";
         toolbar.insertBefore(toolBtn, trackBar);
         const refreshToolBtn = () => {
@@ -1116,9 +1230,11 @@ function wm_ensureViewer(node) {
         // 「引入上游图片」按钮：手动执行当前节点（含上游）引入画面（切换模式不再自动引入）
         const runBtn = document.createElement("div");
         // 加高 8px（20→28）、文字加大 4px（14→18，⏎ 符号随字号等比变大）
-        runBtn.style.cssText = "height: 28px; min-width: 64px; padding: 0 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #d8d8d8; font-size: 18px; font-weight: 400; user-select: none; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;";
-        runBtn.innerHTML = '<span style="font-weight:700">点击加载视频⏎</span>';
+        runBtn.style.cssText = "height: 20px; min-width: 64px; padding: 0 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; background: #3a3a3c; color: #d8d8d8; font-size: 18px; font-weight: 400; user-select: none; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;";
+        runBtn.innerHTML = '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:0.78em">⏎</span></span>';
         runBtn.title = "执行当前节点（含上游），预览检测画面";
+        runBtn.onmouseover = () => { runBtn.style.backgroundColor = "#4a4a4e"; };
+        runBtn.onmouseout = () => { runBtn.style.backgroundColor = "#3a3a3c"; };
         // 点击加载视频：不清空已画标注（持久化方案——同视频重复执行保留标注）
         runBtn.onclick = (e) => { e.stopPropagation(); startProgress(); runUpstream(); };
         // 颜色/文字跟随模式：手工跟踪=暗金+短文案（旧自动检测模式的荧光绿分支已下线，仅保留防御）
@@ -1127,10 +1243,10 @@ function wm_ensureViewer(node) {
             runBtn.style.display = "flex";
             runBtn.style.color = (m === "filter") ? "#3ef558" : "#cba46c";
             runBtn.innerHTML = (m === "filter")
-                ? '<span style="font-weight:700">点击加载视频⏎</span>'
+                ? '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:0.78em">⏎</span></span>'
                   + '<span style="color:#888;font-weight:400;margin-left:20px">1、不操作为全域跟踪</span>'
                   + '<span style="color:#888;font-weight:400;margin-left:20px">2、点击加载时候，画方框为限定区域跟踪</span>'
-                : '<span style="font-weight:700">点击加载视频⏎</span>';
+                : '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:0.78em">⏎</span></span>';
         };
 
         // 仅执行到本节点（含上游）：按钮 / 右键菜单共用
@@ -1200,11 +1316,11 @@ function wm_ensureViewer(node) {
 
         // 说明书按钮：位于「点击加载视频」左侧，笔记本图标（缩小占用空间），点击弹出使用说明
         const helpBtn = document.createElement("div");
-        helpBtn.style.cssText = "background:none;border:none;color:#FFD700;cursor:pointer;user-select:none;white-space:nowrap;flex-shrink:0;padding:0 2px;margin-right:8px;display:flex;align-items:center;justify-content:center;";
+        helpBtn.style.cssText = "height:20px;background:#3a3a3c;border:none;border-radius:4px;color:#FFD700;cursor:pointer;user-select:none;white-space:nowrap;flex-shrink:0;padding:0 6px;margin-right:8px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;";
         helpBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>';
         helpBtn.title = "使用说明";
-        helpBtn.onmouseover = () => { helpBtn.style.color = "#FFA500"; };
-        helpBtn.onmouseout = () => { helpBtn.style.color = "#FFD700"; };
+        helpBtn.onmouseover = () => { helpBtn.style.color = "#FFA500"; helpBtn.style.backgroundColor = "#4a4a4e"; };
+        helpBtn.onmouseout = () => { helpBtn.style.color = "#FFD700"; helpBtn.style.backgroundColor = "#3a3a3c"; };
         helpBtn.onclick = (e) => { e.stopPropagation(); try { showWmDetHelp(); } catch (err) { console.error("[小珠光][水印] showWmDetHelp 错误:", err); } };
         toolbar.insertBefore(helpBtn, runBtn);
 
@@ -1225,8 +1341,8 @@ function wm_ensureViewer(node) {
                 refreshTrackBtns();
             }
         };
-        clearBtn.style.cssText = "width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; font-size: 18px; user-select: none; flex-shrink: 0;";
-        clearBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
+        clearBtn.style.cssText = "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; font-size: 18px; user-select: none; flex-shrink: 0;";
+        clearBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
         clearBtn.title = "删除全部标注（所有分类的关键帧 + 检测/排除区）";
         clearBtn.onmouseover = () => { clearBtn.style.backgroundColor = "#333"; };
         clearBtn.onmouseout = () => { clearBtn.style.backgroundColor = "transparent"; };
@@ -1262,8 +1378,8 @@ function wm_ensureViewer(node) {
         frameInfo.innerText = "0/0";
         tracker.appendChild(frameInfo);
 
-        // 播放画面按钮已移除；stopPlay 保留为空操作，供其余调用点（拖动播放条/切帧）安全调用
-        const stopPlay = () => {};
+        // 注：stopPlay 已在上方播放控制组中定义为真正的停止逻辑（清定时器+复位图标），
+        // 拖动播放条/切帧等调用点会自动停止正/反向播放
 
         const slider = document.createElement("input");
         slider.type = "range";
@@ -1281,11 +1397,11 @@ function wm_ensureViewer(node) {
             const st = document.createElement('style');
             st.id = 'xzg-wmdet-slider-style';
             st.textContent = `
-.xzg-wmdet-slider{-webkit-appearance:none;appearance:none;background:transparent;height:4px;}
+.xzg-wmdet-slider{-webkit-appearance:none;appearance:none;background:transparent;height:4px;will-change:transform;transform:translateZ(0);}
 .xzg-wmdet-slider::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:transparent;}
-.xzg-wmdet-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:35px;margin-top:-15px;background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 35'><path d='M1.5 0 L14.5 0 L8 13 Z' fill='%23d8d8d8'/><line x1='8' y1='4.3' x2='8' y2='34' stroke='%23d8d8d8' stroke-width='2.4'/></svg>") no-repeat center/contain;border:none;cursor:pointer;}
+.xzg-wmdet-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:35px;margin-top:-15px;background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 35'><circle cx='8' cy='6' r='5.5' fill='%23ffffff'/><line x1='8' y1='11.5' x2='8' y2='34' stroke='%23ffffff' stroke-width='2.4'/></svg>") no-repeat center/contain;border:none;cursor:pointer;}
 .xzg-wmdet-slider::-moz-range-track{height:4px;border-radius:2px;background:transparent;}
-.xzg-wmdet-slider::-moz-range-thumb{width:16px;height:35px;background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 35'><path d='M1.5 0 L14.5 0 L8 13 Z' fill='%23d8d8d8'/><line x1='8' y1='4.3' x2='8' y2='34' stroke='%23d8d8d8' stroke-width='2.4'/></svg>") no-repeat center/contain;border:none;border-radius:0;cursor:pointer;}
+.xzg-wmdet-slider::-moz-range-thumb{width:16px;height:35px;background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 35'><circle cx='8' cy='6' r='5.5' fill='%23ffffff'/><line x1='8' y1='11.5' x2='8' y2='34' stroke='%23ffffff' stroke-width='2.4'/></svg>") no-repeat center/contain;border:none;border-radius:0;cursor:pointer;}
 `;
             document.head.appendChild(st);
         }
@@ -1303,6 +1419,23 @@ function wm_ensureViewer(node) {
         tracker.appendChild(hitzone);
         requestAnimationFrame(() => { hitzone.style.left = (slider.offsetLeft || 0) + "px"; });
         let dragging = false;
+        // 播放头拖动残影：按下时在播放头"原位置"放一个半透明同款播放头（三角+竖杠），
+        // 拖动期间保持不动作为原位置参照；松开后播放头已落实到新位置，残影消失。
+        let thumbGhost = null;
+        const removeThumbGhost = () => { if (thumbGhost) { thumbGhost.remove(); thumbGhost = null; } };
+        const spawnThumbGhost = () => {
+            removeThumbGhost();
+            const nf = state.frames.length;
+            if (nf < 1 || slider.clientWidth <= 0) return;
+            // 与 setFrameFromX 同一套几何换算：thumb 宽 16px，水平行程 = 宽度-16；
+            // 垂直方向 thumb(35px) 相对 4px 轨道 margin-top:-15px
+            const frac = nf > 1 ? state.frameIdx / (nf - 1) : 0;
+            thumbGhost = document.createElement("div");
+            thumbGhost.style.cssText = `position:absolute;width:16px;height:35px;opacity:0.65;pointer-events:none;z-index:5;background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 35'><circle cx='8' cy='6' r='5.2' fill='none' stroke='%23ffffff' stroke-width='1.6' stroke-dasharray='3 2'/><line x1='8' y1='13' x2='8' y2='34' stroke='%23ffffff' stroke-width='2.4' stroke-dasharray='4 3'/></svg>") no-repeat center/contain;`;
+            thumbGhost.style.left = (slider.offsetLeft + frac * Math.max(0, slider.clientWidth - 16)) + "px";
+            thumbGhost.style.top = (slider.offsetTop - 15) + "px";
+            tracker.appendChild(thumbGhost);
+        };
         const setFrameFromX = (clientX) => {
             const nf = state.frames.length;
             if (nf < 1) return;
@@ -1317,16 +1450,20 @@ function wm_ensureViewer(node) {
         hitzone.addEventListener("mousedown", (e) => {
             e.preventDefault();
             dragging = true;
+            spawnThumbGhost(); // 先在播放头原位置留半透明残影，再让播放头跳到点击处
             setFrameFromX(e.clientX);
         });
         window.addEventListener("mousemove", (e) => { if (dragging) setFrameFromX(e.clientX); });
-        window.addEventListener("mouseup", () => { dragging = false; });
+        window.addEventListener("mouseup", () => {
+            dragging = false;
+            removeThumbGhost(); // 播放头落实新位置，残影消失
+        });
 
         const canvasWrapper = document.createElement("div");
         // flex:1 让它吃掉 tool 条/帧条之外的全部容器高度，否则高度由 canvas 子元素推导，
-        // 画面大小会被锁死、无法随预览窗自适应；padding:15px 为视频四周保留黑色留边，
+        // 画面大小会被锁死、无法随预览窗自适应；padding:30px 为视频四周保留黑色留边，
         // 画方框时不会贴到节点内边缘。
-        canvasWrapper.style.cssText = "flex:1; width:100%; box-sizing:border-box; position:relative; overflow:hidden; padding:15px; display:flex; align-items:center; justify-content:center; background:#0f1011;";
+        canvasWrapper.style.cssText = "flex:1; width:100%; box-sizing:border-box; position:relative; overflow:hidden; padding:30px; display:flex; align-items:center; justify-content:center; background:#0f1011;";
         container.appendChild(canvasWrapper);
 
         const canvas = document.createElement("canvas");
@@ -1337,6 +1474,83 @@ function wm_ensureViewer(node) {
         canvas.style.cssText = "display: block; cursor: crosshair;";
         canvasWrapper.appendChild(canvas);
         const ctx = canvas.getContext("2d");
+
+        // ---- 手绘黑边显示 overlay ----
+        // 主画布位图 = 图像本身（黑边是 wrapper 的 30px 留白，在 canvas 元素之外），
+        // 黑边内的笔画画在主画布上会被位图边界裁掉。此 overlay 覆盖整个 wrapper
+        // （含黑边），仅承载绘制期间的实时笔迹；松手即清除——存储的多边形轮廓
+        // 仍由主画布裁剪到视频区显示，遮罩后端用完整多边形（边角覆盖不受影响）。
+        const brushOverlay = document.createElement("canvas");
+        brushOverlay.style.cssText = "position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:2;";
+        canvasWrapper.appendChild(brushOverlay);
+        const syncBrushOverlaySize = () => {
+            const dpr = window.devicePixelRatio || 1;
+            const bw = Math.max(1, Math.round((canvasWrapper.clientWidth || 1) * dpr));
+            const bh = Math.max(1, Math.round((canvasWrapper.clientHeight || 1) * dpr));
+            if (brushOverlay.width !== bw || brushOverlay.height !== bh) {
+                brushOverlay.width = bw;
+                brushOverlay.height = bh;
+            }
+        };
+        const clearBrushOverlay = () => {
+            brushOverlay.getContext("2d").setTransform(1, 0, 0, 1, 0, 0);
+            brushOverlay.getContext("2d").clearRect(0, 0, brushOverlay.width, brushOverlay.height);
+        };
+        const drawActiveOverlay = () => {
+            const hasBrush = state.brushActive && state.brushPts.length > 0;
+            const hasRect = !!state.drawing;
+            if (!hasBrush && !hasRect) { clearBrushOverlay(); return; }
+            syncBrushOverlaySize();
+            const bctx = brushOverlay.getContext("2d");
+            const dpr = window.devicePixelRatio || 1;
+            // ComfyUI 画布缩放修正：getBoundingClientRect 返回的是被 zoom 放大后的
+            // 视觉尺寸，而 overlay 位图按 wrapper 的布局尺寸×dpr 同步。k = 视觉/布局，
+            // 坐标必须除以 k，否则原点重合但越往右下偏差被 k 放大（画笔不跟手）。
+            const or = brushOverlay.getBoundingClientRect();
+            const k = or.width > 0 && brushOverlay.clientWidth > 0 ? or.width / brushOverlay.clientWidth : 1;
+            bctx.setTransform(1, 0, 0, 1, 0, 0);
+            bctx.clearRect(0, 0, brushOverlay.width, brushOverlay.height);
+            bctx.setTransform(dpr / k, 0, 0, dpr / k, 0, 0);
+            const cr = canvas.getBoundingClientRect();
+            if (!cr.width || !or.width) return;
+            const cc = state.mode === "manual" ? TRACK_COLORS[(state.trackId - 1) % 8] : "#22c55e";
+            bctx.lineJoin = "round";
+            bctx.lineCap = "round";
+            if (hasBrush) {
+                // 手绘：轨迹不钳制，黑边内照常显示
+                bctx.strokeStyle = cc;
+                bctx.fillStyle = cc;
+                bctx.lineWidth = Math.max(1, (cr.width / (canvas.width || 1)) * 1.2);
+                bctx.beginPath();
+                state.brushPts.forEach((p, i) => {
+                    const px = cr.left - or.left + p.x * cr.width;
+                    const py = cr.top - or.top + p.y * cr.height;
+                    if (i === 0) bctx.moveTo(px, py); else bctx.lineTo(px, py);
+                });
+                if (state.brushPts.length === 1) {
+                    // 单点（刚起笔未移动）：画一个小圆点作为落笔反馈
+                    const p0 = state.brushPts[0];
+                    bctx.arc(cr.left - or.left + p0.x * cr.width, cr.top - or.top + p0.y * cr.height, Math.max(1.5, bctx.lineWidth), 0, 2 * Math.PI);
+                    bctx.fill();
+                } else {
+                    bctx.stroke();
+                }
+            }
+            if (hasRect) {
+                // 方框实时预览：跟随鼠标、不钳制（黑边内也显示）；松手提交时才钳制到视频外边缘
+                const iw = canvas.width || 1, ih = canvas.height || 1;
+                const rx1 = Math.min(state.drawing.x1, state.drawing.x2) / iw;
+                const ry1 = Math.min(state.drawing.y1, state.drawing.y2) / ih;
+                const rx2 = Math.max(state.drawing.x1, state.drawing.x2) / iw;
+                const ry2 = Math.max(state.drawing.y1, state.drawing.y2) / ih;
+                bctx.strokeStyle = cc;
+                bctx.lineWidth = Math.max(1, (cr.width / iw) * 1.2);
+                bctx.setLineDash([5, 5]);
+                bctx.strokeRect(cr.left - or.left + rx1 * cr.width, cr.top - or.top + ry1 * cr.height,
+                    (rx2 - rx1) * cr.width, (ry2 - ry1) * cr.height);
+                bctx.setLineDash([]);
+            }
+        };
 
         // 开关关闭时的提示遮罩（视窗始终可见，仅禁用框选）
         const overlay = document.createElement("div");
@@ -1457,16 +1671,16 @@ function wm_ensureViewer(node) {
         const TRACK_COLORS = ['#ff3b30','#30d158','#ffd60a','#0a84ff','#cba46c','#00bcd4','#bf5af2','#c0c0c0'];
         const calcLayout = () => {
             // 画布内部像素固定为图像分辨率（见 syncSize：state.image 加载后一次性设置），
-            // 画面与检测框都按此坐标绘制；canvas 的 CSS 尺寸由 _updateSurfaceCss 在 15px 留边内
+            // 画面与检测框都按此坐标绘制；canvas 的 CSS 尺寸由 _updateSurfaceCss 在 30px 留边内
             // 以 contain 方式精确设定，浏览器等比显示。
             const iw = canvas.width || 1, ih = canvas.height || 1;
             return { dispW: iw, dispH: ih, imgW: iw, imgH: ih, left: 0, top: 0, dw: iw, dh: ih, scale: 1 };
         };
 
-        // contain 适配 + 严格等比：canvas 在「去掉 15px 黑边后」的可视区域内，
+        // contain 适配 + 严格等比：canvas 在「去掉 30px 黑边后」的可视区域内，
         // 取容器宽/高 ÷ 图像宽/高的较小缩放系数，直接写 inline 宽高，由 flex 居中的宿主
         // 自动居中。画面始终完整可见、任意节点宽高组合都不变形也不被裁切，比例始终不变。
-        const PAD = 15; // 视频与节点框之间的黑色留边
+        const PAD = 30; // 视频与节点框之间的黑色留边（与 wrapper 的 padding:30px 保持一致）
         const _updateSurfaceCss = () => {
             const av = (canvasWrapper.clientWidth || 0) - 2 * PAD;
             const ah = (canvasWrapper.clientHeight || 0) - 2 * PAD;
@@ -1546,7 +1760,15 @@ function wm_ensureViewer(node) {
         const drawRegionBox = (r, color, fill, label) => {
             const L = calcLayout();
             if (r.poly && Array.isArray(r.poly) && r.poly.length >= 3) {
-                // 多边形：1px 实线、无填充（与矩形框一致的细线样式）
+                // 多边形：1px 实线、无填充（与矩形框一致的细线样式）。
+                // 裁剪到视频区显示：手绘允许画进黑边（绘制中黑边内实时显示笔迹），
+                // 松手成关键帧后黑边内轮廓不再显示，仅显示视频区内的部分；
+                // 数据仍保存完整多边形（含黑边段），后端遮罩由 fillPoly 按画布裁剪，
+                // 边角覆盖能力不受影响。
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(L.left, L.top, L.dw, L.dh);
+                ctx.clip();
                 ctx.strokeStyle = color;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
@@ -1557,6 +1779,7 @@ function wm_ensureViewer(node) {
                 ctx.closePath();
                 ctx.stroke();
                 if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+                ctx.restore();
                 if (label) { ctx.fillStyle = color; ctx.font = "14px sans-serif"; ctx.textAlign = "left"; ctx.fillText(label, L.left + r.poly[0][0] * L.dw + 3, L.top + r.poly[0][1] * L.dh + 14); }
                 return;
             }
@@ -1637,37 +1860,8 @@ function wm_ensureViewer(node) {
                     });
                     } catch (e) { console.warn("[小珠光][水印] 关键帧绘制异常(已跳过,不影响预览):", e); }
                 }
-                if (state.drawing) {
-                    // state.drawing 是图像像素坐标，drawRegionBox 按归一化 0~1 绘制，
-                    // 直接画会把实时框甩出画布（像素值*dw 过大），故先归一化并钳制。
-                    const iw = state.image.width || 1, ih = state.image.height || 1;
-                    const clamp01 = (v) => Math.max(0, Math.min(1, v));
-                    const dn = {
-                        x1: clamp01(Math.min(state.drawing.x1, state.drawing.x2) / iw),
-                        y1: clamp01(Math.min(state.drawing.y1, state.drawing.y2) / ih),
-                        x2: clamp01(Math.max(state.drawing.x1, state.drawing.x2) / iw),
-                        y2: clamp01(Math.max(state.drawing.y1, state.drawing.y2) / ih),
-                    };
-                    // 画框中途预览框颜色跟随模式：检测模式=绿，手工跟踪模式=蓝（与关键帧框一致）
-                    if (state.mode === "manual") {
-                        const cc = TRACK_COLORS[(state.trackId-1)%8]; drawRegionBox(dn, cc, null, null);
-                    } else {
-                        drawRegionBox(dn, "#22c55e", null, null);
-                    }
-                }
-                // 涂抹实时预览：把当前轨迹作为临时多边形绘制（手工跟踪模式）
-                if (state.mode === "manual" && state.brushActive && state.brushPts.length >= 2) {
-                    const cc = TRACK_COLORS[(state.trackId-1)%8];
-                    ctx.strokeStyle = cc;
-                    ctx.lineWidth = 1;
-                    ctx.beginPath();
-                    state.brushPts.forEach((p, i) => {
-                        const px = L.left + p.x * L.dw, py = L.top + p.y * L.dh;
-                        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-                    });
-                    ctx.closePath();
-                    ctx.stroke();
-                }
+                // 方框/涂抹的实时预览均已迁移至 brushOverlay（覆盖含黑边的整个 wrapper 区域）：
+                // 主画布位图=图像本身，黑边内笔画会被位图边界裁掉，主画布不再负责实时预览
             }
         };
 
@@ -1701,8 +1895,12 @@ function wm_ensureViewer(node) {
             menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + "px";
             _barMenuEl = menu;
         };
-        // 关键帧三角菜单：删除 / 复制到当前播放头（按三角所属轨道 tid 操作）
+        // 关键帧三角菜单：删除 / 复制到当前播放头 / 移动到播放头 / 一键扩展到首尾（按三角所属轨道 tid 操作）
         const showKfMenu = (x, y, fr, tid) => showBarMenu(x, y, [
+            {
+                label: "一键扩展到首尾",
+                fn: () => extendTrackToEdges(tid),   // 扩展该轨道：最左关键帧→第一帧，最右关键帧→最后一帧
+            },
             {
                 label: "删除关键帧",
                 fn: () => {
@@ -1725,6 +1923,20 @@ function wm_ensureViewer(node) {
                     km[state.frameIdx] = JSON.parse(JSON.stringify(src)); // 深拷贝框数据到播放头所在帧
                     writeData();
                     redraw();   // 播放头位置立即出现复制来的框
+                    refreshTrackBtns();
+                },
+            },
+            {
+                label: "移动关键帧到播放头",
+                fn: () => {
+                    const km = state.manualKeyframes[tid];
+                    const src = km ? km[fr] : null;
+                    if (!src || !src.length) return;               // 该三角无关键帧数据
+                    if (state.frameIdx === fr) return;             // 播放头就在此帧，无需移动
+                    km[state.frameIdx] = src;                      // 数据整体搬到播放头所在帧
+                    delete km[fr];                                 // 原位置删除
+                    writeData();
+                    redraw();   // 关键帧三角与框同步落到播放头所在帧
                     refreshTrackBtns();
                 },
             },
@@ -1812,6 +2024,7 @@ function wm_ensureViewer(node) {
                         if (e.button !== 0) return;
                         e.preventDefault();
                         e.stopPropagation();
+                        spawnThumbGhost(); // 拖关键帧时播放头会跟随，先在播放头原位置留黑色参考残影
                         _kfDrag = { trackId: tid, from: fr, cur: fr };
                     });
                     // 扩展（一键扩展复制到首尾）的关键帧用小一号三角，与手画的关键帧区分
@@ -1888,6 +2101,7 @@ function wm_ensureViewer(node) {
             state.frameIdx = i;
             state.image = state.frames[i];
             state.brushActive = false; state.brushPts = [];
+            clearBrushOverlay();
             frameInfo.innerText = `${i}/${nf - 1}`;
             slider.value = i;
             redraw();
@@ -1916,31 +2130,34 @@ function wm_ensureViewer(node) {
             if (state.mode === "manual" && state.tool === "brush") {
                 const L = calcLayout();
                 state.brushActive = true;
-                state.brushPts = [{ x: Math.max(0, Math.min(1, c.x / L.imgW)), y: Math.max(0, Math.min(1, c.y / L.imgH)) }];
+                // 手绘允许画进黑边：不做 [0,1] 钳制。轨迹可以绕到图像外侧再回来，
+                // 黑边内轨迹照常实时显示；遮罩光栅化时超出部分天然被画布裁剪，
+                // 从而能完整覆盖到视频边角（钳制会把贴边笔迹压扁在边缘上，覆盖不到角）。
+                state.brushPts = [{ x: c.x / L.imgW, y: c.y / L.imgH }];
                 redraw();
+                drawActiveOverlay();
                 return;
             }
             state.drawing = { x1: c.x, y1: c.y, x2: c.x, y2: c.y };
         });
 
         canvasWrapper.addEventListener('pointermove', (e) => {
-            // 涂抹中：按 8px（图像像素）距离节流追加轨迹点
+            // 涂抹中：逐事件追加轨迹点（不做 8px 节流——节流会让线尾滞后鼠标，
+            // 表现为"不跟手"；提交时 resamplePoly 统一重采样为 24 点，点数无影响）
             if (state.brushActive) {
                 const c = toImg(e);
                 const L = calcLayout();
-                const last = state.brushPts[state.brushPts.length - 1];
-                const nx = Math.max(0, Math.min(1, c.x / L.imgW)), ny = Math.max(0, Math.min(1, c.y / L.imgH));
-                if (!last || Math.hypot((nx - last.x) * L.imgW, (ny - last.y) * L.imgH) >= 8) {
-                    state.brushPts.push({ x: nx, y: ny });
-                    redraw();
-                }
+                // 与起笔一致：轨迹点不钳制（允许黑边内绘制，见 pointerdown 注释）
+                state.brushPts.push({ x: c.x / L.imgW, y: c.y / L.imgH });
+                drawActiveOverlay();
                 return;
             }
             if (!state.drawing) return;
             const c = toImg(e);
             state.drawing.x2 = c.x;
             state.drawing.y2 = c.y;
-            scheduleRedraw();
+            // 方框实时预览走 overlay（黑边内可见、逐事件刷新跟手）
+            drawActiveOverlay();
         });
 
         canvasWrapper.addEventListener('pointerup', (e) => {
@@ -1949,6 +2166,7 @@ function wm_ensureViewer(node) {
                 state.brushActive = false;
                 const pts = state.brushPts;
                 state.brushPts = [];
+                clearBrushOverlay();
                 if (state.mode !== "manual" || pts.length < 3) { redraw(); return; }
                 const poly = resamplePoly(pts, 24);
                 const r = { poly };
@@ -1972,6 +2190,7 @@ function wm_ensureViewer(node) {
                 y2: Math.max(0, Math.min(1, Math.max(state.drawing.y1, state.drawing.y2) / L.imgH)),
             };
             state.drawing = null;
+            clearBrushOverlay();
             if (!(r.x2 - r.x1 > 0.002 && r.y2 - r.y1 > 0.002)) return;   // 极小框忽略
             if (state.mode === "manual") {
                 const tid = state.trackId;
@@ -2164,9 +2383,9 @@ function wm_ensureViewer(node) {
         // 并按布局结果统一克隆定位/定尺寸。此处不再写 container.style.height
         //（旧 syncH 双写高度 + 定位随缩放换算，是"节点下方死区"的根源）。
         const MIN_PREVIEW_H = 220;
-        // 最小宽度按手工跟踪模式整行标签不被裁切计算（一键扩展/显示全部颜色关键帧同步加大到 18px 后放宽）：
-        // 笔记本图标(~24) + 点击加载视频⏎18px(~150) + 框选/手绘(~85) + 轨道1-8(20px框×8+间隙6×7+margin10=212) + 一键扩展18px(~92) + 显示全部颜色关键帧18px(~182) + 垃圾桶×2(50) + 工具栏内边距(12) ≈ 807，留缓冲取 815
-        const MIN_NODE_W = 815;
+        // 最小宽度按手工跟踪模式整行标签不被裁切计算（一键扩展移入右键菜单后收紧）：
+        // 笔记本图标(~24) + 点击加载视频⏎18px(~150) + 框选/手绘(~85) + 轨道1-8(20px框×8+间隙6×7+margin10=212) + 显示全部18px(~72) + 控制按钮×4(112) + 垃圾桶×2(50) + 工具栏内边距(12) ≈ 717，留缓冲取 725
+        const MIN_NODE_W = 725;
         // 本 DOM widget 顶部 y：优先用 LiteGraph 绘制时记录的 widget.y；
         // 否则自己累加前面可见 widget 的 computeSize 高度回退。（仅用于一次性初始尺寸）
         const measureTop = (sizeW) => {
@@ -2249,11 +2468,14 @@ function showWmDetHelp() {
             <h4>手工跟踪</h4>
             <ul>
                 <li>1、轨道 1-8 各自颜色不同，先选轨道再画框；可选「方框」或「涂抹（手绘）」画目标轮廓</li>
-                <li>2、右键播放条上的三角可删除/跳转该关键帧（画布上右键框体不再删除）</li>
+                <li>2、右键播放条上的三角可删除 / 跳转 / 复制关键帧到播放头 / 移动关键帧到播放头（移动会把关键帧搬到播放头所在帧并删除原位置）</li>
                 <li>3、在某一颜色分类，在播放头不同进度位置画框，自动跟踪过渡。若当前颜色分类，只画一个框，则代表全帧遮罩。</li>
                 <li>4、播放条上方三角标记定位关键帧，点击三角播放头即跳转到该帧</li>
-                <li>5、切换不同颜色分类，可跟踪多个目标</li>
-                <li>6、「一键扩展」把当前颜色分类的最左/最右关键帧分别复制到第一帧和最后一帧，遮罩覆盖视频全程</li>
+                <li>5、按住三角左右拖动可移动关键帧，播放头跟随移动；拖动播放条或关键帧时，播放头原位置会留一个白色虚线参考播放头，松手落位后消失</li>
+                <li>6、切换不同颜色分类，可跟踪多个目标</li>
+                <li>7、右键关键帧三角 →「一键扩展到首尾」：把该颜色分类的最左/最右关键帧分别复制到第一帧和最后一帧，遮罩覆盖视频全程</li>
+                <li>8、「显示全部 / 显示当前」：仅查看当前颜色分类的关键帧与画框，再次点击恢复显示全部分类</li>
+                <li>9、「← / ◀ / ▶ / →」控制组（位于显示全部/显示当前之后）：左箭头上一帧、反向播放（左三角）、正向播放（右三角）、右箭头下一帧。播放自动逐帧前进/后退（100ms/帧），到首/末帧自动停止，端点再按则从另一端播放；两个播放按钮互斥，播放中同方向再按即暂停；步进按钮长按可连续步进。鼠标悬停在预览面板上时，键盘 ← / → 也可逐帧移动播放头</li>
             </ul>
 
             <h4>参数（手工跟踪）</h4>
