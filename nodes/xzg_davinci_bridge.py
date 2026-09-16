@@ -136,35 +136,62 @@ def _connect():
     return resolve, None
 
 
-def current_video_item(timeline):
-    """返回播放头所在视频片段（TimelineItem）。优先 GetCurrentVideoItem。"""
+def _tc_to_frames(tc, fps):
+    """把 00:00:00:00（或 ; 分隔）时码换算为帧数。解析失败返回 None。"""
     try:
-        item = timeline.GetCurrentVideoItem()
-        if item is not None:
-            return item, ("GetCurrentVideoItem")
+        parts = str(tc).replace(";", ":").split(":")
+        if len(parts) != 4:
+            return None
+        h, m, s, f = (int(x) for x in parts)
+        return int((h * 3600 + m * 60 + s) * fps + f)
+    except Exception:
+        return None
+
+
+def _timeline_start_frames(timeline, fps):
+    """时间线起点时码对应的帧数（项目时码不从 00:00:00:00 开始时用）。默认 0。"""
+    for key in ("timelineStartTimecode", "timelinePlaybackStartTimecode"):
+        try:
+            v = timeline.GetSetting(key)
+            if v:
+                fr = _tc_to_frames(v, fps)
+                if fr is not None:
+                    return fr
+        except Exception:
+            continue
+    return 0
+
+
+def current_video_item(timeline):
+    """返回播放头所在视频片段（TimelineItem）。优先按播放头帧定位。
+
+    注意 GetCurrentVideoItem() 返回的是「当前选中片段」而非播放头下的片段，
+    因此以播放头帧扫描为准，扫描失败才回退到选中片段。
+    播放头相对帧 = 当前时码帧 - 时间线起点时码帧（GetStart/GetEnd 是相对帧）。
+    """
+    try:
+        fps = float(timeline.GetSetting("timelineFrameRate") or 0)
+        if fps > 0:
+            tc = timeline.GetCurrentTimecode() or ""
+            playhead = _tc_to_frames(tc, fps)
+            if playhead is not None:
+                playhead -= _timeline_start_frames(timeline, fps)
+                n = timeline.GetTrackCount("video")
+                # 上层轨道优先（遮挡关系），同一轨道内取覆盖播放头的片段
+                for idx in range(n, 0, -1):
+                    for it in timeline.GetItemListInTrack("video", idx):
+                        s = int(it.GetStart())
+                        e = int(it.GetEnd())
+                        if s <= playhead < e:
+                            return it, "FrameScan"
     except Exception:
         pass
 
-    # 兜底：遍历视频轨道按播放头帧定位
+    # 兜底：GetCurrentVideoItem（选中片段）
     try:
-        fps = float(timeline.GetSetting("timelineFrameRate") or 0)
-        start_frame = int(timeline.GetStartFrame() or 0)
-        tc = timeline.GetCurrentTimecode() or "00:00:00:00"
-        parts = str(tc).replace(";", ":").split(":")
-        if len(parts) == 4 and fps > 0:
-            hours, minutes, seconds, frames = (int(x) for x in parts)
-            playhead = (hours * 3600 + minutes * 60 + seconds) * fps + frames
-            playhead = start_frame + playhead
-        else:
-            playhead = None
-        if playhead is not None:
-            n = timeline.GetTrackCount("video")
-            for idx in range(1, n + 1):
-                for it in timeline.GetItemListInTrack("video", idx):
-                    s = int(it.GetStart())
-                    e = int(it.GetEnd())
-                    if s <= playhead < e:
-                        return it, ("FrameScan")
+        item = timeline.GetCurrentVideoItem()
+        if item is not None:
+            return item, "GetCurrentVideoItem"
     except Exception:
         pass
     return None, "NoClip"

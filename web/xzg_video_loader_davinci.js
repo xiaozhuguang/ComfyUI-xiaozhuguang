@@ -7,7 +7,7 @@ import {
     _xzgCreateComboWidget,
 } from "./xzg_video_loader.js";
 
-// 小珠光视频加载-达芬奇（XiaozhuguangVideoLoaderDaVinci）
+// 小珠光视频加载-化神级（XiaozhuguangVideoLoaderDaVinci）
 // 复用「小珠光视频加载器」全部交互（播放器预览 / 上传 / 视频下拉 / 快剪联动等），
 // 额外新增「加载视频」按钮，通过后端路由触达本机 DaVinci Resolve Studio，
 // 把剪辑页当前播放头所在片段自动导出为视频并加载到本节点。

@@ -1248,7 +1248,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageLoader": "小珠光图像加载器",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
     "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",
-    "XiaozhuguangVideoLoaderDaVinci": "小珠光视频加载-达芬奇",
+    "XiaozhuguangVideoLoaderDaVinci": "小珠光视频加载-化神级",
     "XiaozhuguangAudioLoader": "小珠光音频加载器",
     "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
     "XiaozhuguangVideoCombine": "小珠光合并视频",

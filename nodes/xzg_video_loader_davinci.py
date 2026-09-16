@@ -1,5 +1,5 @@
 """
-小珠光视频加载-达芬奇
+小珠光视频加载-化神级
 =====================
 
 在「小珠光视频加载器」的全部功能基础上，新增「从 DaVinci Resolve 导入」能力：
@@ -32,10 +32,10 @@ _RENDER_TIMEOUT = 1800          # 渲染等待超时（秒）
 
 
 class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoLoader):
-    """小珠光视频加载-达芬奇：复用加载器全部功能，交互前端新增一个达芬奇导入按钮。"""
+    """小珠光视频加载-化神级：复用加载器全部功能，交互前端新增一个达芬奇导入按钮。"""
 
     # INPUT_TYPES / RETURN_TYPES / FUNCTION / CATEGORY / load_video 全部继承自父类，
-    # 只在 CATEGORY 下作为独立节点名出现，由 __init__.py 注册为「小珠光视频加载-达芬奇」。
+    # 只在 CATEGORY 下作为独立节点名出现，由 __init__.py 注册为「小珠光视频加载-化神级」。
 
     @classmethod
     def IS_CHANGED(cls, *args, **kwargs):
