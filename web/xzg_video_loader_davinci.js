@@ -139,7 +139,7 @@ function _createPreviewDavinciButton(node) {
         "position:absolute;top:6px;right:6px;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
         "padding:2px 6px;font-size:11px;line-height:1;" +
-        "background:transparent;color:#dcc85b;border:none;" +
+        "background:transparent;color:#3ef558;border:none;" +
         "cursor:pointer;pointer-events:auto;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
     btn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从达芬奇导入</span>';
@@ -159,7 +159,7 @@ function _createPreviewDavinciButton(node) {
     pc.addEventListener("mouseout", onOut);
 
     btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
-    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#dcc85b"; });
+    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#3ef558"; });
     btn.onclick = () => { if (!btn.disabled) _onImportClick(node, btn, labelSpan); };
 
     node._xzgDavinciBtn = btn;

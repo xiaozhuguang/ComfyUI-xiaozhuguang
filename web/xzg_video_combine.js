@@ -283,6 +283,70 @@ function _xzgCreateNumberWidget(node, inputName, inputData) {
     return w;
 }
 
+// 布尔开关 widget：与数值/combo 同款圆角深色块外观，
+// 右侧显示 开/关（金色为开），点击整行切换 true/false
+function _xzgDrawBoolWidget(ctx, node, width, y, H) {
+    const _nW = node?.size?.[0], _nH = node?.size?.[1];
+    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
+    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
+    this._xzgDrawW = width;
+    const pad = 16, r = 6;
+    const w = width - pad * 2;
+    ctx.fillStyle = '#2a2a2a';
+    ctx.beginPath();
+    if (ctx.roundRect) { ctx.roundRect(pad, y + 1, w, H - 2, r); } else { ctx.rect(pad, y + 1, w, H - 2); }
+    ctx.fill();
+    // 边框与其他选项同色，仅用右侧文字颜色区分开/关状态
+    ctx.strokeStyle = '#444';
+    ctx.stroke();
+    // 左侧标签（超长省略）
+    ctx.fillStyle = '#9ab';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const labelText = this._xzgLabel ? this._xzgLabel() : (this.label || this.name || '');
+    const labelMaxW = width - pad * 2 - 54;
+    if (ctx.measureText(labelText).width > labelMaxW) {
+        let truncated = labelText;
+        while (ctx.measureText(truncated + '…').width > labelMaxW && truncated.length > 0) truncated = truncated.slice(0, -1);
+        ctx.fillText(truncated + '…', pad + 6, y + H / 2);
+    } else {
+        ctx.fillText(labelText, pad + 6, y + H / 2);
+    }
+    // 右侧：开 / 关 文本（开为金色）
+    const displayText = this.value ? '开' : '关';
+    ctx.fillStyle = this.value ? '#FFD700' : '#fff';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(displayText, width - pad - 16, y + H / 2);
+}
+
+function _xzgBoolWidgetMouse(event, [x, y], node) {
+    if (event.type === 'pointerup') {
+        this.value = !this.value;
+        if (this.callback) this.callback(this.value);
+        node.setDirtyCanvas?.(true, true);
+    }
+    return true;
+}
+
+function _xzgCreateBoolWidget(node, inputName, inputData) {
+    const opts = inputData[1] || {};
+    const w = {
+        name: inputName,
+        type: 'xzg-bool',
+        value: !!opts.default,
+        options: {},
+        computeSize(width) { return [width, 20]; },
+        draw: _xzgDrawBoolWidget,
+        mouse: _xzgBoolWidgetMouse,
+        callback(v) { if (this._xzgCb) this._xzgCb(v); },
+    };
+    if (!node.widgets) node.widgets = [];
+    node.widgets.push(w);
+    return w;
+}
+
 function _xzgPatchCanvasPrompt() {
     if (app.canvas._xzgPromptPatched) return;
     const origPrompt = app.canvas.prompt;
@@ -429,7 +493,8 @@ app.registerExtension({
                     _xzgRunningGraphFp = _xzgGraphFingerprint(g);
                     _xzgRunningGraphSaveIds = new Set(
                         (g.nodes || [])
-                            .filter(n => n && n.type === "XiaozhuguangVideoCombine" && n.id != null)
+                            .filter(n => n && n.id != null &&
+                                (n.type === "XiaozhuguangVideoCombine" || n.type === "XiaozhuguangVideoSaveDaVinci"))
                             .map(n => String(n.id))
                     );
                 }
@@ -475,10 +540,13 @@ app.registerExtension({
         return {
             XZGINT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
             XZGFLOAT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
+            XZGBOOL: (node, name, data) => _xzgCreateBoolWidget(node, name, data),
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData?.name !== "XiaozhuguangVideoCombine") return;
+        // 化神级保存节点（XiaozhuguangVideoSaveDaVinci）复用本注册器的全部预览/缓存/恢复逻辑
+        if (nodeData?.name !== "XiaozhuguangVideoCombine" &&
+            nodeData?.name !== "XiaozhuguangVideoSaveDaVinci") return;
 
         // 给 combo widget（格式、模式）设置 XZGINT 类型，避免原生 combo 下拉列表
         // 模式：仅需点击切换 保存/预览，不弹列表
@@ -491,6 +559,15 @@ app.registerExtension({
         for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
             if (["INT", "FLOAT"].includes(inp[0]) && inp[1]) {
                 inp[1].widgetType ??= "XZG" + inp[0];
+            }
+        }
+
+        // BOOLEAN 开关（如「自动导出到达芬奇」）改用 XZGBOOL 同款圆角深色块外观，
+        // 与数值/combo 保持统一（原生 ComfyUI 复选框是其风格不一致的根源）
+        for (const [inpName, inp] of Object.entries({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
+            if (inp && inp[0] === "BOOLEAN" && ["自动导出到达芬奇"].includes(inpName)) {
+                if (!inp[1]) inp[1] = {};
+                inp[1].widgetType = "XZGBOOL";
             }
         }
 
@@ -822,6 +899,8 @@ app.registerExtension({
             _visibilityObserver.observe(playerContainer);
 
             node._xzgVideoPlayer = player;
+            // 暴露预览容器（DOM 宿主），供化神级保存节点在其上叠加「导出到达芬奇」按钮
+            node._xzgPreviewContainer = playerContainer;
 
             _xzgPatchCanvasPrompt();
 
