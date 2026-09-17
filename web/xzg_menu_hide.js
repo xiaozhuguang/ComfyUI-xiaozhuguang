@@ -588,7 +588,13 @@ window.XZGMenuHide = {
                     }
 
                     const instance = new origContextMenu(filteredOptions, opts);
-                    if (menuType) instance._xzgMenuType = menuType;
+                    if (menuType) {
+                        instance._xzgMenuType = menuType;
+                        // 同步把类型打到 DOM 根上：_hideFromDOM 只处理带标记的菜单。
+                        // 工作流标签/侧边栏等菜单 menuType=null → 无标记 → 永久豁免，
+                        // 彻底根治"隐藏条目模糊匹配误伤标签右键菜单，导致菜单弹不出/被清空"
+                        try { if (instance.root) instance.root._xzgMenuType = menuType; } catch (e) {}
+                    }
                     return instance;
                 }
 
@@ -889,6 +895,10 @@ window.XZGMenuHide = {
 
     _hideFromDOM(menuEl) {
         if (!menuEl || !this._enabled) return;
+        // 只处理明确带类型标记的画布/节点菜单（标记由 XZGContextMenu 构造时打上）。
+        // 工作流标签、侧边栏、对话框等菜单无标记，一律豁免——它们的条目文本
+        // 不应参与隐藏条目的模糊匹配，否则会被误清空，表现为"右键弹不出菜单"。
+        if (!menuEl._xzgMenuType) return;
         const self = this;
 
         const allHiddenKeys = new Set();

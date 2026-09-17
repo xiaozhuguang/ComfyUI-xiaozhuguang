@@ -560,6 +560,53 @@ WEBCODECS_DECODABLE = {"h264", "vp8", "vp9", "av1", "mpeg4", "avc1"}
 # 它的音轨无法被 mediabunny 解码 → 有画面没声音，同样需要转成 AAC。
 AUDIOCODECS_DECODABLE = {"aac", "mp4a", "opus", "flac", "vorbis", "pcm"}
 
+# 场景检测结果缓存：key=(绝对路径, 阈值, mtime)，文件没变就不重复解码分析
+_XZG_SCENE_CACHE = {}
+
+
+def detect_scenes(filename, file_type, threshold=0.35):
+    """自动探测视频镜头切换点（场景切换）。
+
+    用 ffmpeg 的 select='gt(scene,T)' + showinfo 滤镜组合：
+    每个检测到场景切换的帧会输出一行 showinfo 日志，其中包含 pts_time（源视频秒）。
+    整段视频需要完整解码一遍，长视频耗时与时长成正比（约 5~20 倍速）。
+    结果按 (文件, mtime, 阈值) 缓存，同一文件重复切分不重复分析。
+
+    返回: [t1, t2, ...] 升序的源视频时间（秒），相邻切点已去重（<0.2s 合并）。
+    """
+    video_path, _ = resolve_path(filename, file_type)
+    if not os.path.isfile(video_path):
+        raise Exception(f"file not found: {filename}")
+    # 图片/纯音频没有镜头切换概念
+    if _is_image_file(filename) or _is_audio_file(filename):
+        return []
+    try:
+        mtime = os.path.getmtime(video_path)
+    except Exception:
+        mtime = 0
+    threshold = max(0.05, min(0.95, float(threshold)))
+    cache_key = (video_path, round(threshold, 3), mtime)
+    if cache_key in _XZG_SCENE_CACHE:
+        return _XZG_SCENE_CACHE[cache_key]
+
+    args = [ffmpeg_path, "-i", video_path,
+            "-vf", f"select='gt(scene,{threshold})',showinfo",
+            "-an", "-f", "null", "-"]
+    try:
+        proc = subprocess.run(args, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=600, check=False)
+    except subprocess.TimeoutExpired:
+        raise Exception("FFmpeg scene detect timeout (600s)")
+    lines = proc.stderr.decode(*ENCODE_ARGS)
+    times = []
+    for m in re.finditer(r"pts_time:([0-9]+\.?[0-9]*)", lines):
+        t = float(m.group(1))
+        if times and t - times[-1] < 0.2:
+            continue  # 同一时刻的重复触发合并
+        times.append(t)
+    _XZG_SCENE_CACHE[cache_key] = times
+    return times
+
 
 def _detect_stream_codecs(filename, file_type):
     """用 ffmpeg -i 探测视频流与音频流编码名，返回 (video_codec, audio_codec) 小写字符串；失败为 None。"""
@@ -1810,6 +1857,20 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
             return web.json_response({"error": "filename required"}, status=400)
         info = probe_video(filename, file_type)
         return web.json_response(info)
+
+    @_xzg_ve_PS.instance.routes.post("/xzg_video_editor_detect_scenes")
+    @_xzg_ve_safe
+    async def xzg_video_editor_detect_scenes_route(request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        body = body or {}
+        filename = body.get("filename", "")
+        file_type = body.get("file_type", "input")
+        threshold = body.get("threshold", 0.35)
+        scenes = detect_scenes(filename, file_type, threshold)
+        return web.json_response({"scenes": scenes, "threshold": threshold})
 
     @_xzg_ve_PS.instance.routes.post("/xzg_video_editor_ensure_h264")
     @_xzg_ve_safe

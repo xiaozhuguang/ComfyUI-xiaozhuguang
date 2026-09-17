@@ -42,10 +42,13 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
         base = XiaozhuguangVideoCombine.INPUT_TYPES()
         # 在「模式」之后、可选「音频」之前追加自动导出开关
         base["required"]["自动导出到达芬奇"] = ("BOOLEAN", {"default": False})
+        # 「自动发送到快剪」由前端消费（执行完成后把视频加入快剪媒体池/V2 轨道），
+        # 后端仅接收占位，保持参数随工作流序列化
+        base["required"]["自动发送到快剪"] = ("BOOLEAN", {"default": False})
         return base
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF, 模式,
-                      自动导出到达芬奇=False,
+                      自动导出到达芬奇=False, 自动发送到快剪=False,
                       音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
         # 调用父类保存逻辑，得到完整 ui（含保存文件信息）

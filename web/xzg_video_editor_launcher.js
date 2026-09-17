@@ -75,10 +75,13 @@ function openEditor(options = {}) {
         _editorInstance._modeFilter =
             (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
         _editorInstance._applyModeFilter?.();
+        window._xzgVideoEditorInstance = _editorInstance;
         return _editorInstance;
     }
     _editorInstance = new XiaozhuguangVideoEditor(options);
     _editorInstance.open();
+    // 暴露实例：化神级保存节点「发送到快剪」联动使用
+    window._xzgVideoEditorInstance = _editorInstance;
     return _editorInstance;
 }
 

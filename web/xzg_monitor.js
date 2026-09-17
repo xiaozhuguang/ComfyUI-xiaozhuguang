@@ -36,17 +36,23 @@ const XZG_DISPLAY_DEFAULT = {
   run_timer: true,
   hist_open: false,
   panel_bg: true,
+  compact: false, // 精简模式：单行极小胶囊，无进度条/标题，宽度自适应
 };
 let _display = loadDisplay();
 let _menuEl = null; // 右键设置菜单
 
 function loadDisplay() {
   try {
-    const s = { ...XZG_DISPLAY_DEFAULT, ...(JSON.parse(localStorage.getItem(XZG_DISPLAY_KEY) || "{}")) };
+    const raw = localStorage.getItem(XZG_DISPLAY_KEY);
+    // 第一次使用（从未保存过显示设置）→ 默认进入精简模式；
+    // 已保存过设置的老用户保持其已存状态（存储里没有 compact 键 → 维持常规模式）
+    const firstTime = raw == null;
+    const s = { ...XZG_DISPLAY_DEFAULT, ...(JSON.parse(raw || "{}")) };
+    if (firstTime) s.compact = true;
     s.panel_bg = true; // 面板始终带底色，不再提供"不带底色"选项
     return s;
   } catch (e) {
-    return { ...XZG_DISPLAY_DEFAULT };
+    return { ...XZG_DISPLAY_DEFAULT, compact: true };
   }
 }
 
@@ -176,6 +182,28 @@ const XZG_CSS = `
   font-size:10px;line-height:1;color:transparent;flex:none;}
 .xzg-menu-it.on{color:#ffd76a;}
 .xzg-menu-it.on .xzg-menu-box{border-color:#d4af37;background:rgba(212,175,55,0.20);color:#ffd76a;}
+/* 精简模式：单行胶囊，宽度自适应，无进度条/分区标题 */
+#xzg-float.xzg-compact{width:auto;max-width:92vw;}
+#xzg-float.xzg-compact .xzg-bd{padding:10px 8px;}
+#xzg-float.xzg-compact .xzg-cmp{display:flex;align-items:center;gap:8px;
+  font-size:15px;line-height:1.6;white-space:nowrap;}
+#xzg-float.xzg-compact .xzg-cmp b{font-weight:600;}
+/* 分区色片：GPU 蓝 / CPU 橙 / 内存 紫，标签与底色同色系，一眼区分 */
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip{display:inline-flex;align-items:center;gap:4px;
+  padding:2px 9px;border-radius:999px;}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-gpu b{color:#6fb3ff;}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-gpu{background:rgba(96,165,250,0.14);
+  border:1px solid rgba(96,165,250,0.28);}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-cpu b{color:#ffc53d;}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-cpu{background:rgba(250,173,20,0.12);
+  border:1px solid rgba(250,173,20,0.26);}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-mem b{color:#c99cff;}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-mem{background:rgba(177,127,250,0.13);
+  border:1px solid rgba(177,127,250,0.26);}
+#xzg-float.xzg-compact .xzg-cmp .xzg-chip-timer{background:rgba(255,255,255,0.08);
+  border:1px solid rgba(255,255,255,0.14);}
+#xzg-float.xzg-compact .xzg-cmp .xzg-v{font-variant-numeric:tabular-nums;color:#fff;
+  display:inline-block;text-align:right;}
 `;
 
 // ---------------------------------------------------------------------------
@@ -186,6 +214,8 @@ const XZG_RUN_HISTORY_KEY = "xzg-run-history-v1";
 const XZG_RUN_HISTORY_MAX = 5; // 最多保留 5 条运行记录
 // 运行状态（模块级：事件监听始终注册，历史记录与浮窗显隐/监控开关无关）
 const _run = { running: false, name: "", startTs: 0 };
+// 本会话是否真的跑过工作流：刷新后为 false，空闲时不再回放上次运行的历史记录
+let _ranThisSession = false;
 let _onRunChange = null; // 浮窗创建后注入：运行状态变化时立即刷新 UI（无需等下一次轮询）
 
 function loadRunHistory() {
@@ -245,6 +275,7 @@ function displayName(name) {
 function startRun() {
   if (_run.running) return;
   _run.running = true;
+  _ranThisSession = true;
   _run.name = resolveWorkflowName(); // 起跑时冻结工作流名
   _run.startTs = Date.now();
   if (_onRunChange) _onRunChange();
@@ -324,7 +355,8 @@ function createFloatWindow() {
   const timerSec = body.querySelector("#xzg-timer-sec");
   const histEl = body.querySelector("#xzg-run-hist");
   function renderTimerSec() {
-    if (!_display.run_timer) {
+    if (!_display.run_timer || _display.compact) {
+      // 精简模式：计时区与历史区整体隐藏（计时以单行小胶囊形式并入精简行）
       timerSec.style.display = "none";
       histEl.style.display = "none";
       return;
@@ -343,7 +375,9 @@ function createFloatWindow() {
         ${tri}${dot}${nameHtml}
         <span class="xzg-val" style="${timerStyle}">${fmtDur(Date.now() - _run.startTs)}</span></div>`;
     } else {
-      const last = loadRunHistory()[0];
+      // 空闲时只在「本会话跑过工作流」后显示上次运行时长；
+      // 刚刷新完的页面不回放 localStorage 里的历史记录（保持 00:00）
+      const last = _ranThisSession ? loadRunHistory()[0] : null;
       if (last) {
         const nm = displayName(last.name);
         const nameHtml = nm ? `<span class="xzg-label" title="${esc(nm)} · 上次运行 ${fmtClock(last.start)}">${esc(nm)}</span>` : "";
@@ -417,12 +451,16 @@ function createFloatWindow() {
     if (!open) renderHistory();
     renderTimerSec(); // 同步三角方向（▶/▼）
   });
-  if (_display.hist_open) {
-    renderHistory();
-    setTimeout(() => { setHistOpen(true); }, 0); // 布局就绪后再按位置决定扩展方向
-  }
+  // 历史列表刷新后始终收起：不自动展开上次的展开状态，
+  // 避免每次刷新先闪现历史记录（用户点计时区可随时展开）
+  _display.hist_open = false;
   // 运行状态变化时由事件层立即回调刷新（启动/结束无需等下一次轮询）
   _onRunChange = () => {
+    if (_display.compact) {
+      // 精简模式：计时并入单行，运行状态变化立即重渲染该行
+      if (_lastData) statsEl.innerHTML = renderCompact(_lastData);
+      return;
+    }
     renderTimerSec();
     if (_display.hist_open) renderHistory();
   };
@@ -475,6 +513,7 @@ function createFloatWindow() {
     if (!data || !data.gpu || !data.gpu.available || !data.gpu.gpus.length) {
       return `<div class="xzg-note">未检测到 NVIDIA GPU</div>`;
     }
+    const multiGpu = data.gpu.gpus.length > 1; // 单卡不显示 GPU 编号
     return data.gpu.gpus.map((g) => {
       const vramPct = g.vram_total_mb > 0 ? (g.vram_used_mb / g.vram_total_mb) * 100 : 0;
       const rows = [];
@@ -495,7 +534,7 @@ function createFloatWindow() {
           <span class="xzg-val">${g.power_w.toFixed(0)}W</span></div>`);
       }
       if (!rows.length) return "";
-      const sub = g.index != null ? `GPU${g.index} · ${shortGpuName(g.name)}` : shortGpuName(g.name);
+      const sub = (multiGpu && g.index != null) ? `GPU${g.index} · ${shortGpuName(g.name)}` : shortGpuName(g.name);
       return `<div class="xzg-sec"><div class="xzg-sec-t">${sub}</div>${rows.join("")}</div>`;
     }).join("");
   }
@@ -525,14 +564,78 @@ function createFloatWindow() {
     return `<div class="xzg-sec"><div class="xzg-sec-t">内存</div>${rows.join("")}</div>`;
   }
 
+  // 精简模式：单行小胶囊。只输出勾选的数值（无进度条/标题/单位占位），
+  // 遵循与常规模式相同的显示项开关；计时作为行首「圆点+时长」并入。
+  // 各数值段带 min-width（ch 单位）+ 右对齐 + tabular-nums，
+  // 位数增减（9%→100%、45°→102°）时胶囊总宽不跳动。
+  function renderCompact(data) {
+    // 数值段通用：min-width 固定占位（覆盖常见位数范围，超出时自然放宽）
+    const v = (content, minCh, extra) =>
+      `<span class="xzg-v" style="min-width:${minCh}ch;${extra || ""}">${content}</span>`;
+    const parts = [];
+    if (_display.run_timer) {
+      const dot = _run.running ? `<span style="color:#52c41a">●</span>` : `<span style="color:#6b7280">●</span>`;
+      const lastRun = _ranThisSession ? loadRunHistory()[0] : null; // 刷新后不回放历史
+      const dur = _run.running ? fmtDur(Date.now() - _run.startTs) : (lastRun ? fmtDur(lastRun.dur) : "00:00");
+      parts.push(`<span class="xzg-chip xzg-chip-timer">${dot}${v(dur, 5.5)}</span>`);
+    }
+    if (data && data.gpu && data.gpu.available && data.gpu.gpus.length) {
+      // 单卡不显示编号（GPU 而非 GPU0）；多卡时才用 GPU0/GPU1 区分
+      const multiGpu = data.gpu.gpus.length > 1;
+      for (const g of data.gpu.gpus) {
+        let s = `<b>GPU${multiGpu && g.index != null ? g.index : ""}</b>`;
+        if (_display.gpu_util) {
+          s += ` ` + v(g.util == null ? "--" : g.util.toFixed(0) + "%", 4.6,
+            `color:${pctColor(g.util, g.temp)}`);
+        }
+        if (_display.gpu_temp) {
+          s += ` ` + v(g.temp == null || isNaN(g.temp) ? "--" : g.temp.toFixed(0) + "°", 4.2,
+            `color:${pctColor(0, g.temp)}`);
+        }
+        if (_display.gpu_vram) {
+          s += ` ` + v(fmtMemPair(g.vram_used_mb, g.vram_total_mb), 6.5);
+        }
+        if (_display.gpu_power && g.power_w != null && !isNaN(g.power_w)) {
+          s += ` ` + v(g.power_w.toFixed(0) + "W", 5.5);
+        }
+        parts.push(`<span class="xzg-chip xzg-chip-gpu">${s}</span>`);
+      }
+    } else if (_display.gpu_util || _display.gpu_temp || _display.gpu_vram || _display.gpu_power) {
+      parts.push(`<span class="xzg-chip xzg-chip-gpu"><b>GPU</b> <span class="xzg-v" style="color:#8b8f9a">--</span></span>`);
+    }
+    const cpu = (data && data.cpu) || {};
+    let cs = "";
+    if (_display.cpu_util && cpu.util != null && !isNaN(cpu.util)) {
+      cs += ` ` + v(cpu.util.toFixed(0) + "%", 4.6, `color:${pctColor(cpu.util, cpu.temp)}`);
+    }
+    if (_display.cpu_temp && cpu.temp != null && !isNaN(cpu.temp)) {
+      cs += ` ` + v(cpu.temp.toFixed(0) + "°", 4.2, `color:${pctColor(0, cpu.temp)}`);
+    }
+    if (cs) parts.push(`<span class="xzg-chip xzg-chip-cpu"><b>CPU</b>${cs}</span>`);
+    if (_display.mem_used && data && data.mem) {
+      parts.push(`<span class="xzg-chip xzg-chip-mem"><b>内存</b> ` +
+        v(fmtMemPair(data.mem.used_mb, data.mem.total_mb), 6.5) + `</span>`);
+    }
+    if (!parts.length) {
+      return `<div class="xzg-cmp"><span style="color:#8b8f9a">精简模式：右键顶部电池按钮勾选显示项</span></div>`;
+    }
+    return `<div class="xzg-cmp">${parts.join("")}</div>`;
+  }
+
   let _lastData = null;
   function render(data) {
     _lastData = data;
     try {
-      statsEl.innerHTML =
-        renderGpu(data) +
-        renderCpu(data.cpu || {}) +
-        renderMem(data.mem || {});
+      // 精简模式：切换单行胶囊布局（宽度自适应），并整体重渲染
+      root.classList.toggle("xzg-compact", !!_display.compact);
+      if (_display.compact) {
+        statsEl.innerHTML = renderCompact(data);
+      } else {
+        statsEl.innerHTML =
+          renderGpu(data) +
+          renderCpu(data.cpu || {}) +
+          renderMem(data.mem || {});
+      }
       renderTimerSec(); // 运行中时随轮询刷新已用时长
     } catch (e) {
       // 渲染出错时显示提示，避免内容区静默空白
@@ -576,6 +679,8 @@ function createFloatWindow() {
     root,
     setVisible,
     rerender() {
+      // 立即应用精简/常规布局切换（即使暂无数据也先切壳，下一秒轮询补数据）
+      root.classList.toggle("xzg-compact", !!_display.compact);
       if (_lastData) render(_lastData);
     },
     applyPanelBg() {
@@ -614,6 +719,7 @@ function showContextMenu(btn) {
   menu.className = "xzg-menu";
   menu.innerHTML = `<div class="xzg-menu-t">显示项目</div>`;
   const items = [
+    { key: "compact", label: "精简模式（极小占用）" },
     { key: "gpu_util", label: "GPU 利用率" },
     { key: "gpu_temp", label: "GPU 温度" },
     { key: "gpu_vram", label: "GPU 显存" },

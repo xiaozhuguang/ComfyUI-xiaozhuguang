@@ -28,20 +28,29 @@ _UPSCALE_CHOICES = [f'{f}X' for f in _NATIVE_FACTORS]   # ["1X","2X","3X","4X"]
 
 
 def _auto_max_gpu_mem():
-    """自动取"显卡总显存-1GiB"作为引擎显存上限, 不再让用户手动设置。
+    """按"显卡总显存 × 87.5%"计算引擎显存上限, 不再让用户手动设置。
 
-    引擎的 max_gpu_mem 只是"天花板"不是"目标"：设多大都不会让显存占用变高，
-    只会限制最高可用量（输入不够大时根本用不满）。因此直接按显卡容量自动给一个
-    足够高的上限即可，用户无需关心。
+    引擎是独立子进程, 调用前已通过 _free_comfyui_vram() 卸载 ComfyUI 模型
+    腾出显存, 预留的 12.5% 覆盖引擎 CUDA context + nvenc 编码缓冲等开销。
     """
     try:
         import torch
         if torch.cuda.is_available():
             total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-            return max(8.0, round(total - 1.0, 1))
+            return max(6.0, round(total * 0.875, 1))
     except Exception:
         pass
-    return 47.0
+    return 16.0
+
+
+def _free_comfyui_vram():
+    """调用引擎前卸载 ComfyUI 已加载模型并清空缓存, 把显存让给引擎子进程。"""
+    try:
+        from comfy import model_management
+        model_management.unload_all_models()
+        model_management.soft_empty_cache()
+    except Exception:
+        pass
 
 
 class StarUpscale:
@@ -94,6 +103,7 @@ class StarUpscale:
             def _on_progress(cur, total):
                 if pbar is not None:
                     pbar.update_absolute(min(cur, total), total)
+            _free_comfyui_vram()
             run_upscale(in_video, out_video, scale, b, w, h, 1.0, model_id,
                         max_gpu_mem=_auto_max_gpu_mem(), on_progress=_on_progress)
             out_frames = read_video_to_frames(out_video, ow, oh)

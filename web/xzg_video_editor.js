@@ -19,7 +19,7 @@
 import { api } from "../../scripts/api.js";
 import { app } from "../../scripts/app.js";
 import { decoderPool, VideoDecoderInstance } from "./xzg_frame_decoder.js";
-import { downloadVideo, xzgDownload, downloadAudio } from "./xzg_save_utils.js";
+import { downloadVideo, xzgDownload, downloadAudio, xzgPickSaveHandle, xzgPickSaveDirectory, xzgWriteBlobToDir } from "./xzg_save_utils.js";
 
 const API_PROBE = "/xzg_video_editor_probe";
 const API_EXTRACT = "/xzg_video_editor_extract_frame";
@@ -92,10 +92,10 @@ function _xzgVeSaveSessionMedia(list) {
     try { localStorage.setItem(_XZG_VE_MEDIA_KEY, JSON.stringify(list)); } catch (_) {}
 }
 
-function _xzgVeAddSessionMedia(name, type, fp) {
+function _xzgVeAddSessionMedia(name, type, fp, addedAt) {
     const list = _xzgVeGetSessionMedia();
     if (!list.find(m => m.name === name && m.type === type)) {
-        list.push({ name, type, fp: fp || "" });
+        list.push({ name, type, fp: fp || "", addedAt: addedAt || Date.now() });
         _xzgVeSaveSessionMedia(list);
     }
 }
@@ -253,7 +253,8 @@ function _xzgVeConfirm(message, okText) {
     });
 }
 
-// 批量导出静帧目录选择对话框：仅支持"输出目录"和"自定义目录"，不支持另存为
+// 批量导出静帧目录选择对话框：仅支持"输出目录"（output 目录），不支持另存为
+// （自定义目录已随输出目录设置一起移除；hasCustomDir 参数保留兼容旧调用）
 // 返回 Promise<'default'|'custom'|null>：null = 取消
 function _xzgVeFrameExportDialog(hasCustomDir) {
     return new Promise((resolve) => {
@@ -298,7 +299,6 @@ function _xzgVeFrameExportDialog(hasCustomDir) {
         };
 
         btnRow.appendChild(makeBtn("输出目录", "default", true));
-        btnRow.appendChild(makeBtn("自定义目录", "custom", hasCustomDir));
         dialog.appendChild(btnRow);
 
         const cancelBtn = document.createElement("button");
@@ -316,6 +316,46 @@ function _xzgVeFrameExportDialog(hasCustomDir) {
     });
 }
 
+// 浏览器端媒体探测（OpenCut/剪映式）：loadedmetadata 毫秒级读取真实时长/分辨率，
+// 无需上传、无需后端 ffmpeg。返回 { duration, width, height }；
+// 浏览器解不动的编码/超时返回 null（调用方回退后端探测）。
+function _probeMediaLocal(file) {
+    return new Promise((resolve) => {
+        let done = false;
+        let url = "";
+        const finish = (info) => {
+            if (done) return;
+            done = true;
+            try { URL.revokeObjectURL(url); } catch (_) {}
+            resolve(info);
+        };
+        url = URL.createObjectURL(file);
+        const v = document.createElement("video");
+        v.preload = "metadata";
+        v.muted = true;
+        v.onloadedmetadata = () => {
+            const dur = isFinite(v.duration) ? v.duration : 0;
+            finish({ duration: dur > 0 ? dur : 0, width: v.videoWidth || 0, height: v.videoHeight || 0 });
+        };
+        v.onerror = () => finish(null);
+        setTimeout(() => finish(null), 8000);  // 超时兜底
+        v.src = url;
+    });
+}
+
+// 片段颜色预设（右键菜单颜色子菜单与工具栏色板共用）
+const XZG_VE_CLIP_COLORS = [
+    { label: "橙",   value: "#EB6E00" },
+    { label: "金黄", value: "#E2A91C" },
+    { label: "黄绿", value: "#9FC615" },
+    { label: "青绿", value: "#448F64" },
+    { label: "青",   value: "#009899" },
+    { label: "海蓝", value: "#156284" },
+    { label: "蓝",   value: "#4376A1" },
+    { label: "粉",   value: "#E98CB5" },
+    { label: "棕",   value: "#8C5A3F" },
+];
+
 export class XiaozhuguangVideoEditor {
     constructor(options = {}) {
         // 编辑器完全独立：不再接收节点参数（filename/type/nodeId/onApplied/onCancel）
@@ -329,22 +369,15 @@ export class XiaozhuguangVideoEditor {
         // _renderTargetW/H: 渲染目标分辨率（null=用首个片段原分辨率）
         this._renderTargetW = null;
         this._renderTargetH = null;
-        // 输出目录设置
-        //   output_mode: "default" → 默认输出到 ComfyUI output 目录，前缀固定 xzg-edit
-        //               "saveas"  → 另存为（浏览器下载对话框）
-        //               "custom"  → 自定义目录 base_dir + 前缀/日期戳/时间戳
+        // 输出目录设置已简化：成片导出固定「另存为」（点击导出时弹出浏览器
+        // 另存为对话框，手动选择保存位置和文件名），不再提供
+        // 「输出到 output 目录」和「自定义目录」模式。
+        // 静帧导出（单帧/旗标批量）固定输出到 ComfyUI output 目录。
         this._xzgVeOutputKey = "xzg_ve_output_settings";
         const savedOutput = _xzgVeLoadJson(this._xzgVeOutputKey, {});
-        // output_mode 优先，其次兼容旧字段 use_default_output；首次默认 "saveas"（另存为）
-        let savedMode = savedOutput.output_mode;
-        if (!savedMode) {
-            if (savedOutput.use_default_output === false) savedMode = "custom";
-            else if (savedOutput.use_default_output === true) savedMode = "default";
-            else savedMode = "saveas";  // 无配置时首次默认 = 另存为
-        }
-        this._outputMode = savedMode;
-        this._useDefaultOutput = (this._outputMode === "default");  // 向后兼容
-        this._baseDir = savedOutput.base_dir || "";
+        this._outputMode = "saveas";
+        this._useDefaultOutput = false;  // 向后兼容（旧字段不再生效）
+        this._baseDir = savedOutput.base_dir || "";  // 保留字段，兼容旧静帧逻辑判断
         this._filenamePrefix = savedOutput.filename_prefix || "xzg-edit";
         this._addDateStamp = !!savedOutput.add_date_stamp;
         this._addTimeStamp = !!savedOutput.add_time_stamp;
@@ -430,6 +463,12 @@ export class XiaozhuguangVideoEditor {
         } catch (_) {}
         // 媒体库面板宽度持久化
         this._mediaWidthKey = "xzg_ve_media_width";
+        // 媒体库排序："added"（加入时间，新→旧）| "name"（名称）；localStorage 持久化
+        this._mediaSortKey = "xzg_ve_media_sort";
+        this._mediaSort = (() => {
+            try { return localStorage.getItem(this._mediaSortKey) === "name" ? "name" : "added"; }
+            catch (_) { return "added"; }
+        })();
         this._mediaPanel = null;
         this._resizer = null;
         // 属性面板宽度持久化
@@ -743,7 +782,7 @@ export class XiaozhuguangVideoEditor {
 
         // ── 一、基本操作 ──
         sectionTitle("一、基本操作");
-        textRow("1. 导入媒体：点击媒体库左上角「＋」按钮上传视频 / 音频 / 图片；空白处按住拖动可框选多个媒体。");
+        textRow("1. 导入媒体：点击媒体库左上角「＋」按钮上传视频 / 音频 / 图片，或把文件从系统拖入媒体池，也可直接拖到时间线（自动入库并落轨）；空白处按住拖动可框选多个媒体。");
         textRow("2. 添加到时间线：从媒体库按住素材拖到时间线轨道（视频 / 图片 → V1、V2 轨道；音频 → A1、A2 轨道），出现金色预览框后松手即可落位。");
         textRow("3. 播放预览：按「空格」播放 / 暂停；按「← / →」逐帧步进；按住 Shift（Shift+← / Shift+→）按秒步进，步进幅度按当前帧率换算（如 30fps 跳 30 帧 = 1 秒）；点击时间线刻度尺可定位播放头。");
         textRow("4. 保存：点击「确认」将时间线保存到节点；点击「导出」直接导出成片；点击「×」关闭快剪（不保存）。");
@@ -755,6 +794,7 @@ export class XiaozhuguangVideoEditor {
         textRow("· 复制片段：按住 Alt 并拖动片段，原片段保留，松手后生成副本。");
         textRow("· 修剪长度：拖动片段的左右边缘，可缩短或恢复片段长度。");
         textRow("· 分割：将播放头移到目标位置，按「B」或点击工具栏「分割」按钮，在播放头处切开片段。");
+        textRow("· 场景切分：点击「🎬」按钮自动探测镜头切换，预览切点后一键把选中片段（未选中则全部视频片段）按镜头切开。");
         textRow("· 删除：选中片段后按「Delete」。");
         textRow("· 磁吸：工具栏「🧲」开关（红 = 开，灰 = 关），开启后拖动时片段自动吸附对齐边缘与播放头。");
         textRow("· 旗标：按「M」在播放头处添加旗标，用于标记关键位置；右键「旗标」按钮清空所有旗标。");
@@ -809,7 +849,7 @@ export class XiaozhuguangVideoEditor {
         // ── 五、导出 ──
         sectionTitle("五、导出");
         textRow("· 格式：视频 MP4（质量高 CRF10 / 中 CRF20 / 低 CRF28）；音频 MP3（320 / 192 / 128 kbps）；WAV / FLAC 无损。");
-        textRow("· 输出目录：点击顶栏「输出目录设置」选择导出位置。");
+        textRow("· 输出：点击「导出」弹出菜单——导出当前片段 / 导出所有片段（每片段一个文件）/ 导出视频（整个时间线），再按提示选择保存位置。");
         textRow("· 点击「导出」开始渲染，进度显示在顶栏状态区。");
 
         // 底部按钮
@@ -952,7 +992,9 @@ export class XiaozhuguangVideoEditor {
             //   - 单独删配对音频：视频保留，skip_audio=true 继续静音
             //   - 单独删视频：配对音频继续存在（变成独立音频片段）
             if (clipSel) {
-                const ids = Array.from(this.selectedClipIds);
+                // 只删除真实存在的片段（撤销/重做等操作可能留下失效的选中 id）
+                const ids = Array.from(this.selectedClipIds)
+                    .filter(id => this.timeline.some(c => c.id === id));
                 for (const id of ids) {
                     const idx = this.timeline.findIndex(c => c.id === id);
                     if (idx >= 0) this.timeline.splice(idx, 1);
@@ -1111,6 +1153,247 @@ export class XiaozhuguangVideoEditor {
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  自动场景切分（参考达芬奇 Scene Cut Detection / 剪映智能分割）
+    //  流程：点击 🎬 → 自动检测镜头切换 → 预览切点列表 → 一键应用到时间线。
+    //  阈值固定用后端默认值（0.35），不给用户暴露灵敏度参数。
+    // ═══════════════════════════════════════════════════════════
+
+    // 场景切分的目标片段：优先选中片段（仅视频），无选中则全部视频片段
+    _sceneDetectTargets() {
+        const all = this.timeline.map(c => ({ clip: c }))
+            .filter(r => (r.clip.kind || "video") !== "audio");
+        if (this.selectedClipIds.size > 0) {
+            const sel = all.filter(r => this.selectedClipIds.has(r.clip.id));
+            if (sel.length > 0) return sel;
+        }
+        return all;
+    }
+
+    // 按文件请求场景切点（同文件同阈值本会话内缓存，不重复 ffmpeg 分析）
+    async _fetchSceneTimes(filename, type) {
+        const cache = this._sceneDetectCache || (this._sceneDetectCache = new Map());
+        const key = `${filename}|${type}`;
+        if (cache.has(key)) return cache.get(key);
+        const resp = await api.fetchApi("/xzg_video_editor_detect_scenes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename, file_type: type }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        const times = data.scenes || [];
+        cache.set(key, times);
+        return times;
+    }
+
+    // 把检测到的全片切点过滤到片段范围内，并保证每段最短 0.3s
+    _filterSceneCuts(times, start, end, minSeg = 0.3) {
+        const cuts = [];
+        let last = start;
+        for (const t of times || []) {
+            if (t <= start + 0.05 || t >= end - 0.05) continue;
+            if (t - last < minSeg || end - t < minSeg) continue;
+            cuts.push(t);
+            last = t;
+        }
+        return cuts;
+    }
+
+    _openSceneDialog() {
+        if (this._sceneDlg) { this._sceneDlg.remove(); this._sceneDlg = null; }
+        const targets = this._sceneDetectTargets();
+        if (!targets.length) {
+            this._setStatus("时间线上没有可切分的视频片段");
+            return;
+        }
+        this._sceneDlgTargets = targets;
+        const dlg = document.createElement("div");
+        dlg.className = "xzg-ve-scene-dlg";
+        dlg.innerHTML = `
+            <div class="xzg-ve-scene-dlg-head">🎬 场景切分<span class="xzg-ve-scene-close" title="关闭">✕</span></div>
+            <div class="xzg-ve-scene-dlg-body">
+                <div class="xzg-ve-scene-row">范围：${targets.length} 个片段${this.selectedClipIds.size > 0 ? "（选中的片段）" : "（时间线上全部视频片段）"}</div>
+                <div class="xzg-ve-scene-status">准备就绪</div>
+                <div class="xzg-ve-scene-list"></div>
+            </div>
+            <div class="xzg-ve-scene-dlg-foot">
+                <button class="xzg-ve-scene-btn2 xzg-ve-scene-cancel">取消</button>
+                <button class="xzg-ve-scene-btn2 xzg-ve-scene-primary" disabled>应用到时间线</button>
+            </div>`;
+        this._root.appendChild(dlg);
+        this._sceneDlg = dlg;
+        const close = () => { dlg.remove(); this._sceneDlg = null; };
+        dlg.querySelector(".xzg-ve-scene-close").onclick = close;
+        dlg.querySelector(".xzg-ve-scene-cancel").onclick = close;
+        dlg.querySelector(".xzg-ve-scene-primary").onclick = () => this._applySceneSplit();
+        this._runSceneDetect();
+    }
+
+    async _runSceneDetect() {
+        const dlg = this._sceneDlg;
+        if (!dlg) return;
+        const statusEl = dlg.querySelector(".xzg-ve-scene-status");
+        const listEl = dlg.querySelector(".xzg-ve-scene-list");
+        const applyBtn = dlg.querySelector(".xzg-ve-scene-primary");
+        applyBtn.disabled = true;
+        statusEl.textContent = "场景检测中（ffmpeg 逐帧分析，长视频需要一些时间）...";
+        listEl.innerHTML = "";
+        const escScene = (s) => String(s == null ? "" : s)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const targets = this._sceneDlgTargets.filter(t => this.timeline.includes(t.clip));
+        if (!targets.length) {
+            statusEl.textContent = "片段已被删除";
+            return;
+        }
+        try {
+            // 同一文件的多个片段只请求一次
+            const timesByKey = new Map();
+            for (const t of targets) {
+                const key = `${t.clip.filename}|${t.clip.type}`;
+                if (!timesByKey.has(key)) {
+                    timesByKey.set(key, await this._fetchSceneTimes(t.clip.filename, t.clip.type));
+                }
+            }
+            this._sceneResults = targets.map(t => ({
+                clip: t.clip,
+                cuts: this._filterSceneCuts(
+                    timesByKey.get(`${t.clip.filename}|${t.clip.type}`) || [],
+                    t.clip.start, t.clip.end),
+            }));
+            listEl.innerHTML = this._sceneResults.map(r => {
+                const total = r.cuts.length + 1;
+                const cutsStr = r.cuts.length
+                    ? `切点: ${r.cuts.map(t => _fmtTime(t)).join("、")}`
+                    : `<span class="xzg-ve-scene-none">未检测到镜头切换</span>`;
+                return `<div class="xzg-ve-scene-item">
+                    <div class="xzg-ve-scene-name">${escScene(r.clip.name || r.clip.filename)} → ${total} 段</div>
+                    <div class="xzg-ve-scene-cuts">${cutsStr}</div>
+                </div>`;
+            }).join("");
+            const totalCuts = this._sceneResults.reduce((a, r) => a + r.cuts.length, 0);
+            statusEl.textContent = `检测完成：${this._sceneResults.length} 个片段，共 ${totalCuts} 个切点`;
+            applyBtn.disabled = totalCuts === 0;
+        } catch (e) {
+            statusEl.textContent = `检测失败: ${e.message}`;
+        }
+    }
+
+    // 应用：把有切点的片段按检测结果在时间线上切开（一次撤销栈入栈）
+    _applySceneSplit() {
+        const results = (this._sceneResults || [])
+            .filter(r => this.timeline.includes(r.clip) && r.cuts.length > 0);
+        if (!results.length) {
+            this._setStatus("没有可应用的切点");
+            return;
+        }
+        this._pushHistory();
+        const newIds = new Set();
+        let segCount = 0;
+        let audioSegCount = 0;
+        for (const r of results) {
+            const clip = r.clip;
+            const baseTl = clip.tlStart != null ? clip.tlStart : 0;
+            const idx = this.timeline.indexOf(clip);
+            // 配对音频片段（视频加入时间线时自动拆分的独立音频，pairedWith 互指）
+            const audioClip = clip.pairedWith != null
+                ? this.timeline.find(c => c.kind === "audio" && c.id === clip.pairedWith)
+                : null;
+            const boundaries = [...r.cuts, clip.end];
+            // ── 视频段：按切点（源视频时间）切段 ──
+            const videoSegs = [];
+            const audioSegs = [];
+            let vStart = clip.start;
+            let vTl = baseTl;
+            let firstVideo = true;
+            let aSrcStart = audioClip ? audioClip.start : 0;   // 音频段源起点
+            let aTl = audioClip ? (audioClip.audioTlStart != null ? audioClip.audioTlStart : 0) : 0;
+            for (const b of boundaries) {
+                // 视频段 [vStart, b]
+                let vc;
+                if (firstVideo) {
+                    vc = clip;
+                    firstVideo = false;
+                } else {
+                    vc = {
+                        id: ++this._clipIdCounter,
+                        filename: clip.filename,
+                        type: clip.type,
+                        name: clip.name,
+                        start: vStart,
+                        end: b,
+                        sourceDuration: clip.sourceDuration,
+                        durationPending: clip.durationPending,
+                        borderColor: clip.borderColor || "",
+                        tlStart: vTl,
+                        audioTlStart: vTl,
+                        kind: clip.kind || "video",
+                        track: clip.track || "v1",
+                        skip_audio: clip.skip_audio,
+                        volume: clip.volume != null ? clip.volume : 1,
+                    };
+                    newIds.add(vc.id);
+                }
+                vc.end = b;
+                vc.tlStart = vTl;
+                videoSegs.push(vc);
+                // ── 配对音频段：按同一时间线位置切开（音频源 1:1 对应时间线） ──
+                if (audioClip) {
+                    const aSrcB = aSrcStart + (b - vStart);  // 该切点在音频源中的时间
+                    let ac;
+                    if (audioSegs.length === 0) {
+                        ac = audioClip;
+                    } else {
+                        ac = {
+                            id: ++this._clipIdCounter,
+                            filename: audioClip.filename,
+                            type: audioClip.type,
+                            name: audioClip.name,
+                            start: aSrcStart,
+                            end: aSrcB,
+                            sourceDuration: audioClip.sourceDuration,
+                            durationPending: audioClip.durationPending,
+                            borderColor: audioClip.borderColor || "",
+                            tlStart: null,
+                            audioTlStart: aTl,
+                            kind: "audio",
+                            track: audioClip.track || "a1",
+                            volume: audioClip.volume != null ? audioClip.volume : 1,
+                        };
+                        newIds.add(ac.id);
+                    }
+                    ac.end = aSrcB;
+                    ac.audioTlStart = aTl;
+                    audioSegs.push(ac);
+                    aSrcStart = aSrcB;
+                    aTl += (b - vStart);
+                }
+                vTl += (b - vStart);
+                vStart = b;
+            }
+            // 替换时间线上的视频段
+            this.timeline.splice(idx, 1, ...videoSegs);
+            // 替换配对音频段（保持 V↔A 配对关系：逐段互指）
+            if (audioClip && audioSegs.length > 1) {
+                const aIdx = this.timeline.indexOf(audioClip);
+                if (aIdx >= 0) this.timeline.splice(aIdx, 1, ...audioSegs);
+                videoSegs.forEach((vc, i) => {
+                    const ac = audioSegs[i];
+                    if (ac) { vc.pairedWith = ac.id; ac.pairedWith = vc.id; }
+                });
+                audioSegCount += audioSegs.length - 1;
+            }
+            segCount += videoSegs.length;
+        }
+        this.selectedClipIds = newIds;
+        this._renderTimeline();
+        this._renderProps();
+        if (this._sceneDlg) { this._sceneDlg.remove(); this._sceneDlg = null; }
+        this._setStatus(audioSegCount > 0
+            ? `场景切分完成：${results.length} 个片段 → 视频 ${segCount} 段 + 配对音频 ${audioSegCount} 段`
+            : `场景切分完成：${results.length} 个片段 → ${segCount} 段`);
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  UI 构建
     // ═══════════════════════════════════════════════════════════
     _build() {
@@ -1123,7 +1406,6 @@ export class XiaozhuguangVideoEditor {
                     <span class="xzg-ve-status"></span>
                     <div class="xzg-ve-header-right">
                         <button class="xzg-ve-btn xzg-ve-btn-manual" title="使用说明书"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#ff5252" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></button>
-                        <button class="xzg-ve-btn xzg-ve-btn-output-settings" title="输出目录设置">输出目录设置</button>
                         <span class="xzg-ve-format-label">格式</span>
                         <select class="xzg-ve-format-select">
                             <option value="video-mp4" selected>视频 MP4</option>
@@ -1147,6 +1429,10 @@ export class XiaozhuguangVideoEditor {
                         <div class="xzg-ve-panel-header">
                             <div class="xzg-ve-media-title-group">
                                 <span style="color:#fff;">媒体库</span>
+                                <div class="xzg-ve-media-sort" title="媒体库排序">
+                                    <button class="xzg-ve-sort-btn" data-sort="added">加入时间</button>
+                                    <button class="xzg-ve-sort-btn" data-sort="name">名称</button>
+                                </div>
                                 <button class="xzg-ve-cache-btn" title="删除所有上传的媒体文件和缩略图缓存">一键清理缓存</button>
                             </div>
                             <div class="xzg-ve-media-btns">
@@ -1214,7 +1500,6 @@ export class XiaozhuguangVideoEditor {
                             <button class="xzg-ve-play-btn"></button>
                             <span class="xzg-ve-time">00:00.00 / 00:00.00</span>
                             <span class="xzg-ve-frames">0 / 0 帧</span>
-                            <button class="xzg-ve-frame-btn">📷 批量导出静帧</button>
                         </div>
                     </div>
                     <div class="xzg-ve-props-resizer"></div>
@@ -1229,6 +1514,8 @@ export class XiaozhuguangVideoEditor {
                 <div class="xzg-ve-timeline-resizer"></div>
                 <div class="xzg-ve-timeline-panel">
                     <div class="xzg-ve-timeline-header">
+                        <button class="xzg-ve-scene-btn" title="自动场景切分：探测镜头切换点，预览后一键按镜头分割片段">探测场景切点</button>
+                        <div class="xzg-ve-color-bar" title="片段颜色：选中片段后点击色块即上色"></div>
                         <button class="xzg-ve-magnet-btn" title="磁吸：开启（红）/ 关闭（灰）">🧲</button>
                         <button class="xzg-ve-split-btn" title="分割 (B)">
                             <svg class="xzg-ve-split-svg" width="25" height="25" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
@@ -1238,12 +1525,15 @@ export class XiaozhuguangVideoEditor {
                                 <line x1="6.6" y1="7.3" x2="17" y2="16" stroke="rgb(0,255,0)" stroke-width="1.4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
                             </svg>
                         </button>
+                        <div class="xzg-ve-tl-group-divider" style="left: calc(150px + (100% - 150px) / 2 - 3px);"></div>
                         <button class="xzg-ve-flag-btn" title="添加旗标 (M) | 右键清空所有旗标">
                             <svg class="xzg-ve-flag-btn-svg" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="#4a9eff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <line x1="4" y1="2" x2="4" y2="22"/>
                                 <path d="M4,4 L18,4 L14,10 L18,16 L4,16"/>
                             </svg>
                         </button>
+                        <button class="xzg-ve-frame-btn" title="批量导出所有旗标位置的静帧">批量导出静帧</button>
+                        <div class="xzg-ve-tl-group-divider" style="left: calc(150px + (100% - 150px) / 2 + 121px);"></div>
                         <button class="xzg-ve-ruler-btn" title="时间线适配宽度 (E)">
                             <svg class="xzg-ve-ruler-svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                                 <rect x="2" y="8" width="20" height="8" rx="2"/>
@@ -1382,7 +1672,7 @@ export class XiaozhuguangVideoEditor {
         });
         root.querySelector(".xzg-ve-btn-cancel").onclick = () => this._cancel();
         root.querySelector(".xzg-ve-btn-close-x").onclick = () => this.close();
-        root.querySelector(".xzg-ve-btn-apply").onclick = () => this._render();
+        root.querySelector(".xzg-ve-btn-apply").onclick = () => this._showExportMenu();
         // 格式切换：视频（CRF 高中低）/ 音频 MP3（比特率 320/192/128）/ FLAC·WAV（单选项「无损」占位）
         const formatSel = root.querySelector(".xzg-ve-format-select");
         const qualitySel = root.querySelector(".xzg-ve-quality-select");
@@ -1496,115 +1786,10 @@ export class XiaozhuguangVideoEditor {
             // mode === null（独立打开）：不强制重置布局，保留用户当前布局
         };
         this._applyModeFilter();
-        // 输出目录设置按钮：复用小珠光图像保存-化神级的目录浏览器对话框
-        // 通过模拟 node + widget 的方式对接全局 _xzgShowDirBrowser
-        const outputSettingsBtn = root.querySelector(".xzg-ve-btn-output-settings");
-        // 更新按钮 tooltip：显示当前输出目录设置摘要（三种模式：默认/另存为/自定义目录）
-        // 按钮本身固定显示文字「输出目录设置」，模式信息只放在 title 悬浮提示
-        this._updateOutputBtn = () => {
-            if (!outputSettingsBtn) return;
-            outputSettingsBtn.textContent = "输出目录设置";
-            if (this._outputMode === "default") {
-                outputSettingsBtn.title = "输出目录设置：默认（输出到 ComfyUI output 目录，前缀 xzg-edit）";
-            } else if (this._outputMode === "saveas") {
-                outputSettingsBtn.title = "输出目录设置：另存为（导出时弹出浏览器另存为对话框，手动选择保存位置和文件名）";
-            } else {
-                // custom：目录名 + 前缀 + 戳
-                const parts = (this._baseDir || "").replace(/[\\/]+$/, "").split(/[\\/]/);
-                const last = parts[parts.length - 1] || this._baseDir || "(未选目录)";
-                const stamps = [];
-                if (this._addDateStamp) stamps.push("日期");
-                if (this._addTimeStamp) stamps.push("时间");
-                const stampStr = stamps.length ? ` + ${stamps.join("/")}` : "";
-                outputSettingsBtn.title = `输出目录设置：${last}\n目录: ${this._baseDir || "(未选)"}\n前缀: ${this._filenamePrefix}${stampStr}`;
-            }
-        };
-        if (outputSettingsBtn) {
-            outputSettingsBtn.onclick = () => {
-                // 检查全局对话框是否可用（由 xzg_image_save.js 挂载到 window）
-                if (typeof window._xzgShowDirBrowser !== 'function') {
-                    console.warn("[小珠光] 全局目录浏览器不可用，请确保 xzg_image_save.js 已加载");
-                    return;
-                }
-                // 构造模拟 node + widget，对接全局对话框
-                // _xzgDirBrowserConfirm 会设置 widget.value 并调用 callback
-                const self = this;
-                const outputModeWidget = {
-                    name: "output_mode",
-                    value: this._outputMode,
-                    callback: function(v) {
-                        // v: "default" | "saveas" | "custom"
-                        self._outputMode = v || "default";
-                        self._useDefaultOutput = (self._outputMode === "default");  // 向后兼容
-                        self._saveOutputSettings();
-                        self._updateOutputBtn();
-                    }
-                };
-                const baseDirWidget = {
-                    name: "base_dir",
-                    value: this._baseDir || "",
-                    callback: function(v) {
-                        self._baseDir = v;
-                        self._saveOutputSettings();
-                        self._updateOutputBtn();
-                    }
-                };
-                const defaultOutputWidget = {
-                    name: "use_default_output",
-                    value: this._useDefaultOutput,
-                    callback: function(v) {
-                        self._useDefaultOutput = !!v;
-                        // 旧版兼容：从 use_default_output 同步到 outputMode
-                        if (self._outputMode !== "saveas") {
-                            self._outputMode = self._useDefaultOutput ? "default" : "custom";
-                        }
-                        self._saveOutputSettings();
-                        self._updateOutputBtn();
-                    }
-                };
-                const prefixWidget = {
-                    name: "filename_prefix",
-                    value: this._filenamePrefix,
-                    callback: function(v) {
-                        self._filenamePrefix = v || "xzg-edit";
-                        self._saveOutputSettings();
-                        self._updateOutputBtn();
-                    }
-                };
-                const dateWidget = {
-                    name: "add_date_stamp",
-                    value: this._addDateStamp,
-                    callback: function(v) {
-                        self._addDateStamp = !!v;
-                        self._saveOutputSettings();
-                        self._updateOutputBtn();
-                    }
-                };
-                const timeWidget = {
-                    name: "add_time_stamp",
-                    value: this._addTimeStamp,
-                    callback: function(v) {
-                        self._addTimeStamp = !!v;
-                        self._saveOutputSettings();
-                        self._updateOutputBtn();
-                    }
-                };
-                const fakeNode = {
-                    widgets: [baseDirWidget],
-                    setDirtyCanvas: () => {},
-                    _xzgOutputModeWidget: outputModeWidget,
-                    _xzgBaseDirWidget: baseDirWidget,
-                    _xzgDefaultOutputWidget: defaultOutputWidget,
-                    _xzgPrefixCustomWidget: prefixWidget,
-                    _xzgDateStampWidget: dateWidget,
-                    _xzgTimeStampWidget: timeWidget,
-                };
-                window._xzgShowDirBrowser(fakeNode);
-            };
-        }
+        // 「输出目录设置」按钮已移除：成片导出固定「另存为」（导出时弹出浏览器
+        // 另存为对话框），不再提供 输出目录/自定义目录 模式选择
         const manualBtn = root.querySelector(".xzg-ve-btn-manual");
         if (manualBtn) manualBtn.onclick = () => { manualBtn.blur(); this._openManual(); };
-        this._updateOutputBtn();
         root.querySelector(".xzg-ve-btn-reset-layout").onclick = (e) => { e.currentTarget.blur(); this._resetTrackLayout(); };
         // 渲染分辨率控件：预设选择 → 自动填入宽高；竖屏按钮 → 交换宽高使较大值为高
         const presetsSel = root.querySelector(".xzg-ve-render-presets");
@@ -1713,6 +1898,19 @@ export class XiaozhuguangVideoEditor {
         }
         root.querySelector(".xzg-ve-add-btn").onclick = () => this._addFromInput();
         root.querySelector(".xzg-ve-cache-btn").onclick = () => this._clearCache();
+        // 媒体库排序切换（加入时间 / 名称），当前模式高亮，选择持久化
+        const sortBtns = root.querySelectorAll(".xzg-ve-sort-btn");
+        const syncSortBtns = () => {
+            sortBtns.forEach(b => b.classList.toggle("xzg-ve-sort-active", b.dataset.sort === this._mediaSort));
+        };
+        sortBtns.forEach(b => b.addEventListener("click", () => {
+            if (this._mediaSort === b.dataset.sort) return;
+            this._mediaSort = b.dataset.sort;
+            try { localStorage.setItem(this._mediaSortKey, this._mediaSort); } catch (_) {}
+            syncSortBtns();
+            this._renderMediaList();
+        }));
+        syncSortBtns();
         this._thumbBtn = root.querySelector(".xzg-ve-thumb-btn");
         this._updateThumbBtn();
         this._thumbBtn.onclick = () => this._toggleThumbMode();
@@ -1723,6 +1921,46 @@ export class XiaozhuguangVideoEditor {
         this._resizer = root.querySelector(".xzg-ve-media-resizer");
         this._restoreMediaWidth();
         this._bindResizer();
+        // 外部文件拖入媒体池：从系统文件管理器拖视频/音频/图片到媒体库即可导入
+        // （复用「＋」按钮的上传管线：指纹去重 + 分块上传 + 探测队列）
+        if (this._mediaPanel) {
+            const panel = this._mediaPanel;
+            const isFileDrag = (e) => !!(e.dataTransfer &&
+                Array.from(e.dataTransfer.types || []).includes("Files"));
+            let dragDepth = 0;
+            panel.addEventListener("dragenter", (e) => {
+                if (!isFileDrag(e)) return;
+                e.preventDefault();
+                dragDepth++;
+                panel.classList.add("xzg-ve-drop-hint");
+            });
+            panel.addEventListener("dragover", (e) => {
+                if (!isFileDrag(e)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "copy";
+                panel.classList.add("xzg-ve-drop-hint");
+            });
+            panel.addEventListener("dragleave", (e) => {
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (dragDepth === 0) panel.classList.remove("xzg-ve-drop-hint");
+            });
+            panel.addEventListener("drop", (e) => {
+                dragDepth = 0;
+                panel.classList.remove("xzg-ve-drop-hint");
+                // 内部媒体拖拽（拖去时间线）误落在媒体库：直接忽略，
+                // 绝不能把它当外部文件导入
+                if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("text/x-media-name")) {
+                    e.preventDefault();
+                    return;
+                }
+                const files = Array.from(e.dataTransfer?.files || []);
+                if (!files.length) return;
+                e.preventDefault();
+                e.stopPropagation();
+                this._importFiles(files);
+            });
+        }
         // 属性面板宽度拖动调整
         this._propsPanel = root.querySelector(".xzg-ve-props-panel");
         this._propsResizer = root.querySelector(".xzg-ve-props-resizer");
@@ -1749,10 +1987,32 @@ export class XiaozhuguangVideoEditor {
             e.currentTarget.blur();  // 点击后立即失焦，避免空格播放时残留焦点高亮
         };
         root.querySelector(".xzg-ve-frame-btn").onclick = () => this._exportFrame();
+        // 批量导出静帧按钮：无旗标时禁用（旗标增删时由 _updateFrameBtn 同步）
+        this._updateFrameBtn();
         root.querySelector(".xzg-ve-split-btn").onclick = (e) => {
             e.currentTarget.blur();
             if (this.timeline.length > 0) this._splitClipAtPlayhead();
         };
+        // 自动场景切分（达芬奇 Scene Cut Detection 式：检测预览 → 可调灵敏度 → 应用）
+        root.querySelector(".xzg-ve-scene-btn").onclick = (e) => {
+            e.currentTarget.blur();
+            this._openSceneDialog();
+        };
+        // 片段颜色色板：选中片段后点击色块即上色（与右键菜单颜色共用同一组预设）
+        const colorBar = root.querySelector(".xzg-ve-color-bar");
+        if (colorBar) {
+            for (const c of XZG_VE_CLIP_COLORS) {
+                const sw = document.createElement("button");
+                sw.className = "xzg-ve-color-swatch";
+                sw.title = c.label;
+                sw.style.background = c.value;
+                sw.onclick = (e) => {
+                    e.currentTarget.blur();
+                    this._applyClipColorToSelection(c.value);
+                };
+                colorBar.appendChild(sw);
+            }
+        }
         const magnetBtn = root.querySelector(".xzg-ve-magnet-btn");
         if (magnetBtn) {
             // 磁吸开关：开启=红色，关闭=灰色
@@ -1786,11 +2046,15 @@ export class XiaozhuguangVideoEditor {
             if (this._markerFlags.length > 0) {
                 this._markerFlags = [];
                 this._renderMarkerFlags();
+                this._updateFrameBtn();
                 this._setStatus("已清空所有旗标");
             }
         };
         // canvas 点击切换播放
-        this._canvas.addEventListener("click", () => this._toggleTimelinePlay());
+        this._canvas.addEventListener("click", () => {
+            this._blurTransientInputs();
+            this._toggleTimelinePlay();
+        });
 
         // 播放头本体 pointer-events: none，点击穿透到下层（刻度区由 scrub 处理）
         // 上方 1/4 拖动区：按住鼠标拖动控制播放头（点击即跳转 + 拖动跟随）
@@ -1804,6 +2068,12 @@ export class XiaozhuguangVideoEditor {
         });
         this._timeline.addEventListener("dragover", (e) => {
             e.preventDefault();
+            // 外部文件拖入：同样显示金色拖入预览框（与从媒体库拖入一致）
+            if (e.dataTransfer.types.includes("Files")) {
+                e.dataTransfer.dropEffect = "copy";
+                this._showDragPreview(e.clientX, null, "left", "video", e.clientY);
+                return;
+            }
             // 实时预览：根据鼠标 X 位置显示片段占位
             const name = e.dataTransfer.types.includes("text/x-media-name");
             if (!name) return;
@@ -1818,6 +2088,13 @@ export class XiaozhuguangVideoEditor {
         this._timeline.addEventListener("drop", (e) => {
             e.preventDefault();
             this._hideDragPreview();
+            // 外部文件直接拖入时间线：先导入媒体库（媒体库同步出现），
+            // 再把导入的媒体加到落点轨道
+            const extFiles = Array.from(e.dataTransfer?.files || []);
+            if (extFiles.length > 0) {
+                this._importFilesAndAddToTimeline(extFiles, e.clientX, e.clientY);
+                return;
+            }
             const name = e.dataTransfer.getData("text/x-media-name");
             const type = e.dataTransfer.getData("text/x-media-type") || "input";
             if (name) {
@@ -1843,11 +2120,19 @@ export class XiaozhuguangVideoEditor {
         //   单击时间线任何区域（片段、轨道空白、刻度区、播放头、轨道头、手柄）→ 激活时间线（Ctrl+A 全选片段）
         //   单击媒体库任何区域（媒体项、空白）→ 激活媒体库（Ctrl+A 全选媒体）
         this._tlFocusHandler = (e) => {
-            if (e.button === 0 || e.button === 2) this._lastFocusArea = "timeline";
+            if (e.button === 0 || e.button === 2) {
+                this._lastFocusArea = "timeline";
+                // 片段/时间线的 mousedown 会 preventDefault，浏览器不会自动失焦输入框；
+                // 焦点残留会导致 Delete 等快捷键被输入框吞掉（表现为"片段删不掉"）
+                this._blurTransientInputs();
+            }
         };
         this._timeline.addEventListener("mousedown", this._tlFocusHandler, true);
         this._mediaFocusHandler = (e) => {
-            if (e.button === 0 || e.button === 2) this._lastFocusArea = "media";
+            if (e.button === 0 || e.button === 2) {
+                this._lastFocusArea = "media";
+                this._blurTransientInputs();
+            }
         };
         this._mediaList.addEventListener("mousedown", this._mediaFocusHandler, true);
 
@@ -1883,18 +2168,8 @@ export class XiaozhuguangVideoEditor {
     //  片段右键菜单（颜色 → 9色板）
     // ═══════════════════════════════════════════════════════════
     _initCtxMenu() {
-        // 颜色预设（用户指定色板，与选中态红色 #fa5b4a 形成较大反差）
-        const COLORS = [
-            { label: "橙",   value: "#EB6E00" },
-            { label: "金黄", value: "#E2A91C" },
-            { label: "黄绿", value: "#9FC615" },
-            { label: "青绿", value: "#448F64" },
-            { label: "青",   value: "#009899" },
-            { label: "海蓝", value: "#156284" },
-            { label: "蓝",   value: "#4376A1" },
-            { label: "粉",   value: "#E98CB5" },
-            { label: "棕",   value: "#8C5A3F" },
-        ];
+        // 颜色预设（用户指定色板，与选中态红色 #fa5b4a 形成较大反差）；与工具栏色板共用
+        const COLORS = XZG_VE_CLIP_COLORS;
         const menu = document.createElement("div");
         menu.className = "xzg-ve-ctx-menu";
         const COLOR_OPTIONS = COLORS;
@@ -1948,6 +2223,18 @@ export class XiaozhuguangVideoEditor {
             this._hideCtxMenu();
         });
         menu.appendChild(flagItem);
+
+        // 自动重命名：给选中片段生成唯一名字（基础名_序号），避免单独导出片段时文件名重复
+        const renameItem = document.createElement("div");
+        renameItem.className = "xzg-ve-ctx-item";
+        renameItem.innerHTML = `<span class="xzg-ve-ctx-icon" aria-hidden="true">✏</span><span class="xzg-ve-ctx-label">自动重命名</span>`;
+        renameItem.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this._autoRenameSelected();
+            this._hideCtxMenu();
+        });
+        menu.appendChild(renameItem);
 
         // 删除
         const delItem = document.createElement("div");
@@ -2065,6 +2352,22 @@ export class XiaozhuguangVideoEditor {
 
     _hideCtxMenu() {
         if (this._ctxMenu) this._ctxMenu.classList.remove("xzg-ve-ctx-show");
+    }
+
+    // 工具栏色板：给选中片段（无选中则播放头所在片段）设置颜色
+    _applyClipColorToSelection(color) {
+        const targets = this.timeline.filter(c => this.selectedClipIds.has(c.id));
+        if (targets.length === 0) {
+            const found = this._findClipByGlobalTime(this._tlGlobalTime || 0);
+            if (!found) {
+                this._setStatus("请先选中要上色的片段");
+                return;
+            }
+            targets.push(found.clip);
+        }
+        for (const clip of targets) clip.borderColor = color || "";
+        this._renderTimeline();
+        this._setStatus(`已为 ${targets.length} 个片段设置颜色`);
     }
 
     _applyClipColor(color) {
@@ -2200,6 +2503,16 @@ export class XiaozhuguangVideoEditor {
             white-space: nowrap;
         }
         .xzg-ve-cache-btn:hover { background: #5a2a2a; }
+        .xzg-ve-media-sort { display: flex; gap: 2px; }
+        .xzg-ve-sort-btn {
+            background: #2a2a2a; border: 1px solid #444; color: #999;
+            font-size: 11px; padding: 3px 7px; border-radius: 3px; cursor: pointer;
+            white-space: nowrap;
+        }
+        .xzg-ve-sort-btn:hover { color: #ddd; border-color: #666; }
+        .xzg-ve-sort-btn.xzg-ve-sort-active {
+            background: rgba(74,158,255,0.15); border-color: #4a9eff; color: #7abfff;
+        }
         .xzg-ve-thumb-btn {
             background: #2a2a2a; border: none; color: #fff;
             font-size: 11px; padding: 3px 6px; border-radius: 3px; cursor: pointer;
@@ -2336,11 +2649,22 @@ export class XiaozhuguangVideoEditor {
         .xzg-ve-play-btn:focus:not(:hover) { background: #2a2a2a; border-color: #555; }
         .xzg-ve-time { font-size: 14px; color: #FFFFFF; font-family: monospace; flex: 1; }
         .xzg-ve-frames { font-size: 14px; color: #FFFFFF; font-family: monospace; margin-right: 8px; }
+        /* 批量导出静帧（时间线工具栏，紧跟旗标按钮，蓝色系与其配对） */
         .xzg-ve-frame-btn {
-            background: #2a2a2a; border: 1px solid #444; color: #ddd;
-            font-size: 11px; padding: 4px 8px; border-radius: 3px; cursor: pointer;
+            position: absolute;
+            left: calc(150px + (100% - 150px) / 2 + 33px);
+            top: 6px; height: 22px; padding: 0 8px;
+            background: rgba(74,158,255,0.10); border: 1px solid rgba(74,158,255,0.45);
+            border-radius: 4px; color: #7abfff; font-size: 11px; line-height: 1;
+            cursor: pointer; white-space: nowrap;
+            display: inline-flex; align-items: center; justify-content: center;
+            transition: background 0.15s ease, border-color 0.15s ease;
         }
-        .xzg-ve-frame-btn:hover { background: #454545; }
+        .xzg-ve-frame-btn:hover:not(:disabled) {
+            background: rgba(74,158,255,0.22); border-color: #4a9eff; color: #fff;
+        }
+        .xzg-ve-frame-btn:focus, .xzg-ve-frame-btn:focus-visible { outline: none; }
+        .xzg-ve-frame-btn:focus, .xzg-ve-frame-btn:focus-visible { outline: none; }
         .xzg-ve-props-resizer {
             width: 8px; cursor: col-resize; background: transparent;
             flex-shrink: 0; position: relative; transition: background 0.15s;
@@ -2457,6 +2781,76 @@ export class XiaozhuguangVideoEditor {
         .xzg-ve-flag-btn svg { transition: stroke 0.15s ease; }
         .xzg-ve-flag-btn:hover svg { stroke: #7abfff; }
         .xzg-ve-flag-btn:focus, .xzg-ve-flag-btn:focus-visible { outline: none; }
+        /* 分组竖线：标记 + 批量导出静帧 是一组功能 */
+        .xzg-ve-tl-group-divider {
+            position: absolute; top: 5px; height: 26px; width: 1px;
+            background: rgba(255,255,255,0.22);
+        }
+        .xzg-ve-scene-btn {
+            position: absolute;
+            height: 26px; background: rgba(212,175,55,0.14); border: 1.5px solid #d4af37;
+            border-radius: 4px; color: #ffd76a;
+            cursor: pointer; padding: 0 12px;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 13px; font-weight: bold; line-height: 1; white-space: nowrap;
+            /* 批量导出静帧（+33）及分组右竖线（+121）右侧 */
+            left: calc(150px + (100% - 150px) / 2 + 130px);
+            top: 4px;
+            box-shadow: 0 0 8px rgba(212,175,55,0.35);
+            transition: background 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+        }
+        .xzg-ve-scene-btn:hover {
+            background: rgba(212,175,55,0.28); color: #fff;
+            box-shadow: 0 0 14px rgba(212,175,55,0.6);
+        }
+        .xzg-ve-scene-btn:hover { background: #3a3a3a; border-color: #d4af37; color: #fff; }
+        .xzg-ve-scene-btn:hover { filter: none; }
+        .xzg-ve-scene-btn:focus, .xzg-ve-scene-btn:focus-visible { outline: none; }
+        /* 片段颜色色板：一排小色块，点击即给选中片段上色；放在时间线 0 点位置上方 */
+        .xzg-ve-color-bar {
+            position: absolute;
+            display: flex; align-items: center; gap: 4px;
+            left: 152px;
+            top: 8px; height: 18px;
+        }
+        .xzg-ve-color-swatch {
+            width: 14px; height: 14px; border-radius: 3px; cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.35); padding: 0;
+            transition: transform 0.12s ease, border-color 0.12s ease;
+        }
+        .xzg-ve-color-swatch:hover { transform: scale(1.25); border-color: #fff; }
+        .xzg-ve-color-swatch:focus { outline: none; }
+        /* 场景切分对话框（参考达芬奇 Scene Cut Detection：先检测预览、可调灵敏度、再应用） */
+        .xzg-ve-scene-dlg {
+            position: fixed; z-index: 300; left: 50%; top: 50%;
+            transform: translate(-50%, -50%);
+            width: 440px; max-width: 92%; max-height: 82%;
+            display: flex; flex-direction: column;
+            background: #232323; border: 1px solid #4a4a4a; border-radius: 8px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6); color: #ddd; font-size: 12px;
+        }
+        .xzg-ve-scene-dlg-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+            font-size: 13px; font-weight: 600; color: #fff; border-bottom: 1px solid #3a3a3a; }
+        .xzg-ve-scene-close { margin-left: auto; cursor: pointer; color: #999; padding: 0 4px; }
+        .xzg-ve-scene-close:hover { color: #fff; }
+        .xzg-ve-scene-dlg-body { padding: 10px 12px; overflow-y: auto; flex: 1; }
+        .xzg-ve-scene-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .xzg-ve-scene-row input[type="range"] { flex: 1; }
+        .xzg-ve-scene-status { color: #8b8f9a; margin: 6px 0; }
+        .xzg-ve-scene-list { max-height: 260px; overflow-y: auto; border: 1px solid #3a3a3a; border-radius: 6px; }
+        .xzg-ve-scene-item { padding: 6px 10px; border-bottom: 1px solid #303030; }
+        .xzg-ve-scene-item:last-child { border-bottom: none; }
+        .xzg-ve-scene-name { color: #fff; font-weight: 600; margin-bottom: 2px; }
+        .xzg-ve-scene-cuts { color: #9db2ff; font-variant-numeric: tabular-nums; line-height: 1.5; }
+        .xzg-ve-scene-none { color: #777; }
+        .xzg-ve-scene-dlg-foot { padding: 8px 12px; border-top: 1px solid #3a3a3a;
+            display: flex; justify-content: flex-end; gap: 8px; }
+        .xzg-ve-scene-btn2 { padding: 5px 14px; border-radius: 5px; border: 1px solid #555;
+            background: #2f2f2f; color: #ddd; cursor: pointer; }
+        .xzg-ve-scene-btn2:hover { background: #3a3a3a; }
+        .xzg-ve-scene-btn2.xzg-ve-scene-primary { background: #8a6d1d; border-color: #d4af37; color: #fff; }
+        .xzg-ve-scene-btn2.xzg-ve-scene-primary:hover { background: #a3822a; }
+        .xzg-ve-scene-btn2:disabled { opacity: 0.5; cursor: default; }
         .xzg-ve-ruler-btn, .xzg-ve-rulerzoom-btn {
             position: absolute;
             width: 32px; height: 32px; background: transparent; border: none;
@@ -2795,6 +3189,12 @@ export class XiaozhuguangVideoEditor {
         }
         .xzg-ve-clip-name { color: rgba(255,255,255,0.85); font-weight: normal; font-size: 12px; }
         .xzg-ve-clip-time { color: rgba(255,255,255,0.6); }
+        /* 外部文件拖入媒体池：金色虚线高亮提示可放置 */
+        .xzg-ve-media-panel.xzg-ve-drop-hint {
+            outline: 2px dashed #d4af37;
+            outline-offset: -3px;
+            background: rgba(212, 175, 55, 0.07);
+        }
         /* 离线媒体：媒体库中被删除的片段，红色背景 + 大红字提示 */
         .xzg-ve-clip.xzg-ve-clip-offline,
         .xzg-ve-audio-clip.xzg-ve-clip-offline {
@@ -3039,18 +3439,19 @@ export class XiaozhuguangVideoEditor {
     // ═══════════════════════════════════════════════════════════
 
     // 根据 name+type 创建媒体对象，若全局探测缓存命中则直接填充 info 与 probeState
-    _makeMediaItem(name, type, displayName, fp) {
+    _makeMediaItem(name, type, displayName, fp, addedAt) {
         const key = `${name}|${type}`;
         const dn = displayName || name;
         const isAudio = _isAudio(name);
         const isImage = _isImage(name);
+        const at = addedAt || Date.now();  // 加入时间：用于媒体库「按加入时间」排序
         const cached = _XZG_VE_PROBE_CACHE[key];
         if (cached && cached.state === "ok") {
-            return { name, type, displayName: dn, info: cached.info, probeState: "ok", error: null, isAudio, isImage, fp: fp || "" };
+            return { name, type, displayName: dn, info: cached.info, probeState: "ok", error: null, isAudio, isImage, fp: fp || "", addedAt: at };
         } else if (cached && cached.state === "failed") {
-            return { name, type, displayName: dn, info: null, probeState: "failed", error: cached.error, isAudio, isImage, fp: fp || "" };
+            return { name, type, displayName: dn, info: null, probeState: "failed", error: cached.error, isAudio, isImage, fp: fp || "", addedAt: at };
         }
-        return { name, type, displayName: dn, info: null, probeState: "pending", error: null, isAudio, isImage, fp: fp || "" };
+        return { name, type, displayName: dn, info: null, probeState: "pending", error: null, isAudio, isImage, fp: fp || "", addedAt: at };
     }
 
     async _loadMediaLibrary() {
@@ -3060,7 +3461,7 @@ export class XiaozhuguangVideoEditor {
             if (!this.mediaLibrary.find(item => item.name === m.name)) {
                 // 显示名只取 basename，不显示上级目录（如 fastcut-cache/video.mp4 → video.mp4）
                 const baseName = m.name.split("/").pop();
-                const item = this._makeMediaItem(m.name, m.type || "input", baseName, m.fp);
+                const item = this._makeMediaItem(m.name, m.type || "input", baseName, m.fp, m.addedAt);
                 this.mediaLibrary.push(item);
             }
         }
@@ -3398,7 +3799,20 @@ export class XiaozhuguangVideoEditor {
         if (this.mediaLibrary.length === 0) {
             _el("div", "xzg-ve-timeline-empty", "点击「＋ 添加」上传视频", list);
         } else {
-            for (const m of this.mediaLibrary) {
+            // 排序：added = 加入时间（新→旧）；name = 名称（中文拼音/字母）
+            const sorted = this.mediaLibrary
+                .map((m, i) => ({ m, i }))
+                .sort((a, b) => {
+                    if (this._mediaSort === "name") {
+                        const an = (a.m.displayName || a.m.name || "").toLowerCase();
+                        const bn = (b.m.displayName || b.m.name || "").toLowerCase();
+                        return an.localeCompare(bn, "zh-Hans-CN", { numeric: true }) || (a.i - b.i);
+                    }
+                    const at = a.m.addedAt || 0, bt = b.m.addedAt || 0;
+                    return (bt - at) || (a.i - b.i);
+                })
+                .map(x => x.m);
+            for (const m of sorted) {
             const item = _el("div", "xzg-ve-media-item", null, list);
             item.draggable = true;
             item.dataset.name = m.name;
@@ -3437,6 +3851,9 @@ export class XiaozhuguangVideoEditor {
                     if (cacheEntry && cacheEntry.url) {
                         const img = _el("img", null, null, thumbWrap);
                         img.src = cacheEntry.url;
+                        // 禁止缩略图原生图片拖拽：否则拖动视频项时 Chrome 会把缩略图
+                        // 当成文件放进 dataTransfer.files，松手在媒体库就被误导入成图片
+                        img.draggable = false;
                     } else if (cacheEntry && cacheEntry.failed) {
                         _el("div", "xzg-ve-media-thumb-placeholder", "❌", thumbWrap);
                     } else {
@@ -4551,11 +4968,28 @@ export class XiaozhuguangVideoEditor {
         document.body.appendChild(input);
         input.onchange = async () => {
             document.body.removeChild(input);
-            const files = Array.from(input.files || []).filter(f => _isMedia(f.name));
-            if (files.length === 0) return;
-            this._setStatus(`上传 ${files.length} 个文件...`);
+            this._importFiles(Array.from(input.files || []));
+        };
+        input.click();
+    }
+
+    /**
+     * 导入媒体文件：文件选择框与「外部拖入媒体池」共用入口。
+     * 流程：过滤媒体类型 → 指纹去重 → 分块上传 → 加入媒体库 → 探测队列。
+     * @param {File[]} fileList  用户选择的或从系统拖入的文件
+     */
+    async _importFiles(fileList) {
+        const files = (fileList || []).filter(f => _isMedia(f.name));
+        if (files.length === 0) {
+            this._setStatus("没有可导入的媒体文件（支持视频 / 音频 / 图片）");
+            return [];
+        }
+        this._setStatus(`上传 ${files.length} 个文件...`);
+        // 上传计数：导出渲染前需等待上传完成（见 _waitForUploads）
+        this._uploadingCount = (this._uploadingCount || 0) + 1;
             const uploaded = [];
             const skipped = [];
+            const imported = [];  // 成功入库的媒体：[{ fp, name }]（fp 用于与拖入文件对齐）
             let needsTimelineRefresh = false;  // 离线恢复时需要刷新时间线
             for (const f of files) {
                 // 文件指纹：name + size + lastModified，三者相同视为同一文件
@@ -4566,6 +5000,7 @@ export class XiaozhuguangVideoEditor {
                     m.probeState !== "failed" && !this.offlineMediaNames.has(m.name));
                 if (existing) {
                     skipped.push(f.name);
+                    imported.push({ fp, name: existing.name });  // 已在库中：仍返回，供拖入时间线使用
                     continue;
                 }
                 try {
@@ -4583,6 +5018,7 @@ export class XiaozhuguangVideoEditor {
                         _xzgVeAddSessionMedia(diskName, "input", fp);  // 写入会话列表（含指纹）
                         this.offlineMediaNames.delete(diskName);
                         uploaded.push(diskName);
+                        imported.push({ fp, name: diskName });
                         // 离线恢复：媒体已从媒体库移除但时间线片段仍引用，需要清除旧缓存 + 刷新时间线
                         if (wasOffline) {
                             this._invalidateMediaCaches(newItem);
@@ -4598,6 +5034,7 @@ export class XiaozhuguangVideoEditor {
                         existItem.fp = fp;  // 更新指纹（重新上传的文件 lastModified 可能不同）
                         _xzgVeAddSessionMedia(diskName, "input", fp);
                         uploaded.push(diskName);
+                        imported.push({ fp, name: diskName });
                         needsTimelineRefresh = true;
                     }
                 } catch (e) {
@@ -4616,8 +5053,49 @@ export class XiaozhuguangVideoEditor {
             } else if (skipped.length > 0) {
                 this._setStatus(`${skipped.length} 个文件已存在，已跳过`);
             }
-        };
-        input.click();
+        this._uploadingCount = Math.max(0, (this._uploadingCount || 1) - 1);
+        return imported;
+    }
+
+    // 外部文件直接拖入时间线（OpenCut/剪映式）：
+    // ① 浏览器端毫秒级探测真实时长/分辨率（loadedmetadata，与后端探测完全解耦）
+    // ② 立即按真实时长落轨：视频 + 配对音频同步创建（无音轨视频为静音轨，已确认可接受）
+    // ③ 上传在后台继续（缩略图/波形/导出渲染使用服务端文件）
+    async _importFilesAndAddToTimeline(files, clientX, clientY) {
+        const infos = new Map();  // fp -> 浏览器端探测的 { duration, width, height }
+        for (const f of files) {
+            if (!_isMedia(f.name) || _isImage(f.name)) continue;
+            const fp = `${f.name}|${f.size}|${f.lastModified}`;
+            infos.set(fp, await _probeMediaLocal(f));
+        }
+        // 后台上传入库（媒体库同步出现该视频）；不阻塞落轨
+        const imported = await this._importFiles(files);
+        for (const { fp, name } of imported) {
+            const media = this.mediaLibrary.find(m => m.name === name);
+            const info = infos.get(fp) || null;
+            // 注入客户端探测信息：has_audio/时长立即已知 → 配对音频即刻创建、无 60s 占位。
+            // 后端 probe 完成后会用权威数据覆盖（内容一致）
+            if (info && media) {
+                media.info = {
+                    duration: info.duration > 0 ? info.duration : (media.info?.duration || 0),
+                    width: info.width || media.info?.width || 0,
+                    height: info.height || media.info?.height || 0,
+                    fps: media.info?.fps || 0,
+                    has_audio: true,  // 视频文件默认假定含音轨（无音轨视频为静音轨，已确认可接受）
+                    is_image: false,
+                    frame_count: media.info?.frame_count || 0,
+                };
+            }
+            const isImg = _isImage(name) || media?.info?.is_image === true;
+            const isAudio = media?.isAudio || (media?.info?.audio_only === true);
+            const kind = (this._modeFilter === "audio" || isAudio) ? "audio" : "video";
+            const md = media?.info?.duration || 0;
+            const dur = isImg ? (media?.info?.default_duration || 5) : (md > 0 ? md : 60);
+            let tlStart = this._clientXToTlStart(clientX, dur);
+            tlStart = this._snapTlStart(tlStart, dur);
+            const track = this._yToTrack(clientY, kind);
+            this._addClipToTimeline(name, media?.type || "input", tlStart, track);
+        }
     }
 
     _computeUploadPaths(file) {
@@ -6480,6 +6958,16 @@ export class XiaozhuguangVideoEditor {
         this._markerFlags.push({ time });
         this._markerFlags.sort((a, b) => a.time - b.time);
         this._renderMarkerFlags();
+        this._updateFrameBtn();
+    }
+
+    // 同步「批量导出静帧」按钮提示（不做禁用变暗：点击时无旗标则弹提示）
+    _updateFrameBtn() {
+        const btn = this._root?.querySelector(".xzg-ve-frame-btn");
+        if (!btn) return;
+        btn.title = this._markerFlags.length > 0
+            ? `批量导出所有旗标位置的静帧（共 ${this._markerFlags.length} 个旗标）`
+            : "批量导出所有旗标位置的静帧（请先按 M 在时间线做标记）";
     }
 
     _renderMarkerFlags() {
@@ -6507,6 +6995,7 @@ export class XiaozhuguangVideoEditor {
                 e.stopPropagation();
                 this._markerFlags = this._markerFlags.filter(m => m !== f);
                 this._renderMarkerFlags();
+                this._updateFrameBtn();
             });
             ticks.appendChild(flag);
         }
@@ -9307,11 +9796,34 @@ export class XiaozhuguangVideoEditor {
         };
     }
 
-    // 同步属性面板「视频/音频」标签的激活态
+    // 让编辑器内的临时输入框（分辨率/帧率等）失焦。
+    // 片段/时间线的 mousedown 会 preventDefault，浏览器不会自动把输入框失焦，
+    // 焦点残留会让快捷键处理器把 Delete/方向键当作输入框编辑直接放行，
+    // 表现为"片段删不掉/快捷键偶尔失灵"。点击时间线/媒体库/预览时调用。
+    _blurTransientInputs() {
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) {
+            try { ae.blur(); } catch (_) {}
+        }
+    }
+
+    // 同步属性面板「视频/音频」标签的激活态与可见性：
+    // 选中纯视频片段时隐藏「音频」标签（视频片段没有音频属性可调，显示出来无法使用）；
+    // 对称地，选中纯音频片段时隐藏「视频」标签；混合选中或未选中时两个都显示
     _syncPropsTabs() {
         if (!this._propsTabs) return;
+        const allSel = this.timeline.filter(cl => this.selectedClipIds.has(cl.id));
+        const hasVideo = allSel.some(cl => cl.kind !== "audio");
+        const hasAudio = allSel.some(cl => cl.kind === "audio");
         const tabs = this._propsTabs.querySelectorAll(".xzg-ve-props-tab");
         for (const t of tabs) {
+            const isAudioTab = t.dataset.type === "audio";
+            const hide = allSel.length > 0 && (isAudioTab ? !hasAudio : !hasVideo);
+            t.style.display = hide ? "none" : "";
+            if (hide && this._propsTab === t.dataset.type) {
+                // 当前激活标签被隐藏 → 切到另一个标签
+                this._propsTab = isAudioTab ? "video" : "audio";
+            }
             const active = t.dataset.type === this._propsTab;
             t.classList.toggle("xzg-ve-props-tab-active", active);
         }
@@ -9321,16 +9833,37 @@ export class XiaozhuguangVideoEditor {
     //  导出
     // ═══════════════════════════════════════════════════════════
     async _exportFrame() {
-        // 弹出对话框选择导出模式（仅支持输出目录/自定义目录，不支持另存为）
-        const hasCustomDir = !!(this._baseDir);
-        const mode = await _xzgVeFrameExportDialog(hasCustomDir);
-        if (!mode) return;  // 用户取消
-
-        // 有旗标时：批量导出每个旗标所在帧
-        if (this._markerFlags.length > 0) {
-            await this._exportFramesAtFlags(mode);
+        // 无旗标：弹出编辑器内提示对话框（批量导出静帧依赖旗标标记位置）
+        if (this._markerFlags.length === 0) {
+            this._showMessageDialog("请先在时间线做标记 (快捷键 M)");
             return;
         }
+        // 另存为支持：Chrome/Edge 下先选目标文件夹（批量选一次，之后每帧直接写入）；
+        // 环境不支持（非安全上下文/旧浏览器）时回退：保存到 ComfyUI output 目录
+        const fsOk = typeof window.showDirectoryPicker === "function";
+        const flags = this._markerFlags;
+
+        // ── 批量：有旗标时导出每个旗标所在帧 ──
+        if (flags.length > 0) {
+            let dirHandle = null;
+            if (fsOk) {
+                try {
+                    dirHandle = await xzgPickSaveDirectory("frame");
+                } catch (e) {
+                    if (e?.name === "AbortError") { this._setStatus("已取消导出"); return; }
+                }
+            }
+            if (dirHandle) {
+                await this._exportFramesAtFlags(dirHandle);
+                return;
+            }
+            const mode = await _xzgVeFrameExportDialog(!!this._baseDir);
+            if (!mode) return;
+            await this._exportFramesAtFlags(null);
+            return;
+        }
+
+        // ── 单帧 ──
         if (!this._currentDecoder || !this._currentClip) {
             this._setStatus("无视频播放");
             return;
@@ -9339,57 +9872,72 @@ export class XiaozhuguangVideoEditor {
         const offset = this._getClipTlStart(this._currentClip);
         const localTime = this._currentClip.start + (this._tlGlobalTime - offset);
         const t = Math.max(0, localTime);
+
+        let dirHandle = null;
+        if (fsOk) {
+            try {
+                dirHandle = await xzgPickSaveDirectory("frame");
+            } catch (e) {
+                if (e?.name === "AbortError") { this._setStatus("已取消导出"); return; }
+            }
+        }
+        let mode = "default";
+        if (!dirHandle) {
+            mode = await _xzgVeFrameExportDialog(!!this._baseDir);
+            if (!mode) return;
+        }
+
         this._setStatus(`导出 ${_fmtTime(t)} 处单帧...`);
-        const isCustom = (mode === "custom");
         const payload = {
             filename: this._currentClip.filename,
             type: this._currentClip.type,
             time: t,
             small: false,
-            use_default_output: !isCustom,
-            output_mode: mode,
+            use_default_output: true,
+            output_mode: "default",
         };
-        if (isCustom) {
-            payload.base_dir = this._baseDir || "";
-            payload.filename_prefix = this._filenamePrefix || "xzg-edit";
-            payload.add_date_stamp = this._addDateStamp;
-            payload.add_time_stamp = this._addTimeStamp;
-            if (!this._baseDir) {
-                this._setStatus("请先点击\"输出目录设置\"选择输出目录");
-                return;
-            }
-        }
         try {
             const data = await _postJson(API_EXTRACT, payload);
             if (data.error) throw new Error(data.error);
-            const display = data.filename || "(未命名)";
-            if (data.type === "output") {
+            if (dirHandle) {
+                // 取回生成的帧并写入用户选择的目录
+                const blob = await this._fetchViewBlob(data);
+                const name = (data.filename || "").split("/").pop() || "frame.png";
+                await xzgWriteBlobToDir(dirHandle, name, blob);
+                this._setStatus(`✅ 已导出静帧: ${name}（已保存到所选目录）`);
+            } else {
+                const display = data.filename || "(未命名)";
                 const sub = data.subfolder ? `/${data.subfolder}` : "";
                 this._setStatus(`✅ 已导出静帧: output${sub}/${display}`);
-            } else if (data.type === "absolute") {
-                this._setStatus(`✅ 已导出静帧: ${display}`);
-            } else {
-                this._setStatus(`已导出静帧: ${display}`);
             }
         } catch (e) {
             this._setStatus(`导出失败: ${e.message}`);
         }
     }
 
+    // 取回后端生成的文件内容（/view 接口 → Blob），供写入用户选择的目录
+    async _fetchViewBlob(data) {
+        const sub = data.subfolder ? `&subfolder=${encodeURIComponent(data.subfolder)}` : "";
+        const url = api.apiURL(
+            `/view?filename=${encodeURIComponent(data.filename)}&type=${encodeURIComponent(data.type || "output")}${sub}${app.getRandParam()}`
+        );
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return await resp.blob();
+    }
+
     // 批量导出所有旗标位置的帧
-    async _exportFramesAtFlags(mode) {
+    // dirHandle: 目录 handle（另存为模式，逐帧写入用户选择的目录）；null = 保存到 output 目录
+    async _exportFramesAtFlags(dirHandle = null) {
         const flags = this._markerFlags;
         if (flags.length === 0) return;
-        const isCustom = (mode === "custom");
-        if (isCustom && !this._baseDir) {
-            this._setStatus("请先点击\"输出目录设置\"选择输出目录");
-            return;
-        }
         let success = 0;
         let failed = 0;
         for (let i = 0; i < flags.length; i++) {
             const f = flags[i];
-            this._setStatus(`导出旗标 ${i + 1}/${flags.length} (${_fmtTime(f.time)})...`);
+            this._setStatus(dirHandle
+                ? `导出旗标 ${i + 1}/${flags.length} (${_fmtTime(f.time)}) → 所选目录...`
+                : `导出旗标 ${i + 1}/${flags.length} (${_fmtTime(f.time)})...`);
             const found = this._findClipByGlobalTime(f.time);
             if (!found || found.clip.kind === "audio") {
                 failed++;
@@ -9404,26 +9952,25 @@ export class XiaozhuguangVideoEditor {
                 type: clip.type,
                 time: t,
                 small: false,
-                use_default_output: !isCustom,
-                output_mode: mode,
+                use_default_output: true,
+                output_mode: "default",
             };
-            if (isCustom) {
-                payload.base_dir = this._baseDir || "";
-                payload.filename_prefix = this._filenamePrefix || "xzg-edit";
-                payload.add_date_stamp = this._addDateStamp;
-                payload.add_time_stamp = this._addTimeStamp;
-            }
             try {
                 const data = await _postJson(API_EXTRACT, payload);
                 if (data.error) throw new Error(data.error);
-                // 批量导出：静默保存到 output 目录，不弹另存为对话框
+                if (dirHandle) {
+                    // 写入用户选择的目录（output 里的副本作为缓存保留）
+                    const blob = await this._fetchViewBlob(data);
+                    const name = (data.filename || "").split("/").pop() || `flag_${i + 1}.png`;
+                    await xzgWriteBlobToDir(dirHandle, name, blob);
+                }
                 success++;
             } catch (e) {
                 failed++;
                 console.warn("[小珠光] 旗标导出失败:", e);
             }
         }
-        this._setStatus(`✅ 旗标导出完成: ${success} 成功${failed > 0 ? `, ${failed} 失败` : ""}`);
+        this._setStatus(`✅ 旗标导出完成: ${success} 成功${failed > 0 ? `, ${failed} 失败` : ""}${dirHandle ? "（已保存到所选目录）" : ""}`);
     }
 
     // 用首个片段的原分辨率填充宽高输入框（首个片段加入时间线时调用）
@@ -9593,7 +10140,322 @@ export class XiaozhuguangVideoEditor {
         } catch (_) {}
     }
 
-    async _render() {
+    // ═══════════════════════════════════════════════════════════
+    //  导出菜单：当前片段 / 所有片段 / 整个视频
+    // ═══════════════════════════════════════════════════════════
+
+    // 「当前片段」：优先取唯一选中的片段，否则取播放头所在片段
+    _getCurrentExportClip() {
+        if (this.selectedClipIds.size === 1) {
+            const c = this.timeline.find(c => this.selectedClipIds.has(c.id));
+            if (c) return c;
+        }
+        const found = this._findClipByGlobalTime(this._tlGlobalTime || 0);
+        return found ? found.clip : null;
+    }
+
+    // 单片段（含其下音频）的子时间线渲染数据：整体平移到 0 起点导出。
+    // 配对原则（位置匹配）：视频正下方对应音频轨道（V1↔A1、V2↔A2）上、
+    // 时间范围与视频重叠的音频片段就是该视频的音频——导出时按视频的时间
+    // 范围裁剪音频并对齐到 0，随视频一起渲染。
+    _singleClipTimelineData(clip) {
+        // 纯音频片段：自身平移到 0 即可
+        if (clip.kind === "audio") {
+            return _buildTimelineData([{ ...clip, tlStart: 0, audioTlStart: 0 }]);
+        }
+        const base = clip.tlStart != null ? clip.tlStart : 0;
+        const vDur = Math.max(0.05, (clip.end - clip.start));
+        const list = [{ ...clip, tlStart: 0 }];
+        // 对应音频轨道：V1↔A1、V2↔A2
+        const vTrack = clip.track || "v1";
+        const aTrack = vTrack === "v2" ? "a2" : "a1";
+        for (const ac of this.timeline) {
+            if (ac.id === clip.id || ac.kind !== "audio") continue;
+            if ((ac.track || "a1") !== aTrack) continue;
+            const aTl = ac.audioTlStart != null ? ac.audioTlStart : 0;
+            const aDur = Math.max(0, ac.end - ac.start);
+            // 音频片段在「视频起点 = 0」坐标系下的重叠区间
+            const segStart = Math.max(0, aTl - base);
+            const segEnd = Math.min(vDur, aTl + aDur - base);
+            if (segEnd - segStart <= 0.05) continue;  // 无实际重叠
+            // 源媒体时间按 1:1 换算裁剪
+            const srcOffset = segStart - (aTl - base);
+            list.push({
+                ...ac,
+                start: ac.start + srcOffset,
+                end: ac.start + srcOffset + (segEnd - segStart),
+                audioTlStart: segStart,
+            });
+        }
+        return _buildTimelineData(list);
+    }
+
+    _showExportMenu() {
+        this._hideExportMenu();
+        const btn = this._root.querySelector(".xzg-ve-btn-apply");
+        const cur = this._getCurrentExportClip();
+        const menu = document.createElement("div");
+        menu.style.cssText = "position:fixed;z-index:400;min-width:200px;padding:4px;" +
+            "background:#232323;border:1px solid #4a4a4a;border-radius:8px;" +
+            "box-shadow:0 8px 28px rgba(0,0,0,0.55);color:#ddd;font-size:12px;user-select:none;";
+        const addItem = (label, disabled, fn) => {
+            const it = document.createElement("div");
+            it.textContent = label;
+            it.style.cssText = "padding:7px 12px;border-radius:5px;" +
+                (disabled ? "color:#666;cursor:default;" : "color:#ddd;cursor:pointer;");
+            if (!disabled) {
+                it.addEventListener("mouseenter", () => { it.style.background = "#3a3a3a"; });
+                it.addEventListener("mouseleave", () => { it.style.background = ""; });
+                it.addEventListener("click", () => { this._hideExportMenu(); fn(); });
+            }
+            menu.appendChild(it);
+        };
+        addItem("导出当前片段", !cur, () => this._render("current"));
+        addItem("导出所有片段", this.timeline.length === 0, () => this._exportAllClips());
+        addItem("导出视频（整个时间线）", this.timeline.length === 0, () => this._render("video"));
+        this._root.appendChild(menu);
+        const r = btn.getBoundingClientRect();
+        menu.style.top = (r.bottom + 6) + "px";
+        menu.style.left = Math.max(8, r.right - menu.offsetWidth) + "px";
+        this._exportMenuEl = menu;
+        const close = (ev) => {
+            if (menu.contains(ev.target) || btn.contains(ev.target)) return;
+            this._hideExportMenu();
+        };
+        this._exportMenuClose = close;
+        document.addEventListener("mousedown", close, true);
+    }
+
+    _hideExportMenu() {
+        if (this._exportMenuEl) { this._exportMenuEl.remove(); this._exportMenuEl = null; }
+        if (this._exportMenuClose) {
+            document.removeEventListener("mousedown", this._exportMenuClose, true);
+            this._exportMenuClose = null;
+        }
+    }
+
+    // 导出所有片段：每个片段（含配对音频）单独渲染为一个文件
+    async _exportAllClips() {
+        const btn = this._root.querySelector(".xzg-ve-btn-apply");
+        btn.disabled = true;
+        btn.textContent = "导出中...";
+        try {
+            // 渲染需要服务端文件就绪：等待后台上传完成
+            await this._waitForUploads();
+            // 先选目标文件夹（批量一次）；环境不支持则保存到 ComfyUI output 目录
+            let dirHandle = null;
+            if (typeof window.showDirectoryPicker === "function") {
+                try { dirHandle = await xzgPickSaveDirectory("video"); }
+                catch (e) {
+                    if (e?.name === "AbortError") { this._setStatus("已取消导出"); return; }
+                }
+            }
+            if (!dirHandle) {
+                this._setStatus("当前环境不支持选择目录，各片段将保存到 ComfyUI output 目录");
+            }
+            const base = this._buildRenderOpts("default");
+            // 片段筛选规则：
+            //   视频格式（默认）→ 只导出视频片段；视频下面的音频（配对音频）只要存在
+            //   就算该视频的音频，随视频文件一起导出，绝不单独导出。
+            //   音频格式（格式下拉切到 MP3 等）→ 视频片段导出其音轨；配对音频仍不单独
+            //   导出（避免与视频音轨重复），只有独立拖入的纯音频素材才单独导出。
+            const audioMode = !!base.audioOnly;
+            const hasPairedVideo = (c) => c.pairedWith != null &&
+                this.timeline.some(v => v.id === c.pairedWith && v.kind !== "audio");
+            const videoClips = this.timeline.filter(c => c.kind !== "audio")
+                .sort((a, b) => (a.tlStart != null ? a.tlStart : 0) - (b.tlStart != null ? b.tlStart : 0));
+            const standaloneAudio = this.timeline.filter(c => c.kind === "audio" && !hasPairedVideo(c))
+                .sort((a, b) => (a.audioTlStart != null ? a.audioTlStart : 0) - (b.audioTlStart != null ? b.audioTlStart : 0));
+            const targets = audioMode ? [...videoClips, ...standaloneAudio] : videoClips;
+            if (targets.length === 0) {
+                this._setStatus("时间线为空");
+                return;
+            }
+            this._progressStart();  // 批量模式：进度按完成数推进
+            let success = 0, failed = 0;
+            const usedNames = new Set();
+            for (let i = 0; i < targets.length; i++) {
+                const clip = targets[i];
+                const isAudioClip = clip.kind === "audio";
+                this._setStatus(`导出片段 ${i + 1}/${targets.length}: ${clip.name || clip.filename}...`);
+                try {
+                    const renderOpts = { ...base.renderOpts, timeline: this._singleClipTimelineData(clip) };
+                    // 音频模式下视频片段导出的也是音轨（renderOpts.audio_only 已为 true）
+                    const fileIsAudio = isAudioClip || base.audioOnly;
+                    const ext = fileIsAudio ? ((base.audioFormat || "mp3").toLowerCase()) : "mp4";
+                    if (fileIsAudio && !renderOpts.audio_only) {
+                        // 防御：纯音频片段在视频格式下强制按音频导出（避免渲成黑屏视频）
+                        delete renderOpts.quality;
+                        renderOpts.audio_only = true;
+                        renderOpts.audio_format = base.audioFormat || "mp3";
+                        if (!renderOpts.audio_bitrate) renderOpts.audio_bitrate = "320";
+                    }
+                    const data = await _postJson(API_RENDER, renderOpts);
+                    if (data.error) throw new Error(data.error);
+                    if (dirHandle) {
+                        const blob = await this._fetchViewBlob(data);
+                        // 文件名 = 片段名（已是 原名_编号 形式）+ 导出扩展名；重名时追加序号
+                        const stem = (clip.name || "clip").replace(/\.[^.]+$/, "") || "clip";
+                        let fname = `${stem}.${ext}`;
+                        let n = 1;
+                        while (usedNames.has(fname)) { fname = `${stem}_${n++}.${ext}`; }
+                        usedNames.add(fname);
+                        await xzgWriteBlobToDir(dirHandle, fname, blob);
+                    }
+                    success++;
+                } catch (e) {
+                    failed++;
+                    console.warn("[小珠光] 片段导出失败:", e);
+                }
+                this._progressSet(((i + 1) / targets.length) * 100);
+            }
+            this._progressStop(true);
+            this._setStatus(`✅ 片段导出完成: ${success} 成功${failed > 0 ? `, ${failed} 失败` : ""}` +
+                (dirHandle ? "（已保存到所选目录）" : "（已保存到 ComfyUI output 目录）"));
+        } finally {
+            this._progressStop();
+            btn.disabled = false;
+            btn.textContent = "导出";
+        }
+    }
+
+    // 重命名核心：按列表顺序给片段改名（原名称 + 后缀编号，编号插在扩展名前，
+    // 导出时按格式替换扩展名后编号仍保留）；配对音频与视频同名同序号；
+    // 新名字避开列表外片段已占用的名字。返回重命名的片段数。
+    _renameClipsUnique(ordered) {
+        const byId = new Map(ordered.map(c => [c.id, c]));
+        const used = new Set(this.timeline
+            .filter(cl => !byId.has(cl.id))
+            .map(cl => cl.name));
+        const done = new Set();
+        let renamed = 0;
+        let idx = 1;
+        for (const c of ordered) {
+            if (done.has(c.id)) continue;
+            const rawName = c.name || "clip";
+            const dot = rawName.lastIndexOf(".");
+            const stem = (dot > 0 ? rawName.slice(0, dot) : rawName).replace(/_\d+$/, "") || "clip";
+            const extPart = dot > 0 ? rawName.slice(dot) : "";
+            let newName;
+            do {
+                newName = `${stem}_${String(idx).padStart(2, "0")}${extPart}`;
+                idx++;
+            } while (used.has(newName));
+            used.add(newName);
+            c.name = newName;
+            done.add(c.id);
+            renamed++;
+            // 配对音频片段与视频同名同序号
+            if (c.pairedWith != null) {
+                const ac = byId.get(c.pairedWith);
+                if (ac) { ac.name = newName; done.add(ac.id); }
+            }
+        }
+        return renamed;
+    }
+
+    // 右键菜单「自动重命名」：对选中片段（无选中则为右键片段）按时间线顺序重命名
+    _autoRenameSelected() {
+        let sel = this.timeline.filter(cl => this.selectedClipIds.has(cl.id));
+        if (sel.length === 0 && this._ctxMenu?.dataset.clipId) {
+            const id = parseInt(this._ctxMenu.dataset.clipId);
+            const c = this.timeline.find(cl => cl.id === id);
+            if (c) sel = [c];
+        }
+        if (sel.length === 0) {
+            this._setStatus("请先选中要重命名的片段（Ctrl+A 全选，或框选/多选）");
+            return;
+        }
+        const ordered = [...sel].sort((a, b) => {
+            const pa = a.kind === "audio" ? (a.audioTlStart != null ? a.audioTlStart : 0) : (a.tlStart != null ? a.tlStart : 0);
+            const pb = b.kind === "audio" ? (b.audioTlStart != null ? b.audioTlStart : 0) : (b.tlStart != null ? b.tlStart : 0);
+            return pa - pb;
+        });
+        const renamed = this._renameClipsUnique(ordered);
+        this._renderTimeline();
+        this._renderProps();
+        this._setStatus(`已自动重命名 ${renamed} 个片段（原名称 + 序号，避免导出重名）`);
+    }
+
+    // ── 导出进度条：编辑器顶部 3px 金色细条 ──
+    // estimateSec: 预估渲染秒数 → 进度随时间渐近推进（封顶 95%，完成后跳 100%）；
+    // null = 无估算（批量导出走 _progressSet 按完成数推进）
+    _progressStart(estimateSec = null) {
+        this._progressStop();
+        const bar = document.createElement("div");
+        bar.style.cssText = "position:fixed;left:0;top:0;height:3px;width:0%;" +
+            "background:linear-gradient(90deg,#15803d,#4ade80);z-index:400;" +
+            "transition:width .3s ease;pointer-events:none;";
+        this._root.appendChild(bar);
+        this._progressBar = bar;
+        this._progressT0 = Date.now();
+        if (estimateSec) {
+            this._progressTimer = setInterval(() => {
+                const elapsed = (Date.now() - this._progressT0) / 1000;
+                this._progressSet(Math.min(95, (elapsed / estimateSec) * 100));
+            }, 300);
+        }
+    }
+
+    _progressSet(pct) {
+        if (this._progressTimer) { clearInterval(this._progressTimer); this._progressTimer = null; }
+        if (this._progressBar) {
+            this._progressBar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+        }
+    }
+
+    _progressStop(done = false) {
+        if (this._progressTimer) { clearInterval(this._progressTimer); this._progressTimer = null; }
+        const bar = this._progressBar;
+        if (!bar) return;
+        this._progressBar = null;
+        if (done) {
+            bar.style.width = "100%";
+            setTimeout(() => bar.remove(), 500);
+        } else {
+            bar.remove();
+        }
+    }
+
+    // 编辑器内消息对话框（替代浏览器 alert，风格统一）：确定按钮 / 点遮罩关闭
+    _showMessageDialog(msg) {
+        this._root.querySelector(".xzg-ve-msg-dlg")?.remove();
+        const overlay = document.createElement("div");
+        overlay.className = "xzg-ve-msg-dlg";
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;" +
+            "display:flex;align-items:center;justify-content:center;";
+        const dlg = document.createElement("div");
+        dlg.style.cssText = "background:#232323;border:1px solid #4a4a4a;border-top:2px solid #d4af37;" +
+            "border-radius:8px;padding:18px 22px;min-width:300px;max-width:80%;" +
+            "box-shadow:0 8px 32px rgba(0,0,0,0.6);color:#ddd;font-size:13px;";
+        const text = document.createElement("div");
+        text.style.cssText = "margin-bottom:14px;line-height:1.6;";
+        text.textContent = msg;
+        const btn = document.createElement("button");
+        btn.textContent = "确定";
+        btn.style.cssText = "display:block;margin:0 auto;padding:6px 24px;background:#d4af37;color:#1e1e1e;" +
+            "border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;";
+        btn.onclick = () => overlay.remove();
+        dlg.appendChild(text);
+        dlg.appendChild(btn);
+        overlay.appendChild(dlg);
+        overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) overlay.remove(); });
+        this._root.appendChild(overlay);
+        btn.focus();
+    }
+
+    // 等待后台媒体上传完成（导出渲染需要服务端文件就绪），最长等 3 分钟
+    async _waitForUploads() {
+        if (!(this._uploadingCount > 0)) return;
+        let waited = 0;
+        while (this._uploadingCount > 0 && waited < 180000) {
+            this._setStatus(`媒体上传中，请稍候（${Math.round(waited / 1000)}s）...`);
+            await new Promise(r => setTimeout(r, 500));
+            waited += 500;
+        }
+    }
+
+    async _render(kind = "video") {
         if (this.timeline.length === 0) {
             this._setStatus("时间线为空");
             return;
@@ -9601,6 +10463,8 @@ export class XiaozhuguangVideoEditor {
         const btn = this._root.querySelector(".xzg-ve-btn-apply");
         btn.disabled = true;
         btn.textContent = "导出中...";
+        // 渲染需要服务端文件就绪：等待后台上传完成
+        await this._waitForUploads();
         // 构造渲染参数（_cancel / silentRender 复用同一方法）
         const { renderOpts, mode, audioOnly, audioFormat, isCustom } = this._buildRenderOpts();
         if (isCustom && !this._baseDir) {
@@ -9609,9 +10473,63 @@ export class XiaozhuguangVideoEditor {
             btn.textContent = "导出";
             return;
         }
+        // 导出当前片段：时间线数据只保留该片段（含配对音频），整体平移到 0
+        let curClip = null;
+        if (kind === "current") {
+            curClip = this._getCurrentExportClip();
+            if (!curClip) {
+                this._setStatus("未找到可导出的片段");
+                btn.disabled = false;
+                btn.textContent = "导出";
+                return;
+            }
+            renderOpts.timeline = this._singleClipTimelineData(curClip);
+        }
         const tlCount = renderOpts.timeline ? renderOpts.timeline.length : 0;
         const kindLabel = audioOnly ? `音频 ${(audioFormat || "").toUpperCase()}` : "视频 MP4";
-        this._setStatus(`正在导出 ${kindLabel} · ${tlCount} 个片段...`);
+        // 另存为：必须在「点击导出」的用户激活期内先弹保存对话框拿文件 handle，
+        // 渲染完直接写入该位置。渲染（长耗时）结束后再弹窗会因激活过期被浏览器
+        // 拒绝（SecurityError），导致静默降级成普通下载到默认下载目录。
+        let saveHandle = null;
+        if (mode === "saveas") {
+            const ext = audioOnly ? ((audioFormat || "mp3").toLowerCase()) : "mp4";
+            // 单片段导出：建议文件名带源时间码（时-分-秒），同素材切出的多段不会重名
+            const tc = (sec) => {
+                const s = Math.max(0, sec || 0);
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                const ss = Math.floor(s % 60);
+                const p = (n) => String(n).padStart(2, "0");
+                return (h > 0 ? `${p(h)}-` : "") + `${p(m)}-${p(ss)}`;
+            };
+            const baseName = (kind === "current" && curClip)
+                ? ((curClip.name || "clip").replace(/\.[^.]+$/, "") || "clip") + "_" + tc(curClip.start)
+                : "xzg-edit";
+            const suggestedName = `${baseName}.${ext}`;
+            try {
+                saveHandle = await xzgPickSaveHandle(audioOnly ? "audio" : "video", suggestedName);
+            } catch (pickErr) {
+                if (pickErr?.name === "AbortError") {
+                    // 用户关掉了另存为对话框 → 中止本次导出
+                    btn.disabled = false;
+                    btn.textContent = "导出";
+                    this._setStatus("已取消导出");
+                    return;
+                }
+                saveHandle = null;
+            }
+            if (!saveHandle) {
+                this._setStatus("当前环境不支持选择保存位置（需 Chrome/Edge 且通过 localhost 或 HTTPS 访问），将直接下载到浏览器默认下载目录");
+            } else {
+                this._setStatus(`正在导出 ${kindLabel} · ${tlCount} 个片段...（完成后自动保存到所选位置）`);
+            }
+        }
+        if (!saveHandle) {
+            this._setStatus(`正在导出 ${kindLabel} · ${tlCount} 个片段...`);
+        }
+        // 进度条：按时间线总时长估算渲染耗时（音频快得多），渐近推进封顶 95%
+        const totalDur = (renderOpts.timeline || []).reduce((a, c) => a + Math.max(0, ((c.end - c.start) || 0)), 0);
+        this._progressStart(Math.max(3, totalDur * (audioOnly ? 0.3 : 2)));
         try {
             const data = await _postJson(API_RENDER, renderOpts);
             if (data.error) throw new Error(data.error);
@@ -9627,9 +10545,9 @@ export class XiaozhuguangVideoEditor {
                         `/view?filename=${encodeURIComponent(fname)}&type=${encodeURIComponent(data.type || "output")}${viewSub}${app.getRandParam()}`
                     );
                     if (saveasAudioOnly) {
-                        await downloadAudio(viewUrl, rawName);
+                        await downloadAudio(viewUrl, rawName, { fileHandle: saveHandle });
                     } else {
-                        await downloadVideo(viewUrl, rawName);
+                        await downloadVideo(viewUrl, rawName, { fileHandle: saveHandle });
                     }
                     this._setStatus(`✅ 已导出${saveasAudioOnly ? "音频" : ""}: ${rawName} （另存为完成）`);
                 } catch (dlErr) {
@@ -9646,6 +10564,7 @@ export class XiaozhuguangVideoEditor {
                 else locLabel = this._baseDir || "output 目录";
                 this._setStatus(`✅ 已导出${saveasAudioOnly ? "音频" : ""}: ${data.filename} （保存到 ${locLabel}）`);
             }
+            this._progressStop(true);
             // 通知外部（视频加载器 / 音频加载器等注册的回调），与静默导出一致
             if (typeof window._xzgOnVideoEditorExport === 'function') {
                 try {
@@ -9669,6 +10588,7 @@ export class XiaozhuguangVideoEditor {
             btn.disabled = false;
             btn.textContent = "导出";
         } catch (e) {
+            this._progressStop(false);
             this._setStatus(`导出失败: ${e.message}`);
             btn.disabled = false;
             btn.textContent = "导出";
@@ -9676,7 +10596,8 @@ export class XiaozhuguangVideoEditor {
     }
 
     async _cancel() {
-        // 有回调 → 来自视频加载器/音频加载器：点"确认"执行导出并回传，再关闭
+        // 有回调 → 来自视频加载器/音频加载器：点"确认"弹出菜单，选择回传范围
+        //   （当前片段 / 整个时间线），导出后回传给加载器，再关闭
         // 无回调 → 直接打开：点"确认"仅关闭窗口
         if (this._confirmCallback) {
             const cancelBtn = this._root?.querySelector(".xzg-ve-btn-cancel");
@@ -9687,34 +10608,155 @@ export class XiaozhuguangVideoEditor {
                 this.close();
                 return;
             }
-            // 按钮进入加载态
-            if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = "确认中..."; }
-            try {
-                // 使用输出目录固定 default（保证文件一定在 ComfyUI output 中，加载器/view 都能访问）
-                const { renderOpts, audioOnly, audioFormat } = this._buildRenderOpts("default");
-                const kindLabel = audioOnly ? `音频 ${(audioFormat || "").toUpperCase()}` : "视频 MP4";
-                this._setStatus(`正在为确认回调导出 ${kindLabel}...`);
-                const data = await _postJson(API_RENDER, renderOpts);
-                if (data.error) throw new Error(data.error);
-                // 调用外部回调（视频/音频加载器注册的接收函数）——传完整 data
-                if (typeof window._xzgOnVideoEditorExport === 'function') {
-                    try { window._xzgOnVideoEditorExport(data); }
-                    catch (e) { console.warn("[小珠光] 导出回调异常:", e); }
-                }
-                // 调用实例回调
-                this._confirmCallbackCalled = true;
-                try { this._confirmCallback(data); } catch (_) {}
-                this.close();
-            } catch (e) {
-                this._setStatus(`确认导出失败: ${e.message}`);
-                if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = "确认"; }
-                this._confirmCallbackCalled = true;
-                try { this._confirmCallback({ error: e.message }); } catch (_) {}
-            }
+            this._showConfirmMenu(cancelBtn);
         } else {
             // 直接打开 → 仅关闭
             this.close();
         }
+    }
+
+    // 确认回传范围菜单：当前片段 / 整个时间线（向上弹出，紧贴确认按钮）
+    _showConfirmMenu(anchorBtn) {
+        this._hideExportMenu();
+        const cur = this._getCurrentExportClip();
+        const menu = document.createElement("div");
+        menu.style.cssText = "position:fixed;z-index:400;min-width:200px;padding:4px;" +
+            "background:#232323;border:1px solid #4a4a4a;border-radius:8px;" +
+            "box-shadow:0 8px 28px rgba(0,0,0,0.55);color:#ddd;font-size:12px;user-select:none;";
+        const addItem = (label, disabled, fn) => {
+            const it = document.createElement("div");
+            it.textContent = label;
+            it.style.cssText = "padding:7px 12px;border-radius:5px;" +
+                (disabled ? "color:#666;cursor:default;" : "color:#ddd;cursor:pointer;");
+            if (!disabled) {
+                it.addEventListener("mouseenter", () => { it.style.background = "#3a3a3a"; });
+                it.addEventListener("mouseleave", () => { it.style.background = ""; });
+                it.addEventListener("click", () => { this._hideExportMenu(); fn(); });
+            }
+            menu.appendChild(it);
+        };
+        addItem("输出当前片段", !cur, () => this._confirmExport("current"));
+        addItem("输出整个时间线", false, () => this._confirmExport("video"));
+        this._root.appendChild(menu);
+        const r = anchorBtn.getBoundingClientRect();
+        menu.style.top = Math.max(8, r.top - menu.offsetHeight - 6) + "px";
+        menu.style.left = Math.max(8, r.left) + "px";
+        this._exportMenuEl = menu;
+        const close = (ev) => {
+            if (menu.contains(ev.target) || anchorBtn.contains(ev.target)) return;
+            this._hideExportMenu();
+        };
+        this._exportMenuClose = close;
+        document.addEventListener("mousedown", close, true);
+    }
+
+    // 按确认菜单选择导出并回传给加载器
+    // 输出目录固定 default：保证文件一定在 ComfyUI output 中，加载器/view 都能访问
+    async _confirmExport(kind) {
+        this._hideExportMenu();
+        const cancelBtn = this._root?.querySelector(".xzg-ve-btn-cancel");
+        if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = "确认中..."; }
+        try {
+            await this._waitForUploads();
+            const { renderOpts, audioOnly, audioFormat } = this._buildRenderOpts("default");
+            if (kind === "current") {
+                const clip = this._getCurrentExportClip();
+                if (!clip) {
+                    this._setStatus("未找到可返回的片段");
+                    if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = "确认"; }
+                    return;
+                }
+                renderOpts.timeline = this._singleClipTimelineData(clip);
+            }
+            const kindLabel = audioOnly ? `音频 ${(audioFormat || "").toUpperCase()}` : "视频 MP4";
+            const scopeLabel = kind === "current" ? "当前片段" : "整个时间线";
+            this._setStatus(`正在导出${scopeLabel}的${kindLabel}...`);
+            const totalDur = (renderOpts.timeline || []).reduce((a, c) => a + Math.max(0, ((c.end - c.start) || 0)), 0);
+            this._progressStart(Math.max(3, totalDur * (audioOnly ? 0.3 : 2)));
+            const data = await _postJson(API_RENDER, renderOpts);
+            if (data.error) throw new Error(data.error);
+            this._progressStop(true);
+            // 调用外部回调（视频/音频加载器注册的接收函数）——传完整 data
+            if (typeof window._xzgOnVideoEditorExport === 'function') {
+                try { window._xzgOnVideoEditorExport(data); }
+                catch (e) { console.warn("[小珠光] 导出回调异常:", e); }
+            }
+            // 调用实例回调
+            this._confirmCallbackCalled = true;
+            try { this._confirmCallback(data); } catch (_) {}
+            this.close();
+        } catch (e) {
+            this._progressStop(false);
+            this._setStatus(`确认导出失败: ${e.message}`);
+            if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = "确认"; }
+            this._confirmCallbackCalled = true;
+            try { this._confirmCallback({ error: e.message }); } catch (_) {}
+        }
+    }
+
+    // ═══ 化神级保存节点联动：接收保存的视频（送入媒体池 + V2 轨道） ═══
+    // type="output"：ComfyUI output 目录中的文件（resolve_path/probe/渲染均支持）
+    async _receiveExternalMedia(name, type = "output") {
+        // 入库去重
+        if (!this.mediaLibrary.find(m => m.name === name)) {
+            const baseName = name.split("/").pop();
+            this.mediaLibrary.push(this._makeMediaItem(name, type, baseName));
+        }
+        const media = this.mediaLibrary.find(m => m.name === name);
+        // 探测拿真实时长/音轨信息（后端 probe 支持 output 类型）
+        let dur = media?.info?.duration || 0;
+        let hasAudio = media?.info?.has_audio === true;
+        if (!dur || media?.probeState === "pending") {
+            try {
+                const resp = await api.fetchApi("/xzg_video_editor_probe", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ filename: name, file_type: type }),
+                });
+                const data = await resp.json();
+                if (!data.error && media) {
+                    media.info = data;
+                    media.probeState = "ok";
+                    media.error = null;
+                }
+                dur = data?.duration || dur;
+                hasAudio = data?.has_audio === true || hasAudio;
+            } catch (_) {}
+        }
+        // V2 轨道：追加到已有内容之后（不覆盖）
+        let start = 0;
+        for (const c of this.timeline) {
+            if (c.kind === "audio" || (c.track || "v1") !== "v2") continue;
+            const end = (c.tlStart != null ? c.tlStart : 0) + (c.end - c.start);
+            if (end > start) start = end;
+        }
+        const baseName = name.split("/").pop();
+        const clip = {
+            id: ++this._clipIdCounter,
+            filename: name, type, name: baseName,
+            start: 0, end: dur > 0 ? dur : 60,
+            sourceDuration: dur, durationPending: !(dur > 0),
+            borderColor: "", tlStart: start, audioTlStart: start,
+            kind: "video", track: "v2", volume: 1,
+        };
+        this.timeline.push(clip);
+        // 含音轨 → 配对音频跟随（A2 对齐），预览播放有声；skip_audio 防止导出双重混音
+        if (hasAudio) {
+            const ac = {
+                id: ++this._clipIdCounter,
+                filename: name, type, name: baseName,
+                start: 0, end: dur > 0 ? dur : 60,
+                sourceDuration: dur, durationPending: !(dur > 0),
+                borderColor: "", tlStart: null, audioTlStart: start,
+                kind: "audio", track: "a2", volume: 1,
+            };
+            clip.pairedWith = ac.id;
+            ac.pairedWith = clip.id;
+            clip.skip_audio = true;
+            this.timeline.push(ac);
+        }
+        this._renderTimeline();
+        this._setStatus(`已从化神级保存节点接收: ${baseName}（V2 @${_fmtTime(start)}${hasAudio ? "，含音频" : ""}）`);
     }
 
     // 保存输出目录设置到 localStorage
@@ -9869,4 +10911,16 @@ async function _xzgVideoEditorSilentRender() {
 // 暴露到 window 供外部调用
 window._xzgVideoEditor = {
     silentRender: _xzgVideoEditorSilentRender,
+};
+
+// 化神级保存节点联动：把保存的视频送入快剪媒体池。
+// 快剪已打开 → 同时落到 V2 轨道（追加在现有内容之后，不覆盖）；
+// 未打开 → 仅加入媒体池（下次打开快剪即可在媒体库看到）。
+window._xzgVideoEditorReceiveMedia = function (name, type = "output") {
+    const inst = window._xzgVideoEditorInstance;
+    if (inst && !inst._destroyed && typeof inst._receiveExternalMedia === "function") {
+        return inst._receiveExternalMedia(name, type).then(() => ({ added: true }));
+    }
+    _xzgVeAddSessionMedia(name, type);
+    return Promise.resolve({ added: false, pooled: true });
 };

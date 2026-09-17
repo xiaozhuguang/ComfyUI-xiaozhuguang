@@ -84,12 +84,95 @@ async function _xzgLoadDirHandle(fileType) {
 })();
 
 /**
+ * 预选保存位置（在用户点击的同步上下文中立即调用！）。
+ * showSaveFilePicker 要求用户激活（transient activation，约 5 秒内有效），
+ * 若先渲染（长耗时）再弹窗会直接 SecurityError → 只能降级普通下载。
+ * 正确姿势：点击按钮时先拿文件 handle，渲染完成后把 blob 写入该 handle。
+ *
+ * @param {'image'|'video'|'audio'} fileType - 文件类型（记忆目录 + MIME）
+ * @param {string} filename - 建议文件名（含扩展名）
+ * @returns {Promise<FileSystemFileHandle|null>}
+ *    handle = 用户选好的保存位置；null = 环境不支持（非安全上下文/旧浏览器）
+ * @throws {AbortError} 用户关闭了另存为对话框（调用方应中止导出）
+ */
+export async function xzgPickSaveHandle(fileType, filename) {
+    if (typeof window.showSaveFilePicker !== "function") return null;
+    const ext = (filename || "").split(".").pop()?.toLowerCase() || "mp4";
+    const mimeMaps = { image: IMAGE_MIME_MAP, video: VIDEO_MIME_MAP, audio: AUDIO_MIME_MAP };
+    const descMap = { image: "图片文件", video: "视频文件", audio: "音频文件" };
+    const mimeType = mimeMaps[fileType]?.[ext] || "application/octet-stream";
+    try {
+        const pickerOpts = {
+            suggestedName: filename || `xzg-save.${ext}`,
+            types: [{
+                description: descMap[fileType] || "文件",
+                accept: { [mimeType]: ["." + ext] },
+            }],
+            // 浏览器原生记忆同一 id 上次使用的目录（跨刷新有效）
+            id: "xzg_" + fileType,
+        };
+        const lastHandle = LAST_FOLDER[fileType];
+        pickerOpts.startIn = (lastHandle && lastHandle.kind === "directory") ? lastHandle : "desktop";
+        const handle = await window.showSaveFilePicker(pickerOpts);
+        // 记忆本次保存位置（file handle 下次作为 startIn 可定位同目录）
+        try {
+            LAST_FOLDER[fileType] = handle;
+            _xzgSaveDirHandle(fileType, handle);
+        } catch (_) {}
+        return handle;
+    } catch (e) {
+        if (e?.name === "AbortError") throw e;  // 用户取消 → 调用方中止
+        return null;  // 其他错误（非安全上下文/权限）→ 调用方走降级下载
+    }
+}
+
+/**
+ * 预选保存目录（在用户点击的同步上下文中立即调用！）。
+ * 适合批量导出：选一次目标文件夹，之后逐个文件直接写入。
+ * @returns {Promise<FileSystemDirectoryHandle|null>}
+ *    目录 handle；null = 环境不支持（非安全上下文/旧浏览器）
+ * @throws {AbortError} 用户关闭了目录选择对话框（调用方应中止导出）
+ */
+export async function xzgPickSaveDirectory(fileType = "video") {
+    if (typeof window.showDirectoryPicker !== "function") return null;
+    try {
+        const opts = { id: "xzg_dir_" + fileType, mode: "readwrite" };
+        const lastHandle = LAST_FOLDER["dir_" + fileType];
+        opts.startIn = (lastHandle && lastHandle.kind === "directory") ? lastHandle : "desktop";
+        const dirHandle = await window.showDirectoryPicker(opts);
+        try {
+            LAST_FOLDER["dir_" + fileType] = dirHandle;
+            _xzgSaveDirHandle("dir_" + fileType, dirHandle);
+        } catch (_) {}
+        return dirHandle;
+    } catch (e) {
+        if (e?.name === "AbortError") throw e;  // 用户取消 → 调用方中止
+        return null;  // 其他错误（非安全上下文/权限）→ 调用方走降级
+    }
+}
+
+/**
+ * 把 Blob 写入已选目录（文件名冲突时覆盖）
+ * @param {FileSystemDirectoryHandle} dirHandle - xzgPickSaveDirectory 返回的目录
+ * @param {string} filename - 文件名（不含路径）
+ * @param {Blob} blob - 文件内容
+ */
+export async function xzgWriteBlobToDir(dirHandle, filename, blob) {
+    const fh = await dirHandle.getFileHandle(filename, { create: true });
+    const writable = await fh.createWritable();
+    await writable.write(blob);
+    await writable.close();
+}
+
+/**
  * 通用下载函数：File System Access API + 降级方案
  * @param {string} url - 资源 URL
  * @param {string} filename - 建议文件名（含扩展名）
  * @param {'image'|'video'|'audio'} fileType - 文件类型，用于记忆文件夹和设置 MIME
+ * @param {object} [opts] - { fileHandle: FileSystemFileHandle }
+ *   预先选好的保存位置（由 xzgPickSaveHandle 在点击时获取）；提供时不再弹窗
  */
-export async function xzgDownload(url, filename, fileType = "image") {
+export async function xzgDownload(url, filename, fileType = "image", opts = {}) {
     if (!url) return;
 
     try {
@@ -107,46 +190,49 @@ export async function xzgDownload(url, filename, fileType = "image") {
 
         // ─── File System Access API（优先） ──────────────────────
         if (typeof window.showSaveFilePicker === "function") {
-            try {
-                const pickerOpts = {
-                    suggestedName: filename || `xzg-save.${ext}`,
-                    types: [{
-                        description,
-                        accept: { [mimeType]: ["." + ext] },
-                    }],
-                };
+            let handle = opts.fileHandle || null;
+            if (!handle) {
+                // 现场弹窗：仅适合点击后立刻调用的场景（需要用户激活）
+                try {
+                    const pickerOpts = {
+                        suggestedName: filename || `xzg-save.${ext}`,
+                        types: [{
+                            description,
+                            accept: { [mimeType]: ["." + ext] },
+                        }],
+                    };
 
-                // 路径记忆策略：
-                // 1. id 属性 — 浏览器原生记忆同一 id 上次使用的目录（最可靠，跨刷新有效）
-                // 2. startIn + IndexedDB 存储的 directory handle — 补充记忆
-                pickerOpts.id = "xzg_" + fileType;
+                    // 路径记忆策略：
+                    // 1. id 属性 — 浏览器原生记忆同一 id 上次使用的目录（最可靠，跨刷新有效）
+                    // 2. startIn + IndexedDB 存储的 directory handle — 补充记忆
+                    pickerOpts.id = "xzg_" + fileType;
 
-                const lastHandle = LAST_FOLDER[fileType];
-                if (lastHandle && lastHandle.kind === "directory") {
-                    pickerOpts.startIn = lastHandle;
-                } else {
-                    pickerOpts.startIn = "desktop";
+                    const lastHandle = LAST_FOLDER[fileType];
+                    if (lastHandle && lastHandle.kind === "directory") {
+                        pickerOpts.startIn = lastHandle;
+                    } else {
+                        pickerOpts.startIn = "desktop";
+                    }
+
+                    handle = await window.showSaveFilePicker(pickerOpts);
+                } catch (e) {
+                    // 用户取消对话框 → 静默返回，不降级
+                    if (e?.name === "AbortError") return;
+                    // 其他错误（权限不足等）→ 继续降级
                 }
-
-                const handle = await window.showSaveFilePicker(pickerOpts);
-
-                // 保存文件后，尝试获取父目录 handle 持久化到 IndexedDB
-                // FileSystemFileHandle 没有标准的 .parent，但可通过 showDirectoryPicker + resolve 验证
-                // 这里用最简方案：保存 file handle 本身，下次作为 startIn 也能定位到同目录
+            }
+            if (handle) {
+                // 保存文件后，把 handle 记忆到内存 + IndexedDB（下次定位同目录）
                 try {
                     LAST_FOLDER[fileType] = handle;
                     _xzgSaveDirHandle(fileType, handle);
                 } catch (_) {}
-
                 const writable = await handle.createWritable();
                 await writable.write(blob);
                 await writable.close();
                 return;
-            } catch (e) {
-                // 用户取消对话框 → 静默返回，不降级
-                if (e?.name === "AbortError") return;
-                // 其他错误（权限不足等）→ 继续降级
             }
+            // handle 为 null：环境不支持或弹窗失败 → 落到降级
         }
 
         // ─── 降级：普通 a.download ──────────────────────────────
@@ -167,8 +253,8 @@ export async function xzgDownload(url, filename, fileType = "image") {
 /**
  * 快捷方法：下载图片（PNG）
  */
-export async function downloadImage(url, filename) {
-    await xzgDownload(url, filename || `xzg-save-${xzgTimestamp()}.png`, "image");
+export async function downloadImage(url, filename, opts = {}) {
+    await xzgDownload(url, filename || `xzg-save-${xzgTimestamp()}.png`, "image", opts);
 }
 
 /**
@@ -181,15 +267,15 @@ export async function downloadJpgImage(url, filename) {
 /**
  * 快捷方法：下载视频
  */
-export async function downloadVideo(url, filename) {
-    await xzgDownload(url, filename || `xzg-video-${xzgTimestamp()}.mp4`, "video");
+export async function downloadVideo(url, filename, opts = {}) {
+    await xzgDownload(url, filename || `xzg-video-${xzgTimestamp()}.mp4`, "video", opts);
 }
 
 /**
  * 快捷方法：下载音频
  */
-export async function downloadAudio(url, filename) {
-    await xzgDownload(url, filename || `xzg-audio-${xzgTimestamp()}.mp3`, "audio");
+export async function downloadAudio(url, filename, opts = {}) {
+    await xzgDownload(url, filename || `xzg-audio-${xzgTimestamp()}.mp3`, "audio", opts);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

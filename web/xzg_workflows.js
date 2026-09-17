@@ -3872,19 +3872,13 @@ class XZGWorkflowsManager {
     }
 
     /**
-     * 重命名后同步更新已打开的工作流（标签名 + 保存路径）。
-     * 否则顶部标签仍显示旧名，保存时会按旧路径再生成一个文件，造成重复。
-     * @param {string} oldXzgPath  小珠光格式旧路径，如 "folder/name"
-     * @param {string} newXzgPath  小珠光格式新路径，如 "folder/newname"
-     * @param {string} newName     新文件名（不含扩展名）
-     * @param {string} [folder]    新分类目录（小珠光格式，空串=未分类）
+     * 旧版前端回退：手改打开标签对象的路径字段。
+     * 注意：这只能改标签对象本身，改不到 openPaths 标签路径列表（store 内部隐藏状态），
+     * 新前端上仍会留"标签关不掉"的隐患 —— 仅作为无官方 renameWorkflow 时的兜底。
      */
-    _syncOpenWorkflowAfterRename(oldXzgPath, newXzgPath, newName, folder) {
+    _patchOpenWorkflowFields(oldFull, newFull, newName, newDir) {
         const wfStore = app.extensionManager?.workflow;
         if (!wfStore?.openWorkflows) return;
-        const oldFull = "workflows/" + oldXzgPath + ".json";
-        const newFull = "workflows/" + newXzgPath + ".json";
-        const newDir = "workflows" + (folder ? "/" + folder : "");
         // 直接修改原对象属性：activeWorkflow 是 openWorkflows 中同一对象的引用，
         // 替换数组会导致 activeWorkflow 仍指向旧对象，标签不更新。
         for (const w of wfStore.openWorkflows) {
@@ -3898,25 +3892,35 @@ class XZGWorkflowsManager {
     }
 
     /**
-     * 分类（文件夹）重命名后，批量同步该文件夹下所有已打开工作流的路径。
+     * 文件夹改名前，把该文件夹下所有「已打开」的工作流先走官方 renameWorkflow。
+     * 必须在服务端文件夹改名之前调用：官方 rename = userdata move（要求旧文件仍在
+     * 磁盘上），服务端整体改名后旧路径就 404 了。官方会一并同步 openPaths 标签列表
+     * （closeWorkflow 按 path 过滤 openPaths，这是"重命名后标签无法关闭"的根治点）、
+     * 注册表、未保存草稿、缩略图、书签。官方 move 会顺带创建新目录。
+     * @returns {Promise<?number>} null=前端无官方 renameWorkflow（旧版，需回退手改补丁）；
+     *                             否则返回成功官方改名的个数（≥0）
      */
-    _syncOpenWorkflowsAfterFolderRename(oldFolder, newFolder) {
+    async _officialRenameOpenInFolder(oldFolder, newFolder) {
         const wfStore = app.extensionManager?.workflow;
-        if (!wfStore?.openWorkflows) return;
+        if (!wfStore || typeof wfStore.renameWorkflow !== "function") return null;
         const oldPrefix = "workflows/" + oldFolder + "/";
         const newPrefix = "workflows/" + newFolder + "/";
-        // 直接修改原对象属性（同 _syncOpenWorkflowAfterRename）
-        for (const w of wfStore.openWorkflows) {
-            if (!w.path || !w.path.startsWith(oldPrefix)) continue;
-            w.path = newPrefix + w.path.slice(oldPrefix.length);
-            // directory 也需要同步：旧目录去掉 oldPrefix 部分后拼到新目录上
-            if (w.directory) {
-                const oldDirPrefix = "workflows/" + oldFolder;
-                if (w.directory.startsWith(oldDirPrefix)) {
-                    w.directory = "workflows/" + newFolder + w.directory.slice(oldDirPrefix.length);
-                }
+        // 先收集目标（openWorkflows 派生自 openPaths，逐个官方重命名时列表会实时变化，不能边遍历边改）
+        const targets = (wfStore.openWorkflows || [])
+            .filter(w => w && w.path && w.path.startsWith(oldPrefix))
+            .map(w => w.path);
+        let count = 0;
+        for (const p of targets) {
+            try {
+                const open = (wfStore.openWorkflows || []).find(w => w && w.path === p);
+                if (!open) continue;
+                await wfStore.renameWorkflow(open, newPrefix + p.slice(oldPrefix.length));
+                count++;
+            } catch (e) {
+                console.warn("[小珠光] 官方重命名失败（打开标签）:", p, e);
             }
         }
+        return count;
     }
 
     async renameWorkflow(wf) {
@@ -3932,15 +3936,33 @@ class XZGWorkflowsManager {
         const newPath = folder + newName;
 
         try {
-            const res = await api.fetchApi("/xzg/workflows/rename", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ oldName: oldPath, newName: newPath })
-            });
+            const oldFull = "workflows/" + oldPath + ".json";
+            const newFull = "workflows/" + newPath + ".json";
+            const wfStore = app.extensionManager?.workflow;
+            // 已打开的工作流：优先走官方 renameWorkflow。
+            // 官方 rename = userdata move（要求旧文件仍在磁盘上），因此必须在插件
+            // 服务端改名之前调用，磁盘改名交由官方完成，随后插件跳过服务端改名。
+            const open = (wfStore?.openWorkflows || []).find(w => w && w.path === oldFull);
+            let officialDone = false;
+            if (open && wfStore && typeof wfStore.renameWorkflow === "function") {
+                try {
+                    await wfStore.renameWorkflow(open, newFull);
+                    officialDone = true;
+                } catch (e) {
+                    console.warn("[小珠光] 官方重命名失败，改走服务端改名:", e);
+                }
+            }
+            if (!officialDone) {
+                const res = await api.fetchApi("/xzg/workflows/rename", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ oldName: oldPath, newName: newPath })
+                });
 
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.error || "重命名失败");
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || "重命名失败");
+                }
             }
 
             if (this.meta.workflows[oldPath]) {
@@ -3950,11 +3972,16 @@ class XZGWorkflowsManager {
             }
 
             await this.loadWorkflows();
-            const wfStore = app.extensionManager?.workflow;
-            if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
-            // 同步已打开的工作流标签名与保存路径，避免保存时生成旧名称重复文件
-            const folderName = wf.folder === "未分类" ? "" : wf.folder;
-            this._syncOpenWorkflowAfterRename(oldPath, newPath, newName, folderName);
+            if (!officialDone) {
+                // 未打开（或官方方法不可用）：重建官方注册表。
+                // 旧版前端且标签还开着：回退手改补丁（新前端不可能走到这里：
+                // 新前端 open 一定走了官方分支且成功，失败也已 console.warn 提示）。
+                if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
+                if (open) {
+                    const newDir = "workflows" + (wf.folder === "未分类" ? "" : "/" + wf.folder);
+                    this._patchOpenWorkflowFields(oldFull, newFull, newName, newDir);
+                }
+            }
         } catch (e) {
             alert(xzgT('重命名失败: ','Rename failed: ') + e.message);
         }
@@ -4086,7 +4113,21 @@ class XZGWorkflowsManager {
         if (newName === cat.name) return; // 未修改，无需操作
 
         try {
+            const oldFolder = cat.path;
+            const lastSlashIdx = oldFolder.lastIndexOf("/");
+            const newFolderPath = lastSlashIdx >= 0 ? oldFolder.slice(0, lastSlashIdx + 1) + newName : newName;
+
+            // 第一步：把「已打开」的工作流先走官方 renameWorkflow。
+            // 官方 rename = userdata move（要求旧文件仍在磁盘上），必须赶在服务端
+            // 整体改名之前；官方会同步 openPaths 标签列表（根治改名后标签无法关闭）、
+            // 注册表/草稿/缩略图/书签，且 move 会顺带创建新目录。
+            // 返回 null = 旧版前端无官方方法，稍后回退手改补丁。
+            const officialCount = await this._officialRenameOpenInFolder(oldFolder, newFolderPath);
+
+            // 第二步：服务端整体改名剩余文件。若第一步官方 move 已创建新目录，
+            // 后端会自动进入合并模式（把旧目录剩余内容移入新目录）。
             await this.renameFolder(cat.path, newName);
+
             // 重命名后刷新整棵树与官方 store，保证工作流路径同步、点击不再 404
             if (this.currentCategory === cat.id) {
                 this.currentCategory = "all";
@@ -4094,11 +4135,17 @@ class XZGWorkflowsManager {
             await this.loadWorkflows();
             const wfStore = app.extensionManager?.workflow;
             if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
-            // 同步该文件夹下所有已打开工作流的路径与标签名
-            const oldFolder = cat.path;
-            const lastSlashIdx = oldFolder.lastIndexOf("/");
-            const newFolderPath = lastSlashIdx >= 0 ? oldFolder.slice(0, lastSlashIdx + 1) + newName : newName;
-            this._syncOpenWorkflowsAfterFolderRename(oldFolder, newFolderPath);
+
+            // 旧版前端回退：官方 renameWorkflow 不可用，服务端已整体改名，
+            // 只能手改标签对象字段（新前端不会走到这里）
+            if (officialCount === null) {
+                const oldPrefix = "workflows/" + oldFolder + "/";
+                const newPrefix = "workflows/" + newFolderPath + "/";
+                for (const w of (wfStore?.openWorkflows || [])) {
+                    if (!w.path || !w.path.startsWith(oldPrefix)) continue;
+                    this._patchOpenWorkflowFields(w.path, newPrefix + w.path.slice(oldPrefix.length), w.filename, w.directory);
+                }
+            }
         } catch (e) {
             let msg = e.message || String(e);
             if (msg.includes("already exists") || msg.includes("409")) msg = "已存在同名分类，请换一个名称";

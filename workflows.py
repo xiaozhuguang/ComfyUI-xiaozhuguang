@@ -511,7 +511,18 @@ async def rename_folder(request):
         return web.json_response({"error": "Folder not found"}, status=404)
 
     if os.path.exists(new_full_path):
-        return web.json_response({"error": "Target folder already exists"}, status=409)
+        # 合并模式：前端可能已把「已打开」的工作流经官方 userdata move 先搬进新目录
+        # （官方 move 要求旧文件在磁盘上，必须在服务端整体改名之前做），此时新目录
+        # 已存在。把旧目录剩余内容逐项移入新目录后删除旧目录，而不是报 409。
+        try:
+            for item in os.listdir(old_full_path):
+                shutil.move(os.path.join(old_full_path, item),
+                            os.path.join(new_full_path, item))
+            os.rmdir(old_full_path)
+        except Exception as e:
+            return web.json_response({"error": f"合并目录失败: {e}"}, status=500)
+        return web.json_response({"success": True, "oldPath": old_path,
+                                  "newPath": new_path.replace("\\", "/"), "merged": True})
 
     try:
         os.rename(old_full_path, new_full_path)
