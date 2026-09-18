@@ -212,6 +212,7 @@ from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 from .nodes.xzg_video_loader import XiaozhuguangVideoLoader
+from .nodes.xzg_video_batch_loader import XiaozhuguangVideoBatchMerge
 from .nodes.xzg_video_loader_lm import XiaozhuguangVideoLoaderLM
 from .nodes.xzg_video_loader_davinci import XiaozhuguangVideoLoaderDaVinci
 from .nodes.xzg_audio_loader import XiaozhuguangAudioLoader
@@ -1193,6 +1194,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
     "XiaozhuguangVideoLoader": XiaozhuguangVideoLoader,
+    "XiaozhuguangVideoBatchMerge": XiaozhuguangVideoBatchMerge,
     "XiaozhuguangVideoLoaderLM": XiaozhuguangVideoLoaderLM,
     "XiaozhuguangVideoLoaderDaVinci": XiaozhuguangVideoLoaderDaVinci,
     "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
@@ -1249,6 +1251,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFrameExtract": "小珠光帧提取",
     "XiaozhuguangImageLoader": "小珠光图像加载器",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
+    "XiaozhuguangVideoBatchMerge": "小珠光视频批处理合并",
     "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",
     "XiaozhuguangVideoLoaderDaVinci": "小珠光视频加载-化神级",
     "XiaozhuguangAudioLoader": "小珠光音频加载器",

@@ -1458,6 +1458,25 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
     });
     node._xzgVideoPlayer = player;
 
+    // 片段窗口（秒）→ 全片帧坐标换算：批处理逐段执行时后端返回 segment_start/segment_end，
+    // 红杠=段起点帧位置，蓝杠=段终点帧位置，播放条始终显示全片（分母=源总帧数）。
+    // 仅当存在片段窗口信息时返回 {skip, limit}，否则返回 null（沿用跳过帧数/帧数上限）。
+    // 定义在 bind 作用域：onExecuted（本作用域）与 rAF 内 _applyLoadRange（闭包）都能访问。
+    const _segmentRangeOf = (info) => {
+        if (!info) return null;
+        const segStart = info.segment_start || 0;
+        const segEnd = info.segment_end || 0;
+        if (!(segEnd > 0) && !(segStart > 0)) return null;
+        const fps = info.source_fps || player._sourceFps || player.getFrameRate?.() || 0;
+        if (!fps || fps <= 0) return null;
+        const skip = Math.max(0, Math.round(segStart * fps));
+        let limit = 0;
+        if (segEnd > segStart) {
+            limit = Math.max(0, Math.round(segEnd * fps) - skip);
+        }
+        return { skip, limit }; // limit=0 表示到片尾
+    };
+
     // UE（easy int 等）节点加载时异步恢复值（widgets_values 被清空转移至 widgets_values_named），
     // 红蓝杠初始读到 0。延迟轮询刷新加载范围，直至值稳定。
     const _ueRefreshLoadRange = () => {
@@ -1479,6 +1498,11 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             const _s = _resolveLinkedValue("跳过帧数");
             const _l = _resolveLinkedValue("帧数上限");
             if (_s !== player._skipFrames || _l !== player._frameLimit) {
+                // 外部连线守卫：跳过/上限任一来自连线时，未运行工作流前不按连线值驱动红蓝条
+                // （未执行前读不到上游真实输出），运行后由 onExecuted 的后端权威值更新
+                const skipInp = node.inputs?.find(x => x.name === "跳过帧数");
+                const limitInp = node.inputs?.find(x => x.name === "帧数上限");
+                if ((skipInp && skipInp.link != null) || (limitInp && limitInp.link != null)) return;
                 // 仅初始化阶段（UE 值异步恢复，player 尚为 0/0）立即修正，避免加载后红蓝条错位；
                 // 运行前修改输入值：不自动跳红蓝条，等待运行工作流后由 onExecuted 的 _applyLoadRange 更新
                 if (player._skipFrames === 0 || player._frameLimit === 0) {
@@ -1772,6 +1796,10 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
                 source_fps: typeof vi.source_fps === "number" ? vi.source_fps : 0,
                 skip_frames: typeof vi.skip_frames === "number" ? vi.skip_frames : 0,
                 frame_limit: typeof vi.frame_limit === "number" ? vi.frame_limit : 0,
+                // 片段窗口（秒）：批处理逐段执行时红蓝杠应按片段在全片时间线上的位置定位，
+                // 而非 skip_frames（批处理时跳过帧数恒 0，会导致红杠压在 0、进度退化成段内坐标）
+                segment_start: typeof vi.segment_start === "number" ? vi.segment_start : 0,
+                segment_end: typeof vi.segment_end === "number" ? vi.segment_end : 0,
             };
             const fps = vi.source_fps || vi.loaded_fps;
             if (typeof fps === "number" && fps > 0) {
@@ -1805,9 +1833,16 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             // 运行后以后端权威值为准设置加载范围（红蓝条）：
             // 外部 easy int 等连线输入在 ComfyUI 机制下前端读值不可靠（widgets_values 异步迁移），
             // 必须等运行工作流后由后端实际使用的 skip/limit 更新，预览视频覆盖预览区时才正确。
+            // 片段窗口（批处理逐段）优先：按 segment_start/segment_end 换算全片帧坐标定位红蓝杠，
+            // 否则红杠恒压在 0（skip_frames 为"跳过帧数"控件值，批处理时恒 0）、进度退化成段内坐标。
             if (typeof vi.skip_frames === "number" && typeof vi.frame_limit === "number") {
                 updateWidgetBounds?.();
-                player.setLoadRange(Math.max(0, vi.skip_frames), Math.max(0, vi.frame_limit));
+                const segRange = _segmentRangeOf(vi);
+                if (segRange) {
+                    player.setLoadRange(segRange.skip, segRange.limit);
+                } else {
+                    player.setLoadRange(Math.max(0, vi.skip_frames), Math.max(0, vi.frame_limit));
+                }
             } else {
                 // 旧后端无 frame_limit 时回退：从控件/连线读值
                 _applyLoadRange?.();
@@ -2103,7 +2138,17 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
                 }
                 return;
             }
-            // 自定义比例：同时兼容 widget 直接输入和外部连线输入
+            // 自定义比例：同时兼容 widget 直接输入和外部连线输入。
+            // 外部连线守卫：宽/高任一来自外部连线时，未运行工作流前不驱动预览比例——
+            // ComfyUI 机制下未执行前读不到上游真实输出（前端读到的只是上游节点控件
+            // 的默认值，如 512），连线接入瞬间/上游值变化时若按它更新会把预览错误地
+            // 改成 512×512。保持当前比例不变，运行工作流后由 onExecuted 的后端权威
+            // video_info 宽高更新。本地手填 widget（无连线）不受影响，仍即时反馈。
+            const cwInp = node.inputs?.find(x => x.name === "自定义宽度");
+            const chInp = node.inputs?.find(x => x.name === "自定义高度");
+            if ((cwInp && cwInp.link != null) || (chInp && chInp.link != null)) {
+                return;
+            }
             const cw = _resolveLinkedValue("自定义宽度");
             const ch = _resolveLinkedValue("自定义高度");
             player.setCustomSize(cw, ch);
@@ -2209,10 +2254,26 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             if (_isPreviewLoaded && _lastExecutedInfo
                 && typeof _lastExecutedInfo.skip_frames === "number"
                 && typeof _lastExecutedInfo.frame_limit === "number") {
-                skip = Math.max(0, _lastExecutedInfo.skip_frames);
-                limit = Math.max(0, _lastExecutedInfo.frame_limit);
+                // 片段窗口优先：按片段起点/终点在全片时间线上定位红蓝杠
+                const seg = _segmentRangeOf(_lastExecutedInfo);
+                if (seg) {
+                    skip = seg.skip;
+                    limit = seg.limit;
+                } else {
+                    skip = Math.max(0, _lastExecutedInfo.skip_frames);
+                    limit = Math.max(0, _lastExecutedInfo.frame_limit);
+                }
             } else {
-                // 支持上游连线输入：优先读取连线值（widget 转 input 后自身 value 不更新）
+                // 外部连线守卫：跳过/上限任一来自外部连线时，未运行工作流前不驱动红蓝条——
+                // 未执行前读不到上游真实输出（前端读到的只是上游控件默认值），连线接入瞬间
+                // /上游值变化时若按它更新会把红蓝条推到错误位置。保持现状，运行工作流后
+                // 由 onExecuted 的后端权威值更新。本地手填 widget（无连线）不受影响。
+                const skipInp = node.inputs?.find(x => x.name === "跳过帧数");
+                const limitInp = node.inputs?.find(x => x.name === "帧数上限");
+                if ((skipInp && skipInp.link != null) || (limitInp && limitInp.link != null)) {
+                    return;
+                }
+                // 无连线：读本地控件值（widget 转 input 后自身 value 不更新）
                 skip = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
                 limit = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
             }
@@ -2224,6 +2285,15 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             // 参数变化（用户交互 / 上游变化）：先重置回原视频再应用加载范围
             _resetToSourceVideo();
             _applyLoadRange();
+        };
+        // 供外部（如「视频批处理」编排器）调用：清掉最后一次执行覆盖的预览，
+        // 回到原始加载的视频（批处理运行时预览会跟随每段输出，结束后需要恢复）
+        node._xzgResetLoaderPreview = () => {
+            try {
+                _lastExecutedInfo = null;
+                _resetToSourceVideo();
+                _applyLoadRange?.();
+            } catch (_) {}
         };
         if (limitWidget) {
             const origLimitCb = limitWidget.callback;
@@ -2306,14 +2376,15 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             const params = new URLSearchParams({ filename, type, subfolder });
             const url = `/view?${params.toString()}&rand=${Math.random()}`;
             console.warn("[小珠光视频加载器] (立即)加载预览视频到预览区: " + filename);
-            // 保存原视频总帧数/帧率：预览视频(输出片段)帧数 < 原视频，load() 会重置 _sourceTotalFrames，
-            // 导致红蓝杠位置被错误 clamp（如跳过100+上限240，蓝杠应在340却被压到240）。
-            // 播放器尚未记录帧数时（原视频未加载完即运行）用最近一次执行的 video_info 兜底。
+            // 保存原视频总帧数/帧率：预览视频(输出片段)帧数 < 原视频，
+            // 播放条分母必须始终是源总帧数（如全片1000帧），不能变成段帧数。
+            // load(url, { isPreview: true }) 已让播放器保留 _sourceTotalFrames/_sourceFps，
+            // 这里再兜底恢复一次（源视频尚未加载完时用最近一次执行的 video_info）。
             const savedSourceTotalFrames = player._sourceTotalFrames
                 || (_lastExecutedInfo ? _lastExecutedInfo.source_frame_count : 0) || 0;
             const savedSourceFps = player._sourceFps
                 || (_lastExecutedInfo ? _lastExecutedInfo.source_fps : 0) || 0;
-            player.load(url);
+            player.load(url, { isPreview: true });
             _isPreviewLoaded = true;
             // 预览视频解码完成后恢复原视频总帧数/帧率，确保加载范围标记基于原视频计算
             const origOnLoadedPreview = player.onLoadedMetadata;
@@ -2432,6 +2503,7 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         // 低内存版（XiaozhuguangVideoLoaderLM）复用全部前端交互，
         // 仅播放器选项不同（LRU 池/流式打开/流式音频），见 bindVideoLoaderInteractions 的 isLM
+        // 「小珠光视频加载-化神级」（XiaozhuguangVideoLoaderDaVinci）由 xzg_video_loader_davinci.js 单独绑定
         const isLM = nodeData.name === "XiaozhuguangVideoLoaderLM";
         if (nodeData.name !== "XiaozhuguangVideoLoader" && !isLM) {
             return;

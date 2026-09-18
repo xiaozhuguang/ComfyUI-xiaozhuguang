@@ -1804,6 +1804,65 @@ import functools as _xzg_ve_ft
 import traceback as _xzg_ve_tb
 import asyncio as _xzg_ve_aio
 
+
+def get_batch_buffer_dir():
+    """「小珠光视频批处理合并」节点的分段缓冲目录（input 下，与快剪缓存同级）。
+    不放在 %TEMP%：temp 会被启动器/系统/其他节点清理，导致缓冲丢失；
+    input 目录稳定，且不会被加载器下拉/快剪媒体列表扫描到（二者只扫顶层或专属子目录）。
+    缓冲清理时机：每轮批处理运行完毕（成功合并 / 中断 / 失败）立即清空，不留缓存。"""
+    return os.path.join(folder_paths.get_input_directory(), "xzg_batch_buffer")
+
+
+def concat_video_files(abs_paths, out_dir, prefix, fmt="mp4"):
+    """把多个视频文件按顺序合并为一个完整视频（供 /xzg_video_batch_concat 路由与
+    「小珠光视频批处理合并」节点共用）。
+    先尝试 concat demuxer + 流复制（快，要求各段编码参数一致），
+    失败则统一转码重编（libx264 + aac，保证兼容）。
+    Args:
+        abs_paths: 分段视频绝对路径列表（按拼接顺序）
+        out_dir: 输出目录（output 目录或临时目录均可）
+        prefix: 输出文件名前缀（可含子目录）
+        fmt: 容器格式（mp4 / webm ...）
+    Returns:
+        (文件名, 子目录, 段数)
+    """
+    if not abs_paths:
+        raise ValueError("no input files")
+    full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(prefix, out_dir)
+    out_name = f"{filename}_{int(time.time() * 1000)}.mp4"
+    out_path = os.path.join(full_output_folder, out_name)
+
+    list_path = os.path.join(out_dir, f"xzg_concat_{int(time.time() * 1000)}.txt")
+    try:
+        with open(list_path, "w", encoding="utf-8") as lf:
+            for p in abs_paths:
+                safe = p.replace("'", "'\\''")
+                lf.write(f"file '{safe}'\n")
+        cmd = [ffmpeg_path, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path]
+        if fmt == "mp4":
+            cmd += ["-c", "copy", "-movflags", "+faststart", out_path]
+        else:
+            cmd += ["-c", "copy", out_path]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
+        if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+            # 流复制失败（各段编码/分辨率/帧率不一致）→ 统一转码重编
+            cmd2 = [ffmpeg_path, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", list_path,
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]
+            if fmt == "mp4":
+                cmd2 += ["-movflags", "+faststart"]
+            cmd2 += [out_path]
+            proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3600)
+            if proc2.returncode != 0 or not os.path.isfile(out_path):
+                err = (proc2.stderr or proc.stderr or b"").decode(*ENCODE_ARGS)
+                raise RuntimeError(f"concat failed: {err[-800:]}")
+    finally:
+        try:
+            os.remove(list_path)
+        except Exception:
+            pass
+    return out_name, subfolder, len(abs_paths)
+
 # 路由安全装饰器（与 xzg_video_loader.py 一致的 fallback 模式）
 try:
     from .. import xzg_safe_handler as _xzg_ve_safe
@@ -2041,6 +2100,70 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
                 missing.append(name)
         return web.json_response({"missing": missing})
 
-    print("[小珠光] 视频编辑器 API 路由已注册: /xzg_video_editor_*")
+    @_xzg_ve_PS.instance.routes.post("/xzg_video_batch_buffer_reset")
+    @_xzg_ve_safe
+    async def xzg_video_batch_buffer_reset_route(request):
+        """场景逐段批处理：清空分段缓冲（新一轮批处理开始前 / 运行完毕时由前端调用）。"""
+        buf_dir = get_batch_buffer_dir()
+        removed = 0
+        if os.path.isdir(buf_dir):
+            removed = len([f for f in os.listdir(buf_dir) if os.path.isfile(os.path.join(buf_dir, f))])
+            shutil.rmtree(buf_dir, ignore_errors=True)
+        return web.json_response({"ok": True, "removed": removed})
+
+    @_xzg_ve_PS.instance.routes.post("/xzg_video_batch_buffer_list")
+    @_xzg_ve_safe
+    async def xzg_video_batch_buffer_list_route(request):
+        """场景逐段批处理：查询缓冲目录中的分段视频数量（最终合并前由前端校验）。
+        返回: { count, files }"""
+        buf_dir = get_batch_buffer_dir()
+        files = sorted(f for f in os.listdir(buf_dir) if f.endswith(".mp4")) if os.path.isdir(buf_dir) else []
+        return web.json_response({"count": len(files), "files": files, "dir": buf_dir})
+
+    @_xzg_ve_PS.instance.routes.post("/xzg_video_batch_concat")
+    @_xzg_ve_safe
+    async def xzg_video_batch_concat_route(request):
+        """场景逐段批处理：把逐段运行的输出视频按顺序拼接为一个完整视频。
+        入参: { files: [{filename, subfolder, type}], prefix: "xzg_batch_concat", format: "mp4" }
+        返回: { filename, subfolder, type, segments }"""
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        data = data or {}
+        files = data.get("files", [])
+        prefix = (data.get("prefix") or "xzg_batch_concat").strip() or "xzg_batch_concat"
+        fmt = data.get("format", "mp4")
+        if not files:
+            return web.json_response({"error": "files required"}, status=400)
+
+        paths = []
+        for f in files:
+            name = (f or {}).get("filename", "")
+            if not name:
+                continue
+            try:
+                fp, _ = resolve_path(name, (f or {}).get("type", "output"))
+            except Exception:
+                continue
+            if os.path.isfile(fp):
+                paths.append(fp)
+        if not paths:
+            return web.json_response({"error": "no valid input files"}, status=400)
+
+        try:
+            out_name, subfolder, segments = concat_video_files(
+                paths, folder_paths.get_output_directory(), prefix, fmt)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        return web.json_response({
+            "filename": out_name,
+            "subfolder": subfolder,
+            "type": "output",
+            "segments": segments,
+        })
+
+    print("[小珠光] 视频编辑器 API 路由已注册: /xzg_video_editor_* + /xzg_video_batch_concat + /xzg_video_batch_buffer_reset")
 else:
     print("[小珠光] 警告: PromptServer.instance 未初始化, 视频编辑器 API 路由未注册")

@@ -301,14 +301,11 @@ class VideoWatermarkDetector:
         n = B                       # 手工跟踪处理全部帧（逐帧精确打点）
         sel = list(range(B))
 
-        # 换了视频：作废上一视频残留的采样帧号映射，避免旧标注错位
-        # （前端清空发生在执行后的 onExecuted，第一次新视频执行必须由后端兜底拦截）
-        _last_vid = getattr(self, "_last_video_id", None)
-        cur_vid = _video_id(image)
-        self._last_video_id = cur_vid
+        # 画框持久化：不随视频切换作废标注 / 采样帧号映射。关键帧框（归一化坐标）
+        # 与 sample_idx 都保留，换视频后仍按上次画框生成遮罩；采样帧号映射
+        # （手工跟踪为逐帧 [0..N-1]，恒等映射）由前端在 onExecuted 后用新视频的
+        # sample_idx 覆盖，无需在此作废。
         manual_kf, sample_idx = _parse_regions(regions_data)
-        if _last_vid is not None and _last_vid != cur_vid:
-            sample_idx = []
 
         # ---- 1) 手工跟踪：不跑模型，遮罩由关键帧插值直接生成 ----
         masks = np.zeros((n, H, W), dtype=np.uint8)

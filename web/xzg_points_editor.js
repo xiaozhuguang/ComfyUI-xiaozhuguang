@@ -2076,19 +2076,14 @@ function wm_ensureViewer(node) {
         };
 
         // ---- 帧切换 ----
-        // 自动清空检测区/排除区框（切换样本帧或载入新视频时，避免旧框残留/继续限域）
+        // 自动清空检测区/排除区框（切换样本帧或载入新视频时，避免旧框残留/继续限域）。
+        // 手工跟踪的关键帧画框（manualKeyframes）不随视频切换清空：保持持久化，
+        // 只要不重启后端、不手动清理画框，即便上游更换视频也保留上次画框。
         const clearRegions = () => {
             if (state.detectRegions.length || state.excludeRegions.length) {
                 state.detectRegions = [];
                 state.excludeRegions = [];
                 writeData();
-            }
-            // 手工跟踪：载入新视频时同样清空各轨道关键帧框，避免旧视频框残留
-            if (state.manualKeyframes && Object.keys(state.manualKeyframes).length) {
-                state.manualKeyframes = {};
-                writeData();
-                redraw();
-                refreshTrackBtns();
             }
         };
         const showFrame = (i) => {

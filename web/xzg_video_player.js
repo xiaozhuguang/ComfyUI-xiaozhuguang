@@ -105,6 +105,7 @@ export class XiaozhuguangVideoPlayer {
         // 红蓝条对应的帧数显示（红=起点/跳过帧数，蓝=终点/帧数上限）
         this._redFrameDisplay = null;
         this._blueFrameDisplay = null;
+        this._rangeLenDisplay = null; // 红蓝条中间的区间长度标签（帧数上限值）
         this._placeholder = null;
         this._loadingSpinner = null;
         this._stage = null;
@@ -128,6 +129,7 @@ export class XiaozhuguangVideoPlayer {
         this._totalFrames = null; // 后端实际加载的帧数（优先使用）
         this._sourceTotalFrames = null; // 原始视频的总帧数（不受帧率调整影响）
         this._previewLoaded = false; // 预览视频已加载（转码从 skip 帧开始，播放用预览坐标，起点=0）
+        this._previewLoad = false;   // 本次 load 是预览覆盖（片段/转码视频），不污染源视频总帧数/帧率
         this._sourceFps = null;    // 原始视频帧率（decoder.fps）
         this._fpsDetected = false;
         this._resizeObserver = null;
@@ -414,20 +416,32 @@ export class XiaozhuguangVideoPlayer {
             "cursor:ew-resize;z-index:5;" +
             "filter:drop-shadow(0 0 4px rgba(59,130,246,0.8));";
 
-        // 蓝色竖线上方的帧数标签（作为进度条子元素，直接相对进度条定位避免边缘裁剪）
+        // 蓝色竖线上方的帧数标签（显示"尾部实际帧号"，绿色——它不是帧数上限值，
+        // 而是红杠+帧数上限换算出的区间尾帧；帧数上限（区间长度）显示在红蓝条中间）
         this._blueFrameDisplay = document.createElement("span");
         this._blueFrameDisplay.style.cssText =
             "position:absolute;bottom:calc(100% + 2px);left:0;transform:translateX(0);" +
-            "color:#5599FF;font-size:7px;font-family:monospace;" +
+            "color:#3EE06A;font-size:7px;font-family:monospace;" +
             "font-variant-numeric:tabular-nums;" +
             "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
             "white-space:nowrap;pointer-events:none;z-index:6;";
         this._blueFrameDisplay.textContent = "";
 
+        // 红蓝条中间的区间长度标签（蓝色 = 帧数上限值本身，即红杠到蓝杠的帧区间长度）
+        this._rangeLenDisplay = document.createElement("span");
+        this._rangeLenDisplay.style.cssText =
+            "position:absolute;bottom:calc(100% + 2px);left:0;transform:translateX(-50%);" +
+            "color:#5599FF;font-size:7px;font-family:monospace;" +
+            "font-variant-numeric:tabular-nums;" +
+            "text-shadow:0 1px 3px rgba(0,0,0,0.6);" +
+            "white-space:nowrap;pointer-events:none;z-index:6;";
+        this._rangeLenDisplay.textContent = "";
+
         this._progressBar.appendChild(this._loadRangeFill);
         this._progressBar.appendChild(this._loadRangeStart);
         this._progressBar.appendChild(this._loadRangeEnd);
         this._progressBar.appendChild(this._redFrameDisplay);
+        this._progressBar.appendChild(this._rangeLenDisplay);
         this._progressBar.appendChild(this._blueFrameDisplay);
         this._progressBar.appendChild(this._progressFill);
         this._progressBar.appendChild(this._progressThumb);
@@ -569,6 +583,15 @@ export class XiaozhuguangVideoPlayer {
             const leftPct = parseFloat(this._loadRangeEnd.style.left) || 0;
             this._positionBlueLabel(leftPct, barW);
         }
+        // 区间长度标签（蓝色）：百分比定位天然跟随宽度，这里仍按竖线位置刷新一次，
+        // 保证数值更新/显示切换后始终位于红蓝条正中间
+        if (this._rangeLenDisplay && this._rangeLenDisplay.style.display !== "none"
+            && this._loadRangeStart && this._loadRangeStart.style.display !== "none"
+            && this._loadRangeEnd && this._loadRangeEnd.style.display !== "none") {
+            const s = parseFloat(this._loadRangeStart.style.left) || 0;
+            const e = parseFloat(this._loadRangeEnd.style.left) || 100;
+            this._positionLenLabel(s, e);
+        }
     }
 
     _updateFrameTicks() {
@@ -620,6 +643,7 @@ export class XiaozhuguangVideoPlayer {
         if (!this._redFrameDisplay || !this._canvas || dur <= 0) {
             if (this._redFrameDisplay) this._redFrameDisplay.textContent = "";
             if (this._blueFrameDisplay) this._blueFrameDisplay.textContent = "";
+            if (this._rangeLenDisplay) this._rangeLenDisplay.textContent = "";
             return;
         }
         const fps = this._frameRate || 24;
@@ -641,9 +665,15 @@ export class XiaozhuguangVideoPlayer {
             ? `${startFrame}`
             : "";
 
-        // 蓝色标签：终点帧号（0-based）
+        // 绿色标签（蓝杠处）：尾部实际帧号（0-based）——它不是帧数上限值，
+        // 而是红杠+帧数上限换算出的区间尾帧
         this._blueFrameDisplay.textContent = this._fpsDetected
             ? `${endFrame}`
+            : "";
+
+        // 蓝色标签（红蓝条中间）：帧数上限 = 区间长度（红杠到蓝杠的帧数）
+        this._rangeLenDisplay.textContent = this._fpsDetected
+            ? `${Math.max(0, endFrame - startFrame)}`
             : "";
     }
 
@@ -943,7 +973,9 @@ export class XiaozhuguangVideoPlayer {
                 if (!this._fpsDetected) {
                     this._frameDisplay.textContent = "";
                 } else {
-                    const totalFrames = this._totalFrames || this.getTotalFrames();
+                    // 分母与 _updateProgressDisplay / _seekByClientX 保持一致：
+                    // 优先源总帧数（全片），批处理逐段时不得用段帧数（_totalFrames）当分母
+                    const totalFrames = this.getSourceTotalFrames() || this._totalFrames || this.getTotalFrames();
                     this._frameDisplay.textContent = `${this._skipFrames} / ${totalFrames}`;
                 }
             }
@@ -1221,12 +1253,16 @@ export class XiaozhuguangVideoPlayer {
                 this._applyVideoFit();
             }
             // 帧率：直接使用 decoder.fps（mediabunny 精确计算，无需 autoDetectFps）
+            // 预览覆盖加载（_previewLoad）：当前 decoder 是片段/转码视频，其帧数≠源总帧数，
+            // 不得写入 _sourceTotalFrames/_sourceFps（否则播放条分母变成段帧数、随段变化）
             if (!this._manualFrameRate && !this._backendFps) {
                 const fps = decoder.fps || 30;
                 if (fps > 0 && fps <= 120) {
                     this._frameRate = fps;
-                    this._sourceFps = fps;
-                    this._sourceTotalFrames = decoder.frameCount || Math.round(decoder.duration * fps);
+                    if (!this._previewLoad) {
+                        this._sourceFps = fps;
+                        this._sourceTotalFrames = decoder.frameCount || Math.round(decoder.duration * fps);
+                    }
                     this._fpsDetected = true;
                     this._updateFrameTicks();
                     this._updateLoadRangeMarkers();
@@ -1314,16 +1350,24 @@ export class XiaozhuguangVideoPlayer {
         }
     }
 
-    load(src) {
+    load(src, opts = {}) {
         if (this._destroyed) return;
         this._src = src || "";
+        this._previewLoad = !!(opts && opts.isPreview);
         this._backendFps = false;
         if (!this._manualFrameRate) {
             this._fpsDetected = false;
         }
-        this._sourceFps = null;
-        this._sourceTotalFrames = null;
-        this._totalFrames = null;
+        if (this._previewLoad) {
+            // 预览覆盖（片段/转码视频盖在预览区）：保留源视频总帧数/帧率，
+            // 播放条分母始终是源总帧数（右下角 X / 源总帧数 稳定不变）；
+            // 段视频自身帧数由 duration（_totalFrames=null → duration×fps）提供
+            this._totalFrames = null;
+        } else {
+            this._sourceFps = null;
+            this._sourceTotalFrames = null;
+            this._totalFrames = null;
+        }
         // 停止播放：加载新视频后进入暂停态。
         // 若不重置 _isPlayingState（旧播放残留 true），后续 seek 恢复播放头时会触发
         // _startAudioPlayback → 新视频只出声、画面静止（视频迭代器未启动）。
@@ -1339,6 +1383,7 @@ export class XiaozhuguangVideoPlayer {
         if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
         if (this._loadRangeEnd) this._loadRangeEnd.style.display = "none";
         if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
+        if (this._rangeLenDisplay) this._rangeLenDisplay.style.display = "none";
         if (src) {
             this._currentDecoder = null;  // 重置引用，_loadDecoderAsync 会重新赋值
             this._placeholder.style.display = "none";
@@ -1810,12 +1855,15 @@ export class XiaozhuguangVideoPlayer {
         this._updateLoadRangeMarkers();
         this.onFpsChange?.(24);
         // Canvas 架构：fps 由 decoder 直接提供，重新读取
+        // 预览覆盖加载（_previewLoad）：decoder 是片段视频，不得覆盖源总帧数/帧率
         if (this._currentDecoder) {
             const fps = this._currentDecoder.fps || 30;
             if (fps > 0 && fps <= 120) {
                 this._frameRate = fps;
-                this._sourceFps = fps;
-                this._sourceTotalFrames = this._currentDecoder.frameCount || Math.round(this._currentDecoder.duration * fps);
+                if (!this._previewLoad) {
+                    this._sourceFps = fps;
+                    this._sourceTotalFrames = this._currentDecoder.frameCount || Math.round(this._currentDecoder.duration * fps);
+                }
                 this._fpsDetected = true;
                 this._updateFrameTicks();
                 this._updateDisplay();
@@ -1899,6 +1947,7 @@ export class XiaozhuguangVideoPlayer {
             if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
             if (this._loadRangeEnd) this._loadRangeEnd.style.display = "none";
             if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
+            if (this._rangeLenDisplay) this._rangeLenDisplay.style.display = "none";
             return;
         }
         const startFrame = this._skipFrames;
@@ -1919,6 +1968,7 @@ export class XiaozhuguangVideoPlayer {
             if (this._loadRangeStart) this._loadRangeStart.style.display = "none";
             if (this._loadRangeEnd) this._loadRangeEnd.style.display = "none";
             if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
+            if (this._rangeLenDisplay) this._rangeLenDisplay.style.display = "none";
             return;
         }
         // 进度条按帧数等分：分母用 totalSourceFrames，使最右侧（endFrame=totalSourceFrames）对应 100%
@@ -1927,17 +1977,22 @@ export class XiaozhuguangVideoPlayer {
         const endPct = (endFrame / denom) * 100;
         const barW = this._progressBar.offsetWidth || 300;
         const edgeOffsetPct = barW > 0 ? (1 / barW) * 100 : 0.35;
+        const clampedStartPct = Math.max(edgeOffsetPct, startPct);
+        const clampedEndPct = Math.min(100 - edgeOffsetPct, endPct);
         if (this._loadRangeStart) {
             this._loadRangeStart.style.display = "block";
-            const clampedStartPct = Math.max(edgeOffsetPct, startPct);
             this._loadRangeStart.style.left = clampedStartPct + "%";
             this._positionRedLabel(clampedStartPct, barW);
         }
         if (this._loadRangeEnd) {
             this._loadRangeEnd.style.display = "block";
-            const clampedEndPct = Math.min(100 - edgeOffsetPct, endPct);
             this._loadRangeEnd.style.left = clampedEndPct + "%";
             this._positionBlueLabel(clampedEndPct, barW);
+        }
+        // 区间长度标签（帧数上限值）：定位在红蓝条中间（与竖线一致的 clamp 值）
+        if (this._rangeLenDisplay) {
+            this._rangeLenDisplay.style.display = "block";
+            this._positionLenLabel(clampedStartPct, clampedEndPct);
         }
         if (this._loadRangeFill) {
             this._loadRangeFill.style.display = "block";
@@ -1962,6 +2017,16 @@ export class XiaozhuguangVideoPlayer {
         this._blueFrameDisplay.style.transform = "translateX(-100%)";
     }
 
+    // 区间长度标签（帧数上限值）：水平居中于红蓝条之间。
+    // 用百分比定位（translateX(-50%) 自身居中），进度条宽度变化（节点/窗口 resize）
+    // 时自动保持居中，无需像素重算
+    _positionLenLabel(startPct, endPct) {
+        if (!this._rangeLenDisplay) return;
+        const midPct = (startPct + endPct) / 2;
+        this._rangeLenDisplay.style.left = midPct + "%";
+        this._rangeLenDisplay.style.transform = "translateX(-50%)";
+    }
+
     // Canvas 架构：fps 由 decoder 精确提供，无需复杂的 autoDetectFps
     // 保留空壳方法兼容外部调用（_onPlayEvt 等历史代码可能引用）
     autoDetectFps() {
@@ -1970,8 +2035,10 @@ export class XiaozhuguangVideoPlayer {
         const fps = this._currentDecoder.fps || 30;
         if (fps > 0 && fps <= 120) {
             this._frameRate = fps;
-            this._sourceFps = fps;
-            this._sourceTotalFrames = this._currentDecoder.frameCount || Math.round(this._currentDecoder.duration * fps);
+            if (!this._previewLoad) {
+                this._sourceFps = fps;
+                this._sourceTotalFrames = this._currentDecoder.frameCount || Math.round(this._currentDecoder.duration * fps);
+            }
             this._fpsDetected = true;
             this._updateFrameTicks();
             this._updateDisplay();
@@ -2094,6 +2161,7 @@ export class XiaozhuguangVideoPlayer {
         this._frameDisplay = null;
         this._redFrameDisplay = null;
         this._blueFrameDisplay = null;
+        this._rangeLenDisplay = null;
         this._loopBtn = null;
         this._muteBtn = null;
         this._buttonRow = null;

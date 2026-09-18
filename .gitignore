@@ -44,6 +44,11 @@ web/node_modules/
 # Arrow tool runtime data
 xzg_arrows/
 
+# 视频批处理合并节点运行时缓冲（逐段输出，input 下，运行完毕即清空）
+tmp_buffer/
+xzg_batch_buffer/
+_diag_tmp.py
+
 # 视频水印检测：已下线的 SAM3 代码包/备份/资源（本地保留，不随仓库分发）
 _xzg_watermark/_xzg_sam3/
 _xzg_watermark/assets/

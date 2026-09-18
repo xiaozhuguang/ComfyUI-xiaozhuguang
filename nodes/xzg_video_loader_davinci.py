@@ -2,13 +2,14 @@
 小珠光视频加载-化神级
 =====================
 
-在「小珠光视频加载器」的全部功能基础上，新增「从 DaVinci Resolve 导入」能力：
-- 前端一个按钮：加载视频
-- 本模块通过独立的达芬奇桥接脚本（xzg_davinci_bridge.py，subprocess 隔离运行）触达
-  本机已运行的 Resolve Studio，把剪辑页当前播放头所在片段自动渲染导出到 ComfyUI。
-- 加载视频：达芬奇导出 H.264/MP4 到 input 根目录 → 前端下拉选中
+合并「小珠光视频加载-化神级（达芬奇导入）」与「小珠光视频批处理（片段窗口）」两个节点：
 
-继承 XiaozhuguangVideoLoader，视频解码/预览/上传/快剪联动等能力完全复用，不修改原加载器。
+1. 达芬奇导入：前端按钮触达本机 DaVinci Resolve Studio（xzg_davinci_bridge.py，subprocess 隔离），
+   把剪辑页当前播放头所在片段自动渲染导出到 ComfyUI input 根目录并加载。
+2. 片段窗口：片段起点/片段终点 + 前端「场景逐段批处理」编排器（web/xzg_video_batch.js），
+   自动探测视频切点并逐段执行。
+
+继承 XiaozhuguangVideoBatchLoader，视频解码/预览/上传/快剪联动等能力完全复用。
 """
 
 import json
@@ -22,20 +23,18 @@ import folder_paths
 from server import PromptServer as _PS
 from aiohttp import web as _web
 
-from .xzg_video_loader import (
-    XiaozhuguangVideoLoader,
-)
+from .xzg_video_batch_loader import XiaozhuguangVideoBatchLoader
 
 _BRIDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_davinci_bridge.py")
 _DV_INPUT_SUBDIR = ""           # 导出的视频直接放 input 根目录，组合框可列出
 _RENDER_TIMEOUT = 1800          # 渲染等待超时（秒）
 
 
-class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoLoader):
-    """小珠光视频加载-化神级：复用加载器全部功能，交互前端新增一个达芬奇导入按钮。"""
+class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
+    """小珠光视频加载-化神级：加载器全部功能 + 片段窗口（场景逐段批处理）+ 达芬奇导入。
 
-    # INPUT_TYPES / RETURN_TYPES / FUNCTION / CATEGORY / load_video 全部继承自父类，
-    # 只在 CATEGORY 下作为独立节点名出现，由 __init__.py 注册为「小珠光视频加载-化神级」。
+    INPUT_TYPES / RETURN_TYPES / FUNCTION / CATEGORY / load_video / IS_CHANGED 全部继承自
+    「小珠光视频批处理」父类（含片段起点/片段终点），由 __init__.py 注册为「小珠光视频加载-化神级」。"""
 
     @classmethod
     def IS_CHANGED(cls, *args, **kwargs):

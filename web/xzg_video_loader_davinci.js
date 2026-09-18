@@ -220,6 +220,38 @@ app.registerExtension({
                 return r;
             };
 
+            // 尺寸持久化修复：刷新浏览器后节点恢复默认大小。
+            // 本节点有多个扩展环节（批处理编排器异步注入控件、达芬奇按钮等），异步注入
+            // 发生在 configure 之后，可能把恢复好的尺寸重新覆盖为默认值。
+            // onConfigure 收到的 data 即节点在工作流里的序列化数据（含用户保存的 size）。
+            // 策略：加载后短时间内持续检测，一旦尺寸被重置回默认值（300×500）就按保存值
+            // 恢复；用户手动拖拽后的尺寸不等于默认值，不会被覆盖。
+            const origOnConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (data) {
+                const r = origOnConfigure?.apply(this, arguments);
+                try {
+                    const node = this;
+                    if (Array.isArray(data?.size) && data.size[0] > 0 && data.size[1] > 0) {
+                        const savedSize = [data.size[0], data.size[1]];
+                        node.size = savedSize.slice();
+                        let tries = 0;
+                        const applySavedSize = () => {
+                            try {
+                                const s = node.size;
+                                const isDefault = s && Math.round(s[0]) === 300 && Math.round(s[1]) === 500;
+                                if (isDefault && (Math.round(savedSize[0]) !== 300 || Math.round(savedSize[1]) !== 500)) {
+                                    node.size = savedSize.slice();
+                                    node.setDirtyCanvas?.(true, true);
+                                }
+                            } catch (e) { /* ignore */ }
+                            if (++tries < 20) setTimeout(applySavedSize, 100); // 持续约 2 秒
+                        };
+                        setTimeout(applySavedSize, 0);
+                    }
+                } catch (e) { /* ignore */ }
+                return r;
+            };
+
             const origOnDrawBackground = nodeType.prototype.onDrawBackground;
             nodeType.prototype.onDrawBackground = function (ctx) {
                 if (this._xzgVideoPlayer && this._xzgUpdateBypassState) {

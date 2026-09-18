@@ -1,3 +1,30 @@
+## v17.0.0 (2026-09-19)
+
+### 新增
+
+- **小珠光视频批处理合并节点（缓冲式过渡节点）**（`nodes/xzg_video_batch_loader.py` + `web/xzg_video_batch.js`）
+  - 逐段运行（执行合并=关）：接收上游图像/音频，把当前段流式编码为无音轨视频 + PCM WAV 缓冲到 `input/xzg_batch_buffer/`（ffmpeg 逐帧写 stdin，内存≈单段常数），输入原样直通下游
+  - 最终合并（执行合并=开）：concat 分段视频（流复制）→ 解码为帧张量；音频用分段 WAV 样本级拼接，段间无 priming 空隙、按帧数/帧率精确对齐；输出图像/音频供「视频保存」产出完整视频
+  - 新增后端路由 `/xzg_video_batch_concat`、`/xzg_video_batch_buffer_reset`、`/xzg_video_batch_buffer_list`，`concat_video_files` 先流复制、编码不一致时自动转码重编（libx264+aac）
+
+- **「小珠光视频加载-化神级」场景逐段批处理**（`nodes/xzg_video_loader.*` + `xzg_video_loader_davinci.*` + `web/xzg_video_batch.js`）
+  - 新增「片段起点/片段终点」参数（0 值默认起点 0 / 终点=片尾），`ffmpeg_frame_generator` 支持片段窗口解码，`source_frame_count` 按全片计保证播放条分母不变
+  - 前端注入「🎬 场景逐段批处理」按钮：复用快剪场景探测接口取切点 → 相邻切点分片 → 逐片改写起点/终点并只执行该分支（hook queuePrompt 过滤）→ 配合合并节点逐段缓冲、最后置位「执行合并」跑一次；无合并节点时走 `/xzg_video_batch_concat` 回退拼接
+  - 批处理运行时红蓝杠按片段在全片时间线的位置定位（`segment_start/segment_end` 换算），支持 `_xzgResetLoaderPreview` 供编排器运行结束后恢复原始预览
+
+### 优化
+
+- **视频加载器：外部连线守卫**（`web/xzg_video_loader.js`）
+  - 跳过帧数/帧数上限、自定义宽/高任一来自外部连线时，未运行工作流前不按连线值驱动红蓝杠/预览比例（未执行前读到的只是上游控件默认值），运行后由 onExecuted 的后端权威 video_info 更新
+- **视频水印检测：手工跟踪关键帧持久化**（`_xzg_watermark/nodes.py` + `web/xzg_points_editor.js`）
+  - 切换样本帧或载入新视频不再清空手工跟踪关键帧画框，后端不再按视频切换作废采样帧号映射；关键帧框与 sample_idx 保留，换视频后仍按上次画框生成遮罩
+
+### 变更
+
+- pyproject.toml / extension.json 版本提升至 17.0.0（大版本），触发 Comfy Registry 发布
+
+---
+
 ## v15.0.15 (2026-09-11)
 
 ### 变更

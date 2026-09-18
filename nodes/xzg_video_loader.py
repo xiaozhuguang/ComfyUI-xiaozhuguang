@@ -279,7 +279,7 @@ def _build_framerate_filters(force_rate, source_fps):
 def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                            custom_width, custom_height, downscale_ratio=8,
                            aspect_ratio=None, ratio_mode=1, ratio_dim=0, fit_mode="crop",
-                           progress_cb=None):
+                           progress_cb=None, segment_start=0.0, segment_end=0.0):
     args_input = ["-i", video]
     args_dummy = [ffmpeg_path] + args_input + ['-c', 'copy', '-frames:v', '1', "-f", "null", "-"]
     size_base = None
@@ -323,8 +323,20 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     else:
         duration = 0.0
 
-    # 将跳过帧数转换为起始时间（基于源视频帧率）
-    start_time = skip_frames / fps_base if fps_base > 0 else 0.0
+    # 片段窗口（场景切点逐段批处理）：segment_start/segment_end 为源视频内的时间区间（秒），
+    # 0 值表示默认（起点 0 / 终点=片尾）。设置后仅解码该区间，duration 换算为片段时长。
+    # full_duration 保留全片时长：源总帧数（source_frame_count）必须按全片计，
+    # 否则前端播放条分母（源总帧数）会变成段帧数，随每段变化
+    full_duration = duration
+    seg_start = max(0.0, float(segment_start or 0.0))
+    seg_end = float(segment_end or 0.0)
+    if seg_start > 0 or seg_end > 0:
+        if seg_end <= seg_start:
+            seg_end = duration
+        duration = max(0.0, seg_end - seg_start)
+
+    # 将跳过帧数转换为起始时间（基于源视频帧率）；片段模式下跳过帧数在片段窗口内偏移
+    start_time = seg_start + skip_frames / fps_base if fps_base > 0 else seg_start
 
     if start_time > 0:
         if start_time > 4:
@@ -406,10 +418,13 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     # 用源帧数推导目标帧数，避免 ffmpeg duration 浮点精度误差
     # ffmpeg 报告的 duration 可能有偏差（如 30/16=1.875 报为 1.88），导致帧数多/少 1
     # 正确方式：source_frames = round(fps_base × duration)，再按比例计算目标帧数
-    source_frame_count = round(fps_base * duration) if fps_base > 0 else 0
-    # 跳过帧：-ss seek 后实际可输出的帧数上限 = 剩余源帧数，
+    # source_frame_count 按全片计（前端播放条分母/红蓝杠定位依赖全片总帧数）；
+    # 可解码帧数（yieldable/进度上限）按片段窗口内帧数计
+    source_frame_count = round(fps_base * full_duration) if fps_base > 0 else 0
+    window_frame_count = round(fps_base * duration) if fps_base > 0 else 0
+    # 跳过帧：-ss seek 后实际可输出的帧数上限 = 窗口内剩余帧数，
     # 否则进度上限偏大（跳过帧数越多，进度条越到不了 100%）
-    remaining_frames = max(0, source_frame_count - skip_frames) if skip_frames > 0 else source_frame_count
+    remaining_frames = max(0, window_frame_count - skip_frames) if skip_frames > 0 else window_frame_count
     if force_rate and fps_base > 0:
         yieldable_frames = remaining_frames * force_rate / fps_base
     else:
@@ -422,7 +437,8 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     if not is_upscale:
         args_all_frames += ["-frames:v", str(int(yieldable_frames))]
 
-    yield (size_base[0], size_base[1], fps_base, duration, fps_base * duration,
+    # 元组第5位 = 源总帧数（全片）：前端 video_info.source_frame_count / 红蓝杠分母依赖
+    yield (size_base[0], size_base[1], fps_base, duration, source_frame_count,
            1.0 / (force_rate or fps_base), yieldable_frames, size[0], size[1], alpha)
 
     # 降帧时使用 passthrough 同步：FFmpeg >= 7 用 -fps_mode，< 7 用 -vsync
@@ -567,6 +583,13 @@ class XiaozhuguangVideoLoader:
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, unique_id=None):
+        """原「小珠光视频加载器」入口：行为与旧版完全一致（不启用片段窗口）。
+        片段窗口能力由子类「小珠光视频加载-化神级」（xzg_video_loader_davinci.py，继承批处理基类）提供。"""
+        return self.load_video_impl(视频, 强制帧率, 视频比例, 比例模式, 自定义宽度, 自定义高度,
+                                    帧数上限, 跳过帧数, 0.0, 0.0, unique_id)
+
+    def load_video_impl(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
+                        帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, unique_id=None):
         强制帧率 = int(强制帧率)
         video_path = folder_paths.get_annotated_filepath(视频)
         if not video_path or not os.path.isfile(video_path):
@@ -612,6 +635,8 @@ class XiaozhuguangVideoLoader:
             ratio_dim=ratio_dim,
             fit_mode=fit_mode,
             progress_cb=progress_cb,
+            segment_start=片段起点,
+            segment_end=片段终点,
         )
 
         info = next(gen)
@@ -639,7 +664,7 @@ class XiaozhuguangVideoLoader:
         loaded_count = image_tensor.shape[0]
         loaded_duration = loaded_count * target_frame_time
 
-        audio_start = 跳过帧数 / src_fps if src_fps > 0 else 0.0
+        audio_start = 片段起点 + 跳过帧数 / src_fps if src_fps > 0 else 片段起点
         audio_duration = loaded_duration if loaded_duration > 0 else None
         pbar.update_absolute(700, 1000)  # 正在提取音频
         waveform, sr = extract_audio(
@@ -681,6 +706,8 @@ class XiaozhuguangVideoLoader:
             "loaded_height": new_h,
             "skip_frames": max(0, int(跳过帧数 or 0)),
             "frame_limit": max(0, int(帧数上限 or 0)),
+            "segment_start": max(0.0, float(片段起点 or 0.0)),
+            "segment_end": max(0.0, float(片段终点 or 0.0)),
             "filename": 视频,
         }
 
@@ -719,8 +746,8 @@ class XiaozhuguangVideoLoader:
                 vf_parts = fr_filters + vf_parts
 
             cmd = [ffmpeg_path, "-y", "-v", "error"]
-            # 起始时间（跳过帧数 → 时间）
-            start_time = 跳过帧数 / src_fps if src_fps > 0 else 0.0
+            # 起始时间（片段起点 + 跳过帧数 → 时间）
+            start_time = 片段起点 + 跳过帧数 / src_fps if src_fps > 0 else 片段起点
             if start_time > 0:
                 if start_time > 4:
                     cmd += ["-ss", str(start_time - 4), "-i", video_path, "-ss", "4"]
