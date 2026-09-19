@@ -128,6 +128,7 @@ export class XiaozhuguangVideoPlayer {
         this._frameRate = 24;
         this._totalFrames = null; // 后端实际加载的帧数（优先使用）
         this._sourceTotalFrames = null; // 原始视频的总帧数（不受帧率调整影响）
+        this._backendFrameCount = null; // 后端实测总帧数（保存节点/权威 video_info），load 不清空
         this._previewLoaded = false; // 预览视频已加载（转码从 skip 帧开始，播放用预览坐标，起点=0）
         this._previewLoad = false;   // 本次 load 是预览覆盖（片段/转码视频），不污染源视频总帧数/帧率
         this._sourceFps = null;    // 原始视频帧率（decoder.fps）
@@ -1255,7 +1256,12 @@ export class XiaozhuguangVideoPlayer {
             // 帧率：直接使用 decoder.fps（mediabunny 精确计算，无需 autoDetectFps）
             // 预览覆盖加载（_previewLoad）：当前 decoder 是片段/转码视频，其帧数≠源总帧数，
             // 不得写入 _sourceTotalFrames/_sourceFps（否则播放条分母变成段帧数、随段变化）
-            if (!this._manualFrameRate && !this._backendFps) {
+            // 总帧数优先级：后端实测（setBackendFrameCount）> 解码器 frameCount > Math.round(duration×fps) 兜底
+            // （容器时长含音轨尾差时 duration×fps 会虚高 1 帧，如 459→460）
+            if (this._backendFrameCount) {
+                // 权威值：仅补总帧数，不覆盖帧率（_manualFrameRate/_backendFps 由外部管理）
+                if (!this._previewLoad) this._sourceTotalFrames = this._backendFrameCount;
+            } else if (!this._manualFrameRate && !this._backendFps) {
                 const fps = decoder.fps || 30;
                 if (fps > 0 && fps <= 120) {
                     this._frameRate = fps;
@@ -1829,6 +1835,14 @@ export class XiaozhuguangVideoPlayer {
     _stopAudio() {
         // P10: 仅停止音频源，保留已解码的 _fullAudioBuffer，避免重复解码
         this._stopAudioSource();
+    }
+
+    setBackendFrameCount(count) {
+        // 后端实测总帧数（权威值）：load 不清空、加载完成后优先采用，
+        // 用于保存节点/权威 video_info 提供真实写入帧数，规避 duration×fps 推算虚高（如 459→460）
+        if (typeof count === "number" && count > 0) {
+            this._backendFrameCount = count;
+        }
     }
 
     setFrameRate(fps) {

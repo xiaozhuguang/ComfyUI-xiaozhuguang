@@ -355,6 +355,98 @@ function getDialog() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 会话归属：对话框与批处理任务都属于「打开它时所在的工作流」。
+//   · 切到其他工作流标签页：隐藏窗口并在段边界【暂停】，不中断后端，
+//     已在队列里的当前段会继续跑完；切回本工作流自动重新显示并续跑；
+//   · 菜单「清空工作流」/ 在本工作流内删除绑定节点 / 在别的加载器上
+//     重新打开对话框：会话彻底失效，中止任务。
+// 工作流身份用 LGraph.id（序列化时持久化，标签页切换保持稳定），
+// 节点实例切换后会重建，一律按 id 实时解析，不持有旧实例。
+// ═══════════════════════════════════════════════════════════════════════
+
+const NIL_GRAPH_ID = "00000000-0000-0000-0000-000000000000";
+let activeSession = null; // 见 openBatchDialog 中的会话结构
+let graphLoading = false; // loadGraphData 执行中（切换标签页会触发 graph.clear → onRemoved）
+
+function hideOverlay() {
+    const overlay = document.querySelector(".xzg-batch-overlay");
+    if (overlay) overlay.style.display = "none";
+}
+function showOverlay() {
+    const overlay = getDialog();
+    if (overlay) overlay.style.display = "block";
+}
+function findLiveNode(id, type) {
+    return (app.graph?._nodes || []).find((n) =>
+        String(n.id) === String(id) && (!type || n.type === type)) || null;
+}
+/** 无 id 的旧工作流兜底身份：节点 id:type 集合签名 */
+function graphSignature() {
+    return (app.graph?._nodes || [])
+        .map((n) => `${n.id}:${n.type}`).sort().join("|");
+}
+function graphMatchesSession(s) {
+    const gid = app.graph?.id;
+    if (s.graphId && s.graphId !== NIL_GRAPH_ID) return gid === s.graphId;
+    return !!s.graphSig && graphSignature() === s.graphSig;
+}
+
+/** 新图载入后（标签页切换/打开文件/载入 JSON 都会走到）：
+ *  绑定工作流重新挂载 → 重新绑定节点实例、重新显示；否则隐藏并暂停。 */
+function syncSession() {
+    const s = activeSession;
+    if (!s) return;
+    if (graphMatchesSession(s)) {
+        const live = findLiveNode(s.nodeId, BATCH_NODE_TYPE);
+        if (live) {
+            s.node = live;
+            s.active = true;
+            if (s.mergeId != null) {
+                const m = findLiveNode(s.mergeId, MERGE_NODE_TYPE);
+                if (m) s.mergeNode = m;
+            }
+            if (s.open) showOverlay();
+            return;
+        }
+    }
+    s.active = false;
+    hideOverlay();
+}
+
+/** 会话彻底失效（清空工作流/删除绑定节点/被新会话取代）：隐藏并中止任务 */
+function abortSession(s) {
+    if (!s) return;
+    if (activeSession === s) activeSession = null;
+    s.open = false;
+    s.active = false;
+    s.abortFlag.v = true;
+    hideOverlay();
+    try { api.interrupt(); } catch (e) { /* ignore */ }
+}
+
+// 切换工作流标签页 / 打开工作流文件 / 载入 JSON / 历史记录载入，
+// 最终都会走 app.loadGraphData，hook 它在新图载入后同步会话归属状态。
+const _origLoadGraphData = app.loadGraphData?.bind(app);
+if (typeof _origLoadGraphData === "function") {
+    app.loadGraphData = async function (...args) {
+        graphLoading = true;
+        try {
+            return await _origLoadGraphData(...args);
+        } finally {
+            graphLoading = false;
+            try { syncSession(); } catch (e) { /* ignore */ }
+            // 二次同步：个别场景节点异步创建，300ms 后再核对一次（幂等）
+            setTimeout(() => { try { syncSession(); } catch (e) { /* ignore */ } }, 300);
+        }
+    };
+}
+// 菜单「清空工作流」：clean() 直接 rootGraph.clear()，不经过 loadGraphData。
+// 它只作用于当前活动工作流，会话处于 active 才说明被清空的是绑定工作流。
+document.addEventListener("graphCleared", () => {
+    if (activeSession?.active) abortSession(activeSession);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // 主流程
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -396,14 +488,24 @@ function cutsToSegments(cuts, winStart = 0, winEnd = 0) {
 // 编排模式提示去重：同一编排模式只提示一次，中断后再次开始不重复刷屏
 let lastOrchHint = "";
 
-async function runBatch(node, segments, ui, abortFlag) {
+async function runBatch(node, segments, ui, abortFlag, session = null) {
+    const nodeId = String(node.id);
+    // 工作流标签页切换会重建节点实例：节点/控件一律按 id 实时解析，
+    // 不长期持有打开对话框时的旧实例（旧实例在 graph.clear 后已脱离画布）。
+    let liveNode = node;
+    let wSkip, wLimit, wStart, wEnd;
+    const resolveLive = () => {
+        liveNode = findLiveNode(nodeId, BATCH_NODE_TYPE) || node;
+        wSkip = findWidget(liveNode, "跳过帧数");
+        wLimit = findWidget(liveNode, "帧数上限");
+        wStart = findWidget(liveNode, "片段起点");
+        wEnd = findWidget(liveNode, "片段终点");
+        return liveNode;
+    };
+    resolveLive();
     // 段窗口用「跳过帧数/帧数上限」（帧）表达，与红杠/蓝杠/右下角帧号显示天然一致：
     // 红杠=跳过帧数（段起点帧），蓝杠=跳过帧数+帧数上限（段终点帧），控件值即执行参数。
     // 「片段起点/片段终点」（秒）置 0，避免两套窗口参数叠加造成双重偏移。
-    const wSkip = findWidget(node, "跳过帧数");
-    const wLimit = findWidget(node, "帧数上限");
-    const wStart = findWidget(node, "片段起点");
-    const wEnd = findWidget(node, "片段终点");
     if (!wSkip || !wLimit) {
         throw new Error("加载器缺少「跳过帧数/帧数上限」控件，请刷新页面后重试");
     }
@@ -419,6 +521,13 @@ async function runBatch(node, segments, ui, abortFlag) {
     const origEnd = Number(wEnd?.value) || 0;
     // 缓冲式合并节点（存在时）：逐段缓冲到 temp，最后单独跑一次合并
     const mergeNode = (app.graph?._nodes || []).find((n) => n.type === MERGE_NODE_TYPE);
+    const mergeId = mergeNode ? String(mergeNode.id) : null;
+    if (session && mergeId != null) session.mergeId = mergeId;
+    // 合并节点同样按 id 实时解析（切走再切回后实例已重建）
+    const resolveMerge = () => {
+        if (!mergeNode) return null;
+        return findLiveNode(mergeId, MERGE_NODE_TYPE) || mergeNode;
+    };
     if (mergeNode) {
         // 前置检查：合并节点必须接了「图像」输入、且位于批处理节点下游，否则逐段阶段不会缓冲
         const imgInput = (mergeNode.inputs || []).find((i) => i.name === "图像");
@@ -473,6 +582,13 @@ async function runBatch(node, segments, ui, abortFlag) {
     try {
         for (let i = 0; i < segments.length; i++) {
             if (abortFlag.v) { aborted = true; ui.segStatus?.(i, "已中断", "#fa0"); break; }
+            // 切到了其他工作流：在段边界暂停（不中断，已在跑的当前段继续跑完），
+            // 切回本工作流后自动续跑
+            if (session) {
+                await session.waitActive(ui);
+                resolveLive();
+                if (abortFlag.v) { aborted = true; ui.segStatus?.(i, "已中断", "#fa0"); break; }
+            }
             const seg = segments[i];
             ui.segStatus?.(i, "执行中", "#fa0");
 
@@ -505,7 +621,7 @@ async function runBatch(node, segments, ui, abortFlag) {
                     wSkip.value = segSkipFrames + (attempt - 1);
                     wLimit.value = segLimitFrames;
                 }
-                node.setDirtyCanvas?.(true, true);
+                liveNode.setDirtyCanvas?.(true, true);
                 collected.length = 0;
                 buffered.length = 0;
                 detach = attachCollector(collected, buffered);
@@ -584,22 +700,33 @@ async function runBatch(node, segments, ui, abortFlag) {
     } finally {
         ui.abortBtn.style.display = "none";
         // 无论批次如何结束，恢复批处理前的控件原值（段窗口参数全部还原，不影响手动执行）
-        wSkip.value = origSkip;
-        wLimit.value = origLimit;
+        resolveLive();
+        if (wSkip) wSkip.value = origSkip;
+        if (wLimit) wLimit.value = origLimit;
         if (wStart) wStart.value = origStart;
         if (wEnd) wEnd.value = origEnd;
-        node.setDirtyCanvas?.(true, true);
+        liveNode.setDirtyCanvas?.(true, true);
     }
 
     // 结束时恢复加载器预览：批处理期间预览跟随每段输出，最后一次执行往往是
     // "合并空跑"的极小窗口（约 1 帧），需要重置回原始加载的视频
-    node._xzgResetLoaderPreview?.();
+    resolveLive();
+    liveNode._xzgResetLoaderPreview?.();
     if (aborted) {
         // 运行完毕（中断）：立即清理缓冲，不留缓存
         if (mergeNode) {
             try { await fetch(BUFFER_RESET_API, { method: "POST" }); } catch (e) { /* ignore */ }
         }
         return { aborted: true, outputs: allOutputs, merged: null, usedMergeNode: !!mergeNode };
+    }
+
+    // 最终合并阶段也要等回本工作流（合并节点控件只存在于挂载的图上）
+    if (session) {
+        await session.waitActive(ui);
+        resolveLive();
+        if (abortFlag.v) {
+            return { aborted: true, outputs: allOutputs, merged: null, usedMergeNode: !!mergeNode };
+        }
     }
 
     let merged = null;
@@ -620,28 +747,29 @@ async function runBatch(node, segments, ui, abortFlag) {
         }
         // 最终合并：编排器把「执行合并」置位 → 单独跑一次合并节点
         // （concat 全部缓冲 → 直接产出最终完整视频到 output/）
-        const wGo = findWidget(mergeNode, "执行合并");
+        const liveMerge = resolveMerge();
+        const wGo = findWidget(liveMerge, "执行合并");
         if (!wGo) throw new Error("「小珠光视频批处理合并」节点缺少「执行合并」控件，请刷新页面后重试");
         ui.status(`合并缓冲中的片段…`);
         const savedGo = wGo.value;
         wGo.value = true;
-        mergeNode.setDirtyCanvas?.(true, true);
+        liveMerge.setDirtyCanvas?.(true, true);
         // 合并节点的图像输入若连着逐段链路，本轮上游会被连带执行一次；
         // 把批处理节点临时设为「帧数上限=1」，让上游空跑开销降到最低且必然解出 1 帧
         // （不用极小时间窗口：某些视频 0.05s 内解不出帧会报 No frames decoded）
-        const wCap = findWidget(node, "帧数上限");
+        const wCap = findWidget(liveNode, "帧数上限");
         let savedCap = null;
-        if (mergeNode.inputs?.some((i) => i.link != null) && wCap) {
+        if (liveMerge.inputs?.some((i) => i.link != null) && wCap) {
             savedCap = wCap.value;
             wCap.value = 1;
-            node.setDirtyCanvas?.(true, true);
+            liveNode.setDirtyCanvas?.(true, true);
         }
         try {
             const mCollected = [];
             const mDetach = attachCollector(mCollected);
             const mBox = { id: null };
             try {
-                await runOnce(collectDownstream(mergeNode), mBox, mCollected);
+                await runOnce(collectDownstream(liveMerge), mBox, mCollected);
             } finally {
                 mDetach();
             }
@@ -655,7 +783,7 @@ async function runBatch(node, segments, ui, abortFlag) {
             // 兜底 2：整轮被缓存命中时事件不会重发，但文件实际已产出（上轮同参数运行）
             // → 按 prompt_id 查执行历史，从合并节点下游节点取真实输出
             if (!vid && mBox.id) {
-                const vids = await fetchHistoryOutputByPrompt(mBox.id, collectDownstream(mergeNode));
+                const vids = await fetchHistoryOutputByPrompt(mBox.id, collectDownstream(liveMerge));
                 if (vids.length) vid = vids[vids.length - 1];
             }
             if (!vid) {
@@ -667,8 +795,8 @@ async function runBatch(node, segments, ui, abortFlag) {
             if (savedCap != null) {
                 wCap.value = savedCap;
             }
-            mergeNode.setDirtyCanvas?.(true, true);
-            node.setDirtyCanvas?.(true, true);
+            liveMerge.setDirtyCanvas?.(true, true);
+            liveNode.setDirtyCanvas?.(true, true);
         }
     } else {
         // 回退（工作流无合并节点）：保存节点逐段产出 → 后端直接拼接
@@ -677,7 +805,7 @@ async function runBatch(node, segments, ui, abortFlag) {
         }
         ui.status(`合并 ${allOutputs.length} 个片段产物…`);
         // 拼接产物前缀自动取源视频名
-        const videoBase = (findWidget(node, "视频")?.value || "batch")
+        const videoBase = (findWidget(liveNode, "视频")?.value || "batch")
             .replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]/g, "_");
         const resp = await fetch(CONCAT_API, {
             method: "POST",
@@ -688,11 +816,23 @@ async function runBatch(node, segments, ui, abortFlag) {
         if (!resp.ok || !j.filename) throw new Error(j.error || "合并失败");
         merged = j;
     }
-    node._xzgResetLoaderPreview?.();
+    liveNode._xzgResetLoaderPreview?.();
     return { aborted: false, outputs: allOutputs, merged, usedMergeNode: !!mergeNode };
 }
 
 function openBatchDialog(node) {
+    // 同一工作流同一节点重入（窗口被切换隐藏后又点按钮）：只重绑实例并重新显示
+    if (activeSession && activeSession.open
+        && String(activeSession.nodeId) === String(node.id)
+        && graphMatchesSession(activeSession)) {
+        activeSession.node = node;
+        activeSession.active = true;
+        showOverlay();
+        return;
+    }
+    // 在别的加载器/别的工作流上打开：旧会话彻底失效（运行中则中止）
+    if (activeSession) abortSession(activeSession);
+
     const overlay = getDialog();
     const $ = (id) => overlay.querySelector("#" + id);
     const wVideo = findWidget(node, "视频");
@@ -704,6 +844,10 @@ function openBatchDialog(node) {
     $("xzg-batch-log").innerHTML = "";
     $("xzg-batch-run").disabled = false;
     $("xzg-batch-run").textContent = "开始任务";
+    // 复位上一次会话遗留的按钮状态（中断按钮隐藏、关闭按钮恢复可点）
+    $("xzg-batch-abort").style.display = "none";
+    $("xzg-batch-close").style.cssText = "margin-right:auto;background:#5a2a2a;color:#faa;border:1px solid #744;" +
+        "border-radius:5px;padding:6px 14px;cursor:pointer;";
     overlay.style.display = "block";
     // 默认位置：水平贴左侧工具栏，垂直在画布中心（按面板实际高度动态计算）
     const panel = overlay.firstElementChild;
@@ -713,7 +857,31 @@ function openBatchDialog(node) {
 
     let segments = null;
     let running = false;
-    let abortFlag = { v: false };
+    const abortFlag = { v: false };
+
+    // 会话：归属打开时的工作流（graphId）。切走只暂停，清空/删节点/别处重开才中止。
+    // 节点实例切换标签页后会重建，runBatch 内一律按 nodeId 实时解析。
+    const session = {
+        graphId: app.graph?.id || NIL_GRAPH_ID,
+        graphSig: graphSignature(),
+        node,
+        nodeId: String(node.id),
+        mergeId: null,
+        active: true,   // 绑定工作流是否为当前挂载的图
+        open: true,     // 对话框是否处于打开状态
+        abortFlag,
+        /** 切走时在段边界等待：不中断后端、不提交新段；切回本工作流自动继续 */
+        async waitActive(uiObj) {
+            if (this.active) return;
+            uiObj?.status?.("已切换到其他工作流：任务已暂停，切回本工作流自动继续", true);
+            while (activeSession === this && !this.abortFlag.v && !this.active) {
+                await new Promise((r) => setTimeout(r, 300));
+            }
+            if (this.abortFlag.v) return;
+            uiObj?.status?.("已切回本工作流，继续执行…");
+        },
+    };
+    activeSession = session;
 
     // 关闭：运行中不可关，提醒先中断；空闲时直接关
     const close = () => {
@@ -723,6 +891,10 @@ function openBatchDialog(node) {
             return;
         }
         overlay.style.display = "none";
+        if (activeSession === session) {
+            session.open = false;
+            activeSession = null;
+        }
     };
     $("xzg-batch-close").onclick = close;
 
@@ -772,7 +944,8 @@ function openBatchDialog(node) {
 
     $("xzg-batch-detect").onclick = async () => {
         if (running) return;
-        const filename = wVideo?.value;
+        const dNode = session.node; // 切回后 syncSession 已重绑为实时实例
+        const filename = findWidget(dNode, "视频")?.value;
         if (!filename) { ui.status("加载器未选择视频", true); return; }
         const threshold = 0.35; // 与快剪默认阈值一致
         ui.status("正在探测切点（大视频可能需要数十秒）…");
@@ -780,9 +953,9 @@ function openBatchDialog(node) {
             const cuts = await detectScenes(filename, threshold);
             // 用户预设的裁剪窗口（跳过帧数/帧数上限）：探测结果与分段都限制在该范围内——
             // 相当于先按红蓝杠裁剪，再在裁剪后的视频上自动探测切点并分段
-            const srcFps = Number(node._xzgSourceFps) || Number(node._xzgVideoPlayer?.getFrameRate?.()) || 0;
-            const wSkipD = findWidget(node, "跳过帧数");
-            const wLimitD = findWidget(node, "帧数上限");
+            const srcFps = Number(dNode._xzgSourceFps) || Number(dNode._xzgVideoPlayer?.getFrameRate?.()) || 0;
+            const wSkipD = findWidget(dNode, "跳过帧数");
+            const wLimitD = findWidget(dNode, "帧数上限");
             const skipF = Number(wSkipD?.value) || 0;
             const limitF = Number(wLimitD?.value) || 0;
             let winStart = 0, winEnd = 0;
@@ -809,13 +982,13 @@ function openBatchDialog(node) {
         if (running) return;
         if (!segments) { ui.status("请先自动探测视频切点", true); return; }
         running = true;
-        abortFlag = { v: false };
+        abortFlag.v = false;
         $("xzg-batch-run").disabled = true;
         // 运行期间关闭按钮置灰（仍可点击，点击会提示"请先中断任务"）
         $("xzg-batch-close").style.cssText = "margin-right:auto;background:#333;color:#666;border:1px solid #444;" +
             "border-radius:5px;padding:6px 14px;cursor:not-allowed;";
         try {
-            const result = await runBatch(node, segments, ui, abortFlag);
+            const result = await runBatch(session.node, segments, ui, abortFlag, session);
             if (result.aborted) {
                 ui.status("已中断任务", true);
             } else {
@@ -832,8 +1005,10 @@ function openBatchDialog(node) {
         } catch (e) {
             console.error("[小珠光逐段批处理]", e);
             ui.status(String(e.message || e), true);
-            // 运行完毕（出错）：立即清理缓冲，不留缓存
-            const _merge = (app.graph?._nodes || []).find((n) => n.type === MERGE_NODE_TYPE);
+            // 运行完毕（出错）：立即清理缓冲，不留缓存（按 id 定位，避免误清别的工作流）
+            const _merge = session.mergeId != null
+                ? findLiveNode(session.mergeId, MERGE_NODE_TYPE)
+                : null;
             if (_merge) {
                 try { await fetch(BUFFER_RESET_API, { method: "POST" }); } catch (_) { /* ignore */ }
             }
@@ -890,6 +1065,24 @@ app.registerExtension({
                 for (const name of ["片段起点", "片段终点"]) {
                     const w = (this.widgets || []).find((x) => x.name === name);
                     if (w) w.value = 0;
+                }
+            } catch (e) { /* ignore */ }
+            return r;
+        };
+        // 绑定节点被删除：仅「同工作流内手动删除」才中止会话。
+        // 切换工作流标签页时新图载入会先 graph.clear()，同样触发 onRemoved，
+        // 但那是暂停场景（graphLoading=true），绝不能中止正在跑的任务；
+        // 菜单「清空工作流」先把图 id 置 nil 再删节点（graphMatchesSession 为 false），
+        // 由 graphCleared 事件负责中止。
+        const origOnRemoved = nodeType.prototype.onRemoved;
+        nodeType.prototype.onRemoved = function () {
+            const r = origOnRemoved?.apply(this, arguments);
+            try {
+                const s = activeSession;
+                if (s && !graphLoading
+                    && String(s.nodeId) === String(this.id)
+                    && graphMatchesSession(s)) {
+                    abortSession(s);
                 }
             } catch (e) { /* ignore */ }
             return r;

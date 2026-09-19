@@ -9,6 +9,7 @@ import subprocess
 import re
 import time
 import hashlib
+import json
 import numpy as np
 import torch
 import folder_paths
@@ -120,6 +121,97 @@ def _get_ffmpeg_major_version():
     except Exception:
         _ffmpeg_major_version = 0
     return _ffmpeg_major_version
+
+
+_ffprobe_path = None
+_nb_frames_cache = {}
+
+
+def _get_ffprobe_path():
+    """由 ffmpeg 路径推断同名 ffprobe（大小写无关），兜底 PATH / 绘世启动器 ffmpeg 目录。
+    都找不到时返回 None —— imageio-ffmpeg 只带 ffmpeg 不带 ffprobe，
+    调用方必须能处理 None（不得把不存在的路径传给 subprocess）。"""
+    global _ffprobe_path
+    if _ffprobe_path is not None:
+        return _ffprobe_path
+    _ffprobe_path = ""
+    cands = []
+    if ffmpeg_path:
+        d = os.path.dirname(ffmpeg_path)
+        cands += [os.path.join(d, "ffprobe.exe"), os.path.join(d, "ffprobe")]
+    try:
+        import shutil
+        w = shutil.which("ffprobe")
+        if w:
+            cands.append(w)
+    except Exception:
+        pass
+    # 绘世/秋叶启动器常见位置：<启动器根>/ffmpeg/bin/ffprobe.exe（当前文件向上 5 层）
+    launcher_dir = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+    cands += [
+        os.path.join(launcher_dir, "ffmpeg", "bin", "ffprobe.exe"),
+        os.path.join(launcher_dir, "ffmpeg", "bin", "ffprobe"),
+    ]
+    for c in cands:
+        if c and os.path.isfile(c):
+            _ffprobe_path = c
+            break
+    return _ffprobe_path or None
+
+
+def _probe_source_frame_count(video, fps, duration):
+    """源视频全片总帧数：优先读 ffprobe 的 nb_frames（容器真实帧数，不实际解码，快），
+    拿不到（无 ffprobe / 无该字段 / 非法值）时回退 round(fps × duration)。
+    注：ffmpeg 报告的 Duration 通常含尾帧展示时长（last PTS + 1 帧），round(fps×duration)
+    会虚高 1 帧（如实际 459 帧 → 460），导致前端播放条分母与真实帧数不符。
+    结果按 文件mtime+size 缓存，避免同一文件反复探测。"""
+    try:
+        st = os.stat(video)
+        key = (video, st.st_mtime, st.st_size)
+    except Exception:
+        key = (video,)
+    if key in _nb_frames_cache:
+        nb = _nb_frames_cache[key]
+        return nb if nb is not None else (round(fps * duration) if fps > 0 else 0)
+    nb = None
+    fp = _get_ffprobe_path()
+    if fp:
+        try:
+            r = subprocess.run(
+                [fp, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=nb_frames", "-of", "json", video],
+                capture_output=True, timeout=30)
+            if r.returncode == 0:
+                data = json.loads(r.stdout.decode(*ENCODE_ARGS) or "{}")
+                streams = data.get("streams") or []
+                if streams:
+                    v = streams[0].get("nb_frames")
+                    if v is not None:
+                        try:
+                            nb = int(v)
+                        except (TypeError, ValueError):
+                            nb = None
+                        if nb is not None and nb <= 0:
+                            nb = None
+        except Exception:
+            nb = None
+    if nb is None:
+        nb = round(fps * duration) if fps > 0 else 0
+    _nb_frames_cache[key] = nb
+    return nb
+
+
+def _finalize_source_frame_count(src_frames, loaded_count, skip_frames=0, frame_limit=0,
+                                 segment_start=0.0, segment_end=0.0, force_rate=0):
+    """默认「全片原样加载」时，用解码器实测帧数修正估算的源总帧数（解码读到 EOF 的数最权威）。
+    仅当 未跳过 / 未截断 / 未分段 / 未强制帧率 时适用——此时 loaded_count 即全片真实帧数；
+    其余情况保持探测值（前端播放条分母/红蓝杠定位依赖全片总帧数，不得被段内/截断帧数污染）。"""
+    if (src_frames != loaded_count and loaded_count > 0
+            and not force_rate and not skip_frames and not frame_limit
+            and not segment_start and not segment_end):
+        return loaded_count
+    return src_frames
 
 
 def float_or_int(value, default=0):
@@ -420,7 +512,10 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     # 正确方式：source_frames = round(fps_base × duration)，再按比例计算目标帧数
     # source_frame_count 按全片计（前端播放条分母/红蓝杠定位依赖全片总帧数）；
     # 可解码帧数（yieldable/进度上限）按片段窗口内帧数计
-    source_frame_count = round(fps_base * full_duration) if fps_base > 0 else 0
+    # 源总帧数优先用 ffprobe nb_frames（容器真实帧数），拿不到再回退 round(fps×duration)：
+    # ffmpeg 报告的 duration 通常含尾帧展示时长（last PTS + 1 帧），round(fps×duration)
+    # 会虚高 1 帧（如实际 459 帧 → 460），导致前端播放条分母与真实帧数不符。
+    source_frame_count = _probe_source_frame_count(video, fps_base, full_duration)
     window_frame_count = round(fps_base * duration) if fps_base > 0 else 0
     # 跳过帧：-ss seek 后实际可输出的帧数上限 = 窗口内剩余帧数，
     # 否则进度上限偏大（跳过帧数越多，进度条越到不了 100%）
@@ -693,9 +788,18 @@ class XiaozhuguangVideoLoader:
             }
         pbar.update_absolute(750, 1000)  # 音频就绪
 
+        # 全片原样加载时用解码实测帧数修正源总帧数（播放条分母 459 vs 460 误差的直接兜底）
+        src_frames_final = _finalize_source_frame_count(
+            src_frames, loaded_count,
+            skip_frames=max(0, int(跳过帧数 or 0)),
+            frame_limit=max(0, int(帧数上限 or 0)),
+            segment_start=max(0.0, float(片段起点 or 0.0)),
+            segment_end=max(0.0, float(片段终点 or 0.0)),
+            force_rate=强制帧率,
+        )
         video_info = {
             "source_fps": src_fps,
-            "source_frame_count": src_frames,
+            "source_frame_count": src_frames_final,
             "source_duration": src_dur,
             "source_width": src_w,
             "source_height": src_h,

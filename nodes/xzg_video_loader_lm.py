@@ -29,6 +29,7 @@ from .xzg_video_loader import (
     FIT_MODE_MAP,
     ENCODE_ARGS,
     _build_framerate_filters,
+    _finalize_source_frame_count,
 )
 
 
@@ -155,9 +156,16 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
             }
         pbar.update_absolute(750, 1000)
 
+        # 全片原样加载时用解码实测帧数修正源总帧数（与加载器一致，播放条分母对齐真实帧数）
+        src_frames_final = _finalize_source_frame_count(
+            src_frames, loaded_count,
+            skip_frames=max(0, int(跳过帧数 or 0)),
+            frame_limit=max(0, int(帧数上限 or 0)),
+            force_rate=强制帧率,
+        )
         video_info = {
             "source_fps": src_fps,
-            "source_frame_count": src_frames,
+            "source_frame_count": src_frames_final,
             "source_duration": src_dur,
             "source_width": src_w,
             "source_height": src_h,

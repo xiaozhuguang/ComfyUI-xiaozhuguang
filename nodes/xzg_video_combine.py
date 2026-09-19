@@ -507,6 +507,9 @@ class XiaozhuguangVideoCombine:
                     "type": "output",
                     "format": 格式,
                     "frame_rate": 帧率,
+                    # 真实写入帧数：前端播放条总帧数优先采用实测值，
+                    # 避免用 容器时长×帧率 推算（音轨尾差会让容器时长虚长，如 459 帧 → 460）
+                    "frame_count": int(图像.size(0)),
                 }],
                 "output_dir": output_dir,
             }

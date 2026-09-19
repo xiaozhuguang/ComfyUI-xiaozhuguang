@@ -30,6 +30,17 @@ const STORAGE_SIZE_KEY = "xiaozhuguang.arrow.size";
 // 箭头工具设置云存储键（设置/快捷键/位置/尺寸合并一个云键）
 const ARROW_STATE_KEY = "xzg_arrow_state";
 
+// 设置项：启用/关闭「箭头绘制工具」（ComfyUI 设置 → xiaozhuguang，与其它小珠光功能开关同一分组）
+const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableArrowTool";
+
+function isArrowToolEnabled() {
+    try {
+        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+    } catch (e) {
+        return true;
+    }
+}
+
 const DEFAULT_SHORTCUT = { key: "t", ctrl: false, alt: false, shift: false, meta: false };
 
 // ============================================================================
@@ -52,11 +63,20 @@ let _arrowBackupDirty = false;
 let _arrowFlushed = false;
 // 延迟显示（等节点渲染完成）的切换令牌：快速连续切换时递增，旧 rAF 链据此取消
 let _arrowSwitchToken = 0;
-// 新打开工作流时固定延迟显示（等画布节点/视图完全加载稳定）；切换 tab 不延迟
-let _lastLoadNewOpen = false;         // 最近一次加载是否为"新打开工作流"
-let _newOpenHoldHide = false;         // 新打开延迟期间强制保持隐藏（拦截 transformTracker 的 150ms 提前渐入）
-const ARROW_NEW_OPEN_DELAY_MS = 3000; // 新打开工作流的显示延迟（毫秒）
+// 切换 tab/新建后“首帧同绘显示”挂起标记：onDrawBackground 同帧钩子首绘完成立即显示覆盖层
+let _arrowInstantShowPending = false;
+// 最近一次首帧同绘显示的时间戳：宽限期内忽略工作流视图适配造成的 transform 跳变
+let _arrowInstantShownAt = 0;
+// 本次挂起显示使用的渐入时长（毫秒）：由 scheduleArrowRedrawAfterSwitch 按场景写入，同帧钩子/兜底统一读取
+let _arrowInstantShowDurMs = 0;
+// 首帧显示后的视图适配宽限期（毫秒）：刷新后首次显示用长宽限覆盖加载期视图适配，切换用短宽限
+let _arrowAdaptGraceMs = 250;
+// 刷新浏览器后的首次工作流显示是否已完成：首次显示不渐入（与普通节点一致，直接出现）
+let _arrowInitialShowDone = false;
 const ARROW_BACKUP_PREFIX = "xzg_arrow_backup_";
+// 功能开关状态：初始化是否已完成 / 轮询是否进行中（供设置开关热切换，避免重复初始化）
+let arrowSystemInitialized = false;
+let _arrowInitPolling = false;
 let currentArrow = null;
 let isDrawing = false;
 let startPoint = null;
@@ -2296,6 +2316,8 @@ function stopAnimLoop() {
 }
 
 function renderArrows() {
+    // 功能被设置开关关闭时：覆盖层已隐藏，跳过绘制（画布重绘同步钩子仍会调用本函数）
+    if (!isArrowToolEnabled()) return;
     const ctx = canvasContext;
     const canvas = canvasElement;
     if (!ctx || !canvas) return;
@@ -2554,6 +2576,8 @@ function setupLiteGraphArrowClick() {
     });
 
     litegraphCanvas.addEventListener("pointerdown", (e) => {
+        // 功能被设置开关关闭时不响应（覆盖层已隐藏，正常无箭头可命中，双保险）
+        if (!isArrowToolEnabled()) return;
         // 模式激活时由覆盖层处理，无需在此处理
         if (isArrowModeActive) return;
 
@@ -3875,6 +3899,8 @@ function updateStyleSliders() {
 // ============================================================================
 
 function toggleArrowMode() {
+    // 功能被设置开关关闭时：快捷键 T / Escape 一律不响应
+    if (!isArrowToolEnabled()) return;
     isArrowModeActive = !isArrowModeActive;
 
     if (isArrowModeActive) {
@@ -3902,6 +3928,41 @@ function toggleArrowMode() {
     updateToolbarState();
     updateTransformSliders();
     updateStyleSliders();
+}
+
+// 设置开关热切换：启用/关闭整个箭头功能（ComfyUI 设置 → xiaozhuguang → 启用「箭头绘制工具」）
+function setArrowToolEnabled(v) {
+    v = !!v;
+    if (v) {
+        // 启用：尚未初始化则走完整初始化轮询；已初始化则恢复覆盖层显示
+        if (!arrowSystemInitialized) {
+            waitForCanvasAndInitialize();
+            return;
+        }
+        showOverlay();
+        if (isArrowModeActive) {
+            showToolbar();
+            setPointerEventsMode("auto");
+            setCursor("crosshair");
+        }
+        renderArrows();
+        updateToolbarState();
+    } else {
+        // 关闭：退出绘制模式（含编组联动复位），隐藏全部 UI；快捷键与点击不再响应
+        if (!arrowSystemInitialized) return;
+        if (isArrowModeActive) {
+            isArrowModeActive = false;
+            abortCurrentArrow();
+            clearSelection();
+            if (typeof window.__xzg_setArrowModeActive === 'function') {
+                try { window.__xzg_setArrowModeActive(false); } catch (e) {}
+            }
+        }
+        hideToolbar();
+        hideOverlay();
+        setPointerEventsMode("none");
+        setCursor("default");
+    }
 }
 
 function showOverlay() {
@@ -4148,85 +4209,39 @@ function arrowFadeInOnce(ms) {
 }
 
 /**
- * 切换提交后立即重绘一次，并强制一次最短渐入（掩盖切换残留）。
- * 即使未开启渐入也默认应用 0.5s；开启时用设置值但同样保证最短 0.5s。
+ * 切换提交后立即重绘一次。
+ * 刷新浏览器后的首次工作流显示：取消渐入，直接立即显示（与普通节点一致）；
+ * 后续切换 tab/新建：渐入跟随设置开关（关闭=立即，开启=设置时长）。
  */
-function scheduleArrowRedrawAfterSwitch(delayMs) {
-    // 等画布视图就绪后再显示箭头：打开工作流时画布会做视图适配（fit view / 恢复保存的 ds），
-    // transform 会从旧值变化到目标值。若在适配完成前显示，箭头会先以错误大小出现、随后随画布缩放。
-    // 策略：先隐藏；transform 变化过 → 等变化后连续稳定若干帧再显示；
-    //       transform 从未变化（切换等无适配场景）→ 等基础时间后显示；总超时强制兜底。
-    // 新打开工作流（delayMs 有值）→ 固定延迟 delayMs 再显示，期间 _newOpenHoldHide 置位，
-    // 拦截 transformTracker 的 150ms 提前渐入，保证画布完全稳定后才出现绘图。
+function scheduleArrowRedrawAfterSwitch() {
+    // 与普通节点一致不等待：先隐藏覆盖层清掉上一工作流残留画面，置挂起标记；
+    // 由 patchCanvasArrowRedrawSync 的 onDrawBackground 同帧钩子在新工作流首帧
+    // 用与节点相同的 transform 绘制并立即显示；200ms 兜底防个别场景无重绘导致不显示。
     const el = canvasElement;
     if (el) el.style.opacity = "0";
     const token = ++_arrowSwitchToken;
-    const t0 = Date.now();
-    // 立即接管 holdHide：延迟链置位（拦截 transformTracker 提前渐入），切换/新建链立即解除
-    const isDelayed = typeof delayMs === 'number' && delayMs > 0;
-    _newOpenHoldHide = isDelayed;
-    if (isDelayed) {
-        const tryShow = () => {
-            if (token !== _arrowSwitchToken) return;   // 已由更新的加载链接管，holdHide 由新链管理
-            if (Date.now() - t0 >= delayMs) {
-                _newOpenHoldHide = false;
-                renderArrows();
-                const durMs = arrowSettings.fadeInEnabled
-                    ? Math.max(arrowSettings.fadeInDuration || 1000, 500)
-                    : 500;
-                arrowFadeInOnce(durMs);
-                return;
-            }
-            requestAnimationFrame(tryShow);
-        };
-        requestAnimationFrame(tryShow);
-        return;
-    }
-    const getSig = () => {
-        const t = getTransform();
-        return (t.scale * 100000 | 0) + ',' + (t.offsetX * 1000 | 0) + ',' + (t.offsetY * 1000 | 0);
-    };
-    const startSig = getSig();
-    let lastSig = startSig;
-    let stableFrames = 0;
-    let changedOnce = false;
-    const NO_CHANGE_MS = 400;       // 无适配场景（切换）基础等待
-    const STABLE_AFTER_CHANGE = 5;  // 适配后需连续稳定 5 帧
-    const TIMEOUT_MS = 4000;        // 总超时兜底
-    const tryShow = () => {
+    // 刷新浏览器后的首次工作流显示：取消渐入，直接立即显示（与普通节点一致）；
+    // 后续切换 tab/新建：渐入跟随设置开关（关闭=立即显示，开启=设置时长）。
+    const isInitial = !_arrowInitialShowDone;
+    _arrowInitialShowDone = true;
+    _arrowInstantShowDurMs = isInitial
+        ? 0
+        : (arrowSettings.fadeInEnabled ? (arrowSettings.fadeInDuration || 1000) : 0);
+    // 首次显示用长宽限期：覆盖刷新后工作流加载/视图适配（fit view / ds 恢复）造成的
+    // transform 跳变，避免“立即显示→隐藏→再渐入”的双重过渡；切换保持短宽限 250ms。
+    _arrowAdaptGraceMs = isInitial ? 2000 : 250;
+    _arrowInstantShowPending = true;
+    setTimeout(() => {
         if (token !== _arrowSwitchToken) return;   // 已发起新一轮切换，取消本链
-        const sig = getSig();
-        if (sig !== lastSig) {
-            lastSig = sig;
-            stableFrames = 0;
-            if (sig !== startSig) changedOnce = true;
-        } else {
-            stableFrames++;
-        }
-        const elapsed = Date.now() - t0;
-        let ready = false;
-        if (changedOnce) {
-            ready = stableFrames >= STABLE_AFTER_CHANGE;   // 适配完成后已稳定
-        } else {
-            ready = elapsed >= NO_CHANGE_MS;               // 无适配场景（切换）
-        }
-        if (ready || elapsed > TIMEOUT_MS) {
-            renderArrows();
-            const durMs = arrowSettings.fadeInEnabled
-                ? Math.max(arrowSettings.fadeInDuration || 1000, 500)
-                : 500;
-            arrowFadeInOnce(durMs);
-            return;
-        }
-        requestAnimationFrame(tryShow);
-    };
-    requestAnimationFrame(tryShow);
+        if (!_arrowInstantShowPending) return;     // 同帧钩子已显示过
+        _arrowInstantShowPending = false;
+        _arrowInstantShownAt = Date.now();
+        renderArrows();
+        arrowFadeInOnce(_arrowInstantShowDurMs);
+    }, 200);
 }
 
 function handleArrowWorkflowSwitch(key, freshData, trusted) {
-    // 读取并消费"最近一次加载是否为新打开工作流"标记（configure/poll 设置），供延迟显示用
-    const newOpen = _lastLoadNewOpen;
-    _lastLoadNewOpen = false;
     // 关键防御：无工作流标识（切换瞬间前端短暂上报 null）时绝不动当前箭头，防止旧内容被误清后消失
     if (!key) return;
     const oldKey = _arrowActiveKey;
@@ -4243,10 +4258,8 @@ function handleArrowWorkflowSwitch(key, freshData, trusted) {
     if (oldKey && !_arrowFlushed) flushCurrentArrowsToKey(oldKey);
     loadArrowsFromSource(key, freshData);
     _arrowActiveKey = key;
-    // 切换完成后多帧延迟重绘，覆盖仍可能滞留在旧变换上的内容。
-    // 新打开工作流（首次从磁盘/列表加载）→ 固定延迟 ARROW_NEW_OPEN_DELAY_MS 再显示；
-    // 切换 tab / 新建 → 用 changedOnce 稳定检测快速显示。
-    scheduleArrowRedrawAfterSwitch(newOpen ? ARROW_NEW_OPEN_DELAY_MS : undefined);
+    // 切换完成后：与普通节点一致同帧显示（新开/切 tab 均不延迟）。
+    scheduleArrowRedrawAfterSwitch();
 }
 
 /** 若箭头有变动，则把当前工作流备份写入 localStorage（刷新后恢复用） */
@@ -4270,13 +4283,11 @@ function pollArrowWorkflow() {
 
         // 权威路径：configure/loadGraphData 携带了明确的新数据，直接信任并提交
         if (pending && pending.key === key) {
-            _lastLoadNewOpen = !!(pending && pending.newOpen);
             handleArrowWorkflowSwitch(key, pending.data, true);
         } else if (key && key !== _arrowActiveKey) {
             // 轮询路径：检测到新的非空工作流 key 立即提交。
             // 不在此确认等待——否则切换后仍长时间显示旧工作流内容；
             // 瞬时 null / key 抖动带来的误清已由 handleArrowWorkflowSwitch 的 null 防护拦截。
-            _lastLoadNewOpen = false;
             handleArrowWorkflowSwitch(key, undefined, true);
         }
         persistArrowBackupIfNeeded();
@@ -4331,16 +4342,8 @@ function setupPersistence() {
                 _arrowPendingLoad = {
                     key: targetWf ? arrowWorkflowKey(targetWf) : currentArrowWorkflowKey(),
                     data: (graphData?.extra && graphData.extra[EXTENSION_KEY]) || null,
-                    targetWf: targetWf || null,
-                    // 新打开工作流（插件缓存中尚无该 key 的绘图记录）→ 延迟显示等画布稳定；
-                    // 切换 tab（缓存已有）→ 快速显示。用插件自身缓存判定，不依赖 ComfyUI 内部时序。
-                    newOpen: !!(targetWf && !_arrowCache.has(arrowWorkflowKey(targetWf)))
+                    targetWf: targetWf || null
                 };
-                // 提前置位延迟期强制隐藏：transformTracker 的 150ms 渐入可能在 configure 完成前
-                // 触发（此时 schedule 的 holdHide 尚未设置），会把 opacity 设回 1，
-                // 导致 onDrawBackground 用未适配的 transform 先绘制出错误位置/大小的内容。
-                // 从加载一开始就置位，配合 schedule 3s 后解除，整段加载期保持隐藏。
-                if (_arrowPendingLoad.newOpen) _newOpenHoldHide = true;
             } catch (e) {}
             const result = await origLoadGraphData(graphData, ...args);
             return result;
@@ -4509,9 +4512,6 @@ function setupPersistence() {
             const realKey = (pending && pending.targetWf) ? arrowWorkflowKey(pending.targetWf) : null;
             const key = realKey || currentArrowWorkflowKey() || (pending && pending.key) || (this._arrowWorkflow && arrowWorkflowKey(this._arrowWorkflow)) || null;
             const fresh = data?.extra?.[EXTENSION_KEY] !== undefined ? data.extra[EXTENSION_KEY] : (pending ? pending.data : undefined);
-            // 标记本次加载是否为"新打开工作流"（延迟显示用）：pending.newOpen 已在 loadGraphData 补丁
-            // 里按"插件缓存是否已有该 key"判定；无 pending（纯轮询）时为 false（快速显示）。
-            _lastLoadNewOpen = !!(pending && pending.newOpen);
 
             // ===== 修复“新建工作流出现旧图形（串台）” =====
             // configure 的 data 是“正在加载的工作流”的权威箭头来源（fresh=null 表示该工作流无箭头）。
@@ -4536,15 +4536,12 @@ function setupPersistence() {
                 } else {
                     loadArrowsFromSource(key, fresh);
                 }
-                // 3) 提交活动工作流标识；仅在真正切换时做渐入
+                // 3) 提交活动工作流标识；仅在真正切换时做同帧重绘显示
                 if (key && key !== prevKey) {
                     _arrowActiveKey = key;
-                    const newOpen = _lastLoadNewOpen;
-                    _lastLoadNewOpen = false;
-                    scheduleArrowRedrawAfterSwitch(newOpen ? ARROW_NEW_OPEN_DELAY_MS : undefined);
+                    scheduleArrowRedrawAfterSwitch();
                 } else if (key) {
                     _arrowActiveKey = key;
-                    _lastLoadNewOpen = false;
                 }
             } else {
                 handleArrowWorkflowSwitch(key, fresh, true);
@@ -6495,12 +6492,21 @@ function setupKeyboardShortcut() {
 // ============================================================================
 
 function waitForCanvasAndInitialize() {
+    // 已初始化或已有轮询在跑：不重复启动（设置开关热切换可能多次触发）
+    if (arrowSystemInitialized || _arrowInitPolling) return;
+    _arrowInitPolling = true;
     let attempts = 0;
     const maxAttempts = 300;
     const pollInterval = 100;
 
     function tryInitialize() {
         try {
+            // 轮询期间功能被设置开关关闭：放弃本次初始化并复位轮询标志，
+            // 避免轮询完成后无视关闭状态照样初始化显示；待重新开启时再启动
+            if (!isArrowToolEnabled()) {
+                _arrowInitPolling = false;
+                return true;
+            }
             const canvas = document.querySelector("canvas");
             if (canvas && canvas.parentElement && app?.canvas?.ds) {
                 initializeArrowSystem(canvas);
@@ -6519,12 +6525,17 @@ function waitForCanvasAndInitialize() {
         if (tryInitialize()) {
             clearInterval(intervalId);
         } else if (attempts >= maxAttempts) {
+            // 轮询放弃：复位标志，允许后续（如重新打开设置开关）再次尝试
+            _arrowInitPolling = false;
             clearInterval(intervalId);
         }
     }, pollInterval);
 }
 
 function initializeArrowSystem(litegraphCanvas) {
+    // 防重复初始化（覆盖层/工具栏/事件会成对重复）
+    if (arrowSystemInitialized) return;
+    arrowSystemInitialized = true;
     const container = litegraphCanvas.parentElement;
     container.style.position = "relative";
 
@@ -6543,6 +6554,9 @@ function initializeArrowSystem(litegraphCanvas) {
     let _arrowCanvasMoving = false;
     let _arrowMoveStopTimer = null;
     const transformTrackerCleanup = createTransformTracker(() => {
+        // 功能被设置开关关闭时：空转等待，不重绘不渐入（保持 lastTransformStr 不更新，
+        // 重新开启后首帧按“已移动”处理触发一次重绘）
+        if (!isArrowToolEnabled()) return;
         const transform = getTransform();
         const transformStr = `${transform.scale},${transform.offsetX},${transform.offsetY}`;
         const moved = transformStr !== lastTransformStr;
@@ -6558,25 +6572,34 @@ function initializeArrowSystem(litegraphCanvas) {
         // 渐入检测
         if (arrowSettings.fadeInEnabled && canvasElement) {
             if (moved) {
-                if (!_arrowCanvasMoving) {
-                    _arrowCanvasMoving = true;
-                    canvasElement.style.transition = 'opacity 0s';
-                    canvasElement.style.opacity = '0';
-                }
-                if (_arrowMoveStopTimer) {
-                    clearTimeout(_arrowMoveStopTimer);
-                    _arrowMoveStopTimer = null;
-                }
-                // 画布停止移动后延迟触发渐入
-                _arrowMoveStopTimer = setTimeout(() => {
+                // 首帧同绘显示后的宽限期内：忽略工作流视图适配造成的 transform 跳变，
+                // 不隐藏不重新渐入（避免“显示→隐藏→再渐入”的双重过渡）。
+                // 刷新浏览器后的首次显示宽限更长（_arrowAdaptGraceMs），覆盖加载期视图适配
+                if (Date.now() - _arrowInstantShownAt < _arrowAdaptGraceMs) {
                     _arrowCanvasMoving = false;
-                    _arrowMoveStopTimer = null;
-                    // 新打开工作流延迟显示期间强制保持隐藏，避免提前渐入打断延迟
-                    if (_newOpenHoldHide) return;
-                    const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
-                    canvasElement.style.transition = `opacity ${fadeDur}s ease`;
-                    canvasElement.style.opacity = '1';
-                }, 150);
+                    if (_arrowMoveStopTimer) {
+                        clearTimeout(_arrowMoveStopTimer);
+                        _arrowMoveStopTimer = null;
+                    }
+                } else {
+                    if (!_arrowCanvasMoving) {
+                        _arrowCanvasMoving = true;
+                        canvasElement.style.transition = 'opacity 0s';
+                        canvasElement.style.opacity = '0';
+                    }
+                    if (_arrowMoveStopTimer) {
+                        clearTimeout(_arrowMoveStopTimer);
+                        _arrowMoveStopTimer = null;
+                    }
+                    // 画布停止移动后延迟触发渐入
+                    _arrowMoveStopTimer = setTimeout(() => {
+                        _arrowCanvasMoving = false;
+                        _arrowMoveStopTimer = null;
+                        const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
+                        canvasElement.style.transition = `opacity ${fadeDur}s ease`;
+                        canvasElement.style.opacity = '1';
+                    }, 150);
+                }
             }
         }
     });
@@ -6672,8 +6695,18 @@ function patchCanvasArrowRedrawSync() {
     const orig = cv.onDrawBackground;
     cv.onDrawBackground = function () {
         try { if (typeof orig === "function") orig.apply(this, arguments); } catch (e) {}
-        // 新打开工作流延迟显示期间不绘制：避免用尚未适配的 transform 先渲染出错误位置/大小的内容
-        try { if (!_newOpenHoldHide) renderArrows(); } catch (e) {}
+        // 每次画布重绘都同步绘制箭头（与节点同一帧、同一 transform）
+        try { renderArrows(); } catch (e) {}
+        // 切换 tab/新建后：新工作流首帧已与节点同帧同 transform 绘制完成 → 立即显示覆盖层
+        try {
+            if (_arrowInstantShowPending) {
+                _arrowInstantShowPending = false;
+                _arrowInstantShownAt = Date.now();
+                // 显示时长由 scheduleArrowRedrawAfterSwitch 按场景预先决定：
+                // 刷新浏览器后的首次显示=0（立即出现，不渐入）；后续切换=跟随渐入设置
+                arrowFadeInOnce(_arrowInstantShowDurMs);
+            }
+        } catch (e) {}
     };
 }
 
@@ -6761,11 +6794,36 @@ window.__xzg_applyArrowStarts = applyArrowStarts;
 // 扩展注册
 // ============================================================================
 
+// 注册设置项：启用/关闭「箭头绘制工具」（与其它小珠光功能开关同一分组）
+function registerArrowToolSetting(retries) {
+    try {
+        const settings = app?.ui?.settings;
+        if (!settings?.addSetting) {
+            // addSetting 尚不可用：延迟重试（参考小珠光设备码/快剪设置注册）
+            if (retries > 0) setTimeout(() => registerArrowToolSetting(retries - 1), 500);
+            return;
+        }
+        settings.addSetting({
+            id: SETTING_ENABLED,
+            name: "[小珠光] 启用「箭头绘制工具」",
+            defaultValue: true,
+            type: "boolean",
+            onChange: (v) => setArrowToolEnabled(!!v),
+        });
+    } catch (e) {
+        console.warn("[小珠光箭头] 注册设置项失败:", e);
+    }
+}
+
 app.registerExtension({
     name: "ComfyUI.xiaozhuguang.arrow",
 
     async setup() {
-        waitForCanvasAndInitialize();
+        registerArrowToolSetting(20);
+        // 设置开关关闭时不初始化；开启时由 onChange 回调启动初始化
+        if (isArrowToolEnabled()) {
+            waitForCanvasAndInitialize();
+        }
     }
 });
 // 箭头工具设置云持久化：模块加载即异步拉取并回写本地

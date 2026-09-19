@@ -530,6 +530,7 @@ app.registerExtension({
                     };
                     if (!info.filename) return;
                     if (typeof v.frame_rate === "number" && v.frame_rate > 0) info.frame_rate = v.frame_rate;
+                    if (typeof v.frame_count === "number" && v.frame_count > 0) info.frame_count = v.frame_count;
                     _xzgVideoOutputCacheByFp.set(`${_xzgRunningGraphFp}|${localId}`, info);
                     _xzgPersistOutput(_xzgRunningGraphFp, localId, info);
                 } catch (e) { /* 兜底监听不影响主流程 */ }
@@ -682,7 +683,10 @@ app.registerExtension({
                         const url = getVideoUrl(filename, type, subfolder);
                         if (url) {
                             const info = { filename, type, subfolder };
+                            // 权威总帧数：复用执行时写入的 player._videoInfo.frame_count（load 不清 _backendFrameCount）
+                            if (player._videoInfo?.frame_count) info.frame_count = player._videoInfo.frame_count;
                             player._videoInfo = info;
+                            if (info.frame_count) player.setBackendFrameCount?.(info.frame_count);
                             // 注意：不再把文件名写进 node.properties —— 那会并入图/extra_pnginfo，
                             // 改变缓存签名导致每次运行都重编码。预览恢复只走模块级 _xzgVideoOutputCache。
                             player.load(url);
@@ -755,6 +759,7 @@ app.registerExtension({
                         player._lastAppliedKey = key;
                         player._videoInfo = saved;
                         if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
+                        if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
                         const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
                         if (url) {
                             const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
@@ -794,6 +799,9 @@ app.registerExtension({
                     if (typeof v.frame_rate === "number" && v.frame_rate > 0) {
                         info.frame_rate = v.frame_rate;
                     }
+                    if (typeof v.frame_count === "number" && v.frame_count > 0) {
+                        info.frame_count = v.frame_count;
+                    }
                     // 关键：先写入模块级全局 cache（按图实例令牌键，杜绝跨工作流串台）
                     // 切 tab 重建节点后，onConfigure/ResizeObserver 从此读取恢复预览。
                     const wfFp = node._xzgWfFp;
@@ -817,6 +825,9 @@ app.registerExtension({
                     const url = getVideoUrl(info.filename, info.type, info.subfolder);
                     if (url) {
                         if (info.frame_rate) player.setFrameRate?.(info.frame_rate);
+                        // 总帧数优先用后端实测值：setBackendFrameCount 存入播放器权威帧数（load 不清空、
+                        // 加载完成后优先采用；容器时长×帧率推算会因音轨尾差虚高 1 帧，如 459→460）
+                        if (info.frame_count) player.setBackendFrameCount?.(info.frame_count);
                         // 容器可见时立即加载；不可见时只记录 pending，等 ResizeObserver 触发
                         const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
                         if (visible) {
@@ -888,6 +899,7 @@ app.registerExtension({
                                 player._lastAppliedKey = key;
                                 player._videoInfo = saved;
                                 if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
+                                if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
                                 const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
                                 if (url) player.load(url);
                             }
