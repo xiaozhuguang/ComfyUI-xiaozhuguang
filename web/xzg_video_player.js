@@ -984,6 +984,18 @@ export class XiaozhuguangVideoPlayer {
         }
     }
 
+    // 拖动蓝杠（帧数上限）时：把预览画面立即切到「全片帧坐标 sourceFrame」对应的画面，
+    // 用于实时观察"加载到这里为止"的截止画面；松手后由 _resetPlaybackToStart 恢复起点。
+    _showFrameAtSourceFrame(sourceFrame) {
+        const fps = this._frameRate || 24;
+        if (fps <= 0) return;
+        const totalFrames = this.getSourceTotalFrames();
+        if (totalFrames > 0) sourceFrame = Math.max(0, Math.min(sourceFrame, totalFrames - 1));
+        // 预览视频坐标起点=0（文件本身已从 skip 帧开始）；未加载预览时用全片坐标
+        const frameInPreview = this._previewLoaded ? Math.max(0, sourceFrame - this._skipFrames) : sourceFrame;
+        this.seek(frameInPreview / fps);
+    }
+
     _onMarkerDown = (e) => {
         if (e.button !== 0) return;
         const dur = this.duration;
@@ -1080,7 +1092,9 @@ export class XiaozhuguangVideoPlayer {
             const frameLimit = (clamped >= totalFrames) ? 0 : clamped - this._markerDragStartFrame;
             this._frameLimit = frameLimit;
             this._updateLoadRangeMarkers();
-            this._resetPlaybackToStart();
+            // 拖动蓝杠（帧数上限）时：预览立即显示蓝杠处画面（"加载到这里为止"的截止画面），
+            // 松手后由 _onMarkerUp 的 _resetPlaybackToStart 恢复红杠（起点）位置画面
+            this._showFrameAtSourceFrame(clamped);
             this.onLoadRangeEndDrag?.(frameLimit, false);
         }
     }

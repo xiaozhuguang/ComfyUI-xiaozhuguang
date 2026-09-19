@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 /**
  * 小珠光 · 场景逐段批处理
@@ -26,6 +27,37 @@ const BATCH_NODE_TYPE = "XiaozhuguangVideoLoaderDaVinci"; // 小珠光视频加�
 const MERGE_NODE_TYPE = "XiaozhuguangVideoBatchMerge";  // 小珠光视频批处理合并（缓冲式过渡节点）
 const MIN_SEGMENT = 0.3; // 最短片段时长（秒），与快剪一致
 const VIDEO_EXTS = new Set(["mp4", "webm", "mkv", "mov", "avi", "gif", "m4v", "ts"]);
+
+// ═══════════════════════════════════════════════════════════════════════
+// 窗口位置持久化（参考工作流管理器云端持久化方案：
+// 服务端 ComfyUI 用户目录磁盘优先，localStorage 仅做离线兜底，
+// 云平台刷新/换设备不丢）
+// ═══════════════════════════════════════════════════════════════════════
+const WIN_POS_KEY = "xzg_batch_win_pos";
+let winPosTouched = false; // 本会话已拖动保存过：云端晚到的旧位置不再覆盖
+
+function readLocalWinPos() {
+    try {
+        const p = JSON.parse(localStorage.getItem(WIN_POS_KEY) || "null");
+        const left = Number(p?.left), top = Number(p?.top);
+        if (!isFinite(left) || !isFinite(top)) return null;
+        return { left, top };
+    } catch (e) { return null; }
+}
+
+function saveWinPos(left, top) {
+    if (!isFinite(left) || !isFinite(top)) return;
+    const pos = { left, top };
+    try { localStorage.setItem(WIN_POS_KEY, JSON.stringify(pos)); } catch (e) {}
+    cloudSave(WIN_POS_KEY, pos).catch(() => {});
+    winPosTouched = true;
+}
+
+/** 应用位置并 clamp 到当前视口（与拖动限制一致，防止换小屏设备后窗口落在视口外） */
+function applyWinPos(overlay, pos) {
+    overlay.style.left = Math.max(0, Math.min(window.innerWidth - 100, pos.left)) + "px";
+    overlay.style.top = Math.max(0, Math.min(window.innerHeight - 50, pos.top)) + "px";
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // 工具函数
@@ -342,6 +374,7 @@ function buildDialog() {
         const up = () => {
             document.removeEventListener("mousemove", move);
             document.removeEventListener("mouseup", up);
+            saveWinPos(parseFloat(overlay.style.left), parseFloat(overlay.style.top));
         };
         document.addEventListener("mousemove", move);
         document.addEventListener("mouseup", up);
@@ -849,11 +882,28 @@ function openBatchDialog(node) {
     $("xzg-batch-close").style.cssText = "margin-right:auto;background:#5a2a2a;color:#faa;border:1px solid #744;" +
         "border-radius:5px;padding:6px 14px;cursor:pointer;";
     overlay.style.display = "block";
-    // 默认位置：水平贴左侧工具栏，垂直在画布中心（按面板实际高度动态计算）
-    const panel = overlay.firstElementChild;
-    const ph = panel?.offsetHeight || 600;
-    overlay.style.left = "70px";
-    overlay.style.top = Math.max(60, Math.round((window.innerHeight - ph) / 2)) + "px";
+    // 窗口位置持久化：本地缓存命中立即恢复（同步、无闪烁），否则用默认位置；
+    // 云端数据异步到达后再校正一次（换设备/清缓存场景，云优先）
+    const localPos = readLocalWinPos();
+    if (localPos) {
+        applyWinPos(overlay, localPos);
+    } else {
+        // 默认位置：水平贴左侧工具栏，垂直在画布中心（按面板实际高度动态计算）
+        const panel = overlay.firstElementChild;
+        const ph = panel?.offsetHeight || 600;
+        overlay.style.left = "70px";
+        overlay.style.top = Math.max(60, Math.round((window.innerHeight - ph) / 2)) + "px";
+    }
+    cloudLoad(WIN_POS_KEY, { fallbackValue: null }).then((remote) => {
+        if (winPosTouched) {
+            // 打开后、云端响应到达前用户已拖动：cloudLoad 可能把云端旧值回写了
+            // localStorage，以窗口当前实际位置为准重写本地+云端，纠正竞态
+            const left = parseFloat(overlay.style.left), top = parseFloat(overlay.style.top);
+            if (isFinite(left) && isFinite(top)) saveWinPos(left, top);
+            return;
+        }
+        if (remote) applyWinPos(overlay, remote);
+    }).catch(() => {});
 
     let segments = null;
     let running = false;

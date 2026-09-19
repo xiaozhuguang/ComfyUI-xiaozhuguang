@@ -207,6 +207,7 @@ class XiaozhuguangWaveformViewer {
         this._audioUrl = "";
         this._rafId = null;
         this._currentFile = "";
+        this._fetchRetrying = false; // fetch 拉取 blob 重试防重入
         this._lastClickTime = 0;
         this._clickTimer = null;
         this._dragThreshold = 5;
@@ -346,6 +347,35 @@ class XiaozhuguangWaveformViewer {
 
     setFilename(name) {
         this._filename = name || "";
+    }
+
+    // 云端/跨域环境下 <audio> 元素直接加载 /view 可能失败（鉴权 header 无法附加、
+    // 平台代理鉴权、iframe 沙盒等），改用原生 fetch（同源带 cookie）拉取音频
+    // 转 blob URL 播放，绕开 media 元素加载限制。仅作降级路径，本地环境不受影响。
+    async _retryLoadViaFetch() {
+        if (this._fetchRetrying || !this._audioUrl) return;
+        this._fetchRetrying = true;
+        try {
+            const url = this._audioUrl;
+            const resp = await fetch(url, { cache: "no-store" });
+            if (!resp.ok) {
+                console.warn("[小珠光] 音频接口拉取失败:", resp.status, resp.statusText);
+                return;
+            }
+            const blob = await resp.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            this._audio.src = objectUrl;
+            this._audio.load();
+            try {
+                await this._audio.play();
+            } catch (e) {
+                console.warn("[小珠光] blob 播放失败:", e && (e.name || e.message || e));
+            }
+        } catch (e) {
+            console.warn("[小珠光] 音频接口拉取异常:", e);
+        } finally {
+            this._fetchRetrying = false;
+        }
     }
 
     saveAudio() {
@@ -580,7 +610,15 @@ class XiaozhuguangWaveformViewer {
     }
 
     togglePlay() {
-        if (!this._audioUrl || this.duration <= 0) return;
+        if (!this._audioUrl || this.duration <= 0) {
+            // 音频未就绪/加载失败（云端 /view 经代理或鉴权时 audio 元素可能拉不到）：
+            // 不静默返回——打印原因并改用接口拉取 blob 重试
+            if (this._audioUrl) {
+                console.warn("[小珠光] 音频尚未就绪（duration=0），尝试接口拉取 blob 重试");
+                this._retryLoadViaFetch();
+            }
+            return;
+        }
         if (this.isPlaying) {
             this._audio.pause();
             return;
@@ -603,10 +641,34 @@ class XiaozhuguangWaveformViewer {
                     // 音频未就绪时 seek 可能失败，忽略，仍尝试播放
                 }
             }
-            this._audio.play().catch(e => console.warn("[小珠光] 播放失败:", e));
+            this._audio.play().catch(e => {
+                console.warn("[小珠光] 播放失败:", e && (e.name || e.message || e));
+                // NotAllowedError：autoplay 被浏览器/平台策略拒绝（iframe 沙盒等）；
+                // NotSupportedError：源加载失败（云端 /view 鉴权/跨域）——改用接口拉取 blob 播放
+                if (e && (e.name === "NotSupportedError" || e.name === "NotAllowedError")) {
+                    this._retryLoadViaFetch();
+                }
+            });
         };
         if (this._audioCtx && this._audioCtx.state === 'suspended') {
-            this._audioCtx.resume().then(startPlayback).catch(() => startPlayback());
+            // 云端 iframe 沙盒可能阻止/长时间不 resolve resume：
+            // 超时后仍启动播放，避免 startPlayback 永不执行导致「点击不播放」
+            let resumed = false;
+            const _resumeTimer = setTimeout(() => {
+                if (!resumed) {
+                    console.warn("[小珠光] AudioContext resume 超时，继续尝试播放（音频图可能无声）");
+                    startPlayback();
+                }
+            }, 800);
+            this._audioCtx.resume().then(() => {
+                resumed = true;
+                clearTimeout(_resumeTimer);
+                startPlayback();
+            }).catch(() => {
+                resumed = true;
+                clearTimeout(_resumeTimer);
+                startPlayback();
+            });
         } else {
             startPlayback();
         }
@@ -1083,10 +1145,11 @@ class XiaozhuguangWaveformViewer {
             const waveMid = widgetY + barPadY + waveH / 3;
             const lowerHalf = localY >= waveMid;
 
-            // 播放头拖动进行中或刚结束(200ms内)：防止拖到界面外后误触发 ——
-            // 但「虚线下点击」必须继续允许播放/暂停，否则用户调整播放头后
-            // 立刻点虚线下会被直接吞掉，出现「有时候不播放」的偶发体验
-            if (!_isDoubleClick && !lowerHalf && (this.isDragging || (this._lastPlayheadEnd && _now - this._lastPlayheadEnd < 200))) {
+            // 播放头拖动进行中：拦截，防止拖到界面外后误触发
+            // （拖动刚结束 200ms 内不再拦截——此前虚线上点轨道会被吞掉，
+            //   出现「拖完播放头点轨道不播放」的偶发体验；虚线上/下统一放行，
+            //   由 _handleMouseUp 对「点了没拖」的把手命中做播放兜底）
+            if (!_isDoubleClick && !lowerHalf && this.isDragging) {
                 return true;
             }
             // 右键：弹出保存菜单
