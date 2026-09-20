@@ -716,7 +716,10 @@ const XZGGroup = {
             // 边框特效动画随之冻结（表现为必须晃动画布才有动画）。
             // 故本循环检测到有编组开启特效时逐帧补调 updatePositions 驱动动画，
             // 无特效时零额外开销。
-            if (self._hasActiveEffect()) self.updatePositions();
+            // 有特效时需逐帧驱动动画颜色。但画布正在缩放/平移（_canvasMoving）时，
+            // 位置更新必须严格由 canvas 绘制帧（onDrawBackground→updatePositions）负责，
+            // 否则 rAF 抢跑会与节点错位（缩放不同步）；静止时才由 rAF 驱动动画。
+            if (self._hasActiveEffect() && !self._canvasMoving) self.updatePositions();
             // 画布移动隐藏/渐入检测
             self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
