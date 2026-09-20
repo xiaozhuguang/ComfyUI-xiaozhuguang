@@ -748,7 +748,14 @@ const XZGGroup = {
         // 缩放/平移/拖拽时不再直接写 DOM 尺寸（避免编组框“提前缩/滞后”），
         // 仅请求重绘：由 canvas 绘制帧内（onDrawBackground）的 updatePositions
         // 与节点在同一帧、同一 scale 更新，达到真正同步
-        const syncNow = () => { const c = app?.canvas; if (c) c.setDirty?.(true, true); };
+        const syncNow = () => {
+            const c = app?.canvas; if (c) c.setDirty?.(true, true);
+            // 缩放/平移事件触发瞬间立即置交互标志：updatePositions 据此跳过特效重样式，
+            // 不等 rAF 那一轮（修复刷新后第一次缩放前几帧特效首次光栅化导致的严重卡顿）
+            self._userZooming = true;
+            if (self._userZoomTimer) clearTimeout(self._userZoomTimer);
+            self._userZoomTimer = setTimeout(() => { self._userZooming = false; }, 250);
+        };
 
         const tryHook = () => {
             const canvas = app?.canvas;
@@ -915,6 +922,16 @@ const XZGGroup = {
             // 每帧同步样式 + 动画效果
             this.updateGroupStyle(gid);
             if (g.bypassed) continue;
+
+            // 画布正在缩放/平移时：真正卸掉重光栅化属性（辉光 boxShadow / 渐变 borderImage），
+            // 让编组框退化成轻量可缓存的合成层——位置 left/top 变化只做合成平移、即时上屏，
+            // 不再每帧整块重新光栅化（这才是开特效后边框滞后于节点的根因）。
+            // 停止移动 250ms 后由 rAF 恢复完整特效。
+            if (this._canvasMoving || this._userZooming) {
+                el.style.boxShadow = 'none';
+                el.style.borderImage = 'none';
+                continue;
+            }
 
             const e = g.effect;
             if (!e || e === 'none') {
