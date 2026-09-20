@@ -353,10 +353,15 @@ function buildDialog() {
           </div>
           <div style="padding:14px 18px;display:flex;flex-direction:column;gap:10px;flex:1;overflow:hidden;min-height:0;">
             <div>源视频：<b id="xzg-batch-video" style="color:#fff;"></b></div>
-            <div style="display:flex;align-items:center;justify-content:flex-end;">
-              <button id="xzg-batch-detect" style="background:#333;color:${GOLD};border:1px solid #555;
-                     border-radius:5px;padding:5px 12px;cursor:pointer;">自动探测视频切点</button>
-            </div>
+            <div style="display:flex;align-items:center;justify-content:flex-end;">
+              <button id="xzg-batch-detect" style="background:#333;color:${GOLD};border:1px solid #555;
+                     border-radius:5px;padding:5px 12px;cursor:pointer;">自动探测视频切点</button>
+            </div>
+            <div id="xzg-batch-selbar" style="display:none;align-items:center;justify-content:space-between;gap:8px;min-height:24px;">
+              <span id="xzg-batch-seltext" style="color:#9ab;font-size:12px;">已选 0/0 段</span>
+              <button id="xzg-batch-selall" style="background:#333;color:${GOLD};border:1px solid #555;
+                     border-radius:5px;padding:2px 10px;cursor:pointer;font-size:12px;">全不选</button>
+            </div>
             <div id="xzg-batch-segments" style="background:#262626;border:1px solid #3a3a3a;border-radius:6px;
                 padding:8px 10px;min-height:60px;flex:1;overflow:auto;line-height:1.7;"></div>
             <div id="xzg-batch-status" style="color:#9ab;min-height:18px;"></div>
@@ -619,7 +624,7 @@ function cutsToSegments(cuts, winStart = 0, winEnd = 0) {
 // 编排模式提示去重：同一编排模式只提示一次，中断后再次开始不重复刷屏
 let lastOrchHint = "";
 
-async function runBatch(node, segments, ui, abortFlag, session = null) {
+async function runBatch(node, segments, ui, abortFlag, session = null, selected = null) {
     const nodeId = String(node.id);
     // 工作流标签页切换会重建节点实例：节点/控件一律按 id 实时解析，
     // 不长期持有打开对话框时的旧实例（旧实例在 graph.clear 后已脱离画布）。
@@ -722,8 +727,12 @@ async function runBatch(node, segments, ui, abortFlag, session = null) {
         if (hint !== lastOrchHint) { ui.log(hint, true); lastOrchHint = hint; }
     }
 
-    const allOutputs = [];
-    const skippedSegments = [];
+    const allOutputs = [];
+    const skippedSegments = [];
+    // 用户点选跳过的段（1-based）：只执行勾选片段，跳过段不计失败、同步减少最终合并预期
+    const userSkipped = new Set();
+    const totalSel = selected ? segments.filter((_, i) => selected[i]).length : segments.length;
+    let execCount = 0;
     // 按合并节点记录缺段（多链时某链某段未缓冲，最终按各节点预期分别校验）
     const skippedByNode = new Map(mergeIds.map((id) => [id, new Set()]));
     let aborted = false;
@@ -735,22 +744,38 @@ async function runBatch(node, segments, ui, abortFlag, session = null) {
         const bl = await fetchBufferList();
         prevCount = bl ? (bl.count || 0) : 0;
     }
-    // 分段行内状态复位
-    segments.forEach((_, i) => { ui.segStatus?.(i, "待执行"); }); // 不清空帧数：探测阶段已显示预计帧数，执行完再覆盖为实际帧数
+    // 分段行内状态复位
+    segments.forEach((_, i) => { ui.segStatus?.(i, "待执行"); }); // 不清空帧数：探测阶段已显示预计帧数，执行完再覆盖为实际帧数
+    if (selected) {
+        const nSkipped = segments.length - totalSel;
+        if (nSkipped > 0) {
+            ui.log(`已按选择跳过 ${nSkipped} 个片段，本次只执行 ${totalSel} 段`);
+        }
+    }
 
     try {
-        for (let i = 0; i < segments.length; i++) {
-            if (abortFlag.v) { aborted = true; ui.segStatus?.(i, "已中断", "#fa0"); break; }
-            // 切到了其他工作流：在段边界暂停（不中断，已在跑的当前段继续跑完），
-            // 切回本工作流后自动续跑
-            if (session) {
-                await session.waitActive(ui);
-                resolveLive();
-                if (abortFlag.v) { aborted = true; ui.segStatus?.(i, "已中断", "#fa0"); break; }
-            }
-            const seg = segments[i];
-            ui.segStatus?.(i, "执行中", "#fa0");
-            updateBatchBall(i + 1, segments.length); // 悬浮球实时显示 当前段/总段数
+        for (let i = 0; i < segments.length; i++) {
+            if (abortFlag.v) { aborted = true; ui.segStatus?.(i, "已中断", "#fa0"); break; }
+            const seg = segments[i];
+            // 用户点选跳过（只执行勾选的片段）：不执行、不缓冲，
+            // 并入 skippedByNode 使最终合并预期段数同步减少，合并/拼接自动忽略该段
+            if (selected && !selected[i]) {
+                ui.segStatus?.(i, "已跳过", "#888");
+                skippedSegments.push(i + 1);
+                userSkipped.add(i + 1);
+                for (const nid of mergeIds) skippedByNode.get(nid)?.add(i + 1);
+                continue;
+            }
+            // 切到了其他工作流：在段边界暂停（不中断，已在跑的当前段继续跑完），
+            // 切回本工作流后自动续跑
+            if (session) {
+                await session.waitActive(ui);
+                resolveLive();
+                if (abortFlag.v) { aborted = true; ui.segStatus?.(i, "已中断", "#fa0"); break; }
+            }
+            execCount++;
+            ui.segStatus?.(i, "执行中", "#fa0");
+            updateBatchBall(execCount, totalSel); // 悬浮球实时显示 当前段/总段数（按已选段计数）
 
             // 每段最多尝试 3 次：与之前运行参数完全相同时 ComfyUI 会缓存命中（整链跳过执行），
             // 导致合并节点不缓冲 → 重试时对片段窗口做 1ms 级微移绕过缓存（画面无感知）
@@ -918,9 +943,15 @@ async function runBatch(node, segments, ui, abortFlag, session = null) {
     if (mergeNodes.length) {
         // 各链缺段警告（多合并节点按各自缓冲独立校验）
         for (let mi = 0; mi < mergeIds.length; mi++) {
-            const sk = skippedByNode.get(mergeIds[mi]);
-            if (sk && sk.size) {
-                ui.log(`警告：合并节点 ${mi + 1} 缺少第 ${[...sk].sort((a, b) => a - b).join("、")} 段（未成功缓冲），其最终视频将缺少这些段落`, true);
+            const sk = skippedByNode.get(mergeIds[mi]);
+            if (sk && sk.size) {
+                // 用户点选跳过的段不算失败：只对真正未缓冲成功的段告警
+                const missing = [...sk].filter((x) => !userSkipped.has(x)).sort((a, b) => a - b);
+                if (missing.length) {
+                    ui.log(`警告：合并节点 ${mi + 1} 缺少第 ${missing.join("、")} 段（未成功缓冲），其最终视频将缺少这些段落`, true);
+                } else if (sk.size > 0) {
+                    ui.log(`合并节点 ${mi + 1}：按选择跳过了第 ${[...sk].sort((a, b) => a - b).join("、")} 段，最终视频不包含这些段落`);
+                }
             }
         }
         // 最终合并前校验：每个合并节点的缓冲数量必须与其预期段数严格一致
@@ -1041,8 +1072,10 @@ function openBatchDialog(node) {
     const $ = (id) => overlay.querySelector("#" + id);
     const wVideo = findWidget(node, "视频");
 
-    $("xzg-batch-video").textContent = wVideo?.value || "(未选择)";
-    $("xzg-batch-segments").innerHTML = `<span style="color:#666;">点击「自动探测视频切点」探测场景切换位置</span>`;
+    $("xzg-batch-video").textContent = wVideo?.value || "(未选择)";
+    $("xzg-batch-segments").innerHTML = `<span style="color:#666;">点击「自动探测视频切点」探测场景切换位置</span>`;
+    $("xzg-batch-selbar").style.display = "none";
+    $("xzg-batch-seltext").textContent = "已选 0/0 段";
     $("xzg-batch-status").textContent = "";
     $("xzg-batch-log").style.display = "none";
     $("xzg-batch-log").innerHTML = "";
@@ -1075,7 +1108,8 @@ function openBatchDialog(node) {
         if (remote) applyWinPos(overlay, remote);
     }).catch(() => {});
 
-    let segments = null;
+    let segments = null;
+    let segSelected = null; // 探测后点选要执行的片段（默认全选），null=未探测
     let running = false;
     const abortFlag = { v: false };
 
@@ -1154,11 +1188,12 @@ function openBatchDialog(node) {
         abortBtn: null,
     };
 
-    const resetUiToIdle = () => {
-        running = false;
-        session.isRunning = false;
-        $("xzg-batch-run").disabled = false;
-        $("xzg-batch-run").textContent = "开始任务";
+    const resetUiToIdle = () => {
+        running = false;
+        session.isRunning = false;
+        $("xzg-batch-run").disabled = false;
+        $("xzg-batch-run").textContent = "开始任务";
+        setChecksEnabled(true);
         ui.abortBtn && (ui.abortBtn.style.display = "none");
         $("xzg-batch-close").style.cssText =
             "background:#5a2a2a;color:#faa;border:1px solid #744;" +
@@ -1180,7 +1215,35 @@ function openBatchDialog(node) {
         }, 5000);
     };
 
-    $("xzg-batch-detect").onclick = async () => {
+    // ═══════════════════════════════════════════════════════════
+    // 点选执行：探测后勾选要执行的片段（默认全选），未勾选段运行时跳过
+    // ═══════════════════════════════════════════════════════════
+    const updateSelUI = () => {
+        const total = segments ? segments.length : 0;
+        const n = segSelected ? segSelected.filter(Boolean).length : 0;
+        $("xzg-batch-seltext").textContent = total > 0 ? `已选 ${n}/${total} 段` : "未探测";
+        const allOn = total > 0 && n === total;
+        $("xzg-batch-selall").textContent = allOn ? "全不选" : "全选";
+        $("xzg-batch-selall").disabled = total === 0;
+        if (segments) {
+            overlay.querySelectorAll(".xzg-batch-seg-row").forEach((rowEl, i) => {
+                rowEl.style.opacity = (segSelected && segSelected[i]) ? "1" : "0.4";
+            });
+        }
+    };
+    $("xzg-batch-selall").onclick = () => {
+        if (!segments || !segSelected || running) return;
+        const allOn = segSelected.every(Boolean);
+        segSelected = segments.map(() => !allOn);
+        overlay.querySelectorAll(".xzg-batch-seg-check").forEach((cb, i) => { cb.checked = segSelected[i]; });
+        updateSelUI();
+    };
+    const setChecksEnabled = (enabled) => {
+        overlay.querySelectorAll(".xzg-batch-seg-check").forEach((cb) => { cb.disabled = !enabled; });
+        $("xzg-batch-selall").disabled = !enabled || !segments;
+    };
+
+    $("xzg-batch-detect").onclick = async () => {
         if (running) return;
         const dNode = session.node; // 切回后 syncSession 已重绑为实时实例
         const filename = findWidget(dNode, "视频")?.value;
@@ -1205,45 +1268,64 @@ function openBatchDialog(node) {
                 winStart = skipF / srcFps;
                 winEnd = limitF > 0 ? (skipF + limitF) / srcFps : 0;
             }
-            segments = cutsToSegments(cuts, winStart, winEnd);
-            // 探测完即显示每段预计帧数（秒→帧换算，与 runBatch 段窗口公式一致）：
-            // 段 end>0 时终点=段末秒；end=0 表示到片尾，终点=源总帧数。
-            // 执行后 segFrames 会用实际缓冲帧数覆盖，二者通常一致。
-            $("xzg-batch-segments").innerHTML = segments
-                .map((s, i) => {
-                    const startFrame = Math.max(0, Math.round(s.start * srcFps));
-                    const endFrame = s.end > 0
-                        ? Math.round(s.end * srcFps)
-                        : (totalFrames > 0 ? totalFrames : 0);
-                    const lenFrames = endFrame > 0 ? Math.max(0, endFrame - startFrame) : 0;
-                    const frameText = (srcFps > 0 && lenFrames > 0) ? `${lenFrames} 帧` : "";
-                    const endTimeStr = s.end > 0
-                        ? fmtTime(s.end)
-                        : (totalFrames > 0 && srcFps > 0 ? fmtTime(totalFrames / srcFps) : "片尾");
-                    return `<div>#${i + 1} &nbsp;${fmtTime(s.start)} → ${endTimeStr}` +
-                        ` &nbsp;<span id="xzg-batch-seg-f-${i}" style="color:#7a9;">${frameText}</span>` +
-                        ` <span id="xzg-batch-seg-s-${i}" style="color:#888;">待执行</span></div>`;
-                })
-                .join("");
-            const rangeNote = (winStart > 0 || winEnd > 0)
-                ? `（裁剪范围 ${fmtTime(winStart)} → ${winEnd > 0 ? fmtTime(winEnd) : "片尾"}）`
-                : "";
-            ui.status(`检测到 ${cuts.length} 个切点，共 ${segments.length} 段${rangeNote}`);
+            segments = cutsToSegments(cuts, winStart, winEnd);
+            segSelected = segments.map(() => true); // 默认全选，可点选只执行某几段
+            // 探测完即显示每段预计帧数（秒→帧换算，与 runBatch 段窗口公式一致）：
+            // 段 end>0 时终点=段末秒；end=0 表示到片尾，终点=源总帧数。
+            // 执行后 segFrames 会用实际缓冲帧数覆盖，二者通常一致。
+            $("xzg-batch-segments").innerHTML = segments
+                .map((s, i) => {
+                    const startFrame = Math.max(0, Math.round(s.start * srcFps));
+                    const endFrame = s.end > 0
+                        ? Math.round(s.end * srcFps)
+                        : (totalFrames > 0 ? totalFrames : 0);
+                    const lenFrames = endFrame > 0 ? Math.max(0, endFrame - startFrame) : 0;
+                    const frameText = (srcFps > 0 && lenFrames > 0) ? `${lenFrames} 帧` : "";
+                    const endTimeStr = s.end > 0
+                        ? fmtTime(s.end)
+                        : (totalFrames > 0 && srcFps > 0 ? fmtTime(totalFrames / srcFps) : "片尾");
+                    return `<div id="xzg-batch-seg-row-${i}" class="xzg-batch-seg-row" style="display:flex;align-items:center;gap:6px;">` +
+                        `<label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0;">` +
+                            `<input type="checkbox" class="xzg-batch-seg-check" data-i="${i}" checked` +
+                                   ` style="accent-color:#dcc85b;cursor:pointer;flex:none;" title="勾选=执行该段，取消=跳过">` +
+                            `<span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">#${i + 1} &nbsp;${fmtTime(s.start)} → ${endTimeStr}</span>` +
+                            `<span id="xzg-batch-seg-f-${i}" style="color:#7a9;flex:none;">${frameText}</span>` +
+                            `<span id="xzg-batch-seg-s-${i}" style="color:#888;flex:none;">待执行</span>` +
+                        `</label>` +
+                    `</div>`;
+                })
+                .join("");
+            overlay.querySelectorAll(".xzg-batch-seg-check").forEach((cb) => {
+                cb.addEventListener("change", () => {
+                    if (running || !segSelected) return;
+                    const i = Number(cb.dataset.i);
+                    if (i >= 0 && i < segments.length) { segSelected[i] = cb.checked; updateSelUI(); }
+                });
+            });
+            $("xzg-batch-selbar").style.display = "flex";
+            updateSelUI();
+            const rangeNote = (winStart > 0 || winEnd > 0)
+                ? `（裁剪范围 ${fmtTime(winStart)} → ${winEnd > 0 ? fmtTime(winEnd) : "片尾"}）`
+                : "";
+            ui.status(`检测到 ${cuts.length} 个切点，共 ${segments.length} 段${rangeNote}（可勾选只执行部分段）`);
         } catch (e) {
             ui.status(String(e.message || e), true);
         }
     };
 
-    $("xzg-batch-run").onclick = async () => {
-        if (running) return;
-        if (!segments) { ui.status("请先自动探测视频切点", true); return; }
-        running = true;
-        session.isRunning = true;
-        abortFlag.v = false;
-        $("xzg-batch-run").disabled = true;
-        // 运行期间「关闭」按钮保持可点：点它=中断并关闭（不再置灰）
-        try {
-            const result = await runBatch(session.node, segments, ui, abortFlag, session);
+    $("xzg-batch-run").onclick = async () => {
+        if (running) return;
+        if (!segments) { ui.status("请先自动探测视频切点", true); return; }
+        const selArr = (segSelected || segments.map(() => true)).slice(); // 快照：运行中勾选不再生效
+        if (!selArr.some(Boolean)) { ui.status("请先勾选要执行的片段（至少一段）", true); return; }
+        running = true;
+        session.isRunning = true;
+        abortFlag.v = false;
+        $("xzg-batch-run").disabled = true;
+        setChecksEnabled(false); // 运行期间禁止改勾选，避免与快照不一致
+        // 运行期间「关闭」按钮保持可点：点它=中断并关闭（不再置灰）
+        try {
+            const result = await runBatch(session.node, segments, ui, abortFlag, session, selArr);
             if (result.aborted) {
                 ui.status("已中断任务", true);
             } else {
@@ -1266,14 +1348,15 @@ function openBatchDialog(node) {
             if ((session.mergeIds || []).length) {
                 try { await fetch(BUFFER_RESET_API, { method: "POST" }); } catch (_) { /* ignore */ }
             }
-        } finally {
-            running = false;
-            session.isRunning = false;
-            $("xzg-batch-run").disabled = false;
-            $("xzg-batch-close").style.cssText = "background:#5a2a2a;color:#faa;border:1px solid #744;" +
-                "border-radius:5px;padding:6px 14px;cursor:pointer;";
-        }
-    };
+        } finally {
+            running = false;
+            session.isRunning = false;
+            $("xzg-batch-run").disabled = false;
+            setChecksEnabled(true);
+            $("xzg-batch-close").style.cssText = "background:#5a2a2a;color:#faa;border:1px solid #744;" +
+                "border-radius:5px;padding:6px 14px;cursor:pointer;";
+        }
+    };
 }
 
 // ═══════════════════════════════════════════════════════════════════════

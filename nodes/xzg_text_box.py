@@ -697,11 +697,14 @@ def _digits_to_zh(text: str) -> str:
             base = _digits_to_zh_by_char(num_str)
 
         # ── 二/两修正：单个整数 2（非小数、非多位）在量词前 → "两个/两只/两米/两岁"
+        #    但数字前邻英文字母时（V2版、A2代…）属编号/型号/版本号语境 → 保持"二"（V二版）
         if "." not in num_str and num_str == "2":
+            prev_ch = m.string[m.start() - 1] if m.start() > 0 else ""
+            is_code_prefix = ("A" <= prev_ch <= "Z") or ("a" <= prev_ch <= "z")
             # _num_to_zh_full 返回 "二"，替换为 "两"
-            if base == "二":
+            if not is_code_prefix and base == "二":
                 base = "两"
-            elif base.startswith("二") and len(base) == 1:
+            elif not is_code_prefix and base.startswith("二") and len(base) == 1:
                 base = "两"
 
         # ── 负号前缀：温度单位用"零下"，其它用"负"

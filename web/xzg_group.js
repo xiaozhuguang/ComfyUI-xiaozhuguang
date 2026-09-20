@@ -1114,8 +1114,10 @@ const XZGGroup = {
         if (moved) {
             if (!this._canvasMoving) {
                 this._canvasMoving = true;
-                // 只渐入：画布移动时不做渐隐，编组（边框/背景）始终保持可见，
-                // 仅停止移动时在 else 分支做一次淡入
+                // 第一时间隐藏编组框：画布一开始移动就立即消失（不等松手），
+                // 停止移动时由 else 分支从 opacity:0 渐入，
+                // 表现为「消失→渐入」而非「保持→消失→渐入」
+                this._hideGroupsOnMoveStart();
             }
             if (this._moveStopTimer) {
                 clearTimeout(this._moveStopTimer);
@@ -1148,6 +1150,28 @@ const XZGGroup = {
             this._kickCanvasRepaint(maxFadeIn);
             // 边框/标题栏 DOM 逐帧渐入：与 canvas 背景同一时间戳+同一 easing，严格同步
             this._driveBorderFades(maxFadeIn);
+        }
+    },
+
+    /* ── 画布开始移动时立即隐藏编组：DOM 边框与 canvas 背景同一时刻归零（目标 0、极短时长），
+        停止移动后由 _checkCanvasMovement 的 else 分支从 opacity:0 渐入 ── */
+    _hideGroupsOnMoveStart() {
+        const now = performance.now();
+        let anyFade = false;
+        for (const [gid, g] of Object.entries(this.groups)) {
+            if (!g.fadeEnabled) continue;
+            const el = this.groupEls[gid];
+            if (!el) continue;
+            el.style.transition = 'none';
+            el.style.opacity = '0';       // DOM 边框/标题栏立即隐藏
+            g._fadeStart = now;           // canvas 背景绘制走同一时间戳机制：目标 0
+            g._fadeDur = 1;               // 极短时长，下一帧即稳定到 0（不做渐隐过渡）
+            g._fadeTarget = 0;
+            anyFade = true;
+        }
+        if (anyFade) {
+            this._kickCanvasRepaint(0);   // 立即重绘，canvas 背景同步隐藏
+            this._driveBorderFades(0);    // 已有渐入循环在跑则一并接管到 0
         }
     },
 
@@ -1203,6 +1227,9 @@ const XZGGroup = {
         let anyAnimating = false;
         for (const [gid, g] of Object.entries(this.groups)) {
             if (!g?.bounds) continue;
+            // 画布移动中：渐入组背景立即隐藏（与 DOM 边框第一时间消失保持同步），
+            // 即使 _fadeStart 已被渐入循环清理，移动期间也不再绘制
+            if (this._canvasMoving && g.fadeEnabled) continue;
             const rgba = g.bgColor;
             if (!rgba) continue;
             // 解析 alpha，完全透明跳过
