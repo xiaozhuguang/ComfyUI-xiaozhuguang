@@ -33,12 +33,19 @@ const ARROW_STATE_KEY = "xzg_arrow_state";
 // 设置项：启用/关闭「箭头绘制工具」（ComfyUI 设置 → xiaozhuguang，与其它小珠光功能开关同一分组）
 const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableArrowTool";
 
+// 设置项已注册 defaultValue:true，新版前端 getSettingValue 不再接受第二个参数
+// （传 defaultValue 会触发 "Parameter defaultValue is deprecated" 警告，
+// 且本函数在 rAF 循环中每帧调用，会疯狂刷屏）。
+// 未注册时返回 undefined → 缓存兜底 true，与旧默认值语义一致。
+let _arrowEnabledCache = true;
 function isArrowToolEnabled() {
     try {
-        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+        const v = app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED);
+        if (v !== undefined && v !== null) _arrowEnabledCache = v !== false;
     } catch (e) {
-        return true;
+        // 读取失败沿用缓存（初始 true）
     }
+    return _arrowEnabledCache;
 }
 
 const DEFAULT_SHORTCUT = { key: "t", ctrl: false, alt: false, shift: false, meta: false };

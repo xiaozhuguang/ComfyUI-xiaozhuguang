@@ -131,11 +131,51 @@ function saveStore(store) {
 }
 
 // ---------------------------------------------------------------------------
+// UI 就绪门：刷新浏览器时前端有全屏加载遮罩（#splash-loader，z-index 9999），
+// 而浮窗层级更高（99999），若立即创建会盖在遮罩上、先于整个主界面出现。
+// 等前端移除该遮罩（主界面渲染完成）后再放行浮窗创建；
+// 旧版前端无此遮罩时立即放行；15 秒超时兜底防异常卡死。
+// ---------------------------------------------------------------------------
+
+let _xzgUiReady = false;
+const _xzgUiReadyWaiters = [];
+
+function xzgMarkUiReady() {
+  if (_xzgUiReady) return;
+  _xzgUiReady = true;
+  const waiters = _xzgUiReadyWaiters.splice(0);
+  for (const cb of waiters) {
+    try {
+      cb();
+    } catch (e) {
+      console.warn("[小珠光] UI 就绪回调执行失败:", e);
+    }
+  }
+}
+
+function xzgWhenUiReady(cb) {
+  if (_xzgUiReady) cb();
+  else _xzgUiReadyWaiters.push(cb);
+}
+
+(function xzgWatchSplashGone() {
+  const SPLASH_ID = "splash-loader";
+  const TIMEOUT_MS = 15000;
+  const startTs = Date.now();
+  const timer = setInterval(() => {
+    if (!document.getElementById(SPLASH_ID) || Date.now() - startTs > TIMEOUT_MS) {
+      clearInterval(timer);
+      xzgMarkUiReady();
+    }
+  }, 150);
+})();
+
+// ---------------------------------------------------------------------------
 // 样式
 // ---------------------------------------------------------------------------
 
 const XZG_CSS = `
-#xzg-float{position:fixed;right:16px;bottom:60px;z-index:99999;width:166px;
+#xzg-float{position:fixed;right:16px;bottom:60px;z-index:999;width:166px;
   color:#e8e8e8;font:12px/1.5 'Segoe UI',system-ui,-apple-system,sans-serif;
   user-select:none;overflow:hidden;cursor:move;}
 #xzg-float.xzg-bg{background:rgba(22,24,30,0.93);border:1px solid rgba(255,255,255,0.14);
@@ -824,7 +864,8 @@ function injectMenuButton(retries) {
 
 function isMonitorEnabled() {
   try {
-    return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+    // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
+    return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED) !== false;
   } catch (e) {
     return true;
   }
@@ -846,19 +887,40 @@ function registerMonitorSetting() {
   }
 }
 
+// 浮窗延迟创建后，工作流里的 XiaozhuguangSystemMonitor 节点可能已先加载完成：
+// 按「显示悬浮窗」控件补一次显隐同步（与 beforeRegisterNodeDef 里 onNodeCreated 的 apply 等价）
+function applyMonitorNodeState() {
+  try {
+    const nodes = (app.graph && app.graph.nodes) || [];
+    for (const n of nodes) {
+      if (!n || (n.type !== XZG_NODE_TYPE && n.comfyClass !== XZG_NODE_TYPE)) continue;
+      const w = n.widgets ? n.widgets.find((x) => x.name === "show_float") : null;
+      if (window.__xzgFloat) window.__xzgFloat.setVisible(w ? !!w.value : true);
+      return;
+    }
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 /** 设置项变更时调用：立即启用/关闭监控（顶部电池按钮 + 轮询） */
 function setMonitorEnabled(v) {
   v = !!v;
   if (v) {
-    // 启用：创建/恢复浮窗轮询 + 注入顶部电池按钮
-    if (!_float) {
-      window.__xzgFloat = createFloatWindow();
-      _float = window.__xzgFloat;
-    } else {
-      _float.root.style.display = _floatHidden ? "none" : "";
-      _float.start();
-    }
-    injectMenuButton(0);
+    // 启用：等待 UI 就绪（加载遮罩移除）后再创建/恢复浮窗轮询 + 注入顶部电池按钮，
+    // 避免刷新时浮窗盖在加载画面上、先于主界面出现
+    xzgWhenUiReady(() => {
+      if (!isMonitorEnabled()) return; // 等待期间被关闭：放弃本次创建
+      if (!_float) {
+        window.__xzgFloat = createFloatWindow();
+        _float = window.__xzgFloat;
+        applyMonitorNodeState();
+      } else {
+        _float.root.style.display = _floatHidden ? "none" : "";
+        _float.start();
+      }
+      injectMenuButton(0);
+    });
   } else {
     // 关闭：移除所有顶部电池按钮 + 停止轮询 + 隐藏所有浮窗（关闭监控）
     document.querySelectorAll("#" + XZG_BTN_ID).forEach((b) => b.remove());
@@ -892,9 +954,8 @@ app.registerExtension({
     // 工作流运行计时：事件监听始终注册（历史记录与浮窗显隐/监控开关无关）
     registerRunEvents();
     if (!isMonitorEnabled()) return; // 设置里关闭了监控：不创建浮窗、不注入顶部按钮、不轮询
-    window.__xzgFloat = createFloatWindow();
-    _float = window.__xzgFloat;
-    injectMenuButton(0);
+    // 内部等待 UI 就绪（加载遮罩移除、主界面渲染完成）后再创建浮窗/注入顶部按钮
+    setMonitorEnabled(true);
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== XZG_NODE_TYPE) return;

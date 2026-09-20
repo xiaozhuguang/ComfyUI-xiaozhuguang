@@ -91,7 +91,8 @@ window._xzgOpenVideoEditor = openEditor;
 // ── 小珠光设置：右上角功能区是否显示「快剪」 ──
 function getShowSetting() {
     try {
-        const v = app.ui?.settings?.getSettingValue?.(SETTING_ID, true);
+        // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
+        const v = app.ui?.settings?.getSettingValue?.(SETTING_ID);
         return v !== false;
     } catch (e) {
         return true;

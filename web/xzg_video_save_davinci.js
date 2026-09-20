@@ -95,8 +95,8 @@ async function _sendToQuickCut(node, btn, labelSpan) {
     if (btn) btn.disabled = true;
     if (labelSpan) labelSpan.textContent = "正在发送…";
     try {
-        const r = await window._xzgVideoEditorReceiveMedia(info.filename, info.type || "output");
-        _toast(r?.added ? "已发送到快剪（媒体池 + V2 轨道）" : "已加入快剪媒体池（打开快剪即可使用）");
+        await window._xzgVideoEditorReceiveMedia(info.filename, info.type || "output");
+        _toast("已加入快剪媒体库（打开快剪即可拖入轨道使用）");
     } catch (e) {
         _toast("[发送到快剪] " + String(e), true);
     } finally {
@@ -111,9 +111,9 @@ function _createQuickCutButton(node) {
     if (!pc) return null;
 
     const btn = document.createElement("button");
-    btn.title = "把当前节点保存的视频发送到快剪媒体池，并在 V2 轨道出现（追加在现有内容之后，不覆盖）";
+    btn.title = "把当前节点保存的视频发送到快剪媒体库（打开快剪后可手动拖入轨道使用）";
     btn.style.cssText =
-        "position:absolute;top:6px;left:115px;z-index:102;" +
+        "position:absolute;top:6px;right:0;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
         "padding:2px 6px;font-size:11px;line-height:1;" +
         "background:transparent;color:#ffd76a;border:none;" +
@@ -143,7 +143,14 @@ function _createQuickCutButton(node) {
     };
     renderAuto();
 
-    const onOver = () => { btn.style.opacity = "1"; };
+    // 排在「导出到达芬奇」按钮左侧：按其宽度留 12px 间隙对齐
+    const alignRight = () => {
+        const dvBtn = node._xzgDavinciSaveBtn;
+        if (dvBtn && dvBtn.offsetWidth > 0) {
+            btn.style.right = (dvBtn.offsetWidth + 12) + "px";
+        }
+    };
+    const onOver = () => { alignRight(); btn.style.opacity = "1"; };
     const onOut = (e) => {
         if (!pc.contains(e.relatedTarget) && !btn.disabled) btn.style.opacity = "0";
     };
@@ -183,7 +190,7 @@ function _createExportDavinciButton(node) {
     const btn = document.createElement("button");
     btn.title = "把当前节点保存的视频导入达芬奇（进媒体池 + 复用空白轨道/无则新建 + 对齐播放头片段前端）";
     btn.style.cssText =
-        "position:absolute;top:6px;left:6px;z-index:102;" +
+        "position:absolute;top:6px;right:6px;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
         "padding:2px 6px;font-size:11px;line-height:1;" +
         "background:transparent;color:#3ef558;border:none;" +
@@ -266,6 +273,37 @@ app.registerExtension({
                 this._xzgDavinciBtnIconRender?.();
                 this._xzgQcBtnIconRender?.();
             });
+            return r;
+        };
+
+        // 尺寸持久化修复：刷新浏览器后节点恢复默认大小。
+        // 本节点 onNodeCreated 内会隐藏开关 widget 并 setSize(computeSize())，异步发生在
+        // configure 之后，可能把恢复好的尺寸重新覆盖为默认值（300×500）。onConfigure 收到的
+        // data 含用户保存的 size；加载后短时间内持续检测，一旦尺寸被重置回默认值就按保存值
+        // 恢复；用户手动拖拽后的尺寸不等于默认值，不会被覆盖。
+        const origOnConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (data) {
+            const r = origOnConfigure?.apply(this, arguments);
+            try {
+                const node = this;
+                if (Array.isArray(data?.size) && data.size[0] > 0 && data.size[1] > 0) {
+                    const savedSize = [data.size[0], data.size[1]];
+                    node.size = savedSize.slice();
+                    let tries = 0;
+                    const applySavedSize = () => {
+                        try {
+                            const s = node.size;
+                            const isDefault = s && Math.round(s[0]) === 300 && Math.round(s[1]) === 500;
+                            if (isDefault && (Math.round(savedSize[0]) !== 300 || Math.round(savedSize[1]) !== 500)) {
+                                node.size = savedSize.slice();
+                                node.setDirtyCanvas?.(true, true);
+                            }
+                        } catch (e) { /* ignore */ }
+                        if (++tries < 20) setTimeout(applySavedSize, 100); // 持续约 2 秒
+                    };
+                    setTimeout(applySavedSize, 0);
+                }
+            } catch (e) { /* ignore */ }
             return r;
         };
     },

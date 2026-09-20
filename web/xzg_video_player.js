@@ -1009,7 +1009,12 @@ export class XiaozhuguangVideoPlayer {
         this._isDraggingMarker = true;
         this._draggingMarkerType = e.currentTarget === this._loadRangeStart ? 'start' : 'end';
         this._markerDragStartFrame = this._skipFrames;
-        this._markerDragEndFrame = this._computeEndFrame();
+        // 红杠（跳过帧数）拖动上限 = 全片总帧数：蓝杠位置 = skip+limit 会实时跟随，
+        // 不能限制在按下瞬间的 skip+limit（_computeEndFrame）——
+        // 否则帧数上限=100 时红杠只能拖到 100 帧，慢速拖动一次按下持续拖就卡死
+        this._markerDragEndFrame = (this._draggingMarkerType === 'start')
+            ? (this.getSourceTotalFrames() || 0)
+            : this._computeEndFrame();
 
         // 与播放头拖拽一致：红蓝条拖拽期间完全暂停（复位 _isPlayingState，
         // 防止拖动中每次 seek 反复重启音频/迭代器）

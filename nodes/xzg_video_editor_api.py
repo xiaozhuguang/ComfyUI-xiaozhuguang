@@ -1805,12 +1805,20 @@ import traceback as _xzg_ve_tb
 import asyncio as _xzg_ve_aio
 
 
-def get_batch_buffer_dir():
+def get_batch_buffer_dir(node_id=None):
     """「小珠光视频批处理合并」节点的分段缓冲目录（input 下，与快剪缓存同级）。
+    传入 node_id 时返回该节点专属子目录（多合并节点各自隔离：缓冲不互串、
+    合并不吞别家分段、清空不误删别家缓冲）。
     不放在 %TEMP%：temp 会被启动器/系统/其他节点清理，导致缓冲丢失；
     input 目录稳定，且不会被加载器下拉/快剪媒体列表扫描到（二者只扫顶层或专属子目录）。
     缓冲清理时机：每轮批处理运行完毕（成功合并 / 中断 / 失败）立即清空，不留缓存。"""
-    return os.path.join(folder_paths.get_input_directory(), "xzg_batch_buffer")
+    base = os.path.join(folder_paths.get_input_directory(), "xzg_batch_buffer")
+    if node_id is not None:
+        # 节点 id 形如 "1120:1116"，其中 : \ / * ? " < > | 在 Windows 文件名非法，
+        # 统一替换为 _ 作为子目录名（前端查 byNode 用同样的安全化规则）。
+        safe = "".join(c if c not in '\\/:*?"<>|' else "_" for c in str(node_id))
+        base = os.path.join(base, safe)
+    return base
 
 
 def concat_video_files(abs_paths, out_dir, prefix, fmt="mp4"):
@@ -2115,10 +2123,21 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
     @_xzg_ve_safe
     async def xzg_video_batch_buffer_list_route(request):
         """场景逐段批处理：查询缓冲目录中的分段视频数量（最终合并前由前端校验）。
-        返回: { count, files }"""
-        buf_dir = get_batch_buffer_dir()
-        files = sorted(f for f in os.listdir(buf_dir) if f.endswith(".mp4")) if os.path.isdir(buf_dir) else []
-        return web.json_response({"count": len(files), "files": files, "dir": buf_dir})
+        返回: { count, files, dir, byNode }，byNode 按合并节点专属子目录分组：
+        { "<node_id>": { count, files } }（多合并节点各自独立校验缓冲数量）"""
+        root = get_batch_buffer_dir()
+        files = []
+        by_node = {}
+        if os.path.isdir(root):
+            for entry in sorted(os.listdir(root)):
+                p = os.path.join(root, entry)
+                if os.path.isfile(p) and entry.endswith(".mp4"):
+                    files.append(entry)
+                elif os.path.isdir(p):
+                    segs = sorted(f for f in os.listdir(p) if f.endswith(".mp4"))
+                    by_node[entry] = {"count": len(segs), "files": segs}
+                    files.extend(f"{entry}/{f}" for f in segs)
+        return web.json_response({"count": len(files), "files": files, "dir": root, "byNode": by_node})
 
     @_xzg_ve_PS.instance.routes.post("/xzg_video_batch_concat")
     @_xzg_ve_safe

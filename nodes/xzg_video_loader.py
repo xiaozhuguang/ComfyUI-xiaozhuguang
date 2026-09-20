@@ -680,11 +680,15 @@ class XiaozhuguangVideoLoader:
                    帧数上限=0, 跳过帧数=0, unique_id=None):
         """原「小珠光视频加载器」入口：行为与旧版完全一致（不启用片段窗口）。
         片段窗口能力由子类「小珠光视频加载-化神级」（xzg_video_loader_davinci.py，继承批处理基类）提供。"""
-        return self.load_video_impl(视频, 强制帧率, 视频比例, 比例模式, 自定义宽度, 自定义高度,
-                                    帧数上限, 跳过帧数, 0.0, 0.0, unique_id)
+        return self.load_video_impl(
+            视频=视频, 强制帧率=强制帧率, 视频比例=视频比例, 比例模式=比例模式,
+            自定义宽度=自定义宽度, 自定义高度=自定义高度,
+            帧数上限=帧数上限, 跳过帧数=跳过帧数,
+            片段起点=0.0, 片段终点=0.0, unique_id=unique_id,
+        )
 
     def load_video_impl(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                        帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, unique_id=None):
+                        帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", unique_id=None):
         强制帧率 = int(强制帧率)
         video_path = folder_paths.get_annotated_filepath(视频)
         if not video_path or not os.path.isfile(video_path):
@@ -738,22 +742,44 @@ class XiaozhuguangVideoLoader:
         (src_w, src_h, src_fps, src_dur, src_frames,
          target_frame_time, yieldable, new_w, new_h, alpha) = info
 
-        frames = []
-        try:
-            for frame in gen:
-                frames.append(frame)
-        except StopIteration:
-            pass
-
-        if not frames:
-            raise RuntimeError("No frames decoded from video")
-        pbar.update_absolute(600, 1000)  # 读帧完成
-
-        channels = 4 if alpha else 3
-        image_tensor = torch.from_numpy(
-            np.stack(frames).astype(np.float32)
-        ).view(-1, new_h, new_w, channels)
-        pbar.update_absolute(650, 1000)  # 帧堆叠/张量转换完成
+        # ── A1：帧堆叠（内存模式）──────────────────────────────────────────────────────────────────
+        # 「标准」= list 累积 + np.stack/astype（峰值≈3×）；「低内存」= 预分配缓冲
+        # 流式写入 + torch 零复制（峰值≈1~1.5×），与低内存版 load_video 一致。
+        if 内存模式 == "低内存":
+            ch_count = 4 if alpha else 3
+            cap = max(8, int(yieldable) + 8) if yieldable and yieldable > 0 else 64
+            buf = np.empty((cap, new_h, new_w, ch_count), np.float32)
+            count = 0
+            try:
+                for frame in gen:
+                    if count >= buf.shape[0]:
+                        grow = np.empty((buf.shape[0] * 3 // 2 + 8, new_h, new_w, ch_count), np.float32)
+                        grow[:count] = buf[:count]
+                        buf = grow
+                    buf[count] = frame
+                    count += 1
+            except StopIteration:
+                pass
+            if count == 0:
+                raise RuntimeError("No frames decoded from video")
+            pbar.update_absolute(650, 1000)  # 读帧+流式堆叠完成
+            # buf[:count] 是连续视图，torch.from_numpy 零复制
+            image_tensor = torch.from_numpy(buf[:count]).view(-1, new_h, new_w, ch_count)
+        else:
+            frames = []
+            try:
+                for frame in gen:
+                    frames.append(frame)
+            except StopIteration:
+                pass
+            if not frames:
+                raise RuntimeError("No frames decoded from video")
+            pbar.update_absolute(600, 1000)  # 读帧完成
+            channels = 4 if alpha else 3
+            image_tensor = torch.from_numpy(
+                np.stack(frames).astype(np.float32)
+            ).view(-1, new_h, new_w, channels)
+            pbar.update_absolute(650, 1000)  # 帧堆叠/张量转换完成
 
         loaded_fps = 1.0 / target_frame_time if target_frame_time > 0 else src_fps
         loaded_count = image_tensor.shape[0]

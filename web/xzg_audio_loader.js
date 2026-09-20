@@ -217,7 +217,7 @@ class XiaozhuguangWaveformViewer {
         this._loopBtn = null;
         // 「从快剪加载」canvas 按钮：状态 + 命中矩形 + 点击回调
         // （与「全览/📝」同机制：canvas 绘制 + 节点局部坐标命中，缩放平移绝不错位）
-        this._fastcut = { visible: false, busy: false, text: '从快剪加载', color: '#dcc85b', hover: false };
+        this._fastcut = { visible: false, busy: false, text: '从快剪加载', color: '#FFD700', hover: false };
         this._fastcutBtn = null;
         this.onFastcutClick = null;
         // 播放头拖动结束时间（防止拖动到界面外后误触发播放）
@@ -547,17 +547,17 @@ class XiaozhuguangWaveformViewer {
         const textY = baseY + 4;
         if (this._decodeProgress >= 0) {
             ctx.fillStyle = '#FFD700';
-            ctx.font = '9px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.fillText(`解码中... ${Math.round(this._decodeProgress * 100)}%`, w / 2, textY);
         } else {
             ctx.fillStyle = '#FFD700';
-            ctx.font = '9px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.fillText('正在分析音频...', w / 2, textY);
         }
 
         // ═══ 时间文字 ═══
         ctx.fillStyle = '#888';
-        ctx.font = '7px sans-serif';
+        ctx.font = '12px sans-serif';
         ctx.textBaseline = 'top';
         const fmt = (t) => {
             if (t >= 60) {
@@ -826,8 +826,8 @@ class XiaozhuguangWaveformViewer {
             ctx.restore();
         }
 
-        // 「从快剪加载」按钮（canvas 绘制；空状态/解码中也要可见可点）
-        this._drawFastcutButton(ctx, widgetY, w);
+        // 「从快剪加载」按钮已改为 DOM 按钮（与「从达芬奇导入」同机制），
+        // 不再 canvas 绘制 —— 两者显隐/出现时机完全同帧同步
 
         // 解码中：显示进度条，不绘制波形
         if (this._decoding) {
@@ -974,11 +974,15 @@ class XiaozhuguangWaveformViewer {
 
         // 音量显示（左上角）
         const volText = `音量${Math.round(this.volume * 100)}`;
+        // 化神级顶栏最右的「从达芬奇导入」DOM 按钮宽度（canvas 本地单位），
+        // 「从快剪加载」与时间码保留区需整体左移让位；普通加载器为 0 不影响
+        const _dvW = this._xzgDvBtnWidth || 0;
+        const volStartX = pad + 2;
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
-        ctx.font = '6px sans-serif';
+        ctx.font = '12px sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillText(volText, pad + 2, widgetY + 3);
+        ctx.fillText(volText, volStartX, widgetY + 3);
         // 时间码显示（紧邻音量右侧）
         const fmt = (t) => {
             const m = Math.floor(t / 60);
@@ -989,91 +993,80 @@ class XiaozhuguangWaveformViewer {
         const rangeStr = `${fmt(this.startTime)}-${fmt(this.endTime)}`;
         // 时长：若被红/蓝裁剪（start/end 标记），显示裁剪后的时长；否则即总时长
         const durLabel = fmt(Math.max(0, this.endTime - this.startTime));
-        const timeText = `${curTime} / ${rangeStr} 时长${durLabel}`;
         const volTextW = ctx.measureText(volText).width;
+        // 右侧保留区：从快剪加载可见时预留其宽度，否则保留 全览/📝
+        let _fcw = 0;
+        if (this._fastcut && this._fastcut.visible) {
+            _fcw = this._xzgFcBtnWidth || 0;
+        }
+        const rightZone = w - pad - 15 - _dvW - _fcw - 8;
+        const timeBaseX = volStartX + volTextW + 6;
+        // 时间码宽度不足时逐级截断：全量(含范围/时长) → 当前/时长 → 当前 → 空
+        let timeText = `${curTime} / ${rangeStr} 时长${durLabel}`;
+        if (ctx.measureText(timeText).width > rightZone - timeBaseX - 24) {
+            timeText = `${curTime} / ${durLabel}`;
+            if (ctx.measureText(timeText).width > rightZone - timeBaseX - 24) {
+                timeText = curTime;
+                if (ctx.measureText(timeText).width > rightZone - timeBaseX - 24) {
+                    timeText = "";
+                }
+            }
+        }
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
-        ctx.font = '6px sans-serif';
+        ctx.font = '12px sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        const timeX = pad + 2 + volTextW + 6;
+        const timeX = timeBaseX;
         ctx.fillText(timeText, timeX, widgetY + 3);
         const timeTextW = ctx.measureText(timeText).width;
-        // 循环/单次播放图标（时间码后面，高度对齐，金色小符号）
+        // 循环/单次播放图标（时间码后面，高度对齐，金色小符号）；放不下时隐藏
         const loopSym = this._loopPlayback ? '⇆' : '→';
         const loopX = timeX + timeTextW + 8;
+        const loopW = ctx.measureText(loopSym).width;
         ctx.fillStyle = '#FFD700';
-        ctx.font = '7px sans-serif';
+        ctx.font = '12px sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillText(loopSym, loopX, widgetY + 2);
-        const loopW = ctx.measureText(loopSym).width;
-        this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 10 };
-        // 小字注释（循环图标右侧）
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
-        ctx.font = '5px sans-serif';
-        ctx.fillText('单击音频轨道播放/双击音频轨道上传/拖动播放头移动位置', loopX + loopW + 6, widgetY + 4);
+        if (loopX + loopW + 6 <= rightZone) {
+            ctx.fillText(loopSym, loopX, widgetY + 2);
+            this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 18 };
+        } else {
+            this._loopBtn = null;
+        }
 
-        // 显示模式切换按钮（右上角）
-        const btnW = 22;
-        const btnX = w - pad - btnW - 10;
+        // 显示模式切换按钮（循环符号之后）；空间不足时隐藏
+        const btnW = 30;
+        const btnX = loopX - 3 + loopW + 6 + 8;
         const btnY = widgetY + 3;
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
-        ctx.font = '6px sans-serif';
+        ctx.font = '12px sans-serif';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
+        if (btnX + btnW + 4 + 16 > rightZone) {
+            this._modeBtn = null;
+            this._helpBtn = null;
+            return;
+        }
         ctx.fillText(isCropMode ? '细节' : '全览', btnX + btnW, btnY);
-        this._modeBtn = { x: btnX, y: btnY, w: btnW, h: 14 };
+        this._modeBtn = { x: btnX, y: btnY, w: btnW, h: 18 };
 
-        // 帮助按钮（全览/细节左侧）
-        const helpIconW = 12;
-        const helpIconX = btnX - helpIconW - 4;
+        // 帮助按钮（全览/细节右侧）
+        const helpIconW = 16;
+        const helpIconX = btnX + btnW + 4;
         const helpIconY = widgetY + 3;
         ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.font = '8px sans-serif';
+        ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText('📝', helpIconX + helpIconW / 2, helpIconY - 1);
-        this._helpBtn = { x: helpIconX, y: helpIconY, w: helpIconW, h: 14 };
+        this._helpBtn = { x: helpIconX, y: helpIconY, w: helpIconW, h: 18 };
     }
 
-    // ── 「从快剪加载」按钮：canvas 绘制 ──
-    //    与「全览/📝」同机制：画在节点局部坐标系里，跟波形同一帧同一变换，
-    //    画布缩放/平移时位置绝不错位；命中检测用同一坐标系，点击绝不偏移
-    _drawFastcutButton(ctx, widgetY, w) {
-        this._fastcutBtn = null;
-        const st = this._fastcut;
-        if (!st.visible) return;
-        const text = `🎬 ${st.text}`;
-        ctx.font = '7px sans-serif';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'top';
-        // 与「全览/📝」同一行，位于说明书(📝)左侧：
-        // 布局链（同 drawOnNode 尾部）：全览右缘 = w - pad - 10，全览宽22，📝宽12，各留4px间隙
-        const pad = this._getPad();
-        const x2 = w - pad - 10 - 22 - 4 - 12 - 4;   // 说明书左缘再留 4px
-        const y = widgetY + 2;                        // 与说明书文字基线对齐
-        const tw = ctx.measureText(text).width;
-        ctx.fillStyle = (st.busy || st.hover) ? '#ffffff' : st.color;
-        ctx.fillText(text, x2, y);
-        this._fastcutBtn = { x: x2 - tw - 5, y: y - 2, w: tw + 10, h: 12 };
-    }
+    // ── 「从快剪加载」按钮已改为 DOM 按钮（见 bindAudioLoaderInteractions /
+    //    _createFastcutDomButton），与「从达芬奇导入」同机制同帧同步 ──
 
     // ── LiteGraph widget 鼠标事件 ──
     handleMouse(event, localX, localY) {
-        // 「从快剪加载」按钮：命中检测优先级最高（空状态/解码中也可点击）
-        if (this._fastcutBtn) {
-            const btn = this._fastcutBtn;
-            const hit = localX >= btn.x && localX <= btn.x + btn.w && localY >= btn.y && localY <= btn.y + btn.h;
-            if (hit && (event.type === 'pointerdown' || event.type === 'mousedown') && event.button !== 2) {
-                if (!this._fastcut.busy) this.onFastcutClick?.();
-                return true;
-            }
-            // hover 高亮（每次 mousemove 重算，离开按钮自动熄灭）
-            if ((event.type === 'pointermove' || event.type === 'mousemove') && hit !== this._fastcut.hover) {
-                this._fastcut.hover = hit;
-                this.onRequestRedraw();
-            }
-        }
         if (this.duration <= 0) {
             if (event.type === 'pointerdown' || event.type === 'mousedown') {
                 // 右键：弹出保存菜单
@@ -1404,7 +1397,6 @@ class XiaozhuguangWaveformViewer {
         if (!this.isDragging) return;
         this.isDragging = false;
         const wasDragging = this.dragType;
-        const startedInLowerHalf = this._dragStartedInLowerHalf;
         const dragMoved = !!this._dragMoved;
         this.dragType = null;
         this._dragMoved = false;
@@ -1424,11 +1416,12 @@ class XiaozhuguangWaveformViewer {
             this._notifyChange();
         }
 
-        // 虚线下点击兜底：按下时命中了把手（start/end/volume）但用户没有拖动 ——
-        // 这种情况属于「用户本意是点虚线下播放/暂停，误撞把手命中判定」。
-        // 只要拖动距离没超过阈值，mouseup 时就补一次播放切换，
-        // 彻底解决「有时候点虚线下不播放」的偶发现象。
-        if (!dragMoved && startedInLowerHalf) {
+        // 全轨道点击播放兜底：按下时命中了把手（start/end/volume/playhead）但用户没有拖动 ——
+        // 这种情况属于「用户本意是点击轨道播放/暂停，误撞把手命中判定」。
+        // 只要拖动距离没超过阈值，mouseup 时就补一次播放切换（不限上下区——
+        // 视觉虚线分区已取消，全轨道统一点击播放/暂停），
+        // 彻底解决「有时候点轨道不播放」的偶发现象。
+        if (!dragMoved) {
             this.togglePlay();
         }
     }
@@ -1610,12 +1603,12 @@ async function uploadAudioFiles(files) {
     return uploaded;
 }
 
-async function refreshAudioCombo(audioWidget, selectName) {
+async function refreshAudioCombo(audioWidget, selectName, nodeType = "XiaozhuguangAudioLoader") {
     try {
-        const resp = await api.fetchApi("/object_info/XiaozhuguangAudioLoader");
+        const resp = await api.fetchApi("/object_info/" + nodeType);
         if (!resp.ok) return;
         const info = await resp.json();
-        const list = info?.XiaozhuguangAudioLoader?.input?.required?.["音频"]?.[0];
+        const list = info?.[nodeType]?.input?.required?.["音频"]?.[0];
         if (Array.isArray(list)) {
             audioWidget.options.values = list;
             if (selectName && list.includes(selectName)) {
@@ -1937,65 +1930,24 @@ function bindAudioLoaderInteractions(node) {
     node._xzgWaveformViewer = waveformViewer;
 
     // =====================================================================
-    // 从快剪加载按钮 —— canvas 绘制（与「全览/📝/音量」同机制）
-    //   不用 HTML 定位：画在节点局部坐标系里，跟波形同一帧同一变换矩阵，
-    //   缩放/平移绝不错位；命中检测用 handleMouse 的同一坐标系，点击绝不偏移
+    // 从快剪加载按钮 —— DOM 按钮（与「从达芬奇导入」完全同机制）
+    //   事件驱动显隐（碰到节点即出现）、无过渡瞬现，两者同帧同步不再有先后；
+    //   busy 导出中强制常显（即使鼠标离开节点）
+    //   仅化神级提供：普通音频加载器不创建按钮，状态设置退化为 no-op
     // =====================================================================
     const _fastcutOriginalText = "从快剪加载";
+    const _isDvAudioLoader = (node.comfyClass || node.type) === XZG_AUDIO_DAVINCI_TYPE;
+    const fastcutDom = _isDvAudioLoader ? _createFastcutDomButton(node, waveformViewer) : null;
     const _setFastcutState = (patch) => {
         Object.assign(waveformViewer._fastcut, patch);
-        // busy 中强制保持可见（即使鼠标离开节点）
-        if (waveformViewer._fastcut.busy) waveformViewer._fastcut.visible = true;
-        waveformViewer.onRequestRedraw?.();
+        if (!fastcutDom) return;
+        if (patch.text !== undefined) fastcutDom.setText(patch.text);
+        if (patch.color !== undefined) fastcutDom.setColor(patch.color);
+        fastcutDom.sync();
     };
 
-    // 鼠标进入/离开节点区域：控制按钮显隐（仅开关状态，不做任何定位）
-    (function _bindNodeHoverTrack() {
-        const canvasEl = app.canvas?.canvas;
-        if (!canvasEl) return;
-        function _getCanvasCoords(ev) {
-            const cv = app.canvas;
-            if (!cv) return null;
-            if (typeof cv.convertEventToCanvasOffset === 'function') {
-                try { return cv.convertEventToCanvasOffset(ev); } catch (_) {}
-            }
-            if (typeof cv.convertEventToCanvasCoordinates === 'function') {
-                try { return cv.convertEventToCanvasCoordinates(ev); } catch (_) {}
-            }
-            const rect = canvasEl.getBoundingClientRect();
-            const scale = cv.ds?.scale || 1;
-            const offset = cv.ds?.offset || [0, 0];
-            return [(ev.clientX - rect.left) / scale - offset[0], (ev.clientY - rect.top) / scale - offset[1]];
-        }
-        let _hovered = false;
-        canvasEl.addEventListener('mousemove', (e) => {
-            const pos = _getCanvasCoords(e);
-            if (!pos) return;
-            const [x, y] = pos;
-            const w = node.size[0], h = node.size[1];
-            const inside = (x >= node.pos[0] && x <= node.pos[0] + w && y >= node.pos[1] && y <= node.pos[1] + h);
-            if (inside !== _hovered) {
-                _hovered = inside;
-                if (!waveformViewer._fastcut.busy) {
-                    waveformViewer._fastcut.visible = inside;
-                    waveformViewer._fastcut.hover = false;
-                    waveformViewer.onRequestRedraw?.();
-                }
-            }
-        });
-        canvasEl.addEventListener('mouseleave', () => {
-            if (_hovered) {
-                _hovered = false;
-                if (!waveformViewer._fastcut.busy) {
-                    waveformViewer._fastcut.visible = false;
-                    waveformViewer.onRequestRedraw?.();
-                }
-            }
-        });
-    })();
-
-    // canvas 按钮点击回调（由 handleMouse 命中后调用）
-    waveformViewer.onFastcutClick = () => {
+    // canvas 按钮点击回调（由 handleMouse 命中后调用）；普通加载器无按钮不注册
+    if (fastcutDom) waveformViewer.onFastcutClick = () => {
         _setFastcutState({ busy: true, text: "等待确认..." });
 
         const audioWidget = node.widgets?.find(w => w.name === "音频");
@@ -2036,13 +1988,13 @@ function bindAudioLoaderInteractions(node) {
                 // 用户在快剪里选了视频格式，音频加载器不消费
                 patch = { text: "格式不匹配", color: "#ff9d3b" };
             } else {
-                patch = { text: _fastcutOriginalText, color: "#dcc85b" };
+                patch = { text: _fastcutOriginalText, color: "#FFD700" };
             }
             const delay = patch.text === "已加载" ? 1500 : 2000;
             _setFastcutState({ busy: false, ...patch });
             if (patch.text !== _fastcutOriginalText) {
                 setTimeout(() => {
-                    _setFastcutState({ text: _fastcutOriginalText, color: "#dcc85b" });
+                    _setFastcutState({ text: _fastcutOriginalText, color: "#FFD700" });
                 }, delay);
             }
         };
@@ -2053,7 +2005,7 @@ function bindAudioLoaderInteractions(node) {
         } else {
             _setFastcutState({ busy: false, text: "快剪未加载", color: "#ff6b6b" });
             setTimeout(() => {
-                _setFastcutState({ text: _fastcutOriginalText, color: "#dcc85b" });
+                _setFastcutState({ text: _fastcutOriginalText, color: "#FFD700" });
             }, 2000);
         }
     };
@@ -2691,6 +2643,290 @@ function _xzgPatchProcessMouseDown(retryCount = 0) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// 化神级（XiaozhuguangAudioLoaderDaVinci）：从达芬奇导入音频
+// 波纹区右上角悬浮「从达芬奇导入」按钮（画布直绘坐标同步，与音频保存的
+// 发送到快剪悬浮按钮同机制）；点击 → 桥接导出 → 刷新音频下拉 → 自动选中预览。
+// ═══════════════════════════════════════════════════════════════════════
+const XZG_AUDIO_DAVINCI_TYPE = "XiaozhuguangAudioLoaderDaVinci";
+
+function _xzgDavinciToast(msg, isError = false) {
+    const el = document.createElement("div");
+    el.style.cssText =
+        "position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:1000002;" +
+        "padding:8px 16px;border-radius:6px;font-size:13px;color:#fff;" +
+        "box-shadow:0 4px 16px rgba(0,0,0,.4);pointer-events:none;opacity:0;" +
+        "transition:opacity .25s;max-width:80vw;word-break:break-all;";
+    el.style.background = isError ? "rgba(198,40,40,.95)" : "rgba(30,30,30,.95)";
+    if (isError) el.style.border = "1px solid #ef9a9a";
+    el.textContent = msg;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => {
+        el.style.opacity = "1";
+        setTimeout(() => {
+            el.style.opacity = "0";
+            setTimeout(() => el.remove(), 260);
+        }, 3000);
+    });
+}
+
+function _createDavinciImportButton(node) {
+    if (node._xzgDvBtn) return node._xzgDvBtn;
+    const viewer = node._xzgWaveformViewer;
+    if (!viewer) return null;
+
+    const btn = document.createElement("button");
+    btn.title = "从达芬奇剪辑页导出当前播放头所在片段的音频并加载";
+    btn.style.cssText =
+        "position:fixed;z-index:100001;" +
+        "display:inline-flex;align-items:center;gap:5px;" +
+        "padding:2px 8px;font-size:12px;line-height:1;" +
+        "background:transparent;border:none;" +
+        "color:#3ef558;cursor:pointer;pointer-events:auto;" +
+        "transition:color 0.15s;opacity:0;" +
+        "text-shadow:0 1px 2px rgba(0,0,0,.8);";
+    btn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从达芬奇导入</span>';
+    btn.classList.add("xzg-dv-import-btn");  // 供 canvas mouseleave 识别（移入本按钮不隐藏快剪）
+    document.body.appendChild(btn);
+    const labelSpan = btn.querySelector("span:last-child");
+    // 画布端让位宽度初始估计（syncBtn 每帧用实测值覆盖）
+    viewer._xzgDvBtnWidth = 110;
+
+    // 位置同步：波纹区节点本地坐标（viewer._drawY/_drawW/_drawH，绘制帧更新）
+    //   → 屏幕坐标（节点 pos + 画布 ds 变换），按钮贴波纹区右上角内侧
+    const _lastMouse = { x: -1, y: -1 };
+    let _hoverRect = null;
+    // 显隐即时求值（与「从快剪加载」的事件驱动同步，避免两者出现时间有先后）
+    const _updateVisibility = () => {
+        if (!_hoverRect) {
+            btn.style.opacity = "0";
+            return;
+        }
+        const r = _hoverRect;
+        const inside = _lastMouse.x >= r.x && _lastMouse.x <= r.x + r.w &&
+                       _lastMouse.y >= r.y && _lastMouse.y <= r.y + r.h;
+        const overBtn = btn.matches(":hover");
+        btn.style.opacity = (inside || overBtn) ? "1" : "0";
+    };
+    const onMove = (e) => {
+        _lastMouse.x = e.clientX;
+        _lastMouse.y = e.clientY;
+        _updateVisibility();
+    };
+    document.addEventListener("pointermove", onMove, true);
+
+    const syncBtn = () => {
+        try {
+            const cv = app.canvas?.canvas;
+            const ds = app.canvas?.ds;
+            const npos = node.pos;
+            const drawW = viewer._drawW || 0;
+            const drawH = viewer._drawH || 0;
+            if (!cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
+                _hoverRect = null;
+                btn.style.opacity = "0";
+                return;
+            }
+            const rect = cv.getBoundingClientRect();
+            const scale = ds.scale || 1;
+            const x0 = (npos[0] + ds.offset[0]) * scale + rect.left;
+            const nodeTop = (npos[1] + ds.offset[1]) * scale + rect.top;
+            const y0 = nodeTop + viewer._drawY * scale;
+            const w = drawW * scale, h = drawH * scale;
+            // 悬停判定区 = 整个节点边界（与「从快剪加载」的显示条件一致：碰到节点即出现，
+            // 避免快剪先出现、波纹区后出现的时序差）
+            const nw = (node.size?.[0] || 0) * scale;
+            const nh = (node.size?.[1] || 0) * scale;
+            _hoverRect = { x: x0, y: nodeTop, w: nw, h: nh };
+            const s = scale; // 完全跟随画布缩放（不再夹取区间）
+            btn.style.transformOrigin = "top left";
+            btn.style.transform = `scale(${s})`;
+            const bw = btn.offsetWidth || 110;
+            // 顶栏最右：「从快剪加载」的右侧；左移 5px 避开右侧蓝杠（裁剪终点标记）；
+            // 垂直与画布顶栏文字对齐（文字顶 = 波纹区顶 + 2px）
+            btn.style.left = Math.round(x0 + w - (13 + bw) * scale) + "px";
+            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
+            // 上报按钮宽度（canvas 本地单位），画布端「从快剪加载」与时间码整体左移让位
+            viewer._xzgDvBtnWidth = bw;
+            _updateVisibility();
+        } catch (e) { /* 画布未就绪等场景忽略 */ }
+    };
+    // 钩进波形绘制帧：平移/缩放/拖动节点时按钮实时跟随
+    const origDrawOnNode = viewer.drawOnNode;
+    viewer.drawOnNode = function (ctx, a, b, c) {
+        const r = origDrawOnNode.apply(this, arguments);
+        node._xzgDvSyncBtn?.();
+        return r;
+    };
+    node._xzgDvSyncBtn = syncBtn;
+
+    let _busy = false;
+    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
+    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#3ef558"; });
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.onclick = async () => {
+        if (_busy) return;
+        const audioWidget = node.widgets?.find(w => w.name === "音频");
+        if (!audioWidget) return;
+        _busy = true;
+        btn.disabled = true;
+        labelSpan.textContent = "正在从达芬奇导出…";
+        try {
+            // 1) 连接状态检查（连接失败给明确指引）
+            const stResp = await api.fetchApi("/xzg/davinci/status");
+            const st = stResp.ok ? await stResp.json() : { ok: false, error: `状态接口 ${stResp.status}` };
+            if (!st.ok) {
+                _xzgDavinciToast("[从达芬奇导入] 无法连接达芬奇。" + (st.error || "") +
+                    " 需 Resolve Studio 已打开，且外部脚本使用设为「本地 Local」。", true);
+                return;
+            }
+            // 2) 导出音频（优先音频轨道播放头片段，其次视频片段的音轨）
+            const resp = await api.fetchApi("/xzg/davinci/export_audio", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            });
+            const data = await resp.json();
+            if (!data?.ok) {
+                _xzgDavinciToast("[从达芬奇导入] " + (data?.error || "导出失败"), true);
+                return;
+            }
+            // 3) 刷新音频下拉并选中导入文件（widget 回调会自动加载波形预览）
+            const w2 = node.widgets?.find(w => w.name === "音频");
+            if (w2) {
+                await refreshAudioCombo(w2, data.filename, XZG_AUDIO_DAVINCI_TYPE);
+            }
+            const clipName = data?.clip?.name;
+            _xzgDavinciToast(`已导入音频${clipName ? `「${clipName}」` : ""}`);
+        } catch (e) {
+            _xzgDavinciToast("[从达芬奇导入] " + String(e), true);
+        } finally {
+            _busy = false;
+            btn.disabled = false;
+            labelSpan.textContent = "从达芬奇导入";
+        }
+    };
+
+    // 节点移除时清理按钮与监听
+    const origOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        document.removeEventListener("pointermove", onMove, true);
+        try { btn.remove(); } catch (e) {}
+        node._xzgDvBtn = null;
+        node._xzgDvSyncBtn = null;
+        return origOnRemoved?.apply(this, arguments);
+    };
+
+    node._xzgDvBtn = btn;
+    return btn;
+}
+
+// 「从快剪加载」DOM 按钮（音频加载器/化神级通用）：与「从达芬奇导入」完全同机制——
+// 事件驱动显隐（碰到节点即出现、无过渡瞬现），busy 导出中强制常显；
+// 顶栏右二位置（「从达芬奇导入」左侧，预留其宽度 + 6px 间隙）
+function _createFastcutDomButton(node, viewer) {
+    if (node._xzgFcDomBtn) return node._xzgFcDomBtn;
+    const btn = document.createElement("button");
+    btn.title = "静默导出快剪编辑器的时间线内容并加载到当前节点";
+    btn.style.cssText =
+        "position:fixed;z-index:100001;" +
+        "display:inline-flex;align-items:center;gap:5px;" +
+        "padding:2px 8px;font-size:12px;line-height:1;" +
+        "background:transparent;border:none;" +
+        "color:#FFD700;cursor:pointer;pointer-events:auto;" +
+        "transition:color 0.15s;opacity:0;" +
+        "text-shadow:0 1px 2px rgba(0,0,0,.8);";
+    btn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从快剪加载</span>';
+    btn.classList.add("xzg-fc-load-btn");
+    document.body.appendChild(btn);
+    // 悬停变色（与「从达芬奇导入」一致：金色 → 白色）
+    btn.addEventListener("mouseenter", () => { btn.style.color = "#fff"; });
+    btn.addEventListener("mouseleave", () => { btn.style.color = "#FFD700"; });
+    viewer._xzgFcBtnWidth = 100;  // 画布端让位宽度初始估计（sync 每帧用实测值覆盖）
+
+    // 悬停判定区 = 整个节点边界（与「从达芬奇导入」一致）；busy 导出中强制常显
+    const _lastMouse = { x: -1, y: -1 };
+    let _hoverRect = null;
+    const _updateVisibility = () => {
+        const busy = !!(viewer._fastcut && viewer._fastcut.busy);
+        let vis = busy;
+        if (!vis && _hoverRect) {
+            const r = _hoverRect;
+            const inside = _lastMouse.x >= r.x && _lastMouse.x <= r.x + r.w &&
+                           _lastMouse.y >= r.y && _lastMouse.y <= r.y + r.h;
+            vis = inside || btn.matches(":hover");
+        }
+        if (viewer._fastcut) viewer._fastcut.visible = vis;
+        btn.style.opacity = vis ? "1" : "0";
+    };
+    const onMove = (e) => {
+        _lastMouse.x = e.clientX;
+        _lastMouse.y = e.clientY;
+        _updateVisibility();
+    };
+    document.addEventListener("pointermove", onMove, true);
+
+    const sync = () => {
+        try {
+            const cv = app.canvas?.canvas;
+            const ds = app.canvas?.ds;
+            const npos = node.pos;
+            const drawW = viewer._drawW || 0;
+            if (!cv || !ds || !npos || drawW <= 0) return;
+            const rect = cv.getBoundingClientRect();
+            const scale = ds.scale || 1;
+            const x0 = (npos[0] + ds.offset[0]) * scale + rect.left;
+            const y0 = (npos[1] + ds.offset[1] + viewer._drawY) * scale + rect.top;
+            const dvW = viewer._xzgDvBtnWidth || 0;
+            const bw = btn.offsetWidth || 100;
+            viewer._xzgFcBtnWidth = bw;
+            // 悬停判定区 = 整个节点边界（与「从达芬奇导入」一致）
+            _hoverRect = {
+                x: x0,
+                y: (npos[1] + ds.offset[1]) * scale + rect.top,
+                w: (node.size?.[0] || 0) * scale,
+                h: (node.size?.[1] || 0) * scale,
+            };
+            const s = scale; // 完全跟随画布缩放（不再夹取区间）
+            btn.style.transformOrigin = "top left";
+            btn.style.transform = `scale(${s})`;
+            // 顶栏右二：「从达芬奇导入」（最右）左侧，预留 dvW + 6；整体左移 5px 避开蓝杠
+            btn.style.left = Math.round(x0 + drawW * scale - (15 + dvW + 6 + bw) * scale) + "px";
+            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
+            _updateVisibility();
+        } catch (e) { /* 画布未就绪等场景忽略 */ }
+    };
+    // 钩进波形绘制帧：平移/缩放/拖动节点时按钮实时跟随
+    const origDrawOnNode = viewer.drawOnNode;
+    viewer.drawOnNode = function (ctx, a, b, c) {
+        const r = origDrawOnNode.apply(this, arguments);
+        node._xzgFcSyncBtn?.();
+        return r;
+    };
+    node._xzgFcSyncBtn = sync;
+
+    const origOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        document.removeEventListener("pointermove", onMove, true);
+        try { btn.remove(); } catch (e) {}
+        node._xzgFcDomBtn = null;
+        node._xzgFcSyncBtn = null;
+        return origOnRemoved?.apply(this, arguments);
+    };
+
+    node._xzgFcDomBtn = btn;
+    return {
+        btn,
+        setText: (t) => {
+            const spans = btn.querySelectorAll("span");
+            const ts = spans[spans.length - 1];
+            if (ts) ts.textContent = t;
+        },
+        setColor: (c) => { btn.style.color = c; },
+        sync,
+    };
+}
+
 app.registerExtension({
     name: "xiaozhuguang.audio_loader",
     setup() {
@@ -2721,7 +2957,8 @@ app.registerExtension({
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "XiaozhuguangAudioLoader") {
+        const isDavinci = nodeData.name === XZG_AUDIO_DAVINCI_TYPE;
+        if (nodeData.name === "XiaozhuguangAudioLoader" || isDavinci) {
             for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
                 if (["FLOAT"].includes(inp[0]) && inp[1]) {
                     inp[1].widgetType ??= "XZGFLOAT";
@@ -2733,6 +2970,11 @@ app.registerExtension({
                 bindAudioLoaderInteractions(this);
                 _xzgPatchCanvasPrompt();
                 _applyAudioWidgetStyles(this);
+                // 化神级：波纹区悬浮「从达芬奇导入」按钮
+                if (isDavinci) {
+                    const node = this;
+                    requestAnimationFrame(() => _createDavinciImportButton(node));
+                }
                 return r;
             };
         }

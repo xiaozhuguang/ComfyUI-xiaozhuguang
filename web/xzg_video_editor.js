@@ -10705,7 +10705,6 @@ export class XiaozhuguangVideoEditor {
         const media = this.mediaLibrary.find(m => m.name === name);
         // 探测拿真实时长/音轨信息（后端 probe 支持 output 类型）
         let dur = media?.info?.duration || 0;
-        let hasAudio = media?.info?.has_audio === true;
         if (!dur || media?.probeState === "pending") {
             try {
                 const resp = await api.fetchApi("/xzg_video_editor_probe", {
@@ -10720,43 +10719,12 @@ export class XiaozhuguangVideoEditor {
                     media.error = null;
                 }
                 dur = data?.duration || dur;
-                hasAudio = data?.has_audio === true || hasAudio;
             } catch (_) {}
         }
-        // V2 轨道：追加到已有内容之后（不覆盖）
-        let start = 0;
-        for (const c of this.timeline) {
-            if (c.kind === "audio" || (c.track || "v1") !== "v2") continue;
-            const end = (c.tlStart != null ? c.tlStart : 0) + (c.end - c.start);
-            if (end > start) start = end;
-        }
-        const baseName = name.split("/").pop();
-        const clip = {
-            id: ++this._clipIdCounter,
-            filename: name, type, name: baseName,
-            start: 0, end: dur > 0 ? dur : 60,
-            sourceDuration: dur, durationPending: !(dur > 0),
-            borderColor: "", tlStart: start, audioTlStart: start,
-            kind: "video", track: "v2", volume: 1,
-        };
-        this.timeline.push(clip);
-        // 含音轨 → 配对音频跟随（A2 对齐），预览播放有声；skip_audio 防止导出双重混音
-        if (hasAudio) {
-            const ac = {
-                id: ++this._clipIdCounter,
-                filename: name, type, name: baseName,
-                start: 0, end: dur > 0 ? dur : 60,
-                sourceDuration: dur, durationPending: !(dur > 0),
-                borderColor: "", tlStart: null, audioTlStart: start,
-                kind: "audio", track: "a2", volume: 1,
-            };
-            clip.pairedWith = ac.id;
-            ac.pairedWith = clip.id;
-            clip.skip_audio = true;
-            this.timeline.push(ac);
-        }
-        this._renderTimeline();
-        this._setStatus(`已从化神级保存节点接收: ${baseName}（V2 @${_fmtTime(start)}${hasAudio ? "，含音频" : ""}）`);
+        // 设计约定：外部发送（视频/音频保存节点联动）只入媒体库，不自动落时间线，
+        // 是否入轨、放哪条轨由用户在快剪里手动拖拽决定
+        this._renderMediaList();
+        this._setStatus(`已加入快剪媒体库: ${name.split("/").pop()}${dur > 0 ? `（${_fmtTime(dur)}）` : ""}`);
     }
 
     // 保存输出目录设置到 localStorage
@@ -10913,10 +10881,10 @@ window._xzgVideoEditor = {
     silentRender: _xzgVideoEditorSilentRender,
 };
 
-// 化神级保存节点联动：把保存的视频送入快剪媒体池。
-// 快剪已打开 → 同时落到 V2 轨道（追加在现有内容之后，不覆盖）；
-// 未打开 → 仅加入媒体池（下次打开快剪即可在媒体库看到）。
-window._xzgVideoEditorReceiveMedia = function (name, type = "output") {
+// 化神级保存节点联动：把保存的视频/音频送入快剪媒体库（只入库，不自动落时间线，
+// 入轨/轨道选择由用户在快剪里手动拖拽）。快剪未打开时写入会话列表（下次打开可见）。
+// opts.kind 仅作兼容保留（"video"/"audio"），当前两种类型行为一致。
+window._xzgVideoEditorReceiveMedia = function (name, type = "output", opts = {}) {
     const inst = window._xzgVideoEditorInstance;
     if (inst && !inst._destroyed && typeof inst._receiveExternalMedia === "function") {
         return inst._receiveExternalMedia(name, type).then(() => ({ added: true }));

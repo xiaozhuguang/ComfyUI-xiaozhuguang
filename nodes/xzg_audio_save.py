@@ -289,7 +289,7 @@ def save_audio_to_file(waveform, sample_rate, output_path, format_name="mp3", qu
     return output_path
 
 
-class XiaozhuguangAudioSave:
+class XiaozhuguangAudioSaveDaVinci:
     """小珠光音频保存 - 将 AUDIO tensor 保存为多种格式"""
 
     @classmethod
@@ -305,6 +305,12 @@ class XiaozhuguangAudioSave:
                 "模式": (["保存", "预览"], {"default": "保存"}),
                 # 音量：仅前端监听预览用，不影响最终文件输出
                 "音量": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.01}),
+                # 自动发送到快剪：保存完成后把音频加入快剪媒体库（前端执行完成回调里发送；
+                # 开关由前端隐藏，交互入口在波形右键菜单，与视频保存-化神级的隐藏开关模式一致）
+                "自动发送到快剪": ("BOOLEAN", {"default": False}),
+                # 自动导出到达芬奇：保存完成后把音频导入达芬奇当前项目（媒体池 + 空白音频
+                # 轨道/无则新建 + 对齐播放头片段前端），开关由前端隐藏在悬浮按钮图标上
+                "自动导出到达芬奇": ("BOOLEAN", {"default": False}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -320,7 +326,7 @@ class XiaozhuguangAudioSave:
     OUTPUT_NODE = True
 
     def save_audio(self, 音频, 格式, 质量, 文件名前缀,
-                   模式="保存", 音量=1.0, **kwargs):
+                   模式="保存", 音量=1.0, 自动导出到达芬奇=False, **kwargs):
         if ffmpeg_path is None:
             raise RuntimeError("FFmpeg not found. Please install FFmpeg.")
 
@@ -409,21 +415,94 @@ class XiaozhuguangAudioSave:
         # 保存文件
         save_audio_to_file(waveform, sample_rate, filepath, format_name=格式, quality=quality_val)
 
+        # 自动导出到达芬奇：保存模式产物导入达芬奇当前项目（音频轨道）。
+        # 与视频保存-化神级一致：桥接失败不阻塞保存，结果挂在 ui 供前端提示。
+        davinci_result = None
+        if 自动导出到达芬奇:
+            try:
+                dv = _davinci_export_audio(filename, subfolder)
+                davinci_result = dv
+                if not dv.get("ok"):
+                    print(f"[小珠光音频保存] 自动导出到达芬奇失败：{dv.get('error', '导入失败')}")
+            except Exception as e:
+                davinci_result = {"ok": False, "error": str(e)}
+                print(f"[小珠光音频保存] 自动导出到达芬奇异常：{e}")
+
+        saved_info = {
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": "output",
+            "format": 格式,
+            "quality": quality_val,
+            "duration": actual_duration,
+            "sample_rate": sample_rate,
+            "peaks": peaks,
+        }
+        if davinci_result is not None:
+            saved_info["davinci"] = davinci_result
+
         return {
             "result": (),
             "ui": {
-                "audio_saved": [{
-                    "filename": filename,
-                    "subfolder": subfolder,
-                    "type": "output",
-                    "format": 格式,
-                    "quality": quality_val,
-                    "duration": actual_duration,
-                    "sample_rate": sample_rate,
-                    "peaks": peaks,
-                }],
+                "audio_saved": [saved_info],
             },
         }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 导出到达芬奇（参考视频保存-化神级 xzg_video_save_davinci.py）：
+# 复用其桥接子进程调用与 output 路径解析，action=import_audio 落音频轨道
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    from .xzg_video_save_davinci import _call_bridge as _dv_call_bridge, \
+        _resolve_abs_path as _dv_resolve_abs_path
+except Exception as _e:
+    _dv_call_bridge = None
+    print(f"[小珠光音频保存] 达芬奇桥接模块加载失败：{_e}")
+
+    def _dv_resolve_abs_path(info):
+        """兜底：output 目录 + subfolder + filename（与视频保存解析逻辑一致）"""
+        filename = info.get("filename")
+        if not filename:
+            return None
+        subfolder = (info.get("subfolder") or "").strip("/\\")
+        out_dir = _safe_dir('get_output_directory', 'output')
+        if subfolder:
+            safe_parts = [p for p in subfolder.replace("\\", "/").split("/") if p and p not in (".", "..")]
+            if not safe_parts:
+                return os.path.join(out_dir, filename)
+            return os.path.join(out_dir, *safe_parts, filename)
+        return os.path.join(out_dir, filename)
+
+
+def _davinci_export_audio(filename, subfolder):
+    """把已保存的音频导入达芬奇。返回桥接结果 dict。"""
+    if _dv_call_bridge is None:
+        return {"ok": False, "error": "达芬奇桥接模块不可用"}
+    abs_path = _dv_resolve_abs_path({"filename": filename, "subfolder": subfolder})
+    if not abs_path or not os.path.isfile(abs_path):
+        return {"ok": False, "error": f"文件不存在：{abs_path}"}
+    return _dv_call_bridge({"action": "import_audio", "file_path": abs_path})
+
+
+@routes.post("/xzg/davinci/audio-save-import")
+@xzg_safe_handler
+async def xzg_davinci_audio_save_import(request):
+    """把已保存的音频导入达芬奇（前端悬浮按钮手动导出入口）。
+
+    请求体：{ filename, subfolder }（保存模式产物在 output 目录）。
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    filename = data.get("filename") or ""
+    subfolder = data.get("subfolder") or ""
+    if not filename:
+        return web.json_response({"ok": False, "error": "缺少 filename"})
+    result = _davinci_export_audio(filename, subfolder)
+    return web.json_response(result)
 
 
 # ═══════════════════════════════════════════════════════════════════════

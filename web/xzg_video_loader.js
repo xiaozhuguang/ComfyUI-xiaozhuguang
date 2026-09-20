@@ -34,6 +34,9 @@ const _LABEL_MAP = {
     "裁剪(crop)": "Crop",
     "拉伸(fill)": "Stretch (Fill)",
     "留边(letterbox)": "Letterbox",
+    "内存模式": "Memory Mode",
+    "标准": "Standard",
+    "低内存": "Low Memory",
     "长边": "Long Edge",
     "短边": "Short Edge",
     "宽度": "Width",
@@ -671,7 +674,7 @@ export function _applyWidgetStyles(node) {
     // 这里统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
     const _XRG_WIDGET_NAME_FIX = {
         '强制帧率': 1, '视频比例': 1, '比例模式': 1, '自定义宽度': 1,
-        '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1,
+        '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1, '内存模式': 1,
     };
     for (const w of node.widgets || []) {
         if (w.name === VIDEO_PREVIEW_WIDGET_NAME) continue;
@@ -710,6 +713,18 @@ export function _applyWidgetStyles(node) {
             w.options.values = ["裁剪(crop)", "拉伸(fill)", "留边(letterbox)"];
             w._xzgDisplayVal = (v) => _tr(String(v));
             w.label = _tr("比例模式");
+        } else if (w.name === '内存模式') {
+            // 化神级「内存模式」（标准/低内存）：与视频比例/比例模式同款下拉；
+            // values 兜底：极端情况下自定义 combo 提取不到值时下拉列表为空
+            w.draw = _xzgDrawComboWidget;
+            w.mouse = _xzgFpsComboMouse;
+            w.value = String(w.value ?? "标准");
+            w.options = w.options || {};
+            if (!Array.isArray(w.options.values) || w.options.values.length === 0) {
+                w.options.values = ["标准", "低内存"];
+            }
+            w._xzgDisplayVal = (v) => _tr(String(v));
+            w.label = _tr("内存模式");
         } else if (w.name === '上传视频') {
             w.draw = _xzgDrawButtonWidget;
             w.label = _tr("上传视频");
@@ -759,8 +774,33 @@ export function _xzgCreateNumberWidget(node, inputName, inputData) {
 // 完全使用小珠光圆角风格 draw + 自定义 DOM 下拉列表
 // type 设为 'xzg_combo' 而非 'combo'，防止 LiteGraph processNodeWidgets 识别为原生 combo 弹出 <select>
 export function _xzgCreateComboWidget(node, inputName, inputData) {
-    const values = Array.isArray(inputData[0]) ? inputData[0] : [];
-    const opts = inputData[1] || {};
+    // 兼容 ComfyUI 不同版本/前端的传参格式：
+    //   1) 老版 object_info 原始格式：[values数组, options对象]
+    //   2) V2 规格对象：{values: [...], ...}
+    //   3) 新版前端（1.51+）addInputWidget：transformInputSpecV2ToV1 返回
+    //      [widgetType字符串, V2规格对象]，下拉选项在 V2 规格 .options 字段，
+    //      default/min/max 等在规格顶层 —— 不识别此格式会导致下拉列表为空
+    let values = [];
+    let opts = {};
+    if (Array.isArray(inputData)) {
+        if (Array.isArray(inputData[0])) {
+            values = inputData[0];
+            opts = inputData[1] || {};
+        } else if (inputData[1] && typeof inputData[1] === 'object') {
+            // [widgetType, V2规格]：values 在规格 .options（或 .values）
+            const spec = inputData[1];
+            if (Array.isArray(spec.options)) { values = spec.options; }
+            else if (Array.isArray(spec.values)) { values = spec.values; }
+            opts = spec;
+        } else if (Array.isArray(inputData.values)) {
+            values = inputData.values;
+            opts = inputData;
+        }
+    } else if (inputData && typeof inputData === 'object') {
+        if (Array.isArray(inputData.options)) values = inputData.options;
+        else if (Array.isArray(inputData.values)) values = inputData.values;
+        opts = inputData;
+    }
     const w = {
         name: inputName,
         type: 'xzg_combo',
@@ -1150,7 +1190,10 @@ async function refreshVideoCombo(videoWidget, selectName) {
     } catch (_) {}
 }
 
-export function bindVideoLoaderInteractions(node, isLM = false) {
+export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
+    // 「从快剪加载」悬浮按钮：仅化神级保留（默认启用）；
+    // 视频加载器/低内存版传入 { fastcut: false } 不创建
+    const _fastcutEnabled = opts?.fastcut !== false;
     node.resizable = true;
     node.minWidth = 300;
     node.minHeight = 500;
@@ -1226,36 +1269,42 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
     uploadOverlay.appendChild(uploadPct);
     playerContainer.appendChild(uploadOverlay);
 
-    // 快剪联动按钮：点击后静默导出快剪时间线，自动加载到当前节点
-    const fastcutBtn = document.createElement("button");
-    fastcutBtn.title = "静默导出快剪编辑器的时间线内容并加载到当前节点";
-    fastcutBtn.style.cssText =
-        "position:absolute;top:6px;right:6px;z-index:102;" +
-        "display:inline-flex;align-items:center;gap:4px;" +
-        "padding:2px 6px;font-size:11px;line-height:1;" +
-        "background:transparent;color:#dcc85b;border:none;" +
-        "cursor:pointer;pointer-events:auto;" +
-        "transition:color 0.15s,opacity 0.2s;" +
-        "opacity:0;";
-    fastcutBtn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从快剪加载</span>';
-    playerContainer.appendChild(fastcutBtn);
+    // 快剪联动按钮：点击后静默导出快剪时间线，自动加载到当前节点。
+    // 仅化神级保留（默认创建）；视频加载器/低内存版不创建（{ fastcut: false }）
+    let fastcutBtn = null;
+    if (_fastcutEnabled) {
+        fastcutBtn = document.createElement("button");
+        fastcutBtn.title = "静默导出快剪编辑器的时间线内容并加载到当前节点";
+        fastcutBtn.style.cssText =
+            "position:absolute;top:6px;right:6px;z-index:102;" +
+            "display:inline-flex;align-items:center;gap:4px;" +
+            "padding:2px 6px;font-size:11px;line-height:1;" +
+            "background:transparent;color:#dcc85b;border:none;" +
+            "cursor:pointer;pointer-events:auto;" +
+            "transition:color 0.15s,opacity 0.2s;" +
+            "opacity:0;";
+        fastcutBtn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从快剪加载</span>';
+        playerContainer.appendChild(fastcutBtn);
+    }
 
     // 暴露预览区容器与快剪按钮，供派生节点（如达芬奇导入节点）在浏览区内追加/并排按钮
     node._xzgPreviewContainer = playerContainer;
     node._xzgFastcutBtn = fastcutBtn;
 
-    // 鼠标进入预览区时显示按钮，离开时隐藏
-    // playerContainer 本身 pointer-events:none，通过子元素冒泡的 mouseover/mouseout 监听
-    playerContainer.addEventListener("mouseover", () => {
-        fastcutBtn.style.opacity = "1";
-    });
-    playerContainer.addEventListener("mouseout", (e) => {
-        // 只有当鼠标真正离开预览区时才隐藏
-        // 导入过程中保持可见，让用户看到进度反馈
-        if (!playerContainer.contains(e.relatedTarget) && !fastcutBtn.disabled) {
-            fastcutBtn.style.opacity = "0";
-        }
-    });
+    if (fastcutBtn) {
+        // 鼠标进入预览区时显示按钮，离开时隐藏
+        // playerContainer 本身 pointer-events:none，通过子元素冒泡的 mouseover/mouseout 监听
+        playerContainer.addEventListener("mouseover", () => {
+            fastcutBtn.style.opacity = "1";
+        });
+        playerContainer.addEventListener("mouseout", (e) => {
+            // 只有当鼠标真正离开预览区时才隐藏
+            // 导入过程中保持可见，让用户看到进度反馈
+            if (!playerContainer.contains(e.relatedTarget) && !fastcutBtn.disabled) {
+                fastcutBtn.style.opacity = "0";
+            }
+        });
+    }
 
     // wheel 事件转发：悬浮在从快剪加载按钮/上传遮罩等覆盖层上时，
     // 滚轮仍能触发布局缩放（与 video player 内部 _forwardWheel 保持一致）
@@ -1376,6 +1425,9 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
     //   import 的 api 不同的实例，导致预览不加载）
     let _loadPreviewFromOutput = null;
     let updateWidgetBounds = null;
+    // 预览视频覆盖标志：bind 作用域共享（setTimeout 闭包 / processDrop /
+    // 内存模式切换 _xzgSetVideoLoaderMode 都会读写，必须同源）
+    let _isPreviewLoaded = false;
 
     // "比例模式"（裁剪/拉伸/留边）→ 播放器画面适配模式
     // 留边(letterbox) → contain：预览区直接显示完整画面+黑边（surface 背景 #000），
@@ -1392,13 +1444,16 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
         player.setFitMode(_ratioModeToFit());
     };
 
-    const player = new XiaozhuguangVideoPlayer({
+    let player = null;
+    const _lmNow = () => (typeof isLM === "function" ? !!isLM() : !!isLM);
+    const _createPlayer = () => {
+        player = new XiaozhuguangVideoPlayer({
         container: playerContainer,
         fit: _ratioModeToFit(),
         onDblClick: triggerUpload,
-        // 低内存版（小珠光视频加载低内存版）：B2 LRU 解码器池 / B3 流式打开。
+        // 低内存模式（小珠光视频加载低内存版/化神级内存模式）：B2 LRU 解码器池 / B3 流式打开。
         // 音频维持与原版一致的整段解码（音频 PCM 占比小，流式调度反而引入断续风险）
-        ...(isLM ? { decoderPool: lmDecoderPool, streamSource: true } : {}),
+        ...(_lmNow() ? { decoderPool: lmDecoderPool, streamSource: true } : {}),
         onLoadedMetadata: () => {
             // 上传流程触发的加载完成 → 关闭"正在加载视频"遮罩
             if (_uploadLoadingActive) {
@@ -1456,7 +1511,36 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             }
         },
     });
-    node._xzgVideoPlayer = player;
+        node._xzgVideoPlayer = player;
+        // load 包装（记录 _currentFile 等）必须随播放器实例一起重装：
+        // 内存模式切换会销毁重建播放器，只包装初始实例会导致重建后失效
+        _installPlayerLoadHook();
+    };
+    _createPlayer();
+
+    // 动态内存模式（化神级「内存模式」widget 切换用）：
+    // decoderPool/streamSource 是构造参数，运行中不可改，必须销毁重建播放器并重载当前视频。
+    if (typeof isLM === "function") {
+        // 记录上次构建时的模式：widget 值在 callback 触发前已更新，
+        // 不能用 _lmNow() 与新值比较（始终相等会直接 return 不重建）
+        let _lastBuiltLm = _lmNow();
+        node._xzgSetVideoLoaderMode = (lm) => {
+            if (_lastBuiltLm === !!lm) return;
+            _lastBuiltLm = !!lm;
+            const vw = node.widgets?.find((w) => w.name === "视频");
+            const url = vw?.value ? getVideoUrl(vw.value) : "";
+            try { player?.destroy?.(); } catch (_e) {}
+            _isPreviewLoaded = false;
+            _createPlayer();
+            if (url) {
+                requestAnimationFrame(() => {
+                    player.setPreviewLoaded(false);
+                    player.load(url);
+                });
+            }
+            node.setDirtyCanvas?.(true, true);
+        };
+    }
 
     // 片段窗口（秒）→ 全片帧坐标换算：批处理逐段执行时后端返回 segment_start/segment_end，
     // 红杠=段起点帧位置，蓝杠=段终点帧位置，播放条始终显示全片（分母=源总帧数）。
@@ -1625,9 +1709,13 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
     uploadBtn.options.serialize = false;
 
     // 拦截 player.load 自动存储当前文件名（用于序列化恢复）
-    player._currentFile = "";
-    const _origPlayerLoad = player.load.bind(player);
-    player.load = function (url) {
+    // 定义为函数（bind 作用域内声明提升）：每次 _createPlayer 重建播放器后重装
+    function _installPlayerLoadHook() {
+        if (!player || player._xzgLoadHooked) return;
+        player._xzgLoadHooked = true;
+        player._currentFile = "";
+        const _origPlayerLoad = player.load.bind(player);
+        player.load = function (url) {
         if (url) {
             try {
                 const p = new URL(url, location.origin);
@@ -1653,6 +1741,7 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
         }
         return _origPlayerLoad(url);
     };
+    }
 
     // 换新视频后（上传/下拉切换/快剪加载）重算预览比例：
     // - 视频比例为预设比例（16:9 等）→ 照常应用预设
@@ -1949,7 +2038,8 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             }
         }
 
-        // 快剪联动按钮：静默导出快剪时间线 → 自动加载到当前节点
+        // 快剪联动按钮：静默导出快剪时间线 → 自动加载到当前节点（仅化神级保留）
+        if (fastcutBtn) {
         const _fastcutOriginalText = "从快剪加载";
         // 只更新文字 span，保留前面的 🎬 图标
         const _setFastcutText = (text) => {
@@ -2040,6 +2130,7 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
                 }, 2000);
             }
         };
+        }
         // 同步强制帧率到播放器
         const fpsWidget = node.widgets?.find(w => w.name === "强制帧率");
         // 帧率变化时更新label（包括播放器初始化和自动检测）
@@ -2078,7 +2169,9 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
         //   播放条总帧数恢复为原视频总帧数，已有 setCustomSize/setLoadRange
         //   机制会自动应用当前参数进行渲染。
         // ═══════════════════════════════════════════════════════════════════
-        let _isPreviewLoaded = false;
+        // _isPreviewLoaded 声明提升至 bind 作用域（见 let _loadPreviewFromOutput 处）：
+        // processDrop 与内存模式切换 _xzgSetVideoLoaderMode 也在 bind 作用域写入该标志，
+        // 原先只在 setTimeout 闭包内声明，跨作用域写入会抛 ReferenceError
 
         const _resetToSourceVideo = () => {
             if (!_isPreviewLoaded) return;
@@ -2300,6 +2393,10 @@ export function bindVideoLoaderInteractions(node, isLM = false) {
             limitWidget.callback = function (value) {
                 origLimitCb?.apply(this, arguments);
                 updateFrameLimitLabel();
+                // 蓝杠拖动中：播放器 _showFrameAtSourceFrame 已实时 seek 截止画面，
+                // 此时 _syncLoadRange 会 _resetToSourceVideo 重新加载原视频，覆盖实时预览
+                // （表现为画面不跟蓝杠/不断重载）。松手后（isDraggingMarker=false）正常重置。
+                if (player._isDraggingMarker && player._draggingMarkerType === 'end') return;
                 _syncLoadRange();
             };
         }
@@ -2535,7 +2632,8 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = origOnNodeCreated?.apply(this, arguments);
-                bindVideoLoaderInteractions(this, isLM);
+                // 「从快剪加载」仅化神级保留：视频加载器/低内存版不创建该按钮
+                bindVideoLoaderInteractions(this, isLM, { fastcut: false });
                 _xzgPatchCanvasPrompt();
                 _applyWidgetStyles(this);
                 if (this.outputs) {

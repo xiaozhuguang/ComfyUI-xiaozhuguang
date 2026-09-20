@@ -710,9 +710,13 @@ const XZGGroup = {
             if (self._needRestore && self._pendingGroups && app?.graph?._nodes?.length) {
                 self.restoreGroups();
             }
-            // 注意：updatePositions 只在 onDrawBackground（canvas 渲染帧）内调用，
-            // 让编组框“边框/标题栏”等 DOM 与背景、节点在同一帧、同一 scale 更新，
-            // 消除“DOM 提前缩放、canvas 后追”的不同步。边框动效仍由该渲染帧驱动。
+            // 几何同步：updatePositions 原本只在 onDrawBackground（canvas 渲染帧）内调用，
+            // 让编组框DOM与背景、节点在同一帧、同一 scale 更新，消除缩放不同步。
+            // 但新版 ComfyUI 前端画布静止时不再重绘，onDrawBackground 不被调用，
+            // 边框特效动画随之冻结（表现为必须晃动画布才有动画）。
+            // 故本循环检测到有编组开启特效时逐帧补调 updatePositions 驱动动画，
+            // 无特效时零额外开销。
+            if (self._hasActiveEffect()) self.updatePositions();
             // 画布移动隐藏/渐入检测
             self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
@@ -722,6 +726,14 @@ const XZGGroup = {
 
         // 立即响应画布缩放/平移，消除渲染延迟
         this._setupImmediateSync();
+    },
+
+    /** 是否有编组开启了边框动画特效（彩虹/脉冲/流光/流光呼吸/发光，未被绕过） */
+    _hasActiveEffect() {
+        for (const g of Object.values(this.groups)) {
+            if (g && !g.bypassed && g.effect && g.effect !== 'none') return true;
+        }
+        return false;
     },
 
     /* ── 立即同步：消除画布缩放时编组框的渲染延迟 ── */
@@ -1017,6 +1029,23 @@ const XZGGroup = {
                 if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${s}%,${l}%,${bo})`);
                 if (refs.title) refs.title.style.color = `hsla(${h},${s}%,${l}%,0.85)`;
                 updateIndicators(h, s, l, bo);
+                break;
+            }
+            case 'glowbreathe': {
+                // 辉光+明暗呼吸：边框/文字/竖杠按 pulse（呼吸）节律明暗，
+                // 辉光阴影三层随同一呼吸值强弱变化（内圈保留基础辉光，谷值不完全消失）
+                const t = (Date.now() / 2000) * spd;
+                const a = Math.abs(Math.sin(t));
+                const h = g.colorHue ?? 48;
+                const s = g.colorSat ?? 100;
+                const l = g.colorLit ?? 55;
+                el.style.borderImage = 'none';
+                el.style.border = `${bw}px solid hsla(${h},${s}%,${l}%,${a.toFixed(2)})`;
+                el.style.boxShadow = `0 0 3px hsla(${h},${s}%,${l}%,${(0.5+a*0.5).toFixed(2)}), 0 0 12px hsla(${h},${s}%,${l}%,${a.toFixed(2)}), 0 0 35px hsla(${h},${s}%,${l}%,${(a*0.5).toFixed(2)})`;
+                if (refs.delBtn) refs.delBtn.style.color = `hsla(${h},${s}%,${l}%,${a.toFixed(2)})`;
+                if (refs.rpath) refs.rpath.setAttribute('stroke', `hsla(${h},${s}%,${l}%,${(0.3+a*0.7).toFixed(2)})`);
+                if (refs.title) refs.title.style.color = `hsla(${h},${s}%,${l}%,${a.toFixed(2)})`;
+                updateIndicators(h, s, l, a);
                 break;
             }
             default:
@@ -1981,6 +2010,7 @@ const XZGGroup = {
                         <option value="rainbow" ${group.effect==='rainbow'?'selected':''}>渐变彩虹</option>
                         <option value="pulse" ${group.effect==='pulse'?'selected':''}>明暗呼吸</option>
                         <option value="glow" ${group.effect==='glow'?'selected':''}>辉光</option>
+                        <option value="glowbreathe" ${group.effect==='glowbreathe'?'selected':''}>辉光+明暗呼吸</option>
                         <option value="marquee" ${group.effect==='marquee'?'selected':''}>流光溢彩</option>
                         <option value="marqueebreathe" ${group.effect==='marqueebreathe'?'selected':''}>流光溢彩+明暗呼吸</option>
                     </select>

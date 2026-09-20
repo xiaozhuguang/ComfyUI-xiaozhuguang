@@ -659,11 +659,10 @@ class XzgAudioWaveformViewer {
         // 音量显示（左上角）+ 时间码（紧邻音量右侧）
         const volText = `音量${Math.round(this.volume * 100)}`;
         const timeStartX = pad + 2;
-        const hintText = '单击音频轨道播放/双击音量线重置/拖动播放头移动位置';
         if (this.duration > 0 && this._saveUrl) {
             // 音量文字
             ctx.fillStyle = 'rgba(255,255,255,0.8)';
-            ctx.font = '6px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
             ctx.fillText(volText, timeStartX, widgetY + 3);
@@ -674,25 +673,21 @@ class XzgAudioWaveformViewer {
             const timeStr = `${curStr} / ${durStr}`;
             const timeX = timeStartX + volTextW + 6;
             ctx.fillStyle = 'rgba(255,255,255,0.7)';
-            ctx.font = '6px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.fillText(timeStr, timeX, widgetY + 3);
             const timeW = ctx.measureText(timeStr).width;
             // 循环/单次播放图标（时间码后面，高度对齐，金色小符号）
             const loopSym = this._loopPlayback ? '⇆' : '→';
             const loopX = timeX + timeW + 8;
             ctx.fillStyle = '#FFD700';
-            ctx.font = '7px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.fillText(loopSym, loopX, widgetY + 2);
             const loopW = ctx.measureText(loopSym).width;
-            this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 10 };
-            // 小字注释（循环图标右侧）
-            ctx.fillStyle = 'rgba(255,255,255,0.35)';
-            ctx.font = '5px sans-serif';
-            ctx.fillText(hintText, loopX + loopW + 6, widgetY + 4);
+            this._loopBtn = { x: loopX - 3, y: widgetY + 1, w: loopW + 6, h: 18 };
         } else if (this.duration > 0) {
-            // 无音频URL时显示音量+总时长，注释同样显示
+            // 无音频URL时显示音量+总时长
             ctx.fillStyle = 'rgba(255,255,255,0.8)';
-            ctx.font = '6px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
             ctx.fillText(volText, timeStartX, widgetY + 3);
@@ -701,17 +696,13 @@ class XzgAudioWaveformViewer {
             const timeX = timeStartX + volTextW + 6;
             ctx.fillStyle = 'rgba(255,255,255,0.6)';
             ctx.fillText(timeStr, timeX, widgetY + 3);
-            const timeW = ctx.measureText(timeStr).width;
-            ctx.fillStyle = 'rgba(255,255,255,0.35)';
-            ctx.font = '5px sans-serif';
-            ctx.fillText(hintText, timeX + timeW + 6, widgetY + 4);
         }
 
         // 采样率文字（右下角）
         if (this.sampleRate > 0) {
             const srText = this._formatSampleRate(this.sampleRate);
             ctx.fillStyle = 'rgba(255,255,255,0.4)';
-            ctx.font = '6px sans-serif';
+            ctx.font = '12px sans-serif';
             ctx.textAlign = 'right';
             ctx.textBaseline = 'bottom';
             ctx.fillText(srText, w - pad - 2, widgetY + h - 3);
@@ -961,13 +952,13 @@ class XzgAudioWaveformViewer {
 // 音频保存节点前端注册
 // ═══════════════════════════════════════════════════════════════════════
 
-const XZG_AUDIO_SAVE_TYPE = "XiaozhuguangAudioSave";
+const XZG_AUDIO_SAVE_TYPES = new Set(["XiaozhuguangAudioSave", "XiaozhuguangAudioSaveDaVinci"]);
 
 // 判断 canvas 坐标是否命中某个音频保存节点的波形区域（命中返回 node，否则 null）
 function _xzgAudioSaveHitWaveform(canvasX, canvasY) {
     const nodes = app.graph?.nodes || [];
     for (const n of nodes) {
-        if (n.type !== XZG_AUDIO_SAVE_TYPE) continue;
+        if (!XZG_AUDIO_SAVE_TYPES.has(n.type)) continue;
         const viewer = n._xzgWaveformViewer;
         if (!viewer || !viewer._saveUrl) continue;
         const nx = n.pos[0], ny = n.pos[1];
@@ -1084,7 +1075,7 @@ app.registerExtension({
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData?.name !== XZG_AUDIO_SAVE_TYPE) return;
+        if (!XZG_AUDIO_SAVE_TYPES.has(nodeData?.name)) return;
 
         // 给 INT/FLOAT widget 设置自定义类型
         for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
@@ -1117,7 +1108,7 @@ app.registerExtension({
                     if (!saveUrl || !savedFilename) return;
                     const fmtWidget = node.widgets?.find(w => w.name === '格式');
                     const fmtVal = fmtWidget ? String(fmtWidget.value) : 'mp3';
-                    _xzgShowSaveMenu(cx, cy, saveUrl, savedFilename, fmtVal, savedType, savedSubfolder);
+                    _xzgShowSaveMenu(cx, cy, saveUrl, savedFilename, fmtVal, savedType, savedSubfolder, node);
                 },
                 onVolumeChange(vol) {
                     const volWidget = node.widgets?.find(w => w.name === '音量');
@@ -1127,6 +1118,25 @@ app.registerExtension({
                 },
             });
             node._xzgWaveformViewer = waveformViewer;
+
+            // 「发送到快剪」「导出到达芬奇」悬浮按钮仅化神级节点创建；
+            // 精简版（XiaozhuguangAudioSave）无此高级功能，不创建按钮
+            if (node.type === "XiaozhuguangAudioSaveDaVinci") {
+                // 波纹区悬浮「发送到快剪」按钮（♪ 图标=自动发送开关，文字=手动发送）
+                _createQuickCutFloatButton(node, waveformViewer, () => ({
+                    filename: savedFilename,
+                    type: savedType,
+                    subfolder: savedSubfolder,
+                }));
+
+                // 波纹区悬浮「导出到达芬奇」按钮（🎬 图标=自动导出开关，文字=手动导出），
+                // 贴波纹区右缘（最右），「发送到快剪」在其左侧；getSavedInfo 共用
+                _createDavinciFloatButton(node, waveformViewer, () => ({
+                    filename: savedFilename,
+                    type: savedType,
+                    subfolder: savedSubfolder,
+                }));
+            }
 
             // 波形 canvas widget（直接在节点画布上绘制，与加载器一致的自适应高度）
             const waveformWidget = {
@@ -1148,6 +1158,10 @@ app.registerExtension({
                         node.size[1] = targetH;
                         node.setDirtyCanvas?.(true, true);
                     }
+                    // 悬浮「发送到快剪」「导出到达芬奇」按钮跟随波纹区屏幕位置
+                    // （平移/缩放/拖动节点时同步；快剪按钮先同步，达芬奇按钮以其为左移基准）
+                    node._xzgDvSyncBtn?.();
+                    node._xzgQcSyncBtn?.();
                 },
                 mouse: function(event, [x, y], node) {
                     return waveformViewer.handleMouse(event, x, y);
@@ -1344,6 +1358,14 @@ app.registerExtension({
                     const initVol = Math.max(0, Math.min(3.0, Number(w.value) || 1.0));
                     w.value = initVol;
                     waveformViewer.volume = initVol;
+                } else if (w.name === '自动发送到快剪' || w.name === '自动导出到达芬奇') {
+                    // 隐藏开关行（与视频保存-化神级一致）：交互入口在悬浮按钮图标上
+                    // （自动发送=♪ 图标 / 自动导出=🎬 图标），widget 仅保留 value 随工作流
+                    // 序列化；标准隐藏手法 converted-widget 仍参与序列化，computeSize 折叠不占高度
+                    w.type = "converted-widget";
+                    w.computeSize = () => [0, -4];
+                    w.hidden = true;
+                    w._xzgHidden = true;
                 }
             }
 
@@ -1418,6 +1440,21 @@ app.registerExtension({
                         volW2.value = 1.0;
                     }
 
+                    // 自动发送到快剪：开关开启且为保存模式（output）时，把音频加入快剪媒体库
+                    // （预览 temp 文件会被 ComfyUI 清理，不入库；手动发送入口在右键菜单）
+                    const autoQcW = node.widgets?.find(w => w.name === '自动发送到快剪');
+                    if (autoQcW && autoQcW.value && info.type === 'output') {
+                        try { _xzgAudioSendQuickCut(info.filename, info.subfolder || ''); } catch (e) {}
+                    }
+
+                    // 自动导出到达芬奇：开关开启且为保存模式（output）时，把音频导入达芬奇
+                    // （与视频保存-化神级一致：仅保存模式有真实磁盘文件；后端已按同名开关
+                    //  自动导出并回传 davinci 结果 —— 若 ui 里带 davinci 信息则跳过前端重复导出）
+                    const autoDvW = node.widgets?.find(w => w.name === '自动导出到达芬奇');
+                    if (autoDvW && autoDvW.value && info.type === 'output' && !info.davinci) {
+                        try { _xzgAudioExportDavinci(info.filename, info.subfolder || ''); } catch (e) {}
+                    }
+
                     node.setDirtyCanvas(true, true);
                 }
             };
@@ -1428,6 +1465,9 @@ app.registerExtension({
                 origOnConfigure?.apply(this, arguments);
                 requestAnimationFrame(() => {
                     node.onResize?.(node.size);
+                    // 工作流加载后同步自动发送/自动导出开关图标状态（widget 值此时才恢复）
+                    node._xzgQcRenderAuto?.();
+                    node._xzgDvRenderAuto?.();
 
                     // 从 widget value 恢复波形数据（刷新/加载工作流后）
                     if (waveformWidget && waveformWidget.value && typeof waveformWidget.value === 'string') {
@@ -1576,7 +1616,344 @@ function _xzgSendToAudioLoader(annotatedName) {
 }
 
 
-function _xzgShowSaveMenu(cx, cy, url, filename, formatVal, type, subfolder) {
+// ═══════════════════════════════════════════════════════════════════════
+// 发送到快剪媒体库（与视频保存-化神级的「发送到快剪」联动同一入口）：
+// 快剪已打开 → 媒体库 + A1 音乐轨追加；未打开 → 仅加入媒体库（下次打开可见）
+// ═══════════════════════════════════════════════════════════════════════
+
+function _xzgToast(msg, isError = false) {
+    const el = document.createElement("div");
+    el.style.cssText =
+        "position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:1000002;" +
+        "padding:8px 16px;border-radius:6px;font-size:13px;color:#fff;" +
+        "box-shadow:0 4px 16px rgba(0,0,0,.4);pointer-events:none;opacity:0;" +
+        "transition:opacity .25s;max-width:80vw;word-break:break-all;";
+    el.style.background = isError ? "rgba(198,40,40,.95)" : "rgba(30,30,30,.95)";
+    if (isError) el.style.border = "1px solid #ef9a9a";
+    el.textContent = msg;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => {
+        el.style.opacity = "1";
+        setTimeout(() => {
+            el.style.opacity = "0";
+            setTimeout(() => el.remove(), 260);
+        }, 3000);
+    });
+}
+
+function _xzgAudioSendQuickCut(filename, subfolder) {
+    if (!filename) return;
+    if (typeof window._xzgVideoEditorReceiveMedia !== "function") {
+        _xzgToast("[发送到快剪] 快剪模块未加载，请刷新页面。", true);
+        return;
+    }
+    // 带子目录时拼完整相对路径（sub/a.mp3），编辑器内部会拆分为 subfolder + filename
+    const name = subfolder ? subfolder + "/" + filename : filename;
+    Promise.resolve(window._xzgVideoEditorReceiveMedia(name, "output"))
+        .then(() => {
+            _xzgToast("已加入快剪媒体库（打开快剪即可拖入轨道使用）");
+        })
+        .catch((e) => {
+            _xzgToast("[发送到快剪] " + String(e), true);
+        });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 导出到达芬奇（与视频保存-化神级同一后端桥接，action=import_audio）：
+// ImportMedia 进媒体池 + 复用空白音频轨道/无则新建 + 对齐播放头片段前端
+// ═══════════════════════════════════════════════════════════════════════
+async function _xzgAudioExportDavinci(filename, subfolder, opts = {}) {
+    if (!filename) return;
+    const btn = opts.btn, labelSpan = opts.labelSpan, label = opts.label || "导出到达芬奇";
+    if (btn) btn.disabled = true;
+    if (labelSpan) labelSpan.textContent = "正在导出…";
+    try {
+        const resp = await api.fetchApi("/xzg/davinci/audio-save-import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename, subfolder: subfolder || "" }),
+        });
+        const data = await resp.json();
+        if (!data?.ok) {
+            _xzgToast("[导出到达芬奇] " + (data?.error || "导入失败"), true);
+            return;
+        }
+        const clip = data.clip ? `「${data.clip}」` : "";
+        const track = data.track != null ? `A${data.track}` : "";
+        _xzgToast(`已导出至达芬奇${clip} ${track} ${data.record_frame != null ? `@帧${data.record_frame}` : ""}`.trim());
+    } catch (e) {
+        _xzgToast("[导出到达芬奇] " + String(e), true);
+    } finally {
+        if (btn) btn.disabled = false;
+        if (labelSpan) labelSpan.textContent = label;
+    }
+}
+
+// 音符 SVG（stroke=currentColor 可随 CSS 变色，用于自动发送开关状态色）
+const _MUSIC_SVG =
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+    'style="display:block">' +
+    '<path d="M9 18V5l12-2v13"/>' +
+    '<circle cx="6" cy="18" r="3"/>' +
+    '<circle cx="18" cy="16" r="3"/>' +
+    '</svg>';
+
+// 场记板 SVG（与视频保存-化神级「导出到达芬奇」同款，stroke=currentColor 可染色）
+const _CLAPPER_SVG =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+    'style="display:block">' +
+    '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/>' +
+    '<path d="m6.2 5.3 3.1 3.9"/>' +
+    '<path d="m12.4 3.4 3.1 4"/>' +
+    '<path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
+    '</svg>';
+
+// ═══════════════════════════════════════════════════════════════════════
+// 波纹区悬浮「发送到快剪」按钮（与视频保存-化神级的悬浮按钮同款交互）：
+//   ♪ 图标 = 自动发送开关（开=金色 / 关=灰色），文字 = 手动发送。
+// 波形是画布直绘（无 DOM 容器），按钮位置由波形 widget 绘制帧同步：
+// 用节点 pos + 画布 ds 变换把波纹区换算到屏幕坐标，按钮贴波纹区右上角内侧；
+// 鼠标悬停波纹区显示、离开隐藏。
+// ═══════════════════════════════════════════════════════════════════════
+function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo) {
+    if (node._xzgQcFloatBtn) return node._xzgQcFloatBtn;
+
+    const btn = document.createElement("button");
+    btn.title = "发送到快剪媒体库（打开快剪后可手动拖入轨道使用）";
+    btn.style.cssText =
+        "position:fixed;z-index:100001;" +
+        "display:inline-flex;align-items:center;gap:5px;" +
+        "padding:2px 8px;font-size:12px;line-height:1;" +
+        "background:transparent;color:#FFD700;border:none;" +
+        "cursor:pointer;pointer-events:auto;" +
+        "transition:color 0.15s,opacity 0.2s;opacity:0;" +
+        "text-shadow:0 1px 2px rgba(0,0,0,.8);";
+    btn.innerHTML = `<span style="display:inline-flex;cursor:pointer;color:#6b7280;">${_MUSIC_SVG}</span><span>发送到快剪</span>`;
+    document.body.appendChild(btn);
+    const iconSpan = btn.querySelector("span:first-child");
+    const labelSpan = btn.querySelector("span:last-child");
+
+    // ♪ 图标 = 自动发送开关（开关本体是隐藏的 BOOLEAN widget，随工作流序列化）
+    const autoWidget = () => (node.widgets || []).find(w => w.name === "自动发送到快剪");
+    const renderAuto = () => {
+        const w = autoWidget();
+        const on = !!(w && w.value);
+        iconSpan.style.color = on ? "#FFD700" : "#6b7280";
+        iconSpan.title = on
+            ? "自动发送：开（保存完成自动加入快剪媒体库；点击关闭）"
+            : "自动发送：关（点击开启，保存完成后自动加入快剪媒体库）";
+    };
+    renderAuto();
+    iconSpan.addEventListener("pointerdown", (e) => e.stopPropagation());
+    iconSpan.onclick = (e) => {
+        e.stopPropagation(); // 只切开关，不触发手动发送
+        const w = autoWidget();
+        if (!w) return;
+        w.value = !w.value;
+        renderAuto();
+        _xzgToast(w.value ? "已开启自动发送到快剪" : "已关闭自动发送到快剪");
+    };
+
+    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
+    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#FFD700"; });
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.onclick = (e) => {
+        if (e.target === iconSpan || iconSpan.contains(e.target)) return; // 图标只切开关
+        const info = getSavedInfo ? getSavedInfo() : null;
+        if (!info || !info.filename || info.type !== "output") {
+            _xzgToast("[发送到快剪] 还没有已保存的音频，请先执行一次「保存」模式。", true);
+            return;
+        }
+        _xzgAudioSendQuickCut(info.filename, info.subfolder || "");
+    };
+
+    // 位置同步：波纹区节点本地坐标（waveformViewer._drawY/_drawW/_drawH，绘制帧更新）
+    //   → 屏幕坐标（节点 pos + 画布 ds 缩放/平移），按钮贴波纹区右上角内侧
+    const _lastMouse = { x: -1, y: -1 };
+    let _hoverRect = null;
+    const onMove = (e) => { _lastMouse.x = e.clientX; _lastMouse.y = e.clientY; };
+    document.addEventListener("pointermove", onMove, true);
+
+    const syncBtn = () => {
+        try {
+            const canvas = app?.canvas;
+            const cv = canvas?.canvas;
+            const ds = canvas?.ds;
+            const npos = node.pos, nsize = node.size;
+            const drawW = waveformViewer._drawW || 0;
+            const drawH = waveformViewer._drawH || 0;
+            if (!cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
+                _hoverRect = null;
+                btn.style.opacity = "0";
+                return;
+            }
+            const rect = cv.getBoundingClientRect();
+            const scale = ds.scale || 1;
+            const x0 = (npos[0] + ds.offset[0]) * scale + rect.left;
+            const y0 = (npos[1] + ds.offset[1] + waveformViewer._drawY) * scale + rect.top;
+            const w = drawW * scale, h = drawH * scale;
+            _hoverRect = { x: x0, y: y0, w, h };
+            // 字体/尺寸随画布缩放：transform 整体缩放（固定 11px 字号在缩小画布时会显得过大）。
+            // 锚定用 top left：视觉盒 = left..left+bw*s（transform 不改变 offsetWidth），
+            // left 显式扣掉缩放后宽度 → 视觉右缘恒定 = 节点右缘 - 10*scale，
+            // 任意 zoom 下按钮相对波纹区的位置与大小都稳定
+            const s = scale; // 完全跟随画布缩放（不再夹取区间）
+            btn.style.transformOrigin = "top left";
+            btn.style.transform = `scale(${s})`;
+            const bw = btn.offsetWidth || 90;
+            // 左移基准：达芬奇按钮的 left（其 sync 在本帧已先执行，贴右缘）；兜底自算右缘
+            const dv = node._xzgDvFloatBtn;
+            let dvLeft = dv ? parseFloat(dv.style.left) : NaN;
+            if (!isFinite(dvLeft)) dvLeft = x0 + w - 10 * scale - (dv?.offsetWidth || 90) * s;
+            btn.style.left = Math.round(dvLeft - 6 * scale - bw * s) + "px";
+            // 垂直对齐：与加载器音轨顶栏文字一致（波纹区顶部 + 2px，节点本地坐标）。
+            // 按钮文字视觉顶 = top + 上内边距(2px)*s，故 top = y0 + 2*scale - 2*s
+            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
+            // 悬停波纹区显示、离开隐藏（节点在视口外时不显示）
+            const inside = _lastMouse.x >= x0 && _lastMouse.x <= x0 + w &&
+                           _lastMouse.y >= y0 && _lastMouse.y <= y0 + h &&
+                           x0 + w > rect.left && x0 < rect.right &&
+                           y0 + h > rect.top && y0 < rect.bottom;
+            const overBtn = btn.matches(":hover");
+            btn.style.opacity = (inside || overBtn) ? "1" : "0";
+        } catch (e) { /* 画布未就绪等场景忽略 */ }
+    };
+    node._xzgQcSyncBtn = syncBtn;
+
+    // 节点移除时清理按钮与监听
+    const origOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        document.removeEventListener("pointermove", onMove, true);
+        try { btn.remove(); } catch (e) {}
+        node._xzgQcFloatBtn = null;
+        node._xzgQcSyncBtn = null;
+        return origOnRemoved?.apply(this, arguments);
+    };
+
+    node._xzgQcFloatBtn = btn;
+    node._xzgQcRenderAuto = renderAuto;
+    return btn;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 波纹区悬浮「导出到达芬奇」按钮（参考视频保存-化神级同款交互）：
+//   🎬 图标 = 自动导出开关（开=绿色 / 关=灰色），文字 = 手动导出。
+// 位置贴「发送到快剪」按钮左侧（顶栏右三），同步逻辑与快剪按钮一致
+// ═══════════════════════════════════════════════════════════════════════
+function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
+    if (node._xzgDvFloatBtn) return node._xzgDvFloatBtn;
+
+    const btn = document.createElement("button");
+    btn.title = "把当前节点保存的音频导入达芬奇（进媒体池 + 复用空白音频轨道/无则新建 + 对齐播放头片段前端）";
+    btn.style.cssText =
+        "position:fixed;z-index:100001;" +
+        "display:inline-flex;align-items:center;gap:5px;" +
+        "padding:2px 8px;font-size:12px;line-height:1;" +
+        "background:transparent;color:#3ef558;border:none;" +
+        "cursor:pointer;pointer-events:auto;" +
+        "transition:color 0.15s,opacity 0.2s;opacity:0;" +
+        "text-shadow:0 1px 2px rgba(0,0,0,.8);";
+    btn.innerHTML = `<span style="display:inline-flex;cursor:pointer;color:#6b7280;">${_CLAPPER_SVG}</span><span>导出到达芬奇</span>`;
+    document.body.appendChild(btn);
+    const iconSpan = btn.querySelector("span:first-child");
+    const labelSpan = btn.querySelector("span:last-child");
+
+    // 🎬 图标 = 自动导出开关（开关本体是隐藏的 BOOLEAN widget，随工作流序列化）
+    const autoWidget = () => (node.widgets || []).find(w => w.name === "自动导出到达芬奇");
+    const renderAuto = () => {
+        const w = autoWidget();
+        const on = !!(w && w.value);
+        iconSpan.style.color = on ? "#3ef558" : "#6b7280";
+        iconSpan.title = on
+            ? "自动导出：开（保存完成自动导入达芬奇；点击关闭）"
+            : "自动导出：关（点击开启，保存完成后自动导入达芬奇）";
+    };
+    iconSpan.onclick = (e) => {
+        e.stopPropagation(); // 只切开关，不触发手动导出
+        const w = autoWidget();
+        if (!w) return;
+        w.value = !w.value;
+        renderAuto();
+        _xzgToast(w.value ? "已开启自动导出到达芬奇" : "已关闭自动导出到达芬奇");
+    };
+
+    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
+    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#3ef558"; });
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.onclick = (e) => {
+        if (e.target === iconSpan || iconSpan.contains(e.target)) return; // 图标只切开关
+        const info = getSavedInfo ? getSavedInfo() : null;
+        if (!info || !info.filename || info.type !== "output") {
+            _xzgToast("[导出到达芬奇] 还没有已保存的音频，请先执行一次「保存」模式。", true);
+            return;
+        }
+        _xzgAudioExportDavinci(info.filename, info.subfolder || "", {
+            btn, labelSpan, label: "导出到达芬奇",
+        });
+    };
+
+    // 位置同步：与快剪按钮同一波纹区矩形，落在其左侧（预留 6px 间隙）
+    const _lastMouse = { x: -1, y: -1 };
+    let _hoverRect = null;
+    const onMove = (e) => { _lastMouse.x = e.clientX; _lastMouse.y = e.clientY; };
+    document.addEventListener("pointermove", onMove, true);
+
+    const syncBtn = () => {
+        try {
+            const canvas = app?.canvas;
+            const cv = canvas?.canvas;
+            const ds = canvas?.ds;
+            const npos = node.pos, nsize = node.size;
+            const drawW = waveformViewer._drawW || 0;
+            const drawH = waveformViewer._drawH || 0;
+            if (!cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
+                _hoverRect = null;
+                btn.style.opacity = "0";
+                return;
+            }
+            const rect = cv.getBoundingClientRect();
+            const scale = ds.scale || 1;
+            const x0 = (npos[0] + ds.offset[0]) * scale + rect.left;
+            const y0 = (npos[1] + ds.offset[1] + waveformViewer._drawY) * scale + rect.top;
+            const w = drawW * scale, h = drawH * scale;
+            _hoverRect = { x: x0, y: y0, w, h };
+            const s = scale; // 完全跟随画布缩放（不再夹取区间）
+            btn.style.transformOrigin = "top left";
+            btn.style.transform = `scale(${s})`;
+            const bw = btn.offsetWidth || 90;
+            // 达芬奇贴波纹区右缘（最右）：视觉右缘 = 节点右缘 - 10*scale
+            btn.style.left = Math.round(x0 + w - 10 * scale - bw * s) + "px";
+            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
+            // 悬停波纹区显示、离开隐藏（节点在视口外时不显示）
+            const inside = _lastMouse.x >= x0 && _lastMouse.x <= x0 + w &&
+                           _lastMouse.y >= y0 && _lastMouse.y <= y0 + h &&
+                           x0 + w > rect.left && x0 < rect.right &&
+                           y0 + h > rect.top && y0 < rect.bottom;
+            const overBtn = btn.matches(":hover");
+            btn.style.opacity = (inside || overBtn) ? "1" : "0";
+        } catch (e) { /* 画布未就绪等场景忽略 */ }
+    };
+    node._xzgDvSyncBtn = syncBtn;
+
+    // 节点移除时清理按钮与监听
+    const origOnRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        document.removeEventListener("pointermove", onMove, true);
+        try { btn.remove(); } catch (e) {}
+        node._xzgDvFloatBtn = null;
+        node._xzgDvSyncBtn = null;
+        return origOnRemoved?.apply(this, arguments);
+    };
+
+    node._xzgDvFloatBtn = btn;
+    node._xzgDvRenderAuto = renderAuto;
+    return btn;
+}
+
+
+function _xzgShowSaveMenu(cx, cy, url, filename, formatVal, type, subfolder, node) {
     const old = document.querySelector('.xzg-audio-save-menu');
     if (old) old.remove();
 
@@ -1641,6 +2018,89 @@ function _xzgShowSaveMenu(cx, cy, url, filename, formatVal, type, subfolder) {
         menu.appendChild(sendItem);
     }
 
+    // 发送到快剪媒体库（仅化神级 + 保存模式 output；temp 预览文件会被 ComfyUI 清理）
+    if (filename && type === "output" && node && node.type === "XiaozhuguangAudioSaveDaVinci") {
+        const qcSep = document.createElement('div');
+        qcSep.style.cssText = `height: 1px; background: #555; margin: 4px 0;`;
+        menu.appendChild(qcSep);
+
+        const qcItem = document.createElement('div');
+        qcItem.style.cssText = `padding: 6px 20px; cursor: pointer; font-size: 13px; color: #FFD700; background: transparent;`;
+        qcItem.innerHTML = `<span style="margin-right:6px;">♫</span>发送到快剪媒体库`;
+        qcItem.onmouseenter = () => { qcItem.style.background = '#444'; };
+        qcItem.onmouseleave = () => { qcItem.style.background = 'transparent'; };
+        qcItem.addEventListener('pointerdown', (e) => e.stopPropagation());
+        qcItem.onclick = (e) => {
+            e.stopPropagation();
+            menu.remove();
+            _xzgAudioSendQuickCut(filename, subfolder);
+        };
+        menu.appendChild(qcItem);
+
+        // 自动发送开关：开关本体是节点 widget（BOOLEAN，随工作流序列化），点击只切 widget.value
+        const autoW = node ? (node.widgets || []).find(w => w.name === "自动发送到快剪") : null;
+        if (autoW) {
+            const autoItem = document.createElement('div');
+            autoItem.style.cssText = `padding: 6px 20px; cursor: pointer; font-size: 13px; background: transparent;`;
+            const renderAuto = () => {
+                autoItem.innerHTML = `<span style="margin-right:6px;">${autoW.value ? '✓' : '○'}</span>保存后自动发送到快剪`;
+                autoItem.style.color = autoW.value ? '#3ef558' : '#888';
+            };
+            renderAuto();
+            autoItem.onmouseenter = () => { autoItem.style.background = '#444'; };
+            autoItem.onmouseleave = () => { autoItem.style.background = 'transparent'; };
+            autoItem.addEventListener('pointerdown', (e) => e.stopPropagation());
+            autoItem.onclick = (e) => {
+                e.stopPropagation();
+                autoW.value = !autoW.value;
+                renderAuto();
+                _xzgToast(autoW.value ? "已开启：保存完成后自动发送到快剪" : "已关闭自动发送到快剪");
+            };
+            menu.appendChild(autoItem);
+        }
+    }
+
+    // 导出到达芬奇（仅化神级 + 保存模式 output；temp 预览文件会被 ComfyUI 清理）
+    if (filename && type === "output" && node && node.type === "XiaozhuguangAudioSaveDaVinci") {
+        const dvSep = document.createElement('div');
+        dvSep.style.cssText = `height: 1px; background: #555; margin: 4px 0;`;
+        menu.appendChild(dvSep);
+
+        const dvItem = document.createElement('div');
+        dvItem.style.cssText = `padding: 6px 20px; cursor: pointer; font-size: 13px; color: #3ef558; background: transparent;`;
+        dvItem.innerHTML = `<span style="margin-right:6px;">🎬</span>导出到达芬奇`;
+        dvItem.onmouseenter = () => { dvItem.style.background = '#444'; };
+        dvItem.onmouseleave = () => { dvItem.style.background = 'transparent'; };
+        dvItem.addEventListener('pointerdown', (e) => e.stopPropagation());
+        dvItem.onclick = (e) => {
+            e.stopPropagation();
+            menu.remove();
+            _xzgAudioExportDavinci(filename, subfolder);
+        };
+        menu.appendChild(dvItem);
+
+        // 自动导出开关：开关本体是节点 widget（BOOLEAN，随工作流序列化），点击只切 widget.value
+        const dvAutoW = node ? (node.widgets || []).find(w => w.name === "自动导出到达芬奇") : null;
+        if (dvAutoW) {
+            const dvAutoItem = document.createElement('div');
+            dvAutoItem.style.cssText = `padding: 6px 20px; cursor: pointer; font-size: 13px; background: transparent;`;
+            const renderDvAuto = () => {
+                dvAutoItem.innerHTML = `<span style="margin-right:6px;">${dvAutoW.value ? '✓' : '○'}</span>保存后自动导出到达芬奇`;
+                dvAutoItem.style.color = dvAutoW.value ? '#3ef558' : '#888';
+            };
+            renderDvAuto();
+            dvAutoItem.onmouseenter = () => { dvAutoItem.style.background = '#444'; };
+            dvAutoItem.onmouseleave = () => { dvAutoItem.style.background = 'transparent'; };
+            dvAutoItem.addEventListener('pointerdown', (e) => e.stopPropagation());
+            dvAutoItem.onclick = (e) => {
+                e.stopPropagation();
+                dvAutoW.value = !dvAutoW.value;
+                renderDvAuto();
+                _xzgToast(dvAutoW.value ? "已开启：保存完成后自动导出到达芬奇" : "已关闭自动导出到达芬奇");
+            };
+            menu.appendChild(dvAutoItem);
+        }
+    }
     // 自动调整菜单位置（避免超出屏幕）
     document.body.appendChild(menu);
     
@@ -1689,4 +2149,3 @@ function _xzgPatchCanvasPrompt() {
     };
     app.canvas._xzgPromptPatched = true;
 }
-

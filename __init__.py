@@ -216,13 +216,15 @@ from .nodes.xzg_video_batch_loader import XiaozhuguangVideoBatchMerge
 from .nodes.xzg_video_loader_lm import XiaozhuguangVideoLoaderLM
 from .nodes.xzg_video_loader_davinci import XiaozhuguangVideoLoaderDaVinci
 from .nodes.xzg_audio_loader import XiaozhuguangAudioLoader
+from .nodes.xzg_audio_loader_davinci import XiaozhuguangAudioLoaderDaVinci
 from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
 from .nodes.xzg_video_save_davinci import XiaozhuguangVideoSaveDaVinci
 from .nodes.xzg_image_compare import XiaozhuguangImageCompare
 from .nodes.xzg_image_save import XiaozhuguangImageSave
 from .nodes.xzg_image_save_custom import XiaozhuguangImageSaveCustom
-from .nodes.xzg_audio_save import XiaozhuguangAudioSave
+from .nodes.xzg_audio_save import XiaozhuguangAudioSaveDaVinci
+from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt
@@ -1198,12 +1200,14 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangVideoLoaderLM": XiaozhuguangVideoLoaderLM,
     "XiaozhuguangVideoLoaderDaVinci": XiaozhuguangVideoLoaderDaVinci,
     "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
+    "XiaozhuguangAudioLoaderDaVinci": XiaozhuguangAudioLoaderDaVinci,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
     "XiaozhuguangVideoSaveDaVinci": XiaozhuguangVideoSaveDaVinci,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
     "XiaozhuguangImageSaveCustom": XiaozhuguangImageSaveCustom,
+    "XiaozhuguangAudioSaveDaVinci": XiaozhuguangAudioSaveDaVinci,
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
@@ -1255,12 +1259,14 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",
     "XiaozhuguangVideoLoaderDaVinci": "小珠光视频加载-化神级",
     "XiaozhuguangAudioLoader": "小珠光音频加载器",
+    "XiaozhuguangAudioLoaderDaVinci": "小珠光音频加载器-化神级",
     "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
     "XiaozhuguangVideoCombine": "小珠光合并视频",
     "XiaozhuguangVideoSaveDaVinci": "小珠光视频保存-化神级",
     "XiaozhuguangImageCompare": "小珠光图像对比",
     "XiaozhuguangImageSave": "小珠光图像保存",
     "XiaozhuguangImageSaveCustom": "小珠光图像保存-化神级",
+    "XiaozhuguangAudioSaveDaVinci": "小珠光音频保存-化神级",
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",

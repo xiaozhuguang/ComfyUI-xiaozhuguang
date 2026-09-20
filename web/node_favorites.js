@@ -88,7 +88,8 @@ const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableNodeFavorites";
 
 function isNodeFavoritesEnabled() {
     try {
-        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED, true) !== false;
+        // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
+        return app?.ui?.settings?.getSettingValue?.(SETTING_ENABLED) !== false;
     } catch (e) {
         return true;
     }

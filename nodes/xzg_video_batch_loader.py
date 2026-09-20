@@ -61,10 +61,12 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
         t = super().INPUT_TYPES()
         t["required"]["片段起点"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1e6, "step": 0.001})
         t["required"]["片段终点"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1e6, "step": 0.001})
+        # 内存模式（低内存版功能并入）：标准=list+堆叠；低内存=预分配流式写入
+        t["required"]["内存模式"] = (["标准", "低内存"], {"default": "标准"})
         return t
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, unique_id=None):
+                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", unique_id=None):
         return self.load_video_impl(
             视频=视频,
             强制帧率=强制帧率,
@@ -76,19 +78,20 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
             跳过帧数=跳过帧数,
             片段起点=片段起点,
             片段终点=片段终点,
+            内存模式=内存模式,
             unique_id=unique_id,
         )
 
     @classmethod
     def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, **kwargs):
+                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", **kwargs):
         try:
             path = folder_paths.get_annotated_filepath(视频)
             file_hash = calculate_file_hash(path)
         except Exception:
             file_hash = "0"
-        # 片段窗口必须纳入变化检测，否则逐段运行时节点会被缓存跳过
-        return f"{file_hash}|{强制帧率}|{视频比例}|{比例模式}|{自定义宽度}|{自定义高度}|{帧数上限}|{跳过帧数}|{片段起点}|{片段终点}"
+        # 片段窗口/内存模式必须纳入变化检测，否则逐段运行时节点会被缓存跳过
+        return f"{file_hash}|{强制帧率}|{视频比例}|{比例模式}|{自定义宽度}|{自定义高度}|{帧数上限}|{跳过帧数}|{片段起点}|{片段终点}|{内存模式}"
 
 
 class XiaozhuguangVideoBatchMerge:
@@ -126,10 +129,10 @@ class XiaozhuguangVideoBatchMerge:
             raise ValueError("帧率必须大于 0：请检查上游「帧率」输入的计算来源")
         return fps
 
-    def _buffer_segment(self, 图像, 音频, fps):
+    def _buffer_segment(self, 图像, 音频, fps, node_id=None):
         """缓冲模式：当前段 → 无音轨视频 + 精确对齐的 WAV。
-        缓冲位置：input/xzg_batch_buffer/"""
-        buf_dir = get_batch_buffer_dir()
+        缓冲位置：input/xzg_batch_buffer/<node_id>/（按节点隔离，多合并节点互不干扰）\n"""
+        buf_dir = get_batch_buffer_dir(node_id)
         os.makedirs(buf_dir, exist_ok=True)
         # 文件名带毫秒时间戳：唯一、可按名排序，且不会被同目录的后续分段覆盖
         tok = int(time.time() * 1000)
@@ -176,19 +179,19 @@ class XiaozhuguangVideoBatchMerge:
             "with_audio": has_audio,
         }
 
-    def _finalize(self):
+    def _finalize(self, node_id=None):
         """最终合并：concat 分段视频（流复制）→ 解码为帧张量；
-        音频用分段 WAV 样本级拼接（零间隙零重编码）"""
-        buf_dir = get_batch_buffer_dir()
+        音频用分段 WAV 样本级拼接（零间隙零重编码）。只处理本节点专属子目录（node_id 隔离），不影响其他合并节点的缓冲"""
+        buf_dir = get_batch_buffer_dir(node_id)
         print(f"[小珠光批处理合并] 开始最终合并，缓冲目录: {buf_dir}，"
               f"存在: {os.path.isdir(buf_dir)}")
         mp4s = sorted(f for f in os.listdir(buf_dir) if f.endswith(".mp4")) if os.path.isdir(buf_dir) else []
         wavs = sorted(f for f in os.listdir(buf_dir) if f.endswith(".wav")) if os.path.isdir(buf_dir) else []
         if not mp4s:
             raise ValueError(
-                f"缓冲区为空（{buf_dir}）。逐段阶段合并节点未被执行或未缓冲成功，请检查：\n"
-                "① 合并节点的「图像」输入是否已从「视频批处理」下游链路接入（不接则逐段时不会执行合并节点）；\n"
-                "② 逐段运行时每段日志是否显示「已缓冲」")
+                f"缓冲区为空（{buf_dir}）。逐段阶段本合并节点未被执行或未缓冲成功，请检查：\n"
+                "① 本合并节点的「图像」输入是否已从「视频批处理」下游链路接入（不接则逐段时不会执行合并节点）；\n"
+                "② 逐段运行时每段日志是否显示「已缓冲」（多合并节点时各节点缓冲相互独立，按本节点子目录校验）")
 
         # 拼接中间文件与清单都放在缓冲目录内（与缓冲同盘，避免跨盘写 C 盘临时目录）
         tmp_video_name, _, seg_count = concat_video_files(
@@ -264,12 +267,13 @@ class XiaozhuguangVideoBatchMerge:
 
     def merge_videos(self, 执行合并=False, 帧率=0, 图像=None, 音频=None, unique_id=None):
         if 执行合并:
-            return self._finalize()
+            return self._finalize(unique_id)
         # 缓冲模式：先缓冲当前段，再把输入原样传给下游（直通）
         if 图像 is None:
             raise ValueError("缓冲模式需要图像输入：请把处理链的「图像」接入本节点")
         fps = self._resolve_fps(帧率)
-        info = self._buffer_segment(图像, 音频, fps)
+        info = self._buffer_segment(图像, 音频, fps, unique_id)
+        info["node"] = str(unique_id)
         return {"result": (图像, 音频), "ui": {"buffered": [info]}}
 
 

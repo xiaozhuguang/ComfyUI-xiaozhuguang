@@ -146,12 +146,13 @@ function _createPreviewDavinciButton(node) {
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
 
-    const alignRight = () => {
-        if (fastcutBtn && fastcutBtn.offsetWidth > 0) {
-            btn.style.right = (fastcutBtn.offsetWidth + 12) + "px";
+    // 达芬奇贴预览区最右（cssText 已是 right:6px），「从快剪加载」排在它左侧
+    const alignFastcut = () => {
+        if (btn.offsetWidth > 0 && fastcutBtn) {
+            fastcutBtn.style.right = (btn.offsetWidth + 12) + "px";
         }
     };
-    const onOver = () => { alignRight(); btn.style.opacity = "1"; };
+    const onOver = () => { alignFastcut(); btn.style.opacity = "1"; };
     const onOut = (e) => {
         if (!pc.contains(e.relatedTarget) && !btn.disabled) btn.style.opacity = "0";
     };
@@ -182,7 +183,7 @@ app.registerExtension({
             if (nodeData.input?.required?.["强制帧率"]) {
                 nodeData.input.required["强制帧率"][1].widgetType = "XZGFLOAT";
             }
-            for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
+            for (const [k, inp] of Object.entries({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
                 if (!inp || !inp[1]) continue;
                 if (["INT", "FLOAT"].includes(inp[0])) {
                     inp[1].widgetType ??= "XZG" + inp[0];
@@ -205,7 +206,22 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = origOnNodeCreated?.apply(this, arguments);
-                bindVideoLoaderInteractions(this, false);
+                // 内存模式（低内存版功能并入）：由 widget 值动态决定 isLM，
+                // 切换时通过 _xzgSetVideoLoaderMode 销毁重建播放器并重载当前视频。
+                bindVideoLoaderInteractions(this, () => {
+                    const mw = this.widgets?.find((w) => w.name === "内存模式");
+                    return (mw?.value || "标准") === "低内存";
+                }, { fastcut: true });
+                // 钩住「内存模式」widget 变化：切换后重建播放器（XZGCOMBO 通过 _xzgCb 挂载回调）
+                const _modeWidget = this.widgets?.find((w) => w.name === "内存模式");
+                if (_modeWidget && !_modeWidget._xzgModeHooked) {
+                    _modeWidget._xzgModeHooked = true;
+                    const _origModeCb = _modeWidget._xzgCb;
+                    _modeWidget._xzgCb = (v) => {
+                        _origModeCb?.(v);
+                        this._xzgSetVideoLoaderMode?.(v === "低内存");
+                    };
+                }
                 _applyWidgetStyles(this);
                 _removeLegacyTopButton(this);
                 _createPreviewDavinciButton(this);
@@ -230,6 +246,9 @@ app.registerExtension({
             nodeType.prototype.onConfigure = function (data) {
                 const r = origOnConfigure?.apply(this, arguments);
                 try {
+                    // 工作流加载后同步内存模式：widget 值恢复可能与当前播放器构建模式不一致（无变化时内部自动跳过）
+                    const _mw = this.widgets?.find((w) => w.name === "内存模式");
+                    if (_mw) this._xzgSetVideoLoaderMode?.((_mw.value || "标准") === "低内存");
                     const node = this;
                     if (Array.isArray(data?.size) && data.size[0] > 0 && data.size[1] > 0) {
                         const savedSize = [data.size[0], data.size[1]];

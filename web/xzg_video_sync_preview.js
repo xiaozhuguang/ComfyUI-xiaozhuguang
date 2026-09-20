@@ -5,7 +5,8 @@ import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
 const SETTING_VIDEO_COMPARE = "xiaozhuguang.Toggle.EnableVideoCompare";
 function isVideoCompareEnabled() {
     try {
-        return app?.ui?.settings?.getSettingValue?.(SETTING_VIDEO_COMPARE, true) !== false;
+        // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
+    return app?.ui?.settings?.getSettingValue?.(SETTING_VIDEO_COMPARE) !== false;
     } catch (e) {
         return true;
     }
