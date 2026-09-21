@@ -113,7 +113,8 @@ def _get_ffmpeg_major_version():
             capture_output=True, timeout=10
         )
         output = (result.stdout + result.stderr).decode(*ENCODE_ARGS)
-        match = re.search(r"ffmpeg version (\d+)", output)
+        # 兼容 ffmpeg version 4.4.2 / n9.0.1-... / N-110358-g... 三种版本号前缀
+        match = re.search(r"ffmpeg version [a-z]*-?(\d+)", output, re.IGNORECASE)
         if match:
             _ffmpeg_major_version = int(match.group(1))
         else:
