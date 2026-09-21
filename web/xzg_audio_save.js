@@ -954,6 +954,94 @@ class XzgAudioWaveformViewer {
 
 const XZG_AUDIO_SAVE_TYPES = new Set(["XiaozhuguangAudioSave", "XiaozhuguangAudioSaveDaVinci"]);
 
+// ═══════════════════════════════════════════════════════════════════
+// 切换工作流恢复机制（参考 xzg_video_combine.js 的视频保存实现）：
+// 模块级输出缓存 + queuePrompt 钩子 + executed 兜底监听。
+// 场景：工作流 A 点击 Run → 切到 B → A 后台跑完 → 切回 A。
+// 切走 tab 后 A 的节点实例被销毁，节点级 onExecuted 失效；这里用全局
+// api executed 事件兜底，把输出写入内存缓存 + localStorage，
+// 切回后由 onConfigure 读取恢复波形与保存信息（防跨工作流串台）。
+// ═══════════════════════════════════════════════════════════════════
+
+// 工作流图结构指纹：以「节点 id→type 集合」为工作流身份。
+// - 跨刷新稳定：刷新后图按 JSON 还原，指纹不变 → localStorage 恢复仍命中；
+// - 跨工作流可区分：不同工作流结构不同 → 指纹不同 → 键不同 → 不串台；
+// - 移动节点 / 编辑 widget 值不影响指纹；增删节点会改变指纹（旧缓存自然失效）。
+function _xzgAudioGraphFingerprint(graph) {
+    const parts = [];
+    for (const n of (graph?.nodes || [])) {
+        if (n && n.id != null && n.type) parts.push(String(n.id) + ":" + n.type);
+    }
+    parts.sort();
+    let h = 5381;
+    for (const p of parts) {
+        for (let i = 0; i < p.length; i++) {
+            h = ((h << 5) + h + p.charCodeAt(i)) >>> 0;
+        }
+    }
+    return String(h);
+}
+
+// 每个存活图实例的唯一运行时令牌（WeakMap 弱引用，不泄漏）。
+// 内容指纹无法区分「内容相同但不同」的两个工作流（如复制得到），
+// 图实例令牌让同会话内任意两个图都持有不同缓存键，杜绝按共享键串台。
+const _xzgAudioGraphTokenMap = new WeakMap();
+let _xzgAudioGraphTokenSeq = 0;
+function _xzgAudioGraphToken(graph) {
+    if (!graph) return "";
+    let t = _xzgAudioGraphTokenMap.get(graph);
+    if (!t) { t = String(++_xzgAudioGraphTokenSeq); _xzgAudioGraphTokenMap.set(graph, t); }
+    return t;
+}
+
+// 输出缓存（两套内存键 + localStorage 三级）：
+// 1) _xzgAudioOutputCache     图实例令牌|节点id —— 同会话实时（真实执行时写入）
+// 2) _xzgAudioOutputCacheByFp 工作流指纹|节点id —— 节点销毁期间由模块级兜底监听写入
+// 3) localStorage             工作流指纹_节点id —— 跨浏览器刷新持久化
+const _xzgAudioOutputCache = new Map();
+const _xzgAudioOutputCacheByFp = new Map();
+const _xzgAudioOutStoreKey = (wfFp, nodeId) => `xzg_audio_save_out_${wfFp}_${nodeId}`;
+function _xzgPersistAudioOutput(wfFp, nodeId, info) {
+    try { localStorage.setItem(_xzgAudioOutStoreKey(wfFp, nodeId), JSON.stringify(info)); } catch (e) { /* 忽略存储失败 */ }
+}
+function _xzgLoadPersistedAudioOutput(wfFp, nodeId) {
+    try { return JSON.parse(localStorage.getItem(_xzgAudioOutStoreKey(wfFp, nodeId))); } catch (e) { return null; }
+}
+const _xzgAudioCacheKey = (graph, nodeId) => `${_xzgAudioGraphToken(graph)}|${nodeId}`;
+
+// 追踪「最近一次发起执行的图」：点击 Run 会走 app.queuePrompt，此刻 app.graph 即发起图。
+// 全局 executed 事件会广播给所有图里 id 相同的节点实例；兜底监听必须只接受
+// 「发起本次执行的图」里音频保存节点的输出，否则 A 工作流的输出会被 B 里 id 相同的
+// 节点写进自己的缓存并在切回时串台到 B 的预览区。
+let _xzgAudioRunningGraph = null;
+let _xzgAudioRunningGraphFp = null;
+let _xzgAudioRunningSaveIds = new Set();
+
+// 由后端 audio_saved ui 项构造缓存对象（onExecuted 与模块级兜底监听共用）
+function _xzgAudioBuildCacheInfo(info) {
+    return {
+        filename: (info && info.filename) || "",
+        type: (info && info.type) || "output",
+        subfolder: (info && info.subfolder) || "",
+        format: (info && info.format) || "",
+        quality: (info && info.quality != null) ? info.quality : 128,
+        duration: (info && info.duration) || 0,
+        sample_rate: (info && info.sample_rate) || 44100,
+        peaks: Array.isArray(info && info.peaks) ? info.peaks : [],
+        preview: !!(info && info.preview),
+    };
+}
+
+// 由缓存对象恢复可播放的 /view URL（仅保存模式 output 有持久化文件；
+// 预览 temp 文件可能被 ComfyUI 清理，只恢复波形不设 URL —— 与 widget.value 兜底一致）
+function _xzgAudioRestoreUrl(cacheInfo) {
+    if (!cacheInfo || !cacheInfo.filename) return "";
+    if (cacheInfo.type === "temp" || cacheInfo.preview) return "";
+    return api.apiURL(
+        `/view?filename=${encodeURIComponent(cacheInfo.filename)}&type=${encodeURIComponent(cacheInfo.type || "output")}&subfolder=${encodeURIComponent(cacheInfo.subfolder || "")}`
+    );
+}
+
 // 判断 canvas 坐标是否命中某个音频保存节点的波形区域（命中返回 node，否则 null）
 function _xzgAudioSaveHitWaveform(canvasX, canvasY) {
     const nodes = app.graph?.nodes || [];
@@ -977,6 +1065,55 @@ function _xzgAudioSaveHitWaveform(canvasX, canvasY) {
 
 app.registerExtension({
     name: "xiaozhuguang.audio_save",
+    init() {
+        // 记录「发起执行的图」：点击 Run 走 app.queuePrompt，此刻 app.graph 即发起图。
+        // 包 app.queuePrompt 而非 api.queuePrompt（与视频保存一致，避免被其它模块临时包装影响）。
+        if (!app._xzgAudioSaveQueueHookInstalled && typeof app.queuePrompt === "function") {
+            app._xzgAudioSaveQueueHookInstalled = true;
+            const _xzgOrigAudioQueuePrompt = app.queuePrompt;
+            app.queuePrompt = function (...args) {
+                const g = app.graph;
+                const r = _xzgOrigAudioQueuePrompt.apply(this, args);
+                if (g) {
+                    _xzgAudioRunningGraph = g;
+                    _xzgAudioRunningGraphFp = _xzgAudioGraphFingerprint(g);
+                    _xzgAudioRunningSaveIds = new Set(
+                        (g.nodes || [])
+                            .filter(n => n && n.id != null && XZG_AUDIO_SAVE_TYPES.has(n.type))
+                            .map(n => String(n.id))
+                    );
+                }
+                return r;
+            };
+        }
+
+        // 模块级 executed 兜底监听（仅做持久化写入，不直接操作任何波形组件 —— 不存在串台加载）：
+        // 切走工作流 tab 后节点实例可能被销毁，节点级 onExecuted 失效；原工作流后台跑完时
+        // 新输出无人写入缓存 —— 切回后重建节点只能读到旧值（用户反馈的"切回原工作流预览不刷新"）。
+        // 在 queuePrompt 时刻捕获的「发起图指纹 + 音频保存节点 id 集合」约束下，
+        // 把输出按「指纹|节点id」写入内存缓存与 localStorage，切回重建后由 onConfigure 恢复。
+        // 铁律：只接受「发起本次执行的图」里音频保存节点的输出，绝不跨工作流写入。
+        if (!app._xzgAudioSaveGlobalExecutedInstalled && typeof api?.addEventListener === "function") {
+            app._xzgAudioSaveGlobalExecutedInstalled = true;
+            api.addEventListener("executed", (event) => {
+                try {
+                    const detail = event.detail;
+                    if (!detail || !detail.output) return;
+                    if (!_xzgAudioRunningGraphFp || _xzgAudioRunningSaveIds.size === 0) return;
+                    const execNode = String(detail.node || detail.display_node || "");
+                    const localId = execNode.split(":").pop();
+                    if (!_xzgAudioRunningSaveIds.has(localId)) return;
+                    const ui = detail.output.ui || detail.output;
+                    const audioSaved = ui?.audio_saved;
+                    if (!Array.isArray(audioSaved) || audioSaved.length === 0) return;
+                    const cacheInfo = _xzgAudioBuildCacheInfo(audioSaved[0]);
+                    if (!cacheInfo.filename) return;
+                    _xzgAudioOutputCacheByFp.set(`${_xzgAudioRunningGraphFp}|${localId}`, cacheInfo);
+                    _xzgPersistAudioOutput(_xzgAudioRunningGraphFp, localId, cacheInfo);
+                } catch (e) { /* 兜底监听不影响主流程 */ }
+            });
+        }
+    },
     setup() {
         // 1. window 捕获阶段 contextmenu：命中波形区就彻底拦截原生菜单（优先级最高）
         window.addEventListener('contextmenu', (e) => {
@@ -1094,6 +1231,11 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             origOnNodeCreated?.apply(this, arguments);
             const node = this;
+
+            // 工作流图指纹：跨工作流隔离预览缓存的关键（写入/恢复键的一部分）。
+            // 加载工作流时 configure 逐个创建节点、图此时未建全，这里只作兜底，
+            // 由 onConfigure 的 rAF 阶段（整图就绪）重算覆盖；用户手动新建节点时图已就绪。
+            node._xzgWfFp = _xzgAudioGraphFingerprint(node.graph);
 
             // ─── 创建波形组件 ──────────────────────────────────────
             let saveUrl = "";      // 后端返回的音频 URL（供右键下载）
@@ -1434,6 +1576,19 @@ app.registerExtension({
                         waveformWidget.value = JSON.stringify(saveData);
                     }
 
+                    // 写入模块级缓存 + localStorage（切换工作流后切回恢复用，参考视频保存机制）：
+                    // 键含工作流指纹/图实例令牌，跨工作流天然隔离；切走 tab 节点销毁期间，
+                    // 由模块级 executed 兜底监听（init 中注册）按指纹键补写最新输出。
+                    const cacheInfo = _xzgAudioBuildCacheInfo(info);
+                    const wfFp = node._xzgWfFp || _xzgAudioGraphFingerprint(node.graph);
+                    if (node.graph) {
+                        _xzgAudioOutputCache.set(_xzgAudioCacheKey(node.graph, String(node.id)), cacheInfo);
+                    }
+                    if (wfFp) {
+                        _xzgAudioOutputCacheByFp.set(`${wfFp}|${String(node.id)}`, cacheInfo);
+                        _xzgPersistAudioOutput(wfFp, String(node.id), cacheInfo);
+                    }
+
                     // 执行完成 → 换新音频：音量 widget 强制重置为 100%（与 viewer 重置同步）
                     const volW2 = node.widgets?.find(w => w.name === '音量');
                     if (volW2) {
@@ -1460,6 +1615,8 @@ app.registerExtension({
             };
 
             // ─── onConfigure：工作流重载后恢复样式和尺寸 ──────────
+            // 恢复优先级：模块缓存（图实例令牌键，同会话真实执行）→ 指纹缓存
+            // （节点销毁期间模块级兜底监听写入）→ localStorage（跨刷新）→ widget.value（旧兜底）。
             const origOnConfigure = node.onConfigure;
             node.onConfigure = function(info) {
                 origOnConfigure?.apply(this, arguments);
@@ -1469,35 +1626,63 @@ app.registerExtension({
                     node._xzgQcRenderAuto?.();
                     node._xzgDvRenderAuto?.();
 
-                    // 从 widget value 恢复波形数据（刷新/加载工作流后）
-                    if (waveformWidget && waveformWidget.value && typeof waveformWidget.value === 'string') {
+                    // 工作流加载/切 tab 重建时，configure 逐个节点执行，同步阶段图可能未建全；
+                    // rAF 阶段整图已就绪，重算指纹（覆盖 onNodeCreated 兜底）
+                    node._xzgWfFp = _xzgAudioGraphFingerprint(node.graph);
+                    const wfFp = node._xzgWfFp;
+                    const moduleCached = node.graph ? _xzgAudioOutputCache.get(_xzgAudioCacheKey(node.graph, String(node.id))) : null;
+                    const fpCached = wfFp ? _xzgAudioOutputCacheByFp.get(`${wfFp}|${String(node.id)}`) : null;
+                    const persisted = wfFp ? _xzgLoadPersistedAudioOutput(wfFp, String(node.id)) : null;
+                    const cached = moduleCached || fpCached || persisted;
+
+                    let restored = false;
+                    // 缓存优先：覆盖「切走期间后台跑完」的最新输出（节点级 onExecuted 已失效的场景）
+                    if (cached && Array.isArray(cached.peaks) && cached.peaks.length > 0 && cached.duration > 0) {
+                        // setData 内部会把 volume 重置到 100%
+                        waveformViewer.setData(cached.peaks, cached.duration, cached.sample_rate);
+                        const restoreUrl = _xzgAudioRestoreUrl(cached);
+                        if (restoreUrl && cached.filename) {
+                            waveformViewer.setSaveInfo(restoreUrl, cached.filename);
+                            // 恢复落盘信息（右键「保存/发送到音频加载器」需要 type/subfolder）
+                            savedFilename = cached.filename;
+                            savedType = cached.type || "output";
+                            savedSubfolder = cached.subfolder || "";
+                        }
+                        // 播放头默认在最开头
+                        if (cached.duration > 0) {
+                            waveformViewer.playbackTime = 0;
+                        }
+                        restored = true;
+                        node.setDirtyCanvas?.(true, true);
+                    }
+
+                    // widget.value 兜底（浏览器刷新/加载工作流后，缓存为空时）
+                    if (!restored && waveformWidget && waveformWidget.value && typeof waveformWidget.value === 'string') {
                         try {
                             const data = JSON.parse(waveformWidget.value);
                             if (data.peaks && data.duration) {
-                                // setData 内部会把 volume 重置到 100%
                                 waveformViewer.setData(data.peaks, data.duration, data.sampleRate);
                                 if (data.saveUrl && data.filename) {
                                     waveformViewer.setSaveInfo(data.saveUrl, data.filename);
-                                    // 恢复落盘信息（右键「发送到音频加载器」需要 type/subfolder）
                                     savedFilename = data.filename;
                                     savedType = data.type || "output";
                                     savedSubfolder = data.subfolder || "";
                                 }
-                                // 播放头默认在最开头
                                 if (data.duration > 0) {
                                     waveformViewer.playbackTime = 0;
                                 }
                             }
-                            // 音量：刷新/重启 ComfyUI 时一律从 100% 开始，不再恢复之前的 volume
-                            const volWidget = node.widgets?.find(w => w.name === '音量');
-                            const defaultVol = 1.0;
-                            waveformViewer.volume = defaultVol;
-                            waveformViewer._applyVolume(defaultVol);
-                            if (volWidget) volWidget.value = defaultVol;
                         } catch (e) {
                             // 解析失败忽略
                         }
                     }
+
+                    // 音量：刷新/重启 ComfyUI 时一律从 100% 开始，不再恢复之前的 volume
+                    const volWidget = node.widgets?.find(w => w.name === '音量');
+                    const defaultVol = 1.0;
+                    waveformViewer.volume = defaultVol;
+                    waveformViewer._applyVolume(defaultVol);
+                    if (volWidget) volWidget.value = defaultVol;
 
                     node.setDirtyCanvas?.(true, true);
                 });
