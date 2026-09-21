@@ -41,13 +41,35 @@ const _CLAPPER_SVG =
     '<path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
     '</svg>';
 
+// 齿轮 SVG 图标（「输出设置」悬浮按钮用）：stroke=currentColor，可随 CSS color 变色
+const _GEAR_SVG =
+    '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+    'style="display:block">' +
+    '<circle cx="12" cy="12" r="3"/>' +
+    '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>' +
+    '</svg>';
+
 // 从节点最近一次保存的输出信息里取 filename/subfolder（预览缓存与 properties 都是信息的来源）
 function _getSavedVideoInfo(node) {
     const info = node._xzgVideoOutput || node.properties?._xzgVideoOutput;
-    if (info && info.filename) return { filename: info.filename, subfolder: info.subfolder || "", type: info.type || "output" };
+    if (info && info.filename) return {
+        filename: info.filename,
+        subfolder: info.subfolder || "",
+        type: info.type || "output",
+        abs_token: info.abs_token || "",
+        is_absolute: !!info.is_absolute,
+    };
     const player = node._xzgVideoPlayer;
     if (player && player._videoInfo && player._videoInfo.filename) {
-        return { filename: player._videoInfo.filename, subfolder: player._videoInfo.subfolder || "", type: player._videoInfo.type || "output" };
+        const v = player._videoInfo;
+        return {
+            filename: v.filename,
+            subfolder: v.subfolder || "",
+            type: v.type || "output",
+            abs_token: v.abs_token || "",
+            is_absolute: !!v.is_absolute,
+        };
     }
     return null;
 }
@@ -61,10 +83,13 @@ async function _exportToDavinci(node, btn, labelSpan, label) {
     btn.disabled = true;
     if (labelSpan) labelSpan.textContent = "正在导出到达芬奇…";
     try {
+        const body = { filename: info.filename, subfolder: info.subfolder };
+        // 自定义输出-绝对路径：携带会话令牌，由后端解析真实路径（不把绝对路径暴露给前端）
+        if (info.abs_token) body.abs_token = info.abs_token;
         const resp = await api.fetchApi("/xzg/davinci/save-import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: info.filename, subfolder: info.subfolder }),
+            body: JSON.stringify(body),
         });
         const data = await resp.json();
         if (!data?.ok) {
@@ -86,6 +111,11 @@ async function _sendToQuickCut(node, btn, labelSpan) {
     const info = _getSavedVideoInfo(node);
     if (!info || !info.filename) {
         _toast("[发送到快剪] 当前节点还没有已保存的视频，请先执行一次「保存」模式。", true);
+        return;
+    }
+    // 自定义输出-绝对路径：快剪媒体库从 ComfyUI 目录读取，暂不支持 output/ 之外的文件
+    if (info.is_absolute) {
+        _toast("[发送到快剪] 自定义绝对路径输出暂不支持发送到快剪，可直接在保存文件夹中使用该视频。", true);
         return;
     }
     if (typeof window._xzgVideoEditorReceiveMedia !== "function") {
@@ -182,6 +212,76 @@ function _createAutoExportToggle(node, widgetName, stateKey) {
     return w;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// 「输出设置」悬浮按钮
+// 把 use_default_output / base_dir / add_date_stamp / add_time_stamp 四个参数收进
+// 「小珠光图片保存-化神级」同一个共享设置弹窗（window._xzgShowDirBrowser），
+// 弹窗选项与其完全一致（输出模式单选/自定义前缀/日期戳/时间戳/目录浏览）；
+// 参数 widget 仍保留在 widgets 数组里参与序列化，只是不绘制。
+// ═══════════════════════════════════════════════════════════════════
+
+// 标准隐藏手法（与图像保存节点一致）：type="hidden" 让新版 ComfyUI 前端
+// isWidgetVisible 返回 false、跳过布局占位；widget 仍随工作流序列化
+function _hideVideoSettingWidget(w) {
+    if (!w) return;
+    w.type = "hidden";
+    w.hidden = true;
+    w.draw = function () {};
+    w.computeSize = function () { return [0, 0]; };
+    w.mouse = function () { return false; };
+}
+
+// 打开「输出设置」：直接复用「小珠光图片保存-化神级」的共享设置弹窗
+// （window._xzgShowDirBrowser，由 xzg_image_save.js 全局注册），弹窗选项与其完全一致：
+// 输出模式单选（默认输出 output / 自定义目录；「另存为」对保存节点隐藏）+ 自定义前缀 +
+// 日期戳 + 时间戳 + 目录浏览（面包屑 / 最近使用 / 新建文件夹），非自定义模式自动灰显目录区。
+function _xzgOpenVideoOutputSettings(node) {
+    if (typeof window._xzgShowDirBrowser !== "function") {
+        _toast("输出设置弹窗不可用（图像保存模块未加载），请刷新页面重试。", true);
+        return;
+    }
+    window._xzgShowDirBrowser(node);
+}
+
+function _createOutputSettingsButton(node) {
+    if (node._xzgOutSettingsBtn) return node._xzgOutSettingsBtn;
+    const pc = node._xzgPreviewContainer;
+    if (!pc) return null;
+
+    const btn = document.createElement("button");
+    btn.title = "输出设置（与小珠光图片保存-化神级同一设置框）：默认输出 / 自定义目录 / 自定义前缀 / 日期戳 / 时间戳";
+    btn.style.cssText =
+        "position:absolute;top:6px;right:0;z-index:102;" +
+        "display:inline-flex;align-items:center;gap:4px;" +
+        "padding:2px 6px;font-size:11px;line-height:1;" +
+        "background:transparent;color:#8ab4f8;border:none;" +
+        "cursor:pointer;pointer-events:auto;" +
+        "transition:color 0.15s,opacity 0.2s;opacity:0;";
+    btn.innerHTML = `<span style="cursor:pointer;">${_GEAR_SVG}</span><span>输出设置</span>`;
+
+    // 排在最左侧：right = 导出按钮宽 + 快剪按钮宽 + 两处间隙
+    const alignRight = () => {
+        const dvBtn = node._xzgDavinciSaveBtn;
+        const qcBtn = node._xzgQuickCutBtn;
+        const w = (dvBtn?.offsetWidth || 0) + (qcBtn?.offsetWidth || 0);
+        btn.style.right = (w + 24) + "px";
+    };
+    const onOver = () => { alignRight(); btn.style.opacity = "1"; };
+    const onOut = (e) => {
+        if (!pc.contains(e.relatedTarget)) btn.style.opacity = "0";
+    };
+    pc.addEventListener("mouseover", onOver);
+    pc.addEventListener("mouseout", onOut);
+
+    btn.addEventListener("mouseenter", () => btn.style.color = "#fff");
+    btn.addEventListener("mouseleave", () => btn.style.color = "#8ab4f8");
+    btn.onclick = () => _xzgOpenVideoOutputSettings(node);
+
+    pc.appendChild(btn);
+    node._xzgOutSettingsBtn = btn;
+    return btn;
+}
+
 function _createExportDavinciButton(node) {
     if (node._xzgDavinciSaveBtn) return node._xzgDavinciSaveBtn;
     const pc = node._xzgPreviewContainer;
@@ -267,11 +367,32 @@ app.registerExtension({
             requestAnimationFrame(() => {
                 _createExportDavinciButton(this);
                 _createQuickCutButton(this);
+                // 输出设置：隐藏 use_default_output / base_dir / add_date_stamp / add_time_stamp 参数
+                // widget（保留在数组中参与序列化），由预览区「输出设置」悬浮按钮打开与小珠光图片
+                // 保存-化神级同一个共享设置弹窗统一设置。自定义前缀映射到「文件名前缀」widget；
+                // 共享弹窗回写依赖 _xzgDefaultOutputWidget / _xzgPrefixCustomWidget /
+                // _xzgDateStampWidget / _xzgTimeStampWidget 这组引用名（与图像保存-化神级一致）。
+                const defW = this.widgets?.find(w => w.name === "use_default_output") || null;
+                const baseW = this.widgets?.find(w => w.name === "base_dir") || null;
+                const prefixW = this.widgets?.find(w => w.name === "文件名前缀") || null;
+                const dateW = this.widgets?.find(w => w.name === "add_date_stamp") || null;
+                const timeW = this.widgets?.find(w => w.name === "add_time_stamp") || null;
+                this._xzgDefaultOutputWidget = defW;
+                this._xzgBaseDirWidget = baseW;
+                this._xzgPrefixCustomWidget = prefixW;
+                this._xzgDateStampWidget = dateW;
+                this._xzgTimeStampWidget = timeW;
+                _hideVideoSettingWidget(defW);
+                _hideVideoSettingWidget(baseW);
+                _hideVideoSettingWidget(dateW);
+                _hideVideoSettingWidget(timeW);
+                _createOutputSettingsButton(this);
                 // 藏两个开关 widget 并把引用给图标渲染函数（图标状态依赖 widget.value）
                 _createAutoExportToggle(this, "自动导出到达芬奇", "_xzgAutoExportWidget");
                 _createAutoExportToggle(this, "自动发送到快剪", "_xzgAutoSendQcWidget");
                 this._xzgDavinciBtnIconRender?.();
                 this._xzgQcBtnIconRender?.();
+                try { this.setSize(this.computeSize()); } catch (e) {}
             });
             return r;
         };

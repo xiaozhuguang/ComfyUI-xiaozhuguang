@@ -12,6 +12,7 @@ import re
 import numpy as np
 import torch
 from PIL import Image
+from datetime import datetime
 import folder_paths
 from comfy.utils import ProgressBar
 
@@ -85,6 +86,60 @@ except Exception:
         print('[小珠光] folder_paths.%s() 返回 None，兜底使用: %s' % (fn_name, fallback))
         return fallback
 # ---------------- END ----------------
+
+
+# ---------- 自定义输出目录支持（与「小珠光图像保存-自定义输出」同一套约定） ----------
+# 关闭「默认输出」后 base_dir 支持：绝对路径直接使用 / 相对路径拼到 output/ 下 / {date} 等模板
+_XZG_INVALID_CHARS_RE = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
+def _xzg_is_absolute_path(p: str) -> bool:
+    """判断是否为绝对路径（跨平台）。"""
+    if not p:
+        return False
+    # Windows: D:\, D:/, \, / ；Linux/Mac: /home
+    if len(p) >= 2 and p[1] == ':' and p[0].isalpha():
+        return True
+    return p.startswith('/') or p.startswith('\\')
+
+
+def _xzg_sanitize_path(name: str) -> str:
+    r"""把路径中的非法字符替换为 _，保留 / 和 \ 作为路径分隔符，并去掉首尾空白和点。
+    Windows 盘符冒号（如 C:）会被保留，避免破坏绝对路径。
+    """
+    if not name:
+        return name
+    drive = ""
+    m = re.match(r'^([A-Za-z]:)', name)
+    if m:
+        drive = m.group(1)
+        name = name[len(drive):]
+    name = _XZG_INVALID_CHARS_RE.sub("_", name)
+    name = name.strip().strip(".")
+    return drive + name
+
+
+def _xzg_resolve_template(template: str, context: dict) -> str:
+    """把 {date} {time} {datetime} {timestamp_ms} {workflow} {node_id} {format} 占位符替换为实际值。
+    不含占位符时原样返回（兼容旧用法）。同一执行共享同一时间戳（context["_now"]）。
+    """
+    if not template:
+        return template
+    now: datetime = context.get("_now") or datetime.now()
+    import time as _time
+    replacements = {
+        "{date}": now.strftime("%Y-%m-%d"),
+        "{time}": now.strftime("%H%M%S"),
+        "{datetime}": now.strftime("%Y%m%d-%H%M%S"),
+        "{timestamp_ms}": str(int(_time.time() * 1000)),
+        "{workflow}": _xzg_sanitize_path(str(context.get("workflow_name", "untitled"))) or "untitled",
+        "{node_id}": str(context.get("node_id", "")),
+        "{format}": str(context.get("format", "")),
+    }
+    result = template
+    for k, v in replacements.items():
+        result = result.replace(k, v)
+    return result
 
 
 def _routes():
@@ -425,31 +480,79 @@ class XiaozhuguangVideoCombine:
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,
                       模式, 音频=None,
-                      prompt=None, extra_pnginfo=None, unique_id=None):
+                      prompt=None, extra_pnginfo=None, unique_id=None,
+                      use_default_output=True, base_dir="",
+                      add_date_stamp=False, add_time_stamp=False):
         if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
             return ()
 
         is_save = (模式 == "保存")
+        is_absolute_base = False
+        subfolder_extra = ""  # 自定义输出-相对路径：base_dir 目录并入 ui subfolder（供 /view 与达芬奇导出定位）
         if is_save:
-            # 保存模式：写入 output/（可含用户前缀子目录），返回 type="output"
-            base_dir = _safe_dir('get_output_directory', 'output')
-            prefix = 文件名前缀
+            # 保存模式：默认写入 output/（可含用户前缀子目录），返回 type="output"；
+            # 关闭「默认输出」后 base_dir 生效：绝对路径直接使用 / 相对路径拼到 output/ 下 /
+            # 空值维持 output/ 根目录；base_dir 支持 {date} {time} {datetime} {workflow} 等模板
+            output_dir = _safe_dir('get_output_directory', 'output')
+            prefix = 文件名前缀 or "xzg_video"
+            if not use_default_output:
+                wf_name = "untitled"
+                if extra_pnginfo and isinstance(extra_pnginfo, dict):
+                    wf = extra_pnginfo.get("workflow") or {}
+                    name = wf.get("name") or wf.get("filename") or ""
+                    if name:
+                        base = os.path.splitext(os.path.basename(str(name)))[0]
+                        if base:
+                            wf_name = base
+                # 同一次执行共享同一时间戳，保证同批文件进同一文件夹
+                ctx = {
+                    "_now": datetime.now(),
+                    "workflow_name": wf_name,
+                    "node_id": unique_id or "",
+                    "format": 格式,
+                }
+                # 日期戳/时间戳（与小珠光图像保存-化神级同一套约定）：独立开关，
+                # 开启时按「日期-时间-文件名前缀」顺序用 - 拼接；仅保存模式的自定义输出生效，
+                # 默认输出/预览模式保持原行为，且与 base_dir 模板共享同一时间戳
+                _date = _xzg_sanitize_path(_xzg_resolve_template("{date}", ctx)) if add_date_stamp else ""
+                _time = _xzg_sanitize_path(_xzg_resolve_template("{time}", ctx)) if add_time_stamp else ""
+                _dt = ""
+                if _date and _time:
+                    _dt = f"{_date}-{_time}"
+                elif _date:
+                    _dt = _date
+                elif _time:
+                    _dt = _time
+                if _dt:
+                    prefix = f"{_dt}-{prefix}" if prefix else _dt
+                resolved_base = _xzg_sanitize_path(_xzg_resolve_template(base_dir or "", ctx))
+                if resolved_base and _xzg_is_absolute_path(resolved_base):
+                    # 绝对路径：直接作为输出根目录（文件在 output/ 之外，预览走会话令牌拉流）
+                    output_dir = resolved_base
+                    is_absolute_base = True
+                elif resolved_base:
+                    # 相对路径：拼到 output/ 下；目录并入 subfolder，文件仍可经 /view 访问
+                    output_dir = os.path.join(_safe_dir('get_output_directory', 'output'), resolved_base)
+                    subfolder_extra = resolved_base
+                # base_dir 为空 → 维持 output/ 根目录（与旧行为完全一致）
+                os.makedirs(output_dir, exist_ok=True)
         else:
             # 预览模式：写入持久化 output/preview/<节点id>/ 子目录（而非 temp，temp 重启即清，
             # 会导致「重启后文件消失 ↔ 前端判定内容未变不重载」的死循环）。返回 type="output"。
-            base_dir = _safe_dir('get_output_directory', 'output')
+            output_dir = _safe_dir('get_output_directory', 'output')
             node_id = str(unique_id) if unique_id else (文件名前缀 or "preview")
             prefix = os.path.join("preview", node_id, 文件名前缀 or "xzg_video")
 
-        # 输出根目录固定为 base_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
+        # 输出根目录固定为 output_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
         # get_save_image_path 会解析出 subfolder 并把文件写到 output_dir/subfolder 下
-        output_dir = base_dir
-
         # 获取可用的文件计数器（full_output_folder 已包含前缀内的子目录）。
         # 返回顺序：full_output_folder, filename, counter, subfolder, filename_prefix
         full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
             prefix, output_dir
         )
+        # 自定义输出-相对路径：把 base_dir 相对目录并入 subfolder，使 /view 与达芬奇导出能正确定位
+        if subfolder_extra:
+            subfolder = os.path.normpath(os.path.join(subfolder_extra, subfolder)) if subfolder else subfolder_extra
 
         # 计算下一个可用的计数器
         max_counter = 0
@@ -510,6 +613,11 @@ class XiaozhuguangVideoCombine:
                     # 真实写入帧数：前端播放条总帧数优先采用实测值，
                     # 避免用 容器时长×帧率 推算（音轨尾差会让容器时长虚长，如 459 帧 → 460）
                     "frame_count": int(图像.size(0)),
+                    # 磁盘绝对路径（后端解析/达芬奇导入用；不随工作流序列化）。
+                    # 绝对路径输出时文件在 output/ 之外，/view 无法服务，
+                    # 化神级节点会再注入 abs_token 供前端经 /xzg/davinci/view-abs 拉流预览。
+                    "abs_path": file_path,
+                    "is_absolute": is_absolute_base,
                 }],
                 "output_dir": output_dir,
             }

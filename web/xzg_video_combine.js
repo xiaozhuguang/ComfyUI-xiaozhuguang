@@ -450,8 +450,12 @@ function _xzgLoadPersistedOutput(wfFp, nodeId) {
 // 模块缓存键：图实例令牌 + 节点 id —— 同会话内两个图（即使结构完全一致）令牌不同 → 键不同 → 不串台
 const _xzgCacheKey = (graph, nodeId) => `${_xzgGraphToken(graph)}|${nodeId}`;
 
-function getVideoUrl(filename, type, subfolder) {
+function getVideoUrl(filename, type, subfolder, absToken) {
     if (!filename) return "";
+    // 绝对路径输出：文件在 output/ 之外，/view 无法服务，走会话令牌拉流（后端注册守卫）
+    if (absToken) {
+        return `/xzg/davinci/view-abs?token=${encodeURIComponent(absToken)}`;
+    }
     const params = new URLSearchParams({
         filename: filename,
         type: type || "output",
@@ -529,6 +533,9 @@ app.registerExtension({
                         subfolder: v.subfolder || "",
                     };
                     if (!info.filename) return;
+                    // 绝对路径输出：令牌随缓存/持久化传递，供恢复时经 /xzg/davinci/view-abs 拉流
+                    if (v.abs_token) info.abs_token = v.abs_token;
+                    if (v.is_absolute) info.is_absolute = v.is_absolute;
                     if (typeof v.frame_rate === "number" && v.frame_rate > 0) info.frame_rate = v.frame_rate;
                     if (typeof v.frame_count === "number" && v.frame_count > 0) info.frame_count = v.frame_count;
                     _xzgVideoOutputCacheByFp.set(`${_xzgRunningGraphFp}|${localId}`, info);
@@ -563,10 +570,10 @@ app.registerExtension({
             }
         }
 
-        // BOOLEAN 开关（如「自动导出到达芬奇」）改用 XZGBOOL 同款圆角深色块外观，
+        // BOOLEAN 开关（如「自动导出到达芬奇」「默认输出」）改用 XZGBOOL 同款圆角深色块外观，
         // 与数值/combo 保持统一（原生 ComfyUI 复选框是其风格不一致的根源）
         for (const [inpName, inp] of Object.entries({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
-            if (inp && inp[0] === "BOOLEAN" && ["自动导出到达芬奇"].includes(inpName)) {
+            if (inp && inp[0] === "BOOLEAN" && ["自动导出到达芬奇", "use_default_output"].includes(inpName)) {
                 if (!inp[1]) inp[1] = {};
                 inp[1].widgetType = "XZGBOOL";
             }
@@ -680,7 +687,7 @@ app.registerExtension({
                         // 浏览器刷新后反序列化会触发 setValue，此时模块 cache 为空但 properties 里
                         // 有旧文件 —— 若直接 load 就会一进界面就转圈读条（对齐 VHS，configure 不拉流）。
                         if (!node.graph || !_xzgVideoOutputCache.get(_xzgCacheKey(node.graph, String(node.id)))) return;
-                        const url = getVideoUrl(filename, type, subfolder);
+                        const url = getVideoUrl(filename, type, subfolder, v.abs_token);
                         if (url) {
                             const info = { filename, type, subfolder };
                             // 权威总帧数：复用执行时写入的 player._videoInfo.frame_count（load 不清 _backendFrameCount）
@@ -760,7 +767,7 @@ app.registerExtension({
                         player._videoInfo = saved;
                         if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
                         if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
-                        const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
+                        const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token);
                         if (url) {
                             const visible = playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
                             if (visible) {
@@ -802,6 +809,9 @@ app.registerExtension({
                     if (typeof v.frame_count === "number" && v.frame_count > 0) {
                         info.frame_count = v.frame_count;
                     }
+                    // 绝对路径输出：令牌随缓存/持久化传递，供恢复时经 /xzg/davinci/view-abs 拉流
+                    if (v.abs_token) info.abs_token = v.abs_token;
+                    if (v.is_absolute) info.is_absolute = v.is_absolute;
                     // 关键：先写入模块级全局 cache（按图实例令牌键，杜绝跨工作流串台）
                     // 切 tab 重建节点后，onConfigure/ResizeObserver 从此读取恢复预览。
                     const wfFp = node._xzgWfFp;
@@ -822,7 +832,7 @@ app.registerExtension({
                     if (player._lastAppliedKey === key) return;
                     player._lastAppliedKey = key;
                     player._videoInfo = info;
-                    const url = getVideoUrl(info.filename, info.type, info.subfolder);
+                    const url = getVideoUrl(info.filename, info.type, info.subfolder, info.abs_token);
                     if (url) {
                         if (info.frame_rate) player.setFrameRate?.(info.frame_rate);
                         // 总帧数优先用后端实测值：setBackendFrameCount 存入播放器权威帧数（load 不清空、
@@ -900,7 +910,7 @@ app.registerExtension({
                                 player._videoInfo = saved;
                                 if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
                                 if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
-                                const url = getVideoUrl(saved.filename, saved.type, saved.subfolder);
+                                const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token);
                                 if (url) player.load(url);
                             }
                         }
