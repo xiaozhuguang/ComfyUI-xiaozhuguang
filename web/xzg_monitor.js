@@ -2,6 +2,7 @@
 // 故需 3 级 ../ 才能回到站点根目录 /scripts/app.js
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 /**
  * 悬浮窗系统监控（xiaozhuguang）
@@ -10,7 +11,8 @@ import { api } from "../../../scripts/api.js";
  * - 工作流运行计时：execution_start 开始计时，成功/出错/中断停止；显示工作流名称，
  *   支持历史记录查询（localStorage 持久化，最近 5 条，可清空）
  * - 工作流中添加 XZG_Monitor 节点后，其“显示悬浮窗”开关可控制本窗显示/隐藏
- * - 拖动位置持久记忆（localStorage），右键电池按钮可设置显示项目（面板固定带底色）
+ * - 拖动位置持久记忆：localStorage 兜底 + 云端（<ComfyUI>/user/xiaozhuguang/，参考工作流管理云端持久化方案），
+ *   只做位置（left/top/posVer）上云，显示项、运行历史、隐藏状态均不上云
  */
 
 const XZG_API = "/xzg/system_monitor_stats";
@@ -24,6 +26,10 @@ const MONITOR_SINGLETON = "__xzgSystemMonitorActive";
 const XZG_STORE_KEY = "xzg-float-state-v1";
 // 位置方案版本号：改为「右下角默认」后升到 2，旧方案保存的位置被忽略
 const XZG_POS_VER = 2;
+// 悬浮窗位置云端持久化 key（参考工作流管理云端方案：服务端磁盘为准，localStorage 兜底；只做位置，其它状态不上云）
+const XZG_CLOUD_POS_KEY = "xzg_float_pos";
+let _cloudPosTimer = null; // 位置云端推送防抖计时器
+let _posDragged = false;   // 本会话是否已手动拖动过位置（防止云端异步回写覆盖用户刚拖的位置）
 const XZG_DISPLAY_KEY = "xzg-display-v1";
 const XZG_DISPLAY_DEFAULT = {
   gpu_util: true,
@@ -127,6 +133,87 @@ function saveStore(store) {
     localStorage.setItem(XZG_STORE_KEY, JSON.stringify(store));
   } catch (e) {
     /* ignore */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 悬浮窗位置云端持久化（参考工作流管理的云端持久化方案：
+// 服务端 <ComfyUI>/user/xiaozhuguang/ 磁盘为准，localStorage 仅做离线兜底）
+// 只做「位置」（left/top/posVer）上云，显示项、运行历史、隐藏状态均不上云。
+// 流程：本地兜底 → 异步 cloudLoad 以服务端为准回写 → 拖动松手防抖上云 + 页面关闭前 sendBeacon 兜底。
+// ---------------------------------------------------------------------------
+
+/** 从本地 store 提取位置部分；无有效位置时返回 null */
+function collectFloatPos(store) {
+  const s = store || loadStore();
+  if (s.posVer !== XZG_POS_VER) return null;
+  if (!s.left && !s.top) return null;
+  return { left: s.left, top: s.top, posVer: XZG_POS_VER };
+}
+
+/** 把位置应用到浮窗 DOM（与本地记忆逻辑同语义） */
+function applyPosStyle(root, left, top) {
+  if (left) root.style.left = left;
+  if (top) root.style.top = top;
+  if (left || top) {
+    root.style.right = "auto";
+    root.style.bottom = "auto";
+  }
+}
+
+/** 位置变化后防抖推送云端（拖动松手触发，合并连续拖动） */
+function queueCloudSavePos() {
+  if (_cloudPosTimer) clearTimeout(_cloudPosTimer);
+  _cloudPosTimer = setTimeout(() => {
+    _cloudPosTimer = null;
+    const local = collectFloatPos(loadStore());
+    if (local) cloudSave(XZG_CLOUD_POS_KEY, local).catch(() => {});
+  }, 400);
+}
+
+/** 页面关闭/刷新前同步推送最新位置（sendBeacon keepalive），兜住防抖窗口内被打断的最后一次拖动 */
+function pushFloatPosSync() {
+  try {
+    const local = collectFloatPos(loadStore());
+    if (!local) return;
+    const body = JSON.stringify({ key: XZG_CLOUD_POS_KEY, data: local });
+    // 用 api.apiURL 拼接（云平台可能挂载在子路径下，硬编码根路径会 404 导致兜底推送失败）
+    const storeUrl = api.apiURL("/xzg_cloud_store");
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(storeUrl, new Blob([body], { type: "application/json" }));
+    } else {
+      const x = new XMLHttpRequest();
+      x.open("POST", storeUrl, false);
+      x.setRequestHeader("Content-Type", "application/json");
+      x.send(body);
+    }
+  } catch (e) { /* ignore */ }
+}
+window.addEventListener("pagehide", pushFloatPosSync);
+
+/** 异步恢复云端位置：服务端有则应用并回写本地；服务端无但有本地则首次上云 */
+async function cloudRestoreFloatPos(root) {
+  try {
+    const remote = await cloudLoad(XZG_CLOUD_POS_KEY, { fallbackValue: null });
+    if (remote && typeof remote === "object" && remote.posVer === XZG_POS_VER &&
+        (remote.left || remote.top)) {
+      // 本会话已手动拖动过：以用户刚拖的位置为准（已由 queueCloudSavePos 推上云），跳过云端回写
+      if (_posDragged) return;
+      const store = loadStore();
+      if (store.left !== remote.left || store.top !== remote.top || store.posVer !== XZG_POS_VER) {
+        store.left = remote.left;
+        store.top = remote.top;
+        store.posVer = XZG_POS_VER;
+        saveStore(store);
+      }
+      applyPosStyle(root, remote.left, remote.top);
+    } else {
+      // 服务端暂无：把本地位置首次上云
+      const local = collectFloatPos(loadStore());
+      if (local) cloudSave(XZG_CLOUD_POS_KEY, local).catch(() => {});
+    }
+  } catch (e) {
+    // 服务端不可用：保留本地
   }
 }
 
@@ -374,13 +461,10 @@ function createFloatWindow() {
   if (hidden) root.style.display = "none";
   // 仅当位置由当前方案（右下角默认）保存过才应用记忆；开启“保持默认”时始终用默认位置
   if (store.posVer === XZG_POS_VER) {
-    if (store.left) root.style.left = store.left;
-    if (store.top) root.style.top = store.top;
-    if (store.left || store.top) {
-      root.style.right = "auto";
-      root.style.bottom = "auto";
-    }
+    applyPosStyle(root, store.left, store.top);
   }
+  // 云端位置恢复（异步）：以服务端为准回写本地；服务端暂无则把本地首次上云
+  cloudRestoreFloatPos(root);
   root.innerHTML = `<div class="xzg-bd"></div>`;
 
   const body = root.querySelector(".xzg-bd");
@@ -526,12 +610,14 @@ function createFloatWindow() {
   window.addEventListener("mouseup", () => {
     if (!dragging) return;
     dragging = false;
+    _posDragged = true;
     saveStore({
       ...loadStore(),
       left: root.style.left,
       top: root.style.top,
       posVer: XZG_POS_VER,
     });
+    queueCloudSavePos(); // 位置变化后防抖推送到云端
   });
 
   function setVisible(v) {
