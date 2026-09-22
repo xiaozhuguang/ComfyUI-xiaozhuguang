@@ -70,6 +70,15 @@ export class XiaozhuguangVideoPlayer {
         // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
         // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
         this._exclusiveDecoder = !!options.exclusiveDecoder;
+        // 对比预览可指定更小的解码边长及预读帧数，避免多路 4K 原片同时解码时
+        // 每个播放器都按全分辨率占用 CPU/GPU 和大量 Canvas 内存。
+        this._previewMaxSide = Number.isFinite(options.previewMaxSide)
+            ? Math.max(320, Math.round(options.previewMaxSide)) : 0;
+        this._playbackBufferMaxFrames = Number.isFinite(options.playbackBufferFrames)
+            ? Math.max(2, Math.min(10, Math.round(options.playbackBufferFrames))) : 10;
+        // 同步对比可请求后端生成有码率上限的 H.264 代理；0 表示仅做编码兼容转码。
+        this._transcodeMaxBitrateKbps = Number.isFinite(options.transcodeMaxBitrateKbps)
+            ? Math.max(0, Math.round(options.transcodeMaxBitrateKbps)) : 0;
         // 低内存版选项（小珠光视频加载低内存版专用，默认关闭不影响既有播放器）：
         // - decoderPool：自带 LRU 上限的独立解码器池（B2，切换视频自动释放旧解码器）
         // - streamSource：流式打开（B3，UrlSource 按 Range 拉取，整文件不驻留内存）
@@ -1207,7 +1216,12 @@ export class XiaozhuguangVideoPlayer {
         try {
             const resp = await api.fetchApi("/xzg/video_ensure_h264", {
                 method: "POST",
-                body: JSON.stringify({ filename, type: type || "input", subfolder: subfolder || "" }),
+                body: JSON.stringify({
+                    filename,
+                    type: type || "input",
+                    subfolder: subfolder || "",
+                    max_video_bitrate_kbps: this._transcodeMaxBitrateKbps,
+                }),
             });
             const data = await resp.json();
             if (!(data && data.transcoded && data.filename)) return null;
@@ -1254,7 +1268,10 @@ export class XiaozhuguangVideoPlayer {
             // 降采样伪影（显示端始终是"缩小"）。
             // 但 4K 全分辨率解码在低配/大文件/WebCodecs 资源受限场景可能失败，失败时自动降级到
             // 1280 低分辨率保底显示，避免预览丢失（出现"双击上传视频"空态）。
-            const PREVIEW_SIDES = [4320, 1280];
+            const PREVIEW_SIDES = this._previewMaxSide > 0
+                // 对比预览的首选档位失败时继续以 720p 兜底，不能因性能优化反而失去预览。
+                ? [...new Set([this._previewMaxSide, Math.min(720, this._previewMaxSide)])]
+                : [4320, 1280];
             let lastError = null;
             let loaded = false;
             for (const maxPreviewSide of PREVIEW_SIDES) {
@@ -1265,7 +1282,15 @@ export class XiaozhuguangVideoPlayer {
                 ? await this._decoderPool.getExclusive(poolKey, poolType, playSrc, maxPreviewSide, { stream: this._streamSource })
                 : await this._decoderPool.get(poolKey, poolType, playSrc, null, 0, maxPreviewSide, { stream: this._streamSource });
             // P1: 校验 token，若期间又调用了 load 则放弃本次结果
-            if (token !== this._loadToken) return;
+            // 窗口关闭或切换视频期间，异步解码仍可能刚好完成。
+            // 对比预览使用独占解码器；若此时直接 return，会遗留 Blob、帧缓存与 sink
+            // 直到页面刷新才有机会回收。失效结果必须由这里主动关闭。
+            if (token !== this._loadToken || this._destroyed) {
+                if (this._exclusiveDecoder) {
+                    try { decoder.close(); } catch (_) {}
+                }
+                return;
+            }
             this._currentDecoder = decoder;
             // 设置视频比例
             if (decoder.width && decoder.height) {
@@ -1309,7 +1334,10 @@ export class XiaozhuguangVideoPlayer {
             this._updateSurfaceSize();
             // P6b: 高分辨率(全分辨率)解码时按内存预算收紧播放预缓冲帧数，防止 4K 帧把缓冲撑爆
             const _frameBytes = (this._canvas.width || 1) * (this._canvas.height || 1) * 4;
-            this._playbackBufferSize = Math.max(2, Math.min(10, Math.floor((200 * 1024 * 1024) / Math.max(_frameBytes, 1))));
+            this._playbackBufferSize = Math.max(2, Math.min(
+                this._playbackBufferMaxFrames,
+                Math.floor((200 * 1024 * 1024) / Math.max(_frameBytes, 1))
+            ));
             // 渲染首帧
             // 修复首帧黑屏：renderFrame 是 fire-and-forget（只调度 RAF、不等待解码绘制完成），
             // 且部分视频在 time=0 处取不到帧（首帧 PTS 非 0）→ 偶发"首帧黑屏、播放一次后正常"。
@@ -2087,6 +2115,16 @@ export class XiaozhuguangVideoPlayer {
 
     // Canvas 架构 getters
     get isPlaying() { return !!this._isPlayingState; }
+    // 对比窗口用此状态区分“文件已加载”与“当前预读帧是否充足”。
+    // 不暴露内部队列本身，避免外部误修改播放状态。
+    getPlaybackBufferState() {
+        return {
+            bufferedFrames: this._playbackBuffer.length,
+            targetFrames: this._playbackBufferSize,
+            isFilling: this._isBuffering,
+            exhausted: this._playbackIteratorDone,
+        };
+    }
     get currentTime() { return this._currentTime ?? 0; }
     get duration() { return this._currentDecoder?.duration ?? 0; }
     get videoWidth() { return this._currentDecoder?.width ?? 0; }
@@ -2102,6 +2140,9 @@ export class XiaozhuguangVideoPlayer {
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
+        // 使仍在进行的 _loadDecoderAsync 结果失效。配合其完成后的 close，
+        // 保证关闭同步对比窗口不会留下迟到的独占解码器。
+        this._loadToken++;
         // Canvas 架构清理
         this._stopPlaybackLoop();
         this._stopAudio();
@@ -2165,7 +2206,13 @@ export class XiaozhuguangVideoPlayer {
         }
         if (this._placeholder) this._placeholder.remove();
         if (this._loadingSpinner) this._loadingSpinner.remove();
-        if (this._canvas) this._canvas.remove();
+        if (this._canvas) {
+            // 移除 DOM 节点不会在所有浏览器中立即释放 Canvas backing store；
+            // 先归零可主动归还高分辨率对比预览占用的图像内存。
+            this._canvas.width = 0;
+            this._canvas.height = 0;
+            this._canvas.remove();
+        }
         if (this._videoSurface) this._videoSurface.remove();
         if (this._progressContainer) this._progressContainer.remove();
         if (this._progressThumb) this._progressThumb.remove();

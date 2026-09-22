@@ -234,7 +234,8 @@ function _ensureStyle() {
     .xzg-sp-btn:hover { background: #444; }
     .xzg-sp-btn-primary { background: #2980b9; border-color: #2980b9; }
     .xzg-sp-btn-primary:hover { background: #3498db; }
-    .xzg-sp-status { margin-left: auto; font-size: 12px; color: #999; }
+    .xzg-sp-btn.active { background: #766c28; border-color: #dcc85b; color: #fff3a0; }
+    .xzg-sp-status { font-size: 12px; color: #999; white-space: nowrap; }
     .xzg-sp-scrub {
         display: flex; align-items: center; gap: 8px; flex: 1;
         min-width: 220px;
@@ -305,6 +306,12 @@ function openSyncPreview(items) {
     const _n = items.length;
     grid.style.gridTemplateColumns = "repeat(" + _n + ", 1fr)";
     grid.style.gridTemplateRows = "repeat(1, 1fr)";
+    // 同时播放多路视频时，解码成本远高于画面实际显示尺寸。对比窗口优先流畅度：
+    // 两路保留 1440p 细节，三至四路用 1080p，更多路用 720p；逐帧查看仍可精确对齐。
+    const previewMaxSide = _n <= 2 ? 1440 : (_n <= 4 ? 1080 : 720);
+    // 预读按预览分辨率控制：双路 6 帧（约 0.2 秒）、多路 4 帧。
+    // 比原先 4/2 更能吸收高码率瞬时解码波动，同时仍受分辨率上限约束。
+    const playbackBufferFrames = _n <= 2 ? 6 : 4;
     const players = [];
     for (const it of items) {
         const cell = document.createElement("div");
@@ -324,6 +331,10 @@ function openSyncPreview(items) {
             fit: "contain", // 保持原比例、不裁剪，在播放区域内居中最大化
             ui: false, // 隐藏播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）
             exclusiveDecoder: true, // 多视频同时 seek 对比：每个播放器独立解码，避免共享解码器渲染状态互相抢占
+            previewMaxSide,
+            playbackBufferFrames,
+            streamSource: true, // 支持 Range 时按需读取，避免整段高码率原片常驻内存
+            transcodeMaxBitrateKbps: 10000, // 高于 10 Mbps 的原片生成可复用代理，降低实时解码压力
             // 点击任一视频画面切换播放/暂停时，同步所有视频（与左下角按钮一致：从暂停处继续）
             onPlay: () => syncResume(),
             onPause: () => syncPause(),
@@ -368,6 +379,9 @@ function openSyncPreview(items) {
     if (_n !== 2) wipeBtn.style.display = "none"; // 仅两个视频时提供划像对比
     const swapBtn = mkBtn("⇄ 交换左右", "交换两个视频的左右顺序（仅 2 个视频）");
     if (_n !== 2) swapBtn.style.display = "none";
+    const ultrawideBtn = mkBtn("🖥 带鱼屏", "双路竖屏时让视频靠近中间，避免在带鱼屏上相距过远");
+    if (_n !== 2) ultrawideBtn.style.display = "none";
+    let ultrawideMode = false;
     let _swapped = false;
     const setSwap = (s) => {
         _swapped = s;
@@ -402,6 +416,7 @@ function openSyncPreview(items) {
     scrubWrap.appendChild(scrubRange);
     const statusEl = document.createElement("span");
     statusEl.className = "xzg-sp-status";
+    statusEl.textContent = "加载中...";
 
     // 主视频（用于进度条/时间显示）：取第一个已有有效时长的
     const pickMain = () => {
@@ -434,12 +449,14 @@ function openSyncPreview(items) {
     scrubRange.addEventListener("change", () => {
         _scrubbing = false;
     });
-    // 多视频同步播放：定期以主视频为基准软对齐各播放器时间。
-    // 各播放器独立 RAF 循环，掉帧/解码延迟会各自累积漂移（不同帧率视频尤其明显），
-    // 这里用低频率 seek 校正，抵消漂移；偏差低于阈值不打扰（避免频繁跳帧）。
+    // 多视频同步播放：以主视频为基准做“硬漂移才校准”。
+    // 高码率时频繁 seek 会让解码器反复跳回关键帧附近，造成更严重的卡顿与不同步；
+    // 因此允许短暂掉帧自行追上，只有明显漂移连续出现才触发一次 seek。
     let _lastAlignAt = 0;
-    const ALIGN_INTERVAL = 500;   // 对齐检查间隔（ms）
-    const ALIGN_THRESHOLD = 0.08; // 偏差阈值（秒），低于此不打扰（避免频繁跳帧）
+    const ALIGN_INTERVAL = 750;          // 对齐检查间隔（ms）
+    const HARD_DRIFT_SECONDS = 0.25;     // 小于约 6 帧（24fps）的偏差不抢占解码
+    const HARD_DRIFT_CONFIRMATIONS = 2;  // 连续两次仍明显漂移才硬校准
+    const driftCounts = new Map();
     const alignPlayers = (now) => {
         if (!playing) return; // 暂停时不强制对齐：避免逐帧浏览时各播放器帧位被拉回主时间
         if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
@@ -452,9 +469,33 @@ function openSyncPreview(items) {
             const d = p.player.duration;
             if (!d || !isFinite(d) || d <= 0) continue;
             const ct = p.player.currentTime || 0;
-            if (Math.abs(ct - master) > ALIGN_THRESHOLD) {
+            const drift = Math.abs(ct - master);
+            const count = drift > HARD_DRIFT_SECONDS ? (driftCounts.get(p) || 0) + 1 : 0;
+            driftCounts.set(p, count);
+            if (count >= HARD_DRIFT_CONFIRMATIONS) {
                 try { p.player.seek(Math.max(0, Math.min(master, d))); } catch (_) {}
+                driftCounts.set(p, 0);
             }
+        }
+    };
+    let _lastBufferStatusText = "";
+    const updateBufferStatus = () => {
+        if (!playing) return;
+        const states = players
+            .filter((p) => p.player.duration > 0)
+            .map((p) => p.player.getPlaybackBufferState?.());
+        if (!states.length) return;
+        const minBuffered = Math.min(...states.map((s) => s.bufferedFrames));
+        const maxBuffered = Math.max(...states.map((s) => s.bufferedFrames));
+        const target = Math.max(...states.map((s) => s.targetFrames));
+        const filling = states.some((s) => s.isFilling);
+        const range = minBuffered === maxBuffered ? String(minBuffered) : `${minBuffered}-${maxBuffered}`;
+        const text = minBuffered === 0 && filling
+            ? `⏳ 解码缓冲中 0/${target} 帧`
+            : `▶ 播放中 · 缓冲 ${range}/${target} 帧`;
+        if (text !== _lastBufferStatusText) {
+            statusEl.textContent = text;
+            _lastBufferStatusText = text;
         }
     };
     // 播放中每帧平滑刷新进度条（拖动时暂停刷新；仅数值变化时写入 DOM，避免无谓开销）
@@ -462,6 +503,7 @@ function openSyncPreview(items) {
         const now = performance.now();
         if (!_scrubbing) {
             alignPlayers(now);
+            updateBufferStatus();
             const main = pickMain();
             const d = main.player.duration;
             if (d && isFinite(d) && d > 0) {
@@ -694,7 +736,9 @@ function openSyncPreview(items) {
     ctrl.appendChild(zoomBtn);
     ctrl.appendChild(wipeBtn);
     ctrl.appendChild(swapBtn);
+    ctrl.appendChild(ultrawideBtn);
     ctrl.appendChild(scrubWrap);
+    ctrl.appendChild(statusEl);
     closeBtn.style.marginLeft = "auto";
     ctrl.appendChild(closeBtn);
     // 控制栏（菜单 + 播放台）置于窗口最顶部，视频区之下
@@ -860,17 +904,34 @@ function openSyncPreview(items) {
     const applyGridLayout = () => {
         const ratios = players.map(p => p.player._videoRatio || 16 / 9);
         let cols, rows;
-        if (ratios.every(r => r < 1)) {
+        const portraitPair = _n === 2 && ratios.every(r => r < 1);
+        if (ultrawideMode && portraitPair) {
+            // 带鱼屏模式：竖屏画面以高度为主计算合适的窄列，整个双列网格居中。
+            // 26vw 防止普通显示器过宽，45vh 则让 9:16 画面几乎填满视频区域高度。
+            cols = 2;
+            rows = 1;
+            grid.style.gridTemplateColumns = "repeat(2, minmax(0, min(26vw, 45vh)))";
+            grid.style.justifyContent = "center";
+        } else if (ratios.every(r => r < 1)) {
             // 全部竖屏：横向排开，让每个格子占满整列高度
             cols = _n <= 4 ? _n : Math.ceil(_n / 2);
             rows = Math.ceil(_n / cols);
+            grid.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
+            grid.style.justifyContent = "";
         } else {
             // 横屏或混合：以 2~3 列为主
             cols = _n === 1 ? 1 : (_n === 2 ? 2 : (_n <= 4 ? 2 : (_n <= 6 ? 3 : 4)));
             rows = Math.ceil(_n / cols);
+            grid.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
+            grid.style.justifyContent = "";
         }
-        grid.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
         grid.style.gridTemplateRows = "repeat(" + rows + ", 1fr)";
+        // 横屏/混合画面下不启用，避免意外压缩正常双路对比；保留按钮但禁用并说明原因。
+        ultrawideBtn.disabled = !portraitPair;
+        ultrawideBtn.title = portraitPair
+            ? "双路竖屏时让视频靠近中间，避免在带鱼屏上相距过远"
+            : "带鱼屏模式仅适用于两个竖屏视频";
+        ultrawideBtn.classList.toggle("active", ultrawideMode && portraitPair);
         // 重排后校准各播放器画布尺寸
         requestAnimationFrame(() => {
             for (const p of players) {
@@ -879,6 +940,11 @@ function openSyncPreview(items) {
             recordHolderBase(); // 布局稳定后重新记录窗格基线，保证缩放锚点准确
         });
     };
+    ultrawideBtn.addEventListener("click", () => {
+        if (ultrawideBtn.disabled) return;
+        ultrawideMode = !ultrawideMode;
+        applyGridLayout();
+    });
     const tryStart = () => {
         if (forceStarted) return;
         if (readyCount >= players.length) {

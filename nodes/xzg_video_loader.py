@@ -1155,7 +1155,37 @@ def _xzg_detect_stream_codecs(filename, file_type="input", subfolder=""):
     return vcodec, acodec
 
 
-def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=False):
+def _xzg_video_bitrate_kbps(video_path):
+    """返回第一路视频流码率（kbps）；探测失败返回 0。
+
+    优先 ffprobe 的视频流 bit_rate，避免容器总码率把音频也算进来；
+    没有 ffprobe 时回退解析 ffmpeg 输出，仍失败则保守地不触发码率代理。
+    """
+    fp = _get_ffprobe_path()
+    if fp:
+        try:
+            proc = subprocess.run(
+                [fp, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=bit_rate", "-of", "json", video_path],
+                capture_output=True, timeout=15, check=False,
+            )
+            data = json.loads(proc.stdout.decode(*ENCODE_ARGS) or "{}")
+            raw = ((data.get("streams") or [{}])[0]).get("bit_rate")
+            if raw:
+                return max(0, int(int(raw) / 1000))
+        except Exception:
+            pass
+    try:
+        proc = subprocess.run([ffmpeg_path, "-i", video_path], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=15, check=False)
+        m = re.search(r"bitrate:\s*(\d+)\s*kb/s", proc.stderr.decode(*ENCODE_ARGS), re.IGNORECASE)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+
+def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=False,
+                           max_video_bitrate_kbps=0):
     """懒触发兜底：若视频或音轨是 WebCodecs 解不了的编码（如 HEVC / MP3），转成 H.264+AAC 并返回可播放文件信息。
 
     返回 dict:
@@ -1166,6 +1196,7 @@ def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=Fals
       - codec: str|None     探测到的视频编码
       - audio_codec: str|None 探测到的音频编码（无音轨为 None）
       - transcoding: bool   是否触发了转码（供前端判读）
+      - source_bitrate_kbps: int  源视频流码率（探测失败为 0）
     """
     try:
         codec, audio_codec = _xzg_detect_stream_codecs(filename, file_type, subfolder)
@@ -1173,25 +1204,34 @@ def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=Fals
         codec = audio_codec = None
     video_ok = (codec is None) or (codec in WEBCODECS_DECODABLE)
     audio_ok = (audio_codec is None) or (audio_codec in AUDIOCODECS_DECODABLE)
-    # 视频与音轨都可解 → 用原片，不转码（懒触发：可解就不动）
-    if not force and video_ok and audio_ok:
-        return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
-                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
-
+    try:
+        bitrate_cap = max(0, int(max_video_bitrate_kbps or 0))
+    except Exception:
+        bitrate_cap = 0
     video_path = _xzg_loader_abs(filename, file_type, subfolder)
+    source_bitrate_kbps = _xzg_video_bitrate_kbps(video_path) if (bitrate_cap and os.path.isfile(video_path)) else 0
+    needs_bitrate_proxy = bitrate_cap > 0 and source_bitrate_kbps > bitrate_cap
+    # 视频与音轨都可解且未超过对比预览码率上限 → 用原片，零开销。
+    if not force and video_ok and audio_ok and not needs_bitrate_proxy:
+        return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
+                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False,
+                "source_bitrate_kbps": source_bitrate_kbps}
+
     if not os.path.isfile(video_path):
         return {"transcoded": False, "filename": filename, "subfolder": subfolder or "",
-                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
+                "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False,
+                "source_bitrate_kbps": source_bitrate_kbps}
 
     # 生成转码缓存键（源绝对路径 + 大小 + mtime，源变化可自动失效）
     try:
         h = hashlib.md5(
-            f"{video_path}|{os.path.getsize(video_path)}|{os.path.getmtime(video_path)}".encode("utf-8")
+            f"{video_path}|{os.path.getsize(video_path)}|{os.path.getmtime(video_path)}|{bitrate_cap}".encode("utf-8")
         ).hexdigest()[:10]
     except Exception:
         h = hashlib.md5(video_path.encode("utf-8")).hexdigest()[:10]
     base = os.path.splitext(os.path.basename(filename))[0]
-    out_name = f"{base}_{h}_h264.mp4"
+    suffix = f"_{bitrate_cap}k" if needs_bitrate_proxy else ""
+    out_name = f"{base}_{h}{suffix}_h264.mp4"
     out_rel = f"{XZG_LOADER_H264_SUBDIR}/{out_name}"
     out_abs = os.path.join(folder_paths.get_input_directory(), XZG_LOADER_H264_SUBDIR, out_name)
     os.makedirs(os.path.dirname(out_abs), exist_ok=True)
@@ -1199,13 +1239,21 @@ def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=Fals
     # 缓存已存在 → 直接复用
     if os.path.isfile(out_abs):
         return {"transcoded": True, "filename": out_rel, "subfolder": XZG_LOADER_H264_SUBDIR,
-                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True}
+                "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True,
+                "source_bitrate_kbps": source_bitrate_kbps}
 
-    cmd = [ffmpeg_path, "-y", "-v", "error",
-           "-i", video_path,
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-           "-c:a", "aac", "-ar", "44100", "-ac", "2", out_abs]
+    cmd = [ffmpeg_path, "-y", "-v", "error", "-i", video_path,
+           "-c:v", "libx264", "-preset", "veryfast"]
+    if needs_bitrate_proxy:
+        # 留出 AAC/封装开销：用户设 10000 kbps 时视频流限制为 9500 kbps，
+        # 令产物总码率通常仍保持在 10 Mbps 内；maxrate 防止瞬时码率反弹。
+        video_target = max(500, bitrate_cap - 500)
+        cmd += ["-b:v", f"{video_target}k", "-maxrate", f"{video_target}k",
+                "-bufsize", f"{video_target * 2}k"]
+    else:
+        cmd += ["-crf", "20"]
+    cmd += ["-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", out_abs]
 
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=1800)
@@ -1223,7 +1271,8 @@ def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=Fals
                 "type": file_type, "codec": codec, "audio_codec": audio_codec, "transcoding": False}
 
     return {"transcoded": True, "filename": out_rel, "subfolder": XZG_LOADER_H264_SUBDIR,
-            "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True}
+            "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True,
+            "source_bitrate_kbps": source_bitrate_kbps}
 
 
 if getattr(_xzg_PS, 'instance', None) is not None:
@@ -1237,9 +1286,13 @@ if getattr(_xzg_PS, 'instance', None) is not None:
         file_type = data.get("type", "input")
         subfolder = data.get("subfolder", "")
         force = bool(data.get("force", False))
+        max_video_bitrate_kbps = data.get("max_video_bitrate_kbps", 0)
         if not filename:
             return _xzg_web2.json_response({"error": "filename required"}, status=400)
-        result = ensure_h264_for_loader(filename, file_type, subfolder, force=force)
+        result = ensure_h264_for_loader(
+            filename, file_type, subfolder, force=force,
+            max_video_bitrate_kbps=max_video_bitrate_kbps,
+        )
         return _xzg_web2.json_response(result)
 
     @_xzg_PS.instance.routes.post("/xzg/video_upload_start")
