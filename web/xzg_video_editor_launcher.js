@@ -12,7 +12,6 @@
  * （设置项：小珠光 · 右上角功能区显示「快剪」）。
  */
 import { app } from "../../scripts/app.js";
-import { XiaozhuguangVideoEditor } from "./xzg_video_editor.js";
 
 const BTN_ID = "xzg-quick-edit-btn";
 const GOLD = "#dcc85b";
@@ -21,6 +20,7 @@ const GOLD = "#dcc85b";
 const SETTING_ID = "xiaozhuguang.Toggle.ShowQuickCutInTopMenu";
 
 let _editorInstance = null;
+let _editorModulePromise = null;
 let _btn = null;
 let _settingRegistered = false;   // 快剪设置已成功注册的标记（避免重复注册）
 
@@ -60,12 +60,26 @@ function buildButton() {
     btn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        openEditor();
+        openEditor().catch((error) => {
+            console.error("[小珠光] 快剪模块加载失败:", error);
+            alert("快剪模块加载失败，请刷新页面后重试。");
+        });
     });
     return btn;
 }
 
-function openEditor(options = {}) {
+function loadEditorModule() {
+    if (!_editorModulePromise) {
+        // 快剪编辑器约 600 KB，只有用户实际打开快剪时才解析和初始化。
+        _editorModulePromise = import("./xzg_video_editor.js").catch((error) => {
+            _editorModulePromise = null;
+            throw error;
+        });
+    }
+    return _editorModulePromise;
+}
+
+async function openEditor(options = {}) {
     // 单例：已打开则不重复创建
     if (_editorInstance && !_editorInstance._destroyed) {
         // 切换打开来源：更新回调 / 模式过滤（无参=菜单独立打开，恢复完整 UI）
@@ -76,6 +90,17 @@ function openEditor(options = {}) {
             (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
         _editorInstance._applyModeFilter?.();
         window._xzgVideoEditorInstance = _editorInstance;
+        return _editorInstance;
+    }
+    const { XiaozhuguangVideoEditor } = await loadEditorModule();
+    // 动态加载期间可能已有另一入口打开了编辑器；再次检查以维持单例。
+    if (_editorInstance && !_editorInstance._destroyed) {
+        _editorInstance._confirmCallback =
+            typeof options.confirmCallback === "function" ? options.confirmCallback : null;
+        _editorInstance._confirmCallbackCalled = false;
+        _editorInstance._modeFilter =
+            (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
+        _editorInstance._applyModeFilter?.();
         return _editorInstance;
     }
     _editorInstance = new XiaozhuguangVideoEditor(options);

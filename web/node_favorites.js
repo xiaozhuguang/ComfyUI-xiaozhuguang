@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
-import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
+import { getPinyin, warmupPinyinWhenIdle } from "./xzg_pinyin_loader.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 // ====== 收藏器设置云持久化 ======
@@ -79,7 +79,6 @@ async function favCloudRestore() {
         console.warn("[小珠光] 从云同步收藏器设置失败:", e);
     }
 }
-window.pinyinPro = { pinyin: pinyinPro };
 
 const STORAGE_KEY = "comfyui_xiaozhuguang";
 const SETTING_TOGGLE_SHORTCUT = "xiaozhuguang.ToggleShortcut";
@@ -410,6 +409,8 @@ class Xiaozhuguang {
             registerNodeFavoritesSetting();
             this.enabled = isNodeFavoritesEnabled();
             if (!this.enabled) return; // 设置里关闭了收藏器：不注入监听、不创建面板
+
+            warmupPinyinWhenIdle();
 
             this.setupKeyboardListener();
             this.setupDragDrop();
@@ -3684,7 +3685,8 @@ class Xiaozhuguang {
     toPinyinInitials(text) {
         if (!text || typeof text !== 'string') return '';
         try {
-            return window.pinyinPro.pinyin(text, { pattern: 'first', toneType: 'none', type: 'string' }).replace(/\s/g, '');
+            const pinyin = getPinyin();
+            return pinyin ? pinyin(text, { pattern: 'first', toneType: 'none', type: 'string' }).replace(/\s/g, '') : '';
         } catch(e) { return ''; }
     }
 
@@ -3692,7 +3694,8 @@ class Xiaozhuguang {
     toPinyinFull(text) {
         if (!text || typeof text !== 'string') return '';
         try {
-            return window.pinyinPro.pinyin(text, { toneType: 'none', type: 'string' }).replace(/\s/g, '');
+            const pinyin = getPinyin();
+            return pinyin ? pinyin(text, { toneType: 'none', type: 'string' }).replace(/\s/g, '') : '';
         } catch(e) { return ''; }
     }
 

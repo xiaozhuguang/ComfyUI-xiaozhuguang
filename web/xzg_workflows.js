@@ -1,6 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
-import { pinyin as pinyinPro } from "./pinyin-pro.esm.js";
+import { getPinyin, warmupPinyinWhenIdle } from "./xzg_pinyin_loader.js";
 import { xzgT } from "./xzg_i18n.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
@@ -213,6 +213,8 @@ class XZGWorkflowsManager {
             registerWorkflowsSetting();
             this.enabled = isWorkflowsEnabled();
             if (!this.enabled) return; // 设置里关闭了工作流管理器：不注入监听、不注册侧边栏
+
+            warmupPinyinWhenIdle();
 
             this.loadMeta();
             this.setupKeyboardListener();
@@ -3647,7 +3649,7 @@ class XZGWorkflowsManager {
     toPinyinInitials(text) {
         if (!text || typeof text !== 'string') return '';
         try {
-            const p = window.pinyinPro?.pinyin || pinyinPro;
+            const p = getPinyin();
             return p(text, { pattern: 'first', toneType: 'none', type: 'string' }).replace(/\s/g, '');
         } catch(e) { return ''; }
     }
@@ -3655,7 +3657,7 @@ class XZGWorkflowsManager {
     toPinyinFull(text) {
         if (!text || typeof text !== 'string') return '';
         try {
-            const p = window.pinyinPro?.pinyin || pinyinPro;
+            const p = getPinyin();
             return p(text, { toneType: 'none', type: 'string' }).replace(/\s/g, '');
         } catch(e) { return ''; }
     }

@@ -332,11 +332,7 @@ def clear_xzg_cache():
         except Exception:
             continue
 
-    msg = (f"[小珠光] 缓存清理：删除 {result['removed_files']} 个散落单帧文件 + "
-           f"{result['removed_dirs']} 个目录（含 fastcut-cache 总目录）")
-    if result["failed_dirs"]:
-        msg += f"；{result['failed_dirs']} 个目录删除失败（文件可能被占用）"
-    print(msg)
+    # 正常清理不打印控制台日志；删除失败仍由上方的具体错误日志说明原因。
     return result
 
 
@@ -1091,7 +1087,6 @@ def _xzg_ve_nvenc_available():
         )
         out = proc.stdout.decode(*ENCODE_ARGS) + proc.stderr.decode(*ENCODE_ARGS)
         _XZG_VE_NVENC_CACHE = "h264_nvenc" in out
-        print(f"[小珠光] NVENC 硬件编码可用性: {_XZG_VE_NVENC_CACHE}")
     except Exception as e:
         _XZG_VE_NVENC_CACHE = False
         print(f"[小珠光] NVENC 检测失败，回退软编: {e}")
@@ -1200,11 +1195,6 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
     if not norm_clips:
         raise Exception("no valid clips")
 
-    # 调试日志：打印规整后的片段信息
-    print(f"[小珠光] render_timeline: {len(norm_clips)} clips")
-    for c in norm_clips:
-        print(f"  kind={c['kind']} track={c['track']} file={c['filename']} start={c['start']:.3f} end={c['end']:.3f} tlStart={c['tlStart']:.3f} has_audio={c['has_audio']}")
-
     # 分离视频轨（v1 下层/v2 上层）和音频轨（a1/a2）
     norm_video = [c for c in norm_clips if c['kind'] != 'audio']
     norm_video_v1 = [c for c in norm_video if c['track'] != 'v2']
@@ -1263,13 +1253,6 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
     total_duration = max(video_end, audio_end)
     if total_duration < 0.01:
         raise Exception("timeline too short")
-
-    # 调试：打印音频片段裁剪信息，便于排查「裁剪后加载器仍显示原时长」
-    if norm_audio:
-        print(f"[小珠光-调试] total_duration={total_duration:.3f} audio_only={audio_only}")
-        for c in norm_audio:
-            print(f"  audio track={c['track']} start={c['start']:.3f} end={c['end']:.3f} "
-                  f"dur={c['end']-c['start']:.3f} tlStart={c['tlStart']:.3f}")
 
     # 音频来源：独立音频片段 或 从视频提取
     has_independent_audio = len(norm_audio) > 0
@@ -1699,10 +1682,8 @@ def render_timeline(timeline, output_name=None, target_w=None, target_h=None, ta
             cmd += ["-compression_level", "5"]
         out_ext = fmt_info["extension"]
     else:
-        # 调试：打印完整 filter_complex，便于排查透明度/裁剪/移动/大小/音量
+        # filter_complex 可能很长且包含项目媒体路径，不在正常运行时输出到后端控制台。
         fc_str = ";".join(filter_parts)
-        print("[小珠光-调试] filter_complex:")
-        print(fc_str)
         cmd += ["-filter_complex", fc_str,
                 "-map", "[outv]"]
         if any_audio:
@@ -2034,7 +2015,6 @@ if getattr(_xzg_ve_PS, 'instance', None) is not None:
         audio_format = data.get("audio_format", "mp3")   # mp3 / flac / wav
         audio_bitrate = data.get("audio_bitrate", "128")  # 320 / 192 / 128（kbps，仅 mp3 生效）
         # default / saveas 都走 use_default_output=true；saveas 仅前端触发下载对话框
-        print(f"[小珠光快剪] 导出模式: {output_mode}, use_default_output={use_default_output}, audio_only={audio_only}, audio_format={audio_format}")
         out_name, out_type, extra = render_timeline(
             timeline, output_name, target_w, target_h, target_fps, quality,
             use_default_output, base_dir, filename_prefix, add_date_stamp, add_time_stamp,

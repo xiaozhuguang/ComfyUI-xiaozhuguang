@@ -5,7 +5,9 @@
 """
 
 import os
+import shutil
 import subprocess
+import threading
 import re
 import time
 import hashlib
@@ -1120,6 +1122,28 @@ WEBCODECS_DECODABLE = {"h264", "vp8", "vp9", "av1", "mpeg4", "avc1"}
 # 它的音轨无法被 mediabunny 解码 → 有画面没声音，同样需要转成 AAC。
 AUDIOCODECS_DECODABLE = {"aac", "mp4a", "opus", "flac", "vorbis", "pcm"}
 
+# 同一源文件的并发转码只允许一个 FFmpeg 实例运行；等待者在锁释放后复用成品。
+_xzg_h264_transcode_locks = {}
+_xzg_h264_transcode_locks_guard = threading.Lock()
+
+
+def _xzg_clear_video_proxy_cache_on_startup():
+    """后端启动时清空视频加载/同步对比产生的全部 H.264 代理缓存。
+
+    ``input/xzg-h264/`` 是本插件专用的可再生成目录，既包含高码率对比代理，
+    也包含 HEVC 等格式的兼容转码；重启后统一删除，避免一次性预览长期占用磁盘。
+    """
+    try:
+        cache_dir = os.path.join(folder_paths.get_input_directory(), XZG_LOADER_H264_SUBDIR)
+        if not os.path.exists(cache_dir):
+            return True
+        shutil.rmtree(cache_dir)
+        return True
+    except Exception as e:
+        # 正常清理保持静默；失败时保留诊断信息，避免用户误以为缓存已释放。
+        print(f"[小珠光视频加载器] 初始化视频代理缓存清理失败: {e}")
+        return False
+
 
 def _xzg_loader_abs(filename, file_type="input", subfolder=""):
     """把文件名(+subfolder)解析为绝对路径。temp 类型走临时目录，其余走 input 目录。"""
@@ -1242,6 +1266,26 @@ def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=Fals
                 "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True,
                 "source_bitrate_kbps": source_bitrate_kbps}
 
+    # 同一输出路径只转码一次：例如重复点开同步对比、多个播放器同时加载同一原片时，
+    # 后续请求在此等待；先完成的任务产出缓存后直接复用，避免 FFmpeg 竞争/覆盖写入。
+    with _xzg_h264_transcode_locks_guard:
+        transcode_lock = _xzg_h264_transcode_locks.setdefault(out_abs, threading.Lock())
+    with transcode_lock:
+        if os.path.isfile(out_abs):
+            return {"transcoded": True, "filename": out_rel, "subfolder": XZG_LOADER_H264_SUBDIR,
+                    "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True,
+                    "source_bitrate_kbps": source_bitrate_kbps}
+
+        return _xzg_transcode_h264_for_loader(
+            video_path, out_abs, out_rel, codec, audio_codec, file_type, filename, subfolder,
+            needs_bitrate_proxy, bitrate_cap, source_bitrate_kbps,
+        )
+
+
+def _xzg_transcode_h264_for_loader(video_path, out_abs, out_rel, codec, audio_codec, file_type,
+                                   filename, subfolder, needs_bitrate_proxy, bitrate_cap,
+                                   source_bitrate_kbps):
+    """执行已经取得单飞锁的 H.264 转码；调用方负责缓存复用和并发保护。"""
     cmd = [ffmpeg_path, "-y", "-v", "error", "-i", video_path,
            "-c:v", "libx264", "-preset", "veryfast"]
     if needs_bitrate_proxy:
@@ -1273,6 +1317,10 @@ def ensure_h264_for_loader(filename, file_type="input", subfolder="", force=Fals
     return {"transcoded": True, "filename": out_rel, "subfolder": XZG_LOADER_H264_SUBDIR,
             "type": "input", "codec": codec, "audio_codec": audio_codec, "transcoding": True,
             "source_bitrate_kbps": source_bitrate_kbps}
+
+
+# 每次 ComfyUI 后端加载本模块时回收全部视频代理；不输出成功日志。
+_xzg_clear_video_proxy_cache_on_startup()
 
 
 if getattr(_xzg_PS, 'instance', None) is not None:

@@ -84,6 +84,8 @@ const ARROW_BACKUP_PREFIX = "xzg_arrow_backup_";
 // 功能开关状态：初始化是否已完成 / 轮询是否进行中（供设置开关热切换，避免重复初始化）
 let arrowSystemInitialized = false;
 let _arrowInitPolling = false;
+// 工作流切换仅作兼容性兜底；保存句柄以便功能关闭后真正停止轮询。
+let _arrowWorkflowPollId = null;
 let currentArrow = null;
 let isDrawing = false;
 let startPoint = null;
@@ -128,7 +130,11 @@ let canvasElement = null;
 let canvasContext = null;
 let resizeObserver = null;
 let litegraphCanvas = null;
-let transformTrackerCleanup = null;
+// 变换状态由 ComfyUI 真实画布重绘时检查。此前这里有一个永久 rAF 轮询，
+// 即使画布静止、没有箭头也会每帧唤醒主线程。
+let _arrowLastTransformStr = "";
+let _arrowCanvasMoving = false;
+let _arrowMoveStopTimer = null;
 
 // 历史记录
 let history = [];
@@ -3940,6 +3946,7 @@ function toggleArrowMode() {
 // 设置开关热切换：启用/关闭整个箭头功能（ComfyUI 设置 → xiaozhuguang → 启用「箭头绘制工具」）
 function setArrowToolEnabled(v) {
     v = !!v;
+    _arrowEnabledCache = v;
     if (v) {
         // 启用：尚未初始化则走完整初始化轮询；已初始化则恢复覆盖层显示
         if (!arrowSystemInitialized) {
@@ -3947,6 +3954,7 @@ function setArrowToolEnabled(v) {
             return;
         }
         showOverlay();
+        startArrowWorkflowPolling();
         if (isArrowModeActive) {
             showToolbar();
             setPointerEventsMode("auto");
@@ -3967,6 +3975,12 @@ function setArrowToolEnabled(v) {
         }
         hideToolbar();
         hideOverlay();
+        stopArrowWorkflowPolling();
+        if (_arrowMoveStopTimer) {
+            clearTimeout(_arrowMoveStopTimer);
+            _arrowMoveStopTimer = null;
+        }
+        _arrowCanvasMoving = false;
         setPointerEventsMode("none");
         setCursor("default");
     }
@@ -4248,6 +4262,22 @@ function scheduleArrowRedrawAfterSwitch() {
     }, 200);
 }
 
+// 工作流的画布可能先重绘、箭头数据随后才经 configure / 轮询提交。
+// 这个短窗口里内存仍是上一工作流的 arrows，绝不能让同步钩子把它画到新画布上。
+function shouldSuppressStaleArrowFrame() {
+    try {
+        const visibleWorkflowKey = currentArrowWorkflowKey();
+        if (!visibleWorkflowKey || !_arrowActiveKey || visibleWorkflowKey === _arrowActiveKey) return false;
+        if (canvasElement) {
+            canvasElement.style.transition = "opacity 0s";
+            canvasElement.style.opacity = "0";
+        }
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 function handleArrowWorkflowSwitch(key, freshData, trusted) {
     // 关键防御：无工作流标识（切换瞬间前端短暂上报 null）时绝不动当前箭头，防止旧内容被误清后消失
     if (!key) return;
@@ -4304,6 +4334,18 @@ function pollArrowWorkflow() {
 /** 轮询间隔：越小切换响应越快（越小系统占用略增，250ms 平衡） */
 const ARROW_SWITCH_POLL_MS = 250;
 
+function startArrowWorkflowPolling() {
+    if (_arrowWorkflowPollId !== null || !isArrowToolEnabled()) return;
+    _arrowWorkflowPollId = setInterval(pollArrowWorkflow, ARROW_SWITCH_POLL_MS);
+}
+
+function stopArrowWorkflowPolling() {
+    if (_arrowWorkflowPollId !== null) {
+        clearInterval(_arrowWorkflowPollId);
+        _arrowWorkflowPollId = null;
+    }
+}
+
 /** 设置持久化 */
 function setupPersistence() {
     const LGraph = window.LGraph;
@@ -4331,6 +4373,9 @@ function setupPersistence() {
         app.loadGraphData = async function (graphData, ...args) {
             try {
                 // 开始加载工作流的瞬间立即隐藏旧覆盖层，消除切换时的残留
+                // 同时取消上一轮“首帧兜底显示”，避免快速切换时它把旧箭头重新显示出来。
+                _arrowSwitchToken++;
+                _arrowInstantShowPending = false;
                 if (canvasElement) {
                     canvasElement.style.transition = 'opacity 0s';
                     canvasElement.style.opacity = '0';
@@ -4564,8 +4609,9 @@ function setupPersistence() {
         };
     }
 
-    // 4) 轮询：检测活动工作流切换，底层前端不触发 configure/loadGraphData 时也能按工作流隔离箭头
-    setInterval(pollArrowWorkflow, ARROW_SWITCH_POLL_MS);
+    // 4) 轮询：检测活动工作流切换，底层前端不触发 configure/loadGraphData 时也能按工作流隔离箭头。
+    // 功能关闭时会由 stopArrowWorkflowPolling 停止，避免后台空转。
+    startArrowWorkflowPolling();
 }
 
 // ============================================================================
@@ -6556,61 +6602,6 @@ function initializeArrowSystem(litegraphCanvas) {
     // 创建工具栏（默认隐藏）
     createToolbar(container);
 
-    // 设置变换追踪（含渐入检测）
-    let lastTransformStr = "";
-    let _arrowCanvasMoving = false;
-    let _arrowMoveStopTimer = null;
-    const transformTrackerCleanup = createTransformTracker(() => {
-        // 功能被设置开关关闭时：空转等待，不重绘不渐入（保持 lastTransformStr 不更新，
-        // 重新开启后首帧按“已移动”处理触发一次重绘）
-        if (!isArrowToolEnabled()) return;
-        const transform = getTransform();
-        const transformStr = `${transform.scale},${transform.offsetX},${transform.offsetY}`;
-        const moved = transformStr !== lastTransformStr;
-        if (moved) {
-            lastTransformStr = transformStr;
-            // 铁律：不在此直接渲染箭头（独立 rAF 若先于 canvas 帧用新 scale 绘制，
-            // 大数据量快速缩放时会出现“箭头先缩、节点后追”的不同步）。
-            // 仅请求画布重绘，由 onDrawBackground 内的 renderArrows 与节点
-            // 同一渲染帧、同一 scale 更新，与节点缩放严格同步。
-            const cv = window.app?.canvas || window.LiteGraph?.LGraphCanvas?.active_canvas;
-            if (cv?.setDirty) cv.setDirty(true, true);
-        }
-        // 渐入检测
-        if (arrowSettings.fadeInEnabled && canvasElement) {
-            if (moved) {
-                // 首帧同绘显示后的宽限期内：忽略工作流视图适配造成的 transform 跳变，
-                // 不隐藏不重新渐入（避免“显示→隐藏→再渐入”的双重过渡）。
-                // 刷新浏览器后的首次显示宽限更长（_arrowAdaptGraceMs），覆盖加载期视图适配
-                if (Date.now() - _arrowInstantShownAt < _arrowAdaptGraceMs) {
-                    _arrowCanvasMoving = false;
-                    if (_arrowMoveStopTimer) {
-                        clearTimeout(_arrowMoveStopTimer);
-                        _arrowMoveStopTimer = null;
-                    }
-                } else {
-                    if (!_arrowCanvasMoving) {
-                        _arrowCanvasMoving = true;
-                        canvasElement.style.transition = 'opacity 0s';
-                        canvasElement.style.opacity = '0';
-                    }
-                    if (_arrowMoveStopTimer) {
-                        clearTimeout(_arrowMoveStopTimer);
-                        _arrowMoveStopTimer = null;
-                    }
-                    // 画布停止移动后延迟触发渐入
-                    _arrowMoveStopTimer = setTimeout(() => {
-                        _arrowCanvasMoving = false;
-                        _arrowMoveStopTimer = null;
-                        const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
-                        canvasElement.style.transition = `opacity ${fadeDur}s ease`;
-                        canvasElement.style.opacity = '1';
-                    }, 150);
-                }
-            }
-        }
-    });
-
     // 设置指针事件
     setupPointerEvents();
 
@@ -6661,29 +6652,6 @@ function initializeArrowSystem(litegraphCanvas) {
     updateToolbarState();
 }
 
-function createTransformTracker(onChange) {
-    let lastScale = -1;
-    let lastOffsetX = -Infinity;
-    let lastOffsetY = -Infinity;
-    let rafId = null;
-    let isRunning = true;
-
-    function checkTransform() {
-        if (!isRunning) return;
-        onChange();
-        rafId = requestAnimationFrame(checkTransform);
-    }
-
-    checkTransform();
-    return () => {
-        isRunning = false;
-        if (rafId !== null) {
-            cancelAnimationFrame(rafId);
-            rafId = null;
-        }
-    };
-}
-
 // ============================================================================
 // 全局 API：供编组拖动时移动箭头
 // ============================================================================
@@ -6694,6 +6662,41 @@ function createTransformTracker(onChange) {
  * 从根本上消除“残影”“错位→移动”。仅在画布真正重绘（脏帧）时才会触发，空闲不额外开销。
  */
 let _arrowCanvasSyncInstalled = false;
+
+// 只在 ComfyUI 已经决定重绘画布时检查变换；静止时不会额外创建 rAF 循环。
+function handleArrowCanvasTransform() {
+    if (!isArrowToolEnabled() || !canvasElement) return;
+    const transform = getTransform();
+    const transformStr = `${transform.scale},${transform.offsetX},${transform.offsetY}`;
+    if (transformStr === _arrowLastTransformStr) return;
+    _arrowLastTransformStr = transformStr;
+
+    if (!arrowSettings.fadeInEnabled) return;
+    // 首帧同绘显示后的视图适配不触发隐藏/渐入，避免双重过渡。
+    if (Date.now() - _arrowInstantShownAt < _arrowAdaptGraceMs) {
+        _arrowCanvasMoving = false;
+        if (_arrowMoveStopTimer) {
+            clearTimeout(_arrowMoveStopTimer);
+            _arrowMoveStopTimer = null;
+        }
+        return;
+    }
+    if (!_arrowCanvasMoving) {
+        _arrowCanvasMoving = true;
+        canvasElement.style.transition = "opacity 0s";
+        canvasElement.style.opacity = "0";
+    }
+    if (_arrowMoveStopTimer) clearTimeout(_arrowMoveStopTimer);
+    _arrowMoveStopTimer = setTimeout(() => {
+        _arrowCanvasMoving = false;
+        _arrowMoveStopTimer = null;
+        const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
+        if (!isArrowToolEnabled() || !canvasElement) return;
+        canvasElement.style.transition = `opacity ${fadeDur}s ease`;
+        canvasElement.style.opacity = "1";
+    }, 150);
+}
+
 function patchCanvasArrowRedrawSync() {
     const cv = window.app?.canvas || window.LiteGraph?.LGraphCanvas?.active_canvas;
     if (!cv) { setTimeout(patchCanvasArrowRedrawSync, 200); return; }
@@ -6702,6 +6705,9 @@ function patchCanvasArrowRedrawSync() {
     const orig = cv.onDrawBackground;
     cv.onDrawBackground = function () {
         try { if (typeof orig === "function") orig.apply(this, arguments); } catch (e) {}
+        // 新工作流已开始绘制、但箭头状态还没完成提交时，跳过旧 arrows，防止串帧闪现。
+        if (shouldSuppressStaleArrowFrame()) return;
+        try { handleArrowCanvasTransform(); } catch (e) {}
         // 每次画布重绘都同步绘制箭头（与节点同一帧、同一 transform）
         try { renderArrows(); } catch (e) {}
         // 切换 tab/新建后：新工作流首帧已与节点同帧同 transform 绘制完成 → 立即显示覆盖层
