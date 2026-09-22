@@ -1715,6 +1715,10 @@ function createImgBatchUI(node) {
                 50% { opacity: 1; }
                 100% { transform: rotate3d(0, 0, 0, 0deg) scale(1); opacity: 1; }
             }
+            @keyframes xzgDragSortGlow {
+                0%, 100% { box-shadow: 0 0 7px var(--xzg-sort-color); }
+                50% { box-shadow: 0 0 18px var(--xzg-sort-color); }
+            }
         `;
         document.head.appendChild(style);
     }
@@ -2734,11 +2738,18 @@ function createImgBatchUI(node) {
     // 更新删除按钮尺寸（跟随卡片边长 20%）
     const _applyDelBtnSize = (delBtn, cardSize) => {
         if (!delBtn) return;
-        const delBtnSize = Math.round(cardSize * 0.2);
-        const delBtnFont = Math.round(delBtnSize * 0.72);
+        const delBtnSize = Math.round(cardSize * 0.12);
+        const delBtnFont = Math.round(delBtnSize * 0.93);
         delBtn.style.width = `${delBtnSize}px`;
         delBtn.style.height = `${delBtnSize}px`;
         delBtn.style.fontSize = `${delBtnFont}px`;
+    };
+
+    // 多图顺序徽标：左上角展示 1 起始的加载/输出顺序，随缩略图一起缩放。
+    const _applyIndexBadgeSize = (badge, cardSize) => {
+        if (!badge) return;
+        badge.style.fontSize = `${Math.max(6, Math.round(cardSize * 0.10))}px`;
+        badge.style.padding = `${Math.max(0, Math.round(cardSize * 0.012))}px ${Math.max(2, Math.round(cardSize * 0.03))}px`;
     };
 
     const resizeObserver = new ResizeObserver(() => {
@@ -2778,6 +2789,7 @@ function createImgBatchUI(node) {
                             cell.style.transition = "none";
                             cell.style.animation = "none";
                             _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
+                            _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
                         });
                         // 统一强制 reflow 一次，确保所有 cell 的 animation:none 已提交
                         void grid.offsetWidth;
@@ -2814,6 +2826,7 @@ function createImgBatchUI(node) {
                             cell.style.transition = "none";
                             cell.style.animation = "none";
                             _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
+                            _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
                         });
                         // 统一强制 reflow
                         void grid.offsetWidth;
@@ -2845,9 +2858,7 @@ function createImgBatchUI(node) {
     let dragSortState = null;
     let marqueeState = null;
     const DRAG_CLICK_THRESHOLD = 5;
-    const DRAG_SORT_SCALE_MS = 1000;
     const DRAG_SORT_SCALE = 1.15;
-    const LONG_PRESS_MS = 500;
     const LONG_PRESS_ANIM_MS = 150;
 
     container.addEventListener("mousedown", (e) => {
@@ -2886,9 +2897,7 @@ function createImgBatchUI(node) {
         }
 
         let mode = null;
-        let readyTimer = null;
         let moved = false;
-        let sortReady = false;
 
         const marquee = document.createElement("div");
         marquee.style.cssText = `
@@ -2919,31 +2928,9 @@ function createImgBatchUI(node) {
             });
         }
 
-        // 长按 500ms 后放大卡片，进入排序模式
-        const startLongPress = () => {
-            if (!cell || !cardInner) return;
-            readyTimer = setTimeout(() => {
-                readyTimer = null;
-                if (moved) return; // 已拖动则取消
-                sortReady = true;
-                // 放大时取消 overflow 裁剪，让卡片悬浮遮挡相邻区域
-                cell.style.overflow = "visible";
-                cell.style.zIndex = "9999";
-                // 先设置过渡，强制 reflow 确保从 transition:none 平滑切换
-                cardInner.style.transition = `transform ${LONG_PRESS_ANIM_MS}ms ease-out, box-shadow ${LONG_PRESS_ANIM_MS}ms ease-out`;
-                void cardInner.offsetHeight;
-                cardInner.style.transform = `scale(${DRAG_SORT_SCALE})`;
-                cardInner.style.boxShadow = `0 8px 24px rgba(0,0,0,0.5)`;
-            }, LONG_PRESS_MS);
-        };
-
         const enterMarqueeMode = () => {
             mode = "marquee";
             marquee.style.display = "block";
-            if (readyTimer) {
-                clearTimeout(readyTimer);
-                readyTimer = null;
-            }
             if (cell && cardInner) {
                 cardInner.style.transform = "";
                 cardInner.style.boxShadow = "";
@@ -2952,18 +2939,11 @@ function createImgBatchUI(node) {
                 cell.style.zIndex = "";
                 cell.style.overflow = "hidden";
             }
-            sortReady = false;
         };
 
         const enterSortMode = () => {
             if (clickedIndex < 0 || !cell) return;
             mode = "sort";
-            sortReady = true;
-            if (readyTimer) {
-                clearTimeout(readyTimer);
-                readyTimer = null;
-            }
-
             const cellRect = cell.getBoundingClientRect();
             const ghost = document.createElement("div");
             ghost.className = "xzg-drag-ghost";
@@ -2987,11 +2967,21 @@ function createImgBatchUI(node) {
                 gCard.style.width = "100%";
                 gCard.style.height = "100%";
                 gCard.style.boxSizing = "border-box";
-                gCard.style.transform = `scale(${DRAG_SORT_SCALE})`;
                 gCard.style.transformOrigin = "center center";
+                // 预览卡整体缩放，内部的编号与删除 X 会同步参与动画。
+                gCard.style.transition = `transform ${LONG_PRESS_ANIM_MS}ms ease-out`;
+                gCard.style.transform = "scale(1)";
                 gCard.style.boxShadow = `0 4px 16px rgba(0,0,0,0.4), 0 0 8px ${selColor}`;
             }
+            // 原卡片的 X 只在悬停时显示；拖拽预览中始终显示，让它和编号一起缩放。
+            const ghostDeleteButton = ghost.querySelector(".del-btn");
+            if (ghostDeleteButton) ghostDeleteButton.style.opacity = "1";
             document.body.appendChild(ghost);
+            requestAnimationFrame(() => {
+                if (gCard?.isConnected && !dragSortState?.hasLeftOrigin) {
+                    gCard.style.transform = `scale(${DRAG_SORT_SCALE})`;
+                }
+            });
 
             cell.style.opacity = "0.3";
             if (cardInner) {
@@ -3019,6 +3009,8 @@ function createImgBatchUI(node) {
                 origNames: [...names],
                 order: names.map((_, i) => i),
                 animating: false,
+                hasLeftOrigin: false,
+                lastReorderAt: 0,
                 cellRect,
             };
 
@@ -3027,12 +3019,8 @@ function createImgBatchUI(node) {
             setIndex(node, clickedIndex);
         };
 
-        // 卡片上按下：启动长按定时器，拖动时进入框选；长按后进入排序
-        if (cell) {
-            startLongPress();
-        } else {
-            enterMarqueeMode();
-        }
+        // 从卡片内按下并移动，立即进入排序；从黑边开始拖动才进入框选。
+        if (!cell) enterMarqueeMode();
 
         const onMouseMove = (moveE) => {
             const dx = moveE.clientX - startX;
@@ -3043,11 +3031,8 @@ function createImgBatchUI(node) {
             if (!moved) return;
 
             if (!mode) {
-                if (sortReady) {
-                    enterSortMode();
-                } else {
-                    enterMarqueeMode();
-                }
+                if (cell) enterSortMode();
+                else enterMarqueeMode();
             }
 
             if (mode === "marquee") {
@@ -3091,6 +3076,13 @@ function createImgBatchUI(node) {
                     gCard.style.borderWidth = "2px";
                     gCard.style.outline = `2px solid ${selColor}`;
                     gCard.style.boxShadow = `0 4px 16px rgba(0,0,0,0.4), 0 0 8px ${selColor}`;
+                    // 鼠标带着卡片离开原位后，拖拽预览缩到 70% 并持续高亮。
+                    if (!dragSortState.hasLeftOrigin) {
+                        dragSortState.hasLeftOrigin = true;
+                        gCard.style.setProperty("--xzg-sort-color", selColor);
+                        gCard.style.transform = "scale(0.7)";
+                        gCard.style.animation = "xzgDragSortGlow 420ms ease-in-out infinite";
+                    }
                 }
 
                 const ghostRect = dragSortState.ghost.getBoundingClientRect();
@@ -3103,7 +3095,9 @@ function createImgBatchUI(node) {
                 for (let i = 0; i < cards.length; i++) {
                     const c = cards[i];
                     if (c.style.opacity === "0.3") continue;
-                    const r = c.getBoundingClientRect();
+                    // 排队动画期间 getBoundingClientRect 会返回视觉中的过渡位置，
+                    // 这里必须使用重排后的稳定格子位置，避免指针反复命中相邻卡片。
+                    const r = c._xzgStaticRect || c.getBoundingClientRect();
                     if (ghostCx >= r.left && ghostCx <= r.right &&
                         ghostCy >= r.top && ghostCy <= r.bottom) {
                         targetCard = c;
@@ -3115,8 +3109,22 @@ function createImgBatchUI(node) {
                     const currentCard = cards[dragSortState.currentIndex];
                     if (targetCard === currentCard) return;
 
+                    // 快速掠过多个卡片时不叠加重排动画，避免画面抖动。
+                    const now = performance.now();
+                    if (now - dragSortState.lastReorderAt < 120) return;
+                    dragSortState.lastReorderAt = now;
+
                     dragSortState.animating = true;
                     const cardsArr = Array.from(cards);
+                    // 每次重排前先结束上一轮位移动画，避免累积位移造成跳动。
+                    cardsArr.forEach((item) => {
+                        if (item._xzgQueueTimer) clearTimeout(item._xzgQueueTimer);
+                        item.style.transition = "none";
+                        item.style.transform = "";
+                    });
+                    void grid.offsetWidth;
+                    // FLIP：记录旧位置，DOM 重排后让其它卡片平滑滑向新位置。
+                    const previousRects = new Map(cardsArr.map((item) => [item, item.getBoundingClientRect()]));
 
                     const draggedEl = cardsArr[dragSortState.currentIndex];
                     const targetIdx = cardsArr.indexOf(targetCard);
@@ -3133,6 +3141,28 @@ function createImgBatchUI(node) {
                         if (c === draggedEl) newIndex = i;
                     });
 
+                    newCards.forEach((c) => {
+                        if (c === draggedEl) return;
+                        const before = previousRects.get(c);
+                        const after = c.getBoundingClientRect();
+                        c._xzgStaticRect = after;
+                        if (!before) return;
+                        const deltaX = before.left - after.left;
+                        const deltaY = before.top - after.top;
+                        if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+                        c.style.transition = "none";
+                        c.style.transformOrigin = "center center";
+                        c.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+                        requestAnimationFrame(() => {
+                            c.style.transition = "transform 300ms cubic-bezier(0.42, 0, 0.25, 1)";
+                            c.style.transform = "translate(0, 0)";
+                            c._xzgQueueTimer = setTimeout(() => {
+                                c.style.transition = "";
+                                c.style.transform = "";
+                            }, 320);
+                        });
+                    });
+
                     const order = dragSortState.order;
                     const [movedIdx] = order.splice(dragSortState.currentIndex, 1);
                     order.splice(newIndex, 0, movedIdx);
@@ -3144,11 +3174,6 @@ function createImgBatchUI(node) {
         };
 
         const onMouseUp = () => {
-            if (readyTimer) {
-                clearTimeout(readyTimer);
-                readyTimer = null;
-            }
-
             marquee.remove();
             marqueeState = null;
             document.removeEventListener("mousemove", onMouseMove);
@@ -3187,6 +3212,7 @@ function createImgBatchUI(node) {
                 const origNames = sortState.origNames;
                 const newNames = order.map(i => origNames[i]);
                 const namesChanged = newNames.some((n, i) => n !== origNames[i]);
+                const droppedIndex = sortState.currentIndex;
 
                 if (moved && namesChanged) {
                     setNameList(node, newNames);
@@ -3202,6 +3228,7 @@ function createImgBatchUI(node) {
                     c.style.opacity = "";
                     c.style.transform = "";
                     c.style.transition = "";
+                    delete c._xzgStaticRect;
                 });
 
                 dragSortState = null;
@@ -3223,6 +3250,22 @@ function createImgBatchUI(node) {
                         cells.forEach(cell => {
                             cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
                         });
+                        // 放下后从拖动中的 70% 状态恢复正常尺寸。
+                        const droppedCard = cells[droppedIndex]?.querySelector(":scope > div");
+                        if (droppedCard) {
+                            const sortColor = getSelColor();
+                            droppedCard.style.borderColor = sortColor;
+                            droppedCard.style.boxShadow = `0 0 14px ${sortColor}`;
+                            droppedCard.style.transition = `transform ${LONG_PRESS_ANIM_MS}ms ease-out, border-color ${LONG_PRESS_ANIM_MS}ms ease-out, box-shadow ${LONG_PRESS_ANIM_MS}ms ease-out`;
+                            droppedCard.style.transform = "scale(0.7)";
+                            requestAnimationFrame(() => { droppedCard.style.transform = "scale(1)"; });
+                            setTimeout(() => {
+                                droppedCard.style.transition = "";
+                                droppedCard.style.borderColor = "";
+                                droppedCard.style.boxShadow = "";
+                                droppedCard.style.transform = "";
+                            }, LONG_PRESS_ANIM_MS + 30);
+                        }
                         if (flipAnimTimer) clearTimeout(flipAnimTimer);
                         flipAnimTimer = setTimeout(() => {
                             flipAnimTimer = null;
@@ -3487,7 +3530,9 @@ function createImgBatchUI(node) {
             delBtn.className = "del-btn";
             delBtn.textContent = "×";
             delBtn.style.cssText =
-                "position:absolute;top:0;right:0;display:flex;align-items:center;justify-content:center;line-height:1;color:#fff;cursor:pointer;z-index:3;opacity:0;";
+                "position:absolute;top:1px;right:1px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;" +
+                "padding-top:1px;line-height:0;color:#fff;font-family:Arial,sans-serif;font-weight:bold;cursor:pointer;z-index:3;opacity:0;" +
+                "background:rgba(0,0,0,0.55);border-radius:50%;text-shadow:0 1px 2px #000;box-shadow:0 1px 3px rgba(0,0,0,0.4);";
             _applyDelBtnSize(delBtn, contentSize);
             delBtn.title = xzgT("删除", "Delete");
             delBtn.addEventListener("click", (e) => {
@@ -3508,6 +3553,15 @@ function createImgBatchUI(node) {
                 delBtn.style.opacity = "0";
             });
 
+            // 编号只在多图网格中创建；i 与实际加载顺序一致，拖动排序后重绘会同步更新。
+            const indexBadge = document.createElement("div");
+            indexBadge.className = "xzg-img-index";
+            indexBadge.textContent = String(i + 1);
+            indexBadge.style.cssText =
+                "position:absolute;top:0;left:0;z-index:3;line-height:1.15;color:#fff;" +
+                "background:rgba(0,0,0,0.72);border-radius:0 0 3px 0;pointer-events:none;font-weight:600;";
+            _applyIndexBadgeSize(indexBadge, contentSize);
+
             const label = document.createElement("div");
             label.textContent = name;
             label.title = name;
@@ -3517,6 +3571,7 @@ function createImgBatchUI(node) {
 
             card.appendChild(thumbEl);
             card.appendChild(delBtn);
+            card.appendChild(indexBadge);
             card.appendChild(label);
             cell.appendChild(card);
             frag.appendChild(cell);

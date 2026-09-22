@@ -15,6 +15,24 @@ const DAVINCI_NODE = "XiaozhuguangVideoLoaderDaVinci";
 
 const _tr = (s) => s;
 
+// 达芬奇专用三瓣图标：三瓣同尺寸、彼此以窄缝分隔，不使用 emoji 或方向箭头。
+function _davinciCloverIcon() {
+    const styleId = "xzg-davinci-clover-style";
+    if (!document.getElementById(styleId)) {
+        const style = document.createElement("style");
+        style.id = styleId;
+        style.textContent = `
+            .xzg-davinci-clover { position:relative; display:inline-block; width:16px; height:15px; flex:0 0 16px; }
+            .xzg-davinci-clover > i { position:absolute; width:8px; height:8px; box-sizing:border-box; border-radius:50%; box-shadow:inset 1px 1px 2px rgba(255,255,255,.42), 0 1px 1px rgba(0,0,0,.3); }
+            .xzg-davinci-clover .xzg-dv-blue { top:0; left:4px; background:linear-gradient(135deg,#47e7ff,#22c9e9 45%,#3f91d7 78%,#d8f6b3); }
+            .xzg-davinci-clover .xzg-dv-green { top:6.93px; left:0; background:linear-gradient(135deg,#fbf264,#dfee4c 52%,#9ac83a); }
+            .xzg-davinci-clover .xzg-dv-red { top:6.93px; left:8px; background:linear-gradient(135deg,#f14c69,#ed5968 52%,#ee9250); }
+        `;
+        document.head.appendChild(style);
+    }
+    return '<span class="xzg-davinci-clover" aria-hidden="true"><i class="xzg-dv-blue"></i><i class="xzg-dv-green"></i><i class="xzg-dv-red"></i></span>';
+}
+
 function _toast(msg, isError = false) {
     const el = document.createElement("div");
     el.style.cssText =
@@ -142,7 +160,7 @@ function _createPreviewDavinciButton(node) {
         "background:transparent;color:#3ef558;border:none;" +
         "cursor:pointer;pointer-events:auto;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
-    btn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从达芬奇导入</span>';
+    btn.innerHTML = `${_davinciCloverIcon()}<span>从达芬奇导入</span>`;
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
 
@@ -252,7 +270,7 @@ async function _exportLoadedToDavinci(node, btn, labelSpan) {
     }
 }
 
-function _createLoaderActionButton(node, key, color, text, title, onClick) {
+function _createLoaderActionButton(node, key, color, text, title, onClick, iconHtml = '<span style="font-size:13px;">🎬</span>') {
     if (node[key]) return node[key];
     const pc = node._xzgPreviewContainer;
     if (!pc) return null;
@@ -263,7 +281,7 @@ function _createLoaderActionButton(node, key, color, text, title, onClick) {
         "display:inline-flex;align-items:center;gap:4px;padding:2px 6px;font-size:11px;line-height:1;" +
         `background:transparent;color:${color};border:none;cursor:pointer;pointer-events:auto;` +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
-    btn.innerHTML = `<span style="font-size:13px;">🎬</span><span>${text}</span>`;
+    btn.innerHTML = `${iconHtml}<span>${text}</span>`;
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
     const onOver = () => { _layoutPreviewActions(node); btn.style.opacity = "1"; };
@@ -290,7 +308,8 @@ function _createLoaderExportDavinciButton(node) {
     return _createLoaderActionButton(
         node, "_xzgLoaderExportDavinciBtn", "#3ef558", "导出到达芬奇",
         "把当前加载的视频导入达芬奇（进媒体池 + 复用空白轨道/无则新建 + 对齐播放头片段前端）",
-        (btn, label) => _exportLoadedToDavinci(node, btn, label)
+        (btn, label) => _exportLoadedToDavinci(node, btn, label),
+        _davinciCloverIcon()
     );
 }
 

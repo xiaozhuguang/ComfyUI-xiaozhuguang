@@ -56,6 +56,24 @@ const VIDEO_EXTS = ["webm", "mp4", "mkv", "gif", "mov", "avi", "flv", "wmv", "m4
 const VIDEO_PREVIEW_WIDGET_NAME = "xzg_video_preview";
 const VIDEO_PREVIEW_MIN_H = 100;
 
+// 工作流恢复时，多个视频节点若同时初始化 WebCodecs 解码器会抢占主线程/GPU。
+// 此队列只调度恢复首帧；用户主动选择/上传视频仍直接加载。
+const _xzgVideoRestoreQueue = [];
+let _xzgVideoRestoreRunning = false;
+
+function _xzgEnqueueVideoRestore(task) {
+    _xzgVideoRestoreQueue.push(task);
+    if (_xzgVideoRestoreRunning) return;
+    _xzgVideoRestoreRunning = true;
+    void (async () => {
+        while (_xzgVideoRestoreQueue.length) {
+            const next = _xzgVideoRestoreQueue.shift();
+            try { await next(); } catch (_) { /* 单节点恢复失败不阻塞后续节点 */ }
+        }
+        _xzgVideoRestoreRunning = false;
+    })();
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 自定义数值 widget（VHS 同款方案：从源头创建 canvas 不认识的 widget 类型）
 // ═══════════════════════════════════════════════════════════════════════
@@ -1445,6 +1463,47 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     };
 
     let player = null;
+    let _restoreRequestToken = 0;
+    let _finishRestorePreview = null;
+    let _restoreFadePending = false;
+
+    const _playRestoreFade = () => {
+        if (!_restoreFadePending) return;
+        _restoreFadePending = false;
+        // 仅合成层 opacity 动画，不增加视频解码、Canvas 绘制或帧缓存开销。
+        playerContainer.style.transition = "opacity 180ms ease-out";
+        playerContainer.style.opacity = "0";
+        requestAnimationFrame(() => { playerContainer.style.opacity = "1"; });
+        setTimeout(() => { playerContainer.style.transition = ""; }, 210);
+    };
+
+    const _cancelRestorePreview = () => {
+        _restoreRequestToken++;
+        _finishRestorePreview?.();
+    };
+
+    const _restoreVideoPreviewInQueue = (url) => {
+        const token = ++_restoreRequestToken;
+        _xzgEnqueueVideoRestore(() => new Promise((resolve) => {
+            let completed = false;
+            const finish = () => {
+                if (completed) return;
+                completed = true;
+                clearTimeout(timeout);
+                if (_finishRestorePreview === finish) _finishRestorePreview = null;
+                resolve();
+            };
+            // 解码异常或不支持时也不能让一个节点永久卡住整个恢复队列。
+            const timeout = setTimeout(finish, 20000);
+            if (token !== _restoreRequestToken || !player) {
+                finish();
+                return;
+            }
+            _finishRestorePreview = finish;
+            _restoreFadePending = true;
+            player.load(url || "");
+        }));
+    };
     const _lmNow = () => (typeof isLM === "function" ? !!isLM() : !!isLM);
     const _createPlayer = () => {
         player = new XiaozhuguangVideoPlayer({
@@ -1465,6 +1524,8 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             // 预览视频（合成覆盖）加载完成后若走 _syncLoadRange 会立即把刚盖上的预览重置回原视频，
             // 导致"合成视频只盖一瞬间又显示默认比例"。参数变化时才由 _syncLoadRange 重置。
             _applyLoadRange?.();
+            _playRestoreFade();
+            _finishRestorePreview?.();
         },
         onSourceFpsDetected: (fps) => {
             if (typeof fps === "number" && fps > 0) {
@@ -1505,10 +1566,12 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         },
         // 上传流程触发的加载失败 → 同样关闭遮罩（播放器内部已展示错误信息）
         onError: () => {
+            _restoreFadePending = false;
             if (_uploadLoadingActive) {
                 _uploadLoadingActive = false;
                 showUploadProgress(false);
             }
+            _finishRestorePreview?.();
         },
     });
         node._xzgVideoPlayer = player;
@@ -2030,11 +2093,12 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 origCb?.apply(this, arguments);
                 const url = getVideoUrl(value);
                 _isPreviewLoaded = false;
+                _cancelRestorePreview();
                 player.load(url || "");
                 applyRatioForNewVideo();
             };
             if (videoWidget.value) {
-                player.load(getVideoUrl(videoWidget.value));
+                _restoreVideoPreviewInQueue(getVideoUrl(videoWidget.value));
             }
         }
 

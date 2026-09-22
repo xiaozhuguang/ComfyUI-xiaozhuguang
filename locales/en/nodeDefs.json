@@ -486,6 +486,11 @@
       "0": { "name": "int" }
     }
   },
+  "XiaozhuguangBatchImageGetter": {
+    "display_name": "Batch Image Getter for Loader",
+    "description": "Set the output count to split a loader batch or image list into numbered outputs. Outputs beyond the available images are empty and block downstream data.",
+    "inputs": { "图像": { "name": "images" }, "输出数量": { "name": "output count" } }
+  },
   "XiaozhuguangBigDisplay": {
     "display_name": "Big Display",
     "inputs": {
