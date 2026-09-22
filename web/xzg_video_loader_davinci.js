@@ -167,6 +167,133 @@ function _createPreviewDavinciButton(node) {
     return btn;
 }
 
+// 当前加载视频的来源信息。组合框默认来自 input，也兼容从 output/temp 拖入的带类型后缀文件名。
+function _getLoadedVideoInfo(node) {
+    const raw = String(node.widgets?.find((w) => w.name === "视频")?.value || "");
+    if (!raw) return null;
+    for (const [suffix, type] of [[" [output]", "output"], [" [input]", "input"], [" [temp]", "temp"]]) {
+        if (raw.endsWith(suffix)) return { filename: raw.slice(0, -suffix.length), type };
+    }
+    return { filename: raw, type: "input" };
+}
+
+function _layoutPreviewActions(node) {
+    // 右 → 左：从达芬奇导入、导出到达芬奇、从快剪加载、发送到快剪。
+    const buttons = [
+        node._xzgDavinciBtn,
+        node._xzgLoaderExportDavinciBtn,
+        node._xzgFastcutBtn,
+        node._xzgLoaderQuickCutBtn,
+    ].filter(Boolean);
+    let right = 6;
+    for (const btn of buttons) {
+        btn.style.right = right + "px";
+        right += (btn.offsetWidth || 0) + 6;
+    }
+}
+
+async function _sendLoadedToQuickCut(node, btn, labelSpan) {
+    const info = _getLoadedVideoInfo(node);
+    if (!info?.filename) {
+        _toast("[发送到快剪] 请先选择或上传视频。", true);
+        return;
+    }
+    btn.disabled = true;
+    labelSpan.textContent = "正在发送…";
+    try {
+        // 启动器会在按需加载快剪模块后转交真实媒体接收器。
+        await window._xzgVideoEditorReceiveMedia(info.filename, info.type);
+        _toast("已加入快剪媒体库（打开快剪即可拖入轨道使用）");
+    } catch (e) {
+        _toast("[发送到快剪] " + String(e), true);
+    } finally {
+        btn.disabled = false;
+        labelSpan.textContent = "发送到快剪";
+    }
+}
+
+async function _exportLoadedToDavinci(node, btn, labelSpan) {
+    const info = _getLoadedVideoInfo(node);
+    if (!info?.filename) {
+        _toast("[导出到达芬奇] 请先选择或上传视频。", true);
+        return;
+    }
+    btn.disabled = true;
+    labelSpan.textContent = "正在导出到达芬奇…";
+    try {
+        const resp = await api.fetchApi("/xzg/davinci/loader-import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(info),
+        });
+        // 反向代理/旧后端可能返回纯文本 404/405；不要把它伪装成 JSON 解析异常。
+        const raw = await resp.text();
+        let data;
+        try {
+            data = raw ? JSON.parse(raw) : {};
+        } catch (_) {
+            throw new Error(`接口响应 ${resp.status}: ${raw.slice(0, 180) || "（空响应）"}`);
+        }
+        if (!resp.ok) {
+            throw new Error(data?.error || `接口响应 ${resp.status}`);
+        }
+        if (!data?.ok) {
+            _toast("[导出到达芬奇] " + (data?.error || "导入失败"), true);
+            return;
+        }
+        const clip = data.clip ? `「${data.clip}」` : "";
+        const track = data.track != null ? `V${data.track}` : "";
+        _toast(`已导出至达芬奇${clip} ${track} ${data.record_frame != null ? `@帧${data.record_frame}` : ""}`.trim());
+    } catch (e) {
+        _toast("[导出到达芬奇] " + String(e), true);
+    } finally {
+        btn.disabled = false;
+        labelSpan.textContent = "导出到达芬奇";
+    }
+}
+
+function _createLoaderActionButton(node, key, color, text, title, onClick) {
+    if (node[key]) return node[key];
+    const pc = node._xzgPreviewContainer;
+    if (!pc) return null;
+    const btn = document.createElement("button");
+    btn.title = title;
+    btn.style.cssText =
+        "position:absolute;top:6px;right:6px;z-index:102;" +
+        "display:inline-flex;align-items:center;gap:4px;padding:2px 6px;font-size:11px;line-height:1;" +
+        `background:transparent;color:${color};border:none;cursor:pointer;pointer-events:auto;` +
+        "transition:color 0.15s,opacity 0.2s;opacity:0;";
+    btn.innerHTML = `<span style="font-size:13px;">🎬</span><span>${text}</span>`;
+    const labelSpan = btn.querySelector("span:last-child");
+    pc.appendChild(btn);
+    const onOver = () => { _layoutPreviewActions(node); btn.style.opacity = "1"; };
+    const onOut = (e) => { if (!pc.contains(e.relatedTarget) && !btn.disabled) btn.style.opacity = "0"; };
+    pc.addEventListener("mouseover", onOver);
+    pc.addEventListener("mouseout", onOut);
+    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
+    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = color; });
+    btn.onclick = () => { if (!btn.disabled) onClick(btn, labelSpan); };
+    node[key] = btn;
+    requestAnimationFrame(() => _layoutPreviewActions(node));
+    return btn;
+}
+
+function _createLoaderQuickCutButton(node) {
+    return _createLoaderActionButton(
+        node, "_xzgLoaderQuickCutBtn", "#ffd76a", "发送到快剪",
+        "把当前加载的视频发送到快剪媒体库（打开快剪后可手动拖入轨道使用）",
+        (btn, label) => _sendLoadedToQuickCut(node, btn, label)
+    );
+}
+
+function _createLoaderExportDavinciButton(node) {
+    return _createLoaderActionButton(
+        node, "_xzgLoaderExportDavinciBtn", "#3ef558", "导出到达芬奇",
+        "把当前加载的视频导入达芬奇（进媒体池 + 复用空白轨道/无则新建 + 对齐播放头片段前端）",
+        (btn, label) => _exportLoadedToDavinci(node, btn, label)
+    );
+}
+
 app.registerExtension({
     name: "Xiaozhuguang.VideoLoader.DaVinci",
     getCustomWidgets() {
@@ -225,6 +352,9 @@ app.registerExtension({
                 _applyWidgetStyles(this);
                 _removeLegacyTopButton(this);
                 _createPreviewDavinciButton(this);
+                _createLoaderExportDavinciButton(this);
+                _createLoaderQuickCutButton(this);
+                requestAnimationFrame(() => _layoutPreviewActions(this));
                 if (this.outputs) {
                     this.outputs.forEach((out, i) => {
                         if (correctOutputs[i]) {

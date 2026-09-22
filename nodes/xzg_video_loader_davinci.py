@@ -77,6 +77,26 @@ def _safe_davinci_name(name):
     return s.replace("  ", " ")[:80] or "xzg_dv_import"
 
 
+def _resolve_loader_video_path(filename, file_type="input"):
+    """解析加载器当前视频的受限路径，仅允许 ComfyUI input/output/temp 目录内文件。"""
+    roots = {
+        "input": folder_paths.get_input_directory,
+        "output": folder_paths.get_output_directory,
+        "temp": folder_paths.get_temp_directory,
+    }
+    root_fn = roots.get(str(file_type or "input").lower())
+    if root_fn is None:
+        return None
+    root = os.path.abspath(root_fn())
+    candidate = os.path.abspath(os.path.join(root, str(filename or "")))
+    try:
+        if os.path.commonpath([root, candidate]) != root:
+            return None
+    except ValueError:
+        return None
+    return candidate if os.path.isfile(candidate) else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 路由安全装饰器（与加载器一致）
 # ═══════════════════════════════════════════════════════════════════════════
@@ -145,6 +165,22 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
                                "mode": "video"})
         if result.get("ok"):
             result["filename"] = result.get("filename", "")
+        return _web.json_response(result)
+
+    @_PS.instance.routes.post("/xzg/davinci/loader-import")
+    @_safe_handler
+    async def xzg_davinci_loader_import(request):
+        """把化神级视频加载器当前选择的视频导入达芬奇。
+
+        前端仅提交相对文件名和 ComfyUI 文件类型；服务端限制解析范围，避免任意本地路径读取。
+        """
+        data = await request.json()
+        filename = str(data.get("filename") or "")
+        file_type = str(data.get("type") or "input")
+        abs_path = _resolve_loader_video_path(filename, file_type)
+        if not abs_path:
+            return _web.json_response({"ok": False, "error": "视频文件不存在，或不在允许的 ComfyUI 目录中"})
+        result = _call_bridge({"action": "import", "file_path": abs_path})
         return _web.json_response(result)
 
     _need_routes = False

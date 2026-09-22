@@ -1097,6 +1097,8 @@ export class XiaozhuguangVideoPlayer {
             const clamped = Math.max(0, Math.min(frameIndex, this._markerDragEndFrame));
             this._skipFrames = clamped;
             this._updateLoadRangeMarkers();
+            // 红蓝标记位置已实时更新，标签数值也必须同帧刷新，不能等松手/重新加载视频。
+            this._updateRangeDisplay();
             this._resetPlaybackToStart();
             this.onLoadRangeStartDrag?.(clamped, false);
         } else {
@@ -1106,6 +1108,8 @@ export class XiaozhuguangVideoPlayer {
             const frameLimit = (clamped >= totalFrames) ? 0 : clamped - this._markerDragStartFrame;
             this._frameLimit = frameLimit;
             this._updateLoadRangeMarkers();
+            // 实时刷新绿色尾帧号与蓝色区间长度（加载帧上限）。
+            this._updateRangeDisplay();
             // 拖动蓝杠（帧数上限）时：预览立即显示蓝杠处画面（"加载到这里为止"的截止画面），
             // 松手后由 _onMarkerUp 的 _resetPlaybackToStart 恢复红杠（起点）位置画面
             this._showFrameAtSourceFrame(clamped);
