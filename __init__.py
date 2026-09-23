@@ -220,7 +220,7 @@ from .nodes.xzg_audio_loader_davinci import XiaozhuguangAudioLoaderDaVinci
 from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
 from .nodes.xzg_video_save_davinci import XiaozhuguangVideoSaveDaVinci
-from .nodes.xzg_image_compare import XiaozhuguangImageCompare
+from .nodes.xzg_image_compare import XiaozhuguangImageCompare, XiaozhuguangImageCompareCustom
 from .nodes.xzg_image_save import XiaozhuguangImageSave
 from .nodes.xzg_image_save_custom import XiaozhuguangImageSaveCustom
 from .nodes.xzg_audio_save import XiaozhuguangAudioSaveDaVinci
@@ -1215,6 +1215,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
     "XiaozhuguangVideoSaveDaVinci": XiaozhuguangVideoSaveDaVinci,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
+    "XiaozhuguangImageCompareCustom": XiaozhuguangImageCompareCustom,
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
     "XiaozhuguangImageSaveCustom": XiaozhuguangImageSaveCustom,
     "XiaozhuguangAudioSaveDaVinci": XiaozhuguangAudioSaveDaVinci,
@@ -1276,6 +1277,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangVideoCombine": "小珠光合并视频",
     "XiaozhuguangVideoSaveDaVinci": "小珠光视频保存-化神级",
     "XiaozhuguangImageCompare": "小珠光图像对比",
+    "XiaozhuguangImageCompareCustom": "小珠光图像对比-化神级",
     "XiaozhuguangImageSave": "小珠光图像保存",
     "XiaozhuguangImageSaveCustom": "小珠光图像保存-化神级",
     "XiaozhuguangAudioSaveDaVinci": "小珠光音频保存-化神级",

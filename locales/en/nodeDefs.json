@@ -283,6 +283,15 @@
       "show_line": { "name": "Show Line" }
     }
   },
+  "XiaozhuguangImageCompareCustom": {
+    "display_name": "Xiaozhuguang Image Compare - Advanced",
+    "inputs": {
+      "a": { "name": "A" },
+      "b": { "name": "B" },
+      "reduce_lag": { "name": "Reduce Lag" },
+      "show_line": { "name": "Show Line" }
+    }
+  },
   "XiaozhuguangImageSave": {
     "display_name": "Xiaozhuguang Image Save",
     "inputs": {

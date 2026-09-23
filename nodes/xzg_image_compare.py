@@ -100,3 +100,9 @@ class XiaozhuguangImageCompare(PreviewImage):
             })
 
         return results
+
+
+class XiaozhuguangImageCompareCustom(XiaozhuguangImageCompare):
+    """小珠光图像对比-化神级：前端提供透明背景观察模式。"""
+
+    CATEGORY = "xiaozhuguang"

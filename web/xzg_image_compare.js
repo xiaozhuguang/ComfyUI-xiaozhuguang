@@ -2,6 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const XZG_IMAGE_COMPARE_TYPE = "XiaozhuguangImageCompare";
+const XZG_IMAGE_COMPARE_CUSTOM_TYPE = "XiaozhuguangImageCompareCustom";
+const XZG_IMAGE_COMPARE_TYPES = new Set([XZG_IMAGE_COMPARE_TYPE, XZG_IMAGE_COMPARE_CUSTOM_TYPE]);
 const IMAGE_MARGIN = 6;
 
 function imageUrl(data) {
@@ -18,8 +20,77 @@ function transparentImageUrl(data) {
     });
 }
 
-function drawCheckerboard(ctx, imgData, x, y, w, h, referenceW = w) {
+function previewBackgroundLabel(mode) {
+    return {
+        checker: "棋盘格",
+        red: "红底",
+        blue: "蓝底",
+        custom: "自定义",
+    }[mode] || "棋盘格";
+}
+
+function showPreviewBackgroundMenu(node) {
+    document.getElementById("xzg-image-compare-bg-menu")?.remove();
+    const menu = document.createElement("div");
+    menu.id = "xzg-image-compare-bg-menu";
+    menu.style.cssText = "position:fixed;z-index:1000000;min-width:130px;padding:5px;background:#292929;border:1px solid #555;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.55);";
+    const point = node._xzgLastClickClient;
+    const anchorX = point?.x ?? 160;
+    const anchorY = point?.y ?? 80;
+    // 菜单默认显示在鼠标右侧；靠近窗口边缘时自动收进可视区域。
+    menu.style.left = `${Math.min(window.innerWidth - 145, Math.max(8, anchorX + 8))}px`;
+    menu.style.top = `${Math.min(window.innerHeight - 175, Math.max(8, anchorY + 8))}px`;
+    const choose = (mode) => {
+        node._xzgPreviewBackground = mode;
+        node.properties = node.properties || {};
+        node.properties.xzg_preview_background = mode;
+        node.setDirtyCanvas(true, true);
+        menu.remove();
+    };
+    for (const mode of ["checker", "red", "blue"]) {
+        const item = document.createElement("button");
+        item.textContent = previewBackgroundLabel(mode);
+        item.style.cssText = "display:block;width:100%;padding:5px 9px;text-align:left;color:#ddd;background:transparent;border:0;cursor:pointer;font-size:12px;";
+        item.onmouseenter = () => item.style.background = "#3b3b3b";
+        item.onmouseleave = () => item.style.background = "transparent";
+        item.onclick = () => choose(mode);
+        menu.appendChild(item);
+    }
+    const custom = document.createElement("label");
+    custom.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 9px;color:#ddd;font-size:12px;cursor:pointer;";
+    custom.append(document.createTextNode(previewBackgroundLabel("custom")));
+    const color = document.createElement("input");
+    color.type = "color";
+    color.value = node._xzgCustomPreviewColor || "#303030";
+    color.style.cssText = "width:28px;height:19px;padding:0;border:0;background:transparent;cursor:pointer;";
+    color.oninput = () => {
+        node._xzgCustomPreviewColor = color.value;
+        node._xzgPreviewBackground = "custom";
+        node.properties = node.properties || {};
+        node.properties.xzg_preview_background = "custom";
+        node.properties.xzg_preview_custom_color = color.value;
+        node.setDirtyCanvas(true, true);
+    };
+    custom.appendChild(color);
+    menu.appendChild(custom);
+    document.body.appendChild(menu);
+    const dismiss = (e) => {
+        if (menu.contains(e.target)) return;
+        menu.remove();
+        window.removeEventListener("pointerdown", dismiss, true);
+    };
+    setTimeout(() => window.addEventListener("pointerdown", dismiss, true), 0);
+}
+
+function drawCheckerboard(ctx, node, imgData, x, y, w, h, referenceW = w) {
     if (!imgData?.has_alpha) return;
+    const mode = node.type === XZG_IMAGE_COMPARE_CUSTOM_TYPE
+        ? (node._xzgPreviewBackground || "checker") : "checker";
+    if (mode !== "checker") {
+        ctx.fillStyle = mode === "red" ? "#e53935" : mode === "blue" ? "#1976d2" : (node._xzgCustomPreviewColor || "#303030");
+        ctx.fillRect(x, y, w, h);
+        return;
+    }
     const sourceW = imgData.img?.naturalWidth || imgData.real_width || w;
     const sourceCell = imgData.preview_checker_cell || 20;
     // 划像模式的 w 是当前裁切宽度，会随鼠标改变；格子必须按完整显示宽度计算。
@@ -115,7 +186,8 @@ class XzgImageCompareWidget {
         const lineWidget = node.widgets?.find(w => w.name === "show_line");
         if (lagWidget && lineWidget) {
             const btnH = 18;
-            const btnCount = 3;
+            const isCustom = node.type === XZG_IMAGE_COMPARE_CUSTOM_TYPE;
+            const btnCount = isCustom ? 4 : 3;
             // 延伸到节点最边界，按钮行不使用任何边距（边距仅作用于下方图像）
             const btnW = node.size[0] / btnCount;
             // 与「A -- B」交换按钮一致的颜色（统一 #aaaaaa）
@@ -157,12 +229,26 @@ class XzgImageCompareWidget {
                 onDown: () => { this._swapAB(); }
             };
 
+            if (isCustom) {
+                const x3 = x2 + btnW;
+                ctx.fillStyle = "#88ccff";
+                ctx.fillText(previewBackgroundLabel(node._xzgPreviewBackground || "checker"), x3 + btnW / 2, y + btnH / 2);
+                this.hitAreas["preview_background"] = {
+                    bounds: [x3, y, btnW, btnH],
+                    onDown: () => showPreviewBackgroundMenu(node),
+                };
+            }
+
             // 分隔线 1px，颜色与 A--B 一致
             ctx.strokeStyle = SWAP_COLOR;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(x1, y); ctx.lineTo(x1, y + btnH);
             ctx.moveTo(x2, y); ctx.lineTo(x2, y + btnH);
+            if (isCustom) {
+                const x3 = x2 + btnW;
+                ctx.moveTo(x3, y); ctx.lineTo(x3, y + btnH);
+            }
             ctx.stroke();
 
             y += btnH + 4;
@@ -240,11 +326,11 @@ class XzgImageCompareWidget {
         const showLine = lineWidget ? lineWidget.value : true;
 
         // 画 image_a
-        this._drawImage(ctx, imgA, node.size[0], nodeHeight, y);
+        this._drawImage(ctx, node, imgA, node.size[0], nodeHeight, y);
 
         // 鼠标在节点上时，按鼠标 X 裁剪画 image_b
         if (node.isPointerOver) {
-            this._drawImage(ctx, imgB, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
+            this._drawImage(ctx, node, imgB, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
 
             // 画分割线：实线，#aaaaaa，1px
             if (showLine) {
@@ -262,7 +348,7 @@ class XzgImageCompareWidget {
     }
 
 
-    _drawImage(ctx, imgData, nodeWidth, nodeHeight, y, cropX) {
+    _drawImage(ctx, node, imgData, nodeWidth, nodeHeight, y, cropX) {
         const img = imgData?.img;
         if (!img || !img.naturalWidth || !img.naturalHeight) return;
 
@@ -302,7 +388,7 @@ class XzgImageCompareWidget {
             ctx.rect(destX, destY, destWidth, destHeight);
             ctx.clip();
         }
-        drawCheckerboard(ctx, imgData, destX, destY, destWidth, destHeight, targetW);
+        drawCheckerboard(ctx, node, imgData, destX, destY, destWidth, destHeight, targetW);
         ctx.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, destX, destY, destWidth, destHeight);
 
         ctx.restore();
@@ -393,6 +479,11 @@ class XiaozhuguangImageCompareNode {
     }
 
     onSerialize(serialised) {
+        if (this.type === XZG_IMAGE_COMPARE_CUSTOM_TYPE) {
+            serialised.properties = serialised.properties || {};
+            serialised.properties.xzg_preview_background = this._xzgPreviewBackground || "checker";
+            serialised.properties.xzg_preview_custom_color = this._xzgCustomPreviewColor || "#303030";
+        }
         if (this.canvasWidget) {
             for (let [index, wv] of (serialised.widgets_values || []).entries()) {
                 if (this.widgets[index] && this.widgets[index].name === "xzg_image_compare") {
@@ -461,7 +552,7 @@ class XiaozhuguangImageCompareNode {
 app.registerExtension({
     name: "xiaozhuguang.ImageCompare",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name === XZG_IMAGE_COMPARE_TYPE) {
+        if (XZG_IMAGE_COMPARE_TYPES.has(nodeData.name)) {
             // 禁止默认的 PreviewImage 预览行为（小窗口 + X 按钮）
             nodeType.prototype.previewWidget = null;
             nodeType.prototype.onPreviewRegistered = function() {};
@@ -474,6 +565,8 @@ app.registerExtension({
             const origOnMouseLeave = nodeType.prototype.onMouseLeave;
             const origOnMouseMove = nodeType.prototype.onMouseMove;
             const origOnSerialize = nodeType.prototype.onSerialize;
+            const origOnConfigure = nodeType.prototype.onConfigure;
+            const origOnMouseDown = nodeType.prototype.onMouseDown;
             const origGetHelp = nodeType.prototype.getHelp;
 
             const proto = XiaozhuguangImageCompareNode.prototype;
@@ -487,6 +580,8 @@ app.registerExtension({
                 this.pointerOverPos = [0, 0];
                 this.canvasWidget = null;
                 this.showLine = true;
+                this._xzgPreviewBackground = this.properties?.xzg_preview_background || "checker";
+                this._xzgCustomPreviewColor = this.properties?.xzg_preview_custom_color || "#303030";
 
                 proto.onNodeCreated.call(this);
 
@@ -530,6 +625,22 @@ app.registerExtension({
 
             nodeType.prototype.onSerialize = function (o) {
                 proto.onSerialize.call(this, o);
+            };
+
+            nodeType.prototype.onConfigure = function (o) {
+                origOnConfigure?.apply(this, arguments);
+                if (this.type === XZG_IMAGE_COMPARE_CUSTOM_TYPE) {
+                    const props = o?.properties || {};
+                    this._xzgPreviewBackground = ["checker", "red", "blue", "custom"].includes(props.xzg_preview_background)
+                        ? props.xzg_preview_background : "checker";
+                    this._xzgCustomPreviewColor = /^#[0-9a-f]{6}$/i.test(props.xzg_preview_custom_color || "")
+                        ? props.xzg_preview_custom_color : "#303030";
+                }
+            };
+
+            nodeType.prototype.onMouseDown = function (event) {
+                this._xzgLastClickClient = { x: event?.clientX, y: event?.clientY };
+                return origOnMouseDown?.apply(this, arguments);
             };
 
             nodeType.prototype.getHelp = function () {

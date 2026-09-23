@@ -283,6 +283,15 @@
       "show_line": { "name": "划线" }
     }
   },
+  "XiaozhuguangImageCompareCustom": {
+    "display_name": "小珠光图像对比-化神级",
+    "inputs": {
+      "a": { "name": "A" },
+      "b": { "name": "B" },
+      "reduce_lag": { "name": "减少卡顿" },
+      "show_line": { "name": "划线" }
+    }
+  },
   "XiaozhuguangImageSave": {
     "display_name": "小珠光图像保存",
     "inputs": {
