@@ -1,6 +1,60 @@
 import { app } from "../../scripts/app.js";
 import { xzgLang } from "./xzg_i18n.js";
 
+const H3_PREFIX = "Minimax-H3 ";
+const H3_GEN_MODES = [
+    "Text to Video (T2VA)", "Image to Video (I2VA)", "First+Last Frame (FL2VA)",
+    "Last Frame (L2VA)", "Full Reference (Ref2VA)",
+].map(value => `${H3_PREFIX}${value}`);
+const QWEN_IMAGE_TARGET = "Qwen-Image-2.1 图像";
+const QWEN_IMAGE_MODES = [
+    "Qwen-Image-2.1 文生图",
+    "Qwen-Image-2.1 图像编辑",
+    "Qwen-Image-2.1 多参考图",
+];
+const H3_ZH_STYLES = [
+    "无 (默认)", "极简产品广告", "3D动画短片", "纸艺定格科普",
+    "品牌宣传短片", "音乐美学MV", "双人游戏开场", "纸拼贴讲解", "手绘实拍融合",
+].map((value, index) => index === 0 ? value : `${H3_PREFIX}${value}`);
+const H3_EN_STYLES = [
+    "None (Default)", "Minimalist Product Ad", "3D Animated Short", "Papercraft Stop-Motion",
+    "Brand Promo Video", "Music Video", "Co-op Game Intro", "Paper Collage Explainer", "Hand-drawn + Live-action",
+].map((value, index) => index === 0 ? value : `${H3_PREFIX}${value}`);
+const H3_LEGACY_GEN_MODE_MAP = {
+    "Text to Video (T2VA)": H3_GEN_MODES[0], "Image to Video (I2VA)": H3_GEN_MODES[1],
+    "First+Last Frame (FL2VA)": H3_GEN_MODES[2], "Last Frame (L2VA)": H3_GEN_MODES[3],
+    "Full Reference (Ref2VA)": H3_GEN_MODES[4],
+    "文生视频 (T2VA)": H3_GEN_MODES[0], "图生视频 (I2VA)": H3_GEN_MODES[1],
+    "首尾帧 (FL2VA)": H3_GEN_MODES[2], "尾帧 (L2VA)": H3_GEN_MODES[3], "全参考 (Ref2VA)": H3_GEN_MODES[4],
+};
+const H3_ZH_STYLE_MAP = {
+    "None (Default)": H3_ZH_STYLES[0], "Minimalist Product Ad": H3_ZH_STYLES[1],
+    "3D Animated Short": H3_ZH_STYLES[2], "Papercraft Stop-Motion": H3_ZH_STYLES[3],
+    "Brand Promo Video": H3_ZH_STYLES[4], "Music Video": H3_ZH_STYLES[5],
+    "Co-op Game Intro": H3_ZH_STYLES[6], "Paper Collage Explainer": H3_ZH_STYLES[7],
+    "Hand-drawn + Live-action": H3_ZH_STYLES[8],
+    "无 (默认)": H3_ZH_STYLES[0], "极简产品广告": H3_ZH_STYLES[1], "3D动画短片": H3_ZH_STYLES[2],
+    "纸艺定格科普": H3_ZH_STYLES[3], "品牌宣传短片": H3_ZH_STYLES[4], "音乐美学MV": H3_ZH_STYLES[5],
+    "双人游戏开场": H3_ZH_STYLES[6], "纸拼贴讲解": H3_ZH_STYLES[7], "手绘实拍融合": H3_ZH_STYLES[8],
+};
+const H3_EN_STYLE_MAP = {
+    "None (Default)": H3_EN_STYLES[0], "Minimalist Product Ad": H3_EN_STYLES[1],
+    "3D Animated Short": H3_EN_STYLES[2], "Papercraft Stop-Motion": H3_EN_STYLES[3],
+    "Brand Promo Video": H3_EN_STYLES[4], "Music Video": H3_EN_STYLES[5],
+    "Co-op Game Intro": H3_EN_STYLES[6], "Paper Collage Explainer": H3_EN_STYLES[7],
+    "Hand-drawn + Live-action": H3_EN_STYLES[8],
+    "无 (默认)": H3_EN_STYLES[0], "极简产品广告": H3_EN_STYLES[1], "3D动画短片": H3_EN_STYLES[2],
+    "纸艺定格科普": H3_EN_STYLES[3], "品牌宣传短片": H3_EN_STYLES[4], "音乐美学MV": H3_EN_STYLES[5],
+    "双人游戏开场": H3_EN_STYLES[6], "纸拼贴讲解": H3_EN_STYLES[7], "手绘实拍融合": H3_EN_STYLES[8],
+};
+// 同一工作流在中英文界面间切换时，也保留已带前缀的选项。
+H3_EN_STYLES.forEach((value, index) => { H3_ZH_STYLE_MAP[value] = H3_ZH_STYLES[index]; });
+H3_ZH_STYLES.forEach((value, index) => { H3_EN_STYLE_MAP[value] = H3_EN_STYLES[index]; });
+H3_ZH_STYLE_MAP[`${H3_PREFIX}无 (默认)`] = H3_ZH_STYLES[0];
+H3_ZH_STYLE_MAP[`${H3_PREFIX}None (Default)`] = H3_ZH_STYLES[0];
+H3_EN_STYLE_MAP[`${H3_PREFIX}无 (默认)`] = H3_EN_STYLES[0];
+H3_EN_STYLE_MAP[`${H3_PREFIX}None (Default)`] = H3_EN_STYLES[0];
+
 app.registerExtension({
     name: "Xiaozhuguang.H3Prompt",
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
@@ -29,96 +83,51 @@ app.registerExtension({
                 this.setSize([300, this.size[1]]);
                 this._hideExtraImageInputs();
                 this._translateStylePreset();
+                this._syncTargetModel();
+                const targetWidget = this.widgets?.find(w => w.name === "target_model");
+                if (targetWidget) {
+                    const originalCallback = targetWidget.callback;
+                    targetWidget.callback = (...args) => {
+                        const result = originalCallback?.apply(targetWidget, args);
+                        this._syncTargetModel();
+                        return result;
+                    };
+                }
                 return r;
             };
 
-            // 根据语言环境翻译下拉选项并去重
+            // 根据语言环境显示带 Minimax-H3 前缀的下拉项，并迁移旧工作流值。
             nodeType.prototype._translateStylePreset = function () {
                 const lang = xzgLang();
+                const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
+                if (gmWidget && gmWidget.options) {
+                    gmWidget.options.values = H3_GEN_MODES;
+                    gmWidget.value = H3_LEGACY_GEN_MODE_MAP[gmWidget.value]
+                        || (H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0]);
+                }
 
-                if (lang === "zh") {
-                    // 中文环境：生成模式统一用英文（便于上游输入字符串匹配），风格预设保留中文
-                    const enGenModes = new Set([
-                        "Text to Video (T2VA)", "Image to Video (I2VA)", "First+Last Frame (FL2VA)", "Last Frame (L2VA)", "Full Reference (Ref2VA)"
-                    ]);
-                    const zhStyles = new Set([
-                        "无 (默认)", "极简产品广告", "3D动画短片", "纸艺定格科普",
-                        "品牌宣传短片", "音乐美学MV", "双人游戏开场", "纸拼贴讲解", "手绘实拍融合"
-                    ]);
+                const spWidget = this.widgets?.find(w => w.name === "style_preset");
+                if (spWidget && spWidget.options) {
+                    const styleValues = lang === "zh" ? H3_ZH_STYLES : H3_EN_STYLES;
+                    const styleMap = lang === "zh" ? H3_ZH_STYLE_MAP : H3_EN_STYLE_MAP;
+                    spWidget.options.values = styleValues;
+                    spWidget.value = styleMap[spWidget.value]
+                        || (styleValues.includes(spWidget.value) ? spWidget.value : styleValues[0]);
+                }
+            };
 
-                    // 生成模式：保持英文，仅过滤掉历史中文值
-                    const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
-                    if (gmWidget && gmWidget.options) {
-                        gmWidget.options.values = gmWidget.options.values.filter(v => enGenModes.has(v));
-                        // 历史中文值映射为英文
-                        const zhToEn = {
-                            "文生视频 (T2VA)": "Text to Video (T2VA)",
-                            "图生视频 (I2VA)": "Image to Video (I2VA)",
-                            "首尾帧 (FL2VA)": "First+Last Frame (FL2VA)",
-                            "尾帧 (L2VA)": "Last Frame (L2VA)",
-                            "全参考 (Ref2VA)": "Full Reference (Ref2VA)",
-                        };
-                        gmWidget.value = zhToEn[gmWidget.value] || (enGenModes.has(gmWidget.value) ? gmWidget.value : "Text to Video (T2VA)");
-                    }
-
-                    // 风格预设
-                    const spWidget = this.widgets?.find(w => w.name === "style_preset");
-                    if (spWidget && spWidget.options) {
-                        spWidget.options.values = spWidget.options.values.filter(v => zhStyles.has(v));
-                        const enToZh = {
-                            "None (Default)": "无 (默认)",
-                            "Minimalist Product Ad": "极简产品广告",
-                            "3D Animated Short": "3D动画短片",
-                            "Papercraft Stop-Motion": "纸艺定格科普",
-                            "Brand Promo Video": "品牌宣传短片",
-                            "Music Video": "音乐美学MV",
-                            "Co-op Game Intro": "双人游戏开场",
-                            "Paper Collage Explainer": "纸拼贴讲解",
-                            "Hand-drawn + Live-action": "手绘实拍融合",
-                        };
-                        spWidget.value = enToZh[spWidget.value] || spWidget.value;
-                    }
+            // Qwen-Image-2.1 使用图像生成/编辑模式；H3 保持视频生成模式。
+            nodeType.prototype._syncTargetModel = function () {
+                const targetWidget = this.widgets?.find(w => w.name === "target_model");
+                const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
+                if (!gmWidget?.options) return;
+                if (targetWidget?.value === QWEN_IMAGE_TARGET) {
+                    gmWidget.options.values = QWEN_IMAGE_MODES;
+                    if (!QWEN_IMAGE_MODES.includes(gmWidget.value)) gmWidget.value = QWEN_IMAGE_MODES[0];
                 } else {
-                    // 英文环境：只保留英文选项
-                    const enGenModes = new Set([
-                        "Text to Video (T2VA)", "Image to Video (I2VA)", "First+Last Frame (FL2VA)", "Last Frame (L2VA)", "Full Reference (Ref2VA)"
-                    ]);
-                    const enStyles = new Set([
-                        "None (Default)", "Minimalist Product Ad", "3D Animated Short", "Papercraft Stop-Motion",
-                        "Brand Promo Video", "Music Video", "Co-op Game Intro", "Paper Collage Explainer", "Hand-drawn + Live-action"
-                    ]);
-
-                    // 生成模式
-                    const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
-                    if (gmWidget && gmWidget.options) {
-                        gmWidget.options.values = gmWidget.options.values.filter(v => enGenModes.has(v));
-                        const zhToEn = {
-                            "文生视频 (T2VA)": "Text to Video (T2VA)",
-                            "图生视频 (I2VA)": "Image to Video (I2VA)",
-                            "首尾帧 (FL2VA)": "First+Last Frame (FL2VA)",
-                            "尾帧 (L2VA)": "Last Frame (L2VA)",
-                            "全参考 (Ref2VA)": "Full Reference (Ref2VA)",
-                        };
-                        gmWidget.value = zhToEn[gmWidget.value] || gmWidget.value;
-                    }
-
-                    // 风格预设
-                    const spWidget = this.widgets?.find(w => w.name === "style_preset");
-                    if (spWidget && spWidget.options) {
-                        spWidget.options.values = spWidget.options.values.filter(v => enStyles.has(v));
-                        const zhToEn = {
-                            "无 (默认)": "None (Default)",
-                            "极简产品广告": "Minimalist Product Ad",
-                            "3D动画短片": "3D Animated Short",
-                            "纸艺定格科普": "Papercraft Stop-Motion",
-                            "品牌宣传短片": "Brand Promo Video",
-                            "音乐美学MV": "Music Video",
-                            "双人游戏开场": "Co-op Game Intro",
-                            "纸拼贴讲解": "Paper Collage Explainer",
-                            "手绘实拍融合": "Hand-drawn + Live-action",
-                        };
-                        spWidget.value = zhToEn[spWidget.value] || spWidget.value;
-                    }
+                    gmWidget.options.values = H3_GEN_MODES;
+                    gmWidget.value = H3_LEGACY_GEN_MODE_MAP[gmWidget.value]
+                        || (H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0]);
                 }
             };
 
@@ -248,8 +257,14 @@ app.registerExtension({
             const origConfigure = nodeType.prototype.configure;
             nodeType.prototype.configure = function (info) {
                 const r = origConfigure?.apply(this, arguments);
-                try { this._adjustImageInputs(); }
-                catch (e) { /* 子图操作时可能状态不一致，忽略 */ }
+                // 子图解包时 configure 早于连线恢复；此刻增删/重编号端口会让恢复目标槽位消失。
+                // 等到当前批次的连接变更全部完成后再统一整理。
+                clearTimeout(this._adjustImgTimer);
+                this._adjustImgTimer = setTimeout(() => {
+                    if (!this.graph || this._removed) return;
+                    try { this._adjustImageInputs(); }
+                    catch (e) { /* 子图操作时可能状态不一致，忽略 */ }
+                }, 350);
                 return r;
             };
         }

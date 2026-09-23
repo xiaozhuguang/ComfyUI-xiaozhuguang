@@ -49,7 +49,7 @@ app.registerExtension({
         if (nodeName === "XiaozhuguangPointsEditor") {
             chainCallback(nodeType.prototype, "onNodeCreated", function() {
                 const container = document.createElement("div");
-                // 注意：高度由 onResize/onDrawForeground 通过 JS 精确控制，与 computeSize 保持一致
+                // 高度由 ComfyUI 的 DOM widget 布局统一管理，避免画布缩放后出现透明溢出区域。
                 container.style.cssText = "position: relative; width: 100%; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
 
                 const toolbar = document.createElement("div");
@@ -210,6 +210,12 @@ app.registerExtension({
                 // 否则 ComfyUI 默认 hideOnZoom: true，画布缩放低于阈值（low_quality）时
                 // 会把整个点编辑器 DOM 设成 display:none，缩小画布后预览即消失。
                 const widget = this.addDOMWidget("canvas", "points_editor", container, { hideOnZoom: false });
+                // DOM widget 的外层可能比可见内容更大。根容器默认点击穿透，只有真实
+                // 交互区接收事件，避免节点下方的透明占位拦截画布拖动或滚轮缩放。
+                container.style.pointerEvents = "none";
+                toolbar.style.pointerEvents = "auto";
+                canvasWrapper.style.pointerEvents = "auto";
+                tracker.style.pointerEvents = "auto";
                 // 修复（同「视频/音频」栏）：ComfyUI 会把 DOM widget 的 width 写成面板侧行宽度，
                 // 而画布侧 DOM 宿主宽度 = widget.width - margin*2，一旦该值大于节点实际宽度，
                 // 点编辑画布就会溢出节点、且随属性面板开/关变化。
@@ -273,29 +279,18 @@ app.registerExtension({
                     }
                 }, 1)
 
-                // 统一偏移量：节点高度 → widget高度的转换
-                // 覆盖标题栏(~30px) + 输入/输出连接区 + 间距等非widget区域
-                const WIDGET_HEIGHT_OFFSET = 130;
-
-                const calcWidgetHeight = (nodeH) => Math.max(50, nodeH - WIDGET_HEIGHT_OFFSET);
-
-                // 返回 height = -1 告诉 ComfyUI："给我多少空间我都填满"
-                widget.computeSize = (width) => [width, -1];
-
-                // 同步更新 container 高度——根据实际节点尺寸计算
-                // 性能优化：带守卫，值没变就不写样式，避免 onDrawForeground 每帧强制 reflow
-                let lastWidgetH = -1;
-                const syncContainerHeight = (size) => {
-                    const h = calcWidgetHeight(size[1]);
-                    if (h === lastWidgetH) return;
-                    lastWidgetH = h;
-                    container.style.height = h + 'px';
-                };
-                chainCallback(this, "onResize", syncContainerHeight);
+                // 不设置 computeSize（旧的 [width, -1] 会短路 ComfyUI 的弹性布局，
+                // 导致 DOM 容器在缩放时溢出节点）。由 computeLayoutSize 提供最小高度，
+                // 其余空间交给前端 DOM widget 统一计算和缩放。
+                widget.computeLayoutSize = () => ({ minHeight: 270, minWidth: 0 });
                 chainCallback(this, "onDrawForeground", function(ctx) {
-                    syncContainerHeight(this.size);
                     syncCanvasSize();
                 });
+                if (typeof ResizeObserver !== "undefined") {
+                    const resizeObserver = new ResizeObserver(() => syncCanvasSize());
+                    resizeObserver.observe(canvasWrapper);
+                    chainCallback(this, "onRemoved", () => resizeObserver.disconnect());
+                }
 
                 chainCallback(this, "onExecuted", function(message) {
                     if (message.preview && message.preview[0]) {

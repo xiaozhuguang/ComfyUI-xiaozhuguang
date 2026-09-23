@@ -12,15 +12,13 @@ Pillow
 opencv-python
 # xzg_monitor 系统监控悬浮窗：CPU / 内存 / 温度数据来源（pynvml 随 ComfyUI 内置）
 psutil
-# Qwen3-VL 系列模型需要 transformers >= 4.57.1（Qwen3VLForConditionalGeneration）
 transformers>=4.57.1
-qwen-vl-utils
 imageio-ffmpeg>=0.5.1
 safetensors
 librosa
-llama-cpp-python
-# qwenVL 节点 4bit / 8bit 量化加载需要（fp16 / fp32 不需要）
-bitsandbytes
+# Qwen 3.8 GGUF（尤其视觉模型）需要 JamePeng 分支提供的 Qwen35ChatHandler。
+# ComfyUI-aki-XZG 的 Windows / Python 3.12 / CUDA 13 环境使用此已验证 GPU 轮子。
+llama-cpp-python @ https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.46-cu130-win-20260808/llama_cpp_python-0.3.46+cu130-cp312-cp312-win_amd64.whl ; platform_system == "Windows" and python_version == "3.12"
 
 # ---------- 内置工具组件依赖（缺失会导致插件加载失败或设备标识生成失败） ----------
 # cryptography: 内置工具组件的数据处理依赖（导入期即需要，缺了插件整体无法加载）

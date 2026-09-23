@@ -157,8 +157,15 @@ class XiaozhuguangImageSave(PreviewImage):
                 jpg_pil = compressed_pil
 
             # 保存压缩 JPG 预览到临时目录（画布显示，始终 JPG）
-            preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
-            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=preview_quality, optimize=True)
+            preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
+            jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=preview_quality, optimize=True)
+
+            # 与化神级统一：保留透明缩略图，交由前端采用同一套棋盘格逻辑铺底。
+            transparent_preview_fname = None
+            preview_checker_cell = max(16, min(40, max(w, h) // 32))
+            if has_alpha:
+                transparent_preview_fname = f"xzg.save.alpha.{rand()}_{i}.png"
+                compressed_pil.save(os.path.join(temp_dir, transparent_preview_fname), "PNG")
 
             # 保存到输出目录（仅保存模式；RGBA 已强制 PNG）
             saved_info = None
@@ -207,14 +214,22 @@ class XiaozhuguangImageSave(PreviewImage):
                 disp_subfolder = ""
                 disp_type = "temp"
 
-            entries.append({
-                "filename": disp_filename,
-                "subfolder": disp_subfolder,
-                "type": disp_type,
-                "real_token": token,
+            entries.append({
+                "filename": disp_filename,
+                "subfolder": disp_subfolder,
+                "type": disp_type,
+                # 画布预览始终使用临时 JPG；RGBA 时它已合成棋盘格，不能改为直接展示透明 PNG。
+                "preview_filename": preview_fname,
+                "preview_subfolder": "",
+                "preview_type": "temp",
+                "transparent_preview_filename": transparent_preview_fname,
+                "transparent_preview_subfolder": "",
+                "transparent_preview_type": "temp",
+                "real_token": token,
                 "real_index": i,
-                "real_width": int(w),
-                "real_height": int(h),
+                "real_width": int(w),
+                "real_height": int(h),
+                "preview_checker_cell": int(preview_checker_cell),
                 # 标记是否含 alpha 通道：前端据此强制右键只允许 PNG 保存
                 "has_alpha": bool(has_alpha),
                 # 保存模式下附带 output 目录文件信息，右键可直接下载，无需懒编码

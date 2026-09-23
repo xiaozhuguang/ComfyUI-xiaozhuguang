@@ -243,6 +243,7 @@ function calcNaturalContentSize(settings) {
 
 const DEFAULT_SETTINGS = {
     labels: { "0": "", "1": "" },
+    outputs: {},
     colors: { color1: "#000000", color2: "#FF0000", color3: "#000000", direction: "180deg" },
     count: 2,
     columns: 2,

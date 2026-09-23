@@ -241,12 +241,13 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                 new_h = max(1, int(h * ratio))
                 compressed_pil = compressed_pil.resize((new_w, new_h), Image.LANCZOS)
 
+            # 与普通版保持同一棋盘格规则；将单元尺寸传给前端，供化神级透明预览精确复现。
+            preview_checker_cell = max(16, min(40, max(w, h) // 32))
+
             # 预览始终为 JPG（减少卡顿）：RGBA 合成到棋盘格背景后转 RGB（Photoshop 风格透明指示）
             if compressed_pil.mode != "RGB":
                 if compressed_pil.mode == "RGBA":
-                    # 格子大小按图像尺寸自适应（最长边 / 32，范围 16~40px）
-                    _cell = max(16, min(40, max(w, h) // 32))
-                    jpg_pil = _xzg_composite_checkerboard(compressed_pil, cell=_cell)
+                    jpg_pil = _xzg_composite_checkerboard(compressed_pil, cell=preview_checker_cell)
                 else:
                     jpg_pil = compressed_pil.convert("RGB")
             else:
@@ -274,6 +275,13 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
             else:
                 preview_fname = f"xzg.save.preview.{rand()}_{i}.jpg"
             jpg_pil.save(os.path.join(temp_dir, preview_fname), "JPEG", quality=preview_quality, optimize=True)
+
+            # 化神级画布可切换透明底色：额外保留一张带 alpha 的缩略 PNG。
+            # 默认媒体资产仍使用上面的棋盘格 JPG，因此此文件只服务节点内预览。
+            transparent_preview_fname = None
+            if has_alpha:
+                transparent_preview_fname = f"xzg.save.alpha.{rand()}_{i}.png"
+                compressed_pil.save(os.path.join(temp_dir, transparent_preview_fname), "PNG")
 
             # 保存到输出目录（仅保存模式；RGBA 已强制 PNG）
             saved_info = None
@@ -320,10 +328,20 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
                 "filename": disp_filename,
                 "subfolder": disp_subfolder,
                 "type": disp_type,
+                # 画布预览始终使用临时 JPG；RGBA 时它已合成棋盘格，不能改为直接展示透明 PNG。
+                "preview_filename": preview_fname,
+                "preview_subfolder": "",
+                "preview_type": "temp",
+                # 仅化神级使用：透明 PNG 让前端可实时切换棋盘格/纯色底，
+                # 不会改变实际输出文件或媒体资产的预览图。
+                "transparent_preview_filename": transparent_preview_fname,
+                "transparent_preview_subfolder": "",
+                "transparent_preview_type": "temp",
                 "real_token": token,
                 "real_index": i,
                 "real_width": int(w),
                 "real_height": int(h),
+                "preview_checker_cell": int(preview_checker_cell),
                 # 标记是否含 alpha 通道：前端据此强制右键只允许 PNG 保存
                 "has_alpha": bool(has_alpha),
                 # 保存模式下附带 output 目录文件信息，右键可直接下载，无需懒编码

@@ -136,25 +136,6 @@
       "0": { "name": "output" }
     }
   },
-  "XiaozhuguangQwenVLInstruct": {
-    "display_name": "Xiaozhuguang Qwen-VL Instruct",
-    "inputs": {
-      "text": { "name": "text" },
-      "model": { "name": "model" },
-      "quantization": { "name": "quantization" },
-      "keep_model_loaded": { "name": "keep model loaded" },
-      "temperature": { "name": "temperature" },
-      "max_tokens": { "name": "max tokens" },
-      "min_pixels": { "name": "min pixels (x10000)" },
-      "max_pixels": { "name": "max pixels (x10000)" },
-      "seed": { "name": "seed" },
-      "attention": { "name": "attention" },
-      "image": { "name": "image" }
-    },
-    "outputs": {
-      "0": { "name": "result" }
-    }
-  },
   "XiaozhuguangGetWidget": {
     "display_name": "Xiaozhuguang Get Widget",
     "inputs": {
@@ -343,8 +324,9 @@
   "XiaozhuguangNinimaxH3Prompt": {
     "display_name": "XZG MiniMax H3 Prompt",
     "inputs": {
-      "qwen_model": { "name": "Qwen Model" },
-      "user_prompt": { "name": "User Prompt" },
+        "qwen_model": { "name": "Qwen Model" },
+        "target_model": { "name": "Target Model" },
+        "user_prompt": { "name": "User Prompt" },
       "generation_mode": { "name": "Generation Mode" },
       "style_preset": { "name": "Style Preset" },
       "seed": { "name": "Seed" },
@@ -359,9 +341,9 @@
       "image_8": { "name": "Image_8" },
       "image_9": { "name": "Image_9" }
     },
-    "outputs": {
-      "0": { "name": "Prompt Output" }
-    }
+      "outputs": {
+        "0": { "name": "Prompt Output" }
+      }
   },
   "XiaozhuguangQwenModelLoader": {
     "display_name": "XZG Qwen Model Loader",

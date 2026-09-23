@@ -4,7 +4,7 @@ name = "ComfyUI-xiaozhuguang"
 
 description = "小珠光 - ComfyUI节点美化增强插件，提供节点收藏、工作流管理、主题美化、田字格对齐、视觉编组等功能"
 
-version = "18.0.10"
+version = "18.1.0"
 
 license = { file = "LICENSE" }
 
@@ -22,17 +22,15 @@ dependencies = [
 
     "transformers>=4.57.1",
 
-    "qwen-vl-utils",
-
     "imageio-ffmpeg",
 
     "safetensors",
 
     "librosa",
 
-    "llama-cpp-python",
-
-    "bitsandbytes",
+    # Qwen 3.8 GGUF（尤其视觉模型）需要 JamePeng 分支提供的 Qwen35ChatHandler。
+    # ComfyUI-aki-XZG 的 Windows / Python 3.12 / CUDA 13 环境使用此已验证 GPU 轮子。
+    "llama-cpp-python @ https://github.com/JamePeng/llama-cpp-python/releases/download/v0.3.46-cu130-win-20260808/llama_cpp_python-0.3.46+cu130-cp312-cp312-win_amd64.whl ; platform_system == 'Windows' and python_version == '3.12'",
 
     "pycryptodome",
 

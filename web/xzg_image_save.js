@@ -428,6 +428,107 @@ function imageUrl(data) {
     );
 }
 
+function previewImageUrl(data) {
+    return imageUrl({
+        filename: data.preview_filename,
+        subfolder: data.preview_subfolder || "",
+        type: data.preview_type || "temp",
+    });
+}
+
+function transparentPreviewImageUrl(data) {
+    return imageUrl({
+        filename: data.transparent_preview_filename,
+        subfolder: data.transparent_preview_subfolder || "",
+        type: data.transparent_preview_type || "temp",
+    });
+}
+
+function _xzgPreviewBgLabel(mode) {
+    return {
+        checker: xzgT("棋盘格", "Checker"),
+        red: xzgT("红底", "Red"),
+        blue: xzgT("蓝底", "Blue"),
+        custom: xzgT("自定义", "Custom"),
+    }[mode] || xzgT("棋盘格", "Checker");
+}
+
+// 化神级专属的透明图背景菜单。状态存于节点 properties，随工作流保存，不参与实际文件输出。
+function _xzgShowPreviewBgMenu(node) {
+    document.getElementById("xzg-image-preview-bg-menu")?.remove();
+    const menu = document.createElement("div");
+    menu.id = "xzg-image-preview-bg-menu";
+    menu.style.cssText = "position:fixed;z-index:1000000;min-width:130px;padding:5px;background:#292929;border:1px solid #555;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.55);";
+    // 使用实际鼠标屏幕坐标，而非 LiteGraph 内部坐标，避免缩放/平移后锚点漂移。
+    const point = node._xzgLastClickClient;
+    const anchorX = point?.x ?? Math.max(8, window.innerWidth - 145);
+    const anchorY = point?.y ?? 80;
+    menu.style.left = `${Math.min(window.innerWidth - 145, Math.max(8, anchorX - 110))}px`;
+    menu.style.top = `${Math.min(window.innerHeight - 175, Math.max(8, anchorY))}px`;
+    const choose = (mode) => {
+        node._xzgPreviewBackground = mode;
+        node.properties = node.properties || {};
+        node.properties.xzg_preview_background = mode;
+        node.setDirtyCanvas(true, true);
+        menu.remove();
+    };
+    for (const mode of ["checker", "red", "blue"]) {
+        const item = document.createElement("button");
+        item.textContent = _xzgPreviewBgLabel(mode);
+        item.style.cssText = "display:block;width:100%;padding:5px 9px;text-align:left;color:#ddd;background:transparent;border:0;cursor:pointer;font-size:12px;";
+        item.onmouseenter = () => item.style.background = "#3b3b3b";
+        item.onmouseleave = () => item.style.background = "transparent";
+        item.onclick = () => choose(mode);
+        menu.appendChild(item);
+    }
+    const customRow = document.createElement("label");
+    customRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 9px;color:#ddd;font-size:12px;cursor:pointer;";
+    customRow.append(document.createTextNode(_xzgPreviewBgLabel("custom")));
+    const color = document.createElement("input");
+    color.type = "color";
+    color.value = node._xzgCustomPreviewColor || "#303030";
+    color.style.cssText = "width:28px;height:19px;padding:0;border:0;background:transparent;cursor:pointer;";
+    color.oninput = () => {
+        node._xzgCustomPreviewColor = color.value;
+        node._xzgPreviewBackground = "custom";
+        node.properties = node.properties || {};
+        node.properties.xzg_preview_background = "custom";
+        node.properties.xzg_preview_custom_color = color.value;
+        node.setDirtyCanvas(true, true);
+    };
+    customRow.appendChild(color);
+    menu.appendChild(customRow);
+    document.body.appendChild(menu);
+    // 点击取色器本身也会触发 pointerdown；只有真正点到菜单外才关闭并注销监听。
+    const dismiss = (e) => {
+        if (menu.contains(e.target)) return;
+        menu.remove();
+        window.removeEventListener("pointerdown", dismiss, true);
+    };
+    setTimeout(() => window.addEventListener("pointerdown", dismiss, true), 0);
+}
+
+function _xzgDrawTransparencyBackground(ctx, node, imgData, x, y, w, h) {
+    const mode = node._xzgPreviewBackground || "checker";
+    if (node.type === XZG_IMAGE_SAVE_CUSTOM_TYPE && (mode === "red" || mode === "blue" || mode === "custom")) {
+        ctx.fillStyle = mode === "red" ? "#e53935" : mode === "blue" ? "#1976d2" : (node._xzgCustomPreviewColor || "#303030");
+        ctx.fillRect(x, y, w, h);
+        return;
+    }
+    // 与普通版后端预览一致：图片最长边 / 32，限制在 16–40px。
+    // 这里按当前缩放后的显示尺寸换算，节点缩放时保留相同的图像内棋盘格比例。
+    const sourceW = imgData?.img?.naturalWidth || imgData?.real_width || w;
+    const sourceCell = imgData?.preview_checker_cell || Math.max(16, Math.min(40, Math.max(imgData?.real_width || sourceW, imgData?.real_height || h) / 32));
+    const cell = Math.max(1, sourceCell * w / sourceW);
+    // 不从浮点坐标反推格子序号：节点缩放后 cell 可能是小数，反推会在边界产生相邻同色格。
+    for (let rowIndex = 0, rowY = 0; rowY < h; rowIndex++, rowY += cell) {
+        for (let colIndex = 0, colX = 0; colX < w; colIndex++, colX += cell) {
+            ctx.fillStyle = ((rowIndex + colIndex) % 2 === 0) ? "#ffffff" : "#dcdcdc";
+            ctx.fillRect(x + colX, y + rowY, Math.min(cell, w - colX), Math.min(cell, h - rowY));
+        }
+    }
+}
+
 // PNG 保存 → 统一走懒编码 + File System Access API（首次桌面，二次上次路径）
 const downloadImage = downloadLazyImage;
 // JPG 保存 → 直接复用压缩预览图 + File System Access API
@@ -493,14 +594,14 @@ class XzgImageSaveWidget {
 
         // 按钮行布局：
         //   原节点（XiaozhuguangImageSave）：三等分 mode / save_format / reduce_lag
-        //   自定义节点（XiaozhuguangImageSaveCustom）：四等分 输出目录 / mode / save_format / reduce_lag
+        //   化神级节点：五等分 mode / save_format / reduce_lag / 输出设置 / 背景
         const modeWidget = node._xzgModeWidget;
         const lagWidget = node._xzgLagWidget;
         const formatWidget = node._xzgFormatWidget;
         const isCustom = node.type === XZG_IMAGE_SAVE_CUSTOM_TYPE;
 
         if (isCustom || modeWidget || formatWidget || lagWidget) {
-            const cols = isCustom ? 4 : 3;
+            const cols = isCustom ? 5 : 3;
             const colW = width / cols;
             ctx.font = "11px Arial";
             ctx.textBaseline = "middle";
@@ -559,16 +660,26 @@ class XzgImageSaveWidget {
                 idx++;
             }
 
-            // 自定义节点最右侧：输出目录
+            // 化神级：输出设置
             if (isCustom) {
                 ctx.textAlign = "center";
                 ctx.fillStyle = "#aaaaaa";
-                ctx.fillText(xzgT("输出目录", "Output Dir"), colW * idx + colW / 2, y + btnH / 2);
+                ctx.fillText(xzgT("输出设置", "Output Settings"), colW * idx + colW / 2, y + btnH / 2);
                 this.hitAreas["browse_dir"] = {
                     bounds: [colW * idx, y, colW, btnH],
                     onDown: () => {
                         if (typeof _xzgShowDirBrowser === "function") _xzgShowDirBrowser(node);
                     }
+                };
+                idx++;
+
+                // 输出设置右侧：仅化神级的透明背景观察模式
+                ctx.textAlign = "center";
+                ctx.fillStyle = "#88ccff";
+                ctx.fillText(_xzgPreviewBgLabel(node._xzgPreviewBackground || "checker"), colW * idx + colW / 2, y + btnH / 2);
+                this.hitAreas["preview_background"] = {
+                    bounds: [colW * idx, y, colW, btnH],
+                    onDown: () => _xzgShowPreviewBgMenu(node)
                 };
                 idx++;
             }
@@ -625,6 +736,7 @@ class XzgImageSaveWidget {
             }
             destX = IMAGE_MARGIN + (effW - targetW) / 2;
             destY = y + (nodeHeight - targetH) / 2;
+            if (imgData.has_alpha) _xzgDrawTransparencyBackground(ctx, node, imgData, destX, destY, targetW, targetH);
             ctx.drawImage(img, destX, destY, targetW, targetH);
 
             // 底部显示分辨率（优先使用后端返回的原始分辨率 real_width/real_height，避免显示压缩后的预览图分辨率）
@@ -730,6 +842,7 @@ class XzgImageSaveWidget {
                 if (ia > 1) th = cell / ia; else tw = cell * ia;
                 const imgX = cx + (cell - tw) / 2;
                 const imgY = cy + (cell - th) / 2;
+                if (imgData.has_alpha) _xzgDrawTransparencyBackground(ctx, node, imgData, imgX, imgY, tw, th);
                 ctx.drawImage(img, imgX, imgY, tw, th);
 
                 // 网格缩略图底部显示分辨率（cell ≥ 60 时才显示，避免拥挤）
@@ -859,11 +972,16 @@ class XiaozhuguangImageSaveNode {
         const imagesToShow = imgs.map((d, i) => ({
             name: String(i + 1),
             selected: i === 0,
-            url: imageUrl(d),
+            // 两个保存节点统一使用透明 PNG + 前端铺底，棋盘格效果完全一致；
+            // 只有化神级额外提供红/蓝/自定义底色菜单。
+            url: (d.has_alpha && d.transparent_preview_filename)
+                ? transparentPreviewImageUrl(d)
+                : ((d.has_alpha && d.preview_filename) ? previewImageUrl(d) : imageUrl(d)),
             real_token: d.real_token || null,
             real_index: (d.real_index != null) ? d.real_index : i,
             real_width: d.real_width,
             real_height: d.real_height,
+            preview_checker_cell: d.preview_checker_cell,
             // 是否含 alpha 通道：右键强制 PNG 保存
             has_alpha: !!d.has_alpha,
             // 保存模式下附带 output 目录文件信息，右键 PNG 可直接下载，无需懒编码
@@ -879,6 +997,11 @@ class XiaozhuguangImageSaveNode {
     }
 
     onSerialize(serialised) {
+        if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
+            serialised.properties = serialised.properties || {};
+            serialised.properties.xzg_preview_background = this._xzgPreviewBackground || "checker";
+            serialised.properties.xzg_preview_custom_color = this._xzgCustomPreviewColor || "#303030";
+        }
         if (this.canvasWidget) {
             for (let [index, wv] of (serialised.widgets_values || []).entries()) {
                 if (this.widgets[index] && this.widgets[index].name === "xzg_image_save") {
@@ -894,6 +1017,13 @@ class XiaozhuguangImageSaveNode {
     }
 
     onConfigure(o) {
+        if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
+            const props = o.properties || {};
+            this._xzgPreviewBackground = ["checker", "red", "blue", "custom"].includes(props.xzg_preview_background)
+                ? props.xzg_preview_background : "checker";
+            this._xzgCustomPreviewColor = /^#[0-9a-f]{6}$/i.test(props.xzg_preview_custom_color || "")
+                ? props.xzg_preview_custom_color : "#303030";
+        }
         // 刷新后从 widgets_values 恢复图片数据
         if (this.canvasWidget && o.widgets_values) {
             for (let [index, wv] of o.widgets_values.entries()) {
@@ -981,6 +1111,7 @@ class XiaozhuguangImageSaveNode {
             cleanup();
             if (!click || e.pointerId !== click.pointerId) return;
             node._xzgClick = null;
+            node._xzgLastClickClient = { x: e.clientX, y: e.clientY };
             if (node.canvasWidget) node.canvasWidget.fireClick(click.nodePos, node);
         };
         window.addEventListener('pointermove', onMove, true);
@@ -990,6 +1121,10 @@ class XiaozhuguangImageSaveNode {
 
     onNodeCreated() {
         const node = this;
+        if (node.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
+            node._xzgPreviewBackground = node.properties?.xzg_preview_background || "checker";
+            node._xzgCustomPreviewColor = node.properties?.xzg_preview_custom_color || "#303030";
+        }
         const w = this.addCustomWidget(new XzgImageSaveWidget("xzg_image_save", this));
         this.canvasWidget = w;
         // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，

@@ -229,6 +229,8 @@ from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
+from .nodes.xzg_qwen_image21_encode import XiaozhuguangTextEncodeQwenImage21
+from .nodes.xzg_string_to_number import XiaozhuguangStringToNumber
 from .nodes.xzg_atbc import XiaozhuguangATBC
 from .nodes.xzg_atr import XiaozhuguangATR
 from .nodes.xzg_face_align import XiaozhuguangFaceAlign
@@ -252,18 +254,6 @@ from .nodes.xzg_star_upscale import StarUpscale
 from .nodes.xzg_brushnet_inpaint import BlendInpaint, CutForInpaint
 # —— 小珠光 · 系统监控悬浮窗（GPU/CPU/内存实时状态，含 /xzg/system_monitor_stats 接口）——
 from .nodes.xzg_monitor import XiaozhuguangSystemMonitor
-
-# —— 依赖 transformers / 大库的「可选节点」，导入失败只警告，不影响其它 20+ 个节点 ——
-# (这些节点用户"找不到"最常见的原因就是 ComfyUI 环境没装 transformers)
-XiaozhuguangQwenVLInstruct = None
-try:
-    from .nodes.xzg_qwen3_vl_instruct import XiaozhuguangQwenVLInstruct
-except Exception as _qwen_err:
-    print(
-        "[小珠光] 跳过 qwenVL 节点（依赖缺失，如需使用请安装 transformers）：",
-        _qwen_err,
-    )
-
 
 # ============ 小珠光 LongCat 离线 TTS（建模库已移植到本插件内部，无需外部插件） ============
 # 原插件 ComfyUI-LongCat-AudioDIT-TTS 的 audiodit/ 建模包与 loader/model_cache 工具
@@ -906,6 +896,15 @@ class XiaozhuguangPointsEditor:
         }
 
 
+class _SelectorAnyType(str):
+    """与 CR Text 的 any_type 同构：允许输出连接到任意下游端口。"""
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+
+_selector_any_type = _SelectorAnyType("*")
+
+
 class XiaozhuguangSelector:
     """
     小珠光标签选择器
@@ -921,12 +920,22 @@ class XiaozhuguangSelector:
             },
         }
 
-    RETURN_TYPES = ("INT",)
+    # 与 CR Text 一致：使用 AnyType 通配端口；自定义项实际返回原始 STRING。
+    RETURN_TYPES = (_selector_any_type,)
     RETURN_NAMES = ("value",)
     FUNCTION = "select"
     CATEGORY = "xiaozhuguang"
 
     def select(self, label, _xz_settings=""):
+        # 设置面板可为每个按钮定义输出内容。空值保持旧行为，继续输出按钮编号的 INT。
+        try:
+            settings = json.loads(_xz_settings) if _xz_settings else {}
+            outputs = settings.get("outputs", {}) if isinstance(settings, dict) else {}
+            custom = outputs.get(str(label)) if isinstance(outputs, dict) else None
+            if custom is not None and str(custom).strip() != "":
+                return (str(custom),)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
         try:
             val = int(label)
             return (val,)
@@ -1214,6 +1223,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
     "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
+    "XiaozhuguangTextEncodeQwenImage21": XiaozhuguangTextEncodeQwenImage21,
+    "XiaozhuguangStringToNumber": XiaozhuguangStringToNumber,
     "XiaozhuguangATBC": XiaozhuguangATBC,
     "XiaozhuguangATR": XiaozhuguangATR,
     "XiaozhuguangFaceAlign": XiaozhuguangFaceAlign,
@@ -1236,14 +1247,13 @@ NODE_CLASS_MAPPINGS = {
     "CutForInpaint": CutForInpaint,
     "XiaozhuguangSystemMonitor": XiaozhuguangSystemMonitor,
 }
-# 可选大依赖节点：只有导入成功才加入映射
-if XiaozhuguangQwenVLInstruct is not None:
-    NODE_CLASS_MAPPINGS["XiaozhuguangQwenVLInstruct"] = XiaozhuguangQwenVLInstruct
 NODE_CLASS_MAPPINGS.update({k: v[0] for k, v in _AUDIODIT_NODES.items()})
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangSelector": "小珠光选择器",
+    "XiaozhuguangSelector": "小珠光选择器-化神级",
     "XiaozhuguangBooleanSelector": "小珠光布尔",
+    "XiaozhuguangTextEncodeQwenImage21": "Text Encode Qwen Image 2.1-xzg",
+    "XiaozhuguangStringToNumber": "小珠光字符串转整数/浮点",
     "XiaozhuguangBoolNot": "小珠光反向布尔",
     "XiaozhuguangDataBlock": "小珠光数据阻断",
     "XiaozhuguangCompareDataBlock": "小珠光比较大小-数据阻断",
@@ -1272,7 +1282,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",
-    "XiaozhuguangNinimaxH3Prompt": "小珠光 MiniMax H3 提示词",
+    "XiaozhuguangNinimaxH3Prompt": "小珠光QWEN提示词",
     "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",
     "XiaozhuguangATBC": "小珠光 ATBC (智能裁剪)",
     "XiaozhuguangATR": "小珠光 ATR (图像回贴)",
@@ -1296,8 +1306,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CutForInpaint": "小珠光局部重绘（裁剪）",
     "XiaozhuguangSystemMonitor": "小珠光系统监控",
 }
-if XiaozhuguangQwenVLInstruct is not None:
-    NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangQwenVLInstruct"] = "小珠光qwenVL"
 NODE_DISPLAY_NAME_MAPPINGS.update({k: v[1] for k, v in _AUDIODIT_NODES.items()})
 
 WEB_DIRECTORY = "./web"

@@ -68,20 +68,35 @@ class XiaozhuguangImageCompare(PreviewImage):
 
             # 转回 numpy/PIL 并保存为 JPG（比 WebP 快很多）
             img = img.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            import random
+            has_alpha = img.ndim == 3 and img.shape[-1] == 4
+            transparent_filename = None
+            if has_alpha:
+                # 对比画布使用这张透明 PNG，由前端铺棋盘格；避免 JPG 丢 alpha 后显示黑底。
+                transparent_filename = f"{prefix}{''.join(random.choice('abcdefghijklmnopqrstuvwxyz0123456789') for _ in range(8))}_{i}.png"
+                Image.fromarray((img * 255).clip(0, 255).astype(np.uint8)).save(
+                    os.path.join(output_dir, transparent_filename), "PNG"
+                )
             # 防御：输入若为 RGBA(4 通道) 且原样保存为 JPG，透明区域会合成到黑色背景 → "半张黑图"。
             # JPG 不支持 alpha，直接丢弃 alpha 通道。
             if img.ndim == 3 and img.shape[-1] > 3:
                 img = img[..., :3]
             pil_img = Image.fromarray((img * 255).clip(0, 255).astype(np.uint8))
 
-            import random
             filename = f"{prefix}{''.join(random.choice('abcdefghijklmnopqrstuvwxyz0123456789') for _ in range(8))}_{i}.jpg"
             filepath = os.path.join(output_dir, filename)
             pil_img.save(filepath, "JPEG", quality=quality, optimize=True)
             results.append({
                 "filename": filename,
                 "subfolder": "",
-                "type": "temp"
+                "type": "temp",
+                "has_alpha": has_alpha,
+                "transparent_filename": transparent_filename,
+                "transparent_subfolder": "",
+                "transparent_type": "temp",
+                "real_width": int(w),
+                "real_height": int(h),
+                "preview_checker_cell": max(16, min(40, max(w, h) // 32)),
             })
 
         return results

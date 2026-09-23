@@ -17,6 +17,12 @@
 # ---------------------------------------------------------------------------
 import os as _xzg_os
 import sys as _xzg_sys
+import ctypes as _xzg_ctypes
+
+# 必须保留 WinDLL 句柄：新版 llama-cpp-python 将 ggml 组件拆分到 lib/ 下，
+# 仅注册搜索目录不足以保证其延迟依赖在 llama.dll 加载前已解析。
+_XZG_LLAMA_DLL_HANDLES = []
+
 def _xzg_add_dll_dir(p: str) -> None:
     if not isinstance(p, str) or not p or not _xzg_os.path.isdir(p):
         return
@@ -155,7 +161,28 @@ except Exception:
 # 4) Python base / DLLs (VC++ CRT / python312.dll)
 _xzg_add_dll_dir(_xzg_os.path.join(_xzg_sys.base_prefix, "DLLs"))
 _xzg_add_dll_dir(_xzg_sys.base_prefix)
-del _xzg_add_dll_dir, _xzg_os, _xzg_sys
+
+# 5) llama-cpp-python 0.3.35+ 的 Windows CUDA wheel 将 llama.dll 的运行时组件
+# 拆分成多份 DLL。按依赖顺序显式预加载，避免 ctypes 只加载 llama.dll 时遗漏
+# ggml-cpu / ggml-cuda，进而造成 WinError 0xc000001d 或“找不到模块”。
+for _llama_lib_dir in (
+    _xzg_os.path.join(_sp, "llama_cpp", "lib"),
+    _xzg_os.path.join(_sp, "llama_cpp", "bin"),
+):
+    if not _xzg_os.path.isdir(_llama_lib_dir):
+        continue
+    for _dll_name in ("ggml-base.dll", "ggml.dll", "ggml-cpu.dll", "ggml-cuda.dll", "llama.dll", "mtmd.dll"):
+        _dll_path = _xzg_os.path.join(_llama_lib_dir, _dll_name)
+        if not _xzg_os.path.isfile(_dll_path):
+            continue
+        try:
+            _XZG_LLAMA_DLL_HANDLES.append(_xzg_ctypes.WinDLL(_dll_path))
+        except (AttributeError, OSError):
+            # 旧版/CPU-only wheel 不一定包含所有组件；后续 llama_cpp 导入会给出
+            # 具体错误，不能因预加载失败阻塞其它节点注册。
+            pass
+
+del _xzg_add_dll_dir, _xzg_os, _xzg_sys, _xzg_ctypes
 
 import os
 import gc
@@ -193,6 +220,24 @@ try:
     from llama_cpp.llama_chat_format import Gemma4ChatHandler
 except Exception:
     Gemma4ChatHandler = None
+
+
+# JamePeng 的新版 llama.cpp 会将以下非致命 Qwen-VL 提示输出为 output 级日志，
+# verbose=False 无法抑制。仅过滤这些已知噪声，不隐藏 error/warning。
+_XZG_LLAMA_LOG_FILTERS = (
+    "load_hparams: Qwen-VL models require at minimum 1024 image tokens",
+    "load_hparams: if you encounter problems with accuracy, try adding --image-min-tokens 1024",
+    "load_hparams: more info: https://github.com/ggml-org/llama.cpp/issues/16842",
+    "find_slot: non-consecutive token position",
+    "CUDA Graph",
+    "CUDA graph",
+)
+try:
+    from llama_cpp._logger import add_log_filters as _xzg_add_llama_log_filters
+    _xzg_add_llama_log_filters(_XZG_LLAMA_LOG_FILTERS)
+except Exception:
+    # 旧版 llama-cpp-python 没有 logger API 时继续兼容运行。
+    pass
 
 
 # ============================================================
@@ -235,6 +280,17 @@ def _xzg_list_llm_files():
         return folder_paths.get_filename_list("LLM")
     except Exception:
         return []
+
+
+def _xzg_is_vision_projector(filename):
+    """判断 GGUF 文件是否为视觉投影，而非可单独加载的语言模型。"""
+    name = os.path.basename(filename).lower()
+    return (
+        "mmproj" in name
+        or "-vision-" in name
+        or "_vision_" in name
+        or name.startswith("vision-")
+    )
 
 
 def _xzg_get_free_vram_bytes():
@@ -436,7 +492,7 @@ class _XZG_QwenStorage:
 
         chat_handler = None
         if mmproj_path:
-            if family in ("Qwen3.5-VL", "Qwen3.6-VL"):
+            if family in ("Qwen3.5-VL", "Qwen3.6-VL", "Qwen3.8-VL"):
                 if Qwen35ChatHandler is None:
                     print(
                         "[小珠光 QwenLoader] 当前 llama-cpp-python 缺少 Qwen35ChatHandler，"
@@ -453,7 +509,7 @@ class _XZG_QwenStorage:
                             clip_model_path=mmproj_path, verbose=False
                         )
             elif family == "Qwen3-VL":
-                # Qwen3-VL 与 Qwen3.5/3.6-VL 同族，优先 Qwen3VLChatHandler，
+                # Qwen3-VL 与 Qwen3.5/3.6/3.8-VL 同族，优先 Qwen3VLChatHandler，
                 # 缺失时回退 Qwen35ChatHandler，最后降级为默认 chat_format，
                 # 避免因用户整合包里的 llama-cpp-python 较旧就直接失败。
                 if Qwen3VLChatHandler is not None:
@@ -468,7 +524,7 @@ class _XZG_QwenStorage:
                 elif Qwen35ChatHandler is not None:
                     print(
                         "[小珠光 QwenLoader] 当前 llama-cpp-python 缺少 Qwen3VLChatHandler，"
-                        "已回退使用 Qwen35ChatHandler（Qwen3-VL 与 Qwen3.5/3.6-VL 同族，"
+                        "已回退使用 Qwen35ChatHandler（Qwen3-VL 与 Qwen3.5/3.6/3.8-VL 同族，"
                         "绝大多数情况下可正常使用图片识别）。"
                     )
                     try:
@@ -515,6 +571,10 @@ class _XZG_QwenStorage:
             sig = inspect.signature(Llama.__init__)
             if "flash_attn" in sig.parameters:
                 llama_kwargs["flash_attn"] = True
+            if "verbosity" in sig.parameters:
+                llama_kwargs["verbosity"] = 1  # 仅原生 error 级别日志
+            if "log_filters" in sig.parameters:
+                llama_kwargs["log_filters"] = _XZG_LLAMA_LOG_FILTERS
         except Exception:
             pass
 
@@ -549,13 +609,13 @@ class XiaozhuguangQwenModelLoader:
         model_list = [
             f
             for f in all_files
-            if "mmproj" not in f.lower()
+            if not _xzg_is_vision_projector(f)
             and os.path.splitext(f)[1].lower() in [".gguf", ".safetensors", ".bin", ".pth", ".pt"]
         ]
         mmproj_list = ["None"] + [
             f
             for f in all_files
-            if "mmproj" in f.lower()
+            if _xzg_is_vision_projector(f)
             and os.path.splitext(f)[1].lower() in [".gguf", ".safetensors", ".bin"]
         ]
 
@@ -565,16 +625,16 @@ class XiaozhuguangQwenModelLoader:
         return {
             "required": {
                 "model_family": (
-                    ["Qwen3-VL", "Qwen3.5-VL", "Qwen3.6-VL", "Gemma4"],
-                    {"default": "Qwen3.6-VL", "tooltip": "模型系列 / Model family"},
+                    ["Qwen3-VL", "Qwen3.5-VL", "Qwen3.6-VL", "Qwen3.8-VL", "Gemma4"],
+                    {"default": "Qwen3.8-VL", "tooltip": "模型系列 / Model family"},
                 ),
                 "model_file": (
                     model_list,
-                    {"tooltip": "主模型文件 (.gguf) 放在 ComfyUI/models/LLM/"},
+                    {"tooltip": "主模型GGUF 文件放在 ComfyUI/models/LLM/"},
                 ),
                 "mmproj": (
                     mmproj_list,
-                    {"default": "None", "tooltip": "多模态 mmproj 文件；纯文本选 None"},
+                    {"default": "None", "tooltip": "视觉模型文件（mmproj 或 vision）；纯文本选 None"},
                 ),
                 "context_length": (
                     "INT",
@@ -603,7 +663,7 @@ class XiaozhuguangQwenModelLoader:
                 "未找到模型文件。请将 .gguf 模型放入 ComfyUI/models/LLM/ 并重启。"
             )
 
-        if model_family in ("Qwen3-VL", "Qwen3.5-VL", "Qwen3.6-VL", "Gemma4"):
+        if model_family in ("Qwen3-VL", "Qwen3.5-VL", "Qwen3.6-VL", "Qwen3.8-VL", "Gemma4"):
             if mmproj == "None":
                 raise RuntimeError(
                     f"{model_family} 是多模态模型，需要 mmproj 文件。\n"

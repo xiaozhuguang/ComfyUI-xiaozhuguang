@@ -5716,6 +5716,7 @@ app.registerExtension({
             };
             const DEFAULT_SETTINGS = {
                 labels: {"0": "", "1": ""},
+                outputs: {},
                 colors: { ...DEFAULT_COLORS },
                 count: DEFAULT_COUNT,
                 columns: DEFAULT_COLUMNS,
@@ -5829,7 +5830,7 @@ app.registerExtension({
                 return Math.round(clamp(baseWidth * scale, 30, 300));
             }
 
-            function buildLabelsHTML(labels, widths, count, columns) {
+            function buildLabelsHTML(labels, widths, outputs, count, columns) {
                 let html = "";
                 for (let i = 0; i < count; i++) {
                     const bias = widths[String(i)] !== undefined ? widths[String(i)] : 0;
@@ -5838,6 +5839,10 @@ app.registerExtension({
                             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
                                 <span style="font-size: 12px; color: #FFD700; width: 50px; white-space: nowrap;">${xzgT('标签','Label')}${i}</span>
                                 <input type="text" id="nf-label-${i}" value="${labels[String(i)] || ""}" placeholder="${xzgT('留空显示','Empty → shows')} ${i}" style="flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 13px;" />
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                <span style="font-size: 11px; color: #88ccff; width: 50px; white-space: nowrap;">${xzgT('输出','Output')}</span>
+                                <input type="text" id="nf-output-${i}" value="${outputs[String(i)] || ""}" placeholder="${xzgT('留空输出','Empty → outputs')} ${i}" style="flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 13px;" />
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="font-size: 11px; color: #888; width: 50px; white-space: nowrap;">${xzgT('宽度','Width')}</span>
@@ -5927,7 +5932,7 @@ app.registerExtension({
                                 </div>
                             </div>
                             <div id="nf-labels-container" style="padding-top: 4px;">
-                                ${buildLabelsHTML(labels, settings.widths || {}, count, columns)}
+                                ${buildLabelsHTML(labels, settings.widths || {}, settings.outputs || {}, count, columns)}
                             </div>
                         </div>
                         <div class="nf-dialog-footer">
@@ -5967,11 +5972,14 @@ app.registerExtension({
                     const newCount = parseInt(countSelect.value, 10);
                     const newLabels = {};
                     const newWidths = {};
+                    const newOutputs = {};
                     for (let i = 0; i < newCount; i++) {
                         const input = dialog.querySelector(`#nf-label-${i}`);
                         if (input) {
                             newLabels[String(i)] = input.value.trim();
                         }
+                        const outputInput = dialog.querySelector(`#nf-output-${i}`);
+                        if (outputInput) newOutputs[String(i)] = outputInput.value.trim();
                         const widthInput = dialog.querySelector(`#nf-label-width-${i}`);
                         if (widthInput) {
                             newWidths[String(i)] = parseInt(widthInput.value, 10) || 0;
@@ -5979,13 +5987,13 @@ app.registerExtension({
                             newWidths[String(i)] = 0;
                         }
                     }
-                    return { newCount, newLabels, newWidths };
+                    return { newCount, newLabels, newWidths, newOutputs };
                 };
 
                 const originalSettings = JSON.parse(JSON.stringify(settings));
 
                 const applyCurrentSettings = () => {
-                    const { newCount, newLabels, newWidths } = getCurrentLabels();
+                    const { newCount, newLabels, newWidths, newOutputs } = getCurrentLabels();
                     let newColumns = parseInt(columnsInput?.value, 10);
                     if (isNaN(newColumns) || newColumns < 1) newColumns = 1;
                     newColumns = Math.min(newColumns, newCount);
@@ -6001,6 +6009,7 @@ app.registerExtension({
                     const newInactiveColor = inactiveColorInput?.value || "#2a2a2a";
                     setNodeSettings(node, {
                         labels: newLabels,
+                        outputs: newOutputs,
                         colors: newColors,
                         count: newCount,
                         columns: newColumns,
@@ -6052,9 +6061,9 @@ app.registerExtension({
                     const newCount = parseInt(countSelect.value, 10);
                     const body = dialog.querySelector(".nf-dialog-body");
                     const scrollTop = body ? body.scrollTop : 0;
-                    const { newLabels: oldLabels, newWidths: oldWidths } = getCurrentLabels();
+                    const { newLabels: oldLabels, newWidths: oldWidths, newOutputs: oldOutputs } = getCurrentLabels();
                     const curColumns = parseInt(columnsInput?.value, 10) || 1;
-                    labelsContainer.innerHTML = buildLabelsHTML(oldLabels, oldWidths, newCount, curColumns);
+                    labelsContainer.innerHTML = buildLabelsHTML(oldLabels, oldWidths, oldOutputs, newCount, curColumns);
                     if (body) body.scrollTop = scrollTop;
                     if (countValueEl) countValueEl.textContent = String(newCount);
                     updateColumnsState();
@@ -6146,7 +6155,7 @@ app.registerExtension({
                     const scrollTop = body ? body.scrollTop : 0;
                     const defaultCount = DEFAULT_COUNT;
                     countSelect.value = defaultCount;
-                    labelsContainer.innerHTML = buildLabelsHTML({}, {}, defaultCount, Math.min(DEFAULT_COLUMNS, defaultCount));
+                    labelsContainer.innerHTML = buildLabelsHTML({}, {}, {}, defaultCount, Math.min(DEFAULT_COLUMNS, defaultCount));
                     if (body) body.scrollTop = scrollTop;
                     if (countValueEl) countValueEl.textContent = String(defaultCount) + "个";
                     color1Input.value = DEFAULT_COLORS.color1;

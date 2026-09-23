@@ -734,8 +734,22 @@ _STYLE_PRESET_ZH_TO_EN = {
     "手绘实拍融合": "Hand-drawn + Live-action",
 }
 
-# ── 风格预设全部可选值（中英文合并，兼容中英文模式下保存的工作流） ──
-_STYLE_PRESET_VALUES = list(_STYLE_PRESET_ZH_TO_EN.keys()) + list(_STYLE_PRESET_EN_TO_ZH.keys())
+# 下拉项统一使用品牌前缀；后端仍接受旧工作流中未加前缀的值。
+_H3_OPTION_PREFIX = "Minimax-H3 "
+_STYLE_PRESET_DEFAULTS = {"无 (默认)", "None (Default)"}
+_STYLE_PRESET_VALUES = [
+    name if name in _STYLE_PRESET_DEFAULTS else f"{_H3_OPTION_PREFIX}{name}"
+    for name in list(_STYLE_PRESET_ZH_TO_EN.keys()) + list(_STYLE_PRESET_EN_TO_ZH.keys())
+]
+_STYLE_PRESET_LEGACY_TO_DISPLAY = {
+    name: name if name in _STYLE_PRESET_DEFAULTS else f"{_H3_OPTION_PREFIX}{name}"
+    for name in list(_STYLE_PRESET_ZH_TO_EN.keys()) + list(_STYLE_PRESET_EN_TO_ZH.keys())
+}
+# 兼容此前短暂保存过的带前缀默认选项。
+_STYLE_PRESET_LEGACY_TO_DISPLAY.update({
+    f"{_H3_OPTION_PREFIX}无 (默认)": "无 (默认)",
+    f"{_H3_OPTION_PREFIX}None (Default)": "None (Default)",
+})
 
 # ── 生成模式中文名 → 英文名映射（供 JS 端切换中文时反向映射） ──
 _GEN_MODE_ZH_TO_EN = {
@@ -746,11 +760,28 @@ _GEN_MODE_ZH_TO_EN = {
     "全参考 (Ref2VA)": "Full Reference (Ref2VA)",
 }
 
-# ── 生成模式全部可选值（中英文合并，兼容中英文模式下保存的工作流） ──
-_GEN_MODE_VALUES = list(_GEN_MODE_ZH_TO_EN.keys()) + list(_GEN_MODE_ZH_TO_EN.values())
+# 下拉项只显示带前缀的英文模式，旧中英文值仍会被归一化。
+_GEN_MODE_VALUES = [f"{_H3_OPTION_PREFIX}{name}" for name in _GEN_MODE_ZH_TO_EN.values()]
+_GEN_MODE_LEGACY_TO_DISPLAY = {
+    **{name: f"{_H3_OPTION_PREFIX}{name}" for name in _GEN_MODE_ZH_TO_EN.values()},
+    **{zh: f"{_H3_OPTION_PREFIX}{en}" for zh, en in _GEN_MODE_ZH_TO_EN.items()},
+}
+_GEN_MODE_DISPLAY_VALUES = set(_GEN_MODE_VALUES)
 
-# ── 合法的英文生成模式集合（用于防错校验） ──
-_GEN_MODE_EN_VALUES = set(_GEN_MODE_ZH_TO_EN.values())
+_TARGET_MODEL_H3 = "MiniMax-H3 视频"
+_TARGET_MODEL_QWEN_IMAGE = "Qwen-Image-2.1 图像"
+_QWEN_IMAGE_MODES = (
+    "Qwen-Image-2.1 文生图",
+    "Qwen-Image-2.1 图像编辑",
+    "Qwen-Image-2.1 多参考图",
+)
+# ComfyUI 会在执行前用 INPUT_TYPES 校验值；Qwen 图像模式必须在此全局列表中。
+# 前端会按“提示词类型”仅展示当前适用的那一组。
+_GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES)
+
+_QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. Rewrite the user's request as one polished, direct English image-generation prompt. Describe the finished image as if observing it: medium and style, subject, setting, composition, camera/viewpoint, lighting, palette, material details, and atmosphere. Preserve every explicit constraint exactly, especially quoted on-image text, spelling, capitalization, line breaks, quantity, colour, and position. State on-image text in double quotes and identify its carrier, placement, typography, colour, and visual treatment. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
+
+_QWEN_IMAGE21_SYSTEM_EDIT = """You are a Qwen-Image-2.1 image-editing prompt rewriting expert. Rewrite the user's request as one direct, precise English edit instruction. Identify the requested change and make it unambiguous; explicitly preserve all unrelated subjects, composition, identity, pose, lighting, scene, and visible text. For multiple reference images, use the exact tags <image1>, <image2>, etc. to name their roles; for one image, refer to it naturally as the image. Preserve every explicitly requested text string exactly, including spelling, capitalization, punctuation, line breaks, placement, and typography. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
 
 
 def _xzg_build_system_prompt(output_language, style_preset=None):
@@ -788,9 +819,13 @@ class XiaozhuguangNinimaxH3Prompt:
                         "tooltip": "用户原始提示词 / User's original prompt",
                     },
                 ),
+                "target_model": (
+                    [_TARGET_MODEL_H3, _TARGET_MODEL_QWEN_IMAGE],
+                    {"default": _TARGET_MODEL_H3, "tooltip": "提示词类型：选择适用的生成模型 / Prompt type"},
+                ),
                 "generation_mode": (
                     _GEN_MODE_VALUES,
-                    {"default": "Text to Video (T2VA)", "tooltip": "视频生成模式 / Generation mode"},
+                    {"default": "Minimax-H3 Text to Video (T2VA)", "tooltip": "提示词细分模式 / Prompt subtype"},
                 ),
                 "style_preset": (
                     _STYLE_PRESET_VALUES,
@@ -900,6 +935,33 @@ class XiaozhuguangNinimaxH3Prompt:
 
         return "\n".join(user_message_parts), collected_images, total_image_count
 
+    def _build_qwen_image21_user_message(self, user_prompt, generation_mode, image_inputs=None, aspect_ratio="16:9", 风格提示=""):
+        """构造 Qwen-Image-2.1 的文本/编辑提示词优化请求。"""
+        mode_hint = {
+            "Qwen-Image-2.1 文生图": "Task: text-to-image. Build a complete image description from text.",
+            "Qwen-Image-2.1 图像编辑": "Task: image editing. Apply only the requested changes and preserve every unrelated visual attribute.",
+            "Qwen-Image-2.1 多参考图": "Task: multi-reference image composition/editing. State the role and retained attributes of each supplied reference image using <image1>, <image2>, etc.",
+        }.get(generation_mode, "Task: image generation.")
+        parts = [mode_hint, f"[Aspect Ratio] {aspect_ratio}"]
+        if 风格提示 and 风格提示.strip():
+            parts.append(f"[Extra Requirements] {风格提示.strip()}")
+        parts.append(f"[User Original Prompt]\n{user_prompt.strip()}")
+
+        collected_images = []
+        total_image_count = 0
+        for idx, img in enumerate(image_inputs or []):
+            if img is None:
+                continue
+            data_uris = _xzg_image_tensor_to_data_uri(img)
+            if data_uris:
+                collected_images.append((f"<image{idx + 1}>", data_uris))
+                total_image_count += len(data_uris)
+        if total_image_count:
+            refs = ", ".join(f"{label} ({len(uris)} image(s))" for label, uris in collected_images)
+            parts.append(f"[Reference Images] {refs}. Analyze their visible details before writing the optimized prompt.")
+        parts.append("Output the optimized prompt directly without any explanation.")
+        return "\n".join(parts), collected_images, total_image_count
+
     def _build_messages(self, system_prompt, user_message, collected_images, total_image_count):
         """构造 LLM messages（支持多模态图片）。"""
         if total_image_count > 0:
@@ -923,6 +985,7 @@ class XiaozhuguangNinimaxH3Prompt:
         qwen_model,
         user_prompt,
         generation_mode,
+        target_model=_TARGET_MODEL_H3,
         no_bgm=False,
         style_preset="无 (默认)",
         aspect_ratio="16:9",
@@ -997,27 +1060,38 @@ class XiaozhuguangNinimaxH3Prompt:
         if not prompt_text_input:
             raise ValueError("user_prompt cannot be empty. Please enter a prompt to optimize.")
 
-        # 根据语言选项和风格预设动态构建系统提示词
-        # 支持英文名反向映射（JS 端切换英文时传回英文名）
-        style_preset = _STYLE_PRESET_EN_TO_ZH.get(style_preset, style_preset)
-        # 防错校验：generation_mode 必须原样为合法英文值（不接受中文名映射）
-        if generation_mode not in _GEN_MODE_EN_VALUES:
+        is_qwen_image = target_model == _TARGET_MODEL_QWEN_IMAGE
+        # 新界面使用带 Minimax-H3 前缀的值；旧工作流的中英文值也兼容。
+        generation_mode = _GEN_MODE_LEGACY_TO_DISPLAY.get(generation_mode, generation_mode)
+        style_preset = _STYLE_PRESET_LEGACY_TO_DISPLAY.get(style_preset, style_preset)
+        valid_modes = set(_QWEN_IMAGE_MODES) if is_qwen_image else _GEN_MODE_DISPLAY_VALUES
+        if generation_mode not in valid_modes:
             raise ValueError(
                 f"Invalid generation_mode: {generation_mode!r}. "
-                f"Must be one of: {sorted(_GEN_MODE_EN_VALUES)}.\n"
+                f"Must be one of: {sorted(valid_modes)}.\n"
                 f"生成模式无效：{generation_mode!r}，请使用以下合法值之一："
-                f"{sorted(_GEN_MODE_EN_VALUES)}"
+                f"{sorted(valid_modes)}"
             )
-        preset = None if style_preset in ("无 (默认)", "None (Default)") else style_preset
-        system_prompt = _xzg_build_system_prompt(output_language, preset)
-        if preset:
-            print(f"[小珠光 H3] 风格预设：{preset}")
-
-        # 构造 user_message
-        user_message, collected_images, total_image_count = self._build_user_message(
-            user_prompt, generation_mode, image_inputs=image_inputs,
-            aspect_ratio=aspect_ratio, no_bgm=no_bgm, 风格提示=风格提示,
-        )
+        if is_qwen_image:
+            system_prompt = (_QWEN_IMAGE21_SYSTEM_EDIT if generation_mode != "Qwen-Image-2.1 文生图" else _QWEN_IMAGE21_SYSTEM_T2I)
+            user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
+                user_prompt, generation_mode, image_inputs=image_inputs,
+                aspect_ratio=aspect_ratio, 风格提示=风格提示,
+            )
+            print(f"[小珠光 Qwen-Image-2.1] 模式：{generation_mode}")
+        else:
+            generation_mode = generation_mode.removeprefix(_H3_OPTION_PREFIX)
+            style_preset = style_preset.removeprefix(_H3_OPTION_PREFIX)
+            style_preset = _STYLE_PRESET_EN_TO_ZH.get(style_preset, style_preset)
+            preset = None if style_preset in ("无 (默认)", "None (Default)") else style_preset
+            # 英文端口固定输出 H3 官方格式的英文版本。
+            system_prompt = _xzg_build_system_prompt("仅英文", preset)
+            if preset:
+                print(f"[小珠光 H3] 风格预设：{preset}")
+            user_message, collected_images, total_image_count = self._build_user_message(
+                user_prompt, generation_mode, image_inputs=image_inputs,
+                aspect_ratio=aspect_ratio, no_bgm=no_bgm, 风格提示=风格提示,
+            )
 
         # 构造 messages
         messages = self._build_messages(system_prompt, user_message, collected_images, total_image_count)

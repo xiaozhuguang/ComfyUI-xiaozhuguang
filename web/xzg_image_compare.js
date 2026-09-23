@@ -10,6 +10,28 @@ function imageUrl(data) {
     );
 }
 
+function transparentImageUrl(data) {
+    return imageUrl({
+        filename: data.transparent_filename,
+        subfolder: data.transparent_subfolder || "",
+        type: data.transparent_type || "temp",
+    });
+}
+
+function drawCheckerboard(ctx, imgData, x, y, w, h, referenceW = w) {
+    if (!imgData?.has_alpha) return;
+    const sourceW = imgData.img?.naturalWidth || imgData.real_width || w;
+    const sourceCell = imgData.preview_checker_cell || 20;
+    // 划像模式的 w 是当前裁切宽度，会随鼠标改变；格子必须按完整显示宽度计算。
+    const cell = Math.max(1, sourceCell * referenceW / sourceW);
+    for (let rowIndex = 0, rowY = 0; rowY < h; rowIndex++, rowY += cell) {
+        for (let colIndex = 0, colX = 0; colX < w; colIndex++, colX += cell) {
+            ctx.fillStyle = ((rowIndex + colIndex) % 2 === 0) ? "#ffffff" : "#dcdcdc";
+            ctx.fillRect(x + colX, y + rowY, Math.min(cell, w - colX), Math.min(cell, h - rowY));
+        }
+    }
+}
+
 
 // ============ 自定义 Widget ============
 class XzgImageCompareWidget {
@@ -218,11 +240,11 @@ class XzgImageCompareWidget {
         const showLine = lineWidget ? lineWidget.value : true;
 
         // 画 image_a
-        this._drawImage(ctx, imgA.img, node.size[0], nodeHeight, y);
+        this._drawImage(ctx, imgA, node.size[0], nodeHeight, y);
 
         // 鼠标在节点上时，按鼠标 X 裁剪画 image_b
         if (node.isPointerOver) {
-            this._drawImage(ctx, imgB.img, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
+            this._drawImage(ctx, imgB, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
 
             // 画分割线：实线，#aaaaaa，1px
             if (showLine) {
@@ -240,7 +262,8 @@ class XzgImageCompareWidget {
     }
 
 
-    _drawImage(ctx, img, nodeWidth, nodeHeight, y, cropX) {
+    _drawImage(ctx, imgData, nodeWidth, nodeHeight, y, cropX) {
+        const img = imgData?.img;
         if (!img || !img.naturalWidth || !img.naturalHeight) return;
 
         const effW = nodeWidth - IMAGE_MARGIN * 2;
@@ -279,6 +302,7 @@ class XzgImageCompareWidget {
             ctx.rect(destX, destY, destWidth, destHeight);
             ctx.clip();
         }
+        drawCheckerboard(ctx, imgData, destX, destY, destWidth, destHeight, targetW);
         ctx.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, destX, destY, destWidth, destHeight);
 
         ctx.restore();
@@ -344,14 +368,22 @@ class XiaozhuguangImageCompareNode {
             imagesToShow.push({
                 name: aImages.length > 1 ? `A${i + 1}` : "A",
                 selected: i === 0,
-                url: imageUrl(d),
+                url: (d.has_alpha && d.transparent_filename) ? transparentImageUrl(d) : imageUrl(d),
+                has_alpha: !!d.has_alpha,
+                real_width: d.real_width,
+                real_height: d.real_height,
+                preview_checker_cell: d.preview_checker_cell,
             });
         }
         for (const [i, d] of bImages.entries()) {
             imagesToShow.push({
                 name: bImages.length > 1 ? `B${i + 1}` : "B",
                 selected: i === 0,
-                url: imageUrl(d),
+                url: (d.has_alpha && d.transparent_filename) ? transparentImageUrl(d) : imageUrl(d),
+                has_alpha: !!d.has_alpha,
+                real_width: d.real_width,
+                real_height: d.real_height,
+                preview_checker_cell: d.preview_checker_cell,
             });
         }
 
