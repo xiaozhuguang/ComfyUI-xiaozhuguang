@@ -143,7 +143,7 @@ app.registerExtension({
             };
 
             // 核心：统一调整图片输入接口（参照 number_switch 的简洁模式）
-            // 规则：已连接的接口左移填补空位，末尾保留一个空接口，最少 1 个，最多 9 个
+            // 规则：已连接的接口左移填补空位，末尾保留一个空接口，最少 1 个，最多 10 个
             nodeType.prototype._adjustImageInputs = function () {
                 if (!this.inputs) return;
                 if (this._adjustingImageInputs) return;
@@ -191,8 +191,8 @@ app.registerExtension({
                         if (inp.link != null) connectedCount++;
                     }
 
-                    // 目标数量 = 已连接 + 1 个空位，最少 1，最多 9
-                    const desiredLen = Math.min(connectedCount + 1, 9);
+                    // 目标数量 = 已连接 + 1 个空位，最少 1，最多 10
+                    const desiredLen = Math.min(connectedCount + 1, 10);
 
                     if (imgInputs.length < desiredLen) {
                         // 添加不足的接口

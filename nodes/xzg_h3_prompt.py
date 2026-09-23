@@ -13,6 +13,7 @@ import gc
 import json
 import base64
 import inspect
+import re
 
 import folder_paths
 import comfy.model_management as mm
@@ -102,6 +103,35 @@ def _xzg_normalize_seed(seed_value):
     if seed_value < 0:
         return None
     return seed_value
+
+
+def _xzg_split_bilingual_output(text):
+    """将 H3 中英双语回复拆分为英文、中文两个独立输出。"""
+    text = text or ""
+    # 新格式使用固定标签；同时兼容旧版横线标题，以及模型擅自加入的 Markdown 标题。
+    cn_marker = re.search(r"(?is)<XZG_CHINESE_PROMPT>\s*", text)
+    en_marker = re.search(r"(?is)<XZG_ENGLISH_PROMPT>\s*", text)
+    if not cn_marker:
+        cn_marker = re.search(
+            r"(?im)^\s*[#>*`\-]*\s*(?:中文(?:版本|提示词)?|chinese\s+(?:version|prompt))\s*[:：\-]*\s*$",
+            text,
+        )
+    if not en_marker:
+        en_marker = re.search(
+            r"(?im)^\s*[#>*`\-]*\s*(?:英文(?:版本|提示词)?|english\s+(?:version|prompt))\s*[:：\-]*\s*$",
+            text,
+        )
+    if not cn_marker or not en_marker:
+        # 模型未遵循格式时保留结果，避免静默丢失生成内容。
+        return text.strip(), ""
+
+    if cn_marker.start() < en_marker.start():
+        chinese = text[cn_marker.end():en_marker.start()].strip()
+        english = text[en_marker.end():].strip()
+    else:
+        english = text[en_marker.end():cn_marker.start()].strip()
+        chinese = text[cn_marker.end():].strip()
+    return english, chinese
 
 
 def _xzg_is_model_valid(llm):
@@ -339,12 +369,12 @@ _H3_OUTPUT_FORMAT_BILINGUAL = """
 
 ## 7. Output Format
 
-Output the prompt in BOTH Chinese and English versions, separated by a divider line.
+Output the prompt in BOTH Chinese and English versions. Use the exact section tags below; do not change, translate, or omit the tags.
 
 ### T2VA / I2VA / FL2VA / L2VA (three core fields):
 
 ```
----中文版本---
+<XZG_CHINESE_PROMPT>
 
 [alignment instruction if applicable]
 
@@ -352,7 +382,7 @@ integrated_multimodal_description: [镜头1] ...
 overall_soundscape: ...
 non_diegetic_music: ...
 
----English Version---
+<XZG_ENGLISH_PROMPT>
 
 [alignment instruction if applicable]
 
@@ -364,7 +394,7 @@ non_diegetic_music: ...
 ### Ref2VA (six sections):
 
 ```
----中文版本---
+<XZG_CHINESE_PROMPT>
 
 subject_definitions: ...
 summary: ...
@@ -373,7 +403,7 @@ detailed_description: ...
 overall_soundscape: ...
 non_diegetic_music: ...
 
----English Version---
+<XZG_ENGLISH_PROMPT>
 
 subject_definitions: ...
 summary: ...
@@ -779,9 +809,29 @@ _QWEN_IMAGE_MODES = (
 # 前端会按“提示词类型”仅展示当前适用的那一组。
 _GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES)
 
-_QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. Rewrite the user's request as one polished, direct English image-generation prompt. Describe the finished image as if observing it: medium and style, subject, setting, composition, camera/viewpoint, lighting, palette, material details, and atmosphere. Preserve every explicit constraint exactly, especially quoted on-image text, spelling, capitalization, line breaks, quantity, colour, and position. State on-image text in double quotes and identify its carrier, placement, typography, colour, and visual treatment. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
+_QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. Rewrite the user's request as one polished, direct English image-generation prompt. Describe the finished image as if observing it: medium and style, subject, setting, composition, camera/viewpoint, lighting, palette, material details, and atmosphere. For every main person or object, describe its natural spatial and visual relationship with the surrounding environment: placement, contact or interaction, depth, and how ambient light, cast shadows, reflected light, diffuse light, and material reflectance connect it credibly to the scene. Preserve every explicit constraint exactly, especially quoted on-image text, spelling, capitalization, line breaks, quantity, colour, and position. State on-image text in double quotes and identify its carrier, placement, typography, colour, and visual treatment. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
 
-_QWEN_IMAGE21_SYSTEM_EDIT = """You are a Qwen-Image-2.1 image-editing prompt rewriting expert. Rewrite the user's request as one direct, precise English edit instruction. Identify the requested change and make it unambiguous; explicitly preserve all unrelated subjects, composition, identity, pose, lighting, scene, and visible text. For multiple reference images, use the exact tags <image1>, <image2>, etc. to name their roles; for one image, refer to it naturally as the image. Preserve every explicitly requested text string exactly, including spelling, capitalization, punctuation, line breaks, placement, and typography. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
+_QWEN_IMAGE21_SYSTEM_EDIT = """You are a Qwen-Image-2.1 image-editing prompt rewriting expert. Rewrite the user's request as one direct, precise English edit instruction. Identify the requested change and make it unambiguous; explicitly preserve all unrelated subjects, composition, identity, pose, lighting, scene, and visible text. When describing a person or object, state its natural relationship with the surrounding environment where relevant: placement, contact or interaction, depth, and physically coherent ambient light, cast shadows, reflected light, diffuse light, and material reflectance. For multiple reference images, use the exact tags <image1>, <image2>, etc. to name their roles; for one image, refer to it naturally as the image. Preserve every explicitly requested text string exactly, including spelling, capitalization, punctuation, line breaks, placement, and typography. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
+
+_PROMPT_TRANSLATE_TO_CHINESE_SYSTEM = """Translate the supplied optimized generation prompt from English into Chinese.
+
+Preserve every requirement, field name, reference label, tag, timestamp, number, quoted on-image text, dialogue, lyric, and formatting structure exactly. Translate descriptive prose only; dialogue, lyrics, and visible text must remain in their original language. Do not optimize, rewrite, add, omit, summarize, explain, or add headings. Output only the translated Chinese prompt."""
+
+
+def _xzg_qwen_image_system_prompt(generation_mode, output_language):
+    """构造 Qwen-Image 单语系统提示词；双语时由调用方分别调用两次。"""
+    base = (
+        _QWEN_IMAGE21_SYSTEM_EDIT
+        if generation_mode != "Qwen-Image-2.1 文生图"
+        else _QWEN_IMAGE21_SYSTEM_T2I
+    )
+    if output_language != "仅中文":
+        return base
+    return (
+        base.replace("English image-generation prompt", "Chinese image-generation prompt")
+        .replace("English edit instruction", "Chinese edit instruction")
+        + " Write all descriptive prose in Chinese; preserve explicitly requested on-image text exactly."
+    )
 
 
 def _xzg_build_system_prompt(output_language, style_preset=None):
@@ -800,8 +850,8 @@ def _xzg_build_system_prompt(output_language, style_preset=None):
 class XiaozhuguangNinimaxH3Prompt:
     """小珠光 MiniMax H3 提示词优化节点
 
-    架构：单次 LLM 调用，系统提示词中要求中英双语输出。
-    参考 BSAI MiniMAX H3 Prompt 原版模式，避免双次调用的翻译式架构。
+    架构：单次 LLM 调用。可按需在同一次调用中附带中文版本，
+    避免双次调用的翻译式架构。
 
     依赖 BSAI MiniMAX H3 Prompt 插件的模型加载器（BSAI_QWEN_MODEL 类型输入）。
     """
@@ -836,6 +886,13 @@ class XiaozhuguangNinimaxH3Prompt:
                     "BOOLEAN",
                     {"default": True, "tooltip": "执行后卸载模型释放显存 / Unload model after execution"},
                 ),
+                "output_language": (
+                    ["仅英文", "仅中文", "中英双语"],
+                    {
+                        "default": "仅英文",
+                        "tooltip": "仅 H3：选择输出语言。仅输出一种语言可减少生成 token 和耗时 / H3 only: choose output language; a single language reduces generation tokens and time",
+                    },
+                ),
             },
             "optional": {
                 "image_1": ("IMAGE", {"tooltip": "可选：参考图片1 / Reference image 1"}),
@@ -847,13 +904,13 @@ class XiaozhuguangNinimaxH3Prompt:
                 "image_7": ("IMAGE", {"tooltip": "可选：参考图片7 / Reference image 7"}),
                 "image_8": ("IMAGE", {"tooltip": "可选：参考图片8 / Reference image 8"}),
                 "image_9": ("IMAGE", {"tooltip": "可选：参考图片9 / Reference image 9"}),
+                "image_10": ("IMAGE", {"tooltip": "可选：参考图片10 / Reference image 10"}),
             },
             "hidden": {
                 "no_bgm": ("BOOLEAN", {"default": False}),
                 "aspect_ratio": (["16:9"], {"default": "16:9"}),
                 "风格提示": ("STRING", {"default": "", "multiline": True}),
                 "video_duration": ("INT", {"default": 10, "min": 4, "max": 15, "step": 1}),
-                "output_language": (["仅英文"], {"default": "仅英文"}),
                 "max_tokens": ("INT", {"default": 4096, "min": 256, "max": 65536, "step": 1}),
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -864,8 +921,8 @@ class XiaozhuguangNinimaxH3Prompt:
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt_output",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("english_prompt", "chinese_prompt")
     FUNCTION = "optimize_prompt"
     CATEGORY = "小珠光"
 
@@ -942,7 +999,9 @@ class XiaozhuguangNinimaxH3Prompt:
             "Qwen-Image-2.1 图像编辑": "Task: image editing. Apply only the requested changes and preserve every unrelated visual attribute.",
             "Qwen-Image-2.1 多参考图": "Task: multi-reference image composition/editing. State the role and retained attributes of each supplied reference image using <image1>, <image2>, etc.",
         }.get(generation_mode, "Task: image generation.")
-        parts = [mode_hint, f"[Aspect Ratio] {aspect_ratio}"]
+        # 画幅比例由下游图像生成节点控制，不交给 Qwen 提示词推理，
+        # 避免模型将比例误写进画面描述或擅自推断构图比例。
+        parts = [mode_hint]
         if 风格提示 and 风格提示.strip():
             parts.append(f"[Extra Requirements] {风格提示.strip()}")
         parts.append(f"[User Original Prompt]\n{user_prompt.strip()}")
@@ -1004,7 +1063,7 @@ class XiaozhuguangNinimaxH3Prompt:
         **kwargs,
     ):
         # 收集所有 image_* 输入
-        image_inputs = [kwargs.get(f"image_{i}") for i in range(1, 10)]
+        image_inputs = [kwargs.get(f"image_{i}") for i in range(1, 11)]
         llm = qwen_model
 
         # 校验模型有效性；若已卸载且有缓存的配置，自动重新加载
@@ -1061,6 +1120,9 @@ class XiaozhuguangNinimaxH3Prompt:
             raise ValueError("user_prompt cannot be empty. Please enter a prompt to optimize.")
 
         is_qwen_image = target_model == _TARGET_MODEL_QWEN_IMAGE
+        secondary_system_prompt = None
+        if output_language not in _H3_OUTPUT_FORMATS:
+            output_language = "仅英文"
         # 新界面使用带 Minimax-H3 前缀的值；旧工作流的中英文值也兼容。
         generation_mode = _GEN_MODE_LEGACY_TO_DISPLAY.get(generation_mode, generation_mode)
         style_preset = _STYLE_PRESET_LEGACY_TO_DISPLAY.get(style_preset, style_preset)
@@ -1073,7 +1135,11 @@ class XiaozhuguangNinimaxH3Prompt:
                 f"{sorted(valid_modes)}"
             )
         if is_qwen_image:
-            system_prompt = (_QWEN_IMAGE21_SYSTEM_EDIT if generation_mode != "Qwen-Image-2.1 文生图" else _QWEN_IMAGE21_SYSTEM_T2I)
+            if output_language == "中英双语":
+                system_prompt = _xzg_qwen_image_system_prompt(generation_mode, "仅英文")
+                secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
+            else:
+                system_prompt = _xzg_qwen_image_system_prompt(generation_mode, output_language)
             user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
                 user_prompt, generation_mode, image_inputs=image_inputs,
                 aspect_ratio=aspect_ratio, 风格提示=风格提示,
@@ -1084,8 +1150,13 @@ class XiaozhuguangNinimaxH3Prompt:
             style_preset = style_preset.removeprefix(_H3_OPTION_PREFIX)
             style_preset = _STYLE_PRESET_EN_TO_ZH.get(style_preset, style_preset)
             preset = None if style_preset in ("无 (默认)", "None (Default)") else style_preset
-            # 英文端口固定输出 H3 官方格式的英文版本。
-            system_prompt = _xzg_build_system_prompt("仅英文", preset)
+            # 双语使用两次独立推理，避免模型在一次长回复中省略中文段；
+            # 单语只执行一次，因此仍可节省对应的计算。
+            if output_language == "中英双语":
+                system_prompt = _xzg_build_system_prompt("仅英文", preset)
+                secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
+            else:
+                system_prompt = _xzg_build_system_prompt(output_language, preset)
             if preset:
                 print(f"[小珠光 H3] 风格预设：{preset}")
             user_message, collected_images, total_image_count = self._build_user_message(
@@ -1135,8 +1206,8 @@ class XiaozhuguangNinimaxH3Prompt:
         if normalized_seed is not None:
             params["seed"] = normalized_seed
 
-        # ── 单次 LLM 调用 ──
-        print(f"[小珠光 H3] 单次调用：{output_language}")
+        # ── LLM 调用：双语时先优化英文，再将英文精确翻译为中文。 ──
+        print(f"[小珠光 H3] 推理：{output_language}")
         try:
             out = _xzg_call_chat_completion(llm, messages=messages, params=params)
         except (RuntimeError, KeyError, ValueError, Exception) as e:
@@ -1160,6 +1231,26 @@ class XiaozhuguangNinimaxH3Prompt:
         except Exception:
             text = str(out)
 
+        chinese_text = ""
+        if secondary_system_prompt is not None:
+            print("[小珠光 H3] 双语模式：翻译中文版本...")
+            translation_source = text.lstrip().removeprefix(": ").strip()
+            chinese_messages = self._build_messages(
+                secondary_system_prompt,
+                "[English prompt to translate]\n" + translation_source,
+                [],
+                0,
+            )
+            try:
+                chinese_out = _xzg_call_chat_completion(
+                    llm, messages=chinese_messages, params=params
+                )
+                chinese_text = chinese_out["choices"][0]["message"]["content"]
+            except Exception as e:
+                raise RuntimeError(
+                    f"Chinese prompt inference failed: {type(e).__name__}: {e}"
+                ) from e
+
         # 卸载模型释放显存（仅在 settings 已缓存、可自动重新加载时才卸载）
         if unload_after and _XZG_QwenStorage is not None:
             if _XZG_QwenStorage.settings is not None:
@@ -1171,4 +1262,13 @@ class XiaozhuguangNinimaxH3Prompt:
                     "（可能使用了 BSAI loader），卸载后将无法自动重新加载。"
                 )
 
-        return (text.lstrip().removeprefix(": ").strip(),)
+        text = text.lstrip().removeprefix(": ").strip()
+        chinese_text = chinese_text.lstrip().removeprefix(": ").strip()
+        if output_language == "仅英文":
+            return (text, "")
+        if output_language == "仅中文":
+            return ("", text)
+        if secondary_system_prompt is not None:
+            return (text, chinese_text)
+        english, chinese = _xzg_split_bilingual_output(text)
+        return (english, chinese)

@@ -331,6 +331,7 @@
       "style_preset": { "name": "Style Preset" },
       "seed": { "name": "Seed" },
       "unload_after": { "name": "Unload Model" },
+      "output_language": { "name": "Output Language" },
       "image_1": { "name": "Image_1" },
       "image_2": { "name": "Image_2" },
       "image_3": { "name": "Image_3" },
@@ -339,10 +340,12 @@
       "image_6": { "name": "Image_6" },
       "image_7": { "name": "Image_7" },
       "image_8": { "name": "Image_8" },
-      "image_9": { "name": "Image_9" }
+      "image_9": { "name": "Image_9" },
+      "image_10": { "name": "Image_10" }
     },
       "outputs": {
-        "0": { "name": "Prompt Output" }
+        "0": { "name": "English Prompt" },
+        "1": { "name": "Chinese Prompt" }
       }
   },
   "XiaozhuguangQwenModelLoader": {

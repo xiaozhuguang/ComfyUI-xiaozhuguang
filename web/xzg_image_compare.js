@@ -334,8 +334,8 @@ class XzgImageCompareWidget {
                     return true;
                 }
             }
-            // 消费所有 body 点击，禁止拖拽
-            return true;
+            // 预览区域不消费点击，让 LiteGraph 按普通节点处理拖动。
+            return false;
         }
         return false;
     }
@@ -406,15 +406,17 @@ class XiaozhuguangImageCompareNode {
         const node = this;
         const w = this.addCustomWidget(new XzgImageCompareWidget("xzg_image_compare", this));
         this.canvasWidget = w;
-        // 让图像区域（按钮/标签以外）被视为节点本体，从而可用左键拖动节点。
-        // body 全部区域（除右下缩放手柄）返回 widget，禁止拖拽
+        // 只有顶部按钮和批次标签交给 widget；预览区域交还节点本体，允许左键拖动。
         if (!node.getWidgetOnPos.__xzgPatched) {
             node.getWidgetOnPos = function (x, y, includeDisabled, ...rest) {
                 const lx = x - node.pos[0];
                 const ly = y - node.pos[1];
-                const titleH = (typeof LiteGraph !== 'undefined' && LiteGraph.NODE_TITLE_HEIGHT) || 30;
-                if (lx >= 0 && lx <= node.size[0] - 12 && ly >= titleH && ly <= node.size[1] - 12) {
-                    if (node.canvasWidget) return node.canvasWidget;
+                const hitAreas = node.canvasWidget?.hitAreas || {};
+                for (const area of Object.values(hitAreas)) {
+                    const [bx, by, bw, bh] = area.bounds;
+                    if (lx >= bx && lx <= bx + bw && ly >= by && ly <= by + bh) {
+                        return node.canvasWidget;
+                    }
                 }
                 return null;
             };

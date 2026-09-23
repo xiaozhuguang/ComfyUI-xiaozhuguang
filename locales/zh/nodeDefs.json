@@ -331,6 +331,7 @@
       "style_preset": { "name": "风格预设" },
       "seed": { "name": "种子" },
       "unload_after": { "name": "卸载模型" },
+      "output_language": { "name": "输出语言" },
       "image_1": { "name": "Image_1" },
       "image_2": { "name": "Image_2" },
       "image_3": { "name": "Image_3" },
@@ -339,10 +340,12 @@
       "image_6": { "name": "Image_6" },
       "image_7": { "name": "Image_7" },
       "image_8": { "name": "Image_8" },
-      "image_9": { "name": "Image_9" }
+      "image_9": { "name": "Image_9" },
+      "image_10": { "name": "Image_10" }
     },
       "outputs": {
-        "0": { "name": "提示词输出" }
+        "0": { "name": "英文提示词" },
+        "1": { "name": "中文提示词" }
       }
   },
   "XiaozhuguangQwenModelLoader": {

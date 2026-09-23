@@ -83,11 +83,11 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | **小珠光获取控件值** | 读取工作流中指定节点的控件当前值 |
 | **小珠光文本框** | 双通道文本输出，默认将阿拉伯数字智能转换为中文（量词/单位/序数/日期时间/中文口语时间、身高米数、纯数字完整读数、分辨率例外） |
 | **🖼 图像处理节点** | |
-| **小珠光图像加载器** | 支持拖入上传、多图/单图模式、拼音搜索、棋盘格透明背景显示；多图网格中心对齐，缩略图黑底无灰框 |
+| **小珠光图像加载器** | 支持拖入上传、多图/单图模式、拼音搜索、棋盘格透明背景显示；多图右键可追加、替换或清除其它图片，新图统一追加至末尾 |
 | **小珠光图像预览** | 图像预览节点 |
 | **小珠光图像保存** | 保存图像，支持懒编码 + 右键保存真实分辨率 |
 | **小珠光图像保存-化神级** | 自定义输出路径、文件夹选择器、JPEG/PNG/WebP 多格式 |
-| **小珠光图像对比** | 两张图像并排对比查看 |
+| **小珠光图像对比** | 两张图像并排对比查看，预览区可拖动节点 |
 | **小珠光 IS (图像分割) / IM (图像合并)** | 将图像按行列分割；将分割图像合并回原图 |
 | **小珠光 ATBC (智能裁剪)** | 按目标尺寸智能裁剪与补边 |
 | **小珠光 ATR (图像回贴)** | 将处理后的子图按坐标回贴回原图 |
@@ -103,9 +103,8 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | **小珠光音频加载器** | 上传大小限制、解码进度律动动画、拖入上传、双击上传、播放头精准交互 |
 | **小珠光音频保存** | 保存音频到文件 |
 | **🤖 大模型节点** | |
-| **小珠光 MiniMax H3 提示词** | MiniMax H3 提示词处理节点 |
-| **小珠光 Qwen Model Loader** | Qwen 系列模型加载器 |
-| **小珠光qwenVL** | Qwen-VL 多模态指令跟随节点（依赖 transformers） |
+| **小珠光QWEN提示词** | MiniMax-H3 视频提示词技能预设，以及 Qwen-Image-2.1 文生图、图像编辑、多参考图提示词优化；支持中英文独立输出 |
+| **小珠光 Qwen Model Loader** | Qwen 3 / 3.5 / 3.6 / 3.8 系列模型加载器（支持 mmproj 与 vision 视觉投影） |
 | **小珠光 AudioDiT 零样本TTS** | 严格离线版 LongCat-AudioDiT 零样本合成（与原插件共享模型目录，永不触发 HF 下载） |
 | **小珠光 AudioDiT 音色克隆TTS** | 严格离线版音色克隆：参考音频 3–15s + 转录文本 → 目标语音，最常用节点 |
 | **小珠光 AudioDiT 多人对话TTS** | 严格离线版多说话人对话：2–10 个克隆音色 + [speaker_N]: 台词标签驱动逐段合成 |
@@ -644,7 +643,6 @@ ComfyUI-xiaozhuguang/
 │   ├── xzg_universal_slider.py  # 万能滑条节点
 │   ├── xzg_h3_prompt.py         # MiniMax H3 提示词节点
 │   ├── xzg_qwen_loader.py       # Qwen Model Loader
-│   ├── xzg_qwen3_vl_instruct.py # qwenVL 多模态节点
 │   ├── xzg_longcat_loader.py    # AudioDiT 严格离线模型加载器
 │   ├── xzg_longcat_model_cache.py # AudioDiT 模型缓存
 │   ├── xzg_audiodit_tts.py      # AudioDiT 离线 TTS 三节点（零样本/音色克隆/多人对话）
@@ -685,12 +683,22 @@ ComfyUI-xiaozhuguang/
     ├── xzg_save_utils.js        # 保存通用工具
     ├── xzg_h3_prompt.js         # MiniMax H3 前端
     ├── xzg_text_box.js          # 文本框前端（数字转中文）
-    └── xzg_qwen.js              # Qwen/qwenVL 前端
 ```
 
 ---
 
-## 📋 更新日志### V14.1.3 (2026-09-03)
+## 📋 更新日志
+
+### V19.0.0 (2026-09-23)
+
+- **小珠光 QWEN 提示词**：新增英文/中文独立输出端口；双语模式采用“英文优化 → 中文精确翻译”，保证内容对应。Qwen-Image-2.1 不再推理画幅比例，并强化主体与环境的光照、反射、漫反射和材质关系描述。
+- **小珠光图像加载器**：多图右键新增追加图片、替换图片、清除其它；空白区域可直接追加，所有新增入口统一将图片放在列表末尾。
+- **小珠光图像对比**：拖动预览区域即可移动节点，顶部按钮和批次标签不受影响。
+- 版本号：`pyproject.toml` / `extension.json` 升至 `19.0.0`；推送 `v19.0.0` 标签自动创建 GitHub Release 并发布到 Comfy Registry。
+
+---
+
+### V14.1.3 (2026-09-03)
 
 **🖥️ 新增：小珠光系统监控悬浮窗**（`nodes/xzg_monitor.py` + `web/xzg_monitor.js`）
 
@@ -1006,7 +1014,7 @@ ComfyUI-xiaozhuguang/
 
 **📦 依赖修复：补全 requirements.txt（git 安装缺 Qwen 依赖）**
 
-- `requirements.txt` 曾被精简为仅 `imageio-ffmpeg>=0.5.1`，导致通过 **git clone 安装**（如晨羽智云）时，ComfyUI Manager 按 `requirements.txt` 安装依赖而漏装 Qwen 相关包（`transformers>=4.57.1`、`qwen-vl-utils`、`llama-cpp-python`、`bitsandbytes` 等），QwenLoader / qwenVL 节点报"未安装 / 依赖缺失"
+- `requirements.txt` 曾被精简为仅 `imageio-ffmpeg>=0.5.1`，导致通过 **git clone 安装**（如晨羽智云）时，ComfyUI Manager 按 `requirements.txt` 安装依赖而漏装 Qwen 相关包，Qwen 模型加载器报“未安装 / 依赖缺失”。
 - 本次补全 `requirements.txt` 必需依赖清单，与 `pyproject.toml` 的 `dependencies` 对齐，并保留可选依赖说明注释；git 安装用户执行 `pip install -r requirements.txt` 即可装上
 - Comfy Registry 安装不受影响（一直读取 `pyproject.toml` 的完整依赖）
 

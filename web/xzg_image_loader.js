@@ -389,7 +389,44 @@ function createImgBatchUI(node) {
         return selectedIndexes.includes(idx);
     };
 
-    const showContextMenu = (x, y, imageName) => {
+    // 多图模式下替换指定位置的图片。保留原来的排序、其它图片和当前选择状态。
+    function openReplaceImageDialog(imageName, imageIndex) {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/*";
+        input.multiple = false;
+        input.style.display = "none";
+        document.body.appendChild(input);
+
+        input.onchange = async (ev) => {
+            const file = ev.target.files?.[0];
+            if (!file) {
+                input.remove();
+                return;
+            }
+            try {
+                const uploaded = await uploadFilesSequential([file]);
+                const replacement = uploaded[0];
+                // 上传期间列表可能已改变，因此在替换前重新定位目标项。
+                const names = parseNameList(getImageListWidget(node)?.value);
+                const targetIndex = names[imageIndex] === imageName
+                    ? imageIndex
+                    : names.indexOf(imageName);
+                if (!replacement || targetIndex < 0) return;
+                names[targetIndex] = replacement;
+                setNameList(node, names);
+                setIndex(node, targetIndex);
+                selectedIndexes = [targetIndex];
+                lastClickedIndex = targetIndex;
+                redraw(true);
+            } finally {
+                input.remove();
+            }
+        };
+        input.click();
+    }
+
+    const showContextMenu = (x, y, imageName, imageIndex) => {
         contextMenu.innerHTML = "";
         const selectedNames = getSelectedNames();
         const rightClickSelected = isImageSelected(imageName);
@@ -417,7 +454,50 @@ function createImgBatchUI(node) {
                 await xzgSaveImage(url, realName);
             }
         });
-        contextMenu.appendChild(saveItem);
+        if (uploadMode === "append") {
+            const appendItem = document.createElement("div");
+            appendItem.textContent = xzgT("追加图片", "Append Images");
+            appendItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC66;";
+            appendItem.addEventListener("mouseenter", () => { appendItem.style.background = "var(--comfy-input-bg)"; });
+            appendItem.addEventListener("mouseleave", () => { appendItem.style.background = ""; });
+            appendItem.addEventListener("click", () => {
+                hideContextMenu();
+                openUploadDialog();
+            });
+            contextMenu.appendChild(appendItem);
+
+            if (imageName) {
+                const replaceItem = document.createElement("div");
+                replaceItem.textContent = xzgT("替换图片", "Replace Image");
+                replaceItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#FFD700;";
+                replaceItem.addEventListener("mouseenter", () => { replaceItem.style.background = "var(--comfy-input-bg)"; });
+                replaceItem.addEventListener("mouseleave", () => { replaceItem.style.background = ""; });
+                replaceItem.addEventListener("click", () => {
+                    hideContextMenu();
+                    openReplaceImageDialog(imageName, imageIndex);
+                });
+                contextMenu.appendChild(replaceItem);
+
+                const clearOthersItem = document.createElement("div");
+                clearOthersItem.textContent = xzgT("清除其它", "Clear Others");
+                clearOthersItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#ff7777;";
+                clearOthersItem.addEventListener("mouseenter", () => { clearOthersItem.style.background = "var(--comfy-input-bg)"; });
+                clearOthersItem.addEventListener("mouseleave", () => { clearOthersItem.style.background = ""; });
+                clearOthersItem.addEventListener("click", () => {
+                    hideContextMenu();
+                    const names = parseNameList(getImageListWidget(node)?.value);
+                    const currentName = names[imageIndex] || imageName;
+                    if (!currentName) return;
+                    setNameList(node, [currentName]);
+                    setIndex(node, 0);
+                    selectedIndexes = [0];
+                    lastClickedIndex = 0;
+                    redraw(true);
+                });
+                contextMenu.appendChild(clearOthersItem);
+            }
+        }
+        if (imageName) contextMenu.appendChild(saveItem);
 
         contextMenu.style.left = `${x}px`;
         contextMenu.style.top = `${y}px`;
@@ -574,7 +654,19 @@ function createImgBatchUI(node) {
         }
         const imgName = getImgNameFromEvent(e);
         if (imgName) {
-            showContextMenu(e.clientX, e.clientY, imgName);
+            const cell = e.target.closest("[data-xzg-img-card]");
+            const imageIndex = cell ? parseInt(cell.dataset.xzgIndex, 10) : getIndex(node);
+            // 右键操作的对象就是当前图片：同步当前索引并取消其它多选高亮。
+            if (Number.isInteger(imageIndex) && imageIndex >= 0) {
+                selectedIndexes = [imageIndex];
+                lastClickedIndex = imageIndex;
+                setIndex(node, imageIndex);
+                redraw(false);
+            }
+            showContextMenu(e.clientX, e.clientY, imgName, imageIndex);
+        } else if (uploadMode === "append") {
+            // 多图区域的空白处也可直接追加，不依赖已有图片。
+            showContextMenu(e.clientX, e.clientY, null, -1);
         }
     });
 
@@ -3604,7 +3696,7 @@ function createImgBatchUI(node) {
                     const all = parseNameList(getImageListWidget(node)?.value);
                     const existing = new Set(all);
                     const newOnes = uploaded.filter(n => !existing.has(n));
-                    const merged = newOnes.concat(all);
+                    const merged = all.concat(newOnes);
                     setNameList(node, merged);
                     setIndex(node, 0);
                 }
@@ -3994,7 +4086,7 @@ function createImgBatchUI(node) {
                     const all = parseNameList(getImageListWidget(node)?.value);
                     const existing = new Set(all);
                     const newOnes = namesToAdd.filter(n => !existing.has(n));
-                    finalList = newOnes.concat(all);
+                    finalList = all.concat(newOnes);
                 }
                 setNameList(node, finalList);
                 setIndex(node, 0);
@@ -4138,7 +4230,7 @@ function createImgBatchUI(node) {
                 const all = parseNameList(getImageListWidget(node)?.value);
                 const existing = new Set(all);
                 const newOnes = uploaded.filter(n => !existing.has(n));
-                const merged = newOnes.concat(all);
+                const merged = all.concat(newOnes);
                 setNameList(node, merged);
                 setIndex(node, 0);
             }
@@ -4174,7 +4266,7 @@ function createImgBatchUI(node) {
                     const all = parseNameList(getImageListWidget(node)?.value);
                     const existing = new Set(all);
                     const newOnes = names.filter(n => !existing.has(n));
-                    const merged = newOnes.concat(all);
+                    const merged = all.concat(newOnes);
                     setNameList(node, merged);
                     setIndex(node, 0);
                 }
@@ -4227,7 +4319,7 @@ function createImgBatchUI(node) {
                     const all = parseNameList(getImageListWidget(node)?.value);
                     const existing = new Set(all);
                     const newOnes = uploaded.filter(n => !existing.has(n));
-                    const merged = newOnes.concat(all);
+                    const merged = all.concat(newOnes);
                     setNameList(node, merged);
                     setIndex(node, 0);
                 }
@@ -4255,7 +4347,7 @@ function createImgBatchUI(node) {
                 } else {
                     const all = parseNameList(getImageListWidget(node)?.value);
                     if (!all.includes(annotatedName)) {
-                        setNameList(node, [annotatedName].concat(all));
+                        setNameList(node, all.concat([annotatedName]));
                         setIndex(node, 0);
                     }
                 }
