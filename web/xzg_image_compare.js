@@ -29,12 +29,14 @@ function previewBackgroundLabel(mode) {
     }[mode] || "棋盘格";
 }
 
-function showPreviewBackgroundMenu(node) {
+function showPreviewBackgroundMenu(node, event) {
     document.getElementById("xzg-image-compare-bg-menu")?.remove();
     const menu = document.createElement("div");
     menu.id = "xzg-image-compare-bg-menu";
     menu.style.cssText = "position:fixed;z-index:1000000;min-width:130px;padding:5px;background:#292929;border:1px solid #555;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.55);";
-    const point = node._xzgLastClickClient;
+    const point = Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : node._xzgLastClickClient;
     const anchorX = point?.x ?? 160;
     const anchorY = point?.y ?? 80;
     // 菜单默认显示在鼠标右侧；靠近窗口边缘时自动收进可视区域。
@@ -235,7 +237,7 @@ class XzgImageCompareWidget {
                 ctx.fillText(previewBackgroundLabel(node._xzgPreviewBackground || "checker"), x3 + btnW / 2, y + btnH / 2);
                 this.hitAreas["preview_background"] = {
                     bounds: [x3, y, btnW, btnH],
-                    onDown: () => showPreviewBackgroundMenu(node),
+                    onDown: (event) => showPreviewBackgroundMenu(node, event),
                 };
             }
 

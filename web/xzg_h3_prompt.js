@@ -77,10 +77,24 @@ app.registerExtension({
                 return NaN;
             };
 
+            nodeType.prototype._addComboControlInputs = function () {
+                const labels = xzgLang() === "zh"
+                    ? { target_model: "提示词类型", generation_mode: "提示词细分" }
+                    : { target_model: "Target Model", generation_mode: "Generation Mode" };
+                for (const [name, label] of Object.entries(labels)) {
+                    if (this.inputs?.some(input => input.name === name)) continue;
+                    const input = this.addInput(name, "*", {
+                        tooltip: "Connect STRING or TEXT to override this selection",
+                    });
+                    input.label = label;
+                }
+            };
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
                 this.setSize([300, this.size[1]]);
+                this._addComboControlInputs();
                 this._hideExtraImageInputs();
                 this._translateStylePreset();
                 this._syncTargetModel();

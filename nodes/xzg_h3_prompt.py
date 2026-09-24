@@ -926,6 +926,11 @@ class XiaozhuguangNinimaxH3Prompt:
     FUNCTION = "optimize_prompt"
     CATEGORY = "小珠光"
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types=None, **kwargs):
+        # 前端将两个 COMBO 字段暴露为通配连接口；实际值在下面按模式校验。
+        return True
+
     def _build_user_message(self, user_prompt, generation_mode,
                             image_inputs=None,
                             aspect_ratio="16:9", no_bgm=False, 风格提示=""):

@@ -1254,7 +1254,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangSelector": "小珠光选择器-化神级",
     "XiaozhuguangBooleanSelector": "小珠光布尔",
     "XiaozhuguangTextEncodeQwenImage21": "Text Encode Qwen Image 2.1-xzg",
-    "XiaozhuguangStringToNumber": "小珠光字符串转整数/浮点",
+    "XiaozhuguangStringToNumber": "小珠光字符串转整数/浮点/文本",
     "XiaozhuguangBoolNot": "小珠光反向布尔",
     "XiaozhuguangDataBlock": "小珠光数据阻断",
     "XiaozhuguangCompareDataBlock": "小珠光比较大小-数据阻断",

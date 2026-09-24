@@ -454,17 +454,20 @@ function _xzgPreviewBgLabel(mode) {
 }
 
 // 化神级专属的透明图背景菜单。状态存于节点 properties，随工作流保存，不参与实际文件输出。
-function _xzgShowPreviewBgMenu(node) {
+function _xzgShowPreviewBgMenu(node, event) {
     document.getElementById("xzg-image-preview-bg-menu")?.remove();
     const menu = document.createElement("div");
     menu.id = "xzg-image-preview-bg-menu";
     menu.style.cssText = "position:fixed;z-index:1000000;min-width:130px;padding:5px;background:#292929;border:1px solid #555;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.55);";
-    // 使用实际鼠标屏幕坐标，而非 LiteGraph 内部坐标，避免缩放/平移后锚点漂移。
-    const point = node._xzgLastClickClient;
+    // 优先使用当前点击的屏幕坐标，避免 LiteGraph 内部坐标在缩放/平移后漂移。
+    const point = Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : node._xzgLastClickClient;
     const anchorX = point?.x ?? Math.max(8, window.innerWidth - 145);
     const anchorY = point?.y ?? 80;
-    menu.style.left = `${Math.min(window.innerWidth - 145, Math.max(8, anchorX - 110))}px`;
-    menu.style.top = `${Math.min(window.innerHeight - 175, Math.max(8, anchorY))}px`;
+    // 与图像对比节点一致：默认弹在鼠标右侧，靠近边缘时收回可视区。
+    menu.style.left = `${Math.min(window.innerWidth - 145, Math.max(8, anchorX + 8))}px`;
+    menu.style.top = `${Math.min(window.innerHeight - 175, Math.max(8, anchorY + 8))}px`;
     const choose = (mode) => {
         node._xzgPreviewBackground = mode;
         node.properties = node.properties || {};
@@ -679,7 +682,7 @@ class XzgImageSaveWidget {
                 ctx.fillText(_xzgPreviewBgLabel(node._xzgPreviewBackground || "checker"), colW * idx + colW / 2, y + btnH / 2);
                 this.hitAreas["preview_background"] = {
                     bounds: [colW * idx, y, colW, btnH],
-                    onDown: () => _xzgShowPreviewBgMenu(node)
+                    onDown: (event) => _xzgShowPreviewBgMenu(node, event)
                 };
                 idx++;
             }
@@ -940,7 +943,7 @@ class XzgImageSaveWidget {
 
     // 单击触发（由 node.onMouseUp 在“无拖动”时调用）：
     // 命中翻页/网格切换/网格点选/按钮行等区域时执行其 onDown（双击区域优先 onDouble）
-    fireClick(pos, node) {
+    fireClick(pos, node, event) {
         const now = performance.now();
         const isDouble = this._lastClickPos &&
             (now - this._lastClickT) < 300 &&
@@ -951,8 +954,8 @@ class XzgImageSaveWidget {
 
         const area = this.hitTest(pos);
         if (!area) return false;
-        if (isDouble && area.onDouble) { area.onDouble(null, pos, node, area); return true; }
-        if (!isDouble && area.onDown) { area.onDown(null, pos, node, area); return true; }
+        if (isDouble && area.onDouble) { area.onDouble(event, pos, node, area); return true; }
+        if (!isDouble && area.onDown) { area.onDown(event, pos, node, area); return true; }
         return false;
     }
 }
@@ -1112,7 +1115,7 @@ class XiaozhuguangImageSaveNode {
             if (!click || e.pointerId !== click.pointerId) return;
             node._xzgClick = null;
             node._xzgLastClickClient = { x: e.clientX, y: e.clientY };
-            if (node.canvasWidget) node.canvasWidget.fireClick(click.nodePos, node);
+            if (node.canvasWidget) node.canvasWidget.fireClick(click.nodePos, node, e);
         };
         window.addEventListener('pointermove', onMove, true);
         window.addEventListener('pointerup', onUp, true);

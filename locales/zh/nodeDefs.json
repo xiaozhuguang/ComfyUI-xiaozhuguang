@@ -481,14 +481,15 @@
     }
   },
   "XiaozhuguangStringToNumber": {
-    "display_name": "小珠光字符串转整数/浮点",
+    "display_name": "小珠光字符串转整数/浮点/文本",
     "inputs": {
       "text": { "name": "字符串" },
       "rounding": { "name": "取整方式" }
     },
     "outputs": {
       "0": { "name": "整数" },
-      "1": { "name": "浮点" }
+      "1": { "name": "浮点" },
+      "2": { "name": "文本" }
     }
   },
   "XiaozhuguangBatchImageGetter": {

@@ -336,7 +336,7 @@
         "qwen_model": { "name": "Qwen Model" },
         "target_model": { "name": "Target Model" },
         "user_prompt": { "name": "User Prompt" },
-      "generation_mode": { "name": "Generation Mode" },
+        "generation_mode": { "name": "Generation Mode" },
       "style_preset": { "name": "Style Preset" },
       "seed": { "name": "Seed" },
       "unload_after": { "name": "Unload Model" },

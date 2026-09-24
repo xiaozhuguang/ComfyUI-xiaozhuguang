@@ -35,6 +35,16 @@ _ZH_DIGIT_MAP = {
     "5": "五", "6": "六", "7": "七", "8": "八", "9": "九",
 }
 
+
+class _XzgTextType(str):
+    """与 Comfyroll 文本端口一致：可连接到任意下游输入类型。"""
+
+    def __ne__(self, other):
+        return False
+
+
+_XZG_TEXT_TYPE = _XzgTextType("*")
+
 # ────────────────────────────────────────────────────────────
 #  量词/单位/后缀 白名单（数字 紧跟这些词 → 完整读数）
 #  注意：
@@ -805,7 +815,7 @@ class XiaozhuguangTextBox:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_TYPES = (_XZG_TEXT_TYPE, "STRING")
     RETURN_NAMES = ("text", "text_zh_num")
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
