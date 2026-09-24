@@ -257,6 +257,10 @@ app.registerExtension({
             const origConfigure = nodeType.prototype.configure;
             nodeType.prototype.configure = function (info) {
                 const r = origConfigure?.apply(this, arguments);
+                // configure 会在 onNodeCreated 之后恢复工作流 widget 值；此时 target_model
+                // 可能已从默认 H3 变为 Qwen-Image-2.1，但恢复赋值不会触发 widget callback。
+                // 因此必须在恢复完成后主动重建“提示词细分”列表，避免显示 H3 选项。
+                this._syncTargetModel();
                 // 子图解包时 configure 早于连线恢复；此刻增删/重编号端口会让恢复目标槽位消失。
                 // 等到当前批次的连接变更全部完成后再统一整理。
                 clearTimeout(this._adjustImgTimer);

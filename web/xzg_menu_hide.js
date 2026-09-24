@@ -534,11 +534,13 @@ window.XZGMenuHide = {
                             if (target) {
                                 const canvasEl = app?.canvas?.canvas;
                                 const graphCanvasEl = document.getElementById('graphCanvas');
-                                const isCanvasClick = 
+                                // 只把事件目标本身是画布时当作画布菜单。工作流切换标签等
+                                // HTML 控件也可能位于 #graphCanvas 容器内；使用 closest() 会把
+                                // 它们误判为画布右键菜单，从而套用隐藏规则并导致菜单失效。
+                                const isCanvasClick =
                                     target === canvasEl ||
-                                    (graphCanvasEl && (target === graphCanvasEl || target.closest('#graphCanvas'))) ||
-                                    target.classList?.contains('graphcanvas') ||
-                                    target.closest?.('.graphcanvas');
+                                    target === graphCanvasEl ||
+                                    target.classList?.contains('graphcanvas');
 
                                 if (isCanvasClick) {
                                     let node = null;
@@ -610,22 +612,6 @@ window.XZGMenuHide = {
                 LiteGraph.ContextMenu = XZGContextMenu;
             }
 
-            // 记录上次右键是否在画布上：用于区分画布/节点菜单 vs 工作流标签/侧边栏等非画布菜单
-            if (!self._ctxMenuTargetListenerInstalled) {
-                self._ctxMenuTargetListenerInstalled = true;
-                window.addEventListener('contextmenu', (e) => {
-                    const target = e.target;
-                    const canvasEl = app?.canvas?.canvas;
-                    const graphCanvasEl = document.getElementById('graphCanvas');
-                    self._lastCtxMenuOnCanvas = !!(
-                        target === canvasEl ||
-                        (graphCanvasEl && (target === graphCanvasEl || target.closest('#graphCanvas'))) ||
-                        target.classList?.contains('graphcanvas') ||
-                        target.closest?.('.graphcanvas')
-                    );
-                }, true);
-            }
-
             self._startDOMObserver();
         };
 
@@ -634,7 +620,6 @@ window.XZGMenuHide = {
 
     _domObserver: null,
     _lastMenuType: 'canvas',
-    _lastCtxMenuOnCanvas: false,
 
     // 在画布/节点右键菜单上，对某个菜单项“鼠标中键点击”弹出“隐藏此菜单项”按钮，点击即隐藏。
     // 这是最方便、且不干扰右键菜单本身的操作方式（右键会关闭原生菜单，因此改用中键）。
@@ -684,16 +669,13 @@ window.XZGMenuHide = {
         document.addEventListener('scroll', removePopup, true);
         document.addEventListener('keydown', (e) => { if (!e.repeat && e.key === 'Escape') removePopup(); }, true);
 
-        // 判定是否画布/节点右键菜单项。不依赖 _lastCtxMenuOnCanvas（桌面版 ComfyUI 画布 id/class 是
-        // graph-canvas / lgraphcanvas，右键还可能被悬浮层截获，导致该标志不置位而误判非画布菜单）。
-        // 改为按菜单自身 class 判定：.litecontextmenu / .litegraph-contextmenu 正是 LiteGraph 画布/节点
-        // 菜单专用容器；工作流标签 / 侧边栏等用的是 .context-menu / .comfyui-menu，不会被误判。
+        // 只按菜单自身的明确标记或 LiteGraph 专用 class 判定；工作流标签 / 侧边栏等
+        // 使用 .context-menu / .comfyui-menu，不会被当成画布菜单。
         const isCanvasLike = (menuEl) => Boolean(
             menuEl && (
                 menuEl._xzgMenuType ||
                 menuEl.classList?.contains('litecontextmenu') ||
-                menuEl.classList?.contains('litegraph-contextmenu') ||
-                self._lastCtxMenuOnCanvas
+                menuEl.classList?.contains('litegraph-contextmenu')
             )
         );
 
@@ -796,18 +778,16 @@ window.XZGMenuHide = {
             const processMenu = (menuEl) => {
                 if (!menuEl || seenMenus.has(menuEl)) return;
                 seenMenus.add(menuEl);
-                // 隐藏必须在任意时机可执行：菜单容器先挂载、条目随后才填充，因此要多次重试。
-                // 且不能依赖画布标志(_lastCtxMenuOnCanvas)——桌面版该标志可能始终为 false，
-                // 若把重试包进该判断内，条目填充后就不会被二次隐藏，造成“重开菜单又回来”。
+                // 菜单类型只能由 ContextMenu 包装层在创建时明确写入。绝不能根据
+                // “上一次右键位置”推断：工作流标签菜单可能在前一次画布右键的异步
+                // 观察周期内出现，若被误标为画布菜单，就会被隐藏规则清空。
+                // 已标记的画布/节点菜单仍需多次重试，因为容器和条目可能分批挂载。
+                if (!menuEl._xzgMenuType) return;
                 const tryHide = () => { if (self._enabled) self._hideFromDOM(menuEl); };
                 tryHide();
                 requestAnimationFrame(tryHide);
                 setTimeout(tryHide, 60);
                 setTimeout(tryHide, 180);
-                if (!self._lastCtxMenuOnCanvas) return;
-                // 仅处理画布/节点右键菜单；跳过工作流标签、侧边栏、对话框等非画布菜单，
-                // 避免误隐藏标签右键条目导致"右键失效"
-                menuEl._xzgMenuType = self._lastMenuType || 'canvas';
                 self._collectFromDOM(menuEl);
                 tryHide();
                 requestAnimationFrame(() => { self._collectFromDOM(menuEl); tryHide(); });
@@ -857,9 +837,11 @@ window.XZGMenuHide = {
     },
 
     _collectFromDOM(menuEl) {
-        if (!menuEl) return;
+        // 工作流标签、侧边栏和弹窗菜单都不属于“菜单隐藏”的管理范围。
+        // 仅收集由 XZGContextMenu 明确标记的画布/节点菜单，避免污染列表或误伤。
+        if (!menuEl || !menuEl._xzgMenuType) return;
         const self = this;
-        let menuType = this._lastMenuType || 'canvas';
+        let menuType = menuEl._xzgMenuType;
 
         const items = menuEl.querySelectorAll('.litemenu-entry, .context-menu-item, .menu-item, .lite-menu-item');
         const collected = [];
