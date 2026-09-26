@@ -1859,7 +1859,10 @@ window.XZGThemeManager = {
 
             // 查找原始 LLink 的 origin_id/target_id
             const graph = self.canvas?.graph || (window.app && app.graph);
-            const linksMap = graph?._links;
+            // 不同 ComfyUI/LiteGraph 前端对图连线表的命名不同：
+            // 旧版常用 _links，新版/部分托管前端使用 links。绘制器传入的 link
+            // 可能只有 id，因此需要从原始图连线表回查端点节点 ID。
+            const linksMap = graph?._links || graph?.links;
             let originId = null, targetId = null, linkId = null;
 
             if (link.origin_id != null) {
@@ -1867,7 +1870,9 @@ window.XZGThemeManager = {
                 targetId = link.target_id;
                 linkId = link.id;
             } else if (linksMap && link.id != null) {
-                const origLink = linksMap.get(Number(link.id)) || linksMap.get(link.id) || linksMap.get(String(link.id));
+                const origLink = typeof linksMap.get === 'function'
+                    ? (linksMap.get(Number(link.id)) || linksMap.get(link.id) || linksMap.get(String(link.id)))
+                    : (linksMap[link.id] || linksMap[Number(link.id)] || linksMap[String(link.id)]);
                 if (origLink) {
                     originId = origLink.origin_id;
                     targetId = origLink.target_id;
