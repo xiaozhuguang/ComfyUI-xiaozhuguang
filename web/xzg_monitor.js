@@ -929,6 +929,28 @@ function buildMenuButton() {
 }
 
 function buildThemeMenuButton() {
+  if (!document.getElementById("xzg-theme-icon-sheen-style")) {
+    const style = document.createElement("style");
+    style.id = "xzg-theme-icon-sheen-style";
+    style.textContent = `
+      @keyframes xzg-theme-ring-orbit {
+        0%,4% { transform:rotate(0deg); opacity:0; }
+        6% { opacity:1; }
+        30% { opacity:.82; }
+        34%,100% { transform:rotate(360deg); opacity:0; }
+      }
+      @keyframes xzg-theme-letters-sweep {
+        0%,35% { transform:translateX(-140%); opacity:0; }
+        38% { opacity:.85; }
+        62% { transform:translateX(140%); opacity:.72; }
+        66%,100% { transform:translateX(140%); opacity:0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .xzg-theme-ring-orbit, .xzg-theme-letters-sweep { animation:none !important; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
   const btn = document.createElement("div");
   btn.id = XZG_THEME_BTN_ID;
   btn.title = "小珠光主题面板";
@@ -941,12 +963,49 @@ function buildThemeMenuButton() {
     transition:background 0.15s;align-self:center;margin:auto 0;
     background:transparent;
   `;
+  const iconUrl = new URL("./xzg_theme_icon.webp", import.meta.url).href;
+  const iconWrap = document.createElement("span");
+  // 动画层限制在图标圆形边界内，避免高光溢出到圆环外侧区域。
+  iconWrap.style.cssText = "position:relative;display:block;width:28px;height:28px;flex:none;border-radius:50%;overflow:hidden;pointer-events:none;";
   const icon = document.createElement("img");
-  icon.src = new URL("./xzg_theme_icon.webp", import.meta.url).href;
+  icon.src = iconUrl;
   icon.alt = "XZG";
   icon.draggable = false;
-  icon.style.cssText = "display:block;width:28px;height:28px;object-fit:cover;border-radius:50%;pointer-events:none;";
-  btn.appendChild(icon);
+  icon.style.cssText = "display:block;width:28px;height:28px;object-fit:cover;border-radius:50%;";
+  const makeGlint = (className) => {
+    const orbit = document.createElement("span");
+    orbit.className = className;
+    orbit.setAttribute("aria-hidden", "true");
+    orbit.style.cssText = `
+      position:absolute;inset:0;pointer-events:none;opacity:0;
+      animation:xzg-theme-ring-orbit 6s linear infinite;
+    `;
+    const glint = document.createElement("span");
+    glint.style.cssText = `
+      position:absolute;left:50%;top:.5px;width:4px;height:4px;border-radius:50%;
+      transform:translate(-50%,-15%);
+      background:radial-gradient(circle,rgba(255,255,245,1) 0%,rgba(255,244,195,.95) 28%,rgba(255,196,75,.62) 52%,rgba(255,190,60,0) 100%);
+      filter:drop-shadow(0 0 2px rgba(255,224,140,.95));
+    `;
+    orbit.appendChild(glint);
+    return orbit;
+  };
+  // 先扫 G 外环（图标原图），下一段扫 XZ 字母（第二段动画延迟到环扫完）。
+  const ringGlint = makeGlint("xzg-theme-ring-orbit");
+  const lettersSweep = document.createElement("span");
+  lettersSweep.className = "xzg-theme-letters-sweep";
+  lettersSweep.setAttribute("aria-hidden", "true");
+  lettersSweep.style.cssText = `
+    position:absolute;inset:0;opacity:0;pointer-events:none;
+    clip-path:inset(25% 16% 24% 16%);
+    background:linear-gradient(108deg,transparent 43%,rgba(255,247,205,.18) 48%,rgba(255,248,215,1) 50%,rgba(255,255,250,.5) 52%,transparent 57%);
+    -webkit-mask-image:url("${iconUrl}");mask-image:url("${iconUrl}");
+    -webkit-mask-size:100% 100%;mask-size:100% 100%;
+    -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+    animation:xzg-theme-letters-sweep 6s linear infinite;
+  `;
+  iconWrap.append(icon, ringGlint, lettersSweep);
+  btn.appendChild(iconWrap);
   btn.addEventListener("mouseenter", () => {
     btn.style.background = "var(--comfy-input-bg,#353535)";
   });
