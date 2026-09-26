@@ -1,6 +1,6 @@
 ﻿// ═══════════════════════════════════════════════
 //  小珠光视角锁定 V4 · 顶部菜单栏集成
-//  记录/恢复画布缩放与坐标，5个槽位
+//  记录/恢复画布缩放与坐标，9个槽位
 //  存储方案：graph.extra（随工作流持久化）+ localStorage 备份
 // ═══════════════════════════════════════════════
 // 版本: V4.0 (graph.extra + localStorage backup)
@@ -16,7 +16,7 @@ const EXTRA_KEY = "xzg_viewport_slots";  // graph.extra 中的字段名（随工
 const CONFIG_KEY = "xzg_viewport_lock_config_v4";
 const GOLD = "#dcc85b";
 const GRAY = "#999";
-const SLOT_COUNT = 5;
+const SLOT_COUNT = 9;
 
 // 可选速度倍率（循环切换）
 const SPEED_LEVELS = [0.5, 1, 1.5, 2, 3];
@@ -93,8 +93,9 @@ function loadSlotsFromGraph() {
     const graph = getGraph();
     if (!graph) return null;
     const arr = (graph.extra || {})[EXTRA_KEY];
-    if (Array.isArray(arr) && arr.length === SLOT_COUNT) {
-        return arr.slice();
+    if (Array.isArray(arr) && arr.length <= SLOT_COUNT) {
+        // 兼容旧版本的 5 槽位数据，扩展到 9 槽位后保留原有记录。
+        return [...arr.slice(0, SLOT_COUNT), ...new Array(Math.max(0, SLOT_COUNT - arr.length)).fill(null)];
     }
     return null;
 }
@@ -230,8 +231,8 @@ function animateViewState(target) {
 
 // ─── UI ───
 
-// 每个槽位的固定颜色：红、橙、黄、绿、蓝
-const SLOT_COLORS = ["#ff5b5b", "#ff9b3d", "#dcc85b", "#5bcc6e", "#5b9bff"];
+// 每个槽位的固定颜色
+const SLOT_COLORS = ["#ff5b5b", "#ff9b3d", "#dcc85b", "#5bcc6e", "#5b9bff", "#b76bff", "#ff6bb5", "#5bd6d6", "#c4d65b"];
 
 // 圆圈图标 + 中间文字（数字或"空"）
 function circleIcon(color, text, size) {
@@ -428,6 +429,10 @@ function buildMenuButton() {
         e.preventDefault(); e.stopPropagation();
         setExpanded(!expanded);
     });
+    btn.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    });
     return btn;
 }
 
@@ -470,6 +475,10 @@ function buildFloatingPanel() {
         if (dragMoved) return;
         e.preventDefault(); e.stopPropagation();
         setExpanded(!expanded);
+    });
+    panel.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
     });
     return panel;
 }
@@ -799,9 +808,9 @@ function showHelpDialog() {
     `;
     dialog.innerHTML = `
         <div style="font-size:15px;color:${GOLD};margin-bottom:12px;font-weight:bold;">视角锁定 使用说明</div>
-        <div><span style="color:${GOLD};">右键</span> 槽位（1-5）：记录当前视角</div>
-        <div><span style="color:${GOLD};">左键</span> 槽位（1-5）：恢复对应视角</div>
-        <div><span style="color:${GOLD};">键盘 1-5</span>：快捷恢复对应视角</div>
+        <div><span style="color:${GOLD};">右键</span> 槽位（1-9）：记录当前视角</div>
+        <div><span style="color:${GOLD};">左键</span> 槽位（1-9）：恢复对应视角</div>
+        <div><span style="color:${GOLD};">键盘 1-9</span>：快捷恢复对应视角</div>
         <div><span style="color:${GOLD};">垃圾桶</span>：清空所有记录</div>
         <div><span style="color:${GOLD};">速度</span>：切换动画速度（0.5× / 1× / 1.5× / 2× / 3×）</div>
         <div><span style="color:${GOLD};">缓动</span>：切换缓动曲线（Out / InOut / In / Linear / None / Boing）</div>
@@ -917,7 +926,7 @@ function init() {
             !!(et && et.closest && et.closest('[contenteditable="true"]'));
         if (editable) return;
         if (e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
-        if (e.key >= "1" && e.key <= "5") {
+        if (e.key >= "1" && e.key <= "9") {
             const idx = parseInt(e.key) - 1;
             if (idx >= SLOT_COUNT) return;
             e.preventDefault();

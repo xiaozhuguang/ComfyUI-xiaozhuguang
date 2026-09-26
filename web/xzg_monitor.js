@@ -282,14 +282,13 @@ const XZG_CSS = `
 /* 运行历史：隐藏滚动条（鼠标滚轮仍可滚动） */
 #xzg-run-hist{scrollbar-width:none;-ms-overflow-style:none;}
 #xzg-run-hist::-webkit-scrollbar{display:none;width:0;height:0;}
-/* 顶部栏横置电池按钮：金色外框 + 绿色电量 */
+/* 顶部栏横置电池按钮：扁平描边与纯色电量，匹配左侧的线框图标 */
 .xzg-batt{position:relative;display:inline-block;width:24px;height:13px;flex:none;
-  border:1.5px solid #d4af37;border-radius:3px;box-shadow:0 0 6px rgba(212,175,55,0.5);
-  transition:border-color .25s,box-shadow .25s;}
+  border:1.5px solid #d4af37;border-radius:3px;box-shadow:none;}
 .xzg-batt::after{content:"";position:absolute;right:-4px;top:50%;transform:translateY(-50%);
-  width:2.5px;height:6.5px;background:#d4af37;border-radius:0 1.5px 1.5px 0;transition:background .25s;}
+  width:2.5px;height:6.5px;background:#d4af37;border-radius:0 1.5px 1.5px 0;}
 .xzg-batt .xzg-batt-fill{position:absolute;left:1.5px;top:1.5px;bottom:1.5px;
-  width:calc(100% - 3px);background:linear-gradient(180deg,#4ade80,#15803d);border-radius:1.5px;
+  width:calc(100% - 3px);background:#52c41a;border-radius:1px;
   transition:width .3s ease,background .3s ease;}
 #xzg-monitor-menu-btn.xzg-mon-off .xzg-batt{border-color:#6b7280;box-shadow:none;}
 #xzg-monitor-menu-btn.xzg-mon-off .xzg-batt::after{background:#6b7280;}
@@ -822,9 +821,11 @@ function createFloatWindow() {
 // ---------------------------------------------------------------------------
 
 const XZG_BTN_ID = "xzg-monitor-menu-btn";
+const XZG_THEME_BTN_ID = "xzg-theme-menu-btn";
 let _float = null;       // 悬浮窗实例
 let _floatHidden = false; // 悬浮窗当前是否隐藏
 let _menuBtn = null;     // 顶部栏按钮
+let _themeMenuBtn = null;
 
 function refreshMenuBtn() {
   if (!_menuBtn) return;
@@ -927,6 +928,81 @@ function buildMenuButton() {
   return btn;
 }
 
+function buildThemeMenuButton() {
+  const btn = document.createElement("div");
+  btn.id = XZG_THEME_BTN_ID;
+  btn.title = "小珠光主题面板";
+  btn.setAttribute("role", "button");
+  btn.setAttribute("aria-label", "打开小珠光主题面板");
+  btn.style.cssText = `
+    display:flex;align-items:center;justify-content:center;
+    width:32px;height:32px;padding:2px;box-sizing:border-box;flex:none;
+    cursor:pointer;border-radius:6px;user-select:none;
+    transition:background 0.15s;align-self:center;margin:auto 0;
+    background:transparent;
+  `;
+  const icon = document.createElement("img");
+  icon.src = new URL("./xzg_theme_icon.webp", import.meta.url).href;
+  icon.alt = "XZG";
+  icon.draggable = false;
+  icon.style.cssText = "display:block;width:28px;height:28px;object-fit:cover;border-radius:50%;pointer-events:none;";
+  btn.appendChild(icon);
+  btn.addEventListener("mouseenter", () => {
+    btn.style.background = "var(--comfy-input-bg,#353535)";
+  });
+  btn.addEventListener("mouseleave", () => {
+    btn.style.background = "transparent";
+  });
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const panel = window.XZGThemePanel;
+    if (!panel) return;
+    if (panel.isVisible) {
+      panel.hide();
+      return;
+    }
+    const manager = window.XZGThemeManager;
+    const selectedNodes = manager?.getSelectedNodes?.() || [];
+    if (selectedNodes.length > 0) manager.currentNodes = selectedNodes;
+    if (manager?.showPanel) manager.showPanel();
+    else panel.show();
+  });
+  btn.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const themePanel = window.XZGThemePanel;
+    if (themePanel?.isVisible) themePanel.hide();
+    try {
+      app.extensionManager?.command?.execute?.("Comfy.ShowSettingsDialog");
+      revealXiaozhuguangSettings();
+    } catch (err) {
+      console.warn("[小珠光] 打开小珠光设置失败:", err);
+    }
+  });
+  return btn;
+}
+
+function revealXiaozhuguangSettings(attempt = 0) {
+  const dialog = document.querySelector('[data-testid="settings-dialog"]');
+  if (dialog) {
+    const navItems = dialog.querySelectorAll("[data-nav-id], button, [role=button]");
+    const xzgNav = [...navItems].find((item) =>
+      /^(小珠光|xiaozhuguang)$/i.test(item.textContent?.trim() || "")
+    );
+    if (xzgNav && !xzgNav.matches("[aria-current=true], [data-active=true], .active")) {
+      xzgNav.click();
+    }
+    const row = [...dialog.querySelectorAll('[data-setting-id^="xiaozhuguang."]')]
+      .find((item) => item.getClientRects().length > 0);
+    if (row) {
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+  }
+  if (attempt < 60) setTimeout(() => revealXiaozhuguangSettings(attempt + 1), 100);
+}
+
 function injectMenuButton(retries) {
   const container = findMenuContainer();
   // 仅当容器已挂载到文档时注入；否则等下一次重试，
@@ -935,6 +1011,8 @@ function injectMenuButton(retries) {
     if (!document.getElementById(XZG_BTN_ID)) {
       _menuBtn = buildMenuButton();
       container.appendChild(_menuBtn);
+      _themeMenuBtn = buildThemeMenuButton();
+      container.insertBefore(_themeMenuBtn, _menuBtn.nextSibling);
       refreshMenuBtn();
     }
     return;
@@ -1008,9 +1086,11 @@ function setMonitorEnabled(v) {
       injectMenuButton(0);
     });
   } else {
-    // 关闭：移除所有顶部电池按钮 + 停止轮询 + 隐藏所有浮窗（关闭监控）
+    // 关闭：移除顶部电池与主题按钮 + 停止轮询 + 隐藏所有浮窗（关闭监控）
     document.querySelectorAll("#" + XZG_BTN_ID).forEach((b) => b.remove());
+    document.querySelectorAll("#" + XZG_THEME_BTN_ID).forEach((b) => b.remove());
     _menuBtn = null;
+    _themeMenuBtn = null;
     document.querySelectorAll("#xzg-float").forEach((f) => {
       f.style.display = "none";
     });

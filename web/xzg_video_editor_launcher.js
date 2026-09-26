@@ -41,21 +41,32 @@ function findMenuContainer() {
 function buildButton() {
     const btn = document.createElement("div");
     btn.id = BTN_ID;
+    btn.title = "快剪";
+    btn.setAttribute("aria-label", "打开快剪");
     btn.style.cssText = `
-        display:flex; align-items:center; justify-content:center; gap:4px;
-        height:32px; padding:0 10px; cursor:pointer;
+        display:flex; align-items:center; justify-content:center;
+        width:36px; height:36px; padding:0; cursor:pointer;
         color:${GOLD}; font-size:20px; font-weight:600;
-        border-radius:6px; user-select:none;
-        transition:background 0.15s; position:relative;
-        align-self:center; margin:auto 0;
+        user-select:none;
+        position:relative;
+        align-self:center; margin:auto 0; transform:translateY(5px);
         background:transparent;
     `;
-    btn.innerHTML = `<span style="font-size:18px;">🎬</span><span>快剪</span>`;
+    const icon = document.createElement("span");
+    icon.style.cssText = "display:flex;align-items:center;justify-content:center;width:30px;height:30px;flex:none;border-radius:6px;transition:background 0.15s;";
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" ' +
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+        'aria-hidden="true" style="display:block;transform:translateY(-2px)">' +
+        '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/>' +
+        '<path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/>' +
+        '<path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
+        '</svg>';
+    btn.appendChild(icon);
     btn.addEventListener("mouseenter", () => {
-        btn.style.background = "var(--comfy-input-bg,#353535)";
+        icon.style.background = "var(--comfy-input-bg,#353535)";
     });
     btn.addEventListener("mouseleave", () => {
-        btn.style.background = "transparent";
+        icon.style.background = "transparent";
     });
     btn.addEventListener("click", (e) => {
         e.preventDefault();

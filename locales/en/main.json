@@ -2,10 +2,10 @@
   "nodeCategories": {
     "xiaozhuguang": "Xiaozhuguang"
   },
-  "Device": "Device",
+  "ZDevice": "Device",
   "Toggle": "Toggles",
   "settingsCategories": {
-    "Device": "Device",
+    "ZDevice": "Device",
     "Toggle": "Toggles"
   }
 }

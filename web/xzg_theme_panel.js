@@ -2087,6 +2087,8 @@ window.XZGThemePanel = {
         const self = this;
         this._canvasBgCloseHandler = (e) => {
             if (!self.isVisible) return;
+            // 主题入口按钮单独负责开关面板，避免捕获阶段先关闭、随后 click 又立即打开。
+            if (e.target.closest("#xzg-theme-menu-btn")) return;
             // 点击面板内部 → 不关闭
             if (self.panel && self.panel.contains(e.target)) return;
             // 点击面板的弹出层（取色器 / 对话框）→ 不关闭

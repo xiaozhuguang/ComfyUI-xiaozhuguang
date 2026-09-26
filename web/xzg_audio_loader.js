@@ -2906,6 +2906,11 @@ function _createFastcutDomButton(node, viewer) {
         "text-shadow:0 1px 2px rgba(0,0,0,.8);";
     btn.innerHTML = _CLAPPER_SVG + '<span>快剪</span>';
     btn.classList.add("xzg-fc-load-btn");
+    // 快剪按钮右键不显示浏览器默认菜单，也不冒泡到画布节点菜单。
+    btn.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    });
     document.body.appendChild(btn);
     // 悬停变色（与「从达芬奇导入」一致：金色 → 白色）
     btn.addEventListener("mouseenter", () => { btn.style.color = "#fff"; });

@@ -15,7 +15,8 @@
 import { app } from '/scripts/app.js';
 
 const ENDPOINT = '/lg_local/getmachineid';
-const SETTING_ID = 'xiaozhuguang.Device.DeviceCode';
+// ZDevice 排在其他设置分类之后，让“设备授权”显示在小珠光设置末尾。
+const SETTING_ID = 'xiaozhuguang.ZDevice.DeviceCode';
 
 async function fetchDeviceCode() {
     const resp = await fetch(ENDPOINT);
@@ -108,7 +109,7 @@ function tryRegister(retries) {
                 id: SETTING_ID,
                 name: '本机设备码',
                 defaultValue: '',
-                // 不设显式 category：前端按 ID 第二段（Device）自动分组，配合 locale 显示「设备授权」标题
+                // 不设显式 category：前端按 ID 第二段（ZDevice）自动分组，配合 locale 显示「设备授权」标题
                 // type 为函数时，前端按自定义控件渲染:
                 //   签名 (name, setValue, value, attrs) => HTMLElement
                 //   返回的元素会被 appendChild 进设置行右侧。
