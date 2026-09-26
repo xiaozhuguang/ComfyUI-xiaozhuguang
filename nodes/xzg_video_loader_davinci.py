@@ -14,10 +14,14 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 import traceback
+import uuid
+import asyncio
+from datetime import datetime
 
 import folder_paths
 from server import PromptServer as _PS
@@ -28,6 +32,53 @@ from .xzg_video_batch_loader import XiaozhuguangVideoBatchLoader
 _BRIDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_davinci_bridge.py")
 _DV_INPUT_SUBDIR = ""           # 导出的视频直接放 input 根目录，组合框可列出
 _RENDER_TIMEOUT = 1800          # 渲染等待超时（秒）
+_DAVINCI_VIDEO_EXPORT_SESSION = uuid.uuid4().hex
+
+
+def _choose_video_save_path(source_path):
+    """用 Windows 原生另存为窗口选择视频副本位置。"""
+    if os.name != "nt":
+        raise RuntimeError("Windows 原生另存为窗口仅支持 Windows 后端")
+    powershell = os.path.join(
+        os.environ.get("WINDIR", r"C:\Windows"),
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    )
+    if not os.path.isfile(powershell):
+        powershell = shutil.which("powershell.exe")
+    if not powershell:
+        raise FileNotFoundError("找不到 Windows PowerShell（powershell.exe），无法打开另存为窗口")
+    ext = os.path.splitext(source_path)[1].lstrip(".") or "mp4"
+    env = os.environ.copy()
+    env["XZG_VIDEO_SAVE_NAME"] = os.path.basename(source_path)
+    env["XZG_VIDEO_SAVE_EXT"] = ext
+    script = r'''
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ext = $env:XZG_VIDEO_SAVE_EXT
+$dlg = New-Object System.Windows.Forms.SaveFileDialog
+$dlg.Title = '导出视频到达芬奇'
+$dlg.Filter = "视频文件 (*.$ext)|*.$ext|所有文件 (*.*)|*.*"
+$dlg.DefaultExt = $ext
+$dlg.AddExtension = $true
+$dlg.FileName = $env:XZG_VIDEO_SAVE_NAME
+$dlg.OverwritePrompt = $false
+$dlg.RestoreDirectory = $true
+if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($dlg.FileName)
+  [Console]::Write([Convert]::ToBase64String($bytes))
+}
+'''
+    proc = subprocess.run([powershell, "-NoProfile", "-STA", "-Command", script],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+        env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or "").strip() or "无法打开 Windows 另存为窗口")
+    encoded = (proc.stdout or "").strip()
+    if not encoded:
+        return None
+    import base64
+    return base64.b64decode(encoded).decode("utf-8")
 
 
 class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
@@ -97,6 +148,36 @@ def _resolve_loader_video_path(filename, file_type="input"):
     return candidate if os.path.isfile(candidate) else None
 
 
+def _copy_loader_video_to_output(source_path, base_dir, filename_prefix="xzg-davinci",
+                                 add_date_stamp=False, add_time_stamp=False):
+    """复制加载器源视频到达芬奇导出设置中的目录，返回副本路径。"""
+    # 与视频保存节点一致：绝对目录直接使用，相对目录置于 ComfyUI output 下。
+    from .xzg_video_combine import _xzg_is_absolute_path, _xzg_sanitize_path
+
+    resolved_base = _xzg_sanitize_path(str(base_dir or "").strip())
+    if not resolved_base:
+        raise ValueError("自定义输出目录为空")
+    destination_dir = (resolved_base if _xzg_is_absolute_path(resolved_base)
+                       else os.path.join(folder_paths.get_output_directory(), resolved_base))
+    os.makedirs(destination_dir, exist_ok=True)
+
+    prefix = _safe_davinci_name(filename_prefix or "xzg-davinci")
+    now = datetime.now()
+    stamps = []
+    if add_date_stamp:
+        stamps.append(now.strftime("%Y-%m-%d"))
+    if add_time_stamp:
+        stamps.append(now.strftime("%H%M%S"))
+    if stamps:
+        prefix = "-".join([*stamps, prefix])
+    # 以源文件名作为副本名：同一视频重复导出覆盖同一文件，不再每次生成新命名文件；保留容器扩展名。
+    ext = os.path.splitext(source_path)[1] or ".mp4"
+    stem = _safe_davinci_name(os.path.splitext(os.path.basename(source_path))[0]) or "xzg-davinci"
+    destination_path = os.path.join(destination_dir, f"{prefix}_{stem}{ext}")
+    shutil.copy2(source_path, destination_path)
+    return destination_path
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 路由安全装饰器（与加载器一致）
 # ═══════════════════════════════════════════════════════════════════════════
@@ -141,6 +222,14 @@ except Exception:
 _need_routes = True
 if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes", None) is not None:
 
+    @_PS.instance.routes.get("/xzg/davinci/video-export-session")
+    @_safe_handler
+    async def xzg_davinci_video_export_session(request):
+        return _web.json_response(
+            {"session": _DAVINCI_VIDEO_EXPORT_SESSION},
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
+
     @_PS.instance.routes.get("/xzg/davinci/status")
     @_safe_handler
     async def xzg_davinci_status(request):
@@ -164,7 +253,11 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
                                "name": base_name,
                                "mode": "video"})
         if result.get("ok"):
-            result["filename"] = result.get("filename", "")
+            filename = os.path.basename(str(result.get("filename") or ""))
+            exported_path = os.path.join(input_dir, filename)
+            if not filename or not os.path.isfile(exported_path) or os.path.getsize(exported_path) <= 0:
+                return _web.json_response({"ok": False, "error": "达芬奇报告导出成功，但找不到有效的视频文件；请检查渲染格式与 input 目录"})
+            result["filename"] = filename
         return _web.json_response(result)
 
     @_PS.instance.routes.post("/xzg/davinci/loader-import")
@@ -173,6 +266,7 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
         """把化神级视频加载器当前选择的视频导入达芬奇。
 
         前端仅提交相对文件名和 ComfyUI 文件类型；服务端限制解析范围，避免任意本地路径读取。
+        如选择自定义输出目录，服务端会将已验证的源文件复制过去再导入。
         """
         data = await request.json()
         filename = str(data.get("filename") or "")
@@ -180,7 +274,40 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
         abs_path = _resolve_loader_video_path(filename, file_type)
         if not abs_path:
             return _web.json_response({"ok": False, "error": "视频文件不存在，或不在允许的 ComfyUI 目录中"})
-        result = _call_bridge({"action": "import", "file_path": abs_path})
+        target_dir = str(data.get("target_dir") or "").strip()
+        selected_path = None
+        try:
+            if target_dir and not os.path.isdir(target_dir):
+                target_dir = ""
+            if not target_dir:
+                selected_path = await asyncio.to_thread(_choose_video_save_path, abs_path)
+                if not selected_path:
+                    return _web.json_response({"ok": False, "cancelled": True})
+                target_dir = os.path.dirname(selected_path)
+                target_name = os.path.basename(selected_path)
+            else:
+                if not os.path.isabs(target_dir):
+                    return _web.json_response({"ok": False, "error": "保存目录必须是完整路径"})
+                target_name = os.path.basename(str(data.get("target_name") or os.path.basename(abs_path)))
+            os.makedirs(target_dir, exist_ok=True)
+            from .xzg_audio_loader_davinci import _find_exported_copy
+            target_path = await asyncio.to_thread(_find_exported_copy, abs_path, target_dir)
+            if target_path is None:
+                target_path = selected_path or os.path.join(target_dir, target_name)
+                if os.path.exists(target_path) and os.path.normcase(os.path.abspath(abs_path)) != os.path.normcase(os.path.abspath(target_path)):
+                    stem, ext = os.path.splitext(target_path)
+                    index = 2
+                    while os.path.exists(f"{stem}_{index}{ext}"):
+                        index += 1
+                    target_path = f"{stem}_{index}{ext}"
+                if os.path.normcase(os.path.abspath(abs_path)) != os.path.normcase(os.path.abspath(target_path)):
+                    await asyncio.to_thread(shutil.copy2, abs_path, target_path)
+        except Exception as e:
+            return _web.json_response({"ok": False, "error": f"选择或保存视频文件失败：{e}"})
+        result = _call_bridge({"action": "import", "file_path": target_path})
+        result["copied"] = True
+        result["save_directory"] = target_dir
+        result["save_filename"] = os.path.basename(target_path)
         return _web.json_response(result)
 
     _need_routes = False

@@ -331,13 +331,12 @@
     }
   },
   "XiaozhuguangNinimaxH3Prompt": {
-    "display_name": "XZG MiniMax H3 Prompt",
+    "display_name": "XZG Prompt Optimizer-Immortal",
     "inputs": {
         "qwen_model": { "name": "Qwen Model" },
-        "target_model": { "name": "Target Model" },
+        "target_model": { "name": "Prompt Type" },
         "user_prompt": { "name": "User Prompt" },
-        "generation_mode": { "name": "Generation Mode" },
-      "style_preset": { "name": "Style Preset" },
+        "generation_mode": { "name": "Prompt Subtype" },
       "seed": { "name": "Seed" },
       "unload_after": { "name": "Unload Model" },
       "output_language": { "name": "Output Language" },
@@ -356,6 +355,26 @@
         "0": { "name": "English Prompt" },
         "1": { "name": "Chinese Prompt" }
       }
+  },
+  "XiaozhuguangNinimaxH3PromptNoSkill": {
+    "display_name": "XZG Prompt Optimizer",
+    "inputs": {
+      "qwen_model": { "name": "Qwen Model" },
+      "target_model": { "name": "Prompt Type" },
+      "user_prompt": { "name": "User Prompt" },
+      "generation_mode": { "name": "Prompt Subtype" },
+      "seed": { "name": "Seed" },
+      "unload_after": { "name": "Unload Model" },
+      "output_language": { "name": "Output Language" },
+      "image_1": { "name": "Image_1" }, "image_2": { "name": "Image_2" },
+      "image_3": { "name": "Image_3" }, "image_4": { "name": "Image_4" },
+      "image_5": { "name": "Image_5" }, "image_6": { "name": "Image_6" },
+      "image_7": { "name": "Image_7" }, "image_8": { "name": "Image_8" },
+      "image_9": { "name": "Image_9" }, "image_10": { "name": "Image_10" }
+    },
+    "outputs": {
+      "0": { "name": "English Prompt" }, "1": { "name": "Chinese Prompt" }
+    }
   },
   "XiaozhuguangQwenModelLoader": {
     "display_name": "XZG Qwen Model Loader",

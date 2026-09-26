@@ -247,6 +247,7 @@ export async function xzgDownload(url, filename, fileType = "image", opts = {}) 
     } catch (e) {
         if (e?.name === "AbortError") return; // 用户取消
         console.warn(`[小珠光] ${fileType} 下载失败:`, e);
+        try { opts.onError?.(e); } catch (_) {}
     }
 }
 

@@ -166,6 +166,28 @@ def _timeline_start_frames(timeline, fps):
     return 0
 
 
+def _capture_playhead_timecode(timeline):
+    try:
+        return timeline.GetCurrentTimecode() or ""
+    except Exception:
+        return ""
+
+
+def _restore_playhead_timecode(timeline, timecode):
+    if not timecode:
+        return False
+    normalized = str(timecode).replace(";", ":")
+    for _ in range(2):
+        try:
+            timeline.SetCurrentTimecode(timecode)
+            current = timeline.GetCurrentTimecode() or ""
+            if str(current).replace(";", ":") == normalized:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def current_video_item(timeline):
     """返回播放头所在视频片段（TimelineItem）。优先按播放头帧定位。
 
@@ -330,57 +352,142 @@ def _pick_render_codec(project):
         formats = project.GetRenderFormats() or {}
     except Exception:
         formats = {}
-    # 视频：优先 H.264/MP4
+    # 视频：优先 H.264/MP4。Resolve 不同版本的 codec 字典键/值格式并不完全一致，
+    # 找不到 H.264 时使用 MP4 下第一个有效视频编码，避免传入硬编码的无效 codec id。
     for fmt, ext in formats.items():
-        if str(ext).lower() == "mp4":
-            codecs = project.GetRenderCodecs(fmt) or {}
+        if str(ext).lower().lstrip(".") == "mp4":
+            try:
+                codecs = project.GetRenderCodecs(fmt) or {}
+            except Exception:
+                codecs = {}
             for disp, codec in codecs.items():
                 name = f"{disp} {codec}".lower()
                 if "h264" in name.replace(".", "").replace(" ", "") or "h.264" in name:
                     return fmt, codec
-    return "mp4", "H.264"
+            if codecs:
+                return fmt, next(iter(codecs.values()))
+    raise RuntimeError(f"达芬奇没有可用的 MP4 视频格式/编码：{formats or '无法读取格式列表'}")
 
 
-def _render_export(project, timeline, item, out_dir, name):
-    """触发达芬奇渲染导出当前片段为视频。返回 (文件名, 扩展名) 或抛异常。"""
+def _render_export(project, timeline, item, out_dir, name, resolve=None):
+    """导出带画面的视频片段（并包含原片音频），返回文件名和扩展名。"""
     os.makedirs(out_dir, exist_ok=True)
+    # Activate Deliver before loading the preset. Loading it from Edit only
+    # changes the queued-job metadata in Resolve 21.1; the visible Export Video
+    # toggle remains off and the resulting MP4 can contain audio only.
+    if resolve is not None:
+        try:
+            page_opened = resolve.OpenPage("deliver")
+        except Exception as e:
+            raise RuntimeError(f"无法先激活达芬奇交付页：{e}")
+        if page_opened is False:
+            raise RuntimeError("达芬奇未能先激活交付页，未提交视频渲染任务")
+        time.sleep(1.0)
+    # H.264 Master also enables video, but it selects QuickTime/MOV on this
+    # installation. Start from the MP4-capable YouTube preset, then set the
+    # requested MP4/H.264 options explicitly below.
+    try:
+        presets = project.GetRenderPresetList() or []
+        video_preset = next(
+            (preset for preset in presets
+             if str(preset).strip().lower() == "youtube - 1080p"),
+            None,
+        )
+        if video_preset is None:
+            raise RuntimeError("未找到达芬奇内置的 YouTube - 1080p 视频预设")
+        preset_loaded = project.LoadRenderPreset(video_preset)
+    except Exception as e:
+        raise RuntimeError(f"无法加载视频导出预设以启用交付面板的“导出视频”：{e}")
+    if preset_loaded is False:
+        raise RuntimeError("达芬奇拒绝加载 YouTube - 1080p 视频预设，未提交渲染任务")
+
     fmt, codec = _pick_render_codec(project)
+    try:
+        selected = project.SetCurrentRenderFormatAndCodec(fmt, codec)
+    except Exception as e:
+        raise RuntimeError(f"达芬奇无法激活 MP4/H.264：{e}")
+    if selected is False:
+        raise RuntimeError("达芬奇拒绝 MP4/H.264 设置，未提交渲染任务")
+
+    # 0 = Individual Clips, 1 = Single Clip. The importer exports one range
+    # from the active timeline, so do not inherit a previous Deliver mode.
+    try:
+        mode_selected = project.SetCurrentRenderMode(1)
+    except Exception as e:
+        raise RuntimeError(f"达芬奇无法设置单个片段渲染模式：{e}")
+    if mode_selected is False:
+        raise RuntimeError("达芬奇拒绝单个片段渲染模式，未提交渲染任务")
+
+    try:
+        audio_codecs = project.GetAudioRenderCodecs("mp4") or {}
+    except Exception as e:
+        raise RuntimeError(f"无法读取 MP4 音频编码列表：{e}")
+    aac_codec = next(
+        (value for label, value in audio_codecs.items()
+         if "aac" in f"{label} {value}".lower()),
+        None,
+    )
+    if not aac_codec:
+        raise RuntimeError(f"达芬奇未提供 MP4/AAC 组合：{audio_codecs or '音频编码列表为空'}")
+
+    try:
+        width = int(timeline.GetSetting("timelineResolutionWidth"))
+        height = int(timeline.GetSetting("timelineResolutionHeight"))
+        frame_rate = float(timeline.GetSetting("timelineFrameRate"))
+        supported_resolutions = project.GetRenderResolutions(fmt, codec) or []
+    except Exception as e:
+        raise RuntimeError(f"无法读取时间线分辨率或 MP4/H.264 输出能力：{e}")
+    if width <= 0 or height <= 0 or frame_rate <= 0:
+        raise RuntimeError(f"时间线分辨率/帧率无效：{width}×{height} @ {frame_rate}")
+    if not any(int(r.get("Width", 0)) == width and int(r.get("Height", 0)) == height
+               for r in supported_resolutions if isinstance(r, dict)):
+        raise RuntimeError(
+            f"MP4/H.264 不支持当前时间线分辨率 {width}×{height}；"
+            f"达芬奇返回的可用分辨率：{supported_resolutions}。未提交渲染任务。"
+        )
 
     start = int(item.GetStart())
     end = int(item.GetEnd())
     # 至少导出一帧，防止 0 长度
     if end <= start:
         end = start + 1
-    clip_name = None
-    try:
-        clip_name = item.GetName()
-    except Exception:
-        pass
     safe_name = "".join(c for c in (name or ("xzg_dv_" + str(int(time.time()))))
                         if c not in '<>:"/\\|?*').strip() or "xzg_dv_export"
 
-    project.SetCurrentRenderFormatAndCodec(fmt, codec)
-    project.SetRenderSettings({
+    settings_ok = project.SetRenderSettings({
         "TargetDir": out_dir,
         "CustomName": safe_name,
         "ExportVideo": True,
         "ExportAudio": True,
+        "AudioCodec": aac_codec,
+        "EncodingProfile": "High",
+        "NetworkOptimization": False,
+        "FormatWidth": width,
+        "FormatHeight": height,
+        "FrameRate": frame_rate,
         "MarkIn": start,
         "MarkOut": end,
         "SelectAllFrames": False,
     })
+    if settings_ok is False:
+        raise RuntimeError("达芬奇拒绝 MP4/H.264 High + AAC 设置（视频与音频均开启），未提交渲染任务")
 
     found = _start_and_wait_render(project, out_dir, safe_name)
-    return found, os.path.splitext(found)[1].lstrip(".")
+    ext = os.path.splitext(found)[1].lstrip(".").lower()
+    if ext != "mp4":
+        raise RuntimeError(f"达芬奇未按指定的 MP4/H.264 格式生成文件（实际：.{ext or '未知'}），已阻止加载")
+    return found, ext
 
 
-def _find_render_file(out_dir, safe_name):
+def _find_render_file(out_dir, safe_name, since=None):
     """按 CustomName 前缀 + 最新 mtime 找刚生成的渲染产物；没有返回 None。"""
     try:
         cands = []
         for f in os.listdir(out_dir):
             fp = os.path.join(out_dir, f)
             if not os.path.isfile(fp):
+                continue
+            if since is not None and os.path.getmtime(fp) < since:
                 continue
             base = os.path.splitext(f)[0]
             if base == safe_name or base.startswith(safe_name):
@@ -393,144 +500,199 @@ def _find_render_file(out_dir, safe_name):
     return None
 
 
-def _try_audio_render(project, out_dir, safe_name, start, end, codec, wait_s=30):
-    """尝试一次纯音频渲染（对齐达芬奇交付页手动流程：关掉导出视频 → 音频标签选格式）。
-
-    codec: AudioCodec 值（None 表示不指定，沿用容器默认）。
-    单次等待 wait_s 秒：产出文件 → 等大小稳定后返回文件名；
-    作业 Error/Failed 或超时无产出 → 取消作业并返回 None
-    （设置无效时达芬奇会立即报「请选择一个有效的渲染路径」且不产出文件）。
-    """
+def _try_audio_render(project, out_dir, safe_name, start, end, audio_format,
+                      audio_codec=None, wait_s=1800):
+    """通过 Resolve 音频渲染 API 显式选择格式，只提交一个纯音频任务。"""
+    settings = {
+        "TargetDir": out_dir,
+        "CustomName": safe_name,
+        "ExportVideo": False,
+        "ExportAudio": True,
+        "AudioFormat": audio_format,
+        "MarkIn": start,
+        "MarkOut": end,
+        "SelectAllFrames": False,
+    }
+    if audio_codec:
+        settings["AudioCodec"] = audio_codec
     try:
-        settings = {
-            "TargetDir": out_dir,
-            "CustomName": safe_name,
-            "ExportVideo": False,
-            "ExportAudio": True,
-            "MarkIn": start,
-            "MarkOut": end,
-            "SelectAllFrames": False,
-        }
-        if codec:
-            settings["AudioCodec"] = codec
-        project.SetRenderSettings(settings)
+        accepted = project.SetRenderSettings(settings)
+    except Exception as e:
+        raise RuntimeError(f"达芬奇无法设置纯音频导出选项：{e}")
+    if accepted is False:
+        raise RuntimeError("达芬奇未接受“关闭视频、开启音频”的导出设置，未提交渲染任务")
+
+    # 只建一个 job，失败时不再用无参数 StartRendering() 启动队列中的其他任务。
+    try:
         job_id = project.AddRenderJob()
-        if job_id is None:
-            return None
+    except Exception as e:
+        raise RuntimeError(f"添加单个音频渲染任务失败：{e}")
+    if job_id is None:
+        raise RuntimeError("达芬奇没有创建音频渲染任务")
+    try:
         started = project.StartRendering(job_id)
-        if started is False:
-            res = project.StartRendering()
-            if res is False:
-                return None
-        deadline = time.time() + wait_s
-        while time.time() < deadline:
-            try:
-                st = (project.GetRenderJobStatus(job_id) or {}).get("CompleteStatus", "")
-            except Exception:
-                st = ""
-            if st in ("Error", "Failed"):
-                return None
-            found = _find_render_file(out_dir, safe_name)
-            if found:
-                # 等大小稳定（~1.2s），避免读到半截文件
-                sz0 = -1
-                for _ in range(3):
-                    try:
-                        sz = os.path.getsize(os.path.join(out_dir, found))
-                    except Exception:
-                        sz = -1
-                    if sz == sz0 and sz > 0:
-                        break
-                    sz0 = sz
-                    time.sleep(0.4)
-                return found
-            time.sleep(0.4)
-        # 超时无产出：取消作业，避免占用渲染队列
+    except Exception as e:
+        started = False
+        start_error = str(e)
+    else:
+        start_error = ""
+    if started is False:
         try:
-            project.StopRendering()
             project.DeleteRenderJob(job_id)
         except Exception:
             pass
-        return None
+        raise RuntimeError(f"达芬奇未能启动音频渲染任务：{start_error or 'StartRendering 返回失败'}")
+
+    render_started_at = time.time()
+    deadline = render_started_at + wait_s
+    while time.time() < deadline:
+        try:
+            status = project.GetRenderJobStatus(job_id) or {}
+        except Exception:
+            status = {}
+        # Resolve 21.1 returns JobStatus (Running / Complete / Failed). Some
+        # API builds expose the older CompleteStatus key, so accept both.
+        complete = status.get("CompleteStatus") or status.get("JobStatus", "")
+        if complete in ("Error", "Failed", "Cancelled", "Stopped"):
+            try:
+                project.DeleteRenderJob(job_id)
+            except Exception:
+                pass
+            raise RuntimeError(f"达芬奇音频渲染失败：{status}")
+        if complete == "Complete":
+            # 文件名前缀包含本次请求的唯一时间戳；不用文件 mtime 作门槛，
+            # 避免 Windows 文件时间精度导致刚生成的 FLAC 被误判为旧文件。
+            found = _find_render_file(out_dir, safe_name)
+            if not found:
+                raise RuntimeError("达芬奇报告音频渲染完成，但没有找到输出文件")
+            # 确认文件大小稳定，避免向后续流程交付尚未写完的文件。
+            previous_size = -1
+            stable = 0
+            for _ in range(10):
+                try:
+                    current_size = os.path.getsize(os.path.join(out_dir, found))
+                except OSError:
+                    current_size = -1
+                if current_size > 0 and current_size == previous_size:
+                    stable += 1
+                    if stable >= 2:
+                        return found
+                else:
+                    stable = 0
+                previous_size = current_size
+                time.sleep(0.4)
+            if previous_size > 0:
+                return found
+            raise RuntimeError("达芬奇生成的音频文件为空")
+        time.sleep(0.4)
+
+    try:
+        project.StopRendering()
     except Exception:
-        return None
+        pass
+    try:
+        project.DeleteRenderJob(job_id)
+    except Exception:
+        pass
+    raise TimeoutError(f"达芬奇音频渲染超时（{wait_s} 秒）；任务已停止，不会自动重试")
 
 
 def _start_and_wait_render(project, out_dir, safe_name):
-    """添加渲染作业、启动并同步等待完成，返回产物文件名。
-
-    以「渲染状态=完成」或「目标文件已落盘且大小稳定约 2 秒」任一为准，避免死等。
-    供视频/音频两种导出复用。超时（30 分钟）或渲染失败抛异常。
-    """
-    job_id = None
+    """只创建并启动一个渲染任务；失败不启动队列里的其他任务。"""
     try:
         job_id = project.AddRenderJob()
     except Exception as e:
         raise RuntimeError(f"AddRenderJob 失败：{e}")
     if job_id is None:
-        # 某些版本 AddRenderJob 默认不使用——需显式触发可用 job
-        job_id = project.AddRenderJob()
+        raise RuntimeError("达芬奇没有创建视频渲染任务")
 
-    started = project.StartRendering(job_id)
-    if started is False:
-        # 容错：部分 render 队列入口不接受 job id 参数
-        res = project.StartRendering()
-        if res is False:
-            raise RuntimeError("StartRendering 失败，请检查渲染设置")
-
-    # 轮询等待渲染完成（同步阻塞）
-    def _matching_size():
-        best = -1
+    # Verify the queued job itself (the panel may retain prior audio-only state).
+    try:
+        jobs = project.GetRenderJobs() or []
+        queued = next(
+            (job for job in jobs.values() if job.get("JobId") == job_id),
+            None,
+        ) if isinstance(jobs, dict) else next(
+            (job for job in jobs if job.get("JobId") == job_id),
+            None,
+        )
+    except Exception as e:
         try:
-            for f in os.listdir(out_dir):
-                fp = os.path.join(out_dir, f)
-                if os.path.isfile(fp) and f.startswith(safe_name):
-                    try:
-                        sz = os.path.getsize(fp)
-                        best = max(best, sz)
-                    except Exception:
-                        pass
+            project.DeleteRenderJob(job_id)
         except Exception:
             pass
-        return best
+        raise RuntimeError(f"无法核实达芬奇视频渲染任务的导出选项：{e}")
+    if queued is None or not queued.get("IsExportVideo"):
+        try:
+            project.DeleteRenderJob(job_id)
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"达芬奇渲染任务未确认开启视频导出，已取消任务：{queued or '无法读取任务设置'}"
+        )
 
-    deadline = time.time() + 60 * 30  # 30 分钟超时保护
-    last_status = {}
-    last_len = -1
-    stable_cnt = 0
+    try:
+        started = project.StartRendering(job_id)
+    except Exception as e:
+        started = False
+        start_error = str(e)
+    else:
+        start_error = ""
+    if started is False:
+        try:
+            project.DeleteRenderJob(job_id)
+        except Exception:
+            pass
+        raise RuntimeError(f"达芬奇未启动视频渲染任务：{start_error or 'StartRendering 返回失败'}")
+
+    deadline = time.time() + 60 * 30
     while time.time() < deadline:
         try:
-            last_status = project.GetRenderJobStatus(job_id) or {}
+            status = project.GetRenderJobStatus(job_id) or {}
         except Exception:
-            last_status = {}
-        status = last_status.get("CompleteStatus", "")
-        if status == "Complete":
-            break
-        if status in ("Error", "Failed"):
-            raise RuntimeError(f"渲染失败：{last_status}")
-
-        # 目标文件稳定兜底：连续 ~2 秒（0.4s * 5）大小不变即认为渲染落盘完成
-        sz = _matching_size()
-        if sz < 0:
-            last_len = -1
-            stable_cnt = 0
-        else:
-            if sz == last_len:
-                stable_cnt += 1
-                if stable_cnt >= 5:
-                    break
-            else:
-                last_len = sz
-                stable_cnt = 0
+            status = {}
+        # Resolve 21.1 returns JobStatus (Running / Complete / Failed). Some
+        # API builds expose the older CompleteStatus key, so accept both.
+        complete = status.get("CompleteStatus") or status.get("JobStatus", "")
+        if complete in ("Error", "Failed", "Cancelled", "Stopped"):
+            try:
+                project.DeleteRenderJob(job_id)
+            except Exception:
+                pass
+            raise RuntimeError(f"视频渲染失败：{status}")
+        if complete == "Complete":
+            found = _find_render_file(out_dir, safe_name)
+            if not found:
+                raise RuntimeError(f"达芬奇报告渲染完成，但没有找到视频文件（{safe_name}*）")
+            previous_size = -1
+            stable_count = 0
+            for _ in range(10):
+                try:
+                    size = os.path.getsize(os.path.join(out_dir, found))
+                except OSError:
+                    size = -1
+                if size > 0 and size == previous_size:
+                    stable_count += 1
+                    if stable_count >= 2:
+                        return found
+                else:
+                    stable_count = 0
+                previous_size = size
+                time.sleep(0.4)
+            if previous_size > 0:
+                return found
+            raise RuntimeError("达芬奇生成的视频文件为空")
         time.sleep(0.4)
-    else:
-        raise TimeoutError("达芬奇渲染超时（30 分钟）")
 
-    # 找出刚生成的文件（CustomName 前缀 + 最新 mtime）
-    found = _find_render_file(out_dir, safe_name)
-    if not found:
-        raise RuntimeError(f"未找到渲染产物（{safe_name}*）。作业状态：{last_status}")
-    return found
+    try:
+        project.StopRendering()
+    except Exception:
+        pass
+    try:
+        project.DeleteRenderJob(job_id)
+    except Exception:
+        pass
+    raise TimeoutError("达芬奇视频渲染超时（30 分钟）；任务已停止，不会自动重试")
 
 
 def action_status():
@@ -594,6 +756,7 @@ def action_export(pargs):
         tl = None
     if tl is None:
         return {"ok": False, "error": "未打开时间线"}
+    original_playhead_tc = _capture_playhead_timecode(tl)
 
     # 判断当前界面：剪辑页走「播放头 + 多轨道取最长片段」逻辑，否则走调色页当前片段
     current_page = ""
@@ -610,19 +773,24 @@ def action_export(pargs):
         item, how = current_video_item(tl)
     if item is None:
         return {"ok": False, "error": "当前播放头下无视频片段，请先把播放头置于要导出的片段上"}
-    try:
-        filename, ext = _render_export(project, tl, item, out_dir, name)
-    except Exception as e:
-        return {"ok": False, "error": f"导出失败：{e}"}
-
-    # 导出会切换到 Deliver/交付页；按需求停留在导出前的当前界面。
-    # 记录导出前页面，完成后切回（剪辑页就停留回剪辑页）。
     switch_back = pargs.get("switch_back", True)
-    if switch_back and current_page:
-        try:
-            resolve.OpenPage(current_page)
-        except Exception:
-            pass
+    render_error = None
+    filename = ext = None
+    try:
+        filename, ext = _render_export(project, tl, item, out_dir, name, resolve=resolve)
+    except Exception as e:
+        render_error = e
+    finally:
+        # Export/render can move the timeline playhead even when the page is
+        # restored, so restore the exact source timecode after restoring page.
+        if switch_back and current_page:
+            try:
+                resolve.OpenPage(current_page)
+            except Exception:
+                pass
+        _restore_playhead_timecode(tl, original_playhead_tc)
+    if render_error is not None:
+        return {"ok": False, "error": f"导出失败：{render_error}"}
 
     # 返回包含 clip 信息，方便插件显示"从哪段导入"
     clip_info = None
@@ -639,13 +807,11 @@ def action_export(pargs):
 
 
 def action_export_audio(pargs):
-    """导出当前播放头所在片段的音频。
+    """仅导出达芬奇播放头所在的音频轨道片段。
 
-    片段选择：优先音频轨道播放头片段；音频轨道没有则用视频片段（导出其音轨）。
+    不读取或修改时间线入出点；播放头下没有音频片段时直接报错。
     渲染策略：对齐达芬奇交付页手动流程「关掉导出视频 → 音频标签选格式」，
-    依次尝试纯音频渲染（AudioCodec：flac → wav → wave → 不指定，
-    不同达芬奇版本的枚举拼写不同），全部失败再回退整段渲染（含音频），
-    由调用方（ComfyUI 后端路由）用 ffmpeg 抽取音频。
+    按 FLAC/WAV 纯音频格式渲染。
     返回 { ok, mode:"audio", filename, ext, is_audio_only, audio_codec, source, clip }
     """
     out_dir = pargs.get("out_dir") or ""
@@ -675,68 +841,77 @@ def action_export_audio(pargs):
         current_page = str(resolve.GetCurrentPage() or "").lower()
     except Exception:
         current_page = ""
-    is_edit = "edit" in current_page or current_page == ""
-
-    # 片段选择：优先音频轨道播放头片段；音频轨道没有则用视频片段（导出其音轨）
+    original_playhead_tc = _capture_playhead_timecode(tl)
     item, how = longest_audio_at_playhead(tl)
+    if item is None:
+        return {"ok": False, "error": "达芬奇播放头下没有音频轨道片段，请将播放头移到要导入的音频片段上"}
     source = "audio_track"
-    if item is None:
-        if is_edit:
-            item, how = longest_video_at_playhead(tl)
-        else:
-            item, how = current_video_item(tl)
-        source = "video_clip_audio"
-    if item is None:
-        return {"ok": False, "error": "当前播放头下无音频/视频片段，请先把播放头置于要导出的片段上"}
-
-    os.makedirs(out_dir, exist_ok=True)
     start = int(item.GetStart())
     end = int(item.GetEnd())
+
+    os.makedirs(out_dir, exist_ok=True)
     if end <= start:
         end = start + 1
     safe_name = "".join(c for c in (name or ("xzg_dv_a_" + str(int(time.time()))))
                         if c not in '<>:"/\\|?*').strip() or "xzg_dv_a_export"
 
-    # 渲染导出：对齐达芬奇交付页手动流程「关掉导出视频 → 音频标签选格式（如 FLAC）」，
-    # 依次尝试纯音频渲染（AudioCodec 候选：flac / wav / wave / 不指定——
-    # 不同达芬奇版本的枚举拼写不同），单个候选 30 秒内未产出文件即判失败
-    # （设置无效时达芬奇会立即报「请选择一个有效的渲染路径」且不产出文件）；
-    # 全部失败再回退整段视频渲染（含音频），由调用方（后端路由）用 ffmpeg 抽取音频。
+    # 固定通过 Resolve 21.1+ 音频渲染接口使用 FLAC；不切换视频格式/编码，
+    # FLAC 不可用或设置失败时直接返回错误，不回退格式，也不重复渲染。
+    audio_formats = {}
+    try:
+        audio_formats = project.GetAudioRenderFormats() or {}
+    except Exception as e:
+        return {"ok": False, "error": f"当前达芬奇未提供音频格式查询 API：{e}；未提交渲染任务。"}
+    flac_format = next(
+        ((fmt, ext) for fmt, ext in audio_formats.items()
+         if str(ext).lower().lstrip(".") == "flac"),
+        None,
+    )
+    if flac_format is None:
+        return {"ok": False, "error": "达芬奇当前没有提供 FLAC 音频格式，未提交渲染任务。"}
+    fmt, expected_ext = flac_format
+    try:
+        codecs = project.GetAudioRenderCodecs(expected_ext) or {}
+    except Exception as e:
+        return {"ok": False, "error": f"无法读取达芬奇 FLAC 编码选项：{e}；未提交渲染任务。"}
+    # 有些音频格式（包括当前版本的 FLAC）不再暴露独立 codec，AudioFormat 已足够。
+    used_codec = next(iter(codecs.values()), None)
+    render_error = None
     produced = None
-    used_codec = None
-    for codec in ("flac", "wav", "wave", None):
-        produced = _try_audio_render(project, out_dir, safe_name, start, end, codec)
-        if produced:
-            used_codec = codec or "auto"
-            break
-    if produced:
-        is_audio_only = True
-    else:
-        try:
-            produced, _ext = _render_export(project, tl, item, out_dir, name)
-            is_audio_only = False
-        except Exception as e:
-            return {"ok": False, "error": f"导出失败：{e}"}
-
-    # 导出会切换到 Deliver/交付页；完成后切回导出前界面
-    if pargs.get("switch_back", True) and current_page:
-        try:
-            resolve.OpenPage(current_page)
-        except Exception:
-            pass
+    try:
+        produced = _try_audio_render(project, out_dir, safe_name, start, end,
+                                     expected_ext, audio_codec=used_codec)
+    except Exception as e:
+        render_error = e
+    finally:
+        # Rendering can move the timeline playhead. Restore the original page
+        # and timecode before returning, including when rendering fails.
+        if pargs.get("switch_back", True) and current_page:
+            try:
+                resolve.OpenPage(current_page)
+            except Exception:
+                pass
+        _restore_playhead_timecode(tl, original_playhead_tc)
+    if render_error is not None:
+        return {"ok": False, "error": str(render_error)}
+    actual_ext = os.path.splitext(produced)[1].lstrip(".").lower()
+    if actual_ext != str(expected_ext).lstrip(".").lower():
+        return {"ok": False, "error": f"达芬奇设置为 {expected_ext}，实际产物为 {actual_ext or '未知格式'}；已停止，不会重复渲染"}
+    is_audio_only = True
 
     clip_info = None
-    try:
-        clip_info = {
-            "name": item.GetName() or "",
-            "start": int(item.GetStart()),
-            "end": int(item.GetEnd()),
-        }
-    except Exception:
-        pass
+    if item is not None:
+        try:
+            clip_info = {
+                "name": item.GetName() or "",
+                "start": int(item.GetStart()),
+                "end": int(item.GetEnd()),
+            }
+        except Exception:
+            pass
     return {"ok": True, "mode": "audio",
             "filename": produced,
-            "ext": os.path.splitext(produced)[1].lstrip(".").lower(),
+            "ext": actual_ext,
             "is_audio_only": is_audio_only,
             "audio_codec": used_codec,
             "source": source, "frame_method": how,
@@ -799,6 +974,29 @@ def action_import(pargs):
     if media_pool is None:
         return {"ok": False, "error": "无法获取媒体池"}
 
+    # 在媒体池导入和落轨前按真实源路径查重，避免重复点击产生重复媒体或时间线片段。
+    try:
+        tl = project.GetCurrentTimeline()
+    except Exception:
+        tl = None
+    if tl is None:
+        return {"ok": False, "error": "未打开时间线，请在剪辑页打开一条时间线再导入"}
+    orig_playhead_tc = _capture_playhead_timecode(tl)
+    duplicate_track, duplicate_item = _timeline_source_match(tl, file_path, "video")
+    if duplicate_item is None:
+        duplicate_track, duplicate_item = _timeline_source_match(tl, file_path, "audio")
+    if duplicate_item is not None:
+        try:
+            duplicate_clip = duplicate_item.GetName() or os.path.basename(file_path)
+            duplicate_frame = int(duplicate_item.GetStart())
+        except Exception:
+            duplicate_clip = os.path.basename(file_path)
+            duplicate_frame = None
+        return {"ok": True, "action": "import", "duplicate": True,
+                "message": "该视频已导出到当前时间线，未重复导入。",
+                "clip": duplicate_clip, "track": duplicate_track,
+                "record_frame": duplicate_frame}
+
     # 1) 导入媒体池。ImportMedia 返回 MediaPoolItem 列表；单个文件传列表最稳。
     try:
         imported = media_pool.ImportMedia([file_path])
@@ -807,24 +1005,14 @@ def action_import(pargs):
     if not imported:
         return {"ok": False, "error": "ImportMedia 无返回，可能文件格式不被支持，或媒体池刷新延迟后再试"}
     item = imported[0] if isinstance(imported, (list, tuple)) else imported
+    _restore_playhead_timecode(tl, orig_playhead_tc)
 
-    # 2) 获取当前时间线
-    try:
-        tl = project.GetCurrentTimeline()
-    except Exception:
-        tl = None
-    if tl is None:
-        return {"ok": False, "error": "未打开时间线，请在剪辑页打开一条时间线再导入"}
+    # 2) 使用查重阶段获取的当前时间线
     try:
         timeline_name = tl.GetName() or ""
     except Exception:
         timeline_name = ""
     # 记录导入前播放头时码，导入完成后再恢复，避免播放头跳到新片段末尾
-    try:
-        orig_playhead_tc = tl.GetCurrentTimecode() or ""
-    except Exception:
-        orig_playhead_tc = ""
-
     # 3) 定位：优先取播放头所在最上层片段的前端；播放头处无片段时以播放头帧为起点
     src_item, src_track = topmost_video_at_playhead(tl)
     how_placed = "blank_track"
@@ -884,16 +1072,49 @@ def action_import(pargs):
     try:
         ok_append = media_pool.AppendToTimeline([desc])
     except Exception as e:
+        _restore_playhead_timecode(tl, orig_playhead_tc)
         return {"ok": False, "error": f"AppendToTimeline 失败：{e}"}
     if not ok_append:
+        _restore_playhead_timecode(tl, orig_playhead_tc)
         return {"ok": False, "error": "AppendToTimeline 返回失败，请检查轨道/落点"}
 
+    # 音视频一起（默认）：视频落轨后，把该视频自带的音频也追加到音频轨道，对齐同一 recordFrame。
+    # 始终将视频文件中的音轨一并导入，与视频片段保持同步（不覆盖现有音频）：
+    #   播放头处已有音频片段 → 在其上方找整条空白音频轨、没有才新建；
+    #   播放头处无音频 → 直接落 A1。视频本身无音轨时追加失败，静默忽略。
+    try:
+        _a_src_item, _a_src_track = topmost_audio_at_playhead(tl)
+        if _a_src_track and _a_src_track > 0:
+            a_target = find_blank_video_track(tl, after_track=_a_src_track, track_type="audio")
+            if a_target is None:
+                try:
+                    _n_before = tl.GetTrackCount("audio")
+                    _added = tl.AddTrack("audio")
+                    a_target = int(_added) if _added and not isinstance(_added, bool) else (_n_before + 1)
+                except Exception:
+                    a_target = None
+            if not a_target:
+                a_target = 1
+        else:
+            try:
+                if tl.GetTrackCount("audio") < 1:
+                    tl.AddTrack("audio")
+            except Exception:
+                pass
+            a_target = 1
+        audio_desc = {
+            "mediaPoolItem": item,
+            "startFrame": 0,
+            "mediaType": 2,
+            "trackIndex": a_target,
+            "recordFrame": record_frame,
+        }
+        media_pool.AppendToTimeline([audio_desc])
+    except Exception as _e:
+        print(f"[小珠光达芬奇] 附加音频到音频轨道失败（可能该视频无音轨）：{_e}")
+
     # 恢复导入前播放头位置（AppendToTimeline 会把播放头移到新片段末尾）
-    if orig_playhead_tc:
-        try:
-            tl.SetCurrentTimecode(orig_playhead_tc)
-        except Exception:
-            pass
+    _restore_playhead_timecode(tl, orig_playhead_tc)
 
     return {
         "ok": True,
@@ -908,6 +1129,50 @@ def action_import(pargs):
     }
 
 
+def _timeline_source_match(timeline, file_path, track_type):
+    """Return (track, item) when this exact media path is already on a timeline track."""
+    wanted = os.path.normcase(os.path.abspath(file_path))
+    try:
+        track_count = int(timeline.GetTrackCount(track_type) or 0)
+    except Exception:
+        return None, None
+    for track_idx in range(1, track_count + 1):
+        try:
+            items = timeline.GetItemListInTrack(track_type, track_idx) or []
+        except Exception:
+            continue
+        for timeline_item in items:
+            try:
+                media_item = timeline_item.GetMediaPoolItem()
+            except Exception:
+                media_item = None
+            if media_item is None:
+                continue
+            properties = {}
+            try:
+                properties = media_item.GetClipProperty() or {}
+            except Exception:
+                pass
+            source_path = ""
+            if isinstance(properties, dict):
+                for key in ("File Path", "File path", "FilePath"):
+                    if properties.get(key):
+                        source_path = str(properties[key])
+                        break
+            if not source_path:
+                try:
+                    source_path = str(media_item.GetClipProperty("File Path") or "")
+                except Exception:
+                    pass
+            if source_path and os.path.normcase(os.path.abspath(source_path)) == wanted:
+                return track_idx, timeline_item
+    return None, None
+
+
+def _timeline_audio_source_match(timeline, file_path):
+    return _timeline_source_match(timeline, file_path, "audio")
+
+
 def action_import_audio(pargs):
     """把 ComfyUI 生成的音频导入达芬奇当前项目的时间线（音频轨道）。
 
@@ -915,9 +1180,9 @@ def action_import_audio(pargs):
     - ImportMedia 进当前媒体池（不建子夹）
     - 对齐点以「音频轨道」为准：播放头处已有音频片段时，对齐该音频片段前端；
       播放头处无音频片段时以当前播放头帧为起点
-    - 目标轨道（不覆盖现有音频）：无论播放头处是否已有音频，都优先复用
-      「整条时间线无任何片段」的空白音频轨道；有现成空白轨道就直接利用
-      （不重复新建），确实没有才 AddTrack 新建
+    - 目标轨道（不覆盖现有音频）：播放头处已有音频片段时，在其上方复用整条空白的
+      音频轨道、没有才 AddTrack 新建；播放头处没有任何片段（含空时间线/播放头下无视频）
+      时直接放入 A1（轨道 1），不找空白轨道、不新建轨道
     - AppendToTimeline 落轨（mediaType=2 音频）；不插入缝隙、不推移、不分割
     - 完成后恢复导入前播放头位置
     返回 { ok, clip, track, record_frame, project, timeline, placed }
@@ -946,6 +1211,27 @@ def action_import_audio(pargs):
     if media_pool is None:
         return {"ok": False, "error": "无法获取媒体池"}
 
+    # 不重复导入同一导出文件：保留现有时间线片段，也避免媒体池再次添加。
+    try:
+        tl = project.GetCurrentTimeline()
+    except Exception:
+        tl = None
+    if tl is None:
+        return {"ok": False, "error": "未打开时间线，请在剪辑页打开一条时间线再导入"}
+    orig_playhead_tc = _capture_playhead_timecode(tl)
+    duplicate_track, duplicate_item = _timeline_audio_source_match(tl, file_path)
+    if duplicate_item is not None:
+        try:
+            duplicate_clip = duplicate_item.GetName() or os.path.basename(file_path)
+            duplicate_frame = int(duplicate_item.GetStart())
+        except Exception:
+            duplicate_clip = os.path.basename(file_path)
+            duplicate_frame = None
+        return {"ok": True, "action": "import_audio", "duplicate": True,
+                "message": "该音频已经导出到当前时间线，未重复导入。",
+                "clip": duplicate_clip, "track": duplicate_track,
+                "record_frame": duplicate_frame}
+
     # 1) 导入媒体池。ImportMedia 返回 MediaPoolItem 列表；单个文件传列表最稳。
     try:
         imported = media_pool.ImportMedia([file_path])
@@ -955,23 +1241,14 @@ def action_import_audio(pargs):
         return {"ok": False, "error": "ImportMedia 无返回，可能文件格式不被支持，或媒体池刷新延迟后再试"}
     item = imported[0] if isinstance(imported, (list, tuple)) else imported
 
-    # 2) 获取当前时间线
-    try:
-        tl = project.GetCurrentTimeline()
-    except Exception:
-        tl = None
-    if tl is None:
-        return {"ok": False, "error": "未打开时间线，请在剪辑页打开一条时间线再导入"}
+    _restore_playhead_timecode(tl, orig_playhead_tc)
+
+    # 2) 当前时间线已在导入前获取并完成去重检查
     try:
         timeline_name = tl.GetName() or ""
     except Exception:
         timeline_name = ""
     # 记录导入前播放头时码，导入完成后再恢复，避免播放头跳到新片段末尾
-    try:
-        orig_playhead_tc = tl.GetCurrentTimecode() or ""
-    except Exception:
-        orig_playhead_tc = ""
-
     # 3) 对齐点：以「音频轨道」为准——取播放头所在最上层音频片段的前端；
     #    播放头处无音频片段时以当前播放头帧为起点。
     #    （用户要求：播放头处有音频就对齐该音频片段前端，而非视频片段）
@@ -997,21 +1274,31 @@ def action_import_audio(pargs):
         except Exception as e:
             return {"ok": False, "error": f"读取播放头位置失败：{e}"}
 
-    # 4) 目标音频轨道（不覆盖现有音频）：
-    #    无论播放头处是否已有音频，都先复用整条时间线无任何片段的空白音频轨道；
-    #    有现成空白轨道就直接利用（不重复新建），确实没有空白轨道时才 AddTrack 新建。
-    #    （对齐点已在第 3 步按「有音频→片段前端 / 无音频→播放头帧」处理好）
-    target_track = find_blank_video_track(tl, track_type="audio")
-    if target_track is None:
-        how_placed = "new_track"
-        try:
-            n_before = tl.GetTrackCount("audio")
-            added = tl.AddTrack("audio")
-            target_track = int(added) if added and not isinstance(added, bool) else (n_before + 1)
-        except Exception as e:
-            return {"ok": False, "error": f"AddTrack 新增音频轨道失败：{e}"}
+    # 4) 目标音频轨道（与视频导入 action_import 同一套规则，避免空时间线上无谓新建轨道）：
+    #    - 播放头处已有音频片段（src_track>0）：在其上方找整条空白的音频轨道，没有才新建，不覆盖现有音频
+    #    - 播放头处没有任何片段（含空时间线/播放头下无视频无音频）：直接放入 A1（轨道 1），
+    #      不找空白轨道、不新建轨道
+    if src_track > 0:
+        target_track = find_blank_video_track(tl, after_track=src_track, track_type="audio")
+        if target_track is None:
+            how_placed = "new_track"
+            try:
+                n_before = tl.GetTrackCount("audio")
+                added = tl.AddTrack("audio")
+                target_track = int(added) if added and not isinstance(added, bool) else (n_before + 1)
+            except Exception as e:
+                return {"ok": False, "error": f"AddTrack 新增音频轨道失败：{e}"}
+        else:
+            how_placed = "blank_track"
     else:
-        how_placed = "blank_track"
+        # 兜底：极端情况下用户删掉了全部音频轨道，则补建一条再作为 A1 使用
+        try:
+            if tl.GetTrackCount("audio") < 1:
+                tl.AddTrack("audio")
+        except Exception:
+            pass
+        target_track = 1
+        how_placed = "track_a1"
 
     # 5) AppendToTimeline 落到目标音频轨道，recordFrame 对齐片段前端
     #    （mediaType：1=视频 2=音频；音频无需 endFrame，默认到片段末尾）
@@ -1025,16 +1312,14 @@ def action_import_audio(pargs):
         }
         ok_append = media_pool.AppendToTimeline([desc])
     except Exception as e:
+        _restore_playhead_timecode(tl, orig_playhead_tc)
         return {"ok": False, "error": f"AppendToTimeline 失败：{e}"}
     if not ok_append:
+        _restore_playhead_timecode(tl, orig_playhead_tc)
         return {"ok": False, "error": "AppendToTimeline 返回失败，请检查音频轨道/落点"}
 
     # 恢复导入前播放头位置（AppendToTimeline 会把播放头移到新片段末尾）
-    if orig_playhead_tc:
-        try:
-            tl.SetCurrentTimecode(orig_playhead_tc)
-        except Exception:
-            pass
+    _restore_playhead_timecode(tl, orig_playhead_tc)
 
     return {
         "ok": True,

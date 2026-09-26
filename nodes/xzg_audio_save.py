@@ -5,8 +5,11 @@
 """
 
 import os
+import shutil
 import subprocess
 import json
+import time
+from datetime import datetime
 import numpy as np
 import torch
 import folder_paths
@@ -311,6 +314,12 @@ class XiaozhuguangAudioSaveDaVinci:
                 # 自动导出到达芬奇：保存完成后把音频导入达芬奇当前项目（媒体池 + 空白音频
                 # 轨道/无则新建 + 对齐播放头片段前端），开关由前端隐藏在悬浮按钮图标上
                 "自动导出到达芬奇": ("BOOLEAN", {"default": False}),
+                # 达芬奇导出副本的输出设置；前端收进悬浮「输出设置」弹窗。
+                "use_default_output": ("BOOLEAN", {"default": True}),
+                "base_dir": ("STRING", {"default": "", "multiline": False}),
+                "filename_custom": ("STRING", {"default": "xzg-audio", "multiline": False}),
+                "add_date_stamp": ("BOOLEAN", {"default": False}),
+                "add_time_stamp": ("BOOLEAN", {"default": False}),
             },
             "hidden": {
                 "prompt": "PROMPT",
@@ -365,6 +374,23 @@ class XiaozhuguangAudioSaveDaVinci:
             preview_filepath = os.path.join(temp_dir, preview_filename)
             # 复用同一套 ffmpeg 编码逻辑，输出到 temp
             save_audio_to_file(waveform, sample_rate, preview_filepath, format_name=格式, quality=quality_val)
+            davinci_token = ""
+            # 与视频保存-化神级一致：预览继续使用 temp 文件，但自定义输出时另存一份
+            # 给达芬奇作为稳定源文件。
+            if not kwargs.get("use_default_output", True) and str(kwargs.get("base_dir") or "").strip():
+                try:
+                    copied = _copy_audio_path_to_configured_output(preview_filepath, {
+                        "base_dir": kwargs.get("base_dir", ""),
+                        "filename_prefix": kwargs.get("filename_custom", "xzg-audio"),
+                        "add_date_stamp": kwargs.get("add_date_stamp", False),
+                        "add_time_stamp": kwargs.get("add_time_stamp", False),
+                    })
+                    davinci_token = _register_audio_abs_token(copied)
+                except Exception as e:
+                    print(f"[小珠光音频保存] 预览副本创建失败：{e}")
+            preview_davinci = None
+            if 自动导出到达芬奇 and davinci_token:
+                preview_davinci = _dv_call_bridge({"action": "import_audio", "file_path": _AUDIO_ABS_FILE_TOKENS[davinci_token]})
             return {
                 "result": (),
                 "ui": {
@@ -378,20 +404,55 @@ class XiaozhuguangAudioSaveDaVinci:
                         "sample_rate": sample_rate,
                         "peaks": peaks,
                         "preview": True,
+                        "davinci_abs_token": davinci_token,
+                        "davinci": preview_davinci,
                     }],
                 },
             }
 
-        # 保存模式：输出到 output 目录
+        # 保存模式：与视频保存-化神级一致，直接落盘。默认写 output/；
+        # 关闭「默认输出」后 base_dir 生效：绝对路径直接使用（文件在 output 之外，走令牌拉流预览），
+        # 相对路径拼到 output/ 下并并入 subfolder（仍可经 /view 访问）。
+        use_default = bool(kwargs.get("use_default_output", True))
+        custom_base = str(kwargs.get("base_dir") or "").strip()
+        is_absolute_base = False
+        subfolder_extra = ""
         output_dir = _safe_dir('get_output_directory', 'output')
+        prefix = 文件名前缀
+        if not use_default and custom_base:
+            from .xzg_video_combine import (_xzg_resolve_template, _xzg_sanitize_path,
+                                            _xzg_is_absolute_path)
+            _ctx = {"_now": datetime.now(), "workflow_name": "", "node_id": "", "format": 格式}
+            _date = _xzg_sanitize_path(_xzg_resolve_template("{date}", _ctx)) if kwargs.get("add_date_stamp") else ""
+            _time = _xzg_sanitize_path(_xzg_resolve_template("{time}", _ctx)) if kwargs.get("add_time_stamp") else ""
+            if _date and _time:
+                _dt = f"{_date}-{_time}"
+            elif _date:
+                _dt = _date
+            elif _time:
+                _dt = _time
+            else:
+                _dt = ""
+            prefix = str(kwargs.get("filename_custom") or "xzg-audio")
+            if _dt:
+                prefix = f"{_dt}-{prefix}" if prefix else _dt
+            resolved_base = _xzg_sanitize_path(_xzg_resolve_template(custom_base, _ctx))
+            if resolved_base and _xzg_is_absolute_path(resolved_base):
+                output_dir = resolved_base
+                is_absolute_base = True
+            elif resolved_base:
+                output_dir = os.path.join(_safe_dir('get_output_directory', 'output'), resolved_base)
+                subfolder_extra = resolved_base
+            os.makedirs(output_dir, exist_ok=True)
 
-        # 文件名前缀可含子目录（如 "123123/123123"，或 "a/b/c" 多级嵌套），
-        # get_save_image_path 会解析出 subfolder、自动创建父目录并返回文件所在目录，
-        # 与视频保存（xzg_video_combine）保持一致。
+        # 文件名前缀可含子目录；get_save_image_path 解析 subfolder 并创建父目录。
         # 返回：full_output_folder, filename(前缀), counter, subfolder, filename_prefix
         full_output_folder, filename, _, subfolder, _ = folder_paths.get_save_image_path(
-            文件名前缀, output_dir
+            prefix, output_dir
         )
+        # 自定义输出-相对路径：把 base_dir 相对目录并入 subfolder，使 /view 与达芬奇导出能正确定位
+        if subfolder_extra:
+            subfolder = os.path.normpath(os.path.join(subfolder_extra, subfolder)) if subfolder else subfolder_extra
 
         # 计算下一个可用计数器（按实际扩展名扫描目标目录，避免 get_save_image_path
         # 基于 .png 的计数与该格式不符）
@@ -412,15 +473,28 @@ class XiaozhuguangAudioSaveDaVinci:
         filename = f"{filename}_{counter:05d}.{ext}"
         filepath = os.path.join(full_output_folder, filename)
 
-        # 保存文件
+        # 保存主文件（直接落到上面解析出的 output_dir / 自定义目录）
         save_audio_to_file(waveform, sample_rate, filepath, format_name=格式, quality=quality_val)
 
-        # 自动导出到达芬奇：保存模式产物导入达芬奇当前项目（音频轨道）。
+        # 绝对路径自定义输出：文件在 output/ 之外，/view 无法服务。复用视频模块令牌，
+        # 前端经 /xzg/davinci/view-abs 拉流预览，「导出到达芬奇」用同一令牌导入。
+        abs_token = ""
+        if is_absolute_base and _dv_register_abs_token is not None:
+            try:
+                abs_token = _dv_register_abs_token(filepath)
+            except Exception as e:
+                print(f"[小珠光音频保存] 绝对路径令牌登记失败：{e}")
+
+        # 自动导出到达芬奇：直接导入已落盘的成品（自定义绝对路径走令牌解析）。
         # 与视频保存-化神级一致：桥接失败不阻塞保存，结果挂在 ui 供前端提示。
         davinci_result = None
         if 自动导出到达芬奇:
             try:
-                dv = _davinci_export_audio(filename, subfolder)
+                if abs_token and _dv_lookup_abs_token is not None:
+                    dv_path = _dv_lookup_abs_token(abs_token)
+                else:
+                    dv_path = filepath
+                dv = _dv_call_bridge({"action": "import_audio", "file_path": dv_path})
                 davinci_result = dv
                 if not dv.get("ok"):
                     print(f"[小珠光音频保存] 自动导出到达芬奇失败：{dv.get('error', '导入失败')}")
@@ -438,6 +512,10 @@ class XiaozhuguangAudioSaveDaVinci:
             "sample_rate": sample_rate,
             "peaks": peaks,
         }
+        # 绝对路径自定义输出：abs_token 供前端预览拉流；davinci_abs_token 供手动导出导入
+        if abs_token:
+            saved_info["abs_token"] = abs_token
+            saved_info["davinci_abs_token"] = abs_token
         if davinci_result is not None:
             saved_info["davinci"] = davinci_result
 
@@ -455,10 +533,16 @@ class XiaozhuguangAudioSaveDaVinci:
 # ═══════════════════════════════════════════════════════════════════════
 
 try:
-    from .xzg_video_save_davinci import _call_bridge as _dv_call_bridge, \
-        _resolve_abs_path as _dv_resolve_abs_path
+    from .xzg_video_save_davinci import (
+        _call_bridge as _dv_call_bridge,
+        _resolve_abs_path as _dv_resolve_abs_path,
+        _register_abs_token as _dv_register_abs_token,
+        _lookup_abs_token as _dv_lookup_abs_token,
+    )
 except Exception as _e:
     _dv_call_bridge = None
+    _dv_register_abs_token = None
+    _dv_lookup_abs_token = None
     print(f"[小珠光音频保存] 达芬奇桥接模块加载失败：{_e}")
 
     def _dv_resolve_abs_path(info):
@@ -476,33 +560,145 @@ except Exception as _e:
         return os.path.join(out_dir, filename)
 
 
-def _davinci_export_audio(filename, subfolder):
-    """把已保存的音频导入达芬奇。返回桥接结果 dict。"""
-    if _dv_call_bridge is None:
-        return {"ok": False, "error": "达芬奇桥接模块不可用"}
-    abs_path = _dv_resolve_abs_path({"filename": filename, "subfolder": subfolder})
-    if not abs_path or not os.path.isfile(abs_path):
-        return {"ok": False, "error": f"文件不存在：{abs_path}"}
-    return _dv_call_bridge({"action": "import_audio", "file_path": abs_path})
+_AUDIO_ABS_FILE_TOKENS = {}
+
+
+def _register_audio_abs_token(path):
+    import uuid
+    token = uuid.uuid4().hex
+    _AUDIO_ABS_FILE_TOKENS[token] = path
+    if len(_AUDIO_ABS_FILE_TOKENS) > 200:
+        _AUDIO_ABS_FILE_TOKENS.pop(next(iter(_AUDIO_ABS_FILE_TOKENS)), None)
+    return token
+
+
+def _copy_audio_path_to_configured_output(source_path, output_options):
+    from .xzg_video_combine import _xzg_is_absolute_path, _xzg_sanitize_path
+    base = _xzg_sanitize_path(str(output_options.get("base_dir") or "").strip())
+    if not base:
+        raise ValueError("自定义输出目录为空")
+    target_dir = base if _xzg_is_absolute_path(base) else os.path.join(folder_paths.get_output_directory(), base)
+    os.makedirs(target_dir, exist_ok=True)
+    prefix = _safe_audio_export_name(output_options.get("filename_prefix") or "xzg-audio")
+    now = datetime.now()
+    stamps = ([now.strftime("%Y-%m-%d")] if output_options.get("add_date_stamp") else [])
+    if output_options.get("add_time_stamp"):
+        stamps.append(now.strftime("%H%M%S"))
+    if stamps:
+        prefix = "-".join([*stamps, prefix])
+    target = os.path.join(target_dir, f"{prefix}_{int(time.time() * 1000)}{os.path.splitext(source_path)[1] or '.wav'}")
+    shutil.copy2(source_path, target)
+    return target
+
+
+def _safe_audio_export_name(name):
+    import re
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(name or "")).strip()[:80] or "xzg-audio"
 
 
 @routes.post("/xzg/davinci/audio-save-import")
 @xzg_safe_handler
 async def xzg_davinci_audio_save_import(request):
-    """把已保存的音频导入达芬奇（前端悬浮按钮手动导出入口）。
-
-    请求体：{ filename, subfolder }（保存模式产物在 output 目录）。
-    """
+    """先按音频加载器-化神级的另存为逻辑复制到用户选定目录，再导入达芬奇。"""
     try:
         data = await request.json()
     except Exception:
         data = {}
-    filename = data.get("filename") or ""
-    subfolder = data.get("subfolder") or ""
-    if not filename:
-        return web.json_response({"ok": False, "error": "缺少 filename"})
-    result = _davinci_export_audio(filename, subfolder)
-    return web.json_response(result)
+    abs_token = data.get("abs_token") or ""
+    if abs_token:
+        abs_path = ""
+        if _dv_lookup_abs_token is not None:
+            try:
+                abs_path = _dv_lookup_abs_token(abs_token) or ""
+            except Exception:
+                abs_path = ""
+        if not abs_path:
+            abs_path = _AUDIO_ABS_FILE_TOKENS.get(abs_token) or ""
+    else:
+        filename = data.get("filename") or ""
+        subfolder = data.get("subfolder") or ""
+        if not filename:
+            return web.json_response({"ok": False, "error": "缺少 filename"})
+        file_type = str(data.get("type") or "output")
+        if file_type == "temp":
+            # 预览模式产物位于 ComfyUI temp。只接受 temp 根目录内的相对文件路径，
+            # 随后会复制到用户选择的稳定目录，再交给达芬奇导入。
+            temp_root = os.path.abspath(_safe_dir('get_temp_directory', 'temp'))
+            clean_name = str(filename).replace("\\", "/")
+            clean_subfolder = str(subfolder or "").replace("\\", "/")
+            parts = [p for p in (clean_subfolder + "/" + clean_name).split("/") if p and p != "."]
+            if (not parts or os.path.isabs(clean_name) or os.path.isabs(clean_subfolder)
+                    or os.path.splitdrive(clean_subfolder)[0]
+                    or os.path.basename(clean_name) != clean_name
+                    or any(p == ".." for p in parts)):
+                return web.json_response({"ok": False, "error": "预览音频路径无效"})
+            abs_path = os.path.abspath(os.path.join(temp_root, *parts))
+            if os.path.commonpath([temp_root, abs_path]) != temp_root:
+                return web.json_response({"ok": False, "error": "预览音频路径超出 temp 目录"})
+        else:
+            abs_path = _dv_resolve_abs_path({"filename": filename, "subfolder": subfolder})
+    if not abs_path or not os.path.isfile(abs_path):
+        return web.json_response({"ok": False, "error": "导出副本不存在或已失效，请重新执行节点"})
+
+    # 复用音频加载器-化神级的 Windows 原生保存对话框、内容去重和重名避让逻辑。
+    stage = "初始化导出"
+    try:
+        from .xzg_audio_loader_davinci import (
+            _choose_audio_save_path,
+            _find_exported_copy,
+            _file_sha256,
+            _cache_audio_sha256,
+        )
+        selected_path = None
+        target_dir = str(data.get("target_dir") or "").strip()
+        target_name = str(data.get("target_name") or "").strip()
+        # 同一后端会话会记住上次选择的目录。若该目录已被移动、删除或所在盘符离线，
+        # 不要继续对失效路径复制文件，重新打开另存为窗口让用户选择有效位置。
+        if target_dir and not os.path.isdir(target_dir):
+            target_dir = ""
+            target_name = ""
+        if not target_dir:
+            stage = "打开 Windows 另存为窗口"
+            selected_path = await _xzg_asyncio.to_thread(_choose_audio_save_path, abs_path)
+            if not selected_path:
+                return web.json_response({"ok": False, "cancelled": True})
+            target_dir = os.path.dirname(selected_path)
+            target_name = os.path.basename(selected_path)
+        elif not os.path.isabs(target_dir):
+            return web.json_response({"ok": False, "error": "保存目录必须是完整路径"})
+
+        stage = "检查目标目录"
+        os.makedirs(target_dir, exist_ok=True)
+        stage = "查找已有副本"
+        target_path = await _xzg_asyncio.to_thread(_find_exported_copy, abs_path, target_dir)
+        if target_path is None:
+            if not target_name:
+                stem = _safe_audio_export_name(os.path.splitext(os.path.basename(abs_path))[0])
+                target_name = stem + (os.path.splitext(abs_path)[1] or ".wav")
+            target_name = os.path.basename(target_name)
+            target_path = selected_path or os.path.join(target_dir, target_name)
+            stage = "检查目标文件名"
+            if os.path.exists(target_path) and os.path.normcase(os.path.abspath(abs_path)) != os.path.normcase(os.path.abspath(target_path)):
+                stem, ext = os.path.splitext(target_path)
+                index = 2
+                while os.path.exists(f"{stem}_{index}{ext}"):
+                    index += 1
+                target_path = f"{stem}_{index}{ext}"
+            if os.path.normcase(os.path.abspath(abs_path)) != os.path.normcase(os.path.abspath(target_path)):
+                stage = "计算音频文件摘要"
+                source_hash = await _xzg_asyncio.to_thread(_file_sha256, abs_path)
+                stage = "复制音频文件"
+                await _xzg_asyncio.to_thread(shutil.copy2, abs_path, target_path)
+                _cache_audio_sha256(target_path, source_hash)
+
+        stage = "启动达芬奇导入"
+        result = await _xzg_asyncio.to_thread(_dv_call_bridge, {"action": "import_audio", "file_path": target_path})
+        result["save_directory"] = target_dir
+        result["save_filename"] = os.path.basename(target_path)
+        result["copied"] = True
+        return web.json_response(result)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": f"{stage}失败：{e}"})
 
 
 # ═══════════════════════════════════════════════════════════════════════

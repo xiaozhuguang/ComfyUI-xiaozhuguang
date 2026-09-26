@@ -187,7 +187,7 @@
     }
   },
   "XiaozhuguangImageLoader": {
-    "display_name": "小珠光图像加载器",
+    "display_name": "小珠光图片加载器-化神级",
     "inputs": {
       "image_list": { "name": "图片列表" },
       "index": { "name": "索引" },
@@ -331,13 +331,12 @@
     }
   },
   "XiaozhuguangNinimaxH3Prompt": {
-    "display_name": "小珠光QWEN提示词",
+    "display_name": "小珠光提示词-化神级",
     "inputs": {
         "qwen_model": { "name": "Qwen模型" },
         "target_model": { "name": "提示词类型" },
         "user_prompt": { "name": "用户提示词" },
         "generation_mode": { "name": "提示词细分" },
-      "style_preset": { "name": "风格预设" },
       "seed": { "name": "种子" },
       "unload_after": { "name": "卸载模型" },
       "output_language": { "name": "输出语言" },
@@ -356,6 +355,26 @@
         "0": { "name": "英文提示词" },
         "1": { "name": "中文提示词" }
       }
+  },
+  "XiaozhuguangNinimaxH3PromptNoSkill": {
+    "display_name": "小珠光提示词",
+    "inputs": {
+      "qwen_model": { "name": "Qwen模型" },
+      "target_model": { "name": "提示词类型" },
+      "user_prompt": { "name": "用户提示词" },
+      "generation_mode": { "name": "提示词细分" },
+      "seed": { "name": "种子" },
+      "unload_after": { "name": "卸载模型" },
+      "output_language": { "name": "输出语言" },
+      "image_1": { "name": "Image_1" }, "image_2": { "name": "Image_2" },
+      "image_3": { "name": "Image_3" }, "image_4": { "name": "Image_4" },
+      "image_5": { "name": "Image_5" }, "image_6": { "name": "Image_6" },
+      "image_7": { "name": "Image_7" }, "image_8": { "name": "Image_8" },
+      "image_9": { "name": "Image_9" }, "image_10": { "name": "Image_10" }
+    },
+    "outputs": {
+      "0": { "name": "英文提示词" }, "1": { "name": "中文提示词" }
+    }
   },
   "XiaozhuguangQwenModelLoader": {
     "display_name": "小珠光 Qwen 模型加载器",

@@ -1,3 +1,23 @@
+## v20.0.0 (2026-09-26)
+
+### 新增与优化
+
+- **提示词节点重构并拆分**（`nodes/xzg_h3_prompt.py` + `web/xzg_h3_prompt.js`）：
+  - 拆分为两个独立节点：「小珠光提示词」（不含自定义 Skill）与「小珠光提示词-化神级」（含 Skill 预设管理：编辑、导入 TXT/MD、全局云端持久化及配置备份恢复）；
+  - 统一支持 MiniMax-H3 / Qwen-Image-2.1 / 通用 Skill 等提示词类型，支持中英文独立输出；自定义 Skill 预设从 ComfyUI 用户目录全局读取，不再依赖工作流节点数据。
+- **图像对比-化神级**（`web/xzg_image_compare.js` + `web/xzg_image_loader.js`）：
+  - 化神级对比新增棋盘格、红底、蓝底与自定义透明背景四种检视模式；
+  - 图片加载器增强并更名为「小珠光图片加载器-化神级」，支持批量追加、覆盖、拖入/粘贴等多入口。
+- **uiltnode 徽章隐藏**（新增 `web/xzg_uiltnode_badge.js`）：隐藏加密工作流包装器的来源名称徽章，已接入 `extension.json` 前端资源。
+- **达芬奇桥接增强**（`nodes/xzg_davinci_bridge.py` + `web/xzg_video_*_davinci.js`）：播放头时间码捕获/恢复、渲染导出（内置 YouTube-1080p 预设回退）、音频渲染、时间线源匹配等逻辑完善。
+- **音频加载/保存节点优化**（`nodes/xzg_audio_loader_davinci.py` / `xzg_audio_save.py` / `xzg_audio_save_lite.py` + 对应前端）。
+
+### 变更
+
+- `pyproject.toml` / `extension.json` 版本提升至 `20.0.0`；推送 `v20.0.0` 标签自动创建 GitHub Release 并发布到 Comfy Registry。
+
+---
+
 ## v19.0.0 (2026-09-23)
 
 ### 新增与优化

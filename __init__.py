@@ -227,7 +227,7 @@ from .nodes.xzg_audio_save import XiaozhuguangAudioSaveDaVinci
 from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_text_box import XiaozhuguangTextBox
-from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt
+from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt, XiaozhuguangNinimaxH3PromptNoSkill
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
 from .nodes.xzg_qwen_image21_encode import XiaozhuguangTextEncodeQwenImage21
 from .nodes.xzg_string_to_number import XiaozhuguangStringToNumber
@@ -1223,6 +1223,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
+    "XiaozhuguangNinimaxH3PromptNoSkill": XiaozhuguangNinimaxH3PromptNoSkill,
     "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
     "XiaozhuguangTextEncodeQwenImage21": XiaozhuguangTextEncodeQwenImage21,
     "XiaozhuguangStringToNumber": XiaozhuguangStringToNumber,
@@ -1266,7 +1267,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
     "XiaozhuguangDuplicateFirstFrame": "小珠光帧优化",
     "XiaozhuguangFrameExtract": "小珠光帧提取",
-    "XiaozhuguangImageLoader": "小珠光图像加载器",
+    "XiaozhuguangImageLoader": "小珠光图片加载器-化神级",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
     "XiaozhuguangVideoBatchMerge": "小珠光视频批处理合并",
     "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",
@@ -1284,7 +1285,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",
-    "XiaozhuguangNinimaxH3Prompt": "小珠光QWEN提示词",
+    "XiaozhuguangNinimaxH3Prompt": "小珠光提示词-化神级",
+    "XiaozhuguangNinimaxH3PromptNoSkill": "小珠光提示词",
     "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",
     "XiaozhuguangATBC": "小珠光 ATBC (智能裁剪)",
     "XiaozhuguangATR": "小珠光 ATR (图像回贴)",

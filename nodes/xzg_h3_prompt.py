@@ -1,8 +1,7 @@
 """
-小珠光 MiniMax H3 提示词优化节点
+小珠光通用提示词优化节点
 架构：单次 LLM 调用，系统提示词中要求中英双语输出（参考 BSAI MiniMAX H3 Prompt 原版模式）。
 集成 MiniMax H3 官方 Skills：
-  - 8 种风格预设：极简产品广告、3D动画短片、纸艺定格科普、品牌宣传短片、音乐美学MV、双人游戏开场、纸拼贴讲解、手绘实拍融合
   - 5 种生成模式：T2VA、I2VA、FL2VA、L2VA、Ref2VA
 依赖：小珠光 Qwen Model Loader 或 BSAI H3 Model Loader（BSAI_QWEN_MODEL 类型）。
 """
@@ -507,279 +506,8 @@ _H3_OUTPUT_FORMATS = {
 }
 
 
-# ============================================================
-# 风格预设：来自 MiniMax H3 官方 Skills 的 8 个风格专属提示词扩展
-# 每个风格提供视觉风格、镜头语言、节奏和音频方向的指导
-# ============================================================
-
-_H3_STYLE_EXTENSIONS = {
-    "极简产品广告": """
-## 8. Style Preset: 极简产品广告 (Minimalist Product Ad)
-
-You are writing a premium, Apple-style minimalist product advertisement. Apply these style rules:
-
-### Visual Style
-- Clean, minimalist aesthetic with high contrast and generous negative space.
-- Product is the absolute hero — every shot centers on the product's texture, materials, curves, and details.
-- Lighting: soft key light + subtle rim light, studio-quality product photography look.
-- Color palette: restrained, typically 2-3 accent colors on a neutral (white/black/gray) background.
-- Background: pure solid color or subtle gradient, no clutter.
-
-### Shot Language
-- Open with an extreme close-up of a key product detail (texture, edge, logo).
-- Use slow, smooth camera movements: push in, slide, gentle arc around the product.
-- Camera motion: always `with small amplitude at slow speed` for a premium feel.
-- Cut rhythm: deliberate, unhurried. Each shot lingers long enough to appreciate the product.
-- Typography shots: clean sans-serif text appearing on-screen, perfectly aligned, beat-synced.
-
-### Content Rules
-- Include on-screen text (product name, key feature, tagline) in English double quotation marks.
-- No dialogue unless the ad concept requires a voiceover.
-- Sound: subtle product sounds (click, snap, slide) + minimal ambient.
-
-### Audio
-- overall_soundscape: minimal — subtle product handling sounds, gentle whoosh transitions.
-- non_diegetic_music: modern minimal electronic or acoustic, slow tempo, understated.
-""",
-
-    "3D动画短片": """
-## 8. Style Preset: 3D动画短片 (3D Animated Short - Pixar Style)
-
-You are writing a stylized 3D animated short with Pixar-quality rendering. Apply these style rules:
-
-### Visual Style
-- Rendering: Pixar-style 3D cartoon, C4D + Octane renderer quality, premium animated film look.
-- Characters: exaggerated geometric shapes with excellent material definition (subsurface scattering, fabric texture).
-- Environment: rich, detailed, with atmospheric lighting and depth of field.
-- Color: warm, cinematic color grading with strong complementary color schemes.
-
-### Shot Language
-- Use dynamic camera work: tracking shots, crane shots, dramatic push-ins, sweeping arcs.
-- Shot composition follows cinematic rules: rule of thirds, leading lines, depth layering.
-- Camera motion: vary amplitude and speed to match emotional beats.
-- Transitions: primarily cuts; use cross-dissolve for emotional or time-passage moments.
-
-### Content Rules
-- Each shot must establish: character pose + expression, environment context, lighting mood, and action.
-- Character consistency: describe appearance, clothing, and proportions in the first shot; maintain across all shots.
-- Include character dialogue/singing where applicable with stable speaker IDs.
-
-### Audio
-- overall_soundscape: rich environmental ambience + character movement sounds (footsteps, fabric rustle).
-- non_diegetic_music: orchestral or cinematic score matching the emotional arc.
-""",
-
-    "纸艺定格科普": """
-## 8. Style Preset: 纸艺定格科普 (Papercraft Stop-Motion Explainer)
-
-You are writing a tactile papercraft stop-motion explainer video. Apply these style rules:
-
-### Visual Style
-- All visuals are handmade papercraft: cut-paper, layered paper diorama, pop-up book, miniature paper sets.
-- Paper texture is always visible: slight grain, deckle edges, visible paper thickness.
-- Lighting: warm, slightly directional top-down light creating real shadows between paper layers.
-- Color: matte, craft-paper palette — muted tones, kraft paper browns, pastel accents.
-- Camera: always top-down or slight isometric angle looking at the paper scene.
-
-### Shot Language
-- Stop-motion feel: describe incremental paper movements (a paper piece slides in, a flap lifts, a character takes a tiny step).
-- Camera: mostly static or slow push-in/pull-out. No sweeping or handheld motion.
-- Transitions: paper elements enter/exit frame by sliding, flipping, or folding.
-- Each shot shows a paper scene being assembled or transformed.
-
-### Content Rules
-- Every visual element must be described as a paper object (paper character, paper tree, paper cloud).
-- Include paper manipulation sounds in the description.
-- On-screen text: hand-lettered paper labels or cut-out paper letters.
-
-### Audio
-- overall_soundscape: paper sliding, rustling, tapping, folding, gentle tearing sounds.
-- non_diegetic_music: light, whimsical acoustic (ukulele, glockenspiel, soft piano) or N/A.
-""",
-
-    "品牌宣传短片": """
-## 8. Style Preset: 品牌宣传短片 (Brand Promo Video)
-
-You are writing a professional brand promotional video. Apply these style rules:
-
-### Visual Style
-- Professional, polished commercial look with strong brand identity.
-- Brand colors must be prominently featured throughout all shots.
-- Product/interface shots: clean, well-lit, with intentional composition.
-- Include on-screen brand elements: logo placement, brand typography, UI screenshots.
-
-### Shot Language
-- Opening: establish brand identity immediately (logo reveal, hero product shot).
-- Mix of wide establishing shots, medium product-in-context shots, and close-up detail shots.
-- Camera: smooth, confident movements — tracking, push-in, crane.
-- Cut rhythm: energetic but not rushed, matching background music tempo.
-
-### Content Rules
-- Each shot must highlight a specific product feature, use case, or benefit.
-- Include a clear call-to-action moment near the end.
-- On-screen text: feature names, taglines, specs in English double quotation marks.
-- Optional voiceover describing product benefits.
-
-### Audio
-- overall_soundscape: subtle whoosh transitions, UI interaction sounds, ambient environment.
-- non_diegetic_music: upbeat, modern corporate/pop, driving rhythm, inspirational feel.
-""",
-
-    "音乐美学MV": """
-## 8. Style Preset: 音乐美学MV (Music Video with Lyric Typography)
-
-You are writing a stylized music video with dynamic lyric typography. Apply these style rules:
-
-### Visual Style
-- Highly stylized, music-driven visuals with strong emotional atmosphere.
-- Beat-reactive spatial typography: lyrics appear on-screen as design elements, not subtitles.
-- Character performance is central: facial expressions, body language, lip-sync.
-- Color: bold, saturated, with dramatic lighting shifts matching song dynamics.
-
-### Shot Language
-- Shot changes sync with musical beats and phrase boundaries.
-- Mix of performance shots (character singing) and narrative/abstract visual shots.
-- Camera: dynamic — handheld energy, dramatic push-ins on emotional peaks, slow drift on quiet passages.
-- Typography: text appears, moves, scales, and fades in rhythm with the music.
-
-### Content Rules
-- Lyrics inside `<d>` tags must match the original song lyrics exactly.
-- Each shot must describe: visual composition + on-screen text content + character performance + camera movement.
-- Preserve the emotional arc of the song: quiet intro → build-up → climax → resolution.
-
-### Audio
-- overall_soundscape: minimal — the music itself is the primary audio; add subtle environmental sounds only if visuals require.
-- non_diegetic_music: N/A (the song itself is the music).
-""",
-
-    "双人游戏开场": """
-## 8. Style Preset: 双人游戏开场 (Co-op Game Intro)
-
-You are writing a two-player co-op game menu/opening animation. Apply these style rules:
-
-### Visual Style
-- Console game main menu aesthetic: dark background, vibrant UI elements, character cards.
-- Two player characters prominently featured with distinct visual identities.
-- UI design: industrial sticker style, bold sans-serif typography, irregular rectangle cards with slight distressing.
-- Color: 5-color max, high-contrast complementary palette, one accent color for interactivity, red for danger/exit.
-
-### Shot Language
-- Opening: dramatic reveal of game title and both characters.
-- Camera: slow dramatic push-in on characters, smooth pan across UI elements.
-- UI elements animate in: player cards slide in, menu buttons appear sequentially.
-- Continue button is the visual focal point — largest, brightest, most highlighted.
-
-### Content Rules
-- Describe each character's appearance, pose, and position in detail.
-- Include on-screen UI text: game title, player names, menu options (Continue, Start New Game, Settings, Exit Game).
-- All UI text in English double quotation marks.
-- Maintain character identity across shots.
-
-### Audio
-- overall_soundscape: UI interaction sounds (clicks, swooshes), subtle ambient drone.
-- non_diegetic_music: epic game-menu orchestral/electronic, building anticipation.
-""",
-
-    "纸拼贴讲解": """
-## 8. Style Preset: 纸拼贴讲解 (Paper Collage Explainer)
-
-You are writing a tactile paper collage explainer animation. Apply these style rules:
-
-### Visual Style
-- Editorial paper collage aesthetic: halftone black-and-white photo silhouettes on color-block paper.
-- Large color-block paper surfaces as background, selective colored cardstock accents.
-- Warm white outlines around cut-out elements, soft paper shadows (drop shadow, not 3D).
-- Texture: visible paper grain, halftone dots, slightly uneven cut edges.
-
-### Shot Language
-- Stop-motion assembly: paper pieces slide in, pop up, press flat, tap into place.
-- Camera: mostly static top-down or slight angle, slow push-in for emphasis.
-- Each shot assembles a paper collage scene piece by piece.
-- Transitions: paper elements slide out, new background paper slides in.
-
-### Content Rules
-- Every visual must be described as paper/collage material.
-- Include paper manipulation actions: a hand slides a paper piece in, a halftone photo is pressed down.
-- On-screen text: cut-out paper letters or stamped text.
-
-### Audio
-- overall_soundscape: paper sliding, tapping, pressing, rustling — rich tactile paper sounds.
-- non_diegetic_music: N/A by default (keep collage SFX prominent). Only add if user requests.
-""",
-
-    "手绘实拍融合": """
-## 8. Style Preset: 手绘实拍融合 (Hand-drawn + Live-action Fusion)
-
-You are writing a 15-second hand-drawn animation + live-action fusion video. Apply these style rules:
-
-### Visual Style
-- Flat hand-drawn glowing animation appearing in real, physical spaces.
-- Drawing texture: crayon, chalk, colored pencil, pastel — rough, slightly shaky lines with uneven fill and visible redraw marks.
-- The drawn entity glows softly, casting colored light onto nearby real surfaces.
-- Real-world space: everyday life environments (kitchen, balcony, hallway, desk, laundry room).
-
-### Shot Language
-- Camera: handheld phone POV, always slightly delayed — the camera chases the entity after it has already moved.
-- 0-3s: real hand makes clear physical contact with the drawn entity (fingers wrap around it, it lands on a palm, it's caught while escaping).
-- The entity continuously morphs between forms (line → creature → symbol → plant → vehicle → small object) while retaining traces of previous forms.
-- 13-15s: spatial-scale transformation — lines spread to walls/floor/ceiling, becoming a large flower, starry sky, sunset, clouds, ribbons, or graffiti town.
-- Ending: emotional afterglow + a cute, funny moment.
-
-### Content Rules
-- NO 3D CG, plush toys, smooth vector lines, neon glow, horror elements, giant eyes, teeth, jump scares.
-- The entity must be trackable — each new form retains the previous form's lines, tail, color trails, or body curves.
-- The camera operator also participates: reaching out, grabbing, chasing, opening doors/boxes, catching, stepping back, being pranked.
-- Tone: cute, nostalgic, gentle, slightly melancholic, NOT horror-comedy.
-
-### Audio
-- overall_soundscape: real-world room tone + the camera operator's movements (footsteps, fabric rustle, breathing).
-- non_diegetic_music: gentle, wistful ambient or lo-fi, or N/A.
-""",
-}
-
-
-# ── 风格预设英文名 → 中文名映射（供 JS 端切换英文时反向映射） ──
-_STYLE_PRESET_EN_TO_ZH = {
-    "None (Default)": "无 (默认)",
-    "Minimalist Product Ad": "极简产品广告",
-    "3D Animated Short": "3D动画短片",
-    "Papercraft Stop-Motion": "纸艺定格科普",
-    "Brand Promo Video": "品牌宣传短片",
-    "Music Video": "音乐美学MV",
-    "Co-op Game Intro": "双人游戏开场",
-    "Paper Collage Explainer": "纸拼贴讲解",
-    "Hand-drawn + Live-action": "手绘实拍融合",
-}
-
-# ── 风格预设中文名 → 英文名映射（供 INPUT_TYPES 合并用，兼容中英文工作流） ──
-_STYLE_PRESET_ZH_TO_EN = {
-    "无 (默认)": "None (Default)",
-    "极简产品广告": "Minimalist Product Ad",
-    "3D动画短片": "3D Animated Short",
-    "纸艺定格科普": "Papercraft Stop-Motion",
-    "品牌宣传短片": "Brand Promo Video",
-    "音乐美学MV": "Music Video",
-    "双人游戏开场": "Co-op Game Intro",
-    "纸拼贴讲解": "Paper Collage Explainer",
-    "手绘实拍融合": "Hand-drawn + Live-action",
-}
-
-# 下拉项统一使用品牌前缀；后端仍接受旧工作流中未加前缀的值。
+# 下拉项统一使用品牌前缀。
 _H3_OPTION_PREFIX = "Minimax-H3 "
-_STYLE_PRESET_DEFAULTS = {"无 (默认)", "None (Default)"}
-_STYLE_PRESET_VALUES = [
-    name if name in _STYLE_PRESET_DEFAULTS else f"{_H3_OPTION_PREFIX}{name}"
-    for name in list(_STYLE_PRESET_ZH_TO_EN.keys()) + list(_STYLE_PRESET_EN_TO_ZH.keys())
-]
-_STYLE_PRESET_LEGACY_TO_DISPLAY = {
-    name: name if name in _STYLE_PRESET_DEFAULTS else f"{_H3_OPTION_PREFIX}{name}"
-    for name in list(_STYLE_PRESET_ZH_TO_EN.keys()) + list(_STYLE_PRESET_EN_TO_ZH.keys())
-}
-# 兼容此前短暂保存过的带前缀默认选项。
-_STYLE_PRESET_LEGACY_TO_DISPLAY.update({
-    f"{_H3_OPTION_PREFIX}无 (默认)": "无 (默认)",
-    f"{_H3_OPTION_PREFIX}None (Default)": "None (Default)",
-})
 
 # ── 生成模式中文名 → 英文名映射（供 JS 端切换中文时反向映射） ──
 _GEN_MODE_ZH_TO_EN = {
@@ -792,14 +520,14 @@ _GEN_MODE_ZH_TO_EN = {
 
 # 下拉项只显示带前缀的英文模式，旧中英文值仍会被归一化。
 _GEN_MODE_VALUES = [f"{_H3_OPTION_PREFIX}{name}" for name in _GEN_MODE_ZH_TO_EN.values()]
-_GEN_MODE_LEGACY_TO_DISPLAY = {
-    **{name: f"{_H3_OPTION_PREFIX}{name}" for name in _GEN_MODE_ZH_TO_EN.values()},
-    **{zh: f"{_H3_OPTION_PREFIX}{en}" for zh, en in _GEN_MODE_ZH_TO_EN.items()},
-}
 _GEN_MODE_DISPLAY_VALUES = set(_GEN_MODE_VALUES)
 
 _TARGET_MODEL_H3 = "MiniMax-H3 视频"
 _TARGET_MODEL_QWEN_IMAGE = "Qwen-Image-2.1 图像"
+_TARGET_MODEL_QWEN_IMAGE_EN = "Qwen-Image-2.1 Image"
+_TARGET_MODEL_QWEN_SHORT = "QWEN"
+_TARGET_MODEL_CUSTOM_SKILL = "自定义 Skill"
+_TARGET_MODEL_CUSTOM_SKILL_EN = "Custom Skill"
 _QWEN_IMAGE_MODES = (
     "Qwen-Image-2.1 文生图",
     "Qwen-Image-2.1 图像编辑",
@@ -807,9 +535,23 @@ _QWEN_IMAGE_MODES = (
 )
 # ComfyUI 会在执行前用 INPUT_TYPES 校验值；Qwen 图像模式必须在此全局列表中。
 # 前端会按“提示词类型”仅展示当前适用的那一组。
-_GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES)
+_GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES) + ["通用 Skill"]
 
-_QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. Rewrite the user's request as one polished, direct English image-generation prompt. Describe the finished image as if observing it: medium and style, subject, setting, composition, camera/viewpoint, lighting, palette, material details, and atmosphere. For every main person or object, describe its natural spatial and visual relationship with the surrounding environment: placement, contact or interaction, depth, and how ambient light, cast shadows, reflected light, diffuse light, and material reflectance connect it credibly to the scene. Preserve every explicit constraint exactly, especially quoted on-image text, spelling, capitalization, line breaks, quantity, colour, and position. State on-image text in double quotes and identify its carrier, placement, typography, colour, and visual treatment. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
+
+def _xzg_load_saved_skill_prompt(preset_name):
+    """从 ComfyUI 用户目录读取全局 Skill 预设，不依赖工作流节点数据。"""
+    try:
+        user_dir = folder_paths.get_user_directory()
+        preset_path = os.path.join(user_dir, "xiaozhuguang", "xzg_prompt_skill_presets.json")
+        with open(preset_path, "r", encoding="utf-8") as preset_file:
+            presets = json.load(preset_file)
+        entry = presets.get(preset_name) if isinstance(presets, dict) else None
+        skill = entry.get("skill") if isinstance(entry, dict) else None
+        return skill.strip() if isinstance(skill, str) and skill.strip() else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+_QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. Rewrite the user's request as one polished, richly detailed English image-generation prompt. When the request is brief, expand it into a fully visualized, coherent still image rather than merely paraphrasing it. Aim for roughly 120-220 words when the concept supports that level of detail; use fewer words only when the user explicitly asks for brevity or the idea is inherently minimal. Add concrete, mutually consistent visual information across these dimensions: image medium and style; main subject's appearance, pose, expression, clothing or surface features; setting and specific environmental details; foreground, middle ground, and background; subject placement, scale, gaze, contact, and interaction with nearby elements; composition, framing, viewpoint, lens or depth-of-field character where useful; direction, softness, colour, and falloff of light; cast shadows, reflected light, diffuse light, material response, and reflections; palette, texture, atmosphere, and small details that strengthen the scene. Describe observable visual facts, not abstract praise or a list of disconnected keywords. Make the subject feel physically present in its environment, with plausible depth, contact, shadows, ambient illumination, and material reflectance. Preserve the user's core idea, requested style, mood, named subjects, and every explicit constraint. Elaborate only with details that naturally support that intent; do not invent story-critical facts, extra prominent subjects, logos, or text. Preserve explicit constraints exactly, especially quoted on-image text, spelling, capitalization, line breaks, quantity, colour, and position. State on-image text in double quotes and identify its carrier, placement, typography, colour, and visual treatment. Do not add negative prompts, model parameters, headings, explanations, or commentary. Output only the final prompt."""
 
 _QWEN_IMAGE21_SYSTEM_EDIT = """You are a Qwen-Image-2.1 image-editing prompt rewriting expert. Rewrite the user's request as one direct, precise English edit instruction. Identify the requested change and make it unambiguous; explicitly preserve all unrelated subjects, composition, identity, pose, lighting, scene, and visible text. When describing a person or object, state its natural relationship with the surrounding environment where relevant: placement, contact or interaction, depth, and physically coherent ambient light, cast shadows, reflected light, diffuse light, and material reflectance. For multiple reference images, use the exact tags <image1>, <image2>, etc. to name their roles; for one image, refer to it naturally as the image. Preserve every explicitly requested text string exactly, including spelling, capitalization, punctuation, line breaks, placement, and typography. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
 
@@ -834,21 +576,18 @@ def _xzg_qwen_image_system_prompt(generation_mode, output_language):
     )
 
 
-def _xzg_build_system_prompt(output_language, style_preset=None):
-    """根据语言选项和风格预设动态构建系统提示词。"""
+def _xzg_build_system_prompt(output_language):
+    """根据语言选项构建 H3 系统提示词。"""
     fmt = _H3_OUTPUT_FORMATS.get(output_language, _H3_OUTPUT_FORMAT_BILINGUAL)
-    prompt = _H3_SYSTEM_PROMPT_BASE + fmt
-    if style_preset and style_preset in _H3_STYLE_EXTENSIONS:
-        prompt += _H3_STYLE_EXTENSIONS[style_preset]
-    return prompt
+    return _H3_SYSTEM_PROMPT_BASE + fmt
 
 
 # ============================================================
-# 主节点：小珠光 MiniMax H3 提示词
+# 主节点：小珠光提示词
 # ============================================================
 
 class XiaozhuguangNinimaxH3Prompt:
-    """小珠光 MiniMax H3 提示词优化节点
+    """小珠光通用提示词优化节点
 
     架构：单次 LLM 调用。可按需在同一次调用中附带中文版本，
     避免双次调用的翻译式架构。
@@ -870,16 +609,12 @@ class XiaozhuguangNinimaxH3Prompt:
                     },
                 ),
                 "target_model": (
-                    [_TARGET_MODEL_H3, _TARGET_MODEL_QWEN_IMAGE],
-                    {"default": _TARGET_MODEL_H3, "tooltip": "提示词类型：选择适用的生成模型 / Prompt type"},
+                    "STRING",
+                    {"default": _TARGET_MODEL_H3, "multiline": False, "tooltip": "提示词类型：选择适用的生成模型或已保存的 Skill / Prompt type"},
                 ),
                 "generation_mode": (
-                    _GEN_MODE_VALUES,
-                    {"default": "Minimax-H3 Text to Video (T2VA)", "tooltip": "提示词细分模式 / Prompt subtype"},
-                ),
-                "style_preset": (
-                    _STYLE_PRESET_VALUES,
-                    {"default": "无 (默认)", "tooltip": "H3 官方风格预设 / Style preset from H3 skills"},
+                    "STRING",
+                    {"default": "Minimax-H3 Text to Video (T2VA)", "multiline": False, "tooltip": "提示词细分模式 / Prompt subtype"},
                 ),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "step": 1}),
                 "unload_after": (
@@ -1051,7 +786,6 @@ class XiaozhuguangNinimaxH3Prompt:
         generation_mode,
         target_model=_TARGET_MODEL_H3,
         no_bgm=False,
-        style_preset="无 (默认)",
         aspect_ratio="16:9",
         video_duration=10,
         风格提示="",
@@ -1124,22 +858,55 @@ class XiaozhuguangNinimaxH3Prompt:
         if not prompt_text_input:
             raise ValueError("user_prompt cannot be empty. Please enter a prompt to optimize.")
 
-        is_qwen_image = target_model == _TARGET_MODEL_QWEN_IMAGE
+        is_custom_skill = (
+            getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True)
+            and target_model in (_TARGET_MODEL_CUSTOM_SKILL, _TARGET_MODEL_CUSTOM_SKILL_EN)
+        )
         secondary_system_prompt = None
         if output_language not in _H3_OUTPUT_FORMATS:
             output_language = "仅英文"
-        # 新界面使用带 Minimax-H3 前缀的值；旧工作流的中英文值也兼容。
-        generation_mode = _GEN_MODE_LEGACY_TO_DISPLAY.get(generation_mode, generation_mode)
-        style_preset = _STYLE_PRESET_LEGACY_TO_DISPLAY.get(style_preset, style_preset)
+        generation_mode = {
+            "Text to Image": "Qwen-Image-2.1 文生图",
+            "Image Editing": "Qwen-Image-2.1 图像编辑",
+            "Multi-Reference Image": "Qwen-Image-2.1 多参考图",
+        }.get(generation_mode, generation_mode)
+        is_qwen_image = (
+            not is_custom_skill and (
+                target_model in (_TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT)
+                or generation_mode in _QWEN_IMAGE_MODES
+            )
+        )
         valid_modes = set(_QWEN_IMAGE_MODES) if is_qwen_image else _GEN_MODE_DISPLAY_VALUES
-        if generation_mode not in valid_modes:
+        if is_custom_skill:
+            valid_modes = None
+        if valid_modes is not None and generation_mode not in valid_modes:
             raise ValueError(
                 f"Invalid generation_mode: {generation_mode!r}. "
                 f"Must be one of: {sorted(valid_modes)}.\n"
                 f"生成模式无效：{generation_mode!r}，请使用以下合法值之一："
                 f"{sorted(valid_modes)}"
             )
-        if is_qwen_image:
+        if is_custom_skill:
+            preset_name = generation_mode
+            skill_text = _xzg_load_saved_skill_prompt(preset_name)
+            if not skill_text:
+                raise ValueError(
+                    f"Skill 预设“{preset_name}”未在 ComfyUI 用户目录中找到。"
+                    "请打开 Skill 管理器确认预设已保存并完成云持久化。"
+                )
+            if output_language == "中英双语":
+                system_prompt = skill_text + "\n\nWrite the optimized prompt in English only. Output the result directly, without explanation."
+                secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
+            elif output_language == "仅中文":
+                system_prompt = skill_text + "\n\n用中文输出优化后的提示词，直接输出结果，不要解释。"
+            else:
+                system_prompt = skill_text + "\n\nWrite the optimized prompt in English. Output the result directly, without explanation."
+            user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
+                user_prompt, "通用", image_inputs=image_inputs,
+                aspect_ratio=aspect_ratio, 风格提示=风格提示,
+            )
+            print(f"[小珠光提示词] Skill 预设：{preset_name}")
+        elif is_qwen_image:
             if output_language == "中英双语":
                 system_prompt = _xzg_qwen_image_system_prompt(generation_mode, "仅英文")
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
@@ -1152,18 +919,13 @@ class XiaozhuguangNinimaxH3Prompt:
             print(f"[小珠光 Qwen-Image-2.1] 模式：{generation_mode}")
         else:
             generation_mode = generation_mode.removeprefix(_H3_OPTION_PREFIX)
-            style_preset = style_preset.removeprefix(_H3_OPTION_PREFIX)
-            style_preset = _STYLE_PRESET_EN_TO_ZH.get(style_preset, style_preset)
-            preset = None if style_preset in ("无 (默认)", "None (Default)") else style_preset
             # 双语使用两次独立推理，避免模型在一次长回复中省略中文段；
             # 单语只执行一次，因此仍可节省对应的计算。
             if output_language == "中英双语":
-                system_prompt = _xzg_build_system_prompt("仅英文", preset)
+                system_prompt = _xzg_build_system_prompt("仅英文")
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             else:
-                system_prompt = _xzg_build_system_prompt(output_language, preset)
-            if preset:
-                print(f"[小珠光 H3] 风格预设：{preset}")
+                system_prompt = _xzg_build_system_prompt(output_language)
             user_message, collected_images, total_image_count = self._build_user_message(
                 user_prompt, generation_mode, image_inputs=image_inputs,
                 aspect_ratio=aspect_ratio, no_bgm=no_bgm, 风格提示=风格提示,
@@ -1277,3 +1039,18 @@ class XiaozhuguangNinimaxH3Prompt:
             return (text, chinese_text)
         english, chinese = _xzg_split_bilingual_output(text)
         return (english, chinese)
+
+
+class XiaozhuguangNinimaxH3PromptNoSkill(XiaozhuguangNinimaxH3Prompt):
+    """标准版提示词节点，不提供自定义 Skill 预设功能。"""
+
+    SUPPORTS_CUSTOM_SKILL = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs["required"]["target_model"] = (
+            "STRING",
+            {"default": _TARGET_MODEL_H3, "multiline": False, "tooltip": "提示词类型 / Prompt type"},
+        )
+        return inputs

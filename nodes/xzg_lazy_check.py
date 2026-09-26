@@ -20,28 +20,45 @@ class XiaozhuguangInputLazyCheck:
         return {
             "required": {},
             "optional": {
-                "A": (any,),
-                "B": (any, {"lazy": True}),
+                "A": (any, {"input_is_list": True}),
+                "B": (any, {"lazy": True, "input_is_list": True}),
             }
         }
 
     RETURN_TYPES = (any, "BOOLEAN")
     RETURN_NAMES = ("输出", "判断")
+    # 整组接收上游列表；透传口维持原列表，判断口固定输出一个布尔值。
+    INPUT_IS_LIST = (True, True)
+    OUTPUT_IS_LIST = (True, True)
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
-    DESCRIPTION = "输入A有内容则输出A（跳过B的计算），输入A无内容则输出B。B为惰性输入，仅当A为空时才计算B的上游工作流。判断输出：输出A时为false，输出B时为true。"
+    DESCRIPTION = "输入A有内容则输出A（跳过B的计算），输入A无内容则输出B。批次/列表整体透传；判断口每次只输出一个值：输出A时为false，输出B时为true。"
+
+    @staticmethod
+    def _has_value(value):
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if item is not None:
+                    return True
+            return False
+        return True
+
+    @staticmethod
+    def _as_output_list(value):
+        if value is None:
+            return []
+        return list(value) if isinstance(value, (list, tuple)) else [value]
 
     def check_lazy_status(self, A=None, B=None):
-        # A 为非惰性，始终已求值
-        # A 有内容时不需要 B，直接执行
-        # A 为空（None）时才请求 B
-        result = []
-        if A is None and B is None:
-            result.append("B")
-        return result if result else None
+        # 一次检查整个 A 列表；仅当 A 没有任何有效项时请求惰性输入 B。
+        if not self._has_value(A) and B is None:
+            return ["B"]
+        return None
 
     def execute(self, A=None, B=None):
-        if A is not None:
-            return (A, False)
-        else:
-            return (B, True)
+        use_a = self._has_value(A)
+        selected = A if use_a else B
+        # 判断输出声明为 list，确保即使透传多张图，结果仍只有一个布尔项。
+        return (self._as_output_list(selected), [not use_a])

@@ -10202,10 +10202,18 @@ export class XiaozhuguangVideoEditor {
             const it = document.createElement("div");
             it.textContent = label;
             it.style.cssText = "padding:7px 12px;border-radius:5px;" +
-                (disabled ? "color:#666;cursor:default;" : "color:#ddd;cursor:pointer;");
+                (disabled ? "color:#666;cursor:default;" : "color:#FFD700;cursor:pointer;font-weight:600;");
             if (!disabled) {
-                it.addEventListener("mouseenter", () => { it.style.background = "#3a3a3a"; });
-                it.addEventListener("mouseleave", () => { it.style.background = ""; });
+                it.addEventListener("mouseenter", () => {
+                    it.style.background = "rgba(255,215,0,.18)";
+                    it.style.color = "#FFF2B2";
+                    it.style.boxShadow = "inset 0 0 0 1px rgba(255,215,0,.45)";
+                });
+                it.addEventListener("mouseleave", () => {
+                    it.style.background = "";
+                    it.style.color = "#FFD700";
+                    it.style.boxShadow = "";
+                });
                 it.addEventListener("click", () => { this._hideExportMenu(); fn(); });
             }
             menu.appendChild(it);
@@ -10615,7 +10623,7 @@ export class XiaozhuguangVideoEditor {
         }
     }
 
-    // 确认回传范围菜单：当前片段 / 整个时间线（向上弹出，紧贴确认按钮）
+    // 确认回传范围菜单：当前片段 / 整个时间线，向下弹出以免遮挡确认按钮
     _showConfirmMenu(anchorBtn) {
         this._hideExportMenu();
         const cur = this._getCurrentExportClip();
@@ -10627,10 +10635,18 @@ export class XiaozhuguangVideoEditor {
             const it = document.createElement("div");
             it.textContent = label;
             it.style.cssText = "padding:7px 12px;border-radius:5px;" +
-                (disabled ? "color:#666;cursor:default;" : "color:#ddd;cursor:pointer;");
+                (disabled ? "color:#666;cursor:default;" : "color:#FFD700;cursor:pointer;font-weight:600;");
             if (!disabled) {
-                it.addEventListener("mouseenter", () => { it.style.background = "#3a3a3a"; });
-                it.addEventListener("mouseleave", () => { it.style.background = ""; });
+                it.addEventListener("mouseenter", () => {
+                    it.style.background = "rgba(255,215,0,.18)";
+                    it.style.color = "#FFF2B2";
+                    it.style.boxShadow = "inset 0 0 0 1px rgba(255,215,0,.45)";
+                });
+                it.addEventListener("mouseleave", () => {
+                    it.style.background = "";
+                    it.style.color = "#FFD700";
+                    it.style.boxShadow = "";
+                });
                 it.addEventListener("click", () => { this._hideExportMenu(); fn(); });
             }
             menu.appendChild(it);
@@ -10639,8 +10655,17 @@ export class XiaozhuguangVideoEditor {
         addItem("输出整个时间线", false, () => this._confirmExport("video"));
         this._root.appendChild(menu);
         const r = anchorBtn.getBoundingClientRect();
-        menu.style.top = Math.max(8, r.top - menu.offsetHeight - 6) + "px";
-        menu.style.left = Math.max(8, r.left) + "px";
+        const menuW = menu.offsetWidth;
+        const menuH = menu.offsetHeight;
+        // 与普通「导出」菜单保持一致：按钮下方弹出、菜单右边缘对齐按钮右边缘；
+        // 同时限制在视口内，避免遮挡确认按钮或向窗口边缘溢出。
+        const left = Math.max(8, Math.min(window.innerWidth - menuW - 8, r.right - menuW));
+        const belowTop = r.bottom + 6;
+        const top = belowTop + menuH <= window.innerHeight - 8
+            ? belowTop
+            : Math.max(8, r.top - menuH - 6);
+        menu.style.top = top + "px";
+        menu.style.left = left + "px";
         this._exportMenuEl = menu;
         const close = (ev) => {
             if (menu.contains(ev.target) || anchorBtn.contains(ev.target)) return;
@@ -10710,7 +10735,7 @@ export class XiaozhuguangVideoEditor {
                 const resp = await api.fetchApi("/xzg_video_editor_probe", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ filename: name, file_type: type }),
+                    body: JSON.stringify({ filename: name, type }),
                 });
                 const data = await resp.json();
                 if (!data.error && media) {
@@ -10884,11 +10909,14 @@ window._xzgVideoEditor = {
 // 化神级保存节点联动：把保存的视频/音频送入快剪媒体库（只入库，不自动落时间线，
 // 入轨/轨道选择由用户在快剪里手动拖拽）。快剪未打开时写入会话列表（下次打开可见）。
 // opts.kind 仅作兼容保留（"video"/"audio"），当前两种类型行为一致。
-window._xzgVideoEditorReceiveMedia = function (name, type = "output", opts = {}) {
+export function receiveVideoEditorMedia(name, type = "output", opts = {}) {
     const inst = window._xzgVideoEditorInstance;
     if (inst && !inst._destroyed && typeof inst._receiveExternalMedia === "function") {
         return inst._receiveExternalMedia(name, type).then(() => ({ added: true }));
     }
     _xzgVeAddSessionMedia(name, type);
     return Promise.resolve({ added: false, pooled: true });
-};
+}
+
+// 兼容其他直接使用全局桥接的扩展；菜单启动器则调用上面的模块导出，避免全局覆盖竞态。
+window._xzgVideoEditorReceiveMedia = receiveVideoEditorMedia;

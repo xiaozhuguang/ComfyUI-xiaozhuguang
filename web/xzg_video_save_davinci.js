@@ -6,6 +6,31 @@ import { api } from "../../scripts/api.js";
 // 额外在预览区叠加「导出到达芬奇」悬浮按钮：把该节点最近一次保存的视频导入达芬奇
 // （进当前媒体池 + 新建视频轨道 + 对齐播放头所在最上层片段前端，不推移/不分割）。
 const SAVE_DAVINCI_NODE = "XiaozhuguangVideoSaveDaVinci";
+const _videoDavinciTargetKey = (node) => {
+    const parts = (node?.graph?.nodes || []).filter(n => n?.id != null && n.type)
+        .map(n => `${n.id}:${n.type}`).sort();
+    let h = 5381;
+    for (const part of parts) for (let i = 0; i < part.length; i++) h = ((h << 5) + h + part.charCodeAt(i)) >>> 0;
+    return `xzg_video_davinci_target_${h}_${node?.id ?? ""}`;
+};
+function _loadVideoDavinciTarget(node) {
+    try {
+        const value = JSON.parse(localStorage.getItem(_videoDavinciTargetKey(node)));
+        if (value?.directory) {
+            node._xzgVideoDavinciSession = value.session || "";
+            node._xzgVideoDavinciOutputDir = value.directory;
+            node._xzgVideoDavinciOutputName = value.filename || "";
+        }
+    } catch (_) {}
+}
+function _saveVideoDavinciTarget(node, session, data) {
+    try {
+        localStorage.setItem(_videoDavinciTargetKey(node), JSON.stringify({
+            session, directory: data.save_directory,
+            filename: data.save_filename || node._xzgVideoDavinciOutputName || "",
+        }));
+    } catch (_) {}
+}
 
 const _tr = (s) => s;
 
@@ -29,6 +54,21 @@ function _toast(msg, isError = false) {
     });
 }
 
+// 悬浮按钮是 DOM 层，鼠标在按钮上时不会命中播放器的滚轮处理区。
+// 显式转发给 LiteGraph 画布，保持与预览区域一致的缩放体验。
+function _forwardCanvasWheel(e) {
+    const canvas = app.canvas?.canvas;
+    if (!canvas) return;
+    e.preventDefault();
+    e.stopPropagation();
+    canvas.dispatchEvent(new WheelEvent("wheel", {
+        deltaY: e.deltaY, deltaX: e.deltaX,
+        clientX: e.clientX, clientY: e.clientY,
+        ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey,
+        bubbles: true, cancelable: true,
+    }));
+}
+
 // 场记板（clapperboard）SVG 图标：stroke 用 currentColor，可随 CSS color 变色。
 // emoji 🎬 由系统字体渲染、无法染色，故开关状态色改用此 SVG 呈现
 const _CLAPPER_SVG =
@@ -40,6 +80,27 @@ const _CLAPPER_SVG =
     '<path d="m12.4 3.4 3.1 4"/>' +
     '<path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
     '</svg>';
+
+// 达芬奇四叶草开关图标：outline=true → 灰色线框（未激活）；否则彩色三叶草（已激活）
+function _xzgDvToggleClover(outline) {
+    const id = "xzg-dv-toggle-clover-style";
+    if (!document.getElementById(id)) {
+        const st = document.createElement("style");
+        st.id = id;
+        st.textContent =
+            ".xzg-dv-tclover{position:relative;display:inline-block;width:16px;height:15px;flex:0 0 16px;vertical-align:middle;outline:none;box-shadow:none;}" +
+            ".xzg-dv-tclover>i{position:absolute;width:8px;height:8px;box-sizing:border-box;border-radius:50%;}" +
+            ".xzg-dv-tclover .c-blue{top:0;left:4px;background:linear-gradient(135deg,#47e7ff,#22c9e9 45%,#3f91d7 78%,#d8f6b3);}" +
+            ".xzg-dv-tclover .c-green{top:6.93px;left:0;background:linear-gradient(135deg,#fbf264,#dfee4c 52%,#9ac83a);}" +
+            ".xzg-dv-tclover .c-red{top:6.93px;left:8px;background:linear-gradient(135deg,#f14c69,#ed5968 52%,#ee9250);}" +
+            "@keyframes xzg-dv-clover-spin{to{transform:rotate(360deg);}}" +
+            ".xzg-dv-tclover.spinning{transform-origin:50% 50%;animation:xzg-dv-clover-spin .8s linear infinite;}" +
+            ".xzg-dv-tclover.outline>i{background:transparent;border:1.3px solid #6b7280;}";
+        document.head.appendChild(st);
+    }
+    return '<span class="xzg-dv-tclover' + (outline ? " outline" : "") + '" aria-hidden="true">' +
+        '<i class="c-blue"></i><i class="c-green"></i><i class="c-red"></i></span>';
+}
 
 // 齿轮 SVG 图标（「输出设置」悬浮按钮用）：stroke=currentColor，可随 CSS color 变色
 const _GEAR_SVG =
@@ -58,6 +119,7 @@ function _getSavedVideoInfo(node) {
         subfolder: info.subfolder || "",
         type: info.type || "output",
         abs_token: info.abs_token || "",
+        davinci_abs_token: info.davinci_abs_token || "",
         is_absolute: !!info.is_absolute,
     };
     const player = node._xzgVideoPlayer;
@@ -68,10 +130,30 @@ function _getSavedVideoInfo(node) {
             subfolder: v.subfolder || "",
             type: v.type || "output",
             abs_token: v.abs_token || "",
+            davinci_abs_token: v.davinci_abs_token || "",
             is_absolute: !!v.is_absolute,
         };
     }
     return null;
+}
+
+function _setSaveDavinciBusy(node, busy, message = "") {
+    const pc = node._xzgPreviewContainer;
+    if (!pc) return;
+    if (busy && !node._xzgDavinciBusyOverlay) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:absolute;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);color:#f2fff3;font:bold clamp(20px,4vw,36px) sans-serif;text-shadow:0 2px 8px #000;pointer-events:auto;text-align:center;";
+        pc.appendChild(overlay);
+        node._xzgDavinciBusyOverlay = overlay;
+    }
+    if (busy) {
+        node._xzgDavinciBusyOverlay.textContent = message || "准备导出…";
+        node._xzgDavinciBusyOverlay.style.display = "flex";
+        node._xzgDavinciActionBusy = true;
+    } else {
+        if (node._xzgDavinciBusyOverlay) node._xzgDavinciBusyOverlay.style.display = "none";
+        node._xzgDavinciActionBusy = false;
+    }
 }
 
 async function _exportToDavinci(node, btn, labelSpan, label) {
@@ -81,19 +163,42 @@ async function _exportToDavinci(node, btn, labelSpan, label) {
         return;
     }
     btn.disabled = true;
-    if (labelSpan) labelSpan.textContent = "正在导出到达芬奇…";
+    _setSaveDavinciBusy(node, true, "准备导出…");
     try {
-        const body = { filename: info.filename, subfolder: info.subfolder };
-        // 自定义输出-绝对路径：携带会话令牌，由后端解析真实路径（不把绝对路径暴露给前端）
-        if (info.abs_token) body.abs_token = info.abs_token;
+        const sessionResp = await api.fetchApi(`/xzg/davinci/video-export-session?_=${Date.now()}`, { cache: "no-store" });
+        const sessionInfo = await sessionResp.json();
+        if (!sessionResp.ok || !sessionInfo?.session) throw new Error(sessionInfo?.error || "无法确认 ComfyUI 会话状态");
+        const session = sessionInfo.session;
+        const sameSession = node._xzgVideoDavinciSession === session && !!node._xzgVideoDavinciOutputDir;
+        const status = sameSession ? "正在导出到达芬奇…" : "选择保存位置…";
+        _setSaveDavinciBusy(node, true, status);
+        if (labelSpan) labelSpan.textContent = status;
+        const body = { filename: info.filename, subfolder: info.subfolder,
+            target_dir: sameSession ? node._xzgVideoDavinciOutputDir : "",
+            target_name: sameSession ? node._xzgVideoDavinciOutputName : "" };
+        // 预览模式 + 自定义输出：优先使用后端为达芬奇准备的目录副本。
+        // 自定义绝对路径保存则仍使用预览令牌；两者都不会向前端暴露真实路径。
+        if (info.davinci_abs_token) body.abs_token = info.davinci_abs_token;
+        else if (info.abs_token) body.abs_token = info.abs_token;
         const resp = await api.fetchApi("/xzg/davinci/save-import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
         });
         const data = await resp.json();
+        if (data?.save_directory) {
+            node._xzgVideoDavinciSession = session;
+            node._xzgVideoDavinciOutputDir = data.save_directory;
+            node._xzgVideoDavinciOutputName = data.save_filename || node._xzgVideoDavinciOutputName;
+            _saveVideoDavinciTarget(node, session, data);
+        }
+        if (data?.cancelled) return;
         if (!data?.ok) {
             _toast("[导出到达芬奇] " + (data?.error || "导入失败"), true);
+            return;
+        }
+        if (data?.duplicate) {
+            _toast("[导出到达芬奇] " + (data?.message || "该位置已存在相同片段，未重复导入"));
             return;
         }
         const clip = data.clip ? `「${data.clip}」` : "";
@@ -102,6 +207,7 @@ async function _exportToDavinci(node, btn, labelSpan, label) {
     } catch (e) {
         _toast("[导出到达芬奇] " + String(e), true);
     } finally {
+        _setSaveDavinciBusy(node, false);
         btn.disabled = false;
         if (labelSpan) labelSpan.textContent = label;
     }
@@ -145,33 +251,18 @@ function _createQuickCutButton(node) {
     btn.style.cssText =
         "position:absolute;top:6px;right:0;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
-        "padding:2px 6px;font-size:11px;line-height:1;" +
+        "height:22px;box-sizing:border-box;padding:2px 6px;font-size:11px;line-height:1;" +
         "background:transparent;color:#ffd76a;border:none;" +
         "cursor:pointer;pointer-events:auto;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
-    btn.innerHTML = `<span style="cursor:pointer;">${_CLAPPER_SVG}</span><span>发送到快剪</span>`;
+    btn.innerHTML = `<span style="cursor:pointer;">${_CLAPPER_SVG}</span><span>发送</span>`;
     const iconSpan = btn.querySelector("span:first-child");
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
 
-    // 🎬 图标 = 「自动发送到快剪」开关（开=绿色 / 关=灰色），文字 = 手动发送
-    const renderAuto = () => {
-        const on = !!(node._xzgAutoSendQcWidget && node._xzgAutoSendQcWidget.value);
-        // SVG 图标 stroke=currentColor：开=金色（与「发送到快剪」文字同色）/ 关=灰色
-        iconSpan.style.color = on ? "#ffd76a" : "#6b7280";
-        iconSpan.title = on
-            ? "自动发送：开（保存完成自动加入快剪；点击关闭）"
-            : "自动发送：关（点击开启，保存完成后自动加入快剪媒体池）";
-    };
-    iconSpan.onclick = (e) => {
-        e.stopPropagation(); // 只切开关，不触发手动发送
-        if (!node._xzgAutoSendQcWidget) return;
-        const w = node._xzgAutoSendQcWidget;
-        w.value = !w.value;
-        renderAuto();
-        _toast(w.value ? "已开启自动发送到快剪" : "已关闭自动发送到快剪");
-    };
-    renderAuto();
+    // 图标保持金色常亮；点击图标或文字都执行一次手动发送，不再切换自动发送状态。
+    iconSpan.style.color = "#ffd76a";
+    iconSpan.title = "点击发送到快剪";
 
     // 排在「导出到达芬奇」按钮左侧：按其宽度留 12px 间隙对齐
     const alignRight = () => {
@@ -187,29 +278,21 @@ function _createQuickCutButton(node) {
     pc.addEventListener("mouseover", onOver);
     pc.addEventListener("mouseout", onOut);
 
-    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
-    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#ffd76a"; });
+    btn.addEventListener("mouseenter", () => {
+        if (!btn.disabled) {
+            btn.style.color = "#fff";
+            iconSpan.style.color = "#fff";
+        }
+    });
+    btn.addEventListener("mouseleave", () => {
+        btn.style.color = "#ffd76a";
+        iconSpan.style.color = "#ffd76a";
+    });
+    btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
     btn.onclick = () => { if (!btn.disabled) _sendToQuickCut(node, btn, labelSpan); };
 
     node._xzgQuickCutBtn = btn;
-    node._xzgQcBtnIconRender = renderAuto;
     return btn;
-}
-
-function _createAutoExportToggle(node, widgetName, stateKey) {
-    // 开关本体是节点 widget（BOOLEAN，随工作流序列化），这里只把它藏出节点界面；
-    // 开关的交互入口在各悬浮按钮的 🎬 图标上 —— 后端逻辑完全不动。
-    const w = (node.widgets || []).find(w => w.name === widgetName);
-    if (w && !w._xzgHidden) {
-        // 标准隐藏手法：converted-widget 仍参与序列化，computeSize 折叠不占高度
-        w.type = "converted-widget";
-        w.computeSize = () => [0, -4];
-        w.hidden = true;
-        w._xzgHidden = true;
-        try { node.setSize(node.computeSize()); } catch (e) {}
-    }
-    node[stateKey] = w || null;
-    return w;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -253,11 +336,11 @@ function _createOutputSettingsButton(node) {
     btn.style.cssText =
         "position:absolute;top:6px;right:0;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
-        "padding:2px 6px;font-size:11px;line-height:1;" +
+        "height:22px;box-sizing:border-box;padding:2px 6px;font-size:11px;line-height:1;" +
         "background:transparent;color:#8ab4f8;border:none;" +
         "cursor:pointer;pointer-events:auto;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
-    btn.innerHTML = `<span style="cursor:pointer;">${_GEAR_SVG}</span><span>输出设置</span>`;
+    btn.innerHTML = `<span style="cursor:pointer;">${_GEAR_SVG}</span><span>设置</span>`;
 
     // 排在最左侧：right = 导出按钮宽 + 快剪按钮宽 + 两处间隙
     const alignRight = () => {
@@ -275,6 +358,7 @@ function _createOutputSettingsButton(node) {
 
     btn.addEventListener("mouseenter", () => btn.style.color = "#fff");
     btn.addEventListener("mouseleave", () => btn.style.color = "#8ab4f8");
+    btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
     btn.onclick = () => _xzgOpenVideoOutputSettings(node);
 
     pc.appendChild(btn);
@@ -292,34 +376,18 @@ function _createExportDavinciButton(node) {
     btn.style.cssText =
         "position:absolute;top:6px;right:6px;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
-        "padding:2px 6px;font-size:11px;line-height:1;" +
+        "height:22px;box-sizing:border-box;padding:2px 6px;font-size:11px;line-height:1;" +
         "background:transparent;color:#3ef558;border:none;" +
         "cursor:pointer;pointer-events:auto;" +
-        "transition:color 0.15s,opacity 0.2s;opacity:0;";
-    btn.innerHTML = `<span style="cursor:pointer;">${_CLAPPER_SVG}</span><span>导出到达芬奇</span>`;
+        "transition:color 0.15s,opacity 0.2s;opacity:0;outline:none;-webkit-tap-highlight-color:transparent;box-shadow:none;";
+    btn.innerHTML = `<span>${_xzgDvToggleClover(false)}</span><span>导出</span>`;
     const iconSpan = btn.querySelector("span:first-child");
-    const labelSpan = btn.querySelector("span:last-child");
+    // 图标包装器内部也有一个三叶草 span；只取按钮直接子级文字标签，避免忙碌
+    // 状态更新时把三叶草替换成状态文字。
+    const labelSpan = btn.lastElementChild;
     pc.appendChild(btn);
 
-    // 🎬 图标 = 「自动导出到达芬奇」开关（开=绿色 / 关=灰色），文字 = 手动导出。
-    // 开关本体是隐藏的 BOOLEAN widget，点击只切 widget.value，仍随工作流序列化。
-    const renderAuto = () => {
-        const on = !!(node._xzgAutoExportWidget && node._xzgAutoExportWidget.value);
-        // SVG 图标 stroke=currentColor，纯靠图标自身变色：开=绿色 / 关=灰色
-        iconSpan.style.color = on ? "#3ef558" : "#6b7280";
-        iconSpan.title = on
-            ? "自动导出：开（点击关闭；点文字则立即手动导出）"
-            : "自动导出：关（点击开启，保存完成后自动导入达芬奇）";
-    };
-    iconSpan.onclick = (e) => {
-        e.stopPropagation(); // 只切开关，不触发手动导出
-        if (!node._xzgAutoExportWidget) return;
-        const w = node._xzgAutoExportWidget;
-        w.value = !w.value;
-        renderAuto();
-        _toast(w.value ? "已开启自动导出到达芬奇" : "已关闭自动导出到达芬奇");
-    };
-    renderAuto();
+    iconSpan.title = "手动导出到达芬奇";
 
     const onOver = () => { btn.style.opacity = "1"; };
     const onOut = (e) => {
@@ -328,12 +396,19 @@ function _createExportDavinciButton(node) {
     pc.addEventListener("mouseover", onOver);
     pc.addEventListener("mouseout", onOut);
 
-    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
-    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#3ef558"; });
-    btn.onclick = () => { if (!btn.disabled) _exportToDavinci(node, btn, labelSpan, "导出到达芬奇"); };
+    btn.addEventListener("mouseenter", () => {
+        if (btn.disabled) return;
+        btn.style.color = "#fff";
+        iconSpan.querySelector(".xzg-dv-tclover")?.classList.add("spinning");
+    });
+    btn.addEventListener("mouseleave", () => {
+        btn.style.color = "#3ef558";
+        iconSpan.querySelector(".xzg-dv-tclover")?.classList.remove("spinning");
+    });
+    btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
+    btn.onclick = () => { if (!btn.disabled) _exportToDavinci(node, btn, labelSpan, "导出"); };
 
     node._xzgDavinciSaveBtn = btn;
-    node._xzgDavinciBtnIconRender = renderAuto;
     return btn;
 }
 
@@ -346,20 +421,9 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = origOnNodeCreated?.apply(this, arguments);
 
-            // 自动发送到快剪：执行完成且开关开启时，静默发送到快剪媒体池/V2 轨道。
-            // 关键：父类把 onExecuted 设为「实例属性」（node.onExecuted = ...，见
-            // xzg_video_combine.js 注册器），会遮蔽原型方法——必须包裹实例本身才生效。
-            const origExec = this.onExecuted;
-            this.onExecuted = function (output) {
-                const r2 = origExec?.apply(this, arguments);
-                const w = this._xzgAutoSendQcWidget;
-                if (w && w.value) {
-                    const btn = this._xzgQuickCutBtn;
-                    const labelSpan = btn?.querySelector("span:last-child");
-                    try { _sendToQuickCut(this, btn, labelSpan)?.catch?.(() => {}); } catch (e) {}
-                }
-                return r2;
-            };
+            // 化神级：最小宽度与默认宽度均为 500（父类默认 300；下方 rAF 的 computeSize() 也会被 minWidth 钳制到 ≥500）
+            this.minWidth = 360;
+            try { this.setSize([360, Math.max(this.size?.[1] || 360, 360)]); } catch (e) {}
 
             // 父类注册器已在本节点的 onNodeCreated 里创建好预览容器；
             // 这里在其基础上叠加「导出到达芬奇」悬浮按钮。父类注册器是同一扩展，
@@ -387,11 +451,9 @@ app.registerExtension({
                 _hideVideoSettingWidget(dateW);
                 _hideVideoSettingWidget(timeW);
                 _createOutputSettingsButton(this);
-                // 藏两个开关 widget 并把引用给图标渲染函数（图标状态依赖 widget.value）
-                _createAutoExportToggle(this, "自动导出到达芬奇", "_xzgAutoExportWidget");
-                _createAutoExportToggle(this, "自动发送到快剪", "_xzgAutoSendQcWidget");
-                this._xzgDavinciBtnIconRender?.();
-                this._xzgQcBtnIconRender?.();
+                // 自动导出开关已取消；旧工作流字段保留隐藏以兼容序列化，但不再自动发送。
+                _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动导出到达芬奇"));
+                _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动发送到快剪"));
                 try { this.setSize(this.computeSize()); } catch (e) {}
             });
             return r;
@@ -407,6 +469,13 @@ app.registerExtension({
             const r = origOnConfigure?.apply(this, arguments);
             try {
                 const node = this;
+                requestAnimationFrame(() => {
+                    const parts = (node.graph?.nodes || []).filter(n => n?.id != null && n.type)
+                        .map(n => `${n.id}:${n.type}`).sort();
+                    let h = 5381;
+                    for (const part of parts) for (let i = 0; i < part.length; i++) h = ((h << 5) + h + part.charCodeAt(i)) >>> 0;
+                    _loadVideoDavinciTarget(node);
+                });
                 if (Array.isArray(data?.size) && data.size[0] > 0 && data.size[1] > 0) {
                     const savedSize = [data.size[0], data.size[1]];
                     node.size = savedSize.slice();

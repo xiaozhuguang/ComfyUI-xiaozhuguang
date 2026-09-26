@@ -28,4 +28,11 @@ class XiaozhuguangAudioSave(XiaozhuguangAudioSaveDaVinci):
         # 去掉高级导出开关，仅保留基础参数
         base["optional"].pop("自动发送到快剪", None)
         base["optional"].pop("自动导出到达芬奇", None)
+        # 化神级「自定义输出目录」设置仅服务于达芬奇导出副本，精简版同样移除。
+        # 否则这 5 个字段会从父类继承下来，在精简节点底部裸露出
+        # use_default_output/base_dir/filename_custom/add_date_stamp/add_time_stamp
+        # 五个可见控件（前端只对化神级节点隐藏它们）。
+        for _k in ("use_default_output", "base_dir", "filename_custom",
+                   "add_date_stamp", "add_time_stamp"):
+            base["optional"].pop(_k, None)
         return base

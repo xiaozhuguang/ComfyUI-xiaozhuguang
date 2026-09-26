@@ -8,17 +8,18 @@
   AddTrack 新建视频轨道，片段落到新轨道并对齐当前播放头所在最上层片段的前端
   （不插入缝隙、不推移、不分割其他轨道）。
 
-触发方式：
-- 手动：前端预览区悬浮按钮「导出到达芬奇」
-- 自动：节点新增「自动导出到达芬奇」开关，开启后每次保存完成自动导入
+触发方式：前端预览区悬浮按钮「导出到达芬奇」手动触发。
 """
 
 import json
+import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime
 
 import folder_paths
 from server import PromptServer as _PS
@@ -40,10 +41,8 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
     @classmethod
     def INPUT_TYPES(cls):
         base = XiaozhuguangVideoCombine.INPUT_TYPES()
-        # 在「模式」之后、可选「音频」之前追加自动导出开关
-        base["required"]["自动导出到达芬奇"] = ("BOOLEAN", {"default": False})
-        # 「自动发送到快剪」由前端消费（执行完成后把视频加入快剪媒体池/V2 轨道），
-        # 后端仅接收占位，保持参数随工作流序列化
+        # 旧工作流兼容字段：前端隐藏并忽略，不再根据它自动发送到快剪。
+        # 保留参数位置，避免历史工作流按位置恢复 widget 值时错位。
         base["required"]["自动发送到快剪"] = ("BOOLEAN", {"default": False})
         # 自定义输出目录（与「小珠光图像保存-自定义输出」同一套约定）：
         # 追加在末尾，保证旧工作流按位置恢复 widget 值时不会错位。
@@ -57,7 +56,7 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
         return base
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF, 模式,
-                      自动导出到达芬奇=False, 自动发送到快剪=False,
+                      自动发送到快剪=False,
                       use_default_output=True, base_dir="",
                       add_date_stamp=False, add_time_stamp=False,
                       音频=None,
@@ -79,25 +78,68 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
         if video and video[0].get("abs_path") and video[0].get("is_absolute"):
             video[0]["abs_token"] = _register_abs_token(video[0]["abs_path"])
 
-        # 仅在「保存模式」产物存在时才有真实磁盘文件可导入达芬奇
-        if 自动导出到达芬奇 and 模式 == "保存":
-            if video and video[0].get("filename"):
+        # 预览模式仍保留 output/preview/<节点ID> 内的临时预览产物，避免改变播放器
+        # 的刷新与旧文件清理逻辑。但用户已配置自定义输出目录时，达芬奇应引用该目录
+        # 中的副本，而不是 preview 目录中的源文件。
+        davinci_path = None
+        if video and video[0].get("filename"):
+            if 模式 == "预览" and not use_default_output and (base_dir or "").strip():
                 try:
-                    abs_path = _resolve_abs_path(video[0])
-                    if abs_path and os.path.isfile(abs_path):
-                        result = _call_bridge({"action": "import", "file_path": abs_path})
-                        if result.get("ok"):
-                            ui["ui"]["davinci"] = {
-                                "ok": True,
-                                "clip": result.get("clip", ""),
-                                "track": result.get("track"),
-                                "record_frame": result.get("record_frame"),
-                            }
-                        else:
-                            ui["ui"]["davinci"] = {"ok": False, "error": result.get("error", "导入失败")}
+                    davinci_path = _copy_preview_to_configured_output(
+                        video[0], base_dir, 格式, extra_pnginfo, unique_id,
+                    )
+                    # 前端只持有会话令牌，不能借由导出接口读取任意本地路径。
+                    video[0]["davinci_abs_token"] = _register_abs_token(davinci_path)
+                    video[0]["davinci_copied"] = True
                 except Exception as _e:
-                    ui["ui"]["davinci"] = {"ok": False, "error": str(_e)}
+                    ui["ui"]["davinci"] = {
+                        "ok": False,
+                        "error": f"预览视频复制到自定义输出目录失败：{_e}",
+                    }
+            else:
+                davinci_path = _resolve_abs_path(video[0])
+
         return ui
+
+
+def _copy_preview_to_configured_output(video_info, base_dir, video_format,
+                                       extra_pnginfo=None, unique_id=None):
+    """将预览产物复制到用户配置的输出目录，并返回副本的绝对路径。
+
+    预览本身必须继续存放在 output/preview 下，才能保持现有播放器缓存和旧文件
+    清理行为。本函数只为达芬奇准备一份稳定、用户可见的源文件。
+    """
+    source_path = _resolve_abs_path(video_info)
+    if not source_path or not os.path.isfile(source_path):
+        raise FileNotFoundError(source_path or "预览视频不存在")
+
+    wf_name = "untitled"
+    if isinstance(extra_pnginfo, dict):
+        workflow = extra_pnginfo.get("workflow") or {}
+        name = workflow.get("name") or workflow.get("filename") or ""
+        if name:
+            wf_name = os.path.splitext(os.path.basename(str(name)))[0] or wf_name
+    context = {
+        "_now": datetime.now(),
+        "workflow_name": wf_name,
+        "node_id": unique_id or "",
+        "format": video_format,
+    }
+    # 与保存模式共用目录模板、非法字符清理与相对路径规则。
+    from .xzg_video_combine import _xzg_resolve_template, _xzg_sanitize_path, _xzg_is_absolute_path
+    resolved_base = _xzg_sanitize_path(_xzg_resolve_template(base_dir.strip(), context))
+    if not resolved_base:
+        raise ValueError("自定义输出目录为空")
+    if _xzg_is_absolute_path(resolved_base):
+        destination_dir = resolved_base
+    else:
+        destination_dir = os.path.join(folder_paths.get_output_directory(), resolved_base)
+    os.makedirs(destination_dir, exist_ok=True)
+
+    # 保留预览生成的文件名；每个预览节点的计数器递增，因而不会覆盖此前导出的版本。
+    destination_path = os.path.join(destination_dir, os.path.basename(video_info["filename"]))
+    shutil.copy2(source_path, destination_path)
+    return destination_path
 
 
 def _resolve_abs_path(video_info, output_dir=None):
@@ -252,7 +294,41 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
             abs_path = _resolve_abs_path({"filename": filename, "subfolder": subfolder})
             if not abs_path or not os.path.isfile(abs_path):
                 return _web.json_response({"ok": False, "error": f"文件不存在：{abs_path}"})
-        result = _call_bridge({"action": "import", "file_path": abs_path})
+        target_dir = str(data.get("target_dir") or "").strip()
+        selected_path = None
+        try:
+            from .xzg_video_loader_davinci import _choose_video_save_path
+            from .xzg_audio_loader_davinci import _find_exported_copy
+            if target_dir and not os.path.isdir(target_dir):
+                target_dir = ""
+            if not target_dir:
+                selected_path = await asyncio.to_thread(_choose_video_save_path, abs_path)
+                if not selected_path:
+                    return _web.json_response({"ok": False, "cancelled": True})
+                target_dir = os.path.dirname(selected_path)
+                target_name = os.path.basename(selected_path)
+            else:
+                if not os.path.isabs(target_dir):
+                    return _web.json_response({"ok": False, "error": "保存目录必须是完整路径"})
+                target_name = os.path.basename(str(data.get("target_name") or os.path.basename(abs_path)))
+            os.makedirs(target_dir, exist_ok=True)
+            target_path = await asyncio.to_thread(_find_exported_copy, abs_path, target_dir)
+            if target_path is None:
+                target_path = selected_path or os.path.join(target_dir, target_name)
+                if os.path.exists(target_path) and os.path.normcase(os.path.abspath(abs_path)) != os.path.normcase(os.path.abspath(target_path)):
+                    stem, ext = os.path.splitext(target_path)
+                    index = 2
+                    while os.path.exists(f"{stem}_{index}{ext}"):
+                        index += 1
+                    target_path = f"{stem}_{index}{ext}"
+                if os.path.normcase(os.path.abspath(abs_path)) != os.path.normcase(os.path.abspath(target_path)):
+                    await asyncio.to_thread(shutil.copy2, abs_path, target_path)
+        except Exception as e:
+            return _web.json_response({"ok": False, "error": f"选择或保存视频文件失败：{e}"})
+        result = await asyncio.to_thread(_call_bridge, {"action": "import", "file_path": target_path})
+        result["save_directory"] = target_dir
+        result["save_filename"] = os.path.basename(target_path)
+        result["copied"] = True
         return _web.json_response(result)
 
     @_PS.instance.routes.get("/xzg/davinci/view-abs")

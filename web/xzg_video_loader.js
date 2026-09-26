@@ -1289,6 +1289,15 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
 
     // 快剪联动按钮：点击后静默导出快剪时间线，自动加载到当前节点。
     // 仅化神级保留（默认创建）；视频加载器/低内存版不创建（{ fastcut: false }）
+    const _CLAPPER_SVG =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' +
+    'style="display:block">' +
+    '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/>' +
+    '<path d="m6.2 5.3 3.1 3.9"/>' +
+    '<path d="m12.4 3.4 3.1 4"/>' +
+    '<path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
+    '</svg>';
     let fastcutBtn = null;
     if (_fastcutEnabled) {
         fastcutBtn = document.createElement("button");
@@ -1296,12 +1305,12 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         fastcutBtn.style.cssText =
             "position:absolute;top:6px;right:6px;z-index:102;" +
             "display:inline-flex;align-items:center;gap:4px;" +
-            "padding:2px 6px;font-size:11px;line-height:1;" +
+            "height:22px;box-sizing:border-box;padding:2px 6px;font-size:11px;line-height:1;" +
             "background:transparent;color:#dcc85b;border:none;" +
             "cursor:pointer;pointer-events:auto;" +
             "transition:color 0.15s,opacity 0.2s;" +
             "opacity:0;";
-        fastcutBtn.innerHTML = '<span style="font-size:13px;">🎬</span><span>从快剪加载</span>';
+        fastcutBtn.innerHTML = _CLAPPER_SVG + '<span>快剪</span>';
         playerContainer.appendChild(fastcutBtn);
     }
 
@@ -2104,7 +2113,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
 
         // 快剪联动按钮：静默导出快剪时间线 → 自动加载到当前节点（仅化神级保留）
         if (fastcutBtn) {
-        const _fastcutOriginalText = "从快剪加载";
+        const _fastcutOriginalText = "快剪";
         // 只更新文字 span，保留前面的 🎬 图标
         const _setFastcutText = (text) => {
             const spans = fastcutBtn.querySelectorAll("span");
@@ -2148,6 +2157,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             };
 
             const confirmCallback = (result) => {
+                node._xzgFastcutEditorOpen = false;
                 fastcutBtn.disabled = false;
                 if (result && result.error) {
                     _setFastcutText("失败");
@@ -2179,6 +2189,14 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 }
             };
 
+            // 打开快剪编辑器前隐藏预览区内所有悬浮按钮，避免浮在编辑器上方
+            node._xzgFastcutEditorOpen = true;
+            try {
+                [fastcutBtn, node._xzgDavinciBtn, node._xzgLoaderQuickCutBtn,
+                 node._xzgLoaderExportDavinciBtn, node._xzgLoaderOutSettingsBtn].forEach(b => {
+                    b && (b.style.opacity = "0");
+                });
+            } catch (e) {}
             // 打开快剪编辑器，并传入 confirmCallback
             // modeFilter: "video" → 快剪只显示视频格式、隐藏「导出」按钮（仅「确认」导出）
             if (typeof window._xzgOpenVideoEditor === "function") {

@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { xzgLang } from "./xzg_i18n.js";
+import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 const H3_PREFIX = "Minimax-H3 ";
 const H3_GEN_MODES = [
@@ -7,59 +8,28 @@ const H3_GEN_MODES = [
     "Last Frame (L2VA)", "Full Reference (Ref2VA)",
 ].map(value => `${H3_PREFIX}${value}`);
 const QWEN_IMAGE_TARGET = "Qwen-Image-2.1 图像";
+const QWEN_IMAGE_TARGET_EN = "Qwen-Image-2.1 Image";
+const SKILL_PRESETS_KEY = "xzg_prompt_skill_presets";
+let skillPresetsRestorePromise = null;
 const QWEN_IMAGE_MODES = [
     "Qwen-Image-2.1 文生图",
     "Qwen-Image-2.1 图像编辑",
     "Qwen-Image-2.1 多参考图",
 ];
-const H3_ZH_STYLES = [
-    "无 (默认)", "极简产品广告", "3D动画短片", "纸艺定格科普",
-    "品牌宣传短片", "音乐美学MV", "双人游戏开场", "纸拼贴讲解", "手绘实拍融合",
-].map((value, index) => index === 0 ? value : `${H3_PREFIX}${value}`);
-const H3_EN_STYLES = [
-    "None (Default)", "Minimalist Product Ad", "3D Animated Short", "Papercraft Stop-Motion",
-    "Brand Promo Video", "Music Video", "Co-op Game Intro", "Paper Collage Explainer", "Hand-drawn + Live-action",
-].map((value, index) => index === 0 ? value : `${H3_PREFIX}${value}`);
-const H3_LEGACY_GEN_MODE_MAP = {
-    "Text to Video (T2VA)": H3_GEN_MODES[0], "Image to Video (I2VA)": H3_GEN_MODES[1],
-    "First+Last Frame (FL2VA)": H3_GEN_MODES[2], "Last Frame (L2VA)": H3_GEN_MODES[3],
-    "Full Reference (Ref2VA)": H3_GEN_MODES[4],
-    "文生视频 (T2VA)": H3_GEN_MODES[0], "图生视频 (I2VA)": H3_GEN_MODES[1],
-    "首尾帧 (FL2VA)": H3_GEN_MODES[2], "尾帧 (L2VA)": H3_GEN_MODES[3], "全参考 (Ref2VA)": H3_GEN_MODES[4],
+const TARGET_LABELS = {
+    zh: { h3: "MiniMax-H3", qwen: "QWEN", custom: "自定义 Skill" },
+    en: { h3: "MiniMax-H3", qwen: "QWEN", custom: "Custom Skill" },
 };
-const H3_ZH_STYLE_MAP = {
-    "None (Default)": H3_ZH_STYLES[0], "Minimalist Product Ad": H3_ZH_STYLES[1],
-    "3D Animated Short": H3_ZH_STYLES[2], "Papercraft Stop-Motion": H3_ZH_STYLES[3],
-    "Brand Promo Video": H3_ZH_STYLES[4], "Music Video": H3_ZH_STYLES[5],
-    "Co-op Game Intro": H3_ZH_STYLES[6], "Paper Collage Explainer": H3_ZH_STYLES[7],
-    "Hand-drawn + Live-action": H3_ZH_STYLES[8],
-    "无 (默认)": H3_ZH_STYLES[0], "极简产品广告": H3_ZH_STYLES[1], "3D动画短片": H3_ZH_STYLES[2],
-    "纸艺定格科普": H3_ZH_STYLES[3], "品牌宣传短片": H3_ZH_STYLES[4], "音乐美学MV": H3_ZH_STYLES[5],
-    "双人游戏开场": H3_ZH_STYLES[6], "纸拼贴讲解": H3_ZH_STYLES[7], "手绘实拍融合": H3_ZH_STYLES[8],
+const QWEN_MODE_LABELS = {
+    zh: ["Qwen-Image-2.1 文生图", "Qwen-Image-2.1 图像编辑", "Qwen-Image-2.1 多参考图"],
+    en: ["Text to Image", "Image Editing", "Multi-Reference Image"],
 };
-const H3_EN_STYLE_MAP = {
-    "None (Default)": H3_EN_STYLES[0], "Minimalist Product Ad": H3_EN_STYLES[1],
-    "3D Animated Short": H3_EN_STYLES[2], "Papercraft Stop-Motion": H3_EN_STYLES[3],
-    "Brand Promo Video": H3_EN_STYLES[4], "Music Video": H3_EN_STYLES[5],
-    "Co-op Game Intro": H3_EN_STYLES[6], "Paper Collage Explainer": H3_EN_STYLES[7],
-    "Hand-drawn + Live-action": H3_EN_STYLES[8],
-    "无 (默认)": H3_EN_STYLES[0], "极简产品广告": H3_EN_STYLES[1], "3D动画短片": H3_EN_STYLES[2],
-    "纸艺定格科普": H3_EN_STYLES[3], "品牌宣传短片": H3_EN_STYLES[4], "音乐美学MV": H3_EN_STYLES[5],
-    "双人游戏开场": H3_EN_STYLES[6], "纸拼贴讲解": H3_EN_STYLES[7], "手绘实拍融合": H3_EN_STYLES[8],
-};
-// 同一工作流在中英文界面间切换时，也保留已带前缀的选项。
-H3_EN_STYLES.forEach((value, index) => { H3_ZH_STYLE_MAP[value] = H3_ZH_STYLES[index]; });
-H3_ZH_STYLES.forEach((value, index) => { H3_EN_STYLE_MAP[value] = H3_EN_STYLES[index]; });
-H3_ZH_STYLE_MAP[`${H3_PREFIX}无 (默认)`] = H3_ZH_STYLES[0];
-H3_ZH_STYLE_MAP[`${H3_PREFIX}None (Default)`] = H3_ZH_STYLES[0];
-H3_EN_STYLE_MAP[`${H3_PREFIX}无 (默认)`] = H3_EN_STYLES[0];
-H3_EN_STYLE_MAP[`${H3_PREFIX}None (Default)`] = H3_EN_STYLES[0];
-
 app.registerExtension({
     name: "Xiaozhuguang.H3Prompt",
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
-        // ── 小珠光 Minimax-H3 提示词 ──
-        if (nodeData.name === "XiaozhuguangNinimaxH3Prompt") {
+        // ── 小珠光通用提示词 ──
+        if (nodeData.name === "XiaozhuguangNinimaxH3Prompt" || nodeData.name === "XiaozhuguangNinimaxH3PromptNoSkill") {
+            const supportsCustomSkill = nodeData.name === "XiaozhuguangNinimaxH3Prompt";
             // 获取图片接口名称（始终使用 image_N 格式，本地化通过 locale 文件处理）
             nodeType.prototype._xzgImgName = function (num) {
                 return `image_${num}`;
@@ -80,7 +50,7 @@ app.registerExtension({
             nodeType.prototype._addComboControlInputs = function () {
                 const labels = xzgLang() === "zh"
                     ? { target_model: "提示词类型", generation_mode: "提示词细分" }
-                    : { target_model: "Target Model", generation_mode: "Generation Mode" };
+                    : { target_model: "Prompt Type", generation_mode: "Prompt Subtype" };
                 for (const [name, label] of Object.entries(labels)) {
                     if (this.inputs?.some(input => input.name === name)) continue;
                     const input = this.addInput(name, "*", {
@@ -93,11 +63,15 @@ app.registerExtension({
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
-                this.setSize([300, this.size[1]]);
+                this.setSize([300, 400]);
                 this._addComboControlInputs();
                 this._hideExtraImageInputs();
-                this._translateStylePreset();
+                this._ensureTargetModelCombo();
                 this._syncTargetModel();
+                if (supportsCustomSkill) {
+                    this._addSkillPresetControls();
+                    this._restoreSkillPresets();
+                }
                 const targetWidget = this.widgets?.find(w => w.name === "target_model");
                 if (targetWidget) {
                     const originalCallback = targetWidget.callback;
@@ -110,39 +84,233 @@ app.registerExtension({
                 return r;
             };
 
-            // 根据语言环境显示带 Minimax-H3 前缀的下拉项，并迁移旧工作流值。
-            nodeType.prototype._translateStylePreset = function () {
+            // Qwen-Image-2.1 使用图像生成/编辑模式；H3 保持视频生成模式。
+            nodeType.prototype._ensureTargetModelCombo = function () {
+                const ensureCombo = (name, flag, fallback, values) => {
+                    let widget = this.widgets?.find(w => w.name === name);
+                    if (!widget) return null;
+                    if (widget.type !== "combo" && !this[flag]) {
+                        const index = this.widgets.indexOf(widget);
+                        const value = widget.value ?? fallback;
+                        const callback = widget.callback;
+                        this.widgets.splice(index, 1);
+                        const combo = this.addWidget("combo", name, value, function (...args) {
+                            return callback?.apply(this, args);
+                        }, { values });
+                        const newIndex = this.widgets.indexOf(combo);
+                        this.widgets.splice(newIndex, 1);
+                        this.widgets.splice(index, 0, combo);
+                        widget = combo;
+                        this[flag] = true;
+                    }
+                    widget.options = widget.options || {};
+                    return widget;
+                };
                 const lang = xzgLang();
-                const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
-                if (gmWidget && gmWidget.options) {
-                    gmWidget.options.values = H3_GEN_MODES;
-                    gmWidget.value = H3_LEGACY_GEN_MODE_MAP[gmWidget.value]
-                        || (H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0]);
-                }
-
-                const spWidget = this.widgets?.find(w => w.name === "style_preset");
-                if (spWidget && spWidget.options) {
-                    const styleValues = lang === "zh" ? H3_ZH_STYLES : H3_EN_STYLES;
-                    const styleMap = lang === "zh" ? H3_ZH_STYLE_MAP : H3_EN_STYLE_MAP;
-                    spWidget.options.values = styleValues;
-                    spWidget.value = styleMap[spWidget.value]
-                        || (styleValues.includes(spWidget.value) ? spWidget.value : styleValues[0]);
-                }
+                const labels = TARGET_LABELS[lang] || TARGET_LABELS.zh;
+                const targetValues = supportsCustomSkill ? [labels.h3, labels.qwen, labels.custom] : [labels.h3, labels.qwen];
+                ensureCombo("target_model", "_xzgTargetComboRebuilt", labels.h3, targetValues);
+                ensureCombo("generation_mode", "_xzgGenerationModeComboRebuilt", H3_GEN_MODES[0], [...H3_GEN_MODES]);
             };
 
-            // Qwen-Image-2.1 使用图像生成/编辑模式；H3 保持视频生成模式。
             nodeType.prototype._syncTargetModel = function () {
+                this._ensureTargetModelCombo();
                 const targetWidget = this.widgets?.find(w => w.name === "target_model");
                 const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
                 if (!gmWidget?.options) return;
-                if (targetWidget?.value === QWEN_IMAGE_TARGET) {
-                    gmWidget.options.values = QWEN_IMAGE_MODES;
-                    if (!QWEN_IMAGE_MODES.includes(gmWidget.value)) gmWidget.value = QWEN_IMAGE_MODES[0];
-                } else {
-                    gmWidget.options.values = H3_GEN_MODES;
-                    gmWidget.value = H3_LEGACY_GEN_MODE_MAP[gmWidget.value]
-                        || (H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0]);
+                const lang = xzgLang();
+                const labels = TARGET_LABELS[lang] || TARGET_LABELS.zh;
+                if (targetWidget?.options) {
+                    let presets = {};
+                    if (supportsCustomSkill) {
+                        try { presets = JSON.parse(localStorage.getItem(SKILL_PRESETS_KEY) || "{}"); } catch (_) {}
+                    }
+                    const oldValue = targetWidget.value || "";
+                    const isQwen = oldValue === QWEN_IMAGE_TARGET || oldValue === QWEN_IMAGE_TARGET_EN || oldValue === "QWEN";
+                    const isCustom = supportsCustomSkill && (oldValue === "自定义 Skill" || oldValue === "Custom Skill");
+                    const values = supportsCustomSkill ? [labels.h3, labels.qwen, labels.custom] : [labels.h3, labels.qwen];
+                    targetWidget.options.values = values;
+                    targetWidget.value = isCustom ? labels.custom : isQwen ? labels.qwen : labels.h3;
+                    const presetNames = presets && typeof presets === "object" && !Array.isArray(presets)
+                        ? Object.keys(presets).sort((a, b) => a.localeCompare(b)) : [];
+                    if (gmWidget?.options) {
+                        if (isCustom) {
+                            gmWidget.options.values = presetNames.length ? presetNames : [lang === "zh" ? "（请先保存 Skill 预设）" : "(Save a Skill preset first)"];
+                            const wanted = gmWidget.value;
+                            gmWidget.value = presetNames.includes(wanted) ? wanted : (presetNames[0] || gmWidget.options.values[0]);
+                        } else if (isQwen) {
+                            const oldMode = gmWidget.value;
+                            gmWidget.options.values = QWEN_MODE_LABELS[lang] || QWEN_MODE_LABELS.zh;
+                            const canonical = ({
+                                "Qwen-Image-2.1 文生图": 0, "Text to Image": 0,
+                                "Qwen-Image-2.1 图像编辑": 1, "Image Editing": 1,
+                                "Qwen-Image-2.1 多参考图": 2, "Multi-Reference Image": 2,
+                            })[oldMode];
+                            gmWidget.value = gmWidget.options.values[canonical ?? 0];
+                        } else {
+                            gmWidget.options.values = H3_GEN_MODES;
+                            gmWidget.value = H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0];
+                        }
+                    }
                 }
+            };
+
+            nodeType.prototype._restoreSkillPresets = function () {
+                if (!skillPresetsRestorePromise) {
+                    skillPresetsRestorePromise = cloudLoad(SKILL_PRESETS_KEY, { fallbackValue: {} })
+                        .then(data => data && typeof data === "object" && !Array.isArray(data) ? data : {})
+                        .catch(() => ({}));
+                }
+                skillPresetsRestorePromise.then(() => this._refreshSkillPresetTypes());
+            };
+
+            nodeType.prototype._refreshSkillPresetTypes = function () {
+                for (const node of app.graph?._nodes || []) {
+                    if (node?.type === "XiaozhuguangNinimaxH3Prompt" || node?.constructor?.name === "XiaozhuguangNinimaxH3Prompt" || node?.type === "XiaozhuguangNinimaxH3PromptNoSkill" || node?.constructor?.name === "XiaozhuguangNinimaxH3PromptNoSkill") {
+                        node._syncTargetModel?.();
+                    }
+                }
+                window.XZGRefreshSkillPresetTypes = () => {
+                    for (const node of app.graph?._nodes || []) node?._syncTargetModel?.();
+                };
+            };
+
+            nodeType.prototype._addSkillPresetControls = function () {
+                if (this._xzgSkillPresetControlsAdded) return;
+                this._xzgSkillPresetControlsAdded = true;
+                const storageKey = SKILL_PRESETS_KEY;
+                const getPresets = () => {
+                    try {
+                        const parsed = JSON.parse(localStorage.getItem(storageKey) || "{}");
+                        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+                    } catch (_) { return {}; }
+                };
+                this.addWidget("button", xzgLang() === "zh" ? "Skill 预设管理" : "Manage Skill Presets", null, () => {
+                    if (this._xzgSkillPresetDialog) return;
+                    const zh = xzgLang() === "zh";
+                    const overlay = document.createElement("div");
+                    overlay.style.cssText = "position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.72);display:flex;align-items:stretch;justify-content:stretch;padding:8px;box-sizing:border-box;";
+                    const panel = document.createElement("div");
+                    panel.style.cssText = "width:100%;height:100%;display:flex;flex-direction:column;background:#202124;color:#eee;border:1px solid #555;border-radius:8px;box-shadow:0 16px 48px #0009;font:13px Arial,sans-serif;overflow:hidden;";
+                    panel.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none"><span style="flex:1">${zh ? "Skill 预设管理" : "Skill Preset Manager"}</span><button data-close style="background:none;border:0;color:#bbb;font-size:21px;cursor:pointer">×</button></div><div style="padding:12px 16px 8px;display:flex;gap:8px;flex:none"><input data-name maxlength="80" placeholder="${zh ? "预设名称" : "Preset name"}" style="flex:1;min-width:0;background:#151617;color:#eee;border:1px solid #555;border-radius:5px;padding:8px"><button data-import style="background:#343b49;color:#ddd;border:1px solid #555;border-radius:5px;padding:0 12px;cursor:pointer">${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><input data-file type="file" accept=".txt,.md,text/plain,text/markdown" style="display:none"><button data-save style="background:#3a7653;color:white;border:0;border-radius:5px;padding:0 14px;cursor:pointer">${zh ? "保存预设" : "Save Preset"}</button></div><textarea data-skill spellcheck="false" placeholder="${zh ? "在这里编写或编辑 Skill，也可以拖入 .txt / .md 文件" : "Write or edit the Skill here, or drop a .txt / .md file"}" style="box-sizing:border-box;width:calc(100% - 32px);flex:1;min-height:120px;resize:none;margin:4px 16px 12px;padding:10px;background:#151617;color:#eee;border:1px solid #555;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea><div data-list style="flex:1;overflow:auto;padding:0 16px 14px;min-height:70px"></div><div style="padding:10px 16px;border-top:1px solid #444;color:#999;font-size:11px;flex:none">${zh ? "点击预设名称加载和应用；同名保存会更新。预设随小珠光配置导出。" : "Click a preset to load and apply it. Saving with the same name updates it. Presets are included in Xiaozhuguang config exports."}</div>`;
+                    overlay.appendChild(panel);
+                    document.body.appendChild(overlay);
+                    this._xzgSkillPresetDialog = overlay;
+                    const close = () => { overlay.remove(); this._xzgSkillPresetDialog = null; };
+                    panel.querySelector("[data-close]").onclick = close;
+                    overlay.addEventListener("mousedown", e => { if (e.target === overlay) close(); });
+                    const editor = panel.querySelector("[data-skill]");
+                    const nameInput = panel.querySelector("[data-name]");
+                    const selectedTarget = this.widgets?.find(w => w.name === "target_model")?.value || "";
+                    const selectedMode = this.widgets?.find(w => w.name === "generation_mode")?.value || "";
+                    if (selectedTarget === TARGET_LABELS[zh ? "zh" : "en"].custom) {
+                        nameInput.value = selectedMode;
+                        const selectedPreset = getPresets()[selectedMode];
+                        if (selectedPreset?.skill) editor.value = selectedPreset.skill;
+                    }
+                    const fileInput = panel.querySelector("[data-file]");
+                    panel.querySelector("[data-import]").onclick = () => fileInput.click();
+                    fileInput.onchange = async () => {
+                        const file = fileInput.files?.[0];
+                        if (!file) return;
+                        if (!/\.(txt|md)$/i.test(file.name)) {
+                            editor.placeholder = zh ? "只支持 .txt 和 .md 文件" : "Only .txt and .md files are supported";
+                            fileInput.value = "";
+                            return;
+                        }
+                        editor.value = await file.text();
+                        if (!nameInput.value.trim()) nameInput.value = file.name.replace(/\.(txt|md)$/i, "");
+                        fileInput.value = "";
+                    };
+                    editor.addEventListener("dragover", e => { e.preventDefault(); editor.style.borderColor = "#68b38a"; });
+                    editor.addEventListener("dragleave", () => { editor.style.borderColor = "#555"; });
+                    editor.addEventListener("drop", async e => {
+                        e.preventDefault();
+                        editor.style.borderColor = "#555";
+                        const file = e.dataTransfer?.files?.[0];
+                        if (!file) return;
+                        if (!/\.(txt|md)$/i.test(file.name)) {
+                            editor.placeholder = zh ? "只支持 .txt 和 .md 文件" : "Only .txt and .md files are supported";
+                            return;
+                        }
+                        editor.value = await file.text();
+                        if (!nameInput.value.trim()) nameInput.value = file.name.replace(/\.(txt|md)$/i, "");
+                    });
+                    const renderList = () => {
+                        const list = panel.querySelector("[data-list]");
+                        const presets = getPresets();
+                        const names = Object.keys(presets).sort((a, b) => a.localeCompare(b));
+                        list.replaceChildren();
+                        if (!names.length) {
+                            const empty = document.createElement("div");
+                            empty.textContent = zh ? "暂无预设。填写 Skill 后，可在上方保存。" : "No presets yet. Enter a Skill and save it above.";
+                            empty.style.cssText = "padding:22px 8px;text-align:center;color:#999";
+                            list.appendChild(empty);
+                            return;
+                        }
+                        for (const name of names) {
+                            const row = document.createElement("div");
+                            row.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 2px;border-bottom:1px solid #383838";
+                            const apply = document.createElement("button");
+                            apply.textContent = name;
+                            apply.title = presets[name]?.skill || "";
+                            apply.style.cssText = "flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:transparent;color:#ddd;border:0;padding:5px;cursor:pointer";
+                            apply.onclick = () => {
+                                editor.value = presets[name]?.skill || "";
+                                const targetWidget = this.widgets?.find(w => w.name === "target_model");
+                                const labels = TARGET_LABELS[xzgLang()] || TARGET_LABELS.zh;
+                                targetWidget.value = labels.custom;
+                                targetWidget.callback?.(labels.custom);
+                                const modeWidget = this.widgets?.find(w => w.name === "generation_mode");
+                                if (modeWidget?.options?.values?.includes(name)) modeWidget.value = name;
+                                modeWidget?.callback?.(modeWidget.value);
+                                nameInput.value = name;
+                                this.setDirtyCanvas(true, true);
+                            };
+                            const remove = document.createElement("button");
+                            remove.textContent = zh ? "删除" : "Delete";
+                            remove.style.cssText = "background:#492d2d;color:#f2baba;border:1px solid #694141;border-radius:4px;padding:5px 9px;cursor:pointer";
+                            remove.onclick = () => {
+                                const updated = getPresets();
+                                delete updated[name];
+                                cloudSave(storageKey, updated).catch(() => {});
+                                const targetWidget = this.widgets?.find(w => w.name === "target_model");
+                                const modeWidget = this.widgets?.find(w => w.name === "generation_mode");
+                                const labels = TARGET_LABELS[xzgLang()] || TARGET_LABELS.zh;
+                                if (targetWidget?.value === labels.custom && modeWidget?.value === name) {
+                                    modeWidget.value = Object.keys(updated).sort((a, b) => a.localeCompare(b))[0] || (zh ? "（请先保存 Skill 预设）" : "(Save a Skill preset first)");
+                                }
+                                this._syncTargetModel();
+                                this._refreshSkillPresetTypes();
+                                renderList();
+                            };
+                            row.append(apply, remove);
+                            list.appendChild(row);
+                        }
+                    };
+                    panel.querySelector("[data-save]").onclick = () => {
+                        const name = nameInput.value.trim();
+                        const value = editor.value.trim();
+                        if (!name || !value) {
+                            nameInput.placeholder = zh ? "请填写预设名称，且 Skill 不能为空" : "Enter a name and a non-empty Skill";
+                            return;
+                        }
+                        const presets = getPresets();
+                        presets[name] = { skill: value, updatedAt: new Date().toISOString() };
+                        cloudSave(storageKey, presets).catch(() => {});
+                        this._syncTargetModel();
+                        this._refreshSkillPresetTypes();
+                        const targetWidget = this.widgets?.find(w => w.name === "target_model");
+                        const labels = TARGET_LABELS[xzgLang()] || TARGET_LABELS.zh;
+                        targetWidget.value = labels.custom;
+                        targetWidget.callback?.(labels.custom);
+                        const modeWidget = this.widgets?.find(w => w.name === "generation_mode");
+                        if (modeWidget?.options?.values?.includes(name)) modeWidget.value = name;
+                        modeWidget?.callback?.(modeWidget.value);
+                        renderList();
+                    };
+                    renderList();
+                });
             };
 
             nodeType.prototype._hideExtraImageInputs = function () {
@@ -267,14 +435,18 @@ app.registerExtension({
                 return r;
             };
 
-            // 从工作流加载时调整图片接口
+            // 调整图片接口
             const origConfigure = nodeType.prototype.configure;
             nodeType.prototype.configure = function (info) {
-                const r = origConfigure?.apply(this, arguments);
-                // configure 会在 onNodeCreated 之后恢复工作流 widget 值；此时 target_model
-                // 可能已从默认 H3 变为 Qwen-Image-2.1，但恢复赋值不会触发 widget callback。
-                // 因此必须在恢复完成后主动重建“提示词细分”列表，避免显示 H3 选项。
+                const callArgs = [...arguments];
+                const r = origConfigure?.apply(this, callArgs);
+                // configure 会在 onNodeCreated 之后恢复 widget 值；恢复后重建细分列表。
+                this._ensureTargetModelCombo();
                 this._syncTargetModel();
+                if (supportsCustomSkill) {
+                    this._addSkillPresetControls();
+                    this._restoreSkillPresets();
+                }
                 // 子图解包时 configure 早于连线恢复；此刻增删/重编号端口会让恢复目标槽位消失。
                 // 等到当前批次的连接变更全部完成后再统一整理。
                 clearTimeout(this._adjustImgTimer);

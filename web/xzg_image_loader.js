@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT, xzgTh } from "./xzg_i18n.js";
-import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
+import { xzgEnableCanvasPanOnSpace, xzgPickSaveDirectory, xzgWriteBlobToDir } from "./xzg_save_utils.js";
 
 // ═══════════════════════════════════════════════
 //  小珠光图像加载器 · 前端
@@ -54,6 +54,32 @@ function getCropDataWidget(node) {
 
 function getUploadModeWidget(node) {
     return getWidgetByName(node, "upload_mode");
+}
+
+function getMaskOutputEnabledWidget(node) {
+    return getWidgetByName(node, "mask_output_enabled");
+}
+
+function getMaskOutputColorWidget(node) {
+    return getWidgetByName(node, "mask_output_color");
+}
+
+function ensureHiddenWidget(node, name, type, value) {
+    let widget = getWidgetByName(node, name);
+    if (!widget) {
+        widget = node.addWidget?.(type, name, value, null, { serialize: true });
+        if (!widget) {
+            widget = { name, type: "hidden", value, options: { serialize: true }, hidden: true, computeSize: () => [0, 0], callback: null };
+            node.widgets = node.widgets || [];
+            node.widgets.push(widget);
+        }
+    }
+    widget.type = "hidden";
+    widget.hidden = true;
+    widget.computeSize = () => [0, 0];
+    widget.options = widget.options || {};
+    widget.options.serialize = true;
+    return widget;
 }
 
 function normalizeAnnotatedName(name) {
@@ -333,6 +359,71 @@ async function xzgSaveImage(url, filename) {
     }
 }
 
+// 多图批量保存：目录选择器可用时只选一次文件夹，随后逐个写入；
+// 不支持目录选择器的浏览器则触发普通批量下载，不逐张弹另存为窗口。
+async function xzgSaveImagesBatch(items) {
+    let dirHandle = null;
+    if (typeof window.showDirectoryPicker === "function") {
+        try {
+            dirHandle = await xzgPickSaveDirectory("image");
+        } catch (e) {
+            if (e?.name === "AbortError") return false;
+            console.warn("[小珠光] 选择批量保存文件夹失败:", e);
+        }
+    }
+
+    if (dirHandle) {
+        const usedNames = new Set();
+        for (const item of items) {
+            const response = await fetch(item.url);
+            if (!response.ok) continue;
+            const blob = await response.blob();
+            const rawName = String(item.filename || "image.png").replace(/\\/g, "/").split("/").pop() || "image.png";
+            const dot = rawName.lastIndexOf(".");
+            const stem = dot > 0 ? rawName.slice(0, dot) : rawName;
+            const ext = dot > 0 ? rawName.slice(dot) : "";
+            let filename = rawName;
+            let suffix = 2;
+            while (usedNames.has(filename.toLowerCase())) {
+                filename = `${stem} (${suffix++})${ext}`;
+            }
+            // 同名文件已存在时递增编号，避免批量保存静默覆盖目录中的旧文件。
+            while (true) {
+                try {
+                    await dirHandle.getFileHandle(filename);
+                    filename = `${stem} (${suffix++})${ext}`;
+                    while (usedNames.has(filename.toLowerCase())) filename = `${stem} (${suffix++})${ext}`;
+                } catch (e) {
+                    if (e?.name !== "NotFoundError") throw e;
+                    break;
+                }
+            }
+            usedNames.add(filename.toLowerCase());
+            await xzgWriteBlobToDir(dirHandle, filename, blob);
+        }
+        return true;
+    }
+
+    // 浏览器不支持目录选择时，走默认下载目录；按序触发下载以减少浏览器拦截。
+    for (const item of items) {
+        try {
+            const response = await fetch(item.url);
+            if (!response.ok) continue;
+            const blobUrl = URL.createObjectURL(await response.blob());
+            const anchor = document.createElement("a");
+            anchor.href = blobUrl;
+            anchor.download = String(item.filename || "image.png").replace(/\\/g, "/").split("/").pop() || "image.png";
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        } catch (e) {
+            console.warn("[小珠光] 批量保存图片失败:", item.filename, e);
+        }
+    }
+    return true;
+}
+
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
@@ -440,6 +531,7 @@ function createImgBatchUI(node) {
         saveItem.addEventListener("mouseleave", () => { saveItem.style.background = ""; });
         saveItem.addEventListener("click", async () => {
             hideContextMenu();
+            const saveItems = [];
             for (let i = 0; i < targetNames.length; i++) {
                 const n = targetNames[i];
                 const url = getOriginalImageUrl(n);
@@ -451,8 +543,10 @@ function createImgBatchUI(node) {
                         break;
                     }
                 }
-                await xzgSaveImage(url, realName);
+                saveItems.push({ url, filename: realName });
             }
+            if (saveItems.length > 1) await xzgSaveImagesBatch(saveItems);
+            else if (saveItems.length === 1) await xzgSaveImage(saveItems[0].url, saveItems[0].filename);
         });
         if (uploadMode === "append") {
             const appendItem = document.createElement("div");
@@ -587,6 +681,17 @@ function createImgBatchUI(node) {
     let maskEnabled = false;               // 遮罩绘制模式是否开启
     let maskTool = "brush";                // brush | eraser
     let brushSize = 30;                    // 画笔大小 px
+    let maskPreviewColor = /^#[0-9a-f]{6}$/i.test(node.properties?.xzg_mask_preview_color || "")
+        ? node.properties.xzg_mask_preview_color : "#ff0000";
+    let maskOutputEnabled = node.properties?.xzg_mask_output_enabled === true ||
+        String(getMaskOutputEnabledWidget(node)?.value || "").toLowerCase() === "true";
+    let maskCloseEnabled = node.properties?.xzg_mask_close_enabled === true || node.properties?.xzg_mask_close_enabled === 1 ||
+        String(node.properties?.xzg_mask_close_enabled || "").toLowerCase() === "true";
+    let _maskStrokePoints = [];
+    const _maskPreviewRgb = () => {
+        const hex = /^#[0-9a-f]{6}$/i.test(maskPreviewColor) ? maskPreviewColor : "#ff0000";
+        return [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+    };
     let _maskRightErasing = false;         // 右键擦除中（临时覆盖 maskTool 为 eraser）
     let _maskDrawing = false;
     let _maskLastPt = null;
@@ -607,6 +712,8 @@ function createImgBatchUI(node) {
     const maskOffCtx = maskOffscreen.getContext("2d");
     // 记录当前遮罩对应哪张图（文件名），切图时自动重建
     let _maskBoundImageName = null;
+    let _maskByImage = {};
+    let _maskWidgetSource = null;
     // 遮罩原图真实尺寸（像素），用于映射绘制坐标
     let _maskImgNaturalW = 0;
     let _maskImgNaturalH = 0;
@@ -656,12 +763,15 @@ function createImgBatchUI(node) {
         if (imgName) {
             const cell = e.target.closest("[data-xzg-img-card]");
             const imageIndex = cell ? parseInt(cell.dataset.xzgIndex, 10) : getIndex(node);
-            // 右键操作的对象就是当前图片：同步当前索引并取消其它多选高亮。
+            // 右键已选中的图片时保留多选集合，供「保存选中图片」使用；
+            // 右键未选中的图片则将它设为唯一选择。
             if (Number.isInteger(imageIndex) && imageIndex >= 0) {
-                selectedIndexes = [imageIndex];
-                lastClickedIndex = imageIndex;
-                setIndex(node, imageIndex);
-                redraw(false);
+                if (!selectedIndexes.includes(imageIndex)) {
+                    selectedIndexes = [imageIndex];
+                    lastClickedIndex = imageIndex;
+                    setIndex(node, imageIndex);
+                    redraw(false);
+                }
             }
             showContextMenu(e.clientX, e.clientY, imgName, imageIndex);
         } else if (uploadMode === "append") {
@@ -727,11 +837,11 @@ function createImgBatchUI(node) {
             b.__lb = lb;
             b.appendChild(g);
             b.appendChild(lb);
-            b.style.cssText = "font-size:11px;line-height:1.4;width:100%;";
+            b.style.cssText = "font-size:13px;line-height:1.4;width:100%;";
         } else {
             b.textContent = label;
             b.style.cssText =
-                "font-size:11px;line-height:1.4;width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;";
+                "font-size:13px;line-height:1.4;width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;";
         }
         b.addEventListener("mouseenter", () => {
             b.style.filter = "brightness(1.2)";
@@ -781,12 +891,9 @@ function createImgBatchUI(node) {
     function _syncUploadModeFromWidget() {
         const newMode = _readUploadMode();
         if (newMode === uploadMode) return;
+        _resetImageEditsForModeSwitch();
         uploadMode = newMode;
         viewMode = uploadMode === "append" ? "grid" : "single";
-        if (uploadMode === "append") {
-            maskEnabled = false;
-            _resetImgZoom();
-        }
         updateUploadModeBtn();
         _refreshMaskToolbar();
         _updateMaskCursor();
@@ -846,15 +953,11 @@ function createImgBatchUI(node) {
     uploadModeBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         const wasAppend = uploadMode === "append";
+        _resetImageEditsForModeSwitch();
         uploadMode = uploadMode === "append" ? "replace" : "append";
         viewMode = uploadMode === "append" ? "grid" : "single";
         // 保存到 widget，随工作流持久化
         _writeUploadMode(uploadMode);
-        // 切到多图模式自动关闭遮罩绘制
-        if (uploadMode === "append") {
-            maskEnabled = false;
-            _resetImgZoom();
-        }
         // 切换到单图模式时，只保留第一张图片
         if (wasAppend && uploadMode === "replace") {
             const names = parseNameList(getImageListWidget(node)?.value);
@@ -1014,7 +1117,7 @@ function createImgBatchUI(node) {
         b.addEventListener("mouseleave", () => { b.style.filter = ""; });
         return b;
     };
-    const maskToggleBtn = _mkMaskBtn(xzgT("遮罩", "Mask"), xzgT("开启/关闭遮罩绘制模式（仅单图模式）", "Toggle mask drawing (single mode only)"), "mask");
+    const maskToggleBtn = _mkMaskBtn(xzgT("遮罩", "Mask"), xzgT("开启/关闭当前图片的遮罩绘制", "Toggle mask drawing for the current image"), "mask");
     const maskBrushBtn = _mkMaskBtn(xzgT("画笔", "Brush"), xzgT("切换到画笔工具", "Switch to Brush"));
     const maskEraserBtn = _mkMaskBtn(xzgT("橡皮", "Eraser"), xzgT("切换到橡皮擦工具", "Switch to Eraser"));
     const maskClearBtn = _mkMaskBtn(xzgT("清空", "Clear"), xzgT("清除整个遮罩", "Clear mask"));
@@ -1041,8 +1144,131 @@ function createImgBatchUI(node) {
     brushSizeRow.appendChild(brushSizeLabel);
     brushSizeRow.appendChild(brushSizeInput);
 
+    const maskColorRow = document.createElement("div");
+    maskColorRow.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:1px;padding:2px 0;";
+    const maskColorControlRow = document.createElement("div");
+    maskColorControlRow.style.cssText = "display:flex;align-items:center;justify-content:center;gap:3px;width:100%;";
+    const maskColorLabel = document.createElement("span");
+    maskColorLabel.textContent = xzgT("预览色", "Color");
+    maskColorLabel.title = xzgT("自定义遮罩预览颜色", "Customize mask preview color");
+    maskColorLabel.style.cssText = "font-size:9px;color:var(--input-text);white-space:nowrap;";
+    const maskColorInput = document.createElement("input");
+    maskColorInput.type = "color";
+    maskColorInput.value = maskPreviewColor;
+    maskColorInput.title = maskColorLabel.title;
+    maskColorInput.style.cssText = "width:25px;height:20px;padding:0;border:1px solid var(--border-color);border-radius:3px;background:transparent;cursor:pointer;";
+    const maskColorPresets = [
+        [xzgT("红色", "Red"), "#ff0000"],
+        [xzgT("绿色", "Green"), "#00ff00"],
+        [xzgT("黄色", "Yellow"), "#ffff00"],
+        [xzgT("蓝色", "Blue"), "#0000ff"],
+    ];
+    const maskColorPresetRow = document.createElement("div");
+    maskColorPresetRow.style.cssText = "display:flex;justify-content:center;gap:3px;padding:1px 0;";
+    const maskColorPresetButtons = [];
+    const _setMaskPreviewColor = (color) => {
+        if (!/^#[0-9a-f]{6}$/i.test(color || "")) return;
+        maskPreviewColor = color;
+        maskColorInput.value = color;
+        if (node.properties) node.properties.xzg_mask_preview_color = maskPreviewColor;
+        const colorWidget = getMaskOutputColorWidget(node);
+        if (colorWidget) colorWidget.value = maskPreviewColor;
+        // 卡片上的遮罩缩略图是独立 canvas，颜色变更后重建以同步预览色。
+        if (uploadMode === "append" && grid?.isConnected) redraw(true);
+        for (const [preset, presetColor] of maskColorPresetButtons) {
+            preset.style.borderColor = presetColor === color.toLowerCase() ? "#fff" : "rgba(255,255,255,0.45)";
+            preset.style.boxShadow = presetColor === color.toLowerCase() ? "0 0 0 1px #222" : "none";
+        }
+        _renderMaskOverlay();
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    };
+    for (const [label, color] of maskColorPresets) {
+        const preset = document.createElement("button");
+        preset.type = "button";
+        preset.title = label;
+        preset.setAttribute("aria-label", label);
+        preset.style.cssText = `width:10px;height:10px;min-width:10px;padding:0;border:1px solid rgba(255,255,255,0.45);border-radius:50%;background:${color};cursor:pointer;`;
+        preset.addEventListener("click", (e) => {
+            e.stopPropagation();
+            _setMaskPreviewColor(color);
+        });
+        maskColorPresetButtons.push([preset, color]);
+        maskColorPresetRow.appendChild(preset);
+    }
+    for (const [preset, color] of maskColorPresetButtons) {
+        if (color === maskPreviewColor.toLowerCase()) {
+            preset.style.borderColor = "#fff";
+            preset.style.boxShadow = "0 0 0 1px #222";
+        }
+    }
+    maskColorInput.addEventListener("input", () => _setMaskPreviewColor(maskColorInput.value));
+    maskColorControlRow.appendChild(maskColorLabel);
+    maskColorControlRow.appendChild(maskColorInput);
+    maskColorRow.appendChild(maskColorControlRow);
+    maskColorRow.appendChild(maskColorPresetRow);
+
+    const maskOutputToggleBtn = _mkMaskBtn(xzgT("输出着色", "Tint Output"),
+        xzgT("开关：把遮罩区域按预览色合成到图像输出（遮罩端口仍单独输出）", "Toggle tinting masked regions in IMAGE output; MASK output remains separate"));
+    maskOutputToggleBtn.replaceChildren();
+    const maskOutputToggleLabel = document.createElement("span");
+    maskOutputToggleLabel.textContent = xzgT("着色输出", "Tint Output");
+    const maskOutputToggleIndicator = document.createElement("span");
+    maskOutputToggleIndicator.setAttribute("aria-hidden", "true");
+    maskOutputToggleIndicator.style.cssText = "display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;box-sizing:border-box;";
+    maskOutputToggleBtn.appendChild(maskOutputToggleLabel);
+    maskOutputToggleBtn.appendChild(maskOutputToggleIndicator);
+    maskOutputToggleBtn.style.cssText = "display:flex;align-items:center;justify-content:center;gap:5px;width:100%;box-sizing:border-box;padding:5px 2px;border:none;border-radius:4px;font-size:11px;font-weight:600;line-height:1.2;white-space:nowrap;cursor:pointer;transition:background 0.12s ease,color 0.12s ease;";
+    maskOutputToggleIndicator.style.transform = "translateX(3px)";
+    const _setMaskOutputEnabled = (enabled) => {
+        maskOutputEnabled = !!enabled;
+        const widget = getMaskOutputEnabledWidget(node);
+        if (widget) widget.value = maskOutputEnabled;
+        if (node.properties) node.properties.xzg_mask_output_enabled = maskOutputEnabled;
+        maskOutputToggleBtn.setAttribute("aria-pressed", String(maskOutputEnabled));
+        maskOutputToggleBtn.style.color = maskOutputEnabled ? "#baffc2" : "var(--input-text)";
+        maskOutputToggleBtn.style.background = maskOutputEnabled ? "rgba(55,170,75,0.35)" : "rgba(128,128,128,0.12)";
+        maskOutputToggleIndicator.style.background = maskOutputEnabled ? "#54e36e" : "transparent";
+        maskOutputToggleIndicator.style.border = maskOutputEnabled ? "1px solid #d8ffe0" : "1px solid #9a9a9a";
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    };
+    maskOutputToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _setMaskOutputEnabled(!maskOutputEnabled);
+    });
+    _setMaskOutputEnabled(maskOutputEnabled);
+
+    const maskCloseToggleBtn = _mkMaskBtn(xzgT("封闭遮罩", "Close Mask"),
+        xzgT("开启后，画出接近闭合的轮廓时会自动闭合并填充内部", "Automatically close and fill the inside of a nearly closed brush stroke"));
+    maskCloseToggleBtn.replaceChildren();
+    const maskCloseToggleLabel = document.createElement("span");
+    maskCloseToggleLabel.textContent = xzgT("封闭遮罩", "Close Mask");
+    const maskCloseToggleIndicator = document.createElement("span");
+    maskCloseToggleIndicator.setAttribute("aria-hidden", "true");
+    maskCloseToggleIndicator.style.cssText = "display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;box-sizing:border-box;transform:translateX(3px);";
+    maskCloseToggleBtn.appendChild(maskCloseToggleLabel);
+    maskCloseToggleBtn.appendChild(maskCloseToggleIndicator);
+    maskCloseToggleBtn.style.cssText = "display:flex;align-items:center;justify-content:center;gap:5px;width:100%;box-sizing:border-box;padding:5px 2px;border:none;border-radius:4px;font-size:11px;font-weight:600;line-height:1.2;white-space:nowrap;cursor:pointer;transition:background 0.12s ease,color 0.12s ease;";
+    const _setMaskCloseEnabled = (enabled) => {
+        maskCloseEnabled = !!enabled;
+        if (node.properties) node.properties.xzg_mask_close_enabled = maskCloseEnabled;
+        maskCloseToggleBtn.setAttribute("aria-pressed", String(maskCloseEnabled));
+        maskCloseToggleBtn.style.color = maskCloseEnabled ? "#baffc2" : "var(--input-text)";
+        maskCloseToggleBtn.style.background = maskCloseEnabled ? "rgba(55,170,75,0.35)" : "rgba(128,128,128,0.12)";
+        maskCloseToggleIndicator.style.background = maskCloseEnabled ? "#54e36e" : "transparent";
+        maskCloseToggleIndicator.style.border = maskCloseEnabled ? "1px solid #d8ffe0" : "1px solid #9a9a9a";
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    };
+    maskCloseToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _setMaskCloseEnabled(!maskCloseEnabled);
+    });
+    _setMaskCloseEnabled(maskCloseEnabled);
+
     maskToolbar.appendChild(maskToggleBtn);
     maskToolbar.appendChild(brushSizeRow);
+    maskToolbar.appendChild(maskColorRow);
+    maskToolbar.appendChild(maskOutputToggleBtn);
+    maskToolbar.appendChild(maskCloseToggleBtn);
     maskToolbar.appendChild(maskBrushBtn);
     maskToolbar.appendChild(maskEraserBtn);
     maskToolbar.appendChild(maskClearBtn);
@@ -1114,12 +1340,15 @@ function createImgBatchUI(node) {
 
     // 统一的显示状态同步（只在这个函数里改 overlay/eventLayer 的 pointer-events/display，避免多改冲突）
     const _syncMaskLayerVisibility = () => {
-        const isSingle = uploadMode === "replace";
-        // 遮罩覆盖层始终显示（单图模式下），不受 maskEnabled 影响
-        singleMaskOverlay.style.display = isSingle ? "block" : "none";
+        // 编辑面显示条件：单图模式，或（多图模式下遮罩/裁剪已开启，正聚焦某张图编辑）
+        // 裁剪/遮罩开启即进入编辑面（红色遮罩覆盖层 / 裁剪框可在其上绘制）
+        const showSingle = uploadMode === "replace" ||
+            (uploadMode === "append" && parseNameList(getImageListWidget(node)?.value).length === 1) ||
+            (maskEnabled || cropEnabled);
+        singleMaskOverlay.style.display = showSingle ? "block" : "none";
         singleMaskOverlay.style.pointerEvents = "none";
         // 事件层和笔刷预览仅在绘制模式开启时显示
-        const shouldEdit = isSingle && (maskEnabled || cropEnabled);
+        const shouldEdit = showSingle && (maskEnabled || cropEnabled);
         singleMaskEventLayer.style.display = shouldEdit ? "block" : "none";
         singleMaskEventLayer.style.pointerEvents = "none";
         if (!shouldEdit) {
@@ -1136,13 +1365,13 @@ function createImgBatchUI(node) {
 
     // 刷新遮罩工具栏按钮高亮状态
     const _refreshMaskToolbar = () => {
-        const isSingle = uploadMode === "replace";
-        maskToolbar.style.display = isSingle ? "flex" : "none";
+        // 遮罩/裁剪工具在单图与多图模式下均可用（多图下聚焦选中图）；子按钮由 editing 状态控制显示
+        maskToolbar.style.display = "flex";
         const editing = maskEnabled || cropEnabled;
-        // 编辑界面（遮罩/裁剪开启）：恢复原设计的固定 52px 侧栏 + 居中按钮；
+        // 编辑界面（遮罩/裁剪开启）：固定 68px 侧栏，给“着色输出”完整标签留出空间；
         // 画布态：侧栏内容自适应 + 开关按钮左对齐（预览区最大化）
-        sidebar.style.width = editing ? "52px" : "auto";
-        sidebar.style.minWidth = editing ? "52px" : "0";
+        sidebar.style.width = editing ? "68px" : "auto";
+        sidebar.style.minWidth = editing ? "68px" : "0";
         sidebar.classList.toggle("xzg-edit", editing);
         // 图标按钮的文字形态（lb）仅编辑态显示；画布态走图标
         maskToggleBtn.__lb.textContent = maskEnabled ? xzgT("退出", "Exit") : xzgT("遮罩", "Mask");
@@ -1176,6 +1405,9 @@ function createImgBatchUI(node) {
         cropApplyBtn.style.color = cropEnabled && !maskEnabled ? "#66CC66" : "var(--input-text)"; // "应用裁剪"：绿色
         cropApplyBtn.style.borderColor = cropEnabled && !maskEnabled ? "#66CC66" : "var(--border-color)";
         brushSizeRow.style.display = vis;
+        maskColorRow.style.display = vis;
+        maskOutputToggleBtn.style.display = vis;
+        maskCloseToggleBtn.style.display = vis;
         maskBrushBtn.style.display = vis;
         maskEraserBtn.style.display = vis;
         maskClearBtn.style.display = vis;
@@ -1212,12 +1444,24 @@ function createImgBatchUI(node) {
 
     maskToggleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (uploadMode !== "replace") {
-            xzgAlert(xzgT("遮罩绘制仅在单图模式下可用", "Mask drawing is only available in single image mode"));
-            return;
+        const inMulti = uploadMode === "append";
+        if (inMulti) {
+            const names = parseNameList(getImageListWidget(node)?.value);
+            if (names.length === 0) {
+                xzgAlert(xzgT("请先加载图片", "Please load images first"));
+                return;
+            }
+            const idx = Math.max(0, Math.min(getIndex(node), names.length - 1));
+            setIndex(node, idx);
+            if (selectedIndexes.length !== 1 || selectedIndexes[0] !== idx) {
+                selectedIndexes = [idx];
+                lastClickedIndex = idx;
+            }
         }
         if (!maskEnabled) cropEnabled = false; // 互斥：开启遮罩即关闭裁剪
         maskEnabled = !maskEnabled;
+        // 编辑结束时先提交当前离屏遮罩，再切回常规预览，确保网格缩略图能读到最新数据。
+        if (!maskEnabled && inMulti) _commitMaskToWidget();
         _refreshCropPreview(); // 若退出裁剪预览（切换到遮罩），恢复原图显示
         // 开启遮罩时自动选中节点、调整大小、放大画布
         if (maskEnabled && app?.canvas) {
@@ -1260,11 +1504,27 @@ function createImgBatchUI(node) {
         }
         // 开启时初始化一次离屏 canvas 尺寸
         if (maskEnabled && singleImgEl.complete && singleImgEl.naturalWidth > 0) {
-            _ensureOffscreenCanvasSize(singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey, true);
+            const imageName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+            _ensureOffscreenCanvasSize(imageName, true);
+            // 多图模式的一张图会被归入 effectiveSingle 分支，但模式仍为 append；
+            // 首次开启遮罩时也要从按图名存储的数据恢复到离屏 canvas。
+            if (inMulti) _loadMaskFromWidget(imageName);
             _renderMaskOverlay();
         }
         _refreshMaskToolbar();
         _updateMaskCursor();
+        if (inMulti) {
+            redraw(true);
+            const imageName = parseNameList(getImageListWidget(node)?.value)[getIndex(node)];
+            if (maskEnabled && singleImgEl.complete && singleImgEl.naturalWidth > 0 &&
+                (singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey) === imageName) {
+                _ensureOffscreenCanvasSize(imageName, true);
+                _loadMaskFromWidget(imageName);
+            }
+            // 单张图的多图模式在常规态走 effectiveSingle；完成编辑后让 overlay
+            // 在该预览面继续显示。多张图回到网格后则由卡片遮罩缩略图显示。
+            _syncMaskLayerVisibility();
+        }
     });
     maskBrushBtn.addEventListener("click", (e) => { e.stopPropagation(); maskTool = "brush"; _refreshMaskToolbar(); _updateMaskCursor(); _renderBrushPreview(); });
     maskEraserBtn.addEventListener("click", (e) => { e.stopPropagation(); maskTool = "eraser"; _refreshMaskToolbar(); _updateMaskCursor(); _renderBrushPreview(); });
@@ -1298,14 +1558,146 @@ function createImgBatchUI(node) {
             maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
         }
         _maskBoundImageName = null;
-        const w = getMaskDataWidget(node);
-        if (w) { w.value = ""; w.callback?.(w.value); }
+        _maskByImage = {};
+        _writeMaskMap();
         _renderMaskOverlay();
+    }
+    function _syncMaskMapFromWidget() {
+        const value = String(getMaskDataWidget(node)?.value || "");
+        if (value === _maskWidgetSource) return value;
+        _maskWidgetSource = value;
+        _maskByImage = {};
+        if (!value) return value;
+        try {
+            const parsed = JSON.parse(value);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                for (const [name, data] of Object.entries(parsed)) {
+                    if (name !== "__cur" && typeof data === "string" && data) _maskByImage[name] = data;
+                }
+            }
+        } catch (_) {}
+        return value;
+    }
+    function _writeMaskMap() {
+        const w = getMaskDataWidget(node);
+        if (!w) return;
+        const value = Object.keys(_maskByImage).length ? JSON.stringify(_maskByImage) : "";
+        w.value = value;
+        _maskWidgetSource = value;
+        w.callback?.(value);
+        if (node.properties) {
+            if (value) node.properties.xzg_mask_data = value;
+            else delete node.properties.xzg_mask_data;
+        }
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    }
+    function _getMaskForImage(imageName) {
+        const value = _syncMaskMapFromWidget();
+        if (imageName && _maskByImage[imageName]) return _maskByImage[imageName];
+        // 兼容旧工作流保存的单张 data URL 遮罩。
+        return value.startsWith("data:") ? value : "";
+    }
+    function _syncMaskList() {
+        const value = _syncMaskMapFromWidget();
+        const activeNames = new Set(parseNameList(getImageListWidget(node)?.value));
+        // 旧工作流可能把单张遮罩直接存成 data URL，而不是按图片名映射。
+        // 将它绑定到原图名；若该图已被移除（含清空后同名重新加载），立即丢弃，
+        // 避免旧遮罩被错误套用到新加载的图片。
+        if (value.startsWith("data:")) {
+            const legacyName = _maskBoundImageName || singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+            if (legacyName && activeNames.has(legacyName)) _maskByImage[legacyName] = value;
+            else _maskByImage = {};
+            _writeMaskMap();
+            return;
+        }
+        let changed = false;
+        for (const name of Object.keys(_maskByImage)) {
+            if (!activeNames.has(name)) {
+                delete _maskByImage[name];
+                changed = true;
+            }
+        }
+        if (changed) _writeMaskMap();
+    }
+    function _syncCropList() {
+        const activeNames = new Set(parseNameList(getImageListWidget(node)?.value));
+        let changed = false;
+        for (const name of Object.keys(_cropByImage)) {
+            if (!activeNames.has(name)) {
+                delete _cropByImage[name];
+                delete _cropThumbCache[name];
+                changed = true;
+            }
+        }
+        const curName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        if (curName && !activeNames.has(curName)) {
+            cropRect = null;
+            _lastCropPreviewKey = null;
+            _refreshCropPreview();
+            _updateSingleResLabel();
+        }
+        if (!changed) return;
+        const widget = getCropDataWidget(node);
+        if (!widget) return;
+        const payload = { __cur: curName && activeNames.has(curName) ? curName : "" };
+        for (const name of activeNames) {
+            if (_cropByImage[name]) payload[name] = _cropByImage[name];
+        }
+        widget.value = Object.keys(payload).length > 1 ? JSON.stringify(payload) : "";
+        widget.callback?.(widget.value);
+        if (node.properties) {
+            if (widget.value) node.properties.xzg_crop_data = widget.value;
+            else delete node.properties.xzg_crop_data;
+        }
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    }
+    function _resetImageEditsForModeSwitch() {
+        maskEnabled = false;
+        cropEnabled = false;
+        _clearMaskData();
+
+        cropRect = null;
+        _cropByImage = {};
+        _cropPending = null;
+        _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
+        _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
+        _cropSelStart = _cropSelCur = null;
+        _cropDrawing = false;
+        const cropWidget = getCropDataWidget(node);
+        if (cropWidget) {
+            cropWidget.value = "";
+            cropWidget.callback?.(cropWidget.value);
+        }
+
+        const originalSize = _cropOrigSize || _maskOrigSize;
+        const originalCanvas = _cropOrigCanvas || _maskOrigCanvas;
+        if (originalSize) node.setSize(originalSize);
+        _cropOrigSize = _maskOrigSize = null;
+        _cropOrigCanvas = _maskOrigCanvas = null;
+        if (node.properties) {
+            delete node.properties.xzg_crop_orig_size;
+            delete node.properties.xzg_mask_orig_size;
+            delete node.properties.xzg_crop_data;
+            delete node.properties.xzg_mask_data;
+        }
+        if (originalCanvas && app?.canvas) {
+            app.canvas.ds.scale = originalCanvas.scale;
+            app.canvas.ds.offset[0] = originalCanvas.offset[0];
+            app.canvas.ds.offset[1] = originalCanvas.offset[1];
+            app.canvas.setDirty(true, true);
+        }
+        _resetImgZoom();
+        _refreshCropPreview();
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
     }
     function _commitCropToWidget() {
         const w = getCropDataWidget(node);
         if (!w) return;
         const curName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        // 裁剪变化 → 失效该图网格缩略图的裁剪预览缓存
+        _invalidCropThumb(curName);
         // 保存当前图片的裁剪区域到映射（每张图独立维护，切换图片不丢失已有裁剪）
         if (curName) {
             if (cropRect) {
@@ -1337,14 +1729,23 @@ function createImgBatchUI(node) {
                 return;
             }
             if (v && typeof v === 'object' && !Array.isArray(v)) {
-                // 新格式：映射 { 图片名: [x,y,w,h], ... }，按当前图片名加载
-                _cropByImage = {};
+                // 新格式：映射 { 图片名: [x,y,w,h], ... }，按当前图片名加载。
+                // 注意：这里只"合并"widget 里的条目，绝不整体重置 _cropByImage——
+                // 否则编辑第二张时某次 widget 暂缺第一张，会把第一张的裁剪从内存映射抹掉，
+                // 随后被 _commitCropToWidget 刷回 widget，造成第一张裁剪永久丢失。
                 for (const key in v) {
                     if (key === '__cur') continue;
                     if (Array.isArray(v[key]) && v[key].length === 4) {
                         _cropByImage[key] = v[key];
                     }
                 }
+                // 与当前图片列表对齐：仅清理已不在列表中的镜像裁剪，保留现有图片的裁剪
+                try {
+                    const activeNames = new Set(parseNameList(getImageListWidget(node)?.value));
+                    for (const k in _cropByImage) {
+                        if (!activeNames.has(k)) delete _cropByImage[k];
+                    }
+                } catch (_e) {}
                 if (curName && _cropByImage[curName]) {
                     const a = _cropByImage[curName];
                     cropRect = { x: Math.round(+a[0]), y: Math.round(+a[1]), w: Math.round(+a[2]), h: Math.round(+a[3]) };
@@ -1451,8 +1852,34 @@ function createImgBatchUI(node) {
         const pt = _cropPxFromEvent(e);
         if (pt) {
             // 若有比例约束，按起点与当前点约束选区宽高比
-            const a = _cropAspectAdjust(_cropSelStart.x, _cropSelStart.y, pt.x, pt.y);
-            _cropSelCur = { x: a.x, y: a.y };
+            // 框选起点可能在图像外（黑边区域）。先将拖动两端裁到图像范围，
+            // 再做比例调整，避免比例修正把另一边推过边界，提交时单独 clamp 后破坏比例。
+            const iw = _maskImgNaturalW || singleImgEl.naturalWidth || 0;
+            const ih = _maskImgNaturalH || singleImgEl.naturalHeight || 0;
+            const clampX = (x) => Math.max(0, Math.min(iw, x));
+            const clampY = (y) => Math.max(0, Math.min(ih, y));
+            const sx = clampX(_cropSelStart.x), sy = clampY(_cropSelStart.y);
+            const mx = clampX(pt.x), my = clampY(pt.y);
+            const a = _cropAspectAdjust(sx, sy, mx, my);
+            // 将比例框完整收进图像边界。起点位于边缘时，只能沿可用方向等比缩小。
+            let x0 = Math.min(sx, a.x), y0 = Math.min(sy, a.y);
+            let w = Math.abs(a.x - sx), h = Math.abs(a.y - sy);
+            if (_cropAspect && w > 0 && h > 0) {
+                const scale = Math.min(1, (iw - x0) / w, (ih - y0) / h, x0 < 0 ? 0 : 1, y0 < 0 ? 0 : 1);
+                w *= scale; h *= scale;
+                // 对于向左/向上拖动，边界剩余量应从框的左上角计算。
+                if (a.x < sx) x0 = Math.max(0, sx - w);
+                if (a.y < sy) y0 = Math.max(0, sy - h);
+            } else {
+                x0 = Math.max(0, Math.min(iw, x0));
+                y0 = Math.max(0, Math.min(ih, y0));
+                w = Math.min(w, iw - x0);
+                h = Math.min(h, ih - y0);
+            }
+            _cropSelStart = { x: sx, y: sy };
+            const x1 = a.x >= sx ? x0 + w : x0;
+            const y1 = a.y >= sy ? y0 + h : y0;
+            _cropSelCur = { x: x1, y: y1 };
         }
         _renderMaskOverlay();
     }
@@ -1671,9 +2098,20 @@ function createImgBatchUI(node) {
     // 裁剪开关 / 清空（仅单图模式可用）
     cropToggleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (uploadMode !== "replace") {
-            xzgAlert(xzgT("裁剪选区仅在单图模式下可用", "Crop region is only available in single image mode"));
-            return;
+        const inMulti = uploadMode === "append";
+        if (inMulti) {
+            // 多图模式下裁剪编辑聚焦到当前选中的那张图（index widget 已由卡片点击同步）
+            const names = parseNameList(getImageListWidget(node)?.value);
+            if (names.length === 0) {
+                xzgAlert(xzgT("请先加载图片", "Please load images first"));
+                return;
+            }
+            const idx = Math.max(0, Math.min(getIndex(node), names.length - 1));
+            setIndex(node, idx); // 确保编辑目标索引明确
+            if (selectedIndexes.length !== 1 || selectedIndexes[0] !== idx) {
+                selectedIndexes = [idx];
+                lastClickedIndex = idx;
+            }
         }
         if (!cropEnabled && maskEnabled) maskEnabled = false; // 互斥：开启裁剪即关闭遮罩
         cropEnabled = !cropEnabled;
@@ -1722,6 +2160,20 @@ function createImgBatchUI(node) {
         }
         _refreshMaskToolbar();
         _renderMaskOverlay();
+        // 多图模式下：进入裁剪需 redraw 切到单图编辑面；布局完成后按聚焦图重新加载并显示裁剪
+        //（早前 _loadCropFromWidget 用的是旧 currentName，须等 redraw 绑定目标图后再跑）
+        if (inMulti) {
+            redraw(true);
+            if (cropEnabled) {
+                _loadCropFromWidget();
+                _renderMaskOverlay();
+                if (cropRect) {
+                    _resetImgZoom();
+                    _refreshCropPreview();
+                    _updateSingleResLabel();
+                }
+            }
+        }
     });
     cropClearBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1820,18 +2272,20 @@ function createImgBatchUI(node) {
         "flex:1;display:flex;align-items:flex-start;justify-content:flex-start;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;padding:6px 4px 4px;box-sizing:border-box;";
     emptyTip.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
-            <div style="text-align:left;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;padding-left:12px;">${xzgTh("小珠光图像加载器", "Xiaozhuguang Image Loader")}</div>
+            <div style="text-align:left;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;padding-left:12px;">${xzgTh("小珠光图片加载器-化神级", "Xiaozhuguang Image Loader - Godlike")}</div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("📁 添加图片", "📁 Add Images")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("双击空白处 / 点击上传按钮", "Double-click blank / Click upload button")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("点击上传或双击预览区；支持多选", "Click Upload or double-click preview; multi-select supported")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh(".input 从输入文件夹选择", ".input Select from input folder")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh(".output 从输出文件夹选择", ".output Select from output folder")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("多图模式可继续追加；单图模式会替换当前图片", "Multi mode appends images; Single mode replaces the current image")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖱️ 鼠标操作", "🖱️ Mouse Operations")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击：选中 / Ctrl多选 / Shift范围选", "Left click: Select / Ctrl+Multi / Shift+Range")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击选中；Shift范围选；Ctrl+左键拖动框选", "Click to select; Shift-click for range; Ctrl-drag to marquee-select")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("Ctrl+左键单击：原图高清预览；滚轮缩放、拖动平移", "Ctrl-click: view full-resolution image; wheel to zoom, drag to pan")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("长按卡片拖动：调整顺序", "Long press card to drag: Reorder")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("卡片上拖动：框选多个图片", "Drag on card: Box select")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("悬停卡片右上角：删除单张", "Hover card corner: Delete")}</div>
@@ -1846,9 +2300,9 @@ function createImgBatchUI(node) {
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖌️ 遮罩 / 裁剪", "🖌️ Mask / Crop")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩：开启后手绘蒙版（画笔/橡皮）", "Mask: Draw mask (brush/eraser)")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("裁剪：框选裁剪区域，支持自由/固定比例", "Crop: Select crop region, free/fixed ratio")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩/裁剪开启后，点击【退出】返回", "After Start, click Exit to return")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩：画笔绘制、橡皮擦除；退出后预览区保留半透明红色遮罩", "Mask: Paint or erase; the translucent red overlay stays in preview after Exit")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("裁剪：拖拽选区后点【应用裁剪】或双击；支持自由/固定比例", "Crop: Drag a region, then Apply Crop or double-click; free/fixed ratios supported")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("退出后预览显示裁剪结果并标记「已裁剪」；删除/清空图片会清除该图编辑数据", "After Exit, preview shows the crop with a Cropped badge; deleting/clearing an image removes its edits")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
@@ -1883,10 +2337,22 @@ function createImgBatchUI(node) {
         "background:rgba(0,0,0,0.55);color:#fff;font-size:11px;line-height:16px;font-family:Arial,sans-serif;" +
         "display:flex;align-items:center;justify-content:center;white-space:nowrap;";
 
+    const singleCropBadge = document.createElement("div");
+    singleCropBadge.className = "xzg-img-cropbadge";
+    singleCropBadge.textContent = xzgT("已裁剪", "Cropped");
+    singleCropBadge.style.cssText =
+        "position:absolute;right:5px;bottom:5px;z-index:5;pointer-events:none;font-weight:600;line-height:1.15;" +
+        "color:#ffd54a;background:rgba(0,0,0,0.65);border-radius:2px;padding:2px 5px;font-size:10px;display:none;";
+
     // 当前单图的原始分辨率（通过 /xzg_image_info API 获取，与压缩预览图分离）
     let _singleOrigW = 0, _singleOrigH = 0;
 
+    function _updateSingleCropBadge() {
+        singleCropBadge.style.display = cropRect ? "block" : "none";
+    }
+
     function _updateSingleResLabel() {
+        _updateSingleCropBadge();
         // 存在裁剪选区：显示「真实输出分辨率」（原图像素），而非压缩预览图坐标尺寸。
         // 前端选区坐标取自最长边3840的预览图，需按 原图宽/预览图宽 换算回原图坐标；
         // 该比例在后端同样用于把预览坐标还原为原图像素，故标签与最终输出一致。
@@ -1932,6 +2398,7 @@ function createImgBatchUI(node) {
     };
     singleImgContainer.appendChild(singleImgEl);
     singleImgContainer.appendChild(singleResLabel);
+    singleImgContainer.appendChild(singleCropBadge);
 
     // 遮罩显示/绘制层：覆盖在图片之上，尺寸与 singleImgContainer 一致
     // 图片在容器内 object-fit:contain，我们需要计算图片实际显示矩形以正确映射坐标
@@ -2266,12 +2733,13 @@ function createImgBatchUI(node) {
         const src = maskOffCtx.getImageData(0, 0, maskOffscreen.width, maskOffscreen.height);
         const dst = tctx.createImageData(tmp.width, tmp.height);
         const sd = src.data, dd = dst.data;
+        const [maskR, maskG, maskB] = _maskPreviewRgb();
         for (let i = 0; i < sd.length; i += 4) {
             const v = sd[i]; // R 通道 = 遮罩强度
-            dd[i] = 255;                 // R = 红
-            dd[i + 1] = 100;             // G
-            dd[i + 2] = 100;             // B
-            dd[i + 3] = Math.floor(v * 0.45); // A = 遮罩强度 * 半透明
+            dd[i] = maskR;
+            dd[i + 1] = maskG;
+            dd[i + 2] = maskB;
+            dd[i + 3] = Math.floor(v * 0.25); // A = 遮罩强度 * 25% 透明度
         }
         tctx.putImageData(dst, 0, 0);
         const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
@@ -2391,51 +2859,74 @@ function createImgBatchUI(node) {
         maskOffCtx.restore();
     }
 
+    function _closeAndFillMaskStroke() {
+        const points = _maskStrokePoints;
+        if (!maskCloseEnabled || points.length < 3 || maskTool !== "brush" || _maskRightErasing) return;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const pt of points) {
+            minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
+            maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
+        }
+        const diagonal = Math.hypot(maxX - minX, maxY - minY);
+        const gap = Math.hypot(points[points.length - 1].x - points[0].x, points[points.length - 1].y - points[0].y);
+        const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
+        const displayScale = cp ? cp.s2 : (_getImageDisplayRect().scale || 1);
+        const brushRadius = Math.max(0.5, brushSize / (2 * displayScale));
+        // 仅把首尾已经接近的闭合轮廓当作圈选，避免普通开放笔划被大面积误填充。
+        if (diagonal < brushRadius * 4 || gap > Math.max(brushRadius * 4, diagonal * 0.18)) return;
+
+        _maskDrawSegment(points[points.length - 1], points[0]);
+        maskOffCtx.save();
+        maskOffCtx.globalCompositeOperation = "source-over";
+        maskOffCtx.fillStyle = "rgba(255,0,0,1)";
+        maskOffCtx.beginPath();
+        maskOffCtx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) maskOffCtx.lineTo(points[i].x, points[i].y);
+        maskOffCtx.closePath();
+        maskOffCtx.fill();
+        maskOffCtx.restore();
+    }
+
     // 序列化离屏遮罩为 base64 PNG（数据 URL），保存到 widget
-    let _maskCommitTimer = null;
     function _commitMaskToWidget() {
-        if (_maskCommitTimer) clearTimeout(_maskCommitTimer);
-        _maskCommitTimer = setTimeout(() => {
-            _maskCommitTimer = null;
-            const w = getMaskDataWidget(node);
-            if (!w) return;
-            if (maskOffscreen.width <= 0 || maskOffscreen.height <= 0) {
-                w.value = "";
-                w.callback?.(w.value);
-                return;
-            }
-            // 导出灰度 PNG：R = 遮罩值，A = 255
-            const out = document.createElement("canvas");
-            out.width = maskOffscreen.width;
-            out.height = maskOffscreen.height;
-            const octx = out.getContext("2d");
-            const src = maskOffCtx.getImageData(0, 0, out.width, out.height);
-            const dst = octx.createImageData(out.width, out.height);
-            const sd = src.data, dd = dst.data;
-            for (let i = 0; i < sd.length; i += 4) {
-                const v = sd[i]; // R = 遮罩强度
-                dd[i] = v; dd[i + 1] = v; dd[i + 2] = v; dd[i + 3] = 255;
-            }
-            octx.putImageData(dst, 0, 0);
-            try {
-                const dataUrl = out.toDataURL("image/png");
-                w.value = dataUrl;
-                w.callback?.(w.value);
-            } catch (e) {
-                console.warn("[小珠光图像加载器] 遮罩序列化失败:", e);
-            }
-        }, 60);
+        const imageName = _maskBoundImageName;
+        if (!imageName || maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return;
+        const out = document.createElement("canvas");
+        out.width = maskOffscreen.width;
+        out.height = maskOffscreen.height;
+        const octx = out.getContext("2d");
+        const src = maskOffCtx.getImageData(0, 0, out.width, out.height);
+        const dst = octx.createImageData(out.width, out.height);
+        const sd = src.data, dd = dst.data;
+        let hasMask = false;
+        for (let i = 0; i < sd.length; i += 4) {
+            const v = sd[i];
+            dd[i] = v; dd[i + 1] = v; dd[i + 2] = v; dd[i + 3] = 255;
+            if (v) hasMask = true;
+        }
+        if (!hasMask) {
+            delete _maskByImage[imageName];
+            _writeMaskMap();
+            return;
+        }
+        octx.putImageData(dst, 0, 0);
+        try {
+            _maskByImage[imageName] = out.toDataURL("image/png");
+            _writeMaskMap();
+        } catch (e) {
+            console.warn("[小珠光图像加载器] 遮罩序列化失败:", e);
+        }
     }
 
     // 从 widget 加载已有遮罩到离屏 canvas
     function _loadMaskFromWidget(imageName) {
-        const w = getMaskDataWidget(node);
-        const data = w?.value;
+        const data = _getMaskForImage(imageName);
         if (!data) {
             // 无保存数据 → 清空
             if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
                 maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
             }
+            _renderMaskOverlay();
             return;
         }
         const img = new Image();
@@ -2478,6 +2969,14 @@ function createImgBatchUI(node) {
         };
         img.onerror = () => { /* 忽略损坏数据，保持空白 */ };
         img.src = data;
+    }
+
+    function _reloadCurrentMaskFromWidget() {
+        _syncMaskMapFromWidget();
+        const imageName = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        if (!imageName || !singleImgEl.complete || singleImgEl.naturalWidth <= 0) return;
+        _ensureOffscreenCanvasSize(imageName, false);
+        _loadMaskFromWidget(imageName);
     }
 
     // ═══════════ 遮罩绘制事件绑定 ═══════════
@@ -2558,6 +3057,7 @@ function createImgBatchUI(node) {
         _renderBrushPreview();
         _maskDrawing = true;
         _maskLastPt = pt;
+        _maskStrokePoints = (maskTool === "brush" && !_maskRightErasing) ? [{ x: pt.x, y: pt.y }] : [];
         try {
             if (singleImgContainer.setPointerCapture) {
                 singleImgContainer.setPointerCapture(e.pointerId);
@@ -2582,6 +3082,9 @@ function createImgBatchUI(node) {
         if (!pt) { _maskLastPt = null; return; }
         const from = _maskLastPt || pt;
         _maskDrawSegment(from, pt);
+        if (maskCloseEnabled && maskTool === "brush" && !_maskRightErasing) {
+            _maskStrokePoints.push({ x: pt.x, y: pt.y });
+        }
         _maskLastPt = pt;
         _renderMaskOverlay();
     }
@@ -2594,8 +3097,25 @@ function createImgBatchUI(node) {
         }
         const wasDrawing = _maskDrawing;
         if (wasDrawing) {
+            // pointerup 可能先于最后一次 pointermove 到达，把终点也纳入路径。
+            if (e.type !== "pointercancel") {
+                const rect = singleImgContainer.getBoundingClientRect();
+                const zoomX = singleImgContainer.clientWidth > 0 ? rect.width / singleImgContainer.clientWidth : 1;
+                const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
+                const innerPt = _containerPtToInner((e.clientX - rect.left) / zoomX, (e.clientY - rect.top) / zoomY);
+                const endPt = _overlayPtToOffscreen(innerPt.x, innerPt.y);
+                if (endPt && _maskLastPt && (endPt.x !== _maskLastPt.x || endPt.y !== _maskLastPt.y)) {
+                    _maskDrawSegment(_maskLastPt, endPt);
+                    if (maskCloseEnabled && maskTool === "brush" && !_maskRightErasing) {
+                        _maskStrokePoints.push({ x: endPt.x, y: endPt.y });
+                    }
+                    _maskLastPt = endPt;
+                }
+            }
+            if (e.type !== "pointercancel") _closeAndFillMaskStroke();
             _maskDrawing = false;
             _maskLastPt = null;
+            _maskStrokePoints = [];
             _maskRightErasing = false;
             try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
             _commitMaskToWidget();
@@ -2629,6 +3149,7 @@ function createImgBatchUI(node) {
                 _altBrushStartSize = brushSize;
                 _maskDrawing = false;   // 若右键已开始擦除，强制中断，优先调整笔刷
                 _maskLastPt = null;
+                _maskStrokePoints = [];
                 _maskRightErasing = false;
                 singleImgContainer.style.cursor = "ew-resize";
             }
@@ -2844,6 +3365,13 @@ function createImgBatchUI(node) {
         badge.style.padding = `${Math.max(0, Math.round(cardSize * 0.012))}px ${Math.max(2, Math.round(cardSize * 0.03))}px`;
     };
 
+    // 多图「已裁剪」角标：右下角展示，随缩略图一起缩放。
+    const _applyCropBadgeSize = (badge, cardSize) => {
+        if (!badge) return;
+        badge.style.fontSize = `${Math.max(6, Math.round(cardSize * 0.05))}px`;
+        badge.style.padding = `${Math.max(0, Math.round(cardSize * 0.006))}px ${Math.max(1, Math.round(cardSize * 0.015))}px`;
+    };
+
     const resizeObserver = new ResizeObserver(() => {
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         resizeRaf = requestAnimationFrame(() => {
@@ -2882,6 +3410,7 @@ function createImgBatchUI(node) {
                             cell.style.animation = "none";
                             _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
                             _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
+                            _applyCropBadgeSize(cell.querySelector(".xzg-img-cropbadge"), finalSize);
                         });
                         // 统一强制 reflow 一次，确保所有 cell 的 animation:none 已提交
                         void grid.offsetWidth;
@@ -2919,6 +3448,7 @@ function createImgBatchUI(node) {
                             cell.style.animation = "none";
                             _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
                             _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
+                            _applyCropBadgeSize(cell.querySelector(".xzg-img-cropbadge"), finalSize);
                         });
                         // 统一强制 reflow
                         void grid.offsetWidth;
@@ -2952,6 +3482,75 @@ function createImgBatchUI(node) {
     const DRAG_CLICK_THRESHOLD = 5;
     const DRAG_SORT_SCALE = 1.15;
     const LONG_PRESS_ANIM_MS = 150;
+
+    const openImageLightbox = (imageName) => {
+        if (!imageName) return;
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;inset:0;z-index:200000;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;overflow:hidden;";
+        const stage = document.createElement("div");
+        stage.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:grab;touch-action:none;";
+        const image = document.createElement("img");
+        image.src = getOriginalImageUrl(imageName);
+        image.alt = imageName;
+        image.draggable = false;
+        image.style.cssText = "position:relative;display:block;max-width:92vw;max-height:92vh;width:auto;height:auto;object-fit:contain;user-select:none;transform-origin:center center;";
+        let zoom = 1, tx = 0, ty = 0, dragging = false, startX = 0, startY = 0, baseX = 0, baseY = 0;
+        const updateImage = () => { image.style.transform = `translate(${tx}px,${ty}px) scale(${zoom})`; };
+        const onMove = (ev) => {
+            if (!dragging) return;
+            tx = baseX + ev.clientX - startX;
+            ty = baseY + ev.clientY - startY;
+            updateImage();
+        };
+        const onUp = () => { dragging = false; stage.style.cursor = "grab"; };
+        const onKeyDown = (ev) => { if (ev.key === "Escape") close(); };
+        const close = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("keydown", onKeyDown, true);
+            overlay.remove();
+        };
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.textContent = "×";
+        closeBtn.title = xzgT("关闭（Esc）", "Close (Esc)");
+        closeBtn.style.cssText = "position:absolute;top:16px;right:18px;z-index:2;width:38px;height:38px;border:0;border-radius:50%;background:rgba(40,40,40,0.8);color:#fff;font-size:28px;line-height:1;cursor:pointer;";
+        closeBtn.addEventListener("click", close);
+        const hint = document.createElement("div");
+        hint.textContent = `${imageName}  ·  ${xzgT("滚轮缩放，拖动平移，Esc 关闭", "Wheel to zoom, drag to pan, Esc to close")}`;
+        hint.style.cssText = "position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:2;max-width:85vw;padding:6px 10px;border-radius:4px;background:rgba(0,0,0,0.6);color:#fff;font-size:12px;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+        stage.appendChild(image);
+        overlay.append(stage, closeBtn, hint);
+        overlay.addEventListener("mousedown", (ev) => {
+            if (ev.target === overlay) close();
+        });
+        overlay.addEventListener("contextmenu", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            close();
+        });
+        stage.addEventListener("wheel", (ev) => {
+            ev.preventDefault();
+            const before = zoom;
+            zoom = Math.max(0.1, Math.min(12, zoom * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
+            const anchorX = ev.clientX - window.innerWidth / 2 - tx;
+            const anchorY = ev.clientY - window.innerHeight / 2 - ty;
+            tx -= anchorX * (zoom / before - 1);
+            ty -= anchorY * (zoom / before - 1);
+            updateImage();
+        }, { passive: false });
+        stage.addEventListener("mousedown", (ev) => {
+            if (ev.button !== 0) return;
+            dragging = true;
+            startX = ev.clientX; startY = ev.clientY; baseX = tx; baseY = ty;
+            stage.style.cursor = "grabbing";
+            ev.preventDefault();
+        });
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        window.addEventListener("keydown", onKeyDown, true);
+        document.body.appendChild(overlay);
+    };
 
     container.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
@@ -3111,8 +3710,10 @@ function createImgBatchUI(node) {
             setIndex(node, clickedIndex);
         };
 
-        // 从卡片内按下并移动，立即进入排序；从黑边开始拖动才进入框选。
-        if (!cell) enterMarqueeMode();
+        // Ctrl/Command + 左键拖动始终进入框选；普通卡片内拖动仍用于调整排序，
+        // 从卡片空隙拖动则保持原有框选方式。
+        const forceMarquee = e.ctrlKey || e.metaKey;
+        if (!cell || forceMarquee) enterMarqueeMode();
 
         const onMouseMove = (moveE) => {
             const dx = moveE.clientX - startX;
@@ -3373,6 +3974,10 @@ function createImgBatchUI(node) {
             } else if (mode === "marquee") {
                 if (moved) {
                     redraw(true);
+                } else if (forceMarquee && cell && clickedIndex >= 0) {
+                    // Ctrl/Command 单击卡片：打开原图高清查看器；按住并拖动则继续框选。
+                    redraw(false);
+                    openImageLightbox(names[clickedIndex]);
                 } else {
                     selectedIndexes = [];
                     lastClickedIndex = -1;
@@ -3446,6 +4051,115 @@ function createImgBatchUI(node) {
         document.addEventListener("contextmenu", onContextMenu, true);
     });
 
+    // ═══════════ 网格缩略图裁剪预览 ═══════════
+    // 对图片名存在裁剪区域的卡片，把缩略图换成「裁剪后」画面并打角标。
+    // 裁剪矩形 `_cropByImage[name]` = [x,y,w,h]，坐标为「压缩预览(最长边3840)」空间的像素，
+    // 与 getPreviewUrl 返回的预览自然尺寸一致，可直接按预览自然坐标裁剪，无需额外换算。
+    const _cropThumbCache = {};   // name -> { k: crop特征串, u: 已生成裁剪缩略图 dataURL }
+    function _invalidCropThumb(name) { if (name) _cropThumbCache[name] = null; }
+    function _gridHasCrop(name) { return Array.isArray(_cropByImage[name]) && _cropByImage[name].length === 4; }
+    function _applyMaskThumb(card, name, cardSize) {
+        const data = _getMaskForImage(name);
+        if (!data) return;
+        const [maskR, maskG, maskB] = _maskPreviewRgb();
+        const overlay = document.createElement("canvas");
+        overlay.className = "xzg-img-mask-thumb";
+        overlay.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;z-index:2;";
+        overlay.width = Math.max(1, Math.round(cardSize * 2));
+        overlay.height = Math.max(1, Math.round(cardSize * 2));
+        const img = new Image();
+        img.onload = () => {
+            if (!overlay.isConnected) return;
+            const ctx = overlay.getContext("2d", { willReadFrequently: true });
+            const crop = _cropByImage[name];
+            const preview = new Image();
+            preview.onload = () => {
+                if (!overlay.isConnected) return;
+                const hasCrop = Array.isArray(crop) && crop.length === 4 && crop[2] > 0 && crop[3] > 0;
+                const [cx, cy, cw, ch] = hasCrop ? crop : [0, 0, preview.naturalWidth, preview.naturalHeight];
+                const sx = cx * img.naturalWidth / preview.naturalWidth;
+                const sy = cy * img.naturalHeight / preview.naturalHeight;
+                const sw = cw * img.naturalWidth / preview.naturalWidth;
+                const sh = ch * img.naturalHeight / preview.naturalHeight;
+                const scale = Math.min(overlay.width / cw, overlay.height / ch);
+                const dw = Math.max(1, Math.round(cw * scale));
+                const dh = Math.max(1, Math.round(ch * scale));
+                const left = Math.round((overlay.width - dw) / 2);
+                const top = Math.round((overlay.height - dh) / 2);
+                const maskCanvas = document.createElement("canvas");
+                maskCanvas.width = dw;
+                maskCanvas.height = dh;
+                const mctx = maskCanvas.getContext("2d", { willReadFrequently: true });
+                mctx.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+                const pixels = mctx.getImageData(0, 0, dw, dh);
+                for (let i = 0; i < pixels.data.length; i += 4) {
+                    const strength = pixels.data[i];
+                    pixels.data[i] = maskR;
+                    pixels.data[i + 1] = maskG;
+                    pixels.data[i + 2] = maskB;
+                    pixels.data[i + 3] = Math.round(strength * 0.25);
+                }
+                mctx.putImageData(pixels, 0, 0);
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+                ctx.drawImage(maskCanvas, left, top);
+            };
+            preview.onerror = () => {
+                const dw = Math.max(1, overlay.width), dh = Math.max(1, Math.round(dw * img.naturalHeight / img.naturalWidth));
+                overlay.width = dw; overlay.height = dh;
+                ctx.drawImage(img, 0, 0, dw, dh);
+                const pixels = ctx.getImageData(0, 0, dw, dh);
+                for (let i = 0; i < pixels.data.length; i += 4) {
+                    const strength = pixels.data[i];
+                    pixels.data[i] = maskR; pixels.data[i + 1] = maskG; pixels.data[i + 2] = maskB;
+                    pixels.data[i + 3] = Math.round(strength * 0.25);
+                }
+                ctx.putImageData(pixels, 0, 0);
+            };
+            preview.src = getPreviewUrl(name);
+        };
+        img.onerror = () => overlay.remove();
+        img.src = data;
+        card.appendChild(overlay);
+    }
+    function _applyCropThumb(imgEl, name) {
+        const rect = _cropByImage[name];
+        if (!Array.isArray(rect) || rect.length !== 4 || !imgEl) return;
+        const [cx, cy, cw, ch] = rect;
+        if (!(cw > 0 && ch > 0)) return;
+        const key = name + "|" + rect.join(",");
+        const cached = _cropThumbCache[name];
+        if (cached && cached.k === key && cached.u) {
+            // 裁剪未变：网格重建后生成的是全新的 <img>（src 为未裁剪缩略图），
+            // 必须把缓存的裁剪 preview 同步回填到新元素，否则会被误判为"第一张裁剪丢失"
+            imgEl.src = cached.u;
+            return;
+        }
+        const prev = document.createElement("img");
+        prev.onload = () => {
+            if (_cropThumbCache[name]?.k !== key) return; // 期间已变化，丢弃
+            const pw = prev.naturalWidth, ph = prev.naturalHeight;
+            if (!pw || !ph) return;
+            const s = 720 / Math.max(cw, ch);
+            const ow = Math.max(1, Math.round(cw * s));
+            const oh = Math.max(1, Math.round(ch * s));
+            const cv = document.createElement("canvas");
+            cv.width = ow; cv.height = oh;
+            const ctx = cv.getContext("2d");
+            const px = Math.max(0, Math.min(cx, pw - 1));
+            const py = Math.max(0, Math.min(cy, ph - 1));
+            const srcW = Math.max(1, Math.min(cw, pw - px));
+            const srcH = Math.max(1, Math.min(ch, ph - py));
+            ctx.drawImage(prev, px, py, srcW, srcH, 0, 0, ow, oh);
+            const url = cv.toDataURL("image/jpeg", 0.82);
+            _cropThumbCache[name] = { k: key, u: url };
+            imgEl.dataset.cropped = "1";
+            imgEl.src = url;
+        };
+        prev.onerror = () => { _cropThumbCache[name] = null; };
+        _cropThumbCache[name] = { k: key, u: null };
+        prev.src = getPreviewUrl(name);
+    }
+
     const redraw = (forceFull = false) => {
         const allNames = parseNameList(getImageListWidget(node)?.value);
         // 加载上限联动：预览区与后端输出保持一致，>0 时仅显示前 N 张
@@ -3460,8 +4174,8 @@ function createImgBatchUI(node) {
         if (w) {
             const modeFromWidget = (String(w.value).trim().toLowerCase() === "replace") ? "replace" : "append";
             if (modeFromWidget !== uploadMode) {
+                _resetImageEditsForModeSwitch();
                 uploadMode = modeFromWidget;
-                if (uploadMode === "append") maskEnabled = false;
                 updateUploadModeBtn();
                 _refreshMaskToolbar();
                 _updateMaskCursor();
@@ -3469,7 +4183,9 @@ function createImgBatchUI(node) {
         }
         viewMode = uploadMode === "append" ? "grid" : "single";
 
-        const effectiveSingle = viewMode === "single" || (viewMode === "grid" && names.length === 1);
+        // 多图模式下遮罩/裁剪开启 = 正在聚焦某张图编辑 → 切到单图编辑面（绑定 index 对应的图）
+        const editFocus = uploadMode === "append" && (cropEnabled || maskEnabled) && names.length > 0;
+        const effectiveSingle = viewMode === "single" || (viewMode === "grid" && names.length === 1) || editFocus;
 
         if (names.length === 0) {
             grid.style.display = "none";
@@ -3516,7 +4232,7 @@ function createImgBatchUI(node) {
                 });
             } else if (singleImgEl.complete && singleImgEl.naturalWidth > 0) {
                 // 图片已加载好：立即同步离屏 canvas 尺寸，必要时加载保存的遮罩
-                _ensureOffscreenCanvasSize(name, false);
+                _ensureOffscreenCanvasSize(name, true);
                 _renderMaskOverlay();
                 _updateSingleResLabel();
                 // 若原始分辨率尚未获取，补充获取一次
@@ -3546,6 +4262,7 @@ function createImgBatchUI(node) {
         }
 
         // 多图网格模式：统一入口同步
+        _loadCropFromWidget();
         _syncMaskLayerVisibility();
 
         grid.style.display = "grid";
@@ -3661,10 +4378,23 @@ function createImgBatchUI(node) {
             label.style.cssText =
                 "position:absolute;left:2px;right:2px;bottom:2px;font-size:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;z-index:1;";
 
+            // 该图已裁剪 → 缩略图显示裁剪后的画面，并加「已裁剪」角标
+            if (_gridHasCrop(name)) {
+                _applyCropThumb(thumbEl, name);
+                const cropBadge = document.createElement("div");
+                cropBadge.className = "xzg-img-cropbadge";
+                cropBadge.textContent = xzgT("已裁剪", "Cropped");
+                cropBadge.style.cssText =
+                    "position:absolute;right:1px;bottom:1px;z-index:3;pointer-events:none;font-weight:600;line-height:1.15;" +
+                    "color:#ffd54a;background:rgba(0,0,0,0.65);border-radius:2px 0 0 0;padding:0 3px;";
+                _applyCropBadgeSize(cropBadge, contentSize);
+                card.appendChild(cropBadge);
+            }
             card.appendChild(thumbEl);
             card.appendChild(delBtn);
             card.appendChild(indexBadge);
             card.appendChild(label);
+            _applyMaskThumb(card, name, contentSize);
             cell.appendChild(card);
             frag.appendChild(cell);
         });
@@ -3825,7 +4555,9 @@ function createImgBatchUI(node) {
                     const img = document.createElement("img");
                     const fileInfo = fileData[name];
                     const v = fileInfo?.mtime ? `&v=${fileInfo.mtime}` : "";
-                    img.src = getThumbUrl(name + prefix, 128) + v;
+                    // Output API 返回的 name 已带 [output] 来源标记；避免重复追加标记。
+                    const thumbName = copyToInput && prefix && !name.endsWith(prefix) ? name + prefix : name;
+                    img.src = getThumbUrl(thumbName, 128) + v;
                     img.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;";
                     img.loading = "lazy";
                     img.addEventListener("error", () => {
@@ -4058,7 +4790,7 @@ function createImgBatchUI(node) {
                 const selected = Array.from(selectedSet);
                 if (selected.length === 0) return;
 
-                let namesToAdd = selected.map(n => n + prefix);
+                let namesToAdd = selected.map(n => (copyToInput ? n : n + prefix));
                 if (copyToInput) {
                     try {
                         const res = await api.fetchApi("/xzg_copy_output_to_input", {
@@ -4162,6 +4894,9 @@ function createImgBatchUI(node) {
         labels.forEach(el => { el.style.fontSize = fontSize + "px"; });
     };
 
+    // 初次恢复多图工作流会直接绘制网格，不经过单图分支里的工具栏刷新；
+    // 先同步一次显隐状态，确保刷新页面后裁剪/遮罩入口可见。
+    _refreshMaskToolbar();
     redraw(true);
     updateModeBtn();
 
@@ -4370,6 +5105,16 @@ function createImgBatchUI(node) {
         _updateBypassState: updateBypassState,
         _onWheel: onWheel,
         syncUploadModeFromWidget: _syncUploadModeFromWidget,
+        commitCurrentMask: _commitMaskToWidget,
+        syncMaskList: _syncMaskList,
+        syncCropList: _syncCropList,
+        reloadMaskFromWidget: _reloadCurrentMaskFromWidget,
+        setMaskOutputEnabled: _setMaskOutputEnabled,
+        setMaskCloseEnabled: _setMaskCloseEnabled,
+        setMaskPreviewColor: (value) => {
+            if (!/^#[0-9a-f]{6}$/i.test(value || "")) return;
+            _setMaskPreviewColor(value);
+        },
         clearMask: () => {
             if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
                 maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
@@ -4377,19 +5122,6 @@ function createImgBatchUI(node) {
             _maskBoundImageName = null;
             _resetImgZoom();
             _renderMaskOverlay();
-        },
-        clearCrop: () => {
-            cropRect = null;
-            _cropPending = null;
-            _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null;
-            _cropDrawing = false;
-            _cropSelStart = _cropSelCur = null;
-            // 同步清空持久化到 widget 的 crop_data，避免后端点裁上一张图的裁剪信息
-            _commitCropToWidget();
-            _resetImgZoom();
-            _refreshCropPreview();
-            _renderMaskOverlay();
-            _updateSingleResLabel();
         },
         get isSingleMode() { return uploadMode === "replace"; },
     };
@@ -4415,7 +5147,7 @@ app.registerExtension({
             // 端口 1: MASK —— 如果之前是 count/COUNT/数字/图片数量，彻底清掉类型
             nodeData.output[1]       = "MASK";
             nodeData.output_name[1]  = xzgT("遮罩", "mask");
-            nodeData.output_is_list[1] = false;
+            nodeData.output_is_list[1] = true;
             // 兼容：有些旧版 ComfyUI 用 nodeData.output 是对象数组 {type,name, …}
             if (!Array.isArray(nodeData.outputs)) nodeData.outputs = [];
             nodeData.outputs[0] = Object.assign({}, nodeData.outputs[0] || {}, { type: "IMAGE", name: xzgT("图像", "images"), label: xzgT("图像", "images") });
@@ -4424,7 +5156,7 @@ app.registerExtension({
             if (Array.isArray(nodeData.output_link_labels)) nodeData.output_link_labels = null;
             if (nodeData.return_names)  nodeData.return_names  = [xzgT("图像", "images"), xzgT("遮罩", "mask")];
             if (nodeData.return_types)  nodeData.return_types  = ["IMAGE", "MASK"];
-            if (nodeData.output_is_array) nodeData.output_is_array = [true, false];
+            if (nodeData.output_is_array) nodeData.output_is_array = [true, true];
 
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -4468,6 +5200,8 @@ app.registerExtension({
                     maxImagesWidget.hidden = true;
                     maxImagesWidget.computeSize = () => [0, 0];
                 }
+                ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
+                ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
                 let maskWidget = getMaskDataWidget(this);
                 // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
                 if (!maskWidget) {
@@ -4555,6 +5289,7 @@ app.registerExtension({
 
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
+                _updateToolbarIconSize(this);
 
                 const MIN_W = 250;
                 const MIN_H = 300;
@@ -4596,25 +5331,7 @@ app.registerExtension({
                 const wIndex = getIndexWidget(this);
                 const wList = getImageListWidget(this);
                 const wSize = getCardSizeWidget(this);
-                const wMask = getMaskDataWidget(this);
                 const _nodeSelf = this;
-
-                // 当 index/imageList 变化导致"当前图片名"改变时 → 清空遮罩，避免旧遮罩粘到新图上
-                // forceClear=true 时（列表变化）无论名称是否相同都清空
-                const _clearMaskIfImageChanged = (forceClear = false) => {
-                    const names = parseNameList(getImageListWidget(_nodeSelf)?.value || "");
-                    const idx = getIndex(_nodeSelf);
-                    const curImg = names[idx >= 0 && idx < names.length ? idx : 0] || "";
-                    const prev = ui._lastMaskImageName || null;
-                    if (forceClear || (curImg && prev && prev !== curImg)) {
-                        if (wMask) {
-                            wMask.value = "";
-                            wMask.callback?.("");
-                        }
-                        ui.clearMask?.();
-                    }
-                    ui._lastMaskImageName = curImg || null;
-                };
 
                 if (wIndex) {
                     const origCallback = wIndex.callback;
@@ -4623,8 +5340,7 @@ app.registerExtension({
                         origCallback?.call(this, value);
                         if (value === wIndex._xzg_lastValue) return;
                         wIndex._xzg_lastValue = value;
-                        _clearMaskIfImageChanged();
-                        ui.clearCrop?.();
+                        ui.commitCurrentMask?.();
                         ui.redraw(false);
                     };
                 }
@@ -4636,8 +5352,9 @@ app.registerExtension({
                         origCallback?.call(this, value);
                         if (value === wList._xzg_lastValue) return;
                         wList._xzg_lastValue = value;
-                        _clearMaskIfImageChanged(true);
-                        ui.clearCrop?.();
+                        ui.commitCurrentMask?.();
+                        ui.syncMaskList?.();
+                        ui.syncCropList?.();
                         ui.updateModeBtn?.();
                         ui.redraw(true);
                     };
@@ -4664,12 +5381,6 @@ app.registerExtension({
                 }
 
                 ui.redraw(true);
-                // 初始化"当前图片名"，用于切图时判断是否清空遮罩
-                {
-                    const names = parseNameList(getImageListWidget(this)?.value || "");
-                    const idx = getIndex(this);
-                    ui._lastMaskImageName = names[idx >= 0 && idx < names.length ? idx : 0] || null;
-                }
                 return r;
             };
 
@@ -4815,6 +5526,19 @@ app.registerExtension({
                     maxImagesWidget.hidden = true;
                     maxImagesWidget.computeSize = () => [0, 0];
                 }
+                const overlayEnabledWidget = ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
+                const overlayColorWidget = ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
+                if (data?.widgets_values && Array.isArray(data.widgets_values)) {
+                    const enabledIndex = this.widgets?.indexOf(overlayEnabledWidget) ?? -1;
+                    const colorIndex = this.widgets?.indexOf(overlayColorWidget) ?? -1;
+                    if (enabledIndex >= 0 && data.widgets_values[enabledIndex] != null) overlayEnabledWidget.value = data.widgets_values[enabledIndex];
+                    if (colorIndex >= 0 && data.widgets_values[colorIndex] != null) overlayColorWidget.value = data.widgets_values[colorIndex];
+                }
+                if (data?.properties?.xzg_mask_output_enabled != null) {
+                    const savedEnabled = data.properties.xzg_mask_output_enabled;
+                    overlayEnabledWidget.value = savedEnabled === true || savedEnabled === 1 || String(savedEnabled).toLowerCase() === "true";
+                }
+                if (data?.properties?.xzg_mask_preview_color) overlayColorWidget.value = data.properties.xzg_mask_preview_color;
                 let maskWidget = getMaskDataWidget(this);
                 // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
                 if (!maskWidget) {
@@ -4875,6 +5599,17 @@ app.registerExtension({
                 // 从 data.properties 恢复（最可靠，不受 widget 索引影响）
                 const propMode = data?.properties?.xzg_upload_mode;
                 const restoredMode = (String(propMode || "").trim().toLowerCase() === "replace") ? "replace" : "append";
+                const restoredMaskColor = data?.properties?.xzg_mask_preview_color || this.properties?.xzg_mask_preview_color;
+                if (restoredMaskColor) this._xzgImgLoaderUI?.setMaskPreviewColor?.(restoredMaskColor);
+                if (data?.properties?.xzg_mask_close_enabled != null) {
+                    const savedClose = data.properties.xzg_mask_close_enabled;
+                    this._xzgImgLoaderUI?.setMaskCloseEnabled?.(savedClose === true || savedClose === 1 || String(savedClose).toLowerCase() === "true");
+                }
+                this._xzgImgLoaderUI?.setMaskOutputEnabled?.(
+                    data?.properties?.xzg_mask_output_enabled != null
+                        ? (data.properties.xzg_mask_output_enabled === true || data.properties.xzg_mask_output_enabled === 1 || String(data.properties.xzg_mask_output_enabled).toLowerCase() === "true")
+                        : String(overlayEnabledWidget?.value || "").toLowerCase() === "true"
+                );
                 if (umWidget) {
                     umWidget.type = "hidden";
                     umWidget.hidden = true;
@@ -4904,6 +5639,7 @@ app.registerExtension({
                     // 先确保 upload_mode widget 值已恢复 → 再同步到闭包变量
                     this._xzgImgLoaderUI.syncUploadModeFromWidget?.();
                     this._xzgImgLoaderUI.redraw(true);
+                    this._xzgImgLoaderUI.reloadMaskFromWidget?.();
                     this._xzgImgLoaderUI.updateModeBtn?.();
                     // 恢复 max_images widget 值后同步到“上限”输入框
                     this._xzgImgLoaderUI.updateMaxImgInput?.();
@@ -4924,6 +5660,11 @@ app.registerExtension({
                 const umValue = String(umWidget?.value || "").trim().toLowerCase();
                 const expected = (umValue === "replace") ? "replace" : "append";
                 data.properties.xzg_upload_mode = expected;
+                data.properties.xzg_mask_preview_color = this.properties?.xzg_mask_preview_color || "#ff0000";
+                const overlayEnabled = getMaskOutputEnabledWidget(this)?.value;
+                data.properties.xzg_mask_output_enabled = overlayEnabled === true || overlayEnabled === 1 || String(overlayEnabled).toLowerCase() === "true";
+                const closeEnabled = this.properties?.xzg_mask_close_enabled;
+                data.properties.xzg_mask_close_enabled = closeEnabled === true || closeEnabled === 1 || String(closeEnabled).toLowerCase() === "true";
                 if (umWidget && data?.widgets_values && Array.isArray(this.widgets)) {
                     const idx = this.widgets.indexOf(umWidget);
                     if (idx >= 0) {
@@ -4960,8 +5701,22 @@ app.registerExtension({
             };
 
             // 画布缩放时同步更新图片名称字体大小，以及 bypass 状态更新
+            function _updateToolbarIconSize(nodeInst) {
+                const sidebar = nodeInst?._xzgImgLoaderUI?.sidebar;
+                if (!sidebar) return;
+                const h = nodeInst.size?.[1] || 300;
+                const iconSize = `${Math.round(Math.min(32, Math.max(18, h / 22)))}px`;
+                if (sidebar.style.getPropertyValue("--xzg-ic-size") !== iconSize) {
+                    sidebar.style.setProperty("--xzg-ic-size", iconSize);
+                }
+                if (sidebar.style.getPropertyValue("--xzg-ui-font") !== "10px") {
+                    sidebar.style.setProperty("--xzg-ui-font", "10px");
+                }
+            }
+
             const origOnDrawBackground = nodeType.prototype.onDrawBackground;
             nodeType.prototype.onDrawBackground = function (ctx) {
+                _updateToolbarIconSize(this);
                 if (this._xzgImgLoaderUI?._updateLabelScale) {
                     this._xzgImgLoaderUI._updateLabelScale();
                 }
@@ -4977,18 +5732,9 @@ app.registerExtension({
             const origOnResize = nodeType.prototype.onResize;
             nodeType.prototype.onResize = function (size) {
                 const r = origOnResize?.apply(this, arguments);
+                _updateToolbarIconSize(this);
                 if (this._xzgAutoFitting) return r;
                 const self = this;
-                // 画布态图标随节点高度放大：20px 起点、上限 40px，节点越高图标越大
-                // （编辑态图标本为 display:none，仅画布态图标受影响）
-                if (self._xzgImgLoaderUI?.sidebar) {
-                    const h = (Array.isArray(size) ? size[1] : undefined) || self.size?.[1] || 300;
-                    const ic = Math.round(Math.min(32, Math.max(18, h / 22)));
-                    self._xzgImgLoaderUI.sidebar.style.setProperty("--xzg-ic-size", ic + "px");
-                    // 底部控件（多图/单图、列表/批次、列表数量）字号固定为 10px，不随节点高度缩放
-                    const fz = 10;
-                    self._xzgImgLoaderUI.sidebar.style.setProperty("--xzg-ui-font", fz + "px");
-                }
                 if (self._xzgResizeTimer) clearTimeout(self._xzgResizeTimer);
                 self._xzgResizeTimer = setTimeout(() => {
                     self._xzgResizeTimer = null;

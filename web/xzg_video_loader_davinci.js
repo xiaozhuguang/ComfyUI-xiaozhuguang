@@ -12,10 +12,36 @@ import {
 // 额外新增「加载视频」按钮，通过后端路由触达本机 DaVinci Resolve Studio，
 // 把剪辑页当前播放头所在片段自动导出为视频并加载到本节点。
 const DAVINCI_NODE = "XiaozhuguangVideoLoaderDaVinci";
+function _videoLoaderDavinciKey(node) {
+    const parts = (node?.graph?.nodes || []).filter(n => n?.id != null && n.type).map(n => `${n.id}:${n.type}`).sort();
+    let h = 5381;
+    for (const part of parts) for (let i = 0; i < part.length; i++) h = ((h << 5) + h + part.charCodeAt(i)) >>> 0;
+    return `xzg_video_loader_davinci_${h}_${node?.id ?? ""}`;
+}
+function _restoreVideoLoaderDavinciTarget(node) {
+    try {
+        const value = JSON.parse(localStorage.getItem(_videoLoaderDavinciKey(node)));
+        if (value?.directory) {
+            node._xzgVideoDavinciSession = value.session || "";
+            node._xzgVideoDavinciOutputDir = value.directory;
+            node._xzgVideoDavinciOutputName = value.filename || "";
+        }
+    } catch (_) {}
+}
 
 const _tr = (s) => s;
 
 // 达芬奇专用三瓣图标：三瓣同尺寸、彼此以窄缝分隔，不使用 emoji 或方向箭头。
+const _CLAPPER_SVG =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' +
+    'style="display:block">' +
+    '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/>' +
+    '<path d="m6.2 5.3 3.1 3.9"/>' +
+    '<path d="m12.4 3.4 3.1 4"/>' +
+    '<path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
+    '</svg>';
+
 function _davinciCloverIcon() {
     const styleId = "xzg-davinci-clover-style";
     if (!document.getElementById(styleId)) {
@@ -27,6 +53,8 @@ function _davinciCloverIcon() {
             .xzg-davinci-clover .xzg-dv-blue { top:0; left:4px; background:linear-gradient(135deg,#47e7ff,#22c9e9 45%,#3f91d7 78%,#d8f6b3); }
             .xzg-davinci-clover .xzg-dv-green { top:6.93px; left:0; background:linear-gradient(135deg,#fbf264,#dfee4c 52%,#9ac83a); }
             .xzg-davinci-clover .xzg-dv-red { top:6.93px; left:8px; background:linear-gradient(135deg,#f14c69,#ed5968 52%,#ee9250); }
+            @keyframes xzg-davinci-clover-spin { to { transform:rotate(360deg); } }
+            .xzg-davinci-clover.spinning { transform-origin:50% 50%; animation:xzg-davinci-clover-spin .8s linear infinite; }
         `;
         document.head.appendChild(style);
     }
@@ -65,8 +93,10 @@ async function _davinciStatus(node) {
 
 async function _davinciExport(node, busyBtn, labelSpan, label) {
     busyBtn.disabled = true;
-    labelSpan.textContent = "正在从达芬奇导出…";
+    _setLoaderDavinciBusy(node, true, "准备从达芬奇加载…");
+    labelSpan.textContent = "正在从达芬奇加载…";
     try {
+        _setLoaderDavinciBusy(node, true, "正在从达芬奇加载…");
         const resp = await api.fetchApi("/xzg/davinci/export", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -77,37 +107,49 @@ async function _davinciExport(node, busyBtn, labelSpan, label) {
             _toast("[达芬奇导入] " + (data?.error || "导出失败"), true);
             return;
         }
-        await _selectImportedVideo(node, data.filename);
+        const selected = await _selectImportedVideo(node, data.filename);
+        if (!selected) throw new Error("达芬奇已导出，但节点没有成功加载新视频；请检查 input 目录和视频文件");
         const clipName = data?.clip?.name;
         _toast(`已导入视频${clipName ? `「${clipName}」` : ""}`);
     } catch (e) {
         _toast("[达芬奇导入] " + String(e), true);
     } finally {
+        _setLoaderDavinciBusy(node, false);
         busyBtn.disabled = false;
         labelSpan.textContent = label;
     }
 }
 
 async function _selectImportedVideo(node, filename) {
+    if (!filename) return false;
+    const w = node.widgets?.find((x) => x.name === "视频");
+    const player = node._xzgVideoPlayer;
+    if (!w && !player?.load) return false;
+    let values = [];
     try {
         const resp = await api.fetchApi("/object_info/" + DAVINCI_NODE);
-        if (!resp.ok) return;
-        const info = await resp.json();
-        const list = info?.[DAVINCI_NODE]?.input?.required?.["视频"]?.[0];
-        if (!Array.isArray(list)) return;
-        const w = node.widgets?.find((x) => x.name === "视频");
-        if (!w) return;
-        w.options = w.options || {};
-        w.options.values = list;
-        if (list.includes(filename)) {
-            w.value = filename;
-            w.callback?.(filename);
-        } else if (list.length > 0) {
-            w.value = list[list.length - 1];
-            w.callback?.(w.value);
+        if (resp.ok) {
+            const info = await resp.json();
+            const list = info?.[DAVINCI_NODE]?.input?.required?.["视频"]?.[0];
+            if (Array.isArray(list)) values = list.slice();
         }
-        node.setDirtyCanvas?.(true, true);
     } catch (_) {}
+    // object_info 可能在渲染刚完成时仍返回旧列表；精确加入本次产物，绝不退回旧视频。
+    if (!values.includes(filename)) values.push(filename);
+    if (w) {
+        w.options = w.options || {};
+        w.options.values = values;
+        w.value = filename;
+        try { w.callback?.(filename); } catch (e) { console.warn("[小珠光] 视频下拉刷新失败，继续直接加载导出文件", e); }
+    }
+    // 显式刷新播放器，避免 widget callback 在节点初始化重绑期间尚未接入播放器。
+    if (player?.load) {
+        const url = `/view?${new URLSearchParams({ filename, type: "input" })}&rand=${Math.random()}`;
+        try { player.setPreviewLoaded?.(false); } catch (_) {}
+        player.load(url);
+    }
+    node.setDirtyCanvas?.(true, true);
+    return true;
 }
 
 async function _onImportClick(node, btn, labelSpan) {
@@ -124,7 +166,7 @@ async function _onImportClick(node, btn, labelSpan) {
         _toast("[达芬奇导入] 当前播放头下没有视频片段，请先在调色页/剪辑页把播放头置于要导出的片段上。", true);
         return;
     }
-    await _davinciExport(node, btn, labelSpan, "从达芬奇导入");
+    await _davinciExport(node, btn, labelSpan, "达芬奇");
 }
 
 // 移除历史遗留的顶部「加载视频」widget 按钮（若有），避免与预览区按钮重复。
@@ -156,11 +198,11 @@ function _createPreviewDavinciButton(node) {
     btn.style.cssText =
         "position:absolute;top:6px;right:6px;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
-        "padding:2px 6px;font-size:11px;line-height:1;" +
+        "height:22px;box-sizing:border-box;padding:2px 6px;font-size:11px;line-height:1;" +
         "background:transparent;color:#3ef558;border:none;" +
         "cursor:pointer;pointer-events:auto;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
-    btn.innerHTML = `${_davinciCloverIcon()}<span>从达芬奇导入</span>`;
+    btn.innerHTML = `${_davinciCloverIcon()}<span>达芬奇</span>`;
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
 
@@ -177,12 +219,34 @@ function _createPreviewDavinciButton(node) {
     pc.addEventListener("mouseover", onOver);
     pc.addEventListener("mouseout", onOut);
 
-    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
-    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#3ef558"; });
+    btn.addEventListener("mouseenter", () => {
+        if (btn.disabled) return;
+        btn.style.color = "#fff";
+        btn.querySelector(".xzg-davinci-clover")?.classList.add("spinning");
+    });
+    btn.addEventListener("mouseleave", () => {
+        btn.style.color = "#3ef558";
+        btn.querySelector(".xzg-davinci-clover")?.classList.remove("spinning");
+    });
+    btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
     btn.onclick = () => { if (!btn.disabled) _onImportClick(node, btn, labelSpan); };
 
     node._xzgDavinciBtn = btn;
     return btn;
+}
+
+// 悬浮按钮属于 DOM 覆盖层；直接把滚轮交还 LiteGraph 画布，避免停在按钮上时无法缩放画布。
+function _forwardCanvasWheel(e) {
+    const canvas = app.canvas?.canvas;
+    if (!canvas) return;
+    e.preventDefault();
+    e.stopPropagation();
+    canvas.dispatchEvent(new WheelEvent("wheel", {
+        deltaY: e.deltaY, deltaX: e.deltaX,
+        clientX: e.clientX, clientY: e.clientY,
+        ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey,
+        bubbles: true, cancelable: true,
+    }));
 }
 
 // 当前加载视频的来源信息。组合框默认来自 input，也兼容从 output/temp 拖入的带类型后缀文件名。
@@ -195,13 +259,68 @@ function _getLoadedVideoInfo(node) {
     return { filename: raw, type: "input" };
 }
 
+// 导出设置只由前端在点击「导出到达芬奇」时提交，不参与加载器的视频解码参数。
+// 使用普通隐藏 widget 保持设置可随工作流保存，并复用图片/视频保存节点的目录选择弹窗。
+function _hideOutputSettingWidget(w) {
+    if (!w) return;
+    w.type = "hidden";
+    w.hidden = true;
+    w.draw = () => {};
+    w.computeSize = () => [0, 0];
+    w.mouse = () => false;
+}
+
+function _ensureLoaderOutputSettings(node) {
+    const find = (name) => node.widgets?.find(w => w.name === name);
+    const add = (type, name, value) => node.addWidget(type, name, value, () => {});
+    const defW = find("use_default_output") || add("toggle", "use_default_output", true);
+    const baseW = find("base_dir") || add("text", "base_dir", "");
+    const prefixW = find("文件名前缀") || add("text", "文件名前缀", "xzg-davinci");
+    const dateW = find("add_date_stamp") || add("toggle", "add_date_stamp", false);
+    const timeW = find("add_time_stamp") || add("toggle", "add_time_stamp", false);
+    [defW, baseW, prefixW, dateW, timeW].forEach(_hideOutputSettingWidget);
+    node._xzgDefaultOutputWidget = defW;
+    node._xzgBaseDirWidget = baseW;
+    node._xzgPrefixCustomWidget = prefixW;
+    node._xzgDateStampWidget = dateW;
+    node._xzgTimeStampWidget = timeW;
+}
+
+function _setLoaderDavinciBusy(node, busy, message = "") {
+    const pc = node._xzgPreviewContainer;
+    if (!pc) return;
+    if (busy && !node._xzgDavinciBusyOverlay) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:absolute;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.96);color:#f2fff3;font:bold clamp(20px,4vw,36px) sans-serif;text-shadow:0 2px 8px #000;pointer-events:auto;text-align:center;";
+        pc.appendChild(overlay);
+        node._xzgDavinciBusyOverlay = overlay;
+    }
+    if (busy) {
+        node._xzgDavinciBusyOverlay.textContent = message || "准备导出…";
+        node._xzgDavinciBusyOverlay.style.display = "flex";
+        node._xzgDavinciActionBusy = true;
+    } else {
+        if (node._xzgDavinciBusyOverlay) node._xzgDavinciBusyOverlay.style.display = "none";
+        node._xzgDavinciActionBusy = false;
+    }
+}
+
+function _openLoaderOutputSettings(node) {
+    if (typeof window._xzgShowDirBrowser !== "function") {
+        _toast("输出设置弹窗不可用（图像保存模块未加载），请刷新页面重试。", true);
+        return;
+    }
+    window._xzgShowDirBrowser(node);
+}
+
 function _layoutPreviewActions(node) {
-    // 右 → 左：从达芬奇导入、导出到达芬奇、从快剪加载、发送到快剪。
+    // 视觉左→右：从快剪加载 · 发送到快剪 · 输出设置 · 从达芬奇加载 · 导出到达芬奇。
+    // 本数组按「右 → 左」（最右在前）排列：导出到达芬奇、从达芬奇加载、输出设置、发送到快剪、从快剪加载。
     const buttons = [
-        node._xzgDavinciBtn,
         node._xzgLoaderExportDavinciBtn,
-        node._xzgFastcutBtn,
+        node._xzgDavinciBtn,
         node._xzgLoaderQuickCutBtn,
+        node._xzgFastcutBtn,
     ].filter(Boolean);
     let right = 6;
     for (const btn of buttons) {
@@ -226,7 +345,7 @@ async function _sendLoadedToQuickCut(node, btn, labelSpan) {
         _toast("[发送到快剪] " + String(e), true);
     } finally {
         btn.disabled = false;
-        labelSpan.textContent = "发送到快剪";
+        labelSpan.textContent = "发送";
     }
 }
 
@@ -237,12 +356,23 @@ async function _exportLoadedToDavinci(node, btn, labelSpan) {
         return;
     }
     btn.disabled = true;
-    labelSpan.textContent = "正在导出到达芬奇…";
+    _setLoaderDavinciBusy(node, true, "准备导出…");
     try {
+        const sessionResp = await api.fetchApi(`/xzg/davinci/video-export-session?_=${Date.now()}`, { cache: "no-store" });
+        const sessionInfo = await sessionResp.json();
+        if (!sessionResp.ok || !sessionInfo?.session) throw new Error(sessionInfo?.error || "无法确认 ComfyUI 会话状态");
+        const session = sessionInfo.session;
+        const sameSession = node._xzgVideoDavinciSession === session && !!node._xzgVideoDavinciOutputDir;
+        const status = sameSession ? "正在导出到达芬奇…" : "选择保存位置…";
+        _setLoaderDavinciBusy(node, true, status);
+        labelSpan.textContent = status;
         const resp = await api.fetchApi("/xzg/davinci/loader-import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(info),
+            body: JSON.stringify({ ...info,
+                target_dir: sameSession ? node._xzgVideoDavinciOutputDir : "",
+                target_name: sameSession ? node._xzgVideoDavinciOutputName : "",
+            }),
         });
         // 反向代理/旧后端可能返回纯文本 404/405；不要把它伪装成 JSON 解析异常。
         const raw = await resp.text();
@@ -255,8 +385,19 @@ async function _exportLoadedToDavinci(node, btn, labelSpan) {
         if (!resp.ok) {
             throw new Error(data?.error || `接口响应 ${resp.status}`);
         }
+        if (data?.save_directory) {
+            node._xzgVideoDavinciSession = session;
+            node._xzgVideoDavinciOutputDir = data.save_directory;
+            node._xzgVideoDavinciOutputName = data.save_filename || node._xzgVideoDavinciOutputName;
+            try { localStorage.setItem(_videoLoaderDavinciKey(node), JSON.stringify({ session, directory: data.save_directory, filename: node._xzgVideoDavinciOutputName || "" })); } catch (_) {}
+        }
+        if (data?.cancelled) return;
         if (!data?.ok) {
             _toast("[导出到达芬奇] " + (data?.error || "导入失败"), true);
+            return;
+        }
+        if (data?.duplicate) {
+            _toast("[导出到达芬奇] " + (data?.message || "该位置已存在相同片段，未重复导入"));
             return;
         }
         const clip = data.clip ? `「${data.clip}」` : "";
@@ -265,8 +406,9 @@ async function _exportLoadedToDavinci(node, btn, labelSpan) {
     } catch (e) {
         _toast("[导出到达芬奇] " + String(e), true);
     } finally {
+        _setLoaderDavinciBusy(node, false);
         btn.disabled = false;
-        labelSpan.textContent = "导出到达芬奇";
+        labelSpan.textContent = "导出";
     }
 }
 
@@ -278,18 +420,33 @@ function _createLoaderActionButton(node, key, color, text, title, onClick, iconH
     btn.title = title;
     btn.style.cssText =
         "position:absolute;top:6px;right:6px;z-index:102;" +
-        "display:inline-flex;align-items:center;gap:4px;padding:2px 6px;font-size:11px;line-height:1;" +
+        "display:inline-flex;align-items:center;gap:4px;height:22px;box-sizing:border-box;padding:2px 6px;font-size:11px;line-height:1;" +
         `background:transparent;color:${color};border:none;cursor:pointer;pointer-events:auto;` +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
     btn.innerHTML = `${iconHtml}<span>${text}</span>`;
+    const clover = btn.querySelector(".xzg-davinci-clover");
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
-    const onOver = () => { _layoutPreviewActions(node); btn.style.opacity = "1"; };
-    const onOut = (e) => { if (!pc.contains(e.relatedTarget) && !btn.disabled) btn.style.opacity = "0"; };
+    const _refreshVis = () => {
+        if (node._xzgFastcutEditorOpen) { btn.style.opacity = "0"; return; }  // 快剪编辑器打开时全隐藏
+        if (btn.disabled) { btn.style.opacity = "1"; return; }  // busy 按钮常显
+        const anyBusy = ["_xzgLoaderQuickCutBtn","_xzgLoaderExportDavinciBtn","_xzgDavinciBtn"].some(k => node[k]?.disabled);
+        btn.style.opacity = anyBusy ? "0" : (pc.matches(":hover") ? "1" : btn.style.opacity);
+    };
+    const onOver = () => { _layoutPreviewActions(node); _refreshVis(); };
+    const onOut = (e) => { if (!pc.contains(e.relatedTarget)) btn.style.opacity = "0"; };
     pc.addEventListener("mouseover", onOver);
     pc.addEventListener("mouseout", onOut);
-    btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
-    btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = color; });
+    btn.addEventListener("mouseenter", () => {
+        if (btn.disabled) return;
+        btn.style.color = "#fff";
+        clover?.classList.add("spinning");
+    });
+    btn.addEventListener("mouseleave", () => {
+        btn.style.color = color;
+        clover?.classList.remove("spinning");
+    });
+    btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
     btn.onclick = () => { if (!btn.disabled) onClick(btn, labelSpan); };
     node[key] = btn;
     requestAnimationFrame(() => _layoutPreviewActions(node));
@@ -298,18 +455,28 @@ function _createLoaderActionButton(node, key, color, text, title, onClick, iconH
 
 function _createLoaderQuickCutButton(node) {
     return _createLoaderActionButton(
-        node, "_xzgLoaderQuickCutBtn", "#ffd76a", "发送到快剪",
+        node, "_xzgLoaderQuickCutBtn", "#ffd76a", "发送",
         "把当前加载的视频发送到快剪媒体库（打开快剪后可手动拖入轨道使用）",
-        (btn, label) => _sendLoadedToQuickCut(node, btn, label)
+        (btn, label) => _sendLoadedToQuickCut(node, btn, label),
+        _CLAPPER_SVG
     );
 }
 
 function _createLoaderExportDavinciButton(node) {
     return _createLoaderActionButton(
-        node, "_xzgLoaderExportDavinciBtn", "#3ef558", "导出到达芬奇",
+        node, "_xzgLoaderExportDavinciBtn", "#3ef558", "导出",
         "把当前加载的视频导入达芬奇（进媒体池 + 复用空白轨道/无则新建 + 对齐播放头片段前端）",
         (btn, label) => _exportLoadedToDavinci(node, btn, label),
         _davinciCloverIcon()
+    );
+}
+
+function _createLoaderOutputSettingsButton(node) {
+    return _createLoaderActionButton(
+        node, "_xzgLoaderOutSettingsBtn", "#8ab4f8", "设置",
+        "设置导出到达芬奇前的视频副本目录、文件名前缀与日期/时间戳",
+        () => _openLoaderOutputSettings(node),
+        '<span style="font-size:13px;line-height:1;">⚙</span>'
     );
 }
 
@@ -352,12 +519,16 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = origOnNodeCreated?.apply(this, arguments);
+                requestAnimationFrame(() => _restoreVideoLoaderDavinciTarget(this));
                 // 内存模式（低内存版功能并入）：由 widget 值动态决定 isLM，
                 // 切换时通过 _xzgSetVideoLoaderMode 销毁重建播放器并重载当前视频。
                 bindVideoLoaderInteractions(this, () => {
                     const mw = this.widgets?.find((w) => w.name === "内存模式");
                     return (mw?.value || "标准") === "低内存";
                 }, { fastcut: true });
+                // 化神级：最小宽度与默认宽度均为 500（基础加载器默认 300）
+                this.minWidth = 360;
+                this.setSize([360, Math.max(this.size?.[1] || 360, 360)]);
                 // 钩住「内存模式」widget 变化：切换后重建播放器（XZGCOMBO 通过 _xzgCb 挂载回调）
                 const _modeWidget = this.widgets?.find((w) => w.name === "内存模式");
                 if (_modeWidget && !_modeWidget._xzgModeHooked) {
@@ -389,12 +560,13 @@ app.registerExtension({
             // 本节点有多个扩展环节（批处理编排器异步注入控件、达芬奇按钮等），异步注入
             // 发生在 configure 之后，可能把恢复好的尺寸重新覆盖为默认值。
             // onConfigure 收到的 data 即节点在工作流里的序列化数据（含用户保存的 size）。
-            // 策略：加载后短时间内持续检测，一旦尺寸被重置回默认值（300×500）就按保存值
-            // 恢复；用户手动拖拽后的尺寸不等于默认值，不会被覆盖。
+            // 策略：加载后短时间内持续检测，一旦尺寸被异步初始化逻辑重置为默认值
+            // （300×500 或 360×500）就按保存值恢复；用户手动拖拽后的尺寸不会被覆盖。
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (data) {
                 const r = origOnConfigure?.apply(this, arguments);
                 try {
+                    requestAnimationFrame(() => _restoreVideoLoaderDavinciTarget(this));
                     // 工作流加载后同步内存模式：widget 值恢复可能与当前播放器构建模式不一致（无变化时内部自动跳过）
                     const _mw = this.widgets?.find((w) => w.name === "内存模式");
                     if (_mw) this._xzgSetVideoLoaderMode?.((_mw.value || "标准") === "低内存");
@@ -406,8 +578,14 @@ app.registerExtension({
                         const applySavedSize = () => {
                             try {
                                 const s = node.size;
-                                const isDefault = s && Math.round(s[0]) === 300 && Math.round(s[1]) === 500;
-                                if (isDefault && (Math.round(savedSize[0]) !== 300 || Math.round(savedSize[1]) !== 500)) {
+                                const isDefault = s && (
+                                    (Math.round(s[0]) === 300 && Math.round(s[1]) === 500) ||
+                                    (Math.round(s[0]) === 360 && Math.round(s[1]) === 500)
+                                );
+                                const savedIsDefault =
+                                    (Math.round(savedSize[0]) === 300 && Math.round(savedSize[1]) === 500) ||
+                                    (Math.round(savedSize[0]) === 360 && Math.round(savedSize[1]) === 500);
+                                if (isDefault && !savedIsDefault) {
                                     node.size = savedSize.slice();
                                     node.setDirtyCanvas?.(true, true);
                                 }

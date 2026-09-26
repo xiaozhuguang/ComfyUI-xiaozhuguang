@@ -535,6 +535,8 @@ app.registerExtension({
                     if (!info.filename) return;
                     // 绝对路径输出：令牌随缓存/持久化传递，供恢复时经 /xzg/davinci/view-abs 拉流
                     if (v.abs_token) info.abs_token = v.abs_token;
+                    // 达芬奇节点在「预览 + 自定义输出」下使用的目录副本令牌。
+                    if (v.davinci_abs_token) info.davinci_abs_token = v.davinci_abs_token;
                     if (v.is_absolute) info.is_absolute = v.is_absolute;
                     if (typeof v.frame_rate === "number" && v.frame_rate > 0) info.frame_rate = v.frame_rate;
                     if (typeof v.frame_count === "number" && v.frame_count > 0) info.frame_count = v.frame_count;
@@ -811,6 +813,8 @@ app.registerExtension({
                     }
                     // 绝对路径输出：令牌随缓存/持久化传递，供恢复时经 /xzg/davinci/view-abs 拉流
                     if (v.abs_token) info.abs_token = v.abs_token;
+                    // 达芬奇节点在「预览 + 自定义输出」下使用的目录副本令牌。
+                    if (v.davinci_abs_token) info.davinci_abs_token = v.davinci_abs_token;
                     if (v.is_absolute) info.is_absolute = v.is_absolute;
                     // 关键：先写入模块级全局 cache（按图实例令牌键，杜绝跨工作流串台）
                     // 切 tab 重建节点后，onConfigure/ResizeObserver 从此读取恢复预览。

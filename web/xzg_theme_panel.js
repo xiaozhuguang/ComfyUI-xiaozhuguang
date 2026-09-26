@@ -1244,6 +1244,8 @@ window.XZGThemePanel = {
                 setTimeout(renderQuickNodesList, 50);
             }
         };
+        // 供每次打开面板时重置到默认「主题」标签使用。
+        this._switchTopTab = switchTopTab;
 
         topTabs.forEach(tab => {
             tab.addEventListener('click', (e) => {
@@ -1252,30 +1254,8 @@ window.XZGThemePanel = {
             });
         });
 
-        let savedTab = 'theme';
-        try {
-            const t = localStorage.getItem('xzg-theme-panel-tab');
-            if (t === 'menuhide' || t === 'theme' || t === 'quicknodes' || t === 'themeplus') savedTab = t;
-        } catch(e) {}
-
-        if (savedTab === 'menuhide' || savedTab === 'quicknodes') {
-            const themeTab = panel.querySelector('.xzg-tab-content[data-tab-content="theme"]');
-            const targetTab = panel.querySelector(`.xzg-tab-content[data-tab-content="${savedTab}"]`);
-            if (themeTab && targetTab) {
-                themeTab.style.display = '';
-                targetTab.style.display = 'none';
-                requestAnimationFrame(() => {
-                    if (themeTab.offsetHeight > 0) {
-                        targetTab.style.height = themeTab.offsetHeight + 'px';
-                    }
-                    switchTopTab(savedTab);
-                });
-            } else {
-                switchTopTab(savedTab);
-            }
-        } else {
-            switchTopTab(savedTab);
-        }
+        // 创建时始终先显示主题页，不恢复上次停留的「主题+ / 菜单隐藏 / 快速连线」。
+        switchTopTab('theme');
 
         if (menuTabs && menuTabs.length > 0) {
             menuTabs.forEach(tab => {
@@ -2048,6 +2028,8 @@ window.XZGThemePanel = {
         if (!this.panel) this.create();
         this.isVisible = true;
         this.panel.style.display = "block";
+        // 面板每次重新打开都回到「主题」页；其他标签只在本次打开期间切换。
+        if (typeof this._switchTopTab === "function") this._switchTopTab("theme");
         // 打开面板时兜底刷新菜单隐藏列表，避免隐藏菜单项后重新打开仍显示旧列表
         try {
             if (this._refreshMenuListUI) this._refreshMenuListUI();
@@ -2866,6 +2848,17 @@ window.XZGThemePanel = {
                                 if (typeof inst.renderWorkflowList === "function") inst.renderWorkflowList();
                             }
                             cloudSave("xzg_workflows_meta", meta).catch(() => {});
+                        }
+                    } catch (e) {}
+                }
+                // Skill 预设：写入云端并刷新节点类型下拉，避免刷新页面时旧云数据覆盖导入结果。
+                const skillPresetsRaw = obj.localStorage["xzg_prompt_skill_presets"];
+                if (typeof skillPresetsRaw === "string") {
+                    try {
+                        const presets = JSON.parse(skillPresetsRaw);
+                        if (presets && typeof presets === "object" && !Array.isArray(presets)) {
+                            cloudSave("xzg_prompt_skill_presets", presets).catch(() => {});
+                            window.XZGRefreshSkillPresetTypes?.();
                         }
                     } catch (e) {}
                 }

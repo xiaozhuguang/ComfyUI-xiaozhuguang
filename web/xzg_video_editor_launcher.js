@@ -115,12 +115,11 @@ window._xzgOpenVideoEditor = openEditor;
 // 按需加载后，外部节点仍可直接“发送到快剪”：这里先加载编辑器模块，再转交其媒体入库函数。
 // 编辑器模块加载完成时会用真实实现覆盖该同名入口，因此无需额外维护第二套媒体列表。
 async function receiveMediaBridge(...args) {
-    await loadEditorModule();
-    const receive = window._xzgVideoEditorReceiveMedia;
-    if (receive === receiveMediaBridge) {
-        throw new Error("快剪媒体接收器未初始化");
+    const editorModule = await loadEditorModule();
+    if (typeof editorModule.receiveVideoEditorMedia !== "function") {
+        throw new Error("快剪媒体接收器未初始化，请刷新页面后重试");
     }
-    return receive(...args);
+    return editorModule.receiveVideoEditorMedia(...args);
 }
 window._xzgVideoEditorReceiveMedia = receiveMediaBridge;
 

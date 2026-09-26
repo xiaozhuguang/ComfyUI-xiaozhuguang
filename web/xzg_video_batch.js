@@ -1447,7 +1447,8 @@ app.registerExtension({
                     });
                     w.options = w.options || {};
                     w.options.serialize = false; // 按钮回调不可序列化，与「上传视频」按钮一致
-                    w.computeSize = (width) => [width, 24];
+                    // 普通控件行高为 20px；LiteGraph 另加 4px，设 24 会多占一档高度。
+                    w.computeSize = (width) => [width, 20];
                     w.draw = function (ctx, node, widget_width, y, H) {
                         const pad = 16, r = 6;
                         ctx.fillStyle = "#2a2a2a";
@@ -1475,7 +1476,8 @@ app.registerExtension({
                     for (const nm of ["片段起点", "片段终点"]) {
                         const hw = (node.widgets || []).find((x) => x.name === nm);
                         if (hw) {
-                            hw.computeSize = () => [0, -1]; // 高度折叠，不占节点空间
+                            // LiteGraph 会在每个 widget 高度上额外加 4px；用 -4 才能真正零占位。
+                            hw.computeSize = () => [0, -4];
                             hw.draw = () => {};             // 不绘制
                         }
                     }

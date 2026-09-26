@@ -86,6 +86,7 @@ function _xzgImgSaveEnsureCtxMenu() {
     menu._pngItem = pngItem;
     menu._jpgItem = jpgItem;
     menu._sendItem = sendItem;
+    menu._sendSep = sep;
     document.body.appendChild(menu);
 
     // 点击其他地方关闭菜单（pointerdown 覆盖鼠标+触摸，mousedown 兜底，contextmenu 处理右键，keydown Escape）
@@ -119,6 +120,9 @@ function _xzgImgSaveShowCtxMenu(widget, x, y) {
     const fmt = forcePng ? "PNG" : (widget?.node?._xzgFormatWidget?.value || "JPG");
     if (menu._pngItem) menu._pngItem.style.display = (fmt === "PNG") ? "" : "none";
     if (menu._jpgItem) menu._jpgItem.style.display = (fmt === "JPG") ? "" : "none";
+    const canSendToLoader = widget?.node?.type === XZG_IMAGE_SAVE_CUSTOM_TYPE;
+    if (menu._sendItem) menu._sendItem.style.display = canSendToLoader ? "" : "none";
+    if (menu._sendSep) menu._sendSep.style.display = canSendToLoader ? "" : "none";
 
     menu.style.left = x + "px";
     menu.style.top = y + "px";
@@ -184,15 +188,34 @@ function _xzgFindImageLoaders() {
     const loaders = [];
     const nodes = app.graph?.nodes || [];
     for (const n of nodes) {
-        if (n && n.type === "XiaozhuguangImageLoader") {
+        if (_xzgIsImageLoaderAvailable(n)) {
             loaders.push(n);
         }
     }
     return loaders;
 }
 
+// LiteGraph: NEVER=2 表示停用，BYPASS=4 表示绕过。兼容运行时暴露的命名常量。
+function _xzgIsImageLoaderAvailable(node) {
+    if (!node || node.type !== "XiaozhuguangImageLoader") return false;
+    const lg = globalThis.LiteGraph || {};
+    const nodeModes = lg.NODE_MODES || {};
+    const unavailableModes = new Set([
+        2, 4,
+        lg.NEVER,
+        lg.BYPASS,
+        nodeModes.NEVER,
+        nodeModes.BYPASS,
+    ].filter((value) => value !== undefined));
+    return !unavailableModes.has(node.mode) && node.disabled !== true && node.flags?.disabled !== true;
+}
+
 // 向指定加载器节点添加图片名（遵循其 upload_mode：replace 替换，append 追加到头部）
 function _xzgAppendToLoader(loaderNode, annotatedName) {
+    if (!_xzgIsImageLoaderAvailable(loaderNode)) {
+        alert(xzgT("目标图像加载器已停用或被绕过，请选择一个启用中的加载器。", "The target Image Loader is disabled or bypassed. Choose an enabled loader."));
+        return;
+    }
     const listWidget = loaderNode.widgets?.find((w) => w.name === "image_list");
     if (!listWidget) return;
     const modeWidget = loaderNode.widgets?.find((w) => w.name === "upload_mode");
@@ -269,17 +292,66 @@ function _xzgShowLoaderSelector(loaders, annotatedName) {
     document.body.appendChild(overlay);
 }
 
-// 主入口：发送当前图片到小珠光图像加载器
-function _xzgSendToImageLoader(imgData) {
+// 主入口：优先从后端原始像素缓存生成全分辨率无损 PNG；旧工作流无缓存时才用实际保存文件。
+async function _xzgSendToImageLoader(imgData) {
     if (!imgData) return;
-    const annotatedName = _xzgFormatLoaderName(imgData);
+    let annotatedName = null;
+    let retrievalError = null;
+    if (imgData.real_token) {
+        try {
+            const resp = await api.fetchApi("/xzg_save_real", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index, format: "png" }),
+            });
+            if (resp.ok) {
+                const info = await resp.json();
+                if (info?.filename) {
+                    const fullName = info.subfolder ? `${info.subfolder}/${info.filename}` : info.filename;
+                    annotatedName = `${fullName} [${info.type || "temp"}]`;
+                }
+                if (!annotatedName) retrievalError = "后端没有返回图片文件名";
+            } else {
+                let detail = "";
+                try {
+                    const body = await resp.json();
+                    detail = body?.error ? `：${body.error}` : "";
+                } catch (_) {}
+                retrievalError = `后端请求失败 HTTP ${resp.status}${detail}`;
+            }
+        } catch (e) {
+            retrievalError = `后端请求异常：${e?.message || e}`;
+        }
+    } else {
+        retrievalError = "当前图片数据没有原始图像缓存令牌";
+    }
+    // 兼容旧工作流：已保存的 output 文件也是全分辨率；绝不退回画布预览图。
+    if (!annotatedName && imgData.saved_filename) annotatedName = _xzgFormatLoaderName(imgData);
     if (!annotatedName) {
-        console.warn("[小珠光图像保存] 无法解析图片文件名，发送取消");
+        const msg = xzgT(
+            `无法取得全分辨率图片（${retrievalError || "未知原因"}）。请重新执行对应的图像保存节点后再发送。`,
+            `Could not get the full-resolution image (${retrievalError || "unknown error"}). Re-run the Image Save node, then send it again.`
+        );
+        console.warn("[小珠光图像保存] " + msg, {
+            hasRealToken: !!imgData.real_token,
+            hasSavedFile: !!imgData.saved_filename,
+        });
+        alert(msg);
         return;
     }
     const loaders = _xzgFindImageLoaders();
 
     if (loaders.length === 0) {
+        const anyLoaders = (app.graph?.nodes || []).some((n) => n?.type === "XiaozhuguangImageLoader");
+        if (anyLoaders) {
+            const msg = xzgTh(
+                "画布中的图像加载器都已停用或被绕过，请先启用一个。",
+                "All Image Loader nodes on the canvas are disabled or bypassed. Enable one first."
+            );
+            console.warn("[小珠光图像保存] " + msg);
+            alert(msg);
+            return;
+        }
         const msg = xzgTh(
             "未找到小珠光图像加载器节点，请先添加一个",
             "No Xiaozhuguang Image Loader found. Please add one first."
@@ -667,7 +739,7 @@ class XzgImageSaveWidget {
             if (isCustom) {
                 ctx.textAlign = "center";
                 ctx.fillStyle = "#aaaaaa";
-                ctx.fillText(xzgT("输出设置", "Output Settings"), colW * idx + colW / 2, y + btnH / 2);
+                ctx.fillText(xzgT("设置", "Settings"), colW * idx + colW / 2, y + btnH / 2);
                 this.hitAreas["browse_dir"] = {
                     bounds: [colW * idx, y, colW, btnH],
                     onDown: () => {
@@ -1405,7 +1477,7 @@ app.registerExtension({
                 };
             })(nodeType.prototype.onNodeCreated);
 
-            // 右键菜单：PNG保存 + JPG保存 + 发送到小珠光图片加载器
+            // 右键菜单：化神级保留「发送到小珠光图片加载器」；普通保存节点仅提供下载
             const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
@@ -1427,11 +1499,12 @@ app.registerExtension({
                             callback: () => { downloadJpgImage(cur); }
                         });
                     }
-                    // 发送到小珠光图片加载器
-                    saveOpts.push({
-                        content: `<span style="color:#88ccff;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
-                        callback: () => { _xzgSendToImageLoader(cur); }
-                    });
+                    if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
+                        saveOpts.push({
+                            content: `<span style="color:#88ccff;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
+                            callback: () => { _xzgSendToImageLoader(cur); }
+                        });
+                    }
                     options.splice(0, 0, ...saveOpts, null);
                 }
             };
@@ -1709,6 +1782,21 @@ function _xzgDirBrowserEnsureDlg() {
     timeText.textContent = xzgT("时间戳", "Time Stamp");
     timeToggle.appendChild(timeText);
     customRow.appendChild(timeToggle);
+
+    // 仅视频轨道（视频导出专用）：勾选后视频导出到达芬奇时只上视频轨道、不带音频。
+    // 仅当节点挂有 _xzgDvVideoOnlyWidget 时才显示该行（音频/图像节点不出现）。
+    const videoOnlyToggle = document.createElement("label");
+    videoOnlyToggle.style.cssText = "font-size:11px;color:#ddd;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;white-space:nowrap;margin-left:14px;";
+    const videoOnlyCheck = document.createElement("input");
+    videoOnlyCheck.type = "checkbox";
+    videoOnlyCheck.style.cssText = `accent-color:${GOLD};cursor:pointer;`;
+    videoOnlyToggle.appendChild(videoOnlyCheck);
+    const videoOnlyText = document.createElement("span");
+    videoOnlyText.textContent = xzgT("仅视频轨道（不带音频）", "Video Only (no audio)");
+    videoOnlyToggle.appendChild(videoOnlyText);
+    modeRow.appendChild(videoOnlyToggle);
+    dlg._videoOnlyCheck = videoOnlyCheck;
+    dlg._videoOnlyRow = videoOnlyToggle;
 
     // 读取当前选中的输出模式（"default" | "saveas" | "custom"）
     const _xzgGetOutputMode = () => {
@@ -2168,6 +2256,11 @@ function _xzgDirBrowserConfirm() {
             node._xzgTimeStampWidget.value = v;
             if (node._xzgTimeStampWidget.callback) node._xzgTimeStampWidget.callback(v);
         }
+        if (dlg._videoOnlyCheck && node._xzgDvVideoOnlyWidget) {
+            const v = !!dlg._videoOnlyCheck.checked;
+            node._xzgDvVideoOnlyWidget.value = v;
+            if (node._xzgDvVideoOnlyWidget.callback) node._xzgDvVideoOnlyWidget.callback(v);
+        }
         node.setDirtyCanvas(true);
     }
     _xzgDirBrowserHide();
@@ -2221,6 +2314,14 @@ async function _xzgShowDirBrowser(node) {
     } else if (dlg._timeCheck) {
         dlg._timeCheck.checked = false;
     }
+    // 仅视频轨道行：仅视频节点（挂有 _xzgDvVideoOnlyWidget）显示
+    if (dlg._videoOnlyRow) {
+        const _hasVO = !!(node && node._xzgDvVideoOnlyWidget);
+        dlg._videoOnlyRow.style.display = _hasVO ? "" : "none";
+        if (dlg._videoOnlyCheck) {
+            dlg._videoOnlyCheck.checked = _hasVO ? !!node._xzgDvVideoOnlyWidget.value : false;
+        }
+    }
     // 根据输出模式，同步灰显/启用 自定义前缀/日期戳/时间戳 + 路径选择区
     if (typeof dlg._applyDefaultState === "function") dlg._applyDefaultState();
     dlg.style.display = "flex";
@@ -2236,8 +2337,10 @@ async function _xzgShowDirBrowser(node) {
             }
         }
     } catch (_) {}
-    // 始终默认显示我的电脑（C/D/E/F），用户再点具体盘符进入
-    await _xzgDirBrowserLoad("");
+    // 有已保存的目录时直接回到该目录；空值才显示「我的电脑」。此前始终传空字符串，
+    // 导致设置实际生效但再次打开弹窗时路径显示为根目录，容易误以为被重置。
+    const savedPath = typeof widget?.value === "string" ? widget.value.trim() : "";
+    await _xzgDirBrowserLoad(savedPath || "");
 }
 
 async function _xzgDirBrowserNewFolder() {

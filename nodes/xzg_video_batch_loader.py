@@ -63,6 +63,16 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
         t["required"]["片段终点"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1e6, "step": 0.001})
         # 内存模式（低内存版功能并入）：标准=list+堆叠；低内存=预分配流式写入
         t["required"]["内存模式"] = (["标准", "低内存"], {"default": "标准"})
+        # 把可见控件放在隐藏的片段起点/终点之前，避免隐藏 widget 占位影响帧数上限后的间距。
+        required = t["required"]
+        reordered = {}
+        for name, spec in required.items():
+            if name == "内存模式":
+                continue
+            reordered[name] = spec
+            if name == "帧数上限":
+                reordered["内存模式"] = required["内存模式"]
+        t["required"] = reordered
         return t
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
