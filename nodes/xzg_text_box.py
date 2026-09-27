@@ -830,10 +830,46 @@ class XiaozhuguangTextBox:
         return _digits_to_zh(raw)
 
 
+class XiaozhuguangTextBoxGod(XiaozhuguangTextBox):
+    """化神级文本框的基础版本：先沿用标准文本框行为，后续功能独立扩展。"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        spec = super().INPUT_TYPES()
+        text_widget = spec["required"]["text"]
+        text_widget[1]["placeholder"] = text_widget[1]["placeholder"].replace(
+            "小珠光文本框", "小珠光文本框-化神级", 1
+        )
+        # 保持原 text 控件为第一个 widget，兼容此前已放入工作流的化神级节点。
+        # 两级选择：先选大分类，再选该分类中的提示词细分。
+        # 前端会把这两个 STRING 控件换成动态下拉框。后端不能使用固定枚举，
+        # 否则用户保存的分类和子项名称会在工作流校验时被判为无效输入。
+        # 保留 text 为首控件兼容旧工作流。
+        spec["required"]["preset_category"] = (
+            "STRING",
+            {"default": "无", "tooltip": "提示词类型 / Prompt type"},
+        )
+        spec["required"]["preset_name"] = (
+            "STRING",
+            {"default": "无", "tooltip": "提示词细分 / Prompt subtype"},
+        )
+        return spec
+
+    def execute(self, text, preset_category=None, preset_name=None):
+        return super().execute(text)
+
+    @classmethod
+    def IS_CHANGED(cls, text, preset_category=None, preset_name=None):
+        raw = text if text is not None else ""
+        return _digits_to_zh(raw)
+
+
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
+    "XiaozhuguangTextBoxGod": XiaozhuguangTextBoxGod,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangTextBox": "小珠光文本框 / Xiaozhuguang Text Box",
+    "XiaozhuguangTextBoxGod": "小珠光文本框-化神级",
 }

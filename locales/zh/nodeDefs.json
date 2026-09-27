@@ -340,16 +340,16 @@
       "seed": { "name": "种子" },
       "unload_after": { "name": "卸载模型" },
       "output_language": { "name": "输出语言" },
-      "image_1": { "name": "Image_1" },
-      "image_2": { "name": "Image_2" },
-      "image_3": { "name": "Image_3" },
-      "image_4": { "name": "Image_4" },
-      "image_5": { "name": "Image_5" },
-      "image_6": { "name": "Image_6" },
-      "image_7": { "name": "Image_7" },
-      "image_8": { "name": "Image_8" },
-      "image_9": { "name": "Image_9" },
-      "image_10": { "name": "Image_10" }
+      "image_1": { "name": "图片_1" },
+      "image_2": { "name": "图片_2" },
+      "image_3": { "name": "图片_3" },
+      "image_4": { "name": "图片_4" },
+      "image_5": { "name": "图片_5" },
+      "image_6": { "name": "图片_6" },
+      "image_7": { "name": "图片_7" },
+      "image_8": { "name": "图片_8" },
+      "image_9": { "name": "图片_9" },
+      "image_10": { "name": "图片_10" }
     },
       "outputs": {
         "0": { "name": "英文提示词" },
@@ -366,11 +366,11 @@
       "seed": { "name": "种子" },
       "unload_after": { "name": "卸载模型" },
       "output_language": { "name": "输出语言" },
-      "image_1": { "name": "Image_1" }, "image_2": { "name": "Image_2" },
-      "image_3": { "name": "Image_3" }, "image_4": { "name": "Image_4" },
-      "image_5": { "name": "Image_5" }, "image_6": { "name": "Image_6" },
-      "image_7": { "name": "Image_7" }, "image_8": { "name": "Image_8" },
-      "image_9": { "name": "Image_9" }, "image_10": { "name": "Image_10" }
+      "image_1": { "name": "图片_1" }, "image_2": { "name": "图片_2" },
+      "image_3": { "name": "图片_3" }, "image_4": { "name": "图片_4" },
+      "image_5": { "name": "图片_5" }, "image_6": { "name": "图片_6" },
+      "image_7": { "name": "图片_7" }, "image_8": { "name": "图片_8" },
+      "image_9": { "name": "图片_9" }, "image_10": { "name": "图片_10" }
     },
     "outputs": {
       "0": { "name": "英文提示词" }, "1": { "name": "中文提示词" }
@@ -607,6 +607,18 @@
     },
     "outputs": {
       "0": { "name": "合成图像" }
+    }
+  },
+  "XiaozhuguangTextBoxGod": {
+    "display_name": "小珠光文本框-化神级",
+    "inputs": {
+      "preset_category": { "name": "提示词类型" },
+      "preset_name": { "name": "提示词细分" },
+      "text": { "name": "文本" }
+    },
+    "outputs": {
+      "0": { "name": "原文" },
+      "1": { "name": "数字转中文" }
     }
   }
 }

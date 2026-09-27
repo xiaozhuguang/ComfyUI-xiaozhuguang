@@ -1,9 +1,43 @@
 
 import { xzgT } from "./xzg_i18n.js";
-import { cloudLoad, cloudSave, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
+import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 // 主题面板设置云存储键（预设/快捷键/最近色/标签页）
 const THEME_PANEL_STATE_KEY = "xzg_theme_panel_state";
+const XZG_EXPORT_CATEGORIES = [
+    ["theme", "主题与外观", "Theme & Appearance", "已云端持久化", "Cloud-backed"],
+    ["favorites", "节点收藏", "Node Favorites", "部分云端同步", "Partially cloud-backed"],
+    ["title", "标题与标题样式", "Titles & Styles", "已云端持久化", "Cloud-backed"],
+    ["workflows", "工作流管理器", "Workflow Manager", "已云端持久化", "Cloud-backed"],
+    ["groups", "编组与标题节点", "Groups & Title Nodes", "已云端持久化", "Cloud-backed"],
+    ["quickLinks", "快速连线", "Quick Links", "已云端持久化", "Cloud-backed"],
+    ["menuHide", "菜单隐藏", "Menu Hiding", "已云端持久化", "Cloud-backed"],
+    ["skills", "提示词规则预设", "Prompt Rule Presets", "已云端持久化", "Cloud-backed"],
+    ["textBoxGodPresets", "文本框化神级预设", "Text Box God-Tier Presets", "已云端持久化", "Cloud-backed"],
+    ["notes", "记事本", "Notepad", "已云端持久化", "Cloud-backed"],
+    ["align", "田字格对齐", "Grid Alignment", "已云端持久化", "Cloud-backed"],
+    ["sidebar", "侧边栏偏好", "Sidebar Preferences", "已云端持久化", "Cloud-backed"],
+    ["shortcuts", "小珠光自定义快捷键", "XZG Custom Shortcuts", "服务端持久化", "Server-backed"],
+];
+
+function xzgExportCategoryForKey(key) {
+    // Internal cloud snapshots combine several selectable categories; omit them from export
+    // so they cannot smuggle unchecked categories into an otherwise granular backup.
+    if (key === "xzg_favorites_state" || key === "xzg_ui_state") return null;
+    if (key === "xiaozhuguang.notes") return "notes";
+    if (key === "comfyui_xiaozhuguang" || /^xiaozhuguang\.Panel(Pos|Width|Height|SplitWidth)$/.test(key)) return "favorites";
+    if (/^xzg_(title_presets|last_title_|last_title_config)/.test(key) || key === "xz_selector_dialog_pos") return "title";
+    if (key === "xzg_workflows_meta" || /^xzg_wf_/.test(key) || key === "xzg_possess_mode" || key === "xiaozhuguang.Toggle.EnableWorkflows") return "workflows";
+    if (/^xzg_(group_|toggle_|deleted_groups|groups_backup|shortcut$|toggle_shortcut$)/.test(key) || key === "xzg_title_state") return "groups";
+    if (/^xzg_quick_nodes/.test(key)) return "quickLinks";
+    if (/^xzg-menu-hide/.test(key)) return "menuHide";
+    if (/^xzg_prompt_(skill|rule)_/.test(key)) return "skills";
+    if (key === "xzg_text_box_god_presets") return "textBoxGodPresets";
+    if (/^xiaozhuguang\.tian\./.test(key) || key === "xzg_align_state") return "align";
+    if (key === "xzg_comfy_sidebar_state") return "sidebar";
+    if (/^(xzg_theme_|xzg-theme-|xzg_recent_colors$|xzg-link-|xzg-node-|xzg-wallpaper-|xzg-laser-)/.test(key)) return "theme";
+    return null;
+}
 
 window.XZGThemePanel = {
     panel: null,
@@ -99,9 +133,6 @@ window.XZGThemePanel = {
             <div class="xzg-theme-header">
                 <span class="xzg-theme-title">${xzgT('小珠光','Xiaozhuguang')}</span>
                 <div class="xzg-theme-header-btns">
-                    <button type="button" class="xzg-theme-config-btn" id="xzg-theme-export-btn">${xzgT('导出','Export')}</button>
-                    <button type="button" class="xzg-theme-config-btn" id="xzg-theme-import-btn">${xzgT('导入','Import')}</button>
-                    <input type="file" id="xzg-theme-import-file" accept=".json,application/json" style="display:none;" />
                     <button type="button" class="xzg-theme-shortcut-btn" id="xzg-theme-shortcut-btn"></button>
                     <button type="button" class="xzg-theme-close">×</button>
                 </div>
@@ -492,55 +523,6 @@ window.XZGThemePanel = {
         panel.querySelector(".xzg-theme-close").addEventListener("click", () => {
             self.hide();
         });
-
-        // 统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速连线 / 隐藏菜单 / 主题等所有模块）
-        const configExportBtn = panel.querySelector("#xzg-theme-export-btn");
-        const configImportBtn = panel.querySelector("#xzg-theme-import-btn");
-        const configImportFile = panel.querySelector("#xzg-theme-import-file");
-
-        if (configExportBtn) {
-            configExportBtn.addEventListener("click", (e) => {
-                e.stopPropagation();
-                self.exportAllConfig().catch(err => {
-                    console.error("[XZG] Export error:", err);
-                    alert(xzgT('导出失败：', 'Export failed: ') + err.message);
-                });
-            });
-        }
-        if (configImportBtn && configImportFile) {
-            configImportBtn.addEventListener("click", (e) => {
-                e.stopPropagation();
-                configImportFile.click();
-            });
-            configImportFile.addEventListener("change", (e) => {
-                e.stopPropagation();
-                const file = e.target.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        const obj = JSON.parse(ev.target.result);
-                        self.importAllConfig(obj).then((result) => {
-                            if (result && result.applied) {
-                                const parts = [];
-                                if (result.appliedXzgConfig || result.appliedNotes) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
-                                if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
-                                const imported = parts.join(' + ');
-                                alert(xzgT('导入成功（', 'Import succeeded (') + imported + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
-                                setTimeout(() => location.reload(), 300);
-                            }
-                            // 用户取消则不做任何操作
-                        }).catch((err) => {
-                            alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
-                        });
-                    } catch (err) {
-                        alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
-                    }
-                };
-                reader.readAsText(file);
-                configImportFile.value = '';
-            });
-        }
 
         const shortcutBtn = panel.querySelector("#xzg-theme-shortcut-btn");
         if (shortcutBtn) {
@@ -1298,6 +1280,82 @@ window.XZGThemePanel = {
             }
         };
 
+        function showQuickNodeRenameDialog(node) {
+            return new Promise(resolve => {
+                const overlay = document.createElement("div");
+                overlay.className = "xzg-quick-link-rename-overlay";
+                overlay.style.cssText = "position:fixed;inset:0;z-index:2000020;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.65);padding:20px;box-sizing:border-box";
+                overlay.addEventListener("contextmenu", event => { event.preventDefault(); event.stopPropagation(); });
+                const dialog = document.createElement("div");
+                dialog.style.cssText = "box-sizing:border-box;width:min(420px,100%);padding:16px;background:var(--comfy-menu-bg,#25282c);color:#fff;border:1px solid var(--border-color,#555);border-radius:8px;box-shadow:0 12px 36px #0009;font:13px Arial,sans-serif";
+                const title = document.createElement("div");
+                title.textContent = xzgT("重命名快速连线", "Rename Quick Link");
+                title.style.cssText = "font-size:15px;font-weight:bold;color:#FFD700;margin-bottom:12px";
+                const input = document.createElement("input");
+                input.type = "text"; input.maxLength = 100; input.value = node.title || node.type;
+                input.style.cssText = "box-sizing:border-box;width:100%;padding:8px;background:var(--comfy-input-bg,#151617);color:#fff;border:1px solid var(--border-color,#555);border-radius:4px;outline:none";
+                const error = document.createElement("div");
+                error.style.cssText = "min-height:18px;margin-top:5px;color:#ff7777;font-size:12px";
+                const footer = document.createElement("div");
+                footer.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:10px";
+                const makeButton = (label, confirm = false) => {
+                    const button = document.createElement("button"); button.type = "button"; button.textContent = label;
+                    button.style.cssText = `padding:6px 14px;background:${confirm ? "#FFD700" : "var(--comfy-input-bg,#3a3a3a)"};color:${confirm ? "#222" : "#ddd"};border:1px solid ${confirm ? "#FFD700" : "var(--border-color,#555)"};border-radius:4px;cursor:pointer`;
+                    return button;
+                };
+                const cancel = makeButton(xzgT("取消", "Cancel"));
+                const confirm = makeButton(xzgT("确认", "Confirm"), true);
+                footer.append(cancel, confirm); dialog.append(title, input, error, footer); overlay.appendChild(dialog); document.body.appendChild(overlay);
+                const finish = value => { document.removeEventListener("keydown", onKey, true); overlay.remove(); resolve(value); };
+                const save = () => { const value = input.value.trim(); if (!value) { error.textContent = xzgT("名称不能为空", "Name cannot be empty"); input.focus(); return; } finish(value); };
+                const onKey = event => { if (event.key === "Escape") { event.preventDefault(); finish(null); } else if (event.key === "Enter") { event.preventDefault(); save(); } };
+                cancel.addEventListener("click", () => finish(null)); confirm.addEventListener("click", save);
+                overlay.addEventListener("click", event => { if (event.target === overlay) finish(null); });
+                dialog.addEventListener("pointerdown", event => event.stopPropagation());
+                document.addEventListener("keydown", onKey, true); input.focus(); input.select();
+            });
+        }
+
+        async function renameQuickNode(node) {
+            const nextTitle = await showQuickNodeRenameDialog(node);
+            if (!nextTitle || !window.XZGQuickNodes?.renameQuickNode?.(node.type, nextTitle)) return;
+            renderQuickNodesList();
+        }
+
+        function showQuickNodeContextMenu(node, event) {
+            document.querySelectorAll(".xzg-quick-link-context-menu").forEach(menu => menu.remove());
+            const menu = document.createElement("div");
+            menu.className = "xzg-quick-link-context-menu";
+            menu.setAttribute("role", "menu");
+            menu.style.cssText = "position:fixed;z-index:2000019;min-width:0;padding:2px;background:rgba(37,40,44,.97);color:#d6ad55;border:1px solid #d6ad55;border-radius:4px;box-shadow:0 3px 10px rgba(0,0,0,.35);font:12px Arial,sans-serif";
+            const rename = document.createElement("button");
+            rename.type = "button";
+            rename.setAttribute("role", "menuitem");
+            rename.textContent = xzgT("重命名", "Rename");
+            rename.style.cssText = "display:block;width:100%;padding:5px 8px;text-align:left;white-space:nowrap;background:transparent;color:#d6ad55;border:0;border-radius:3px;cursor:pointer;font:inherit";
+            rename.addEventListener("mouseenter", () => { rename.style.background = "rgba(214,173,85,.12)"; });
+            rename.addEventListener("mouseleave", () => { rename.style.background = "transparent"; });
+
+            let disposed = false;
+            const dispose = () => {
+                if (disposed) return;
+                disposed = true;
+                document.removeEventListener("pointerdown", onOutside, true);
+                document.removeEventListener("keydown", onKey, true);
+                menu.remove();
+            };
+            const onOutside = e => { if (!menu.contains(e.target)) dispose(); };
+            const onKey = e => { if (e.key === "Escape") { e.preventDefault(); dispose(); } };
+            rename.addEventListener("click", () => { dispose(); renameQuickNode(node); });
+            menu.appendChild(rename);
+            document.body.appendChild(menu);
+            const rect = menu.getBoundingClientRect();
+            menu.style.left = `${Math.max(0, Math.min(event.clientX, window.innerWidth - rect.width))}px`;
+            menu.style.top = `${Math.max(0, Math.min(event.clientY, window.innerHeight - rect.height))}px`;
+            document.addEventListener("pointerdown", onOutside, true);
+            document.addEventListener("keydown", onKey, true);
+        }
+
         function renderQuickNodesList() {
             const listEl = panel.querySelector('#xzg-quick-nodes-list');
             const countEl = panel.querySelector('#xzg-quick-count');
@@ -1318,6 +1376,11 @@ window.XZGThemePanel = {
                 item.draggable = true;
                 item.dataset.index = index;
                 item.dataset.type = node.type;
+                item.title = xzgT("右键重命名快速连线", "Right-click to rename this quick link");
+                item.addEventListener("contextmenu", event => {
+                    event.preventDefault(); event.stopPropagation();
+                    showQuickNodeContextMenu(node, event);
+                });
 
                 const dragHandle = document.createElement('span');
                 dragHandle.className = 'xzg-quick-drag-handle';
@@ -1847,6 +1910,7 @@ window.XZGThemePanel = {
                 left: rect.left,
                 top: rect.top
             }));
+            cloudUIQueueGeometry();
         } catch(e) {}
     },
 
@@ -2028,6 +2092,17 @@ window.XZGThemePanel = {
         if (!this.panel) this.create();
         this.isVisible = true;
         this.panel.style.display = "block";
+        cloudUIInit().then(() => {
+            if (!this.isVisible || !this.panel) return;
+            const remotePosition = this.loadPosition();
+            if (remotePosition && Number.isFinite(remotePosition.left) && Number.isFinite(remotePosition.top)) {
+                const rect = this.panel.getBoundingClientRect();
+                const left = Math.max(10, Math.min(remotePosition.left, window.innerWidth - rect.width - 10));
+                const top = Math.max(10, Math.min(remotePosition.top, window.innerHeight - rect.height - 10));
+                this.panel.style.left = `${left}px`;
+                this.panel.style.top = `${top}px`;
+            }
+        }).catch(() => {});
         // 面板每次重新打开都回到「主题」页；其他标签只在本次打开期间切换。
         if (typeof this._switchTopTab === "function") this._switchTopTab("theme");
         // 打开面板时兜底刷新菜单隐藏列表，避免隐藏菜单项后重新打开仍显示旧列表
@@ -2092,7 +2167,7 @@ window.XZGThemePanel = {
             // 点击面板内部 → 不关闭
             if (self.panel && self.panel.contains(e.target)) return;
             // 点击面板的弹出层（取色器 / 对话框）→ 不关闭
-            if (e.target.closest(".xzg-dialog-overlay") || e.target.closest(".xzg-color-picker-popup") || e.target.closest(".xzg-wf-dialog-overlay")) return;
+            if (e.target.closest(".xzg-dialog-overlay") || e.target.closest(".xzg-color-picker-popup") || e.target.closest(".xzg-wf-dialog-overlay") || e.target.closest(".xzg-quick-link-context-menu") || e.target.closest(".xzg-quick-link-rename-overlay")) return;
             // 点击菜单 / 右键菜单 → 不关闭
             if (e.target.closest(".comfy-menu") || e.target.closest(".litecontextmenu") || e.target.closest(".context-menu")) return;
 
@@ -2490,29 +2565,247 @@ window.XZGThemePanel = {
         }
     },
 
+    /** 从 XZG 顶部按钮的右键菜单打开统一配置导入/导出入口。 */
+    async openConfigTransferDialog() {
+        this._ensureGlobalDialogCSS();
+        const overlay = document.createElement("div");
+        overlay.className = "xzg-modal-overlay";
+        overlay.style.zIndex = "2000001";
+        overlay.innerHTML = `
+            <div class="xzg-modal-dialog">
+                <div class="xzg-modal-title">${xzgT('导入导出配置', 'Import / Export Config')}</div>
+                <div class="xzg-modal-body" style="gap:8px">
+                    <div class="xzg-modal-hint">${xzgT('导出或导入小珠光与 ComfyUI 的配置。', 'Export or import Xiaozhuguang and ComfyUI settings.')}</div>
+                </div>
+                <div class="xzg-modal-footer">
+                    <button type="button" class="xzg-modal-btn xzg-modal-danger" data-action="initialize">${xzgT('初始化', 'Initialize')}</button>
+                    <button type="button" class="xzg-modal-btn xzg-modal-cancel xzg-transfer-neutral">${xzgT('取消', 'Cancel')}</button>
+                    <button type="button" class="xzg-modal-btn xzg-transfer-neutral" data-action="import">${xzgT('导入配置', 'Import')}</button>
+                    <button type="button" class="xzg-modal-btn xzg-transfer-neutral" data-action="export">${xzgT('导出配置', 'Export')}</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const close = () => overlay.remove();
+        overlay.querySelector(".xzg-modal-cancel").addEventListener("click", close);
+        overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
+        overlay.querySelector('[data-action="initialize"]').addEventListener("click", () => {
+            close();
+            this.confirmInitialize().then(confirmed => {
+                if (confirmed) this.initializePersistedState().catch(err => {
+                    console.error("[XZG] Initialization error:", err);
+                    alert(xzgT('初始化失败：', 'Initialization failed: ') + err.message);
+                });
+            });
+        });
+        overlay.querySelector('[data-action="import"]').addEventListener("click", () => {
+            close();
+            this.openConfigImportPicker();
+        });
+        overlay.querySelector('[data-action="export"]').addEventListener("click", () => {
+            close();
+            this.exportAllConfig().catch(err => {
+                console.error("[XZG] Export error:", err);
+                alert(xzgT('导出失败：', 'Export failed: ') + err.message);
+            });
+        });
+    },
+
+    /** 初始化前显示三次独立警告确认；任一步取消都不会清理数据。 */
+    async confirmInitialize() {
+        for (let step = 1; step <= 3; step++) {
+            const confirmed = await new Promise(resolve => {
+            this._ensureGlobalDialogCSS();
+            const overlay = document.createElement("div");
+            overlay.className = "xzg-modal-overlay";
+            overlay.style.zIndex = "2000002";
+            const finalStep = step === 3;
+            const warning = step === 1
+                ? xzgT('将清除快速连线、隐藏菜单规则及其他小珠光自定义配置，并初始化为初始状态。', 'This will clear quick links, hidden-menu rules, and other Xiaozhuguang custom settings, returning to the initial state.')
+                : step === 2
+                    ? xzgT('此操作不可撤销，浏览器与服务端的小珠光持久化都会被清理。', 'This cannot be undone. Xiaozhuguang persistence in both the browser and server will be cleared.')
+                : xzgT('最后一次确认：继续后立即清除配置并初始化，随后刷新页面。', 'Final warning: continuing will immediately clear the configuration, initialize it, and reload the page.');
+            overlay.innerHTML = `
+                <div class="xzg-modal-dialog" style="width:min(520px,calc(100vw - 32px))">
+                    <div class="xzg-modal-title">${xzgT(`初始化警告（${step}/3）`, `Initialization Warning (${step}/3)`)}</div>
+                    <div class="xzg-modal-body" style="gap:8px">
+                        <div>${warning}</div>
+                        <div>${xzgT('同时清空收藏预览和主题壁纸数据，并载入初始默认快捷键。', 'Favorite previews and theme wallpapers will also be cleared, and initial default shortcuts loaded.')}</div>
+                        <div style="color:#ffb4a9">${xzgT('包括主题、快速连线、隐藏菜单自定义规则、预设、收藏、工作流管理器偏好等。操作不可撤销；不会删除工作流文件或 ComfyUI 核心设置。', 'This includes theme, quick links, custom hidden-menu rules, presets, favorites, and workflow-manager preferences. This cannot be undone; workflow files and core ComfyUI settings are not deleted.')}</div>
+                    </div>
+                    <div class="xzg-modal-footer">
+                        <button type="button" class="xzg-modal-btn xzg-modal-cancel">${xzgT('取消', 'Cancel')}</button>
+                        <button type="button" class="xzg-modal-btn xzg-modal-danger" data-confirm-initialize>${finalStep ? xzgT('确认初始化', 'Confirm Initialization') : xzgT(`继续（${step}/3）`, `Continue (${step}/3)`)}</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+            const close = value => {
+                document.removeEventListener("keydown", onKey, true);
+                overlay.remove();
+                resolve(value);
+            };
+            overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(false));
+            overlay.querySelector("[data-confirm-initialize]").addEventListener("click", () => close(true));
+            overlay.addEventListener("click", event => { if (event.target === overlay) close(false); });
+            const onKey = event => { if (event.key === "Escape") close(false); };
+            document.addEventListener("keydown", onKey, true);
+            });
+            if (!confirmed) return false;
+        }
+        return true;
+    },
+
+    async _clearPersistedIndexedStore(dbName, storeName) {
+        if (!window.indexedDB) return;
+        if (typeof indexedDB.databases === "function") {
+            const dbs = await indexedDB.databases();
+            if (!dbs.some(db => db.name === dbName)) return;
+        }
+        const db = await new Promise((resolve, reject) => {
+            const request = indexedDB.open(dbName);
+            let created = false;
+            request.onupgradeneeded = () => { created = true; };
+            request.onerror = () => reject(request.error || new Error(`Cannot open ${dbName}`));
+            request.onsuccess = () => {
+                if (created) {
+                    const fresh = request.result;
+                    fresh.close();
+                    const deletion = indexedDB.deleteDatabase(dbName);
+                    deletion.onsuccess = () => resolve(null);
+                    deletion.onerror = () => reject(deletion.error || new Error(`Cannot remove ${dbName}`));
+                    deletion.onblocked = () => reject(new Error(`Database ${dbName} is busy`));
+                    return;
+                }
+                resolve(request.result);
+            };
+        });
+        if (!db || !db.objectStoreNames.contains(storeName)) { db?.close(); return; }
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction(storeName, "readwrite");
+            tx.objectStore(storeName).clear();
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error || new Error(`Cannot clear ${dbName}`));
+            tx.onabort = () => reject(tx.error || new Error(`Cannot clear ${dbName}`));
+        }).finally(() => db.close());
+    },
+
+    /** 清除小珠光专属持久化配置，成功后刷新页面使所有模块进入初始状态。 */
+    async initializePersistedState() {
+        const fetchFn = (typeof api !== "undefined" && api?.fetchApi) ? api.fetchApi.bind(api) : fetch;
+
+        // ComfyUI 将功能开关值保存在服务器设置中；这些开关的注册默认值均为 true。
+        // 只初始化小珠光功能开关，不改动用户的 ComfyUI 核心设置。
+        try {
+            const settingsResponse = await fetchFn("/settings", { method: "GET", cache: "no-store" });
+            if (settingsResponse.ok) {
+                const savedSettings = await settingsResponse.json();
+                const defaults = {};
+                for (const [key, value] of Object.entries(savedSettings || {})) {
+                    if (key.startsWith("xiaozhuguang.Toggle.Enable") && typeof value === "boolean") defaults[key] = true;
+                }
+                if (Object.keys(defaults).length) {
+                    const resetSettingsResponse = await fetchFn("/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(defaults),
+                    });
+                    if (!resetSettingsResponse.ok) throw new Error("Unable to reset Xiaozhuguang feature toggles");
+                }
+            }
+        } catch (error) {
+            throw new Error(xzgT('初始化小珠光功能开关失败：', 'Failed to initialize Xiaozhuguang feature toggles: ') + (error.message || error));
+        }
+
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (key.startsWith("xzg") || key.startsWith("xiaozhuguang.") || key === "comfyui_xiaozhuguang" || key === "xz_selector_dialog_pos")) keys.push(key);
+        }
+        for (const key of keys) localStorage.removeItem(key);
+
+        const idbErrors = [];
+        for (const [dbName, storeName] of [["XiaozhuguangFavorites", "nodePreviews"], ["XzgThemeWallpaper", "wallpapers"]]) {
+            try { await this._clearPersistedIndexedStore(dbName, storeName); }
+            catch (error) { idbErrors.push(error.message || String(error)); }
+        }
+        // 最后清理服务端快照并重建默认快捷键，避免页面当前模块的待完成同步把旧配置留在云端。
+        const response = await fetchFn("/xzg/reset_persistence", { method: "POST", cache: "no-store" });
+        if (!response.ok) {
+            let detail = "HTTP " + response.status;
+            try { detail = (await response.json()).error || detail; } catch (_) {}
+            throw new Error(detail);
+        }
+        if (idbErrors.length) {
+            alert(xzgT('小珠光已初始化，但部分 IndexedDB 数据未能清理：', 'Xiaozhuguang was initialized, but some IndexedDB data could not be cleared: ') + idbErrors.join('; '));
+        } else {
+            alert(xzgT('小珠光已完成初始化，页面即将刷新。', 'Xiaozhuguang initialization is complete. The page will reload.'));
+        }
+        setTimeout(() => location.reload(), 500);
+    },
+
+    /** 选择并应用统一配置文件。 */
+    openConfigImportPicker() {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,application/json";
+        input.style.display = "none";
+        document.body.appendChild(input);
+        input.addEventListener("cancel", () => input.remove(), { once: true });
+        input.addEventListener("change", () => {
+            const file = input.files?.[0];
+            input.remove();
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async event => {
+                try {
+                    const obj = JSON.parse(event.target.result);
+                    const result = await this.importAllConfig(obj);
+                    if (result?.applied) {
+                        const parts = [];
+                        if (result.appliedXzgConfig || result.appliedNotes) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
+                        if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
+                        alert(xzgT('导入成功（', 'Import succeeded (') + parts.join(' + ') + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
+                        setTimeout(() => location.reload(), 300);
+                    }
+                } catch (err) {
+                    alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
+                }
+            };
+            reader.readAsText(file);
+        }, { once: true });
+        input.click();
+    },
+
     /**
      * 显示导出选项对话框
      */
     showExportDialog() {
         return new Promise((resolve) => {
-            const self = this;
-            self._ensureGlobalDialogCSS();
+            this._ensureGlobalDialogCSS();
             const overlay = document.createElement("div");
             overlay.className = "xzg-modal-overlay";
             overlay.style.zIndex = "2000001";
+            const rows = XZG_EXPORT_CATEGORIES.map(([id, zh, en]) => {
+                return `
+                <label class="xzg-modal-checkbox xzg-export-category-row" style="align-items:center;padding:4px 7px;border:1px solid #444;border-radius:5px;margin:0;gap:6px;min-height:24px">
+                    <input type="checkbox" data-export-category="${id}" checked />
+                    <span style="flex:1;min-width:0">${xzgT(zh, en)}</span>
+                </label>`;
+            }).join("");
             overlay.innerHTML = `
-                <div class="xzg-modal-dialog">
-                    <div class="xzg-modal-title">${xzgT('导出配置', 'Export Config')}</div>
-                    <div class="xzg-modal-body">
-                        <label class="xzg-modal-checkbox">
-                            <input type="checkbox" id="xzg-export-include-xzg" checked />
-                            <span>${xzgT('包含小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速连线 / 记事本）', 'Include Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick links / notepad)')}</span>
-                        </label>
-                        <label class="xzg-modal-checkbox">
+                <div class="xzg-modal-dialog" style="width:min(620px,calc(100vw - 32px));max-height:85vh;display:flex;flex-direction:column">
+                    <div class="xzg-modal-title" style="justify-content:space-between">
+                        <span>${xzgT('导出配置', 'Export Config')}</span>
+                        <div style="display:flex;gap:8px">
+                            <button type="button" class="xzg-modal-btn" data-select-all="true" style="padding:4px 12px">${xzgT('全选','Select all')}</button>
+                            <button type="button" class="xzg-modal-btn" data-select-all="false" style="padding:4px 12px">${xzgT('全不选','Select none')}</button>
+                        </div>
+                    </div>
+                    <div class="xzg-modal-body" style="overflow:auto;gap:6px">
+                        <div class="xzg-export-category-list" style="display:flex;flex-direction:column;gap:2px">${rows}</div>
+                        <label class="xzg-modal-checkbox" style="align-items:center;padding:4px 7px;margin:0;gap:6px;min-height:24px;border:1px solid #444;border-radius:5px">
                             <input type="checkbox" id="xzg-export-include-comfy" checked />
-                            <span>${xzgT('包含 ComfyUI 设置（快捷键、界面主题、布局偏好等）', 'Include ComfyUI settings (keybindings, UI theme, layout preferences, etc.)')}</span>
+                            <span style="flex:1">${xzgT('ComfyUI 设置','ComfyUI settings')}</span>
                         </label>
-                        <div class="xzg-modal-hint">${xzgT('提示：ComfyUI 设置包含您自定义的快捷键、颜色主题、界面布局偏好等。', 'Tip: ComfyUI settings include your custom keybindings, color theme, UI layout preferences, etc.')}</div>
                     </div>
                     <div class="xzg-modal-footer">
                         <button type="button" class="xzg-modal-btn xzg-modal-cancel">${xzgT('取消', 'Cancel')}</button>
@@ -2528,11 +2821,22 @@ window.XZGThemePanel = {
             };
 
             overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(null));
+            overlay.querySelectorAll("[data-select-all]").forEach(button => {
+                button.addEventListener("click", () => {
+                    const checked = button.dataset.selectAll === "true";
+                    overlay.querySelectorAll("[data-export-category]").forEach(input => { input.checked = checked; });
+                    overlay.querySelector("#xzg-export-include-comfy").checked = checked;
+                });
+            });
             overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
-                const includeXzg = overlay.querySelector("#xzg-export-include-xzg").checked;
+                const categories = {};
+                overlay.querySelectorAll("[data-export-category]").forEach(input => { categories[input.dataset.exportCategory] = input.checked; });
                 const includeComfy = overlay.querySelector("#xzg-export-include-comfy").checked;
-                // 备注/记事本已合并到小珠光配置
-                close({ includeXzgConfig: includeXzg, includeNotes: includeXzg, includeComfySettings: includeComfy });
+                if (!includeComfy && !Object.values(categories).some(Boolean)) {
+                    alert(xzgT('至少选择一项要导出的内容。', 'Select at least one item to export.'));
+                    return;
+                }
+                close({ categories, includeComfySettings: includeComfy });
             });
             overlay.addEventListener("click", (e) => {
                 if (e.target === overlay) close(null);
@@ -2606,45 +2910,58 @@ window.XZGThemePanel = {
         // 1) 先弹导出选项，等用户确认各模块的勾选
         const opt = await this.showExportDialog();
         if (!opt) return; // 用户取消
-        const includeXzg = opt.includeXzgConfig !== false;    // 默认true
-        const includeNotes = opt.includeNotes !== false;      // 默认true
+        const selected = opt.categories || Object.fromEntries(XZG_EXPORT_CATEGORIES.map(([id]) => [id, true]));
+        const includeNotes = selected.notes === true;
+        const includeXzg = Object.entries(selected).some(([id, enabled]) => enabled && id !== "shortcuts");
         const includeComfy = opt.includeComfySettings !== false;
 
         const NOTES_KEY = "xiaozhuguang.notes";
 
-        const prefixes = ["xzg_", "xzg-", "xiaozhuguang.", "xz_"];
-        const extraKeys = ["comfyui_xiaozhuguang", "xzg_workflows_meta"];
-        let ls = {};
         if (includeXzg) {
-            // 优先从实例内存导出（云存储生效时本地可能没最新数据）
-            if (window.xiaozhuguangFavorites && typeof window.xiaozhuguangFavorites.favorites === "object") {
-                try {
-                    ls["comfyui_xiaozhuguang"] = JSON.stringify(window.xiaozhuguangFavorites.favorites);
-                } catch (e) {}
-            }
-            if (window.XZGWorkflows && typeof window.XZGWorkflows.meta === "object") {
-                try {
-                    ls["xzg_workflows_meta"] = JSON.stringify(window.XZGWorkflows.meta);
-                } catch (e) {}
-            }
-            // 兜底遍历 localStorage（覆盖实例导出不到的其他键）
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                if (!k) continue;
-                // 备注单独处理（根据 includeNotes 决定）
-                if (!includeNotes && k === NOTES_KEY) continue;
-                if (prefixes.some(p => k.startsWith(p)) || extraKeys.includes(k)) {
-                    if (!ls[k]) { // 实例已经导出则不覆盖
-                        try { ls[k] = localStorage.getItem(k); } catch (e) {}
+            await cloudUIInit();
+            if (selected.skills) try {
+                const presets = await cloudLoad("xzg_prompt_rule_presets", { fallbackValue: null })
+                    ?? await cloudLoad("xzg_prompt_skill_presets", { fallbackValue: null });
+                if (presets && typeof presets === "object" && !Array.isArray(presets)) {
+                    const normalized = {};
+                    for (const [name, entry] of Object.entries(presets)) {
+                        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+                        const { skill: _legacySkill, ...rest } = entry;
+                        const rule = typeof entry.rule === "string" ? entry.rule : entry.skill;
+                        if (typeof rule === "string") normalized[name] = { ...rest, rule };
                     }
+                    localStorage.setItem("xzg_prompt_rule_presets", JSON.stringify(normalized));
                 }
-            }
-        } else if (includeNotes) {
-            // 不导出小珠光配置，但导出备注时只带 notes 键
-            try {
-                const v = localStorage.getItem(NOTES_KEY);
-                if (v !== null) ls[NOTES_KEY] = v;
             } catch (e) {}
+            if (selected.textBoxGodPresets) try {
+                const presets = await cloudLoad("xzg_text_box_god_presets", { fallbackValue: null });
+                if (presets && typeof presets === "object" && !Array.isArray(presets)) {
+                    localStorage.setItem("xzg_text_box_god_presets", JSON.stringify(presets));
+                }
+            } catch (e) {}
+        }
+
+        let ls = {};
+        // 逐键按导出类别筛选，避免此前前缀匹配把未勾选类别也写进备份。
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (!key) continue;
+            const category = xzgExportCategoryForKey(key);
+            if (!category || !selected[category]) continue;
+            try { ls[key] = localStorage.getItem(key); } catch (e) {}
+        }
+        // 运行中的云同步实例可能比 localStorage 更新，以实例状态覆盖。
+        if (selected.favorites && window.xiaozhuguangFavorites && typeof window.xiaozhuguangFavorites.favorites === "object") {
+            try { ls["comfyui_xiaozhuguang"] = JSON.stringify(window.xiaozhuguangFavorites.favorites); } catch (e) {}
+        }
+        if (selected.workflows && window.XZGWorkflows && typeof window.XZGWorkflows.meta === "object") {
+            try { ls["xzg_workflows_meta"] = JSON.stringify(window.XZGWorkflows.meta); } catch (e) {}
+        }
+        if (selected.quickLinks && window.XZGQuickNodes) {
+            try {
+                ls["xzg_quick_nodes"] = JSON.stringify(window.XZGQuickNodes.getQuickNodeList?.() || window.XZGQuickNodes.quickNodes || []);
+                ls["xzg_quick_nodes_config"] = JSON.stringify(window.XZGQuickNodes.config || { hideDefaultMenu: false });
+            } catch (e) { console.warn("[XZG] Failed to export quick links:", e); }
         }
 
         // 顶层 notes 字段（结构化，方便未来扩展和跨工具识别）
@@ -2677,7 +2994,7 @@ window.XZGThemePanel = {
 
         // 收藏截图存于 IndexedDB，单独收集（仅当 includeXzg 时）
         let favoritesPreviews = null;
-        if (includeXzg) {
+        if (selected.favorites) {
             try {
                 const fav = window.xiaozhuguangFavorites;
                 if (fav && typeof fav._getAllPreviewImages === "function") {
@@ -2701,7 +3018,7 @@ window.XZGThemePanel = {
 
         // 导出自定义快捷键（后端存储 xzg_shortcuts.json）
         let shortcuts = null;
-        if (includeXzg) {
+        if (selected.shortcuts) {
             try {
                 const fetchFn = (typeof api !== "undefined" && api?.fetchApi) ? api.fetchApi.bind(api) : fetch;
                 const resp = await fetchFn("/xzg/shortcuts", { method: "GET", cache: "no-store" });
@@ -2718,9 +3035,9 @@ window.XZGThemePanel = {
 
         const cfg = {
             format: "xiaozhuguang-config",
-            version: 4,
+            version: 5,
             exportedAt: new Date().toISOString(),
-            flags: { includeXzgConfig: includeXzg, includeNotes: includeNotes, includeComfySettings: includeComfy },
+            flags: { includeXzgConfig: includeXzg, includeNotes: includeNotes, includeComfySettings: includeComfy, selectedCategories: selected },
             localStorage: ls,
             notes: notesTop,
             favoritesPreviews: favoritesPreviews,
@@ -2853,16 +3170,68 @@ window.XZGThemePanel = {
                         }
                     } catch (e) {}
                 }
-                // Skill 预设：写入云端并刷新节点类型下拉，避免刷新页面时旧云数据覆盖导入结果。
-                const skillPresetsRaw = obj.localStorage["xzg_prompt_skill_presets"];
-                if (typeof skillPresetsRaw === "string") {
+                // 快速连线的运行时列表/开关也要同步回实例；只写 localStorage 后，
+                // 全局云推送会用旧实例状态覆盖导入值，刷新后看起来像导入丢失。
+                const quickNodesRaw = obj.localStorage["xzg_quick_nodes"];
+                const quickConfigRaw = obj.localStorage["xzg_quick_nodes_config"];
+                if (typeof quickNodesRaw === "string" || typeof quickConfigRaw === "string") {
                     try {
-                        const presets = JSON.parse(skillPresetsRaw);
-                        if (presets && typeof presets === "object" && !Array.isArray(presets)) {
-                            cloudSave("xzg_prompt_skill_presets", presets).catch(() => {});
-                            window.XZGRefreshSkillPresetTypes?.();
+                        const quickInstance = window.XZGQuickNodes;
+                        await quickInstance?._cloudRestorePromise?.catch?.(() => {});
+                        const currentNodes = Array.isArray(quickInstance?.quickNodes) ? quickInstance.quickNodes : [];
+                        const currentConfig = quickInstance?.config && typeof quickInstance.config === "object" ? quickInstance.config : { hideDefaultMenu: false };
+                        const nodes = typeof quickNodesRaw === "string" ? JSON.parse(quickNodesRaw) : currentNodes;
+                        const config = typeof quickConfigRaw === "string" ? JSON.parse(quickConfigRaw) : currentConfig;
+                        if (!Array.isArray(nodes) || !config || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid quick-link backup data");
+                        const normalizedNodes = nodes.filter(node => node && typeof node.type === "string");
+                        const normalizedConfig = Object.assign({}, { hideDefaultMenu: false }, config);
+                        localStorage.setItem("xzg_quick_nodes", JSON.stringify(normalizedNodes));
+                        localStorage.setItem("xzg_quick_nodes_config", JSON.stringify(normalizedConfig));
+                        if (quickInstance) {
+                            quickInstance.quickNodes = normalizedNodes;
+                            quickInstance.config = normalizedConfig;
+                            if (quickInstance._cloudSaveTimer) clearTimeout(quickInstance._cloudSaveTimer);
+                            quickInstance._cloudSaveTimer = null;
+                        }
+                        const quickCloudResult = await cloudSave("xzg_quick_nodes_state", { nodes: normalizedNodes, config: normalizedConfig });
+                        if (quickCloudResult?.ok !== true) console.warn("[XZG] Quick links were imported locally but cloud save failed.");
+                        window.XZGThemePanel?.refreshQuickNodesTab?.();
+                        importedXzg = true;
+                    } catch (e) { console.warn("[XZG] Failed to import quick links:", e); }
+                }
+                // 提示词规则预设：同时兼容旧备份字段和旧内容格式。
+                const promptRulesRaw = obj.localStorage["xzg_prompt_rule_presets"] ?? obj.localStorage["xzg_prompt_skill_presets"];
+                if (typeof promptRulesRaw === "string") {
+                    try {
+                        const rawPresets = JSON.parse(promptRulesRaw);
+                        if (rawPresets && typeof rawPresets === "object" && !Array.isArray(rawPresets)) {
+                            const presets = {};
+                            for (const [name, entry] of Object.entries(rawPresets)) {
+                                if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+                                const { skill: _legacySkill, ...rest } = entry;
+                                const rule = typeof entry.rule === "string" ? entry.rule : entry.skill;
+                                if (typeof rule === "string") presets[name] = { ...rest, rule };
+                            }
+                            await cloudSave("xzg_prompt_rule_presets", presets);
+                            localStorage.setItem("xzg_prompt_rule_presets", JSON.stringify(presets));
+                            localStorage.removeItem("xzg_prompt_skill_presets");
+                            window.XZGRefreshPromptRulePresetTypes?.();
                         }
                     } catch (e) {}
+                }
+                // 文本框化神级提示词预设：导入后同步到 user/xiaozhuguang 云端并刷新现有节点。
+                const textBoxGodPresetsRaw = obj.localStorage["xzg_text_box_god_presets"];
+                if (typeof textBoxGodPresetsRaw === "string") {
+                    try {
+                        const presets = JSON.parse(textBoxGodPresetsRaw);
+                        if (presets && typeof presets === "object" && !Array.isArray(presets)) {
+                            const result = await cloudSave("xzg_text_box_god_presets", presets);
+                            await window.XZGRefreshTextBoxGodPresets?.(presets);
+                            if (result?.ok !== true) console.warn("[XZG] Text-box presets were imported locally but cloud save failed.");
+                        }
+                    } catch (e) {
+                        console.warn("[XZG] Failed to import text-box presets:", e);
+                    }
                 }
                 // 面板几何（位置/尺寸，位于 xiaozhuguang.* / xzg_* 前缀，已随上面循环写入本地）——
                 // 一并推送云端，避免刷新后旧云端几何覆盖刚导入的几何。
@@ -3098,12 +3467,21 @@ window.XZGThemePanel = {
                 border-radius: 4px;cursor: pointer;transition: all 0.15s;
             }
             .xzg-modal-btn:hover { background: rgba(255,255,255,0.1); }
+            .xzg-modal-btn.xzg-transfer-neutral {
+                background: var(--comfy-input-bg, #3a3a3a);color: var(--fg, #ddd);
+                border: 1px solid var(--border-color, #555);font-weight: normal;
+            }
+            .xzg-modal-btn.xzg-transfer-neutral:hover { background: rgba(255,255,255,0.1); }
             .xzg-modal-cancel {
                 background: #3a3a3a; color: #ccc;
             }
             .xzg-modal-confirm {
                 background: #FFD700;color: #333;border-color: #FFD700;font-weight: bold;
             }
+            .xzg-modal-danger {
+                background: #7a3030;color: #fff;border-color: #a94a4a;font-weight: bold;
+            }
+            .xzg-modal-danger:hover:not(:disabled) { background: #963b3b; }
             .xzg-modal-confirm:hover:not(:disabled) { background: #FFC700; }
             .xzg-modal-confirm:disabled { opacity: 0.4;cursor: not-allowed; }
             .xzg-modal-checkbox {

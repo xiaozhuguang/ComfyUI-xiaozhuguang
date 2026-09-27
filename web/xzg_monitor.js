@@ -3,6 +3,7 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
+import { xzgT } from "./xzg_i18n.js";
 
 /**
  * 悬浮窗系统监控（xiaozhuguang）
@@ -826,6 +827,7 @@ let _float = null;       // 悬浮窗实例
 let _floatHidden = false; // 悬浮窗当前是否隐藏
 let _menuBtn = null;     // 顶部栏按钮
 let _themeMenuBtn = null;
+let _themeContextMenu = null;
 
 function refreshMenuBtn() {
   if (!_menuBtn) return;
@@ -926,6 +928,63 @@ function buildMenuButton() {
     else showContextMenu(btn);
   });
   return btn;
+}
+
+function closeThemeContextMenu() {
+  if (!_themeContextMenu) return;
+  document.removeEventListener("pointerdown", _themeContextMenu.outsideHandler, true);
+  document.removeEventListener("keydown", _themeContextMenu.keyHandler, true);
+  _themeContextMenu.element.remove();
+  _themeContextMenu = null;
+}
+
+function showThemeContextMenu(btn) {
+  closeThemeContextMenu();
+  const menu = document.createElement("div");
+  menu.style.cssText = "position:fixed;z-index:2000002;min-width:190px;padding:5px;background:var(--comfy-menu-bg,#252525);color:var(--fg-color,#ddd);border:1px solid var(--border-color,#555);border-radius:7px;box-shadow:0 8px 24px #0009;font:13px Arial,'Microsoft YaHei',sans-serif";
+  const addItem = (label, callback) => {
+    const item = document.createElement("div");
+    item.textContent = label;
+    item.style.cssText = "padding:9px 11px;border-radius:4px;cursor:pointer;white-space:nowrap";
+    item.addEventListener("mouseenter", () => { item.style.background = "rgba(255,255,255,.1)"; });
+    item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeThemeContextMenu();
+      callback();
+    });
+    menu.appendChild(item);
+  };
+  addItem(xzgT("设置 - 小珠光", "Settings - Xiaozhuguang"), () => openXiaozhuguangSettings());
+  addItem(xzgT("导入导出配置", "Import / Export Config"), () => {
+    const panel = window.XZGThemePanel;
+    if (panel?.openConfigTransferDialog) panel.openConfigTransferDialog();
+    else console.warn("[小珠光] 配置导入导出模块尚未就绪");
+  });
+  menu.addEventListener("pointerdown", (event) => event.stopPropagation());
+  menu.addEventListener("contextmenu", (event) => { event.preventDefault(); event.stopPropagation(); });
+  document.body.appendChild(menu);
+  const rect = btn.getBoundingClientRect();
+  menu.style.left = `${Math.max(4, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(rect.bottom + 5, window.innerHeight - menu.offsetHeight - 4))}px`;
+  const outsideHandler = (event) => {
+    if (!menu.contains(event.target) && !btn.contains(event.target)) closeThemeContextMenu();
+  };
+  const keyHandler = (event) => { if (event.key === "Escape") closeThemeContextMenu(); };
+  _themeContextMenu = { element: menu, outsideHandler, keyHandler };
+  document.addEventListener("pointerdown", outsideHandler, true);
+  document.addEventListener("keydown", keyHandler, true);
+}
+
+function openXiaozhuguangSettings() {
+  const themePanel = window.XZGThemePanel;
+  if (themePanel?.isVisible) themePanel.hide();
+  try {
+    app.extensionManager?.command?.execute?.("Comfy.ShowSettingsDialog");
+    revealXiaozhuguangSettings();
+  } catch (err) {
+    console.warn("[小珠光] 打开小珠光设置失败:", err);
+  }
 }
 
 function buildThemeMenuButton() {
@@ -1032,12 +1091,7 @@ function buildThemeMenuButton() {
     e.stopPropagation();
     const themePanel = window.XZGThemePanel;
     if (themePanel?.isVisible) themePanel.hide();
-    try {
-      app.extensionManager?.command?.execute?.("Comfy.ShowSettingsDialog");
-      revealXiaozhuguangSettings();
-    } catch (err) {
-      console.warn("[小珠光] 打开小珠光设置失败:", err);
-    }
+    showThemeContextMenu(btn);
   });
   return btn;
 }

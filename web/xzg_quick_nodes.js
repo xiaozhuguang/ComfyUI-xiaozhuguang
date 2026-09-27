@@ -15,7 +15,7 @@ class XZGQuickNodes {
         this.config = this.loadConfig();
         this._cloudSaveTimer = null;
         // 云持久化：先本地同步，再异步以服务端为准覆盖
-        this._cloudRestore();
+        this._cloudRestorePromise = this._cloudRestore();
         this.initialized = false;
         this.originalShowSearchBox = null;
         this.originalShowConnectionMenu = null;
@@ -108,6 +108,15 @@ class XZGQuickNodes {
     getNodeColor(nodeType) {
         const node = this.quickNodes.find(n => n.type === nodeType);
         return node?.color || "#FFD700";
+    }
+
+    renameQuickNode(nodeType, title) {
+        const node = this.quickNodes.find(n => n.type === nodeType);
+        const nextTitle = String(title ?? "").trim();
+        if (!node || !nextTitle) return false;
+        node.title = nextTitle;
+        this.saveQuickNodes();
+        return true;
     }
 
     loadQuickNodes() {

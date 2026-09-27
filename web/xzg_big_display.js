@@ -10,13 +10,13 @@ const _NODE_TYPE = "XiaozhuguangBigDisplay";
 
 // 每项文本的大字配置（右键设置可调）
 const DEFAULT_CFG = {
-    fontSize: 40,        // 固定字号；自适应开启时由可用空间决定
-    minFontSize: 16,     // 自适应字号下限；空间不足时通过滚动查看内容
-    maxFontSize: 200,    // 自适应字号上限
-    autoFit: false,      // 文字大小自适应：开启后字号自动放大/缩小以尽量填满内容区
+    fontSize: 16,        // 固定字号；自适应开启时由可用空间决定
+    minFontSize: 6,      // 自适应字号下限；空间不足时通过滚动查看内容
+    maxFontSize: 20,     // 自适应字号上限
+    autoFit: true,       // 文字大小自适应：开启后字号自动放大/缩小以尽量填满内容区
     fontColor: "#ffffff",
-    textAlign: "center", // left / center / right
-    vAlign: "center",   // 上下对齐：top / center / bottom
+    textAlign: "left",  // left / center / right
+    vAlign: "top",      // 上下对齐：top / center / bottom
     lineHeight: 1.1,
     bold: false,
 };
@@ -603,7 +603,7 @@ app.registerExtension({
                 const maxAdaptiveFont = Math.min(500, Math.max(4, Math.round(Number(cfg.maxFontSize) || DEFAULT_CFG.maxFontSize)));
                 const minFont = Math.min(maxAdaptiveFont, Math.min(500, Math.max(4, Math.round(Number(cfg.minFontSize) || DEFAULT_CFG.minFontSize))));
                 const weight = cfg.bold ? "bold" : "normal";
-                const align = cfg.textAlign || "center";
+                const align = cfg.textAlign || "left";
                 const lineFactor = cfg.lineHeight || 1.1;
                 const scrollbarW = 8;
                 const cellW = Math.max(1, contentW);
@@ -690,7 +690,7 @@ app.registerExtension({
                     ctx.fillStyle = cfg.fontColor || "#ffffff";
                     ctx.textAlign = align;
                     ctx.textBaseline = "top";
-                    const vAlign = cfg.vAlign || "center";
+                    const vAlign = cfg.vAlign || "top";
                     let textY = y + 5 - scrollTop;
                     if (maxScroll === 0 && vAlign === "center") textY += Math.max(0, (innerH - textHeight) / 2);
                     else if (maxScroll === 0 && vAlign === "bottom") textY += Math.max(0, innerH - textHeight);
@@ -714,7 +714,7 @@ app.registerExtension({
             // 注：不再绘制"整个节点"的外圈绿色虚线框，仅保留下方文字内容区的绿框。
 
             const weight = cfg.bold ? "bold" : "normal";
-            const align = cfg.textAlign || "center";
+            const align = cfg.textAlign || "left";
             // 外侧内边距固定为 0；滚动条单独占据右侧区域。
             const pad = 0;
             const showHint = (this._texts || []).length > 1;
@@ -855,7 +855,7 @@ app.registerExtension({
             const scrollTop = this._xzgBigDisplayScrollTop;
 
             // 文字的起点 Y：按上下对齐（vAlign）计算（上对齐 top / 居中 center / 下对齐 bottom）
-            const vAlign = cfg.vAlign || "center";
+            const vAlign = cfg.vAlign || "top";
             let blockTop;
             if (maxScroll > 0) blockTop = contentTopExact - scrollTop;
             else if (vAlign === "top") blockTop = contentTopExact;

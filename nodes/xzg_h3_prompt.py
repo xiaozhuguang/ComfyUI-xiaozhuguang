@@ -526,8 +526,11 @@ _TARGET_MODEL_H3 = "MiniMax-H3 视频"
 _TARGET_MODEL_QWEN_IMAGE = "Qwen-Image-2.1 图像"
 _TARGET_MODEL_QWEN_IMAGE_EN = "Qwen-Image-2.1 Image"
 _TARGET_MODEL_QWEN_SHORT = "QWEN"
-_TARGET_MODEL_CUSTOM_SKILL = "自定义 Skill"
-_TARGET_MODEL_CUSTOM_SKILL_EN = "Custom Skill"
+_TARGET_MODEL_CUSTOM_RULES = "自定义提示词规则"
+_TARGET_MODEL_CUSTOM_RULES_EN = "Custom Prompt Rules"
+# Keep accepting values serialized by older workflows.
+_TARGET_MODEL_CUSTOM_SKILL_LEGACY = "自定义 Skill"
+_TARGET_MODEL_CUSTOM_SKILL_EN_LEGACY = "Custom Skill"
 _QWEN_IMAGE_MODES = (
     "Qwen-Image-2.1 文生图",
     "Qwen-Image-2.1 图像编辑",
@@ -538,16 +541,30 @@ _QWEN_IMAGE_MODES = (
 _GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES) + ["通用 Skill"]
 
 
-def _xzg_load_saved_skill_prompt(preset_name):
-    """从 ComfyUI 用户目录读取全局 Skill 预设，不依赖工作流节点数据。"""
+def _xzg_load_saved_prompt_rule(preset_name, preset_category=None):
+    """从 ComfyUI 用户目录读取全局提示词规则预设，不依赖工作流节点数据。"""
     try:
         user_dir = folder_paths.get_user_directory()
-        preset_path = os.path.join(user_dir, "xiaozhuguang", "xzg_prompt_skill_presets.json")
-        with open(preset_path, "r", encoding="utf-8") as preset_file:
-            presets = json.load(preset_file)
-        entry = presets.get(preset_name) if isinstance(presets, dict) else None
-        skill = entry.get("skill") if isinstance(entry, dict) else None
-        return skill.strip() if isinstance(skill, str) and skill.strip() else None
+        preset_dir = os.path.join(user_dir, "xiaozhuguang")
+        for filename in ("xzg_prompt_rule_presets.json", "xzg_prompt_skill_presets.json"):
+            preset_path = os.path.join(preset_dir, filename)
+            try:
+                with open(preset_path, "r", encoding="utf-8") as preset_file:
+                    presets = json.load(preset_file)
+            except (OSError, ValueError):
+                continue
+            entry = presets.get(preset_name) if isinstance(presets, dict) else None
+            if isinstance(entry, dict) and preset_category and str(entry.get("category", "自定义提示词规则")) != str(preset_category):
+                entry = None
+            if entry is None and isinstance(presets, dict):
+                entry = next((value for key, value in presets.items()
+                              if isinstance(value, dict)
+                              and str(value.get("name", key)) == str(preset_name)
+                              and (not preset_category or str(value.get("category", "自定义提示词规则")) == str(preset_category))), None)
+            rule = entry.get("rule", entry.get("skill")) if isinstance(entry, dict) else None
+            if isinstance(rule, str) and rule.strip():
+                return rule.strip()
+        return None
     except (OSError, ValueError, TypeError, AttributeError):
         return None
 
@@ -605,12 +622,12 @@ class XiaozhuguangNinimaxH3Prompt:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "用户原始提示词 / User's original prompt",
+                        "tooltip": "提示词和参考图片均可留空 / Prompt and reference images are optional",
                     },
                 ),
                 "target_model": (
                     "STRING",
-                    {"default": _TARGET_MODEL_H3, "multiline": False, "tooltip": "提示词类型：选择适用的生成模型或已保存的 Skill / Prompt type"},
+                    {"default": _TARGET_MODEL_H3, "multiline": False, "tooltip": "提示词类型：选择生成模型或使用自定义提示词规则 / Prompt type: choose a model or custom prompt rules"},
                 ),
                 "generation_mode": (
                     "STRING",
@@ -686,7 +703,11 @@ class XiaozhuguangNinimaxH3Prompt:
             user_message_parts.append(f"[Extra Requirements] {风格提示.strip()}")
 
         user_message_parts.append(f"[Mode Hint] {mode_hints.get(generation_mode, '')}")
-        user_message_parts.append(f"[User Original Prompt]\n{user_prompt.strip()}")
+        prompt_text = (user_prompt or "").strip()
+        if prompt_text:
+            user_message_parts.append(f"[User Original Prompt]\n{prompt_text}")
+        else:
+            user_message_parts.append("[User Original Prompt]\nNo text prompt was provided. Follow the selected mode and use any attached reference images as context.")
 
         # 收集图片
         image_inputs = image_inputs or []
@@ -742,9 +763,65 @@ class XiaozhuguangNinimaxH3Prompt:
         # 画幅比例由下游图像生成节点控制，不交给 Qwen 提示词推理，
         # 避免模型将比例误写进画面描述或擅自推断构图比例。
         parts = [mode_hint]
+
+        # 九宫格与故事板是按用户明确用词触发的任务约束；普通图像任务不加载这些规则。
+        prompt_text = user_prompt or ""
+        has_nine_grid = "九宫格" in prompt_text
+        has_storyboard = "故事板" in prompt_text or "分镜头" in prompt_text
+        is_t2i = generation_mode == "Qwen-Image-2.1 文生图"
+        is_multi_reference = generation_mode == "Qwen-Image-2.1 多参考图"
+
+        if has_nine_grid:
+            if is_t2i:
+                grid_rule = (
+                    "[九宫格规则：已由用户明确触发] 按用户要求创作严格的三行三列九个画格，"
+                    "明确从左到右、从上到下的阅读顺序，保持九格边界、间距和整体版式清楚。"
+                    "逐格呈现用户要求的内容；若用户表达连续事件，保持人物、服装、道具、空间和动作状态连续。"
+                    "仅凭‘九宫格’不添加镜号、时间码、对白、标题或制作注释；只有同时触发故事板规则或用户明确要求时才添加。"
+                )
+            elif is_multi_reference:
+                grid_rule = (
+                    "[九宫格规则：已由用户明确触发] 创作严格的三行三列九个画格，明确阅读顺序并保持版面清楚。"
+                    "先逐张绑定参考图标签与用途，再说明每格实际使用哪些参考图；保持身份、服装、产品及场景来源对应稳定。"
+                    "若用户表达连续事件，保持跨格状态连续。仅凭‘九宫格’不添加镜号、时间码、对白、标题或制作注释；"
+                    "只有同时触发故事板规则或用户明确要求时才添加。参考图标签是提示词引用，不是画面文字。"
+                )
+            else:
+                grid_rule = (
+                    "[九宫格规则：已由用户明确触发] 若输入图本身是九宫格，按用户指定的画格或区域执行编辑，"
+                    "保持未指定画格、格线、间距、阅读顺序和整体布局不变；若用户要求重做整张版面，再按要求调整。"
+                    "若输入图不是九宫格而用户要求将其编排成九宫格，明确新布局及原图内容的保留方式。"
+                    "仅凭‘九宫格’不添加镜号、时间码、对白、标题或制作注释；只有同时触发故事板规则或用户明确要求时才添加。"
+                )
+            parts.append(grid_rule)
+
+        if has_storyboard:
+            storyboard_rule = (
+                "[故事板/分镜头规则：已由用户明确触发] 按制作型故事板组织画面；尊重用户指定的格数，"
+                "未指定时根据剧情拍点决定，不因触发词自动强制九格。每格表现一个主要时刻，明确镜号或顺序、"
+                "景别/视角、主体位置与动作，并保持人物、服装、道具、空间方向、光线和状态连续。"
+                "默认在画格外设置清楚的注释区域；镜号、时间（仅在有时长依据时）、镜头说明、用户提供的对白/字幕、声音和转场"
+                "均作为板面注释，不覆盖剧情画面。若用户明确要求纯视觉、无文字、无编号、不要说明或关键帧板，则省略注释与文字。"
+                "逐字保留用户给定文字，不编造对白、品牌或剧情事实；无对白时不虚构台词。"
+            )
+            if is_multi_reference:
+                storyboard_rule += (
+                    "先逐张说明每个 <imageN> 的身份、服装、产品、场景、姿态、风格或画布用途；"
+                    "再在每格标明实际使用的参考图标签，未出现在该格的素材不强行加入。"
+                )
+            elif not is_t2i:
+                storyboard_rule += (
+                    "若编辑现有故事板，只修改用户指定的格子或板面元素，并保持其余画格及其注释对应关系不变。"
+                )
+            parts.append(storyboard_rule)
+
         if 风格提示 and 风格提示.strip():
             parts.append(f"[Extra Requirements] {风格提示.strip()}")
-        parts.append(f"[User Original Prompt]\n{user_prompt.strip()}")
+        prompt_text = (user_prompt or "").strip()
+        if prompt_text:
+            parts.append(f"[User Original Prompt]\n{prompt_text}")
+        else:
+            parts.append("[User Original Prompt]\nNo text prompt was provided. Follow the selected prompt rules and use any attached reference images as context.")
 
         collected_images = []
         total_image_count = 0
@@ -854,15 +931,29 @@ class XiaozhuguangNinimaxH3Prompt:
                 "Check workflow connections: 'qwen_model' should connect to BSAI H3 Model Loader output."
             )
 
-        prompt_text_input = (user_prompt or "").strip()
-        if not prompt_text_input:
-            raise ValueError("user_prompt cannot be empty. Please enter a prompt to optimize.")
-
-        is_custom_skill = (
-            getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True)
-            and target_model in (_TARGET_MODEL_CUSTOM_SKILL, _TARGET_MODEL_CUSTOM_SKILL_EN)
+        custom_rule_categories = set()
+        if getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True)):
+            try:
+                user_dir = folder_paths.get_user_directory()
+                with open(os.path.join(user_dir, "xiaozhuguang", "xzg_prompt_rule_presets.json"), "r", encoding="utf-8") as preset_file:
+                    custom_rule_categories = {str(entry.get("category", "自定义提示词规则")) for entry in json.load(preset_file).values() if isinstance(entry, dict)}
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        is_custom_prompt_rules = (
+            getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True))
+            and (target_model in (
+                _TARGET_MODEL_CUSTOM_RULES,
+                _TARGET_MODEL_CUSTOM_RULES_EN,
+                _TARGET_MODEL_CUSTOM_SKILL_LEGACY,
+                _TARGET_MODEL_CUSTOM_SKILL_EN_LEGACY,
+            ) or target_model in custom_rule_categories)
         )
         secondary_system_prompt = None
+        output_language = {
+            "English Only": "仅英文",
+            "Chinese Only": "仅中文",
+            "Chinese + English": "中英双语",
+        }.get(output_language, output_language)
         if output_language not in _H3_OUTPUT_FORMATS:
             output_language = "仅英文"
         generation_mode = {
@@ -871,13 +962,13 @@ class XiaozhuguangNinimaxH3Prompt:
             "Multi-Reference Image": "Qwen-Image-2.1 多参考图",
         }.get(generation_mode, generation_mode)
         is_qwen_image = (
-            not is_custom_skill and (
+            not is_custom_prompt_rules and (
                 target_model in (_TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT)
                 or generation_mode in _QWEN_IMAGE_MODES
             )
         )
         valid_modes = set(_QWEN_IMAGE_MODES) if is_qwen_image else _GEN_MODE_DISPLAY_VALUES
-        if is_custom_skill:
+        if is_custom_prompt_rules:
             valid_modes = None
         if valid_modes is not None and generation_mode not in valid_modes:
             raise ValueError(
@@ -886,26 +977,26 @@ class XiaozhuguangNinimaxH3Prompt:
                 f"生成模式无效：{generation_mode!r}，请使用以下合法值之一："
                 f"{sorted(valid_modes)}"
             )
-        if is_custom_skill:
+        if is_custom_prompt_rules:
             preset_name = generation_mode
-            skill_text = _xzg_load_saved_skill_prompt(preset_name)
-            if not skill_text:
+            rule_text = _xzg_load_saved_prompt_rule(preset_name, target_model)
+            if not rule_text:
                 raise ValueError(
-                    f"Skill 预设“{preset_name}”未在 ComfyUI 用户目录中找到。"
-                    "请打开 Skill 管理器确认预设已保存并完成云持久化。"
+                    f"规则预设“{preset_name}”未在 ComfyUI 用户目录中找到。"
+                    "请打开自定义提示词规则管理器确认预设已保存并完成云持久化。"
                 )
             if output_language == "中英双语":
-                system_prompt = skill_text + "\n\nWrite the optimized prompt in English only. Output the result directly, without explanation."
+                system_prompt = rule_text + "\n\nWrite the optimized prompt in English only. Output the result directly, without explanation."
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             elif output_language == "仅中文":
-                system_prompt = skill_text + "\n\n用中文输出优化后的提示词，直接输出结果，不要解释。"
+                system_prompt = rule_text + "\n\n用中文输出优化后的提示词，直接输出结果，不要解释。"
             else:
-                system_prompt = skill_text + "\n\nWrite the optimized prompt in English. Output the result directly, without explanation."
+                system_prompt = rule_text + "\n\nWrite the optimized prompt in English. Output the result directly, without explanation."
             user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
                 user_prompt, "通用", image_inputs=image_inputs,
                 aspect_ratio=aspect_ratio, 风格提示=风格提示,
             )
-            print(f"[小珠光提示词] Skill 预设：{preset_name}")
+            print(f"[小珠光提示词] 自定义提示词规则：{preset_name}")
         elif is_qwen_image:
             if output_language == "中英双语":
                 system_prompt = _xzg_qwen_image_system_prompt(generation_mode, "仅英文")
@@ -1044,11 +1135,16 @@ class XiaozhuguangNinimaxH3Prompt:
 class XiaozhuguangNinimaxH3PromptNoSkill(XiaozhuguangNinimaxH3Prompt):
     """标准版提示词节点，不提供自定义 Skill 预设功能。"""
 
-    SUPPORTS_CUSTOM_SKILL = False
+    SUPPORTS_CUSTOM_PROMPT_RULES = False
+    SUPPORTS_CUSTOM_SKILL = False  # legacy alias
 
     @classmethod
     def INPUT_TYPES(cls):
         inputs = super().INPUT_TYPES()
+        inputs["required"]["user_prompt"] = (
+            "STRING",
+            {"default": "", "multiline": True, "tooltip": "提示词和参考图片均可留空 / Prompt and reference images are optional"},
+        )
         inputs["required"]["target_model"] = (
             "STRING",
             {"default": _TARGET_MODEL_H3, "multiline": False, "tooltip": "提示词类型 / Prompt type"},

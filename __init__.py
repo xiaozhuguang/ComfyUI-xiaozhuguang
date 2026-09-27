@@ -226,7 +226,7 @@ from .nodes.xzg_image_save_custom import XiaozhuguangImageSaveCustom
 from .nodes.xzg_audio_save import XiaozhuguangAudioSaveDaVinci
 from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
-from .nodes.xzg_text_box import XiaozhuguangTextBox
+from .nodes.xzg_text_box import XiaozhuguangTextBox, XiaozhuguangTextBoxGod
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt, XiaozhuguangNinimaxH3PromptNoSkill
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
 from .nodes.xzg_qwen_image21_encode import XiaozhuguangTextEncodeQwenImage21
@@ -736,6 +736,31 @@ try:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    @_xzg_save_real_routes.post("/xzg/reset_persistence")
+    @xzg_safe_handler
+    async def xzg_reset_persistence_post(request):
+        """初始化小珠光 user/xiaozhuguang 下的持久化配置，并载入默认快捷键。"""
+        import shutil as _xzg_reset_shutil
+        try:
+            directory = _xzg_shortcuts_dir()
+            removed = 0
+            # 该目录专用于小珠光的持久化配置。只处理目录第一层 JSON 文件，
+            # 不触碰子目录或 ComfyUI 工作流/模型等用户数据。
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False) or not entry.name.lower().endswith(".json"):
+                        continue
+                    try:
+                        os.remove(entry.path)
+                        removed += 1
+                    except FileNotFoundError:
+                        pass
+            if os.path.isfile(_xzg_shortcuts_default):
+                _xzg_reset_shutil.copy2(_xzg_shortcuts_default, _xzg_shortcuts_file)
+            return web.json_response({"ok": True, "removed": removed, "shortcutsRestored": os.path.isfile(_xzg_shortcuts_file)})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
 except Exception as _sc_err:
     print("[xiaozhuguang] 注册 /xzg/shortcuts 路由失败:", _sc_err)
 
@@ -1222,6 +1247,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
+    "XiaozhuguangTextBoxGod": XiaozhuguangTextBoxGod,
     "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
     "XiaozhuguangNinimaxH3PromptNoSkill": XiaozhuguangNinimaxH3PromptNoSkill,
     "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
@@ -1285,6 +1311,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
     "XiaozhuguangTextBox": "小珠光文本框",
+    "XiaozhuguangTextBoxGod": "小珠光文本框-化神级",
     "XiaozhuguangNinimaxH3Prompt": "小珠光提示词-化神级",
     "XiaozhuguangNinimaxH3PromptNoSkill": "小珠光提示词",
     "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",

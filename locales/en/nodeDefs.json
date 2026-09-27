@@ -589,5 +589,17 @@
     "outputs": {
       "0": { "name": "composite" }
     }
+  },
+  "XiaozhuguangTextBoxGod": {
+    "display_name": "Xiaozhuguang Text Box - God Tier",
+    "inputs": {
+      "preset_category": { "name": "Prompt Type" },
+      "preset_name": { "name": "Prompt Subtype" },
+      "text": { "name": "Text" }
+    },
+    "outputs": {
+      "0": { "name": "Raw Text" },
+      "1": { "name": "Num → Chinese" }
+    }
   }
 }

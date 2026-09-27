@@ -98,6 +98,10 @@ const UI_GEOMETRY_KEYS = [
     "xiaozhuguang.PanelHeight",
     "xiaozhuguang.SplitWidth",
     "xzg_wf_left_col_width",
+    "xzg_prompt_skill_manager_geometry",
+    "xzg_prompt_rule_manager_geometry",
+    "xzg_text_box_god_manager_geometry",
+    "xzg_theme_panel_pos",
 ];
 
 let _uiInit = null;

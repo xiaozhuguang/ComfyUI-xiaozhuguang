@@ -1240,6 +1240,13 @@ class Xiaozhuguang {
                 border-style: dashed;
                 border-color: #4CAF50;
             }
+            .nf-category-item[draggable="true"] {
+                cursor: grab;
+                user-select: none;
+            }
+            .nf-category-item[draggable="true"]:active {
+                cursor: grabbing;
+            }
             .nf-cat-insert-indicator {
                 height: 3px;
                 flex: none;
@@ -3809,8 +3816,8 @@ class Xiaozhuguang {
             const catNodes = this.favorites.nodes.filter(n => n.categoryId === cat.id);
             const invalidInCat = catNodes.filter(n => !this.isNodeTypeValid(n.type)).length;
             html += `
-                <div class="nf-category-item ${this.currentCategory === cat.id ? 'active' : ''}" data-cat="${cat.id}">
-                    <span class="nf-cat-drag-handle" draggable="true" data-cat="${cat.id}" title="拖动调整顺序">⠿</span>
+                <div class="nf-category-item ${this.currentCategory === cat.id ? 'active' : ''}" data-cat="${cat.id}" draggable="true" title="拖动调整顺序">
+                    <span class="nf-cat-drag-handle" data-cat="${cat.id}">⠿</span>
                     <span class="nf-cat-name" title="${cat.name}">${cat.name}</span>
                     ${invalidInCat > 0 ? `<span class="nf-cat-invalid-count" title="${invalidInCat}个失效节点">${invalidInCat}</span>` : ''}
                 </div>
@@ -3878,22 +3885,18 @@ class Xiaozhuguang {
                 this.showCategoryContextMenu(e.clientX, e.clientY, catId);
             });
 
-            // 排序手柄：拖动分类项调整顺序
-            const handle = item.querySelector(".nf-cat-drag-handle");
-            if (handle) {
-                handle.addEventListener("dragstart", (e) => {
-                    e.stopPropagation();
+            if (item.dataset.cat !== "all") {
+                item.addEventListener("dragstart", (e) => {
                     e.dataTransfer.effectAllowed = "move";
-                    e.dataTransfer.setData("text/xzg-cat-id", handle.dataset.cat);
+                    e.dataTransfer.setData("text/xzg-cat-id", item.dataset.cat);
                     item.classList.add("nf-cat-dragging");
                 });
-                handle.addEventListener("dragend", () => {
+                item.addEventListener("dragend", () => {
                     item.classList.remove("nf-cat-dragging");
                     this._removeCatInsertIndicator();
                     this._catInsertIndex = null;
                 });
-                // 阻止点击手柄时触发分类选中
-                handle.addEventListener("click", (e) => e.stopPropagation());
+                item.querySelector(".nf-cat-drag-handle")?.addEventListener("click", (e) => e.stopPropagation());
             }
         });
     }

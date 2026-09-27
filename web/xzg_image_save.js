@@ -70,7 +70,7 @@ function _xzgImgSaveEnsureCtxMenu() {
     // 发送到小珠光图片加载器
     const sendItem = document.createElement("div");
     sendItem.style.cssText = menuItemStyle;
-    sendItem.innerHTML = `<span style="color:#88ccff;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`;
+    sendItem.innerHTML = `<span style="color:#FFD700;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`;
     sendItem.addEventListener("mouseenter", () => { sendItem.style.background = "#3a3a3a"; });
     sendItem.addEventListener("mouseleave", () => { sendItem.style.background = ""; });
     sendItem.addEventListener("click", () => {
@@ -248,14 +248,86 @@ function _xzgAppendToLoader(loaderNode, annotatedName) {
 
 // 多个加载器时弹出选择对话框
 function _xzgShowLoaderSelector(loaders, annotatedName) {
+    let locateRaf = null;
+    let moveRaf = null;
+    const stopLocate = () => {
+        if (locateRaf) cancelAnimationFrame(locateRaf);
+        if (moveRaf) cancelAnimationFrame(moveRaf);
+        locateRaf = null;
+        moveRaf = null;
+        document.getElementById("xzg-image-loader-locate-guide")?.remove();
+    };
+    const locateLoader = (node, fromEl) => {
+        stopLocate();
+        const canvas = app?.canvas;
+        if (!canvas?.ds || !node?.pos) return;
+        const scale = canvas.ds.scale || 1;
+        const canvasEl = canvas.canvas;
+        const viewW = canvasEl?.clientWidth || window.innerWidth;
+        const viewH = canvasEl?.clientHeight || window.innerHeight;
+        const centerX = node.pos[0] + (node.size?.[0] || 0) / 2;
+        const centerY = node.pos[1] + (node.size?.[1] || 0) / 2;
+        const sx = (node.pos[0] + canvas.ds.offset[0]) * scale;
+        const sy = (node.pos[1] + canvas.ds.offset[1]) * scale;
+        const sw = (node.size?.[0] || 0) * scale;
+        const sh = (node.size?.[1] || 0) * scale;
+        const margin = 40;
+        if (sx < margin || sy < margin || sx + sw > viewW - margin || sy + sh > viewH - margin) {
+            const startOX = canvas.ds.offset[0];
+            const startOY = canvas.ds.offset[1];
+            const targetOX = viewW / 2 / scale - centerX;
+            const targetOY = viewH / 2 / scale - centerY;
+            const start = performance.now();
+            const animate = (now) => {
+                const t = Math.min((now - start) / 500, 1);
+                const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+                canvas.ds.offset[0] = startOX + (targetOX - startOX) * ease;
+                canvas.ds.offset[1] = startOY + (targetOY - startOY) * ease;
+                canvas.setDirty?.(true, true);
+                canvas.draw?.();
+                if (t < 1) moveRaf = requestAnimationFrame(animate);
+                else moveRaf = null;
+            };
+            moveRaf = requestAnimationFrame(animate);
+        }
+
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.id = "xzg-image-loader-locate-guide";
+        svg.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:1000000;overflow:visible;";
+        const draw = () => {
+            const rect = canvasEl?.getBoundingClientRect();
+            if (!rect) return;
+            const tx = rect.left + (centerX + canvas.ds.offset[0]) * (canvas.ds.scale || 1);
+            const ty = rect.top + (centerY + canvas.ds.offset[1]) * (canvas.ds.scale || 1);
+            const from = fromEl.getBoundingClientRect();
+            const x1 = from.left + from.width / 2;
+            const y1 = from.top + from.height / 2;
+            svg.replaceChildren();
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+            line.setAttribute("x2", tx); line.setAttribute("y2", ty);
+            line.setAttribute("stroke", "#FFD700"); line.setAttribute("stroke-width", "2");
+            line.setAttribute("stroke-dasharray", "6 4");
+            svg.appendChild(line);
+            const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            ring.setAttribute("cx", tx); ring.setAttribute("cy", ty); ring.setAttribute("r", "11");
+            ring.setAttribute("fill", "none"); ring.setAttribute("stroke", "#FFD700"); ring.setAttribute("stroke-width", "3");
+            ring.style.filter = "drop-shadow(0 0 8px rgba(255,215,0,.9))";
+            svg.appendChild(ring);
+        };
+        document.body.appendChild(svg);
+        const animateGuide = () => { draw(); locateRaf = requestAnimationFrame(animateGuide); };
+        animateGuide();
+    };
+
     const overlay = document.createElement("div");
     overlay.style.cssText =
-        "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;";
-    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+        "position:fixed;top:0;left:0;right:0;bottom:0;background:transparent;z-index:999999;display:flex;align-items:center;justify-content:flex-end;padding:16px;box-sizing:border-box;pointer-events:none;";
+    overlay.onclick = (e) => { if (e.target === overlay) { stopLocate(); overlay.remove(); } };
 
     const dialog = document.createElement("div");
     dialog.style.cssText =
-        "background:var(--comfy-menu-bg,#2a2a2a);border:1px solid var(--border-color,#555);border-radius:8px;padding:20px 24px;min-width:300px;max-width:90vw;";
+        "background:var(--comfy-menu-bg,#2a2a2a);border:1px solid var(--border-color,#555);border-radius:8px;padding:20px 24px;width:320px;max-width:min(90vw,420px);max-height:80vh;overflow:auto;box-sizing:border-box;pointer-events:auto;";
     dialog.onclick = (e) => e.stopPropagation();
 
     const title = document.createElement("div");
@@ -271,9 +343,10 @@ function _xzgShowLoaderSelector(loaders, annotatedName) {
             "padding:8px 14px;background:var(--comfy-input-bg,#333);color:var(--input-text,#ddd);border:1px solid var(--border-color,#555);border-radius:4px;cursor:pointer;font-size:12px;";
         const label = (n.title || n.type || "Image Loader") + " #" + n.id;
         item.textContent = label;
-        item.addEventListener("mouseenter", () => { item.style.borderColor = "#FFD700"; });
-        item.addEventListener("mouseleave", () => { item.style.borderColor = "var(--border-color,#555)"; });
+        item.addEventListener("mouseenter", () => { item.style.borderColor = "#FFD700"; locateLoader(n, item); });
+        item.addEventListener("mouseleave", () => { item.style.borderColor = "var(--border-color,#555)"; stopLocate(); });
         item.addEventListener("click", () => {
+            stopLocate();
             overlay.remove();
             _xzgAppendToLoader(n, annotatedName);
         });
@@ -285,7 +358,7 @@ function _xzgShowLoaderSelector(loaders, annotatedName) {
     cancelBtn.style.cssText =
         "margin-top:14px;padding:6px 16px;background:var(--comfy-input-bg,#333);color:var(--input-text,#ddd);border:1px solid var(--border-color,#555);border-radius:4px;cursor:pointer;font-size:12px;width:100%;";
     cancelBtn.textContent = xzgTh("取消", "Cancel");
-    cancelBtn.onclick = () => overlay.remove();
+    cancelBtn.onclick = () => { stopLocate(); overlay.remove(); };
     dialog.appendChild(cancelBtn);
 
     overlay.appendChild(dialog);
@@ -1501,7 +1574,7 @@ app.registerExtension({
                     }
                     if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
                         saveOpts.push({
-                            content: `<span style="color:#88ccff;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
+                            content: `<span style="color:#FFD700;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
                             callback: () => { _xzgSendToImageLoader(cur); }
                         });
                     }
