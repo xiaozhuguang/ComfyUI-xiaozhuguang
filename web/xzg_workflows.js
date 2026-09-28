@@ -2970,12 +2970,11 @@ class XZGWorkflowsManager {
         style.id = "xzg-owned-workflow-tabs-style";
         style.textContent = `
             .xzg-owned-workflow-tabs { display:flex; align-items:center; gap:1px; width:100%; height:var(--workflow-tabs-height,40px); flex:0 0 var(--workflow-tabs-height,40px); min-width:0; overflow-x:auto; overflow-y:hidden; padding:0 4px; border-bottom:1px solid color-mix(in srgb,var(--interface-stroke,#555) 50%,transparent); box-shadow:0 1px 2px rgba(0,0,0,.12); background:var(--comfy-menu-bg,#171717); color:var(--fg-color,#eee); pointer-events:auto; position:relative; }
-            .xzg-owned-workflow-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 1 auto; min-width:80px; max-width:220px; height:calc(100% - 2px); padding:0 10px; border:0; border-right:1px solid rgba(255,255,255,.12); background:transparent; color:#aaa; cursor:pointer; font:500 14px/1 sans-serif; white-space:nowrap; }
-            .xzg-owned-workflow-tab:hover { background:rgba(255,255,255,.06); color:#eee; }
-            .xzg-owned-workflow-tab.active { color:#fff; font-weight:600; background:rgba(255,255,255,.04); }
+            .xzg-owned-workflow-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 1 auto; min-width:80px; max-width:220px; height:calc(100% - 2px); padding:0 10px; border:0; border-right:1px solid rgba(255,255,255,.12); background:transparent; color:var(--xzg-use-color,#aaa); cursor:pointer; font:500 14px/1 sans-serif; white-space:nowrap; }
+            .xzg-owned-workflow-tab:hover { background:rgba(255,255,255,.06); color:var(--xzg-use-color,#eee); }
+            .xzg-owned-workflow-tab.active { color:var(--xzg-use-color,#fff); font-weight:600; background:transparent; box-shadow:inset 0 -2px 0 color-mix(in srgb,var(--xzg-use-color,#fff) 72%,transparent); }
             .xzg-owned-workflow-tab-label { overflow:hidden; text-overflow:ellipsis; }
-            .xzg-owned-workflow-tab-dirty { width:8px; height:8px; flex:0 0 8px; border-radius:50%; background:#eee; }
-            .xzg-owned-workflow-tab-close { display:none; flex:0 0 auto; border:0; padding:0; color:inherit; background:transparent; cursor:pointer; font-size:17px; line-height:1; }
+            .xzg-owned-workflow-tab-close { display:none; flex:0 0 auto; border:0; padding:0 2px; color:inherit; background:transparent; cursor:pointer; font-size:24px; line-height:1; }
             .xzg-owned-workflow-tab:hover .xzg-owned-workflow-tab-close, .xzg-owned-workflow-tab.active .xzg-owned-workflow-tab-close { display:block; }
             .xzg-owned-workflow-tab-add { display:flex; align-items:center; justify-content:center; width:34px; height:30px; flex:0 0 34px; border:0; border-radius:5px; color:#ddd; background:transparent; cursor:pointer; font-size:21px; }
             .xzg-owned-workflow-tab-add:hover { background:rgba(255,255,255,.1); }
@@ -2989,13 +2988,23 @@ class XZGWorkflowsManager {
         document.head.appendChild(style);
     }
 
+    _ownedWorkflowManagerMeta(workflow) {
+        const workflowPath = String(workflow?.path || "")
+            .replace(/\\/g, "/")
+            .replace(/^\/+/, "")
+            .replace(/^workflows\//i, "")
+            .replace(/\.json$/i, "");
+        return this.meta?.workflows?.[workflowPath] || null;
+    }
+
     _renderOwnedWorkflowTabs() {
         const bar = this._ownedWorkflowTabBar;
         if (!bar) return;
         const store = app.extensionManager?.workflow;
         const workflows = Array.isArray(store?.openWorkflows) ? store.openWorkflows : [];
         const active = store?.activeWorkflow;
-        const signature = workflows.map(w => [w.key, w.path, w.filename, w.isPersisted, w.isModified, store?.isActive?.(w) || w.path === active?.path].join("|")).join(";");
+        const useColorSignature = `${this.meta?.useColorsEnabled !== false}:${JSON.stringify(this.meta?.useColors || [])}`;
+        const signature = useColorSignature + ";" + workflows.map(w => [w.key, w.path, w.filename, w.isPersisted, w.isModified, this._ownedWorkflowManagerMeta(w)?.useCount ?? w.useCount ?? 0, store?.isActive?.(w) || w.path === active?.path].join("|")).join(";");
         if (signature === this._ownedWorkflowTabSignature && bar.childElementCount) return;
         this._ownedWorkflowTabSignature = signature;
         bar.replaceChildren();
@@ -3003,6 +3012,11 @@ class XZGWorkflowsManager {
             const tab = document.createElement("div");
             const isActive = store?.isActive?.(workflow) || workflow.path === active?.path;
             tab.className = "xzg-owned-workflow-tab" + (isActive ? " active" : "");
+            const useCount = this._ownedWorkflowManagerMeta(workflow)?.useCount ?? workflow.useCount ?? 0;
+            const useInfo = this.getUseLevel(useCount);
+            if (this.meta?.useColorsEnabled !== false && useInfo.level > 0) {
+                tab.style.setProperty("--xzg-use-color", useInfo.color);
+            }
             tab.draggable = true;
             tab.setAttribute("role", "tab");
             tab.setAttribute("aria-selected", isActive ? "true" : "false");
@@ -3011,12 +3025,6 @@ class XZGWorkflowsManager {
             label.className = "xzg-owned-workflow-tab-label";
             label.textContent = workflow.filename || workflow.path?.split("/").pop() || xzgT("未命名工作流", "Untitled Workflow");
             tab.appendChild(label);
-            if (!workflow.isPersisted || workflow.isModified) {
-                const dirty = document.createElement("span");
-                dirty.className = "xzg-owned-workflow-tab-dirty";
-                dirty.title = xzgT("有未保存的更改", "Unsaved changes");
-                tab.appendChild(dirty);
-            }
             const close = document.createElement("button");
             close.className = "xzg-owned-workflow-tab-close";
             close.type = "button";
@@ -3028,6 +3036,12 @@ class XZGWorkflowsManager {
             });
             tab.appendChild(close);
             tab.addEventListener("click", () => this._activateOwnedWorkflowTab(workflow));
+            tab.addEventListener("dblclick", ev => {
+                if (ev.target.closest(".xzg-owned-workflow-tab-close")) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                this._closeOwnedWorkflowTabs([workflow]);
+            });
             tab.addEventListener("auxclick", ev => {
                 if (ev.button === 1) this._closeOwnedWorkflowTabs([workflow]);
             });
@@ -3743,6 +3757,7 @@ class XZGWorkflowsManager {
     }
 
     renderWorkflowList() {
+        this._renderOwnedWorkflowTabs();
         if (!this.workflowList) return;
         const countEl = this.container.querySelector(".xzg-wf-count");
         const items = this.getFilteredWorkflows(this.currentCategory, this.currentSearch);

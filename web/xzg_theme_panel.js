@@ -17,6 +17,7 @@ const XZG_EXPORT_CATEGORIES = [
     ["notes", "记事本", "Notepad", "已云端持久化", "Cloud-backed"],
     ["align", "田字格对齐", "Grid Alignment", "已云端持久化", "Cloud-backed"],
     ["sidebar", "侧边栏偏好", "Sidebar Preferences", "已云端持久化", "Cloud-backed"],
+    ["monitor", "GPU/CPU 监控悬浮窗", "GPU/CPU Monitor", "已云端持久化", "Cloud-backed"],
     ["shortcuts", "小珠光自定义快捷键", "XZG Custom Shortcuts", "服务端持久化", "Server-backed"],
 ];
 
@@ -30,6 +31,7 @@ function xzgExportCategoryForKey(key) {
     if (key === "xzg_workflows_meta" || /^xzg_wf_/.test(key) || key === "xzg_possess_mode" || key === "xiaozhuguang.Toggle.EnableWorkflows") return "workflows";
     if (/^xzg_(group_|toggle_|deleted_groups|groups_backup|shortcut$|toggle_shortcut$)/.test(key) || key === "xzg_title_state") return "groups";
     if (/^xzg_quick_nodes/.test(key)) return "quickLinks";
+    if (key === "xzg-display-v1" || key === "xzg-float-state-v1") return "monitor";
     if (/^xzg-menu-hide/.test(key)) return "menuHide";
     if (/^xzg_prompt_(skill|rule)_/.test(key)) return "skills";
     if (key === "xzg_text_box_god_presets") return "textBoxGodPresets";
@@ -3133,6 +3135,12 @@ window.XZGThemePanel = {
                     try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
                 }
                 importedXzg = true;
+            }
+            if (obj.localStorage && obj.localStorage["xzg-display-v1"] !== undefined) {
+                try {
+                    window.XZGMonitorConfig?.reloadFromStorage?.();
+                    importedXzg = true;
+                } catch (e) { console.warn("[XZG] Failed to import monitor display config:", e); }
             }
             // 云存储同步：收藏 / 工作流元数据除写本地外，还要推送到云端并刷新实例与面板，
             // 否则云优先加载会在刷新时用旧云端数据覆盖刚导入的配置。

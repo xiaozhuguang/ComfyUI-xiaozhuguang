@@ -253,7 +253,9 @@ def _cpu_sampler_loop():
             if val is None:
                 # PDH 不可用/读取失败：回退 psutil 阻塞式 1s（自带完整测量窗口）
                 val = psutil.cpu_percent(interval=1)
-            _cpu_util["value"] = val
+            # 监控展示采用常见的 0–100% 利用率范围；PDH 的 Processor Utility
+            # 会因睿频而超过 100%，这里统一封顶。
+            _cpu_util["value"] = max(0.0, min(100.0, _to_float(val)))
         except Exception:
             _cpu_util["value"] = 0.0
 

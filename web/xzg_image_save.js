@@ -1016,17 +1016,17 @@ class XzgImageSaveWidget {
                 ctx.textAlign = "center";
 
                 ctx.font = `${32 * iconScale}px Arial`;
-                ctx.fillStyle = "rgba(255,255,255,0.1)";
+                ctx.fillStyle = "rgba(255,255,255,0.2)";
                 ctx.fillText("◀", cx0, iconY);
 
                 // 中间仅显示圆环，表示切换单图/网格视图。
-                ctx.strokeStyle = "rgba(255,255,255,0.1)";
+                ctx.strokeStyle = "rgba(255,255,255,0.2)";
                 ctx.lineWidth = 3 * iconScale;
                 ctx.beginPath();
                 ctx.arc(cx1, iconY, 20 * iconScale, 0, Math.PI * 2);
                 ctx.stroke();
 
-                ctx.fillStyle = "rgba(255,255,255,0.1)";
+                ctx.fillStyle = "rgba(255,255,255,0.2)";
                 ctx.fillText("▶", cx2, iconY);
                 ctx.restore();
             }

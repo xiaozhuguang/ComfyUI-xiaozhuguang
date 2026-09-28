@@ -541,6 +541,46 @@ _QWEN_IMAGE_MODES = (
 _GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES) + ["通用 Skill"]
 
 
+def _xzg_prompt_rule_selection_names(presets):
+    """Return stable combo labels so duplicate subtype names remain selectable."""
+    if not isinstance(presets, dict):
+        return {}
+
+    def order_key(item):
+        key, entry = item
+        order = entry.get("order")
+        if isinstance(order, (int, float)) and not isinstance(order, bool):
+            try:
+                value = float(order)
+                if value == value and abs(value) != float("inf"):
+                    return (0, value, str(key))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return (1, 0.0, str(key))
+
+    groups = {}
+    for key, entry in sorted(presets.items(), key=order_key):
+        if not isinstance(entry, dict) or entry.get("_typeOnly"):
+            continue
+        category = str(entry.get("category") or "自定义提示词规则")
+        name = str(entry.get("name") or key)
+        groups.setdefault((category, name), []).append(str(key))
+
+    selection_names = {}
+    used_by_category = {}
+    for (category, name), keys in groups.items():
+        used = used_by_category.setdefault(category, set())
+        for index, key in enumerate(keys):
+            selection_name = name if len(keys) == 1 else f"{name} ({index + 1})"
+            suffix = 2
+            while selection_name in used:
+                selection_name = f"{name} ({index + 1}, {suffix})"
+                suffix += 1
+            used.add(selection_name)
+            selection_names[key] = selection_name
+    return selection_names
+
+
 def _xzg_load_saved_prompt_rule(preset_name, preset_category=None):
     """从 ComfyUI 用户目录读取全局提示词规则预设，不依赖工作流节点数据。"""
     try:
@@ -553,13 +593,31 @@ def _xzg_load_saved_prompt_rule(preset_name, preset_category=None):
                     presets = json.load(preset_file)
             except (OSError, ValueError):
                 continue
-            entry = presets.get(preset_name) if isinstance(presets, dict) else None
-            if isinstance(entry, dict) and preset_category and str(entry.get("category", "自定义提示词规则")) != str(preset_category):
-                entry = None
+            computed_selection_names = _xzg_prompt_rule_selection_names(presets)
+            entry = None
+            if isinstance(presets, dict) and preset_category:
+                # Prefer the unique selector label used by the node combo. This avoids
+                # confusing a duplicate subtype with a different subtype whose literal
+                # name happens to look like the generated "Name (2)" label.
+                entry = next((value for key, value in presets.items()
+                              if isinstance(value, dict)
+                              and str(value.get("category", "自定义提示词规则")) == str(preset_category)
+                              and (str(value.get("selectionName", "")) == str(preset_name)
+                                   or computed_selection_names.get(str(key)) == str(preset_name))), None)
+            if entry is None and isinstance(presets, dict):
+                candidate = presets.get(preset_name)
+                if isinstance(candidate, dict):
+                    category_matches = not preset_category or str(candidate.get("category", "自定义提示词规则")) == str(preset_category)
+                    selector = str(candidate.get("selectionName", ""))
+                    computed_selector = computed_selection_names.get(str(preset_name))
+                    legacy_name_matches = not selector and not computed_selector and str(candidate.get("name", preset_name)) == str(preset_name)
+                    if category_matches and (selector == str(preset_name) or computed_selector == str(preset_name) or legacy_name_matches):
+                        entry = candidate
             if entry is None and isinstance(presets, dict):
                 entry = next((value for key, value in presets.items()
                               if isinstance(value, dict)
-                              and str(value.get("name", key)) == str(preset_name)
+                              and (str(value.get("selectionName", "")) == str(preset_name)
+                                   or computed_selection_names.get(str(key)) == str(preset_name))
                               and (not preset_category or str(value.get("category", "自定义提示词规则")) == str(preset_category))), None)
             rule = entry.get("rule", entry.get("skill")) if isinstance(entry, dict) else None
             if isinstance(rule, str) and rule.strip():

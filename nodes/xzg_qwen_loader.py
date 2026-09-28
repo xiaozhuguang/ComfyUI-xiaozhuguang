@@ -457,6 +457,10 @@ class _XZG_QwenStorage:
 
         if cls.model is not None:
             cls.unload()
+        else:
+            # Failed loads can leave settings from the last successful model behind.
+            # Clear them before starting so H3 cannot auto-reload a stale model.
+            cls.settings = None
 
         # 用 get_full_path 遍历所有注册的 LLM 路径（含 extra_model_paths.yaml 配置的额外路径），
         # 而非仅查主目录 folder_paths.models_dir/LLM，避免「下拉列表可见但加载失败」。
@@ -500,14 +504,17 @@ class _XZG_QwenStorage:
                         "建议升级 llama-cpp-python 到 0.3.30+ 获取最佳兼容性）。"
                     )
                 else:
+                    # Do not retry constructor failures with a different signature:
+                    # the constructor opens mtmd immediately, and retrying a failed
+                    # native context initialization can retain native resources and
+                    # obscure the original error.
+                    handler_kwargs = {"clip_model_path": mmproj_path, "verbose": False}
                     try:
-                        chat_handler = Qwen35ChatHandler(
-                            clip_model_path=mmproj_path, enable_thinking=think, verbose=False
-                        )
-                    except Exception:
-                        chat_handler = Qwen35ChatHandler(
-                            clip_model_path=mmproj_path, verbose=False
-                        )
+                        if "enable_thinking" in inspect.signature(Qwen35ChatHandler).parameters:
+                            handler_kwargs["enable_thinking"] = think
+                    except (TypeError, ValueError):
+                        handler_kwargs["enable_thinking"] = think
+                    chat_handler = Qwen35ChatHandler(**handler_kwargs)
             elif family == "Qwen3-VL":
                 # Qwen3-VL 与 Qwen3.5/3.6/3.8-VL 同族，优先 Qwen3VLChatHandler，
                 # 缺失时回退 Qwen35ChatHandler，最后降级为默认 chat_format，
@@ -578,12 +585,15 @@ class _XZG_QwenStorage:
         except Exception:
             pass
 
+        model = None
         try:
-            cls.model = Llama(**llama_kwargs)
+            model = Llama(**llama_kwargs)
+            cls.model = model
             cls.settings = dict(config)
             cls.unloaded = False
-            return cls.model
+            return model
         except ValueError as e:
+            cls._cleanup_failed_load(model, chat_handler)
             if "Failed to create context with model" in str(e):
                 raise RuntimeError(
                     "模型加载失败：Failed to create context with model\n"
@@ -594,6 +604,35 @@ class _XZG_QwenStorage:
                     "4. 模型文件路径错误"
                 )
             raise
+        except Exception:
+            cls._cleanup_failed_load(model, chat_handler)
+            raise
+
+    @classmethod
+    def _cleanup_failed_load(cls, model, chat_handler):
+        """Release partially initialized llama/mtmd resources after a failed load."""
+        if model is not None:
+            try:
+                model.close()
+            except Exception:
+                pass
+            for attr in ("_ctx", "_model", "_chat_handler", "ctx", "model"):
+                try:
+                    setattr(model, attr, None)
+                except Exception:
+                    pass
+        if chat_handler is not None:
+            # Qwen35ChatHandler owns the mtmd context. Drop references even when
+            # Llama.__init__ failed before assigning the handler to its instance.
+            for attr in ("_mtmd_ctx", "mtmd_ctx", "_clip_ctx", "clip_ctx"):
+                try:
+                    setattr(chat_handler, attr, None)
+                except Exception:
+                    pass
+        cls.model = None
+        cls.settings = None
+        gc.collect()
+        mm.soft_empty_cache()
 
 
 # ============================================================

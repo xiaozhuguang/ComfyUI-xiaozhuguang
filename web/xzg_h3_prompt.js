@@ -35,6 +35,35 @@ function xzgOrderedPromptRulePresetNames(presets) {
         return a.localeCompare(b);
     });
 }
+function xzgRefreshPromptRuleSelectionNames(presets) {
+    if (!presets || typeof presets !== "object" || Array.isArray(presets)) return presets;
+    const groups = new Map();
+    for (const key of xzgOrderedPromptRulePresetNames(presets)) {
+        const entry = presets[key];
+        if (!entry || typeof entry !== "object" || entry._typeOnly) continue;
+        const category = String(entry.category || "自定义提示词规则");
+        const name = String(entry.name || key);
+        const groupKey = `${category}\u0000${name}`;
+        if (!groups.has(groupKey)) groups.set(groupKey, []);
+        groups.get(groupKey).push(key);
+    }
+    const usedByCategory = new Map();
+    for (const keys of groups.values()) {
+        const entry = presets[keys[0]];
+        const category = String(entry.category || "自定义提示词规则");
+        const name = String(entry.name || keys[0]);
+        if (!usedByCategory.has(category)) usedByCategory.set(category, new Set());
+        const used = usedByCategory.get(category);
+        for (let index = 0; index < keys.length; index++) {
+            let selectionName = keys.length === 1 ? name : `${name} (${index + 1})`;
+            let suffix = 2;
+            while (used.has(selectionName)) selectionName = `${name} (${index + 1}, ${suffix++})`;
+            used.add(selectionName);
+            presets[keys[index]].selectionName = selectionName;
+        }
+    }
+    return presets;
+}
 function normalizePromptRulePresets(data) {
     if (!data || typeof data !== "object" || Array.isArray(data)) return {};
     const normalized = {};
@@ -46,7 +75,7 @@ function normalizePromptRulePresets(data) {
         const category = String(rest.category || "自定义提示词规则");
         normalized[name] = { ...rest, category, name: String(rest.name || name), rule };
     }
-    return normalized;
+    return xzgRefreshPromptRuleSelectionNames(normalized);
 }
 
 async function openPromptRuleManager(node) {
@@ -63,7 +92,7 @@ async function openPromptRuleManager(node) {
         catch (_) { return {}; }
     };
     let presets = load();
-    let activeType = Object.values(presets)[0]?.category || "";
+    let activeType = Object.values(presets).map(entry => String(entry?.category || "").trim()).filter(Boolean)[0] || "";
     let activeName = null;
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;z-index:100000;background:#0009;padding:20px;box-sizing:border-box";
@@ -164,18 +193,22 @@ async function openPromptRuleManager(node) {
         return Object.values(presets).findIndex(p => p?.category === type);
     };
     const typeNames = () => [...new Set(Object.values(presets).map(p => String(p.category || "").trim()).filter(Boolean))].sort((a,b)=>typeOrder(a)-typeOrder(b)||a.localeCompare(b));
-    const itemsFor = type => Object.entries(presets).filter(([,p]) => p.category === type && !p._typeOnly).sort((a,b)=>(a[1].order ?? 0)-(b[1].order ?? 0));
+    const itemsFor = type => Object.entries(presets).filter(([,p]) => p.category === type && !p._typeOnly).sort((a,b)=>(a[1].order ?? 0)-(b[1].order ?? 0)||a[0].localeCompare(b[0]));
     const hasDragType = (event, type) => event.dataTransfer && Array.from(event.dataTransfer.types).includes(type);
     const clearInsertMarker = list => list.querySelector("[data-insert-marker]")?.remove();
     const showInsertMarker = (list, rows, index) => { clearInsertMarker(list); const marker = document.createElement("div"); marker.dataset.insertMarker = "1"; marker.className = "xzg-preset-insert-marker"; list.insertBefore(marker, rows[index] || null); };
     const presetKeyFor = (type, name, except = null) => {
-        if (!Object.entries(presets).some(([key,p]) => key !== except && p.category === type && !p._typeOnly && (p.name || key) === name)) return name;
-        return `${type}::${name}`;
+        const duplicateInCategory = Object.entries(presets).some(([key,p]) => key !== except && p.category === type && !p._typeOnly && (p.name || key) === name);
+        if (!duplicateInCategory && !Object.prototype.hasOwnProperty.call(presets, name)) return name;
+        const base = `${type}::${name}`;
+        let candidate = base, suffix = 2;
+        while (Object.prototype.hasOwnProperty.call(presets, candidate) && candidate !== except) candidate = `${base}::${suffix++}`;
+        return candidate;
     };
     const buttonStyle = "background:transparent;color:#43ffa0 !important;border:0;padding:4px 7px;cursor:pointer;white-space:nowrap";
     const close = () => { overlay.remove(); node._xzgPromptRulePresetDialog = null; };
     const updateNode = () => { for (const n of new Set([node, ...(app.graph?._nodes || [])])) n?._syncTargetModel?.(); };
-    const persist = async () => { localStorage.setItem(PROMPT_RULE_PRESETS_KEY, JSON.stringify(presets)); await cloudSave(PROMPT_RULE_PRESETS_KEY, presets).catch(() => {}); updateNode(); };
+    const persist = async () => { xzgRefreshPromptRuleSelectionNames(presets); localStorage.setItem(PROMPT_RULE_PRESETS_KEY, JSON.stringify(presets)); await cloudSave(PROMPT_RULE_PRESETS_KEY, presets).catch(() => {}); updateNode(); };
     const ask = (message, initial="") => new Promise(resolve => {
         const shade = document.createElement("div"); shade.style.cssText = "position:fixed;inset:0;z-index:100010;display:flex;align-items:center;justify-content:center;background:#0009;padding:20px;box-sizing:border-box";
         const box = document.createElement("div"); box.style.cssText = "box-sizing:border-box;width:min(420px,100%);padding:16px;background:#202124;color:#fff;border:1px solid #555;border-radius:7px;box-shadow:0 12px 36px #0009;font:13px Arial,sans-serif";
@@ -253,9 +286,12 @@ async function openPromptRuleManager(node) {
             row.addEventListener("click", event => { if (event.target.closest("button")) return; activeType = type; render(); });
             const dragHandle = document.createElement("span"); dragHandle.className = "xzg-preset-drag-handle"; dragHandle.textContent = "⠿"; dragHandle.title = zh ? "拖动调整顺序" : "Drag to reorder";
             const label = document.createElement("span"); label.textContent = type; label.title = type; label.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;cursor:pointer"; label.onclick = () => { activeType = type; render(); };
+            const subtypeCount = document.createElement("span"); subtypeCount.textContent = String(itemsFor(type).length); subtypeCount.title = zh ? "此分类下的细分规则数量" : "Number of subcategory rules"; subtypeCount.style.cssText = "box-sizing:border-box;min-width:22px;height:20px;flex:none;padding:0 6px;border-radius:10px;background:#3a3a3a;color:#bbb;text-align:center;font:11px/20px Arial,sans-serif";
+            row.append(dragHandle, label, subtypeCount);
             const rename = document.createElement("button"); rename.textContent = "✎"; rename.title = zh ? "重命名" : "Rename"; rename.style.cssText = `${buttonStyle};box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;font-size:16px;line-height:24px`; rename.style.setProperty("color", "#fff", "important"); rename.onclick = async () => { const next = await ask(zh ? "重命名提示词类型" : "Rename prompt type", type); const reserved = ["MiniMax-H3", "QWEN", "Qwen-Image-2.1 图像", "Qwen-Image-2.1 Image", "自定义提示词规则", "Custom Prompt Rules", "自定义 Skill", "Custom Skill"]; if (!next || (next !== type && (categories.includes(next) || reserved.includes(next)))) return; for (const p of Object.values(presets)) if (p.category === type) p.category = next; for (const n of new Set([node, ...(app.graph?._nodes || [])])) { const w=n?.widgets?.find(item=>item.name==="target_model"); if (w?.value===type) w.value=next; } activeType = next; await persist(); render(); };
             const del = document.createElement("button"); del.textContent = "×"; del.title = zh ? "删除" : "Delete"; del.style.cssText = `${buttonStyle};box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;font-size:26px;line-height:24px`; del.style.setProperty("color", "#c75c5c", "important"); del.onclick = async () => { if (!await askConfirm(zh ? `删除类型“${type}”及其所有细分和规则？` : `Delete type “${type}” and all its subtypes and rules?`)) return; for (const [key,p] of Object.entries(presets)) if (p.category === type) delete presets[key]; activeType = ""; await persist(); render(); };
-            row.append(dragHandle,label,rename,del); types.appendChild(row);
+            row.append(rename, del);
+            types.appendChild(row);
         }
         panel.querySelector("[data-subtitle]").textContent = zh ? "提示词细分" : "Prompt Subcategories";
         const entries = itemsFor(activeType);
@@ -271,14 +307,34 @@ async function openPromptRuleManager(node) {
             const hasRuleContent = typeof p.rule === "string" && p.rule.trim().length > 0;
             const ruleContentDot = hasRuleContent ? document.createElement("span") : null;
             if (ruleContentDot) { ruleContentDot.title = zh ? "已有规则内容" : "Has rule content"; ruleContentDot.setAttribute("aria-label", ruleContentDot.title); ruleContentDot.style.cssText = "width:6px;height:6px;flex:none;border-radius:50%;background:#fff;box-shadow:0 0 4px rgba(255,255,255,.65)"; }
-            const rename = document.createElement("button"); rename.textContent = zh ? "重命名" : "Rename"; rename.style.cssText = buttonStyle; rename.style.setProperty("color", "#fff", "important"); rename.onclick = async () => { const next = await ask(zh ? "重命名细分" : "Rename subtype", p.name || key); if (!next || next === (p.name || key) || itemsFor(activeType).some(([otherKey,other]) => otherKey !== key && (other.name || otherKey) === next)) return; const nextKey = presetKeyFor(activeType,next,key); presets[nextKey] = {...p,name:next}; delete presets[key]; for (const n of new Set([node, ...(app.graph?._nodes || [])])) { const t=n?.widgets?.find(item=>item.name==="target_model"), m=n?.widgets?.find(item=>item.name==="generation_mode"); if (t?.value===activeType && m?.value===(p.name || key)) m.value=next; } if (activeName === key) activeName = nextKey; await persist(); render(); };
+            const rename = document.createElement("button"); rename.textContent = zh ? "重命名" : "Rename"; rename.style.cssText = buttonStyle; rename.style.setProperty("color", "#fff", "important"); rename.onclick = async () => {
+                const next = await ask(zh ? "重命名细分" : "Rename subtype", p.name || key);
+                if (!next || next === (p.name || key)) return;
+                const affectedNodes = [...new Set([node, ...(app.graph?._nodes || [])])].filter(n => {
+                    const target = n?.widgets?.find(item => item.name === "target_model");
+                    const mode = n?.widgets?.find(item => item.name === "generation_mode");
+                    return target?.value === activeType && mode?.value === (p.selectionName || p.name || key);
+                });
+                const nextKey = presetKeyFor(activeType, next, key);
+                presets[nextKey] = { ...p, name: next };
+                delete presets[key];
+                if (activeName === key) activeName = nextKey;
+                await persist();
+                for (const n of affectedNodes) {
+                    const mode = n?.widgets?.find(item => item.name === "generation_mode");
+                    if (mode) mode.value = presets[nextKey]?.selectionName || next;
+                    n?._syncTargetModel?.();
+                    n?.setDirtyCanvas?.(true, true);
+                }
+                render();
+            };
             const edit = document.createElement("button"); edit.textContent = zh ? "编辑内容" : "Edit Content"; edit.style.cssText = buttonStyle; edit.style.setProperty("color", "#fff", "important"); edit.onclick = () => { activeName = key; panel.querySelector("[data-editor-label]").textContent = `${p.category} / ${p.name || key}`; content.value = p.rule || ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorConfirmDisabled(true); };
             const del = document.createElement("button"); del.textContent = zh ? "删除" : "Delete"; del.style.cssText = buttonStyle; del.style.setProperty("color", "#c75c5c", "important"); del.onclick = async () => { if (!await askConfirm(zh ? `删除细分“${p.name || key}”及其规则？` : `Delete subtype “${p.name || key}” and its rule?`)) return; delete presets[key]; await persist(); render(); };
             row.append(dragHandle); if (ruleContentDot) row.append(ruleContentDot); row.append(label,rename,edit,del); subtypes.appendChild(row);
         }
     };
     panel.querySelector("[data-add-type]").onclick = async () => { const type = await ask(zh ? "新建提示词类型" : "New prompt type"); const reserved = ["MiniMax-H3", "QWEN", "Qwen-Image-2.1 图像", "Qwen-Image-2.1 Image", "自定义提示词规则", "Custom Prompt Rules", "自定义 Skill", "Custom Skill"]; if (!type || typeNames().includes(type) || reserved.includes(type)) return; const nextOrder = typeNames().reduce((max, name) => Math.max(max, typeOrder(name)), 0) + 1000; presets[`__type__${Date.now()}`] = {category:type,name:"",rule:"",order:nextOrder,_typeOnly:true}; activeType = type; await persist(); render(); };
-    panel.querySelector("[data-add-sub]").onclick = async () => { if (!activeType) return; const name = await ask(zh ? "新增提示词细分" : "New prompt subtype"); if (!name || itemsFor(activeType).some(([,p]) => (p.name || "") === name)) return; const key = presetKeyFor(activeType,name); const nextOrder = itemsFor(activeType).reduce((max, [,item]) => Math.max(max, Number.isFinite(item.order) ? item.order : 0), 0) + 1000; presets[key] = {category:activeType,name,rule:"",order:nextOrder}; activeName = key; await persist(); render(); panel.querySelector("[data-editor-label]").textContent = `${activeType} / ${name}`; content.value = ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorConfirmDisabled(true); };
+    panel.querySelector("[data-add-sub]").onclick = async () => { if (!activeType) return; const name = await ask(zh ? "新增提示词细分" : "New prompt subtype"); if (!name) return; const key = presetKeyFor(activeType,name); const nextOrder = itemsFor(activeType).reduce((max, [,item]) => Math.max(max, Number.isFinite(item.order) ? item.order : 0), 0) + 1000; presets[key] = {category:activeType,name,rule:"",order:nextOrder}; activeName = key; await persist(); render(); panel.querySelector("[data-editor-label]").textContent = `${activeType} / ${name}`; content.value = ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorConfirmDisabled(true); };
     panel.querySelector("[data-import]").onclick = () => panel.querySelector("[data-file]").click();
     panel.querySelector("[data-file]").onchange = async e => { const file=e.target.files?.[0]; if (file && /\.(txt|md)$/i.test(file.name)) { content.value=await file.text(); if (!activeName) { const name=file.name.replace(/\.(txt|md)$/i,""); presets[name]={category:activeType || "自定义提示词规则",name,rule:content.value}; activeName=name; panel.querySelector("[data-editor-label]").textContent=`${activeType} / ${name}`; } } e.target.value=""; };
     panel.querySelector("[data-save]").onclick = async () => { if (!activeName || !presets[activeName]) return; presets[activeName].rule=content.value; presets[activeName].updatedAt=new Date().toISOString(); await persist(); editorView.style.display="none"; panel.querySelector("main").style.display="flex"; setEditorConfirmDisabled(false); render(); };
@@ -404,24 +460,25 @@ app.registerExtension({
                 if (targetWidget?.options) {
                     let presets = {};
                     if (supportsCustomPromptRules) {
-                        try { presets = JSON.parse(localStorage.getItem(PROMPT_RULE_PRESETS_KEY) || "{}"); } catch (_) {}
+                        try { presets = xzgRefreshPromptRuleSelectionNames(JSON.parse(localStorage.getItem(PROMPT_RULE_PRESETS_KEY) || "{}")); } catch (_) {}
                     }
                     const oldValue = targetWidget.value || "";
                     const isQwen = oldValue === QWEN_IMAGE_TARGET || oldValue === QWEN_IMAGE_TARGET_EN || oldValue === "QWEN";
+                    const presetNames = presets && typeof presets === "object" && !Array.isArray(presets)
+                        ? xzgOrderedPromptRulePresetNames(presets).filter(name => !presets[name]?._typeOnly) : [];
                     const presetCategories = [...new Set(Object.values(presets || {}).map(entry => String(entry?.category || "").trim()).filter(Boolean))];
-                    const isCustom = supportsCustomPromptRules && (["自定义 Skill", "Custom Skill", "自定义提示词规则", "Custom Prompt Rules"].includes(oldValue) || presetCategories.includes(oldValue));
+                    const isCustomCategory = presetCategories.includes(oldValue);
+                    const isCustom = supportsCustomPromptRules && (["自定义 Skill", "Custom Skill", "自定义提示词规则", "Custom Prompt Rules"].includes(oldValue) || isCustomCategory);
                     if (gmWidget) gmWidget.label = isCustom
                         ? (lang === "zh" ? "规则预设" : "Rule Preset")
                         : (lang === "zh" ? "提示词细分" : "Prompt Subtype");
                     const values = supportsCustomPromptRules ? [...new Set([labels.h3, labels.qwen, ...presetCategories])] : [labels.h3, labels.qwen];
                     targetWidget.options.values = values;
-                    const selectedType = presetCategories.includes(oldValue) ? oldValue : labels.custom;
+                    const selectedType = isCustomCategory ? oldValue : labels.custom;
                     targetWidget.value = isCustom ? selectedType : isQwen ? labels.qwen : labels.h3;
-                    const presetNames = presets && typeof presets === "object" && !Array.isArray(presets)
-                        ? xzgOrderedPromptRulePresetNames(presets).filter(name => !presets[name]?._typeOnly) : [];
                     if (gmWidget?.options) {
                         if (isCustom) {
-                            const subtypeNames = presetNames.filter(name => String(presets[name]?.category || "自定义提示词规则") === selectedType).map(name => String(presets[name]?.name || name));
+                            const subtypeNames = presetNames.filter(name => String(presets[name]?.category || "自定义提示词规则") === selectedType).map(name => String(presets[name]?.selectionName || presets[name]?.name || name));
                             gmWidget.options.values = subtypeNames.length ? subtypeNames : [lang === "zh" ? "（请先保存规则预设）" : "(Save a rule preset first)"];
                             const wanted = gmWidget.value;
                             gmWidget.value = subtypeNames.includes(wanted) ? wanted : (subtypeNames[0] || gmWidget.options.values[0]);
