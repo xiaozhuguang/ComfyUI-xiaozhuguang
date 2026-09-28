@@ -695,6 +695,9 @@ class XzgImageSaveWidget {
         this.gridMode = false;
         this._mousePos = null;
         this._btnFade = 0;
+        this._hoverHintShownInHover = false;
+        this._hoverHintUntil = 0;
+        this._hoverHintTimer = null;
         this._lastClickT = 0;
         this._lastClickPos = null;
         this._imageDrawY = 0;
@@ -732,6 +735,47 @@ class XzgImageSaveWidget {
         };
         newImg.src = imgData.url;
         imgData.img = newImg;
+    }
+
+    async getSelectedCompareItems() {
+        const images = this._value?.images || [];
+        // 与化神级保存节点一致：单图显示时只对比当前图，网格/批量显示时对比全部图。
+        const visibleImages = this.gridMode
+            ? images
+            : [images[this.currentIndex] || images[0]].filter(Boolean);
+        return Promise.all(visibleImages.map(async (image) => {
+            let filename = image.saved_filename || "";
+            let subfolder = image.saved_subfolder || "";
+            let type = image.saved_type || "output";
+            let url = image.url || "";
+            // 保存节点保留原始像素缓存；生成全分辨率 PNG 后通过 /view 加载，
+            // 不使用节点画布上的缩小预览图作为对比源。
+            if (image.real_token) {
+                try {
+                    const response = await api.fetchApi("/xzg_save_real", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ token: image.real_token, index: image.real_index, format: "png" }),
+                    });
+                    if (!response.ok) throw new Error(`原图读取失败（HTTP ${response.status}）`);
+                    const info = await response.json();
+                    filename = info.filename || filename;
+                    subfolder = info.subfolder || "";
+                    type = info.type || "temp";
+                } catch (error) {
+                    // 旧工作流/已过期 token 仍可用节点当前的预览图参加对比；
+                    // 有有效原图 token 时仍优先生成全分辨率 PNG。
+                    if (url) console.warn("[小珠光图像保存] 原图读取失败，改用节点预览图对比：", error);
+                    else throw error;
+                }
+            }
+            if (filename) {
+                url = api.apiURL(`/view?${new URLSearchParams({ filename, subfolder, type }).toString()}`);
+            }
+            if (!url) throw new Error("当前图片没有可用的预览或原图数据，请重新执行图片保存节点");
+            const name = image.saved_filename || filename || image.name || "image";
+            return { name: name.split(/[\\/]/).pop() || name, url };
+        }));
     }
 
     draw(ctx, node, width, y) {
@@ -905,51 +949,86 @@ class XzgImageSaveWidget {
             ctx.fillText(labelText, destX + targetW / 2, labelY + labelH / 2);
         }
 
-        // 三等分判定：左 1/3 上一页、中 1/3 网格、右 1/3 下一页
+        // 图片水平分为三等份，每个图标的命中区覆盖对应列中间高度的三分之一。
         const drawW = (img && img.naturalWidth) ? targetW : effW;
         const drawX = (img && img.naturalWidth) ? destX : IMAGE_MARGIN;
         const imgLoaded = img && img.naturalWidth;
         const third = drawW / 3;
-        const fifth2 = drawW / 5;
+        const iconY = y + nodeHeight / 2;
+        const nodeImageLeft = IMAGE_MARGIN;
+        const nodeImageWidth = width - IMAGE_MARGIN * 2;
+        const iconScale = Math.max(0.5, Math.min(1.75, width / 400, nodeHeight / 260)) * 0.7;
+        const iconCenters = [
+            IMAGE_MARGIN + 12 * iconScale,
+            width / 2,
+            width - IMAGE_MARGIN - 12 * iconScale,
+        ];
+        const hitH = nodeHeight / 3;
 
         if (imgLoaded && imgs.length > 1) {
             this.hitAreas["prev"] = {
-                bounds: [drawX, y, third, nodeHeight],
+                bounds: [nodeImageLeft, y + hitH, nodeImageWidth / 3, hitH],
                 onDown: () => this._step(-1, node)
             };
             this.hitAreas["toggle_grid"] = {
-                bounds: [drawX + third, y, third, nodeHeight],
+                bounds: [nodeImageLeft + nodeImageWidth / 3, y + hitH, nodeImageWidth / 3, hitH],
                 onDown: () => { this.gridMode = !this.gridMode; node.setDirtyCanvas(true, true); }
             };
             this.hitAreas["next"] = {
-                bounds: [drawX + third * 2, y, third, nodeHeight],
+                bounds: [nodeImageLeft + nodeImageWidth * 2 / 3, y + hitH, nodeImageWidth / 3, hitH],
                 onDown: () => this._step(1, node)
             };
         }
 
-        // 图标渐入
+        // 每次连续悬浮只显示一次操作提示，离开图片后重新允许提示。
         if (imgLoaded && imgs.length > 1) {
             const inY = this._mousePos && this._mousePos[1] >= y && this._mousePos[1] <= y + nodeHeight;
             const inX = this._mousePos && this._mousePos[0] >= drawX && this._mousePos[0] <= drawX + drawW;
             const near = inY && inX;
-            if (near) { this._btnFade = Math.min(1, this._btnFade + 0.1); }
-            else { this._btnFade = 0; }
-            if (this._btnFade > 0.01) {
-                const a = this._btnFade;
-                const iconY = y + nodeHeight - 12;
-                const cx0 = drawX + fifth2 / 2;
-                const cx1 = drawX + fifth2 * 2.5;
-                const cx2 = drawX + fifth2 * 4.5;
+            const now = Date.now();
+            if (!near && now >= this._hoverHintUntil) this._hoverHintShownInHover = false;
+            if (near && !this._hoverHintShownInHover) {
+                this._hoverHintShownInHover = true;
+                this._hoverHintStart = now;
+                this._hoverHintUntil = now + 1500;
+                if (!this._hoverHintTimer) {
+                    // 定时刷新让提示淡出动画即使鼠标静止时也能完成。
+                    this._hoverHintTimer = setInterval(() => {
+                        if (Date.now() >= this._hoverHintUntil) {
+                            clearInterval(this._hoverHintTimer);
+                            this._hoverHintTimer = null;
+                        }
+                        node.setDirtyCanvas(true, true);
+                    }, 50);
+                }
+            }
+            // 触发后完整播放淡入/停留/淡出，不因指针短暂移出图片而中断。
+            if (now < this._hoverHintUntil) {
+                const elapsed = now - this._hoverHintStart;
+                const remaining = this._hoverHintUntil - now;
+                const fadeIn = Math.min(1, elapsed / 500);
+                const fadeOut = Math.min(1, remaining / 500);
+                const alpha = Math.min(fadeIn, fadeOut);
+                const [cx0, cx1, cx2] = iconCenters;
+                ctx.save();
+                ctx.globalAlpha *= alpha;
                 ctx.textBaseline = "middle";
                 ctx.textAlign = "center";
 
-                ctx.font = "16px Arial";
-                ctx.fillStyle = `rgba(255,255,255,${a * 0.85})`;
+                ctx.font = `${32 * iconScale}px Arial`;
+                ctx.fillStyle = "rgba(255,255,255,0.1)";
                 ctx.fillText("◀", cx0, iconY);
 
-                ctx.font = "16px Arial";
-                ctx.fillStyle = `rgba(255,255,255,${a * 0.85})`;
+                // 中间仅显示圆环，表示切换单图/网格视图。
+                ctx.strokeStyle = "rgba(255,255,255,0.1)";
+                ctx.lineWidth = 3 * iconScale;
+                ctx.beginPath();
+                ctx.arc(cx1, iconY, 20 * iconScale, 0, Math.PI * 2);
+                ctx.stroke();
+
+                ctx.fillStyle = "rgba(255,255,255,0.1)";
                 ctx.fillText("▶", cx2, iconY);
+                ctx.restore();
             }
         }
     }
@@ -981,7 +1060,8 @@ class XzgImageSaveWidget {
             this._ensureImg(imgData);
             const img = imgData.img;
 
-            ctx.fillStyle = "rgba(128,128,128,0.4)";
+            // 非正方形缩略图两侧/上下的留白使用黑色底。
+            ctx.fillStyle = "#000000";
             ctx.fillRect(cx, cy, cell, cell);
 
             if (img && img.naturalWidth) {
@@ -1037,6 +1117,7 @@ class XzgImageSaveWidget {
             cx += cell + gap;
             if ((i + 1) % cols === 0) { cx = startX; cy += cell + gap; }
         }
+
     }
 
     _step(dir, node) {
@@ -1138,9 +1219,7 @@ class XiaozhuguangImageSaveNode {
             saved_type: d.saved_type || null,
         }));
         this.canvasWidget.value = { images: imagesToShow };
-        if (imagesToShow.length > 1) {
-            this.canvasWidget.gridMode = true;
-        }
+        this.canvasWidget.gridMode = imagesToShow.length > 1;
         this.setDirtyCanvas(true, true);
     }
 
@@ -1306,6 +1385,29 @@ class XiaozhuguangImageSaveNode {
             };
             node.getWidgetOnPos.__xzgPatched = true;
         }
+        node._xzgImageSaveKeyHandler = (event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+            const target = event.target;
+            if (target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName || "")) return;
+            const images = node.canvasWidget?.value?.images || [];
+            if (images.length < 2) return;
+
+            const selected = app.canvas?.selected_nodes;
+            const selectedNodes = selected instanceof Map ? [...selected.values()]
+                : selected instanceof Set ? [...selected]
+                    : Object.values(selected || {});
+            const activeNodes = selectedNodes.length
+                ? selectedNodes
+                : (node.graph?._nodes || []).filter(item => item.selected);
+            if (activeNodes.length !== 1 || activeNodes[0] !== node) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            node.canvasWidget.gridMode = false;
+            node.canvasWidget._step(event.key === "ArrowLeft" ? -1 : 1, node);
+        };
+        window.addEventListener("keydown", node._xzgImageSaveKeyHandler, true);
         const s = this.size;
         if (!Array.isArray(s) || !isFinite(s[0]) || !isFinite(s[1])) {
             let n = s;
@@ -1324,7 +1426,8 @@ class XiaozhuguangImageSaveNode {
         return `
             <p>小珠光图像保存节点，支持保存/预览模式切换，保存图像为 JPG(压缩) 或 PNG(无损)，并显示压缩预览。</p>
             <ul>
-                <li><strong>画面拖动</strong>：在画面区域按下并拖动可直接移动节点；单击画面区域触发上一张/网格切换/下一张（多图时），单击网格缩略图回到单图显示。</li>
+                <li><strong>图片切换</strong>：选中节点后按键盘 ←/→ 切换多图；也可点击画面左右区域翻页、点击中间区域切换网格/单图，单击网格缩略图查看对应图片。</li>
+                <li><strong>节点拖动</strong>：在画面区域按下并拖动可直接移动节点。</li>
                 <li><strong>保存/预览</strong>：切换模式。保存模式输出文件到output目录；预览模式仅显示不保存（可替代小珠光图像预览）。</li>
                 <li><strong>JPG/PNG</strong>：切换保存格式（仅保存模式有效）。JPG使用压缩参数(与预览一致)，PNG为全分辨率无损。</li>
                 <li><strong>减少卡顿</strong>：开启后预览压缩为最长边3840px的JPG（质量85）；关闭(极速流畅)：最长边6400px的JPG（质量80）。</li>
@@ -1477,6 +1580,16 @@ app.registerExtension({
                 setTimeout(() => this.__xzgSanitizeInputs?.call(this), 0);
             };
 
+            const origOnRemoved = nodeType.prototype.onRemoved;
+            nodeType.prototype.onRemoved = function () {
+                if (this._xzgImageSaveKeyHandler) {
+                    window.removeEventListener("keydown", this._xzgImageSaveKeyHandler, true);
+                    this._xzgImageSaveKeyHandler = null;
+                }
+                this._xzgClickCleanup?.();
+                return origOnRemoved?.apply(this, arguments);
+            };
+
             // 最后一道防线：每次绘制前清理一次 inputs，确保即使其他回调错过了也不留下多余端口
             const _origDrawBackground = nodeType.prototype.onDrawBackground;
             nodeType.prototype.onDrawBackground = function (ctx, canvas) {
@@ -1556,6 +1669,21 @@ app.registerExtension({
                 if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
                 if (!options || !Array.isArray(options)) return;
                 const w = this.canvasWidget;
+                if (w?.value?.images?.some((image) => !!image?.url)) {
+                    options.unshift({
+                        content: "<span style='color:#dcc85b;font-weight:600'>▧ 图片对比</span>",
+                        callback: () => {
+                            const compare = window.xzgSyncPreview;
+                            if (typeof compare?.previewNodes !== "function") {
+                                console.warn("[小珠光图像保存] 图片对比模块未加载");
+                                return;
+                            }
+                            const nodes = compare.getSelectedMediaNodes?.() || [];
+                            if (!nodes.includes(this)) nodes.push(this);
+                            compare.previewNodes(nodes);
+                        },
+                    });
+                }
                 if (w && !w.gridMode && w.value && w.value.images && w.value.images.length) {
                     const cur = w.value.images[w.currentIndex] || w.value.images[0];
                     // 含 alpha 通道时强制 PNG（JPG 无法保留透明度）

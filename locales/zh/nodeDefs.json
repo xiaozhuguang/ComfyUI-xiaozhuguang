@@ -512,7 +512,7 @@
     }
   },
   "XiaozhuguangBatchImageGetter": {
-    "display_name": "小珠光批次阻断器",
+    "display_name": "小珠光图像获取",
     "description": "填写输出数量后，将加载器的批次或列表图像按顺序拆到对应编号输出；图片数量不足时，对应输出为空并阻断下游数据。",
     "inputs": { "图像": { "name": "图像" }, "输出数量": { "name": "输出数量" } },
     "outputs": {

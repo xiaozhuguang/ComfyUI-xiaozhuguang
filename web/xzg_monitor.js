@@ -263,7 +263,7 @@ function xzgWhenUiReady(cb) {
 // ---------------------------------------------------------------------------
 
 const XZG_CSS = `
-#xzg-float{position:fixed;right:16px;bottom:60px;z-index:999;width:166px;
+#xzg-float{position:fixed;right:16px;bottom:60px;z-index:1;width:166px;
   color:#e8e8e8;font:12px/1.5 'Segoe UI',system-ui,-apple-system,sans-serif;
   user-select:none;overflow:hidden;cursor:move;}
 #xzg-float.xzg-bg{background:rgba(22,24,30,0.93);border:1px solid rgba(255,255,255,0.14);
@@ -457,6 +457,8 @@ function createFloatWindow() {
   const root = document.createElement("div");
   root.id = "xzg-float";
   root.classList.add("xzg-bg"); // 面板始终带底色
+  // 首次监控请求完成前不展示空容器；否则紧凑模式会短暂呈现为空的小椭圆。
+  root.style.visibility = "hidden";
   // 之前点电池按钮隐藏过浮窗：刷新后仍保持隐藏（否则会以空内容的小胶囊形态出现）
   if (hidden) root.style.display = "none";
   // 仅当位置由当前方案（右下角默认）保存过才应用记忆；开启“保持默认”时始终用默认位置
@@ -767,10 +769,13 @@ function createFloatWindow() {
       // 渲染出错时显示提示，避免内容区静默空白
       statsEl.innerHTML = `<div class="xzg-note">⚠ 渲染出错: ${esc(e && e.message ? e.message : e)}</div>`;
     }
+    // 在布局与内容都已就绪后一次性显示，避免刷新时闪过空胶囊。
+    root.style.visibility = "visible";
   }
 
   function renderOffline() {
     statsEl.innerHTML = `<div class="xzg-note">⚠ 连接后端失败，等待重试…</div>`;
+    root.style.visibility = "visible";
   }
 
   async function poll() {

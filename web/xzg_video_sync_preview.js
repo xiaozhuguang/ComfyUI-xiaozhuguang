@@ -3,6 +3,10 @@ import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
 
 // ── 设置项：启用/关闭「视频对比（同步预览）」（设置 → xiaozhuguang）──
 const SETTING_VIDEO_COMPARE = "xiaozhuguang.Toggle.EnableVideoCompare";
+const IMAGE_SAVE_NODE_TYPES = new Set(["XiaozhuguangImageSave", "XiaozhuguangImageSaveCustom"]);
+function isImageSaveNode(node) {
+    return !!node && (IMAGE_SAVE_NODE_TYPES.has(node.type) || node.canvasWidget?.name === "xzg_image_save");
+}
 function isVideoCompareEnabled() {
     try {
         // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
@@ -88,6 +92,69 @@ function getVideoFromNode(node) {
     return item;
 }
 
+/** 小珠光图片加载器当前选中的图片。 */
+function nodeHasImage(node) {
+    if (!node || node.mode === 4) return false;
+    if (isImageSaveNode(node)) {
+        return (node.canvasWidget?.value?.images || []).some((image) => !!image?.url);
+    }
+    // ComfyUI 可能在节点重载/旧工作流恢复时调整运行时 type 字符串；
+    // image_list 控件才是小珠光图片加载器稳定且唯一的识别标记。
+    const list = node.widgets?.find((w) => w.name === "image_list")?.value;
+    return typeof list === "string" && list.trim().length > 0;
+}
+
+function getImageFromNode(node) {
+    if (!nodeHasImage(node)) return null;
+    if (isImageSaveNode(node)) {
+        const widget = node.canvasWidget;
+        const images = widget?.value?.images || [];
+        const index = Number.isFinite(widget?.currentIndex) ? widget.currentIndex : 0;
+        const image = images[index] || images[0];
+        if (!image?.url) return null;
+        return {
+            kind: "image",
+            url: image.url,
+            name: image.saved_filename || _extractFilename(image.url),
+        };
+    }
+    const selectedItems = node._xzgImgLoaderUI?.getSelectedCompareItems?.();
+    if (Array.isArray(selectedItems) && selectedItems.length) {
+        return { ...selectedItems[0], kind: "image" };
+    }
+    const names = node.widgets.find((w) => w.name === "image_list").value
+        .split("\n").map((s) => s.trim()).filter(Boolean);
+    const rawIndex = Number(node.widgets.find((w) => w.name === "index")?.value || 0);
+    const index = Number.isFinite(rawIndex) ? Math.max(0, Math.min(names.length - 1, Math.floor(rawIndex))) : 0;
+    const annotated = names[index];
+    let filename = annotated, type = "input";
+    for (const suffix of [" [output]", " [input]", " [temp]"]) {
+        if (filename.endsWith(suffix)) {
+            type = suffix.slice(2, -1);
+            filename = filename.slice(0, -suffix.length);
+            break;
+        }
+    }
+    const url = `/view?${new URLSearchParams({ filename, type }).toString()}`;
+    return { kind: "image", url, name: filename.split(/[\\/]/).pop() || filename };
+}
+
+async function getImagesFromNode(node) {
+    if (!nodeHasImage(node)) return [];
+    if (isImageSaveNode(node)) {
+        const items = await node.canvasWidget?.getSelectedCompareItems?.();
+        return Array.isArray(items) ? items.map((item) => ({ ...item, kind: "image" })) : [];
+    }
+    const selectedItems = node._xzgImgLoaderUI?.getSelectedCompareItems?.();
+    if (Array.isArray(selectedItems) && selectedItems.length) {
+        return selectedItems.map((item) => ({ ...item, kind: "image" }));
+    }
+    const image = getImageFromNode(node);
+    return image ? [image] : [];
+}
+
+function nodeHasMedia(node) { return nodeHasVideo(node) || nodeHasImage(node); }
+
 /** 按画布位置排序：x 升序（左→右），x 相同按 y 升序（上→下） */
 function _sortByCanvasPos(nodes) {
     return [...nodes].sort((a, b) => {
@@ -121,6 +188,318 @@ function getSelectedVideoNodes() {
 /** 画布上所有有视频的节点（按画布位置排序） */
 function getAllVideoNodes() {
     return _sortByCanvasPos((app?.graph?._nodes || []).filter((n) => nodeHasVideo(n)));
+}
+
+function getSelectedMediaNodes() {
+    const sel = app?.canvas?.selected_nodes;
+    const out = [];
+    if (sel instanceof Map || sel instanceof Set) {
+        for (const n of sel.values()) if (nodeHasMedia(n)) out.push(n);
+    } else if (sel && typeof sel === "object") {
+        for (const id in sel) if (nodeHasMedia(sel[id])) out.push(sel[id]);
+    }
+    // 有些画布版本会短暂重建 selected_nodes 映射；节点自身的 selected
+    // 标记可作为兜底，避免快捷键恰好落在重建间隙时看起来没有响应。
+    if (out.length === 0) {
+        for (const n of app?.graph?._nodes || []) {
+            if (n?.selected && nodeHasMedia(n)) out.push(n);
+        }
+    }
+    return _sortByCanvasPos(out);
+}
+
+function getAllMediaNodes() {
+    return _sortByCanvasPos((app?.graph?._nodes || []).filter(nodeHasMedia));
+}
+
+function openImageCompare(items) {
+    if (!items.length) return false;
+    _ensureStyle();
+    closeSyncPreview();
+    const overlay = document.createElement("div");
+    overlay.className = "xzg-sp-overlay";
+    _overlay = overlay;
+    const win = document.createElement("div");
+    win.className = "xzg-sp-window";
+    const header = document.createElement("div");
+    header.className = "xzg-sp-header";
+    header.style.justifyContent = "flex-start";
+    header.style.gap = "8px";
+    const title = document.createElement("span");
+    title.className = "xzg-sp-title";
+    title.textContent = "图片对比";
+    const zoomBtn = document.createElement("button"); zoomBtn.className = "xzg-sp-btn"; zoomBtn.textContent = "🔍 100%";
+    zoomBtn.title = "滚轮缩放；点击恢复 100% 并将画面居中";
+    const zoomSyncBtn = document.createElement("button"); zoomSyncBtn.className = "xzg-sp-btn";
+    zoomSyncBtn.textContent = "🔗 缩放同步";
+    zoomSyncBtn.title = "切换图片缩放同步状态；双击图片可直接进入不同步缩放";
+    const close = document.createElement("button");
+    close.className = "xzg-sp-close"; close.textContent = "✕"; close.title = "关闭";
+    close.onclick = closeSyncPreview;
+    close.style.marginLeft = "auto";
+    header.append(title);
+    const grid = document.createElement("div");
+    grid.className = "xzg-sp-grid";
+    const cells = items.map((item) => {
+        const cell = document.createElement("div"); cell.className = "xzg-sp-cell";
+        const label = document.createElement("div"); label.className = "xzg-sp-label"; label.textContent = item.name;
+        const holder = document.createElement("div"); holder.className = "xzg-sp-player";
+        const img = document.createElement("img");
+        img.src = item.url; img.alt = item.name; img.draggable = false;
+        img.style.cssText = "width:100%;height:100%;object-fit:contain;display:block";
+        holder.appendChild(img); cell.append(label, holder); grid.appendChild(cell);
+        return { cell, holder };
+    });
+    if (cells.length === 2) {
+        // 双图默认左右并排，避免竖屏图片在默认自动布局中上下堆叠。
+        grid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+        grid.style.gridTemplateRows = "minmax(0, 1fr)";
+    } else if (cells.length === 4) {
+        // 四图对比固定为两列两行，便于按顺序逐行查看。
+        grid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+        grid.style.gridTemplateRows = "repeat(2, minmax(0, 1fr))";
+    } else if (cells.length === 3) {
+        // 三图对比在同一行从左到右排列。
+        grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+        grid.style.gridTemplateRows = "minmax(0, 1fr)";
+    } else if (cells.length === 5 || cells.length === 6) {
+        // 五/六图都按三列两行排列；五图时右下角自然留空。
+        grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+        grid.style.gridTemplateRows = "repeat(2, minmax(0, 1fr))";
+    }
+    const wipeBtn = document.createElement("button"); wipeBtn.className = "xzg-sp-btn"; wipeBtn.textContent = "🔀 划像对比";
+    const swapBtn = document.createElement("button"); swapBtn.className = "xzg-sp-btn"; swapBtn.textContent = "⇄ 交换左右";
+    const ultrawideBtn = document.createElement("button"); ultrawideBtn.className = "xzg-sp-btn"; ultrawideBtn.textContent = "🖥 带鱼屏";
+    ultrawideBtn.title = "双路竖屏图片靠近窗口中间显示";
+    ultrawideBtn.style.display = cells.length === 2 ? "" : "none";
+    header.append(swapBtn, wipeBtn, zoomSyncBtn, zoomBtn, ultrawideBtn, close);
+    let ultrawideMode = false;
+    const applyImageCompareLayout = () => {
+        if (cells.length !== 2) return;
+        const ratios = cells.map(({ holder }) => {
+            const img = holder.querySelector("img");
+            return img?.naturalWidth > 0 && img?.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : null;
+        });
+        const portraitPair = ratios.every((ratio) => ratio != null && ratio < 1);
+        if (ultrawideMode && portraitPair) {
+            // 为两张图各预留一个 2:3 竖屏视窗；宽度按屏幕可用高/宽计算并居中。
+            grid.style.gridTemplateColumns = "repeat(2, minmax(0, min(40vw, calc(66.6667vh - 60px))))";
+            grid.style.gridTemplateRows = "auto";
+            grid.style.justifyContent = "center";
+            grid.style.alignContent = "center";
+            for (const { holder } of cells) {
+                holder.style.aspectRatio = "2 / 3";
+                holder.style.flex = "none";
+                holder.style.width = "100%";
+                holder.style.height = "auto";
+            }
+        } else {
+            grid.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
+            grid.style.gridTemplateRows = "minmax(0, 1fr)";
+            grid.style.justifyContent = "";
+            grid.style.alignContent = "";
+            for (const { holder } of cells) {
+                holder.style.aspectRatio = "";
+                holder.style.flex = "";
+                holder.style.width = "";
+                holder.style.height = "";
+            }
+        }
+        ultrawideBtn.disabled = !portraitPair;
+        ultrawideBtn.title = portraitPair
+            ? "双路竖屏图片靠近窗口中间显示"
+            : "带鱼屏模式仅适用于两张竖屏图片";
+        ultrawideBtn.classList.toggle("active", ultrawideMode && portraitPair);
+    };
+    ultrawideBtn.onclick = () => {
+        if (ultrawideBtn.disabled) return;
+        ultrawideMode = !ultrawideMode;
+        applyImageCompareLayout();
+    };
+    for (const { holder } of cells) {
+        const img = holder.querySelector("img");
+        img.addEventListener("load", applyImageCompareLayout, { once: true });
+    }
+    applyImageCompareLayout();
+    const wipe = document.createElement("div"); wipe.className = "xzg-sp-wipe";
+    const divider = document.createElement("div"); divider.className = "xzg-sp-wipe-divider";
+    divider.title = "拖动分界线进行划像对比"; wipe.appendChild(divider);
+    let wipeOn = false, swapped = false, wipeX = 50;
+    const updateWipe = () => { wipe.style.setProperty("--wipe", `${wipeX}%`); divider.style.left = `${wipeX}%`; };
+    const setWipe = (on) => {
+        if (cells.length !== 2) return;
+        wipeOn = on; wipe.classList.toggle("active", on); grid.style.display = on ? "none" : "grid";
+        if (on) {
+            wipe.insertBefore(cells[swapped ? 1 : 0].holder, divider);
+            wipe.insertBefore(cells[swapped ? 0 : 1].holder, divider);
+            cells[swapped ? 0 : 1].holder.classList.add("wipe-top");
+            cells[swapped ? 1 : 0].holder.classList.remove("wipe-top");
+            updateWipe();
+        } else for (const c of cells) { c.holder.classList.remove("wipe-top"); c.cell.appendChild(c.holder); }
+        wipeBtn.textContent = on ? "⬒ 并排对比" : "🔀 划像对比";
+    };
+    wipeBtn.style.display = cells.length === 2 ? "" : "none";
+    swapBtn.style.display = cells.length === 2 ? "" : "none";
+    wipeBtn.onclick = () => setWipe(!wipeOn);
+    swapBtn.onclick = () => {
+        swapped = !swapped;
+        if (wipeOn) setWipe(true);
+        else grid.insertBefore(cells[swapped ? 1 : 0].cell, cells[swapped ? 0 : 1].cell);
+    };
+    let zoomSync = true;
+    let activeIndex = 0;
+    const viewStates = cells.map(() => ({ zoom: 1, panX: 0, panY: 0 }));
+    const updateZoomModeUI = () => {
+        const syncColor = zoomSync ? "#42d392" : "#ffb74d";
+        const syncBackground = zoomSync ? "rgba(35,145,96,.22)" : "rgba(190,112,24,.24)";
+        zoomSyncBtn.textContent = zoomSync ? "🔗 同步中" : "⛓ 不同步";
+        zoomSyncBtn.style.color = syncColor;
+        zoomSyncBtn.style.borderColor = syncColor;
+        zoomSyncBtn.style.background = syncBackground;
+        zoomSyncBtn.style.fontWeight = "700";
+        zoomSyncBtn.title = zoomSync
+            ? "同步模式：缩放和移动会作用于所有图片；双击图片可切换为不同步"
+            : "不同步模式：缩放和移动只作用于当前图片；双击图片可恢复同步";
+        for (let i = 0; i < cells.length; i++) {
+            const cell = cells[i].cell;
+            if (zoomSync) {
+                cell.style.borderColor = "#3f3f3f";
+                cell.style.borderWidth = "1px";
+                cell.style.boxShadow = "none";
+            } else if (i === activeIndex) {
+                cell.style.borderColor = "#ff3b30";
+                cell.style.borderWidth = "2px";
+                cell.style.boxShadow = "inset 0 0 0 1px rgba(255,59,48,.84)";
+            } else {
+                cell.style.borderColor = "#3f3f3f";
+                cell.style.borderWidth = "1px";
+                cell.style.boxShadow = "none";
+            }
+        }
+    };
+    const applyImageTransform = (onlyIndex = -1) => {
+        for (let i = 0; i < cells.length; i++) {
+            if (onlyIndex >= 0 && i !== onlyIndex) continue;
+            const { holder } = cells[i];
+            const state = viewStates[i];
+            holder.style.overflow = "hidden";
+            const image = holder.querySelector("img");
+            if (!image) continue;
+            image.style.transformOrigin = "center center";
+            image.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+            image.style.willChange = state.zoom === 1 && state.panX === 0 && state.panY === 0 ? "" : "transform";
+        }
+        zoomBtn.textContent = `🔍 ${Math.round(viewStates[activeIndex]?.zoom * 100 || 100)}%`;
+    };
+    const setZoomSync = (sync) => {
+        if (zoomSync === sync) return;
+        // 切换状态本身不改任何图片的缩放或位置；同步只作用于之后的滚轮/拖动增量。
+        zoomSync = sync;
+        updateZoomModeUI();
+    };
+    zoomSyncBtn.onclick = () => {
+        setZoomSync(!zoomSync);
+    };
+    zoomBtn.onclick = () => {
+        const targets = zoomSync ? viewStates : [viewStates[activeIndex]];
+        for (const state of targets) Object.assign(state, { zoom: 1, panX: 0, panY: 0 });
+        applyImageTransform(zoomSync ? -1 : activeIndex);
+    };
+    const zoomAt = (index, factor, clientX, clientY, target) => {
+        const rect = target.getBoundingClientRect();
+        const state = viewStates[index];
+        const oldZoom = state.zoom;
+        const nextZoom = Math.max(0.1, Math.min(10, oldZoom * factor));
+        if (nextZoom === oldZoom) return;
+        const x = clientX - rect.left - rect.width / 2;
+        const y = clientY - rect.top - rect.height / 2;
+        state.panX = x - (x - state.panX) * (nextZoom / oldZoom);
+        state.panY = y - (y - state.panY) * (nextZoom / oldZoom);
+        state.zoom = nextZoom;
+        if (zoomSync) {
+            const ratio = nextZoom / oldZoom;
+            // 把鼠标锚点按窗格内的相对位置映射到其它图片，
+            // 让每张图都围绕对应的同一视觉锚点缩放。
+            const anchorRX = rect.width > 0 ? (clientX - rect.left) / rect.width : 0.5;
+            const anchorRY = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
+            for (let i = 0; i < viewStates.length; i++) {
+                if (i === index) continue;
+                const peer = viewStates[i];
+                const peerRect = cells[i].holder.getBoundingClientRect();
+                const peerX = (anchorRX - 0.5) * peerRect.width;
+                const peerY = (anchorRY - 0.5) * peerRect.height;
+                const peerOldZoom = peer.zoom;
+                const peerNewZoom = Math.max(0.1, Math.min(10, peerOldZoom * ratio));
+                const peerRatio = peerOldZoom > 0 ? peerNewZoom / peerOldZoom : 1;
+                peer.panX = peerX - (peerX - peer.panX) * peerRatio;
+                peer.panY = peerY - (peerY - peer.panY) * peerRatio;
+                peer.zoom = peerNewZoom;
+            }
+            applyImageTransform();
+        } else {
+            activeIndex = index;
+            applyImageTransform(index);
+        }
+    };
+    for (let index = 0; index < cells.length; index++) {
+        const { holder } = cells[index];
+        holder.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            activeIndex = index;
+            updateZoomModeUI();
+            zoomAt(index, e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY, holder);
+        }, { passive: false });
+        holder.addEventListener("dblclick", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            activeIndex = index;
+            setZoomSync(!zoomSync);
+            applyImageTransform(zoomSync ? -1 : index);
+        });
+        holder.addEventListener("mousedown", (e) => {
+            if (e.button !== 0 && e.button !== 1) return;
+            e.preventDefault();
+            activeIndex = index;
+            updateZoomModeUI();
+            const baseStates = viewStates.map((state) => ({ panX: state.panX, panY: state.panY }));
+            const startX = e.clientX, startY = e.clientY;
+            const move = (ev) => {
+                const deltaX = ev.clientX - startX;
+                const deltaY = ev.clientY - startY;
+                if (zoomSync) {
+                    // 保留切回同步时各图片已有的位置差，后续拖动对每张图应用相同位移。
+                    for (let i = 0; i < viewStates.length; i++) {
+                        viewStates[i].panX = baseStates[i].panX + deltaX;
+                        viewStates[i].panY = baseStates[i].panY + deltaY;
+                    }
+                    applyImageTransform();
+                } else {
+                    viewStates[index].panX = baseStates[index].panX + deltaX;
+                    viewStates[index].panY = baseStates[index].panY + deltaY;
+                    applyImageTransform(index);
+                }
+            };
+            const up = () => {
+                window.removeEventListener("mousemove", move, true);
+                window.removeEventListener("mouseup", up, true);
+            };
+            window.addEventListener("mousemove", move, true);
+            window.addEventListener("mouseup", up, true);
+        });
+        holder.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+    }
+    updateZoomModeUI();
+    let dragging = false;
+    const moveWipe = (e) => { if (!dragging) return; const r = wipe.getBoundingClientRect(); wipeX = Math.max(0, Math.min(100, (e.clientX-r.left)/r.width*100)); updateWipe(); };
+    divider.onmousedown = (e) => { dragging = true; e.preventDefault(); };
+    overlay._xzgWipeMove = moveWipe;
+    overlay._xzgWipeUp = () => { dragging = false; };
+    window.addEventListener("mousemove", moveWipe, true);
+    window.addEventListener("mouseup", overlay._xzgWipeUp, true);
+    win.append(header, grid, wipe); overlay.appendChild(win); document.body.appendChild(overlay);
+    overlay._xzgOnKey = (e) => { if (e.key === "Escape") closeSyncPreview(); };
+    document.addEventListener("keydown", overlay._xzgOnKey, true);
+    return true;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -299,13 +678,17 @@ function openSyncPreview(items) {
     closeBtn.textContent = "✕";
     closeBtn.title = "关闭";
     closeBtn.addEventListener("click", closeSyncPreview);
+    const videoCompareTitle = document.createElement("span");
+    videoCompareTitle.className = "xzg-sp-title";
+    videoCompareTitle.textContent = "视频对比";
 
-    // 网格容器：初始按"一行排开"占位，视频加载完成后按实际宽高比重新计算行列
+    // 网格容器：视频加载完成后按实际宽高比重排；五/六路从一开始就固定三列两行。
     const grid = document.createElement("div");
     grid.className = "xzg-sp-grid";
     const _n = items.length;
-    grid.style.gridTemplateColumns = "repeat(" + _n + ", 1fr)";
-    grid.style.gridTemplateRows = "repeat(1, 1fr)";
+    const fixedThreeByTwo = _n === 5 || _n === 6;
+    grid.style.gridTemplateColumns = fixedThreeByTwo ? "repeat(3, minmax(0, 1fr))" : "repeat(" + _n + ", 1fr)";
+    grid.style.gridTemplateRows = fixedThreeByTwo ? "repeat(2, minmax(0, 1fr))" : "repeat(1, 1fr)";
     // 同时播放多路视频时，解码成本远高于画面实际显示尺寸。对比窗口优先流畅度：
     // 两路保留 1440p 细节，三至四路用 1080p，更多路用 720p；逐帧查看仍可精确对齐。
     const previewMaxSide = _n <= 2 ? 1440 : (_n <= 4 ? 1080 : 720);
@@ -374,7 +757,8 @@ function openSyncPreview(items) {
     const nextFrameBtn = mkBtn("下一帧 ▶", "下一帧（快捷键 →）");
     const restartBtn = mkBtn("⏮ 回到开头", "全部回到开头重新播放");
     const muteBtn = mkBtn("🔇", "静音开关（默认静音）");
-    const zoomBtn = mkBtn("🔍 100%", "滚轮缩放视频，点击重置（所有视频同步缩放）");
+    const zoomSyncBtn = mkBtn("🔗 同步中", "切换视频缩放和移动同步状态；也可双击视频切换");
+    const zoomBtn = mkBtn("🔍 100%", "滚轮缩放视频，点击重置");
     const wipeBtn = mkBtn("🔀 划像对比", "两个视频重叠，拖动金色分界线左右对比（仅 2 个视频可用）");
     if (_n !== 2) wipeBtn.style.display = "none"; // 仅两个视频时提供划像对比
     const swapBtn = mkBtn("⇄ 交换左右", "交换两个视频的左右顺序（仅 2 个视频）");
@@ -390,6 +774,7 @@ function openSyncPreview(items) {
         // 同步交换累计平移：_holderT 与 players 索引一一对应，
         // 基线重录（recordHolderBase）依赖它反推布局矩形，错位会导致缩放锚点错乱
         [_holderT[0], _holderT[1]] = [_holderT[1], _holderT[0]];
+        [_zoomScales[0], _zoomScales[1]] = [_zoomScales[1], _zoomScales[0]];
         // 统一让 players[0] 的格子排在前（左侧）
         grid.insertBefore(players[0].cell, players[1].cell);
         if (wipeMode) setWipeMode(true); // 划像模式：重新布置底层/上层
@@ -646,7 +1031,7 @@ function openSyncPreview(items) {
         wipeDivider.style.transform = "none";
         wipeDivider.style.transformOrigin = "0 0";
         _holderT = players.map(() => ({ x: 0, y: 0 }));
-        _zoomScale = 1;
+        _zoomScales = players.map(() => 1);
         applyZoomText();
         // 布局/画布尺寸变化后重录基线并校准
         requestAnimationFrame(() => {
@@ -670,7 +1055,7 @@ function openSyncPreview(items) {
         const W = wipe.clientWidth;
         if (!W) return;
         const t0 = _holderT[0] || { x: 0, y: 0 };
-        const leftPct = _wipeX * _zoomScale + (t0.x / W) * 100;
+        const leftPct = _wipeX * (_zoomScales[0] || 1) + (t0.x / W) * 100;
         wipeDivider.style.left = Math.max(-4, Math.min(104, leftPct)) + "%";
     };
     const updateWipe = (e) => {
@@ -679,7 +1064,7 @@ function openSyncPreview(items) {
         // 鼠标指向的内容在本地坐标中的比例（消除缩放与平移的影响）：
         // clip-path 的 inset 百分比相对未缩放内容坐标，直接取容器比例会在放大/平移后错位
         const t0 = _holderT[0] || { x: 0, y: 0 };
-        const s = _zoomScale || 1;
+        const s = _zoomScales[0] || 1;
         let x = ((e.clientX - r.left - t0.x) / (r.width * s)) * 100;
         x = Math.max(0, Math.min(100, x));
         _wipeX = x;
@@ -728,11 +1113,13 @@ function openSyncPreview(items) {
     overlay._xzgWipeMove = onWipeMove;
     overlay._xzgWipeUp = onWipeUp;
 
+    ctrl.appendChild(videoCompareTitle);
     ctrl.appendChild(playPauseBtn);
     ctrl.appendChild(prevFrameBtn);
     ctrl.appendChild(nextFrameBtn);
     ctrl.appendChild(restartBtn);
     ctrl.appendChild(muteBtn);
+    ctrl.appendChild(zoomSyncBtn);
     ctrl.appendChild(zoomBtn);
     ctrl.appendChild(wipeBtn);
     ctrl.appendChild(swapBtn);
@@ -754,13 +1141,26 @@ function openSyncPreview(items) {
     // 滚轮同步缩放：以鼠标处为锚点的 zoom-to-cursor。
     // 每个窗格用独立 translate + scale，所有窗格同步同倍率；
     // 锚点统一取"鼠标所在窗格内的相对位置"，放大时鼠标指向的内容点保持不动，便于多窗格对比
-    let _zoomScale = 1;
-    const ZOOM_MIN = 0.3, ZOOM_MAX = 6;
+    let _zoomScales = players.map(() => 1);
+    let zoomSync = true;
+    let activeIndex = 0;
+    const ZOOM_MIN = 0.3, ZOOM_MAX = 10;
     let _zoomAnchorRX = 50, _zoomAnchorRY = 50;
     let _holderBase = []; // 各窗格 scale=1 时的屏幕矩形
     let _holderT = [];    // 各窗格累计 translate
     const applyZoomText = () => {
-        zoomBtn.textContent = "🔍 " + Math.round(_zoomScale * 100) + "%";
+        zoomBtn.textContent = "🔍 " + Math.round((_zoomScales[activeIndex] || 1) * 100) + "%";
+        zoomSyncBtn.textContent = zoomSync ? "🔗 同步中" : "⛓ 不同步";
+        zoomSyncBtn.style.color = zoomSync ? "#42d392" : "#ffb74d";
+        zoomSyncBtn.style.borderColor = zoomSync ? "#42d392" : "#ffb74d";
+        zoomSyncBtn.style.background = zoomSync ? "rgba(35,145,96,.22)" : "rgba(190,112,24,.24)";
+        zoomSyncBtn.style.fontWeight = "700";
+        players.forEach((p, i) => {
+            const active = !zoomSync && i === activeIndex;
+            p.cell.style.borderColor = active ? "#ff3b30" : "#3f3f3f";
+            p.cell.style.borderWidth = active ? "2px" : "1px";
+            p.cell.style.boxShadow = active ? "inset 0 0 0 1px rgba(255,59,48,.84)" : "none";
+        });
     };
     const recordHolderBase = () => {
         // 记录各窗格的“布局矩形”（消除 holder 自身 transform 的影响）：
@@ -769,7 +1169,7 @@ function openSyncPreview(items) {
         _holderBase = players.map((p, i) => {
             const r = p.holder.getBoundingClientRect();
             const t = _holderT[i] || { x: 0, y: 0 };
-            const s = _zoomScale || 1;
+            const s = _zoomScales[i] || 1;
             return {
                 left: r.left - t.x,
                 top: r.top - t.y,
@@ -779,47 +1179,59 @@ function openSyncPreview(items) {
         });
         // 不重置 _holderT：保留现有缩放/平移状态，锚点依赖 基线+平移+倍率 的自洽关系
     };
-    const applyZoomAll = (factor) => {
+    const applyZoom = (factor, sourceIndex) => {
         // 基线失效（未记录/尺寸为 0）时即时重录，确保每个窗格都能被同步缩放
         if (_holderBase.length !== players.length ||
             _holderBase.some(b => !b || !(b.width > 0) || !(b.height > 0))) {
             recordHolderBase();
         }
-        const sOld = _zoomScale;
-        const sNew = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, sOld * factor));
-        if (sNew === sOld) return;
         const rx = _zoomAnchorRX, ry = _zoomAnchorRY;
         for (let i = 0; i < players.length; i++) {
+            if (!zoomSync && i !== sourceIndex) continue;
+            const sOld = _zoomScales[i] || 1;
+            const sNew = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, sOld * factor));
+            if (sNew === sOld) continue;
             const holder = players[i].holder;
             const b = _holderBase[i];
             const t = _holderT[i] || { x: 0, y: 0 };
-            // 锚点内容坐标：窗格内 rx%/ry% 处的内容点（相对窗格未缩放左上角）。
-            // 鼠标所在窗格中该点即鼠标指向的内容点，因此缩放即以鼠标位置为锚点。
-            const cX = b.width * rx / 100;
-            const cY = b.height * ry / 100;
+            // rx/ry 是鼠标在来源窗格中的视窗相对位置；各窗格映射到相同的相对锚点。
+            // 从每个窗格自己的平移和缩放状态反算锚点内容坐标，重新同步时也不会重置对侧画面。
+            const cX = (b.width * rx / 100 - t.x) / sOld;
+            const cY = (b.height * ry / 100 - t.y) / sOld;
             // 缩放后保持该内容点位于其缩放前的屏幕位置不动（b.left + t.x + cX*sOld）
             const nX = t.x + cX * (sOld - sNew);
             const nY = t.y + cY * (sOld - sNew);
             _holderT[i] = { x: nX, y: nY };
+            _zoomScales[i] = sNew;
             holder.style.transformOrigin = "0 0";
             holder.style.transform = "translate(" + nX + "px," + nY + "px) scale(" + sNew + ")";
         }
-        _zoomScale = sNew;
         applyZoomText();
         if (wipeMode) updateDividerPos(); // 缩放后分界线跟随 clip 边界
     };
-    const resetZoomAll = () => {
-        _zoomScale = 1;
+    const resetZoom = () => {
         _zoomAnchorRX = 50; _zoomAnchorRY = 50;
-        for (const p of players) {
+        for (let i = 0; i < players.length; i++) {
+            if (!zoomSync && i !== activeIndex) continue;
+            const p = players[i];
             p.holder.style.transform = "none";
             p.holder.style.transformOrigin = "0 0";
+            _holderT[i] = { x: 0, y: 0 };
+            _zoomScales[i] = 1;
         }
-        _holderT = players.map(() => ({ x: 0, y: 0 }));
         applyZoomText();
         if (wipeMode) updateDividerPos();
     };
-    zoomBtn.addEventListener("click", resetZoomAll);
+    zoomSyncBtn.addEventListener("click", () => { zoomSync = !zoomSync; applyZoomText(); });
+    zoomBtn.addEventListener("click", resetZoom);
+    win.addEventListener("dblclick", (e) => {
+        const index = players.findIndex((p) => p.holder.contains(e.target));
+        if (index < 0) return;
+        e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+        activeIndex = index;
+        zoomSync = !zoomSync;
+        applyZoomText();
+    }, true);
     win.addEventListener("wheel", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -833,16 +1245,17 @@ function openSyncPreview(items) {
             if (b && b.width > 0 && b.height > 0 &&
                 e.clientX >= b.left && e.clientX <= b.left + b.width &&
                 e.clientY >= b.top && e.clientY <= b.top + b.height) {
-                const t = _holderT[i] || { x: 0, y: 0 };
-                rx = ((e.clientX - b.left - t.x) / (b.width * _zoomScale)) * 100;
-                ry = ((e.clientY - b.top - t.y) / (b.height * _zoomScale)) * 100;
+                activeIndex = i;
+                // 用鼠标相对窗格的位置做锚点；不同步后两边状态不同，也映射到各自对应位置。
+                rx = ((e.clientX - b.left) / b.width) * 100;
+                ry = ((e.clientY - b.top) / b.height) * 100;
                 rx = Math.max(0, Math.min(100, rx));
                 ry = Math.max(0, Math.min(100, ry));
                 break;
             }
         }
         _zoomAnchorRX = rx; _zoomAnchorRY = ry;
-        applyZoomAll(e.deltaY < 0 ? 1.1 : (e.deltaY > 0 ? 1 / 1.1 : 1));
+        applyZoom(e.deltaY < 0 ? 1.1 : (e.deltaY > 0 ? 1 / 1.1 : 1), activeIndex);
     }, { capture: true, passive: false });
 
     // 鼠标中键 / Ctrl+左键拖动平移：所有窗格同步移动（配合滚轮缩放对比细节）
@@ -850,16 +1263,22 @@ function openSyncPreview(items) {
     let _suppressClick = false; // 平移拖动结束后抑制一次 click，避免误触发播放/暂停
     let _panStartX = 0, _panStartY = 0;
     let _panStartT = [];
+    let _panTargetIndexes = [];
     win.addEventListener("mousedown", (e) => {
         // 中键，或 Ctrl+左键：进入平移模式
         const wantPan = (e.button === 1) || (e.button === 0 && e.ctrlKey);
         if (!wantPan) return;
         e.preventDefault();
         e.stopPropagation();
+        const targetIndex = players.findIndex((p) => p.holder.contains(e.target));
+        if (targetIndex < 0) return;
         _suppressClick = true;
         _panning = true;
         _panStartX = e.clientX; _panStartY = e.clientY;
         _panStartT = _holderT.map(t => ({ x: t.x, y: t.y }));
+        activeIndex = targetIndex;
+        _panTargetIndexes = zoomSync ? players.map((_, i) => i) : [targetIndex];
+        applyZoomText();
         win.style.cursor = "grabbing";
     }, true);
     // 平移结束后紧接着的 click 一律拦截（阻止播放器 _onSurfaceClick 触发播放/暂停）
@@ -874,13 +1293,13 @@ function openSyncPreview(items) {
         e.preventDefault();
         const dx = e.clientX - _panStartX;
         const dy = e.clientY - _panStartY;
-        for (let i = 0; i < players.length; i++) {
+        for (const i of _panTargetIndexes) {
             const t = _panStartT[i] || { x: 0, y: 0 };
             const nx = t.x + dx;
             const ny = t.y + dy;
             _holderT[i] = { x: nx, y: ny };
             players[i].holder.style.transformOrigin = "0 0";
-            players[i].holder.style.transform = "translate(" + nx + "px," + ny + "px) scale(" + _zoomScale + ")";
+            players[i].holder.style.transform = "translate(" + nx + "px," + ny + "px) scale(" + (_zoomScales[i] || 1) + ")";
         }
         if (wipeMode) updateDividerPos(); // 平移后分界线跟随 clip 边界
     };
@@ -894,6 +1313,7 @@ function openSyncPreview(items) {
     overlay._xzgPanMove = onPanMove;
     overlay._xzgPanUp = onPanUp;
     recordHolderBase(); // 初始布局下记录各窗格基线
+    applyZoomText();
     _syncLoopOn = true;
     _syncMuted = true;
 
@@ -905,12 +1325,17 @@ function openSyncPreview(items) {
         const ratios = players.map(p => p.player._videoRatio || 16 / 9);
         let cols, rows;
         const portraitPair = _n === 2 && ratios.every(r => r < 1);
-        if (ultrawideMode && portraitPair) {
-            // 带鱼屏模式：竖屏画面以高度为主计算合适的窄列，整个双列网格居中。
-            // 26vw 防止普通显示器过宽，45vh 则让 9:16 画面几乎填满视频区域高度。
+        if (fixedThreeByTwo) {
+            // 五/六路不随视频宽高比改变行列，保持上三下三；五路右下角留空。
+            cols = 3;
+            rows = 2;
+            grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+            grid.style.justifyContent = "";
+        } else if (ultrawideMode && portraitPair) {
+            // 带鱼屏模式：为两路视频各预留 2:3 竖屏视窗，并把双列整体居中。
             cols = 2;
             rows = 1;
-            grid.style.gridTemplateColumns = "repeat(2, minmax(0, min(26vw, 45vh)))";
+            grid.style.gridTemplateColumns = "repeat(2, minmax(0, min(40vw, calc(66.6667vh - 90px))))";
             grid.style.justifyContent = "center";
         } else if (ratios.every(r => r < 1)) {
             // 全部竖屏：横向排开，让每个格子占满整列高度
@@ -925,7 +1350,25 @@ function openSyncPreview(items) {
             grid.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)";
             grid.style.justifyContent = "";
         }
-        grid.style.gridTemplateRows = "repeat(" + rows + ", 1fr)";
+        if (ultrawideMode && portraitPair) {
+            grid.style.gridTemplateRows = "auto";
+            grid.style.alignContent = "center";
+            for (const p of players) {
+                p.holder.style.aspectRatio = "2 / 3";
+                p.holder.style.flex = "none";
+                p.holder.style.width = "100%";
+                p.holder.style.height = "auto";
+            }
+        } else {
+            grid.style.gridTemplateRows = "repeat(" + rows + ", 1fr)";
+            grid.style.alignContent = "";
+            for (const p of players) {
+                p.holder.style.aspectRatio = "";
+                p.holder.style.flex = "";
+                p.holder.style.width = "100%";
+                p.holder.style.height = "100%";
+            }
+        }
         // 横屏/混合画面下不启用，避免意外压缩正常双路对比；保留按钮但禁用并说明原因。
         ultrawideBtn.disabled = !portraitPair;
         ultrawideBtn.title = portraitPair
@@ -1018,26 +1461,44 @@ function openSyncPreview(items) {
 // ═══════════════════════════════════════════════════════════════
 
 /** 对指定节点集合做同步预览 */
-function previewNodes(nodes) {
+async function previewNodes(nodes) {
     const items = [];
     for (const n of nodes || []) {
-        const v = getVideoFromNode(n);
-        if (v) items.push(v);
+        const video = getVideoFromNode(n);
+        if (video) items.push(video);
+        else {
+            try {
+                items.push(...await getImagesFromNode(n));
+            } catch (error) {
+                console.warn("[小珠光同步预览] 读取图片原图失败:", error);
+                return false;
+            }
+        }
     }
     if (items.length === 0) {
-        console.warn("[小珠光同步预览] 选中的节点中没有可预览的视频");
+        console.warn("[小珠光同步预览] 选中的节点中没有可预览的视频或图片");
         return false;
+    }
+    if (items.some((item) => item.kind === "image")) {
+        const images = items.filter((item) => item.kind === "image");
+        if (images.length !== items.length) {
+            console.warn("[小珠光同步预览] 图片与视频暂不支持放在同一个对比窗口");
+            return false;
+        }
+        return openImageCompare(images);
     }
     return openSyncPreview(items);
 }
 
-/** 快捷键入口：当前选中的视频节点；无选中时预览画布全部视频节点 */
+/** 快捷键入口：当前选中的视频/图片节点；无选中时优先沿用全视频预览 */
 function previewSelection() {
     if (!isVideoCompareEnabled()) return false;
-    let nodes = getSelectedVideoNodes();
-    if (nodes.length === 0) nodes = getAllVideoNodes();
+    let nodes = getSelectedMediaNodes();
     if (nodes.length === 0) {
-        console.warn("[小珠光同步预览] 画布上没有可预览的视频节点");
+        nodes = getAllMediaNodes();
+    }
+    if (nodes.length === 0) {
+        console.warn("[小珠光同步预览] 画布上没有可预览的视频或图片节点");
         return false;
     }
     return previewNodes(nodes);
@@ -1058,11 +1519,13 @@ function patchContextMenus() {
     const origNodeMenu = LGC.prototype.getNodeMenuOptions;
     LGC.prototype.getNodeMenuOptions = function (node) {
         const options = origNodeMenu ? origNodeMenu.apply(this, arguments) : [];
-        if (Array.isArray(options) && isVideoCompareEnabled() && nodeHasVideo(node)) {
+        // 图片保存节点在自身 getExtraMenuOptions 中加入图片对比，兼容不经过
+        // LiteGraph 旧式节点菜单钩子的 ComfyUI 前端。
+        if (Array.isArray(options) && isVideoCompareEnabled() && nodeHasMedia(node) && !isImageSaveNode(node)) {
             options.unshift({
-                content: "<span style='color:#dcc85b;font-weight:600'>▶ 同步预览</span>",
+                content: `<span style='color:#dcc85b;font-weight:600'>${nodeHasImage(node) ? "▧ 图片对比" : "▶ 同步预览"}</span>`,
                 callback: () => {
-                    let nodes = getSelectedVideoNodes();
+                    let nodes = getSelectedMediaNodes();
                     // 保证右键节点本身被包含（多选时选中集合应已含它，兜底补上）
                     if (!nodes.includes(node)) nodes.push(node);
                     previewNodes(nodes);
@@ -1076,10 +1539,10 @@ function patchContextMenus() {
     const origCanvasMenu = LGC.prototype.getCanvasMenuOptions;
     LGC.prototype.getCanvasMenuOptions = function () {
         const options = origCanvasMenu ? origCanvasMenu.apply(this, arguments) : [];
-        if (Array.isArray(options) && isVideoCompareEnabled() && getSelectedVideoNodes().length > 0) {
+        if (Array.isArray(options) && isVideoCompareEnabled() && getSelectedMediaNodes().length > 0) {
             options.push(null);
             options.push({
-                content: "<span style='color:#dcc85b;font-weight:600'>▶ 同步预览选中视频</span>",
+                content: "<span style='color:#dcc85b;font-weight:600'>▶ 对比选中的视频/图片</span>",
                 callback: () => previewSelection(),
             });
         }
@@ -1105,6 +1568,9 @@ window.xzgSyncPreview = {
     openSyncPreview,
     closeSyncPreview,
     nodeHasVideo,
+    nodeHasImage,
     getVideoFromNode,
+    getImageFromNode,
     getSelectedVideoNodes,
+    getSelectedMediaNodes,
 };

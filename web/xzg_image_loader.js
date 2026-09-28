@@ -36,12 +36,20 @@ function getMaxImagesWidget(node) {
     return getWidgetByName(node, "max_images");
 }
 
+// 历史工作流的 widgets_values 发生错位时，append/replace 等模式字符串可能落入 INT 控件。
+// 统一归一化为 0（无限制），避免前端校验或执行队列仍收到非整数值。
+function normalizeMaxImagesWidget(widget) {
+    if (!widget) return 0;
+    const raw = widget.value;
+    const parsed = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+    const value = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    widget.value = value;
+    return value;
+}
+
 // 获取默认的加载上限：>0 时最多显示/加载前 N 张，0 表示无限制
 function getMaxImagesLimit(node) {
-    const w = getWidgetByName(node, "max_images");
-    let v = parseInt(w?.value, 10);
-    if (isNaN(v) || v < 0) v = 0;
-    return v;
+    return normalizeMaxImagesWidget(getMaxImagesWidget(node));
 }
 
 function getMaskDataWidget(node) {
@@ -424,6 +432,40 @@ async function xzgSaveImagesBatch(items) {
     return true;
 }
 
+function captureCanvasSelection(canvas) {
+    if (!canvas) return null;
+    const selected = canvas.selected_nodes;
+    const nodes = selected instanceof Map
+        ? [...selected.values()]
+        : selected instanceof Set
+            ? [...selected]
+            : Object.values(selected || {});
+    return [...new Set(nodes.filter(Boolean))];
+}
+
+function restoreCanvasSelection(canvas, previousNodes, loaderNode) {
+    if (!canvas || !Array.isArray(previousNodes)) return;
+    const graphNodes = canvas.graph?._nodes || [];
+    const validPrevious = previousNodes.filter((item) => graphNodes.includes(item));
+    const desiredNodes = [...new Set([...validPrevious, ...(graphNodes.includes(loaderNode) ? [loaderNode] : [])])];
+    for (const item of graphNodes) item.selected = desiredNodes.includes(item);
+
+    const selected = canvas.selected_nodes;
+    if (selected instanceof Map) {
+        selected.clear();
+        for (const item of desiredNodes) selected.set(item.id, item);
+    } else if (selected instanceof Set) {
+        selected.clear();
+        for (const item of desiredNodes) selected.add(item);
+    } else if (selected && typeof selected === "object") {
+        for (const key of Object.keys(selected)) delete selected[key];
+        for (const item of desiredNodes) selected[item.id] = item;
+    } else {
+        canvas.selected_nodes = Object.fromEntries(desiredNodes.map((item) => [item.id, item]));
+    }
+    canvas.setDirty?.(true, true);
+}
+
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
@@ -560,7 +602,7 @@ function createImgBatchUI(node) {
             });
             contextMenu.appendChild(appendItem);
 
-            if (imageName) {
+            if (imageName && !multi) {
                 const replaceItem = document.createElement("div");
                 replaceItem.textContent = xzgT("替换图片", "Replace Image");
                 replaceItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#FFD700;";
@@ -571,7 +613,9 @@ function createImgBatchUI(node) {
                     openReplaceImageDialog(imageName, imageIndex);
                 });
                 contextMenu.appendChild(replaceItem);
+            }
 
+            if (imageName) {
                 const clearOthersItem = document.createElement("div");
                 clearOthersItem.textContent = xzgT("清除其它", "Clear Others");
                 clearOthersItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#ff7777;";
@@ -582,16 +626,65 @@ function createImgBatchUI(node) {
                     const names = parseNameList(getImageListWidget(node)?.value);
                     const currentName = names[imageIndex] || imageName;
                     if (!currentName) return;
-                    setNameList(node, [currentName]);
-                    setIndex(node, 0);
-                    selectedIndexes = [0];
-                    lastClickedIndex = 0;
+                    // 多选时保留所有已选图片；单选时仅保留右键点击的图片。
+                    const keepIndexes = multi
+                        ? [...selectedIndexes].filter((index) => index >= 0 && index < names.length)
+                        : [imageIndex];
+                    const keepSet = new Set(keepIndexes);
+                    const retainedNames = names.filter((_, index) => keepSet.has(index));
+                    if (retainedNames.length === 0) return;
+                    const retainedIndexByOriginal = new Map();
+                    let nextIndex = 0;
+                    names.forEach((_, index) => {
+                        if (keepSet.has(index)) retainedIndexByOriginal.set(index, nextIndex++);
+                    });
+                    setNameList(node, retainedNames);
+                    const activeIndex = retainedIndexByOriginal.get(imageIndex) ?? 0;
+                    setIndex(node, activeIndex);
+                    selectedIndexes = keepIndexes
+                        .map((index) => retainedIndexByOriginal.get(index))
+                        .filter((index) => index !== undefined)
+                        .sort((a, b) => a - b);
+                    lastClickedIndex = activeIndex;
                     redraw(true);
                 });
                 contextMenu.appendChild(clearOthersItem);
             }
         }
         if (imageName) contextMenu.appendChild(saveItem);
+
+        // 原图高清查看入口固定放在右键菜单最下方。
+        if (imageName && uploadMode === "append" && !multi) {
+            const originalItem = document.createElement("div");
+            originalItem.textContent = xzgT("查看原图", "View Original Image");
+            originalItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#8ecbff;";
+            originalItem.addEventListener("mouseenter", () => { originalItem.style.background = "var(--comfy-input-bg)"; });
+            originalItem.addEventListener("mouseleave", () => { originalItem.style.background = ""; });
+            originalItem.addEventListener("click", () => {
+                hideContextMenu();
+                openImageLightbox(imageName);
+            });
+            contextMenu.appendChild(originalItem);
+        }
+
+        if (multi) {
+            const compareItem = document.createElement("div");
+            compareItem.textContent = xzgT("图片对比", "Compare Images");
+            compareItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#dcc85b;font-weight:600;";
+            compareItem.addEventListener("mouseenter", () => { compareItem.style.background = "var(--comfy-input-bg)"; });
+            compareItem.addEventListener("mouseleave", () => { compareItem.style.background = ""; });
+            compareItem.addEventListener("click", () => {
+                hideContextMenu();
+                const compare = window.xzgSyncPreview;
+                if (typeof compare?.previewNodes !== "function") {
+                    console.warn("[小珠光图片加载器] 图片对比模块未加载");
+                    return;
+                }
+                // previewNodes 会读取本加载器当前多选的原图条目。
+                compare.previewNodes([node]);
+            });
+            contextMenu.appendChild(compareItem);
+        }
 
         contextMenu.style.left = `${x}px`;
         contextMenu.style.top = `${y}px`;
@@ -800,7 +893,7 @@ function createImgBatchUI(node) {
         const _ics = document.createElement("style");
         _ics.id = "xzg-side-ic-style";
         _ics.textContent = `
-            .xzg-ic-btn{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;padding:4px 2px;box-sizing:border-box;border:none;background:transparent;border-radius:4px;cursor:pointer;color:var(--input-text);white-space:nowrap;}
+            .xzg-ic-btn{display:flex;align-items:center;justify-content:flex-start;gap:6px;width:100%;padding:var(--xzg-btn-pad-y,4px) 2px;box-sizing:border-box;border:none;background:transparent;border-radius:4px;cursor:pointer;color:var(--input-text);white-space:nowrap;}
             .xzg-ic-btn:hover{filter:brightness(1.2);}
             .xzg-ic-btn svg{width:var(--xzg-ic-size, 20px);height:var(--xzg-ic-size, 20px);flex:0 0 auto;display:block;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;}
             .xzg-ic-btn .xzg-ic-g{display:inline-flex;}
@@ -909,20 +1002,29 @@ function createImgBatchUI(node) {
     // 显示辅助：0 或空显示无穷符号 ∞，否则显示数字
     const setMaxImgDisplay = () => {
         const w = getMaxImagesWidget(node);
-        const v = parseInt(w?.value, 10);
-        const num = isNaN(v) ? 0 : Math.max(0, v);
+        const num = normalizeMaxImagesWidget(w);
         maxImgInput.value = num > 0 ? String(num) : "∞";
     };
     setMaxImgDisplay();
     maxImgInput.title = xzgT("加载图片上限，0/∞ 表示无限制", "Max images to load, 0/∞ = unlimited");
+    maxImgInput.setAttribute("aria-label", xzgT("加载图片上限", "Maximum images to load"));
     maxImgInput.style.cssText =
-        "width:calc(var(--xzg-ui-font,10px) + 11px);max-width:100%;flex:0 0 auto;margin-left:2px;box-sizing:border-box;padding:0;font-size:var(--xzg-ui-font,10px);line-height:1.4;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:transparent;border:none;border-radius:0;outline:none;text-align:center;cursor:text;";
+        "width:calc(2 * var(--xzg-ui-font,10px));max-width:100%;min-width:0;height:20px;flex:0 0 auto;align-self:flex-start;margin:0 0 2px 2px;box-sizing:border-box;padding:1px 1px;font-size:var(--xzg-ui-font,10px);line-height:1.2;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:var(--comfy-input-bg,rgba(0,0,0,0.22));border:1px solid var(--border-color,rgba(255,255,255,0.25));border-radius:4px;outline:none;text-align:center;cursor:text;transition:border-color 0.12s ease,box-shadow 0.12s ease,background 0.12s ease;";
     // 输入框交互不冒泡，避免触发节点/侧边栏拖动
     maxImgInput.addEventListener("pointerdown", (e) => e.stopPropagation());
     maxImgInput.addEventListener("mousedown", (e) => e.stopPropagation());
     maxImgInput.addEventListener("click", (e) => e.stopPropagation());
-    // 聚焦时全选，便于直接输入新数字替换 ∞ 或旧值
-    maxImgInput.addEventListener("focus", () => maxImgInput.select());
+    // 保持原生文本光标行为；点击数字定位插入点，不自动蓝色全选。
+    maxImgInput.addEventListener("focus", () => {
+        maxImgInput.style.borderColor = "var(--input-text,#fff)";
+        maxImgInput.style.background = "var(--comfy-input-bg,rgba(0,0,0,0.4))";
+        maxImgInput.style.boxShadow = "0 0 0 1px color-mix(in srgb, var(--input-text,#fff) 25%, transparent)";
+    });
+    maxImgInput.addEventListener("blur", () => {
+        maxImgInput.style.borderColor = "var(--border-color,rgba(255,255,255,0.25))";
+        maxImgInput.style.background = "var(--comfy-input-bg,rgba(0,0,0,0.22))";
+        maxImgInput.style.boxShadow = "none";
+    });
     maxImgInput.addEventListener("change", () => {
         const w = getMaxImagesWidget(node);
         if (!w) return;
@@ -2223,7 +2325,6 @@ function createImgBatchUI(node) {
     let lastCardSize = null;
     let selectedIndexes = [];
     let lastClickedIndex = -1;
-
     const mainContent = document.createElement("div");
     mainContent.style.cssText = "flex:1;display:flex;flex-direction:column;pointer-events:auto;min-width:0;min-height:120px;";
     mainContent.style.userSelect = "none";
@@ -2284,8 +2385,8 @@ function createImgBatchUI(node) {
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖱️ 鼠标操作", "🖱️ Mouse Operations")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击选中；Shift范围选；Ctrl+左键拖动框选", "Click to select; Shift-click for range; Ctrl-drag to marquee-select")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("Ctrl+左键单击：原图高清预览；滚轮缩放、拖动平移", "Ctrl-click: view full-resolution image; wheel to zoom, drag to pan")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击选中；Shift范围选；Ctrl+左键多选，Ctrl+拖动框选", "Click to select; Shift-click for range; Ctrl-click to multi-select, Ctrl-drag to marquee-select")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("右键缩略图 → 菜单最下方「查看原图」；滚轮缩放、拖动平移", "Right-click a thumbnail → View Original Image at the bottom; wheel to zoom, drag to pan")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("长按卡片拖动：调整顺序", "Long press card to drag: Reorder")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("卡片上拖动：框选多个图片", "Drag on card: Box select")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("悬停卡片右上角：删除单张", "Hover card corner: Delete")}</div>
@@ -3568,12 +3669,13 @@ function createImgBatchUI(node) {
                 return;
             }
         }
-        e.stopPropagation();
-
         const cell = e.target.closest("[data-xzg-img-card]");
+        const preserveCanvasSelection = !!(cell && (e.ctrlKey || e.metaKey));
+        const selectionBeforeThumbnailClick = preserveCanvasSelection
+            ? captureCanvasSelection(app?.canvas)
+            : null;
         const names = parseNameList(getImageListWidget(node)?.value);
         if (names.length === 0) return;
-
         const startX = e.clientX;
         const startY = e.clientY;
         const clickedIndex = cell ? parseInt(cell.dataset.xzgIndex, 10) : -1;
@@ -3603,20 +3705,22 @@ function createImgBatchUI(node) {
 
         const cardInner = cell?.querySelector(":scope > div");
 
-        // 按下时立即金边高亮（无过渡，瞬间生效），同时清除其他卡片的高亮
+        // 按下时立即高亮目标卡片。多选/范围选择期间保留既有选中项的边框，避免闪烁。
         if (cell && cardInner) {
             cardInner.style.transition = "none";
             cardInner.style.borderColor = getSelColor();
-            // 立即清除其他所有卡片的高亮边框
-            const allCards = grid.querySelectorAll("[data-xzg-img-card]");
-            allCards.forEach((c) => {
-                if (c === cell) return;
-                const card = c.querySelector(":scope > div");
-                if (card) {
-                    card.style.transition = "none";
-                    card.style.borderColor = "transparent";
-                }
-            });
+            if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                // 普通单选时立即清除其余卡片；组合键选择时要保留原有高亮。
+                const allCards = grid.querySelectorAll("[data-xzg-img-card]");
+                allCards.forEach((c) => {
+                    if (c === cell) return;
+                    const card = c.querySelector(":scope > div");
+                    if (card) {
+                        card.style.transition = "none";
+                        card.style.borderColor = "transparent";
+                    }
+                });
+            }
         }
 
         const enterMarqueeMode = () => {
@@ -3625,7 +3729,6 @@ function createImgBatchUI(node) {
             if (cell && cardInner) {
                 cardInner.style.transform = "";
                 cardInner.style.boxShadow = "";
-                cardInner.style.borderColor = "";
                 cardInner.style.transition = "";
                 cell.style.zIndex = "";
                 cell.style.overflow = "hidden";
@@ -3975,9 +4078,25 @@ function createImgBatchUI(node) {
                 if (moved) {
                     redraw(true);
                 } else if (forceMarquee && cell && clickedIndex >= 0) {
-                    // Ctrl/Command 单击卡片：打开原图高清查看器；按住并拖动则继续框选。
+                    // Ctrl/Command 左键单击切换多选；按住拖动仍在上面的 moved 分支执行框选。
+                    const selectedAt = selectedIndexes.indexOf(clickedIndex);
+                    if (selectedAt >= 0) {
+                        // 仅单选时 Ctrl 再点当前缩略图不应清空选择；
+                        // 真正进入多选后，才允许通过 Ctrl/Command 点击取消其中一张。
+                        if (selectedIndexes.length > 1) selectedIndexes.splice(selectedAt, 1);
+                    } else {
+                        selectedIndexes.push(clickedIndex);
+                        selectedIndexes.sort((a, b) => a - b);
+                    }
+                    lastClickedIndex = clickedIndex;
+                    setIndex(node, clickedIndex);
+                    const cards = grid.querySelectorAll("[data-xzg-img-card]");
+                    const color = getSelColor();
+                    cards.forEach((c, i) => {
+                        const card = c.querySelector(":scope > div");
+                        if (card) card.style.borderColor = selectedIndexes.includes(i) ? color : "transparent";
+                    });
                     redraw(false);
-                    openImageLightbox(names[clickedIndex]);
                 } else {
                     selectedIndexes = [];
                     lastClickedIndex = -1;
@@ -4009,7 +4128,7 @@ function createImgBatchUI(node) {
                 } else if (e.ctrlKey || e.metaKey) {
                     const idx = selectedIndexes.indexOf(clickedIndex);
                     if (idx >= 0) {
-                        selectedIndexes.splice(idx, 1);
+                        if (selectedIndexes.length > 1) selectedIndexes.splice(idx, 1);
                     } else {
                         selectedIndexes.push(clickedIndex);
                         selectedIndexes.sort((a, b) => a - b);
@@ -4040,6 +4159,13 @@ function createImgBatchUI(node) {
                     if (app?.canvas) app.canvas.setDirty(true, true);
                 }
             }
+
+            // 组合键缩略图选择时保留原有画布节点，并把当前图片加载器加入选区。
+            // 在本监听器结束后再恢复，避免 LiteGraph 在同一次鼠标事件中清除 A 节点。
+            if (preserveCanvasSelection && selectionBeforeThumbnailClick) {
+                setTimeout(() => restoreCanvasSelection(app?.canvas, selectionBeforeThumbnailClick, node), 0);
+            }
+
         };
 
         const onContextMenu = (ev) => {
@@ -4050,7 +4176,6 @@ function createImgBatchUI(node) {
         document.addEventListener("mouseup", onMouseUp);
         document.addEventListener("contextmenu", onContextMenu, true);
     });
-
     // ═══════════ 网格缩略图裁剪预览 ═══════════
     // 对图片名存在裁剪区域的卡片，把缩略图换成「裁剪后」画面并打角标。
     // 裁剪矩形 `_cropByImage[name]` = [x,y,w,h]，坐标为「压缩预览(最长边3840)」空间的像素，
@@ -5095,6 +5220,7 @@ function createImgBatchUI(node) {
         container,
         grid,
         sidebar,
+        actionGroup,
         redraw,
         updateModeBtn,
         updateAlignBtn,
@@ -5115,6 +5241,25 @@ function createImgBatchUI(node) {
             if (!/^#[0-9a-f]{6}$/i.test(value || "")) return;
             _setMaskPreviewColor(value);
         },
+        getSelectedCompareItems: () => {
+            const allNames = parseNameList(getImageListWidget(node)?.value);
+            const limit = getMaxImagesLimit(node);
+            const names = limit > 0 ? allNames.slice(0, limit) : allNames;
+            // 未选中缩略图时（例如只选中了加载器节点），默认将第一张图片纳入对比。
+            const indexes = selectedIndexes.length > 0 ? [...selectedIndexes] : [0];
+            return [...new Set(indexes)]
+                .map((index) => names[index])
+                .filter(Boolean)
+                .map((name) => ({
+                    name: name.replace(/\s+\[(?:input|output|temp)\]$/i, "").split(/[\\/]/).pop() || name,
+                    url: getOriginalImageUrl(name),
+                }));
+        },
+        clearThumbnailSelection: () => {
+            selectedIndexes = [];
+            lastClickedIndex = -1;
+            redraw(false);
+        },
         clearMask: () => {
             if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
                 maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
@@ -5129,6 +5274,22 @@ function createImgBatchUI(node) {
 
 app.registerExtension({
     name: "xiaozhuguang.image_loader",
+    // 工作流反序列化前预清洗：如果旧版/错位 JSON 把 upload_mode 的字符串写进 max_images，
+    // ComfyUI 在构造整数 widget 前就可能拒绝该值，所以不能只依赖 onConfigure。
+    beforeConfigureGraph(graphData) {
+        const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+        for (const node of nodes) {
+            if (node?.type !== "XiaozhuguangImageLoader" || !Array.isArray(node.widgets_values)) continue;
+            const maxIndex = Array.isArray(node.widgets)
+                ? node.widgets.findIndex((widget) => widget?.name === "max_images")
+                : -1;
+            if (maxIndex >= 0 && maxIndex < node.widgets_values.length) {
+                const raw = node.widgets_values[maxIndex];
+                const parsed = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+                node.widgets_values[maxIndex] = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+            }
+        }
+    },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "XiaozhuguangImageLoader") {
             // ═══════════════════════════════════════════════════════
@@ -5199,6 +5360,7 @@ app.registerExtension({
                     maxImagesWidget.type = "hidden";
                     maxImagesWidget.hidden = true;
                     maxImagesWidget.computeSize = () => [0, 0];
+                    normalizeMaxImagesWidget(maxImagesWidget);
                 }
                 ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
                 ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
@@ -5289,6 +5451,23 @@ app.registerExtension({
 
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
+                const originalOnDeselected = this.onDeselected;
+                this.onDeselected = function () {
+                    const node = this;
+                    // DOM 缩略图的鼠标交互可能触发一次临时的 deselect 回调；
+                    // 等 LiteGraph 完成选中态更新后再判断，避免清掉正在操作的选择。
+                    requestAnimationFrame(() => {
+                        const selected = app?.canvas?.selected_nodes;
+                        const stillSelected = !!(
+                            node.selected ||
+                            selected?.[node.id] === node ||
+                            (selected instanceof Map && selected.get(node.id) === node) ||
+                            (selected instanceof Set && selected.has(node))
+                        );
+                        if (!stillSelected) ui.clearThumbnailSelection?.();
+                    });
+                    if (originalOnDeselected) return originalOnDeselected.apply(this, arguments);
+                };
                 _updateToolbarIconSize(this);
 
                 const MIN_W = 250;
@@ -5309,7 +5488,10 @@ app.registerExtension({
                 };
 
                 // hideOnZoom:false —— 画布缩小到细节阈值以下时仍显示图片预览，避免被灰色占位矩形替代（与内置图像/视频预览组件一致）
-                const _xzgImgDomWidget = this.addDOMWidget("xzg_img_loader", "customwidget", ui.container, { hideOnZoom: false });
+                const _xzgImgDomWidget = this.addDOMWidget("xzg_img_loader", "customwidget", ui.container, {
+                    hideOnZoom: false,
+                    margin: 5,
+                });
                 // 修复（同「视频/音频」栏）：ComfyUI 会把 DOM widget 的 width 写成面板侧行宽度，
                 // 画布侧 DOM 宿主宽度 = width - margin*2，一旦大于节点实际宽度，图片预览区/按钮栏就会
                 // 溢出节点、且随属性面板开/关变化。这里把 width 改为只读访问器，始终跟随节点实际宽度。
@@ -5525,6 +5707,8 @@ app.registerExtension({
                     maxImagesWidget.type = "hidden";
                     maxImagesWidget.hidden = true;
                     maxImagesWidget.computeSize = () => [0, 0];
+                    // 先调用 ComfyUI 原始 onConfigure 完成位置恢复，再把错位字符串清洗为默认无限。
+                    normalizeMaxImagesWidget(maxImagesWidget);
                 }
                 const overlayEnabledWidget = ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
                 const overlayColorWidget = ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
@@ -5650,6 +5834,8 @@ app.registerExtension({
             const origOnSerialize = nodeType.prototype.onSerialize;
             nodeType.prototype.onSerialize = function (data) {
                 const r = origOnSerialize?.apply(this, arguments);
+                // 保存工作流前再规范一次，避免损坏或旧工作流中的模式字符串继续传播。
+                normalizeMaxImagesWidget(getMaxImagesWidget(this));
                 if (!data.properties) data.properties = {};
                 const listWidget = getImageListWidget(this);
                 if (listWidget && listWidget.value) {
@@ -5702,12 +5888,25 @@ app.registerExtension({
 
             // 画布缩放时同步更新图片名称字体大小，以及 bypass 状态更新
             function _updateToolbarIconSize(nodeInst) {
-                const sidebar = nodeInst?._xzgImgLoaderUI?.sidebar;
+                const ui = nodeInst?._xzgImgLoaderUI;
+                const sidebar = ui?.sidebar;
                 if (!sidebar) return;
                 const h = nodeInst.size?.[1] || 300;
-                const iconSize = `${Math.round(Math.min(32, Math.max(18, h / 22)))}px`;
+                const availableHeight = Math.max(0, h - 30);
+                const density = Math.max(0, Math.min(1, (availableHeight - 260) / 220));
+                const iconSize = `${Math.round(14 + density * 18)}px`;
                 if (sidebar.style.getPropertyValue("--xzg-ic-size") !== iconSize) {
                     sidebar.style.setProperty("--xzg-ic-size", iconSize);
+                }
+                const buttonPadding = `${Math.round(1 + density * 3)}px`;
+                if (sidebar.style.getPropertyValue("--xzg-btn-pad-y") !== buttonPadding) {
+                    sidebar.style.setProperty("--xzg-btn-pad-y", buttonPadding);
+                }
+                const sideGap = `${Math.round(density * 2)}px`;
+                if (sidebar.style.gap !== sideGap) sidebar.style.gap = sideGap;
+                const actionGap = `${Math.round(1 + density * 5)}px`;
+                if (ui.actionGroup && ui.actionGroup.style.gap !== actionGap) {
+                    ui.actionGroup.style.gap = actionGap;
                 }
                 if (sidebar.style.getPropertyValue("--xzg-ui-font") !== "10px") {
                     sidebar.style.setProperty("--xzg-ui-font", "10px");

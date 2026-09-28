@@ -69,6 +69,12 @@ class XZGWorkflowsManager {
         // 工作流面板设置（夺舍/强调色/快捷键）云持久化
         this._wfSettingsCloudTimer = null;
         this._wfSettingsCloudStarted = false;
+        this._ownedWorkflowTabBar = null;
+        this._ownedWorkflowTabSource = null;
+        this._ownedWorkflowTabObserver = null;
+        this._ownedWorkflowTabSignature = "";
+        this._ownedWorkflowContextMenu = null;
+        this._ownedWorkflowMenuDismiss = null;
 
         this.init();
         // 云平台持久化：初始化后异步从云端拉取元数据，服务端有则覆盖本地
@@ -2390,12 +2396,7 @@ class XZGWorkflowsManager {
             }
             /* 夺舍模式是该节唯一内容，去掉自身底部外边距，避免与下一节间距翻倍 */
             .xzg-wf-use-switch.xzg-wf-possess-flag { margin-bottom: 0; }
-            .xzg-wf-possess-flag .xzg-wf-possess-desc {
-                margin-left: auto;
-                font-size: 12px;
-                color: var(--fg-muted, #888);
-                white-space: nowrap;
-            }
+            .xzg-wf-possess-flag > span:first-child { white-space: nowrap; }
             .xzg-wf-settings-shortcut-row {
                 display: flex;
                 align-items: center;
@@ -2489,7 +2490,6 @@ class XZGWorkflowsManager {
                         <div class="xzg-wf-use-switch xzg-wf-possess-flag ${possessOn ? 'active' : ''}" id="xzg-wf-possess-btn">
                             <span>${xzgT('夺舍模式','Possess Mode')}</span>
                             <span class="xzg-wf-toggle"><i></i></span>
-                            <span class="xzg-wf-possess-desc">${xzgT('关闭左侧默认工作流按钮','Hides the default workflow button on the left')}</span>
                         </div>
                     </div>
                     <div class="xzg-wf-settings-section">
@@ -2806,7 +2806,7 @@ class XZGWorkflowsManager {
                     <h4>${xzgT('其它设置', 'Other Settings')}</h4>
                     <ul>
                         <li><b>${xzgT('设置', 'Settings')}</b>：${xzgT('自定义面板强调色、使用频率配色、快捷键与夺舍模式', 'Customize panel accent color, usage-frequency colors, shortcut and possess mode')}</li>
-                        <li><b>${xzgT('夺舍模式', 'Possess Mode')}</b>：${xzgT('开启后隐藏 ComfyUI 官方工作流管理按钮，由本面板接管', 'Once enabled, hides ComfyUI official workflow buttons and takes over')}</li>
+                        <li><b>${xzgT('夺舍模式', 'Possess Mode')}</b>：${xzgT('开启后使用小珠光自有的顶部工作流标签与右键菜单，接管官方工作流管理入口', 'Replaces the official workflow tabs and context menu with Xiaozhuguang controls')}</li>
                         <li><b>${xzgT('保存工作流', 'Save Workflow')}</b>：${xzgT('使用 ComfyUI 官方保存（Ctrl+S / 顶栏），保存后本面板会自动同步显示', 'Use ComfyUI official save (Ctrl+S / top bar); the panel auto-syncs after saving')}</li>
                     </ul>
                 </div>
@@ -2896,7 +2896,10 @@ class XZGWorkflowsManager {
                 xzgBtn.style.display = "";
             }
         }
-        const targets = this._findOfficialWorkflowButtons();
+        const targets = [
+            ...this._findOfficialWorkflowButtons(),
+            ...this._findOfficialWorkflowControls(),
+        ];
         targets.forEach(el => {
             if (hidden) {
                 if (el.style.display !== "none") {
@@ -2908,6 +2911,295 @@ class XZGWorkflowsManager {
                 delete el.dataset.xzgHidden;
             }
         });
+        this._setPossessWorkflowTabs(hidden);
+    }
+
+    _setPossessWorkflowTabs(hidden) {
+        const source = document.querySelector('[data-testid="topbar-workflow-tabs"]');
+        if (!hidden) {
+            this._ownedWorkflowTabObserver?.disconnect();
+            this._ownedWorkflowTabObserver = null;
+            this._ownedWorkflowTabSource = null;
+            this._ownedWorkflowTabBar?.remove();
+            this._ownedWorkflowTabBar = null;
+            this._ownedWorkflowTabSignature = "";
+            document.querySelectorAll('[data-xzg-possess-tabs-hidden="1"]').forEach(el => {
+                el.style.display = el.dataset.xzgOriginalDisplay || "";
+                delete el.dataset.xzgOriginalDisplay;
+                delete el.dataset.xzgPossessTabsHidden;
+            });
+            this._hideOwnedWorkflowContextMenu();
+            return;
+        }
+        if (!source?.parentElement) return;
+        if (!this._ownedWorkflowTabBar) {
+            const bar = document.createElement("div");
+            bar.className = "xzg-owned-workflow-tabs";
+            bar.setAttribute("role", "tablist");
+            this._ownedWorkflowTabBar = bar;
+            this._ensureOwnedWorkflowTabStyles();
+        }
+        if (this._ownedWorkflowTabBar.parentElement !== source.parentElement ||
+            this._ownedWorkflowTabBar.nextElementSibling !== source) {
+            source.parentElement.insertBefore(this._ownedWorkflowTabBar, source);
+        }
+        if (source.dataset.xzgPossessTabsHidden !== "1") {
+            source.dataset.xzgOriginalDisplay = source.style.display || "";
+            source.dataset.xzgPossessTabsHidden = "1";
+            source.style.display = "none";
+        }
+        if (this._ownedWorkflowTabSource !== source) {
+            this._ownedWorkflowTabObserver?.disconnect();
+            this._ownedWorkflowTabSource = source;
+            this._ownedWorkflowTabObserver = new MutationObserver(() => {
+                if (source.style.display !== "none") source.style.display = "none";
+                this._renderOwnedWorkflowTabs();
+            });
+            this._ownedWorkflowTabObserver.observe(source, {
+                childList: true, subtree: true, attributes: true,
+                attributeFilter: ["class", "aria-selected", "data-testid"], characterData: true,
+            });
+        }
+        if (source.style.display !== "none") source.style.display = "none";
+        this._renderOwnedWorkflowTabs();
+    }
+
+    _ensureOwnedWorkflowTabStyles() {
+        if (document.getElementById("xzg-owned-workflow-tabs-style")) return;
+        const style = document.createElement("style");
+        style.id = "xzg-owned-workflow-tabs-style";
+        style.textContent = `
+            .xzg-owned-workflow-tabs { display:flex; align-items:center; gap:1px; width:100%; height:var(--workflow-tabs-height,40px); flex:0 0 var(--workflow-tabs-height,40px); min-width:0; overflow-x:auto; overflow-y:hidden; padding:0 4px; border-bottom:1px solid color-mix(in srgb,var(--interface-stroke,#555) 50%,transparent); box-shadow:0 1px 2px rgba(0,0,0,.12); background:var(--comfy-menu-bg,#171717); color:var(--fg-color,#eee); pointer-events:auto; position:relative; }
+            .xzg-owned-workflow-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 1 auto; min-width:80px; max-width:220px; height:calc(100% - 2px); padding:0 10px; border:0; border-right:1px solid rgba(255,255,255,.12); background:transparent; color:#aaa; cursor:pointer; font:500 14px/1 sans-serif; white-space:nowrap; }
+            .xzg-owned-workflow-tab:hover { background:rgba(255,255,255,.06); color:#eee; }
+            .xzg-owned-workflow-tab.active { color:#fff; font-weight:600; background:rgba(255,255,255,.04); }
+            .xzg-owned-workflow-tab-label { overflow:hidden; text-overflow:ellipsis; }
+            .xzg-owned-workflow-tab-dirty { width:8px; height:8px; flex:0 0 8px; border-radius:50%; background:#eee; }
+            .xzg-owned-workflow-tab-close { display:none; flex:0 0 auto; border:0; padding:0; color:inherit; background:transparent; cursor:pointer; font-size:17px; line-height:1; }
+            .xzg-owned-workflow-tab:hover .xzg-owned-workflow-tab-close, .xzg-owned-workflow-tab.active .xzg-owned-workflow-tab-close { display:block; }
+            .xzg-owned-workflow-tab-add { display:flex; align-items:center; justify-content:center; width:34px; height:30px; flex:0 0 34px; border:0; border-radius:5px; color:#ddd; background:transparent; cursor:pointer; font-size:21px; }
+            .xzg-owned-workflow-tab-add:hover { background:rgba(255,255,255,.1); }
+            .xzg-owned-workflow-menu { position:fixed; z-index:10000; min-width:220px; padding:6px 8px; border:1px solid #393939; border-radius:8px; background:#171717; color:#eee; box-shadow:0 8px 28px #0009; font:14px/1.2 sans-serif; }
+            .xzg-owned-workflow-menu-item { display:flex; align-items:center; gap:12px; min-height:36px; padding:0 9px; border-radius:4px; cursor:pointer; white-space:nowrap; }
+            .xzg-owned-workflow-menu-item:hover { background:#2b2b2b; }
+            .xzg-owned-workflow-menu-item.disabled { color:#777; cursor:default; }
+            .xzg-owned-workflow-menu-item.xzg-exit-possess { color:#ffd700; }
+            .xzg-owned-workflow-menu-separator { height:1px; margin:5px 0; background:#393939; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    _renderOwnedWorkflowTabs() {
+        const bar = this._ownedWorkflowTabBar;
+        if (!bar) return;
+        const store = app.extensionManager?.workflow;
+        const workflows = Array.isArray(store?.openWorkflows) ? store.openWorkflows : [];
+        const active = store?.activeWorkflow;
+        const signature = workflows.map(w => [w.key, w.path, w.filename, w.isPersisted, w.isModified, store?.isActive?.(w) || w.path === active?.path].join("|")).join(";");
+        if (signature === this._ownedWorkflowTabSignature && bar.childElementCount) return;
+        this._ownedWorkflowTabSignature = signature;
+        bar.replaceChildren();
+        workflows.forEach((workflow, index) => {
+            const tab = document.createElement("div");
+            const isActive = store?.isActive?.(workflow) || workflow.path === active?.path;
+            tab.className = "xzg-owned-workflow-tab" + (isActive ? " active" : "");
+            tab.draggable = true;
+            tab.setAttribute("role", "tab");
+            tab.setAttribute("aria-selected", isActive ? "true" : "false");
+            tab.title = workflow.filename || workflow.path || "";
+            const label = document.createElement("span");
+            label.className = "xzg-owned-workflow-tab-label";
+            label.textContent = workflow.filename || workflow.path?.split("/").pop() || xzgT("未命名工作流", "Untitled Workflow");
+            tab.appendChild(label);
+            if (!workflow.isPersisted || workflow.isModified) {
+                const dirty = document.createElement("span");
+                dirty.className = "xzg-owned-workflow-tab-dirty";
+                dirty.title = xzgT("有未保存的更改", "Unsaved changes");
+                tab.appendChild(dirty);
+            }
+            const close = document.createElement("button");
+            close.className = "xzg-owned-workflow-tab-close";
+            close.type = "button";
+            close.title = xzgT("关闭标签", "Close tab");
+            close.textContent = "×";
+            close.addEventListener("click", ev => {
+                ev.stopPropagation();
+                this._closeOwnedWorkflowTabs([workflow]);
+            });
+            tab.appendChild(close);
+            tab.addEventListener("click", () => this._activateOwnedWorkflowTab(workflow));
+            tab.addEventListener("auxclick", ev => {
+                if (ev.button === 1) this._closeOwnedWorkflowTabs([workflow]);
+            });
+            tab.addEventListener("dragstart", ev => {
+                ev.dataTransfer?.setData("text/plain", workflow.path);
+                if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+            });
+            tab.addEventListener("dragover", ev => ev.preventDefault());
+            tab.addEventListener("drop", ev => {
+                ev.preventDefault();
+                const from = workflows.findIndex(w => w.path === ev.dataTransfer?.getData("text/plain"));
+                const to = (store?.openWorkflows || []).findIndex(w => w.path === workflow.path);
+                if (from >= 0 && to >= 0 && from !== to) store?.reorderWorkflows?.(from, to);
+            });
+            tab.addEventListener("contextmenu", ev => this._showOwnedWorkflowContextMenu(ev, workflow, index, workflows));
+            bar.appendChild(tab);
+        });
+        const add = document.createElement("button");
+        add.className = "xzg-owned-workflow-tab-add";
+        add.type = "button";
+        add.title = xzgT("新建工作流", "New workflow");
+        add.setAttribute("aria-label", add.title);
+        add.textContent = "+";
+        add.addEventListener("click", () => app.extensionManager?.command?.execute?.("Comfy.NewBlankWorkflow"));
+        bar.appendChild(add);
+    }
+
+    _nativeWorkflowTab(workflow) {
+        const store = app.extensionManager?.workflow;
+        const workflows = Array.isArray(store?.openWorkflows) ? store.openWorkflows : [];
+        const index = workflows.findIndex(w => w === workflow || w.path === workflow?.path);
+        if (index < 0) return null;
+        return this._ownedWorkflowTabSource?.querySelectorAll('[data-testid="workflow-tab"], .workflow-tab')?.[index] || null;
+    }
+
+    _officialWorkflowBookmarkStore() {
+        // Pinia 实例属于 Vue 根应用，不会挂在 workflow store 实例的 $pinia 属性上。
+        const vueApp = document.getElementById("vue-app")?.__vue_app__;
+        const pinia = vueApp?.config?.globalProperties?.$pinia
+            || vueApp?._context?.provides?.pinia;
+        return pinia?._s?.get("workflowBookmark") || null;
+    }
+
+    async _activateOwnedWorkflowTab(workflow) {
+        const store = app.extensionManager?.workflow;
+        if (store?.isActive?.(workflow)) return;
+        if (!app.loadGraphData || !workflow) return;
+        const loaded = workflow.isLoaded ? workflow : await workflow.load();
+        await app.loadGraphData(loaded.activeState, true, true, loaded);
+    }
+
+    async _closeOwnedWorkflowTabs(workflows) {
+        const store = app.extensionManager?.workflow;
+        for (const workflow of workflows) {
+            const nativeTab = this._nativeWorkflowTab(workflow);
+            const close = nativeTab?.querySelector('[data-testid="close-workflow-button"], .close-button, button[aria-label="Close"]');
+            if (!close) break;
+            close.click();
+            const isOpen = () => store?.isOpen ? store.isOpen(workflow) : store?.openWorkflows?.some(w => w.path === workflow.path);
+            for (let i = 0; i < 1200 && isOpen(); i++) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            if (isOpen()) break;
+            for (let i = 0; i < 80; i++) {
+                const nativeCount = this._ownedWorkflowTabSource?.querySelectorAll('[data-testid="workflow-tab"], .workflow-tab')?.length || 0;
+                if (nativeCount === (store?.openWorkflows?.length || 0)) break;
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+        }
+    }
+
+    _hideOwnedWorkflowContextMenu() {
+        if (this._ownedWorkflowMenuDismiss) {
+            window.removeEventListener("pointerdown", this._ownedWorkflowMenuDismiss, true);
+            document.removeEventListener("mousedown", this._ownedWorkflowMenuDismiss, true);
+            document.removeEventListener("keydown", this._ownedWorkflowMenuDismiss, true);
+            this._ownedWorkflowMenuDismiss = null;
+        }
+        this._ownedWorkflowContextMenu?.remove();
+        this._ownedWorkflowContextMenu = null;
+    }
+
+    _showOwnedWorkflowContextMenu(event, workflow, index, workflows) {
+        event.preventDefault();
+        event.stopPropagation();
+        this._hideOwnedWorkflowContextMenu();
+        const menu = document.createElement("div");
+        menu.className = "xzg-owned-workflow-menu";
+        const store = app.extensionManager?.workflow;
+        const possessModeOn = localStorage.getItem("xzg_possess_mode") === "1";
+        const bookmarkStore = this._officialWorkflowBookmarkStore();
+        const isBookmarked = bookmarkStore?.isBookmarked?.(workflow.path)
+            ?? (store?.bookmarkedWorkflows || []).some(w => w.path === workflow.path);
+        const items = [
+            { icon: "pi pi-pencil", label: xzgT("重命名", "Rename"), disabled: !workflow.isPersisted, action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.RenameWorkflow"); } },
+            { icon: "pi pi-copy", label: xzgT("复制", "Duplicate"), action: async () => {
+                if (!workflow.isLoaded) await workflow.load();
+                const state = JSON.parse(JSON.stringify(workflow.activeState));
+                if (state) state.id = crypto.randomUUID();
+                const filename = workflow.filename.replace(/\s*\(\d+\)$/, "") + (workflow.isPersisted ? " (Copy)" : "");
+                const duplicate = store.createNewTemporary(filename + ".json", state);
+                await app.loadGraphData(state, true, true, duplicate);
+            } },
+            { icon: isBookmarked ? "pi pi-bookmark-fill" : "pi pi-bookmark", label: isBookmarked ? xzgT("从书签移除", "Remove from bookmarks") : xzgT("添加到书签", "Add to bookmarks"), disabled: workflow.isTemporary, action: async () => {
+                const current = bookmarkStore?.isBookmarked?.(workflow.path)
+                    ?? (store?.bookmarkedWorkflows || []).some(w => w.path === workflow.path);
+                if (bookmarkStore?.setBookmarked) {
+                    await bookmarkStore.setBookmarked(workflow.path, !current);
+                } else if (bookmarkStore?.toggleBookmarked) {
+                    await bookmarkStore.toggleBookmarked(workflow.path);
+                }
+            } },
+            { separator: true },
+            { icon: "pi pi-save", label: xzgT("保存", "Save"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.SaveWorkflow"); } },
+            { icon: "pi pi-save", label: xzgT("另存为", "Save As"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.SaveWorkflowAs"); } },
+            { separator: true },
+            { icon: "pi pi-download", label: xzgT("导出", "Export"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.ExportWorkflow"); } },
+            { icon: "pi pi-download", label: xzgT("导出 (API)", "Export (API)"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.ExportWorkflowAPI"); } },
+            { separator: true },
+            { icon: "pi pi-trash", label: xzgT("清除工作流", "Clear workflow"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.ClearWorkflow"); } },
+            { separator: true },
+            { icon: "pi pi-times", label: xzgT("关闭标签", "Close tab"), action: () => this._closeOwnedWorkflowTabs([workflow]) },
+            { icon: "pi pi-times", label: xzgT("关闭左侧标签", "Close tabs to the left"), disabled: index === 0, action: () => this._closeOwnedWorkflowTabs(workflows.slice(0, index)) },
+            { icon: "pi pi-times", label: xzgT("关闭右侧标签", "Close tabs to the right"), disabled: index === workflows.length - 1, action: () => this._closeOwnedWorkflowTabs(workflows.slice(index + 1)) },
+            { icon: "pi pi-times", label: xzgT("关闭其他标签", "Close other tabs"), disabled: workflows.length < 2, action: () => this._closeOwnedWorkflowTabs(workflows.filter(w => w !== workflow)) },
+        ];
+        if (possessModeOn) {
+            items.push(
+                { separator: true },
+                { icon: "pi pi-sign-out", label: xzgT("取消夺舍模式", "Exit possess mode"), exitPossess: true, action: () => this.togglePossessMode() },
+            );
+        }
+        for (const item of items) {
+            if (item.separator) {
+                const separator = document.createElement("div");
+                separator.className = "xzg-owned-workflow-menu-separator";
+                menu.appendChild(separator);
+                continue;
+            }
+            const row = document.createElement("div");
+            row.className = "xzg-owned-workflow-menu-item" + (item.disabled ? " disabled" : "");
+            if (item.exitPossess) row.classList.add("xzg-exit-possess");
+            if (item.icon) {
+                const icon = document.createElement("i");
+                icon.className = item.icon;
+                row.appendChild(icon);
+            }
+            const label = document.createElement("span");
+            label.textContent = item.label;
+            row.appendChild(label);
+            if (!item.disabled) row.addEventListener("click", async () => {
+                this._hideOwnedWorkflowContextMenu();
+                try { await item.action(); } catch (e) { console.warn("[小珠光] 工作流标签操作失败:", e); }
+            });
+            menu.appendChild(row);
+        }
+        document.body.appendChild(menu);
+        const rect = menu.getBoundingClientRect();
+        menu.style.left = Math.max(4, Math.min(event.clientX, innerWidth - rect.width - 4)) + "px";
+        menu.style.top = Math.max(4, Math.min(event.clientY, innerHeight - rect.height - 4)) + "px";
+        this._ownedWorkflowContextMenu = menu;
+        const dismiss = ev => {
+            if (ev.type === "keydown" && ev.key !== "Escape") return;
+            if (ev.type !== "keydown" && menu.contains(ev.target)) return;
+            this._hideOwnedWorkflowContextMenu();
+        };
+        this._ownedWorkflowMenuDismiss = dismiss;
+        setTimeout(() => {
+            window.addEventListener("pointerdown", dismiss, true);
+            document.addEventListener("mousedown", dismiss, true);
+            document.addEventListener("keydown", dismiss, true);
+        }, 0);
     }
 
     _findOfficialWorkflowButtons() {
@@ -2959,6 +3251,31 @@ class XZGWorkflowsManager {
             if (keywords.some(k => t.includes(k))) out.push(el);
         });
         return out;
+    }
+
+    _findOfficialWorkflowControls() {
+        const out = new Set();
+        const xzgBtn = document.querySelector(this._xzgTabBtnSel());
+        document.querySelectorAll(".new-blank-workflow-button").forEach(el => out.add(el));
+        document.querySelectorAll("button, [role='button']").forEach(el => {
+            if (xzgBtn && (el === xzgBtn || el.contains(xzgBtn))) return;
+            const labels = [el.textContent, el.getAttribute("aria-label"), el.getAttribute("title")]
+                .filter(Boolean).map(value => value.trim().toLowerCase());
+            // 画布左上角的工作流类型入口（中文“图形” / 英文“Graph”）。
+            if (!labels.some(label => /^(图形|graph)$/.test(label))) return;
+            out.add(el);
+            // 新版前端在模式入口左侧放了一个独立的图标按钮，同属这组画布模式控件。
+            const siblings = el.parentElement ? [...el.parentElement.children] : [];
+            const index = siblings.indexOf(el);
+            for (let i = index - 1; i >= 0; i--) {
+                const preceding = siblings[i];
+                if (preceding.matches?.("button, [role='button']")) {
+                    out.add(preceding);
+                    break;
+                }
+            }
+        });
+        return [...out];
     }
 
     // ====== 回收站 (A) ======

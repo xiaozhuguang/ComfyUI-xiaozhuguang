@@ -67,4 +67,4 @@ class XiaozhuguangBatchImageGetter:
 
 
 NODE_CLASS_MAPPINGS = {"XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter}
-NODE_DISPLAY_NAME_MAPPINGS = {"XiaozhuguangBatchImageGetter": "小珠光批次阻断器"}
+NODE_DISPLAY_NAME_MAPPINGS = {"XiaozhuguangBatchImageGetter": "小珠光图像获取"}
