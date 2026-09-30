@@ -652,6 +652,38 @@ try:
                 return
             existing_actions = {s.get("action") for s in cur_list if isinstance(s, dict)}
             added = []
+            # 遮罩编辑动作从 ComfyUI 原生命令改为图片加载器内部切换。
+            # 已有配置通常保存着 open_mask_editor: W；迁移其键位，避免新动作显示为空。
+            if "toggle_image_loader_mask" not in existing_actions:
+                legacy_mask = next(
+                    (s for s in cur_list if isinstance(s, dict) and s.get("action") == "open_mask_editor"),
+                    None,
+                )
+                mask_default = next(
+                    (s for s in dft_list if isinstance(s, dict) and s.get("action") == "toggle_image_loader_mask"),
+                    None,
+                )
+                if legacy_mask or mask_default:
+                    migrated_mask = dict(legacy_mask or mask_default)
+                    migrated_mask["action"] = "toggle_image_loader_mask"
+                    migrated_mask["label"] = (
+                        f"{'Ctrl+' if migrated_mask.get('ctrl') else ''}"
+                        f"{'Shift+' if migrated_mask.get('shift') else ''}"
+                        f"{'Alt+' if migrated_mask.get('alt') else ''}"
+                        f"{'Meta+' if migrated_mask.get('meta') else ''}"
+                        f"{str(migrated_mask.get('key') or '').upper()}"
+                    )
+                    cur_list.append(migrated_mask)
+                    existing_actions.add("toggle_image_loader_mask")
+                    added.append("toggle_image_loader_mask (从旧遮罩快捷键迁移)" if legacy_mask else "toggle_image_loader_mask")
+            # 删除不再支持的原生遮罩编辑动作，不能让其旧键位残留并占用按键。
+            filtered_list = [
+                s for s in cur_list
+                if not (isinstance(s, dict) and s.get("action") == "open_mask_editor")
+            ]
+            if len(filtered_list) != len(cur_list):
+                cur_list = filtered_list
+                added.append("移除旧 open_mask_editor 动作")
             for d in dft_list:
                 if not isinstance(d, dict):
                     continue

@@ -21,18 +21,185 @@ const IMAGE_MARGIN = 6;
 let _xzgImgSaveCtxMenu = null;
 let _xzgImgSaveCtxCurrentWidget = null;
 
+function _xzgImageSaveFormat(imgData, node) {
+    return imgData?.has_alpha ? "PNG" : (node?._xzgFormatWidget?.value || "JPG");
+}
+
+async function _xzgAddImageToMediaLibrary(imgData, node) {
+    if (!imgData) throw new Error(xzgTh("没有可收藏的图片", "No image is available to add"));
+
+    const format = _xzgImageSaveFormat(imgData, node).toLowerCase() === "png" ? "png" : "jpg";
+    let filename = "";
+    let subfolder = "";
+    let type = "";
+    if (imgData.real_token) {
+        const encoded = await api.fetchApi("/xzg_save_real", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index, format, quality: 90 }),
+        });
+        if (!encoded.ok) throw new Error(xzgTh("读取高清原图失败", "Could not retrieve the full-resolution image") + ` (HTTP ${encoded.status})`);
+        const info = await encoded.json();
+        filename = info.filename || "";
+        subfolder = info.subfolder || "";
+        type = info.type || "temp";
+    } else if (imgData.saved_filename) {
+        // 兼容没有原始像素令牌的旧工作流：只读取节点实际保存的原图，绝不回退到预览 URL。
+        filename = imgData.saved_filename;
+        subfolder = imgData.saved_subfolder || "";
+        type = imgData.saved_type || "output";
+    } else {
+        throw new Error(xzgTh("当前图片没有可用的高清原图，请重新执行保存节点", "Full-resolution source is unavailable. Re-run the image save node."));
+    }
+    if (!filename) throw new Error(xzgTh("后端没有返回高清图片", "The server did not return a full-resolution image"));
+
+    const sourceUrl = api.apiURL(`/view?${new URLSearchParams({ filename, subfolder, type }).toString()}`);
+    const source = await fetch(sourceUrl, { cache: "no-store" });
+    if (!source.ok) throw new Error(xzgTh("读取高清图片失败", "Could not load the full-resolution image") + ` (HTTP ${source.status})`);
+    const blob = await source.blob();
+    const ext = imgData.real_token
+        ? (format === "png" ? ".png" : ".jpg")
+        : (/png/i.test(blob.type) ? ".png" : ".jpg");
+    const originalName = imgData.saved_filename || imgData.name || filename;
+    const stem = originalName.split(/[\\/]/).pop().replace(/\.[^.]+$/, "") || "xzg-image";
+    const formData = new FormData();
+    formData.append("file", blob, `${stem}${ext}`);
+    const uploaded = await api.fetchApi("/xzg/media-library/upload", { method: "POST", body: formData });
+    const result = await uploaded.json().catch(() => ({}));
+    if (!uploaded.ok) throw new Error(result.error || `HTTP ${uploaded.status}`);
+    return result.name || `${stem}${ext}`;
+}
+
+function _xzgImageSaveMediaLibraryAction(imgData, node) {
+    _xzgAddImageToMediaLibrary(imgData, node).then((storedName) => {
+        app?.extensionManager?.toast?.add?.({
+            title: xzgTh("已收藏到媒体库", "Added to Media Library"),
+            message: storedName,
+            type: "success",
+            life: 2,
+        });
+    }).catch((error) => {
+        const message = error?.message || String(error);
+        if (app?.extensionManager?.toast?.add) {
+            app.extensionManager.toast.add({ title: xzgTh("收藏失败", "Add failed"), message, type: "error", life: 4 });
+        } else {
+            alert(`${xzgTh("收藏到媒体库失败", "Could not add to Media Library")}: ${message}`);
+        }
+    });
+}
+
+async function _xzgShowOriginalImage(imgData, node) {
+    if (!imgData) throw new Error(xzgTh("没有可查看的图片", "No image is available to view"));
+    let filename = "";
+    let subfolder = "";
+    let type = "";
+    if (imgData.real_token) {
+        const format = _xzgImageSaveFormat(imgData, node).toLowerCase() === "png" ? "png" : "jpg";
+        const encoded = await api.fetchApi("/xzg_save_real", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index, format, quality: 90 }),
+        });
+        if (!encoded.ok) throw new Error(xzgTh("读取高清原图失败", "Could not retrieve the full-resolution image") + ` (HTTP ${encoded.status})`);
+        const info = await encoded.json();
+        filename = info.filename || "";
+        subfolder = info.subfolder || "";
+        type = info.type || "temp";
+    } else if (imgData.saved_filename) {
+        filename = imgData.saved_filename;
+        subfolder = imgData.saved_subfolder || "";
+        type = imgData.saved_type || "output";
+    } else {
+        throw new Error(xzgTh("当前图片没有可用的高清原图，请重新执行保存节点", "Full-resolution source is unavailable. Re-run the image save node."));
+    }
+    if (!filename) throw new Error(xzgTh("后端没有返回高清图片", "The server did not return a full-resolution image"));
+
+    const src = api.apiURL(`/view?${new URLSearchParams({ filename, subfolder, type }).toString()}`);
+    const label = imgData.saved_filename || imgData.name || filename;
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:200000;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;overflow:hidden;";
+    const stage = document.createElement("div");
+    stage.style.cssText = "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:grab;touch-action:none;";
+    const image = document.createElement("img");
+    image.src = src;
+    image.alt = label;
+    image.draggable = false;
+    image.style.cssText = "position:relative;display:block;max-width:92vw;max-height:92vh;width:auto;height:auto;object-fit:contain;user-select:none;transform-origin:center center;";
+    let zoom = 1, tx = 0, ty = 0, dragging = false, startX = 0, startY = 0, baseX = 0, baseY = 0;
+    const updateImage = () => { image.style.transform = `translate(${tx}px,${ty}px) scale(${zoom})`; };
+    const onMove = (event) => {
+        if (!dragging) return;
+        tx = baseX + event.clientX - startX;
+        ty = baseY + event.clientY - startY;
+        updateImage();
+    };
+    const onUp = () => { dragging = false; stage.style.cursor = "grab"; };
+    const close = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        window.removeEventListener("keydown", onKeyDown, true);
+        overlay.remove();
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") close(); };
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.textContent = "×";
+    closeBtn.title = xzgTh("关闭（Esc）", "Close (Esc)");
+    closeBtn.style.cssText = "position:absolute;top:16px;right:18px;z-index:2;width:38px;height:38px;border:0;border-radius:50%;background:rgba(40,40,40,0.8);color:#fff;font-size:28px;line-height:1;cursor:pointer;";
+    closeBtn.addEventListener("click", close);
+    const hint = document.createElement("div");
+    hint.textContent = `${label} · ${xzgTh("滚轮缩放，拖动平移，Esc 关闭", "Wheel to zoom, drag to pan, Esc to close")}`;
+    hint.style.cssText = "position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:2;max-width:85vw;padding:6px 10px;border-radius:4px;background:rgba(0,0,0,0.6);color:#fff;font-size:12px;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    stage.appendChild(image);
+    overlay.append(stage, closeBtn, hint);
+    overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) close(); });
+    overlay.addEventListener("contextmenu", (event) => { event.preventDefault(); event.stopPropagation(); close(); });
+    stage.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const before = zoom;
+        zoom = Math.max(0.1, Math.min(12, zoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        const anchorX = event.clientX - window.innerWidth / 2 - tx;
+        const anchorY = event.clientY - window.innerHeight / 2 - ty;
+        tx -= anchorX * (zoom / before - 1);
+        ty -= anchorY * (zoom / before - 1);
+        updateImage();
+    }, { passive: false });
+    stage.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        dragging = true;
+        startX = event.clientX; startY = event.clientY; baseX = tx; baseY = ty;
+        stage.style.cursor = "grabbing";
+        event.preventDefault();
+    });
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKeyDown, true);
+    document.body.appendChild(overlay);
+}
+
+function _xzgImageSaveViewOriginalAction(imgData, node) {
+    _xzgShowOriginalImage(imgData, node).catch((error) => {
+        const message = error?.message || String(error);
+        if (app?.extensionManager?.toast?.add) {
+            app.extensionManager.toast.add({ title: xzgTh("打开原图失败", "Could not open original image"), message, type: "error", life: 4 });
+        } else {
+            alert(`${xzgTh("打开原图失败", "Could not open original image")}: ${message}`);
+        }
+    });
+}
+
 function _xzgImgSaveEnsureCtxMenu() {
     if (_xzgImgSaveCtxMenu) return _xzgImgSaveCtxMenu;
-    const menuItemStyle = "padding: 6px 16px; color: #ddd; cursor: pointer; font-size: 12px; white-space: nowrap;";
+    const menuItemStyle = "padding: 6px 14px; cursor: pointer; white-space: nowrap;";
     const menu = document.createElement("div");
     menu.style.cssText =
-        "position: fixed; z-index: 99999; background: #2a2a2a; border: 1px solid #555; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); display: none; min-width: 120px; padding: 4px 0;";
+        "position: fixed; z-index: 1000010; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 0; min-width: 140px; display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.4); font-size: 14px; color: var(--input-text); user-select: none;";
 
     // PNG 保存
     const pngItem = document.createElement("div");
     pngItem.style.cssText = menuItemStyle;
     pngItem.innerHTML = `<span style="color:#4CAF50;">${xzgTh("PNG保存", "Save PNG")}</span>`;
-    pngItem.addEventListener("mouseenter", () => { pngItem.style.background = "#3a3a3a"; });
+    pngItem.addEventListener("mouseenter", () => { pngItem.style.background = "var(--comfy-input-bg)"; });
     pngItem.addEventListener("mouseleave", () => { pngItem.style.background = ""; });
     pngItem.addEventListener("click", () => {
         const w = _xzgImgSaveCtxCurrentWidget;
@@ -43,12 +210,17 @@ function _xzgImgSaveEnsureCtxMenu() {
         if (cur) downloadImage(cur);
     });
     menu.appendChild(pngItem);
+    const dividerStyle = "width:82%;height:0;margin:2px auto;border-top:1px solid var(--input-text);opacity:.55;";
+    const pngSep = document.createElement("div");
+    pngSep.setAttribute("aria-hidden", "true");
+    pngSep.style.cssText = dividerStyle;
+    menu.appendChild(pngSep);
 
     // JPG 保存
     const jpgItem = document.createElement("div");
     jpgItem.style.cssText = menuItemStyle;
     jpgItem.innerHTML = `<span style="color:#4CAF50;">${xzgTh("JPG保存", "Save JPG")}</span>`;
-    jpgItem.addEventListener("mouseenter", () => { jpgItem.style.background = "#3a3a3a"; });
+    jpgItem.addEventListener("mouseenter", () => { jpgItem.style.background = "var(--comfy-input-bg)"; });
     jpgItem.addEventListener("mouseleave", () => { jpgItem.style.background = ""; });
     jpgItem.addEventListener("click", () => {
         const w = _xzgImgSaveCtxCurrentWidget;
@@ -61,17 +233,48 @@ function _xzgImgSaveEnsureCtxMenu() {
         downloadJpgImage(cur, { quality: 90 });
     });
     menu.appendChild(jpgItem);
+    const jpgSep = document.createElement("div");
+    jpgSep.setAttribute("aria-hidden", "true");
+    jpgSep.style.cssText = dividerStyle;
+    menu.appendChild(jpgSep);
 
-    // 分隔线
-    const sep = document.createElement("div");
-    sep.style.cssText = "height:1px;background:#555;margin:4px 0;";
-    menu.appendChild(sep);
+    const libraryItem = document.createElement("div");
+    libraryItem.style.cssText = menuItemStyle;
+    libraryItem.innerHTML = `<span style="color:#ddd;">${xzgTh("收藏到媒体库", "Add to Media Library")}</span>`;
+    libraryItem.addEventListener("mouseenter", () => { libraryItem.style.background = "var(--comfy-input-bg)"; });
+    libraryItem.addEventListener("mouseleave", () => { libraryItem.style.background = ""; });
+    libraryItem.addEventListener("click", () => {
+        const w = _xzgImgSaveCtxCurrentWidget;
+        _xzgImgSaveHideCtxMenu();
+        if (!w) return;
+        const imgs = w._value?.images || [];
+        const cur = imgs[w.currentIndex] || imgs[0];
+        if (cur) _xzgImageSaveMediaLibraryAction(cur, w.node);
+    });
+    menu.appendChild(libraryItem);
+    const librarySep = document.createElement("div");
+    librarySep.setAttribute("aria-hidden", "true");
+    librarySep.style.cssText = dividerStyle;
+    menu.appendChild(librarySep);
 
+    const originalItem = document.createElement("div");
+    originalItem.style.cssText = menuItemStyle;
+    originalItem.innerHTML = `<span style="color:#8ecbff;">${xzgTh("查看原图", "View Original Image")}</span>`;
+    originalItem.addEventListener("mouseenter", () => { originalItem.style.background = "var(--comfy-input-bg)"; });
+    originalItem.addEventListener("mouseleave", () => { originalItem.style.background = ""; });
+    originalItem.addEventListener("click", () => {
+        const w = _xzgImgSaveCtxCurrentWidget;
+        _xzgImgSaveHideCtxMenu();
+        if (!w) return;
+        const imgs = w._value?.images || [];
+        const cur = imgs[w.currentIndex] || imgs[0];
+        if (cur) _xzgImageSaveViewOriginalAction(cur, w.node);
+    });
     // 发送到小珠光图片加载器
     const sendItem = document.createElement("div");
     sendItem.style.cssText = menuItemStyle;
     sendItem.innerHTML = `<span style="color:#FFD700;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`;
-    sendItem.addEventListener("mouseenter", () => { sendItem.style.background = "#3a3a3a"; });
+    sendItem.addEventListener("mouseenter", () => { sendItem.style.background = "var(--comfy-input-bg)"; });
     sendItem.addEventListener("mouseleave", () => { sendItem.style.background = ""; });
     sendItem.addEventListener("click", () => {
         const w = _xzgImgSaveCtxCurrentWidget;
@@ -82,11 +285,19 @@ function _xzgImgSaveEnsureCtxMenu() {
         if (cur) _xzgSendToImageLoader(cur);
     });
     menu.appendChild(sendItem);
+    const sendSep = document.createElement("div");
+    sendSep.setAttribute("aria-hidden", "true");
+    sendSep.style.cssText = dividerStyle;
+    menu.appendChild(sendSep);
+    menu.appendChild(originalItem);
 
     menu._pngItem = pngItem;
     menu._jpgItem = jpgItem;
+    menu._pngSep = pngSep;
+    menu._jpgSep = jpgSep;
+    menu._librarySep = librarySep;
     menu._sendItem = sendItem;
-    menu._sendSep = sep;
+    menu._sendSep = sendSep;
     document.body.appendChild(menu);
 
     // 点击其他地方关闭菜单（pointerdown 覆盖鼠标+触摸，mousedown 兜底，contextmenu 处理右键，keydown Escape）
@@ -114,12 +325,13 @@ function _xzgImgSaveShowCtxMenu(widget, x, y) {
     // 当前图片含 alpha 通道时强制 PNG（JPG 无法保留透明度）
     const imgs = widget?._value?.images || [];
     const cur = imgs[widget.currentIndex] || imgs[0];
-    const forcePng = !!(cur && cur.has_alpha);
 
     // 根据 save_format 只显示对应菜单项（RGBA 时强制 PNG）
-    const fmt = forcePng ? "PNG" : (widget?.node?._xzgFormatWidget?.value || "JPG");
+    const fmt = _xzgImageSaveFormat(cur, widget?.node);
     if (menu._pngItem) menu._pngItem.style.display = (fmt === "PNG") ? "" : "none";
     if (menu._jpgItem) menu._jpgItem.style.display = (fmt === "JPG") ? "" : "none";
+    if (menu._pngSep) menu._pngSep.style.display = (fmt === "PNG") ? "" : "none";
+    if (menu._jpgSep) menu._jpgSep.style.display = (fmt === "JPG") ? "" : "none";
     const canSendToLoader = widget?.node?.type === XZG_IMAGE_SAVE_CUSTOM_TYPE;
     if (menu._sendItem) menu._sendItem.style.display = canSendToLoader ? "" : "none";
     if (menu._sendSep) menu._sendSep.style.display = canSendToLoader ? "" : "none";
@@ -695,7 +907,7 @@ class XzgImageSaveWidget {
         this.gridMode = false;
         this._mousePos = null;
         this._btnFade = 0;
-        this._hoverHintShownInHover = false;
+        this._hoverHintNextAt = 0;
         this._hoverHintUntil = 0;
         this._hoverHintTimer = null;
         this._lastClickT = 0;
@@ -980,35 +1192,39 @@ class XzgImageSaveWidget {
             };
         }
 
-        // 每次连续悬浮只显示一次操作提示，离开图片后重新允许提示。
+        // 鼠标悬浮时每 30 秒播放一次提示动画。
         if (imgLoaded && imgs.length > 1) {
             const inY = this._mousePos && this._mousePos[1] >= y && this._mousePos[1] <= y + nodeHeight;
             const inX = this._mousePos && this._mousePos[0] >= drawX && this._mousePos[0] <= drawX + drawW;
             const near = inY && inX;
             const now = Date.now();
-            if (!near && now >= this._hoverHintUntil) this._hoverHintShownInHover = false;
-            if (near && !this._hoverHintShownInHover) {
-                this._hoverHintShownInHover = true;
+            if (near && now >= this._hoverHintNextAt) {
                 this._hoverHintStart = now;
-                this._hoverHintUntil = now + 1500;
+                this._hoverHintNextAt = now + 30000;
+                // 圆环旋转 1 秒、竖线扫过 1 秒、暗色图标停留 10 秒、淡出 0.5 秒。
+                this._hoverHintUntil = now + 12500;
                 if (!this._hoverHintTimer) {
-                    // 定时刷新让提示淡出动画即使鼠标静止时也能完成。
+                    // 定时刷新让动画即使鼠标静止时也能完整播放。
                     this._hoverHintTimer = setInterval(() => {
                         if (Date.now() >= this._hoverHintUntil) {
                             clearInterval(this._hoverHintTimer);
                             this._hoverHintTimer = null;
+                            const delay = Math.max(0, this._hoverHintNextAt - Date.now());
+                            setTimeout(() => node.setDirtyCanvas(true, true), delay);
                         }
                         node.setDirtyCanvas(true, true);
                     }, 50);
                 }
             }
-            // 触发后完整播放淡入/停留/淡出，不因指针短暂移出图片而中断。
+            // 触发后完整播放，不因指针短暂移出图片而中断。
             if (now < this._hoverHintUntil) {
                 const elapsed = now - this._hoverHintStart;
                 const remaining = this._hoverHintUntil - now;
                 const fadeIn = Math.min(1, elapsed / 500);
                 const fadeOut = Math.min(1, remaining / 500);
                 const alpha = Math.min(fadeIn, fadeOut);
+                const ringDuration = 1000;
+                const scanDuration = 1000;
                 const [cx0, cx1, cx2] = iconCenters;
                 ctx.save();
                 ctx.globalAlpha *= alpha;
@@ -1023,8 +1239,33 @@ class XzgImageSaveWidget {
                 ctx.strokeStyle = "rgba(255,255,255,0.2)";
                 ctx.lineWidth = 3 * iconScale;
                 ctx.beginPath();
-                ctx.arc(cx1, iconY, 20 * iconScale, 0, Math.PI * 2);
-                ctx.stroke();
+                if (elapsed < ringDuration) {
+                    const ringProgress = Math.max(0, elapsed / ringDuration);
+                    const angle = -Math.PI / 2 + ringProgress * Math.PI * 2;
+                    const arcLength = Math.PI * 1.5;
+                    ctx.arc(cx1, iconY, 20 * iconScale, angle, angle + arcLength);
+                    ctx.stroke();
+                    const headX = cx1 + Math.cos(angle + arcLength) * 20 * iconScale;
+                    const headY = iconY + Math.sin(angle + arcLength) * 20 * iconScale;
+                    ctx.beginPath();
+                    ctx.arc(headX, headY, 2.5 * iconScale, 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    ctx.arc(cx1, iconY, 20 * iconScale, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+
+                // 圆环转完后，竖向扫描线从节点图像控件左侧扫到右侧。
+                if (elapsed >= ringDuration && elapsed < ringDuration + scanDuration) {
+                    const scanProgress = (elapsed - ringDuration) / scanDuration;
+                    const scanX = nodeImageLeft + nodeImageWidth * scanProgress;
+                    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+                    ctx.lineWidth = 2 * iconScale;
+                    ctx.beginPath();
+                    ctx.moveTo(scanX, y);
+                    ctx.lineTo(scanX, y + nodeHeight);
+                    ctx.stroke();
+                }
 
                 ctx.fillStyle = "rgba(255,255,255,0.2)";
                 ctx.fillText("▶", cx2, iconY);
@@ -1700,12 +1941,20 @@ app.registerExtension({
                             callback: () => { downloadJpgImage(cur); }
                         });
                     }
+                    saveOpts.push({
+                        content: `<span style="color:#ddd;">${xzgTh("收藏到媒体库", "Add to Media Library")}</span>`,
+                        callback: () => { _xzgImageSaveMediaLibraryAction(cur, this); }
+                    });
                     if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
                         saveOpts.push({
                             content: `<span style="color:#FFD700;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
                             callback: () => { _xzgSendToImageLoader(cur); }
                         });
                     }
+                    saveOpts.push({
+                        content: `<span style="color:#8ecbff;">${xzgTh("查看原图", "View Original Image")}</span>`,
+                        callback: () => { _xzgImageSaveViewOriginalAction(cur, this); }
+                    });
                     options.splice(0, 0, ...saveOpts, null);
                 }
             };

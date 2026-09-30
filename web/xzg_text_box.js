@@ -233,9 +233,9 @@ function _showGodPromptHistory(node, textarea) {
             const favorite = document.createElement("button");
             favorite.type = "button";
             favorite.textContent = xzgLang() === "en" ? "Add to Favorites" : "收藏";
-            favorite.style.cssText = "padding:6px 12px;border:0;border-radius:3px;background:transparent;color:#eee;cursor:pointer;white-space:nowrap";
-            favorite.addEventListener("mouseenter", () => { favorite.style.background = "#3b3d40"; });
-            favorite.addEventListener("mouseleave", () => { favorite.style.background = "transparent"; });
+            favorite.style.cssText = "padding:6px 12px;border:0;border-radius:3px;background:transparent;color:#eee;cursor:pointer;white-space:nowrap;font-size:16px;";
+            favorite.addEventListener("mouseenter", () => { favorite.style.color = "#e7b94f"; favorite.style.fontWeight = "bold"; });
+            favorite.addEventListener("mouseleave", () => { favorite.style.color = "#eee"; favorite.style.fontWeight = ""; });
             favorite.addEventListener("click", async clickEvent => {
                 clickEvent.preventDefault(); clickEvent.stopPropagation();
                 favorite.disabled = true;
@@ -293,7 +293,7 @@ function _installGodPromptHistory(node, textarea) {
     button.textContent = "◷";
     button.title = xzgLang() === "en" ? "Prompt history (last 100)" : "历史提示词（最近 100 条）";
     button.setAttribute("aria-label", button.title);
-    button.style.cssText = "position:absolute;left:6px;bottom:6px;z-index:20;width:26px;height:26px;padding:0;border:0;border-radius:0;background:transparent;color:inherit;font:19px/26px sans-serif;cursor:pointer;opacity:.72;transition:opacity .15s ease";
+    button.style.cssText = "position:absolute;left:0;bottom:0;z-index:20;width:26px;height:26px;padding:0;border:0;border-radius:0;background:transparent;color:#b8b8b8;font:19px/26px sans-serif;cursor:pointer;opacity:.3;transition:opacity .15s ease";
     button.addEventListener("mouseenter", () => { button.style.opacity = "1"; });
     button.addEventListener("mouseleave", () => { button.style.opacity = ".72"; });
     button.addEventListener("pointerdown", event => event.stopPropagation());
@@ -312,9 +312,9 @@ function _installGodPromptHistory(node, textarea) {
             const favorite = document.createElement("button");
             favorite.type = "button";
             favorite.textContent = xzgLang() === "en" ? "Add to Favorites" : "收藏";
-            favorite.style.cssText = "padding:6px 12px;border:0;border-radius:3px;background:transparent;color:#eee;cursor:pointer;white-space:nowrap";
-            favorite.addEventListener("mouseenter", () => { favorite.style.background = "#3b3d40"; });
-            favorite.addEventListener("mouseleave", () => { favorite.style.background = "transparent"; });
+            favorite.style.cssText = "padding:6px 12px;border:0;border-radius:3px;background:transparent;color:#eee;cursor:pointer;white-space:nowrap;font-size:16px;";
+            favorite.addEventListener("mouseenter", () => { favorite.style.color = "#e7b94f"; favorite.style.fontWeight = "bold"; });
+            favorite.addEventListener("mouseleave", () => { favorite.style.color = "#eee"; favorite.style.fontWeight = ""; });
             favorite.addEventListener("click", async clickEvent => {
                 clickEvent.preventDefault(); clickEvent.stopPropagation();
                 favorite.disabled = true;
@@ -490,7 +490,7 @@ async function _openGodPresetManagerTree(node) {
     overlay.style.cssText = "position:fixed;inset:0;z-index:2000005;background:#0009;display:block;padding:20px;box-sizing:border-box";
     const dialog = document.createElement("div");
     dialog.style.cssText = "box-sizing:border-box;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100vw - 40px));height:min(700px,calc(100vh - 40px));display:flex;flex-direction:column;background:#202124;color:#fff;border:1px solid #555;border-radius:8px;box-shadow:0 16px 48px #0009;font:13px Arial,sans-serif;overflow:hidden";
-    dialog.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none;user-select:none;-webkit-user-select:none"><span data-title style="flex:1">${zh ? "提示词预设管理" : "Prompt Preset Manager"}</span><button data-close style="background:transparent;border:0;border-radius:0;color:#e7b94f;padding:5px 8px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "确认" : "Confirm"}</button></div><div data-home style="flex:1;overflow:auto;padding:12px 16px"></div><div data-editor style="display:none;flex:1;flex-direction:column;min-height:0;padding:12px 16px"><div data-editor-label style="color:#9db7a6;margin-bottom:8px"></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 0 10px"><button data-back>${zh ? "返回分类" : "Back to categories"}</button><button data-import-content>${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><button data-save-content>${zh ? "保存内容" : "Save content"}</button></div><textarea data-editor-text spellcheck="false" style="box-sizing:border-box;flex:1;min-height:100px;resize:none;padding:10px;background:#151617;color:#eee;border:1px solid #555;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea></div><div data-resize title="${zh ? "拖动调整窗口大小" : "Drag to resize"}" style="position:absolute;right:1px;bottom:1px;width:18px;height:18px;cursor:nwse-resize;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 48%,#666 49% 55%,transparent 56% 66%,#888 67% 73%,transparent 74%)"></div>`;
+    dialog.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none;user-select:none;-webkit-user-select:none"><span data-title style="flex:1">${zh ? "提示词预设管理" : "Prompt Preset Manager"}</span><button data-close style="background:transparent;border:0;border-radius:0;color:#e7b94f;padding:5px 8px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "确认" : "Confirm"}</button></div><div data-home style="flex:1;overflow:auto;padding:12px 16px"></div><div data-editor style="display:none;flex:1;flex-direction:column;min-height:0;padding:12px 16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><select data-editor-category style="flex:none;padding:5px 8px;background:#151617;color:#9db7a6;border:1px solid #555;border-radius:4px;font-size:13px;max-width:40%"></select><span style="color:#555">/</span><input data-editor-name type="text" spellcheck="false" style="flex:1;min-width:0;padding:5px 8px;background:#151617;color:#eee;border:1px solid #555;border-radius:4px;font-size:13px" /></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 0 10px"><button data-import-content>${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><button data-back>${zh ? "取消" : "Cancel"}</button><button data-save-content>${zh ? "保存" : "Save"}</button></div><textarea data-editor-text spellcheck="false" style="box-sizing:border-box;flex:1;min-height:100px;resize:none;padding:10px;background:#151617;color:#eee;border:1px solid #555;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea></div><div data-resize title="${zh ? "拖动调整窗口大小" : "Drag to resize"}" style="position:absolute;right:1px;bottom:1px;width:18px;height:18px;cursor:nwse-resize;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 48%,#666 49% 55%,transparent 56% 66%,#888 67% 73%,transparent 74%)"></div>`;
     overlay.appendChild(dialog); document.body.appendChild(overlay);
     const dragStyle = document.createElement("style");
     dragStyle.textContent = `
@@ -567,7 +567,6 @@ async function _openGodPresetManagerTree(node) {
     addSubButton.title = zh ? "增加子项" : "Add item";
     addSubButton.style.cssText = "box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;padding:0;background:transparent;border:0;border-radius:0;font:32px/32px Arial,sans-serif;cursor:pointer";
     addSubButton.style.color = "#fff";
-    dialog.querySelector("[data-editor-label]").style.color = "#fff";
     const categoryOrder = category => {
         if (category === _GOD_FAVORITES_CATEGORY) return -10000;
         const entries = Object.values(working);
@@ -724,7 +723,7 @@ async function _openGodPresetManagerTree(node) {
     categoryList.addEventListener("dragend", () => { clearInsertMarker(categoryList); categoryInsertIndex = null; });
     let onExternalPresets = null;
     const close = () => { document.removeEventListener("keydown", onKey, true); if (onExternalPresets) window.removeEventListener("xzg:text-box-presets-imported", onExternalPresets); overlay.remove(); node._xzgGodPresetDialogOpen = false; };
-    const openEditor = key => { const p = working[key]; if (!p) return; editingKey = key; title.textContent = zh ? "编辑细分内容" : "Edit Subcategory Content"; closeButton.disabled = true; closeButton.style.opacity = "0.45"; closeButton.style.cursor = "not-allowed"; dialog.querySelector("[data-editor-label]").textContent = `${p.category} / ${_godPresetChildName(key, p)}`; textArea.value = typeof p.text === "string" ? p.text : ""; home.style.display = "none"; editorView.style.display = "flex"; textArea.focus(); };
+    const openEditor = key => { const p = working[key]; if (!p) return; editingKey = key; title.textContent = zh ? "编辑细分内容" : "Edit Subcategory Content"; closeButton.disabled = true; closeButton.style.opacity = "0.45"; closeButton.style.cursor = "not-allowed"; const catSelect = dialog.querySelector("[data-editor-category]"); catSelect.innerHTML = categories().map(c => `<option value="${c.replace(/"/g, "&quot;")}"${c === String(p.category || "") ? " selected" : ""}>${c === _GOD_FAVORITES_CATEGORY ? "★ " + c : c}</option>`).join(""); dialog.querySelector("[data-editor-name]").value = _godPresetChildName(key, p); textArea.value = typeof p.text === "string" ? p.text : ""; home.style.display = "none"; editorView.style.display = "flex"; textArea.focus(); };
     const createSubcategory = async category => {
         if (!category) return;
         const name = await askText(zh ? `在“${category}”中增加子项` : `Add an item to “${category}”`); if (!name) return;
@@ -732,6 +731,43 @@ async function _openGodPresetManagerTree(node) {
         const nextOrder = Object.values(working).filter(p => p?.category === category && !p?._categoryOnly).reduce((max, p) => Math.max(max, Number.isFinite(p.order) ? p.order : -1000), -1000) + 1000;
         working[key] = { category, name, text: "", order: nextOrder };
         await save(); render();
+    };
+    const moveSubcategory = (key, event) => {
+        const p = working[key];
+        if (!p) return;
+        const currentCat = String(p.category || "");
+        const targets = categories().filter(c => c !== currentCat);
+        if (!targets.length) { notify(zh ? "没有其他分类可移动" : "No other categories to move to"); return; }
+        document.querySelector(".xzg-preset-move-menu")?.remove();
+        const menu = document.createElement("div");
+        menu.className = "xzg-preset-move-menu";
+        menu.style.cssText = `position:fixed;z-index:2147483647;left:${event.clientX}px;top:${event.clientY}px;min-width:150px;max-height:260px;overflow:auto;background:#2a2a2a;border:1px solid #555;border-radius:5px;box-shadow:0 4px 14px #0009;padding:4px 0`;
+        for (const cat of targets) {
+            const item = document.createElement("div");
+            item.textContent = cat === _GOD_FAVORITES_CATEGORY ? `★ ${cat}` : cat;
+            item.style.cssText = "padding:7px 14px;cursor:pointer;color:#ddd;font-size:13px;white-space:nowrap";
+            item.addEventListener("mouseenter", () => { item.style.background = "#3a3a3a"; item.style.color = "#e7b94f"; });
+            item.addEventListener("mouseleave", () => { item.style.background = "transparent"; item.style.color = "#ddd"; });
+            item.addEventListener("click", async () => {
+                menu.remove();
+                const name = _godPresetChildName(key, p);
+                const nextKey = keyFor(cat, name, key);
+                const moved = { ...p, category: cat };
+                if (cat !== _GOD_FAVORITES_CATEGORY) delete moved._xzgFavorite;
+                working[nextKey] = moved;
+                delete working[key];
+                await save();
+                selectedCategory = cat;
+                render();
+            });
+            menu.appendChild(item);
+        }
+        document.body.appendChild(menu);
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth - 4) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+        if (rect.bottom > window.innerHeight - 4) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+        const dismiss = e => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("pointerdown", dismiss, true); } };
+        setTimeout(() => document.addEventListener("pointerdown", dismiss, true), 0);
     };
     const renameCategory = async category => {
         const next = await askText(zh ? `重命名提示词类型“${category}”` : `Rename prompt type “${category}”`, category); if (!next || next === category) return;
@@ -840,16 +876,11 @@ async function _openGodPresetManagerTree(node) {
             const hasContent = typeof p.text === "string" && p.text.trim().length > 0;
             const contentDot = hasContent ? document.createElement("span") : null;
             if (contentDot) { contentDot.title = zh ? "已有编辑内容" : "Has content"; contentDot.setAttribute("aria-label", contentDot.title); contentDot.style.cssText = "width:6px;height:6px;flex:none;border-radius:50%;background:#fff;box-shadow:0 0 4px rgba(255,255,255,.65)"; }
-            const rename = button(zh ? "重命名" : "Rename", async () => {
-                const next = await askText(zh ? `重命名子项“${name.textContent}”` : `Rename item “${name.textContent}”`, name.textContent); if (!next || next === name.textContent) return;
-                const nextKey = keyFor(selectedCategory, next, key);
-                working[nextKey] = { ...p, name: next }; delete working[key]; await save(); render();
-            });
             const edit = button(zh ? "编辑内容" : "Edit Content", () => openEditor(key));
             const del = button(zh ? "删除" : "Delete", async () => { if (!await askConfirm(zh ? `确定删除子项“${name.textContent}”及其提示词？` : `Delete item “${name.textContent}” and its prompt?`)) return; delete working[key]; await save(); render(); }, true);
-            for (const b of [rename, edit]) b.style.cssText += ";background:transparent;border:0;color:#fff";
+            edit.style.cssText += ";background:transparent;border:0;color:#fff";
             del.style.cssText += ";background:transparent;border:0;color:#c75c5c";
-            card.append(dragHandle); if (contentDot) card.append(contentDot); card.append(name, rename, edit, del); subcategoryList.appendChild(card);
+            card.append(dragHandle); if (contentDot) card.append(contentDot); card.append(name, edit, del); subcategoryList.appendChild(card);
         }
     };
     addSubButton.addEventListener("click", () => createSubcategory(selectedCategory));
@@ -865,7 +896,34 @@ async function _openGodPresetManagerTree(node) {
     };
     window.addEventListener("xzg:text-box-presets-imported", onExternalPresets);
     render();
-    dialog.querySelector("[data-save-content]").addEventListener("click", async () => { if (!editingKey || !working[editingKey]) return; working[editingKey].text = textArea.value; working[editingKey].updatedAt = new Date().toISOString(); await save(); editorView.style.display = "none"; home.style.display = "flex"; closeButton.disabled = false; closeButton.style.opacity = "1"; closeButton.style.cursor = "pointer"; title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager"; render(); });
+    dialog.querySelector("[data-save-content]").addEventListener("click", async () => {
+        if (!editingKey || !working[editingKey]) return;
+        const p = working[editingKey];
+        const newCat = dialog.querySelector("[data-editor-category]").value;
+        const newName = dialog.querySelector("[data-editor-name]").value.trim();
+        const oldCat = String(p.category || "");
+        const oldName = _godPresetChildName(editingKey, p);
+        const catChanged = newCat && newCat !== oldCat;
+        const nameChanged = newName && newName !== oldName;
+        if (catChanged || nameChanged) {
+            const targetCat = newCat || oldCat;
+            const targetName = newName || oldName;
+            const nextKey = keyFor(targetCat, targetName, editingKey);
+            const moved = { ...p, category: targetCat, name: targetName, text: textArea.value, updatedAt: new Date().toISOString() };
+            if (targetCat !== _GOD_FAVORITES_CATEGORY) delete moved._xzgFavorite;
+            working[nextKey] = moved;
+            delete working[editingKey];
+            selectedCategory = targetCat;
+        } else {
+            p.text = textArea.value;
+            p.updatedAt = new Date().toISOString();
+        }
+        await save();
+        editorView.style.display = "none"; home.style.display = "flex";
+        closeButton.disabled = false; closeButton.style.opacity = "1"; closeButton.style.cursor = "pointer";
+        title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager";
+        render();
+    });
     dialog.querySelector("[data-back]").addEventListener("click", () => { editorView.style.display = "none"; home.style.display = "flex"; closeButton.disabled = false; closeButton.style.opacity = "1"; closeButton.style.cursor = "pointer"; title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager"; render(); });
     dialog.querySelector("[data-close]").addEventListener("click", close);
     const onKey = event => { if (event.key === "Escape" && !document.querySelector("[data-modal]")) close(); }; document.addEventListener("keydown", onKey, true);
@@ -897,11 +955,12 @@ function _installGodPresetControls(node) {
             }
             if (presetWidget) presetWidget.value = "";
             _syncGodPresetWidget(node, _readGodPresetsLocal(), true);
-            if (previousCategory === "无" && nextCategory !== "无") {
-                const detail = String(presetWidget?.value || "");
+            // 切换分类后，若细分已被自动选中（例如该分类只有一个细分），自动把提示词带入文本框
+            const detail = String(presetWidget?.value || "");
+            if (detail && detail !== "无") {
                 const presets = _readGodPresetsLocal();
-                const key = _godPresetKeyForSelection(presets, nextCategory, detail);
-                if (detail && Object.prototype.hasOwnProperty.call(presets, key)) {
+                const key = _godPresetKeyForSelection(presets, nextCategory === "无" ? "" : nextCategory, detail);
+                if (Object.prototype.hasOwnProperty.call(presets, key)) {
                     _applyGodPreset(node, key, presets);
                 }
             }
@@ -997,8 +1056,8 @@ function applyBilingual(node) {
         }
         // label
         txt.label = isEn ? _tr("文本") : (isGodTier ? "文本" : (txt._xzgOrigLabel || "text"));
-        // placeholder
-        const want = isEn ? _placeholderForLang(isGodTier) : txt._xzgOrigPlaceholder;
+        // placeholder（化神级不显示暗色注释说明）
+        const want = isGodTier ? "" : (isEn ? _placeholderForLang(isGodTier) : txt._xzgOrigPlaceholder);
         if (txt.element && typeof txt.element.setAttribute === "function") {
             if (txt.element.getAttribute("placeholder") !== want) {
                 txt.element.setAttribute("placeholder", want);
@@ -1028,29 +1087,8 @@ function ensureTextarea(node) {
     const tag = (ta) => {
         if (!ta) return;
         if (!ta._xzgTagged) { ta._xzgTagged = true; ta.classList.add("xzg-text-box"); }
-        if (!ta._xzgFocusBorderGuard) {
-            ta._xzgFocusBorderGuard = true;
-            const applyWhiteFocusBorder = () => {
-                ta.style.setProperty("border", "1px solid #fff", "important");
-                ta.style.setProperty("outline", "1px solid #fff", "important");
-                ta.style.setProperty("outline-offset", "0", "important");
-                ta.style.setProperty("box-shadow", "none", "important");
-            };
-            ta.addEventListener("focus", applyWhiteFocusBorder);
-            // ComfyUI/LiteGraph may update widget inline styles after focus. Reapply
-            // while focused so those writes cannot leave the active border black.
-            ta.addEventListener("input", applyWhiteFocusBorder);
-            ta.addEventListener("keyup", applyWhiteFocusBorder);
-            ta.addEventListener("pointerup", applyWhiteFocusBorder);
-            ta.addEventListener("blur", () => {
-                for (const property of ["border", "outline", "outline-offset", "box-shadow"]) {
-                    ta.style.removeProperty(property);
-                }
-            });
-            if (document.activeElement === ta) applyWhiteFocusBorder();
-        }
         const isGodTier = node.type === _NODE_TYPE_GOD || node.comfyClass === _NODE_TYPE_GOD;
-        const want = _placeholderForLang(isGodTier);
+        const want = isGodTier ? "" : _placeholderForLang(isGodTier);
         if (ta.getAttribute("placeholder") !== want) {
             ta.setAttribute("placeholder", want);
         }
@@ -1073,12 +1111,16 @@ function ensureTextarea(node) {
             const ta = root.querySelector("textarea");
             if (ta) { tag(ta); return true; }
         }
+        // 通过 widget.element 直接定位（最可靠，不依赖 placeholder 文本）
+        const txtWidget = node.widgets?.find(w => w?.name === "text");
+        if (txtWidget?.element) { tag(txtWidget.element); return true; }
         // ComfyUI can mount multiline widgets in a shared overlay without node-id
-        // attributes. The God Tier placeholder is unique, so use it as a fallback.
+        // attributes. Fallback: match any textarea already tagged, or one inside this node.
         if (node.type === _NODE_TYPE_GOD || node.comfyClass === _NODE_TYPE_GOD) {
-            const ta = [...document.querySelectorAll("textarea")].find(item =>
-                /小珠光文本框-化神级|Text Box - God Tier/i.test(item.getAttribute("placeholder") || "")
-            );
+            const ta = [...document.querySelectorAll("textarea.xzg-text-box")].find(item => {
+                const nid = item.closest("[data-node-id]")?.getAttribute("data-node-id");
+                return nid == null || String(nid) === String(wid);
+            });
             if (ta) { tag(ta); return true; }
         }
         return false;
@@ -1107,52 +1149,8 @@ textarea.xzg-text-box::placeholder {
     font-size: 14px;
     line-height: 1.5;
     opacity: 0.55;
-}
-textarea.xzg-text-box:focus,
-textarea.xzg-text-box:focus-visible {
-    border: 1px solid #fff !important;
-    outline: 1px solid #fff !important;
-    box-shadow: none !important;
-    outline-offset: 0;
 }`;
     document.head.appendChild(s);
-})();
-
-// ComfyUI 会在画布控件获得焦点时才创建/挂载 multiline textarea。
-// 这时按 node.id 查找可能错过输入框；用委托焦点事件兜底，直接识别本节点占位符。
-(function () {
-    if (window.__xzg_text_box_focus_border_fixed) return;
-    window.__xzg_text_box_focus_border_fixed = true;
-    const focusProperties = ["border", "outline", "outline-offset", "box-shadow"];
-    const isTextBoxTextarea = el => el instanceof HTMLTextAreaElement && (
-        el.classList.contains("xzg-text-box") ||
-        /小珠光文本框|Xiaozhuguang Text Box/i.test(el.getAttribute("placeholder") || "")
-    );
-    const applyWhiteBorder = el => {
-        el.classList.add("xzg-text-box");
-        el.style.setProperty("border", "1px solid #fff", "important");
-        el.style.setProperty("outline", "1px solid #fff", "important");
-        el.style.setProperty("outline-offset", "0", "important");
-        el.style.setProperty("box-shadow", "none", "important");
-    };
-    let focusedTextarea = null;
-    let styleObserver = null;
-    document.addEventListener("focusin", event => {
-        const el = event.target;
-        if (!isTextBoxTextarea(el)) return;
-        focusedTextarea = el;
-        applyWhiteBorder(el);
-        styleObserver?.disconnect();
-        styleObserver = new MutationObserver(() => applyWhiteBorder(el));
-        styleObserver.observe(el, { attributes: true, attributeFilter: ["style"] });
-    }, true);
-    document.addEventListener("focusout", event => {
-        if (event.target !== focusedTextarea) return;
-        styleObserver?.disconnect();
-        styleObserver = null;
-        for (const property of focusProperties) focusedTextarea.style.removeProperty(property);
-        focusedTextarea = null;
-    }, true);
 })();
 
 // 全局 capture：textarea 不可滚动时把 wheel 转发给画布缩放

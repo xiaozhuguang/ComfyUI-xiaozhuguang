@@ -233,14 +233,14 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
     @_PS.instance.routes.get("/xzg/davinci/status")
     @_safe_handler
     async def xzg_davinci_status(request):
-        """检查达芬奇是否可连接，并返回当前项目/时间线/播放头所在片段信息。"""
+        """检查达芬奇是否可连接，并返回当前时间线手工视频入出点状态。"""
         result = _call_bridge({"action": "status"})
         return _web.json_response(result)
 
     @_PS.instance.routes.post("/xzg/davinci/export")
     @_safe_handler
     async def xzg_davinci_export(request):
-        """触发从达芬奇导出当前播放头所在片段为视频。
+        """触发从达芬奇导出当前时间线手工设置的入出点范围。
         返回 { ok, filename, clip:{name,start,end} }，filename 为 input 相对文件名。"""
         data = await request.json()
         input_dir = folder_paths.get_input_directory()

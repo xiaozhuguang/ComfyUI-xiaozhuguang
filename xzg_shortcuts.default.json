@@ -87,7 +87,7 @@
       "shift": false,
       "alt": false,
       "meta": false,
-      "action": "open_mask_editor",
+      "action": "toggle_image_loader_mask",
       "label": "W"
     },
     {

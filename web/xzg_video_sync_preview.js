@@ -444,6 +444,8 @@ function openImageCompare(items) {
     for (let index = 0; index < cells.length; index++) {
         const { holder } = cells[index];
         holder.addEventListener("wheel", (e) => {
+            // 划像模式由重叠容器统一处理滚轮，避免重叠图层上的事件选错缩放源。
+            if (wipeOn) return;
             e.preventDefault();
             activeIndex = index;
             updateZoomModeUI();
@@ -490,12 +492,34 @@ function openImageCompare(items) {
     }
     updateZoomModeUI();
     let dragging = false;
-    const moveWipe = (e) => { if (!dragging) return; const r = wipe.getBoundingClientRect(); wipeX = Math.max(0, Math.min(100, (e.clientX-r.left)/r.width*100)); updateWipe(); };
+    const followWipePointer = (e) => {
+        const r = wipe.getBoundingClientRect();
+        if (!r.width) return;
+        wipeX = Math.max(0, Math.min(100, (e.clientX - r.left) / r.width * 100));
+        updateWipe();
+    };
+    // 与视频对比划线一致：悬停移动时分界线持续跟随鼠标，无需按住拖动。
+    wipe.addEventListener("mousemove", followWipePointer);
+    wipe.addEventListener("wheel", (e) => {
+        if (!wipeOn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = wipe.getBoundingClientRect();
+        if (!rect.width) return;
+        const pointerPct = (e.clientX - rect.left) / rect.width * 100;
+        const onTopImage = pointerPct >= wipeX;
+        const index = onTopImage ? (swapped ? 0 : 1) : (swapped ? 1 : 0);
+        activeIndex = index;
+        updateZoomModeUI();
+        zoomAt(index, e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY, cells[index].holder);
+    }, { passive: false });
+    const moveWipe = (e) => { if (dragging) followWipePointer(e); };
     divider.onmousedown = (e) => { dragging = true; e.preventDefault(); };
     overlay._xzgWipeMove = moveWipe;
     overlay._xzgWipeUp = () => { dragging = false; };
     window.addEventListener("mousemove", moveWipe, true);
     window.addEventListener("mouseup", overlay._xzgWipeUp, true);
+    if (cells.length === 2) setWipe(true);
     win.append(header, grid, wipe); overlay.appendChild(win); document.body.appendChild(overlay);
     overlay._xzgOnKey = (e) => { if (e.key === "Escape") closeSyncPreview(); };
     document.addEventListener("keydown", overlay._xzgOnKey, true);
@@ -642,14 +666,8 @@ function _ensureStyle() {
     }
     .xzg-sp-wipe-divider::before {
         content: ""; position: absolute; top: 0; bottom: 0; left: 50%;
-        width: 3px; transform: translateX(-50%);
+        width: 1px; transform: translateX(-50%);
         background: #dcc85b; box-shadow: 0 0 8px rgba(0,0,0,.7);
-    }
-    .xzg-sp-wipe-divider::after {
-        content: "◀ ▶"; position: absolute; top: 50%; left: 50%;
-        transform: translate(-50%, -50%);
-        background: #dcc85b; color: #222; font-size: 10px;
-        padding: 2px 4px; border-radius: 3px; white-space: nowrap;
     }
     /* 划像区域内禁用元素原生拖拽/文本选中，防止按住拖动时出现禁用光标 */
     .xzg-sp-wipe, .xzg-sp-wipe * { -webkit-user-drag: none; user-select: none; }
@@ -1314,6 +1332,8 @@ function openSyncPreview(items) {
     overlay._xzgPanUp = onPanUp;
     recordHolderBase(); // 初始布局下记录各窗格基线
     applyZoomText();
+    // 缩放状态与基线初始化后再默认启用双视频划像，避免访问尚未初始化的 let 状态。
+    if (_n === 2) setWipeMode(true);
     _syncLoopOn = true;
     _syncMuted = true;
 

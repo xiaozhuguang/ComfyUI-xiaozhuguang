@@ -15,6 +15,7 @@ const PANEL_ID = "xzg-viewport-lock-btn-v4";
 const EXTRA_KEY = "xzg_viewport_slots";  // graph.extra 中的字段名（随工作流持久化）
 const CONFIG_KEY = "xzg_viewport_lock_config_v4";
 const GOLD = "#dcc85b";
+const TOOLBAR_GOLD = "#CDA56D";
 const GRAY = "#999";
 const SLOT_COUNT = 9;
 
@@ -349,7 +350,7 @@ function updateMainIcon() {
     const iconBox = menuBtn.querySelector(".xzg-vp-icon");
     if (!iconBox) return;
     // 无记录（新建/未记录过的工作流）或有记录，统一只显示空心圆环（targetIcon），不显示"空"文字
-    iconBox.innerHTML = targetIcon(GOLD, 25);
+    iconBox.innerHTML = targetIcon(TOOLBAR_GOLD, 25);
 }
 
 // 主图标临时显示某个槽位的圆圈（覆盖靶心），与展开槽位同等大小，一段时间后恢复

@@ -1,7 +1,11 @@
 import os
 import io
 import hashlib
+import time
 import json
+import base64
+import shutil
+import tempfile
 import torch
 import numpy as np
 from PIL import Image, ImageOps
@@ -96,6 +100,7 @@ def _routes():
 routes = _routes()
 
 _thumb_cache_dir = None
+_media_thumb_cache_dir = None
 DEFAULT_THUMB_SIZE = 256
 
 
@@ -119,6 +124,69 @@ def _get_thumb_cache_dir():
     return _thumb_cache_dir
 
 
+def _get_media_thumb_cache_dir():
+    global _media_thumb_cache_dir
+    if _media_thumb_cache_dir is None:
+        # 媒体库缩略图缓存放系统临时目录（与其他图片缩略图同类位置），每月自动清理，不占用 ComfyUI 项目目录
+        try:
+            root = tempfile.gettempdir()
+        except Exception:
+            root = _media_library_dir()
+        _media_thumb_cache_dir = os.path.join(root, "xiaozhuguang", "xzg_media_thumbs")
+        os.makedirs(_media_thumb_cache_dir, exist_ok=True)
+    return _media_thumb_cache_dir
+
+
+def _clean_media_thumb_cache(max_age_days=30):
+    """定期清理超过指定天数未使用的媒体库缩略图缓存（默认保留最近 1 个月）。"""
+    try:
+        cache_dir = _get_media_thumb_cache_dir()
+        if not os.path.isdir(cache_dir):
+            return
+        cutoff = time.time() - max_age_days * 86400
+        with os.scandir(cache_dir) as entries:
+            for entry in entries:
+                if not entry.name.startswith("media_"):
+                    continue
+                try:
+                    st = entry.stat()
+                    if st.st_mtime < cutoff:
+                        os.remove(entry.path)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
+def _clear_thumb_cache_on_startup():
+    """每次载入节点模块时清理 input/output 缩略图的后端磁盘缓存。"""
+    try:
+        temp_root = os.path.realpath(_safe_dir('get_temp_directory', 'temp'))
+        cache_dir = os.path.join(temp_root, "xzg_thumbs")
+        # 只处理预期的直属缓存目录；不跟随目录或文件符号链接。
+        if os.path.islink(cache_dir) or not os.path.isdir(cache_dir):
+            return
+        removed = 0
+        with os.scandir(cache_dir) as entries:
+            for entry in entries:
+                if (len(entry.name) != 32 or
+                        any(ch not in "0123456789abcdef" for ch in entry.name) or
+                        not entry.is_file(follow_symlinks=False)):
+                    continue
+                try:
+                    os.remove(entry.path)
+                    removed += 1
+                except OSError as exc:
+                    print(f"[小珠光图片加载器] 清理缩略图失败: {entry.name}: {exc}")
+        if removed:
+            print(f"[小珠光图片加载器] 启动时已清理 {removed} 个 input/output 缩略图缓存")
+    except OSError as exc:
+        print(f"[小珠光图片加载器] 启动时清理缩略图缓存失败: {exc}")
+
+
+_clear_thumb_cache_on_startup()
+
+
 def _get_thumb_cache_key(filename, size):
     try:
         filename = _normalize_annotated_filename(filename)
@@ -135,6 +203,445 @@ def _get_thumb_cache_key(filename, size):
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg"}
+MEDIA_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS - {".svg"}
+MEDIA_MAX_FILE_BYTES = 100 * 1024 * 1024
+
+
+def _media_library_dir():
+    """媒体库文件保存在 ComfyUI 用户目录，供同一后端的浏览器会话共享。"""
+    base = folder_paths.get_user_directory()
+    path = os.path.join(base, "xiaozhuguang", "media_library", "images")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _media_order_path():
+    return os.path.join(os.path.dirname(_media_library_dir()), "order.json")
+
+
+def _media_ordered_names(directory):
+    available = []
+    for name in os.listdir(directory):
+        if _media_safe_name(name) and os.path.isfile(os.path.join(directory, name)):
+            available.append(name)
+    available.sort(key=lambda name: os.path.getmtime(os.path.join(directory, name)), reverse=True)
+    try:
+        with open(_media_order_path(), "r", encoding="utf-8") as source:
+            saved = json.load(source)
+        if not isinstance(saved, list):
+            saved = []
+    except (OSError, ValueError):
+        saved = []
+    current = set(available)
+    ordered = []
+    seen = set()
+    for name in saved + available:
+        if isinstance(name, str) and name in current and name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered
+
+
+def _media_write_order(names):
+    target = _media_order_path()
+    fd, temp_path = tempfile.mkstemp(prefix=".order-", dir=os.path.dirname(target))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(names, out, ensure_ascii=False)
+        os.replace(temp_path, target)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _media_safe_name(name):
+    if not isinstance(name, str) or not name or len(name) > 240:
+        return None
+    if name != os.path.basename(name) or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    if name.rstrip(" .") != name or any(ord(ch) < 32 or ch in '<>:"|?*' for ch in name):
+        return None
+    if os.path.splitext(name)[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        return None
+    if os.path.splitext(name)[1].lower() not in MEDIA_IMAGE_EXTENSIONS:
+        return None
+    return name
+
+
+def _media_unique_name(directory, name):
+    stem, ext = os.path.splitext(name)
+    candidate = name
+    n = 1
+    while os.path.exists(os.path.join(directory, candidate)):
+        candidate = f"{stem}_{n}{ext}"
+        n += 1
+    return candidate
+
+
+def _media_validate_image(path):
+    with Image.open(path) as img:
+        img.verify()
+
+
+@routes.get("/xzg/media-library")
+@xzg_safe_handler
+async def xzg_media_library_list(request):
+    directory = _media_library_dir()
+    items = []
+    for name in _media_ordered_names(directory):
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            stat = os.stat(path)
+            version = f"{stat.st_mtime_ns}-{stat.st_ctime_ns}-{stat.st_size}"
+            items.append({"name": name, "size": stat.st_size, "mtime": stat.st_mtime, "version": version})
+    return web.json_response({"items": items}, headers={"Cache-Control": "no-store"})
+
+
+@routes.put("/xzg/media-library/order")
+@xzg_safe_handler
+async def xzg_media_library_order(request):
+    data = await request.json()
+    names = data.get("names")
+    directory = _media_library_dir()
+    current = _media_ordered_names(directory)
+    if not isinstance(names, list) or any(not isinstance(name, str) for name in names) or len(names) != len(current) or set(names) != set(current):
+        return web.json_response({"error": "invalid image order"}, status=400)
+    _media_write_order(names)
+    return web.json_response({"names": names})
+
+
+@routes.put("/xzg/media-library/rename")
+@xzg_safe_handler
+async def xzg_media_library_rename(request):
+    data = await request.json()
+    old_name = _media_safe_name(data.get("old_name"))
+    new_name = _media_safe_name(data.get("new_name"))
+    if not old_name or not new_name:
+        return web.json_response({"error": "invalid image name"}, status=400)
+    if os.path.splitext(old_name)[1].lower() != os.path.splitext(new_name)[1].lower():
+        return web.json_response({"error": "image extension cannot change"}, status=400)
+    directory = _media_library_dir()
+    old_path = os.path.join(directory, old_name)
+    new_path = os.path.join(directory, new_name)
+    if not os.path.isfile(old_path):
+        return web.json_response({"error": "image not found"}, status=404)
+    if new_name == old_name:
+        return web.json_response({"name": old_name})
+    case_only_rename = os.path.normcase(old_path) == os.path.normcase(new_path)
+    if os.path.exists(new_path) and not case_only_rename:
+        return web.json_response({"error": "image name already exists"}, status=409)
+    order = _media_ordered_names(directory)
+    if case_only_rename:
+        fd, temp_path = tempfile.mkstemp(prefix=".rename-", dir=directory)
+        os.close(fd)
+        os.remove(temp_path)
+        os.rename(old_path, temp_path)
+        try:
+            os.rename(temp_path, new_path)
+        except Exception:
+            os.rename(temp_path, old_path)
+            raise
+    else:
+        os.rename(old_path, new_path)
+    _media_write_order([new_name if name == old_name else name for name in order])
+    return web.json_response({"name": new_name})
+
+
+@routes.get("/xzg/media-library/file")
+@xzg_safe_handler
+async def xzg_media_library_file(request):
+    name = _media_safe_name(request.query.get("name"))
+    if not name:
+        return web.Response(status=400, text="invalid name")
+    path = os.path.join(_media_library_dir(), name)
+    if not os.path.isfile(path):
+        return web.Response(status=404, text="not found")
+    return web.FileResponse(path, headers={"X-Content-Type-Options": "nosniff"})
+
+
+@routes.get("/xzg/media-library/thumb")
+@xzg_safe_handler
+async def xzg_media_library_thumb(request):
+    name = _media_safe_name(request.query.get("name"))
+    if not name:
+        return web.Response(status=400, text="invalid name")
+    path = os.path.join(_media_library_dir(), name)
+    if not os.path.isfile(path):
+        return web.Response(status=404, text="not found")
+
+    # 媒体库缩略图磁盘缓存 + ETag（与 input 加载器同机制）：浏览器缓存缩略图，
+    # 重新打开媒体库命中 304/磁盘缓存，不再每次重新生成与下载；图片更新后 mtime 变 → ETag 变 → 强制刷新。
+    etag = None
+    cache_path = None
+    try:
+        mtime = str(os.path.getmtime(path))
+        fsize = str(os.path.getsize(path))
+        raw = "media_v1_{0}_{1}_{2}_{3}".format(name, 192, mtime, fsize)
+        etag = hashlib.md5(raw.encode("utf-8")).hexdigest()
+        cache_path = os.path.join(_get_media_thumb_cache_dir(), "media_" + etag)
+    except Exception:
+        etag = None
+        cache_path = None
+
+    if_none_match = request.headers.get("If-None-Match", "")
+    if etag and if_none_match == etag:
+        return web.Response(status=304)
+
+    if cache_path and os.path.isfile(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                data = f.read()
+            headers = {"Cache-Control": "no-cache"}
+            if etag:
+                headers["ETag"] = etag
+            return web.Response(body=data, content_type="image/png", headers=headers)
+        except Exception:
+            pass
+
+    with Image.open(path) as source:
+        img = ImageOps.exif_transpose(source)
+        img.thumbnail((192, 192), Image.LANCZOS)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+    data = buffer.getvalue()
+
+    if cache_path:
+        try:
+            with open(cache_path, "wb") as f:
+                f.write(data)
+        except Exception:
+            pass
+
+    # 定期清理超过 1 个月的媒体库缩略图缓存（生成新缩略图时顺手执行，低频不卡顿）
+    _clean_media_thumb_cache(30)
+
+    headers = {"Cache-Control": "no-cache"}
+    if etag:
+        headers["ETag"] = etag
+    return web.Response(body=data, content_type="image/png", headers=headers)
+
+
+@routes.delete("/xzg/media-library/thumb-cache")
+@xzg_safe_handler
+async def xzg_media_library_thumb_cache_clear(request):
+    """清理媒体库缩略图磁盘缓存（media_* 前缀），强制下次全部重新生成。"""
+    removed = 0
+    try:
+        cache_dir = _get_media_thumb_cache_dir()
+        if os.path.isdir(cache_dir):
+            for fname in os.listdir(cache_dir):
+                if fname.startswith("media_"):
+                    try:
+                        os.remove(os.path.join(cache_dir, fname))
+                        removed += 1
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return web.json_response({"removed": removed})
+
+
+@routes.post("/xzg/media-library/upload")
+@xzg_safe_handler
+async def xzg_media_library_upload(request):
+    reader = await request.multipart()
+    part = await reader.next()
+    if not part or part.name != "file":
+        return web.json_response({"error": "file required"}, status=400)
+    name = _media_safe_name(part.filename)
+    if not name:
+        return web.json_response({"error": "unsupported image name or type"}, status=400)
+    directory = _media_library_dir()
+    fd, temp_path = tempfile.mkstemp(prefix=".upload-", dir=directory)
+    try:
+        size = 0
+        with os.fdopen(fd, "wb") as out:
+            while chunk := await part.read_chunk(size=1024 * 1024):
+                size += len(chunk)
+                if size > MEDIA_MAX_FILE_BYTES:
+                    return web.json_response({"error": "image exceeds 100 MB"}, status=413)
+                out.write(chunk)
+        _media_validate_image(temp_path)
+        stored_name = _media_unique_name(directory, name)
+        os.replace(temp_path, os.path.join(directory, stored_name))
+        _media_write_order(_media_ordered_names(directory))
+        return web.json_response({"name": stored_name})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@routes.post("/xzg/media-library/add-cropped-loader-image")
+@xzg_safe_handler
+async def xzg_media_library_add_cropped_loader_image(request):
+    data = await request.json()
+    annotated_name = _normalize_annotated_filename(str(data.get("filename") or "").strip())
+    crop = data.get("crop")
+    if not annotated_name or not isinstance(crop, (list, tuple)) or len(crop) != 4:
+        return web.json_response({"error": "filename and crop rectangle are required"}, status=400)
+
+    if annotated_name.endswith(" [output]"):
+        output_root = os.path.realpath(_safe_dir("get_output_directory", "output"))
+        rel_path = annotated_name[:-len(" [output]")]
+        image_path = os.path.realpath(os.path.join(output_root, rel_path))
+        try:
+            if os.path.commonpath([output_root, image_path]) != output_root:
+                return web.json_response({"error": "invalid image path"}, status=400)
+        except ValueError:
+            return web.json_response({"error": "invalid image path"}, status=400)
+    else:
+        image_path = folder_paths.get_annotated_filepath(annotated_name)
+    if not image_path or not os.path.isfile(image_path):
+        return web.json_response({"error": "source image not found"}, status=404)
+
+    try:
+        x, y, w, h = (int(round(float(value))) for value in crop)
+    except (TypeError, ValueError, OverflowError):
+        return web.json_response({"error": "invalid crop rectangle"}, status=400)
+    w, h = max(1, w), max(1, h)
+
+    with node_helpers.pillow(Image.open, image_path) as opened:
+        source = ImageOps.exif_transpose(opened).convert("RGB")
+    orig_w, orig_h = source.size
+    max_edge = max(orig_w, orig_h)
+    if max_edge > 3840:
+        scale = max_edge / 3840.0
+        x, y, w, h = (int(round(value * scale)) for value in (x, y, w, h))
+        w, h = max(1, w), max(1, h)
+
+    if w > 50000 or h > 50000 or w * h > 150_000_000:
+        return web.json_response({"error": "cropped image dimensions are too large"}, status=413)
+
+    padding_rgb = _parse_crop_padding_color(json.dumps({"__padding_color": data.get("padding_color", "#ffffff")}))
+    cropped = Image.new("RGB", (w, h), padding_rgb)
+    sx0, sy0 = max(0, x), max(0, y)
+    sx1, sy1 = min(orig_w, x + w), min(orig_h, y + h)
+    if sx1 > sx0 and sy1 > sy0:
+        cropped.paste(source.crop((sx0, sy0, sx1, sy1)), (sx0 - x, sy0 - y))
+
+    base_name = annotated_name
+    for suffix in (" [output]", " [input]", " [temp]"):
+        if base_name.endswith(suffix):
+            base_name = base_name[:-len(suffix)]
+            break
+    stem = os.path.splitext(os.path.basename(base_name.replace("\\", "/")))[0] or "image"
+    stored_name = _media_safe_name(f"{stem}_crop.png")
+    if not stored_name:
+        return web.json_response({"error": "unsupported source image name"}, status=400)
+
+    directory = _media_library_dir()
+    fd, temp_path = tempfile.mkstemp(prefix=".crop-", dir=directory)
+    os.close(fd)
+    try:
+        cropped.save(temp_path, format="PNG", compress_level=3)
+        if os.path.getsize(temp_path) > MEDIA_MAX_FILE_BYTES:
+            return web.json_response({"error": "cropped image exceeds 100 MB"}, status=413)
+        final_name = _media_unique_name(directory, stored_name)
+        os.replace(temp_path, os.path.join(directory, final_name))
+        _media_write_order(_media_ordered_names(directory))
+        return web.json_response({"name": final_name})
+    finally:
+        cropped.close()
+        source.close()
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@routes.delete("/xzg/media-library")
+@xzg_safe_handler
+async def xzg_media_library_delete(request):
+    data = await request.json()
+    names = data.get("names", [])
+    if not isinstance(names, list) or any(not _media_safe_name(name) for name in names):
+        return web.json_response({"error": "invalid names"}, status=400)
+    directory = _media_library_dir()
+    for name in names:
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            os.remove(path)
+    _media_write_order(_media_ordered_names(directory))
+    return web.json_response({"deleted": names})
+
+
+@routes.post("/xzg/media-library/to-input")
+@xzg_safe_handler
+async def xzg_media_library_to_input(request):
+    data = await request.json()
+    names = data.get("names", [])
+    if not isinstance(names, list) or any(not _media_safe_name(name) for name in names):
+        return web.json_response({"error": "invalid names"}, status=400)
+    source_dir = _media_library_dir()
+    input_dir = _safe_dir('get_input_directory', 'input')
+    copied = []
+    for name in names:
+        source = os.path.join(source_dir, name)
+        if not os.path.isfile(source):
+            return web.json_response({"error": f"image not found: {name}"}, status=404)
+        target_name = _media_unique_name(input_dir, name)
+        shutil.copy2(source, os.path.join(input_dir, target_name))
+        copied.append(target_name)
+    return web.json_response({"names": copied})
+
+
+@routes.get("/xzg/media-library/backup")
+@xzg_safe_handler
+async def xzg_media_library_backup(request):
+    directory = _media_library_dir()
+    files = []
+    order = _media_ordered_names(directory)
+    for name in order:
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            with open(path, "rb") as source:
+                files.append({"name": name, "data": base64.b64encode(source.read()).decode("ascii")})
+    return web.json_response({"version": 2, "order": order, "files": files})
+
+
+@routes.post("/xzg/media-library/restore")
+@xzg_safe_handler
+async def xzg_media_library_restore(request):
+    request._client_max_size = 1024 * 1024 * 1024
+    data = await request.json()
+    files = data.get("files")
+    if not isinstance(files, list):
+        return web.json_response({"error": "invalid backup"}, status=400)
+    directory = _media_library_dir()
+    staged = []
+    try:
+        for entry in files:
+            name = _media_safe_name(entry.get("name") if isinstance(entry, dict) else None)
+            encoded = entry.get("data") if isinstance(entry, dict) else None
+            if not name or not isinstance(encoded, str):
+                raise ValueError("invalid image entry")
+            raw = base64.b64decode(encoded, validate=True)
+            if len(raw) > MEDIA_MAX_FILE_BYTES:
+                raise ValueError("image exceeds 100 MB")
+            fd, path = tempfile.mkstemp(prefix=".restore-", dir=directory)
+            staged.append((name, path))
+            with os.fdopen(fd, "wb") as out:
+                out.write(raw)
+            _media_validate_image(path)
+        for name, path in staged:
+            os.replace(path, os.path.join(directory, name))
+        backed_up_order = data.get("order")
+        imported = [name for name, _ in staged]
+        if (not isinstance(backed_up_order, list) or
+                any(not isinstance(name, str) for name in backed_up_order) or
+                set(backed_up_order) != set(imported) or len(backed_up_order) != len(imported)):
+            backed_up_order = imported
+        existing = _media_ordered_names(directory)
+        _media_write_order(backed_up_order + [name for name in existing if name not in backed_up_order])
+        return web.json_response({"restored": len(staged)})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    finally:
+        for _, path in staged:
+            if os.path.exists(path):
+                os.remove(path)
 
 
 def _parse_crop_data(crop_str, image_name=None):
@@ -172,6 +679,73 @@ def _parse_crop_data(crop_str, image_name=None):
     except Exception:
         pass
     return None
+
+
+def _parse_crop_padding_color(crop_str):
+    """Read the optional canvas padding color stored alongside crop rectangles."""
+    try:
+        value = crop_str if isinstance(crop_str, dict) else json.loads(str(crop_str or ""))
+        color = value.get("__padding_color", "#ffffff") if isinstance(value, dict) else "#ffffff"
+        color = str(color).strip().lstrip("#")
+        if len(color) == 3:
+            color = "".join(ch * 2 for ch in color)
+        if len(color) == 6 and all(ch in "0123456789abcdefABCDEF" for ch in color):
+            return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        pass
+    return (255, 255, 255)
+
+
+def _parse_image_transform(crop_str, image_name):
+    """Read per-image flip values stored with crop data."""
+    default = {"flip_x": False, "flip_y": False}
+    try:
+        value = json.loads(str(crop_str or ""))
+        transforms = value.get("__transforms", {}) if isinstance(value, dict) else {}
+        item = {}
+        if isinstance(transforms, dict):
+            candidates = [image_name, _normalize_annotated_filename(image_name)]
+            for suffix in (" [output]", " [input]", " [temp]"):
+                if candidates[-1].endswith(suffix):
+                    candidates.append(candidates[-1][:-len(suffix)])
+                    break
+            for candidate in candidates:
+                if candidate in transforms:
+                    item = transforms[candidate]
+                    break
+        if not isinstance(item, dict):
+            return default
+        return {
+            "flip_x": bool(item.get("flip_x", False)),
+            "flip_y": bool(item.get("flip_y", False)),
+        }
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _transform_pil(image, transform):
+    if transform.get("flip_x"):
+        image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if transform.get("flip_y"):
+        image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    return image
+
+
+def _transform_tensor(img_t, transform):
+    pil = Image.fromarray((img_t[0].numpy().clip(0, 1) * 255).astype(np.uint8), mode="RGB")
+    pil = _transform_pil(pil, transform)
+    arr = np.array(pil).astype(np.float32) / 255.0
+    return torch.from_numpy(arr)[None,]
+
+
+def _transform_mask(mask_t, transform):
+    mask = Image.fromarray((mask_t[0].detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8), mode="L")
+    if transform.get("flip_x"):
+        mask = mask.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if transform.get("flip_y"):
+        mask = mask.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    arr = np.array(mask).astype(np.float32) / 255.0
+    return torch.from_numpy(arr)[None,]
 
 
 def _parse_mask_data(mask_str, image_name=None):
@@ -213,21 +787,36 @@ def _clamp_crop(crop, orig_w, orig_h):
     return (x, y, w, h)
 
 
-def _crop_tensor(img_t, crop, orig_w, orig_h):
-    """对 IMAGE 张量 (1, H, W, 3) 按原图像素矩形裁剪。"""
-    x, y, w, h = _clamp_crop(crop, orig_w, orig_h)
+def _crop_tensor(img_t, crop, orig_w, orig_h, padding_rgb=(255, 255, 255)):
+    """裁剪 IMAGE 张量；矩形超出原图时以白色补齐。"""
+    x, y, w, h = (int(round(float(v))) for v in crop)
+    w, h = max(1, w), max(1, h)
     if x == 0 and y == 0 and w == orig_w and h == orig_h:
         return img_t
     pil = Image.fromarray((img_t[0].numpy() * 255).astype(np.uint8))
-    pil = pil.crop((x, y, x + w, y + h))
-    arr = np.array(pil).astype(np.float32) / 255.0
+    fill = tuple(padding_rgb[:len(pil.getbands())])
+    if len(fill) != len(pil.getbands()):
+        fill = (255,) * len(pil.getbands())
+    out = Image.new(pil.mode, (w, h), fill)
+    sx0, sy0 = max(0, x), max(0, y)
+    sx1, sy1 = min(orig_w, x + w), min(orig_h, y + h)
+    if sx1 > sx0 and sy1 > sy0:
+        part = pil.crop((sx0, sy0, sx1, sy1))
+        out.paste(part, (sx0 - x, sy0 - y))
+    arr = np.array(out).astype(np.float32) / 255.0
     return torch.from_numpy(arr)[None,]
 
 
 def _crop_mask(mask_t, crop, orig_w, orig_h):
-    """对 3D 遮罩 (1, H, W) 按原图像素矩形裁剪。"""
-    x, y, w, h = _clamp_crop(crop, orig_w, orig_h)
-    return mask_t[:, y:y + h, x:x + w]
+    """裁剪遮罩；图像之外的补边区域保持未遮罩。"""
+    x, y, w, h = (int(round(float(v))) for v in crop)
+    w, h = max(1, w), max(1, h)
+    out = torch.zeros((mask_t.shape[0], h, w), dtype=mask_t.dtype, device=mask_t.device)
+    sx0, sy0 = max(0, x), max(0, y)
+    sx1, sy1 = min(orig_w, x + w), min(orig_h, y + h)
+    if sx1 > sx0 and sy1 > sy0:
+        out[:, sy0 - y:sy1 - y, sx0 - x:sx1 - x] = mask_t[:, sy0:sy1, sx0:sx1]
+    return out
 
 
 def _normalize_annotated_filename(name: str) -> str:
@@ -536,6 +1125,7 @@ class XiaozhuguangImageLoader:
 
     def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000"):
         mask_output_enabled = mask_output_enabled is True or str(mask_output_enabled).strip().lower() in ("true", "1")
+        crop_padding_rgb = _parse_crop_padding_color(crop_data)
         if not image_list or not image_list.strip():
             return ([], [])
 
@@ -550,6 +1140,7 @@ class XiaozhuguangImageLoader:
         orig_sizes = []  # 每张图裁剪前的原始尺寸 (w, h)
         image_alphas = []  # 每张图的 alpha 通道（无 alpha 则 None），用于无用户遮罩时回退提取
         crops_loaded = []  # 与 images 对齐，每张图自己的裁剪矩形（原图像素，None=该图不裁剪）
+        transforms_loaded = []
         for name in names:
             try:
                 name_norm = _normalize_annotated_filename(name)
@@ -589,6 +1180,7 @@ class XiaozhuguangImageLoader:
                 image_alphas.append(alpha)
                 # 仅在图成功载入 images 后再对齐追加裁剪，避免失败图导致列表错位
                 crops_loaded.append(_crop_i)
+                transforms_loaded.append(_parse_image_transform(crop_data, name))
             except Exception:
                 continue
 
@@ -603,6 +1195,7 @@ class XiaozhuguangImageLoader:
             orig_sizes = orig_sizes[:limit]
             image_alphas = image_alphas[:limit]
             crops_loaded = crops_loaded[:limit]
+            transforms_loaded = transforms_loaded[:limit]
 
         # 解析遮罩数据
         # 语义约定：白色(255 / 1.0) = 用户绘制过的区域；黑色(0 / 0.0) = 未绘制区域
@@ -672,7 +1265,7 @@ class XiaozhuguangImageLoader:
         for _ci, _crop in enumerate(crops_loaded):
             if _crop:
                 _ow, _oh = orig_sizes[_ci]
-                images[_ci] = _crop_tensor(images[_ci], _crop, _ow, _oh)
+                images[_ci] = _crop_tensor(images[_ci], _crop, _ow, _oh, crop_padding_rgb)
 
         masks = []
         for i, name in enumerate(loaded_names):
@@ -680,6 +1273,10 @@ class XiaozhuguangImageLoader:
             mask = _decode_mask(_parse_mask_data(mask_data, name), orig_h, orig_w, image_alphas[i])
             if crops_loaded[i]:
                 mask = _crop_mask(mask, crops_loaded[i], orig_w, orig_h)
+            transform = transforms_loaded[i]
+            if transform["flip_x"] or transform["flip_y"]:
+                images[i] = _transform_tensor(images[i], transform)
+                mask = _transform_mask(mask, transform)
             masks.append(mask)
 
         if batch_mode:

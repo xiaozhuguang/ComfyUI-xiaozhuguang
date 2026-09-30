@@ -10,8 +10,6 @@
   - CPU 使用率：Windows 下读取 PDH 性能计数器 \Processor Information(_Total)\% Processor Utility
     （任务管理器「性能」页同款计数器，考虑睿频、可能超过 100%），由系统性能计数器引擎
     实时计算，稳定可靠；非 Windows 或 PDH 不可用时回退 psutil.cpu_percent(interval=1)。
-  - CPU 温度：Windows 下通过 WMI（MSAcpi_ThermalZoneTemperature）获取，
-    多数主板不暴露该数据，取不到时返回 None，前端整行隐藏
   - 内存：psutil
 """
 
@@ -267,45 +265,10 @@ def _start_cpu_sampler():
 
 _start_cpu_sampler()
 
-_cpu_temp_cache = {"ts": 0.0, "val": None}
-
-
-def _cpu_temperature():
-    """Windows 下通过 WMI 获取 CPU 温度，结果缓存 5 秒，取不到返回 None。"""
-    now = time.time()
-    if now - _cpu_temp_cache["ts"] < 5:
-        return _cpu_temp_cache["val"]
-
-    value = None
-    try:
-        proc = subprocess.run(
-            [
-                "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                "(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
-                "-ErrorAction SilentlyContinue | "
-                "Measure-Object -Property CurrentTemperature -Maximum).Maximum",
-            ],
-            capture_output=True, text=True, timeout=3, creationflags=_CREATE_NO_WINDOW,
-        )
-        raw = (proc.stdout or "").strip()
-        if raw:
-            kelvin_tenths = _to_float(raw, 0.0)
-            if kelvin_tenths > 0:
-                value = round(kelvin_tenths / 10.0 - 273.15, 1)
-    except Exception:
-        value = None
-
-    _cpu_temp_cache.update(ts=now, val=value)
-    return value
-
-
 def _cpu_stats():
-    freq = psutil.cpu_freq()
     return {
         "util": _cpu_util["value"],
-        "temp": _cpu_temperature(),
         "cores": psutil.cpu_count(logical=True) or 0,
-        "freq_mhz": round(freq.current, 0) if freq else None,
     }
 
 

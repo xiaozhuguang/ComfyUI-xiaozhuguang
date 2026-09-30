@@ -1,6 +1,6 @@
 // -*- coding: utf-8 -*-
 /**
- * xzg_device_code.js —— 「设置 → xiaozhuguang」面板中的本机设备码查询
+ * xzg_device_code.js —— 「设置 → xiaozhuguang → 其他」中的本机设备码查询
  *
  * 用途:
  *   需要授权的用户打开 ComfyUI 左下角「设置」→ xiaozhuguang 分类 →
@@ -12,11 +12,7 @@
  *   - 独立成单文件，不与其它内部工具耦合，可随插件公开分发。
  */
 
-import { app } from '/scripts/app.js';
-
 const ENDPOINT = '/lg_local/getmachineid';
-// ZDevice 排在其他设置分类之后，让“设备授权”显示在小珠光设置末尾。
-const SETTING_ID = 'xiaozhuguang.ZDevice.DeviceCode';
 
 async function fetchDeviceCode() {
     const resp = await fetch(ENDPOINT);
@@ -99,30 +95,34 @@ function buildWidget() {
     return wrap;
 }
 
-let registered = false;
-function tryRegister(retries) {
-    if (registered) return;
-    const settings = app?.ui?.settings;
-    if (settings?.addSetting) {
-        try {
-            settings.addSetting({
-                id: SETTING_ID,
-                name: '本机设备码',
-                defaultValue: '',
-                // 不设显式 category：前端按 ID 第二段（ZDevice）自动分组，配合 locale 显示「设备授权」标题
-                // type 为函数时，前端按自定义控件渲染:
-                //   签名 (name, setValue, value, attrs) => HTMLElement
-                //   返回的元素会被 appendChild 进设置行右侧。
-                type: () => buildWidget(),
-            });
-            registered = true;
-            console.log('[xzg] 设备码设置项已注册');
-            return;
-        } catch (e) {
-            console.warn('[xzg] 注册设备码设置项失败:', e);
-        }
-    }
-    if (retries > 0) setTimeout(() => tryRegister(retries - 1), 500);
+function injectDeviceCodeSetting() {
+    if (document.getElementById('xzg-device-code-setting')) return true;
+
+    // 将设备码控件放入 xzg_shortcuts.js 创建的“小珠光 → 其他”区域，
+    // 避免以 setting ID 单独生成另一个“其他”分类。
+    const shortcutSetting = document.getElementById('xzg-shortcuts-setting-btn');
+    if (!shortcutSetting?.parentNode) return false;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'setting-item mb-3';
+    wrapper.id = 'xzg-device-code-setting';
+    wrapper.innerHTML = `
+        <div class="flex min-h-8 flex-row items-center gap-2">
+            <div class="form-label flex grow items-center">
+                <span class="text-sm text-muted">[小珠光] 本机设备码</span>
+            </div>
+            <div class="form-input flex justify-end"></div>
+        </div>
+    `;
+    wrapper.querySelector('.form-input').appendChild(buildWidget());
+    shortcutSetting.parentNode.insertBefore(wrapper, shortcutSetting);
+    return true;
 }
 
-tryRegister(60);
+const deviceCodeObserver = new MutationObserver(() => {
+    // ComfyUI 关闭设置窗口时会销毁其内容 DOM；保留观察器，
+    // 下次打开并重建“小珠光 → 其他”区域后重新插入设备码控件。
+    injectDeviceCodeSetting();
+});
+deviceCodeObserver.observe(document.body, { childList: true, subtree: true });
+injectDeviceCodeSetting();

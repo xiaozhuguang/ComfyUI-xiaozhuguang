@@ -5909,7 +5909,7 @@ app.registerExtension({
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
                                     <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('标签数量：','Label count:')}</label>
-                                    <input type="range" id="nf-label-count" min="2" max="10" value="${count}" style="flex: 1; height: 14px;" />
+                                    <input type="range" id="nf-label-count" min="2" max="20" value="${count}" style="flex: 1; height: 14px;" />
                                     <span id="nf-count-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${count}</span>
                                 </div>
                             </div>

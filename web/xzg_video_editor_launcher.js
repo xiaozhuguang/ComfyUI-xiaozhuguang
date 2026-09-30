@@ -14,7 +14,7 @@
 import { app } from "../../scripts/app.js";
 
 const BTN_ID = "xzg-quick-edit-btn";
-const GOLD = "#dcc85b";
+const GOLD = "#CDA56D";
 
 // 小珠光插件设置：右上角功能区是否显示「快剪」
 const SETTING_ID = "xiaozhuguang.Toggle.ShowQuickCutInTopMenu";

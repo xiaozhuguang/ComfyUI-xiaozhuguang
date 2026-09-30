@@ -239,8 +239,15 @@ const ACTION_HANDLERS = {
     /** 折叠/展开选中节点（Comfy.Canvas.ToggleSelectedNodes.Collapse） */
     collapse_selected: () => executeCommand("Comfy.Canvas.ToggleSelectedNodes.Collapse"),
 
-    /** 打开选中节点的遮罩编辑器（Comfy.MaskEditor.OpenMaskEditor） */
-    open_mask_editor: () => executeCommand("Comfy.MaskEditor.OpenMaskEditor"),
+    /** 切换选中小珠光图片加载器的遮罩编辑模式 */
+    toggle_image_loader_mask: () => {
+        const nodes = app?.graph?._nodes;
+        if (!nodes?.length) return;
+        const selected = nodes.filter(n => n.selected && n.type === "XiaozhuguangImageLoader");
+        for (const node of selected) {
+            node._xzgImgLoaderUI?.toggleMask?.();
+        }
+    },
 
     /** 同步预览：对选中的小珠光视频节点输出做同步预览（无选中时预览全部视频节点） */
     sync_preview: () => {
@@ -267,7 +274,7 @@ const ACTION_LABELS = {
     bypass_selected: "忽略/取消忽略选中节点 (Bypass Selected)",
     resize_selected_nodes: "调整选中节点大小 (Resize Selected Nodes)",
     collapse_selected: "折叠/展开选中节点 (Collapse Selected)",
-    open_mask_editor: "打开选中节点遮罩编辑器 (Open Mask Editor)",
+    toggle_image_loader_mask: "切换选中小珠光图片加载器遮罩 (Toggle Image Loader Mask)",
     sync_preview: "同步预览选中的视频 (Sync Preview)",
 };
 
@@ -413,12 +420,19 @@ async function openSettingsDialog() {
     const overlay = document.createElement("div");
     overlay.id = "xzg-shortcuts-dialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;";
+    // 设置面板可能有全局表单监听；阻止提交事件传出弹窗。
+    overlay.addEventListener("submit", (e) => { e.preventDefault(); e.stopPropagation(); }, true);
+    for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick"]) {
+        // 冒泡阶段拦截：弹窗按钮的 onclick 先运行，事件再被挡在弹窗内。
+        overlay.addEventListener(eventName, (e) => e.stopPropagation());
+    }
 
     const dialog = document.createElement("div");
     dialog.style.cssText = "background:#2a2a2a;color:#e0e0e0;border-radius:10px;padding:24px;width:560px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5);border:1px solid #444;";
 
     // 正在捕获快捷键的动作索引（-1 表示未在捕获）
     let capturingIdx = -1;
+    let captureOriginal = null;
 
     function render() {
         const rowsHtml = editing.map((s, i) => {
@@ -446,14 +460,17 @@ async function openSettingsDialog() {
                 <button id="xzg-sc-save" style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:8px 20px;cursor:pointer;font-size:13px;">保存</button>
             </div>
         `;
+        dialog.querySelectorAll("button").forEach(button => { button.type = "button"; });
 
         // 事件绑定
-        dialog.querySelector("#xzg-sc-close").onclick = () => { cleanupCapture(); overlay.remove(); };
-        dialog.querySelector("#xzg-sc-cancel").onclick = () => { cleanupCapture(); overlay.remove(); };
-        overlay.addEventListener("click", (e) => { if (e.target === overlay) { cleanupCapture(); overlay.remove(); } });
+        dialog.querySelector("#xzg-sc-close").onclick = (e) => { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); };
+        dialog.querySelector("#xzg-sc-cancel").onclick = (e) => { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); };
+        overlay.addEventListener("click", (e) => { if (e.target === overlay) { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); } });
 
         // 保存：只保存已设置的快捷键（未设置的动作不写入后端，重新打开仍显示"未设置"）
-        dialog.querySelector("#xzg-sc-save").onclick = async () => {
+        dialog.querySelector("#xzg-sc-save").onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             const toSave = editing.filter(s => s.key);
             // 安全护栏：本次刷新后端失败 且 列表为空时，禁止保存，避免把真实配置误清空。
             if (toSave.length === 0 && fresh === null) {
@@ -473,6 +490,8 @@ async function openSettingsDialog() {
         dialog.querySelectorAll("[data-act=set], [data-act=key]").forEach(el => {
             el.onclick = () => {
                 capturingIdx = parseInt(el.dataset.idx);
+                const current = editing[capturingIdx];
+                captureOriginal = current ? { ...current } : null;
                 render();
             };
         });
@@ -493,6 +512,19 @@ async function openSettingsDialog() {
         if (capturingIdx < 0) return;
         e.preventDefault();
         e.stopPropagation();
+        if (e.key === "Escape") {
+            // Escape 只用于取消本次捕获，保留进入捕获前的按键绑定。
+            if (captureOriginal) editing[capturingIdx] = captureOriginal;
+            capturingIdx = -1;
+            captureOriginal = null;
+            const hint = dialog.querySelector("#xzg-sc-hint");
+            if (hint) {
+                hint.textContent = "已取消设置";
+                hint.style.color = "#888";
+            }
+            render();
+            return;
+        }
         const sc = eventToShortcut(e);
         if (!sc) return;
         // 检查该组合键是否已被其它动作占用
@@ -508,6 +540,7 @@ async function openSettingsDialog() {
         it.key = sc.key; it.ctrl = sc.ctrl; it.shift = sc.shift; it.alt = sc.alt; it.meta = sc.meta;
         it.label = shortcutToText(sc);
         capturingIdx = -1;
+        captureOriginal = null;
         const hint = dialog.querySelector("#xzg-sc-hint");
         hint.textContent = "已绑定为 " + it.label;
         hint.style.color = "#27ae60";
@@ -520,6 +553,7 @@ async function openSettingsDialog() {
 
     render();
     overlay.appendChild(dialog);
+    // 直接挂到 body，避免被 ComfyUI 设置面板容器的销毁/关闭事件接管。
     document.body.appendChild(overlay);
 }
 

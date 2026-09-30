@@ -1,5 +1,6 @@
 
 import { xzgT } from "./xzg_i18n.js";
+import { api } from "../../scripts/api.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 // 主题面板设置云存储键（预设/快捷键/最近色/标签页）
@@ -14,6 +15,7 @@ const XZG_EXPORT_CATEGORIES = [
     ["menuHide", "菜单隐藏", "Menu Hiding", "已云端持久化", "Cloud-backed"],
     ["skills", "提示词规则预设", "Prompt Rule Presets", "已云端持久化", "Cloud-backed"],
     ["textBoxGodPresets", "文本框化神级预设", "Text Box God-Tier Presets", "已云端持久化", "Cloud-backed"],
+    ["mediaLibrary", "资源媒体库图片", "Media Library Images", "服务端持久化", "Server-backed"],
     ["notes", "记事本", "Notepad", "已云端持久化", "Cloud-backed"],
     ["align", "田字格对齐", "Grid Alignment", "已云端持久化", "Cloud-backed"],
     ["sidebar", "侧边栏偏好", "Sidebar Preferences", "已云端持久化", "Cloud-backed"],
@@ -2873,7 +2875,7 @@ window.XZGThemePanel = {
                     <div class="xzg-modal-body">
                         <label class="xzg-modal-checkbox" style="${hasXzg ? '' : 'opacity:0.5;pointer-events:none;'}">
                             <input type="checkbox" id="xzg-import-include-xzg" ${hasXzg ? 'checked' : 'disabled'} />
-                            <span>${xzgT('导入小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速连线 / 记事本）', 'Import Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick links / notepad)')}</span>
+                            <span>${xzgT('导入小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速连线 / 记事本 / 资源媒体库）', 'Import Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick links / notepad / media library)')}</span>
                         </label>
                         ${xzgHint}
                         ${comfyCheckbox}
@@ -3035,16 +3037,29 @@ window.XZGThemePanel = {
             }
         }
 
+        // 媒体文件本体纳入配置备份，避免仅保存文件名后换服务器丢失图片。
+        let mediaLibrary = null;
+        let folderDialogGeometry = null;
+        if (selected.mediaLibrary) {
+            const response = await api.fetchApi("/xzg/media-library/backup", { cache: "no-store" });
+            if (!response.ok) throw new Error(xzgT("媒体库备份失败", "Media library backup failed") + ` (HTTP ${response.status})`);
+            mediaLibrary = await response.json();
+            mediaLibrary.geometry = await cloudLoad("xzg_media_library_geometry", { fallbackValue: null });
+            folderDialogGeometry = await cloudLoad("xzg_folder_dialog_geometry", { fallbackValue: null });
+        }
+
         const cfg = {
             format: "xiaozhuguang-config",
-            version: 5,
+            version: 7,
             exportedAt: new Date().toISOString(),
             flags: { includeXzgConfig: includeXzg, includeNotes: includeNotes, includeComfySettings: includeComfy, selectedCategories: selected },
             localStorage: ls,
             notes: notesTop,
             favoritesPreviews: favoritesPreviews,
             comfySettings: comfySettings,
-            shortcuts: shortcuts
+            shortcuts: shortcuts,
+            mediaLibrary: mediaLibrary,
+            folderDialogGeometry: folderDialogGeometry
         };
         const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -3076,7 +3091,8 @@ window.XZGThemePanel = {
             (obj.notes && typeof obj.notes === "object" && Array.isArray(obj.notes.groups)) ||
             (obj.favoritesPreviews && Array.isArray(obj.favoritesPreviews) && obj.favoritesPreviews.length > 0) ||
             (obj.workflowUsage && typeof obj.workflowUsage === "object" && Object.keys(obj.workflowUsage).length > 0) ||
-            (Array.isArray(obj.shortcuts) && obj.shortcuts.length > 0)
+            (Array.isArray(obj.shortcuts) && obj.shortcuts.length > 0) ||
+            (obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files))
         );
         const hasNotes = !!(
             (obj.notes && typeof obj.notes === "object") ||
@@ -3089,6 +3105,42 @@ window.XZGThemePanel = {
         const includeXzg = opt.includeXzgConfig !== false;
         const includeNotes = opt.includeNotes !== false;
         const includeComfy = opt.includeComfySettings !== false;
+
+        let mediaRestored = false;
+        if (includeXzg && obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files)) {
+            const response = await api.fetchApi("/xzg/media-library/restore", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(obj.mediaLibrary),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || xzgT("媒体库恢复失败", "Media library restore failed"));
+            const geometry = obj.mediaLibrary.geometry;
+            if (geometry && Number.isFinite(Number(geometry.width)) && Number.isFinite(Number(geometry.height))) {
+                const restoredGeometry = {
+                    width: Number(geometry.width),
+                    height: Number(geometry.height),
+                };
+                if (geometry.x != null && geometry.y != null && Number.isFinite(Number(geometry.x)) && Number.isFinite(Number(geometry.y))) {
+                    restoredGeometry.x = Number(geometry.x);
+                    restoredGeometry.y = Number(geometry.y);
+                }
+                await cloudSave("xzg_media_library_geometry", restoredGeometry);
+            }
+            const folderGeometry = obj.folderDialogGeometry;
+            if (folderGeometry && Number.isFinite(Number(folderGeometry.width)) && Number.isFinite(Number(folderGeometry.height))) {
+                const restoredFolderGeometry = {
+                    width: Number(folderGeometry.width),
+                    height: Number(folderGeometry.height),
+                };
+                if (folderGeometry.x != null && folderGeometry.y != null && Number.isFinite(Number(folderGeometry.x)) && Number.isFinite(Number(folderGeometry.y))) {
+                    restoredFolderGeometry.x = Number(folderGeometry.x);
+                    restoredFolderGeometry.y = Number(folderGeometry.y);
+                }
+                await cloudSave("xzg_folder_dialog_geometry", restoredFolderGeometry);
+            }
+            mediaRestored = true;
+        }
 
         // ============ 1) 导入备注（优先从顶层 notes，回退到 localStorage[NOTES_KEY]） ============
         let importedNotes = false;
@@ -3126,7 +3178,7 @@ window.XZGThemePanel = {
         }
 
         // ============ 2) 导入小珠光配置（除 notes 外的所有 localStorage，以及收藏预览） ============
-        let importedXzg = false;
+        let importedXzg = mediaRestored;
         if (includeXzg) {
             if (obj.localStorage && typeof obj.localStorage === "object") {
                 for (const k in obj.localStorage) {
@@ -3172,6 +3224,7 @@ window.XZGThemePanel = {
                                 inst.meta = inst._normalizeMeta(meta);
                                 inst.sortMode = inst.meta.sortMode || "default";
                                 try { inst.persistLocal(); } catch (e) {}
+                                if (typeof inst.renderCategories === "function") inst.renderCategories();
                                 if (typeof inst.renderWorkflowList === "function") inst.renderWorkflowList();
                             }
                             cloudSave("xzg_workflows_meta", meta).catch(() => {});

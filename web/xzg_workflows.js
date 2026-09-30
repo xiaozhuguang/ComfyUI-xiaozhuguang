@@ -118,15 +118,41 @@ class XZGWorkflowsManager {
         }
     }
 
-    /** 从云端拉取工作流元数据（服务端有则覆盖本地并刷新列表） */
+    /** 从云端合并工作流元数据；收藏按更新时间合并，避免旧云数据覆盖本地新变更。 */
     async syncFromCloud() {
         try {
             const cloud = await cloudLoad(STORAGE_KEY, { fallbackValue: null });
             if (cloud && typeof cloud === "object") {
-                this.meta = this._normalizeMeta(cloud);
+                const localMeta = this._normalizeMeta(this.meta || {});
+                const cloudMeta = this._normalizeMeta(cloud);
+                let keptNewerLocalFavorite = false;
+                for (const [path, localWorkflow] of Object.entries(localMeta.workflows || {})) {
+                    if (!localWorkflow || typeof localWorkflow !== "object") continue;
+                    if (!Object.prototype.hasOwnProperty.call(localWorkflow, "favorite")) continue;
+                    const cloudWorkflow = cloudMeta.workflows[path] || (cloudMeta.workflows[path] = {});
+                    const localUpdatedAt = Number(localWorkflow.favoriteUpdatedAt) || 0;
+                    const cloudUpdatedAt = Number(cloudWorkflow.favoriteUpdatedAt) || 0;
+                    const localHasFavorite = Object.prototype.hasOwnProperty.call(localWorkflow, "favorite");
+                    const cloudHasFavorite = Object.prototype.hasOwnProperty.call(cloudWorkflow, "favorite");
+                    const legacyLocalDiffers = localHasFavorite && !localUpdatedAt && !cloudUpdatedAt
+                        && cloudHasFavorite && !!localWorkflow.favorite !== !!cloudWorkflow.favorite;
+                    if (localUpdatedAt > cloudUpdatedAt || (!cloudHasFavorite && localHasFavorite) || legacyLocalDiffers) {
+                        cloudWorkflow.favorite = !!localWorkflow.favorite;
+                        cloudWorkflow.favoriteUpdatedAt = localUpdatedAt;
+                        keptNewerLocalFavorite = true;
+                    }
+                }
+                this.meta = cloudMeta;
                 this.sortMode = this.meta.sortMode || "default";
                 this.persistLocal();
-                if (this.container) this.renderWorkflowList();
+                if (keptNewerLocalFavorite) this._queueCloudSave();
+                if (this.container) {
+                    this.renderCategories();
+                    this.renderWorkflowList();
+                }
+            } else if (Object.keys(this.meta?.workflows || {}).length > 0) {
+                // 云端尚无工作流元数据时，用本地数据初始化云端备份。
+                this._queueCloudSave();
             }
         } catch (e) {
             console.warn("[小珠光] 从云同步工作流元数据失败:", e);
@@ -205,7 +231,9 @@ class XZGWorkflowsManager {
                 lastUsed: Date.now(), // 新工作流默认最近使用时间=创建时间，排在最近排序列表顶部
                 categoryId: null,
                 createdAt: Date.now(),
-                readOnly: false
+                readOnly: false,
+                favorite: false,
+                favoriteUpdatedAt: 0
             };
         }
         return this.meta.workflows[path];
@@ -679,7 +707,9 @@ class XZGWorkflowsManager {
         
         const menu = document.createElement("div");
         menu.className = "xzg-wf-context-menu";
+        const isFavorite = this._isWorkflowFavorite(wf.path);
         menu.innerHTML = `
+            <div class="xzg-wf-ctx-item xzg-wf-bookmark-action" data-action="toggle-bookmark"><i class="pi pi-bookmark-fill"></i> ${isFavorite ? xzgT('取消收藏','Remove from favorites') : xzgT('添加到收藏','Add to favorites')}</div>
             <div class="xzg-wf-ctx-item" data-action="toggle-readonly">🔒 ${xzgT('切换只读','Toggle Read-only')}</div>
             <div class="xzg-wf-ctx-item" data-action="rename">✏️ ${xzgT('重命名','Rename')}</div>
             <div class="xzg-wf-ctx-item" data-action="custom-usage">🔢 ${xzgT('自定义使用频率','Custom Usage Count')}</div>
@@ -731,6 +761,8 @@ class XZGWorkflowsManager {
                 
                 if (action === "toggle-readonly") {
                     this.toggleWorkflowReadOnly(wf);
+                } else if (action === "toggle-bookmark") {
+                    this.toggleWorkflowBookmark(wf);
                 } else if (action === "rename") {
                     this.renameWorkflow(wf);
                 } else if (action === "custom-usage") {
@@ -767,7 +799,9 @@ class XZGWorkflowsManager {
 
     /** 切换工作流只读属性：标记后禁止删除/重命名/移动分类，且文件本身设为只读（无法覆盖保存） */
     async toggleWorkflowReadOnly(wf) {
-        const meta = this.getWorkflowMeta(wf.path);
+        const metaPath = this._workflowMetaPath(wf?.path);
+        if (!metaPath || wf?.isTemporary) return;
+        const meta = this.getWorkflowMeta(metaPath);
         meta.readOnly = !meta.readOnly;
         this.saveMeta();
         this.renderWorkflowList();
@@ -777,7 +811,7 @@ class XZGWorkflowsManager {
             const res = await api.fetchApi("/xzg/workflows/set-readonly", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name: wf.path, readonly: meta.readOnly })
+                body: JSON.stringify({ name: metaPath, readonly: meta.readOnly })
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
@@ -1759,10 +1793,14 @@ class XZGWorkflowsManager {
             }
             .xzg-wf-cat-list {
                 padding: 4px 0;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
                 flex: 1;
-                overflow-y: auto;
                 min-height: 0;
             }
+            .xzg-wf-cat-pinned { flex: 0 0 auto; }
+            .xzg-wf-cat-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
             .xzg-wf-folder-wrapper {
                 width: 100%;
             }
@@ -1866,6 +1904,7 @@ class XZGWorkflowsManager {
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
+            .xzg-wf-cat-item.xzg-wf-cat-bookmarks { color: #FFD700; }
             .xzg-wf-cat-item.drag-over {
                 background: rgba(255, 215, 0, 0.25) !important;
                 border: 2px dashed #FFD700;
@@ -2006,6 +2045,8 @@ class XZGWorkflowsManager {
                 text-overflow: ellipsis;
                 font-weight: 500;
             }
+            .xzg-wf-favorite-mark { color: #FFD700; font-size: 12px; margin-right: 5px; vertical-align: 1px; }
+            .xzg-wf-readonly-mark { color: #FFD700; font-size: 12px; margin-right: 5px; vertical-align: 1px; }
             .xzg-wf-item-meta {
                 font-size: 12px;
                 color: var(--fg-muted, #888);
@@ -2036,6 +2077,8 @@ class XZGWorkflowsManager {
                 box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
                 font-size: 13px;
             }
+            .xzg-wf-ctx-item.xzg-wf-bookmark-action { color: #FFD700; }
+            .xzg-wf-ctx-item.xzg-wf-bookmark-action i { margin-right: 2px; }
             .xzg-wf-ctx-item {
                 padding: 8px 16px;
                 cursor: pointer;
@@ -2914,6 +2957,19 @@ class XZGWorkflowsManager {
         this._setPossessWorkflowTabs(hidden);
     }
 
+    async toggleWorkflowBookmark(wf) {
+        if (!wf?.path || wf.isTemporary) return;
+        const metaPath = this._workflowMetaPath(wf.path);
+        if (!metaPath) return;
+        const nextFavorite = !this._isWorkflowFavorite(metaPath);
+        const meta = this.getWorkflowMeta(metaPath);
+        meta.favorite = nextFavorite;
+        meta.favoriteUpdatedAt = Math.max(Date.now(), (Number(meta.favoriteUpdatedAt) || 0) + 1);
+        this.saveMeta();
+        this.renderCategories();
+        this.renderWorkflowList();
+    }
+
     _setPossessWorkflowTabs(hidden) {
         const source = document.querySelector('[data-testid="topbar-workflow-tabs"]');
         if (!hidden) {
@@ -2973,6 +3029,8 @@ class XZGWorkflowsManager {
             .xzg-owned-workflow-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 1 auto; min-width:80px; max-width:220px; height:calc(100% - 2px); padding:0 10px; border:0; border-right:1px solid rgba(255,255,255,.12); background:transparent; color:var(--xzg-use-color,#aaa); cursor:pointer; font:500 14px/1 sans-serif; white-space:nowrap; }
             .xzg-owned-workflow-tab:hover { background:rgba(255,255,255,.06); color:var(--xzg-use-color,#eee); }
             .xzg-owned-workflow-tab.active { color:var(--xzg-use-color,#fff); font-weight:600; background:transparent; box-shadow:inset 0 -2px 0 color-mix(in srgb,var(--xzg-use-color,#fff) 72%,transparent); }
+            .xzg-owned-workflow-tabs .xzg-wf-favorite-mark,
+            .xzg-owned-workflow-tabs .xzg-wf-readonly-mark { flex:0 0 auto; color:#FFD700 !important; font-size:12px !important; line-height:1 !important; margin:0; vertical-align:middle; }
             .xzg-owned-workflow-tab-label { overflow:hidden; text-overflow:ellipsis; }
             .xzg-owned-workflow-tab-close { display:none; flex:0 0 auto; border:0; padding:0 2px; color:inherit; background:transparent; cursor:pointer; font-size:24px; line-height:1; }
             .xzg-owned-workflow-tab:hover .xzg-owned-workflow-tab-close, .xzg-owned-workflow-tab.active .xzg-owned-workflow-tab-close { display:block; }
@@ -2983,6 +3041,8 @@ class XZGWorkflowsManager {
             .xzg-owned-workflow-menu-item:hover { background:#2b2b2b; }
             .xzg-owned-workflow-menu-item.disabled { color:#777; cursor:default; }
             .xzg-owned-workflow-menu-item.xzg-exit-possess { color:#ffd700; }
+            .xzg-owned-workflow-menu-item.xzg-toggle-readonly { color:#ffd700; }
+            .xzg-owned-workflow-menu-item.xzg-toggle-favorite { color:#ffd700; }
             .xzg-owned-workflow-menu-separator { height:1px; margin:5px 0; background:#393939; }
         `;
         document.head.appendChild(style);
@@ -3004,7 +3064,7 @@ class XZGWorkflowsManager {
         const workflows = Array.isArray(store?.openWorkflows) ? store.openWorkflows : [];
         const active = store?.activeWorkflow;
         const useColorSignature = `${this.meta?.useColorsEnabled !== false}:${JSON.stringify(this.meta?.useColors || [])}`;
-        const signature = useColorSignature + ";" + workflows.map(w => [w.key, w.path, w.filename, w.isPersisted, w.isModified, this._ownedWorkflowManagerMeta(w)?.useCount ?? w.useCount ?? 0, store?.isActive?.(w) || w.path === active?.path].join("|")).join(";");
+        const signature = useColorSignature + ";" + workflows.map(w => [w.key, w.path, w.filename, w.isPersisted, w.isModified, this._ownedWorkflowManagerMeta(w)?.useCount ?? w.useCount ?? 0, this._isWorkflowFavorite(w.path), this._ownedWorkflowManagerMeta(w)?.readOnly === true, store?.isActive?.(w) || w.path === active?.path].join("|")).join(";");
         if (signature === this._ownedWorkflowTabSignature && bar.childElementCount) return;
         this._ownedWorkflowTabSignature = signature;
         bar.replaceChildren();
@@ -3023,6 +3083,18 @@ class XZGWorkflowsManager {
             tab.title = workflow.filename || workflow.path || "";
             const label = document.createElement("span");
             label.className = "xzg-owned-workflow-tab-label";
+            if (this._isWorkflowFavorite(workflow.path)) {
+                const favoriteMark = document.createElement("i");
+                favoriteMark.className = "pi pi-bookmark-fill xzg-wf-favorite-mark";
+                favoriteMark.title = xzgT("已收藏", "Favorited");
+                tab.appendChild(favoriteMark);
+            }
+            if (this._ownedWorkflowManagerMeta(workflow)?.readOnly === true) {
+                const readOnlyMark = document.createElement("i");
+                readOnlyMark.className = "pi pi-lock xzg-wf-readonly-mark";
+                readOnlyMark.title = xzgT("只读工作流", "Read-only workflow");
+                tab.appendChild(readOnlyMark);
+            }
             label.textContent = workflow.filename || workflow.path?.split("/").pop() || xzgT("未命名工作流", "Untitled Workflow");
             tab.appendChild(label);
             const close = document.createElement("button");
@@ -3077,12 +3149,43 @@ class XZGWorkflowsManager {
         return this._ownedWorkflowTabSource?.querySelectorAll('[data-testid="workflow-tab"], .workflow-tab')?.[index] || null;
     }
 
-    _officialWorkflowBookmarkStore() {
-        // Pinia 实例属于 Vue 根应用，不会挂在 workflow store 实例的 $pinia 属性上。
-        const vueApp = document.getElementById("vue-app")?.__vue_app__;
-        const pinia = vueApp?.config?.globalProperties?.$pinia
-            || vueApp?._context?.provides?.pinia;
-        return pinia?._s?.get("workflowBookmark") || null;
+    _isWorkflowFavorite(path) {
+        const metaPath = this._workflowMetaPath(path);
+        if (!metaPath) return false;
+        let meta = this.meta.workflows[metaPath];
+        const aliases = new Set([
+            String(path || ""),
+            `workflows/${metaPath}`,
+            `${metaPath}.json`,
+            `workflows/${metaPath}.json`
+        ]);
+        let migrated = false;
+        for (const alias of aliases) {
+            if (!alias || alias === metaPath || !this.meta.workflows[alias]) continue;
+            const oldMeta = this.meta.workflows[alias];
+            if (!meta) {
+                meta = this.meta.workflows[metaPath] = oldMeta;
+            } else if ((Number(oldMeta.favoriteUpdatedAt) || 0) > (Number(meta.favoriteUpdatedAt) || 0)) {
+                meta.favorite = !!oldMeta.favorite;
+                meta.favoriteUpdatedAt = Number(oldMeta.favoriteUpdatedAt) || 0;
+            } else if (oldMeta.favorite && !meta.favorite) {
+                // 兼容旧版只记录收藏布尔值、没有更新时间的路径键。
+                meta.favorite = true;
+            }
+            delete this.meta.workflows[alias];
+            migrated = true;
+        }
+        if (!meta) meta = this.getWorkflowMeta(metaPath);
+        if (migrated) this.saveMeta();
+        return !!meta.favorite;
+    }
+
+    _workflowMetaPath(path) {
+        return String(path || "")
+            .replace(/\\/g, "/")
+            .replace(/^\/+/, "")
+            .replace(/^workflows\//i, "")
+            .replace(/\.json$/i, "");
     }
 
     async _activateOwnedWorkflowTab(workflow) {
@@ -3132,9 +3235,10 @@ class XZGWorkflowsManager {
         menu.className = "xzg-owned-workflow-menu";
         const store = app.extensionManager?.workflow;
         const possessModeOn = localStorage.getItem("xzg_possess_mode") === "1";
-        const bookmarkStore = this._officialWorkflowBookmarkStore();
-        const isBookmarked = bookmarkStore?.isBookmarked?.(workflow.path)
-            ?? (store?.bookmarkedWorkflows || []).some(w => w.path === workflow.path);
+        const isFavorite = this._isWorkflowFavorite(workflow.path);
+        const workflowMetaPath = this._workflowMetaPath(workflow.path);
+        const workflowMeta = workflowMetaPath ? this.getWorkflowMeta(workflowMetaPath) : null;
+        const isReadOnly = workflowMeta?.readOnly === true;
         const items = [
             { icon: "pi pi-pencil", label: xzgT("重命名", "Rename"), disabled: !workflow.isPersisted, action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.RenameWorkflow"); } },
             { icon: "pi pi-copy", label: xzgT("复制", "Duplicate"), action: async () => {
@@ -3145,15 +3249,8 @@ class XZGWorkflowsManager {
                 const duplicate = store.createNewTemporary(filename + ".json", state);
                 await app.loadGraphData(state, true, true, duplicate);
             } },
-            { icon: isBookmarked ? "pi pi-bookmark-fill" : "pi pi-bookmark", label: isBookmarked ? xzgT("从书签移除", "Remove from bookmarks") : xzgT("添加到书签", "Add to bookmarks"), disabled: workflow.isTemporary, action: async () => {
-                const current = bookmarkStore?.isBookmarked?.(workflow.path)
-                    ?? (store?.bookmarkedWorkflows || []).some(w => w.path === workflow.path);
-                if (bookmarkStore?.setBookmarked) {
-                    await bookmarkStore.setBookmarked(workflow.path, !current);
-                } else if (bookmarkStore?.toggleBookmarked) {
-                    await bookmarkStore.toggleBookmarked(workflow.path);
-                }
-            } },
+            { icon: isFavorite ? "pi pi-bookmark-fill" : "pi pi-bookmark", label: isFavorite ? xzgT("取消收藏", "Remove from favorites") : xzgT("添加到收藏", "Add to favorites"), disabled: workflow.isTemporary, toggleFavorite: true, action: async () => { await this.toggleWorkflowBookmark(workflow); } },
+            { icon: "pi pi-lock", label: isReadOnly ? xzgT("取消只读", "Disable Read-only") : xzgT("切换只读", "Toggle Read-only"), disabled: workflow.isTemporary || !workflow.path, toggleReadOnly: true, action: async () => { await this.toggleWorkflowReadOnly(workflow); } },
             { separator: true },
             { icon: "pi pi-save", label: xzgT("保存", "Save"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.SaveWorkflow"); } },
             { icon: "pi pi-save", label: xzgT("另存为", "Save As"), action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.SaveWorkflowAs"); } },
@@ -3184,6 +3281,8 @@ class XZGWorkflowsManager {
             const row = document.createElement("div");
             row.className = "xzg-owned-workflow-menu-item" + (item.disabled ? " disabled" : "");
             if (item.exitPossess) row.classList.add("xzg-exit-possess");
+            if (item.toggleReadOnly) row.classList.add("xzg-toggle-readonly");
+            if (item.toggleFavorite) row.classList.add("xzg-toggle-favorite");
             if (item.icon) {
                 const icon = document.createElement("i");
                 icon.className = item.icon;
@@ -3535,13 +3634,25 @@ class XZGWorkflowsManager {
     renderCategories() {
         if (!this.categoryList) return;
         this.categoryList.innerHTML = "";
+        const pinned = document.createElement("div");
+        pinned.className = "xzg-wf-cat-pinned";
+        const treeList = document.createElement("div");
+        treeList.className = "xzg-wf-cat-tree";
 
         const allItem = this.createCategoryItem({
             id: "all",
             name: "全部",
             type: "system"
         }, 0);
-        this.categoryList.appendChild(allItem);
+        pinned.appendChild(allItem);
+
+        const bookmarksItem = this.createCategoryItem({
+            id: "bookmarks",
+            name: xzgT('收藏', 'Bookmarks'),
+            type: "bookmarks"
+        }, 0);
+        bookmarksItem.classList.add("xzg-wf-cat-bookmarks");
+        pinned.appendChild(bookmarksItem);
 
         const uncategorizedItem = this.createCategoryItem({
             id: "uncategorized",
@@ -3549,16 +3660,18 @@ class XZGWorkflowsManager {
             type: "uncategorized",
             path: ""
         }, 0);
-        this.categoryList.appendChild(uncategorizedItem);
+        pinned.appendChild(uncategorizedItem);
+        this.categoryList.appendChild(pinned);
 
         if (this.tree && this.tree.length > 0) {
             for (const item of this.tree) {
                 if (item.type === "folder") {
                     const el = this.renderFolderTree(item, 0);
-                    this.categoryList.appendChild(el);
+                    treeList.appendChild(el);
                 }
             }
         }
+        this.categoryList.appendChild(treeList);
     }
 
     renderFolderTree(folderData, depth) {
@@ -3682,7 +3795,9 @@ class XZGWorkflowsManager {
         item.dataset.catType = cat.type;
         item.dataset.catName = cat.name;
         item.style.paddingLeft = (12 + depth * 16) + "px";
-        const catIcon = cat.id === "all" ? "" : (cat.type === "uncategorized" ? "" : `<svg width="14" height="14" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="16" height="12" /></svg>`);
+        const catIcon = cat.id === "all" || cat.type === "uncategorized" ? ""
+            : cat.type === "bookmarks" ? `<i class="pi pi-bookmark-fill" style="font-size:13px"></i>`
+            : `<svg width="14" height="14" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="16" height="12" /></svg>`;
         item.innerHTML = `
             <span class="xzg-wf-cat-name">
                 <span class="xzg-wf-cat-toggle xzg-wf-cat-toggle-empty"></span>
@@ -3802,6 +3917,7 @@ class XZGWorkflowsManager {
 
         const wfMeta = this.getWorkflowMeta(wf.path);
         if (wfMeta.readOnly) item.classList.add("xzg-wf-item-readonly");
+        const isFavorite = this._isWorkflowFavorite(wf.path);
 
         const useInfo = this.getUseLevel(wf.useCount || 0);
         if (this.meta.useColorsEnabled !== false && useInfo.level > 0) {
@@ -3826,12 +3942,12 @@ class XZGWorkflowsManager {
                 </svg>
             </span>
             <div class="xzg-wf-item-info">
-                <div class="xzg-wf-item-name"></div>
-                <div class="xzg-wf-item-meta">${useCountText}${wfMeta.readOnly ? ' · <span class="xzg-wf-readonly-tag">🔒 只读</span>' : ''}</div>
+                <div class="xzg-wf-item-name">${isFavorite ? '<i class="pi pi-bookmark-fill xzg-wf-favorite-mark" title="' + xzgT('已收藏', 'Favorited') + '"></i>' : ''}${wfMeta.readOnly ? '<i class="pi pi-lock xzg-wf-readonly-mark" title="' + xzgT('只读工作流', 'Read-only workflow') + '"></i>' : ''}<span class="xzg-wf-item-name-text"></span></div>
+                <div class="xzg-wf-item-meta">${useCountText}${wfMeta.readOnly ? ' · <span class="xzg-wf-readonly-tag">只读</span>' : ''}</div>
             </div>
         `;
 
-        item.querySelector(".xzg-wf-item-name").textContent = wf.name;
+        item.querySelector(".xzg-wf-item-name-text").textContent = wf.name;
 
         // 悬浮高亮：处于「全部」分类时，悬浮工作流 → 左侧对应分类高亮并展开（手风琴模式）
         item.addEventListener("mouseenter", () => {
@@ -3929,7 +4045,9 @@ class XZGWorkflowsManager {
     getFilteredWorkflows(catId, search) {
         let items = [...this.workflows];
 
-        if (catId === "uncategorized") {
+        if (catId === "bookmarks") {
+            items = items.filter(w => this._isWorkflowFavorite(w.path));
+        } else if (catId === "uncategorized") {
             items = items.filter(w => !w.folder || w.folder === "未分类");
         } else if (catId && catId.startsWith("folder:")) {
             const folder = catId.substring(7);

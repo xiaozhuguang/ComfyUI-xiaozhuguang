@@ -162,8 +162,8 @@ async function _onImportClick(node, btn, labelSpan) {
         );
         return;
     }
-    if (!st.clip) {
-        _toast("[达芬奇导入] 当前播放头下没有视频片段，请先在调色页/剪辑页把播放头置于要导出的片段上。", true);
+    if (!st.has_marked_range) {
+        _toast("[达芬奇导入] 请先在达芬奇时间线上手工设置视频入点（I）和出点（O）。", true);
         return;
     }
     await _davinciExport(node, btn, labelSpan, "达芬奇");
@@ -194,7 +194,7 @@ function _createPreviewDavinciButton(node) {
     const fastcutBtn = node._xzgFastcutBtn || null;
 
     const btn = document.createElement("button");
-    btn.title = "从达芬奇剪辑页导出当前播放头所在片段并加载";
+    btn.title = "导出达芬奇时间线上手工设置的入出点范围并加载";
     btn.style.cssText =
         "position:absolute;top:6px;right:6px;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +

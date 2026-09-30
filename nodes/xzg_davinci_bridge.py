@@ -12,8 +12,8 @@ subprocess 方式调用（环境变量隔离，避免污染 ComfyUI 主进程 Py
     python xzg_davinci_bridge.py '{"action":"import_audio","file_path":".../x.mp3"}'
 结果以 JSON 输出到 stdout。
 
-action=status :  返回达芬奇连接状态与当前片段信息（不触发任何改动）
-action=export :  触发达芬奇渲染导出当前播放头所在片段为 H.264/MP4 视频
+action=status :  返回达芬奇连接状态与时间线手工入出点状态（不触发任何改动）
+action=export :  触发达芬奇渲染导出当前时间线手工设置的入出点范围为 H.264/MP4 视频
 action=import :  把本地视频导入当前项目：ImportMedia 进媒体池，AddTrack 新建视频轨道，
                  再把片段落到新轨道并对齐当前播放头所在最上层片段的前端（不推移/不分割）
 
@@ -186,6 +186,25 @@ def _restore_playhead_timecode(timeline, timecode):
         except Exception:
             continue
     return False
+
+
+def _manual_timeline_render_range(timeline):
+    """读取用户手工设置的时间线视频入出点，返回渲染 API 使用的绝对帧号。"""
+    marks = timeline.GetMarkInOut() or {}
+    video_marks = marks.get("video") or {}
+    mark_in, mark_out = video_marks.get("in"), video_marks.get("out")
+    if mark_in is None or mark_out is None:
+        return None
+    try:
+        mark_in, mark_out = int(mark_in), int(mark_out)
+    except (TypeError, ValueError):
+        return None
+    if mark_out <= mark_in:
+        return None
+    # Timeline.GetMarkInOut 返回相对时间线起点的帧号；渲染 MarkIn/MarkOut
+    # 使用时间线记录帧号，因此加上时间线起始帧。
+    timeline_start = int(timeline.GetStartFrame() or 0)
+    return mark_in + timeline_start, mark_out + timeline_start
 
 
 def current_video_item(timeline):
@@ -369,7 +388,7 @@ def _pick_render_codec(project):
     raise RuntimeError(f"达芬奇没有可用的 MP4 视频格式/编码：{formats or '无法读取格式列表'}")
 
 
-def _render_export(project, timeline, item, out_dir, name, resolve=None):
+def _render_export(project, timeline, item, out_dir, name, resolve=None, render_range=None):
     """导出带画面的视频片段（并包含原片音频），返回文件名和扩展名。"""
     os.makedirs(out_dir, exist_ok=True)
     # Activate Deliver before loading the preset. Loading it from Edit only
@@ -446,8 +465,12 @@ def _render_export(project, timeline, item, out_dir, name, resolve=None):
             f"达芬奇返回的可用分辨率：{supported_resolutions}。未提交渲染任务。"
         )
 
-    start = int(item.GetStart())
-    end = int(item.GetEnd())
+    if render_range is not None:
+        start, end = (int(render_range[0]), int(render_range[1]))
+    elif item is not None:
+        start, end = int(item.GetStart()), int(item.GetEnd())
+    else:
+        raise RuntimeError("没有可用于渲染的时间线范围")
     # 至少导出一帧，防止 0 长度
     if end <= start:
         end = start + 1
@@ -718,19 +741,19 @@ def action_status():
         result["timeline"] = None
         return result
     result["timeline"] = tl.GetName() or ""
-    item, how = current_video_item(tl)
-    if item is None:
-        result["clip"] = None
-        result["clip_note"] = "当前播放头下无视频片段"
+    render_range = _manual_timeline_render_range(tl)
+    result["has_marked_range"] = render_range is not None
+    if render_range is None:
+        result["clip_note"] = "请先在时间线上手工设置视频入点和出点"
     else:
-        result["clip"] = item.GetName() or ""
-        result["clip_start"] = int(item.GetStart())
-        result["clip_end"] = int(item.GetEnd())
-        result["frame_method"] = how
-        try:
-            result["fps"] = float(tl.GetSetting("timelineFrameRate") or 0)
-        except Exception:
-            result["fps"] = 0
+        timeline_start = int(tl.GetStartFrame() or 0)
+        result["mark_in"] = render_range[0] - timeline_start
+        result["mark_out"] = render_range[1] - timeline_start
+        result["mark_frames"] = render_range[1] - render_range[0]
+    try:
+        result["fps"] = float(tl.GetSetting("timelineFrameRate") or 0)
+    except Exception:
+        result["fps"] = 0
     return result
 
 
@@ -758,26 +781,21 @@ def action_export(pargs):
         return {"ok": False, "error": "未打开时间线"}
     original_playhead_tc = _capture_playhead_timecode(tl)
 
-    # 判断当前界面：剪辑页走「播放头 + 多轨道取最长片段」逻辑，否则走调色页当前片段
     current_page = ""
     try:
         current_page = str(resolve.GetCurrentPage() or "").lower()
     except Exception:
         current_page = ""
-    is_edit = "edit" in current_page or current_page == ""
-
-    item, how = None, ""
-    if is_edit:
-        item, how = longest_video_at_playhead(tl)
-    else:
-        item, how = current_video_item(tl)
-    if item is None:
-        return {"ok": False, "error": "当前播放头下无视频片段，请先把播放头置于要导出的片段上"}
+    render_range = _manual_timeline_render_range(tl)
+    if render_range is None:
+        return {"ok": False, "error": "未检测到有效的手工视频入出点，请先在达芬奇时间线上按 I 和 O 设置出入点"}
     switch_back = pargs.get("switch_back", True)
     render_error = None
     filename = ext = None
     try:
-        filename, ext = _render_export(project, tl, item, out_dir, name, resolve=resolve)
+        filename, ext = _render_export(
+            project, tl, None, out_dir, name, resolve=resolve,
+            render_range=render_range)
     except Exception as e:
         render_error = e
     finally:
@@ -792,18 +810,14 @@ def action_export(pargs):
     if render_error is not None:
         return {"ok": False, "error": f"导出失败：{render_error}"}
 
-    # 返回包含 clip 信息，方便插件显示"从哪段导入"
-    clip_info = None
-    try:
-        clip_info = {
-            "name": item.GetName() or "",
-            "start": int(item.GetStart()),
-            "end": int(item.GetEnd()),
-        }
-    except Exception:
-        pass
+    clip_info = {
+        "name": "",
+        "start": render_range[0],
+        "end": render_range[1],
+    }
     return {"ok": True, "mode": "video", "filename": filename, "ext": ext,
-            "clip": clip_info, "frame_method": how, "page": current_page or "unknown"}
+            "clip": clip_info, "frame_method": "ManualTimelineMarks",
+            "page": current_page or "unknown"}
 
 
 def action_export_audio(pargs):
