@@ -34,6 +34,56 @@ _DV_INPUT_SUBDIR = ""           # 导出的视频直接放 input 根目录，组
 _RENDER_TIMEOUT = 1800          # 渲染等待超时（秒）
 _DAVINCI_VIDEO_EXPORT_SESSION = uuid.uuid4().hex
 
+# 空选兜底视频：用户没在节点上选任何视频时，自动加载这个内置占位小视频，
+# 让节点能留在工作流上直接跑通而不报 "Invalid video file"。
+# 视频随插件分发（assets/default_reference.mp4），不依赖外部绝对路径。
+_FALLBACK_VIDEO = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "assets", "default_reference.mp4"
+)
+# ComfyUI 的 get_annotated_filepath 只接受 input 目录下的相对文件名，拒绝任意绝对路径。
+# 因此首次使用时把内置占位视频复制到 input 目录下一个固定文件名，再传相对名给父类。
+_FALLBACK_INPUT_NAME = "xzg_fallback_reference.mp4"
+
+
+def _ensure_fallback_in_input():
+    """确保 input 目录下存在兜底占位视频，返回它在 input 下的相对文件名。"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        dst = os.path.join(input_dir, _FALLBACK_INPUT_NAME)
+        if os.path.isfile(_FALLBACK_VIDEO) and not os.path.isfile(dst):
+            shutil.copy2(_FALLBACK_VIDEO, dst)
+            print(f"[小珠光视频加载-化神级] 已复制内置占位视频到 input/{_FALLBACK_INPUT_NAME}")
+        if os.path.isfile(dst):
+            return _FALLBACK_INPUT_NAME
+    except Exception as e:
+        print(f"[小珠光视频加载-化神级] 准备兜底视频失败：{e}")
+    return ""
+
+
+def _resolve_video_widget(视频):
+    """把节点上的「视频」widget 值解析为真实可用路径；空选或文件丢失时回退到兜底视频。
+
+    返回 (relative_filename_or_raw, used_fallback: bool)。
+    三种情况：
+    - 用户选了真实存在的视频 → 原样返回；
+    - widget 为空 → 复制内置占位视频到 input，返回其相对文件名；
+    - widget 非空但文件已被删除/移走 → 同样回退到占位视频（老节点刷新浏览器后常见）。
+    """
+    raw = (视频 or "").strip() if isinstance(视频, str) else (视频 or "")
+    if raw:
+        # 先验证用户选的文件是否真的存在；不存在则走兜底，不直接报错。
+        try:
+            resolved = folder_paths.get_annotated_filepath(raw)
+            if resolved and os.path.isfile(resolved):
+                return raw, False
+        except Exception:
+            pass
+        # 文件丢失：静默兜底，不打警告日志（避免每次跑节点都刷屏）。
+    fallback_name = _ensure_fallback_in_input()
+    if fallback_name:
+        return fallback_name, True
+    return raw, False
+
 
 def _choose_video_save_path(source_path):
     """用 Windows 原生另存为窗口选择视频副本位置。"""
@@ -84,14 +134,52 @@ if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
     """小珠光视频加载-化神级：加载器全部功能 + 片段窗口（场景逐段批处理）+ 达芬奇导入。
 
-    INPUT_TYPES / RETURN_TYPES / FUNCTION / CATEGORY / load_video / IS_CHANGED 全部继承自
-    「小珠光视频批处理」父类（含片段起点/片段终点），由 __init__.py 注册为「小珠光视频加载-化神级」。"""
+    INPUT_TYPES / RETURN_TYPES / FUNCTION / CATEGORY 全部继承自
+    「小珠光视频批处理」父类（含片段起点/片段终点），由 __init__.py 注册为「小珠光视频加载-化神级」。
+
+    空选兜底：节点上没选任何视频时，自动加载 _FALLBACK_VIDEO 占位视频，
+    让节点能留在工作流上直接跑通而不报 "Invalid video file"。
+    """
+
+    def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
+                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", unique_id=None):
+        视频, _used_fallback = _resolve_video_widget(视频)
+        return super().load_video(
+            视频=视频,
+            强制帧率=强制帧率,
+            视频比例=视频比例,
+            比例模式=比例模式,
+            自定义宽度=自定义宽度,
+            自定义高度=自定义高度,
+            帧数上限=帧数上限,
+            跳过帧数=跳过帧数,
+            片段起点=片段起点,
+            片段终点=片段终点,
+            内存模式=内存模式,
+            unique_id=unique_id,
+        )
 
     @classmethod
-    def IS_CHANGED(cls, *args, **kwargs):
+    def VALIDATE_INPUTS(cls, **kwargs):
+        # 父类（祖父类）校验「文件不存在」直接返回错误字符串，ComfyUI 会在执行节点前
+        # 就拦截报错、根本不调用 load_video。这里一律放行：文件不存在时由 load_video
+        # 的兜底逻辑自动复制占位视频接管，老节点刷新浏览器后文件被删也不报错。
+        # 只用 **kwargs，不把「视频」写成必填位置参数——ComfyUI 在重载/校验画布节点时
+        # 可能不传入控件值，否则会抛 "missing 1 required positional argument: '视频'"。
+        return True
+
+    @classmethod
+    def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
+                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", **kwargs):
+        # 空选或文件被删时，与 load_video 走同一套兜底逻辑，保证缓存键稳定。
+        视频, _ = _resolve_video_widget(视频)
         # 达芬奇导入会替换「视频」输入，IS_CHANGED 需与本节点名一致；父类实现已足够，
         # 直接委托父类（父类签名含视频等参数）。
-        return super().IS_CHANGED(*args, **kwargs)
+        return super().IS_CHANGED(
+            视频=视频, 强制帧率=强制帧率, 视频比例=视频比例, 比例模式=比例模式,
+            自定义宽度=自定义宽度, 自定义高度=自定义高度, 帧数上限=帧数上限,
+            跳过帧数=跳过帧数, 片段起点=片段起点, 片段终点=片段终点,
+            内存模式=内存模式, **kwargs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

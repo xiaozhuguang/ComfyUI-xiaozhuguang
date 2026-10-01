@@ -6,6 +6,11 @@ import json
 import base64
 import shutil
 import tempfile
+import zipfile
+import secrets
+import contextvars
+import subprocess
+from contextlib import contextmanager
 import torch
 import numpy as np
 from PIL import Image, ImageOps
@@ -13,6 +18,8 @@ import folder_paths
 import node_helpers
 from aiohttp import web
 from server import PromptServer
+from .xzg_video_loader import VIDEO_EXTENSIONS, ffmpeg_path, _get_ffprobe_path
+from .xzg_audio_loader import AUDIO_EXTENSIONS
 
 # ---------- 小珠光路由安全装饰器 ----------
 import asyncio as _xzg_asyncio
@@ -205,26 +212,62 @@ def _get_thumb_cache_key(filename, size):
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".svg"}
 MEDIA_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS - {".svg"}
 MEDIA_MAX_FILE_BYTES = 100 * 1024 * 1024
+MEDIA_MAX_VIDEO_BYTES = 10 * 1024 * 1024 * 1024
+_media_kind = contextvars.ContextVar("xzg_media_library_kind", default="image")
+_media_video_thumbnail_slots = _xzg_asyncio.Semaphore(2)
+MEDIA_VIDEO_FORMATS = "mov,matroska,webm,gif,avi,flv,asf,mpeg,mpegts"
+MEDIA_AUDIO_FORMATS = "mp3,wav,ogg,flac,aac,mov,asf,amr,ac3,aiff,au,matroska,rm,voc,w64,mpeg"
+
+
+@contextmanager
+def _media_library_context(kind):
+    token = _media_kind.set(kind)
+    try:
+        yield
+    finally:
+        _media_kind.reset(token)
+
+
+def _media_library_handler(function):
+    @_xzg_ft.wraps(function)
+    async def wrapped(request):
+        kind = request.query.get("kind", "image")
+        if kind not in ("image", "video", "audio"):
+            return web.json_response({"error": "invalid media kind"}, status=400)
+        with _media_library_context(kind):
+            return await function(request)
+    return wrapped
+
+
+def _media_max_file_bytes():
+    return MEDIA_MAX_VIDEO_BYTES if _media_kind.get() != "image" else MEDIA_MAX_FILE_BYTES
 
 
 def _media_library_dir():
     """媒体库文件保存在 ComfyUI 用户目录，供同一后端的浏览器会话共享。"""
     base = folder_paths.get_user_directory()
-    path = os.path.join(base, "xiaozhuguang", "media_library", "images")
+    path = os.path.join(base, "xiaozhuguang", "media_library", {"image": "images", "video": "videos", "audio": "audio"}[_media_kind.get()])
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def _media_order_path():
-    return os.path.join(os.path.dirname(_media_library_dir()), "order.json")
+    return os.path.join(os.path.dirname(_media_library_dir()), "order.json" if _media_kind.get() == "image" else _media_kind.get() + "-order.json")
 
 
 def _media_ordered_names(directory):
+    """返回媒体库全部图片的相对路径列表（含一级子文件夹）。
+    根目录图片为 'name.ext'，文件夹图片为 'folder/name.ext'，按 order.json 记录排序（缺失时按修改时间倒序）。"""
     available = []
     for name in os.listdir(directory):
-        if _media_safe_name(name) and os.path.isfile(os.path.join(directory, name)):
+        full = os.path.join(directory, name)
+        if os.path.isdir(full) and _media_safe_folder(name):
+            for fname in os.listdir(full):
+                if _media_safe_name(fname) and os.path.isfile(os.path.join(full, fname)):
+                    available.append(name + "/" + fname)
+        elif _media_safe_name(name) and os.path.isfile(full):
             available.append(name)
-    available.sort(key=lambda name: os.path.getmtime(os.path.join(directory, name)), reverse=True)
+    available.sort(key=lambda rel: os.path.getmtime(_media_resolve_path(directory, rel)), reverse=True)
     try:
         with open(_media_order_path(), "r", encoding="utf-8") as source:
             saved = json.load(source)
@@ -263,7 +306,8 @@ def _media_safe_name(name):
         return None
     if os.path.splitext(name)[0].upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
         return None
-    if os.path.splitext(name)[1].lower() not in MEDIA_IMAGE_EXTENSIONS:
+    extensions = {"." + ext for ext in (AUDIO_EXTENSIONS if _media_kind.get() == "audio" else VIDEO_EXTENSIONS)} if _media_kind.get() != "image" else MEDIA_IMAGE_EXTENSIONS
+    if os.path.splitext(name)[1].lower() not in extensions:
         return None
     return name
 
@@ -278,51 +322,203 @@ def _media_unique_name(directory, name):
     return candidate
 
 
+def _media_safe_folder(folder):
+    """校验文件夹名（一级分类名），通过则原样返回，否则 None。"""
+    if not isinstance(folder, str) or not folder or len(folder) > 120:
+        return None
+    if folder != os.path.basename(folder) or "/" in folder or "\\" in folder or folder in (".", ".."):
+        return None
+    if folder.rstrip(" .") != folder or any(ord(ch) < 32 or ch in '<>:"|?*' for ch in folder):
+        return None
+    if folder.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        return None
+    return folder
+
+
+def _media_safe_rel(rel):
+    """校验媒体库相对路径：'name.ext'（根目录）或 'folder/name.ext'（一级文件夹），通过则原样返回，否则 None。"""
+    if not isinstance(rel, str) or not rel or len(rel) > 480:
+        return None
+    parts = rel.split("/")
+    if len(parts) == 1:
+        folder = ""
+        fname = parts[0]
+    elif len(parts) == 2:
+        folder, fname = parts
+        if not _media_safe_folder(folder):
+            return None
+    else:
+        return None
+    if not _media_safe_name(fname):
+        return None
+    return rel
+
+
+def _media_resolve_path(directory, rel):
+    """把媒体库相对路径安全解析为绝对路径，防止目录穿越。非法路径抛 ValueError。"""
+    rel = _media_safe_rel(rel)
+    if not rel:
+        raise ValueError("invalid media path")
+    root_real = os.path.realpath(directory)
+    path = os.path.realpath(os.path.join(root_real, *rel.split("/")))
+    if path != root_real and os.path.commonpath([root_real, path]) != root_real:
+        raise ValueError("invalid media path")
+    return path
+
+
+def _media_folder_of(rel):
+    """返回相对路径所属文件夹（根目录返回 ''）。"""
+    idx = rel.find("/")
+    return rel[:idx] if idx >= 0 else ""
+
+
+def _media_folder_order_path():
+    return os.path.join(os.path.dirname(_media_library_dir()), "folders.json" if _media_kind.get() == "image" else _media_kind.get() + "-folders.json")
+
+
+def _media_read_folder_order():
+    try:
+        with open(_media_folder_order_path(), "r", encoding="utf-8") as source:
+            saved = json.load(source)
+        return saved if isinstance(saved, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _media_write_folder_order(names):
+    target = _media_folder_order_path()
+    fd, temp_path = tempfile.mkstemp(prefix=".folders-", dir=os.path.dirname(target))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(names, out, ensure_ascii=False)
+        os.replace(temp_path, target)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _media_folders(directory):
+    """返回媒体库全部一级子文件夹（含空文件夹，便于新建后立即进入再上传）。"""
+    folders = []
+    for name in os.listdir(directory):
+        full = os.path.join(directory, name)
+        if os.path.isdir(full) and _media_safe_folder(name):
+            folders.append(name)
+    # 优先按 folders.json 保存的顺序排列，缺失的按名称排在其后；无顺序记录时按名称排序。
+    saved = _media_read_folder_order()
+    current = set(folders)
+    ordered = []
+    seen = set()
+    for name in saved:
+        if name in current and name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    for name in sorted(folders):
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered
+
+
 def _media_validate_image(path):
+    if _media_kind.get() != "image":
+        is_audio = _media_kind.get() == "audio"
+        probe = _get_ffprobe_path()
+        if not probe:
+            raise ValueError("FFprobe is required for the video media library")
+        result = subprocess.run([probe, "-v", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", MEDIA_AUDIO_FORMATS if is_audio else MEDIA_VIDEO_FORMATS,
+            "-select_streams", "a:0" if is_audio else "v:0", "-show_entries",
+            "stream=sample_rate,channels" if is_audio else "stream=width,height", "-of", "json", path], capture_output=True, timeout=30)
+        streams = json.loads(result.stdout).get("streams", []) if result.returncode == 0 else []
+        dimensions = ("sample_rate", "channels") if is_audio else ("width", "height")
+        if not streams or any(not streams[0].get(key) for key in dimensions):
+            raise ValueError("file has no readable audio stream" if is_audio else "file has no readable video stream")
+        return
     with Image.open(path) as img:
         img.verify()
 
 
 @routes.get("/xzg/media-library")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_list(request):
     directory = _media_library_dir()
+    folder = (request.query.get("folder") or "").strip()
+    # “全部”视图：folder=__all__ 时返回所有图片（根目录 + 各子文件夹）
+    all_view = folder == "__all__"
+    if not all_view and folder and not _media_safe_folder(folder):
+        return web.json_response({"error": "invalid folder"}, status=400)
+    folders = _media_folders(directory)
     items = []
-    for name in _media_ordered_names(directory):
-        path = os.path.join(directory, name)
+    for rel in _media_ordered_names(directory):
+        rel_folder = _media_folder_of(rel)
+        if not all_view and rel_folder != folder:
+            continue
+        path = _media_resolve_path(directory, rel)
         if os.path.isfile(path):
             stat = os.stat(path)
             version = f"{stat.st_mtime_ns}-{stat.st_ctime_ns}-{stat.st_size}"
-            items.append({"name": name, "size": stat.st_size, "mtime": stat.st_mtime, "version": version})
-    return web.json_response({"items": items}, headers={"Cache-Control": "no-store"})
+            items.append({"name": rel, "folder": rel_folder, "size": stat.st_size, "mtime": stat.st_mtime, "version": version})
+    return web.json_response({"folders": folders, "folder": folder, "items": items}, headers={"Cache-Control": "no-store"})
 
 
 @routes.put("/xzg/media-library/order")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_order(request):
     data = await request.json()
     names = data.get("names")
+    folder = (data.get("folder") or "").strip()
+    if folder and folder != "__all__" and not _media_safe_folder(folder):
+        return web.json_response({"error": "invalid folder"}, status=400)
     directory = _media_library_dir()
     current = _media_ordered_names(directory)
-    if not isinstance(names, list) or any(not isinstance(name, str) for name in names) or len(names) != len(current) or set(names) != set(current):
+    if not isinstance(names, list) or any(not _media_safe_rel(name) for name in names):
         return web.json_response({"error": "invalid image order"}, status=400)
-    _media_write_order(names)
+    if folder == "__all__":
+        # “全部”视图：对聚合后的全局顺序直接重排（可跨文件夹拖动）
+        if len(names) != len(current) or set(names) != set(current):
+            return web.json_response({"error": "invalid image order"}, status=400)
+        _media_write_order(names)
+        return web.json_response({"names": names})
+    folder_cur = [rel for rel in current if _media_folder_of(rel) == folder]
+    if len(names) != len(folder_cur) or set(names) != set(folder_cur):
+        return web.json_response({"error": "invalid image order"}, status=400)
+    # 仅重排目标文件夹的顺序，其它文件夹（及根目录）内部顺序与相对位置保持不变
+    if folder == "":
+        new_order = list(names) + [rel for rel in current if _media_folder_of(rel) != ""]
+    else:
+        new_order = []
+        inserted = False
+        for rel in current:
+            if _media_folder_of(rel) == folder:
+                if not inserted:
+                    new_order.extend(names)
+                    inserted = True
+            else:
+                new_order.append(rel)
+        if not inserted:
+            new_order.extend(names)
+    _media_write_order(new_order)
     return web.json_response({"names": names})
 
 
 @routes.put("/xzg/media-library/rename")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_rename(request):
     data = await request.json()
-    old_name = _media_safe_name(data.get("old_name"))
-    new_name = _media_safe_name(data.get("new_name"))
+    old_name = _media_safe_rel(data.get("old_name"))
+    new_name = _media_safe_rel(data.get("new_name"))
     if not old_name or not new_name:
         return web.json_response({"error": "invalid image name"}, status=400)
+    if _media_folder_of(old_name) != _media_folder_of(new_name):
+        return web.json_response({"error": "folder cannot change on rename"}, status=400)
     if os.path.splitext(old_name)[1].lower() != os.path.splitext(new_name)[1].lower():
         return web.json_response({"error": "image extension cannot change"}, status=400)
     directory = _media_library_dir()
-    old_path = os.path.join(directory, old_name)
-    new_path = os.path.join(directory, new_name)
+    old_path = _media_resolve_path(directory, old_name)
+    new_path = _media_resolve_path(directory, new_name)
     if not os.path.isfile(old_path):
         return web.json_response({"error": "image not found"}, status=404)
     if new_name == old_name:
@@ -332,7 +528,7 @@ async def xzg_media_library_rename(request):
         return web.json_response({"error": "image name already exists"}, status=409)
     order = _media_ordered_names(directory)
     if case_only_rename:
-        fd, temp_path = tempfile.mkstemp(prefix=".rename-", dir=directory)
+        fd, temp_path = tempfile.mkstemp(prefix=".rename-", dir=os.path.dirname(old_path))
         os.close(fd)
         os.remove(temp_path)
         os.rename(old_path, temp_path)
@@ -349,11 +545,12 @@ async def xzg_media_library_rename(request):
 
 @routes.get("/xzg/media-library/file")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_file(request):
-    name = _media_safe_name(request.query.get("name"))
+    name = _media_safe_rel(request.query.get("name"))
     if not name:
         return web.Response(status=400, text="invalid name")
-    path = os.path.join(_media_library_dir(), name)
+    path = _media_resolve_path(_media_library_dir(), name)
     if not os.path.isfile(path):
         return web.Response(status=404, text="not found")
     return web.FileResponse(path, headers={"X-Content-Type-Options": "nosniff"})
@@ -361,11 +558,12 @@ async def xzg_media_library_file(request):
 
 @routes.get("/xzg/media-library/thumb")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_thumb(request):
-    name = _media_safe_name(request.query.get("name"))
+    name = _media_safe_rel(request.query.get("name"))
     if not name:
         return web.Response(status=400, text="invalid name")
-    path = os.path.join(_media_library_dir(), name)
+    path = _media_resolve_path(_media_library_dir(), name)
     if not os.path.isfile(path):
         return web.Response(status=404, text="not found")
 
@@ -376,7 +574,7 @@ async def xzg_media_library_thumb(request):
     try:
         mtime = str(os.path.getmtime(path))
         fsize = str(os.path.getsize(path))
-        raw = "media_v1_{0}_{1}_{2}_{3}".format(name, 192, mtime, fsize)
+        raw = "media_v2_{0}_{1}_{2}_{3}_{4}".format(_media_kind.get(), name, 192, mtime, fsize)
         etag = hashlib.md5(raw.encode("utf-8")).hexdigest()
         cache_path = os.path.join(_get_media_thumb_cache_dir(), "media_" + etag)
     except Exception:
@@ -398,14 +596,34 @@ async def xzg_media_library_thumb(request):
         except Exception:
             pass
 
-    with Image.open(path) as source:
-        img = ImageOps.exif_transpose(source)
-        img.thumbnail((192, 192), Image.LANCZOS)
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-    data = buffer.getvalue()
+    if _media_kind.get() != "image":
+        if not ffmpeg_path:
+            return web.Response(status=503, text="FFmpeg is required for media thumbnails")
+        is_audio = _media_kind.get() == "audio"
+        args = [ffmpeg_path, "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-format_whitelist", MEDIA_AUDIO_FORMATS if is_audio else MEDIA_VIDEO_FORMATS, "-threads", "1"]
+        if is_audio:
+            args += ["-t", "30"]
+        args += ["-i", path]
+        if is_audio:
+            args += ["-filter_complex", "[0:a:0]aformat=channel_layouts=mono,showwavespic=s=192x96:colors=0xaaaaaa[wave]", "-map", "[wave]"]
+        else:
+            args += ["-map", "0:v:0", "-vf", "scale=192:192:force_original_aspect_ratio=decrease"]
+        args += ["-frames:v", "1", "-threads", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+        async with _media_video_thumbnail_slots:
+            result = await _media_archive_io(subprocess.run, args, capture_output=True, timeout=30)
+        if result.returncode or not result.stdout:
+            return web.Response(status=422, text="cannot generate media thumbnail")
+        data = result.stdout
+    else:
+        with Image.open(path) as source:
+            img = ImageOps.exif_transpose(source)
+            img.thumbnail((192, 192), Image.LANCZOS)
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG")
+        data = buffer.getvalue()
 
     if cache_path:
         try:
@@ -425,6 +643,7 @@ async def xzg_media_library_thumb(request):
 
 @routes.delete("/xzg/media-library/thumb-cache")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_thumb_cache_clear(request):
     """清理媒体库缩略图磁盘缓存（media_* 前缀），强制下次全部重新生成。"""
     removed = 0
@@ -445,6 +664,7 @@ async def xzg_media_library_thumb_cache_clear(request):
 
 @routes.post("/xzg/media-library/upload")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_upload(request):
     reader = await request.multipart()
     part = await reader.next()
@@ -452,27 +672,159 @@ async def xzg_media_library_upload(request):
         return web.json_response({"error": "file required"}, status=400)
     name = _media_safe_name(part.filename)
     if not name:
-        return web.json_response({"error": "unsupported image name or type"}, status=400)
-    directory = _media_library_dir()
-    fd, temp_path = tempfile.mkstemp(prefix=".upload-", dir=directory)
+        return web.json_response({"error": "unsupported media name or type"}, status=400)
+    root_dir = _media_library_dir()
+    fd, temp_path = tempfile.mkstemp(prefix=".upload-", dir=root_dir)
     try:
         size = 0
         with os.fdopen(fd, "wb") as out:
             while chunk := await part.read_chunk(size=1024 * 1024):
                 size += len(chunk)
-                if size > MEDIA_MAX_FILE_BYTES:
-                    return web.json_response({"error": "image exceeds 100 MB"}, status=413)
-                out.write(chunk)
-        _media_validate_image(temp_path)
+                if size > _media_max_file_bytes():
+                    return web.json_response({"error": "media exceeds 10 GB" if _media_kind.get() != "image" else "image exceeds 100 MB"}, status=413)
+                await _media_archive_io(out.write, chunk)
+        # 先完整读取图片内容，再读 folder 字段（aiohttp 按顺序解析 multipart，
+        # 若提前 next() 推进会破坏当前 part 数据流，导致图片内容损坏无法识别）
+        folder = ""
+        try:
+            folder_part = await reader.next()
+            if folder_part and folder_part.name == "folder":
+                folder = _media_safe_folder((await folder_part.read()).decode("utf-8", "replace").strip()) or ""
+        except Exception:
+            folder = ""
+        directory = os.path.join(root_dir, folder) if folder else root_dir
+        os.makedirs(directory, exist_ok=True)
+        await _media_archive_io(_media_validate_image, temp_path)
         stored_name = _media_unique_name(directory, name)
         os.replace(temp_path, os.path.join(directory, stored_name))
-        _media_write_order(_media_ordered_names(directory))
-        return web.json_response({"name": stored_name})
+        _media_write_order(_media_ordered_names(root_dir))
+        return web.json_response({"name": (folder + "/" if folder else "") + stored_name})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+@routes.post("/xzg/media-library/folder")
+@xzg_safe_handler
+@_media_library_handler
+async def xzg_media_library_folder_create(request):
+    data = await request.json()
+    name = _media_safe_folder(data.get("name"))
+    if not name:
+        return web.json_response({"error": "invalid folder name"}, status=400)
+    directory = _media_library_dir()
+    target = os.path.join(directory, name)
+    if os.path.exists(target):
+        return web.json_response({"error": "folder already exists"}, status=409)
+    os.makedirs(target, exist_ok=True)
+    return web.json_response({"name": name})
+
+
+@routes.delete("/xzg/media-library/folder")
+@xzg_safe_handler
+@_media_library_handler
+async def xzg_media_library_folder_delete(request):
+    data = await request.json()
+    name = _media_safe_folder(data.get("folder"))
+    if not name:
+        return web.json_response({"error": "invalid folder"}, status=400)
+    directory = _media_library_dir()
+    target = os.path.join(directory, name)
+    if not os.path.isdir(target):
+        return web.json_response({"error": "folder not found"}, status=404)
+    if any(os.path.isfile(os.path.join(target, f)) for f in os.listdir(target)):
+        return web.json_response({"error": "folder is not empty"}, status=400)
+    os.rmdir(target)
+    _media_write_order(_media_ordered_names(directory))
+    return web.json_response({"deleted": name})
+
+
+@routes.put("/xzg/media-library/folder-rename")
+@xzg_safe_handler
+@_media_library_handler
+async def xzg_media_library_folder_rename(request):
+    data = await request.json()
+    old_name = _media_safe_folder(data.get("old_name"))
+    new_name = _media_safe_folder(data.get("new_name"))
+    if not old_name or not new_name:
+        return web.json_response({"error": "invalid folder name"}, status=400)
+    if new_name == old_name:
+        return web.json_response({"name": old_name})
+    directory = _media_library_dir()
+    old_path = os.path.join(directory, old_name)
+    if not os.path.isdir(old_path):
+        return web.json_response({"error": "folder not found"}, status=404)
+    new_path = os.path.join(directory, new_name)
+    case_only_rename = os.path.normcase(old_path) == os.path.normcase(new_path)
+    if os.path.exists(new_path) and not case_only_rename:
+        return web.json_response({"error": "folder name already exists"}, status=409)
+    if case_only_rename:
+        # 仅大小写变化的改名：Windows 下直接 rename 会冲突，借助临时名两步完成。
+        import tempfile
+        fd, temp_path = tempfile.mkstemp(prefix=".rename-", dir=os.path.dirname(old_path))
+        os.close(fd)
+        os.remove(temp_path)
+        temp_path = os.path.join(directory, ".rename-" + old_name)
+        os.rename(old_path, temp_path)
+        try:
+            os.rename(temp_path, new_path)
+        except Exception:
+            os.rename(temp_path, old_path)
+            raise
+    else:
+        os.rename(old_path, new_path)
+    # 重命名后 order.json 中该文件夹下的相对路径前缀随之变化，重建排序记录。
+    _media_write_order(_media_ordered_names(directory))
+    return web.json_response({"name": new_name})
+
+
+@routes.put("/xzg/media-library/folder-order")
+@xzg_safe_handler
+@_media_library_handler
+async def xzg_media_library_folder_order(request):
+    data = await request.json()
+    names = data.get("names")
+    if not isinstance(names, list) or any(not _media_safe_folder(name) for name in names):
+        return web.json_response({"error": "invalid folder order"}, status=400)
+    directory = _media_library_dir()
+    current = set(_media_folders(directory))
+    if set(names) != current:
+        return web.json_response({"error": "invalid folder order"}, status=400)
+    _media_write_folder_order(list(names))
+    return web.json_response({"names": names})
+
+
+@routes.put("/xzg/media-library/move")
+@xzg_safe_handler
+@_media_library_handler
+async def xzg_media_library_move(request):
+    data = await request.json()
+    names = data.get("names", [])
+    folder = (data.get("folder") or "").strip()
+    if folder and not _media_safe_folder(folder):
+        return web.json_response({"error": "invalid folder"}, status=400)
+    if not isinstance(names, list) or not names or any(not _media_safe_rel(n) for n in names):
+        return web.json_response({"error": "invalid names"}, status=400)
+    directory = _media_library_dir()
+    target_dir = os.path.join(directory, folder) if folder else directory
+    os.makedirs(target_dir, exist_ok=True)
+    moved = []
+    for rel in names:
+        src = _media_resolve_path(directory, rel)
+        if not os.path.isfile(src):
+            continue
+        fname = rel.split("/")[-1]
+        dest = os.path.join(target_dir, fname)
+        if os.path.normcase(os.path.realpath(src)) == os.path.normcase(os.path.realpath(dest)):
+            moved.append(rel)
+            continue
+        tname = _media_unique_name(target_dir, fname)
+        shutil.move(src, os.path.join(target_dir, tname))
+        moved.append((folder + "/" if folder else "") + tname)
+    _media_write_order(_media_ordered_names(directory))
+    return web.json_response({"names": moved})
 
 
 @routes.post("/xzg/media-library/add-cropped-loader-image")
@@ -553,14 +905,15 @@ async def xzg_media_library_add_cropped_loader_image(request):
 
 @routes.delete("/xzg/media-library")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_delete(request):
     data = await request.json()
     names = data.get("names", [])
-    if not isinstance(names, list) or any(not _media_safe_name(name) for name in names):
+    if not isinstance(names, list) or any(not _media_safe_rel(name) for name in names):
         return web.json_response({"error": "invalid names"}, status=400)
     directory = _media_library_dir()
     for name in names:
-        path = os.path.join(directory, name)
+        path = _media_resolve_path(directory, name)
         if os.path.isfile(path):
             os.remove(path)
     _media_write_order(_media_ordered_names(directory))
@@ -569,36 +922,349 @@ async def xzg_media_library_delete(request):
 
 @routes.post("/xzg/media-library/to-input")
 @xzg_safe_handler
+@_media_library_handler
 async def xzg_media_library_to_input(request):
     data = await request.json()
     names = data.get("names", [])
-    if not isinstance(names, list) or any(not _media_safe_name(name) for name in names):
+    if not isinstance(names, list) or any(not _media_safe_rel(name) for name in names):
         return web.json_response({"error": "invalid names"}, status=400)
     source_dir = _media_library_dir()
     input_dir = _safe_dir('get_input_directory', 'input')
     copied = []
-    for name in names:
-        source = os.path.join(source_dir, name)
+    for rel in names:
+        source = _media_resolve_path(source_dir, rel)
         if not os.path.isfile(source):
-            return web.json_response({"error": f"image not found: {name}"}, status=404)
-        target_name = _media_unique_name(input_dir, name)
-        shutil.copy2(source, os.path.join(input_dir, target_name))
-        copied.append(target_name)
+            return web.json_response({"error": f"image not found: {rel}"}, status=404)
+        folder = "" if _media_kind.get() != "image" else _media_folder_of(rel)
+        target_dir = os.path.join(input_dir, folder) if folder else input_dir
+        os.makedirs(target_dir, exist_ok=True)
+        target_name = _media_unique_name(target_dir, rel.split("/")[-1])
+        await _media_archive_io(shutil.copy2, source, os.path.join(target_dir, target_name))
+        copied.append((folder + "/" if folder else "") + target_name)
     return web.json_response({"names": copied})
 
 
-@routes.get("/xzg/media-library/backup")
+@routes.post("/xzg/media-library/add-video")
 @xzg_safe_handler
-async def xzg_media_library_backup(request):
-    directory = _media_library_dir()
-    files = []
-    order = _media_ordered_names(directory)
-    for name in order:
-        path = os.path.join(directory, name)
+async def xzg_media_library_add_video(request):
+    return await _media_add_loaded(request, "video")
+
+
+@routes.post("/xzg/media-library/add-audio")
+@xzg_safe_handler
+async def xzg_media_library_add_audio(request):
+    return await _media_add_loaded(request, "audio")
+
+
+async def _media_add_loaded(request, kind):
+    data = await request.json()
+    source_type = data.get("type", "input")
+    filename = data.get("filename")
+    if source_type not in ("input", "output", "temp") or not isinstance(filename, str) or not filename or os.path.isabs(filename):
+        return web.json_response({"error": "invalid media source"}, status=400)
+    token = data.get("abs_token")
+    if token:
+        from .xzg_video_save_davinci import _lookup_abs_token
+        source = _lookup_abs_token(token)
+        if not source and kind == "audio":
+            from .xzg_audio_save import _AUDIO_ABS_FILE_TOKENS
+            source = _AUDIO_ABS_FILE_TOKENS.get(token)
+        if not source:
+            return web.json_response({"error": "saved media token expired; execute the node again"}, status=400)
+        source = os.path.realpath(source)
+    else:
+        root = os.path.realpath(_safe_dir("get_" + source_type + "_directory", source_type))
+        source = os.path.realpath(os.path.join(root, filename))
+        try:
+            if os.path.commonpath([root, source]) != root:
+                raise ValueError("invalid media source")
+        except ValueError:
+            return web.json_response({"error": "invalid media source"}, status=400)
+    with _media_library_context(kind):
+        name = _media_safe_name(os.path.basename(source))
+        if not name or not os.path.isfile(source):
+            return web.json_response({"error": "media not found or unsupported type"}, status=400)
+        if os.path.getsize(source) > MEDIA_MAX_VIDEO_BYTES:
+            return web.json_response({"error": "media exceeds 10 GB"}, status=413)
+        directory = _media_library_dir()
+        fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=directory)
+        os.close(fd)
+        try:
+            await _media_archive_io(shutil.copy2, source, temporary)
+            await _media_archive_io(_media_validate_image, temporary)
+            name = _media_unique_name(directory, name)
+            os.replace(temporary, os.path.join(directory, name))
+            _media_write_order(_media_ordered_names(directory))
+            return web.json_response({"name": name})
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+
+MEDIA_ARCHIVE_MAX_BYTES = 20 * 1024 * 1024 * 1024
+MEDIA_CONFIG_MAX_BYTES = 100 * 1024 * 1024
+_media_pending_archives = {}
+
+
+async def _media_archive_io(function, *args, **kwargs):
+    task = _xzg_asyncio.create_task(_xzg_asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await _xzg_asyncio.shield(task)
+    except _xzg_asyncio.CancelledError:
+        # Finish disk work before the caller closes or deletes its temporary file.
+        await task
+        raise
+
+
+def _media_discard_archive(token):
+    pending = _media_pending_archives.pop(token, None)
+    if pending:
+        path, timer = pending
+        timer.cancel()
         if os.path.isfile(path):
-            with open(path, "rb") as source:
-                files.append({"name": name, "data": base64.b64encode(source.read()).decode("ascii")})
-    return web.json_response({"version": 2, "order": order, "files": files})
+            os.remove(path)
+
+
+MEDIA_ARCHIVE_LIBRARIES = (("mediaLibrary", "images", "image"), ("videoLibrary", "videos", "video"), ("audioLibrary", "audio", "audio"))
+
+
+def _media_build_archive(path, config):
+    total = 0
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+        for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES:
+            media = config.get(key)
+            if media is None:
+                continue
+            with _media_library_context(kind):
+                directory = _media_library_dir()
+                order = _media_ordered_names(directory)
+                media.update(version=3, files=[{"name": name} for name in order],
+                             order=order, folders=_media_folders(directory))
+                for name in order:
+                    source = _media_resolve_path(directory, name)
+                    size = os.path.getsize(source)
+                    if size > _media_max_file_bytes():
+                        raise ValueError("media file exceeds size limit")
+                    total += size
+                    if total > MEDIA_ARCHIVE_MAX_BYTES:
+                        raise ValueError("archive exceeds 20 GB")
+                    archive.write(source, prefix + "/" + name)
+        metadata = json.dumps(config, ensure_ascii=False).encode("utf-8")
+        if len(metadata) > MEDIA_CONFIG_MAX_BYTES:
+            raise ValueError("config exceeds 100 MB")
+        if total + len(metadata) > MEDIA_ARCHIVE_MAX_BYTES:
+            raise ValueError("archive exceeds 20 GB")
+        archive.writestr("config.json", metadata, compress_type=zipfile.ZIP_DEFLATED)
+    if os.path.getsize(path) > MEDIA_ARCHIVE_MAX_BYTES:
+        raise ValueError("archive exceeds 20 GB")
+
+
+def _media_archive_config(archive):
+    entries = archive.infolist()
+    names = [entry.filename for entry in entries]
+    if len(names) != len(set(name.casefold() for name in names)):
+        raise ValueError("duplicate archive entries")
+    if sum(entry.file_size for entry in entries) > MEDIA_ARCHIVE_MAX_BYTES:
+        raise ValueError("archive exceeds 20 GB")
+    for entry in entries:
+        if entry.flag_bits & 1 or ((entry.external_attr >> 16) & 0o170000) == 0o120000:
+            raise ValueError("encrypted entries and symbolic links are unsupported")
+        if entry.filename == "config.json":
+            if entry.file_size > MEDIA_CONFIG_MAX_BYTES:
+                raise ValueError("config exceeds 100 MB")
+            continue
+        prefix, separator, rel = entry.filename.partition("/")
+        if not separator or prefix not in ("images", "videos", "audio"):
+            raise ValueError("invalid archive path")
+        with _media_library_context({"images": "image", "videos": "video", "audio": "audio"}[prefix]):
+            if not _media_safe_rel(rel):
+                raise ValueError("invalid archive path")
+            if entry.file_size > _media_max_file_bytes():
+                raise ValueError("media file exceeds size limit")
+    config = json.loads(archive.read("config.json"))
+    if (not isinstance(config, dict) or config.get("format") != "xiaozhuguang-config"
+            or config.get("version") not in (8, 9, 10)):
+        raise ValueError("unsupported backup format")
+    for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES:
+        media = config.get(key)
+        media_names = [name[len(prefix) + 1:] for name in names if name.startswith(prefix + "/")]
+        if media is None:
+            if media_names:
+                raise ValueError("missing media manifest")
+            continue
+        if not isinstance(media, dict) or media.get("version") != 3:
+            raise ValueError("invalid media manifest")
+        files, order, folders = media.get("files"), media.get("order"), media.get("folders")
+        with _media_library_context(kind):
+            if (not isinstance(files, list) or any(not isinstance(entry, dict) for entry in files)
+                    or not isinstance(order, list) or any(not _media_safe_rel(name) for name in order)
+                    or [entry.get("name") for entry in files] != order
+                    or len(order) != len(media_names) or set(order) != set(media_names)
+                    or not isinstance(folders, list) or any(not _media_safe_folder(name) for name in folders)
+                    or len(folders) != len(set(name.casefold() for name in folders))
+                    or {name.casefold() for name in order if "/" not in name} & {name.casefold() for name in folders}
+                    or any(_media_folder_of(name) and _media_folder_of(name) not in folders for name in order)):
+                raise ValueError("invalid media manifest")
+    return config
+
+
+def _media_read_archive(path, restore=False):
+    with zipfile.ZipFile(path) as archive:
+        config = _media_archive_config(archive)
+        if not restore:
+            return config
+        selected = {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} if restore is True else restore
+        libraries = [(key, prefix, kind, config[key]) for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES
+                     if selected.get(key) and config.get(key) is not None]
+        if not libraries:
+            raise ValueError("backup has no selected media library")
+        root = os.path.dirname(_media_library_dir())
+        # Validate both libraries before committing; keep originals for rollback.
+        with tempfile.TemporaryDirectory(prefix=".archive-", dir=root) as staging:
+            staged, histories = [], []
+            for key, prefix, kind, media in libraries:
+                with _media_library_context(kind):
+                    directory = _media_library_dir()
+                    for name in media["order"]:
+                        target = _media_resolve_path(directory, name)
+                        if os.path.exists(target) and not os.path.isfile(target):
+                            raise ValueError("media path conflicts with an existing directory")
+                        temporary = os.path.join(staging, str(len(staged)))
+                        with archive.open(prefix + "/" + name) as source, open(temporary, "wb") as out:
+                            shutil.copyfileobj(source, out, 1024 * 1024)
+                        _media_validate_image(temporary)
+                        staged.append((target, temporary))
+                    histories.append((kind, directory, media, _media_ordered_names(directory), _media_folders(directory)))
+            committed, created_folders = [], []
+            try:
+                for kind, directory, media, old_order, old_folders in histories:
+                    with _media_library_context(kind):
+                        for folder in media["folders"]:
+                            placeholder = {"video": "placeholder.mp4", "image": "placeholder.png", "audio": "placeholder.wav"}[kind]
+                            target = os.path.dirname(_media_resolve_path(directory, folder + "/" + placeholder))
+                            if not os.path.exists(target):
+                                os.mkdir(target)
+                                created_folders.append(target)
+                for index, (target, temporary) in enumerate(staged):
+                    original = os.path.join(staging, "original-" + str(index)) if os.path.exists(target) else None
+                    if original:
+                        os.replace(target, original)
+                    committed.append((target, original))
+                    os.replace(temporary, target)
+                for kind, directory, media, old_order, old_folders in histories:
+                    with _media_library_context(kind):
+                        _media_write_order(media["order"] + [name for name in old_order if name not in media["order"]])
+                        _media_write_folder_order(media["folders"] + [name for name in old_folders if name not in media["folders"]])
+            except Exception:
+                for target, original in reversed(committed):
+                    if os.path.isfile(target):
+                        os.remove(target)
+                    if original:
+                        os.replace(original, target)
+                for target in reversed(created_folders):
+                    os.rmdir(target)
+                for kind, directory, media, old_order, old_folders in histories:
+                    with _media_library_context(kind):
+                        _media_write_order(old_order)
+                        _media_write_folder_order(old_folders)
+                raise
+        return {"restored": sum(len(media["order"]) for key, _, _, media in libraries if key == "mediaLibrary"),
+                "restoredVideos": sum(len(media["order"]) for key, _, _, media in libraries if key == "videoLibrary"),
+                "restoredAudios": sum(len(media["order"]) for key, _, _, media in libraries if key == "audioLibrary")}
+
+
+@routes.post("/xzg/media-library/backup")
+@xzg_safe_handler
+async def xzg_media_library_archive_backup(request):
+    request._client_max_size = MEDIA_CONFIG_MAX_BYTES
+    config = await request.json()
+    if (not isinstance(config, dict) or config.get("format") != "xiaozhuguang-config"
+            or config.get("version") not in (8, 9, 10) or
+            any(config.get(key) is not None and not isinstance(config[key], dict) for key, _, _ in MEDIA_ARCHIVE_LIBRARIES)):
+        return web.json_response({"error": "invalid config"}, status=400)
+    fd, path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        try:
+            await _media_archive_io(_media_build_archive, path, config)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        response = web.StreamResponse(headers={"Content-Type": "application/zip",
+            "Content-Disposition": 'attachment; filename="xiaozhuguang-backup.zip"',
+            "Content-Length": str(os.path.getsize(path))})
+        await response.prepare(request)
+        with open(path, "rb") as source:
+            while True:
+                chunk = await _media_archive_io(source.read, 1024 * 1024)
+                if not chunk:
+                    break
+                await response.write(chunk)
+        await response.write_eof()
+        return response
+    finally:
+        os.remove(path)
+
+
+@routes.post("/xzg/media-library/archive")
+@xzg_safe_handler
+async def xzg_media_library_archive_upload(request):
+    fd, path = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    retained = False
+    try:
+        size = 0
+        with open(path, "wb") as out:
+            async for chunk in request.content.iter_chunked(1024 * 1024):
+                size += len(chunk)
+                if size > MEDIA_ARCHIVE_MAX_BYTES:
+                    return web.json_response({"error": "archive exceeds 20 GB"}, status=413)
+                await _media_archive_io(out.write, chunk)
+        config = await _media_archive_io(_media_read_archive, path)
+        token = secrets.token_urlsafe(32)
+        timer = _xzg_asyncio.get_running_loop().call_later(30 * 60, _media_discard_archive, token)
+        _media_pending_archives[token] = (path, timer)
+        retained = True
+        return web.json_response({"config": config, "token": token})
+    except (ValueError, KeyError, OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    finally:
+        if not retained:
+            os.remove(path)
+
+
+@routes.post("/xzg/media-library/archive/restore")
+@xzg_safe_handler
+async def xzg_media_library_archive_restore(request):
+    data = await request.json()
+    token = data.get("token") if isinstance(data, dict) else None
+    pending = _media_pending_archives.pop(token, None) if isinstance(token, str) else None
+    if not pending:
+        return web.json_response({"error": "backup expired; please select the ZIP again"}, status=400)
+    path, timer = pending
+    timer.cancel()
+    try:
+        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES})
+        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary") or not isinstance(value, bool) for key, value in selected.items()):
+            return web.json_response({"error": "invalid library selection"}, status=400)
+        result = await _media_archive_io(_media_read_archive, path, selected)
+        return web.json_response(result)
+    except (ValueError, KeyError, OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    finally:
+        os.remove(path)
+
+
+@routes.delete("/xzg/media-library/archive")
+@xzg_safe_handler
+async def xzg_media_library_archive_discard(request):
+    data = await request.json()
+    token = data.get("token") if isinstance(data, dict) else None
+    if not isinstance(token, str):
+        return web.json_response({"error": "invalid backup token"}, status=400)
+    _media_discard_archive(token)
+    return web.json_response({"discarded": True})
 
 
 @routes.post("/xzg/media-library/restore")
@@ -613,22 +1279,25 @@ async def xzg_media_library_restore(request):
     staged = []
     try:
         for entry in files:
-            name = _media_safe_name(entry.get("name") if isinstance(entry, dict) else None)
+            rel = _media_safe_rel(entry.get("name") if isinstance(entry, dict) else None)
             encoded = entry.get("data") if isinstance(entry, dict) else None
-            if not name or not isinstance(encoded, str):
+            if not rel or not isinstance(encoded, str):
                 raise ValueError("invalid image entry")
             raw = base64.b64decode(encoded, validate=True)
             if len(raw) > MEDIA_MAX_FILE_BYTES:
                 raise ValueError("image exceeds 100 MB")
-            fd, path = tempfile.mkstemp(prefix=".restore-", dir=directory)
-            staged.append((name, path))
+            target_path = _media_resolve_path(directory, rel)
+            target_dir = os.path.dirname(target_path)
+            os.makedirs(target_dir, exist_ok=True)
+            fd, path = tempfile.mkstemp(prefix=".restore-", dir=target_dir)
+            staged.append((target_path, path))
             with os.fdopen(fd, "wb") as out:
                 out.write(raw)
             _media_validate_image(path)
-        for name, path in staged:
-            os.replace(path, os.path.join(directory, name))
+        for target_path, path in staged:
+            os.replace(path, target_path)
         backed_up_order = data.get("order")
-        imported = [name for name, _ in staged]
+        imported = [os.path.relpath(tp, directory).replace("\\", "/") for tp, _ in staged]
         if (not isinstance(backed_up_order, list) or
                 any(not isinstance(name, str) for name in backed_up_order) or
                 set(backed_up_order) != set(imported) or len(backed_up_order) != len(imported)):
@@ -1096,6 +1765,41 @@ async def xzg_copy_output_to_input(request):
         return web.json_response({"copied": [], "errors": [str(e)]}, status=500)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 空选兜底图片（与「小珠光视频加载-化神级」同一机制）
+# 用户没在节点上加载任何图片，或所列图片全部丢失/加载失败时，自动加载内置占位图片，
+# 让节点能留在工作流上直接跑通而不返回空列表。
+# 图片随插件分发（assets/xzg_theme_icon.png），不依赖外部绝对路径。
+# ═══════════════════════════════════════════════════════════════════════════
+_FALLBACK_IMAGE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "assets", "xzg_theme_icon.png"
+)
+# ComfyUI 的 get_annotated_filepath 只接受 input 目录下的相对文件名，拒绝任意绝对路径。
+# 因此首次使用时把内置占位图片复制到 input 目录下一个固定文件名，再传相对名给解码逻辑。
+_FALLBACK_IMAGE_INPUT_NAME = "xzg_fallback_theme.png"
+
+
+def _ensure_fallback_image_in_input():
+    """确保 input 目录下存在兜底占位图片，返回它在 input 下的相对文件名。"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        dst = os.path.join(input_dir, _FALLBACK_IMAGE_INPUT_NAME)
+        if os.path.isfile(_FALLBACK_IMAGE) and not os.path.isfile(dst):
+            shutil.copy2(_FALLBACK_IMAGE, dst)
+            print(f"[小珠光图像加载器] 已复制内置占位图片到 input/{_FALLBACK_IMAGE_INPUT_NAME}")
+        if os.path.isfile(dst):
+            return _FALLBACK_IMAGE_INPUT_NAME
+    except Exception as e:
+        print(f"[小珠光图像加载器] 准备兜底图片失败：{e}")
+    return ""
+
+
+def _fallback_image_names():
+    """空选/全部丢失时回退到的图片文件名列表；无法准备占位图片时返回空列表。"""
+    name = _ensure_fallback_image_in_input()
+    return [name] if name else []
+
+
 class XiaozhuguangImageLoader:
     @classmethod
     def INPUT_TYPES(cls):
@@ -1126,63 +1830,67 @@ class XiaozhuguangImageLoader:
     def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000"):
         mask_output_enabled = mask_output_enabled is True or str(mask_output_enabled).strip().lower() in ("true", "1")
         crop_padding_rgb = _parse_crop_padding_color(crop_data)
-        if not image_list or not image_list.strip():
-            return ([], [])
-
-        names = [n.strip() for n in image_list.split("\n") if n.strip()]
-        if not names:
-            return ([], [])
+        # 空选/所列图片全部丢失时回退到内置占位图片（防报错，与视频加载器同一机制）。
+        names = [n.strip() for n in (image_list or "").split("\n") if n.strip()]
 
         # 裁剪矩形改为逐图解析（见下方 crops_loaded）：每张图按自己的映射矩形独立裁剪
-
-        images = []
-        loaded_names = []
-        orig_sizes = []  # 每张图裁剪前的原始尺寸 (w, h)
-        image_alphas = []  # 每张图的 alpha 通道（无 alpha 则 None），用于无用户遮罩时回退提取
-        crops_loaded = []  # 与 images 对齐，每张图自己的裁剪矩形（原图像素，None=该图不裁剪）
-        transforms_loaded = []
-        for name in names:
-            try:
-                name_norm = _normalize_annotated_filename(name)
-                if name_norm.endswith(" [output]"):
-                    output_root = os.path.realpath(_safe_dir('get_output_directory', 'output'))
-                    rel_path = name_norm[:-len(" [output]")]
-                    image_path = os.path.realpath(os.path.join(output_root, rel_path))
-                    if os.path.commonpath([output_root, image_path]) != output_root:
+        def _load_names(names_list):
+            images = []
+            loaded_names = []
+            orig_sizes = []  # 每张图裁剪前的原始尺寸 (w, h)
+            image_alphas = []  # 每张图的 alpha 通道（无 alpha 则 None），用于无用户遮罩时回退提取
+            crops_loaded = []  # 与 images 对齐，每张图自己的裁剪矩形（原图像素，None=该图不裁剪）
+            transforms_loaded = []
+            for name in names_list:
+                try:
+                    name_norm = _normalize_annotated_filename(name)
+                    if name_norm.endswith(" [output]"):
+                        output_root = os.path.realpath(_safe_dir('get_output_directory', 'output'))
+                        rel_path = name_norm[:-len(" [output]")]
+                        image_path = os.path.realpath(os.path.join(output_root, rel_path))
+                        if os.path.commonpath([output_root, image_path]) != output_root:
+                            continue
+                    else:
+                        image_path = folder_paths.get_annotated_filepath(name_norm)
+                    if not image_path or not os.path.isfile(image_path):
                         continue
-                else:
-                    image_path = folder_paths.get_annotated_filepath(name_norm)
-                if not image_path or not os.path.isfile(image_path):
-                    continue
 
-                img = node_helpers.pillow(Image.open, image_path)
-                img = ImageOps.exif_transpose(img)
-                orig_size = img.size  # (w, h)
-                # 每张图独立裁剪：解析该图在映射中的矩形，把"压缩预览(3840)"坐标换算回原图像素
-                _crop_i = _parse_crop_data(crop_data, name)
-                if _crop_i:
-                    _ow0, _oh0 = orig_size
-                    _spr0 = max(_ow0, _oh0)
-                    if _spr0 > 3840:
-                        _ratio0 = _spr0 / 3840.0
-                        _crop_i = (int(round(_crop_i[0] * _ratio0)),
-                                   int(round(_crop_i[1] * _ratio0)),
-                                   int(round(_crop_i[2] * _ratio0)),
-                                   int(round(_crop_i[3] * _ratio0)))
-                # 在 convert("RGB") 之前提取 alpha 通道（与官方 LoadImage 一致）
-                alpha = img.getchannel('A') if 'A' in img.getbands() else None
-                image = img.convert("RGB")
-                image = np.array(image).astype(np.float32) / 255.0
-                image = torch.from_numpy(image)[None,]
-                images.append(image)
-                loaded_names.append(name)
-                orig_sizes.append(orig_size)
-                image_alphas.append(alpha)
-                # 仅在图成功载入 images 后再对齐追加裁剪，避免失败图导致列表错位
-                crops_loaded.append(_crop_i)
-                transforms_loaded.append(_parse_image_transform(crop_data, name))
-            except Exception:
-                continue
+                    img = node_helpers.pillow(Image.open, image_path)
+                    img = ImageOps.exif_transpose(img)
+                    orig_size = img.size  # (w, h)
+                    # 每张图独立裁剪：解析该图在映射中的矩形，把"压缩预览(3840)"坐标换算回原图像素
+                    _crop_i = _parse_crop_data(crop_data, name)
+                    if _crop_i:
+                        _ow0, _oh0 = orig_size
+                        _spr0 = max(_ow0, _oh0)
+                        if _spr0 > 3840:
+                            _ratio0 = _spr0 / 3840.0
+                            _crop_i = (int(round(_crop_i[0] * _ratio0)),
+                                       int(round(_crop_i[1] * _ratio0)),
+                                       int(round(_crop_i[2] * _ratio0)),
+                                       int(round(_crop_i[3] * _ratio0)))
+                    # 在 convert("RGB") 之前提取 alpha 通道（与官方 LoadImage 一致）
+                    alpha = img.getchannel('A') if 'A' in img.getbands() else None
+                    image = img.convert("RGB")
+                    image = np.array(image).astype(np.float32) / 255.0
+                    image = torch.from_numpy(image)[None,]
+                    images.append(image)
+                    loaded_names.append(name)
+                    orig_sizes.append(orig_size)
+                    image_alphas.append(alpha)
+                    # 仅在图成功载入 images 后再对齐追加裁剪，避免失败图导致列表错位
+                    crops_loaded.append(_crop_i)
+                    transforms_loaded.append(_parse_image_transform(crop_data, name))
+                except Exception:
+                    continue
+            return images, loaded_names, orig_sizes, image_alphas, crops_loaded, transforms_loaded
+
+        images, loaded_names, orig_sizes, image_alphas, crops_loaded, transforms_loaded = _load_names(names)
+        if not images:
+            # 空选（image_list 为空）或所列文件全部缺失/加载失败：加载内置占位图片，避免输出空列表。
+            fallback_names = _fallback_image_names()
+            if fallback_names:
+                images, loaded_names, orig_sizes, image_alphas, crops_loaded, transforms_loaded = _load_names(fallback_names)
 
         # 加载图片上限：max_images>0 时最多加载前 N 张（默认 0 表示无限制），对批次/列表模式均生效
         try:
@@ -1356,5 +2064,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangImageLoader": "小珠光图片加载器-化神级",
+    "XiaozhuguangImageLoader": "小珠光图像加载器-化神级",
 }

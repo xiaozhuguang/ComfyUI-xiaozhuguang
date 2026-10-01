@@ -569,7 +569,8 @@ class XiaozhuguangVideoCombine:
         counter = max_counter + 1
 
         extension = VIDEO_FORMATS[格式]["extension"]
-        file = f"{filename}_{counter:05}.{extension}"
+        # 序号不补零：xzg_video_1.mp4、xzg_video_2.mp4 ... xzg_video_123.mp4（旧的 00001 补零格式不再产生）
+        file = f"{filename}_{counter}.{extension}"
         file_path = os.path.join(full_output_folder, file)
 
         export_to_video(

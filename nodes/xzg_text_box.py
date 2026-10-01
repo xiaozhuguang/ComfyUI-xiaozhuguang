@@ -783,15 +783,9 @@ def _digits_to_zh(text: str) -> str:
 class XiaozhuguangTextBox:
     """
     小珠光文本框 / Xiaozhuguang Text Box
-    提供文本输入和双通道输出：
+    提供文本输入和单通道输出：
       - text        : 原始文本（不变，便于其他节点直接复用）
-      - text_zh_num : 数字转中文后的文本（默认始终开启）：
-          · 乘积/分辨率（1280x720 / 1x2x3 / 3×4）→ A乘以B 完整读数
-          · 数字 + 量词/单位（个/只/米/千克/元/度/%/岁/时…白名单内，含英文缩写 cm→厘米…）→ 完整读数
-          · 第/其 + 数字（+可选序号后缀）→ 完整读数（第十二章）
-          · 4位及以上数字 + 年 → 按位读（1926年→一九二六年），整千年例外用完整读数（2000年→两千年）
-          · 书名号《》→ 句号。；省略号…… → 句号。
-          · 其他数字 → 按位读（12→一二）
+    普通版已取消数字转中文，也不再提供 text_zh_num 输出端口（如需数字转中文请使用化神级）。
     """
 
     @classmethod
@@ -803,35 +797,34 @@ class XiaozhuguangTextBox:
                     "multiline": True,
                     "placeholder":
                         "【小珠光文本框】\n"
-                        "输出：text 原文 / text_zh_num 数字转中文\n"
-                        "规则：日期时间→整体转写；中文时间(6点15分)→完整读数；数字+量词→完整读数；第N→第N；4位+年→按位读；6位以内数字→完整读数(720→七百二十)；其余→按位读\n"
-                        "例：2023.4.16 21:08→二零二三年四月十六日九点零八分\n"
-                        "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n"
-                        "6点15分→六点十五分  21:08→九点零八分\n"
-                        "1.72米→一米七二  3.14kg→三点一四千克\n"
-                        "720→七百二十  720分辨率→七二零分辨率\n"
-                        "《》→。  ……→。",
+                        "输出：text 原文\n"
+                        "例：1280x720→1280x720  1926年→1926年",
                 }),
             },
         }
 
-    RETURN_TYPES = (_XZG_TEXT_TYPE, "STRING")
-    RETURN_NAMES = ("text", "text_zh_num")
+    RETURN_TYPES = (_XZG_TEXT_TYPE,)
+    RETURN_NAMES = ("text",)
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
 
     def execute(self, text):
         raw = text if text is not None else ""
-        return (raw, _digits_to_zh(raw))
+        # 普通版已取消数字转中文：仅输出原文
+        return (raw,)
 
     @classmethod
     def IS_CHANGED(cls, text):
         raw = text if text is not None else ""
-        return _digits_to_zh(raw)
+        return raw
 
 
 class XiaozhuguangTextBoxGod(XiaozhuguangTextBox):
-    """化神级文本框的基础版本：先沿用标准文本框行为，后续功能独立扩展。"""
+    """化神级文本框：普通版已取消数字转中文，化神级显式保留双通道（text 原文 / text_zh_num 数字转中文）。"""
+
+    # 显式声明双输出（普通版为单输出，化神级需覆盖回双通道以保留数字转中文）
+    RETURN_TYPES = (_XZG_TEXT_TYPE, "STRING")
+    RETURN_NAMES = ("text", "text_zh_num")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -839,7 +832,7 @@ class XiaozhuguangTextBoxGod(XiaozhuguangTextBox):
         text_widget = spec["required"]["text"]
         text_widget[1]["placeholder"] = text_widget[1]["placeholder"].replace(
             "小珠光文本框", "小珠光文本框-化神级", 1
-        )
+        ).replace("text 原文", "text 原文 / text_zh_num 数字转中文")
         # 保持原 text 控件为第一个 widget，兼容此前已放入工作流的化神级节点。
         # 两级选择：先选大分类，再选该分类中的提示词细分。
         # 前端会把这两个 STRING 控件换成动态下拉框。后端不能使用固定枚举，
@@ -856,7 +849,9 @@ class XiaozhuguangTextBoxGod(XiaozhuguangTextBox):
         return spec
 
     def execute(self, text, preset_category=None, preset_name=None):
-        return super().execute(text)
+        raw = text if text is not None else ""
+        # 化神级保留数字转中文（普通版已取消）
+        return (raw, _digits_to_zh(raw))
 
     @classmethod
     def IS_CHANGED(cls, text, preset_category=None, preset_name=None):

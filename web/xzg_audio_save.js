@@ -1453,6 +1453,10 @@ app.registerExtension({
                     davinci_abs_token: savedDavinciToken,
                 }));
                 _createAudioSaveOutputButton(node, waveformViewer);
+                _createQuickCutFloatButton(node, waveformViewer, () => ({
+                    filename: savedFilename, type: savedType, subfolder: savedSubfolder,
+                    davinci_abs_token: savedDavinciToken,
+                }), true);
             }
 
             // 波形 canvas widget（直接在节点画布上绘制，与加载器一致的自适应高度）
@@ -1480,6 +1484,7 @@ app.registerExtension({
                     node._xzgDvSyncBtn?.();
                     node._xzgQcSyncBtn?.();
                     node._xzgOutSyncBtn?.();
+                    node._xzgFavoriteSyncBtn?.();
                 },
                 mouse: function(event, [x, y], node) {
                     return waveformViewer.handleMouse(event, x, y);
@@ -2284,8 +2289,26 @@ const _GEAR_SVG =
 // 用节点 pos + 画布 ds 变换把波纹区换算到屏幕坐标，按钮贴波纹区右上角内侧；
 // 鼠标悬停波纹区显示、离开隐藏。
 // ═══════════════════════════════════════════════════════════════════════
-function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo) {
-    if (node._xzgQcFloatBtn) return node._xzgQcFloatBtn;
+async function _favoriteSavedAudio(info, btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+        const response = await api.fetchApi("/xzg/media-library/add-audio", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: [info.subfolder, info.filename].filter(Boolean).join("/"),
+                type: info.type, abs_token: info.davinci_abs_token || "" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "收藏失败");
+        _xzgToast("已收藏到音频媒体库");
+    } catch (error) { _xzgToast(error.message || "收藏失败", true); }
+    finally { btn.disabled = false; }
+}
+
+function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite = false) {
+    const buttonKey = favorite ? "_xzgAudioFavoriteBtn" : "_xzgQcFloatBtn";
+    const syncKey = favorite ? "_xzgFavoriteSyncBtn" : "_xzgQcSyncBtn";
+    if (node[buttonKey]) return node[buttonKey];
 
     const btn = document.createElement("button");
     btn.title = "发送到快剪媒体库（打开快剪后可手动拖入轨道使用）";
@@ -2298,6 +2321,10 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo) {
         "transition:color 0.15s,opacity 0.2s;opacity:0;" +
         "text-shadow:0 1px 2px rgba(0,0,0,.8);";
     btn.innerHTML = `<span style="display:inline-flex;color:#FFD700;">${_CLAPPER_SVG}</span><span>发送</span>`;
+    if (favorite) {
+        btn.title = "收藏当前音频到音频媒体库";
+        btn.innerHTML = '<span style="font-size:13px">☆</span><span>收藏</span>';
+    }
     document.body.appendChild(btn);
     const iconSpan = btn.querySelector("span:first-child");
     const labelSpan = btn.querySelector("span:last-child");
@@ -2328,7 +2355,8 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo) {
             _xzgToast("[发送到快剪] 当前没有可发送的音频，请先执行一次节点。", true);
             return;
         }
-        _xzgAudioSendQuickCut(info.filename, info.subfolder || "", info.type);
+        if (favorite) _favoriteSavedAudio(info, btn);
+        else _xzgAudioSendQuickCut(info.filename, info.subfolder || "", info.type);
     };
 
     // 位置同步：波纹区节点本地坐标（waveformViewer._drawY/_drawW/_drawH，绘制帧更新）
@@ -2369,10 +2397,13 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo) {
             const dv = node._xzgDvFloatBtn;
             let dvLeft = dv ? parseFloat(dv.style.left) : NaN;
             if (!isFinite(dvLeft)) dvLeft = x0 + w - 10 * scale - (dv?.offsetWidth || 90) * s;
-            btn.style.left = Math.round(dvLeft - 6 * scale - bw * s) + "px";
+            btn.style.left = Math.round(favorite ? x0 + 6 * scale : dvLeft - 6 * scale - bw * s) + "px";
             // 垂直对齐：与加载器音轨顶栏文字一致（波纹区顶部 + 2px，节点本地坐标）。
             // 按钮文字视觉顶 = top + 上内边距(2px)*s，故 top = y0 + 2*scale - 2*s
-            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
+            // 收藏贴左下角，避开顶部时间码；其他按钮保持顶部位置。
+            btn.style.top = Math.round(favorite
+                ? y0 + h - ((btn.offsetHeight || 20) + 4) * s
+                : y0 + 2 * scale - 2 * s) + "px";
             // 悬停波纹区显示、离开隐藏（节点在视口外时不显示）
             const inside = _lastMouse.x >= x0 && _lastMouse.x <= x0 + w &&
                            _lastMouse.y >= y0 && _lastMouse.y <= y0 + h &&
@@ -2382,20 +2413,20 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo) {
             btn.style.opacity = (inside || overBtn) ? "1" : "0";
         } catch (e) { /* 画布未就绪等场景忽略 */ }
     };
-    node._xzgQcSyncBtn = syncBtn;
+    node[syncKey] = syncBtn;
 
     // 节点移除时清理按钮与监听
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
         document.removeEventListener("pointermove", onMove, true);
         try { btn.remove(); } catch (e) {}
-        node._xzgQcFloatBtn = null;
-        node._xzgQcSyncBtn = null;
+        node[buttonKey] = null;
+        node[syncKey] = null;
         return origOnRemoved?.apply(this, arguments);
     };
 
-    node._xzgQcFloatBtn = btn;
-    node._xzgQcRenderAuto = renderAuto;
+    node[buttonKey] = btn;
+    if (!favorite) node._xzgQcRenderAuto = renderAuto;
     return btn;
 }
 
@@ -2441,7 +2472,9 @@ function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
     btn.innerHTML = `<span style="display:inline-flex;">${_xzgDvToggleClover(false)}</span><span>导出</span>`;
     document.body.appendChild(btn);
     const iconSpan = btn.querySelector("span:first-child");
-    const labelSpan = btn.querySelector("span:last-child");
+    // 图标包装器内部的三叶草 span 自身也是 :last-child，会被 querySelector 先命中，
+    // 导致忙碌状态更新把三叶草替换成状态文字。直接取最后一个元素子节点当文字标签。
+    const labelSpan = btn.lastElementChild;
     iconSpan.title = "点击导出到达芬奇";
     // 保留工作流恢复时的同步入口，但悬浮按钮始终显示彩色三叶草，不再切换自动导出状态。
     const renderAuto = () => {

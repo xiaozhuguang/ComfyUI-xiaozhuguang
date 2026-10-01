@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import time
+import uuid
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -222,8 +223,8 @@ def current_video_item(timeline):
             if playhead is not None:
                 playhead -= _timeline_start_frames(timeline, fps)
                 n = timeline.GetTrackCount("video")
-                # 上层轨道优先（遮挡关系），同一轨道内取覆盖播放头的片段
-                for idx in range(n, 0, -1):
+                # 从最顶层 V1（index=1）往下找，上层轨道优先（遮挡关系）
+                for idx in range(1, n + 1):
                     for it in timeline.GetItemListInTrack("video", idx):
                         s = int(it.GetStart())
                         e = int(it.GetEnd())
@@ -314,7 +315,8 @@ def longest_video_at_playhead(timeline):
 def topmost_video_at_playhead(timeline):
     """返回播放头所在位置「最上面」的视频片段。
 
-    叠加的多个视频片段会被拆到不同轨道，最上层（trackIndex 最大）即用户肉眼可见的顶层。
+    达芬奇 API：index 1 = 最顶层 V1，index 越大越靠下。
+    从最顶层（V1）往下找，第一个覆盖播放头的片段即用户肉眼可见的顶层。
     返回 (item, trackIndex) 或 (None, None)：trackIndex 为轨道序号（1 起），
     item.GetStart() 为其前端起始帧（相对帧）。播放头帧换算与 current_video_item 一致。
     """
@@ -326,8 +328,8 @@ def topmost_video_at_playhead(timeline):
             if playhead is not None:
                 playhead -= _timeline_start_frames(timeline, fps)
                 n = timeline.GetTrackCount("video")
-                # 从最上层往下找，取第一个覆盖播放头的片段
-                for idx in range(n, 0, -1):
+                # 从最顶层 V1（index=1）往下找，取第一个覆盖播放头的片段
+                for idx in range(1, n + 1):
                     for it in timeline.GetItemListInTrack("video", idx):
                         s = int(it.GetStart())
                         e = int(it.GetEnd())
@@ -353,7 +355,7 @@ def topmost_audio_at_playhead(timeline):
             if playhead is not None:
                 playhead -= _timeline_start_frames(timeline, fps)
                 n = timeline.GetTrackCount("audio")
-                for idx in range(n, 0, -1):
+                for idx in range(1, n + 1):
                     for it in (timeline.GetItemListInTrack("audio", idx) or []):
                         s = int(it.GetStart())
                         e = int(it.GetEnd())
@@ -786,9 +788,41 @@ def action_export(pargs):
         current_page = str(resolve.GetCurrentPage() or "").lower()
     except Exception:
         current_page = ""
+
+    # 小珠光视频加载器-化神级：当用户停留在「调色」页（color）时，直接读取手工
+    # 入出点并切到 Deliver 渲染，达芬奇内部状态可能不一致。按用户要求：先切到
+    # 「剪辑」页（edit）再继续读入出点、走渲染流程；导出结束后 finally 会把页面
+    # 切回 current_page（即调色页），实现「调色页 → 剪辑页 → 交付页渲染 → 调色页」。
+    if current_page == "color":
+        try:
+            if resolve.OpenPage("edit"):
+                time.sleep(0.6)  # 等剪辑页时间线 UI 就绪，再读入出点/切交付页
+        except Exception:
+            # 切页失败不阻断，交给后续渲染流程自然报错
+            pass
+
     render_range = _manual_timeline_render_range(tl)
     if render_range is None:
         return {"ok": False, "error": "未检测到有效的手工视频入出点，请先在达芬奇时间线上按 I 和 O 设置出入点"}
+
+    # 文件名：直接用播放头所在片段原名，不加短码/时间戳。
+    # 同名时达芬奇 CustomName 会覆盖旧文件（用户已接受此行为）。
+    clip_display_name = ""
+    try:
+        _clip_item, _ = topmost_video_at_playhead(tl)
+        clip_display_name = (_clip_item.GetName() if _clip_item else "") or ""
+    except Exception:
+        clip_display_name = ""
+    # 截断到 40 字符，避免长片段名撑爆文件名；_render_export 内部还会再过滤非法字符。
+    # 达芬奇 GetName() 返回的片段名可能自带 .mp4 扩展名，必须去掉，否则 _find_render_file
+    # 拿 base（已去扩展名）匹配带 .mp4 的 safe_name 会匹配失败。
+    clip_name = os.path.splitext(clip_display_name.strip())[0][:40]
+    # 加 4 位 hex 短码防重复（同一片段重复导出不覆盖上一次）；尽量短、不扫目录。
+    if clip_name:
+        name = f"{clip_name}_{uuid.uuid4().hex[:4]}"
+    else:
+        name = f"xzg_dv_{uuid.uuid4().hex[:4]}"
+
     switch_back = pargs.get("switch_back", True)
     render_error = None
     filename = ext = None
@@ -811,7 +845,7 @@ def action_export(pargs):
         return {"ok": False, "error": f"导出失败：{render_error}"}
 
     clip_info = {
-        "name": "",
+        "name": clip_display_name,
         "start": render_range[0],
         "end": render_range[1],
     }
@@ -969,6 +1003,8 @@ def action_import(pargs):
         return {"ok": False, "error": "缺少 file_path"}
     if not os.path.isfile(file_path):
         return {"ok": False, "error": f"文件不存在：{file_path}"}
+    # import_audio=False 时只导视频，不把视频自带音频追加到音频轨道。
+    import_audio = bool(pargs.get("import_audio", True))
 
     resolve, err = _connect()
     if resolve is None:
@@ -996,20 +1032,8 @@ def action_import(pargs):
     if tl is None:
         return {"ok": False, "error": "未打开时间线，请在剪辑页打开一条时间线再导入"}
     orig_playhead_tc = _capture_playhead_timecode(tl)
-    duplicate_track, duplicate_item = _timeline_source_match(tl, file_path, "video")
-    if duplicate_item is None:
-        duplicate_track, duplicate_item = _timeline_source_match(tl, file_path, "audio")
-    if duplicate_item is not None:
-        try:
-            duplicate_clip = duplicate_item.GetName() or os.path.basename(file_path)
-            duplicate_frame = int(duplicate_item.GetStart())
-        except Exception:
-            duplicate_clip = os.path.basename(file_path)
-            duplicate_frame = None
-        return {"ok": True, "action": "import", "duplicate": True,
-                "message": "该视频已导出到当前时间线，未重复导入。",
-                "clip": duplicate_clip, "track": duplicate_track,
-                "record_frame": duplicate_frame}
+    # 不做时间线去重：允许反复导出到时间线上、每次新增轨道。
+    # 文件层面已有防重复复制（_find_exported_copy + 同名加 _2/_3），不会反复覆盖文件。
 
     # 1) 导入媒体池。ImportMedia 返回 MediaPoolItem 列表；单个文件传列表最稳。
     try:
@@ -1051,29 +1075,25 @@ def action_import(pargs):
         except Exception as e:
             return {"ok": False, "error": f"读取播放头位置失败：{e}"}
 
-    # 4) 目标轨道：
-    #    - 播放头处有片段：复用播放头最上层片段之上的空白轨道；没有则新建
-    #    - 播放头处无片段：直接放入 V1（不新建、不找空白轨道，避免无谓新增轨道）
-    if src_track > 0:
-        target_track = find_blank_video_track(tl, after_track=src_track)
-        if target_track is None:
-            how_placed = "new_track"
-            try:
-                n_before = tl.GetTrackCount("video")
-                added = tl.AddTrack("video")
-                target_track = int(added) if added and not isinstance(added, bool) else (n_before + 1)
-            except Exception as e:
-                return {"ok": False, "error": f"AddTrack 新增视频轨道失败：{e}"}
+    # 4) 目标轨道：从播放头最上层片段往上找第一条整条轨道完全空的轨道；
+    #    找不到才新建。例：V1有视频/V2空/V3有视频 → 最上层是V3，上面V4空 → 新建V4；
+    #    V1有视频/V2V3空 → V2空 → 放V2；只有V1 → 新建V2。
+    target_track = find_blank_video_track(tl, after_track=src_track)
+    if target_track is None:
+        how_placed = "new_track"
+        try:
+            n_before = tl.GetTrackCount("video")
+            added = tl.AddTrack("video")
+            target_track = int(added) if added and not isinstance(added, bool) else (n_before + 1)
+        except Exception as e:
+            return {"ok": False, "error": f"AddTrack 新增视频轨道失败：{e}"}
     else:
-        target_track = 1
-        how_placed = "track_v1"
+        how_placed = "blank_track"
 
-    # 5) AppendToTimeline 落到目标轨道，recordFrame 对齐 src_item 前端
-    try:
-        clip = item.GetClipProperty("Frames")
-        end_frame = int(float(clip)) - 1 if clip else None
-    except Exception:
-        end_frame = None
+    # 5) AppendToTimeline 落到目标轨道，recordFrame 对齐 src_item 前端。
+    # 不传 endFrame：GetClipProperty("Frames") 读的是容器元数据帧数，ffmpeg 生成的 mp4
+    # 元数据 duration 经常比实际视频流短几帧（末尾帧没写进 moov），传 endFrame 会导致
+    # 片段末尾被截掉几帧、要手动拖尾部才显示完整。让达芬奇按媒体实际长度自动定 endFrame。
     desc = {
         "mediaPoolItem": item,
         "startFrame": 0,
@@ -1081,8 +1101,6 @@ def action_import(pargs):
         "trackIndex": target_track,
         "recordFrame": record_frame,
     }
-    if end_frame is not None:
-        desc["endFrame"] = end_frame
     try:
         ok_append = media_pool.AppendToTimeline([desc])
     except Exception as e:
@@ -1093,39 +1111,38 @@ def action_import(pargs):
         return {"ok": False, "error": "AppendToTimeline 返回失败，请检查轨道/落点"}
 
     # 音视频一起（默认）：视频落轨后，把该视频自带的音频也追加到音频轨道，对齐同一 recordFrame。
-    # 始终将视频文件中的音轨一并导入，与视频片段保持同步（不覆盖现有音频）：
-    #   播放头处已有音频片段 → 在其上方找整条空白音频轨、没有才新建；
-    #   播放头处无音频 → 直接落 A1。视频本身无音轨时追加失败，静默忽略。
-    try:
-        _a_src_item, _a_src_track = topmost_audio_at_playhead(tl)
-        if _a_src_track and _a_src_track > 0:
-            a_target = find_blank_video_track(tl, after_track=_a_src_track, track_type="audio")
-            if a_target is None:
+    # import_audio=False 时跳过此段（用户选择只导视频）。
+    if import_audio:
+        try:
+            _a_src_item, _a_src_track = topmost_audio_at_playhead(tl)
+            if _a_src_track and _a_src_track > 0:
+                a_target = find_blank_video_track(tl, after_track=_a_src_track, track_type="audio")
+                if a_target is None:
+                    try:
+                        _n_before = tl.GetTrackCount("audio")
+                        _added = tl.AddTrack("audio")
+                        a_target = int(_added) if _added and not isinstance(_added, bool) else (_n_before + 1)
+                    except Exception:
+                        a_target = None
+                if not a_target:
+                    a_target = 1
+            else:
                 try:
-                    _n_before = tl.GetTrackCount("audio")
-                    _added = tl.AddTrack("audio")
-                    a_target = int(_added) if _added and not isinstance(_added, bool) else (_n_before + 1)
+                    if tl.GetTrackCount("audio") < 1:
+                        tl.AddTrack("audio")
                 except Exception:
-                    a_target = None
-            if not a_target:
+                    pass
                 a_target = 1
-        else:
-            try:
-                if tl.GetTrackCount("audio") < 1:
-                    tl.AddTrack("audio")
-            except Exception:
-                pass
-            a_target = 1
-        audio_desc = {
-            "mediaPoolItem": item,
-            "startFrame": 0,
-            "mediaType": 2,
-            "trackIndex": a_target,
-            "recordFrame": record_frame,
-        }
-        media_pool.AppendToTimeline([audio_desc])
-    except Exception as _e:
-        print(f"[小珠光达芬奇] 附加音频到音频轨道失败（可能该视频无音轨）：{_e}")
+            audio_desc = {
+                "mediaPoolItem": item,
+                "startFrame": 0,
+                "mediaType": 2,
+                "trackIndex": a_target,
+                "recordFrame": record_frame,
+            }
+            media_pool.AppendToTimeline([audio_desc])
+        except Exception as _e:
+            print(f"[小珠光达芬奇] 附加音频到音频轨道失败（可能该视频无音轨）：{_e}")
 
     # 恢复导入前播放头位置（AppendToTimeline 会把播放头移到新片段末尾）
     _restore_playhead_timecode(tl, orig_playhead_tc)
@@ -1197,6 +1214,8 @@ def action_import_audio(pargs):
     - 目标轨道（不覆盖现有音频）：播放头处已有音频片段时，在其上方复用整条空白的
       音频轨道、没有才 AddTrack 新建；播放头处没有任何片段（含空时间线/播放头下无视频）
       时直接放入 A1（轨道 1），不找空白轨道、不新建轨道
+    - 不做时间线去重：同一音频可反复导出，每次都在空白音频轨道（无则新建）上叠放新片段；
+      文件副本去重由前端 audio-save-import 路由负责（相同内容不重复复制文件）
     - AppendToTimeline 落轨（mediaType=2 音频）；不插入缝隙、不推移、不分割
     - 完成后恢复导入前播放头位置
     返回 { ok, clip, track, record_frame, project, timeline, placed }
@@ -1225,7 +1244,8 @@ def action_import_audio(pargs):
     if media_pool is None:
         return {"ok": False, "error": "无法获取媒体池"}
 
-    # 不重复导入同一导出文件：保留现有时间线片段，也避免媒体池再次添加。
+    # 不做时间线去重：允许同一音频反复导出，每次在空白音频轨道（无则新建）上叠放新片段。
+    # （文件副本去重由前端 audio-save-import 路由负责，相同内容不会重复复制文件）
     try:
         tl = project.GetCurrentTimeline()
     except Exception:
@@ -1233,18 +1253,6 @@ def action_import_audio(pargs):
     if tl is None:
         return {"ok": False, "error": "未打开时间线，请在剪辑页打开一条时间线再导入"}
     orig_playhead_tc = _capture_playhead_timecode(tl)
-    duplicate_track, duplicate_item = _timeline_audio_source_match(tl, file_path)
-    if duplicate_item is not None:
-        try:
-            duplicate_clip = duplicate_item.GetName() or os.path.basename(file_path)
-            duplicate_frame = int(duplicate_item.GetStart())
-        except Exception:
-            duplicate_clip = os.path.basename(file_path)
-            duplicate_frame = None
-        return {"ok": True, "action": "import_audio", "duplicate": True,
-                "message": "该音频已经导出到当前时间线，未重复导入。",
-                "clip": duplicate_clip, "track": duplicate_track,
-                "record_frame": duplicate_frame}
 
     # 1) 导入媒体池。ImportMedia 返回 MediaPoolItem 列表；单个文件传列表最稳。
     try:
@@ -1257,7 +1265,7 @@ def action_import_audio(pargs):
 
     _restore_playhead_timecode(tl, orig_playhead_tc)
 
-    # 2) 当前时间线已在导入前获取并完成去重检查
+    # 2) 记录时间线名称（不做时间线去重，允许每次导出叠放新轨）
     try:
         timeline_name = tl.GetName() or ""
     except Exception:

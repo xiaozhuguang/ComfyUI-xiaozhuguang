@@ -5838,8 +5838,9 @@ app.registerExtension({
                 for (let i = 0; i < count; i++) {
                     const bias = widths[String(i)] !== undefined ? widths[String(i)] : 0;
                     html += `
-                        <div class="nf-form-item" style="margin-bottom: 10px; padding: 8px; background: #1a1a1a; border-radius: 6px;">
+                        <div class="nf-form-item nf-selector-row" data-idx="${i}" style="margin-bottom: 10px; padding: 8px; background: #1a1a1a; border-radius: 6px; border: 1px solid transparent;">
                             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                <span class="nf-drag-handle" draggable="true" title="${xzgT('拖拽调整顺序','Drag to reorder')}" style="cursor: grab; color: #888; font-size: 13px; user-select: none; line-height: 1;">⋮⋮</span>
                                 <span style="font-size: 12px; color: #FFD700; width: 50px; white-space: nowrap;">${xzgT('标签','Label')}${i}</span>
                                 <input type="text" id="nf-label-${i}" value="${labels[String(i)] || ""}" placeholder="${xzgT('留空显示','Empty → shows')} ${i}" style="flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 13px;" />
                             </div>
@@ -6100,6 +6101,67 @@ app.registerExtension({
                         applyCurrentSettings();
                     }
                 });
+
+                // ── 拖拽调整顺序：标签/输出/宽度行支持拖拽重排（拖动行左侧 ⋮⋮ 手柄）──
+                let dragRowIdx = null;
+                labelsContainer.addEventListener("dragstart", (e) => {
+                    const handle = e.target.closest?.(".nf-drag-handle");
+                    if (!handle) return;
+                    const row = handle.closest?.(".nf-selector-row");
+                    if (!row) return;
+                    dragRowIdx = row.getAttribute("data-idx");
+                    e.dataTransfer.effectAllowed = "move";
+                    try { e.dataTransfer.setData("text/plain", dragRowIdx); } catch (err) {}
+                    row.style.opacity = "0.5";
+                    e.stopPropagation();
+                });
+
+                labelsContainer.addEventListener("dragend", () => {
+                    dragRowIdx = null;
+                    labelsContainer.querySelectorAll(".nf-selector-row").forEach(r => {
+                        r.style.opacity = "";
+                        r.style.borderColor = "transparent";
+                    });
+                });
+
+                labelsContainer.addEventListener("dragover", (e) => {
+                    if (dragRowIdx === null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    labelsContainer.querySelectorAll(".nf-selector-row").forEach(r => {
+                        r.style.borderColor = "transparent";
+                    });
+                    const row = e.target.closest?.(".nf-selector-row");
+                    if (row && row.getAttribute("data-idx") !== String(dragRowIdx)) {
+                        row.style.borderColor = "#FFD700";
+                    }
+                });
+
+                labelsContainer.addEventListener("drop", (e) => {
+                    if (dragRowIdx === null) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const row = e.target.closest?.(".nf-selector-row");
+                    if (!row) return;
+                    const targetIdx = row.getAttribute("data-idx");
+                    const srcIdx = String(dragRowIdx);
+                    if (targetIdx === srcIdx) return;
+
+                    const { newLabels, newWidths, newOutputs, newCount } = getCurrentLabels();
+                    // 交换来源行与目标行的标签/输出/宽度
+                    [newLabels[srcIdx], newLabels[targetIdx]] = [newLabels[targetIdx], newLabels[srcIdx]];
+                    [newOutputs[srcIdx], newOutputs[targetIdx]] = [newOutputs[targetIdx], newOutputs[srcIdx]];
+                    [newWidths[srcIdx], newWidths[targetIdx]] = [newWidths[targetIdx], newWidths[srcIdx]];
+
+                    const curColumns = parseInt(columnsInput?.value, 10) || 1;
+                    const body = dialog.querySelector(".nf-dialog-body");
+                    const scrollTop = body ? body.scrollTop : 0;
+                    labelsContainer.innerHTML = buildLabelsHTML(newLabels, newWidths, newOutputs, newCount, curColumns);
+                    if (body) body.scrollTop = scrollTop;
+                    dragRowIdx = null;
+                    applyCurrentSettings();
+                });
+
                 [fontSizeInput, btnGapInput].forEach(inp => {
                     if (!inp) return;
                     inp.addEventListener("dblclick", (e) => {

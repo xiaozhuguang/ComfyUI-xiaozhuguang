@@ -1325,7 +1325,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFirstLastFrame": "小珠光首尾帧",
     "XiaozhuguangDuplicateFirstFrame": "小珠光帧优化",
     "XiaozhuguangFrameExtract": "小珠光帧提取",
-    "XiaozhuguangImageLoader": "小珠光图片加载器-化神级",
+    "XiaozhuguangImageLoader": "小珠光图像加载器-化神级",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
     "XiaozhuguangVideoBatchMerge": "小珠光视频批处理合并",
     "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",

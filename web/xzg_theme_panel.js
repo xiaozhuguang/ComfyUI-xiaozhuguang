@@ -16,6 +16,8 @@ const XZG_EXPORT_CATEGORIES = [
     ["skills", "提示词规则预设", "Prompt Rule Presets", "已云端持久化", "Cloud-backed"],
     ["textBoxGodPresets", "文本框化神级预设", "Text Box God-Tier Presets", "已云端持久化", "Cloud-backed"],
     ["mediaLibrary", "资源媒体库图片", "Media Library Images", "服务端持久化", "Server-backed"],
+    ["audioLibrary", "资源媒体库音频", "Media Library Audio", "服务端持久化", "Server-backed"],
+    ["videoLibrary", "资源媒体库视频", "Media Library Videos", "服务端持久化", "Server-backed"],
     ["notes", "记事本", "Notepad", "已云端持久化", "Cloud-backed"],
     ["align", "田字格对齐", "Grid Alignment", "已云端持久化", "Cloud-backed"],
     ["sidebar", "侧边栏偏好", "Sidebar Preferences", "已云端持久化", "Cloud-backed"],
@@ -27,6 +29,9 @@ function xzgExportCategoryForKey(key) {
     // Internal cloud snapshots combine several selectable categories; omit them from export
     // so they cannot smuggle unchecked categories into an otherwise granular backup.
     if (key === "xzg_favorites_state" || key === "xzg_ui_state") return null;
+    if (key === "xzg_audio_media_library_geometry") return "audioLibrary";
+    if (key === "xzg_video_media_library_geometry") return "videoLibrary";
+    if (key === "xzg_media_library_geometry" || key === "xzg_folder_dialog_geometry") return "mediaLibrary";
     if (key === "xiaozhuguang.notes") return "notes";
     if (key === "comfyui_xiaozhuguang" || /^xiaozhuguang\.Panel(Pos|Width|Height|SplitWidth)$/.test(key)) return "favorites";
     if (/^xzg_(title_presets|last_title_|last_title_config)/.test(key) || key === "xz_selector_dialog_pos") return "title";
@@ -2746,35 +2751,82 @@ window.XZGThemePanel = {
         setTimeout(() => location.reload(), 500);
     },
 
+    async configTransfer(label, action) {
+        if (this._configTransferBusy) throw new Error(xzgT("备份或还原正在进行，请稍候", "A backup or restore is already running. Please wait."));
+        this._configTransferBusy = true;
+        const overlay = document.createElement("div");
+        overlay.className = "xzg-modal-overlay";
+        overlay.style.zIndex = "2000002";
+        const message = document.createElement("div");
+        message.className = "xzg-modal-dialog";
+        message.textContent = label;
+        message.setAttribute("role", "status");
+        overlay.appendChild(message);
+        document.body.appendChild(overlay);
+        try { return await action(); }
+        finally { overlay.remove(); this._configTransferBusy = false; }
+    },
+
+    async uploadConfigArchive(file, restore = false, libraries = null) {
+        return this.configTransfer(restore
+            ? xzgT("正在校验并还原媒体库，请稍候…", "Validating and restoring the media library…")
+            : xzgT("正在读取 ZIP 备份，请稍候…", "Reading ZIP backup…"), async () => {
+            const response = await api.fetchApi(`/xzg/media-library/archive${restore ? "/restore" : ""}`, {
+                method: "POST",
+                headers: { "Content-Type": restore ? "application/json" : "application/zip" },
+                body: restore ? JSON.stringify({ token: file, ...(libraries ? { libraries } : {}) }) : file,
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            return result;
+        });
+    },
+
     /** 选择并应用统一配置文件。 */
     openConfigImportPicker() {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".json,application/json";
+        input.accept = ".zip,.json,application/zip,application/json";
         input.style.display = "none";
         document.body.appendChild(input);
         input.addEventListener("cancel", () => input.remove(), { once: true });
-        input.addEventListener("change", () => {
+        input.addEventListener("change", async () => {
             const file = input.files?.[0];
             input.remove();
             if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async event => {
-                try {
-                    const obj = JSON.parse(event.target.result);
-                    const result = await this.importAllConfig(obj);
-                    if (result?.applied) {
-                        const parts = [];
-                        if (result.appliedXzgConfig || result.appliedNotes) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
-                        if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
-                        alert(xzgT('导入成功（', 'Import succeeded (') + parts.join(' + ') + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
-                        setTimeout(() => location.reload(), 300);
-                    }
-                } catch (err) {
-                    alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
+            let archiveToken = null;
+            try {
+                let obj;
+                if (/\.zip$/i.test(file.name)) {
+                    const archive = await this.uploadConfigArchive(file);
+                    archiveToken = archive.token;
+                    obj = archive.config;
+                } else {
+                    obj = JSON.parse(await file.text());
                 }
-            };
-            reader.readAsText(file);
+                const result = await this.importAllConfig(obj, archiveToken);
+                if (result?.applied) {
+                    const parts = [];
+                    if (result.appliedXzgConfig || result.appliedNotes) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
+                    if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
+                    if (result.restoredAudioCount != null) parts.push(xzgT(`媒体库 ${result.restoredAudioCount} 个音频`, `Media library: ${result.restoredAudioCount} audio files`));
+                    if (result.restoredVideoCount != null) parts.push(xzgT(`媒体库 ${result.restoredVideoCount} 个视频`, `Media library: ${result.restoredVideoCount} videos`));
+                    if (result.restoredMediaCount != null) parts.push(xzgT(`媒体库 ${result.restoredMediaCount} 张图片`, `Media library: ${result.restoredMediaCount} images`));
+                    alert(xzgT('导入成功（', 'Import succeeded (') + parts.join(' + ') + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
+                    setTimeout(() => location.reload(), 300);
+                }
+            } catch (err) {
+                alert(xzgT('导入失败：配置文件无效', 'Import failed: invalid config file') + ' (' + err.message + ')');
+            } finally {
+                if (archiveToken) {
+                    try {
+                        await api.fetchApi("/xzg/media-library/archive", {
+                            method: "DELETE", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ token: archiveToken }),
+                        });
+                    } catch (_) { /* 后端会自动清理到期的临时备份 */ }
+                }
+            }
         }, { once: true });
         input.click();
     },
@@ -2782,38 +2834,41 @@ window.XZGThemePanel = {
     /**
      * 显示导出选项对话框
      */
-    showExportDialog() {
+    showExportDialog(importAvailability = null) {
         return new Promise((resolve) => {
             this._ensureGlobalDialogCSS();
             const overlay = document.createElement("div");
             overlay.className = "xzg-modal-overlay";
             overlay.style.zIndex = "2000001";
-            const rows = XZG_EXPORT_CATEGORIES.map(([id, zh, en]) => {
+            const importing = importAvailability !== null;
+            const rows = XZG_EXPORT_CATEGORIES.map(([id, zh, en], index) => {
+                const available = !importing || importAvailability[id];
                 return `
-                <label class="xzg-modal-checkbox xzg-export-category-row" style="align-items:center;padding:4px 7px;border:1px solid #444;border-radius:5px;margin:0;gap:6px;min-height:24px">
-                    <input type="checkbox" data-export-category="${id}" checked />
-                    <span style="flex:1;min-width:0">${xzgT(zh, en)}</span>
+                <label class="xzg-modal-checkbox xzg-export-category-row" style="align-items:center;padding:4px 7px;border:1px solid #444;border-radius:5px;margin:0;gap:6px;min-height:24px;opacity:${available ? 1 : 0.5}">
+                    <input type="checkbox" data-export-category="${id}" ${available ? "checked" : "disabled"} />
+                    <span style="flex:1;min-width:0">${String(index + 1).padStart(2, "0")}. ${xzgT(zh, en)}${available ? "" : xzgT("（文件中无此项）", " (not in file)")}</span>
                 </label>`;
             }).join("");
             overlay.innerHTML = `
                 <div class="xzg-modal-dialog" style="width:min(620px,calc(100vw - 32px));max-height:85vh;display:flex;flex-direction:column">
                     <div class="xzg-modal-title" style="justify-content:space-between">
-                        <span>${xzgT('导出配置', 'Export Config')}</span>
+                        <span>${importing ? xzgT('导入配置', 'Import Config') : xzgT('导出配置', 'Export Config')}</span>
                         <div style="display:flex;gap:8px">
                             <button type="button" class="xzg-modal-btn" data-select-all="true" style="padding:4px 12px">${xzgT('全选','Select all')}</button>
                             <button type="button" class="xzg-modal-btn" data-select-all="false" style="padding:4px 12px">${xzgT('全不选','Select none')}</button>
                         </div>
                     </div>
                     <div class="xzg-modal-body" style="overflow:auto;gap:6px">
+                        ${importing ? `<div class="xzg-modal-warning">${xzgT("导入将覆盖勾选项的当前设置。", "Import will overwrite the selected settings.")}</div>` : ""}
                         <div class="xzg-export-category-list" style="display:flex;flex-direction:column;gap:2px">${rows}</div>
                         <label class="xzg-modal-checkbox" style="align-items:center;padding:4px 7px;margin:0;gap:6px;min-height:24px;border:1px solid #444;border-radius:5px">
-                            <input type="checkbox" id="xzg-export-include-comfy" checked />
-                            <span style="flex:1">${xzgT('ComfyUI 设置','ComfyUI settings')}</span>
+                            <input type="checkbox" id="xzg-export-include-comfy" ${!importing || importAvailability.comfy ? "checked" : "disabled"} />
+                            <span style="flex:1;opacity:${!importing || importAvailability.comfy ? 1 : 0.5}">${String(XZG_EXPORT_CATEGORIES.length + 1).padStart(2, "0")}. ${xzgT('ComfyUI 设置','ComfyUI settings')}${!importing || importAvailability.comfy ? "" : xzgT("（文件中无此项）", " (not in file)")}</span>
                         </label>
                     </div>
                     <div class="xzg-modal-footer">
                         <button type="button" class="xzg-modal-btn xzg-modal-cancel">${xzgT('取消', 'Cancel')}</button>
-                        <button type="button" class="xzg-modal-btn xzg-modal-confirm">${xzgT('导出', 'Export')}</button>
+                        <button type="button" class="xzg-modal-btn xzg-modal-confirm">${importing ? xzgT('导入', 'Import') : xzgT('导出', 'Export')}</button>
                     </div>
                 </div>
             `;
@@ -2828,8 +2883,9 @@ window.XZGThemePanel = {
             overlay.querySelectorAll("[data-select-all]").forEach(button => {
                 button.addEventListener("click", () => {
                     const checked = button.dataset.selectAll === "true";
-                    overlay.querySelectorAll("[data-export-category]").forEach(input => { input.checked = checked; });
-                    overlay.querySelector("#xzg-export-include-comfy").checked = checked;
+                    overlay.querySelectorAll("[data-export-category]").forEach(input => { input.checked = checked && !input.disabled; });
+                    const comfy = overlay.querySelector("#xzg-export-include-comfy");
+                    comfy.checked = checked && !comfy.disabled;
                 });
             });
             overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
@@ -2837,7 +2893,7 @@ window.XZGThemePanel = {
                 overlay.querySelectorAll("[data-export-category]").forEach(input => { categories[input.dataset.exportCategory] = input.checked; });
                 const includeComfy = overlay.querySelector("#xzg-export-include-comfy").checked;
                 if (!includeComfy && !Object.values(categories).some(Boolean)) {
-                    alert(xzgT('至少选择一项要导出的内容。', 'Select at least one item to export.'));
+                    alert(importing ? xzgT('至少选择一项要导入的内容。', 'Select at least one item to import.') : xzgT('至少选择一项要导出的内容。', 'Select at least one item to export.'));
                     return;
                 }
                 close({ categories, includeComfySettings: includeComfy });
@@ -2851,62 +2907,21 @@ window.XZGThemePanel = {
     /**
      * 显示导入选项对话框
      */
-    showImportDialog(hasComfySettings, hasXzg) {
-        return new Promise((resolve) => {
-            const self = this;
-            self._ensureGlobalDialogCSS();
-            const overlay = document.createElement("div");
-            overlay.className = "xzg-modal-overlay";
-            overlay.style.zIndex = "2000001";
-            const comfyCheckbox = hasComfySettings ? `
-                <label class="xzg-modal-checkbox">
-                    <input type="checkbox" id="xzg-import-include-comfy" checked />
-                    <span>${xzgT('导入 ComfyUI 设置（快捷键、界面主题、布局偏好等）', 'Import ComfyUI settings (keybindings, UI theme, layout preferences, etc.)')}</span>
-                </label>
-            ` : `
-                <div class="xzg-modal-hint">${xzgT('此配置文件不包含 ComfyUI 设置。', 'This config file does not contain ComfyUI settings.')}</div>
-            `;
-            const xzgHint = hasXzg ? `` : `
-                <div class="xzg-modal-hint">${xzgT('此配置文件不包含小珠光配置。', 'This config file does not contain Xiaozhuguang config.')}</div>
-            `;
-            overlay.innerHTML = `
-                <div class="xzg-modal-dialog">
-                    <div class="xzg-modal-title">${xzgT('导入配置', 'Import Config')}</div>
-                    <div class="xzg-modal-body">
-                        <label class="xzg-modal-checkbox" style="${hasXzg ? '' : 'opacity:0.5;pointer-events:none;'}">
-                            <input type="checkbox" id="xzg-import-include-xzg" ${hasXzg ? 'checked' : 'disabled'} />
-                            <span>${xzgT('导入小珠光配置（主题配色 / 收藏节点 / 工作流使用频率 / 菜单隐藏 / 快速连线 / 记事本 / 资源媒体库）', 'Import Xiaozhuguang config (theme colors / favorites / workflow usage / menu hide / quick links / notepad / media library)')}</span>
-                        </label>
-                        ${xzgHint}
-                        ${comfyCheckbox}
-                        <div class="xzg-modal-warning">${xzgT('警告：导入将覆盖当前的对应设置，建议先导出备份。', 'Warning: Importing will overwrite current corresponding settings. Export a backup first is recommended.')}</div>
-                    </div>
-                    <div class="xzg-modal-footer">
-                        <button type="button" class="xzg-modal-btn xzg-modal-cancel">${xzgT('取消', 'Cancel')}</button>
-                        <button type="button" class="xzg-modal-btn xzg-modal-confirm">${xzgT('导入', 'Import')}</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(overlay);
-
-            const close = (result) => {
-                overlay.remove();
-                resolve(result);
-            };
-
-            overlay.querySelector(".xzg-modal-cancel").addEventListener("click", () => close(null));
-            overlay.querySelector(".xzg-modal-confirm").addEventListener("click", () => {
-                const includeXzgEl = overlay.querySelector("#xzg-import-include-xzg");
-                const includeXzg = includeXzgEl && !includeXzgEl.disabled ? includeXzgEl.checked : false;
-                const includeComfyEl = overlay.querySelector("#xzg-import-include-comfy");
-                const includeComfy = includeComfyEl ? includeComfyEl.checked : false;
-                // 备注/记事本已合并到小珠光配置
-                close({ includeXzgConfig: includeXzg, includeNotes: includeXzg, includeComfySettings: includeComfy });
-            });
-            overlay.addEventListener("click", (e) => {
-                if (e.target === overlay) close(null);
-            });
-        });
+    showImportDialog(obj) {
+        const available = Object.fromEntries(XZG_EXPORT_CATEGORIES.map(([id]) => [id, false]));
+        for (const key of Object.keys(obj.localStorage || {})) {
+            const category = xzgExportCategoryForKey(key);
+            if (category) available[category] = true;
+        }
+        if (obj.notes != null) available.notes = true;
+        if (Array.isArray(obj.favoritesPreviews) && obj.favoritesPreviews.length) available.favorites = true;
+        if (obj.workflowUsage && Object.keys(obj.workflowUsage).length) available.workflows = true;
+        if (Array.isArray(obj.shortcuts) && obj.shortcuts.length) available.shortcuts = true;
+        if (obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files)) available.mediaLibrary = true;
+        if (obj.videoLibrary && Array.isArray(obj.videoLibrary.files)) available.videoLibrary = true;
+        if (obj.audioLibrary && Array.isArray(obj.audioLibrary.files)) available.audioLibrary = true;
+        available.comfy = !!(obj.comfySettings && Object.keys(obj.comfySettings).length);
+        return this.showExportDialog(available);
     },
 
     // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速连线 / 隐藏菜单 / 主题 / 备注 / ComfyUI设置 等所有模块） ======
@@ -3041,16 +3056,20 @@ window.XZGThemePanel = {
         let mediaLibrary = null;
         let folderDialogGeometry = null;
         if (selected.mediaLibrary) {
-            const response = await api.fetchApi("/xzg/media-library/backup", { cache: "no-store" });
-            if (!response.ok) throw new Error(xzgT("媒体库备份失败", "Media library backup failed") + ` (HTTP ${response.status})`);
-            mediaLibrary = await response.json();
+            mediaLibrary = {};
             mediaLibrary.geometry = await cloudLoad("xzg_media_library_geometry", { fallbackValue: null });
             folderDialogGeometry = await cloudLoad("xzg_folder_dialog_geometry", { fallbackValue: null });
         }
 
+        const videoLibrary = selected.videoLibrary ? {
+            geometry: await cloudLoad("xzg_video_media_library_geometry", { fallbackValue: null }),
+        } : null;
+        const audioLibrary = selected.audioLibrary ? {
+            geometry: await cloudLoad("xzg_audio_media_library_geometry", { fallbackValue: null }),
+        } : null;
         const cfg = {
             format: "xiaozhuguang-config",
-            version: 7,
+            version: 10,
             exportedAt: new Date().toISOString(),
             flags: { includeXzgConfig: includeXzg, includeNotes: includeNotes, includeComfySettings: includeComfy, selectedCategories: selected },
             localStorage: ls,
@@ -3059,23 +3078,34 @@ window.XZGThemePanel = {
             comfySettings: comfySettings,
             shortcuts: shortcuts,
             mediaLibrary: mediaLibrary,
+            videoLibrary: videoLibrary,
+            audioLibrary: audioLibrary,
             folderDialogGeometry: folderDialogGeometry
         };
-        const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
+        const blob = await this.configTransfer(xzgT("正在打包并下载 ZIP 备份，请稍候…", "Preparing and downloading ZIP backup…"), async () => {
+            const response = await api.fetchApi("/xzg/media-library/backup", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg),
+            });
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || `HTTP ${response.status}`);
+            }
+            return response.blob();
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         const d = new Date();
         const pad = (n) => String(n).padStart(2, "0");
         const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
         a.href = url;
-        a.download = `xiaozhuguang-config-${stamp}.json`;
+        a.download = `xiaozhuguang-config-${stamp}.zip`;
         document.body.appendChild(a);
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     },
 
-    async importAllConfig(obj) {
+    async importAllConfig(obj, archive = null) {
         if (!obj || typeof obj !== "object") throw new Error("not an object");
         if (obj.format && obj.format !== "xiaozhuguang-config") {
             throw new Error("unknown format: " + obj.format);
@@ -3083,38 +3113,77 @@ window.XZGThemePanel = {
 
         const NOTES_KEY = "xiaozhuguang.notes";
 
-        // 先检测此文件是否包含两类可选模块（用于弹窗显示复选框）
-        const hasComfy = !!(obj.comfySettings && typeof obj.comfySettings === "object" && Object.keys(obj.comfySettings).length > 0);
-        // hasXzg：只要文件包含 localStorage / notes / favoritesPreviews / workflowUsage / shortcuts 之一，就视为包含小珠光配置
-        const hasXzg = !!(
-            (obj.localStorage && typeof obj.localStorage === "object" && Object.keys(obj.localStorage).length > 0) ||
-            (obj.notes && typeof obj.notes === "object" && Array.isArray(obj.notes.groups)) ||
-            (obj.favoritesPreviews && Array.isArray(obj.favoritesPreviews) && obj.favoritesPreviews.length > 0) ||
-            (obj.workflowUsage && typeof obj.workflowUsage === "object" && Object.keys(obj.workflowUsage).length > 0) ||
-            (Array.isArray(obj.shortcuts) && obj.shortcuts.length > 0) ||
-            (obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files))
-        );
-        const hasNotes = !!(
-            (obj.notes && typeof obj.notes === "object") ||
-            (obj.localStorage && obj.localStorage["xiaozhuguang.notes"])
-        );
-
-        // 弹导入选项（备注/记事本已合并进小珠光配置，不再单独复选）
-        const opt = await this.showImportDialog(hasComfy, hasXzg);
+        // 与导出共享分类和编号，先过滤载荷，后续写入和运行时恢复仅接触勾选项。
+        const opt = await this.showImportDialog(obj);
         if (!opt) return { applied: false };
-        const includeXzg = opt.includeXzgConfig !== false;
-        const includeNotes = opt.includeNotes !== false;
-        const includeComfy = opt.includeComfySettings !== false;
+        const selected = opt.categories;
+        obj = {
+            ...obj,
+            localStorage: Object.fromEntries(Object.entries(obj.localStorage || {}).filter(([key]) => selected[xzgExportCategoryForKey(key)] === true)),
+            notes: selected.notes ? obj.notes : null,
+            favoritesPreviews: selected.favorites ? obj.favoritesPreviews : null,
+            workflowUsage: selected.workflows ? obj.workflowUsage : null,
+            shortcuts: selected.shortcuts ? obj.shortcuts : null,
+            mediaLibrary: selected.mediaLibrary ? obj.mediaLibrary : null,
+            videoLibrary: selected.videoLibrary ? obj.videoLibrary : null,
+            audioLibrary: selected.audioLibrary ? obj.audioLibrary : null,
+            folderDialogGeometry: selected.mediaLibrary ? obj.folderDialogGeometry : null,
+        };
+        const includeXzg = Object.values(selected).some(Boolean);
+        const includeNotes = selected.notes === true;
+        const includeComfy = opt.includeComfySettings === true;
+        const hasComfy = !!(obj.comfySettings && Object.keys(obj.comfySettings).length);
+        const hasNotes = obj.notes != null || obj.localStorage[NOTES_KEY] != null;
 
         let mediaRestored = false;
+        let restoredMediaCount = 0;
+        let restoredVideoCount = null;
+        let restoredAudioCount = null;
+        const restoreImages = !!(obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files));
+        const restoreVideos = !!(obj.videoLibrary && Array.isArray(obj.videoLibrary.files));
+        const restoreAudio = !!(obj.audioLibrary && Array.isArray(obj.audioLibrary.files));
+        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio)
+            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio })
+            : null;
+        if (restoreVideos) {
+            if (!archiveResult) throw new Error(xzgT("视频媒体库需要 ZIP 备份文件", "Video media library requires a ZIP backup."));
+            restoredVideoCount = archiveResult.restoredVideos;
+            const geometry = obj.videoLibrary.geometry;
+            if (geometry && Number.isFinite(Number(geometry.width)) && Number.isFinite(Number(geometry.height))) {
+                const restoredGeometry = { width: Number(geometry.width), height: Number(geometry.height) };
+                if (geometry.x != null && geometry.y != null && Number.isFinite(Number(geometry.x)) && Number.isFinite(Number(geometry.y))) {
+                    restoredGeometry.x = Number(geometry.x);
+                    restoredGeometry.y = Number(geometry.y);
+                }
+                await cloudSave("xzg_video_media_library_geometry", restoredGeometry);
+            }
+        }
+        if (restoreAudio) {
+            if (!archiveResult) throw new Error(xzgT("音频媒体库需要 ZIP 备份文件", "Audio media library requires a ZIP backup."));
+            restoredAudioCount = archiveResult.restoredAudios;
+            const geometry = obj.audioLibrary.geometry;
+            if (geometry && Number.isFinite(Number(geometry.width)) && Number.isFinite(Number(geometry.height))) {
+                const restoredGeometry = { width: Number(geometry.width), height: Number(geometry.height) };
+                if (geometry.x != null && geometry.y != null && Number.isFinite(Number(geometry.x)) && Number.isFinite(Number(geometry.y))) {
+                    restoredGeometry.x = Number(geometry.x);
+                    restoredGeometry.y = Number(geometry.y);
+                }
+                await cloudSave("xzg_audio_media_library_geometry", restoredGeometry);
+            }
+        }
         if (includeXzg && obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files)) {
-            const response = await api.fetchApi("/xzg/media-library/restore", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(obj.mediaLibrary),
-            });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.error || xzgT("媒体库恢复失败", "Media library restore failed"));
+            if (archive) {
+                restoredMediaCount = archiveResult.restored;
+            } else {
+                const response = await api.fetchApi("/xzg/media-library/restore", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(obj.mediaLibrary),
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || xzgT("媒体库恢复失败", "Media library restore failed"));
+                restoredMediaCount = result.restored;
+            }
             const geometry = obj.mediaLibrary.geometry;
             if (geometry && Number.isFinite(Number(geometry.width)) && Number.isFinite(Number(geometry.height))) {
                 const restoredGeometry = {
@@ -3178,7 +3247,7 @@ window.XZGThemePanel = {
         }
 
         // ============ 2) 导入小珠光配置（除 notes 外的所有 localStorage，以及收藏预览） ============
-        let importedXzg = mediaRestored;
+        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null;
         if (includeXzg) {
             if (obj.localStorage && typeof obj.localStorage === "object") {
                 for (const k in obj.localStorage) {
@@ -3360,7 +3429,7 @@ window.XZGThemePanel = {
         }
         // 云同步推送：导入写回本地后，把本次云化模块的设置一并推上云，
         // 避免刷新时“云优先覆盖”用旧云端数据覆盖刚导入的配置。
-        if (window.__xzgCloudPush && typeof window.__xzgCloudPush === "object") {
+        if (includeXzg && window.__xzgCloudPush && typeof window.__xzgCloudPush === "object") {
             for (const _k in window.__xzgCloudPush) {
                 try { window.__xzgCloudPush[_k](); } catch (e) {}
             }
@@ -3385,7 +3454,10 @@ window.XZGThemePanel = {
             applied: anyXzgApplied || importedNotes || importedComfy,
             appliedXzgConfig: anyXzgApplied,
             appliedNotes: importedNotes,
-            appliedComfySettings: importedComfy
+            appliedComfySettings: importedComfy,
+            restoredMediaCount: mediaRestored ? restoredMediaCount : null,
+            restoredVideoCount: restoredVideoCount,
+            restoredAudioCount: restoredAudioCount
         };
     },
 

@@ -644,6 +644,57 @@ class XZGWorkflowsManager {
         });
     }
 
+    /** 自定义确认对话框，替代浏览器原生 confirm。返回 true=确认，false=取消（含 ESC / 点遮罩） */
+    showConfirmDialog(title, message, opts = {}) {
+        return new Promise((resolve) => {
+            const escapeAttr = (v) => String(v == null ? "" : v)
+                .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+                .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const dialog = document.createElement("div");
+            dialog.className = "xzg-wf-dialog-overlay";
+            dialog.innerHTML = this._applyAccent(`
+                <div class="xzg-wf-dialog">
+                    <div class="xzg-wf-dialog-title">${escapeAttr(title)}</div>
+                    <div class="xzg-wf-dialog-body">
+                        <div class="xzg-wf-dialog-msg">${escapeAttr(message).replace(/\n/g, "<br>")}</div>
+                    </div>
+                    <div class="xzg-wf-dialog-footer">
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-cancel" id="xzg-wf-dialog-cancel">${xzgT('取消','Cancel')}</button>
+                        <button class="xzg-wf-dialog-btn xzg-wf-dialog-btn-danger" id="xzg-wf-dialog-confirm">${escapeAttr(opts.confirmLabel || xzgT('确认','Confirm'))}</button>
+                    </div>
+                </div>
+            `);
+            document.body.appendChild(dialog);
+
+            const confirmBtn = dialog.querySelector("#xzg-wf-dialog-confirm");
+            const cancelBtn = dialog.querySelector("#xzg-wf-dialog-cancel");
+
+            const finish = (val) => {
+                document.removeEventListener("keydown", onKey, true);
+                dialog.remove();
+                resolve(val);
+            };
+            const onKey = (e) => {
+                if (e.key === "Escape") {
+                    e.preventDefault(); e.stopPropagation();
+                    finish(false);
+                } else if (e.key === "Enter") {
+                    e.preventDefault(); e.stopPropagation();
+                    finish(true);
+                }
+            };
+            document.addEventListener("keydown", onKey, true);
+
+            cancelBtn.addEventListener("click", () => finish(false));
+            confirmBtn.addEventListener("click", () => finish(true));
+            dialog.addEventListener("click", (e) => {
+                if (e.target === dialog) finish(false);
+            });
+
+            confirmBtn.focus();
+        });
+    }
+
     setupKeyboardListener() {
         if (this._keyboardInstalled) return;
         const self = this;
@@ -2292,6 +2343,25 @@ class XZGWorkflowsManager {
             .xzg-wf-dialog-btn-confirm:disabled {
                 opacity: 0.4;
                 cursor: not-allowed;
+            }
+            .xzg-wf-dialog-btn-danger {
+                background: #c0392b;
+                color: #fff;
+                border-color: #a93226;
+                font-weight: bold;
+            }
+            .xzg-wf-dialog-btn-danger:hover:not(:disabled) {
+                background: #a93226;
+            }
+            .xzg-wf-dialog-btn-danger:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            .xzg-wf-dialog-msg {
+                font-size: 14px;
+                line-height: 1.7;
+                color: var(--fg, #ddd);
+                word-break: break-word;
             }
             .xzg-wf-shortcut-btn {
                 color: #ddd !important;
@@ -4445,7 +4515,12 @@ class XZGWorkflowsManager {
             alert(xzgT('该工作流已设为只读，无法删除。请先右键取消只读。', 'This workflow is read-only. Right-click to disable read-only first.'));
             return;
         }
-        if (!confirm(xzgT(`确定要删除工作流「${wf.name}」吗？`, `Delete workflow "${wf.name}"?`))) return;
+        const ok = await this.showConfirmDialog(
+            xzgT('删除工作流','Delete Workflow'),
+            xzgT(`确定要删除工作流「${wf.name}」吗？\n删除后会移入回收站，可随时恢复。`, `Delete workflow "${wf.name}"?\nIt will be moved to the recycle bin and can be recovered anytime.`),
+            { confirmLabel: xzgT('删除','Delete') }
+        );
+        if (!ok) return;
 
         try {
             const res = await api.fetchApi(`/xzg/workflows/${encodeURIComponent(wf.path)}`, {

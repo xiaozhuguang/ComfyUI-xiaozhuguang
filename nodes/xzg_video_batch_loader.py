@@ -32,6 +32,7 @@ from .xzg_video_loader import (
     XiaozhuguangVideoLoader,
     calculate_file_hash,
     ffmpeg_frame_generator,
+    _resolve_video_widget,
 )
 from .xzg_video_combine import export_to_video
 from .xzg_video_editor_api import get_batch_buffer_dir, concat_video_files
@@ -95,6 +96,8 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
     @classmethod
     def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", **kwargs):
+        # 空选或文件被删时，与 load_video_impl 走同一套兜底逻辑，保证缓存键稳定。
+        视频, _ = _resolve_video_widget(视频)
         try:
             path = folder_paths.get_annotated_filepath(视频)
             file_hash = calculate_file_hash(path)

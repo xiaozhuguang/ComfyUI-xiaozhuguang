@@ -1,5 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { showMediaLibrary } from "./xzg_media_library.js";
+import { xzgT } from "./xzg_i18n.js";
 import {
     downloadAudio,
     xzgTimestamp,
@@ -3126,7 +3128,7 @@ function _createAudioLoaderAction(node, viewer, key, text, color, onClick, iconH
         node._xzgAudioActionCleanup = true;
         const origOnRemoved = node.onRemoved;
         node.onRemoved = function () {
-            for (const k of ["_xzgAudioLoaderExportBtn", "_xzgAudioLoaderQuickCutBtn", "_xzgDvBtn"]) {
+            for (const k of ["_xzgAudioLoaderExportBtn", "_xzgAudioLoaderQuickCutBtn", "_xzgDvBtn", "_xzgAudioMediaLibraryBtn", "_xzgAudioMediaFavoriteBtn"]) {
                 try { node[k]?.remove(); node[k] = null; } catch (e) {}
             }
             node._xzgAudioActionAnchor = null;
@@ -3134,6 +3136,39 @@ function _createAudioLoaderAction(node, viewer, key, text, color, onClick, iconH
         };
     }
     return btn;
+}
+
+function _createAudioMediaLibraryButtons(node, viewer) {
+    _createAudioLoaderAction(node, viewer, "_xzgAudioMediaLibraryBtn", xzgT("资源媒体", "Media"), "#FFD700", () => {
+        showMediaLibrary({
+            kind: "audio",
+            alertUser: message => _xzgDavinciToast(message, true),
+            confirmUser: (message, action) => { if (window.confirm(message)) action(); },
+            addImages: async names => {
+                if (!names.length) return;
+                const widget = node.widgets?.find(w => w.name === "音频");
+                if (!widget || !await refreshAudioCombo(widget, names[0], XZG_AUDIO_DAVINCI_TYPE, { requireExact: true })) {
+                    throw new Error(xzgT("音频未能载入节点", "Could not load audio into the node"));
+                }
+                node.setDirtyCanvas?.(true, true);
+            },
+        });
+    }, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="display:block" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="5"/><polyline points="8,11.0 8,13.0"/><polyline points="10,10.0 10,14.0"/><polyline points="12,10.5 12,13.5"/><polyline points="14,10.0 14,14.0"/><polyline points="16,11.0 16,13.0"/></svg>');
+    _createAudioLoaderAction(node, viewer, "_xzgAudioMediaFavoriteBtn", xzgT("收藏", "Save"), "#FFD700", async (btn, label) => {
+        const info = _xzgAudioLoadedInfo(node);
+        if (!info) return _xzgDavinciToast(xzgT("请先选择或上传音频", "Select or upload audio first"), true);
+        btn.disabled = true;
+        label.textContent = xzgT("收藏中…", "Saving…");
+        try {
+            const response = await api.fetchApi("/xzg/media-library/add-audio", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(info),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            _xzgDavinciToast(xzgT("已收藏到音频媒体库", "Added to audio media library"));
+        } catch (error) { _xzgDavinciToast(error.message, true); }
+        finally { btn.disabled = false; label.textContent = xzgT("收藏", "Save"); }
+    }, '<span style="font-size:13px;">☆</span>');
 }
 
 function _installAudioLoaderActions(node) {
@@ -3210,6 +3245,7 @@ function _installAudioLoaderActions(node) {
         }
     }, _CLAPPER_SVG);
     _createDavinciImportButton(node);
+    _createAudioMediaLibraryButtons(node, viewer);
     // 画布端让位：按钮可见时顶栏时间码整体左移（与 _xzgFcBtnWidth 同机制上报三钮总宽）
     const origDraw = viewer.drawOnNode;
     viewer.drawOnNode = function (...args) {
@@ -3241,7 +3277,8 @@ function _installAudioLoaderLayout(node) {
         node._xzgDvBtn,                  // 从达芬奇加载
         node._xzgAudioLoaderExportBtn,   // 导出到达芬奇（最右）
     ].filter(Boolean);
-    const allButtons = () => bottomRow();
+    const mediaRow = () => [node._xzgAudioMediaLibraryBtn, node._xzgAudioMediaFavoriteBtn].filter(Boolean);
+    const allButtons = () => [...bottomRow(), ...mediaRow()];
 
     const mouse = { x: -1, y: -1 };
     const onMove = (e) => { mouse.x = e.clientX; mouse.y = e.clientY; };
@@ -3317,11 +3354,19 @@ function _installAudioLoaderLayout(node) {
             const bottomPx = Math.round(y0 + h - BTN_H * s - 2 * s);
             let rEdge = x0 + w - 13 * scale;  // 最右按钮贴右缘（留 13px 边距）
             const row = bottomRow();
+            const mediaWidth = mediaRow().reduce((total, b) => total + wOf(b) + 6, 0);
+            const actionWidth = row.reduce((total, b) => total + wOf(b) + 2, 0);
+            const actionTop = mediaWidth + actionWidth + 21 > drawW ? bottomPx - 24 * scale : bottomPx;
             for (let k = row.length - 1; k >= 0; k--) {
                 const b = row[k];
                 const bw = b.offsetWidth || 90;
-                place(b, rEdge - bw * s, bottomPx);
+                place(b, rEdge - bw * s, actionTop);
                 rEdge -= (bw + 2) * scale;
+            }
+            let left = x0 + 8 * scale;
+            for (const b of mediaRow()) {
+                place(b, left, bottomPx);
+                left += (wOf(b) + 6) * scale;
             }
             if (viewer._fastcut) viewer._fastcut.visible = viewer._davinciActionBusy ? false : inside;
 

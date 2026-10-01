@@ -1135,7 +1135,7 @@ function createImgBatchUI(node) {
     actionGroup.appendChild(mediaBtn);
     actionGroup.appendChild(mediaMaskDivider);
     const safetyActionGroup = document.createElement("div");
-    safetyActionGroup.style.cssText = `display:flex;flex-direction:column;gap:${initialActionGap};width:100%;margin-top:calc(10px - ${initialActionGap});`;
+    safetyActionGroup.style.cssText = `display:flex;flex-direction:column;gap:${initialActionGap};width:100%;margin-top:4px;`;
     const cropDeleteDivider = createActionDivider();
     safetyActionGroup.appendChild(cropDeleteDivider);
     safetyActionGroup.appendChild(deleteBtn);
@@ -1190,7 +1190,7 @@ function createImgBatchUI(node) {
     maxImgInput.title = xzgT("加载图片上限，0/∞ 表示无限制", "Max images to load, 0/∞ = unlimited");
     maxImgInput.setAttribute("aria-label", xzgT("加载图片上限", "Maximum images to load"));
     maxImgInput.style.cssText =
-        "width:calc(2 * var(--xzg-ui-font,10px));max-width:100%;min-width:0;height:20px;flex:0 0 auto;align-self:flex-start;margin:0 0 2px 2px;box-sizing:border-box;padding:1px 1px;font-size:var(--xzg-ui-font,10px);line-height:1.2;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:var(--comfy-input-bg,rgba(0,0,0,0.22));border:1px solid var(--border-color,rgba(255,255,255,0.25));border-radius:4px;outline:none;text-align:center;cursor:text;transition:border-color 0.12s ease,box-shadow 0.12s ease,background 0.12s ease;";
+        "width:calc(2 * var(--xzg-ui-font,10px));max-width:100%;min-width:0;height:20px;flex:0 0 auto;align-self:flex-start;margin:0 0 2px 2px;box-sizing:border-box;padding:0 1px 3px 1px;font-size:var(--xzg-ui-font,10px);line-height:1;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:var(--comfy-input-bg,rgba(0,0,0,0.22));border:1px solid var(--border-color,rgba(255,255,255,0.25));border-radius:4px;outline:none;text-align:center;cursor:text;transition:border-color 0.12s ease,box-shadow 0.12s ease,background 0.12s ease;";
     // 输入框交互不冒泡，避免触发节点/侧边栏拖动
     maxImgInput.addEventListener("pointerdown", (e) => e.stopPropagation());
     maxImgInput.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -2866,7 +2866,7 @@ function createImgBatchUI(node) {
         "flex:1;display:flex;align-items:flex-start;justify-content:flex-start;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;padding:6px 4px 4px;box-sizing:border-box;";
     emptyTip.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
-            <div style="text-align:left;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;padding-left:12px;">${xzgTh("小珠光图片加载器-化神级", "Xiaozhuguang Image Loader - Godlike")}</div>
+            <div style="text-align:left;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;padding-left:12px;">${xzgTh("小珠光图像加载器-化神级", "Xiaozhuguang Image Loader - Godlike")}</div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("📁 添加图片", "📁 Add Images")}</div>
@@ -6753,33 +6753,48 @@ app.registerExtension({
                 const h = nodeInst.size?.[1] || 300;
                 const availableHeight = Math.max(0, h - 30);
                 const density = Math.max(0, Math.min(1, (availableHeight - 260) / 220));
-                const iconSize = `${Math.round(14 + density * 18)}px`;
+                // 0.5px 步进：拖拽缩放时所有间距随同一 density 连续平滑变化，
+                // 分割线与按钮之间不再出现原先 Math.round 整跳带来的不均匀跳变。
+                const px = (v) => `${Math.round(v * 2) / 2}px`;
+
+                // 图标与按钮内边距：随 density 平滑放大
+                const iconSize = px(14 + density * 18);
                 if (sidebar.style.getPropertyValue("--xzg-ic-size") !== iconSize) {
                     sidebar.style.setProperty("--xzg-ic-size", iconSize);
                 }
-                const buttonPadding = `${Math.round(1 + density * 3)}px`;
+                const buttonPadding = px(1 + density * 3);
                 if (sidebar.style.getPropertyValue("--xzg-btn-pad-y") !== buttonPadding) {
                     sidebar.style.setProperty("--xzg-btn-pad-y", buttonPadding);
                 }
-                const sideGap = `${Math.round(density * 2)}px`;
+
+                // 组内按钮间距：侧栏、操作组、安全组、遮罩工具栏共用同一节奏
+                const itemGapV = 1 + density * 5;   // 按钮间距（1→6px）
+                const sideGapV = density * 2;        // 侧栏组间间距（0→2px）
+                const itemGap = px(itemGapV);
+                const sideGap = px(sideGapV);
                 if (sidebar.style.gap !== sideGap) sidebar.style.gap = sideGap;
-                const actionGap = `${Math.round(1 + density * 5)}px`;
-                if (ui.actionGroup && ui.actionGroup.style.gap !== actionGap) {
-                    ui.actionGroup.style.gap = actionGap;
+                if (ui.actionGroup && ui.actionGroup.style.gap !== itemGap) {
+                    ui.actionGroup.style.gap = itemGap;
                 }
+
+                // 分割线（cropDeleteDivider）是安全组（删除/清空）的首个子元素，为其上方
+                // 预留与按钮间距相同的间隙：使「裁剪→垃圾桶」与「资源媒体→遮罩」两处分隔
+                // 都等于 2×itemGap，整列节奏均匀，不再出现明显偏大的空隙。
+                const sectionGap = px(itemGapV - sideGapV);
                 if (ui.safetyActionGroup) {
-                    if (ui.safetyActionGroup.style.gap !== actionGap) ui.safetyActionGroup.style.gap = actionGap;
-                    const actionGapPx = Number.parseFloat(actionGap) || 0;
-                    const safetyMargin = `${Math.max(0, 10 - actionGapPx)}px`;
-                    if (ui.safetyActionGroup.style.marginTop !== safetyMargin) {
-                        ui.safetyActionGroup.style.marginTop = safetyMargin;
+                    if (ui.safetyActionGroup.style.gap !== itemGap) ui.safetyActionGroup.style.gap = itemGap;
+                    if (ui.safetyActionGroup.style.marginTop !== sectionGap) {
+                        ui.safetyActionGroup.style.marginTop = sectionGap;
                     }
                 }
-                if (ui.maskToolbar && ui.maskToolbar.style.gap !== actionGap) {
-                    ui.maskToolbar.style.gap = actionGap;
+                if (ui.maskToolbar && ui.maskToolbar.style.gap !== itemGap) {
+                    ui.maskToolbar.style.gap = itemGap;
                 }
-                if (sidebar.style.getPropertyValue("--xzg-ui-font") !== "10px") {
-                    sidebar.style.setProperty("--xzg-ui-font", "10px");
+                // 底部文字按钮（上限∞/批量/列表/批次）字号也随 density 缩放，
+                // 与上方图标按钮保持同一节奏（8→14px），节点拖大后不再大小不变。
+                const uiFont = px(8 + density * 6);
+                if (sidebar.style.getPropertyValue("--xzg-ui-font") !== uiFont) {
+                    sidebar.style.setProperty("--xzg-ui-font", uiFont);
                 }
             }
 

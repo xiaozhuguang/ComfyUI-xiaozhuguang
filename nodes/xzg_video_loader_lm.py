@@ -30,6 +30,7 @@ from .xzg_video_loader import (
     ENCODE_ARGS,
     _build_framerate_filters,
     _finalize_source_frame_count,
+    _resolve_video_widget,
 )
 
 
@@ -50,6 +51,8 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, unique_id=None):
         强制帧率 = int(强制帧率)
+        # 空选/文件丢失时回退到内置占位视频（与普通版/化神级一致）。
+        视频, _used_fallback = _resolve_video_widget(视频)
         video_path = get_annotated_filepath(视频)
         if not video_path or not os.path.isfile(video_path):
             raise ValueError(f"Invalid video file: {视频}")

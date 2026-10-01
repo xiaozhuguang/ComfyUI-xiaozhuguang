@@ -14,12 +14,13 @@ const _videoDavinciTargetKey = (node) => {
     return `xzg_video_davinci_target_${h}_${node?.id ?? ""}`;
 };
 function _loadVideoDavinciTarget(node) {
+    // 刷新浏览器后只恢复 session（用于判断 ComfyUI 是否重启），
+    // 不恢复 directory/filename：否则会复用上次导出的旧目录和旧文件名，
+    // 导致不弹文件夹选择对话框、且达芬奇里的文件名和 output 当前文件名对不上。
     try {
         const value = JSON.parse(localStorage.getItem(_videoDavinciTargetKey(node)));
-        if (value?.directory) {
+        if (value?.session) {
             node._xzgVideoDavinciSession = value.session || "";
-            node._xzgVideoDavinciOutputDir = value.directory;
-            node._xzgVideoDavinciOutputName = value.filename || "";
         }
     } catch (_) {}
 }
@@ -175,7 +176,11 @@ async function _exportToDavinci(node, btn, labelSpan, label) {
         if (labelSpan) labelSpan.textContent = status;
         const body = { filename: info.filename, subfolder: info.subfolder,
             target_dir: sameSession ? node._xzgVideoDavinciOutputDir : "",
-            target_name: sameSession ? node._xzgVideoDavinciOutputName : "" };
+            // target_name 始终传空：后端用 output 当前文件的实际文件名（abs_path 的 basename），
+            // 不复用 localStorage 里的旧文件名，避免和 output 里新保存的名字对不上。
+            target_name: "",
+            // 仅视频轨道开关：widget.value=true 表示不导音频，故 import_audio 取反。
+            import_audio: !node._xzgDvVideoOnlyWidget?.value };
         // 预览模式 + 自定义输出：优先使用后端为达芬奇准备的目录副本。
         // 自定义绝对路径保存则仍使用预览令牌；两者都不会向前端暴露真实路径。
         if (info.davinci_abs_token) body.abs_token = info.davinci_abs_token;
@@ -241,8 +246,26 @@ async function _sendToQuickCut(node, btn, labelSpan) {
     }
 }
 
-function _createQuickCutButton(node) {
-    if (node._xzgQuickCutBtn) return node._xzgQuickCutBtn;
+async function _favoriteSavedVideo(node, btn) {
+    const info = _getSavedVideoInfo(node);
+    if (!info?.filename) return _toast("请先执行节点生成视频。", true);
+    btn.disabled = true;
+    try {
+        const response = await api.fetchApi("/xzg/media-library/add-video", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: [info.subfolder, info.filename].filter(Boolean).join("/"),
+                type: info.type, abs_token: info.abs_token || info.davinci_abs_token || "" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "收藏失败");
+        _toast("已收藏到视频媒体库");
+    } catch (error) { _toast(error.message || "收藏失败", true); }
+    finally { btn.disabled = false; }
+}
+
+function _createQuickCutButton(node, favorite = false) {
+    const buttonKey = favorite ? "_xzgVideoFavoriteBtn" : "_xzgQuickCutBtn";
+    if (node[buttonKey]) return node[buttonKey];
     const pc = node._xzgPreviewContainer;
     if (!pc) return null;
 
@@ -256,6 +279,12 @@ function _createQuickCutButton(node) {
         "cursor:pointer;pointer-events:auto;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
     btn.innerHTML = `<span style="cursor:pointer;">${_CLAPPER_SVG}</span><span>发送</span>`;
+    if (favorite) {
+        btn.title = "收藏当前视频到视频媒体库";
+        btn.style.right = "auto";
+        btn.style.left = "6px";
+        btn.innerHTML = '<span style="font-size:13px">☆</span><span>收藏</span>';
+    }
     const iconSpan = btn.querySelector("span:first-child");
     const labelSpan = btn.querySelector("span:last-child");
     pc.appendChild(btn);
@@ -266,6 +295,7 @@ function _createQuickCutButton(node) {
 
     // 排在「导出到达芬奇」按钮左侧：按其宽度留 12px 间隙对齐
     const alignRight = () => {
+        if (favorite) return;
         const dvBtn = node._xzgDavinciSaveBtn;
         if (dvBtn && dvBtn.offsetWidth > 0) {
             btn.style.right = (dvBtn.offsetWidth + 12) + "px";
@@ -289,9 +319,12 @@ function _createQuickCutButton(node) {
         iconSpan.style.color = "#ffd76a";
     });
     btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
-    btn.onclick = () => { if (!btn.disabled) _sendToQuickCut(node, btn, labelSpan); };
+    btn.onclick = () => { if (!btn.disabled) {
+        if (favorite) _favoriteSavedVideo(node, btn);
+        else _sendToQuickCut(node, btn, labelSpan);
+    } };
 
-    node._xzgQuickCutBtn = btn;
+    node[buttonKey] = btn;
     return btn;
 }
 
@@ -421,9 +454,12 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = origOnNodeCreated?.apply(this, arguments);
 
-            // 化神级：最小宽度与默认宽度均为 500（父类默认 300；下方 rAF 的 computeSize() 也会被 minWidth 钳制到 ≥500）
+            // 化神级：最小宽度与默认宽度均为 360。
             this.minWidth = 360;
             try { this.setSize([360, Math.max(this.size?.[1] || 360, 360)]); } catch (e) {}
+            // 尺寸持久化标志：onConfigure 从工作流恢复尺寸时会置 true，
+            // 阻止下方 rAF 末尾的 setSize(computeSize()) 覆盖用户手动调好的尺寸。
+            this._xzgRestoredSize = false;
 
             // 父类注册器已在本节点的 onNodeCreated 里创建好预览容器；
             // 这里在其基础上叠加「导出到达芬奇」悬浮按钮。父类注册器是同一扩展，
@@ -431,6 +467,7 @@ app.registerExtension({
             requestAnimationFrame(() => {
                 _createExportDavinciButton(this);
                 _createQuickCutButton(this);
+                _createQuickCutButton(this, true);
                 // 输出设置：隐藏 use_default_output / base_dir / add_date_stamp / add_time_stamp 参数
                 // widget（保留在数组中参与序列化），由预览区「输出设置」悬浮按钮打开与小珠光图片
                 // 保存-化神级同一个共享设置弹窗统一设置。自定义前缀映射到「文件名前缀」widget；
@@ -450,49 +487,76 @@ app.registerExtension({
                 _hideVideoSettingWidget(baseW);
                 _hideVideoSettingWidget(dateW);
                 _hideVideoSettingWidget(timeW);
+                // 导出音频开关：隐藏在节点上，由输出设置弹窗里的「仅视频轨道」勾选框控制。
+                const audioW = this.widgets?.find(w => w.name === "仅视频") || null;
+                this._xzgExportAudioWidget = audioW;
+                _hideVideoSettingWidget(audioW);
+                // 「仅视频」widget：隐藏在节点上，由输出设置弹窗里的
+                // 「仅视频轨道（不带音频）」勾选框双向绑定（弹窗读 node._xzgDvVideoOnlyWidget）。
+                this._xzgDvVideoOnlyWidget = this.widgets?.find(w => w.name === "仅视频") || null;
                 _createOutputSettingsButton(this);
                 // 自动导出开关已取消；旧工作流字段保留隐藏以兼容序列化，但不再自动发送。
                 _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动导出到达芬奇"));
                 _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动发送到快剪"));
-                try { this.setSize(this.computeSize()); } catch (e) {}
+
+                // 清理多余的输入口：后端 INPUT_TYPES 只声明了 图像/帧率/音频 三个端口型 input。
+                // 隐藏 widget（自动发送到快剪 / use_default_output / base_dir / 日期戳 / 时间戳）
+                // 在旧版本若被右键「转换为输入」、或被旧工作流序列化残留，会在 node.inputs 里
+                // 留下未连线的多余口，画在预览黑块左侧，拖拽连线时还能吸附。这里把不在白名单、
+                // 且未连接（link == null）的多余 input 口移除；已连接的保留，不破坏既有工作流。
+                const _expectedInputs = ["图像", "帧率", "音频"];
+                for (let i = this.inputs.length - 1; i >= 0; i--) {
+                    const inp = this.inputs[i];
+                    if (inp && !_expectedInputs.includes(inp.name) && inp.link == null) {
+                        try { this.removeInput(i); } catch (_) {}
+                    }
+                }
+
+                // 仅新建节点（没有从工作流恢复尺寸）时才按 widget 布局重算尺寸；
+                // 从工作流恢复的节点（_xzgRestoredSize=true）保留用户手动调好的尺寸。
+                if (!this._xzgRestoredSize) {
+                    try { this.setSize(this.computeSize()); } catch (e) {}
+                }
             });
             return r;
         };
 
-        // 尺寸持久化修复：刷新浏览器后节点恢复默认大小。
-        // 本节点 onNodeCreated 内会隐藏开关 widget 并 setSize(computeSize())，异步发生在
-        // configure 之后，可能把恢复好的尺寸重新覆盖为默认值（300×500）。onConfigure 收到的
-        // data 含用户保存的 size；加载后短时间内持续检测，一旦尺寸被重置回默认值就按保存值
-        // 恢复；用户手动拖拽后的尺寸不等于默认值，不会被覆盖。
+        // 尺寸持久化：从工作流恢复时，直接用 data.size；并设置 _xzgRestoredSize=true
+        // 阻止 onNodeCreated rAF 里的 setSize(computeSize()) 覆盖。rAF 里再恢复一次，
+        // 确保在 onNodeCreated 的 rAF（隐藏 widget / 清理输入口）跑完之后仍然是用户尺寸。
         const origOnConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (data) {
             const r = origOnConfigure?.apply(this, arguments);
             try {
                 const node = this;
+                const savedSize = (Array.isArray(data?.size) && data.size[0] > 0 && data.size[1] > 0)
+                    ? [data.size[0], data.size[1]] : null;
+                if (savedSize) {
+                    node._xzgRestoredSize = true;
+                    node.size = savedSize.slice();
+                }
                 requestAnimationFrame(() => {
                     const parts = (node.graph?.nodes || []).filter(n => n?.id != null && n.type)
                         .map(n => `${n.id}:${n.type}`).sort();
                     let h = 5381;
                     for (const part of parts) for (let i = 0; i < part.length; i++) h = ((h << 5) + h + part.charCodeAt(i)) >>> 0;
                     _loadVideoDavinciTarget(node);
+
+                    // 加载旧工作流时 inputs 可能被序列化恢复出多余的未连接口（画在预览区左侧），
+                    // 与 onNodeCreated 同一套白名单清理。已连接的口保留。
+                    const _expected = ["图像", "帧率", "音频"];
+                    for (let i = (node.inputs?.length || 0) - 1; i >= 0; i--) {
+                        const inp = node.inputs[i];
+                        if (inp && !_expected.includes(inp.name) && inp.link == null) {
+                            try { node.removeInput(i); } catch (_) {}
+                        }
+                    }
+                    // 再恢复一次尺寸（onNodeCreated 的 rAF 可能刚跑完）
+                    if (savedSize) {
+                        node.size = savedSize.slice();
+                        node.setDirtyCanvas?.(true, true);
+                    }
                 });
-                if (Array.isArray(data?.size) && data.size[0] > 0 && data.size[1] > 0) {
-                    const savedSize = [data.size[0], data.size[1]];
-                    node.size = savedSize.slice();
-                    let tries = 0;
-                    const applySavedSize = () => {
-                        try {
-                            const s = node.size;
-                            const isDefault = s && Math.round(s[0]) === 300 && Math.round(s[1]) === 500;
-                            if (isDefault && (Math.round(savedSize[0]) !== 300 || Math.round(savedSize[1]) !== 500)) {
-                                node.size = savedSize.slice();
-                                node.setDirtyCanvas?.(true, true);
-                            }
-                        } catch (e) { /* ignore */ }
-                        if (++tries < 20) setTimeout(applySavedSize, 100); // 持续约 2 秒
-                    };
-                    setTimeout(applySavedSize, 0);
-                }
             } catch (e) { /* ignore */ }
             return r;
         };

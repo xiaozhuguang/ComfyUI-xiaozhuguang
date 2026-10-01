@@ -53,12 +53,17 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
         # 位置恢复 widget 值时不会错位。前端隐藏，收进「输出设置」弹窗（与小珠光图片保存-化神级同一设置框）。
         base["required"]["add_date_stamp"] = ("BOOLEAN", {"default": False, "label_on": "开启", "label_off": "关闭"})
         base["required"]["add_time_stamp"] = ("BOOLEAN", {"default": False, "label_on": "开启", "label_off": "关闭"})
+        # 导出到达芬奇时是否连同视频自带音频一起导入轨道。默认 False（带音频）；
+        # True 时仅导视频、不导音频轨道。前端隐藏 widget，由输出设置弹窗里的
+        # 「仅视频轨道（不带音频）」勾选框控制（弹窗已实现双向绑定 _xzgDvVideoOnlyWidget）。
+        base["required"]["仅视频"] = ("BOOLEAN", {"default": False, "label_on": "仅视频", "label_off": "带音频"})
         return base
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF, 模式,
                       自动发送到快剪=False,
                       use_default_output=True, base_dir="",
                       add_date_stamp=False, add_time_stamp=False,
+                      仅视频=False,
                       音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
         # 调用父类保存逻辑，得到完整 ui（含保存文件信息）
@@ -325,7 +330,9 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
                     await asyncio.to_thread(shutil.copy2, abs_path, target_path)
         except Exception as e:
             return _web.json_response({"ok": False, "error": f"选择或保存视频文件失败：{e}"})
-        result = await asyncio.to_thread(_call_bridge, {"action": "import", "file_path": target_path})
+        # import_audio 默认 True（兼容旧前端）；False 时 bridge 只导视频不导音频轨道。
+        import_audio = bool(data.get("import_audio", True))
+        result = await asyncio.to_thread(_call_bridge, {"action": "import", "file_path": target_path, "import_audio": import_audio})
         result["save_directory"] = target_dir
         result["save_filename"] = os.path.basename(target_path)
         result["copied"] = True

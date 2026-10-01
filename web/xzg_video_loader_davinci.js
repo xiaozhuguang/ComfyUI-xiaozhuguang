@@ -1,5 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { showMediaLibrary } from "./xzg_media_library.js";
+import { xzgT } from "./xzg_i18n.js";
 import {
     bindVideoLoaderInteractions,
     _applyWidgetStyles,
@@ -327,6 +329,52 @@ function _layoutPreviewActions(node) {
         btn.style.right = right + "px";
         right += (btn.offsetWidth || 0) + 6;
     }
+    let left = 6;
+    let top = 6;
+    const width = node._xzgPreviewContainer?.clientWidth || node.size?.[0] || 360;
+    for (const btn of [node._xzgVideoMediaLibraryBtn, node._xzgVideoMediaFavoriteBtn].filter(Boolean)) {
+        if (left > 6 && left + (btn.offsetWidth || 0) + 6 > width - right) {
+            left = 6;
+            top += 28;
+        }
+        btn.style.right = "auto";
+        btn.style.left = left + "px";
+        btn.style.top = top + "px";
+        left += (btn.offsetWidth || 0) + 6;
+    }
+}
+
+function _createVideoMediaLibraryButtons(node) {
+    _createLoaderActionButton(node, "_xzgVideoMediaLibraryBtn", "#ffd76a", xzgT("资源媒体", "Media"),
+        xzgT("打开视频媒体库", "Open video media library"), () => {
+            showMediaLibrary({
+                kind: "video",
+                alertUser: message => _toast(message, true),
+                confirmUser: (message, action) => { if (window.confirm(message)) action(); },
+                addImages: async names => {
+                    if (names.length && !await _selectImportedVideo(node, names[0])) {
+                        throw new Error(xzgT("视频未能载入节点", "Could not load the video into the node"));
+                    }
+                },
+            });
+        }, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="display:block" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="5"/><polyline points="9.6,8.8 15.2,12 9.6,15.2 9.6,8.8"/></svg>');
+    _createLoaderActionButton(node, "_xzgVideoMediaFavoriteBtn", "#ffd76a", xzgT("收藏", "Save"),
+        xzgT("收藏当前视频到媒体库", "Add current video to media library"), async (btn, label) => {
+            const info = _getLoadedVideoInfo(node);
+            if (!info?.filename) { _toast(xzgT("请先选择或上传视频", "Select or upload a video first"), true); return; }
+            btn.disabled = true;
+            label.textContent = xzgT("收藏中…", "Saving…");
+            try {
+                const response = await api.fetchApi("/xzg/media-library/add-video", {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(info),
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+                _toast(xzgT("已收藏到视频媒体库", "Added to video media library"));
+            } catch (error) { _toast(error.message, true); }
+            finally { btn.disabled = false; label.textContent = xzgT("收藏", "Save"); }
+        }, '<span style="font-size:13px;">☆</span>');
+    _layoutPreviewActions(node);
 }
 
 async function _sendLoadedToQuickCut(node, btn, labelSpan) {
@@ -544,6 +592,7 @@ app.registerExtension({
                 _createPreviewDavinciButton(this);
                 _createLoaderExportDavinciButton(this);
                 _createLoaderQuickCutButton(this);
+                _createVideoMediaLibraryButtons(this);
                 requestAnimationFrame(() => _layoutPreviewActions(this));
                 if (this.outputs) {
                     this.outputs.forEach((out, i) => {

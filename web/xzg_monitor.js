@@ -347,7 +347,7 @@ const XZG_CSS = `
   border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.55);
   color:#e8e8e8;font:13px/1.4 'Segoe UI',system-ui,-apple-system,sans-serif;
   user-select:none;}
-.xzg-menu-t{padding:4px 8px 5px;color:#9db2ff;font-weight:600;font-size:13px;
+.xzg-menu-t{padding:4px 8px 5px;color:#ffd76a;font-weight:400;font-size:13px;
   margin-bottom:3px;}
 .xzg-menu-sep{height:0;border-top:1px solid rgba(255,255,255,.10);margin:5px 4px;}
 .xzg-menu-it{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;cursor:pointer;}
@@ -1090,16 +1090,26 @@ function createFloatWindow() {
     setMetric(chip.dataset.xzgMetric);
   });
   statsEl.addEventListener("contextmenu", async (event) => {
+    // 右键落到带 data-xzg-metric 的具体数值上：按该指标弹出曲线。
+    // 右键落到标签文字等无具体数值位置：按所在胶囊分组给出默认指标——
+    // GPU标签→显存、CPU标签→CPU利用率、内存标签→内存占用，
+    // 保证胶囊任意位置右键都能激活曲线界面，而非无反应。
     const parameter = event.target.closest("[data-xzg-metric]");
-    if (!parameter) return;
+    let key = parameter ? parameter.dataset.xzgMetric : null;
+    if (!key) {
+      const chip = event.target.closest(".xzg-chip");
+      key = chip?.classList.contains("xzg-chip-gpu") ? "gpu_vram"
+        : chip?.classList.contains("xzg-chip-cpu") ? "cpu_util"
+        : chip?.classList.contains("xzg-chip-mem") ? "mem_used"
+        : "gpu_vram";
+    }
     event.preventDefault();
     event.stopPropagation();
     await _runMetricsRestorePromise;
-    const key = parameter.dataset.xzgMetric;
     const gpuChartMetric = { gpu_util: 0, gpu_temp: 1, gpu_vram: 2, gpu_power: 3 };
     const otherChartMetric = { cpu_util: 0, mem_used: 1 };
     const metricIndex = key.startsWith("gpu_") ? (gpuChartMetric[key] ?? 0) : (otherChartMetric[key] ?? 0);
-    const gpuId = parameter.dataset.xzgGpuIndex || "0";
+    const gpuId = parameter?.dataset.xzgGpuIndex || "0";
     const latestRun = _activeRunMetrics || _runMetricsHistory[0] || _lastRunMetrics;
     const gpuPosition = latestRun?.gpuIds?.findIndex((id) => String(id) === String(gpuId)) ?? 0;
     const schemaVersion = Number(latestRun?.schemaVersion) || 1;
@@ -1372,10 +1382,29 @@ function showContextMenu(btn, chartRequest = null) {
     { key: "cpu_util", label: "CPU 使用率" },
     { key: "mem_used", label: "内存占用" },
   ];
+  // 显示项文字按胶囊配色染色：运行时间→白，GPU/CPU/内存→对应组标签色（随配色方案联动）。
+  const paletteHost = () => document.getElementById(XZG_RUN_TIMER_BTN_ID) || document.querySelector(".xzg-monitor-toolbar.xzg-compact");
+  const capsuleVar = (variable, fallback) => {
+    const host = paletteHost();
+    if (host) {
+      const value = getComputedStyle(host).getPropertyValue(variable).trim();
+      if (value) return value;
+    }
+    return fallback;
+  };
+  const metricMenuColor = (key) => {
+    if (key === "run_timer") return "#ffffff";
+    if (key.startsWith("gpu_")) return capsuleVar("--xzg-gpu-label", "#84caff");
+    if (key === "cpu_util") return capsuleVar("--xzg-cpu-label", "#e9bd70");
+    if (key === "mem_used") return capsuleVar("--xzg-mem-label", "#c7a6ef");
+    return "";
+  };
   items.forEach((it) => {
     const row = document.createElement("div");
     row.className = "xzg-menu-it" + (_display[it.key] ? " on" : "");
-    row.innerHTML = `<span class="xzg-menu-box">${_display[it.key] ? "✓" : ""}</span><span>${it.label}</span>`;
+    const color = metricMenuColor(it.key);
+    const boxStyle = color ? ` style="color:${color};border-color:${color};background:transparent"` : "";
+    row.innerHTML = `<span class="xzg-menu-box"${boxStyle}>${_display[it.key] ? "✓" : ""}</span><span${color ? ` style="color:${color}"` : ""}>${it.label}</span>`;
     row.addEventListener("click", (e) => {
       e.stopPropagation();
       _display[it.key] = !_display[it.key];
@@ -1389,7 +1418,7 @@ function showContextMenu(btn, chartRequest = null) {
   });
   const recordingRow = document.createElement("div");
   recordingRow.className = "xzg-menu-it" + (_runRecordingEnabled ? " on" : "");
-  recordingRow.innerHTML = `<span class="xzg-menu-box">${_runRecordingEnabled ? "✓" : ""}</span><span>记录运行曲线</span>`;
+  recordingRow.innerHTML = `<span class="xzg-menu-box" style="color:#52c41a;border-color:#52c41a;background:transparent">${_runRecordingEnabled ? "✓" : ""}</span><span style="color:#52c41a">记录运行曲线</span>`;
   recordingRow.title = "仅记录工作流运行期间的数据，关闭页面后清除";
   recordingRow.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -2064,26 +2093,6 @@ function showContextMenu(btn, chartRequest = null) {
   });
   chartButton.addEventListener("pointerdown", (event) => event.stopPropagation());
   addMenuDivider();
-  const sizeLabel = document.createElement("div");
-  sizeLabel.className = "xzg-menu-t";
-  sizeLabel.style.marginTop = "4px";
-  sizeLabel.textContent = `圆球大小：${_display.orb_size}px`;
-  menu.appendChild(sizeLabel);
-  const sizeInput = document.createElement("input");
-  sizeInput.type = "range";
-  sizeInput.min = "52";
-  sizeInput.max = "180";
-  sizeInput.step = "2";
-  sizeInput.value = String(_display.orb_size);
-  sizeInput.style.cssText = "display:block;width:calc(100% - 16px);margin:8px;accent-color:#d4af37;";
-  sizeInput.addEventListener("input", () => {
-    _display.orb_size = Number(sizeInput.value);
-    sizeLabel.textContent = `圆球大小：${_display.orb_size}px`;
-    if (_float) _float.resizeOrb(_display.orb_size);
-    else saveDisplay();
-  });
-  menu.appendChild(sizeInput);
-  addMenuDivider();
   const paletteTitle = document.createElement("div");
   paletteTitle.className = "xzg-menu-t";
   paletteTitle.style.marginTop = "5px";
@@ -2139,6 +2148,28 @@ function showContextMenu(btn, chartRequest = null) {
   });
   animationSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
   menu.appendChild(animationSelect);
+  // 悬浮球动画与悬浮球大小同为一组，中间无分割线。
+  // 悬浮球大小：左侧仅保留标题文字，不显示数值；当前尺寸放到滑条悬停提示里。
+  const sizeLabel = document.createElement("div");
+  sizeLabel.className = "xzg-menu-t";
+  sizeLabel.style.marginTop = "5px";
+  sizeLabel.textContent = "悬浮球大小";
+  menu.appendChild(sizeLabel);
+  const sizeInput = document.createElement("input");
+  sizeInput.type = "range";
+  sizeInput.min = "52";
+  sizeInput.max = "180";
+  sizeInput.step = "2";
+  sizeInput.value = String(_display.orb_size);
+  sizeInput.title = `悬浮球大小：${_display.orb_size}px`;
+  sizeInput.style.cssText = "display:block;width:calc(100% - 16px);margin:8px;accent-color:#d4af37;";
+  sizeInput.addEventListener("input", () => {
+    _display.orb_size = Number(sizeInput.value);
+    sizeInput.title = `悬浮球大小：${_display.orb_size}px`;
+    if (_float) _float.resizeOrb(_display.orb_size);
+    else saveDisplay();
+  });
+  menu.appendChild(sizeInput);
   addMenuDivider();
   const timerEffectTitle = document.createElement("div");
   timerEffectTitle.className = "xzg-menu-t";
@@ -2165,7 +2196,7 @@ function showContextMenu(btn, chartRequest = null) {
   customColorPicker.type = "color";
   customColorPicker.value = _display.timer_custom_color || XZG_DISPLAY_DEFAULT.timer_custom_color;
   customColorPicker.title = "自定义计时器颜色";
-  customColorPicker.style.cssText = "width:30px;height:26px;padding:2px;border:1px solid rgba(255,255,255,.2);border-radius:5px;background:var(--comfy-menu-bg,#303030);cursor:pointer;";
+  customColorPicker.style.cssText = "width:30px;height:26px;padding:2px;border:0;border-radius:5px;background:var(--comfy-menu-bg,#303030);cursor:pointer;";
   customColorPicker.addEventListener("input", (event) => {
     event.stopPropagation();
     _display.timer_effect = "custom";
@@ -2188,7 +2219,7 @@ function showContextMenu(btn, chartRequest = null) {
   timerEffectRow.style.cssText = "display:flex;align-items:center;gap:6px;padding:0 8px 8px;";
   timerEffectSelect.style.width = "auto";
   timerEffectSelect.style.flex = "1";
-  timerEffectSelect.style.margin = "6px 0 0";
+  timerEffectSelect.style.margin = "0";
   timerEffectRow.append(timerEffectSelect, customColorPicker);
   menu.appendChild(timerEffectRow);
   if (isChartWindow) {
@@ -2220,7 +2251,8 @@ function showContextMenu(btn, chartRequest = null) {
     const savedChartWindow = normalizeChartWindow(_display.chart_window);
     menu.style.width = `min(${savedChartWindow.width}px,calc(100vw - 24px))`;
     menu.style.height = `min(${savedChartWindow.height}px,calc(100vh - 24px))`;
-    menu.style.minWidth = "0";
+    // 最小尺寸限制：避免拖拽窗口过小导致画面畸形（与保存时的 normalizeChartWindow 下限一致）。
+    menu.style.minWidth = "min(480px,calc(100vw - 24px))";
     menu.style.maxWidth = "calc(100vw - 24px)";
     menu.style.minHeight = "min(320px,calc(100vh - 24px))";
     menu.style.padding = "12px";
@@ -2324,28 +2356,28 @@ function showContextMenu(btn, chartRequest = null) {
   } else {
     chartButton.remove();
     chartPanel.remove();
-    menu.style.width = "min(350px,calc(100vw - 16px))";
+    menu.style.width = "min(250px,calc(100vw - 16px))";
     menu.style.minWidth = "min(0px,calc(100vw - 16px))";
     menu.style.maxWidth = "calc(100vw - 16px)";
     menu.style.display = "grid";
     menu.style.gridTemplateColumns = "100px minmax(0,1fr)";
     menu.style.alignItems = "center";
-    menu.style.columnGap = "12px";
+    menu.style.columnGap = "10px";
     menu.style.rowGap = "1px";
     menu.style.boxSizing = "border-box";
     menu.children[0].style.gridColumn = "1 / -1";
-    recordingRow.style.gridColumn = "1 / -1";
     for (const divider of menu.querySelectorAll(":scope > .xzg-menu-sep")) divider.style.gridColumn = "1 / -1";
     sizeLabel.style.margin = "0";
-    sizeInput.style.width = "100%";
+    sizeInput.style.width = "130px";
     sizeInput.style.margin = "0";
     paletteTitle.style.margin = "0";
-    paletteSelect.style.width = "100%";
+    paletteSelect.style.width = "130px";
     paletteSelect.style.margin = "0";
     animationTitle.style.margin = "0";
-    animationSelect.style.width = "100%";
+    animationSelect.style.width = "130px";
     animationSelect.style.margin = "0";
     timerEffectTitle.style.margin = "0";
+    timerEffectRow.style.width = "130px";
     timerEffectRow.style.padding = "0";
     timerEffectRow.style.margin = "0";
   }
@@ -2690,7 +2722,7 @@ function buildThemeMenuButton() {
   iconWrap.append(icon, innerSweep, ringSweep, ringSweep2);
   btn.appendChild(iconWrap);
   // ===== 随机动画调度（Web Animations API）=====
-  const GAP_MS = 5 * 60 * 1000; // 段间间隔 5 分钟
+  const GAP_MS = 30 * 1000; // 段间间隔 30 秒
   const X_LEFT = "polygon(evenodd, -31px 0px, 0px 0px, 0px 31px, -31px 31px, -31px 0px, 0px 0px, -15.5px 13.5px, -31px 31px, 0px 31px, -15.5px 17.5px)";
   const X_RIGHT = "polygon(evenodd, 31px 0px, 62px 0px, 62px 31px, 31px 31px, 31px 0px, 62px 0px, 46.5px 13.5px, 31px 31px, 62px 31px, 46.5px 17.5px)";
   const SEGMENTS = [

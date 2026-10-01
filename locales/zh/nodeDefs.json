@@ -187,7 +187,7 @@
     }
   },
   "XiaozhuguangImageLoader": {
-    "display_name": "小珠光图片加载器-化神级",
+    "display_name": "小珠光图像加载器-化神级",
     "inputs": {
       "image_list": { "name": "图片列表" },
       "index": { "name": "索引" },

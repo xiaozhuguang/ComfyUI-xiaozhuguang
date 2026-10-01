@@ -5,6 +5,7 @@
 """
 
 import os
+import shutil
 import subprocess
 import re
 import hashlib
@@ -474,6 +475,61 @@ def _xzg_decode_audio_thread(audio_path, sample_rate, job_id, total_duration):
                 job['finished_at'] = time.time()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 空选兜底音频（与「小珠光视频加载-化神级」「小珠光图片加载器」同一机制）
+# 用户没在节点上选任何音频，或所选文件已被删除/移走时，自动加载内置备用音频，
+# 让节点能留在工作流上直接跑通而不报 "Invalid audio file"。
+# 音频随插件分发（assets/default_reference_audio.flac），不依赖外部绝对路径。
+# 普通版与化神级都继承本基类的 load_audio / IS_CHANGED / VALIDATE_INPUTS，故同时生效。
+# ═══════════════════════════════════════════════════════════════════════════
+_FALLBACK_AUDIO = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "assets", "default_reference_audio.flac"
+)
+# ComfyUI 的 get_annotated_filepath 只接受 input 目录下的相对文件名，拒绝任意绝对路径。
+# 因此首次使用时把内置备用音频复制到 input 目录下一个固定文件名，再传相对名给解码逻辑。
+_FALLBACK_AUDIO_INPUT_NAME = "xzg_fallback_reference.flac"
+
+
+def _ensure_fallback_audio_in_input():
+    """确保 input 目录下存在备用音频，返回它在 input 下的相对文件名。"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        dst = os.path.join(input_dir, _FALLBACK_AUDIO_INPUT_NAME)
+        if os.path.isfile(_FALLBACK_AUDIO) and not os.path.isfile(dst):
+            shutil.copy2(_FALLBACK_AUDIO, dst)
+            print(f"[小珠光音频加载器] 已复制内置备用音频到 input/{_FALLBACK_AUDIO_INPUT_NAME}")
+        if os.path.isfile(dst):
+            return _FALLBACK_AUDIO_INPUT_NAME
+    except Exception as e:
+        print(f"[小珠光音频加载器] 准备备用音频失败：{e}")
+    return ""
+
+
+def _resolve_audio_widget(音频):
+    """把节点上的「音频」widget 值解析为真实可用路径；空选或文件丢失时回退到备用音频。
+
+    返回 (relative_filename_or_raw, used_fallback: bool)。
+    三种情况：
+    - 用户选了真实存在的音频 → 原样返回；
+    - widget 为空 → 复制内置备用音频到 input，返回其相对文件名；
+    - widget 非空但文件已被删除/移走 → 同样回退到备用音频（老节点刷新浏览器后常见）。
+    """
+    raw = (音频 or "").strip() if isinstance(音频, str) else (音频 or "")
+    if raw:
+        # 先验证用户选的文件是否真的存在；不存在则走兜底，不直接报错。
+        try:
+            resolved = folder_paths.get_annotated_filepath(raw)
+            if resolved and os.path.isfile(resolved):
+                return raw, False
+        except Exception:
+            pass
+        # 文件丢失：静默兜底，不打警告日志（避免每次跑节点都刷屏）。
+    fallback_name = _ensure_fallback_audio_in_input()
+    if fallback_name:
+        return fallback_name, True
+    return raw, False
+
+
 class XiaozhuguangAudioLoader:
     """
     小珠光音频加载器
@@ -516,6 +572,8 @@ class XiaozhuguangAudioLoader:
         起始时间_秒 = kwargs.get("起始时间(秒)", kwargs.get("起始时间_秒", 0.0))
         时长_秒 = kwargs.get("时长(秒)", kwargs.get("时长_秒", 0.0))
         音量 = kwargs.get("音量", 1.0)
+        # 空选/文件丢失时回退到内置备用音频（与视频/图片加载器同一机制）。
+        音频, _used_fallback = _resolve_audio_widget(音频)
         audio_path = folder_paths.get_annotated_filepath(音频)
         if not audio_path or not os.path.isfile(audio_path):
             raise ValueError(f"Invalid audio file: {音频}")
@@ -598,6 +656,8 @@ class XiaozhuguangAudioLoader:
 
     @classmethod
     def IS_CHANGED(cls, 音频, **kwargs):
+        # 空选或文件被删时，与 load_audio 走同一套兜底逻辑，保证缓存键稳定。
+        音频, _ = _resolve_audio_widget(音频)
         try:
             path = folder_paths.get_annotated_filepath(音频)
             return calculate_file_hash(path)
@@ -605,9 +665,12 @@ class XiaozhuguangAudioLoader:
             return "0"
 
     @classmethod
-    def VALIDATE_INPUTS(cls, 音频, **kwargs):
-        if not folder_paths.exists_annotated_filepath(音频):
-            return f"Invalid audio file: {音频}"
+    def VALIDATE_INPUTS(cls, **kwargs):
+        # 空选或文件不存在时由 load_audio 的兜底逻辑自动复制内置备用音频接管
+        # （与视频/图片加载器同一机制）；若在这里返回错误字符串，ComfyUI 会在执行节点
+        # 前拦截报错、根本不调用 load_audio，兜底逻辑便永远无法生效。
+        # 只用 **kwargs，不把「音频」写成必填位置参数——ComfyUI 在重载/校验画布节点时
+        # 可能不传控件值，否则会抛 "missing 1 required positional argument: '音频'"。
         return True
 
 

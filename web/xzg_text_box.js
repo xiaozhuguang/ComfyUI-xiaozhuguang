@@ -33,24 +33,32 @@ function _tr(zh) {
 }
 
 // 占位符原文 placeholder（多行中文）→ 英文
+// 普通版已取消数字转中文（仅 text 原文输出）；化神级独立定义，保留 text_zh_num 数字转中文说明。
 const _PLACEHOLDER_ZH =
     "【小珠光文本框】\n" +
+    "输出：text 原文\n" +
+    "例：1280x720→1280x720  1926年→1926年";
+
+const _PLACEHOLDER_EN =
+    "[Xiaozhuguang Text Box]\n" +
+    "Outputs: text (raw)\n" +
+    "Ex: 1280x720→1280x720  1926年→1926年";
+
+const _PLACEHOLDER_ZH_GOD =
+    "【小珠光文本框-化神级】\n" +
     "输出：text 原文 / text_zh_num 数字转中文\n" +
     "规则：日期时间→整体转写；数字+量词→完整读数；第N→第N；4位+年→按位读；其余→按位读\n" +
     "例：2023.4.16 21:08→二零二三年四月十六日九点零八分\n" +
     "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n" +
     "《》→。  ……→。";
 
-const _PLACEHOLDER_EN =
-    "[Xiaozhuguang Text Box]\n" +
+const _PLACEHOLDER_EN_GOD =
+    "[Xiaozhuguang Text Box - God Tier]\n" +
     "Outputs: text (raw) / text_zh_num (digits → Chinese words)\n" +
     "Rules: datetime→whole conversion; digit+unit→full reading; 第N→ordinal; 4digits+年→year per digit; rest→per digit\n" +
     "Ex: 2023.4.16 21:08→二零二三年四月十六日九点零八分\n" +
     "12个→十二个  1280x720→一二八零乘以七二零  1926年→一九二六年\n" +
     "《》→。  ……→。";
-
-const _PLACEHOLDER_ZH_GOD = _PLACEHOLDER_ZH.replace("【小珠光文本框】", "【小珠光文本框-化神级】");
-const _PLACEHOLDER_EN_GOD = _PLACEHOLDER_EN.replace("[Xiaozhuguang Text Box]", "[Xiaozhuguang Text Box - God Tier]");
 
 function _placeholderForLang(isGodTier = false) {
     if (xzgLang() !== "en") return isGodTier ? _PLACEHOLDER_ZH_GOD : _PLACEHOLDER_ZH;
@@ -490,7 +498,7 @@ async function _openGodPresetManagerTree(node) {
     overlay.style.cssText = "position:fixed;inset:0;z-index:2000005;background:#0009;display:block;padding:20px;box-sizing:border-box";
     const dialog = document.createElement("div");
     dialog.style.cssText = "box-sizing:border-box;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100vw - 40px));height:min(700px,calc(100vh - 40px));display:flex;flex-direction:column;background:#202124;color:#fff;border:1px solid #555;border-radius:8px;box-shadow:0 16px 48px #0009;font:13px Arial,sans-serif;overflow:hidden";
-    dialog.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none;user-select:none;-webkit-user-select:none"><span data-title style="flex:1">${zh ? "提示词预设管理" : "Prompt Preset Manager"}</span><button data-close style="background:transparent;border:0;border-radius:0;color:#e7b94f;padding:5px 8px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "确认" : "Confirm"}</button></div><div data-home style="flex:1;overflow:auto;padding:12px 16px"></div><div data-editor style="display:none;flex:1;flex-direction:column;min-height:0;padding:12px 16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><select data-editor-category style="flex:none;padding:5px 8px;background:#151617;color:#9db7a6;border:1px solid #555;border-radius:4px;font-size:13px;max-width:40%"></select><span style="color:#555">/</span><input data-editor-name type="text" spellcheck="false" style="flex:1;min-width:0;padding:5px 8px;background:#151617;color:#eee;border:1px solid #555;border-radius:4px;font-size:13px" /></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 0 10px"><button data-import-content>${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><button data-back>${zh ? "取消" : "Cancel"}</button><button data-save-content>${zh ? "保存" : "Save"}</button></div><textarea data-editor-text spellcheck="false" style="box-sizing:border-box;flex:1;min-height:100px;resize:none;padding:10px;background:#151617;color:#eee;border:1px solid #555;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea></div><div data-resize title="${zh ? "拖动调整窗口大小" : "Drag to resize"}" style="position:absolute;right:1px;bottom:1px;width:18px;height:18px;cursor:nwse-resize;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 48%,#666 49% 55%,transparent 56% 66%,#888 67% 73%,transparent 74%)"></div>`;
+    dialog.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none;user-select:none;-webkit-user-select:none"><span data-title style="flex:1">${zh ? "提示词预设管理" : "Prompt Preset Manager"}</span><button data-close style="background:transparent;border:0;border-radius:0;color:#e7b94f;padding:5px 8px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "确认" : "Confirm"}</button></div><div data-home style="flex:1;overflow:auto;padding:12px 16px"></div><div data-editor style="display:none;flex:1;flex-direction:column;min-height:0;padding:12px 16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><select data-editor-category style="flex:none;padding:5px 8px;background:#151617;color:#9db7a6;border:1px solid #151617;border-radius:4px;font-size:13px;max-width:40%"></select><span style="color:#555">/</span><input data-editor-name type="text" spellcheck="false" style="flex:1;min-width:0;padding:5px 8px;background:#151617;color:#eee;border:1px solid #151617;border-radius:4px;font-size:13px" /></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 0 10px"><button data-import-content>${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><button data-back>${zh ? "取消" : "Cancel"}</button><button data-save-content>${zh ? "保存" : "Save"}</button></div><textarea data-editor-text spellcheck="false" style="box-sizing:border-box;flex:1;min-height:100px;resize:none;padding:10px;background:#151617;color:#eee;border:1px solid #151617;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea></div><div data-resize title="${zh ? "拖动调整窗口大小" : "Drag to resize"}" style="position:absolute;right:1px;bottom:1px;width:18px;height:18px;cursor:nwse-resize;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 48%,#666 49% 55%,transparent 56% 66%,#888 67% 73%,transparent 74%)"></div>`;
     overlay.appendChild(dialog); document.body.appendChild(overlay);
     const dragStyle = document.createElement("style");
     dragStyle.textContent = `
@@ -506,6 +514,13 @@ async function _openGodPresetManagerTree(node) {
         .xzg-preset-drag-row.xzg-preset-dragging { opacity: 0.5; border-style: dashed; border-color: #4CAF50; }
         .xzg-preset-drag-handle { flex: none; color: #666; font-size: 14px; line-height: 1; user-select: none; }
         .xzg-preset-drag-handle:hover { background: rgba(255, 255, 255, 0.1); }
+        [data-editor] select:focus,
+        [data-editor] input:focus,
+        [data-editor] textarea:focus {
+            outline: none !important;
+            border: 1px solid #888 !important;
+            box-shadow: none !important;
+        }
     `;
     dialog.appendChild(dragStyle);
     overlay.addEventListener("contextmenu", event => {
@@ -557,8 +572,9 @@ async function _openGodPresetManagerTree(node) {
     });
     const home = dialog.querySelector("[data-home]"), editorView = dialog.querySelector("[data-editor]"), title = dialog.querySelector("[data-title]"), textArea = dialog.querySelector("[data-editor-text]"), closeButton = dialog.querySelector("[data-close]");
     home.style.cssText = "display:flex;flex:1;min-height:0;padding:0;overflow:hidden;user-select:none;-webkit-user-select:none";
-    home.innerHTML = `<aside data-left-pane style="box-sizing:border-box;flex:0 0 34%;width:34%;min-width:150px;max-width:80%;display:flex;flex-direction:column;min-height:0;padding:12px 10px;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:0 4px 10px"><span style="flex:1;color:#ccc;font-weight:600">${zh ? "提示词类型" : "Prompt Types"}</span><button type="button" data-add-category style="width:28px;height:28px;background:#303030;color:#e7b94f;border:1px solid #454545;border-radius:4px;font-size:16px;cursor:pointer">+</button></div><div data-category-list style="display:flex;flex-direction:column;gap:4px;overflow:auto;min-height:0;flex:1"></div></aside><div data-split-divider style="width:4px;flex:none;background:#3a3a3a;cursor:col-resize"></div><section data-right-pane style="box-sizing:border-box;flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0;padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;padding:0 2px 10px;border-bottom:1px solid #3a3a3a"><span data-right-title style="flex:1;color:#ddd;font-weight:600">${zh ? "提示词细分" : "Prompt Subcategories"}</span><button type="button" data-clear-favorites style="display:none;background:transparent;color:#c75c5c;border:0;padding:4px 6px;cursor:pointer">${zh ? "清空收藏" : "Clear favorites"}</button><button type="button" data-add-sub style="background:transparent;color:#e7b94f;border:0;padding:2px 5px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "+ 增加子项" : "+ Add item"}</button></div><div data-subcategory-list style="display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;padding-top:10px"></div></section>`;
+    home.innerHTML = `<aside data-left-pane style="box-sizing:border-box;flex:0 0 34%;width:34%;min-width:150px;max-width:80%;display:flex;flex-direction:column;min-height:0;padding:12px 10px;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:0 4px 10px"><span style="flex:1;color:#ccc;font-weight:600">${zh ? "提示词类型" : "Prompt Types"}</span><button type="button" data-add-category style="width:28px;height:28px;background:#303030;color:#e7b94f;border:1px solid #454545;border-radius:4px;font-size:16px;cursor:pointer">+</button></div><div data-category-list style="display:flex;flex-direction:column;gap:4px;overflow:auto;min-height:0;flex:1"></div></aside><div data-split-divider style="width:4px;flex:none;background:#3a3a3a;cursor:col-resize"></div><section data-right-pane style="box-sizing:border-box;flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0;padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;padding:0 2px 10px;border-bottom:1px solid #3a3a3a"><span data-right-title style="flex:1;color:#ddd;font-weight:600">${zh ? "提示词细分" : "Prompt Subcategories"}</span><button type="button" data-clear-favorites style="display:none;background:transparent;color:#c75c5c;border:0;padding:4px 6px;cursor:pointer">${zh ? "清空收藏" : "Clear favorites"}</button><button type="button" data-add-sub style="background:transparent;color:#e7b94f;border:0;padding:2px 5px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "+ 增加子项" : "+ Add item"}</button></div><div data-batch-bar style="display:none;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #3a3a3a"><span data-batch-count style="color:#e7b94f;font-size:12px;font-weight:600;flex:none"></span><button type="button" data-batch-select-all style="background:transparent;color:#9db7a6;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "全选" : "Select all"}</button><button type="button" data-batch-move style="background:#3a3a3a;color:#e7b94f;border:1px solid #555;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:600">${zh ? "批量移动" : "Batch move"}</button><button type="button" data-batch-clear style="background:transparent;color:#888;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "取消选择" : "Clear"}</button></div><div data-subcategory-list style="display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;padding-top:10px"></div></section>`;
     const categoryList = home.querySelector("[data-category-list]"), subcategoryList = home.querySelector("[data-subcategory-list]"), rightTitle = home.querySelector("[data-right-title]"), addSubButton = home.querySelector("[data-add-sub]"), clearFavoritesButton = home.querySelector("[data-clear-favorites]");
+    const batchBar = home.querySelector("[data-batch-bar]"), batchCount = home.querySelector("[data-batch-count]"), batchSelectAll = home.querySelector("[data-batch-select-all]"), batchMove = home.querySelector("[data-batch-move]"), batchClear = home.querySelector("[data-batch-clear]");
     categoryList.classList.add("xzg-preset-drag-list");
     subcategoryList.classList.add("xzg-preset-drag-list");
     home.querySelector("[data-left-pane] span").style.color = "#fff";
@@ -612,12 +628,13 @@ async function _openGodPresetManagerTree(node) {
         return next;
     };
     let editingKey = null;
+    let selectedKeys = new Set();
     const notify = message => { let note = dialog.querySelector("[data-notice]"); if (!note) { note = document.createElement("div"); note.dataset.notice = "1"; note.style.cssText = "position:absolute;z-index:3;top:56px;left:50%;transform:translateX(-50%);max-width:calc(100% - 32px);padding:8px 12px;background:#343b49;color:#fff;border:1px solid #555;border-radius:5px;box-shadow:0 4px 12px #0008;pointer-events:none;text-align:center"; dialog.appendChild(note); } note.textContent = message; clearTimeout(note._timer); note._timer = setTimeout(() => note.remove(), 4000); };
     const askText = (label, initial = "") => new Promise(resolve => {
         const shade = document.createElement("div"); shade.dataset.modal = "1"; shade.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#000a;display:flex;align-items:center;justify-content:center;padding:20px;pointer-events:auto";
         const box = document.createElement("div"); box.style.cssText = "width:min(420px,100%);padding:16px;background:#25282c;color:#fff;border:1px solid #555;border-radius:7px;box-shadow:0 12px 36px #0009;font:13px Arial,sans-serif";
         const title = document.createElement("div"); title.textContent = label; title.style.cssText = "font-weight:600;margin-bottom:12px";
-        const input = document.createElement("input"); input.value = initial; input.maxLength = 100; input.style.cssText = "box-sizing:border-box;width:100%;padding:8px;background:#151617;color:#fff;border:1px solid #555;border-radius:4px";
+        const input = document.createElement("input"); input.value = initial; input.maxLength = 100; input.className = "xzg-text-box-modal-input"; input.style.cssText = "box-sizing:border-box;width:100%;padding:8px;background:#151617;color:#fff;border:1px solid #555;border-radius:4px";
         const actions = document.createElement("div"); actions.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:14px";
         const finish = value => { document.removeEventListener("keydown", onKey, true); shade.remove(); resolve(value); };
         const cancel = button(zh ? "取消" : "Cancel", () => finish(null)); const ok = button(zh ? "确定" : "OK", () => finish(input.value.trim()));
@@ -732,34 +749,37 @@ async function _openGodPresetManagerTree(node) {
         working[key] = { category, name, text: "", order: nextOrder };
         await save(); render();
     };
-    const moveSubcategory = (key, event) => {
-        const p = working[key];
-        if (!p) return;
-        const currentCat = String(p.category || "");
-        const targets = categories().filter(c => c !== currentCat);
-        if (!targets.length) { notify(zh ? "没有其他分类可移动" : "No other categories to move to"); return; }
+    const moveKeysToCategory = async (keys, cat) => {
+        for (const key of keys) {
+            const p = working[key];
+            if (!p) continue;
+            if (String(p.category || "") === cat) continue;
+            const name = _godPresetChildName(key, p);
+            const nextKey = keyFor(cat, name, key);
+            const moved = { ...p, category: cat };
+            if (cat !== _GOD_FAVORITES_CATEGORY) delete moved._xzgFavorite;
+            working[nextKey] = moved;
+            delete working[key];
+        }
+        await save();
+        selectedKeys.clear();
+        render();
+    };
+    const showMoveMenu = (keys, x, y) => {
+        if (!keys || !keys.length) return;
+        const targets = categories();
+        if (!targets.length) { notify(zh ? "没有分类可移动" : "No categories to move to"); return; }
         document.querySelector(".xzg-preset-move-menu")?.remove();
         const menu = document.createElement("div");
         menu.className = "xzg-preset-move-menu";
-        menu.style.cssText = `position:fixed;z-index:2147483647;left:${event.clientX}px;top:${event.clientY}px;min-width:150px;max-height:260px;overflow:auto;background:#2a2a2a;border:1px solid #555;border-radius:5px;box-shadow:0 4px 14px #0009;padding:4px 0`;
+        menu.style.cssText = `position:fixed;z-index:2147483647;left:${x}px;top:${y}px;min-width:150px;max-height:260px;overflow:auto;background:#2a2a2a;border:1px solid #555;border-radius:5px;box-shadow:0 4px 14px #0009;padding:4px 0`;
         for (const cat of targets) {
             const item = document.createElement("div");
             item.textContent = cat === _GOD_FAVORITES_CATEGORY ? `★ ${cat}` : cat;
             item.style.cssText = "padding:7px 14px;cursor:pointer;color:#ddd;font-size:13px;white-space:nowrap";
             item.addEventListener("mouseenter", () => { item.style.background = "#3a3a3a"; item.style.color = "#e7b94f"; });
             item.addEventListener("mouseleave", () => { item.style.background = "transparent"; item.style.color = "#ddd"; });
-            item.addEventListener("click", async () => {
-                menu.remove();
-                const name = _godPresetChildName(key, p);
-                const nextKey = keyFor(cat, name, key);
-                const moved = { ...p, category: cat };
-                if (cat !== _GOD_FAVORITES_CATEGORY) delete moved._xzgFavorite;
-                working[nextKey] = moved;
-                delete working[key];
-                await save();
-                selectedCategory = cat;
-                render();
-            });
+            item.addEventListener("click", () => { menu.remove(); moveKeysToCategory(keys, cat); });
             menu.appendChild(item);
         }
         document.body.appendChild(menu);
@@ -769,6 +789,7 @@ async function _openGodPresetManagerTree(node) {
         const dismiss = e => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("pointerdown", dismiss, true); } };
         setTimeout(() => document.addEventListener("pointerdown", dismiss, true), 0);
     };
+    const moveSubcategory = (key, event) => showMoveMenu([key], event.clientX, event.clientY);
     const renameCategory = async category => {
         const next = await askText(zh ? `重命名提示词类型“${category}”` : `Rename prompt type “${category}”`, category); if (!next || next === category) return;
         if (categories().includes(next)) { notify(zh ? "提示词类型名称已存在，必须全局唯一。" : "Prompt category names must be unique."); return; }
@@ -819,7 +840,7 @@ async function _openGodPresetManagerTree(node) {
             if (permanentCategory) { label.style.color = "#e7b94f"; label.style.fontWeight = "700"; }
             const rename = button("✎", event => { event.stopPropagation(); renameCategory(category); }); rename.title = zh ? "重命名" : "Rename"; rename.style.cssText += ";box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;background:transparent;border:0;color:#fff;font-size:16px;line-height:24px";
             const del = button("×", event => { event.stopPropagation(); removeCategory(category); }); del.title = zh ? "删除" : "Delete"; del.style.cssText += ";box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;background:transparent;border:0;color:#c75c5c;font-size:22px;line-height:24px";
-            row.addEventListener("click", () => { selectedCategory = category; render(); });
+            row.addEventListener("click", () => { selectedCategory = category; selectedKeys.clear(); render(); });
             if (permanentCategory) row.append(label);
             else row.append(dragHandle, label, rename, del);
             categoryList.appendChild(row);
@@ -851,10 +872,21 @@ async function _openGodPresetManagerTree(node) {
         if (!selectedCategory || !details.length) {
             const empty = document.createElement("div"); empty.textContent = selectedCategory ? (zh ? "此分类下还没有子项" : "No items in this category yet") : (zh ? "请先在左侧新建提示词类型" : "Create a prompt type on the left first"); empty.style.cssText = "margin:auto;padding:20px;text-align:center;color:#fff"; subcategoryList.appendChild(empty);
         }
+        // 批量栏显隐
+        const currentKeys = details;
+        const selectedInView = currentKeys.filter(k => selectedKeys.has(k));
+        if (selectedInView.length > 0) {
+            batchBar.style.display = "flex";
+            batchCount.textContent = zh ? `已选 ${selectedInView.length} 项` : `${selectedInView.length} selected`;
+            batchSelectAll.textContent = currentKeys.length > 0 && selectedInView.length === currentKeys.length ? (zh ? "取消全选" : "Deselect all") : (zh ? "全选" : "Select all");
+        } else {
+            batchBar.style.display = "none";
+        }
         for (const key of details) {
             const p = working[key], card = document.createElement("div"); card.draggable = true; card.dataset.subcategoryCard = "1"; card.className = "xzg-preset-drag-row";
+            if (selectedKeys.has(key)) card.style.borderColor = "#e7b94f";
             card.addEventListener("dragstart", event => {
-                if (event.target.closest("button")) { event.preventDefault(); return; }
+                if (event.target.closest("button") || event.target.closest("input")) { event.preventDefault(); return; }
                 event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-xzg-prompt-subcategory", key); card.classList.add("xzg-preset-dragging");
             });
             card.addEventListener("dragend", () => { card.classList.remove("xzg-preset-dragging"); clearInsertMarker(subcategoryList); subcategoryInsertIndex = null; });
@@ -871,19 +903,39 @@ async function _openGodPresetManagerTree(node) {
                 const dragKey = event.dataTransfer?.getData("application/x-xzg-prompt-subcategory"); if (!dragKey) return;
                 event.preventDefault(); event.stopPropagation(); const index = subcategoryInsertIndex; clearInsertMarker(subcategoryList); subcategoryInsertIndex = null; reorderSubcategory(dragKey, index);
             });
+            const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = selectedKeys.has(key); checkbox.style.cssText = "width:16px;height:16px;cursor:pointer;accent-color:#e7b94f;vertical-align:middle";
+            const checkboxLabel = document.createElement("label"); checkboxLabel.style.cssText = "flex:none;display:inline-flex;align-items:center;justify-content:center;padding:6px 8px;margin:-6px 0;cursor:pointer;border-radius:4px";
+            checkboxLabel.appendChild(checkbox);
+            checkboxLabel.addEventListener("click", e => e.stopPropagation());
+            checkbox.addEventListener("change", () => { if (checkbox.checked) selectedKeys.add(key); else selectedKeys.delete(key); render(); });
             const dragHandle = document.createElement("span"); dragHandle.className = "xzg-preset-drag-handle"; dragHandle.textContent = "⠿"; dragHandle.title = zh ? "拖动调整顺序" : "Drag to reorder";
             const name = document.createElement("span"); name.textContent = _godPresetChildName(key, p); name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#fff";
             const hasContent = typeof p.text === "string" && p.text.trim().length > 0;
             const contentDot = hasContent ? document.createElement("span") : null;
             if (contentDot) { contentDot.title = zh ? "已有编辑内容" : "Has content"; contentDot.setAttribute("aria-label", contentDot.title); contentDot.style.cssText = "width:6px;height:6px;flex:none;border-radius:50%;background:#fff;box-shadow:0 0 4px rgba(255,255,255,.65)"; }
+            const move = button(zh ? "移动" : "Move", e => { e.stopPropagation(); moveSubcategory(key, e); });
+            move.title = zh ? "移动到其他分类" : "Move to another category";
             const edit = button(zh ? "编辑内容" : "Edit Content", () => openEditor(key));
-            const del = button(zh ? "删除" : "Delete", async () => { if (!await askConfirm(zh ? `确定删除子项“${name.textContent}”及其提示词？` : `Delete item “${name.textContent}” and its prompt?`)) return; delete working[key]; await save(); render(); }, true);
-            edit.style.cssText += ";background:transparent;border:0;color:#fff";
+            const del = button(zh ? "删除" : "Delete", async () => { if (!await askConfirm(zh ? `确定删除子项“${name.textContent}”及其提示词？` : `Delete item “${name.textContent}” and its prompt?`)) return; selectedKeys.delete(key); delete working[key]; await save(); render(); }, true);
+            for (const b of [move, edit]) b.style.cssText += ";background:transparent;border:0;color:#fff";
+            move.style.cssText += ";color:#e7b94f";
             del.style.cssText += ";background:transparent;border:0;color:#c75c5c";
-            card.append(dragHandle); if (contentDot) card.append(contentDot); card.append(name, edit, del); subcategoryList.appendChild(card);
+            card.append(checkboxLabel, dragHandle); if (contentDot) card.append(contentDot); card.append(name, move, edit, del); subcategoryList.appendChild(card);
         }
     };
     addSubButton.addEventListener("click", () => createSubcategory(selectedCategory));
+    batchSelectAll.addEventListener("click", () => {
+        const all = Object.keys(working).filter(k => !working[k]?._categoryOnly && working[k]?.category === selectedCategory);
+        if (all.every(k => selectedKeys.has(k))) selectedKeys.clear();
+        else all.forEach(k => selectedKeys.add(k));
+        render();
+    });
+    batchMove.addEventListener("click", e => {
+        const keys = [...selectedKeys].filter(k => working[k]);
+        if (!keys.length) return;
+        showMoveMenu(keys, e.clientX, e.clientY);
+    });
+    batchClear.addEventListener("click", () => { selectedKeys.clear(); render(); });
     onExternalPresets = event => {
         const presets = event.detail;
         if (!presets || typeof presets !== "object" || Array.isArray(presets)) return;
@@ -1056,8 +1108,8 @@ function applyBilingual(node) {
         }
         // label
         txt.label = isEn ? _tr("文本") : (isGodTier ? "文本" : (txt._xzgOrigLabel || "text"));
-        // placeholder（化神级不显示暗色注释说明）
-        const want = isGodTier ? "" : (isEn ? _placeholderForLang(isGodTier) : txt._xzgOrigPlaceholder);
+        // placeholder（普通版与化神级均不显示暗色注释说明）
+        const want = "";
         if (txt.element && typeof txt.element.setAttribute === "function") {
             if (txt.element.getAttribute("placeholder") !== want) {
                 txt.element.setAttribute("placeholder", want);
@@ -1088,7 +1140,7 @@ function ensureTextarea(node) {
         if (!ta) return;
         if (!ta._xzgTagged) { ta._xzgTagged = true; ta.classList.add("xzg-text-box"); }
         const isGodTier = node.type === _NODE_TYPE_GOD || node.comfyClass === _NODE_TYPE_GOD;
-        const want = isGodTier ? "" : _placeholderForLang(isGodTier);
+        const want = ""; // 普通版与化神级均不显示暗色 placeholder 注释
         if (ta.getAttribute("placeholder") !== want) {
             ta.setAttribute("placeholder", want);
         }
@@ -1149,6 +1201,20 @@ textarea.xzg-text-box::placeholder {
     font-size: 14px;
     line-height: 1.5;
     opacity: 0.55;
+}
+textarea.xzg-text-box:focus,
+textarea.xzg-text-box:focus-visible,
+textarea.xzg-text-box:active {
+    outline: none !important;
+    box-shadow: none !important;
+    border: 1px solid #666 !important;
+}
+input.xzg-text-box-modal-input:focus,
+input.xzg-text-box-modal-input:focus-visible,
+input.xzg-text-box-modal-input:active {
+    outline: none !important;
+    box-shadow: none !important;
+    border: 1px solid #666 !important;
 }`;
     document.head.appendChild(s);
 })();

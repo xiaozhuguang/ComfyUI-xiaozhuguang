@@ -637,6 +637,60 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
         raise Exception("FFmpeg read error:\n" + err)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 空选兜底视频（与「小珠光视频加载-化神级」同一机制）
+# 用户没在节点上选任何视频，或所选文件已被删除/移走时，自动加载内置占位小视频，
+# 让节点能留在工作流上直接跑通而不报 "Invalid video file"。
+# 视频随插件分发（assets/default_reference.mp4），不依赖外部绝对路径。
+# ═══════════════════════════════════════════════════════════════════════════
+_FALLBACK_VIDEO = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "assets", "default_reference.mp4"
+)
+# ComfyUI 的 get_annotated_filepath 只接受 input 目录下的相对文件名，拒绝任意绝对路径。
+# 因此首次使用时把内置占位视频复制到 input 目录下一个固定文件名，再传相对名给解码逻辑。
+_FALLBACK_INPUT_NAME = "xzg_fallback_reference.mp4"
+
+
+def _ensure_fallback_in_input():
+    """确保 input 目录下存在兜底占位视频，返回它在 input 下的相对文件名。"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        dst = os.path.join(input_dir, _FALLBACK_INPUT_NAME)
+        if os.path.isfile(_FALLBACK_VIDEO) and not os.path.isfile(dst):
+            shutil.copy2(_FALLBACK_VIDEO, dst)
+            print(f"[小珠光视频加载器] 已复制内置占位视频到 input/{_FALLBACK_INPUT_NAME}")
+        if os.path.isfile(dst):
+            return _FALLBACK_INPUT_NAME
+    except Exception as e:
+        print(f"[小珠光视频加载器] 准备兜底视频失败：{e}")
+    return ""
+
+
+def _resolve_video_widget(视频):
+    """把节点上的「视频」widget 值解析为真实可用路径；空选或文件丢失时回退到兜底视频。
+
+    返回 (relative_filename_or_raw, used_fallback: bool)。
+    三种情况：
+    - 用户选了真实存在的视频 → 原样返回；
+    - widget 为空 → 复制内置占位视频到 input，返回其相对文件名；
+    - widget 非空但文件已被删除/移走 → 同样回退到占位视频（老节点刷新浏览器后常见）。
+    """
+    raw = (视频 or "").strip() if isinstance(视频, str) else (视频 or "")
+    if raw:
+        # 先验证用户选的文件是否真的存在；不存在则走兜底，不直接报错。
+        try:
+            resolved = folder_paths.get_annotated_filepath(raw)
+            if resolved and os.path.isfile(resolved):
+                return raw, False
+        except Exception:
+            pass
+        # 文件丢失：静默兜底，不打警告日志（避免每次跑节点都刷屏）。
+    fallback_name = _ensure_fallback_in_input()
+    if fallback_name:
+        return fallback_name, True
+    return raw, False
+
+
 class XiaozhuguangVideoLoader:
     """
     小珠光视频加载器
@@ -693,6 +747,8 @@ class XiaozhuguangVideoLoader:
     def load_video_impl(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                         帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", unique_id=None):
         强制帧率 = int(强制帧率)
+        # 空选/文件丢失时回退到内置占位视频，避免 "Invalid video file" 中断（与化神级一致）。
+        视频, _used_fallback = _resolve_video_widget(视频)
         video_path = folder_paths.get_annotated_filepath(视频)
         if not video_path or not os.path.isfile(video_path):
             raise ValueError(f"Invalid video file: {视频}")
@@ -977,6 +1033,8 @@ class XiaozhuguangVideoLoader:
     @classmethod
     def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, **kwargs):
+        # 空选或文件被删时，与 load_video_impl 走同一套兜底逻辑，保证缓存键稳定。
+        视频, _ = _resolve_video_widget(视频)
         try:
             path = folder_paths.get_annotated_filepath(视频)
             file_hash = calculate_file_hash(path)
@@ -986,9 +1044,13 @@ class XiaozhuguangVideoLoader:
         return f"{file_hash}|{强制帧率}|{视频比例}|{比例模式}|{自定义宽度}|{自定义高度}|{帧数上限}|{跳过帧数}"
 
     @classmethod
-    def VALIDATE_INPUTS(cls, 视频, **kwargs):
-        if not folder_paths.exists_annotated_filepath(视频):
-            return f"Invalid video file: {视频}"
+    def VALIDATE_INPUTS(cls, **kwargs):
+        # 空选或文件不存在时由 load_video_impl 的兜底逻辑自动复制占位视频接管
+        # （与化神级一致）；若在这里返回错误字符串，ComfyUI 会在执行节点前拦截报错、
+        # 根本不调用 load_video，兜底逻辑便永远无法生效。
+        # 注意：签名只用 **kwargs，不把「视频」写成必填位置参数——ComfyUI 在重载/校验
+        # 画布节点时可能不传入控件值，一旦写成 (cls, 视频, **kwargs) 会报
+        # "missing 1 required positional argument: '视频'"。
         return True
 
 
