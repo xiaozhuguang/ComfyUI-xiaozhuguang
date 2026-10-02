@@ -834,6 +834,26 @@ function showHelpDialog() {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
 }
 
+/**
+ * 固定右上角功能区按钮顺序：缩放定位 → 快剪 → CPU/GPU 监测 → xzglogo（幂等，全局单例）。
+ * 与 xzg_monitor.js 定义一致，任何文件先加载都能先定义可用。
+ */
+if (!window.XZGOrderTopMenuButtons) {
+    window.XZGOrderTopMenuButtons = function (container) {
+        if (!container || !container.isConnected) return;
+        const ORDER = [
+            "xzg-viewport-lock-btn-v4",
+            "xzg-quick-edit-btn",
+            "xzg-monitor-menu-btn",
+            "xzg-theme-menu-btn",
+        ];
+        for (const id of ORDER) {
+            const el = container.querySelector("#" + id);
+            if (el && el.parentNode === container) container.appendChild(el);
+        }
+    };
+}
+
 function injectIntoMenu() {
     // 移除旧按钮（如果存在）
     const oldBtn = document.getElementById(PANEL_ID);
@@ -843,6 +863,8 @@ function injectIntoMenu() {
     if (container) {
         menuBtn = buildMenuButton();
         container.appendChild(menuBtn);
+        // 注入后按固定顺序重排：缩放定位 → 快剪 → CPU/GPU 监测 → xzglogo
+        window.XZGOrderTopMenuButtons?.(container);
     } else {
         menuBtn = buildFloatingPanel();
         document.body.appendChild(menuBtn);
@@ -985,6 +1007,8 @@ function setViewportLockEnabled(v) {
     } else {
         setExpanded(false);
         if (menuBtn) { menuBtn.remove(); menuBtn = null; }
+        // 移除缩放定位按钮后重排，保持剩余按钮（快剪→CPU/GPU 监测→xzglogo）顺序固定
+        window.XZGOrderTopMenuButtons?.(findMenuContainer());
         if (slotPanel) { slotPanel.remove(); slotPanel = null; }
         if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
         featureStarted = false;

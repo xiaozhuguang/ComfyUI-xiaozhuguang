@@ -173,6 +173,26 @@ function registerSetting() {
     }
 }
 
+/**
+ * 固定右上角功能区按钮顺序：缩放定位 → 快剪 → CPU/GPU 监测 → xzglogo（幂等，全局单例）。
+ * 与 xzg_monitor.js 定义一致，任何文件先加载都能先定义可用。
+ */
+if (!window.XZGOrderTopMenuButtons) {
+    window.XZGOrderTopMenuButtons = function (container) {
+        if (!container || !container.isConnected) return;
+        const ORDER = [
+            "xzg-viewport-lock-btn-v4",
+            "xzg-quick-edit-btn",
+            "xzg-monitor-menu-btn",
+            "xzg-theme-menu-btn",
+        ];
+        for (const id of ORDER) {
+            const el = container.querySelector("#" + id);
+            if (el && el.parentNode === container) container.appendChild(el);
+        }
+    };
+}
+
 function tryInject(retries) {
     const container = findMenuContainer();
     if (container) {
@@ -183,6 +203,8 @@ function tryInject(retries) {
         _btn = buildButton();
         container.appendChild(_btn);
         applyVisibility();
+        // 注入后按固定顺序重排：缩放定位 → 快剪 → CPU/GPU 监测 → xzglogo
+        window.XZGOrderTopMenuButtons?.(container);
         return;
     }
     if (retries < 20) {

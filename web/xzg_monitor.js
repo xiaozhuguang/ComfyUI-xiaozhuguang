@@ -59,6 +59,7 @@ const XZG_DISPLAY_DEFAULT = {
   capsule_palette: "classic",
   timer_effect: "white",
   timer_custom_color: "#65D6A6",
+  timer_font_size: 22,
   chart_window: { width: 760, height: 560, left: null, top: null },
   chart_split: 0.70,
 };
@@ -80,6 +81,7 @@ function loadDisplay() {
     if (s.capsule_palette === "ice" || !["classic", "aurora", "amber", "graphite"].includes(s.capsule_palette)) s.capsule_palette = "classic";
     if (!["white", "cyan", "green", "custom"].includes(s.timer_effect)) s.timer_effect = XZG_DISPLAY_DEFAULT.timer_effect;
     if (!/^#[0-9a-f]{6}$/i.test(s.timer_custom_color)) s.timer_custom_color = XZG_DISPLAY_DEFAULT.timer_custom_color;
+    s.timer_font_size = XZG_DISPLAY_DEFAULT.timer_font_size; // 数字时钟字体固定默认值，忽略存储的旧值
     s.chart_window = normalizeChartWindow(s.chart_window);
     s.chart_split = normalizeChartSplit(s.chart_split);
     s.compact = s.compact !== false;
@@ -116,6 +118,7 @@ function normalizeDisplay(value) {
   if (next.capsule_palette === "ice" || !["classic", "aurora", "amber", "graphite"].includes(next.capsule_palette)) next.capsule_palette = "classic";
   if (!["white", "cyan", "green", "custom"].includes(next.timer_effect)) next.timer_effect = XZG_DISPLAY_DEFAULT.timer_effect;
   if (!/^#[0-9a-f]{6}$/i.test(next.timer_custom_color)) next.timer_custom_color = XZG_DISPLAY_DEFAULT.timer_custom_color;
+  next.timer_font_size = XZG_DISPLAY_DEFAULT.timer_font_size; // 数字时钟字体固定默认值，忽略存储的旧值
   next.chart_window = normalizeChartWindow(next.chart_window);
   next.chart_split = normalizeChartSplit(next.chart_split);
   next.compact = next.compact !== false;
@@ -388,7 +391,7 @@ const XZG_CSS = `
 .xzg-monitor-toolbar.xzg-compact .xzg-v[data-xzg-metric="gpu_vram"]{margin-left:-5px;}
 .xzg-monitor-toolbar.xzg-compact .xzg-run-time{display:inline-block;min-width:54px;color:var(--xzg-timer-color,#DCC85B);font:600 20px/1 'Segoe UI',system-ui,sans-serif;font-variant-numeric:tabular-nums;text-align:center;white-space:nowrap;}
 .xzg-monitor-toolbar.xzg-compact .xzg-run-time:not(.xzg-lcd){color:#fff;font-size:22px;filter:none;}
-.xzg-monitor-toolbar.xzg-compact .xzg-run-time.xzg-lcd{display:inline-flex;align-items:center;gap:3px;min-width:60px;filter:none;transform:scale(.86);transform-origin:center;}
+.xzg-monitor-toolbar.xzg-compact .xzg-run-time.xzg-lcd{display:inline-flex;align-items:center;gap:3px;min-width:60px;filter:none;transform:scale(var(--xzg-run-lcd-scale, .86));transform-origin:center;}
 .xzg-run-time .xzg-lcd-digit{position:relative;display:inline-block;width:12px;height:22px;flex:none;}
 .xzg-run-time .xzg-lcd-seg{position:absolute;display:block;background:transparent;border:1px solid transparent;border-radius:2px;box-sizing:border-box;}
 .xzg-run-time .xzg-lcd-seg.on{background:var(--xzg-timer-color,#DCC85B);border-color:var(--xzg-timer-color,#DCC85B);box-shadow:0 0 3px var(--xzg-timer-glow-strong,rgba(220,200,91,.65)),0 0 7px var(--xzg-timer-glow,rgba(220,200,91,.34));}
@@ -683,7 +686,9 @@ function updateRunTimerButton() {
     } else {
       const rawWidth = seconds.length * 12 + Math.max(0, seconds.length - 1) * 3;
       // 按圆球直径和秒数位数共同缩放，不设固定最大倍率，避免圆球变大后数字停在原尺寸。
-      const scale = Math.min((size * .68) / rawWidth, (size * .48) / 22);
+      // 乘用户自定义的数字时钟字体缩放因子。
+      const fontScale = Math.max(.6, Math.min(2, (_display.timer_font_size || XZG_DISPLAY_DEFAULT.timer_font_size) / XZG_DISPLAY_DEFAULT.timer_font_size));
+      const scale = Math.min((size * .68) / rawWidth, (size * .48) / 22) * fontScale;
       _float.root.style.setProperty("--xzg-orb-content-scale", String(Math.max(.2, scale)));
       orbTime.classList.add("xzg-lcd");
       orbTime.innerHTML = renderLcdTime(seconds);
@@ -714,6 +719,8 @@ function applyTimerEffect() {
   if (!channels) return;
   const [, r, g, b] = channels.map((part, index) => index ? parseInt(part, 16) : part);
   const rgba = (alpha) => `rgba(${r},${g},${b},${alpha})`;
+  // 数字时钟字体大小：基准数字高度 22px，按用户设置换算缩放因子（上限 2x，下限 0.6x）
+  const fontScale = Math.max(.6, Math.min(2, (_display.timer_font_size || XZG_DISPLAY_DEFAULT.timer_font_size) / XZG_DISPLAY_DEFAULT.timer_font_size));
   for (const host of [_runTimerBtn, _float?.root]) {
     if (!host) continue;
     host.style.setProperty("--xzg-timer-color", color);
@@ -721,6 +728,8 @@ function applyTimerEffect() {
     host.style.setProperty("--xzg-timer-dim-border", rgba(.12));
     host.style.setProperty("--xzg-timer-glow", rgba(effect.glow));
     host.style.setProperty("--xzg-timer-glow-strong", rgba(effect.activeGlow));
+    // 顶部胶囊数字时钟缩放（基准 .86，按字体因子缩放）
+    host.style.setProperty("--xzg-run-lcd-scale", String(.86 * fontScale));
   }
 }
 
@@ -1470,11 +1479,9 @@ function showContextMenu(btn, chartRequest = null) {
     if (!_runMetricsHistory.length) return;
     const disableTargets = () => {
       if (sourceButton) sourceButton.disabled = true;
-      clearHistoryButton.disabled = true;
     };
     const enableTargets = () => {
       if (sourceButton) sourceButton.disabled = false;
-      clearHistoryButton.disabled = false;
     };
     disableTargets();
     try {
@@ -1509,17 +1516,6 @@ function showContextMenu(btn, chartRequest = null) {
       enableTargets();
     }
   };
-  const clearHistoryButton = document.createElement("button");
-  clearHistoryButton.type = "button";
-  clearHistoryButton.textContent = "清理历史记录";
-  clearHistoryButton.title = "删除本地保存的历史曲线数据";
-  clearHistoryButton.style.cssText = "padding:3px 7px;border:1px solid rgba(255,255,255,.18);border-radius:4px;background:#3a3a3a;color:#eee;font:inherit;cursor:pointer;";
-  clearHistoryButton.addEventListener("mouseenter", () => { clearHistoryButton.style.background = "#4a4a4a"; });
-  clearHistoryButton.addEventListener("mouseleave", () => { clearHistoryButton.style.background = "#3a3a3a"; });
-  clearHistoryButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    runClearMetricsHistory(clearHistoryButton);
-  });
   const syncRunPickerButton = () => {
     const selected = Array.from(runSelect.options).find((option) => option.value === runSelect.value);
     runPickerLabel.textContent = selected?.dataset.workflowName || "选择工作流运行记录";
@@ -1536,10 +1532,8 @@ function showContextMenu(btn, chartRequest = null) {
   };
   const renderRunHistoryPopup = () => {
     runHistoryPopup.replaceChildren();
-    clearHistoryButton.disabled = _runMetricsHistory.length === 0;
-    clearHistoryButton.style.opacity = clearHistoryButton.disabled ? ".5" : "1";
     syncInlineClearButton();
-    clearHistoryRow.append(historyTitle, clearHistoryButton);
+    clearHistoryRow.append(historyTitle);
     runHistoryPopup.appendChild(clearHistoryRow);
     if (!runSelect.options.length) {
       const empty = document.createElement("div");
@@ -2174,7 +2168,7 @@ function showContextMenu(btn, chartRequest = null) {
   const timerEffectTitle = document.createElement("div");
   timerEffectTitle.className = "xzg-menu-t";
   timerEffectTitle.style.marginTop = "5px";
-  timerEffectTitle.textContent = "计时器特效";
+  timerEffectTitle.textContent = "时钟颜色";
   menu.appendChild(timerEffectTitle);
   const timerEffectSelect = document.createElement("select");
   timerEffectSelect.style.cssText = animationSelect.style.cssText;
@@ -2722,13 +2716,10 @@ function buildThemeMenuButton() {
   iconWrap.append(icon, innerSweep, ringSweep, ringSweep2);
   btn.appendChild(iconWrap);
   // ===== 随机动画调度（Web Animations API）=====
-  const GAP_MS = 30 * 1000; // 段间间隔 30 秒
+  const GAP_MS = 5 * 1000; // 段间间隔 5 秒
   const X_LEFT = "polygon(evenodd, -31px 0px, 0px 0px, 0px 31px, -31px 31px, -31px 0px, 0px 0px, -15.5px 13.5px, -31px 31px, 0px 31px, -15.5px 17.5px)";
   const X_RIGHT = "polygon(evenodd, 31px 0px, 62px 0px, 62px 31px, 31px 31px, 31px 0px, 62px 0px, 46.5px 13.5px, 31px 31px, 62px 31px, 46.5px 17.5px)";
   const SEGMENTS = [
-    { name:"Z轴高速旋转", duration:10000, easing:"ease-in-out", plays:[
-      { el:iconWrap, kf:[{transform:"rotateZ(0deg) rotateY(0deg)"},{transform:"rotateZ(10800deg) rotateY(0deg)"}] },
-    ]},
     { name:"单弧段顺时针", duration:2400, easing:"linear", before:()=>{ringSweep.style.opacity=1;ringSweep2.style.opacity=0;}, plays:[
       { el:ringSweep, kf:[{transform:"rotate(0deg)"},{transform:"rotate(360deg)"}] },
     ]},
@@ -2745,9 +2736,6 @@ function buildThemeMenuButton() {
     ]},
     { name:"明暗呼吸", duration:2400, easing:"ease-in-out", plays:[
       { el:icon, kf:[{opacity:1},{opacity:0.45},{opacity:1},{opacity:0.45},{opacity:1}] },
-    ]},
-    { name:"Y轴吹铜钱", duration:10000, easing:"ease-in-out", plays:[
-      { el:iconWrap, kf:[{transform:"rotateZ(0deg) rotateY(0deg)"},{transform:"rotateZ(0deg) rotateY(4320deg)"}] },
     ]},
   ];
   let _animLoopTimer = null;
@@ -2827,16 +2815,59 @@ function revealXiaozhuguangSettings(attempt = 0) {
   if (attempt < 60) setTimeout(() => revealXiaozhuguangSettings(attempt + 1), 100);
 }
 
+/**
+ * 固定右上角功能区按钮顺序：缩放定位 → 快剪 → CPU/GPU 监测 → xzglogo。
+ * 幂等：按 ID 顺序把这些按钮移到容器末尾连续排列，不受各按钮开关状态/注入时序影响。
+ * 作为 window 全局单例定义一次，多个文件复用；关闭任一按钮后调用即可保持剩余按钮顺序固定。
+ */
+if (!window.XZGOrderTopMenuButtons) {
+  window.XZGOrderTopMenuButtons = function (container) {
+    if (!container || !container.isConnected) return;
+    const ORDER = [
+      "xzg-viewport-lock-btn-v4",   // 缩放定位
+      "xzg-quick-edit-btn",         // 快剪
+      "xzg-monitor-menu-btn",       // CPU/GPU 监测
+      "xzg-theme-menu-btn",         // xzglogo
+    ];
+    for (const id of ORDER) {
+      const el = container.querySelector("#" + id);
+      if (el && el.parentNode === container) container.appendChild(el);
+    }
+  };
+}
+
+/**
+ * 主题/logo 按钮（含「设置 - 小珠光」「导入导出配置」）与 GPU/CPU 监控解耦：
+ * 无论监控开关如何都保持注入，避免关闭监控后 logo 按钮一并消失。
+ * 幂等：容器已挂载且按钮已存在时直接复用，不会重复注入。
+ */
+function ensureThemeMenuButton(retries = 0) {
+  const container = findMenuContainer();
+  // 仅当容器已挂载到文档时注入；否则等下一次重试，
+  // 否则 append 到 detached 容器会因 getElementById 探测不到而重复注入多个按钮
+  if (container && container.isConnected) {
+    if (!document.getElementById(XZG_THEME_BTN_ID)) {
+      _themeMenuBtn = buildThemeMenuButton();
+      container.appendChild(_themeMenuBtn);
+    } else {
+      _themeMenuBtn = document.getElementById(XZG_THEME_BTN_ID);
+    }
+    window.XZGOrderTopMenuButtons?.(container);
+    return;
+  }
+  if (retries < 30) setTimeout(() => ensureThemeMenuButton(retries + 1), 300);
+}
+
 function injectMenuButton(retries) {
   const container = findMenuContainer();
   // 仅当容器已挂载到文档时注入；否则等下一次重试，
   // 否则 append 到 detached 容器会因 getElementById 探测不到而重复注入多个按钮
   if (container && container.isConnected) {
+    // 主题/logo 按钮独立于监控注入（幂等），监控按钮插到其前面，保持「电池→logo」顺序
+    ensureThemeMenuButton();
     if (!document.getElementById(XZG_BTN_ID)) {
       _menuBtn = buildMenuButton();
-      container.appendChild(_menuBtn);
-      _themeMenuBtn = buildThemeMenuButton();
-      container.insertBefore(_themeMenuBtn, _menuBtn.nextSibling);
+      container.insertBefore(_menuBtn, _themeMenuBtn);
     }
     _runTimerBtn = document.getElementById(XZG_RUN_TIMER_BTN_ID) || buildRunTimerButton();
     attachRunTimerContextMenu(_runTimerBtn);
@@ -2852,6 +2883,7 @@ function injectMenuButton(retries) {
     const firstMenuItem = container.firstElementChild;
     if (firstMenuItem !== _runTimerBtn) container.insertBefore(_runTimerBtn, firstMenuItem);
     refreshMenuBtn();
+    window.XZGOrderTopMenuButtons?.(container);
     return;
   }
   if (retries < 30) {
@@ -2922,17 +2954,18 @@ function setMonitorEnabled(v) {
       injectMenuButton(0);
     });
   } else {
-    // 关闭：移除顶部电池与主题按钮，隐藏监控栏并停止轮询。
+    // 关闭：仅移除顶部监控（电池）按钮，隐藏监控栏并停止轮询。
     // 保留监控栏 DOM，使 stats 节点在再次启用时仍可复用。
+    // 主题/logo 按钮（含「设置 - 小珠光」「导入导出配置」）不受监控开关影响，予以保留。
     document.querySelectorAll("#" + XZG_BTN_ID).forEach((b) => b.remove());
-    document.querySelectorAll("#" + XZG_THEME_BTN_ID).forEach((b) => b.remove());
     if (_runTimerBtn) _runTimerBtn.style.display = "none";
     _menuBtn = null;
-    _themeMenuBtn = null;
     document.querySelectorAll("#xzg-float").forEach((f) => {
       f.style.display = "none";
     });
     if (_float) _float.stop();
+    // 移除电池按钮后重排，保持剩余按钮（缩放定位→快剪→logo）顺序固定
+    window.XZGOrderTopMenuButtons?.(findMenuContainer());
   }
 }
 
@@ -2958,7 +2991,10 @@ app.registerExtension({
     // 工作流运行计时：事件监听始终注册（历史记录与浮窗显隐/监控开关无关）
     registerRunEvents();
     restoreMonitorDisplay();
-    if (!isMonitorEnabled()) return; // 设置里关闭了监控：不创建浮窗、不注入顶部按钮、不轮询
+    // 主题/logo 按钮（含「设置 - 小珠光」「导入导出配置」）与 GPU/CPU 监控解耦：
+    // 无论监控开关如何都保持注入，避免关闭监控后 logo 按钮一并消失。
+    ensureThemeMenuButton();
+    if (!isMonitorEnabled()) return; // 设置里关闭了监控：不创建浮窗、不注入监控按钮、不轮询
     // 内部等待 UI 就绪（加载遮罩移除、主界面渲染完成）后再创建浮窗/注入顶部按钮
     setMonitorEnabled(true);
   },

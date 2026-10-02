@@ -1197,6 +1197,12 @@ function ensureTextarea(node) {
     const s = document.createElement("style");
     s.id = cssId;
     s.textContent = `
+textarea.xzg-text-box {
+    /* 恒定 1px 边框（空闲透明、聚焦变色）+ border-box：
+       保证聚焦/选中时内容区尺寸不变，字体不发生位移 */
+    box-sizing: border-box !important;
+    border: 1px solid transparent !important;
+}
 textarea.xzg-text-box::placeholder {
     font-size: 14px;
     line-height: 1.5;
@@ -1207,7 +1213,7 @@ textarea.xzg-text-box:focus-visible,
 textarea.xzg-text-box:active {
     outline: none !important;
     box-shadow: none !important;
-    border: 1px solid #666 !important;
+    border-color: #666 !important;
 }
 input.xzg-text-box-modal-input:focus,
 input.xzg-text-box-modal-input:focus-visible,
