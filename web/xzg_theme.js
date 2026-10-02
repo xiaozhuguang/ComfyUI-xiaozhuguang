@@ -1560,18 +1560,39 @@ window.XZGThemeManager = {
         }
 
         if (window.LiteGraph && LiteGraph.LGraphNode && LiteGraph.LGraphNode.prototype) {
-            hookProto(LiteGraph.LGraphNode.prototype, 'serialize', (orig) => function() {
-                const data = orig ? orig.call(this) : {};
-                if (this._xzgGradient) {
-                    data._xzgGradient = JSON.parse(JSON.stringify(this._xzgGradient));
-                }
-                return data;
-            });
+            // 新前端保存图状态直接调用 serializeFromStoreState，绕过 serialize。
+            for (const method of ['serialize', 'serializeFromStoreState']) {
+                if (typeof LiteGraph.LGraphNode.prototype[method] !== 'function') continue;
+                hookProto(LiteGraph.LGraphNode.prototype, method, (orig) => function(...args) {
+                    const data = orig.apply(this, args);
+                    if (this._xzgGradient) {
+                        data._xzgGradient = JSON.parse(JSON.stringify(this._xzgGradient));
+                        data.properties = { ...data.properties,
+                            _xzgGradient: JSON.parse(JSON.stringify(this._xzgGradient)) };
+                    } else {
+                        // 前端会从扩展缓存重新合入旧字段，重置后也必须清理序列化结果。
+                        delete data._xzgGradient;
+                        if (data.properties) delete data.properties._xzgGradient;
+                    }
+                    if (data.extensions && Object.hasOwn(data.extensions, '_xzgGradient')) {
+                        data.extensions = { ...data.extensions };
+                        delete data.extensions._xzgGradient;
+                        if (!Object.keys(data.extensions).length) delete data.extensions;
+                    }
+                    return data;
+                });
+            }
 
             hookProto(LiteGraph.LGraphNode.prototype, 'configure', (orig) => function(data) {
                 if (orig) orig.call(this, data);
-                if (data && data._xzgGradient) {
-                    this._xzgGradient = JSON.parse(JSON.stringify(data._xzgGradient));
+                const gradient = data?.properties?._xzgGradient || data?._xzgGradient;
+                if (gradient) {
+                    this._xzgGradient = JSON.parse(JSON.stringify(gradient));
+                    this.properties ||= {};
+                    this.properties._xzgGradient = JSON.parse(JSON.stringify(gradient));
+                } else {
+                    delete this._xzgGradient;
+                    if (this.properties) delete this.properties._xzgGradient;
                 }
             });
 
@@ -3793,6 +3814,8 @@ window.XZGThemeManager = {
         nodes.forEach(node => {
             if (node.type === "XiaozhuguangTitle") return;
             node._xzgGradient = { ...cfg };
+            node.properties ||= {};
+            node.properties._xzgGradient = JSON.parse(JSON.stringify(cfg));
             if (node.type === "XiaozhuguangBigDisplay") {
                 // 大字文本展示节点：仅标题栏允许主题，正文区域保持节点默认的背景/透明度，
                 // 不设置 node.color/bgcolor。标题栏主题已由 makeDrawShapeWrapper 在画布上绘制，
@@ -3911,6 +3934,7 @@ window.XZGThemeManager = {
 
         nodes.forEach(node => {
             delete node._xzgGradient;
+            if (node.properties) delete node.properties._xzgGradient;
             node.color = null;
             node.bgcolor = null;
             this.removeGradientFromDOMNode(node);
@@ -4907,6 +4931,15 @@ window.XZGThemeManager = {
             try {
                 app.registerExtension({
                     name: "XZG.Theme",
+                    loadedGraphNode(node) {
+                        const gradient = node.properties?._xzgGradient || node._xzgGradient;
+                        if (gradient) node._xzgGradient = JSON.parse(JSON.stringify(gradient));
+                    },
+                    afterConfigureGraph() {
+                        window.XZGThemeManager.refreshDOMGradients();
+                        app.graph?.setDirtyCanvas?.(true, true);
+                        requestAnimationFrame(() => window.XZGThemeManager.refreshDOMGradients());
+                    },
                     
                     getNodeMenuItems(node) {
                         if (!window.XZGThemeManager) return [];
