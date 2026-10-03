@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 104 104" fill="none">
+  <defs>
+    <radialGradient id="hA" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.3"/><stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0.12"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+    <filter id="gA" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <circle cx="52" cy="52" r="45" fill="url(#hA)"/>
+  <circle cx="52" cy="52" r="45" stroke="rgba(255,255,255,0.26)" stroke-width="1.1"/>
+  <path d="M24 52 A28 28 0 0 1 80 52" stroke="#FFFFFF" stroke-width="7" fill="none" stroke-linecap="round" filter="url(#gA)" opacity="0.95"/>
+  <path d="M24 52 A28 28 0 0 0 80 52" stroke="#9A9A9A" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="52" cy="52" r="21.5" stroke="#FFFFFF" stroke-width="1.6" fill="none" filter="url(#gA)"/>
+  <circle cx="52" cy="52" r="25" fill="#000" opacity="0.22" filter="url(#gA)"/>
+  <circle cx="52" cy="52" r="19" fill="#000000"/>
+</svg>

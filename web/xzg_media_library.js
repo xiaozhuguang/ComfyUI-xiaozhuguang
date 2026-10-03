@@ -650,7 +650,7 @@ let lastWindowKey = "";
         imageBox.append(image, number);
         const label = document.createElement("span");
         label.textContent = item.name;
-        label.style.cssText = "flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 4px;color:var(--input-text);font-size:14px;text-align:center;pointer-events:none;";
+        label.style.cssText = "flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 4px;color:var(--input-text);font-size:12px;line-height:14px;text-align:center;pointer-events:none;";
         if (isAudio) {
             card.style.flexDirection = "row";
             card.style.alignItems = "center";

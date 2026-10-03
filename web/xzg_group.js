@@ -68,6 +68,7 @@ const XZGGroup = {
         this.createOverlay();
         this.setupKeyboardShortcut();
         this.setupCanvasMenu();
+        this.setupCanvasDoubleClickMenu();
 
         // 节点拖动→编组跟随会话：全局 mouseup/touchend 统一结束锁定
         const resetDragSession = () => {
@@ -433,7 +434,35 @@ const XZGGroup = {
         document.addEventListener('mousemove', e => {
             self._lastMouseX = e.clientX;
             self._lastMouseY = e.clientY;
+            self._updateRunButtonHover();
         }, true);
+        const clearMouse = () => {
+            self._lastMouseX = self._lastMouseY = -Infinity;
+            self._updateRunButtonHover();
+        };
+        document.documentElement.addEventListener('mouseleave', clearMouse);
+        window.addEventListener('blur', clearMouse);
+    },
+
+    _updateRunButtonHover() {
+        const canvas = app?.canvas?.canvas;
+        if (!canvas) return;
+        const cr = canvas.getBoundingClientRect();
+        const x = this._lastMouseX, y = this._lastMouseY;
+        const onCanvas = x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom;
+        for (const el of Object.values(this.groupEls)) {
+            const btn = this._ensureRefs(el).runBtn;
+            if (!btn) continue;
+            const gid = el.dataset.groupId;
+            const g = gid ? this.groups?.[gid] : null;
+            const btnEnabled = gid ? this.groups?.[gid]?.runBtnEnabled !== false : true;
+            const r = el.getBoundingClientRect();
+            const hovered = btnEnabled && !g?.bypassed && onCanvas && r.width > 0 && r.height > 0 &&
+                x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+            btn.style.visibility = hovered ? 'visible' : 'hidden';
+            btn.style.opacity = hovered ? '0.5' : '0';
+            btn.style.transform = hovered ? 'scale(1)' : 'scale(0.75)';
+        }
     },
 
     getGroupAtMouse() {
@@ -706,6 +735,7 @@ const XZGGroup = {
         const self = this;
         const loop = () => {
             self.syncOverlayPosition();
+            self._updateRunButtonHover();
             // 有未恢复的编组数据且 graph 有节点时立即恢复（不依赖 canvas）
             if (self._needRestore && self._pendingGroups && app?.graph?._nodes?.length) {
                 self.restoreGroups();
@@ -805,6 +835,7 @@ const XZGGroup = {
                 title: el.querySelector('.xzg-group-title-text'),
                 delBtn: el.querySelector('.xzg-delete-btn'),
                 lockBtn: el.querySelector('.xzg-lock-btn'),
+                runBtn: el.querySelector('.xzg-run-group-btn'),
                 rpath: el.querySelector('.xzg-resize-handle svg path'),
                 leftFifth: el.querySelector('.xzg-left-fifth'),
                 leftFifthIcon: el.querySelector('.xzg-left-fifth-icon'),
@@ -825,6 +856,11 @@ const XZGGroup = {
         const scale = c.ds.scale || 1;
         const ox = c.ds.offset[0] || 0;
         const oy = c.ds.offset[1] || 0;
+        const canvasRect = c.canvas.getBoundingClientRect();
+        const mouseX = this._lastMouseX - canvasRect.left;
+        const mouseY = this._lastMouseY - canvasRect.top;
+        const mouseOnCanvas = mouseX >= 0 && mouseX <= canvasRect.width &&
+            mouseY >= 0 && mouseY <= canvasRect.height;
 
         if (Object.keys(this.groups).length === 0) {
             const graph = app?.graph;
@@ -866,6 +902,22 @@ const XZGGroup = {
             el.style.top = ((b.y + oy) * scale - extraTop) + 'px';
             el.style.width = (b.w * scale) + 'px';
             el.style.height = (b.h * scale + extraTop) + 'px';
+
+            const runBtn = this._ensureRefs(el).runBtn;
+            if (runBtn) {
+                const left = (b.x + ox) * scale;
+                const top = (b.y + oy) * scale - extraTop;
+                const hovered = g.runBtnEnabled !== false && !g.bypassed && mouseOnCanvas && mouseX >= left && mouseX <= left + b.w * scale &&
+                    mouseY >= top && mouseY <= top + b.h * scale + extraTop;
+                runBtn.style.visibility = hovered ? 'visible' : 'hidden';
+                runBtn.style.opacity = hovered ? '0.5' : '0';
+                runBtn.style.transform = hovered ? 'scale(1)' : 'scale(0.75)';
+                runBtn.style.top = (headerHeight + 6 * scale) + 'px';
+                runBtn.style.right = (8 * scale) + 'px';
+                runBtn.style.width = runBtn.style.height = (104 * scale) + 'px';
+                runBtn.style.padding = '0';
+                runBtn.style.boxSizing = 'border-box';
+            }
 
             const header = el.querySelector('.xzg-group-header');
             if (header) {
@@ -1512,6 +1564,141 @@ const XZGGroup = {
         window.addEventListener('keydown', onKey, true);
     },
 
+    /* ── 双击空白画布：官方搜索 / 小珠光节点收藏 双预选菜单 ── */
+    setupCanvasDoubleClickMenu() {
+        if (window._xzg_group_dblclick_patched) return;
+        window._xzg_group_dblclick_patched = true;
+        const self = this;
+        // 真实官方 showSearchBox（纯净版）。quick_nodes 只改画布实例属性，不动原型，
+        // 因此原型方法即官方原版；用它作为「官方节点搜索」的入口。
+        const protoSsb = (typeof window.LiteGraph?.LGraphCanvas?.prototype?.showSearchBox === 'function')
+            ? window.LiteGraph.LGraphCanvas.prototype.showSearchBox : null;
+
+        // 真实空白双击：捕获阶段在 window 上拦截第 2 次 pointerup。
+        // 原因：ComfyUI 的双击搜索由 CanvasPointer 跟踪器在第 2 次 pointerup 触发；
+        // 且 xzg_quick_nodes 会把 canvas.showSearchBox 设为实例自有属性（优先于原型），
+        // 方法级包装会被它覆盖/遮蔽，顺序不定。DOM 捕获阶段拦截完全独立、最可靠。
+        // window 捕获最先执行，stopImmediatePropagation 可阻断画布上的任何监听器（含 ComfyUI 跟踪器）。
+        const onPointerUp = (e) => {
+            if (e.button !== 0) return;
+            const canvasEl = app?.canvas?.canvas;
+            if (!canvasEl) return;
+            if (!(e.target === canvasEl || canvasEl.contains(e.target))) return;
+            const now = e.timeStamp || performance.now();
+            const prev = self._xzgPrevCanvasClick;
+            const isDbl = prev && Math.abs(e.clientX - prev.x) <= 8 && Math.abs(e.clientY - prev.y) <= 8
+                && (now - prev.t) > 0 && (now - prev.t) < 500;
+            if (!isDbl) { self._xzgPrevCanvasClick = { x: e.clientX, y: e.clientY, t: now }; return; }
+            self._xzgPrevCanvasClick = null;
+            // 双击：若非空白画布则放行（如双击节点打开配置）
+            const node = self._getNodeUnderCursor(app.canvas, e);
+            if (node) return;
+            // 空白双击：拦截 + 弹双预选菜单
+            e.preventDefault?.();
+            e.stopPropagation?.();
+            e.stopImmediatePropagation?.();
+            self.showDoubleClickMenu(e, () => {
+                // 官方节点搜索：触发 ComfyUI 官方的 empty-double-click 图事件，
+                // 由前端 Vue 层打开新版「添加节点」对话框（蓝图/舒适/合作伙伴 标签、分类侧栏）。
+                // 注意：不能用 showSearchBox / LGraphCanvas.prototype.showSearchBox——
+                // 那只会打开旧版 litesearchbox 下拉；官方新版对话框是监听该图事件打开的。
+                try {
+                    const c = app?.canvas;
+                    if (c && typeof c.emitEvent === 'function') {
+                        c.emitEvent({
+                            subType: 'empty-double-click',
+                            originalEvent: e,
+                            canvas: c,
+                            node: null,
+                            node_input: null,
+                            node_output: null,
+                        });
+                    } else if (protoSsb) {
+                        protoSsb.call(c, e);
+                    }
+                } catch (err) {}
+            });
+        };
+        window.addEventListener('pointerup', onPointerUp, true);
+
+        // 兜底：dblclick 捕获阶段同样拦空白双击，防止其它 dblclick 监听器打开搜索
+        const onDblClick = (e) => {
+            if (e.button !== 0) return;
+            const canvasEl = app?.canvas?.canvas;
+            if (!canvasEl || !(e.target === canvasEl || canvasEl.contains(e.target))) return;
+            const node = self._getNodeUnderCursor(app.canvas, e);
+            if (node) return;
+            e.preventDefault?.();
+            e.stopPropagation?.();
+            e.stopImmediatePropagation?.();
+        };
+        window.addEventListener('dblclick', onDblClick, true);
+    },
+
+    _getNodeUnderCursor(canvas, e) {
+        try {
+            const rect = canvas.canvas?.getBoundingClientRect();
+            if (!rect) return null;
+            const ds = canvas.ds || { offset: [0, 0], scale: 1 };
+            const px = e.clientX - rect.left;
+            const py = e.clientY - rect.top;
+            const gx = px / (ds.scale || 1) - (ds.offset?.[0] || 0);
+            const gy = py / (ds.scale || 1) - (ds.offset?.[1] || 0);
+            return canvas.graph?.getNodeOnPos?.(gx, gy) || null;
+        } catch (err) { return null; }
+    },
+
+    showDoubleClickMenu(e, onNative) {
+        const old = document.getElementById('xzg-dblclick-menu');
+        if (old) old.remove();
+
+        const menu = document.createElement('div');
+        menu.id = 'xzg-dblclick-menu';
+        const w = 210, h = 2 * 44 + 12;
+        const mx = Math.max(8, Math.min(window.innerWidth - w - 8, (e?.clientX ?? window.innerWidth / 2)));
+        const my = Math.max(8, Math.min(window.innerHeight - h - 8, (e?.clientY ?? window.innerHeight / 2)));
+        menu.style.cssText = `position:fixed;left:${mx}px;top:${my}px;z-index:99999;background:#2a2a2a;border:1px solid #555;border-radius:8px;padding:6px 0;min-width:${w}px;box-shadow:0 6px 20px rgba(0,0,0,0.6);font-family:system-ui,sans-serif;`;
+
+        const items = [
+            {
+                label: '🔍 官方节点搜索',
+                cb: () => { try { onNative(); } catch (err) {} },
+            },
+            {
+                label: '⭐ 小珠光节点收藏',
+                cb: () => {
+                    const fav = window.xiaozhuguangFavorites;
+                    if (fav) {
+                        if (typeof fav.expandPanel === 'function') fav.expandPanel();
+                        else if (typeof fav.togglePanel === 'function') fav.togglePanel();
+                    }
+                },
+            },
+        ];
+
+        for (const item of items) {
+            const div = document.createElement('div');
+            div.style.cssText = 'padding:10px 16px;cursor:pointer;color:#e0e0e0;font-size:14px;';
+            div.textContent = item.label;
+            div.onmouseenter = () => { div.style.background = '#3a3a3a'; };
+            div.onmouseleave = () => { div.style.background = 'transparent'; };
+            div.onclick = () => { cleanup(); item.cb(); };
+            menu.appendChild(div);
+        }
+
+        document.body.appendChild(menu);
+
+        const close = (ev) => { if (menu.contains(ev.target)) return; cleanup(); };
+        const onKey = (ev) => { if (ev.key === 'Escape') cleanup(); };
+        const cleanup = () => {
+            menu.remove();
+            window.removeEventListener('pointerdown', close, true);
+            window.removeEventListener('keydown', onKey, true);
+        };
+        window.addEventListener('pointerdown', close, true);
+        window.addEventListener('keydown', onKey, true);
+    },
+
     createGroupFromSelection() {
         const c = app?.canvas;
         if (!c?.selected_nodes) { alert('[小珠光编组] 请框选节点'); return; }
@@ -1656,17 +1843,18 @@ const XZGGroup = {
         el.innerHTML = `
             <div class="xzg-group-header" style="display:flex;align-items:center;padding:0;background:${group.headerHidden ? 'transparent' : (group.headerBgColor || 'rgba(0,0,0,0.4)')};border-radius:7px 7px 0 0;cursor:pointer;user-select:none;pointer-events:auto;height:${headerHeight}px;box-sizing:border-box;overflow:visible;z-index:4;">
                 <div class="xzg-left-fifth" title="点击此区域：该编组开启，同级其他全部绕过" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:${group.headerHidden ? 'transparent' : 'rgba(255,255,255,0.04)'};border-right:${group.headerHidden ? '1px solid transparent' : '1px solid rgba(255,255,255,0.1)'};position:relative;">
-                    <span class="xzg-left-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;${group.headerHidden ? 'display:none;' : ''}">◀</span>
+                    <span class="xzg-left-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;${group.headerHidden ? 'display:none;' : ''}">●</span>
                 </div>
                 <div style="flex:1 1 auto;min-width:0;overflow:hidden;padding:0;display:flex;align-items:center;justify-content:center;height:100%;">
                     <span class="xzg-group-title-text" style="color:${group.titleColor || '#FFD700'};font-size:${fs}px;font-weight:400;white-space:nowrap;line-height:1;overflow:hidden;text-overflow:ellipsis;${(!showTitle || group.headerHidden) ? 'display:none;' : ''}">${showTitle ? group.title : ''}</span>
                 </div>
                 <div class="xzg-right-fifth" title="点击此区域：该编组绕过，同级其他全部开启" style="display:flex;align-items:center;justify-content:center;width:20%;height:100%;flex-shrink:0;background:${group.headerHidden ? 'transparent' : 'rgba(255,255,255,0.04)'};border-left:${group.headerHidden ? '1px solid transparent' : '1px solid rgba(255,255,255,0.1)'};position:relative;">
-                    <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;${group.headerHidden ? 'display:none;' : ''}">▶</span>
+                    <span class="xzg-right-fifth-icon" style="font-size:9px;color:rgba(255,215,0,0.35);line-height:1;pointer-events:none;${group.headerHidden ? 'display:none;' : ''}">●</span>
                 </div>
                 <button class="xzg-lock-btn" title="锁定/解锁编组，Ctrl+鼠标左键锁定/解锁所有编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;line-height:1;display:flex;align-items:center;"><svg viewBox="0 0 16 16" width="${Math.round(headerHeight * 0.55)}" height="${Math.round(headerHeight * 0.55)}"><path d="M4 7V5a4 4 0 018 0v2h1v7H3V7h1zm2 0h4V5a2 2 0 00-4 0v2z" fill="currentColor"/></svg></button>
                 <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;font-size:${headerHeight * 0.7}px;color:hsla(48,100%,55%,0.5);line-height:1;display:flex;align-items:center;">×</button>
             </div>
+            <button type="button" class="xzg-run-group-btn" title="执行当前编组（F）" aria-label="执行当前编组" style="position:absolute;right:${8 * scale}px;top:${headerHeight + 6 * scale}px;width:${104 * scale}px;height:${104 * scale}px;display:flex;align-items:center;justify-content:center;padding:0;border:none;border-radius:50%;background:transparent;opacity:0;transform:scale(0.75);transition:opacity .3s ease-in-out,transform .3s ease-in-out,visibility .3s ease-in-out;cursor:pointer;pointer-events:auto;visibility:hidden;z-index:5;"><svg viewBox="0 0 104 104" width="100%" height="100%" fill="none" aria-hidden="true" style="display:block;pointer-events:none;"><circle cx="52" cy="52" r="30.7" stroke="#FFD11A" stroke-width="12" fill="none" opacity="0.35" style="filter:blur(3px)"/><circle cx="52" cy="52" r="30.7" stroke="#FFD11A" stroke-width="4.5" fill="none"/></svg></button>
             <div class="xzg-border-left" style="position:absolute;left:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
             <div class="xzg-border-right" style="position:absolute;right:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
             <div class="xzg-border-bottom" style="position:absolute;left:7px;right:7px;bottom:-3px;height:10px;pointer-events:auto;cursor:move;z-index:2;"></div>
@@ -1674,6 +1862,47 @@ const XZGGroup = {
                 <svg viewBox="0 0 14 14" width="14" height="14"><path d="M12 2L2 12 M8 12h4v-4" stroke="#FFD700" stroke-width="1.5" fill="none"/></svg>
             </div>
         `;
+
+        // 悬浮执行按钮：复用 F 键的编组执行方法
+        const runBtn = el.querySelector('.xzg-run-group-btn');
+        for (const eventName of ['pointerdown', 'mousedown', 'mouseup', 'dblclick', 'contextmenu']) {
+            runBtn.addEventListener(eventName, e => { e.stopPropagation(); e.preventDefault(); });
+        }
+        // 按钮覆盖画布时，将滚轮交回画布原有的缩放处理。
+        runBtn.addEventListener('wheel', e => {
+            const canvas = app?.canvas?.canvas;
+            if (!canvas) return;
+            e.preventDefault();
+            e.stopPropagation();
+            canvas.dispatchEvent(new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                clientX: e.clientX,
+                clientY: e.clientY,
+                deltaX: e.deltaX,
+                deltaY: e.deltaY,
+                deltaZ: e.deltaZ,
+                deltaMode: e.deltaMode,
+                ctrlKey: e.ctrlKey,
+                shiftKey: e.shiftKey,
+                altKey: e.altKey,
+                metaKey: e.metaKey,
+                view: window
+            }));
+        }, { passive: false });
+        runBtn.addEventListener('click', async e => {
+            e.stopPropagation();
+            e.preventDefault();
+            if (runBtn.disabled) return;
+            runBtn.disabled = true;
+            runBtn.style.opacity = '0.25';
+            try {
+                await self.queueGroupOutputNodes(group.id);
+            } finally {
+                runBtn.disabled = false;
+                runBtn.style.opacity = '0.5';
+            }
+        });
 
         // 删除按钮
         el.querySelector('.xzg-delete-btn').addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); });
@@ -1968,15 +2197,22 @@ const XZGGroup = {
             </div>
             <div style="margin-bottom:10px;">
                 <label style="color:#ff8c00;font-size:14px;display:block;margin-bottom:6px;font-weight:600;">标题栏设置</label>
-                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
+                <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;flex-wrap:nowrap;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">一键隐藏标题栏</label>
-                    <button type="button" class="xzg-set-header-hidden-toggle" data-checked="${group.headerHidden ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 8px;background:transparent;border:none;cursor:pointer;" title="${'开启后标题栏背景与填充色一致，隐藏三角/竖杠，保留锁定与删除'}">
+                    <button type="button" class="xzg-set-header-hidden-toggle" data-checked="${group.headerHidden ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 8px;background:transparent;border:none;cursor:pointer;" title="${'开启后标题栏背景与填充色一致，隐藏圆点/竖杠，保留锁定与删除'}">
                         <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${group.headerHidden ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
                             <span class="xzg-fade-toggle-thumb" style="position:absolute;left:${group.headerHidden ? '14px' : '2px'};top:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.2s;"></span>
                         </span>
                         <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${group.headerHidden ? '#FFD700' : '#777'};min-width:20px;">${group.headerHidden ? '开' : '关'}</span>
                     </button>
-                    <div style="width:72px;flex-shrink:0;"></div>
+                    <span style="flex:1;min-width:6px;"></span>
+                    <span style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;">悬浮执行按钮</span>
+                    <button type="button" class="xzg-set-runbtn-toggle" data-checked="${group.runBtnEnabled !== false ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 4px;background:transparent;border:none;cursor:pointer;" title="鼠标移入编组时是否显示右上角悬浮执行按钮">
+                        <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${group.runBtnEnabled !== false ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
+                            <span class="xzg-fade-toggle-thumb" style="position:absolute;left:${group.runBtnEnabled !== false ? '14px' : '2px'};top:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.2s;"></span>
+                        </span>
+                        <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${group.runBtnEnabled !== false ? '#FFD700' : '#777'};min-width:20px;">${group.runBtnEnabled !== false ? '开' : '关'}</span>
+                    </button>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
                     <label style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;width:72px;">名称</label>
@@ -2226,8 +2462,32 @@ const XZGGroup = {
                 const isOn = headerHiddenToggle.dataset.checked === 'true';
                 const next = !isOn;
                 updateHeaderHiddenToggle(next);
-                // 实时预览：立即应用并刷新编组视觉（背景/三角/竖杠/标题/左右1/5），无需关闭弹窗
+                // 实时预览：立即应用并刷新编组视觉（背景/圆点/竖杠/标题/左右1/5），无需关闭弹窗
                 group.headerHidden = next;
+                self.updatePositions();
+                const _c = app?.canvas;
+                if (_c) _c.setDirty?.(true, true);
+            });
+        }
+
+        // 悬浮执行按钮开关（独立控制，置于"一键隐藏标题栏"开关右侧）
+        const runBtnToggle = modal.querySelector('.xzg-set-runbtn-toggle');
+        if (runBtnToggle) {
+            const updateRunBtnToggle = (enabled) => {
+                runBtnToggle.dataset.checked = enabled ? 'true' : 'false';
+                const track = runBtnToggle.querySelector('.xzg-fade-toggle-track');
+                const thumb = runBtnToggle.querySelector('.xzg-fade-toggle-thumb');
+                const label = runBtnToggle.querySelector('.xzg-fade-toggle-label');
+                if (track) track.style.background = enabled ? '#dcc85b' : '#a855f7';
+                if (thumb) thumb.style.left = enabled ? '14px' : '2px';
+                if (label) { label.textContent = enabled ? '开' : '关'; label.style.color = enabled ? '#FFD700' : '#777'; }
+            };
+            runBtnToggle.addEventListener('click', () => {
+                const isOn = runBtnToggle.dataset.checked === 'true';
+                const next = !isOn;
+                updateRunBtnToggle(next);
+                // 实时预览：立即应用并刷新编组，无需关闭弹窗
+                group.runBtnEnabled = next;
                 self.updatePositions();
                 const _c = app?.canvas;
                 if (_c) _c.setDirty?.(true, true);
@@ -2417,6 +2677,7 @@ const XZGGroup = {
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
             targetGroup.fadeEnabled = fadeToggle.dataset.checked === 'true';
             if (headerHiddenToggle) targetGroup.headerHidden = headerHiddenToggle.dataset.checked === 'true';
+            if (runBtnToggle) targetGroup.runBtnEnabled = runBtnToggle.dataset.checked === 'true';
             targetGroup.fadeInDuration = parseInt(fadeDurR.value) || 1000;
             if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
 
@@ -2545,7 +2806,7 @@ Ctrl+拖拽编组标题栏或边框：仅移动框体，框内节点不跟随<br
 点击标题栏 🔒 锁图标：锁定/解锁当前编组（锁定后无法拖动和调整大小）<br>
 Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 <div style="color:#FFD700;font-weight:bold;margin-top:6px;">4、执行框内节点</div>
-按键盘 F 键：执行当前编组框内的所有节点`;
+按键盘 F 键，或鼠标移入编组后点击内部右上角的悬浮执行按钮：执行当前编组框内的所有节点`;
             overlay.appendChild(box);
             document.body.appendChild(overlay);
             overlay.addEventListener('click', () => overlay.remove());

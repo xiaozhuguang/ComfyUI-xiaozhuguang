@@ -258,6 +258,10 @@ function _xzgImgSaveEnsureCtxMenu() {
         if (cur) _xzgImageSaveCopyAction(cur);
     });
     menu.appendChild(copyItem);
+    const copySep = document.createElement("div");
+    copySep.setAttribute("aria-hidden", "true");
+    copySep.style.cssText = dividerStyle;
+    menu.appendChild(copySep);
 
     const libraryItem = document.createElement("div");
     libraryItem.style.cssText = menuItemStyle;
@@ -1965,7 +1969,7 @@ app.registerExtension({
                             callback: () => { downloadJpgImage(cur); }
                         });
                     }
-                    saveOpts.push({
+                    saveOpts.push(null, {
                         content: `<span style="color:#ddd;">${xzgTh("收藏到媒体库", "Add to Media Library")}</span>`,
                         callback: () => { _xzgImageSaveMediaLibraryAction(cur, this); }
                     });
