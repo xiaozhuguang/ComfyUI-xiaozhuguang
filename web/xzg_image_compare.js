@@ -1,10 +1,173 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { xzgCopyImageToClipboard } from "./xzg_image_clipboard.js";
+import { xzgTh } from "./xzg_i18n.js";
 
 const XZG_IMAGE_COMPARE_TYPE = "XiaozhuguangImageCompare";
 const XZG_IMAGE_COMPARE_CUSTOM_TYPE = "XiaozhuguangImageCompareCustom";
 const XZG_IMAGE_COMPARE_TYPES = new Set([XZG_IMAGE_COMPARE_TYPE, XZG_IMAGE_COMPARE_CUSTOM_TYPE]);
 const IMAGE_MARGIN = 6;
+
+function copyCompareImage(image) {
+    return xzgCopyImageToClipboard(image).catch((error) => {
+        console.warn("[小珠光图像对比] 复制原图失败:", error);
+    });
+}
+
+function compareCopyOptions(widget) {
+    return (widget?.selected || []).slice(0, 2).map((image, index) => ({
+        content: index === 0
+            ? xzgTh("复制 A 图到剪贴板", "Copy Image A to Clipboard")
+            : xzgTh("复制 B 图到剪贴板", "Copy Image B to Clipboard"),
+        callback: () => copyCompareImage(image),
+    }));
+}
+
+let compareCopyMenu = null;
+let dismissCompareCopyMenu = null;
+
+function closeCompareCopyMenu() {
+    compareCopyMenu?.remove();
+    compareCopyMenu = null;
+    if (dismissCompareCopyMenu) {
+        window.removeEventListener("pointerdown", dismissCompareCopyMenu, true);
+        window.removeEventListener("keydown", dismissCompareCopyMenu, true);
+        dismissCompareCopyMenu = null;
+    }
+}
+
+function showCompareCopyMenu(widget, event) {
+    closeCompareCopyMenu();
+    const menu = document.createElement("div");
+    menu.style.cssText = "position:fixed;z-index:1000010;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:6px;padding:4px 0;min-width:160px;box-shadow:0 4px 16px rgba(0,0,0,.4);font-size:14px;color:var(--input-text);user-select:none;";
+    menu.setAttribute("role", "menu");
+    for (const option of compareCopyOptions(widget)) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.textContent = option.content;
+        item.setAttribute("role", "menuitem");
+        item.style.cssText = "display:block;width:100%;padding:6px 14px;text-align:left;white-space:nowrap;cursor:pointer;background:transparent;border:0;color:inherit;font:inherit;";
+        item.onmouseenter = () => { item.style.background = "var(--comfy-input-bg)"; };
+        item.onmouseleave = () => { item.style.background = "transparent"; };
+        let activated = false;
+        item._xzgActivateCopy = () => {
+            if (activated) return;
+            activated = true;
+            // Start clipboard access while the user gesture is still active.
+            option.callback();
+            closeCompareCopyMenu();
+        };
+        item.onclick = (event) => {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            item._xzgActivateCopy();
+        };
+        menu.appendChild(item);
+    }
+    const x = event?.clientX ?? 0, y = event?.clientY ?? 0;
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    document.body.appendChild(menu);
+    compareCopyMenu = menu;
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(0, Math.min(x, window.innerWidth - rect.width))}px`;
+    menu.style.top = `${Math.max(0, Math.min(y, window.innerHeight - rect.height))}px`;
+    dismissCompareCopyMenu = (e) => {
+        if (e.type === "keydown") {
+            if (e.key === "Escape") closeCompareCopyMenu();
+        } else if (!menu.contains(e.target)) {
+            closeCompareCopyMenu();
+        }
+    };
+    window.addEventListener("pointerdown", dismissCompareCopyMenu, true);
+    window.addEventListener("keydown", dismissCompareCopyMenu, true);
+}
+
+function compareImageAreaAt(canvas, x, y) {
+    const node = canvas?.getNodeAtPosition?.(x, y)
+        || canvas?.getNodeAtPos?.(x, y)
+        || canvas?.graph?.getNodeOnPos?.(x, y);
+    if (!XZG_IMAGE_COMPARE_TYPES.has(node?.type) || node.flags?.collapsed) return null;
+    const widget = node.canvasWidget;
+    const bounds = widget?._previewBounds;
+    if (!bounds || !widget.selected?.length) return null;
+    const [bx, by, bw, bh] = bounds;
+    const lx = x - node.pos[0], ly = y - node.pos[1];
+    return bw > 0 && bh > 0 && lx >= bx && lx <= bx + bw && ly >= by && ly <= by + bh ? widget : null;
+}
+
+function compareWidgetAtEvent(canvas, event) {
+    let point;
+    if (Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)) {
+        try { point = canvas.convertEventToCanvasCoordinates?.(event); } catch (_) {}
+        if (!point) {
+            const rect = canvas.canvas?.getBoundingClientRect();
+            if (rect && canvas.ds?.scale) {
+                point = [(event.clientX - rect.left) / canvas.ds.scale - canvas.ds.offset[0],
+                    (event.clientY - rect.top) / canvas.ds.scale - canvas.ds.offset[1]];
+            }
+        }
+    }
+    if (!point && Number.isFinite(event?.canvasX) && Number.isFinite(event?.canvasY)) {
+        point = [event.canvasX, event.canvasY];
+    }
+    return point ? compareImageAreaAt(canvas, point[0], point[1]) : null;
+}
+
+function installCompareCopyHooks(retry = 0) {
+    const canvas = app.canvas, canvasEl = canvas?.canvas;
+    if (!canvasEl) {
+        if (retry < 60) setTimeout(() => installCompareCopyHooks(retry + 1), 100);
+        return;
+    }
+    if (window._xzgCompareCopyHooksInstalled) return;
+    window._xzgCompareCopyHooksInstalled = true;
+    // Capture before either the browser or the graph's native context menu.
+    const intercept = (event) => {
+        if (compareCopyMenu?.contains(event.target)) {
+            // Handle menu input at window capture before graph handlers can
+            // dismiss the menu or swallow the later click event.
+            const item = [...compareCopyMenu.children].find(child => child.contains(event.target));
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            if (event.type === "pointerdown" && event.button === 0) item?._xzgActivateCopy?.();
+            return;
+        }
+        if (event.type !== "contextmenu" && event.button !== 2) return;
+        const element = app.canvas?.canvas;
+        if (event.target !== element && !element?.contains?.(event.target)) return;
+        const widget = compareWidgetAtEvent(app.canvas, event);
+        if (!widget) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        showCompareCopyMenu(widget, event);
+    };
+    for (const type of ["pointerdown", "mousedown", "contextmenu"]) {
+        window.addEventListener(type, intercept, true);
+    }
+    const proto = canvas.constructor?.prototype;
+    if (!proto || proto._xzgCompareCopyPatched) return;
+    proto._xzgCompareCopyPatched = true;
+    for (const name of ["processMouseDown", "processContextMenu"]) {
+        const original = proto[name];
+        if (typeof original !== "function") continue;
+        proto[name] = function (...args) {
+            const event = name === "processContextMenu" ? args[1] : args[0];
+            if (name === "processContextMenu" || event?.button === 2) {
+                const widget = compareWidgetAtEvent(this, event);
+                if (widget) {
+                    event?.preventDefault?.();
+                    event?.stopPropagation?.();
+                    showCompareCopyMenu(widget, event);
+                    return name === "processMouseDown" ? true : undefined;
+                }
+            }
+            return original.apply(this, args);
+        };
+    }
+}
 
 function imageUrl(data) {
     return api.apiURL(
@@ -311,6 +474,7 @@ class XzgImageCompareWidget {
         }
 
         // Slide 模式对比
+        this._previewBounds = [0, y, width, Math.max(0, node.size[1] - y - IMAGE_MARGIN)];
         this._drawSlide(ctx, node, width, y);
     }
 
@@ -458,6 +622,8 @@ class XiaozhuguangImageCompareNode {
                 selected: i === 0,
                 url: (d.has_alpha && d.transparent_filename) ? transparentImageUrl(d) : imageUrl(d),
                 has_alpha: !!d.has_alpha,
+                real_token: d.real_token,
+                real_index: d.real_index,
                 real_width: d.real_width,
                 real_height: d.real_height,
                 preview_checker_cell: d.preview_checker_cell,
@@ -469,6 +635,8 @@ class XiaozhuguangImageCompareNode {
                 selected: i === 0,
                 url: (d.has_alpha && d.transparent_filename) ? transparentImageUrl(d) : imageUrl(d),
                 has_alpha: !!d.has_alpha,
+                real_token: d.real_token,
+                real_index: d.real_index,
                 real_width: d.real_width,
                 real_height: d.real_height,
                 preview_checker_cell: d.preview_checker_cell,
@@ -553,6 +721,9 @@ class XiaozhuguangImageCompareNode {
 // ============ 注册扩展 ============
 app.registerExtension({
     name: "xiaozhuguang.ImageCompare",
+    setup() {
+        installCompareCopyHooks();
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (XZG_IMAGE_COMPARE_TYPES.has(nodeData.name)) {
             // 禁止默认的 PreviewImage 预览行为（小窗口 + X 按钮）
@@ -647,6 +818,14 @@ app.registerExtension({
 
             nodeType.prototype.getHelp = function () {
                 return proto.getHelp.call(this);
+            };
+
+            const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+                origGetExtraMenuOptions?.call(this, canvas, options);
+                if (!Array.isArray(options)) return;
+                const copyOptions = compareCopyOptions(this.canvasWidget);
+                if (copyOptions.length) options.unshift(...copyOptions, null);
             };
 
             // 最小尺寸限制

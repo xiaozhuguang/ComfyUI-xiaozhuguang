@@ -5,6 +5,8 @@ import folder_paths
 import numpy as np
 import torch
 from PIL import Image
+import secrets
+from .xzg_image_save import REAL_STORE
 
 
 class XiaozhuguangImageCompare(PreviewImage):
@@ -54,8 +56,16 @@ class XiaozhuguangImageCompare(PreviewImage):
         output_dir = folder_paths.get_temp_directory()
         os.makedirs(output_dir, exist_ok=True)
         results = []
+        # Keep original pixels for on-demand clipboard PNG encoding, just as
+        # the image save nodes do. Preview compression must not affect copying.
+        token = secrets.token_hex(16)
+        REAL_STORE[token] = []
+        while len(REAL_STORE) > 100:
+            REAL_STORE.pop(next(iter(REAL_STORE)), None)
 
         for i, tensor in enumerate(images):
+            real_np = (tensor.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+            REAL_STORE[token].append(real_np)
             # GPU 加速缩放: [B,H,W,C] -> [1,C,H,W] -> resize -> [H,W,C]
             img = tensor.unsqueeze(0).permute(0, 3, 1, 2)
             h, w = img.shape[2], img.shape[3]
@@ -90,6 +100,8 @@ class XiaozhuguangImageCompare(PreviewImage):
                 "filename": filename,
                 "subfolder": "",
                 "type": "temp",
+                "real_token": token,
+                "real_index": i,
                 "has_alpha": has_alpha,
                 "transparent_filename": transparent_filename,
                 "transparent_subfolder": "",

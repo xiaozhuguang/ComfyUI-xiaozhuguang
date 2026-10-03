@@ -459,6 +459,8 @@ let _onRunChange = null;
 // 曲线记录保存到浏览器本机 IndexedDB，不写入 localStorage、云端或配置备份。
 let _runRecordingEnabled = true;
 let _activeRunMetrics = null;
+const XZG_RUN_METRICS_TAIL_MS = 2000; // 工作流结束后继续记录 2 秒资源释放过程，不计入运行时长
+let _runMetricsTailTimer = null;
 let _lastRunMetrics = null;
 let _currentRunNode = null;
 let _runOwnerGraph = null;
@@ -541,8 +543,13 @@ async function restoreRunMetricsHistory() {
 }
 
 function finalizeActiveRunMetrics(status, finishedAt = Date.now()) {
+  if (_runMetricsTailTimer != null) clearTimeout(_runMetricsTailTimer);
+  _runMetricsTailTimer = null;
   const record = _activeRunMetrics;
   if (!record) return null;
+  finishedAt = record.finishedAt ?? finishedAt;
+  finishRunNodeInterval(finishedAt);
+  status = record.finishedAt != null ? record.status : status;
   record.durationMs = Math.max(0, finishedAt - record.startedAt);
   record.finishedAt = finishedAt;
   record.status = status;
@@ -558,8 +565,12 @@ function finalizeActiveRunMetrics(status, finishedAt = Date.now()) {
 }
 
 function captureRunMetrics(data) {
-  if (!_runRecordingEnabled || !_run.running || !_activeRunMetrics || !data) return;
+  if (!_runRecordingEnabled || !_activeRunMetrics || !data) return;
   const sourceTime = Number(data.time) || 0;
+  // 上一次请求的迟到响应不能归入新任务，也不能延长结束后的采样窗口。
+  if (sourceTime && sourceTime * 1000 < _activeRunMetrics.startedAt) return;
+  if (_activeRunMetrics.finishedAt != null &&
+      Date.now() > _activeRunMetrics.finishedAt + XZG_RUN_METRICS_TAIL_MS) return;
   if (sourceTime && sourceTime === _activeRunMetrics.lastSourceTime) return;
   const now = Date.now();
   if (now - _activeRunMetrics.lastCapturedAt < 850) return;
@@ -626,8 +637,25 @@ function beginRunMetricsCapture(startedAt = Date.now()) {
     gpuNames: [],
     gpuIds: [],
     samples: [],
+    nodeIntervals: [], // 独立记录执行区间，避免短节点落在两次资源采样之间
   };
   _currentRunNode = null;
+}
+
+function finishRunNodeInterval(at = Date.now()) {
+  const record = _activeRunMetrics;
+  const interval = record?.nodeIntervals?.at(-1);
+  if (interval && interval.endMs == null) {
+    interval.endMs = Math.max(interval.startMs, at - record.startedAt);
+  }
+}
+
+function nodeAtRunTime(record, elapsedMs, fallback = null) {
+  if (!Array.isArray(record?.nodeIntervals)) return fallback; // 兼容旧记录
+  if (record.finishedAt != null && elapsedMs >= record.finishedAt - record.startedAt) return null;
+  const interval = record.nodeIntervals.findLast((item) =>
+    elapsedMs >= item.startMs && (item.endMs == null || elapsedMs < item.endMs));
+  return interval?.node || null;
 }
 
 function fmtDur(ms) {
@@ -783,7 +811,7 @@ function displayNodeId(id) {
 
 function startRun() {
   if (_run.running) return;
-  _activeRunMetrics = null;
+  if (_activeRunMetrics) finalizeActiveRunMetrics(_activeRunMetrics.status);
   _run.running = true;
   _run.name = resolveWorkflowName(); // 起跑时冻结工作流名
   _run.startTs = Date.now();
@@ -800,7 +828,18 @@ function stopRun(status) {
   _run.running = false;
   const end = Date.now();
   _lastRunDuration = Math.max(0, end - _run.startTs);
-  finalizeActiveRunMetrics(status, end);
+  finishRunNodeInterval(end);
+  _currentRunNode = null;
+  if (_activeRunMetrics) {
+    const record = _activeRunMetrics;
+    record.finishedAt = end;
+    record.durationMs = Math.max(0, end - record.startedAt);
+    record.status = status;
+    _runMetricsTailTimer = setTimeout(() => {
+      if (_activeRunMetrics === record) finalizeActiveRunMetrics(status, end);
+    }, XZG_RUN_METRICS_TAIL_MS);
+    try { _liveRunChartRefresh?.(); } catch (error) { console.warn("[小珠光] 实时曲线刷新失败:", error); }
+  }
   _run.startTs = 0;
   if (_onRunChange) _onRunChange();
 }
@@ -835,6 +874,7 @@ function registerRunEvents() {
     if (nodeId != null && !_run.running) startRun();
     if (!_run.running) return;
     if (nodeId == null) {
+      finishRunNodeInterval();
       _currentRunNode = null;
       return;
     }
@@ -854,7 +894,17 @@ function registerRunEvents() {
       || node?.type
       || node?.constructor?.type
       || "节点";
-    _currentRunNode = { id: resolved ? nodeId : (resolvedDisplay ? displayNodeId : nodeId), title: String(title) };
+    const nextNode = { id: resolved ? nodeId : (resolvedDisplay ? displayNodeId : nodeId), title: String(title) };
+    if (_currentRunNode?.id !== nextNode.id) {
+      const at = Date.now();
+      finishRunNodeInterval(at);
+      if (_activeRunMetrics) {
+        _activeRunMetrics.nodeIntervals.push({
+          startMs: Math.max(0, at - _activeRunMetrics.startedAt), endMs: null, node: nextNode,
+        });
+      }
+    }
+    _currentRunNode = nextNode;
   };
   const executionEmitters = new Set([api, app.api].filter((emitter) => typeof emitter?.addEventListener === "function"));
   for (const emitter of executionEmitters) emitter.addEventListener("executing", onExecuting);
@@ -869,7 +919,10 @@ function registerRunEvents() {
     const finished = typeof finishedId === "object"
       ? (finishedId.id ?? finishedId.node_id ?? finishedId.nodeId)
       : finishedId;
-    if (finished != null && String(finished) === String(_currentRunNode.id)) _currentRunNode = null;
+    if (finished != null && String(finished) === String(_currentRunNode.id)) {
+      finishRunNodeInterval();
+      _currentRunNode = null;
+    }
   };
   for (const emitter of executionEmitters) emitter.addEventListener("executed", onExecuted);
   // 工作流停止：成功 / 出错 / 中断
@@ -879,6 +932,7 @@ function registerRunEvents() {
   // 页面关闭时仍在运行：记一条"中断"，避免历史里悬空
   window.addEventListener("beforeunload", () => {
     if (_run.running) stopRun("中断");
+    if (_activeRunMetrics) finalizeActiveRunMetrics(_activeRunMetrics.status);
   });
 }
 
@@ -1233,7 +1287,7 @@ function createFloatWindow() {
   }
 
   async function poll() {
-    if (hidden && !(_runRecordingEnabled && _run.running)) return;
+    if (hidden && !(_runRecordingEnabled && _activeRunMetrics)) return;
     try {
       const res = await fetch(XZG_API, { cache: "no-store" });
       if (!res.ok) throw new Error("http " + res.status);
@@ -1325,6 +1379,7 @@ let _monitorInitialized = false; // 首次系统监测响应完成前隐藏时�
 let _menuBtn = null;     // 顶部栏按钮
 let _themeMenuBtn = null;
 let _runTimerBtn = null;
+let _capsuleFloating = false; // 顶部胶囊是否已拖出工具栏呈悬浮状态
 let _themeContextMenu = null;
 
 window.XZGMonitorConfig = {
@@ -1497,7 +1552,7 @@ function showContextMenu(btn, chartRequest = null) {
       _runMetricsHistory = [];
       _lastRunMetrics = null;
       _lastRunDuration = 0;
-      const activeId = _run.running ? _activeRunMetrics?.id : null;
+      const activeId = _activeRunMetrics?.id;
       populateRunSelector(activeId);
       if (activeId) {
         chartCanvas.style.display = "block";
@@ -1607,8 +1662,8 @@ function showContextMenu(btn, chartRequest = null) {
   const closeChartButton = document.createElement("button");
   closeChartButton.type = "button";
   closeChartButton.title = "关闭曲线观察界面";
-  // 绝对定位到面板右上角；透明大热区（104px，视觉 × 的 2 倍），内部红色 × 视觉保持原大小。
-  closeChartButton.style.cssText = "position:absolute;top:-6px;right:-6px;width:104px;height:104px;padding:0;border:0;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;";
+  // 点击区域限制在关闭图标附近，避免覆盖下方列表。
+  closeChartButton.style.cssText = "position:absolute;top:0;right:0;width:32px;height:32px;min-width:0;min-height:0;padding:0;border:0;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;box-sizing:border-box;";
   const closeGlyph = document.createElement("span");
   closeGlyph.textContent = "×";
   closeGlyph.style.cssText = "color:#ff3b30;font-size:36px;font-weight:600;line-height:1;pointer-events:none;user-select:none;";
@@ -1886,7 +1941,9 @@ function showContextMenu(btn, chartRequest = null) {
       ctx.fillStyle = "#fff"; ctx.textAlign = "center";
       ctx.fillText(chartHoverInfo.time, timeX + timeWidth / 2, timeY + 11);
       const node = chartHoverInfo.node;
-      let nodeLabel = node ? `${displayNodeId(node.id)} · ${node.title}` : "无对应执行节点";
+      // 无执行节点（例如结束后的补充采样）不绘制节点名称及背景框。
+      if (node) {
+      let nodeLabel = `${displayNodeId(node.id)} · ${node.title}`;
       ctx.font = "bold 15px Segoe UI, sans-serif";
       const maxNodeWidth = Math.max(90, w - pad.l - pad.r - 20);
       while (nodeLabel.length > 4 && ctx.measureText(nodeLabel).width > maxNodeWidth - 14) {
@@ -1905,6 +1962,7 @@ function showContextMenu(btn, chartRequest = null) {
       ctx.fillRect(nodeLabelX, nodeLabelY, nodeLabelWidth, 23);
       ctx.fillStyle = "#11151b"; ctx.textAlign = "left";
       ctx.fillText(nodeLabel, nodeLabelX + 7, nodeLabelY + 11.5);
+      }
       ctx.restore();
     }
   };
@@ -1943,7 +2001,7 @@ function showContextMenu(btn, chartRequest = null) {
     const elapsed = Math.floor(seconds);
     const time = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
     const sample = ratio < .5 ? leftData.sample : rightData.sample;
-    const node = sample?.[3];
+    const node = nodeAtRunTime(_selectedRunMetrics, seconds * 1000, sample?.[3]);
     chartHoverInfo = { x, y: Math.max(pad.t, Math.min(h - pad.b, y)), value, time, node };
     drawRunChart();
   });
@@ -1954,12 +2012,12 @@ function showContextMenu(btn, chartRequest = null) {
   });
   const populateRunSelector = (preferredId = null) => {
     runSelect.replaceChildren();
-    const hasActiveRun = !!(_run.running && _activeRunMetrics);
+    const hasActiveRun = !!_activeRunMetrics;
     if (hasActiveRun) {
       const option = document.createElement("option");
       option.value = _activeRunMetrics.id;
-      const workflowName = `● 正在运行 · ${displayName(_activeRunMetrics.workflowName) || "未命名工作流"}`;
-      const activeDuration = Math.max(0, Date.now() - _activeRunMetrics.startedAt);
+      const workflowName = `● ${_run.running ? "正在运行" : "结束后采样"} · ${displayName(_activeRunMetrics.workflowName) || "未命名工作流"}`;
+      const activeDuration = _activeRunMetrics.durationMs ?? Math.max(0, Date.now() - _activeRunMetrics.startedAt);
       const previousDuration = _runMetricsHistory.length ? runMetricsDurationMs(_runMetricsHistory[0]) : null;
       option.textContent = workflowName;
       option.dataset.workflowName = workflowName;
@@ -2044,7 +2102,7 @@ function showContextMenu(btn, chartRequest = null) {
   runSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
   _liveRunChartRefresh = () => {
     if (!isChartWindow && chartPanel.style.display !== "block") return;
-    const selectedId = _activeRunMetrics && _run.running ? _activeRunMetrics.id : runSelect.value;
+    const selectedId = _activeRunMetrics ? _activeRunMetrics.id : runSelect.value;
     const selectedMetric = chartSelect.value;
     populateRunSelector(selectedId);
     populateRunChart(selectedMetric);
@@ -2069,7 +2127,7 @@ function showContextMenu(btn, chartRequest = null) {
       return;
     }
     chartCanvas.style.display = "block";
-    closeChartButton.style.display = "block";
+    closeChartButton.style.display = "flex";
     populateRunSelector();
     populateRunChart();
     syncInlineClearButton();
@@ -2334,13 +2392,14 @@ function showContextMenu(btn, chartRequest = null) {
     });
     chartCanvasResizeObserver.observe(chartCanvas);
     // 窗口模式：关闭按钮移到菜单容器上，垂直居中对齐标题栏行（标题栏高约30px）。
-    // 热区104px，中心放在标题栏中线处，让红色×与标题栏同一行。
+    // 32px 点击区域完整位于标题栏内，不向下覆盖列表。
     menu.appendChild(closeChartButton);
-    closeChartButton.style.top = "-30px";
-    closeChartButton.style.right = "2px";
+    closeChartButton.style.top = "4px";
+    closeChartButton.style.right = "4px";
+    chartMenuTitle.style.paddingRight = "36px";
     if (_runMetricsHistory.length || _activeRunMetrics?.samples?.length >= 2) {
       chartCanvas.style.display = "block";
-      closeChartButton.style.display = "block";
+      closeChartButton.style.display = "flex";
       populateRunSelector();
       populateRunChart(chartRequest.chartKey);
     } else {
@@ -2500,6 +2559,153 @@ function attachRunTimerContextMenu(btn) {
   btn.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     event.stopPropagation();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 顶部胶囊拖拽：可拖出工具栏任意悬浮，也可拖回工具栏吸附。
+// 悬浮状态与位置持久化到本地（localStorage，仅本机），不参与云端位置同步。
+// 拖动采用位移阈值判定，区分单击/双击（阈值内不算拖动，不影响现有交互）。
+// ---------------------------------------------------------------------------
+
+const XZG_CAPSULE_DRAG_KEY = "xzg-capsule-drag-v1";
+
+function loadCapsuleState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(XZG_CAPSULE_DRAG_KEY) || "{}");
+    return {
+      floating: !!raw.floating && raw.floating !== false,
+      left: raw.left || "",
+      top: raw.top || "",
+    };
+  } catch (e) {
+    return { floating: false, left: "", top: "" };
+  }
+}
+
+function saveCapsuleState(state) {
+  try {
+    localStorage.setItem(XZG_CAPSULE_DRAG_KEY, JSON.stringify(state));
+  } catch (e) { /* ignore */ }
+}
+
+/** 把胶囊从工具栏「抽出」为 fixed 定位的悬浮元素，并定位到 left/top */
+function floatCapsule(btn, left, top) {
+  if (!btn) return;
+  btn.style.position = "fixed";
+  btn.style.left = left;
+  btn.style.top = top;
+  btn.style.right = "auto";
+  btn.style.bottom = "auto";
+  btn.style.zIndex = "90000";
+  btn.style.margin = "0";
+  if (btn.parentNode !== document.body) document.body.appendChild(btn);
+  _capsuleFloating = true;
+  const state = loadCapsuleState();
+  state.floating = true;
+  if (left) state.left = left;
+  if (top) state.top = top;
+  saveCapsuleState(state);
+}
+
+/** 把悬浮中的胶囊吸附回顶部工具栏（还原为普通 flex 子元素） */
+function dockCapsule(btn) {
+  if (!btn) return;
+  const container = findMenuContainer();
+  btn.style.position = "relative";
+  btn.style.left = "";
+  btn.style.top = "";
+  btn.style.right = "";
+  btn.style.bottom = "";
+  btn.style.zIndex = "";
+  btn.style.margin = "auto 0";
+  if (container && btn.parentNode !== container) {
+    container.insertBefore(btn, container.firstChild);
+  }
+  window.XZGOrderTopMenuButtons?.(container);
+  _capsuleFloating = false;
+  const state = loadCapsuleState();
+  state.floating = false;
+  state.left = "";
+  state.top = "";
+  saveCapsuleState(state);
+}
+
+/** 页面加载时恢复上次的悬浮/吸附状态 */
+function restoreCapsuleState(btn) {
+  const state = loadCapsuleState();
+  if (state.floating && state.left) {
+    floatCapsule(btn, state.left, state.top);
+  } else {
+    dockCapsule(btn);
+  }
+}
+
+/** 为顶部胶囊挂载拖拽逻辑，幂等 */
+function attachCapsuleDrag(btn) {
+  if (!btn || btn.dataset.xzgCapsuleDrag === "true") return;
+  btn.dataset.xzgCapsuleDrag = "true";
+  const DRAG_THRESHOLD = 6; // 位移超过该像素才判定为拖动，以区分单击/双击
+
+  let candidate = false; // 按下待判定
+  let dragging = false;  // 正在拖动
+  let dx = 0;
+  let dy = 0;
+  let startX = 0;
+  let startY = 0;
+
+  btn.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return; // 仅左键拖动
+    const rect = btn.getBoundingClientRect();
+    dx = e.clientX - rect.left;
+    dy = e.clientY - rect.top;
+    startX = e.clientX;
+    startY = e.clientY;
+    candidate = true;
+    dragging = false;
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!candidate) return;
+    const moved = Math.hypot(e.clientX - startX, e.clientY - startY);
+    if (!dragging && moved < DRAG_THRESHOLD) return;
+    if (!dragging) {
+      // 首次越过阈值：把胶囊抽出为悬浮元素并跟随鼠标
+      dragging = true;
+      if (!_capsuleFloating) {
+        floatCapsule(btn, `${e.clientX - dx}px`, `${e.clientY - dy}px`);
+      }
+    }
+    btn.style.left = `${e.clientX - dx}px`;
+    btn.style.top = `${e.clientY - dy}px`;
+    btn.style.right = "auto";
+    btn.style.bottom = "auto";
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (!candidate && !dragging) return;
+    candidate = false;
+    if (!dragging) return;
+    dragging = false;
+    // 松手时判断是否落入工具栏吸附区（容器包围盒外扩 24px）
+    const container = findMenuContainer();
+    let snapped = false;
+    if (container && container.isConnected) {
+      const r = container.getBoundingClientRect();
+      const pad = 24;
+      snapped = e.clientX >= r.left - pad && e.clientX <= r.right + pad &&
+                 e.clientY >= r.top - pad && e.clientY <= r.bottom + pad;
+    }
+    if (snapped) {
+      dockCapsule(btn);
+    } else {
+      // 保持悬浮并持久化位置
+      const state = loadCapsuleState();
+      state.floating = true;
+      state.left = btn.style.left;
+      state.top = btn.style.top;
+      saveCapsuleState(state);
+    }
   });
 }
 
@@ -2871,6 +3077,8 @@ function injectMenuButton(retries) {
     }
     _runTimerBtn = document.getElementById(XZG_RUN_TIMER_BTN_ID) || buildRunTimerButton();
     attachRunTimerContextMenu(_runTimerBtn);
+    attachCapsuleDrag(_runTimerBtn);
+    restoreCapsuleState(_runTimerBtn);
     _runTimerBtn.style.display = _floatHidden ? "none" : "flex";
     _runTimerBtn.style.visibility = _monitorInitialized ? "visible" : "hidden";
     applyTimerEffect();
@@ -2880,8 +3088,11 @@ function injectMenuButton(retries) {
         _runTimerBtn.querySelector("#xzg-toolbar-run-time"),
       );
     }
-    const firstMenuItem = container.firstElementChild;
-    if (firstMenuItem !== _runTimerBtn) container.insertBefore(_runTimerBtn, firstMenuItem);
+    // 若胶囊当前处于悬浮状态（拖出工具栏），不把它重新拽回工具栏
+    if (!_capsuleFloating) {
+      const firstMenuItem = container.firstElementChild;
+      if (firstMenuItem !== _runTimerBtn) container.insertBefore(_runTimerBtn, firstMenuItem);
+    }
     refreshMenuBtn();
     window.XZGOrderTopMenuButtons?.(container);
     return;

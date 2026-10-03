@@ -311,6 +311,31 @@ try:
                 return deco
         _xzg_save_real_routes = _Nop()
 
+    @_xzg_save_real_routes.post("/xzg_copy_image_clipboard")
+    @xzg_safe_handler
+    async def xzg_copy_image_clipboard(request):
+        from .xzg_windows_clipboard import is_local_clipboard_request, copy_windows_image
+        if not is_local_clipboard_request(request):
+            return web.json_response({"error": "原生剪贴板仅允许本机同源访问"}, status=403)
+        if os.name != "nt":
+            return web.json_response({"error": "原生图片剪贴板仅支持 Windows"}, status=501)
+        try:
+            data = await request.json()
+            token = data.get("token")
+            index = int(data.get("index", 0))
+            images = REAL_STORE.get(token)
+            if not images or index < 0 or index >= len(images) or images[index] is None:
+                return web.json_response({"error": "高清原图不可用，请重新执行保存节点"}, status=404)
+            image = Image.fromarray(images[index])
+        except (ValueError, TypeError, AttributeError):
+            return web.json_response({"error": "图片参数无效"}, status=400)
+        import asyncio
+        try:
+            await asyncio.to_thread(copy_windows_image, image)
+        except Exception as error:
+            return web.json_response({"error": str(error)}, status=500)
+        return web.json_response({"copied": True, "native": True})
+
     @_xzg_save_real_routes.post("/xzg_save_real")
     @xzg_safe_handler
     async def xzg_save_real(request):

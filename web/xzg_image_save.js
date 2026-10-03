@@ -5,6 +5,7 @@ import {
     downloadLazyJpg,
 } from "./xzg_save_utils.js";
 import { xzgT, xzgTh } from "./xzg_i18n.js";
+import { xzgCopyImageToClipboard } from "./xzg_image_clipboard.js";
 
 const XZG_IMAGE_SAVE_TYPE = "XiaozhuguangImageSave";
 const XZG_IMAGE_SAVE_CUSTOM_TYPE = "XiaozhuguangImageSaveCustom";
@@ -23,6 +24,12 @@ let _xzgImgSaveCtxCurrentWidget = null;
 
 function _xzgImageSaveFormat(imgData, node) {
     return imgData?.has_alpha ? "PNG" : (node?._xzgFormatWidget?.value || "JPG");
+}
+
+function _xzgImageSaveCopyAction(imgData) {
+    return xzgCopyImageToClipboard(imgData).catch((error) => {
+        console.warn("[小珠光图像保存] 复制原图失败:", error);
+    });
 }
 
 async function _xzgAddImageToMediaLibrary(imgData, node) {
@@ -237,6 +244,20 @@ function _xzgImgSaveEnsureCtxMenu() {
     jpgSep.setAttribute("aria-hidden", "true");
     jpgSep.style.cssText = dividerStyle;
     menu.appendChild(jpgSep);
+
+    const copyItem = document.createElement("div");
+    copyItem.style.cssText = menuItemStyle;
+    copyItem.textContent = xzgTh("复制图片到剪贴板", "Copy Image to Clipboard");
+    copyItem.addEventListener("mouseenter", () => { copyItem.style.background = "var(--comfy-input-bg)"; });
+    copyItem.addEventListener("mouseleave", () => { copyItem.style.background = ""; });
+    copyItem.addEventListener("click", () => {
+        const w = _xzgImgSaveCtxCurrentWidget;
+        _xzgImgSaveHideCtxMenu();
+        const imgs = w?._value?.images || [];
+        const cur = imgs[w?.currentIndex] || imgs[0];
+        if (cur) _xzgImageSaveCopyAction(cur);
+    });
+    menu.appendChild(copyItem);
 
     const libraryItem = document.createElement("div");
     libraryItem.style.cssText = menuItemStyle;
@@ -1904,7 +1925,7 @@ app.registerExtension({
                 };
             })(nodeType.prototype.onNodeCreated);
 
-            // 右键菜单：化神级保留「发送到小珠光图片加载器」；普通保存节点仅提供下载
+            // 两种保存节点均支持原图复制；化神级额外提供发送到加载器。
             const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
@@ -1929,7 +1950,10 @@ app.registerExtension({
                     const cur = w.value.images[w.currentIndex] || w.value.images[0];
                     // 含 alpha 通道时强制 PNG（JPG 无法保留透明度）
                     const fmt = (cur && cur.has_alpha) ? "PNG" : (this._xzgFormatWidget?.value || "JPG");
-                    const saveOpts = [];
+                    const saveOpts = [{
+                        content: xzgTh("复制图片到剪贴板", "Copy Image to Clipboard"),
+                        callback: () => { _xzgImageSaveCopyAction(cur); }
+                    }];
                     if (fmt === "PNG") {
                         saveOpts.push({
                             content: `<span style="color:#4CAF50;">${xzgTh("PNG保存", "Save PNG")}</span>`,
