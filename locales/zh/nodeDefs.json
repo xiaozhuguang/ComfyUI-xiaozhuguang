@@ -396,7 +396,7 @@
       "mask": { "name": "遮罩" },
       "resize_mode": { "name": "缩放模式" },
       "Box_grow_factor": { "name": "扩展倍数" },
-      "megapixels": { "name": "百万像素" },
+      "kilopixels": { "name": "千像素" },
       "divisible_by": { "name": "整除数" },
       "ratio": { "name": "比例" },
       "startup_threshold": { "name": "启动阈值" },
@@ -524,7 +524,7 @@
     }
   },
   "XiaozhuguangBigDisplay": {
-    "display_name": "小珠光大字展示",
+    "display_name": "小珠光展示任意",
     "inputs": {
       "input": { "name": "输入" }
     }

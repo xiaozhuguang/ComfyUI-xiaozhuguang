@@ -93,6 +93,11 @@ class XiaozhuguangATR:
 
         orig8 = np.clip(original_image.cpu().numpy() * 255, 0, 255).astype(np.uint8)
         proc8 = np.clip(processed_image.cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        # 兼容上游 4 通道(RGBA)图像：截断为 3 通道 RGB，避免混合时广播形状不匹配
+        if orig8.ndim == 4 and orig8.shape[-1] == 4:
+            orig8 = orig8[..., :3]
+        if proc8.ndim == 4 and proc8.shape[-1] == 4:
+            proc8 = proc8[..., :3]
 
         mask8 = None
         mask_batched = False

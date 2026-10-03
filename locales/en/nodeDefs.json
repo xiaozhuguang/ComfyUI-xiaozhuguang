@@ -396,7 +396,7 @@
       "mask": { "name": "mask" },
       "resize_mode": { "name": "resize mode" },
       "Box_grow_factor": { "name": "box grow factor" },
-      "megapixels": { "name": "megapixels" },
+      "kilopixels": { "name": "kilopixels" },
       "divisible_by": { "name": "divisible by" },
       "ratio": { "name": "ratio" },
       "startup_threshold": { "name": "startup threshold" },
@@ -505,7 +505,7 @@
     "inputs": { "图像": { "name": "images" }, "输出数量": { "name": "output count" } }
   },
   "XiaozhuguangBigDisplay": {
-    "display_name": "Big Display",
+    "display_name": "Show Anything",
     "inputs": {
       "input": { "name": "input" }
     }

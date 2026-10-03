@@ -201,6 +201,7 @@ export function showMediaLibrary({ addImages, alertUser, confirmUser, kind = "im
         window.removeEventListener("keyup", onShiftKeyUp, true);
         window.removeEventListener("blur", onShiftKeyUp);
         releaseThumbnailUrls();
+        gridResizeObserver?.disconnect();
         overlay.remove();
     };
     header.append(title, search);
@@ -360,6 +361,11 @@ let lastWindowKey = "";
     // 防重复：同一时刻只保留一个媒体库实例，避免多个弹窗持有独立选中集合导致 Delete 状态错乱
     document.querySelectorAll('[data-xzg-media-library="1"]').forEach(el => el.remove());
     document.body.appendChild(overlay);
+    // 面板/窗口尺寸变化时自动重排：让缩略图随 grid 可用宽度自适应
+    const gridResizeObserver = new ResizeObserver(() => {
+        if (grid.isConnected) render(false);
+    });
+    gridResizeObserver.observe(grid);
     // 抢占键盘焦点到弹窗内，避免 ComfyUI 全局快捷键把 Delete 当成"删除节点"等操作拦截掉
     dialog.focus();
 
@@ -695,9 +701,21 @@ let lastWindowKey = "";
             return;
         }
         virtualStage.querySelector('[data-xzg-media-empty="1"]')?.remove();
-        const cols = isAudio ? 1 : Math.min(8, Math.max(4, visible.length));
         const gap = isAudio ? 6 : 2;
         const inset = 8;
+        // 列数按可用宽度动态计算，使缩略图大小随面板/窗口尺寸自适应：
+        // 目标单元格约 targetCell 宽，且不小于 minCell，也不超过图片数量与上限。
+        const availW = grid.clientWidth - inset * 2;
+        const targetCell = 200;
+        const minCell = 120;
+        let cols;
+        if (isAudio) {
+            cols = 1;
+        } else {
+            const byTarget = Math.max(1, Math.floor((availW + gap) / (targetCell + gap)));
+            const maxByMin = Math.max(1, Math.floor((availW + gap) / (minCell + gap)));
+            cols = Math.max(1, Math.min(byTarget, maxByMin, Math.max(1, visible.length), 20));
+        }
         const cellWidth = Math.max(1, (grid.clientWidth - inset * 2 - gap * (cols - 1)) / cols);
         const labelHeight = 20;
         const cardHeight = isAudio ? 80 : cellWidth + labelHeight;

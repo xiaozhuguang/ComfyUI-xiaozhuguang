@@ -2951,7 +2951,7 @@ class Xiaozhuguang {
                 // 单节点收藏
                 const isFavorited = self.isNodeFavorited(node.type);
                 let favOption = {
-                    content: isFavorited ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏','Unfavorite')}</span>` : `<span style="color:#FFD700;">☆ ${xzgT('收藏节点','Favorite Node')}</span>`,
+                    content: isFavorited ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏节点','Unfavorite Node')}</span>` : `<span style="color:#FFD700;">☆ ${xzgT('收藏节点','Favorite Node')}</span>`,
                     callback: () => {
                         if (isFavorited) {
                             self.removeFavorite(node.type);

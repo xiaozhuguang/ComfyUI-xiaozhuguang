@@ -912,11 +912,17 @@ const XZGGroup = {
                 runBtn.style.visibility = hovered ? 'visible' : 'hidden';
                 runBtn.style.opacity = hovered ? '0.5' : '0';
                 runBtn.style.transform = hovered ? 'scale(1)' : 'scale(0.75)';
-                runBtn.style.top = (headerHeight + 6 * scale) + 'px';
+                runBtn.style.top = headerHeight + 'px';
                 runBtn.style.right = (8 * scale) + 'px';
                 runBtn.style.width = runBtn.style.height = (104 * scale) + 'px';
                 runBtn.style.padding = '0';
                 runBtn.style.boxSizing = 'border-box';
+                // 命中区域为 104*scale（视觉圆环的 2 倍），视觉圆环保持 52*scale 并留在标题栏下方 6*scale 处
+                const runVis = runBtn.querySelector('.xzg-run-group-btn-visual');
+                if (runVis) {
+                    runVis.style.width = runVis.style.height = (52 * scale) + 'px';
+                    runVis.style.marginTop = (6 * scale) + 'px';
+                }
             }
 
             const header = el.querySelector('.xzg-group-header');
@@ -1881,7 +1887,7 @@ const XZGGroup = {
                 <button class="xzg-lock-btn" title="锁定/解锁编组，Ctrl+鼠标左键锁定/解锁所有编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;line-height:1;display:flex;align-items:center;"><svg viewBox="0 0 16 16" width="${Math.round(headerHeight * 0.55)}" height="${Math.round(headerHeight * 0.55)}"><path d="M4 7V5a4 4 0 018 0v2h1v7H3V7h1zm2 0h4V5a2 2 0 00-4 0v2z" fill="currentColor"/></svg></button>
                 <button class="xzg-delete-btn" title="删除编组" style="border:none;background:none;cursor:pointer;padding:0 2px;flex-shrink:0;font-size:${headerHeight * 0.7}px;color:hsla(48,100%,55%,0.5);line-height:1;display:flex;align-items:center;">×</button>
             </div>
-            <button type="button" class="xzg-run-group-btn" title="执行当前编组（F）" aria-label="执行当前编组" style="position:absolute;right:${8 * scale}px;top:${headerHeight + 6 * scale}px;width:${104 * scale}px;height:${104 * scale}px;display:flex;align-items:center;justify-content:center;padding:0;border:none;border-radius:50%;background:transparent;opacity:0;transform:scale(0.75);transition:opacity .3s ease-in-out,transform .3s ease-in-out,visibility .3s ease-in-out;cursor:pointer;pointer-events:auto;visibility:hidden;z-index:5;"><svg viewBox="0 0 104 104" width="100%" height="100%" fill="none" aria-hidden="true" style="display:block;pointer-events:none;"><circle cx="52" cy="52" r="30.7" stroke="#FFD11A" stroke-width="12" fill="none" opacity="0.35" style="filter:blur(3px)"/><circle cx="52" cy="52" r="30.7" stroke="#FFD11A" stroke-width="4.5" fill="none"/></svg></button>
+            <button type="button" class="xzg-run-group-btn" title="执行当前编组（F）" aria-label="执行当前编组" style="position:absolute;right:${8 * scale}px;top:${headerHeight}px;width:${104 * scale}px;height:${104 * scale}px;display:flex;align-items:flex-start;justify-content:flex-end;padding:0;border:none;border-radius:0;background:transparent;opacity:0;transform:scale(0.75);transition:opacity .3s ease-in-out,transform .3s ease-in-out,visibility .3s ease-in-out;cursor:pointer;pointer-events:auto;visibility:hidden;z-index:5;"><span class="xzg-run-group-btn-visual" style="display:block;width:${52 * scale}px;height:${52 * scale}px;margin-top:${6 * scale}px;"><svg viewBox="0 0 104 104" width="100%" height="100%" fill="none" aria-hidden="true" style="display:block;pointer-events:none;"><circle cx="52" cy="52" r="30.7" stroke="#FFD11A" stroke-width="12" fill="none" opacity="0.35" style="filter:blur(3px)"/><circle cx="52" cy="52" r="30.7" stroke="#FFD11A" stroke-width="4.5" fill="none"/></svg></span></button>
             <div class="xzg-border-left" style="position:absolute;left:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
             <div class="xzg-border-right" style="position:absolute;right:-3px;top:${headerHeight}px;width:10px;bottom:-3px;pointer-events:auto;cursor:move;z-index:2;"></div>
             <div class="xzg-border-bottom" style="position:absolute;left:7px;right:7px;bottom:-3px;height:10px;pointer-events:auto;cursor:move;z-index:2;"></div>

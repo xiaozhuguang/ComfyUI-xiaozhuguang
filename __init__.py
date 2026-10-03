@@ -1382,7 +1382,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangListCount": "小珠光列表计数",
     "XiaozhuguangImageFromList": "小珠光从列表获取图像",
     "XiaozhuguangBatchImageGetter": "小珠光图像获取",
-    "XiaozhuguangBigDisplay": "小珠光大字展示",
+    "XiaozhuguangBigDisplay": "小珠光展示任意",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
     "XiaozhuguangColorAdjust": "小珠光颜色调整",

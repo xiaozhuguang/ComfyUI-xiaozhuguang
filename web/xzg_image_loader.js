@@ -756,7 +756,8 @@ function createImgBatchUI(node) {
                 // previewNodes 会读取本加载器当前多选的原图条目。
                 compare.previewNodes([node]);
             });
-            contextMenu.appendChild(compareItem);
+            // 图片对比默认置顶：插到自定义右键菜单最上方（仅多图模式显示）。
+            contextMenu.insertBefore(compareItem, contextMenu.firstChild);
         }
 
         contextMenu.style.left = `${x}px`;

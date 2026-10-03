@@ -3195,7 +3195,9 @@ function _installAudioLoaderActions(node) {
                 body: JSON.stringify({
                     filename: info.raw,
                     target_dir: sameSession ? node._xzgAudioDavinciOutputDir : "",
-                    target_name: sameSession ? node._xzgAudioDavinciOutputName : "",
+                    // 与视频保存-化神级一致：target_name 始终传空，后端基于 source 当前文件的实际文件名
+                    // 生成并做防重复/重名避让；不复用旧文件名，避免 _2_2_2_2... 后缀无限累积。
+                    target_name: "",
                 }),
             });
             const raw = await resp.text();

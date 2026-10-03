@@ -15,12 +15,12 @@ class XiaozhuguangATBC:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "mask": ("MASK",),
                 "resize_mode": (["lanczos", "nearest-exact", "bilinear", "bicubic"], {"default": "lanczos"}),
             },
             "optional": {
+                "mask": ("MASK", {"tooltip": "裁剪遮罩，可不连接；未连接时自动按输入图大小生成全黑遮罩（即整图裁剪）"}),
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
-                "megapixels": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1, "tooltip": "目标图像的百万像素数，以1024*1024为1百万像素基准"}),
+                "kilopixels": ("FLOAT", {"default": 1000.0, "min": 100.0, "max": 10000.0, "step": 10.0, "tooltip": "目标图像的千像素数（十进制，1千像素=1000像素）。1000千像素=1000*1000像素，4194千像素≈2048*2048像素"}),
                 "divisible_by": ("INT", {"default": 8, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
                 "ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
                 "startup_threshold": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "当mask的box面积与输入图像的面积占比达到此阈值时，跳过ratio和box_grow_factor判断"}),
@@ -76,8 +76,9 @@ class XiaozhuguangATBC:
         b = int(hex_color[4:6], 16)
         return (r, g, b)
 
-    def _calculate_target_dimensions(self, megapixels, aspect_ratio, divisible_by=1):
-        total_pixels = megapixels * 1024 * 1024
+    def _calculate_target_dimensions(self, kilopixels, aspect_ratio, divisible_by=1):
+        # 千像素→总像素（十进制）：1千像素=1000像素，故总像素 = 千像素*1000；如2048*2048=4194304像素≈4194千像素
+        total_pixels = kilopixels * 1000
         width_ratio, height_ratio = aspect_ratio
         aspect_ratio_value = width_ratio / height_ratio
         target_height = int((total_pixels / aspect_ratio_value) ** 0.5)
@@ -234,7 +235,7 @@ class XiaozhuguangATBC:
         "bicubic": cv2.INTER_CUBIC,
     }
 
-    def _process_single_image(self, img, mask, resize_mode, megapixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255)):
+    def _process_single_image(self, img, mask, resize_mode, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255)):
         # img: (H,W,3) uint8，mask: (H,W) uint8 —— 用 numpy/vc2( C 实现) 替代 PIL，大幅提速
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
 
@@ -266,7 +267,7 @@ class XiaozhuguangATBC:
         crop_height = crop_y2 - crop_y1
         actual_aspect_ratio = (crop_width, crop_height)
 
-        target_dimensions = self._calculate_target_dimensions(megapixels, actual_aspect_ratio, divisible_by)
+        target_dimensions = self._calculate_target_dimensions(kilopixels, actual_aspect_ratio, divisible_by)
         target_width, target_height = target_dimensions
         interp = self._CV2_INTERP.get(resize_mode, cv2.INTER_LANCZOS4)
         resized_image = cv2.resize(cropped_image, (target_width, target_height), interpolation=interp)
@@ -282,10 +283,8 @@ class XiaozhuguangATBC:
 
         return resized_image, resized_mask, crop_info
 
-    def crop_and_resize(self, image, mask, resize_mode, Box_grow_factor=1.0, megapixels=1.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False):
+    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False):
         image_batch_size = image.shape[0]
-        mask_batch_size = mask.shape[0] if len(mask.shape) == 3 else 1
-        batch_size = max(image_batch_size, mask_batch_size)
 
         original_width = image.shape[2]
         original_height = image.shape[1]
@@ -294,10 +293,18 @@ class XiaozhuguangATBC:
 
         # (B) 一次性整批转换，避免逐帧 cpu/numpy 多层拷贝
         img8 = np.clip(image.cpu().numpy() * 255, 0, 255).astype(np.uint8)  # (B,H,W,3)
-        mask8 = np.clip(mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        if mask8.ndim == 4:  # (B,H,W,1)：去掉单通道
-            mask8 = mask8[..., 0]
-        mask_batched = mask8.ndim == 3  # (B,H,W)；否则 (H,W) 单遮罩
+        if mask is None:
+            # 无遮罩输入：生成与输入图同尺寸的全黑遮罩，裁剪框即整张输入图
+            mask8 = np.zeros((image_batch_size, original_height, original_width), dtype=np.uint8)
+            mask_batch_size = image_batch_size
+            mask_batched = True
+        else:
+            mask8 = np.clip(mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
+            if mask8.ndim == 4:  # (B,H,W,1)：去掉单通道
+                mask8 = mask8[..., 0]
+            mask_batched = mask8.ndim == 3  # (B,H,W)；否则 (H,W) 单遮罩
+            mask_batch_size = mask8.shape[0] if mask_batched else 1
+        batch_size = max(image_batch_size, mask_batch_size)
 
         if sum_mask and batch_size > 1:
             if mask_batched:
@@ -337,7 +344,7 @@ class XiaozhuguangATBC:
             m_i = mask8[i] if mask_batched else mask8
             resized_image, resized_mask, crop_info = self._process_single_image(
                 img_i, m_i, resize_mode,
-                megapixels, divisible_by,
+                kilopixels, divisible_by,
                 original_width, original_height,
                 crop_boxes[i],
                 fill_color_rgb

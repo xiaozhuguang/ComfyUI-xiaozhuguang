@@ -2781,96 +2781,6 @@ function openXiaozhuguangSettings() {
 }
 
 function buildThemeMenuButton() {
-  // ===== 动画参数：段间间隔 X 统一改 GAP 即可 =====
-  const SEG = 2.4;                       // 标准段时长（秒）
-  const SEG1 = 10;                       // 第一段特殊时长（Z轴旋转缓入缓出）
-  const SEG7 = 10;                       // 第七段特殊时长（吹铜钱）
-  const GAP = 0;                         // 段间间隔 X（秒），0 = 无延迟
-  const TOTAL = SEG1 + SEG * 5 + SEG7;   // 总周期 = 第一段10s + 5段标准 + 第七段10s
-  const seg6Pct = SEG / TOTAL * 100;    // 标准段占总周期的百分比（用于呼吸中间点）
-  const p1e = SEG1 / TOTAL * 100;                    // 第一段结束（Z轴旋转）
-  const p2s = (SEG1 + GAP) / TOTAL * 100;            // 第二段开始（单弧段）
-  const p2e = (SEG1 + SEG + GAP) / TOTAL * 100;      // 第二段结束
-  const p3s = (SEG1 + SEG + GAP * 2) / TOTAL * 100;  // 第三段开始（双弧段同向）
-  const p3e = (SEG1 + SEG * 2 + GAP * 2) / TOTAL * 100; // 第三段结束
-  const p4s = (SEG1 + SEG * 2 + GAP * 3) / TOTAL * 100; // 第四段开始（双弧段反向）
-  const p4e = (SEG1 + SEG * 3 + GAP * 3) / TOTAL * 100; // 第四段结束
-  const p5s = (SEG1 + SEG * 3 + GAP * 4) / TOTAL * 100; // 第五段开始（X交叉双线）
-  const p5e = (SEG1 + SEG * 4 + GAP * 4) / TOTAL * 100; // 第五段结束
-  const p6s = (SEG1 + SEG * 4 + GAP * 5) / TOTAL * 100; // 第六段开始（明暗呼吸）
-  const p6e = (SEG1 + SEG * 5 + GAP * 5) / TOTAL * 100; // 第六段结束
-  const p7s = (SEG1 + SEG * 5 + GAP * 6) / TOTAL * 100; // 第七段开始（吹铜钱Y轴快转）
-  const f = (v) => v.toFixed(2) + "%";
-  // ==================================================
-  if (!document.getElementById("xzg-theme-icon-sheen-style")) {
-    const style = document.createElement("style");
-    style.id = "xzg-theme-icon-sheen-style";
-    style.textContent = `
-      /* 第一段：整个图标绕 Z 轴旋转一周 */
-      /* 统一 transform：第一段绕Z轴转30圈（10s ease-in-out），第七段绕Y轴转12圈（10s ease-in-out） */
-      @keyframes xzg-theme-icon-transform {
-        0% { transform: rotateZ(0deg) rotateY(0deg); animation-timing-function:ease-in-out; }
-        ${f(p1e)} { transform: rotateZ(10800deg) rotateY(0deg); }
-        ${f(p1e+0.1)},${f(p7s-0.1)} { transform: rotateZ(0deg) rotateY(0deg); }
-        ${f(p7s)} { transform: rotateZ(0deg) rotateY(0deg); animation-timing-function:ease-in-out; }
-        100% { transform: rotateZ(0deg) rotateY(4320deg); }
-      }
-      /* 弧段1：第二段单弧段顺时针 + 第三四段双弧段（第四段顺时针） */
-      @keyframes xzg-theme-ring-sweep {
-        0%,${f(p2s-0.1)} { transform: rotate(0deg); opacity:0; }
-        ${f(p2s)} { transform: rotate(0deg); opacity:1; }
-        ${f(p2e)} { transform: rotate(360deg); opacity:1; }
-        ${f(p2e+0.1)} { transform: rotate(360deg); opacity:0; }
-        ${f(p3s)} { transform: rotate(360deg); opacity:0; }
-        ${f(p3s+0.1)} { transform: rotate(360deg); opacity:1; }
-        ${f(p3e)} { transform: rotate(720deg); opacity:1; }
-        ${f(p3e+0.1)} { transform: rotate(720deg); opacity:0; }
-        ${f(p4s)} { transform: rotate(720deg); opacity:0; }
-        ${f(p4s+0.1)} { transform: rotate(720deg); opacity:1; }
-        ${f(p4e)} { transform: rotate(1080deg); opacity:1; }
-        ${f(p4e+0.1)},100% { transform: rotate(1080deg); opacity:0; }
-      }
-      /* 弧段2：第三四段双弧段（第四段逆时针，与弧段1反向） */
-      @keyframes xzg-theme-ring-sweep-2 {
-        0%,${f(p3s-0.1)} { transform: rotate(0deg); opacity:0; }
-        ${f(p3s)} { transform: rotate(0deg); opacity:1; }
-        ${f(p3e)} { transform: rotate(360deg); opacity:1; }
-        ${f(p3e+0.1)} { transform: rotate(360deg); opacity:0; }
-        ${f(p4s)} { transform: rotate(360deg); opacity:0; }
-        ${f(p4s+0.1)} { transform: rotate(360deg); opacity:1; }
-        ${f(p4e)} { transform: rotate(0deg); opacity:1; }
-        ${f(p4e+0.1)},100% { transform: rotate(0deg); opacity:0; }
-      }
-      /* 第五段：X 交叉双线（4px 宽）从左往右滑动 */
-      @keyframes xzg-theme-inner-sweep {
-        0%,${f(p5s-0.1)} { clip-path: polygon(evenodd, -31px 0px, 0px 0px, 0px 31px, -31px 31px, -31px 0px, 0px 0px, -15.5px 13.5px, -31px 31px, 0px 31px, -15.5px 17.5px); opacity:0; }
-        ${f(p5s)} { clip-path: polygon(evenodd, -31px 0px, 0px 0px, 0px 31px, -31px 31px, -31px 0px, 0px 0px, -15.5px 13.5px, -31px 31px, 0px 31px, -15.5px 17.5px); opacity:1; }
-        ${f(p5e)} { clip-path: polygon(evenodd, 31px 0px, 62px 0px, 62px 31px, 31px 31px, 31px 0px, 62px 0px, 46.5px 13.5px, 31px 31px, 62px 31px, 46.5px 17.5px); opacity:1; }
-        ${f(p5e+0.1)},100% { clip-path: polygon(evenodd, 31px 0px, 62px 0px, 62px 31px, 31px 31px, 31px 0px, 62px 0px, 46.5px 13.5px, 31px 31px, 62px 31px, 46.5px 17.5px); opacity:0; }
-      }
-      /* 第六段：明暗呼吸（opacity 两次起伏） */
-      @keyframes xzg-theme-icon-breathe {
-        0%,${f(p6s-0.1)} { opacity:1; }
-        ${f(p6s)} { opacity:1; }
-        ${f(p6s+seg6Pct*0.25)} { opacity:0.45; }
-        ${f(p6s+seg6Pct*0.5)} { opacity:1; }
-        ${f(p6s+seg6Pct*0.75)} { opacity:0.45; }
-        ${f(p6e)} { opacity:1; }
-        ${f(p6e+0.1)},100% { opacity:1; }
-      }
-      @keyframes xzg-theme-ring-glow {
-        0%,100% { filter:drop-shadow(0 0 0 transparent); }
-      }
-      @keyframes xzg-theme-inner-glow {
-        0%,60%,100% { filter:drop-shadow(0 0 0 rgba(0,212,255,0)); }
-        68%,92% { filter:drop-shadow(0 0 2px rgba(0,212,255,.7)); }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .xzg-theme-sweep-layer { animation:none !important; }
-      }
-    `;
-    document.head.appendChild(style);
-  }
   const btn = document.createElement("div");
   btn.id = XZG_THEME_BTN_ID;
   btn.title = "小珠光主题面板";
@@ -2892,16 +2802,6 @@ function buildThemeMenuButton() {
   icon.alt = "XZG";
   icon.draggable = false;
   icon.style.cssText = "position:absolute;inset:0;display:block;width:31px;height:31px;object-fit:contain;";
-  const makeSweepLayer = (className, mask, animationName, glowName) => {
-    const layer = document.createElement("img");
-    layer.className = `xzg-theme-sweep-layer ${className}`;
-    layer.src = new URL("./xzg_theme_icon_bright.png", import.meta.url).href;
-    layer.alt = "";
-    layer.draggable = false;
-    layer.setAttribute("aria-hidden", "true");
-    layer.style.cssText = `position:absolute;inset:0;display:block;width:31px;height:31px;object-fit:contain;opacity:0;pointer-events:none;${mask}animation:${animationName} 5s linear infinite,${glowName} 5s ease-in-out infinite;`;
-    return layer;
-  };
   const brightUrl = new URL("./xzg_theme_icon_bright.png", import.meta.url).href;
   // 第四段：X 交叉双线从左往右滑动
   const innerSweep = document.createElement("div");
@@ -2918,7 +2818,7 @@ function buildThemeMenuButton() {
   ringSweep2.className = "xzg-theme-sweep-layer xzg-theme-ring-sweep-2";
   ringSweep2.setAttribute("aria-hidden", "true");
   ringSweep2.style.cssText = `position:absolute;inset:0;width:31px;height:31px;pointer-events:none;opacity:0;background:url(${brightUrl}) center/31px 31px no-repeat;clip-path:path('M 19.46 30.28 A 15.3 15.3 0 0 1 11.54 30.28 L 12.01 28.54 A 13.5 13.5 0 0 0 18.99 28.54 Z');transform-origin:15.5px 15.5px;`;
-  // 中亮图常驻；JS 随机调度七段动画，段间间隔5分钟。
+  // 中亮图常驻；JS 随机调度 4 段动画，段间间隔 5 秒。
   iconWrap.append(icon, innerSweep, ringSweep, ringSweep2);
   btn.appendChild(iconWrap);
   // ===== 随机动画调度（Web Animations API）=====
@@ -2939,9 +2839,6 @@ function buildThemeMenuButton() {
     ]},
     { name:"X交叉双线扫掠", duration:2400, easing:"linear", before:()=>{innerSweep.style.opacity=1;}, plays:[
       { el:innerSweep, kf:[{clipPath:X_LEFT},{clipPath:X_RIGHT}] },
-    ]},
-    { name:"明暗呼吸", duration:2400, easing:"ease-in-out", plays:[
-      { el:icon, kf:[{opacity:1},{opacity:0.45},{opacity:1},{opacity:0.45},{opacity:1}] },
     ]},
   ];
   let _animLoopTimer = null;

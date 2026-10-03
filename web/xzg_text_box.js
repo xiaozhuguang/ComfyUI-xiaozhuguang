@@ -1061,6 +1061,8 @@ if (typeof window !== "undefined") {
         _syncAllGodPresetWidgets(presets);
         return presets;
     };
+    // 供其他模块（如「小珠光展示任意」）把提示词收藏进「小珠光文本框-化神级」提示词库
+    window._xzgAddGodFavorite = async (prompt) => _addGodFavorite(prompt);
 }
 
 // 给单个节点实例应用双语补丁

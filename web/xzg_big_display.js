@@ -75,7 +75,7 @@ app.registerExtension({
                 const inputLabels = scoped(inputSelectors);
                 style.textContent = `${header},${badges},${inputLabels}{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;height:0!important;min-height:0!important;margin:0!important;padding:0!important;}`;
             } catch (e) {
-                console.warn("[小珠光大字展示] 隐藏标题栏/徽标失败:", e);
+                console.warn("[小珠光展示任意] 隐藏标题栏/徽标失败:", e);
             }
         };
 
@@ -122,15 +122,36 @@ app.registerExtension({
                 options.length = 0;
                 // 复制当前展示的文本
                 options.push({
-                    content: `<span style="color:#FFD700;">${xzgT("复制文本", "Copy Text")}</span>`,
+                    content: `<span style="color:#4ade80;">${xzgT("复制文本", "Copy Text")}</span>`,
                     callback: () => {
                         const txt = (this._texts || []).join("\n");
                         this.copyTextToClipboard(txt);
                     },
                 });
-                // 金色文字，置于菜单最上方
+                // 收藏到提示词库：置于复制文本之后，收藏进「小珠光文本框-化神级」提示词库
+                options.push({
+                    content: `<span style="color:#4ade80;">★ ${xzgT("收藏到提示词库", "Favorite to Prompt Library")}</span>`,
+                    callback: async () => {
+                        const txt = (this._texts || []).join("\n");
+                        if (!txt || !String(txt).trim()) {
+                            if (app?.extensionManager?.toast)
+                                app.extensionManager.toast.add({ title: xzgT("无内容可收藏", "Nothing to favorite"), message: "", type: "error", life: 2 });
+                            return;
+                        }
+                        try {
+                            const ok = await window._xzgAddGodFavorite?.(txt);
+                            if (app?.extensionManager?.toast)
+                                app.extensionManager.toast.add({ title: ok ? xzgT("已收藏到提示词库", "Favorited to prompt library") : xzgT("收藏失败", "Favorite failed"), message: "", type: ok ? "success" : "error", life: 2 });
+                        } catch (err) {
+                            console.error("[小珠光展示任意] 收藏到提示词库失败:", err);
+                            if (app?.extensionManager?.toast)
+                                app.extensionManager.toast.add({ title: xzgT("收藏失败", "Favorite failed"), message: "", type: "error", life: 2 });
+                        }
+                    },
+                });
+                // 样式设置：置于收藏到提示词库之后
                 options.push(null, {
-                    content: `<span style="color:#FFD700;">${xzgT("大字样式设置…", "Big Text Style…")}</span>`,
+                    content: `<span style="color:#FFD700;">${xzgT("样式设置", "Style…")}</span>`,
                     callback: () => this._openStyleDialog(),
                 });
             };
@@ -931,6 +952,72 @@ app.registerExtension({
     },
 
     async setup() {
+        // 右键菜单白名单：只保留 复制文本 / 收藏到提示词库 / 样式设置 / 对所选输出节点进行排队 / 收藏 / 快速连线，
+        // 隐藏其它（执行框内节点、修复重建、删除、添加获取/设置节点、小珠光主题等）。
+        // ComfyUI 0.38 的最终菜单由 getNodeMenuOptionsWithExtensions 组装：原 getNodeMenuOptions 结果
+        // + collectNodeMenuItems(扩展菜单) + legacy 项，都追加进同一个数组。getExtraMenuOptions 里的
+        // options.length=0 只能清掉调用那一刻的内容，拦不住这些后续追加项，因此在此最外层对
+        // getNodeMenuOptions 的返回结果做白名单过滤。
+        // —— 过滤函数 ——
+        const catOf = (content) => {
+            if (content.includes("对所选输出节点进行排队") || content.includes("Queue Selected Output")) return 0; // 排队 → 第一行
+            if (content.includes("复制文本")) return 1; // 复制文本 + 收藏到提示词库 同一组
+            if (content.includes("收藏到提示词库")) return 1;
+            if (content.includes("样式设置")) return 2; // 样式设置 + 收藏 + 快速连线 同一组
+            if (content.includes("收藏节点") || content.includes("取消收藏")) return 2;
+            if (content.includes("添加到快速连线") || content.includes("从快速连线移除")) return 2;
+            return -1; // 其余一律隐藏
+        };
+        const filterFn = (options) => {
+            if (!Array.isArray(options)) return options;
+            const kept = options
+                .filter((item) => item && typeof item.content === "string" && catOf(item.content) >= 0)
+                .sort((a, b) => catOf(a.content) - catOf(b.content));
+            // 分组：相邻两项类别不同则插入分割线；
+            // 复制文本+收藏到提示词库 同组，样式设置+收藏+快速连线 同组，组内不加分割线。
+            const result = [];
+            kept.forEach((item, i) => {
+                if (i > 0) {
+                    const prevCat = catOf(kept[i - 1].content);
+                    const curCat = catOf(item.content);
+                    if (curCat !== prevCat) result.push(null);
+                }
+                result.push(item);
+            });
+            return result;
+        };
+        const applyFilterTo = (owner, onceFlagKey) => {
+            if (!owner) return;
+            if (onceFlagKey && owner[onceFlagKey]) return;
+            if (onceFlagKey) owner[onceFlagKey] = true;
+            const orig = owner.getNodeMenuOptions;
+            if (typeof orig !== "function") return;
+            owner.getNodeMenuOptions = function (node, ...args) {
+                let options = orig.apply(this, [node, ...args]);
+                if (node && node.type === _NODE_TYPE) options = filterFn(options);
+                return options;
+            };
+        };
+        // 原型层兜底（只装一次，防叠加）
+        const Proto = (typeof LGraphCanvas !== "undefined" ? LGraphCanvas : LiteGraph.LGraphCanvas);
+        applyFilterTo(Proto && Proto.prototype, "_xzgBigDisplayMenuWhitelistInstalled");
+        // 实例层：xzg_quick_nodes 通过 app.canvas.getNodeMenuOptions（实例方法）在末尾追加
+        // separator({content:null}) + 快速连线项，若它在我的过滤之后执行，separator 会落在
+        // 收藏与快速连线之间。因此这里可重复包装实例方法，并延迟数次，确保最后成为最外层，
+        // 从而能过滤掉那个 separator。
+        const installInstance = () => {
+            try {
+                if (!app || !app.canvas) return;
+                applyFilterTo(app.canvas, null);
+            } catch (e) { console.warn("[小珠光展示任意] 右键菜单过滤安装失败:", e); }
+        };
+        try {
+            installInstance();
+            setTimeout(installInstance, 500);
+            setTimeout(installInstance, 1500);
+            setTimeout(installInstance, 4000); // 确保在 xzg_quick_nodes 扩展菜单之后仍为最外层
+        } catch (e) { console.warn("[小珠光展示任意] 右键菜单白名单过滤失败:", e); }
+
         if (!window._xzgBigDisplayPointerUpCaptureInstalled) {
             window._xzgBigDisplayPointerUpCaptureInstalled = true;
             const releaseScrollbars = () => {

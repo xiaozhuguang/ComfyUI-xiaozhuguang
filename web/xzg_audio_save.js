@@ -2181,7 +2181,10 @@ async function _xzgAudioExportDavinci(filename, subfolder, opts = {}) {
                 type: opts.type || "output",
                 ...(opts.token ? { abs_token: opts.token } : {}),
                 target_dir: sameSession ? node._xzgAudioDavinciOutputDir : "",
-                target_name: sameSession ? node._xzgAudioDavinciOutputName : "",
+                // 与视频保存-化神级一致：target_name 始终传空，后端用 output 当前文件的实际文件名
+                // （abs_path 的 basename）生成并做防重复/重名避让；不复用旧文件名，避免反复把上次
+                // 生成的名字作为 target_name 传回导致 _2_2_2_2... 后缀无限累积。
+                target_name: "",
             }),
         });
         const data = await resp.json();
