@@ -1688,9 +1688,36 @@ const XZGGroup = {
 
         document.body.appendChild(menu);
 
+        // —— 1.2 秒倒计时：未点选则自动进入官方节点搜索 ——
+        let remaining = 1.2;          // 剩余秒数
+        let autoTimer = null;
+        const runAuto = () => {
+            cleanup();
+            try { onNative(); } catch (err) {}
+        };
+        // 底部倒计时提示条
+        const countEl = document.createElement('div');
+        countEl.style.cssText = 'padding:6px 16px 8px;color:#8a8a8a;font-size:11px;border-top:1px solid #3a3a3a;margin-top:2px;white-space:nowrap;';
+        countEl.textContent = `${remaining} 秒后自动进入官方节点搜索`;
+        menu.appendChild(countEl);
+
+        const tick = () => {
+            remaining -= 0.2;
+            if (remaining <= 0) {
+                countEl.textContent = '正在进入官方节点搜索…';
+                clearInterval(autoTimer);
+                autoTimer = null;
+                runAuto();
+                return;
+            }
+            countEl.textContent = `${remaining.toFixed(1)} 秒后自动进入官方节点搜索`;
+        };
+        autoTimer = setInterval(tick, 200);
+
         const close = (ev) => { if (menu.contains(ev.target)) return; cleanup(); };
         const onKey = (ev) => { if (ev.key === 'Escape') cleanup(); };
         const cleanup = () => {
+            if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
             menu.remove();
             window.removeEventListener('pointerdown', close, true);
             window.removeEventListener('keydown', onKey, true);

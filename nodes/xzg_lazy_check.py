@@ -52,8 +52,10 @@ class XiaozhuguangInputLazyCheck:
         return list(value) if isinstance(value, (list, tuple)) else [value]
 
     def check_lazy_status(self, A=None, B=None):
-        # 一次检查整个 A 列表；仅当 A 没有任何有效项时请求惰性输入 B。
-        if not self._has_value(A) and B is None:
+        # 一次检查整个 A 列表；仅当 A 没有任何有效项、且 B 尚无有效值时请求惰性输入 B。
+        # 注意：ComfyUI 对尚未求值的惰性输入会传入 (None,) 元组（get_input_data 的 mark_missing），
+        # 而非 None。因此必须用 not _has_value(B) 判断，不能写 B is None，否则 B 永远不会被求值。
+        if not self._has_value(A) and not self._has_value(B):
             return ["B"]
         return None
 

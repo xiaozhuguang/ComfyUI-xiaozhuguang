@@ -32,6 +32,14 @@ app.registerExtension({
         nodeType.title_mode = LiteGraph.NO_TITLE;
         nodeType.collapsable = false;
 
+        // V0.38+ 内核兼容：ComfyUI 通过 registerBadgeRowsProvider(nodeBadges) 提供
+        // 节点右上角的角标（节点 ID「#数字」/ 来源 / 生命周期），它直接计算、**不读
+        // node.badges**，因此下方 suppressNodeBadges 的"只读空数组拦截"对这一新通道
+        // 已经失效，导致更新内核后右上角文案又冒出来。
+        // 这里直接从源头禁用本节点类的角标绘制（调用点是 LiteGraph 绘制流程的
+        // node.drawBadges(canvas)，覆盖 prototype 即可让该节点不再绘制任何角标）。
+        nodeType.prototype.drawBadges = function () {};
+
         const hideNodeHeader = (node) => {
             if (!node?.id) return;
             try {
@@ -73,8 +81,12 @@ app.registerExtension({
 
         const suppressNodeBadges = (node) => {
             if (!node) return;
-            // ComfyUI 的 ID、来源、耗时等角标由 LiteGraph 从 node.badges 绘制，
-            // 不是 DOM。用仅属于此节点的只读空列表拦截核心扩展及其他扩展后续添加的角标。
+            // 兼容旧内核：旧版 ComfyUI 的 ID、来源、耗时等角标由 LiteGraph 从
+            // node.badges 数组绘制（不是 DOM）。用仅属于此节点的只读空列表拦截
+            // 核心扩展及其他扩展后续添加的角标。
+            // 注意：V0.38+ 的右上角角标改由 registerBadgeRowsProvider 提供（不读
+            // node.badges），已由上方 nodeType.prototype.drawBadges = ()=>{} 统一禁用，
+            // 此处仅作为旧内核兜底保留。
             const hiddenBadges = [];
             Object.defineProperty(hiddenBadges, "push", {
                 value: () => hiddenBadges.length,
