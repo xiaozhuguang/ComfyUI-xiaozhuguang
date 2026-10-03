@@ -189,7 +189,10 @@ class XiaozhuguangATBC:
         bbox_area = bbox_width * bbox_height
         area_ratio = bbox_area / image_area
 
-        skip_ratio_and_grow = area_ratio >= startup_threshold
+        # 仅 auto 模式才允许“mask 占比达阈值即跳过比例/扩展”：
+        # 用户显式指定 ratio（如 1:1）时，即使 mask 充满整图也应按该比例裁剪，
+        # 超出部分用 fill_color 补齐，而不是直接输出整图。
+        skip_ratio_and_grow = ratio == "auto" and area_ratio >= startup_threshold
 
         if skip_ratio_and_grow:
             crop_x1, crop_y1, crop_x2, crop_y2 = 0, 0, width, height

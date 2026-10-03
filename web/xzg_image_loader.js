@@ -3299,7 +3299,8 @@ function createImgBatchUI(node) {
         if (rect.scale <= 0) return null;
         const localX = px - rect.x;
         const localY = py - rect.y;
-        if (localX < 0 || localY < 0 || localX > rect.w || localY > rect.h) return null;
+        // 圆心超出预览图边界时不再丢弃：返回真实（允许越界）的离屏坐标，
+        // 交由 Canvas 自动裁剪，笔刷圆与图片相交的部分仍能被正确绘制。
         const ox = localX / rect.scale;
         const oy = localY / rect.scale;
         return { x: ox, y: oy };
