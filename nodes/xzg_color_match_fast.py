@@ -26,6 +26,19 @@ _XYZ2RGB = [
 _WHITE = [0.95047, 1.0, 1.08883]
 
 
+def _to_rgb(x):
+    """把任意通道图像统一转成 3 通道 RGB，避免 reshape(3,-1) 因通道数≠3 崩溃。
+    1 通道(灰度/Mask)按灰度复制到 3 通道；4 通道(RGBA)丢弃 alpha；其他通道数报错。"""
+    c = x.shape[-1]
+    if c == 3:
+        return x
+    if c == 1:
+        return x.repeat(1, 1, 1, 3)
+    if c == 4:
+        return x[..., :3]
+    raise ValueError(f"颜色匹配需要 RGB(3通道) 输入，当前为 {c} 通道")
+
+
 def _srgb_to_linear(x):
     return torch.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055).pow(2.4))
 
@@ -123,6 +136,8 @@ class XiaozhuguangColorMatchFast:
 
     def execute(self, image, reference, 模式="LAB", 强度=1.0):
         factor = float(强度)
+        image = _to_rgb(image)
+        reference = _to_rgb(reference)
         orig_dtype = image.dtype
         img = image.to(torch.float32)
         ref = reference.to(torch.float32).to(img.device)

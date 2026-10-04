@@ -209,12 +209,47 @@ function collectFloatPos(store) {
 
 /** 把位置应用到浮窗 DOM（与本地记忆逻辑同语义） */
 function applyPosStyle(root, left, top) {
-  if (left) root.style.left = left;
-  if (top) root.style.top = top;
   if (left || top) {
+    const p = clampToViewport(root, left, top);
+    root.style.left = p.left;
+    root.style.top = p.top;
     root.style.right = "auto";
     root.style.bottom = "auto";
   }
+}
+
+/** 把悬浮元素位置钳制在屏幕可视区内，避免带鱼屏/切分辨率后跑出屏幕找不到。
+ * 参数 left/top 可为 "123px" 或数字，返回钳制后的 {left, top}（px 字符串）。
+ * 元素隐藏（offsetWidth/Height 为 0，如加载恢复位置时）会读取 CSS 声明的宽高兜底，
+ * 仍能正确把越界位置拉回屏幕内。 */
+function clampToViewport(el, left, top) {
+  const num = (v) => {
+    if (v == null || v === "") return null;
+    const n = typeof v === "number" ? v : parseFloat(String(v));
+    return Number.isFinite(n) ? n : null;
+  };
+  let L = num(left), T = num(top);
+  if (L == null && T == null) return { left, top };
+
+  let w = el.offsetWidth || 0;
+  let h = el.offsetHeight || 0;
+  if (w === 0 || h === 0) {
+    // 隐藏/未布局：用 CSS 声明的尺寸兜底（取非 0 的那个，另一个给最小兜底）
+    const cs = getComputedStyle(el);
+    const cw = parseFloat(cs.width);
+    const ch = parseFloat(cs.height);
+    if (!w && Number.isFinite(cw) && cw > 0) w = cw;
+    if (!h && Number.isFinite(ch) && ch > 0) h = ch;
+    if (w === 0) w = 24;
+    if (h === 0) h = 24;
+  }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (L == null) L = el.offsetLeft || 0;
+  if (T == null) T = el.offsetTop || 0;
+  L = Math.max(0, Math.min(L, Math.max(0, vw - w)));
+  T = Math.max(0, Math.min(T, Math.max(0, vh - h)));
+  return { left: `${L}px`, top: `${T}px` };
 }
 
 /** 位置变化后防抖推送云端（拖动松手触发，合并连续拖动） */
@@ -318,7 +353,7 @@ function xzgWhenUiReady(cb) {
 // ---------------------------------------------------------------------------
 
 const XZG_CSS = `
-#xzg-float{position:fixed;right:16px;bottom:60px;z-index:1;width:166px;
+#xzg-float{position:fixed;right:16px;bottom:60px;z-index:90001;width:166px;
   color:#e8e8e8;font:12px/1.5 'Segoe UI',system-ui,-apple-system,sans-serif;
   user-select:none;overflow:hidden;cursor:move;}
 #xzg-float.xzg-bg{background:rgba(22,24,30,0.93);border:1px solid rgba(255,255,255,0.14);
@@ -1048,8 +1083,9 @@ function createFloatWindow() {
   });
   window.addEventListener("mousemove", (e) => {
     if (!dragging) return;
-    root.style.left = e.clientX - dx + "px";
-    root.style.top = e.clientY - dy + "px";
+    const p = clampToViewport(root, e.clientX - dx, e.clientY - dy);
+    root.style.left = p.left;
+    root.style.top = p.top;
     root.style.right = "auto";
     root.style.bottom = "auto";
   });
@@ -1085,12 +1121,13 @@ function createFloatWindow() {
     root.style.setProperty("--xzg-orb-size", `${_display.orb_size}px`);
     root.style.setProperty("--xzg-orb-auto-font", `${_display.orb_size * .34}px`);
     if (rect) {
-      root.style.left = `${centerX - _display.orb_size / 2}px`;
-      root.style.top = `${centerY - _display.orb_size / 2}px`;
+      const p = clampToViewport(root, centerX - _display.orb_size / 2, centerY - _display.orb_size / 2);
+      root.style.left = p.left;
+      root.style.top = p.top;
       root.style.right = "auto";
       root.style.bottom = "auto";
       _posDragged = true;
-      saveStore({ ...loadStore(), left: root.style.left, top: root.style.top, posVer: XZG_POS_VER });
+      saveStore({ ...loadStore(), left: p.left, top: p.top, posVer: XZG_POS_VER });
       queueCloudSavePos();
     }
     saveDisplay();
@@ -2589,12 +2626,13 @@ function saveCapsuleState(state) {
   } catch (e) { /* ignore */ }
 }
 
-/** 把胶囊从工具栏「抽出」为 fixed 定位的悬浮元素，并定位到 left/top */
+/** 把胶囊从工具栏「抽出」为 fixed 定位的悬浮元素，并定位到 left/top（钳制在屏幕内） */
 function floatCapsule(btn, left, top) {
   if (!btn) return;
+  const p = clampToViewport(btn, left, top);
   btn.style.position = "fixed";
-  btn.style.left = left;
-  btn.style.top = top;
+  btn.style.left = p.left;
+  btn.style.top = p.top;
   btn.style.right = "auto";
   btn.style.bottom = "auto";
   btn.style.zIndex = "90000";
@@ -2603,8 +2641,8 @@ function floatCapsule(btn, left, top) {
   _capsuleFloating = true;
   const state = loadCapsuleState();
   state.floating = true;
-  if (left) state.left = left;
-  if (top) state.top = top;
+  state.left = p.left;
+  state.top = p.top;
   saveCapsuleState(state);
 }
 
@@ -2676,8 +2714,9 @@ function attachCapsuleDrag(btn) {
         floatCapsule(btn, `${e.clientX - dx}px`, `${e.clientY - dy}px`);
       }
     }
-    btn.style.left = `${e.clientX - dx}px`;
-    btn.style.top = `${e.clientY - dy}px`;
+    const p = clampToViewport(btn, e.clientX - dx, e.clientY - dy);
+    btn.style.left = p.left;
+    btn.style.top = p.top;
     btn.style.right = "auto";
     btn.style.bottom = "auto";
   });
