@@ -478,8 +478,8 @@ const XZG_CSS = `
 #xzg-float.xzg-orb.xzg-orb-timer #xzg-orb-run-time{display:inline-flex;align-items:center;justify-content:center;gap:3px;min-width:0;max-width:100%;height:100%;color:var(--xzg-timer-color,#F2F4F8);filter:none;transform:scale(var(--xzg-orb-content-scale,1));transition:transform .16s ease;}
 #xzg-float.xzg-orb.xzg-orb-timer #xzg-orb-run-time:not(.xzg-lcd){display:block;font:700 var(--xzg-orb-auto-font,30px)/1 'Segoe UI',system-ui,sans-serif;color:#fff;filter:none;white-space:nowrap;transform:scaleX(var(--xzg-orb-timer-x-scale,1));transform-origin:center;transition:transform .16s ease;}
 #xzg-float.xzg-orb .xzg-orb-value{font:700 var(--xzg-orb-auto-font,30px)/1 'Segoe UI',system-ui,sans-serif;
-  font-variant-numeric:tabular-nums;letter-spacing:-.04em;white-space:nowrap;text-shadow:0 2px 10px #0009;}
-#xzg-float.xzg-orb .xzg-orb-value.small{font-size:var(--xzg-orb-auto-font,30px);}
+  font-variant-numeric:tabular-nums;letter-spacing:-.04em;white-space:nowrap;text-shadow:0 2px 10px #0009;
+  transform:scaleX(var(--xzg-orb-value-x-scale,1));transform-origin:center;transition:transform .16s ease;}
 #xzg-float.xzg-orb .xzg-note{font-size:10px;padding:8px;text-align:center;}
 `;
 
@@ -1183,11 +1183,17 @@ function createFloatWindow() {
       toggleCompact();
       return;
     }
-    const chip = event.target.closest("[data-xzg-metric]");
-    if (!chip) return;
+    // 与右键一样，将判定区域扩展到整个指标胶囊；点到标签或胶囊空白时使用组默认指标。
+    const parameter = event.target.closest("[data-xzg-metric]");
+    const metricChip = event.target.closest(".xzg-chip");
+    const key = parameter?.dataset.xzgMetric
+      || (metricChip?.classList.contains("xzg-chip-gpu") ? "gpu_vram"
+        : metricChip?.classList.contains("xzg-chip-cpu") ? "cpu_util"
+        : metricChip?.classList.contains("xzg-chip-mem") ? "mem_used"
+        : "gpu_vram");
     event.preventDefault();
     event.stopPropagation();
-    setMetric(chip.dataset.xzgMetric);
+    setMetric(key);
   });
   statsEl.addEventListener("contextmenu", async (event) => {
     // 右键落到带 data-xzg-metric 的具体数值上：按该指标弹出曲线。
@@ -1282,20 +1288,23 @@ function createFloatWindow() {
         let shown = "--";
         if (valid) {
           const number = Number(value);
-          // 内存/显存在悬浮球上省略单位字母 G（只显示数字，如 7.8），字符更短字号更大。
+          // 内存/显存在悬浮球上省略单位字母 G（只显示数字，如 7.8）。
           shown = metric.key === "gpu_vram" || metric.key === "mem_used" ? number.toFixed(1)
             : metric.unit === "°C" ? `${number.toFixed(0)}°` : `${number.toFixed(0)}${metric.unit}`;
         }
-        const small = shown.length > 5 ? " small" : "";
         const size = _display.orb_size || 88;
-        // 内存/显存数值带小数与单位（如 7.8GB），文本较长易被压缩偏小，加大其字体上限与宽度余量。
-        const isMem = metric.key === "gpu_vram" || metric.key === "mem_used";
-        const fontCap = isMem ? size * .44 : size * .38;
-        const widthBudget = isMem ? size * .78 : size * .72;
-        const autoFont = Math.max(9, Math.min(fontCap, widthBudget / (Math.max(1, shown.length) * .62)));
+        // 所有指标使用一致字高；仅在实际字宽超出可用区域时压缩横向比例。
+        const autoFont = Math.max(9, size * .38);
+        const widthBudget = size * .78;
+        const measureCanvas = render._orbMeasureCanvas || (render._orbMeasureCanvas = document.createElement("canvas"));
+        const measureContext = measureCanvas.getContext("2d");
+        measureContext.font = `700 ${autoFont}px 'Segoe UI', system-ui, sans-serif`;
+        const textWidth = measureContext.measureText(shown).width + Math.max(0, shown.length - 1) * autoFont * .04;
+        const textScaleX = Math.min(1, widthBudget / Math.max(1, textWidth));
         root.style.setProperty("--xzg-orb-auto-font", `${autoFont}px`);
+        root.style.setProperty("--xzg-orb-value-x-scale", String(textScaleX));
         const color = valid ? (typeof metric.color === "function" ? metric.color(Number(value), data) : metric.color) : "#8b8f9a";
-        statsEl.innerHTML = `<div class="xzg-orb-value${small}" data-xzg-metric="${metric.key}"${metric.key.startsWith("gpu_") ? ' data-xzg-gpu-index="0"' : ""} title="${esc(metric.label)}" style="color:${color}">${shown}</div>`;
+        statsEl.innerHTML = `<div class="xzg-orb-value" data-xzg-metric="${metric.key}"${metric.key.startsWith("gpu_") ? ' data-xzg-gpu-index="0"' : ""} title="${esc(metric.label)}" style="color:${color}">${shown}</div>`;
       }
     } catch (e) {
       // 渲染出错时显示提示，避免内容区静默空白

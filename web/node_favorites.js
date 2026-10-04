@@ -814,6 +814,9 @@ class Xiaozhuguang {
             }
 
             .nf-title {
+                display: flex;
+                align-items: center;
+                gap: 6px;
                 font-weight: bold;
                 font-size: 14px;
             }
@@ -1865,7 +1868,7 @@ class Xiaozhuguang {
             <div class="nf-panel-resizer" title="${xzgT('拖动调节宽度','Drag to resize width')}"></div>
             <div class="nf-panel-bottom-resizer" title="${xzgT('拖动调节高度','Drag to resize height')}"></div>
             <div class="nf-header" title="${xzgT('拖拽标题栏可移动窗口','Drag the title bar to move window')}">
-                <span class="nf-title">⭐ ${xzgT('小珠光收藏','Xiaozhuguang Favorites')}</span>
+                <span class="nf-title">${favoritesManagerIconSvg(25)}<span>${xzgT('小珠光节点收藏管理','Xiaozhuguang Node Favorites Manager')}</span></span>
                 <div class="nf-header-btns">
                     <button class="nf-header-btn nf-settings-btn" id="nf-settings-btn" title="${xzgT('设置（使用频率配色）','Settings (usage frequency colors)')}">${xzgT('设置','Settings')}</button>
                     <button class="nf-header-btn nf-shortcut-display" id="nf-shortcut-btn"></button>
@@ -3016,7 +3019,7 @@ class Xiaozhuguang {
             if (sc.shift) scParts.push("Shift");
             scParts.push(sc.key.toUpperCase());
             const xzgItem = {
-                content: `<span style="color:#FFD700;">⭐ ${xzgT('小珠光收藏','Xiaozhuguang Favorites')}</span> <span style="color:#4CAF50;font-size:10px;">${xzgT('快捷键','Shortcut')}${scParts.join("+")}</span>`,
+                content: `<span style="display:inline-flex;align-items:center;gap:5px;color:#FFD700;">${favoritesManagerIconSvg(23)}${xzgT('小珠光节点收藏管理','Xiaozhuguang Node Favorites Manager')}</span> <span style="color:#4CAF50;font-size:10px;">${xzgT('快捷键','Shortcut')}${scParts.join("+")}</span>`,
                 callback: () => {
                     self.togglePanel();
                 }
@@ -4135,7 +4138,7 @@ class Xiaozhuguang {
         const c = this.panel;
         if (!c) return;
         const title = c.querySelector(".nf-title");
-        if (title) title.textContent = "⭐ " + xzgT('小珠光收藏','Xiaozhuguang Favorites');
+        if (title) title.innerHTML = favoritesManagerIconSvg(25) + `<span>${xzgT('小珠光节点收藏管理','Xiaozhuguang Node Favorites Manager')}</span>`;
         const tabFav = c.querySelector('.nf-tab-btn[data-tab="favorites"]');
         if (tabFav) tabFav.textContent = "⭐ " + xzgT('收藏','Favorites');
         const tabNotes = c.querySelector('.nf-tab-btn[data-tab="notes"]');
@@ -5522,6 +5525,50 @@ class Xiaozhuguang {
     }
 }
 
+// 方案 5：环绕星标，用于收藏管理器入口和面板标题。
+function favoritesManagerIconSvg(size = 18) {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true" style="display:block;flex:none;">
+        <circle cx="12" cy="12" r="9" fill="none" stroke="#f2f2f2" stroke-opacity="0.58" stroke-width="1.7"/>
+        <circle cx="5.64" cy="5.64" r="1.9" fill="#242424" stroke="#f2f2f2" stroke-opacity="0.58" stroke-width="1.5"/>
+        <circle cx="18.36" cy="18.36" r="1.9" fill="#242424" stroke="#f2f2f2" stroke-opacity="0.58" stroke-width="1.5"/>
+        <path d="m12 6.7 1.65 3.36 3.71.54-2.68 2.61.63 3.69L12 15.16l-3.31 1.74.63-3.69-2.68-2.61 3.71-.54L12 6.7Z" fill="#f4c542"/>
+    </svg>`;
+}
+
+// 在官方新版节点搜索框旁提供收藏面板入口，不改变官方搜索和画布双击行为。
+function setupFavoritesSearchButton() {
+    const install = () => {
+        const input = document.querySelector('[role="combobox"][aria-controls="results-list"]');
+        const row = input?.parentElement;
+        if (!row || row.querySelector(".xzg-favorites-search-button")) return;
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "xzg-favorites-search-button";
+        button.title = xzgT("小珠光节点收藏管理", "Xiaozhuguang Node Favorites Manager");
+        button.setAttribute("aria-label", button.title);
+        button.innerHTML = favoritesManagerIconSvg(27);
+        button.style.cssText = "flex:none;border:0;background:transparent;color:inherit;cursor:pointer;padding:6px 8px;font-size:16px;line-height:1;border-radius:6px;";
+        button.addEventListener("mouseenter", () => { button.style.background = "rgba(255,255,255,.1)"; });
+        button.addEventListener("mouseleave", () => { button.style.background = "transparent"; });
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            document.dispatchEvent(new KeyboardEvent("keydown", {
+                key: "Escape",
+                code: "Escape",
+                bubbles: true,
+                cancelable: true
+            }));
+            setTimeout(() => nodeFavoritesInstance?.expandPanel(), 120);
+        });
+        row.appendChild(button);
+    };
+
+    install();
+    new MutationObserver(install).observe(document.body, { childList: true, subtree: true });
+}
+
 app.registerExtension({
     name: "ComfyUI.xiaozhuguang",
 
@@ -5534,6 +5581,7 @@ app.registerExtension({
 
         nodeFavoritesInstance = new Xiaozhuguang();
         window.xiaozhuguangFavorites = nodeFavoritesInstance;
+        setupFavoritesSearchButton();
 
         // 语言切换时刷新面板文案（双语支持）
         try {
