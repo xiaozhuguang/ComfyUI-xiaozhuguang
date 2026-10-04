@@ -3019,7 +3019,7 @@ class Xiaozhuguang {
             if (sc.shift) scParts.push("Shift");
             scParts.push(sc.key.toUpperCase());
             const xzgItem = {
-                content: `<span style="display:inline-flex;align-items:center;gap:5px;color:#FFD700;">${favoritesManagerIconSvg(23)}${xzgT('小珠光节点收藏管理','Xiaozhuguang Node Favorites Manager')}</span> <span style="color:#4CAF50;font-size:10px;">${xzgT('快捷键','Shortcut')}${scParts.join("+")}</span>`,
+                content: `<span style="display:flex;align-items:center;gap:8px;min-height:16px;line-height:1;white-space:nowrap;"><span style="display:inline-flex;align-items:center;gap:5px;color:#FFD700;line-height:1;">${favoritesManagerIconSvg(16)}<span>${xzgT('小珠光节点收藏管理','Xiaozhuguang Node Favorites Manager')}</span></span><span style="display:inline-flex;align-items:center;color:#4CAF50;font-size:10px;line-height:1;">${xzgT('快捷键','Shortcut')}${scParts.join("+")}</span></span>`,
                 callback: () => {
                     self.togglePanel();
                 }
@@ -6655,7 +6655,15 @@ app.registerExtension({
             nodeType.prototype.serialize = function () {
                 const d = _origSerialize ? _origSerialize.apply(this, arguments) : {};
                 if (!d.id && this.id) d.id = this.id;
-                d.properties = { ...this.properties };
+                // 子图转换会 structuredClone 序列化结果；过滤属性中意外混入的 DOM/Window 等运行时对象。
+                const safeProperties = {};
+                const sourceProperties = this.properties;
+                if (sourceProperties && (Object.getPrototypeOf(sourceProperties) === Object.prototype || Object.getPrototypeOf(sourceProperties) === null)) {
+                    for (const [key, value] of Object.entries(sourceProperties)) {
+                        try { safeProperties[key] = structuredClone(value); } catch (e) {}
+                    }
+                }
+                d.properties = safeProperties;
                 if (!d.pos && this.pos) d.pos = [...this.pos];
                 if (!d.size && this.size) d.size = [...this.size];
                 if (!d.flags && this.flags) d.flags = { ...this.flags };
