@@ -477,9 +477,56 @@ function _extractFilename(url) {
     }
 }
 
+// 在原生数值控件处理前消费点击，避免列表和 Value 输入框同时弹出。
+function _xzgVideoSaveControlHit(event) {
+    const canvas = app.canvas;
+    const canvasEl = canvas?.canvas;
+    if (!canvasEl || (event.target !== canvasEl && !canvasEl.contains?.(event.target))) return null;
+    const point = canvas.convertEventToCanvasCoordinates(event);
+    for (const node of app.graph?.nodes || []) {
+        if (node.type !== "XiaozhuguangVideoCombine" && node.type !== "XiaozhuguangVideoSaveDaVinci") continue;
+        if (node.flags?.collapsed) continue;
+        const x = point[0] - node.pos[0], y = point[1] - node.pos[1];
+        for (const widget of node.widgets || []) {
+            if (widget.name !== "格式" && widget.name !== "模式") continue;
+            if (!Number.isFinite(widget._xzgControlY) || !Number.isFinite(widget._xzgControlH)) continue;
+            if (x >= 16 && x <= widget._xzgDrawW - 16 &&
+                y >= widget._xzgControlY && y <= widget._xzgControlY + widget._xzgControlH) {
+                return { node, widget, x, y };
+            }
+        }
+    }
+    return null;
+}
+
+function _xzgPatchVideoSaveControlPointer() {
+    let pendingControl = null;
+    window.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        pendingControl = _xzgVideoSaveControlHit(event);
+        if (!pendingControl) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+    }, true);
+    window.addEventListener("pointerup", (event) => {
+        if (!pendingControl) return;
+        const { node, widget } = pendingControl;
+        pendingControl = null;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        const hit = _xzgVideoSaveControlHit(event);
+        if (hit?.node !== node || hit.widget !== widget) return;
+        widget.mouse(event, [hit.x, hit.y], node);
+    }, true);
+    window.addEventListener("pointercancel", () => { pendingControl = null; }, true);
+}
+
 app.registerExtension({
     name: "xiaozhuguang.video_combine",
     init() {
+        _xzgPatchVideoSaveControlPointer();
         // 记录「发起执行的图」：点击 Run 会走 app.queuePrompt，此刻 app.graph 即发起执行的图。
         // 之所以包 app.queuePrompt 而非 api.queuePrompt —— api.queuePrompt 会被本插件其它模块
         // （编组 / 水印）做一次性临时包装后随即还原，永久包进会把临时包装链拉长；而 app.queuePrompt
@@ -950,7 +997,11 @@ app.registerExtension({
                     w._xzgLabel = () => _tr(w.name);
                 }
                 if (w.name === '格式') {
-                    w.draw = _xzgDrawComboWidget;
+                    w.draw = function(ctx, nd, width, y, H) {
+                        this._xzgControlY = y;
+                        this._xzgControlH = H;
+                        _xzgDrawComboWidget.call(this, ctx, nd, width, y, H);
+                    };
                     w.mouse = _xzgFpsComboMouse;
                     w.value = String(w.value ?? "mp4");
                     w.options = w.options || {};
@@ -1011,6 +1062,8 @@ app.registerExtension({
                         if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
                         if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
                         this._xzgDrawW = width;
+                        this._xzgControlY = y;
+                        this._xzgControlH = H;
                         const pad = 16, r = 6, wr = width - pad * 2;
                         ctx.fillStyle = '#2a2a2a';
                         ctx.beginPath();

@@ -30,6 +30,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
+import { planEncryptedGroups } from './lib/xzg_encrypt_topology.js';
 
 // 匹配组合菜单的识别词（unicode 转义，不落明文）
 const MENU_KEYWORDS = ["\u52a0\u5bc6\u8282\u70b9\u7ec4"];
@@ -782,7 +783,7 @@ function suppressHiddenSeed() {
   }
 }
 
-async function doSmartGroup(bridges) {
+async function doSmartGroup() {
   const api = window.__xzgTools;
   if (!api || typeof api.addHiddenNode !== "function") {
     showInfoDialog("⚠️ 未找到处理接口",
@@ -800,14 +801,8 @@ async function doSmartGroup(bridges) {
   const selectedNodes = Object.values(app.canvas.selected_nodes || {});
   if (selectedNodes.length === 0) return;
 
-  const groups = splitGroups(selectedNodes);
+  const groups = planEncryptedGroups(app.canvas.graph, selectedNodes);
   if (groups.length === 0) return;
-
-  if (hasInternalLoop(bridges, groups)) {
-    showInfoDialog("⚠️ 检测到无法自动拆分",
-      `<p style="margin:0;font-size:12px;line-height:1.8;">存在连接节点在该组内"进进出出",拆分无法消除环路。<br/>请把该连接节点也一并选中后再处理(或将其纳入该组)。</p>`);
-    return;
-  }
 
   // 逐个处理(顺序执行;每个 addHiddenNode 会把组内节点从画布移除并接好外部连线)
   const graph = app.canvas && app.canvas.graph;
@@ -817,7 +812,9 @@ async function doSmartGroup(bridges) {
   for (const g of groups) {
     if (!g.length) continue;
     const groupHasSeed = g.some((n) => hasSeedWidget(n));
-    await api.addHiddenNode(g, secret, 0);
+    if (await api.addHiddenNode(g, secret, 0) === false) {
+      throw new Error('整理失败，已停止后续分组（详见控制台）');
+    }
     // 找到本次新生成的目标节点,若组内没有种子控件则移除其 seed/control_after_generate
     try {
       const created = (graph && graph._nodes || [])
@@ -852,19 +849,17 @@ async function doSmartGroup(bridges) {
 function wrapGroupCallback(origCb) {
   const wrapped = async function (...args) {
     try {
-      const bridges = findBridgeNodes();
-      console.log(
-        "[util] 处理菜单已命中本扩展, 桥接节点数 =",
-        bridges.length,
-        bridges.map((n) => n.title || n.type)
-      );
-      if (bridges.length > 0) {
+      const selected = Object.values(app.canvas.selected_nodes || {});
+      const groups = planEncryptedGroups(app.canvas.graph, selected);
+      if (groups.length > 1) {
         // 智能拆分路径内部已处理"无种子则不暴露 seed"的逻辑
-        await doSmartGroup(bridges);
+        await doSmartGroup();
         return true; // 已由本扩展处理
       }
     } catch (err) {
-      console.warn("[util] 处理异常,回退原生", err);
+      console.warn("[util] 已取消处理", err);
+      alert(err?.message || String(err));
+      return false;
     }
     // 拓扑正常或拆分失败:放行原生处理,行为基本不变;
     // 但在原生处理前后记录节点集合,若本次处理的工作流没有任何种子控件,

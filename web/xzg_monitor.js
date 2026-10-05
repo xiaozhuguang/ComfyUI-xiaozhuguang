@@ -3051,6 +3051,27 @@ function injectMenuButton(retries) {
 // 设置项：启用/关闭 GPU/CPU 监控（与节点收藏器/工作流管理器同机制）
 // ---------------------------------------------------------------------------
 
+function registerSubgraphMonitorVisibility() {
+  const style = document.createElement("style");
+  style.textContent = `
+    html.xzg-monitor-subgraph #${XZG_RUN_TIMER_BTN_ID},
+    html.xzg-monitor-subgraph #${XZG_BTN_ID},
+    html.xzg-monitor-subgraph #xzg-float {
+      display: none !important;
+    }
+  `;
+  document.head.appendChild(style);
+  const sync = () => {
+    const graph = app.canvas?.graph;
+    const rootGraph = app.rootGraph || app.graph;
+    document.documentElement.classList.toggle("xzg-monitor-subgraph", !!graph && graph !== rootGraph);
+  };
+  // 使用画布切图事件，也覆盖面包屑导航、嵌套子图和工作流切换。
+  document.addEventListener("litegraph:set-graph", sync);
+  document.addEventListener("subgraph-opened", sync);
+  sync();
+}
+
 function isMonitorEnabled() {
   try {
     // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
@@ -3135,6 +3156,7 @@ app.registerExtension({
     // 防重复加载：同一页面只允许一个实例创建浮窗/按钮/注册设置
     if (window[MONITOR_SINGLETON]) return;
     window[MONITOR_SINGLETON] = true;
+    registerSubgraphMonitorVisibility();
     // 右键菜单：点击菜单外 / Esc 关闭
     document.addEventListener("mousedown", (e) => {
       if (_menuEl && !_menuEl.contains(e.target) && !e.target.closest?.(".xzg-run-history-popup") && e.target.id !== XZG_BTN_ID) closeContextMenu();

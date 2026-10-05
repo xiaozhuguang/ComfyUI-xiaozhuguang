@@ -6,6 +6,7 @@
  *   Ctrl + Alt + Shift + L —— 节点整理
  */
 import { app } from '/scripts/app.js';
+import { planEncryptedGroups } from './lib/xzg_encrypt_topology.js';
 
 const SERVER = 'lg_local';
 const LOCK_TYPE = 'LG_Lock_Local';
@@ -383,7 +384,9 @@ async function renderRow(row, myMachineId) {
 /* ───────────── 快捷键动作 ───────────── */
 
 // 节点整理：与画布「节点组（本地）」入口等价的快捷方式
+let encryptBusy = false;
 async function encryptSelectedNodes() {
+    if (encryptBusy) return;
     const tools = window.__xzgTools;
     if (!tools || typeof tools.addHiddenNode !== 'function') {
         alert('步骤1失败：工具未就绪（window.__xzgTools 不可用）');
@@ -394,6 +397,13 @@ async function encryptSelectedNodes() {
     const nodes = Object.values(app.canvas.selected_nodes ?? {});
     if (nodes.length < 2) {
         alert('步骤2失败：请先框选至少两个节点');
+        return;
+    }
+    let groups;
+    try {
+        groups = planEncryptedGroups(app.canvas.graph, nodes);
+    } catch (err) {
+        alert(err.message);
         return;
     }
     // 密码：优先取会话内已保存的；没有则直接输入。
@@ -407,14 +417,21 @@ async function encryptSelectedNodes() {
         }
     }
     try {
-        const result = await tools.addHiddenNode(nodes, secret, 0);
-        if (result === false) {
-            // 仅失败时提示, 成功完全静默
-            alert('步骤5失败：整理流程返回 false（详见控制台）');
+        encryptBusy = true;
+        for (const group of groups) {
+            const result = await tools.addHiddenNode(group, secret, 0);
+            if (result === false) {
+                alert('整理失败，已停止后续分组（详见控制台）');
+                return;
+            }
         }
+        app.canvas.selected_nodes = {};
+        if (groups.length > 1) toast(`已安全拆分为 ${groups.length} 个加密节点，避免依赖循环`);
     } catch (err) {
         console.error('[xzg] op failed:', err);
         alert('步骤6失败：' + (err?.message || err));
+    } finally {
+        encryptBusy = false;
     }
 }
 

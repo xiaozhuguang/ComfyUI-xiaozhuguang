@@ -539,6 +539,8 @@ def _digits_to_zh(text: str) -> str:
     text = text.replace("+", "加")
     # 用户指定：淼 → 邈（仅转中文输出，text 原文不受影响）
     text = text.replace("淼", "邈")
+    text = re.sub(r"一会(?!儿)", "一会儿", text)
+    text = text.replace("局部重绘", "局部虫绘")
     # 用户指定：去掉所有间隔号 ・（达・芬奇→达芬奇、张・芬奇→张芬奇 等，仅转中文输出，text 原文不受影响）
     text = text.replace("・", "")
     # 用户指定：保留数字之间的空格，其余空格删除（仅转中文输出，text 原文不受影响）

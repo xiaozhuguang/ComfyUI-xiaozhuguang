@@ -396,6 +396,7 @@
       "mask": { "name": "mask" },
       "resize_mode": { "name": "resize mode" },
       "Box_grow_factor": { "name": "box grow factor" },
+      "Box_grow_pixels": { "name": "pixel expansion" },
       "kilopixels": { "name": "kilopixels" },
       "divisible_by": { "name": "divisible by" },
       "ratio": { "name": "ratio" },
@@ -417,7 +418,6 @@
       "processed_image": { "name": "processed image" },
       "crop_box": { "name": "crop box" },
       "blur_amount": { "name": "blur amount" },
-      "mask_expand": { "name": "mask expand" },
       "mask": { "name": "mask" }
     },
     "outputs": {

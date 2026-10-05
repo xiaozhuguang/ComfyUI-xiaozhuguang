@@ -27,6 +27,7 @@ class XiaozhuguangATBC:
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
                 "mask_smooth": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "遮罩时间平滑系数，0为不开启，越大越平滑（0-0.98）。对视频帧的裁剪框位置进行指数移动平均，减少画面抖动"}),
                 "sum_mask": ("BOOLEAN", {"default": False, "tooltip": "开启后，将所有帧的遮罩求和（截断到0-1）后统一计算裁剪框，所有帧输出尺寸一致"}),
+                "Box_grow_pixels": ("INT", {"default": 0, "min": 0, "max": 16384, "step": 1, "tooltip": "在倍数扩展后，裁剪框上下左右每边增加的原图像素数，仅扩大裁剪范围，不膨胀遮罩；10表示50×50裁剪框扩为70×70，倍数为2时裁剪框为120×120。裁剪框按所选比例进一步补齐；auto达到启动阈值时跳过裁剪框扩展。遮罩随图像正常裁剪和缩放。0为不扩展"}),
             }
         }
 
@@ -169,7 +170,7 @@ class XiaozhuguangATBC:
             smoothed.append((x0, y0, x1, y1))
         return smoothed
 
-    def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold):
+    def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels=0):
         """根据 mask（numpy 灰度图 (H,W)）计算裁剪框，返回 (crop_x1,crop_y1,crop_x2,crop_y2), best_aspect_ratio"""
         coords = np.argwhere(mask_np > 0)
         if coords.shape[0] == 0:
@@ -229,6 +230,16 @@ class XiaozhuguangATBC:
             crop_x2 = center_x + half_width
             crop_y2 = center_y + half_height
 
+            if Box_grow_pixels > 0:
+                expanded_width = half_width * 2 + Box_grow_pixels * 2
+                expanded_height = half_height * 2 + Box_grow_pixels * 2
+                crop_width = math.ceil(max(expanded_width, expanded_height * width_ratio / height_ratio))
+                crop_height = math.ceil(max(expanded_height, expanded_width * height_ratio / width_ratio))
+                crop_x1 = math.floor((x1 + x2 - crop_width) / 2)
+                crop_y1 = math.floor((y1 + y2 - crop_height) / 2)
+                crop_x2 = crop_x1 + crop_width
+                crop_y2 = crop_y1 + crop_height
+
         return (crop_x1, crop_y1, crop_x2, crop_y2), best_aspect_ratio
 
     _CV2_INTERP = {
@@ -238,7 +249,7 @@ class XiaozhuguangATBC:
         "bicubic": cv2.INTER_CUBIC,
     }
 
-    def _process_single_image(self, img, mask, resize_mode, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255)):
+    def _process_single_image(self, img, mask, resize_mode, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255), Box_grow_pixels=0):
         # img: (H,W,3) uint8，mask: (H,W) uint8 —— 用 numpy/vc2( C 实现) 替代 PIL，大幅提速
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
 
@@ -286,7 +297,7 @@ class XiaozhuguangATBC:
 
         return resized_image, resized_mask, crop_info
 
-    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False):
+    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0):
         image_batch_size = image.shape[0]
 
         original_width = image.shape[2]
@@ -315,7 +326,7 @@ class XiaozhuguangATBC:
             else:
                 sum_mask_np = mask8
             unified_crop_coords, _ = self._compute_crop_box(
-                sum_mask_np, img8.shape[2], img8.shape[1], Box_grow_factor, ratio, startup_threshold
+                sum_mask_np, img8.shape[2], img8.shape[1], Box_grow_factor, ratio, startup_threshold, Box_grow_pixels
             )
             crop_boxes = [unified_crop_coords] * batch_size
             smooth_aspect_ratio = None
@@ -326,7 +337,7 @@ class XiaozhuguangATBC:
             img_h = img8.shape[1]
             for i in range(batch_size):
                 m_i = mask8[i] if mask_batched else mask8
-                crop_coords, ar = self._compute_crop_box(m_i, img_w, img_h, Box_grow_factor, ratio, startup_threshold)
+                crop_coords, ar = self._compute_crop_box(m_i, img_w, img_h, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels)
                 crop_boxes.append(crop_coords)
                 aspect_ratios.append(ar)
             if ratio != "auto":
@@ -350,7 +361,7 @@ class XiaozhuguangATBC:
                 kilopixels, divisible_by,
                 original_width, original_height,
                 crop_boxes[i],
-                fill_color_rgb
+                fill_color_rgb, Box_grow_pixels
             )
 
             img_tensor = resized_image.astype(np.float32) / 255.0

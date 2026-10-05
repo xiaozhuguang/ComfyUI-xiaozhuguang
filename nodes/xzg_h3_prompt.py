@@ -91,7 +91,20 @@ def _xzg_call_chat_completion(llm, messages, params):
         ):
             kwargs["present_penalty"] = kwargs.pop("presence_penalty")
         kwargs = {k: v for k, v in kwargs.items() if k in allowed}
-    return llm.create_chat_completion(**kwargs)
+    kwargs["stream"] = True
+    mm.throw_exception_if_processing_interrupted()
+    chunks = llm.create_chat_completion(**kwargs)
+    content = []
+    try:
+        for chunk in chunks:
+            mm.throw_exception_if_processing_interrupted()
+            content.append(chunk["choices"][0]["delta"].get("content") or "")
+        mm.throw_exception_if_processing_interrupted()
+    finally:
+        close = getattr(chunks, "close", None)
+        if close is not None:
+            close()
+    return {"choices": [{"message": {"content": "".join(content)}}]}
 
 
 def _xzg_normalize_seed(seed_value):

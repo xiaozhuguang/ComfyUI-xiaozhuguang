@@ -14,8 +14,7 @@ class XiaozhuguangATR:
                 "original_image": ("IMAGE",),
                 "processed_image": ("IMAGE",),
                 "crop_box": ("CROPBOX",),
-                "blur_amount": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "tooltip": "边缘羽化值，对mask边缘或bbox边缘应用高斯模糊"}),
-                "mask_expand": ("INT", {"default": 0, "min": -500, "max": 500, "step": 1, "tooltip": "遮罩扩展值，正值扩展，负值收缩"}),
+                "blur_amount": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "tooltip": "边缘羽化值，同时自动按相同像素数收缩遮罩，再应用高斯模糊；例如羽化30，对应遮罩扩展-30。未连接遮罩时作用于裁剪框边缘"}),
             },
             "optional": {
                 "mask": ("MASK",),
@@ -83,7 +82,8 @@ class XiaozhuguangATR:
 
         return restored
 
-    def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask_expand, mask=None):
+    def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask=None):
+        mask_expand = -blur_amount
         batch_size = original_image.shape[0]
 
         if "batch_size" in crop_box:

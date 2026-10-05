@@ -1172,8 +1172,8 @@ function _xzgAudioSaveHitWaveform(canvasX, canvasY) {
 }
 
 // LiteGraph 有些版本会把同一行右侧单元格的 pointerup 继续派给左侧 STRING widget，
-// 触发原生 Value 文本框。以 window capture 按实际画布坐标先截获模式单元格点击。
-function _xzgAudioSaveModeHit(event) {
+// 触发原生 Value 文本框。以 window capture 先截获模式和下拉单元格点击。
+function _xzgAudioSaveControlHit(event) {
     const canvas = app.canvas;
     const canvasEl = canvas?.canvas;
     if (!canvasEl || (event?.target !== canvasEl && !canvasEl.contains?.(event?.target))) return null;
@@ -1188,16 +1188,22 @@ function _xzgAudioSaveModeHit(event) {
     const graphX = point[0], graphY = point[1];
     for (const node of app.graph?.nodes || []) {
         if (node.type !== "XiaozhuguangAudioSaveDaVinci" && node.type !== "XiaozhuguangAudioSave") continue;
-        const prefix = node.widgets?.find(w => w.name === "文件名前缀");
-        const y = prefix?._xzgPairY, h = prefix?._xzgPairH;
-        if (!Number.isFinite(y) || !Number.isFinite(h)) continue;
-        const x = graphX - node.pos[0], localY = graphY - node.pos[1];
-        const width = Math.max(1, Math.min(node.size?.[0] || 320, prefix._xzgPairDrawW || node.size?.[0] || 320));
-        const outer = 16, gap = 8;
-        const cellWidth = Math.max(1, (width - outer * 2 - gap) / 2);
-        const modeLeft = outer + cellWidth + gap;
-        const modeRight = modeLeft + cellWidth;
-        if (localY >= y && localY <= y + h && x >= modeLeft && x <= modeRight) return node;
+        for (const name of ["格式", "文件名前缀"]) {
+            const row = node.widgets?.find(w => w.name === name);
+            const y = row?._xzgPairY, h = row?._xzgPairH;
+            if (!Number.isFinite(y) || !Number.isFinite(h)) continue;
+            const x = graphX - node.pos[0], localY = graphY - node.pos[1];
+            const width = Math.max(1, Math.min(node.size?.[0] || 320, row._xzgPairDrawW || node.size?.[0] || 320));
+            const outer = 16, gap = 8;
+            const cellWidth = Math.max(1, (width - outer * 2 - gap) / 2);
+            const modeLeft = outer + cellWidth + gap;
+            const modeRight = modeLeft + cellWidth;
+            if (localY < y || localY > y + h) continue;
+            if (x >= modeLeft && x <= modeRight) {
+                return { node, widget: node.widgets.find(w => w.name === (name === "格式" ? "质量" : "模式")) };
+            }
+            if (name === "格式" && x >= outer && x <= outer + cellWidth) return { node, widget: row };
+        }
     }
     return null;
 }
@@ -1205,31 +1211,36 @@ function _xzgAudioSaveModeHit(event) {
 function _xzgPatchAudioSaveModePointer() {
     if (window._xzgAudioSaveModePointerPatched) return;
     window._xzgAudioSaveModePointerPatched = true;
-    let pendingNode = null;
+    let pendingControl = null;
     window.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
-        pendingNode = _xzgAudioSaveModeHit(event);
-        if (pendingNode) {
+        pendingControl = _xzgAudioSaveControlHit(event);
+        if (pendingControl) {
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();
         }
     }, true);
     window.addEventListener("pointerup", (event) => {
-        if (!pendingNode) return;
-        const node = pendingNode;
-        pendingNode = null;
+        if (!pendingControl) return;
+        const { node, widget } = pendingControl;
+        pendingControl = null;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        if (_xzgAudioSaveModeHit(event) !== node) return;
-        const modeWidget = node.widgets?.find(w => w.name === "模式");
-        if (!modeWidget) return;
-        modeWidget.value = modeWidget.value === "预览" ? "保存" : "预览";
-        modeWidget.callback?.(modeWidget.value);
+        const hit = _xzgAudioSaveControlHit(event);
+        if (hit?.node !== node || hit.widget !== widget || !widget) return;
+        if (widget.name !== "模式") {
+            const format = node.widgets.find(w => w.name === "格式");
+            if (widget.name === "质量" && ['wav', 'flac'].includes(String(format.value).toLowerCase())) return;
+            _xzgShowComboDropdown(widget, node, event);
+            return;
+        }
+        widget.value = widget.value === "预览" ? "保存" : "预览";
+        widget.callback?.(widget.value);
         node.setDirtyCanvas?.(true, true);
     }, true);
-    window.addEventListener("pointercancel", () => { pendingNode = null; }, true);
+    window.addEventListener("pointercancel", () => { pendingControl = null; }, true);
 }
 
 app.registerExtension({
@@ -1702,13 +1713,16 @@ app.registerExtension({
             if (formatWidget && qualityWidget) {
                 formatWidget.computeSize = (width) => [width, pairRowHeight];
                 formatWidget.draw = function(ctx, nd, width, y, H) {
+                    this._xzgPairY = y;
+                    this._xzgPairH = H;
+                    this._xzgPairDrawW = Math.min(width, nd?.size?.[0] || width);
                     _xzgDrawSavePairCell(ctx, nd, width, y, H, 0, '格式', String(this.value || 'mp3').toUpperCase(), { dropdown: true });
                     const lossless = ['wav', 'flac'].includes(String(formatWidget.value).toLowerCase());
                     const qualityText = lossless ? '无损' : (qualityWidget._xzgDisplayVal?.(String(qualityWidget.value)) || String(qualityWidget.value));
                     _xzgDrawSavePairCell(ctx, nd, width, y, H, 1, '质量', qualityText, { dropdown: !lossless, disabled: lossless });
                 };
                 formatWidget.mouse = function(event, [x, y], nd) {
-                    if (event.type === 'pointerdown') return false;
+                    if (event.type === 'pointerdown') return true;
                     if (event.type === 'pointerup') {
                         const isLeftCell = x < (nd?.size?.[0] || this._xzgDrawW || 320) / 2;
                         const target = isLeftCell ? formatWidget : qualityWidget;

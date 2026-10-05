@@ -173,6 +173,7 @@ function _saveGodPromptHistory(prompt) {
     const text = String(prompt || "").trim();
     if (!text) return;
     const history = _readGodPromptHistory();
+    if (history.includes(text)) return;
     history.unshift(text);
     try { localStorage.setItem(_GOD_HISTORY_KEY, JSON.stringify(history.slice(0, _GOD_HISTORY_LIMIT))); } catch (_) {}
 }
