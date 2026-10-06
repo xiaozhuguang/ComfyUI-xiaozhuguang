@@ -6,10 +6,9 @@ import cv2
 import re
 
 
-class XiaozhuguangATBC:
-    CATEGORY = "_legacy"
-    DEPRECATED = True
-    DESCRIPTION = "根据mask裁剪图像区域并调整大小"
+class XiaozhuguangImageCrop:
+    CATEGORY = "xiaozhuguang"
+    DESCRIPTION = "根据mask裁剪单张图像区域并调整大小，批次输入自动使用第一张图片和第一个遮罩"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -26,13 +25,11 @@ class XiaozhuguangATBC:
                 "ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
                 "startup_threshold": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "当mask的box面积与输入图像的面积占比达到此阈值时，跳过ratio和box_grow_factor判断"}),
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
-                "mask_smooth": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "遮罩时间平滑系数，0为不开启，越大越平滑（0-0.98）。对视频帧的裁剪框位置进行指数移动平均，减少画面抖动"}),
-                "sum_mask": ("BOOLEAN", {"default": False, "tooltip": "开启后，将所有帧的遮罩求和（截断到0-1）后统一计算裁剪框，所有帧输出尺寸一致"}),
                 "Box_grow_pixels": ("INT", {"default": 0, "min": 0, "max": 16384, "step": 1, "tooltip": "在倍数扩展后，裁剪框上下左右每边增加的原图像素数，仅扩大裁剪范围，不膨胀遮罩；10表示50×50裁剪框扩为70×70，倍数为2时裁剪框为120×120。裁剪框按所选比例进一步补齐；auto达到启动阈值时跳过裁剪框扩展。遮罩随图像正常裁剪和缩放。0为不扩展"}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "CROPBOX", "MASK")
+    RETURN_TYPES = ("IMAGE", "XZG_IMAGE_CROPBOX", "MASK")
     RETURN_NAMES = ("cropped_image", "crop_box", "cropped_mask")
     FUNCTION = "crop_and_resize"
 
@@ -93,83 +90,7 @@ class XiaozhuguangATBC:
             target_height = target_height + 1 if target_height % 2 != 0 else target_height
         return (target_width, target_height)
 
-    def _clamp_bbox(self, bbox, width, height):
-        x0, y0, x1, y1 = bbox
-        width = max(1, int(width))
-        height = max(1, int(height))
-        x0 = max(0, min(width - 1, int(x0)))
-        y0 = max(0, min(height - 1, int(y0)))
-        x1 = max(x0 + 1, min(width, int(x1)))
-        y1 = max(y0 + 1, min(height, int(y1)))
-        return (x0, y0, x1, y1)
 
-    def _smooth_bboxes(self, bboxes, width, height, smoothing, aspect_ratio=None):
-        if not bboxes:
-            return []
-        alpha = max(0.0, min(0.98, float(smoothing)))
-        if alpha <= 0.0:
-            return bboxes
-        centers = []
-        for bbox in bboxes:
-            x0, y0, x1, y1 = bbox
-            cx = (x0 + x1) / 2.0
-            cy = (y0 + y1) / 2.0
-            centers.append((cx, cy))
-        prev_cx, prev_cy = centers[0]
-        smoothed_centers = []
-        for cx, cy in centers:
-            prev_cx = prev_cx * alpha + cx * (1.0 - alpha)
-            prev_cy = prev_cy * alpha + cy * (1.0 - alpha)
-            smoothed_centers.append((prev_cx, prev_cy))
-        req_half_w = 0
-        req_half_h = 0
-        for i, bbox in enumerate(bboxes):
-            x0, y0, x1, y1 = bbox
-            scx, scy = smoothed_centers[i]
-            left_dist = scx - x0
-            right_dist = x1 - scx
-            top_dist = scy - y0
-            bottom_dist = y1 - scy
-            hw = max(left_dist, right_dist)
-            hh = max(top_dist, bottom_dist)
-            if hw > req_half_w:
-                req_half_w = hw
-            if hh > req_half_h:
-                req_half_h = hh
-        req_half_w = min(req_half_w, width / 2.0)
-        req_half_h = min(req_half_h, height / 2.0)
-        if aspect_ratio is not None:
-            ar_w, ar_h = aspect_ratio
-            target_ratio = ar_w / ar_h
-            current_ratio = req_half_w / req_half_h if req_half_h > 0 else 1.0
-            if current_ratio > target_ratio:
-                new_half_h = req_half_w / target_ratio
-                new_half_h = min(new_half_h, height / 2.0)
-                new_half_w = new_half_h * target_ratio
-            else:
-                new_half_w = req_half_h * target_ratio
-                new_half_w = min(new_half_w, width / 2.0)
-                new_half_h = new_half_w / target_ratio
-            req_half_w = new_half_w
-            req_half_h = new_half_h
-        final_w = int(math.ceil(req_half_w * 2))
-        final_h = int(math.ceil(req_half_h * 2))
-        half_w = final_w / 2.0
-        half_h = final_h / 2.0
-        min_cx = half_w
-        max_cx = width - half_w
-        min_cy = half_h
-        max_cy = height - half_h
-        smoothed = []
-        for cx, cy in smoothed_centers:
-            cx = max(min_cx, min(max_cx, cx))
-            cy = max(min_cy, min(max_cy, cy))
-            x0 = int(round(cx - half_w))
-            y0 = int(round(cy - half_h))
-            x1 = x0 + final_w
-            y1 = y0 + final_h
-            smoothed.append((x0, y0, x1, y1))
-        return smoothed
 
     def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels=0):
         """根据 mask（numpy 灰度图 (H,W)）计算裁剪框，返回 (crop_x1,crop_y1,crop_x2,crop_y2), best_aspect_ratio"""
@@ -298,127 +219,33 @@ class XiaozhuguangATBC:
 
         return resized_image, resized_mask, crop_info
 
-    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0):
-        image_batch_size = image.shape[0]
-
-        original_width = image.shape[2]
-        original_height = image.shape[1]
-
-        fill_color_rgb = self._hex_to_rgb(fill_color)
-
-        # (B) 一次性整批转换，避免逐帧 cpu/numpy 多层拷贝
-        img8 = np.clip(image.cpu().numpy() * 255, 0, 255).astype(np.uint8)  # (B,H,W,3)
+    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", Box_grow_pixels=0):
+        original_height, original_width = image.shape[1:3]
+        img8 = np.clip(image[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)
         if mask is None:
-            # 无遮罩输入：生成与输入图同尺寸的全黑遮罩，裁剪框即整张输入图
-            mask8 = np.zeros((image_batch_size, original_height, original_width), dtype=np.uint8)
-            mask_batch_size = image_batch_size
-            mask_batched = True
+            mask8 = np.zeros((original_height, original_width), dtype=np.uint8)
         else:
-            mask8 = np.clip(mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-            if mask8.ndim == 4:  # (B,H,W,1)：去掉单通道
-                mask8 = mask8[..., 0]
-            mask_batched = mask8.ndim == 3  # (B,H,W)；否则 (H,W) 单遮罩
-            mask_batch_size = mask8.shape[0] if mask_batched else 1
-        batch_size = max(image_batch_size, mask_batch_size)
-
-        if sum_mask and batch_size > 1:
-            if mask_batched:
-                sum_mask_np = np.clip(mask8[:min(mask_batch_size, batch_size)].astype(np.float32).sum(axis=0), 0, 255).astype(np.uint8)
-            else:
-                sum_mask_np = mask8
-            unified_crop_coords, _ = self._compute_crop_box(
-                sum_mask_np, img8.shape[2], img8.shape[1], Box_grow_factor, ratio, startup_threshold, Box_grow_pixels
-            )
-            crop_boxes = [unified_crop_coords] * batch_size
-            smooth_aspect_ratio = None
-        else:
-            crop_boxes = []
-            aspect_ratios = []
-            img_w = img8.shape[2]
-            img_h = img8.shape[1]
-            for i in range(batch_size):
-                m_i = mask8[i] if mask_batched else mask8
-                crop_coords, ar = self._compute_crop_box(m_i, img_w, img_h, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels)
-                crop_boxes.append(crop_coords)
-                aspect_ratios.append(ar)
-            if ratio != "auto":
-                width_ratio, height_ratio = map(int, ratio.split(":"))
-                smooth_aspect_ratio = (width_ratio, height_ratio)
-            else:
-                smooth_aspect_ratio = aspect_ratios[0] if aspect_ratios else None
-
-        if mask_smooth > 0 and batch_size > 1 and not sum_mask:
-            crop_boxes = self._smooth_bboxes(crop_boxes, original_width, original_height, mask_smooth, smooth_aspect_ratio)
-
-        output_images = []
-        output_masks = []
-        crop_infos = []
-
-        for i in range(batch_size):
-            img_i = img8[i] if i < image_batch_size else img8[0]
-            m_i = mask8[i] if mask_batched else mask8
-            resized_image, resized_mask, crop_info = self._process_single_image(
-                img_i, m_i, resize_mode,
-                kilopixels, divisible_by,
-                original_width, original_height,
-                crop_boxes[i],
-                fill_color_rgb, Box_grow_pixels
-            )
-
-            img_tensor = resized_image.astype(np.float32) / 255.0
-            mask_tensor = resized_mask.astype(np.float32) / 255.0
-
-            output_images.append(img_tensor)
-            output_masks.append(mask_tensor)
-            crop_infos.append(crop_info)
-
-        if batch_size > 1:
-            max_h = max(img.shape[0] for img in output_images)
-            max_w = max(img.shape[1] for img in output_images)
-            need_pad = any(img.shape[0] != max_h or img.shape[1] != max_w for img in output_images)
-            if need_pad:
-                padded_images = []
-                padded_masks = []
-                fill_r = fill_color_rgb[0] / 255.0
-                fill_g = fill_color_rgb[1] / 255.0
-                fill_b = fill_color_rgb[2] / 255.0
-                fill_pixel = np.array([fill_r, fill_g, fill_b], dtype=np.float32)
-                for img_arr, mask_arr in zip(output_images, output_masks):
-                    h, w = img_arr.shape[:2]
-                    pad_h = max_h - h
-                    pad_w = max_w - w
-                    if pad_h > 0 or pad_w > 0:
-                        pad_right = pad_w // 2
-                        pad_left = pad_w - pad_right
-                        pad_bottom = pad_h // 2
-                        pad_top = pad_h - pad_bottom
-                        new_img = np.tile(fill_pixel, (max_h, max_w, 1))
-                        new_img[pad_top:pad_top+h, pad_left:pad_left+w, :] = img_arr
-                        padded_images.append(new_img)
-                        new_mask = np.zeros((max_h, max_w), dtype=np.float32)
-                        new_mask[pad_top:pad_top+h, pad_left:pad_left+w] = mask_arr
-                        padded_masks.append(new_mask)
-                    else:
-                        padded_images.append(img_arr)
-                        padded_masks.append(mask_arr)
-                output_images = padded_images
-                output_masks = padded_masks
-
-        output_image = torch.from_numpy(np.stack(output_images, axis=0))
-        output_mask = torch.from_numpy(np.stack(output_masks, axis=0))
-
-        crop_info_batch = {
-            "batch_size": batch_size,
-            "crop_infos": crop_infos
-        }
-
-        return (output_image, crop_info_batch, output_mask)
+            single_mask = mask if mask.ndim == 2 else mask[0]
+            if single_mask.ndim == 3:
+                single_mask = single_mask[..., 0]
+            mask8 = np.clip(single_mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        fill_color_rgb = self._hex_to_rgb(fill_color)
+        crop_coords, _ = self._compute_crop_box(
+            mask8, original_width, original_height, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels
+        )
+        resized_image, resized_mask, crop_info = self._process_single_image(
+            img8, mask8, resize_mode, kilopixels, divisible_by,
+            original_width, original_height, crop_coords, fill_color_rgb, Box_grow_pixels
+        )
+        output_image = torch.from_numpy(resized_image.astype(np.float32) / 255.0).unsqueeze(0)
+        output_mask = torch.from_numpy(resized_mask.astype(np.float32) / 255.0).unsqueeze(0)
+        return (output_image, crop_info, output_mask)
 
 
 NODE_CLASS_MAPPINGS = {
-    "XiaozhuguangATBC": XiaozhuguangATBC,
+    "XiaozhuguangImageCrop": XiaozhuguangImageCrop,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangATBC": "ATBC · 高级",
+    "XiaozhuguangImageCrop": "小珠光图像裁剪",
 }

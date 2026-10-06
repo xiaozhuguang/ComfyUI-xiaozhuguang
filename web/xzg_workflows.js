@@ -4262,9 +4262,9 @@ class XZGWorkflowsManager {
                     }
                     // 确保内容已加载到本地，供我们精确掌控画布图
                     if (!persistedWf.isLoaded) {
-                        try { await persistedWf.load(); } catch (_) {}
+                        await persistedWf.load();
                     }
-                    data = JSON.parse(persistedWf.content);
+                    data = persistedWf.activeState || JSON.parse(persistedWf.content);
                 }
             }
 
@@ -4274,9 +4274,6 @@ class XZGWorkflowsManager {
                 if (!res.ok) throw new Error("加载失败");
                 data = await res.json();
             }
-
-            const graph = app.graph;
-            const canvas = app.canvas;
 
             // 0) 保存当前工作流的箭头数据到 graph.extra，确保切换前已被持久化
             try {
@@ -4295,37 +4292,14 @@ class XZGWorkflowsManager {
                 }
             } catch (e) {}
 
-            // 1) 通过官方 store 切换「激活工作流」：决定顶部标签与保存目标路径
-            if (persistedWf && wfStore?.openWorkflow) {
-                try { await wfStore.openWorkflow(persistedWf); } catch (_) {}
-            }
+            // 与官方标签切换使用同一个加载入口，等待图和激活工作流一起完成。
+            // 不再先 openWorkflow 再延时 configure，避免两条异步加载路径互相覆盖。
+            await app.loadGraphData(data, true, true, persistedWf || undefined);
 
-            // 2) 等待官方异步图加载先行完成（通常 < 300ms），避免其随后覆盖我们下面的加载
-            await new Promise(r => setTimeout(r, 300));
-
-            // 3) 由本扩展完全掌控画布图：清图并配置为「本次点击」的工作流数据，作为最终画布写入者
-            graph.beforeChange();
-            graph.clear();
-            graph.configure(data);
-            graph.afterChange();
-
-            // 4) 视图恢复（缩放/偏移）
             const savedDs = data.extra?.ds;
-            if (savedDs && canvas?.ds) {
-                if (savedDs.scale != null) canvas.ds.scale = savedDs.scale;
-                if (savedDs.offset) {
-                    canvas.ds.offset[0] = savedDs.offset[0] || 0;
-                    canvas.ds.offset[1] = savedDs.offset[1] || 0;
-                }
-            } else {
-                this.centerCanvasOnNodes();
-            }
-
-            if (canvas?.setDirty) canvas.setDirty(true, true);
-            if (data.id) location.hash = data.id;
-
-            await new Promise(r => setTimeout(r, 120));
-            app.canvas?.draw(true, true);
+            if (!savedDs) this.centerCanvasOnNodes();
+            app.canvas?.setDirty?.(true, true);
+            app.canvas?.draw?.(true, true);
 
             // 5) 代际校验：若期间有更新的点击（gen 已变），不再写元信息，交由最新代次负责
             if (gen === this._loadGen) {

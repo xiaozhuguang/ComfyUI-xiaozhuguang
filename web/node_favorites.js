@@ -132,6 +132,7 @@ class Xiaozhuguang {
         this.initialized = false;
         this.draggingNodeType = null;
         this.draggingWorkflowId = null;
+        this._dragPanelWasExpanded = null;
         this._previewEl = null;
         this._previewCanvasCache = new Map();
         this._previewHideTimer = null;
@@ -483,6 +484,7 @@ class Xiaozhuguang {
         };
 
         const onUp = (e) => {
+            let inserted = false;
             if (self.draggingNodeType) {
                 const canvas = app.canvas;
                 if (canvas && canvas.canvas) {
@@ -497,7 +499,7 @@ class Xiaozhuguang {
                         } else {
                             self.addNodeToCanvasAt(self.draggingNodeType, offsetX, offsetY);
                         }
-                        self.maybeCollapseAfterInsert();
+                        inserted = true;
                     }
                 }
                 self.removeDragPreview();
@@ -516,12 +518,13 @@ class Xiaozhuguang {
                         } else {
                             self.addWorkflowToCanvasAt(self.draggingWorkflowId, offsetX, offsetY);
                         }
-                        self.maybeCollapseAfterInsert();
+                        inserted = true;
                     }
                 }
                 self.removeDragPreview();
                 self.draggingWorkflowId = null;
             }
+            if (self._dragPanelWasExpanded !== null) self.restorePanelAfterFavoriteDrag(inserted);
         };
 
         this._dragMoveHandler = onMove;
@@ -537,6 +540,30 @@ class Xiaozhuguang {
         this._dragMoveHandler = null;
         this._dragUpHandler = null;
         this._dragInstalled = false;
+    }
+
+    // Temporarily hide the favorites panel while dragging an item to the canvas.
+    hidePanelForFavoriteDrag() {
+        if (!this.panel || this._dragPanelWasExpanded !== null) return;
+        this._dragPanelWasExpanded = !this.panel.classList.contains("collapsed");
+        this.panel.style.visibility = "hidden";
+    }
+
+    restorePanelAfterFavoriteDrag(inserted) {
+        if (!this.panel) {
+            this._dragPanelWasExpanded = null;
+            return;
+        }
+        this.panel.style.visibility = "";
+        const wasExpanded = this._dragPanelWasExpanded;
+        this._dragPanelWasExpanded = null;
+        if (inserted && this.favorites.autoCloseAfterInsert !== false) {
+            this.collapsePanel();
+        } else if (wasExpanded && this.panel.classList.contains("collapsed")) {
+            this.expandPanel();
+        } else if (!wasExpanded && !this.panel.classList.contains("collapsed")) {
+            this.collapsePanel();
+        }
     }
 
     updateDragPreview(x, y, name = "") {
@@ -4278,9 +4305,11 @@ class Xiaozhuguang {
                         self.startReorderDrag(item, e.clientY);
                     } else if (isWorkflowDrag) {
                         self.draggingWorkflowId = dragInfo.id;
+                        self.hidePanelForFavoriteDrag();
                         self.updateDragPreview(e.clientX, e.clientY, "🔗 " + dragInfo.name);
                     } else {
                         self.draggingNodeType = dragInfo.type;
+                        self.hidePanelForFavoriteDrag();
                         self.updateDragPreview(e.clientX, e.clientY, dragInfo.name);
                     }
                 }

@@ -390,7 +390,7 @@
     }
   },
   "XiaozhuguangATBC": {
-    "display_name": "小珠光 ATBC (智能裁剪)",
+    "display_name": "ATBC · 高级",
     "inputs": {
       "image": { "name": "图像" },
       "mask": { "name": "遮罩" },
@@ -412,13 +412,20 @@
     }
   },
   "XiaozhuguangATR": {
-    "display_name": "小珠光 ATR (图像回贴)",
+    "display_name": "ATR · 高级",
     "inputs": {
       "original_image": { "name": "原始图像" },
       "processed_image": { "name": "处理图像" },
       "crop_box": { "name": "裁剪框" },
-      "blur_amount": { "name": "羽化值" },
-      "mask": { "name": "遮罩" }
+      "blur_amount": { "name": "羽化值", "tooltip": "只控制边缘模糊，不改变遮罩范围" },
+      "mask_expand": { "name": "遮罩扩张（像素）", "tooltip": "独立调整遮罩范围：正值向外扩张，负值向内收缩，0=不变" },
+      "mask": { "name": "遮罩" },
+      "edge_color_match": { "name": "边缘颜色匹配" },
+      "color_band_width": { "name": "分析带宽" },
+      "color_match_strength": { "name": "匹配强度" },
+      "color_correction_range": { "name": "修正范围" },
+      "color_temporal_smooth": { "name": "时间平滑" },
+      "compute_device": { "name": "计算设备" }
     },
     "outputs": {
       "0": { "name": "还原图像" }
@@ -619,6 +626,86 @@
     "outputs": {
       "0": { "name": "原文" },
       "1": { "name": "数字转中文" }
+    }
+  },
+  "XiaozhuguangImageCrop": {
+    "display_name": "小珠光图像裁剪",
+    "inputs": {
+      "image": {
+        "name": "图像"
+      },
+      "mask": {
+        "name": "遮罩"
+      },
+      "resize_mode": {
+        "name": "缩放模式"
+      },
+      "Box_grow_factor": {
+        "name": "扩展倍数"
+      },
+      "Box_grow_pixels": {
+        "name": "像素扩展"
+      },
+      "kilopixels": {
+        "name": "千像素"
+      },
+      "divisible_by": {
+        "name": "整除数"
+      },
+      "ratio": {
+        "name": "比例"
+      },
+      "startup_threshold": {
+        "name": "启动阈值"
+      },
+      "fill_color": {
+        "name": "填充颜色"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "裁剪图像"
+      },
+      "1": {
+        "name": "裁剪框"
+      },
+      "2": {
+        "name": "裁剪遮罩"
+      }
+    }
+  },
+  "XiaozhuguangImageRestore": {
+    "display_name": "小珠光 图像回贴",
+    "inputs": {
+      "original_image": {
+        "name": "原始图像"
+      },
+      "processed_image": {
+        "name": "处理图像"
+      },
+      "crop_box": {
+        "name": "裁剪框"
+      },
+      "blur_amount": {
+        "name": "羽化"
+      },
+      "edge_color_match": { "name": "边缘颜色匹配", "tooltip": "根据最终遮罩的接缝区域修正处理图像的颜色偏差" },
+      "color_band_width": { "name": "分析带宽", "tooltip": "沿最终融合遮罩的50%轮廓向内分析的带宽，单位为原图像素" },
+      "color_match_strength": { "name": "匹配强度" },
+      "color_correction_range": { "name": "修正范围", "tooltip": "覆盖羽化过渡带并向接缝内侧渐弱的范围，单位为原图像素" },
+      "color_temporal_smooth": { "name": "时间平滑", "tooltip": "批次内颜色修正量的时间平滑，0为关闭" },
+      "mask_expand": {
+        "name": "遮罩扩张（像素）",
+        "tooltip": "独立调整遮罩范围：正值向外扩张，负值向内收缩，0=不变"
+      },
+      "mask": {
+        "name": "遮罩"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "还原图像"
+      }
     }
   }
 }

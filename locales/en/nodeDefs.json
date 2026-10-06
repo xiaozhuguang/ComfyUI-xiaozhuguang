@@ -390,7 +390,7 @@
     }
   },
   "XiaozhuguangATBC": {
-    "display_name": "Xiaozhuguang ATBC (Smart Crop)",
+    "display_name": "ATBC (Advanced)",
     "inputs": {
       "image": { "name": "image" },
       "mask": { "name": "mask" },
@@ -412,13 +412,20 @@
     }
   },
   "XiaozhuguangATR": {
-    "display_name": "Xiaozhuguang ATR (Image Restore)",
+    "display_name": "ATR (Advanced)",
     "inputs": {
       "original_image": { "name": "original image" },
       "processed_image": { "name": "processed image" },
       "crop_box": { "name": "crop box" },
       "blur_amount": { "name": "blur amount" },
-      "mask": { "name": "mask" }
+      "mask_expand": { "name": "mask expansion (pixels)", "tooltip": "Adjusts mask extent independently: positive expands outward, negative shrinks inward, 0 = unchanged" },
+      "mask": { "name": "mask" },
+      "edge_color_match": { "name": "Edge Color Match" },
+      "color_band_width": { "name": "Analysis Band Width" },
+      "color_match_strength": { "name": "Match Strength" },
+      "color_correction_range": { "name": "Correction Range" },
+      "color_temporal_smooth": { "name": "Temporal Smoothing" },
+      "compute_device": { "name": "Compute Device" }
     },
     "outputs": {
       "0": { "name": "restored image" }
@@ -600,6 +607,86 @@
     "outputs": {
       "0": { "name": "Raw Text" },
       "1": { "name": "Num → Chinese" }
+    }
+  },
+  "XiaozhuguangImageCrop": {
+    "display_name": "Xiaozhuguang Image Crop",
+    "inputs": {
+      "image": {
+        "name": "image"
+      },
+      "mask": {
+        "name": "mask"
+      },
+      "resize_mode": {
+        "name": "resize mode"
+      },
+      "Box_grow_factor": {
+        "name": "box grow factor"
+      },
+      "Box_grow_pixels": {
+        "name": "pixel expansion"
+      },
+      "kilopixels": {
+        "name": "kilopixels"
+      },
+      "divisible_by": {
+        "name": "divisible by"
+      },
+      "ratio": {
+        "name": "ratio"
+      },
+      "startup_threshold": {
+        "name": "startup threshold"
+      },
+      "fill_color": {
+        "name": "fill color"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "cropped image"
+      },
+      "1": {
+        "name": "crop box"
+      },
+      "2": {
+        "name": "cropped mask"
+      }
+    }
+  },
+  "XiaozhuguangImageRestore": {
+    "display_name": "Xiaozhuguang Image Restore",
+    "inputs": {
+      "original_image": {
+        "name": "original image"
+      },
+      "processed_image": {
+        "name": "processed image"
+      },
+      "crop_box": {
+        "name": "crop box"
+      },
+      "blur_amount": {
+        "name": "blur amount"
+      },
+      "edge_color_match": { "name": "Edge Color Match", "tooltip": "Correct color differences near the seam using the final mask" },
+      "color_band_width": { "name": "Analysis Band Width", "tooltip": "Inward analysis band from the final mask's 50% contour, in original-image pixels" },
+      "color_match_strength": { "name": "Match Strength" },
+      "color_correction_range": { "name": "Correction Range", "tooltip": "Correction reach inward from the seam, in original-image pixels" },
+      "color_temporal_smooth": { "name": "Temporal Smoothing", "tooltip": "Smooth correction across items in the batch; 0 disables smoothing" },
+      "mask_expand": {
+        "name": "mask expansion (pixels)",
+        "tooltip": "Adjusts mask extent independently: positive expands outward, negative shrinks inward, 0 = unchanged"
+      },
+      "mask": {
+        "name": "mask"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "restored image"
+      }
     }
   }
 }

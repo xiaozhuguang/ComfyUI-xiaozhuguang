@@ -233,6 +233,8 @@ from .nodes.xzg_qwen_image21_encode import XiaozhuguangTextEncodeQwenImage21
 from .nodes.xzg_string_to_number import XiaozhuguangStringToNumber
 from .nodes.xzg_atbc import XiaozhuguangATBC
 from .nodes.xzg_atr import XiaozhuguangATR
+from .nodes.xzg_image_crop import XiaozhuguangImageCrop
+from .nodes.xzg_image_restore import XiaozhuguangImageRestore
 from .nodes.xzg_face_align import XiaozhuguangFaceAlign
 from .nodes.xzg_image_split_merge import XiaozhuguangImageSplitter, XiaozhuguangImageMerger
 from .nodes.xzg_seed import XiaozhuguangSeed
@@ -1313,6 +1315,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangStringToNumber": XiaozhuguangStringToNumber,
     "XiaozhuguangATBC": XiaozhuguangATBC,
     "XiaozhuguangATR": XiaozhuguangATR,
+    "XiaozhuguangImageCrop": XiaozhuguangImageCrop,
+    "XiaozhuguangImageRestore": XiaozhuguangImageRestore,
     "XiaozhuguangFaceAlign": XiaozhuguangFaceAlign,
     "XiaozhuguangImageSplitter": XiaozhuguangImageSplitter,
     "XiaozhuguangImageMerger": XiaozhuguangImageMerger,
@@ -1374,8 +1378,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangNinimaxH3Prompt": "小珠光提示词-化神级",
     "XiaozhuguangNinimaxH3PromptNoSkill": "小珠光提示词",
     "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",
-    "XiaozhuguangATBC": "小珠光 ATBC (智能裁剪)",
-    "XiaozhuguangATR": "小珠光 ATR (图像回贴)",
+    "XiaozhuguangATBC": "ATBC · 高级",
+    "XiaozhuguangATR": "ATR · 高级",
+    "XiaozhuguangImageCrop": "小珠光图像裁剪",
+    "XiaozhuguangImageRestore": "小珠光 图像回贴",
     "XiaozhuguangFaceAlign": "小珠光 Face Align (人脸对齐)",
     "XiaozhuguangImageSplitter": "小珠光 IS (图像分割)",
     "XiaozhuguangImageMerger": "小珠光 IM (图像合并)",

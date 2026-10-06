@@ -286,7 +286,7 @@ class VideoWatermarkDetector:
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("逐帧遮罩",)
     FUNCTION = "detect"
-    CATEGORY = "xzg/视频遮罩手工跟踪"
+    CATEGORY = "xiaozhuguang"
     DESCRIPTION = ""  # 悬停不弹使用说明（说明走前端视窗「使用说明」按钮）
 
     def detect(self, image, model_name=MANUAL_MODEL_NAME,

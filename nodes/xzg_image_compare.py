@@ -12,6 +12,9 @@ from .xzg_image_save import REAL_STORE
 class XiaozhuguangImageCompare(PreviewImage):
     """小珠光图像对比 - 在画布上对比两张图像，支持减少卡顿模式"""
 
+    # 清除 PreviewImage 的基础节点标记，按插件来源归入扩展。
+    ESSENTIALS_CATEGORY = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {

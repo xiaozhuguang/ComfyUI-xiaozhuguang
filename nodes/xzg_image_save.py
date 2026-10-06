@@ -40,7 +40,10 @@ def _xzg_composite_checkerboard(rgba_pil, cell=8):
     return composed
 
 
-class XiaozhuguangImageSave(PreviewImage):
+class XiaozhuguangImageSave(PreviewImage):
+
+    # 清除 PreviewImage 的基础节点标记，按插件来源归入扩展。
+    ESSENTIALS_CATEGORY = ""
     """小珠光图像保存 - 保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)。
     与小珠光图像预览完全相似的显示体验，但增加实际文件保存功能。
     磁盘/右键 JPG 保存质量统一为 90；画布预览 JPG 固定 80。PNG 保存为全分辨率无损。

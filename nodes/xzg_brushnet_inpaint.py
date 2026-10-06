@@ -76,8 +76,9 @@ class BlendInpaint:
         # 有可用 CUDA 时把扩展+羽化临时放到 GPU 完成，结果拷回原设备/精度（输出仅差 fp 舍入）。
         blur_dev = torch.device("cuda") if (torch.cuda.is_available() and original.device.type != "cuda") else original.device
 
-        # ── A: 接缝扩展 + 羽化（对齐小珠光 ATR 的 mask_expand / blur_amount 语义）──
-        # 先对遮罩做形态学扩展（正=膨胀外扩、负=腐蚀内缩）移动接缝位置，再高斯羽化过渡。
+        # ── A: 接缝扩展 + 羽化 ──
+        # 先对遮罩做形态学扩展，再高斯羽化。羽化半径不能大于原遮罩短边的
+        # 一半，否则小遮罩峰值会被模糊压低到 1 以下，使整个重绘区域都混入原图。
         feather = max(0, int(feather))
         transform = None
         if feather > 0:
@@ -94,7 +95,7 @@ class BlendInpaint:
             if origin is None:
                 m = _expand_mask(mask[i][None,None,:,:].to(blur_dev), expand)
                 if transform is not None:
-                    m = transform(m)
+                    m = _feather_mask(m, transform, feather)
                 blurred_mask = m.to(original.device, original.dtype)
                 blurred.append(blurred_mask[0])
 
@@ -118,7 +119,7 @@ class BlendInpaint:
                     padded_mask = mask[i]
                 m = _expand_mask(padded_mask[None,None,:,:].to(blur_dev), expand)
                 if transform is not None:
-                    m = transform(m)
+                    m = _feather_mask(m, transform, feather)
                 blurred_mask = m.to(original.device, original.dtype)
                 blurred.append(blurred_mask[0][0])
 
@@ -183,6 +184,17 @@ def _expand_mask(mask: torch.Tensor, expand: int) -> torch.Tensor:
     return -F.max_pool2d(-mask, k, stride=1, padding=-expand)
 
 
+def _feather_mask(mask: torch.Tensor, transform, feather: int) -> torch.Tensor:
+    """Feather edges without letting a small mask fade below full replacement."""
+    if feather <= 0:
+        return mask
+    blurred = transform(mask)
+    # Keep the original mask at full strength inside its boundary. A max-pool
+    # here would dilate the mask and can paint the inpaint result outside the
+    # intended region, producing a colored halo/seam.
+    return torch.maximum(blurred, mask)
+
+
 def check_image_mask(image, mask, name):
     if len(image.shape) < 4:
         # image tensor shape should be [B, H, W, C], but batch somehow is missing
@@ -208,7 +220,9 @@ def check_image_mask(image, mask, name):
 
 # Get origin of the mask
 def cut_with_mask(mask, width, height):
-    iy, ix = (mask == 1).nonzero(as_tuple=True)
+    # Masks can contain antialiased/soft values; any positive coverage belongs
+    # to the masked region and must be included in the crop bounds.
+    iy, ix = (mask > 0).nonzero(as_tuple=True)
 
     h0, w0 = mask.shape
     

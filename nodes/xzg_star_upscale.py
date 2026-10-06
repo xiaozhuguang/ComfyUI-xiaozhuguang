@@ -74,7 +74,7 @@ class StarUpscale:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("图像",)
     FUNCTION = "run"
-    CATEGORY = "Star Upscale"
+    CATEGORY = "xiaozhuguang"
 
     def run(self, 图像, 帧率, 放大倍数, 输出长边, unique_id=None):
         b, h, w, c = 图像.shape

@@ -75,6 +75,8 @@ def _resolve_template(template: str, context: dict) -> str:
 
 
 class XiaozhuguangImageSaveCustom(PreviewImage):
+    # 清除 PreviewImage 的基础节点标记，按插件来源归入扩展。
+    ESSENTIALS_CATEGORY = ""
     """小珠光图像保存-自定义输出
     保存图像为 JPG(压缩) 或 PNG(无损)，画布预览始终为压缩JPG(流畅)；磁盘/右键 JPG 质量统一为 90，预览 JPG 固定 80。
     与小珠光图像保存完全相似的显示体验，但 output_path / filename_prefix 支持

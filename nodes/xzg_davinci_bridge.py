@@ -23,6 +23,7 @@ action=import :  把本地视频导入当前项目：ImportMedia 进媒体池，
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -966,8 +967,8 @@ def action_export_audio(pargs):
             "clip": clip_info, "page": current_page or "unknown"}
 
 
-def find_blank_video_track(timeline, after_track=0, track_type="video"):
-    """返回一个「整条时间线无任何片段」的空白轨道序号，优先复用不新建。
+def find_blank_video_track(timeline, after_track=0, track_type="video", start_frame=None, end_frame=None):
+    """返回可复用的空白轨道；提供起止帧时只检查该时间范围。
 
     - track_type：轨道类型（"video" / "audio"），音频导入复用同一逻辑
     - after_track>0 时，仅返回序号大于该轨道的空白轨道（即播放头最上层片段之上的空隙层）
@@ -980,7 +981,10 @@ def find_blank_video_track(timeline, after_track=0, track_type="video"):
     for idx in range(after_track + 1, n + 1):
         try:
             items = timeline.GetItemListInTrack(track_type, idx) or []
-            if len(items) == 0:
+            if start_frame is not None and end_frame is not None:
+                if all(int(it.GetEnd()) <= start_frame or int(it.GetStart()) >= end_frame for it in items):
+                    return idx
+            elif len(items) == 0:
                 return idx
         except Exception:
             continue
@@ -992,9 +996,9 @@ def action_import(pargs):
 
     行为（严格对齐需求）：
     - ImportMedia 进当前媒体池（不建子夹）
-    - 播放头处有片段：优先复用「播放头最上层片段之上、且整条时间线无片段的空白视频轨道」，
+    - 播放头处有片段：优先复用该片段之上、在新视频完整落点范围内空白的视频轨道，
       完全没有空白轨道时才 AddTrack 新建（不刻意新建轨道）
-    - 播放头处无片段：自动以当前播放头帧为起点，直接放入 V1 轨道（不新建/不找空白轨道）
+    - 播放头处无片段：以当前播放头帧为起点，复用该时间范围空白的轨道
     - AppendToTimeline 落到目标轨道；不插入缝隙、不推移、不分割其他轨道
     返回 { ok, clip, track, record_frame, project, timeline }
     """
@@ -1075,10 +1079,20 @@ def action_import(pargs):
         except Exception as e:
             return {"ok": False, "error": f"读取播放头位置失败：{e}"}
 
-    # 4) 目标轨道：从播放头最上层片段往上找第一条整条轨道完全空的轨道；
-    #    找不到才新建。例：V1有视频/V2空/V3有视频 → 最上层是V3，上面V4空 → 新建V4；
-    #    V1有视频/V2V3空 → V2空 → 放V2；只有V1 → 新建V2。
-    target_track = find_blank_video_track(tl, after_track=src_track)
+    # 按新视频的完整落点范围复用轨道；读取不到时长时仍只使用整条空轨道。
+    end_frame = None
+    try:
+        properties = item.GetClipProperty() or {}
+        source_fps = float(properties.get("FPS") or 0)
+        source_frames = float(properties.get("Frames") or 0)
+        timeline_fps = float(tl.GetSetting("timelineFrameRate") or 0)
+        if source_fps > 0 and source_frames > 0 and timeline_fps > 0:
+            end_frame = record_frame + math.ceil(source_frames * timeline_fps / source_fps)
+    except (TypeError, ValueError, AttributeError):
+        pass
+    target_track = find_blank_video_track(
+        tl, after_track=src_track, start_frame=record_frame, end_frame=end_frame,
+    )
     if target_track is None:
         how_placed = "new_track"
         try:
