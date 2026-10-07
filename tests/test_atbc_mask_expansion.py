@@ -51,6 +51,25 @@ class MaskExpansionTests(unittest.TestCase):
         self.assertEqual(result[1]["crop_infos"][0]["original_coords"], (0, 0, 100, 100))
         self.assertTrue(torch.equal(result[2], mask))
 
+    def test_smoothed_edge_mask_expands_outward_with_fill_like_sum_mode(self):
+        node = ATBC()
+        image = torch.zeros((2, 100, 100, 3))
+        mask = torch.zeros((2, 100, 100))
+        mask[:, 25:75, :50] = 1
+        options = dict(mask=mask, ratio="1:1", Box_grow_factor=2,
+                       kilopixels=10, divisible_by=1, fill_color="#FF0000")
+
+        per_frame = node.crop_and_resize(image, "nearest-exact", mask_smooth=0.5,
+                                         sum_mask=False, **options)
+        summed = node.crop_and_resize(image, "nearest-exact", sum_mask=True, **options)
+
+        info = per_frame[1]["crop_infos"][0]
+        self.assertEqual(info["pad_info"], (25, 0, 0, 0))
+        self.assertEqual(info["padded_size"], (125, 100))
+        torch.testing.assert_close(per_frame[0], summed[0])
+        torch.testing.assert_close(per_frame[2], summed[2])
+        torch.testing.assert_close(per_frame[0][:, 0, 0], torch.tensor([[1., 0., 0.], [1., 0., 0.]]))
+
 
 if __name__ == "__main__":
     unittest.main()

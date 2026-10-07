@@ -136,19 +136,15 @@ class XiaozhuguangATBC:
                 req_half_w = hw
             if hh > req_half_h:
                 req_half_h = hh
-        req_half_w = min(req_half_w, width / 2.0)
-        req_half_h = min(req_half_h, height / 2.0)
         if aspect_ratio is not None:
             ar_w, ar_h = aspect_ratio
             target_ratio = ar_w / ar_h
             current_ratio = req_half_w / req_half_h if req_half_h > 0 else 1.0
             if current_ratio > target_ratio:
                 new_half_h = req_half_w / target_ratio
-                new_half_h = min(new_half_h, height / 2.0)
                 new_half_w = new_half_h * target_ratio
             else:
                 new_half_w = req_half_h * target_ratio
-                new_half_w = min(new_half_w, width / 2.0)
                 new_half_h = new_half_w / target_ratio
             req_half_w = new_half_w
             req_half_h = new_half_h
@@ -156,14 +152,11 @@ class XiaozhuguangATBC:
         final_h = int(math.ceil(req_half_h * 2))
         half_w = final_w / 2.0
         half_h = final_h / 2.0
-        min_cx = half_w
-        max_cx = width - half_w
-        min_cy = half_h
-        max_cy = height - half_h
         smoothed = []
         for cx, cy in smoothed_centers:
-            cx = max(min_cx, min(max_cx, cx))
-            cy = max(min_cy, min(max_cy, cy))
+            # Keep the smoothed crop centered on the mask, even when that
+            # places part of it beyond the source frame. _process_single_image
+            # pads those areas with fill_color, matching the summed-mask path.
             x0 = int(round(cx - half_w))
             y0 = int(round(cy - half_h))
             x1 = x0 + final_w
@@ -173,7 +166,11 @@ class XiaozhuguangATBC:
 
     def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels=0):
         """根据 mask（numpy 灰度图 (H,W)）计算裁剪框，返回 (crop_x1,crop_y1,crop_x2,crop_y2), best_aspect_ratio"""
-        coords = np.argwhere(mask_np > 0)
+        # Resize/smoothing filters can leave tiny non-zero values across the
+        # whole frame. Those interpolation tails should not turn the mask bbox
+        # into the full image (which would trigger auto's startup bypass and
+        # make Box_grow_factor appear ineffective).
+        coords = np.argwhere(mask_np > 1)
         if coords.shape[0] == 0:
             bbox = (0, 0, width, height)
         else:

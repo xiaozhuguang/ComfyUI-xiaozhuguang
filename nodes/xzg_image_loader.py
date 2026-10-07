@@ -10,6 +10,7 @@ import zipfile
 import secrets
 import contextvars
 import subprocess
+import re
 from contextlib import contextmanager
 import torch
 import numpy as np
@@ -366,6 +367,42 @@ def _media_resolve_path(directory, rel):
     return path
 
 
+def _text_box_preview_dir():
+    path = os.path.join(folder_paths.get_user_directory(), "xiaozhuguang", "text_box_previews")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _text_box_preview_path(preview_id):
+    if not isinstance(preview_id, str) or not re.fullmatch(r"[a-f0-9]{32}", preview_id):
+        raise ValueError("invalid preview id")
+    return os.path.join(_text_box_preview_dir(), preview_id + ".webp")
+
+
+@routes.get("/xzg/text-box-preview/{preview_id}")
+@xzg_safe_handler
+async def xzg_text_box_preview_get(request):
+    try:
+        path = _text_box_preview_path(request.match_info.get("preview_id"))
+    except ValueError:
+        return web.json_response({"error": "invalid preview id"}, status=400)
+    if not os.path.isfile(path):
+        return web.json_response({"error": "preview not found"}, status=404)
+    return web.FileResponse(path, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@routes.delete("/xzg/text-box-preview/{preview_id}")
+@xzg_safe_handler
+async def xzg_text_box_preview_delete(request):
+    try:
+        path = _text_box_preview_path(request.match_info.get("preview_id"))
+    except ValueError:
+        return web.json_response({"error": "invalid preview id"}, status=400)
+    if os.path.isfile(path):
+        os.remove(path)
+    return web.json_response({"deleted": True})
+
+
 def _media_folder_of(rel):
     """返回相对路径所属文件夹（根目录返回 ''）。"""
     idx = rel.find("/")
@@ -670,31 +707,51 @@ async def xzg_media_library_upload(request):
     part = await reader.next()
     if not part or part.name != "file":
         return web.json_response({"error": "file required"}, status=400)
+    preview_upload = request.query.get("purpose") == "text_box_preview"
     name = _media_safe_name(part.filename)
     if not name:
         return web.json_response({"error": "unsupported media name or type"}, status=400)
-    root_dir = _media_library_dir()
+    root_dir = _text_box_preview_dir() if preview_upload else _media_library_dir()
     fd, temp_path = tempfile.mkstemp(prefix=".upload-", dir=root_dir)
     try:
         size = 0
         with os.fdopen(fd, "wb") as out:
             while chunk := await part.read_chunk(size=1024 * 1024):
                 size += len(chunk)
-                if size > _media_max_file_bytes():
-                    return web.json_response({"error": "media exceeds 10 GB" if _media_kind.get() != "image" else "image exceeds 100 MB"}, status=413)
+                if size > (50 * 1024 * 1024 if preview_upload else _media_max_file_bytes()):
+                    limit_message = "image exceeds 50 MB" if preview_upload else ("media exceeds 10 GB" if _media_kind.get() != "image" else "image exceeds 100 MB")
+                    return web.json_response({"error": limit_message}, status=413)
                 await _media_archive_io(out.write, chunk)
         # 先完整读取图片内容，再读 folder 字段（aiohttp 按顺序解析 multipart，
         # 若提前 next() 推进会破坏当前 part 数据流，导致图片内容损坏无法识别）
         folder = ""
-        try:
-            folder_part = await reader.next()
-            if folder_part and folder_part.name == "folder":
-                folder = _media_safe_folder((await folder_part.read()).decode("utf-8", "replace").strip()) or ""
-        except Exception:
-            folder = ""
+        if not preview_upload:
+            try:
+                folder_part = await reader.next()
+                if folder_part and folder_part.name == "folder":
+                    folder = _media_safe_folder((await folder_part.read()).decode("utf-8", "replace").strip()) or ""
+            except Exception:
+                folder = ""
         directory = os.path.join(root_dir, folder) if folder else root_dir
         os.makedirs(directory, exist_ok=True)
         await _media_archive_io(_media_validate_image, temp_path)
+        if preview_upload:
+            preview_id = secrets.token_hex(16)
+            target = _text_box_preview_path(preview_id)
+            with Image.open(temp_path) as opened:
+                if opened.width * opened.height > 100_000_000:
+                    return web.json_response({"error": "image dimensions exceed 100 megapixels"}, status=413)
+                opened.load()
+                oriented = ImageOps.exif_transpose(opened)
+                image = oriented.convert("RGBA" if "A" in oriented.getbands() else "RGB")
+                if oriented is not opened:
+                    oriented.close()
+            image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+            image.save(temp_path, format="WEBP", quality=82, method=4)
+            width, height = image.size
+            image.close()
+            os.replace(temp_path, target)
+            return web.json_response({"id": preview_id, "width": width, "height": height, "size": os.path.getsize(target)})
         stored_name = _media_unique_name(directory, name)
         os.replace(temp_path, os.path.join(directory, stored_name))
         _media_write_order(_media_ordered_names(root_dir))
@@ -1051,6 +1108,18 @@ def _media_build_archive(path, config):
                     if total > MEDIA_ARCHIVE_MAX_BYTES:
                         raise ValueError("archive exceeds 20 GB")
                     archive.write(source, prefix + "/" + name)
+        if config.get("textBoxPreviews") is not None:
+            preview_dir = _text_box_preview_dir()
+            preview_ids = sorted(name[:-5] for name in os.listdir(preview_dir)
+                                 if re.fullmatch(r"[a-f0-9]{32}\.webp", name)
+                                 and os.path.isfile(os.path.join(preview_dir, name)))
+            config["textBoxPreviews"] = {"version": 1, "files": preview_ids}
+            for preview_id in preview_ids:
+                source = _text_box_preview_path(preview_id)
+                total += os.path.getsize(source)
+                if total > MEDIA_ARCHIVE_MAX_BYTES:
+                    raise ValueError("archive exceeds 20 GB")
+                archive.write(source, "text_box_previews/" + preview_id + ".webp")
         metadata = json.dumps(config, ensure_ascii=False).encode("utf-8")
         if len(metadata) > MEDIA_CONFIG_MAX_BYTES:
             raise ValueError("config exceeds 100 MB")
@@ -1076,8 +1145,12 @@ def _media_archive_config(archive):
                 raise ValueError("config exceeds 100 MB")
             continue
         prefix, separator, rel = entry.filename.partition("/")
-        if not separator or prefix not in ("images", "videos", "audio"):
+        if not separator or prefix not in ("images", "videos", "audio", "text_box_previews"):
             raise ValueError("invalid archive path")
+        if prefix == "text_box_previews":
+            if not re.fullmatch(r"[a-f0-9]{32}\.webp", rel) or entry.file_size > 50 * 1024 * 1024:
+                raise ValueError("invalid text box preview image")
+            continue
         with _media_library_context({"images": "image", "videos": "video", "audio": "audio"}[prefix]):
             if not _media_safe_rel(rel):
                 raise ValueError("invalid archive path")
@@ -1085,7 +1158,7 @@ def _media_archive_config(archive):
                 raise ValueError("media file exceeds size limit")
     config = json.loads(archive.read("config.json"))
     if (not isinstance(config, dict) or config.get("format") != "xiaozhuguang-config"
-            or config.get("version") not in (8, 9, 10)):
+            or config.get("version") not in (8, 9, 10, 11)):
         raise ValueError("unsupported backup format")
     for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES:
         media = config.get(key)
@@ -1107,6 +1180,17 @@ def _media_archive_config(archive):
                     or {name.casefold() for name in order if "/" not in name} & {name.casefold() for name in folders}
                     or any(_media_folder_of(name) and _media_folder_of(name) not in folders for name in order)):
                 raise ValueError("invalid media manifest")
+    preview_manifest = config.get("textBoxPreviews")
+    preview_ids = [name[len("text_box_previews/"):-5] for name in names if name.startswith("text_box_previews/") and name.endswith(".webp")]
+    if preview_manifest is None:
+        if preview_ids:
+            raise ValueError("missing text box preview manifest")
+    elif (not isinstance(preview_manifest, dict) or preview_manifest.get("version") != 1
+          or not isinstance(preview_manifest.get("files"), list)
+          or any(not isinstance(item, str) or not re.fullmatch(r"[a-f0-9]{32}", item) for item in preview_manifest["files"])
+          or len(preview_manifest["files"]) != len(set(preview_manifest["files"]))
+          or set(preview_manifest["files"]) != set(preview_ids)):
+        raise ValueError("invalid text box preview manifest")
     return config
 
 
@@ -1115,10 +1199,11 @@ def _media_read_archive(path, restore=False):
         config = _media_archive_config(archive)
         if not restore:
             return config
-        selected = {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} if restore is True else restore
+        selected = ({key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True}) if restore is True else restore
         libraries = [(key, prefix, kind, config[key]) for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES
                      if selected.get(key) and config.get(key) is not None]
-        if not libraries:
+        restore_previews = bool(selected.get("textBoxPreviews") and config.get("textBoxPreviews") is not None)
+        if not libraries and not restore_previews:
             raise ValueError("backup has no selected media library")
         root = os.path.dirname(_media_library_dir())
         # Validate both libraries before committing; keep originals for rollback.
@@ -1170,9 +1255,28 @@ def _media_read_archive(path, restore=False):
                         _media_write_order(old_order)
                         _media_write_folder_order(old_folders)
                 raise
+        restored_previews = 0
+        if restore_previews:
+            preview_dir = _text_box_preview_dir()
+            with tempfile.TemporaryDirectory(prefix=".text-box-preview-restore-", dir=os.path.dirname(preview_dir)) as staging:
+                staged_previews = []
+                for preview_id in config["textBoxPreviews"]["files"]:
+                    target = _text_box_preview_path(preview_id)
+                    temporary = os.path.join(staging, preview_id + ".webp")
+                    with archive.open("text_box_previews/" + preview_id + ".webp") as source, open(temporary, "wb") as out:
+                        shutil.copyfileobj(source, out, 1024 * 1024)
+                    with Image.open(temporary) as image:
+                        if image.format != "WEBP" or max(image.size) > 1024:
+                            raise ValueError("invalid text box preview image")
+                        image.verify()
+                    staged_previews.append((target, temporary))
+                for target, temporary in staged_previews:
+                    os.replace(temporary, target)
+                restored_previews = len(staged_previews)
         return {"restored": sum(len(media["order"]) for key, _, _, media in libraries if key == "mediaLibrary"),
                 "restoredVideos": sum(len(media["order"]) for key, _, _, media in libraries if key == "videoLibrary"),
-                "restoredAudios": sum(len(media["order"]) for key, _, _, media in libraries if key == "audioLibrary")}
+                "restoredAudios": sum(len(media["order"]) for key, _, _, media in libraries if key == "audioLibrary"),
+                "restoredTextBoxPreviews": restored_previews}
 
 
 @routes.post("/xzg/media-library/backup")
@@ -1181,7 +1285,7 @@ async def xzg_media_library_archive_backup(request):
     request._client_max_size = MEDIA_CONFIG_MAX_BYTES
     config = await request.json()
     if (not isinstance(config, dict) or config.get("format") != "xiaozhuguang-config"
-            or config.get("version") not in (8, 9, 10) or
+            or config.get("version") not in (8, 9, 10, 11) or
             any(config.get(key) is not None and not isinstance(config[key], dict) for key, _, _ in MEDIA_ARCHIVE_LIBRARIES)):
         return web.json_response({"error": "invalid config"}, status=400)
     fd, path = tempfile.mkstemp(suffix=".zip")
@@ -1245,8 +1349,8 @@ async def xzg_media_library_archive_restore(request):
     path, timer = pending
     timer.cancel()
     try:
-        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES})
-        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary") or not isinstance(value, bool) for key, value in selected.items()):
+        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True})
+        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary", "textBoxPreviews") or not isinstance(value, bool) for key, value in selected.items()):
             return web.json_response({"error": "invalid library selection"}, status=400)
         result = await _media_archive_io(_media_read_archive, path, selected)
         return web.json_response(result)

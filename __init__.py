@@ -648,7 +648,7 @@ except Exception as _cloud_err:
 # 位于插件目录之外，更新/整体替换插件目录时不会丢失；
 # 同一台服务器上所有浏览器/会话共享，解决云端环境浏览器 localStorage 丢失问题。
 try:
-    _xzg_shortcuts_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.default.json")
+    _xzg_shortcuts_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "xzg_shortcuts.default.json")
     # 旧版（历史版本）将配置存在插件目录下，需迁移到 user/xiaozhuguang 下
     _xzg_shortcuts_legacy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xzg_shortcuts.json")
 
@@ -664,7 +664,7 @@ try:
     _xzg_shortcuts_file = os.path.join(_xzg_shortcuts_dir(), "xzg_shortcuts.json")
 
     def _xzg_shortcuts_merge_defaults():
-        # 将默认配置中用户缺失的新快捷键并入现有配置（不覆盖用户自定义）。
+        # 新增动作仅补充未设置项，避免自动占用用户在 ComfyUI 中配置的按键。
         # key 为空的 action 是用户主动清除的 tombstone，仍计入 existing_actions。
         if not os.path.exists(_xzg_shortcuts_file) or not os.path.exists(_xzg_shortcuts_default):
             return
@@ -688,12 +688,8 @@ try:
                     (s for s in cur_list if isinstance(s, dict) and s.get("action") == "open_mask_editor"),
                     None,
                 )
-                mask_default = next(
-                    (s for s in dft_list if isinstance(s, dict) and s.get("action") == "toggle_image_loader_mask"),
-                    None,
-                )
-                if legacy_mask or mask_default:
-                    migrated_mask = dict(legacy_mask or mask_default)
+                if legacy_mask:
+                    migrated_mask = dict(legacy_mask)
                     migrated_mask["action"] = "toggle_image_loader_mask"
                     migrated_mask["label"] = (
                         f"{'Ctrl+' if migrated_mask.get('ctrl') else ''}"
@@ -704,7 +700,7 @@ try:
                     )
                     cur_list.append(migrated_mask)
                     existing_actions.add("toggle_image_loader_mask")
-                    added.append("toggle_image_loader_mask (从旧遮罩快捷键迁移)" if legacy_mask else "toggle_image_loader_mask")
+                    added.append("toggle_image_loader_mask (从旧遮罩快捷键迁移)")
             # 删除不再支持的原生遮罩编辑动作，不能让其旧键位残留并占用按键。
             filtered_list = [
                 s for s in cur_list
@@ -718,14 +714,15 @@ try:
                     continue
                 action = d.get("action")
                 if action and action not in existing_actions:
-                    cur_list.append(d)
+                    cur_list.append({**d, "key": "", "ctrl": False, "shift": False,
+                                     "alt": False, "meta": False, "label": ""})
                     existing_actions.add(action)
                     added.append(action)
             if added:
                 cur["shortcuts"] = cur_list
                 with open(_xzg_shortcuts_file, "w", encoding="utf-8") as f:
                     json.dump(cur, f, ensure_ascii=False, indent=2)
-                print("[xiaozhuguang] 已为新快捷键补充默认配置:", added)
+                print("[xiaozhuguang] 已更新快捷键动作配置:", added)
         except Exception as _merge_err:
             print("[xiaozhuguang] 合并默认快捷键失败:", _merge_err)
 
@@ -738,15 +735,16 @@ try:
                 print("[xiaozhuguang] 已将快捷键配置迁移至 user/xiaozhuguang/xzg_shortcuts.json")
             except Exception as _mig_err:
                 print("[xiaozhuguang] 迁移快捷键配置失败:", _mig_err)
-        # 2. 全新安装：user 下配置不存在时，从默认配置复制一份
+        # 2. 全新安装：不自动绑定按键，保留用户已有的 ComfyUI 快捷键行为。
         # 更新插件：user 下配置已存在则不覆盖，保留用户自定义快捷键
         if not os.path.exists(_xzg_shortcuts_file) and os.path.exists(_xzg_shortcuts_default):
             try:
-                shutil.copy2(_xzg_shortcuts_default, _xzg_shortcuts_file)
-                print("[xiaozhuguang] 已从默认配置初始化 user/xiaozhuguang/xzg_shortcuts.json")
+                with open(_xzg_shortcuts_file, "w", encoding="utf-8") as f:
+                    json.dump({"shortcuts": []}, f, ensure_ascii=False, indent=2)
+                print("[xiaozhuguang] 已初始化快捷键配置，请在设置中自行绑定按键")
             except Exception as _init_err:
                 print("[xiaozhuguang] 初始化快捷键配置失败:", _init_err)
-        # 3. 已有用户配置：把默认配置里用户缺失的新快捷键并入（如新版本的默认 G 键）
+        # 3. 已有用户配置：迁移旧动作，新增动作保持未设置。
         _xzg_shortcuts_merge_defaults()
 
     _xzg_shortcuts_init()

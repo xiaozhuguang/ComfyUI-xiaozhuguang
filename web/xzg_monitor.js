@@ -1443,6 +1443,7 @@ function createFloatWindow() {
 const XZG_BTN_ID = "xzg-monitor-menu-btn";
 const XZG_THEME_BTN_ID = "xzg-theme-menu-btn";
 const XZG_RUN_TIMER_BTN_ID = "xzg-run-timer-menu-btn";
+const XZG_MONITOR_TUTORIAL_URL = "https://www.bilibili.com/video/BV1MsaU6AEKx/";
 let _float = null;       // 悬浮窗实例
 let _floatHidden = false; // 悬浮窗当前是否隐藏
 let _monitorInitialized = false; // 首次系统监测响应完成前隐藏时间/监控 UI
@@ -2354,7 +2355,17 @@ function showContextMenu(btn, chartRequest = null) {
       cpu_util: "CPU 利用率", mem_used: "内存占用",
     };
     chartMenuTitle.textContent = `${metricNames[chartRequest.metricKey] || "运行参数"} 曲线`;
-    chartMenuTitle.style.cssText = "display:flex;align-items:center;flex:0 0 30px;height:30px;min-height:30px;padding:2px 8px 4px;margin:-2px 0 0;border:0;font:600 15px/1.2 'Segoe UI',system-ui,sans-serif;white-space:nowrap;cursor:move;touch-action:none;user-select:none;";
+    chartMenuTitle.style.cssText = "display:flex;align-items:center;gap:12px;flex:0 0 30px;height:30px;min-height:30px;padding:2px 8px 4px;margin:-2px 0 0;border:0;font:600 15px/1.2 'Segoe UI',system-ui,sans-serif;white-space:nowrap;cursor:move;touch-action:none;user-select:none;";
+    const tutorialLink = document.createElement("a");
+    tutorialLink.href = XZG_MONITOR_TUTORIAL_URL;
+    tutorialLink.target = "_blank";
+    tutorialLink.rel = "noopener noreferrer";
+    tutorialLink.textContent = "📖 使用说明";
+    tutorialLink.title = "打开 CPU/GPU 监测视频教程";
+    tutorialLink.style.cssText = "color:#ffd76a;text-decoration:none;font:500 13px/1.2 'Segoe UI',system-ui,sans-serif;cursor:pointer;";
+    tutorialLink.addEventListener("pointerdown", (event) => event.stopPropagation());
+    tutorialLink.addEventListener("click", (event) => event.stopPropagation());
+    chartMenuTitle.appendChild(tutorialLink);
     menu.replaceChildren(chartMenuTitle, chartPanel);
     // 联动：切换右侧曲线类型列表时，左上角标题同步更新。
     const syncChartWindowTitle = () => {
@@ -2480,11 +2491,23 @@ function showContextMenu(btn, chartRequest = null) {
   } else {
     chartButton.remove();
     chartPanel.remove();
+    // 设置菜单专属的标题链接与显示网格布局只在非曲线窗口中应用。
+    const menuTitle = menu.children[0];
+    menuTitle.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;grid-column:1 / -1;";
+    const tutorialLink = document.createElement("a");
+    tutorialLink.href = XZG_MONITOR_TUTORIAL_URL;
+    tutorialLink.target = "_blank";
+    tutorialLink.rel = "noopener noreferrer";
+    tutorialLink.textContent = "📖 使用说明";
+    tutorialLink.style.cssText = "color:#ffd76a;text-decoration:none;font-weight:500;white-space:nowrap;";
+    menuTitle.appendChild(tutorialLink);
+    recordingRow.style.cssText = "grid-column:2;grid-row:5;white-space:normal;";
     menu.style.width = "min(250px,calc(100vw - 16px))";
     menu.style.minWidth = "min(0px,calc(100vw - 16px))";
     menu.style.maxWidth = "calc(100vw - 16px)";
     menu.style.display = "grid";
     menu.style.gridTemplateColumns = "100px minmax(0,1fr)";
+    menu.style.gridAutoRows = "auto";
     menu.style.alignItems = "center";
     menu.style.columnGap = "10px";
     menu.style.rowGap = "1px";

@@ -14,7 +14,7 @@ const XZG_EXPORT_CATEGORIES = [
     ["quickLinks", "快速连线", "Quick Links", "已云端持久化", "Cloud-backed"],
     ["menuHide", "菜单隐藏", "Menu Hiding", "已云端持久化", "Cloud-backed"],
     ["skills", "提示词规则预设", "Prompt Rule Presets", "已云端持久化", "Cloud-backed"],
-    ["textBoxGodPresets", "文本框化神级预设", "Text Box God-Tier Presets", "已云端持久化", "Cloud-backed"],
+    ["textBoxGodPresets", "文本框化神级预设（含缩略图）", "Text Box God-Tier Presets (with previews)", "云端及服务端持久化", "Cloud and server-backed"],
     ["mediaLibrary", "资源媒体库图片", "Media Library Images", "服务端持久化", "Server-backed"],
     ["audioLibrary", "资源媒体库音频", "Media Library Audio", "服务端持久化", "Server-backed"],
     ["videoLibrary", "资源媒体库视频", "Media Library Videos", "服务端持久化", "Server-backed"],
@@ -2812,6 +2812,7 @@ window.XZGThemePanel = {
                     if (result.restoredAudioCount != null) parts.push(xzgT(`媒体库 ${result.restoredAudioCount} 个音频`, `Media library: ${result.restoredAudioCount} audio files`));
                     if (result.restoredVideoCount != null) parts.push(xzgT(`媒体库 ${result.restoredVideoCount} 个视频`, `Media library: ${result.restoredVideoCount} videos`));
                     if (result.restoredMediaCount != null) parts.push(xzgT(`媒体库 ${result.restoredMediaCount} 张图片`, `Media library: ${result.restoredMediaCount} images`));
+                    if (result.restoredTextBoxPreviews != null) parts.push(xzgT(`文本框缩略图 ${result.restoredTextBoxPreviews} 张`, `Text-box previews: ${result.restoredTextBoxPreviews}`));
                     alert(xzgT('导入成功（', 'Import succeeded (') + parts.join(' + ') + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
                     setTimeout(() => location.reload(), 300);
                 }
@@ -2920,6 +2921,7 @@ window.XZGThemePanel = {
         if (obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files)) available.mediaLibrary = true;
         if (obj.videoLibrary && Array.isArray(obj.videoLibrary.files)) available.videoLibrary = true;
         if (obj.audioLibrary && Array.isArray(obj.audioLibrary.files)) available.audioLibrary = true;
+        if (obj.textBoxPreviews && Array.isArray(obj.textBoxPreviews.files)) available.textBoxGodPresets = true;
         available.comfy = !!(obj.comfySettings && Object.keys(obj.comfySettings).length);
         return this.showExportDialog(available);
     },
@@ -3069,7 +3071,7 @@ window.XZGThemePanel = {
         } : null;
         const cfg = {
             format: "xiaozhuguang-config",
-            version: 10,
+            version: 11,
             exportedAt: new Date().toISOString(),
             flags: { includeXzgConfig: includeXzg, includeNotes: includeNotes, includeComfySettings: includeComfy, selectedCategories: selected },
             localStorage: ls,
@@ -3080,6 +3082,7 @@ window.XZGThemePanel = {
             mediaLibrary: mediaLibrary,
             videoLibrary: videoLibrary,
             audioLibrary: audioLibrary,
+            textBoxPreviews: selected.textBoxGodPresets ? {} : null,
             folderDialogGeometry: folderDialogGeometry
         };
         const blob = await this.configTransfer(xzgT("正在打包并下载 ZIP 备份，请稍候…", "Preparing and downloading ZIP backup…"), async () => {
@@ -3139,12 +3142,15 @@ window.XZGThemePanel = {
         let restoredMediaCount = 0;
         let restoredVideoCount = null;
         let restoredAudioCount = null;
+        let restoredTextBoxPreviews = null;
         const restoreImages = !!(obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files));
         const restoreVideos = !!(obj.videoLibrary && Array.isArray(obj.videoLibrary.files));
         const restoreAudio = !!(obj.audioLibrary && Array.isArray(obj.audioLibrary.files));
-        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio)
-            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio })
+        const restoreTextBoxPreviews = !!(selected.textBoxGodPresets && obj.textBoxPreviews && Array.isArray(obj.textBoxPreviews.files));
+        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio || restoreTextBoxPreviews)
+            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio, textBoxPreviews: restoreTextBoxPreviews })
             : null;
+        if (restoreTextBoxPreviews && archiveResult) restoredTextBoxPreviews = archiveResult.restoredTextBoxPreviews ?? 0;
         if (restoreVideos) {
             if (!archiveResult) throw new Error(xzgT("视频媒体库需要 ZIP 备份文件", "Video media library requires a ZIP backup."));
             restoredVideoCount = archiveResult.restoredVideos;
@@ -3247,7 +3253,7 @@ window.XZGThemePanel = {
         }
 
         // ============ 2) 导入小珠光配置（除 notes 外的所有 localStorage，以及收藏预览） ============
-        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null;
+        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null || restoredTextBoxPreviews != null;
         if (includeXzg) {
             if (obj.localStorage && typeof obj.localStorage === "object") {
                 for (const k in obj.localStorage) {
@@ -3457,7 +3463,8 @@ window.XZGThemePanel = {
             appliedComfySettings: importedComfy,
             restoredMediaCount: mediaRestored ? restoredMediaCount : null,
             restoredVideoCount: restoredVideoCount,
-            restoredAudioCount: restoredAudioCount
+            restoredAudioCount: restoredAudioCount,
+            restoredTextBoxPreviews: restoredTextBoxPreviews
         };
     },
 

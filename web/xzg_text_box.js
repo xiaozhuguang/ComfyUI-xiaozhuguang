@@ -19,6 +19,233 @@ const _GOD_HISTORY_LIMIT = 100;
 const _GOD_FAVORITES_CATEGORY = "收藏";
 const _NO_PRESET = { zh: "（暂无提示词预设）", en: "(No prompt presets)" };
 let _godPresetsRestorePromise = null;
+let _godPreviewElement = null;
+let _godPreviewOwner = null;
+let _godPreviewHideTimer = null;
+let _godPreviewMenuEntryOwner = null;
+let _godPreviewMenuEntryHideTimer = null;
+
+function _godPreviewUrl(previewId) {
+    return api.apiURL(`/xzg/text-box-preview/${encodeURIComponent(previewId)}`);
+}
+
+async function _uploadGodPreview(file) {
+    if (!file || !file.type?.startsWith("image/")) throw new Error(xzgLang() === "en" ? "Choose an image file." : "请选择图片文件。");
+    const formData = new FormData();
+    formData.append("file", file, file.name || "text-box-preview.png");
+    const response = await api.fetchApi("/xzg/media-library/upload?purpose=text_box_preview", { method: "POST", body: formData });
+    const body = await response.text();
+    let result;
+    try { result = JSON.parse(body); }
+    catch (_) {
+        if (response.status === 404) {
+            throw new Error(xzgLang() === "en"
+                ? "The preview upload endpoint is not loaded. Restart ComfyUI and try again."
+                : "服务端尚未加载缩略图接口，请重启 ComfyUI 后重试。");
+        }
+        if (response.status === 405) {
+            throw new Error(xzgLang() === "en"
+                ? `The server rejected the upload method (HTTP 405): ${body.slice(0, 120)}`
+                : `服务器拒绝了上传请求（HTTP 405）：${body.slice(0, 120)}`);
+        }
+        throw new Error(xzgLang() === "en"
+            ? `Server returned a non-JSON response (HTTP ${response.status}): ${body.slice(0, 120)}`
+            : `服务器返回了非 JSON 响应（HTTP ${response.status}）：${body.slice(0, 120)}`);
+    }
+    if (!response.ok || !result.id) {
+        if (response.ok && !result.id) throw new Error(xzgLang() === "en"
+            ? "This server version does not support preview uploads. Restart ComfyUI and try again."
+            : "当前服务端版本尚不支持缩略图上传，请重启 ComfyUI 后重试。");
+        throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    return result.id;
+}
+
+function _hideGodPreview() {
+    if (_godPreviewHideTimer) clearTimeout(_godPreviewHideTimer);
+    _godPreviewHideTimer = null;
+    if (_godPreviewElement) _godPreviewElement.style.display = "none";
+    _godPreviewOwner = null;
+}
+
+function _setGodPreviewMenuEntryHover(entry) {
+    if (_godPreviewMenuEntryHideTimer) clearTimeout(_godPreviewMenuEntryHideTimer);
+    _godPreviewMenuEntryHideTimer = null;
+    if (_godPreviewMenuEntryOwner && _godPreviewMenuEntryOwner !== entry) {
+        _godPreviewMenuEntryOwner.classList.remove("xzg-god-preset-hover-marker");
+    }
+    if (entry && !entry.classList.contains("xzg-god-preset-hover-marker")) entry.classList.add("xzg-god-preset-hover-marker");
+    _godPreviewMenuEntryOwner = entry || null;
+}
+
+function _markGodSelectedPresetMenuEntry(entry, selectedText) {
+    const root = entry.closest?.(".litecontextmenu,.litemenu,[role='listbox']") || entry.parentElement;
+    if (!root) return;
+    if (!root.classList.contains("xzg-god-preset-menu-root")) {
+        const background = getComputedStyle(root).backgroundColor;
+        root.style.setProperty("--xzg-preset-menu-bg", background && background !== "rgba(0, 0, 0, 0)" ? background : "#171717");
+        root.classList.add("xzg-god-preset-menu-root");
+    }
+    const entries = root.querySelectorAll(".litemenu-entry,[role='option']");
+    for (const option of entries) {
+        const selected = !!selectedText && String(option.getAttribute("data-value") || option.textContent || "").trim() === selectedText;
+        if (option.classList.contains("xzg-god-preset-selected-option") !== selected) {
+            option.classList.toggle("xzg-god-preset-selected-option", selected);
+        }
+    }
+}
+
+function _showGodPreview(previewId, rect, owner) {
+    if (!previewId || !rect) return _hideGodPreview();
+    if (_godPreviewHideTimer) clearTimeout(_godPreviewHideTimer);
+    _godPreviewHideTimer = null;
+    if (!_godPreviewElement) {
+        _godPreviewElement = document.createElement("div");
+        _godPreviewElement.style.cssText = "position:fixed;z-index:2147483647;display:none;padding:5px;background:#171819;border:1px solid #666;border-radius:5px;box-shadow:0 5px 18px #000b;pointer-events:none";
+        const image = document.createElement("img");
+        image.style.cssText = "display:block;max-width:320px;max-height:320px;object-fit:contain";
+        _godPreviewElement.appendChild(image);
+        document.body.appendChild(_godPreviewElement);
+    }
+    const image = _godPreviewElement.firstElementChild;
+    const url = _godPreviewUrl(previewId);
+    if (image.dataset.previewId !== previewId) {
+        image.dataset.previewId = previewId;
+        image.src = url;
+    }
+    _godPreviewOwner = owner;
+    _godPreviewElement.style.display = "block";
+    const width = Math.min(332, innerWidth - 16), height = Math.min(332, innerHeight - 16);
+    let left = rect.right + 10;
+    if (left + width > innerWidth - 8) left = Math.max(8, rect.left - width - 10);
+    let top = Math.min(Math.max(8, rect.top), innerHeight - height - 8);
+    _godPreviewElement.style.left = `${left}px`;
+    _godPreviewElement.style.top = `${top}px`;
+}
+
+function _presetForHoveredMenuEntry(entry) {
+    const text = String(entry?.getAttribute("data-value") || entry?.textContent || "").trim();
+    if (!text) return null;
+    const hoveredNode = app.canvas?.node_over;
+    const nodes = [hoveredNode, ...(app.graph?._nodes || [])].filter((node, index, all) => node && all.indexOf(node) === index);
+    for (const node of nodes) {
+        if (node.type !== _NODE_TYPE_GOD && node.comfyClass !== _NODE_TYPE_GOD) continue;
+        const category = String(node.widgets?.find(widget => widget.name === "preset_category")?.value || "");
+        const widget = node.widgets?.find(item => item.name === "preset_name");
+        if (!widget?.options?.values?.some(value => String(value).trim() === text)) continue;
+        const presets = _readGodPresetsLocal();
+        const key = _godPresetKeyForSelection(presets, category === "无" ? "" : category, text);
+        return {
+            previewId: typeof presets[key]?.previewId === "string" ? presets[key].previewId : "",
+            selectedText: String(widget.value ?? "").trim(),
+        };
+    }
+    return null;
+}
+
+if (typeof document !== "undefined" && !window._xzgGodPreviewHoverInstalled) {
+    window._xzgGodPreviewHoverInstalled = true;
+    const hoverStyle = document.createElement("style");
+    hoverStyle.textContent = `
+        /* ContextMenuFilter writes inline !important background/color in its first
+           animation frame. An opaque background image and text fill keep our menu
+           readable without observing or repeatedly rewriting those inline styles. */
+        .xzg-god-preset-menu-root .litemenu-entry,
+        .xzg-god-preset-menu-root [role='option'] {
+            background-image: linear-gradient(var(--xzg-preset-menu-bg), var(--xzg-preset-menu-bg)) !important;
+            color: #eee !important;
+            -webkit-text-fill-color: #eee !important;
+            transition: none !important;
+        }
+        .xzg-god-preset-menu-root .litemenu-entry:hover,
+        .xzg-god-preset-menu-root [role='option']:hover,
+        .xzg-god-preset-menu-root .xzg-god-preset-hover-marker {
+            background-image: linear-gradient(#453d12, #453d12) !important;
+        }
+        .xzg-god-preset-menu-root .litemenu-entry *,
+        .xzg-god-preset-menu-root [role='option'] * {
+            -webkit-text-fill-color: #eee !important;
+        }
+        .xzg-god-preset-selected-option {
+            position: relative;
+            padding-left: 16px !important;
+        }
+        input[placeholder="Filter list"]:focus,
+        input[placeholder="过滤列表"]:focus,
+        input[placeholder="筛选列表"]:focus {
+            border: 1px solid #e6e6e6 !important;
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        .xzg-god-preset-selected-option::before {
+            content: "";
+            position: absolute;
+            left: 5px;
+            top: 50%;
+            transform: translateY(-50%);
+            border-top: 5px solid transparent;
+            border-bottom: 5px solid transparent;
+            border-left: 6px solid #FFD700;
+            filter: drop-shadow(0 0 1px #202124);
+            z-index: 1;
+            pointer-events: none;
+        }
+    `;
+    document.head.appendChild(hoverStyle);
+    document.addEventListener("pointerover", event => {
+        const card = event.target?.closest?.("[data-xzg-preview-id]");
+        if (card) {
+            _setGodPreviewMenuEntryHover(null);
+            _showGodPreview(card.dataset.xzgPreviewId, card.getBoundingClientRect(), card);
+            return;
+        }
+        const entry = event.target?.closest?.(".litemenu-entry,[role='option']");
+        if (!entry) return;
+        const preset = _presetForHoveredMenuEntry(entry);
+        if (!preset) {
+            _setGodPreviewMenuEntryHover(null);
+            _hideGodPreview();
+            return;
+        }
+        _markGodSelectedPresetMenuEntry(entry, preset.selectedText);
+        _setGodPreviewMenuEntryHover(entry);
+        if (preset.previewId) _showGodPreview(preset.previewId, entry.getBoundingClientRect(), entry);
+        else _hideGodPreview();
+    }, true);
+    document.addEventListener("pointerout", event => {
+        const relatedTarget = event.relatedTarget;
+        const entry = event.target?.closest?.(".litemenu-entry,[role='option']");
+        if (_godPreviewMenuEntryOwner && entry === _godPreviewMenuEntryOwner && !entry.contains(relatedTarget)) {
+            if (_godPreviewMenuEntryHideTimer) clearTimeout(_godPreviewMenuEntryHideTimer);
+            _godPreviewMenuEntryHideTimer = setTimeout(() => _setGodPreviewMenuEntryHover(null), 120);
+        }
+        const previewOwner = event.target?.closest?.("[data-xzg-preview-id],.litemenu-entry,[role='option']");
+        if (_godPreviewOwner && previewOwner === _godPreviewOwner && !_godPreviewOwner.contains(relatedTarget)) {
+            _godPreviewHideTimer = setTimeout(_hideGodPreview, 120);
+        }
+    }, true);
+    document.addEventListener("scroll", () => { _setGodPreviewMenuEntryHover(null); _hideGodPreview(); }, true);
+    const syncOpenPresetMenuSelection = () => {
+        for (const root of document.querySelectorAll(".litecontextmenu,[role='listbox']")) {
+            for (const entry of root.querySelectorAll(".litemenu-entry,[role='option']")) {
+                const preset = _presetForHoveredMenuEntry(entry);
+                if (!preset) continue;
+                _markGodSelectedPresetMenuEntry(entry, preset.selectedText);
+                break;
+            }
+        }
+    };
+    const presetMenuObserver = new MutationObserver(records => {
+        const menuChanged = records.some(record =>
+            record.target.closest?.(".litecontextmenu,[role='listbox']")
+            || [...record.addedNodes].some(node => node.nodeType === Node.ELEMENT_NODE
+                && (node.matches(".litecontextmenu,[role='listbox']")
+                    || node.querySelector(".litecontextmenu,[role='listbox']"))));
+        if (menuChanged) syncOpenPresetMenuSelection();
+    });
+    presetMenuObserver.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    syncOpenPresetMenuSelection();
+}
 
 const _LABEL_MAP = {
     "文本": "Text",
@@ -499,7 +726,15 @@ async function _openGodPresetManagerTree(node) {
     overlay.style.cssText = "position:fixed;inset:0;z-index:2000005;background:#0009;display:block;padding:20px;box-sizing:border-box";
     const dialog = document.createElement("div");
     dialog.style.cssText = "box-sizing:border-box;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100vw - 40px));height:min(700px,calc(100vh - 40px));display:flex;flex-direction:column;background:#202124;color:#fff;border:1px solid #555;border-radius:8px;box-shadow:0 16px 48px #0009;font:13px Arial,sans-serif;overflow:hidden";
-    dialog.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none;user-select:none;-webkit-user-select:none"><span data-title style="flex:1">${zh ? "提示词预设管理" : "Prompt Preset Manager"}</span><button data-close style="background:transparent;border:0;border-radius:0;color:#e7b94f;padding:5px 8px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "确认" : "Confirm"}</button></div><div data-home style="flex:1;overflow:auto;padding:12px 16px"></div><div data-editor style="display:none;flex:1;flex-direction:column;min-height:0;padding:12px 16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><select data-editor-category style="flex:none;padding:5px 8px;background:#151617;color:#9db7a6;border:1px solid #151617;border-radius:4px;font-size:13px;max-width:40%"></select><span style="color:#555">/</span><input data-editor-name type="text" spellcheck="false" style="flex:1;min-width:0;padding:5px 8px;background:#151617;color:#eee;border:1px solid #151617;border-radius:4px;font-size:13px" /></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 0 10px"><button data-import-content>${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><button data-back>${zh ? "取消" : "Cancel"}</button><button data-save-content>${zh ? "保存" : "Save"}</button></div><textarea data-editor-text spellcheck="false" style="box-sizing:border-box;flex:1;min-height:100px;resize:none;padding:10px;background:#151617;color:#eee;border:1px solid #151617;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea></div><div data-resize title="${zh ? "拖动调整窗口大小" : "Drag to resize"}" style="position:absolute;right:1px;bottom:1px;width:18px;height:18px;cursor:nwse-resize;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 48%,#666 49% 55%,transparent 56% 66%,#888 67% 73%,transparent 74%)"></div>`;
+    dialog.innerHTML = `<div style="display:flex;align-items:center;padding:13px 16px;border-bottom:1px solid #444;font-size:15px;font-weight:600;flex:none;user-select:none;-webkit-user-select:none"><span data-title style="flex:1">${zh ? "提示词预设管理" : "Prompt Preset Manager"}</span><button data-close style="background:transparent;border:0;border-radius:0;color:#e7b94f;padding:5px 8px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "确认" : "Confirm"}</button></div><div data-home style="flex:1;overflow:auto;padding:12px 16px"></div><div data-editor style="display:none;flex:1;flex-direction:column;min-height:0;padding:12px 16px"><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><select data-editor-category style="flex:none;padding:5px 8px;background:#151617;color:#9db7a6;border:1px solid #151617;border-radius:4px;font-size:13px;max-width:40%"></select><span style="color:#555">/</span><input data-editor-name type="text" spellcheck="false" style="flex:1;min-width:0;padding:5px 8px;background:#151617;color:#eee;border:1px solid #151617;border-radius:4px;font-size:13px" /></div><div data-thumbnail-row style="display:flex;align-items:center;gap:10px;padding:8px 0 10px;border-bottom:1px solid #393939;margin-bottom:10px"><img data-thumbnail-image alt="" style="display:none;width:72px;height:54px;object-fit:contain;background:#171819;border:1px solid #555;border-radius:3px"/><span data-thumbnail-status style="flex:1;color:#aaa;font-size:12px">${zh ? "尚未设置缩略图" : "No thumbnail set"}</span><button data-thumbnail-maintenance type="button">${zh ? "缩略图维护" : "Thumbnail maintenance"}</button><button data-thumbnail-clear type="button" style="display:none">${zh ? "移除" : "Remove"}</button></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 0 10px"><button data-import-content>${zh ? "导入 .txt / .md" : "Import .txt / .md"}</button><button data-back>${zh ? "取消" : "Cancel"}</button><button data-save-content>${zh ? "保存" : "Save"}</button></div><textarea data-editor-text spellcheck="false" style="box-sizing:border-box;flex:1;min-height:100px;resize:none;padding:10px;background:#151617;color:#eee;border:1px solid #151617;border-radius:5px;font:12px/1.5 Consolas,monospace"></textarea></div><div data-resize title="${zh ? "拖动调整窗口大小" : "Drag to resize"}" style="position:absolute;right:1px;bottom:1px;width:18px;height:18px;cursor:nwse-resize;touch-action:none;user-select:none;background:linear-gradient(135deg,transparent 0 48%,#666 49% 55%,transparent 56% 66%,#888 67% 73%,transparent 74%)"></div>`;
+    const dialogHeader = dialog.firstElementChild;
+    dialogHeader.style.padding = "6px 16px";
+    dialogHeader.querySelector("[data-close]").style.padding = "2px 8px";
+    dialogHeader.querySelector("[data-close]").style.fontSize = "13px";
+    const thumbnailRow = dialog.querySelector("[data-thumbnail-row]");
+    const thumbnailPreview = thumbnailRow.querySelector("[data-thumbnail-image]");
+    thumbnailPreview.style.width = "88px";
+    thumbnailPreview.style.height = "66px";
     overlay.appendChild(dialog); document.body.appendChild(overlay);
     const dragStyle = document.createElement("style");
     dragStyle.textContent = `
@@ -572,10 +807,30 @@ async function _openGodPresetManagerTree(node) {
         resizeHandle.setPointerCapture(event.pointerId); resizeHandle.addEventListener("pointermove", move); resizeHandle.addEventListener("pointerup", end, { once: true }); resizeHandle.addEventListener("pointercancel", end, { once: true });
     });
     const home = dialog.querySelector("[data-home]"), editorView = dialog.querySelector("[data-editor]"), title = dialog.querySelector("[data-title]"), textArea = dialog.querySelector("[data-editor-text]"), closeButton = dialog.querySelector("[data-close]");
+    const setEditorHeaderState = editing => {
+        closeButton.style.display = editing ? "none" : "";
+        closeButton.disabled = editing;
+        closeButton.style.opacity = editing ? "0.45" : "1";
+        closeButton.style.cursor = editing ? "not-allowed" : "pointer";
+    };
+    textArea.style.backgroundColor = "#1d1f21";
     home.style.cssText = "display:flex;flex:1;min-height:0;padding:0;overflow:hidden;user-select:none;-webkit-user-select:none";
-    home.innerHTML = `<aside data-left-pane style="box-sizing:border-box;flex:0 0 34%;width:34%;min-width:150px;max-width:80%;display:flex;flex-direction:column;min-height:0;padding:12px 10px;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:0 4px 10px"><span style="flex:1;color:#ccc;font-weight:600">${zh ? "提示词类型" : "Prompt Types"}</span><button type="button" data-add-category style="width:28px;height:28px;background:#303030;color:#e7b94f;border:1px solid #454545;border-radius:4px;font-size:16px;cursor:pointer">+</button></div><div data-category-list style="display:flex;flex-direction:column;gap:4px;overflow:auto;min-height:0;flex:1"></div></aside><div data-split-divider style="width:4px;flex:none;background:#3a3a3a;cursor:col-resize"></div><section data-right-pane style="box-sizing:border-box;flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0;padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;padding:0 2px 10px;border-bottom:1px solid #3a3a3a"><span data-right-title style="flex:1;color:#ddd;font-weight:600">${zh ? "提示词细分" : "Prompt Subcategories"}</span><button type="button" data-clear-favorites style="display:none;background:transparent;color:#c75c5c;border:0;padding:4px 6px;cursor:pointer">${zh ? "清空收藏" : "Clear favorites"}</button><button type="button" data-add-sub style="background:transparent;color:#e7b94f;border:0;padding:2px 5px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "+ 增加子项" : "+ Add item"}</button></div><div data-batch-bar style="display:none;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #3a3a3a"><span data-batch-count style="color:#e7b94f;font-size:12px;font-weight:600;flex:none"></span><button type="button" data-batch-select-all style="background:transparent;color:#9db7a6;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "全选" : "Select all"}</button><button type="button" data-batch-move style="background:#3a3a3a;color:#e7b94f;border:1px solid #555;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:600">${zh ? "批量移动" : "Batch move"}</button><button type="button" data-batch-clear style="background:transparent;color:#888;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "取消选择" : "Clear"}</button></div><div data-subcategory-list style="display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;padding-top:10px"></div></section>`;
+    home.innerHTML = `<aside data-left-pane style="box-sizing:border-box;flex:0 0 34%;width:34%;min-width:150px;max-width:80%;display:flex;flex-direction:column;min-height:0;padding:12px 10px;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:0 4px 10px"><span style="flex:1;color:#ccc;font-weight:600">${zh ? "提示词类型" : "Prompt Types"}</span><button type="button" data-add-category style="width:28px;height:28px;background:#303030;color:#e7b94f;border:1px solid #454545;border-radius:4px;font-size:16px;cursor:pointer">+</button></div><div data-category-list style="display:flex;flex-direction:column;gap:4px;overflow:auto;min-height:0;flex:1"></div></aside><div data-split-divider style="width:4px;flex:none;background:#3a3a3a;cursor:col-resize"></div><section data-right-pane style="box-sizing:border-box;flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0;padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;padding:0 2px 10px;border-bottom:1px solid #3a3a3a"><span data-right-title style="flex:1;color:#ddd;font-weight:600">${zh ? "提示词细分" : "Prompt Subcategories"}</span><button type="button" data-clear-favorites style="display:none;background:transparent;color:#c75c5c;border:0;padding:4px 6px;cursor:pointer">${zh ? "清空收藏" : "Clear favorites"}</button><button type="button" data-add-sub style="background:transparent;color:#e7b94f;border:0;padding:2px 5px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "+ 增加子项" : "+ Add item"}</button></div><div data-batch-bar style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #3a3a3a"><span data-batch-count style="color:#e7b94f;font-size:12px;font-weight:600;flex:none"></span><button type="button" data-batch-select-all style="background:transparent;color:#9db7a6;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "全选" : "Select all"}</button><button type="button" data-batch-move style="background:#3a3a3a;color:#e7b94f;border:1px solid #555;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:600">${zh ? "批量移动" : "Batch move"}</button><button type="button" data-batch-clear style="background:transparent;color:#ff5b5b;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "取消选择" : "Clear"}</button></div><div data-subcategory-list style="display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;padding-top:10px"></div></section>`;
     const categoryList = home.querySelector("[data-category-list]"), subcategoryList = home.querySelector("[data-subcategory-list]"), rightTitle = home.querySelector("[data-right-title]"), addSubButton = home.querySelector("[data-add-sub]"), clearFavoritesButton = home.querySelector("[data-clear-favorites]");
     const batchBar = home.querySelector("[data-batch-bar]"), batchCount = home.querySelector("[data-batch-count]"), batchSelectAll = home.querySelector("[data-batch-select-all]"), batchMove = home.querySelector("[data-batch-move]"), batchClear = home.querySelector("[data-batch-clear]");
+    batchSelectAll.after(batchClear);
+    batchMove.style.background = "transparent";
+    batchMove.style.border = "0";
+    batchMove.style.padding = "3px 6px";
+    batchMove.style.fontWeight = "400";
+    batchCount.style.width = "70px";
+    for (const [control, width] of [[batchSelectAll, "68px"], [batchClear, "68px"], [batchMove, "76px"]]) {
+        control.style.width = width;
+        control.style.boxSizing = "border-box";
+        control.style.textAlign = "center";
+        control.style.whiteSpace = "nowrap";
+        control.style.fontSize = "13px";
+    }
     categoryList.classList.add("xzg-preset-drag-list");
     subcategoryList.classList.add("xzg-preset-drag-list");
     home.querySelector("[data-left-pane] span").style.color = "#fff";
@@ -672,6 +927,72 @@ async function _openGodPresetManagerTree(node) {
     const importTextButton = editorView.querySelector("[data-import-content]");
     importTextButton.addEventListener("click", () => textFileInput.click());
     importTextButton.title = zh ? "导入后点击“保存内容”同步到云端" : "Click Save content after importing to sync to the cloud";
+    const editorThumbnailImage = editorView.querySelector("[data-thumbnail-image]");
+    const editorThumbnailStatus = editorView.querySelector("[data-thumbnail-status]");
+    const editorThumbnailClear = editorView.querySelector("[data-thumbnail-clear]");
+    editorThumbnailClear.textContent = zh ? "移除缩略图" : "Remove thumbnail";
+    editorThumbnailClear.title = zh ? "移除此细分的缩略图" : "Remove this subcategory's thumbnail";
+    const refreshEditorThumbnail = preset => {
+        const previewId = typeof preset?.previewId === "string" ? preset.previewId : "";
+        editorThumbnailImage.style.display = "block";
+        editorThumbnailImage.style.visibility = previewId ? "visible" : "hidden";
+        editorThumbnailImage.removeAttribute("src");
+        if (previewId) editorThumbnailImage.src = _godPreviewUrl(previewId);
+        editorThumbnailStatus.textContent = previewId ? (zh ? "已设置缩略图" : "Thumbnail set") : (zh ? "尚未设置缩略图" : "No thumbnail");
+        editorThumbnailStatus.title = previewId
+            ? (zh ? "悬浮预览缩略图，长边 1024 px" : "Hover preview thumbnail, 1024 px long edge")
+            : editorThumbnailStatus.textContent;
+        editorThumbnailClear.style.display = previewId ? "inline-flex" : "none";
+    };
+    const thumbnailMaintenanceButton = editorView.querySelector("[data-thumbnail-maintenance]");
+    const editorActionBar = importTextButton.parentElement;
+    const editorBackButton = editorView.querySelector("[data-back]");
+    const editorActionDivider = document.createElement("span");
+    editorActionDivider.setAttribute("aria-hidden", "true");
+    editorActionDivider.style.cssText = "display:block;flex:none;width:1px;height:24px;margin:0 2px;background:#555";
+    editorActionBar.style.justifyContent = "flex-end";
+    editorActionBar.style.alignItems = "center";
+    editorActionBar.style.gap = "6px";
+    editorActionBar.style.flexWrap = "nowrap";
+    editorActionBar.style.overflowX = "auto";
+    editorActionBar.style.overflowY = "hidden";
+    editorActionBar.style.padding = "0 0 8px";
+    editorActionBar.insertBefore(thumbnailPreview, importTextButton);
+    editorActionBar.insertBefore(editorThumbnailStatus, importTextButton);
+    thumbnailRow.remove();
+    editorActionBar.insertBefore(thumbnailMaintenanceButton, importTextButton);
+    editorActionBar.insertBefore(editorThumbnailClear, importTextButton);
+    editorActionBar.insertBefore(editorActionDivider, importTextButton);
+    for (const control of [thumbnailPreview, editorThumbnailStatus, thumbnailMaintenanceButton, editorThumbnailClear, editorActionDivider, importTextButton, editorBackButton, editorView.querySelector("[data-save-content]")]) {
+        control.style.flex = "none";
+        control.style.whiteSpace = "nowrap";
+    }
+    editorThumbnailStatus.style.maxWidth = "140px";
+    editorThumbnailStatus.style.color = "#aaa";
+    editorThumbnailStatus.style.fontSize = "11px";
+    thumbnailMaintenanceButton.textContent = zh ? "缩略图上传" : "Upload thumbnail";
+    thumbnailMaintenanceButton.title = zh ? "上传或更换此细分的悬浮预览缩略图" : "Upload or replace this subcategory's hover thumbnail";
+    thumbnailMaintenanceButton.addEventListener("click", () => {
+        const input = document.createElement("input"); input.type = "file"; input.accept = "image/*"; input.style.display = "none";
+        input.addEventListener("cancel", () => input.remove(), { once: true });
+        input.addEventListener("change", async () => {
+            const file = input.files?.[0]; input.remove(); if (!file || !editingKey || !working[editingKey]) return;
+            try {
+                working[editingKey].previewId = await _uploadGodPreview(file);
+                await save(); refreshEditorThumbnail(working[editingKey]);
+                notify(zh ? "缩略图已更新" : "Thumbnail updated");
+            } catch (error) {
+                notify(zh ? `缩略图保存失败：${error.message}` : `Could not save thumbnail: ${error.message}`);
+            }
+        }, { once: true });
+        document.body.appendChild(input); input.click();
+    });
+    editorThumbnailClear.addEventListener("click", async () => {
+        if (!editingKey || !working[editingKey]) return;
+        delete working[editingKey].previewId;
+        await save(); refreshEditorThumbnail(working[editingKey]);
+        notify(zh ? "缩略图已移除" : "Thumbnail removed");
+    });
     const importTextFile = async file => {
         if (!/\.(txt|md)$/i.test(file.name)) {
             throw new Error(zh ? "只支持 .txt 和 .md 文件。" : "Only .txt and .md files are supported.");
@@ -741,7 +1062,7 @@ async function _openGodPresetManagerTree(node) {
     categoryList.addEventListener("dragend", () => { clearInsertMarker(categoryList); categoryInsertIndex = null; });
     let onExternalPresets = null;
     const close = () => { document.removeEventListener("keydown", onKey, true); if (onExternalPresets) window.removeEventListener("xzg:text-box-presets-imported", onExternalPresets); overlay.remove(); node._xzgGodPresetDialogOpen = false; };
-    const openEditor = key => { const p = working[key]; if (!p) return; editingKey = key; title.textContent = zh ? "编辑细分内容" : "Edit Subcategory Content"; closeButton.disabled = true; closeButton.style.opacity = "0.45"; closeButton.style.cursor = "not-allowed"; const catSelect = dialog.querySelector("[data-editor-category]"); catSelect.innerHTML = categories().map(c => `<option value="${c.replace(/"/g, "&quot;")}"${c === String(p.category || "") ? " selected" : ""}>${c === _GOD_FAVORITES_CATEGORY ? "★ " + c : c}</option>`).join(""); dialog.querySelector("[data-editor-name]").value = _godPresetChildName(key, p); textArea.value = typeof p.text === "string" ? p.text : ""; home.style.display = "none"; editorView.style.display = "flex"; textArea.focus(); };
+    const openEditor = key => { const p = working[key]; if (!p) return; editingKey = key; title.textContent = zh ? "编辑细分内容" : "Edit Subcategory Content"; setEditorHeaderState(true); const catSelect = dialog.querySelector("[data-editor-category]"); catSelect.innerHTML = categories().map(c => `<option value="${c.replace(/"/g, "&quot;")}"${c === String(p.category || "") ? " selected" : ""}>${c === _GOD_FAVORITES_CATEGORY ? "★ " + c : c}</option>`).join(""); dialog.querySelector("[data-editor-name]").value = _godPresetChildName(key, p); textArea.value = typeof p.text === "string" ? p.text : ""; refreshEditorThumbnail(p); home.style.display = "none"; editorView.style.display = "flex"; textArea.focus(); };
     const createSubcategory = async category => {
         if (!category) return;
         const name = await askText(zh ? `在“${category}”中增加子项` : `Add an item to “${category}”`); if (!name) return;
@@ -873,18 +1194,28 @@ async function _openGodPresetManagerTree(node) {
         if (!selectedCategory || !details.length) {
             const empty = document.createElement("div"); empty.textContent = selectedCategory ? (zh ? "此分类下还没有子项" : "No items in this category yet") : (zh ? "请先在左侧新建提示词类型" : "Create a prompt type on the left first"); empty.style.cssText = "margin:auto;padding:20px;text-align:center;color:#fff"; subcategoryList.appendChild(empty);
         }
-        // 批量栏显隐
+        // 批量操作栏固定显示，避免选择状态变化导致列表跳动。
         const currentKeys = details;
         const selectedInView = currentKeys.filter(k => selectedKeys.has(k));
-        if (selectedInView.length > 0) {
-            batchBar.style.display = "flex";
-            batchCount.textContent = zh ? `已选 ${selectedInView.length} 项` : `${selectedInView.length} selected`;
-            batchSelectAll.textContent = currentKeys.length > 0 && selectedInView.length === currentKeys.length ? (zh ? "取消全选" : "Deselect all") : (zh ? "全选" : "Select all");
-        } else {
-            batchBar.style.display = "none";
-        }
+        batchBar.style.display = "flex";
+        batchCount.textContent = zh ? `已选 ${selectedInView.length} 项` : `${selectedInView.length} selected`;
+        batchSelectAll.textContent = zh ? "全选" : "Select all";
+        batchSelectAll.disabled = currentKeys.length === 0;
+        batchSelectAll.style.setProperty("color", batchSelectAll.disabled ? "#b5b5b5" : "#fff", "important");
+        batchSelectAll.style.setProperty("opacity", "1", "important");
+        batchSelectAll.style.cursor = batchSelectAll.disabled ? "default" : "pointer";
+        const noSelection = selectedInView.length === 0;
+        batchMove.disabled = noSelection;
+        batchMove.style.setProperty("color", noSelection ? "#b5b5b5" : "#fff", "important");
+        batchMove.style.setProperty("opacity", "1", "important");
+        batchMove.style.cursor = batchMove.disabled ? "default" : "pointer";
+        batchClear.disabled = noSelection;
+        batchClear.style.setProperty("color", noSelection ? "#b5b5b5" : "#fff", "important");
+        batchClear.style.setProperty("opacity", "1", "important");
+        batchClear.style.cursor = batchClear.disabled ? "default" : "pointer";
         for (const key of details) {
             const p = working[key], card = document.createElement("div"); card.draggable = true; card.dataset.subcategoryCard = "1"; card.className = "xzg-preset-drag-row";
+            if (typeof p.previewId === "string" && p.previewId.length > 0) card.dataset.xzgPreviewId = p.previewId;
             if (selectedKeys.has(key)) card.style.borderColor = "#e7b94f";
             card.addEventListener("dragstart", event => {
                 if (event.target.closest("button") || event.target.closest("input")) { event.preventDefault(); return; }
@@ -912,8 +1243,17 @@ async function _openGodPresetManagerTree(node) {
             const dragHandle = document.createElement("span"); dragHandle.className = "xzg-preset-drag-handle"; dragHandle.textContent = "⠿"; dragHandle.title = zh ? "拖动调整顺序" : "Drag to reorder";
             const name = document.createElement("span"); name.textContent = _godPresetChildName(key, p); name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#fff";
             const hasContent = typeof p.text === "string" && p.text.trim().length > 0;
-            const contentDot = hasContent ? document.createElement("span") : null;
-            if (contentDot) { contentDot.title = zh ? "已有编辑内容" : "Has content"; contentDot.setAttribute("aria-label", contentDot.title); contentDot.style.cssText = "width:6px;height:6px;flex:none;border-radius:50%;background:#fff;box-shadow:0 0 4px rgba(255,255,255,.65)"; }
+            const contentIndicator = document.createElement("span");
+            contentIndicator.title = hasContent ? (zh ? "已有编辑内容" : "Has content") : (zh ? "暂无编辑内容" : "No content");
+            contentIndicator.setAttribute("aria-label", contentIndicator.title);
+            contentIndicator.style.cssText = `display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:16px;height:16px;flex:none;opacity:${hasContent ? "1" : ".42"}`;
+            contentIndicator.innerHTML = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 1.5h5.1L12.5 5v9.1c0 .8-.6 1.4-1.4 1.4H4c-.8 0-1.4-.6-1.4-1.4V2.9c0-.8.6-1.4 1.4-1.4Z" fill="#DCE8F2" stroke="#F3F7FA" stroke-width=".8"/><path d="M9 1.8v2.5c0 .5.4.9.9.9h2.3" stroke="#687887" stroke-width=".8"/><path d="M5.1 7.2h5.2M5.1 9.3h5.2M5.1 11.4h3.7" stroke="#526576" stroke-width="1" stroke-linecap="round"/><path d="M5.1 7.2h1.2" stroke="#34B8B2" stroke-width="1.3" stroke-linecap="round"/></svg>`;
+            const hasPreview = typeof p.previewId === "string" && p.previewId.length > 0;
+            const thumbnailIndicator = document.createElement("span");
+            thumbnailIndicator.title = hasPreview ? (zh ? "已设置缩略图" : "Thumbnail set") : (zh ? "尚未设置缩略图" : "No thumbnail");
+            thumbnailIndicator.setAttribute("aria-label", thumbnailIndicator.title);
+            thumbnailIndicator.style.cssText = `display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:16px;height:16px;flex:none;opacity:${hasPreview ? "1" : ".42"};filter:${hasPreview ? "none" : "grayscale(1)"}`;
+            thumbnailIndicator.innerHTML = `<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2" width="13" height="12" rx="2.2" fill="#25282C" stroke="#C8D3E0" stroke-width="1.2"/><circle cx="11.4" cy="5.1" r="1.35" fill="#FFE16B"/><path d="m2.2 11.4 3.5-4 2.2 2.1 1.6-1.7 4.3 4v.1c0 .7-.5 1.2-1.2 1.2H3.4c-.7 0-1.2-.5-1.2-1.2v-.5Z" fill="#55DDE0"/><path d="m2.2 12 3-2.8 2.4 2.1 1.9-1.8 4.3 2.3v.1c0 .7-.5 1.2-1.2 1.2H3.4c-.7 0-1.2-.5-1.2-1.2V12Z" fill="#65E4A3"/></svg>`;
             const move = button(zh ? "移动" : "Move", e => { e.stopPropagation(); moveSubcategory(key, e); });
             move.title = zh ? "移动到其他分类" : "Move to another category";
             const edit = button(zh ? "编辑内容" : "Edit Content", () => openEditor(key));
@@ -921,14 +1261,13 @@ async function _openGodPresetManagerTree(node) {
             for (const b of [move, edit]) b.style.cssText += ";background:transparent;border:0;color:#fff";
             move.style.cssText += ";color:#e7b94f";
             del.style.cssText += ";background:transparent;border:0;color:#c75c5c";
-            card.append(checkboxLabel, dragHandle); if (contentDot) card.append(contentDot); card.append(name, move, edit, del); subcategoryList.appendChild(card);
+            card.append(checkboxLabel, dragHandle, contentIndicator, thumbnailIndicator, name, move, edit, del); subcategoryList.appendChild(card);
         }
     };
     addSubButton.addEventListener("click", () => createSubcategory(selectedCategory));
     batchSelectAll.addEventListener("click", () => {
         const all = Object.keys(working).filter(k => !working[k]?._categoryOnly && working[k]?.category === selectedCategory);
-        if (all.every(k => selectedKeys.has(k))) selectedKeys.clear();
-        else all.forEach(k => selectedKeys.add(k));
+        all.forEach(k => selectedKeys.add(k));
         render();
     });
     batchMove.addEventListener("click", e => {
@@ -943,6 +1282,7 @@ async function _openGodPresetManagerTree(node) {
         working = { ...presets };
         selectedCategory = categories()[0] || "";
         editingKey = null;
+        setEditorHeaderState(false);
         editorView.style.display = "none"; home.style.display = "flex";
         title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager";
         render();
@@ -973,11 +1313,11 @@ async function _openGodPresetManagerTree(node) {
         }
         await save();
         editorView.style.display = "none"; home.style.display = "flex";
-        closeButton.disabled = false; closeButton.style.opacity = "1"; closeButton.style.cursor = "pointer";
+        setEditorHeaderState(false);
         title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager";
         render();
     });
-    dialog.querySelector("[data-back]").addEventListener("click", () => { editorView.style.display = "none"; home.style.display = "flex"; closeButton.disabled = false; closeButton.style.opacity = "1"; closeButton.style.cursor = "pointer"; title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager"; render(); });
+    dialog.querySelector("[data-back]").addEventListener("click", () => { editorView.style.display = "none"; home.style.display = "flex"; setEditorHeaderState(false); title.textContent = zh ? "提示词预设管理" : "Prompt Preset Manager"; render(); });
     dialog.querySelector("[data-close]").addEventListener("click", close);
     const onKey = event => { if (event.key === "Escape" && !document.querySelector("[data-modal]")) close(); }; document.addEventListener("keydown", onKey, true);
     render();

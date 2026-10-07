@@ -3,7 +3,8 @@ import { app } from "../../scripts/app.js";
 
 /**
  * 小珠光自定义快捷键
- * - 配置持久化在后端插件目录 xzg_shortcuts.json，跟插件绑定，所有浏览器共享
+ * - 配置持久化在 ComfyUI 用户目录，所有浏览器共享
+ * - 首次安装不自动绑定按键，避免占用用户已有快捷键
  * - 支持为"执行工作流"等动作绑定额外快捷键（如 Ctrl+D）
  * - 不覆盖 ComfyUI 原生 Ctrl+Enter，仅追加
  */
@@ -452,10 +453,11 @@ async function openSettingsDialog() {
                 <h3 style="margin:0;font-size:18px;">小珠光 · 自定义快捷键</h3>
                 <button id="xzg-sc-close" style="background:transparent;color:#999;border:none;font-size:20px;cursor:pointer;">&times;</button>
             </div>
-            <p style="font-size:12px;color:#999;margin:0 0 16px;">配置保存在服务器端（插件目录），所有浏览器共享。以下为全部可用快捷键，未设置的显示"未设置"，点击"设置"后按组合键即可绑定。</p>
+            <p style="font-size:12px;color:#999;margin:0 0 16px;">配置保存在服务器端（ComfyUI 用户目录），所有浏览器共享。首次安装不自动绑定快捷键；点击"设置"后按组合键即可绑定，请选择不与现有功能冲突的按键。</p>
             <div id="xzg-sc-list">${rowsHtml}</div>
             <p id="xzg-sc-hint" style="font-size:12px;color:#888;margin:12px 0 0;">点击某行右侧的"设置"或快捷键文本，然后按下组合键（如 Ctrl+F）进行绑定。</p>
             <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
+                <button id="xzg-sc-recommend" title="填入原来的推荐键位，点击保存后生效；会替换当前弹窗中的绑定" style="background:#298055;color:#fff;border:none;border-radius:4px;padding:8px 16px;cursor:pointer;font-size:13px;margin-right:auto;">一键推荐快捷键</button>
                 <button id="xzg-sc-cancel" style="background:#555;color:#fff;border:none;border-radius:4px;padding:8px 20px;cursor:pointer;font-size:13px;">取消</button>
                 <button id="xzg-sc-save" style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:8px 20px;cursor:pointer;font-size:13px;">保存</button>
             </div>
@@ -466,6 +468,37 @@ async function openSettingsDialog() {
         dialog.querySelector("#xzg-sc-close").onclick = (e) => { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); };
         dialog.querySelector("#xzg-sc-cancel").onclick = (e) => { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); };
         overlay.addEventListener("click", (e) => { if (e.target === overlay) { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); } });
+
+        dialog.querySelector("#xzg-sc-recommend").onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const button = e.currentTarget;
+            button.disabled = true;
+            try {
+                const res = await fetch(new URL("./xzg_shortcuts.default.json", import.meta.url), { cache: "no-store" });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                if (!Array.isArray(data.shortcuts) || !data.shortcuts.length) {
+                    throw new Error("推荐快捷键配置为空或格式错误");
+                }
+                if (!overlay.isConnected) return;
+                const recommended = new Map(data.shortcuts.map(s => [s.action, s]));
+                editing = editing.map(s => recommended.has(s.action) ? { ...recommended.get(s.action) } : s);
+                capturingIdx = -1;
+                captureOriginal = null;
+                render();
+                const hint = dialog.querySelector("#xzg-sc-hint");
+                hint.textContent = "已填入推荐键位，会替换当前绑定。请检查与现有功能是否冲突，点击保存后生效。";
+                hint.style.color = "#dcc85b";
+            } catch (err) {
+                if (!overlay.isConnected) return;
+                const hint = dialog.querySelector("#xzg-sc-hint");
+                hint.textContent = "读取推荐快捷键失败：" + err.message + "。请刷新页面后重试。";
+                hint.style.color = "#e74c3c";
+            } finally {
+                button.disabled = false;
+            }
+        };
 
         // 空 key 也要保存：这是用户主动清除的标记，防止后端重启时把默认键补回来。
         dialog.querySelector("#xzg-sc-save").onclick = async (e) => {
