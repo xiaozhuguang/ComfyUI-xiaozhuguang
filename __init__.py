@@ -664,7 +664,8 @@ try:
     _xzg_shortcuts_file = os.path.join(_xzg_shortcuts_dir(), "xzg_shortcuts.json")
 
     def _xzg_shortcuts_merge_defaults():
-        # 将默认配置中用户缺失的新快捷键并入现有配置（不覆盖用户自定义）
+        # 将默认配置中用户缺失的新快捷键并入现有配置（不覆盖用户自定义）。
+        # key 为空的 action 是用户主动清除的 tombstone，仍计入 existing_actions。
         if not os.path.exists(_xzg_shortcuts_file) or not os.path.exists(_xzg_shortcuts_default):
             return
         try:
@@ -778,7 +779,8 @@ try:
             if not isinstance(s, dict):
                 continue
             key = (s.get("key") or "").strip()
-            if not key:
+            action = s.get("action", "queue_prompt")
+            if not isinstance(action, str) or not action.strip():
                 continue
             cleaned.append({
                 "key": key,
@@ -786,8 +788,8 @@ try:
                 "shift": bool(s.get("shift", False)),
                 "alt": bool(s.get("alt", False)),
                 "meta": bool(s.get("meta", False)),
-                "action": s.get("action", "queue_prompt"),
-                "label": s.get("label", ""),
+                "action": action.strip(),
+                "label": s.get("label", "") if key else "",
             })
         try:
             with open(_xzg_shortcuts_file, "w", encoding="utf-8") as f:

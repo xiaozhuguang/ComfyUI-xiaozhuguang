@@ -331,7 +331,7 @@ async function loadShortcuts() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const list = Array.isArray(data.shortcuts) ? data.shortcuts : [];
-        shortcuts = list;
+        shortcuts = list.filter(s => s && s.key);
         return list;
     } catch (e) {
         console.warn("[小珠光快捷键] 加载失败:", e);
@@ -350,7 +350,7 @@ async function saveShortcuts(list) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
     }
-    shortcuts = list;
+    shortcuts = list.filter(s => s && s.key);
 }
 
 /** 全局 keydown 监听（capture 阶段，优先于输入框判断） */
@@ -467,13 +467,13 @@ async function openSettingsDialog() {
         dialog.querySelector("#xzg-sc-cancel").onclick = (e) => { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); };
         overlay.addEventListener("click", (e) => { if (e.target === overlay) { e.preventDefault(); e.stopPropagation(); cleanupCapture(); overlay.remove(); } });
 
-        // 保存：只保存已设置的快捷键（未设置的动作不写入后端，重新打开仍显示"未设置"）
+        // 空 key 也要保存：这是用户主动清除的标记，防止后端重启时把默认键补回来。
         dialog.querySelector("#xzg-sc-save").onclick = async (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const toSave = editing.filter(s => s.key);
+            const toSave = editing;
             // 安全护栏：本次刷新后端失败 且 列表为空时，禁止保存，避免把真实配置误清空。
-            if (toSave.length === 0 && fresh === null) {
+            if (fresh === null && shortcuts.length === 0) {
                 alert("无法连接到服务器读取当前快捷键配置，为防止数据丢失已取消保存，请稍后重试。");
                 return;
             }
