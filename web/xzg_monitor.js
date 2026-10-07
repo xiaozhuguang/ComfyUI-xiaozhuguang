@@ -402,6 +402,23 @@ const XZG_CSS = `
 .xzg-monitor-toolbar.xzg-compact{display:flex;align-items:center;gap:8px;flex:0 1 auto;min-width:0;max-width:min(76vw,760px);height:36px;padding:0 10px;box-sizing:border-box;border:1px solid transparent;border-radius:999px;background:linear-gradient(var(--xzg-capsule-bg,#171a20),var(--xzg-capsule-bg,#171a20)) padding-box,var(--xzg-capsule-edge,linear-gradient(90deg,#6d9fc5,#cda56d,#9582bd)) border-box;color:#e8e8e8;user-select:none;}
 .xzg-monitor-toolbar.xzg-compact{--xzg-chip-text:#f2f5fa;--xzg-gpu-label:#84caff;--xzg-cpu-label:#e9bd70;--xzg-mem-label:#c7a6ef;
   --xzg-capsule-bg:#171c25;--xzg-capsule-edge:linear-gradient(100deg,#5698ca 0%,#718bb0 37%,#cda56d 68%,#9b83c1 100%);--xzg-capsule-separator:rgba(189,202,219,.27);}
+.xzg-monitor-toolbar.xzg-compact.xzg-brand-intro{justify-content:center;min-width:min(310px,76vw);max-width:min(420px,76vw);padding:0 18px;overflow:hidden;isolation:isolate;position:relative;background:linear-gradient(115deg,#10151f,#1b2030 48%,#151923) padding-box,var(--xzg-capsule-edge) border-box;box-shadow:0 0 18px rgba(106,160,220,.24),inset 0 0 18px rgba(128,156,220,.08);transition:min-width .85s cubic-bezier(.22,1,.36,1),max-width .85s cubic-bezier(.22,1,.36,1),padding .85s cubic-bezier(.22,1,.36,1),box-shadow .85s ease,background .85s ease;animation:xzg-brand-capsule-in 1.1s cubic-bezier(.2,.8,.2,1) both;}
+.xzg-monitor-toolbar.xzg-compact.xzg-brand-intro::before{content:"";position:absolute;inset:-60% -35%;z-index:-1;pointer-events:none;background:linear-gradient(105deg,transparent 38%,rgba(94,218,255,.08) 44%,rgba(255,255,255,.72) 50%,rgba(203,127,255,.22) 54%,transparent 61%);transform:translateX(-65%);animation:xzg-brand-scan 3.2s .25s ease-in-out both;}
+.xzg-brand-intro-content{display:flex;align-items:center;justify-content:center;gap:10px;white-space:nowrap;animation:xzg-brand-wordmark 5s ease both;transition:opacity .55s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .55s ease;}
+.xzg-monitor-toolbar.xzg-brand-intro-exit .xzg-brand-intro-content{opacity:0;transform:translateY(-8px) scale(.96);filter:blur(5px);transition:opacity .65s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .65s ease;}
+.xzg-brand-monitor-enter{animation:xzg-monitor-content-in .75s cubic-bezier(.22,1,.36,1) both;}
+.xzg-monitor-reveal-scan{position:absolute;inset:-60% -35%;z-index:100;pointer-events:none;background:linear-gradient(105deg,transparent 38%,rgba(94,218,255,.08) 44%,rgba(255,255,255,.92) 50%,rgba(203,127,255,.28) 54%,transparent 61%);transform:translateX(-75%);animation:xzg-monitor-reveal-scan 3.4s .05s ease-in-out both;}
+@keyframes xzg-monitor-content-in{from{opacity:0;transform:translateY(7px);filter:blur(4px)}to{opacity:1;transform:none;filter:none}}
+@keyframes xzg-monitor-reveal-scan{0%{transform:translateX(-70%);opacity:0}14%{opacity:1}82%{opacity:.8}100%{transform:translateX(70%);opacity:0}}
+.xzg-brand-intro-mark{width:19px;height:19px;flex:none;border:1px solid rgba(151,214,255,.8);border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff 0 7%,#a8ecff 10%,#7b8cff 42%,rgba(65,224,239,.12) 72%);box-shadow:0 0 8px #72d9ff,0 0 18px rgba(131,116,255,.72);animation:xzg-brand-core .9s ease-in-out infinite alternate;}
+.xzg-brand-intro-name{font:700 15px/1 'Segoe UI',system-ui,sans-serif;letter-spacing:.075em;background:linear-gradient(90deg,#f5fbff,#9eeaff 35%,#d5b4ff 68%,#ffe9ae);color:transparent;background-clip:text;-webkit-background-clip:text;text-shadow:0 0 14px rgba(119,187,255,.26);}
+.xzg-brand-intro-caption{font:500 9px/1 'Segoe UI',system-ui,sans-serif;letter-spacing:.22em;color:rgba(204,222,247,.68);text-transform:uppercase;}
+@keyframes xzg-brand-capsule-in{from{opacity:0;transform:translateY(-5px) scale(.94);filter:blur(4px)}to{opacity:1;transform:none;filter:none}}
+@keyframes xzg-brand-scan{0%{transform:translateX(-65%);opacity:0}18%{opacity:1}82%{opacity:.8}100%{transform:translateX(65%);opacity:0}}
+@keyframes xzg-brand-core{to{transform:scale(1.16);filter:hue-rotate(32deg);box-shadow:0 0 12px #72d9ff,0 0 25px rgba(131,116,255,.9)}}
+@keyframes xzg-brand-shine{to{background-position:200% center}}
+@keyframes xzg-brand-wordmark{0%{opacity:0;transform:translateY(3px);filter:blur(3px)}12%{opacity:1;transform:none;filter:none}100%{opacity:1;transform:none;filter:none}}
+@media(prefers-reduced-motion:reduce){.xzg-monitor-toolbar.xzg-compact.xzg-brand-intro,.xzg-brand-intro-content,.xzg-brand-intro-mark,.xzg-brand-intro-name{animation-duration:.01ms!important;transition-duration:.01ms!important;animation-iteration-count:1!important}}
 .xzg-monitor-toolbar.xzg-palette-ice{--xzg-chip-text:#e4f7fc;--xzg-gpu-label:#8bd9f3;--xzg-cpu-label:#8fd5cc;--xzg-mem-label:#b5cafa;
   --xzg-capsule-bg:#12232b;--xzg-capsule-edge:linear-gradient(100deg,#46a9c7,#66c9d0,#9bc9ed);--xzg-capsule-separator:rgba(114,207,218,.3);}
 .xzg-monitor-toolbar.xzg-palette-aurora{--xzg-chip-text:#f1edfa;--xzg-gpu-label:#c2aaff;--xzg-cpu-label:#76dfbd;--xzg-mem-label:#e59bd7;
@@ -1310,6 +1327,13 @@ function createFloatWindow() {
       // 渲染出错时显示提示，避免内容区静默空白
       statsEl.innerHTML = `<div class="xzg-note">⚠ 渲染出错: ${esc(e && e.message ? e.message : e)}</div>`;
     }
+    // 首次数据到达后等待片头最短展示时长，再交给实时监测内容。
+    const introBtn = document.getElementById(XZG_RUN_TIMER_BTN_ID);
+    if (introBtn?.classList.contains("xzg-brand-intro")) {
+      const introMinDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 5000;
+      const remaining = Math.max(0, introMinDuration - (Date.now() - _brandIntroStartedAt));
+      if (remaining === 0) finishBrandIntro(introBtn);
+    }
     // 在布局与内容都已就绪后一次性显示，避免刷新时闪过空胶囊。
     root.style.visibility = "visible";
     if (firstResponse) {
@@ -1425,6 +1449,7 @@ let _monitorInitialized = false; // 首次系统监测响应完成前隐藏时�
 let _menuBtn = null;     // 顶部栏按钮
 let _themeMenuBtn = null;
 let _runTimerBtn = null;
+let _brandIntroStartedAt = 0;
 let _capsuleFloating = false; // 顶部胶囊是否已拖出工具栏呈悬浮状态
 let _themeContextMenu = null;
 
@@ -2587,16 +2612,58 @@ function buildRunTimerButton() {
     align-self:center;margin:auto 0;background:linear-gradient(var(--xzg-capsule-bg,#171a20),var(--xzg-capsule-bg,#171a20)) padding-box,var(--xzg-capsule-edge,linear-gradient(90deg,#6d9fc5,#cda56d,#9582bd)) border-box;overflow:hidden;
   `;
   btn.innerHTML = `<span id="xzg-toolbar-run-time" class="xzg-run-time"></span><div id="xzg-toolbar-monitor-stats"></div>`;
-  btn.style.visibility = _monitorInitialized ? "visible" : "hidden";
+  // 每个页面会话开场先播放品牌卡；首个监控响应到达时由 render 接管并展示实时数据。
+  const showBrandIntro = !_monitorInitialized;
+  btn.style.visibility = "visible";
+  if (showBrandIntro) {
+    _brandIntroStartedAt = Date.now();
+    btn.classList.add("xzg-brand-intro");
+    btn.innerHTML = `<div class="xzg-brand-intro-content"><span class="xzg-brand-intro-mark" aria-hidden="true"></span><span class="xzg-brand-intro-name">https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang</span></div>`;
+    const introDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 5000;
+    window.setTimeout(() => {
+      finishBrandIntro(btn);
+    }, introDuration);
+  }
   const stats = document.getElementById("xzg-stats");
   const statsHost = btn.querySelector("#xzg-toolbar-monitor-stats");
   const timeHost = btn.querySelector("#xzg-toolbar-run-time");
-  if (stats) {
+  if (stats && statsHost) {
     statsHost.appendChild(stats);
     if (_float) _float.setToolbarHosts(statsHost, timeHost);
   }
   updateRunTimerButton();
   return btn;
+}
+
+function finishBrandIntro(btn) {
+  if (!btn?.classList.contains("xzg-brand-intro")) return;
+  // 先独立淡出品牌片头；品牌层消失后再挂载计时器和监测参数。
+  requestAnimationFrame(() => {
+    if (!btn.isConnected || !btn.classList.contains("xzg-brand-intro")) return;
+    btn.classList.add("xzg-brand-intro-exit");
+    window.setTimeout(() => {
+      if (!btn.isConnected) return;
+      btn.innerHTML = `<span id="xzg-toolbar-run-time" class="xzg-run-time"></span><div id="xzg-toolbar-monitor-stats"></div>`;
+      const statsHost = btn.querySelector("#xzg-toolbar-monitor-stats");
+      const timeHost = btn.querySelector("#xzg-toolbar-run-time");
+      const currentStats = document.getElementById("xzg-stats");
+      if (currentStats && statsHost) statsHost.appendChild(currentStats);
+      if (_float && statsHost) _float.setToolbarHosts(statsHost, timeHost);
+      btn.classList.remove("xzg-brand-intro", "xzg-brand-intro-exit");
+      btn.classList.add("xzg-brand-monitor-enter");
+      const scan = document.createElement("span");
+      scan.className = "xzg-monitor-reveal-scan";
+      btn.appendChild(scan);
+      window.setTimeout(() => {
+        btn.classList.remove("xzg-brand-monitor-enter");
+        scan.remove();
+      }, 3500);
+      btn.style.minWidth = "";
+      btn.style.maxWidth = "";
+      btn.style.padding = "";
+      updateRunTimerButton();
+    }, 700);
+  });
 }
 
 function attachRunTimerContextMenu(btn) {
@@ -3030,7 +3097,7 @@ function injectMenuButton(retries) {
     attachCapsuleDrag(_runTimerBtn);
     restoreCapsuleState(_runTimerBtn);
     _runTimerBtn.style.display = _floatHidden ? "none" : "flex";
-    _runTimerBtn.style.visibility = _monitorInitialized ? "visible" : "hidden";
+    _runTimerBtn.style.visibility = (_monitorInitialized || _runTimerBtn.classList.contains("xzg-brand-intro")) ? "visible" : "hidden";
     applyTimerEffect();
     if (_float) {
       _float.setToolbarHosts(
