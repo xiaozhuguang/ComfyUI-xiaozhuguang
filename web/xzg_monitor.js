@@ -2761,7 +2761,12 @@ function fmtMemPair(usedMb, totalMb) {
   const fmt = (mb) => mb == null || Number.isNaN(Number(mb)) ? "--"
     : Number(mb) >= 1024 ? `${(Number(mb) / 1024).toFixed(1)}G` : `${Math.round(Number(mb))}M`;
   if (usedMb == null || totalMb == null) return `${fmt(usedMb)}/${fmt(totalMb)}`;
-  if (usedMb >= 1024 && totalMb >= 1024) return `${Math.round(usedMb / 1024)}/${Math.round(totalMb / 1024)}`;
+  if (totalMb >= 1024) {
+    const usedGb = Number(usedMb) / 1024;
+    const totalGb = Math.round(Number(totalMb) / 1024);
+    // 总量按 GB 显示时，已用显存低于 1 GB 也用 GB 小数，避免更长的 "830M/32.0G"。
+    return `${usedGb >= 1 ? Math.round(usedGb) : usedGb.toFixed(1)}/${totalGb}`;
+  }
   return `${fmt(usedMb)}/${fmt(totalMb)}`;
 }
 
