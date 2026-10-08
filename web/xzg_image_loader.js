@@ -74,6 +74,10 @@ function getMaskOutputColorWidget(node) {
     return getWidgetByName(node, "mask_output_color");
 }
 
+function getRemoveAlphaWidget(node) {
+    return getWidgetByName(node, "remove_alpha");
+}
+
 function ensureHiddenWidget(node, name, type, value) {
     let widget = getWidgetByName(node, name);
     if (!widget) {
@@ -871,6 +875,8 @@ function createImgBatchUI(node) {
         ? node.properties.xzg_mask_preview_color : "#ff0000";
     let maskOutputEnabled = node.properties?.xzg_mask_output_enabled === true ||
         String(getMaskOutputEnabledWidget(node)?.value || "").toLowerCase() === "true";
+    let removeAlphaEnabled = node.properties?.xzg_remove_alpha === true || node.properties?.xzg_remove_alpha === 1 ||
+        String(node.properties?.xzg_remove_alpha ?? getRemoveAlphaWidget(node)?.value ?? "false").toLowerCase() === "true";
     let maskCloseEnabled = node.properties?.xzg_mask_close_enabled === true || node.properties?.xzg_mask_close_enabled === 1 ||
         String(node.properties?.xzg_mask_close_enabled || "").toLowerCase() === "true";
     let _maskStrokePoints = [];
@@ -1061,6 +1067,9 @@ function createImgBatchUI(node) {
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar select,
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar > div > span{font-size:15px!important;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar button:not(.xzg-edit-exit-btn){font-size:20px!important;line-height:1.2;}
+            .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar .xzg-mask-setting-toggle{font-size:16px!important;font-weight:400!important;line-height:1.2!important;}
+            .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar .xzg-mask-setting-toggle:hover{background:rgba(255,255,255,.10)!important;filter:none!important;}
+            .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar button.xzg-mask-setting-toggle > span:not([aria-hidden="true"]){font-size:16px!important;font-weight:400!important;line-height:1.2!important;color:#FFD700!important;}
             .xzg-img-edit-workspace .xzg-crop-ratio-bar .xzg-crop-ratio-btn{font-size:14px!important;line-height:1.2;text-align:center!important;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar .xzg-crop-ratio-text{display:inline-grid;grid-template-columns:2ch 1ch 2ch;width:5ch;text-align:center;}
             .xzg-crop-ratio-options .xzg-crop-ratio-btn:hover{background:rgba(255,255,255,.12)!important;}
@@ -1222,7 +1231,9 @@ function createImgBatchUI(node) {
 
     const updateMaxImgInput = () => {
         setMaxImgDisplay();
-        maxImgInput.style.display = uploadMode === "append" ? "" : "none";
+        const shouldShow = uploadMode === "append" && !maskEnabled && !cropEnabled;
+        if (shouldShow) maxImgInput.style.removeProperty("display");
+        else maxImgInput.style.setProperty("display", "none", "important");
     };
 
     const uploadModeBtn = document.createElement("button");
@@ -1398,7 +1409,9 @@ function createImgBatchUI(node) {
             b.style.cssText =
                 "padding:4px 2px;background:transparent;color:var(--input-text);border:none;border-radius:4px;cursor:pointer;font-size:11px;line-height:1.4;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;";
         }
-        b.addEventListener("mouseenter", () => { b.style.filter = "brightness(1.2)"; });
+        b.addEventListener("mouseenter", () => {
+            if (!b.classList.contains("xzg-mask-setting-toggle")) b.style.filter = "brightness(1.2)";
+        });
         b.addEventListener("mouseleave", () => { b.style.filter = ""; });
         return b;
     };
@@ -1472,7 +1485,7 @@ function createImgBatchUI(node) {
     const maskColorControlRow = document.createElement("div");
     maskColorControlRow.style.cssText = "display:flex;align-items:center;justify-content:center;gap:5px;width:100%;";
     const maskColorLabel = document.createElement("span");
-    maskColorLabel.textContent = xzgT("预览色", "Color");
+    maskColorLabel.textContent = xzgT("填充色", "Fill Color");
     maskColorLabel.title = xzgT("自定义遮罩预览颜色", "Customize mask preview color");
     maskColorLabel.style.cssText = "font-size:13px;color:var(--input-text);white-space:nowrap;";
     const maskColorInput = document.createElement("input");
@@ -1531,28 +1544,43 @@ function createImgBatchUI(node) {
     maskColorRow.appendChild(maskColorControlRow);
     maskColorRow.appendChild(maskColorPresetRow);
 
+    const _makeToggleSwitch = () => {
+        const track = document.createElement("span");
+        track.setAttribute("aria-hidden", "true");
+        track.style.cssText = "position:absolute;right:8px;top:50%;display:inline-block;width:32px;height:18px;box-sizing:border-box;border:1px solid #777;border-radius:9px;background:#555;transform:translateY(-50%);transition:background .16s ease,border-color .16s ease;";
+        const thumb = document.createElement("span");
+        thumb.style.cssText = "position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:#f2f2f2;box-shadow:0 1px 2px rgba(0,0,0,.45);transition:transform .16s ease,background .16s ease;";
+        track.appendChild(thumb);
+        return {
+            element: track,
+            set(enabled) {
+                track.style.background = enabled ? "#35a852" : "#555";
+                track.style.borderColor = enabled ? "#61d77b" : "#888";
+                thumb.style.transform = enabled ? "translateX(14px)" : "translateX(0)";
+            },
+        };
+    };
+
     const maskOutputToggleBtn = _mkMaskBtn(xzgT("输出着色", "Tint Output"),
         xzgT("开关：把遮罩区域按预览色合成到图像输出（遮罩端口仍单独输出）", "Toggle tinting masked regions in IMAGE output; MASK output remains separate"));
+    maskOutputToggleBtn.classList.add("xzg-mask-setting-toggle");
     maskOutputToggleBtn.replaceChildren();
     const maskOutputToggleLabel = document.createElement("span");
     maskOutputToggleLabel.textContent = xzgT("着色输出", "Tint Output");
-    const maskOutputToggleIndicator = document.createElement("span");
-    maskOutputToggleIndicator.setAttribute("aria-hidden", "true");
-    maskOutputToggleIndicator.style.cssText = "display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;box-sizing:border-box;";
+    const maskOutputToggleIndicator = _makeToggleSwitch();
     maskOutputToggleBtn.appendChild(maskOutputToggleLabel);
-    maskOutputToggleBtn.appendChild(maskOutputToggleIndicator);
-    maskOutputToggleBtn.style.cssText = "display:flex;align-items:center;justify-content:center;gap:5px;width:100%;box-sizing:border-box;padding:5px 2px;border:none;border-radius:4px;font-size:11px;font-weight:600;line-height:1.2;white-space:nowrap;cursor:pointer;transition:background 0.12s ease,color 0.12s ease;";
-    maskOutputToggleIndicator.style.transform = "translateX(3px)";
+    maskOutputToggleBtn.appendChild(maskOutputToggleIndicator.element);
+    maskOutputToggleBtn.style.cssText = "position:relative;display:flex!important;align-items:center;justify-content:flex-start;align-self:stretch;width:100%!important;min-height:30px;box-sizing:border-box;padding:5px 48px 5px 12px;border:none;border-radius:4px;font-size:11px;font-weight:400;line-height:1.2;text-align:left;white-space:nowrap;cursor:pointer;transition:color 0.12s ease;";
+    maskOutputToggleLabel.style.cssText = "display:block;min-width:0;text-align:left;";
     const _setMaskOutputEnabled = (enabled) => {
         maskOutputEnabled = !!enabled;
         const widget = getMaskOutputEnabledWidget(node);
         if (widget) widget.value = maskOutputEnabled;
         if (node.properties) node.properties.xzg_mask_output_enabled = maskOutputEnabled;
         maskOutputToggleBtn.setAttribute("aria-pressed", String(maskOutputEnabled));
-        maskOutputToggleBtn.style.color = maskOutputEnabled ? "#baffc2" : "var(--input-text)";
-        maskOutputToggleBtn.style.background = maskOutputEnabled ? "rgba(55,170,75,0.35)" : "rgba(128,128,128,0.12)";
-        maskOutputToggleIndicator.style.background = maskOutputEnabled ? "#54e36e" : "transparent";
-        maskOutputToggleIndicator.style.border = maskOutputEnabled ? "1px solid #d8ffe0" : "1px solid #9a9a9a";
+        maskOutputToggleBtn.style.color = "#FFD700";
+        maskOutputToggleBtn.style.background = "transparent";
+        maskOutputToggleIndicator.set(maskOutputEnabled);
         if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
     };
     maskOutputToggleBtn.addEventListener("click", (e) => {
@@ -1561,25 +1589,58 @@ function createImgBatchUI(node) {
     });
     _setMaskOutputEnabled(maskOutputEnabled);
 
+    const removeAlphaToggleBtn = _mkMaskBtn(xzgT("移除图片 Alpha", "Remove Image Alpha"),
+        xzgT("开启后将图片透明区域合成到不透明背景；设置随当前工作流保存", "Composite image transparency onto an opaque background; this setting is saved with the workflow"));
+    removeAlphaToggleBtn.classList.add("xzg-mask-setting-toggle");
+    removeAlphaToggleBtn.replaceChildren();
+    const removeAlphaToggleLabel = document.createElement("span");
+    removeAlphaToggleLabel.textContent = xzgT("移除Alpha", "Remove Alpha");
+    const removeAlphaToggleIndicator = _makeToggleSwitch();
+    removeAlphaToggleBtn.append(removeAlphaToggleLabel, removeAlphaToggleIndicator.element);
+    removeAlphaToggleBtn.style.cssText = "position:relative;display:flex!important;align-items:center;justify-content:flex-start;align-self:stretch;width:100%!important;min-height:30px;box-sizing:border-box;padding:5px 48px 5px 12px;border:none;border-radius:4px;font-size:11px;font-weight:400;line-height:1.2;text-align:left;white-space:nowrap;cursor:pointer;transition:color 0.12s ease;";
+    removeAlphaToggleLabel.style.cssText = "display:block;min-width:0;text-align:left;";
+    const _setRemoveAlphaEnabled = (enabled) => {
+        removeAlphaEnabled = !!enabled;
+        const widget = getRemoveAlphaWidget(node);
+        if (widget) widget.value = removeAlphaEnabled;
+        if (node.properties) node.properties.xzg_remove_alpha = removeAlphaEnabled;
+        removeAlphaToggleBtn.setAttribute("aria-pressed", String(removeAlphaEnabled));
+        removeAlphaToggleBtn.style.color = "#FFD700";
+        removeAlphaToggleBtn.style.background = "transparent";
+        removeAlphaToggleIndicator.set(removeAlphaEnabled);
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    };
+    const _syncRemoveAlphaFromWorkflow = () => {
+        const saved = node.properties?.xzg_remove_alpha;
+        const value = saved != null
+            ? saved === true || saved === 1 || String(saved).toLowerCase() === "true"
+            : getRemoveAlphaWidget(node)?.value === true || String(getRemoveAlphaWidget(node)?.value || "").toLowerCase() === "true";
+        _setRemoveAlphaEnabled(value);
+    };
+    removeAlphaToggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _setRemoveAlphaEnabled(!removeAlphaEnabled);
+    });
+    _setRemoveAlphaEnabled(removeAlphaEnabled);
+
     const maskCloseToggleBtn = _mkMaskBtn(xzgT("封闭遮罩", "Close Mask"),
         xzgT("开启后，画出接近闭合的轮廓时会自动闭合并填充内部", "Automatically close and fill the inside of a nearly closed brush stroke"));
+    maskCloseToggleBtn.classList.add("xzg-mask-setting-toggle");
     maskCloseToggleBtn.replaceChildren();
     const maskCloseToggleLabel = document.createElement("span");
     maskCloseToggleLabel.textContent = xzgT("封闭遮罩", "Close Mask");
-    const maskCloseToggleIndicator = document.createElement("span");
-    maskCloseToggleIndicator.setAttribute("aria-hidden", "true");
-    maskCloseToggleIndicator.style.cssText = "display:inline-block;width:8px;height:8px;flex:0 0 8px;border-radius:50%;box-sizing:border-box;transform:translateX(3px);";
+    const maskCloseToggleIndicator = _makeToggleSwitch();
     maskCloseToggleBtn.appendChild(maskCloseToggleLabel);
-    maskCloseToggleBtn.appendChild(maskCloseToggleIndicator);
-    maskCloseToggleBtn.style.cssText = "display:flex;align-items:center;justify-content:center;gap:5px;width:100%;box-sizing:border-box;padding:5px 2px;border:none;border-radius:4px;font-size:11px;font-weight:600;line-height:1.2;white-space:nowrap;cursor:pointer;transition:background 0.12s ease,color 0.12s ease;";
+    maskCloseToggleBtn.appendChild(maskCloseToggleIndicator.element);
+    maskCloseToggleBtn.style.cssText = "position:relative;display:flex!important;align-items:center;justify-content:flex-start;align-self:stretch;width:100%!important;min-height:30px;box-sizing:border-box;padding:5px 48px 5px 12px;border:none;border-radius:4px;font-size:11px;font-weight:400;line-height:1.2;text-align:left;white-space:nowrap;cursor:pointer;transition:color 0.12s ease;";
+    maskCloseToggleLabel.style.cssText = "display:block;min-width:0;text-align:left;";
     const _setMaskCloseEnabled = (enabled) => {
         maskCloseEnabled = !!enabled;
         if (node.properties) node.properties.xzg_mask_close_enabled = maskCloseEnabled;
         maskCloseToggleBtn.setAttribute("aria-pressed", String(maskCloseEnabled));
-        maskCloseToggleBtn.style.color = maskCloseEnabled ? "#baffc2" : "var(--input-text)";
-        maskCloseToggleBtn.style.background = maskCloseEnabled ? "rgba(55,170,75,0.35)" : "rgba(128,128,128,0.12)";
-        maskCloseToggleIndicator.style.background = maskCloseEnabled ? "#54e36e" : "transparent";
-        maskCloseToggleIndicator.style.border = maskCloseEnabled ? "1px solid #d8ffe0" : "1px solid #9a9a9a";
+        maskCloseToggleBtn.style.color = "#FFD700";
+        maskCloseToggleBtn.style.background = "transparent";
+        maskCloseToggleIndicator.set(maskCloseEnabled);
         if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
     };
     maskCloseToggleBtn.addEventListener("click", (e) => {
@@ -1590,13 +1651,14 @@ function createImgBatchUI(node) {
 
     maskToolbar.appendChild(maskToggleBtn);
     maskToolbar.appendChild(maskColorRow);
-    maskToolbar.appendChild(maskOutputToggleBtn);
-    maskToolbar.appendChild(maskCloseToggleBtn);
     maskToolbar.appendChild(maskBrushBtn);
     maskToolbar.appendChild(maskEraserBtn);
     maskToolbar.appendChild(maskClearBtn);
     maskToolbar.appendChild(maskInvertBtn);
     maskToolbar.appendChild(brushSizeRow);
+    maskToolbar.appendChild(maskOutputToggleBtn);
+    maskToolbar.appendChild(maskCloseToggleBtn);
+    maskToolbar.appendChild(removeAlphaToggleBtn);
 
     // 裁剪选区按钮（与遮罩同一工具栏，仅单图模式显示，互斥开启）
     const cropToggleBtn = _mkMaskBtn(xzgT("裁剪", "Crop"), xzgT("开启/关闭裁剪选区（仅单图模式）", "Toggle crop region (single mode only)"), "crop");
@@ -1707,7 +1769,7 @@ function createImgBatchUI(node) {
     cropPaddingSwatches.style.cssText = "display:flex;justify-content:center;gap:6px;padding:2px 0;";
     const cropPaddingChoices = [
         ["白", "#ffffff"], ["黑", "#000000"], ["红", "#ff0000"],
-        ["绿", "#00ff00"], ["蓝", "#0000ff"],
+        ["绿", "#00ff00"],
     ];
     const cropPaddingButtons = [];
     const applyCropPaddingColor = (color) => {
@@ -1836,8 +1898,8 @@ function createImgBatchUI(node) {
         const editing = maskEnabled || cropEnabled;
         // 编辑界面（遮罩/裁剪开启）：统一使用 110px 侧栏；
         // 画布态：侧栏内容自适应 + 开关按钮左对齐（预览区最大化）
-        sidebar.style.width = editing ? "110px" : "auto";
-        sidebar.style.minWidth = editing ? "110px" : "0";
+        sidebar.style.width = editing ? "150px" : "auto";
+        sidebar.style.minWidth = editing ? "150px" : "0";
         sidebar.classList.toggle("xzg-edit", editing);
         // 图标按钮的文字形态（lb）仅编辑态显示；画布态走图标
         maskToggleBtn.__lb.textContent = maskEnabled ? xzgT("退出", "Exit") : xzgT("遮罩", "Mask");
@@ -1877,6 +1939,8 @@ function createImgBatchUI(node) {
         brushSizeRow.style.display = vis;
         maskColorRow.style.display = vis;
         maskOutputToggleBtn.style.display = vis;
+        // Alpha 开关仅在点击「遮罩」进入编辑界面后显示，画布侧栏常驻状态不显示。
+        removeAlphaToggleBtn.style.display = vis;
         maskCloseToggleBtn.style.display = vis;
         maskBrushBtn.style.display = vis;
         maskEraserBtn.style.display = vis;
@@ -6093,6 +6157,7 @@ function createImgBatchUI(node) {
         syncCropList: _syncCropList,
         reloadMaskFromWidget: _reloadCurrentMaskFromWidget,
         setMaskOutputEnabled: _setMaskOutputEnabled,
+        syncRemoveAlphaFromWorkflow: _syncRemoveAlphaFromWorkflow,
         setMaskCloseEnabled: _setMaskCloseEnabled,
         setMaskPreviewColor: (value) => {
             if (!/^#[0-9a-f]{6}$/i.test(value || "")) return;
@@ -6221,6 +6286,7 @@ app.registerExtension({
                 }
                 ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
                 ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
+                ensureHiddenWidget(this, "remove_alpha", "toggle", false);
                 let maskWidget = getMaskDataWidget(this);
                 // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
                 if (!maskWidget) {
@@ -6569,6 +6635,7 @@ app.registerExtension({
                 }
                 const overlayEnabledWidget = ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
                 const overlayColorWidget = ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
+                const removeAlphaWidget = ensureHiddenWidget(this, "remove_alpha", "toggle", false);
                 if (data?.widgets_values && Array.isArray(data.widgets_values)) {
                     const enabledIndex = this.widgets?.indexOf(overlayEnabledWidget) ?? -1;
                     const colorIndex = this.widgets?.indexOf(overlayColorWidget) ?? -1;
@@ -6578,6 +6645,28 @@ app.registerExtension({
                 if (data?.properties?.xzg_mask_output_enabled != null) {
                     const savedEnabled = data.properties.xzg_mask_output_enabled;
                     overlayEnabledWidget.value = savedEnabled === true || savedEnabled === 1 || String(savedEnabled).toLowerCase() === "true";
+                }
+                if (data?.widgets_values && Array.isArray(data.widgets_values)) {
+                    const removeAlphaIndex = this.widgets?.indexOf(removeAlphaWidget) ?? -1;
+                    if (removeAlphaIndex >= 0 && data.widgets_values[removeAlphaIndex] != null) {
+                        removeAlphaWidget.value = data.widgets_values[removeAlphaIndex];
+                    }
+                }
+                if (data?.properties?.xzg_remove_alpha != null) {
+                    const saved = data.properties.xzg_remove_alpha;
+                    removeAlphaWidget.value = saved === true || saved === 1 || String(saved).toLowerCase() === "true";
+                    this.properties = this.properties || {};
+                    this.properties.xzg_remove_alpha = removeAlphaWidget.value;
+                }
+                else if (data?.widgets_values && Array.isArray(data.widgets_values)) {
+                    // 兼容旧工作流：remove_alpha 曾是 required 控件，位于 max_images 后一位。
+                    const maxIndex = this.widgets?.indexOf(getMaxImagesWidget(this)) ?? -1;
+                    const legacyValue = maxIndex >= 0 ? data.widgets_values[maxIndex + 1] : undefined;
+                    if (typeof legacyValue === "boolean") {
+                        removeAlphaWidget.value = legacyValue;
+                        this.properties = this.properties || {};
+                        this.properties.xzg_remove_alpha = legacyValue;
+                    }
                 }
                 if (data?.properties?.xzg_mask_preview_color) overlayColorWidget.value = data.properties.xzg_mask_preview_color;
                 let maskWidget = getMaskDataWidget(this);
@@ -6679,6 +6768,7 @@ app.registerExtension({
                 if (this._xzgImgLoaderUI) {
                     // 先确保 upload_mode widget 值已恢复 → 再同步到闭包变量
                     this._xzgImgLoaderUI.syncUploadModeFromWidget?.();
+                    this._xzgImgLoaderUI.syncRemoveAlphaFromWorkflow?.();
                     this._xzgImgLoaderUI.redraw(true);
                     this._xzgImgLoaderUI.reloadMaskFromWidget?.();
                     this._xzgImgLoaderUI.updateModeBtn?.();
@@ -6706,6 +6796,13 @@ app.registerExtension({
                 data.properties.xzg_mask_preview_color = this.properties?.xzg_mask_preview_color || "#ff0000";
                 const overlayEnabled = getMaskOutputEnabledWidget(this)?.value;
                 data.properties.xzg_mask_output_enabled = overlayEnabled === true || overlayEnabled === 1 || String(overlayEnabled).toLowerCase() === "true";
+                const removeAlphaWidget = getRemoveAlphaWidget(this);
+                const removeAlphaValue = removeAlphaWidget?.value;
+                data.properties.xzg_remove_alpha = removeAlphaValue === true || removeAlphaValue === 1 || String(removeAlphaValue).toLowerCase() === "true";
+                if (removeAlphaWidget && Array.isArray(data.widgets_values) && Array.isArray(this.widgets)) {
+                    const idx = this.widgets.indexOf(removeAlphaWidget);
+                    if (idx >= 0) data.widgets_values[idx] = data.properties.xzg_remove_alpha;
+                }
                 const closeEnabled = this.properties?.xzg_mask_close_enabled;
                 data.properties.xzg_mask_close_enabled = closeEnabled === true || closeEnabled === 1 || String(closeEnabled).toLowerCase() === "true";
                 if (umWidget && data?.widgets_values && Array.isArray(this.widgets)) {

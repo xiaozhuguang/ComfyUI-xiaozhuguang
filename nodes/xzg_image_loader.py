@@ -1505,7 +1505,8 @@ def _transform_pil(image, transform):
 
 
 def _transform_tensor(img_t, transform):
-    pil = Image.fromarray((img_t[0].numpy().clip(0, 1) * 255).astype(np.uint8), mode="RGB")
+    arr = (img_t[0].detach().cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
+    pil = Image.fromarray(arr, mode="RGBA" if arr.shape[-1] == 4 else "RGB")
     pil = _transform_pil(pil, transform)
     arr = np.array(pil).astype(np.float32) / 255.0
     return torch.from_numpy(arr)[None,]
@@ -1922,6 +1923,7 @@ class XiaozhuguangImageLoader:
                 "upload_mode": ("STRING", {"default": "append"}),  # append=多图 / replace=单图，前端持久化用
                 "mask_output_enabled": ("BOOLEAN", {"default": False}),
                 "mask_output_color": ("STRING", {"default": "#ff0000"}),
+                "remove_alpha": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -1931,8 +1933,9 @@ class XiaozhuguangImageLoader:
     FUNCTION = "load_images"
     CATEGORY = "xiaozhuguang"
 
-    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000"):
+    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, remove_alpha=False, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000"):
         mask_output_enabled = mask_output_enabled is True or str(mask_output_enabled).strip().lower() in ("true", "1")
+        remove_alpha = remove_alpha is True or str(remove_alpha).strip().lower() in ("true", "1")
         crop_padding_rgb = _parse_crop_padding_color(crop_data)
         # 空选/所列图片全部丢失时回退到内置占位图片（防报错，与视频加载器同一机制）。
         names = [n.strip() for n in (image_list or "").split("\n") if n.strip()]
@@ -1973,9 +1976,18 @@ class XiaozhuguangImageLoader:
                                        int(round(_crop_i[1] * _ratio0)),
                                        int(round(_crop_i[2] * _ratio0)),
                                        int(round(_crop_i[3] * _ratio0)))
-                    # 在 convert("RGB") 之前提取 alpha 通道（与官方 LoadImage 一致）
-                    alpha = img.getchannel('A') if 'A' in img.getbands() else None
-                    image = img.convert("RGB")
+                    # 保留原图 Alpha 到 IMAGE 的第 4 通道，除非用户主动选择移除。
+                    alpha = img.getchannel('A') if 'A' in img.getbands() and not remove_alpha else None
+                    if remove_alpha and 'A' in img.getbands():
+                        # 合成到不透明背景，避免透明像素的 RGB 残留造成色边。
+                        rgba = img.convert("RGBA")
+                        opaque = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+                        img = Image.alpha_composite(opaque, rgba).convert("RGB")
+                    elif 'A' in img.getbands():
+                        img = img.convert("RGBA")
+                    else:
+                        img = img.convert("RGB")
+                    image = img
                     image = np.array(image).astype(np.float32) / 255.0
                     image = torch.from_numpy(image)[None,]
                     images.append(image)
@@ -2071,7 +2083,10 @@ class XiaozhuguangImageLoader:
             # IMAGE 输出是硬边纯色覆盖，不沿用编辑器预览的半透明度。
             alpha = (mask_tensor >= 0.5).to(dtype=image_tensor.dtype).unsqueeze(-1)
             color_tensor = torch.tensor(overlay_rgb, dtype=image_tensor.dtype, device=image_tensor.device)
-            return (image_tensor * (1.0 - alpha) + color_tensor * alpha).clamp(0.0, 1.0)
+            tinted_rgb = image_tensor[..., :3] * (1.0 - alpha) + color_tensor * alpha
+            if image_tensor.shape[-1] > 3:
+                return torch.cat((tinted_rgb, image_tensor[..., 3:]), dim=-1).clamp(0.0, 1.0)
+            return tinted_rgb.clamp(0.0, 1.0)
 
         # 逐图裁剪图片与遮罩，保持每个输出项同尺寸。
         for _ci, _crop in enumerate(crops_loaded):
@@ -2117,7 +2132,8 @@ class XiaozhuguangImageLoader:
                     resized_masks.append(mask)
                     continue
 
-                img_pil = Image.fromarray((img[0].numpy() * 255).astype(np.uint8))
+                img_arr = (img[0].numpy().clip(0, 1) * 255).astype(np.uint8)
+                img_pil = Image.fromarray(img_arr, mode="RGBA" if img_arr.shape[-1] == 4 else "RGB")
                 mask_pil = Image.fromarray((mask[0].numpy() * 255).clip(0, 255).astype(np.uint8))
                 if use_letterbox:
                     # letterbox 留边：等比缩放至完全放入 max_w×max_h，四周用黑色填充补齐
@@ -2125,7 +2141,7 @@ class XiaozhuguangImageLoader:
                     new_h = max(1, int(round(h * scale)))
                     new_w = max(1, int(round(w * scale)))
                     img_pil = img_pil.resize((new_w, new_h), Image.LANCZOS)
-                    canvas = Image.new("RGB", (max_w, max_h), (0, 0, 0))
+                    canvas = Image.new(img_pil.mode, (max_w, max_h), (0, 0, 0, 0) if img_pil.mode == "RGBA" else (0, 0, 0))
                     left = (max_w - new_w) // 2
                     top = (max_h - new_h) // 2
                     canvas.paste(img_pil, (left, top))

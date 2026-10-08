@@ -202,6 +202,30 @@ function _xzgImgSaveEnsureCtxMenu() {
     menu.style.cssText =
         "position: fixed; z-index: 1000010; background: var(--comfy-menu-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 0; min-width: 140px; display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.4); font-size: 14px; color: var(--input-text); user-select: none;";
 
+    // 图片对比：预览区的独立右键菜单也提供此入口，并保持可用时置顶。
+    const compareItem = document.createElement("div");
+    compareItem.style.cssText = `${menuItemStyle}color:#dcc85b;font-weight:600;`;
+    compareItem.textContent = xzgTh("▧ 图片对比", "▧ Compare Images");
+    compareItem.addEventListener("mouseenter", () => { compareItem.style.background = "var(--comfy-input-bg)"; });
+    compareItem.addEventListener("mouseleave", () => { compareItem.style.background = ""; });
+    compareItem.addEventListener("click", () => {
+        const widget = _xzgImgSaveCtxCurrentWidget;
+        _xzgImgSaveHideCtxMenu();
+        const compare = window.xzgSyncPreview;
+        if (typeof compare?.previewNodes !== "function") {
+            console.warn("[小珠光图像保存] 图片对比模块未加载");
+            return;
+        }
+        const nodes = (compare.getSelectedMediaNodes?.() || []).filter((node) => compare.nodeHasImage?.(node));
+        if (nodes.length >= 2) compare.previewNodes(nodes);
+    });
+    const compareSep = document.createElement("div");
+    compareSep.setAttribute("aria-hidden", "true");
+    compareSep.style.cssText = "width:82%;height:0;margin:2px auto;border-top:1px solid var(--input-text);opacity:.55;";
+    menu.append(compareItem, compareSep);
+    menu._compareItem = compareItem;
+    menu._compareSep = compareSep;
+
     // PNG 保存
     const pngItem = document.createElement("div");
     pngItem.style.cssText = menuItemStyle;
@@ -360,6 +384,13 @@ function _xzgImgSaveShowCtxMenu(widget, x, y) {
     const canSendToLoader = widget?.node?.type === XZG_IMAGE_SAVE_CUSTOM_TYPE;
     if (menu._sendItem) menu._sendItem.style.display = canSendToLoader ? "" : "none";
     if (menu._sendSep) menu._sendSep.style.display = canSendToLoader ? "" : "none";
+    const compare = window.xzgSyncPreview;
+    const selectedImageNodes = compare?.getSelectedMediaNodes?.().filter((node) => compare.nodeHasImage?.(node)) || [];
+    const compareAvailable = compare?.isEnabled?.() !== false
+        && typeof compare?.previewNodes === "function"
+        && selectedImageNodes.length >= 2;
+    if (menu._compareItem) menu._compareItem.style.display = compareAvailable ? "" : "none";
+    if (menu._compareSep) menu._compareSep.style.display = compareAvailable ? "" : "none";
 
     menu.style.left = x + "px";
     menu.style.top = y + "px";
@@ -1934,56 +1965,78 @@ app.registerExtension({
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
                 if (!options || !Array.isArray(options)) return;
+                // 先移除本节点专属菜单项，最后统一重组，防止其它扩展插入后打乱顺序。
+                const ownItems = new Map();
+                for (let i = options.length - 1; i >= 0; i--) {
+                    const item = options[i];
+                    if (item?._xzgImageCompareMenuItem || item?._xzgImageSaveMenuItem) {
+                        ownItems.set(item._xzgImageCompareMenuItem ? "compare" : item._xzgImageSaveMenuItem, item);
+                        options.splice(i, 1);
+                    }
+                }
                 const w = this.canvasWidget;
-                if (w?.value?.images?.some((image) => !!image?.url)) {
-                    options.unshift({
+                const compare = window.xzgSyncPreview;
+                const selectedImageNodes = compare?.getSelectedMediaNodes?.().filter((node) => compare.nodeHasImage?.(node)) || [];
+                if (compare?.isEnabled?.() !== false
+                    && typeof compare?.previewNodes === "function"
+                    && selectedImageNodes.length >= 2
+                    && w?.value?.images?.some((image) => !!image?.url)) {
+                    const compareOption = ownItems.get("compare") || {
                         content: "<span style='color:#dcc85b;font-weight:600'>▧ 图片对比</span>",
                         callback: () => {
                             const compare = window.xzgSyncPreview;
-                            if (typeof compare?.previewNodes !== "function") {
-                                console.warn("[小珠光图像保存] 图片对比模块未加载");
-                                return;
-                            }
-                            const nodes = compare.getSelectedMediaNodes?.() || [];
-                            if (!nodes.includes(this)) nodes.push(this);
-                            compare.previewNodes(nodes);
+                            if (typeof compare?.previewNodes !== "function" || compare?.isEnabled?.() === false) return;
+                            const nodes = (compare.getSelectedMediaNodes?.() || []).filter((node) => compare.nodeHasImage?.(node));
+                            if (nodes.length >= 2) compare.previewNodes(nodes);
                         },
-                    });
+                        _xzgImageCompareMenuItem: true,
+                    };
+                    ownItems.set("compare", compareOption);
                 }
                 if (w && !w.gridMode && w.value && w.value.images && w.value.images.length) {
                     const cur = w.value.images[w.currentIndex] || w.value.images[0];
                     // 含 alpha 通道时强制 PNG（JPG 无法保留透明度）
                     const fmt = (cur && cur.has_alpha) ? "PNG" : (this._xzgFormatWidget?.value || "JPG");
-                    const saveOpts = [{
+                    const saveOpts = [ownItems.get("copy") || {
                         content: xzgTh("复制图片到剪贴板", "Copy Image to Clipboard"),
-                        callback: () => { _xzgImageSaveCopyAction(cur); }
+                        callback: () => { _xzgImageSaveCopyAction(cur); },
+                        _xzgImageSaveMenuItem: "copy",
                     }];
                     if (fmt === "PNG") {
-                        saveOpts.push({
+                        saveOpts.push(ownItems.get("save") || {
                             content: `<span style="color:#4CAF50;">${xzgTh("PNG保存", "Save PNG")}</span>`,
-                            callback: () => { downloadImage(cur); }
+                            callback: () => { downloadImage(cur); },
+                            _xzgImageSaveMenuItem: "save",
                         });
                     } else {
-                        saveOpts.push({
+                        saveOpts.push(ownItems.get("save") || {
                             content: `<span style="color:#4CAF50;">${xzgTh("JPG保存", "Save JPG")}</span>`,
-                            callback: () => { downloadJpgImage(cur); }
+                            callback: () => { downloadJpgImage(cur); },
+                            _xzgImageSaveMenuItem: "save",
                         });
                     }
-                    saveOpts.push(null, {
-                        content: `<span style="color:#ddd;">${xzgTh("收藏到媒体库", "Add to Media Library")}</span>`,
-                        callback: () => { _xzgImageSaveMediaLibraryAction(cur, this); }
+                    saveOpts.push({
+                        content: `<span style="color:#FFD700;">${xzgTh("收藏到媒体库", "Add to Media Library")}</span>`,
+                        callback: () => { _xzgImageSaveMediaLibraryAction(cur, this); },
+                        _xzgImageSaveMenuItem: "library",
                     });
                     if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
                         saveOpts.push({
                             content: `<span style="color:#FFD700;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
-                            callback: () => { _xzgSendToImageLoader(cur); }
+                            callback: () => { _xzgSendToImageLoader(cur); },
+                            _xzgImageSaveMenuItem: "send",
                         });
                     }
                     saveOpts.push({
                         content: `<span style="color:#8ecbff;">${xzgTh("查看原图", "View Original Image")}</span>`,
-                        callback: () => { _xzgImageSaveViewOriginalAction(cur, this); }
+                        callback: () => { _xzgImageSaveViewOriginalAction(cur, this); },
+                        _xzgImageSaveMenuItem: "original",
                     });
-                    options.splice(0, 0, ...saveOpts, null);
+                    const ordered = [];
+                    if (ownItems.has("compare")) ordered.push(ownItems.get("compare"));
+                    ordered.push(...saveOpts);
+                    // 图片保存节点的专属操作保持连续，其后再显示其它扩展与 ComfyUI 菜单项。
+                    options.unshift(...ordered, null);
                 }
             };
         }

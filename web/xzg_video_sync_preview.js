@@ -1538,7 +1538,25 @@ function patchContextMenus() {
     // 节点右键菜单：视频节点置顶「▶ 同步预览」（金色，放在菜单最上面）
     const origNodeMenu = LGC.prototype.getNodeMenuOptions;
     LGC.prototype.getNodeMenuOptions = function (node) {
-        const options = origNodeMenu ? origNodeMenu.apply(this, arguments) : [];
+        let options = origNodeMenu ? origNodeMenu.apply(this, arguments) : [];
+        if (Array.isArray(options) && isImageSaveNode(node)) {
+            // 统一把保存节点专属操作放在菜单最前面，扩展项与 ComfyUI 项目随后显示。
+            const orderedKeys = ["compare", "copy", "save", "library", "original"];
+            if (node.type === "XiaozhuguangImageSaveCustom") orderedKeys.splice(4, 0, "send");
+            const ownItems = new Map();
+            for (let i = options.length - 1; i >= 0; i--) {
+                const item = options[i];
+                if (item?._xzgImageCompareMenuItem) {
+                    ownItems.set("compare", item);
+                    options.splice(i, 1);
+                } else if (item?._xzgImageSaveMenuItem) {
+                    ownItems.set(item._xzgImageSaveMenuItem, item);
+                    options.splice(i, 1);
+                }
+            }
+            const ordered = orderedKeys.map((key) => ownItems.get(key)).filter(Boolean);
+            if (ordered.length) options.unshift(...ordered, null);
+        }
         // 图片保存节点在自身 getExtraMenuOptions 中加入图片对比，兼容不经过
         // LiteGraph 旧式节点菜单钩子的 ComfyUI 前端。
         if (Array.isArray(options) && isVideoCompareEnabled() && nodeHasMedia(node) && !isImageSaveNode(node)) {
@@ -1585,6 +1603,9 @@ app.registerExtension({
 window.xzgSyncPreview = {
     previewSelection,
     previewNodes,
+    isEnabled: isVideoCompareEnabled,
+    getAllMediaNodes,
+    getSelectedMediaNodes,
     openSyncPreview,
     closeSyncPreview,
     nodeHasVideo,

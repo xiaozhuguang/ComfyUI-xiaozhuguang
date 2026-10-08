@@ -1,0 +1,6 @@
+[project]
+name = "comfyui-pose"
+version = "0.1.0"
+description = "Visual batch editor for SDPOSE/OpenPose video skeleton sequences in ComfyUI"
+requires-python = ">=3.10"
+

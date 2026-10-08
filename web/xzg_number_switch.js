@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { xzgT } from "./xzg_i18n.js";
 
 app.registerExtension({
     name: "ComfyUI.xiaozhuguang.number_switch",
@@ -44,11 +45,19 @@ app.registerExtension({
         nodeType.prototype.adjustInputSlots = function () {
             if (!this.inputs) return;
 
+            const localizeValueInput = (input) => {
+                if (!input || !/^value\d+$/.test(input.name || "")) return;
+                const index = Number(input.name.slice(5));
+                input.label = xzgT(`值${index}`, `Value ${index}`);
+                input.localized_name = input.label;
+            };
+
             // 只统计 值* 的输入口
             let lastConnected = -1;
             let valueCount = 0;
             for (const inp of this.inputs) {
                 if (!inp.name.startsWith("value")) continue;
+                localizeValueInput(inp);
                 if (inp.link != null) lastConnected = valueCount;
                 valueCount++;
             }
@@ -58,7 +67,8 @@ app.registerExtension({
 
             if (valueCount < desiredLen) {
                 for (let i = valueCount; i < desiredLen; i++) {
-                    this.addInput(`value${i}`, "*");
+                    const input = this.addInput(`value${i}`, "*");
+                    localizeValueInput(input || this.inputs[this.inputs.length - 1]);
                 }
                 this.setSize(this.computeSize());
                 if (app.graph) app.graph.setDirtyCanvas(true, true);

@@ -1,0 +1,2 @@
+# No additional packages required inside a standard ComfyUI environment.
+# ComfyUI already provides torch, numpy, Pillow and aiohttp.

@@ -191,7 +191,8 @@
     "inputs": {
       "image_list": { "name": "图片列表" },
       "index": { "name": "索引" },
-      "batch_mode": { "name": "批次模式" }
+      "batch_mode": { "name": "批次模式" },
+      "remove_alpha": { "name": "移除图片 Alpha" }
     },
     "outputs": {
       "0": { "name": "图像" },

@@ -1405,6 +1405,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 NODE_DISPLAY_NAME_MAPPINGS.update({k: v[1] for k, v in _AUDIODIT_NODES.items()})
 
+# ============ \u89c6\u9891\u59ff\u52bf\u7f16\u8f91\u5668\uff08\u7531\u72ec\u7acb comfyui-pose \u63d2\u4ef6\u5e76\u5165\uff09 ============
+from ._xzg_pose import NODE_CLASS_MAPPINGS as _XZG_POSE_NODE_CLASS_MAPPINGS
+from ._xzg_pose import NODE_DISPLAY_NAME_MAPPINGS as _XZG_POSE_NODE_DISPLAY_NAME_MAPPINGS
+NODE_CLASS_MAPPINGS.update(_XZG_POSE_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_XZG_POSE_NODE_DISPLAY_NAME_MAPPINGS)
+
 WEB_DIRECTORY = "./web"
 # 内部辅助工具子包：仅合并其节点注册（导入即注册自身接口路由）
 from . import _xzg_tool

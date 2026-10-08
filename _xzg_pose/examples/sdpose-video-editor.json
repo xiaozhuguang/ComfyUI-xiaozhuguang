@@ -1,0 +1,332 @@
+{
+  "id": "79f3ddfc-7e70-44ed-8f9f-c00ab105c1b5",
+  "revision": 0,
+  "last_node_id": 21868,
+  "last_link_id": 62796,
+  "nodes": [
+    {
+      "id": 21862,
+      "type": "XiaozhuguangVideoLoader",
+      "pos": [
+        12922.116468086815,
+        -163.98096135837693
+      ],
+      "size": [
+        300,
+        500
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "label": "图像",
+          "name": "图像",
+          "type": "IMAGE",
+          "links": [
+            62789,
+            62796
+          ]
+        },
+        {
+          "label": "音频",
+          "name": "音频",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "label": "视频信息",
+          "name": "视频信息",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "2aad24445e6717f002eecaaec926dc8f6b21fed9",
+        "Node name for S&R": "XiaozhuguangVideoLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "input.mp4",
+        25,
+        "自定义比例",
+        "裁剪(crop)",
+        0,
+        0,
+        0,
+        100,
+        "upload"
+      ],
+      "widgets_values_named": {
+        "视频": "input.mp4",
+        "强制帧率": 25,
+        "视频比例": "自定义比例",
+        "比例模式": "裁剪(crop)",
+        "自定义宽度": 0,
+        "自定义高度": 0,
+        "跳过帧数": 0,
+        "帧数上限": 100,
+        "上传视频": "upload"
+      }
+    },
+    {
+      "id": 21860,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        12963.050012782656,
+        -335.48535379035735
+      ],
+      "size": [
+        220,
+        98
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "ckpt_name",
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "ckpt_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            62786
+          ]
+        },
+        {
+          "label": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": []
+        },
+        {
+          "label": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            62787
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.16.4",
+        "Node name for S&R": "CheckpointLoaderSimple",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "sdpose_wholebody_fp16.safetensors"
+      ],
+      "widgets_values_named": {
+        "ckpt_name": "sdpose_wholebody_fp16.safetensors"
+      }
+    },
+    {
+      "id": 21859,
+      "type": "SDPoseKeypointExtractor",
+      "pos": [
+        13327.373682850519,
+        -391.63425415868016
+      ],
+      "size": [
+        230,
+        118
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 62786
+        },
+        {
+          "label": "vae",
+          "name": "vae",
+          "type": "VAE",
+          "link": 62787
+        },
+        {
+          "label": "image",
+          "name": "image",
+          "type": "IMAGE",
+          "link": 62789
+        },
+        {
+          "label": "bboxes",
+          "name": "bboxes",
+          "shape": 7,
+          "type": "BOUNDING_BOX",
+          "link": null
+        },
+        {
+          "label": "batch_size",
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "keypoints",
+          "name": "keypoints",
+          "type": "POSE_KEYPOINT",
+          "links": [
+            62795
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.16.4",
+        "Node name for S&R": "SDPoseKeypointExtractor",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        1
+      ],
+      "widgets_values_named": {
+        "batch_size": 1
+      }
+    },
+    {
+      "id": 21864,
+      "type": "ComfyUIPoseSequenceEditor",
+      "pos": [
+        13374.70615502953,
+        -70.2191654334562
+      ],
+      "size": [
+        380,
+        240
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_keypoint",
+          "type": "POSE_KEYPOINT",
+          "link": 62795
+        },
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": 62796
+        }
+      ],
+      "outputs": [
+        {
+          "name": "pose_keypoint",
+          "type": "POSE_KEYPOINT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ComfyUIPoseSequenceEditor"
+      },
+      "widgets_values": [
+        "{\"version\":1,\"operations\":[]}"
+      ]
+    }
+  ],
+  "links": [
+    [
+      62786,
+      21860,
+      0,
+      21859,
+      0,
+      "MODEL"
+    ],
+    [
+      62787,
+      21860,
+      2,
+      21859,
+      1,
+      "VAE"
+    ],
+    [
+      62789,
+      21862,
+      0,
+      21859,
+      2,
+      "IMAGE"
+    ],
+    [
+      62795,
+      21859,
+      0,
+      21864,
+      0,
+      "POSE_KEYPOINT"
+    ],
+    [
+      62796,
+      21862,
+      0,
+      21864,
+      1,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ue_links": [],
+    "xzgGroups": {},
+    "ds": {
+      "scale": 0.7400249944258218,
+      "offset": [
+        -12541.741154883037,
+        686.8489862091402
+      ]
+    },
+    "links_added_by_ue": [],
+    "frontendVersion": "1.52.7",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4,
+  "seed_widgets": {}
+}
