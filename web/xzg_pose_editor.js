@@ -1,6 +1,7 @@
 import { app } from '/scripts/app.js';
 import { api } from '/scripts/api.js';
 
+
 app.registerExtension({
     name: 'xiaozhuguang.pose-editor',
     async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -24,22 +25,12 @@ app.registerExtension({
             hideEditsWidget(node);
             node.setSize([Math.max(node.size[0], 360), node.computeSize()[1]]);
         };
-        const hasSavedEdits = node => {
-            const value = node.poseEditsWidget?.value;
-            if (typeof value !== 'string' || value === '{"version":1,"operations":[]}') return false;
-            try {
-                const edits = JSON.parse(value);
-                return !!(edits.operations?.length || edits.hand_fixes?.length);
-            } catch {
-                return true;
-            }
-        };
         const updateButtons = node => {
             const hasPose = !!node.poseSession;
             const hasPoseInput = !!node.inputs?.some(input => input.name === 'pose_keypoint' && input.link != null);
             if (node.poseGetDataButton) node.poseGetDataButton.disabled = !hasPoseInput;
             if (node.poseOpenEditorButton) node.poseOpenEditorButton.disabled = !hasPose;
-            if (node.poseClearDataButton) node.poseClearDataButton.disabled = !(hasPose || hasSavedEdits(node));
+            if (node.poseClearDataButton) node.poseClearDataButton.disabled = !hasPose;
             app.graph.setDirtyCanvas(true, true);
         };
         const created = nodeType.prototype.onNodeCreated;
@@ -64,7 +55,9 @@ app.registerExtension({
                 if (this.poseClearDataButton.disabled) return;
                 const widget = this.poseEditsWidget;
                 if (widget) { widget.value = '{"version":1,"operations":[]}'; widget.callback?.(widget.value); }
+                this.poseSessionValidation = null;
                 this.poseSession = null;
+                if (this.properties) delete this.properties.xzg_pose_session;
                 updateButtons(this);
                 app.graph.setDirtyCanvas(true, true);
                 showNotice('调整已清除。请执行一次工作流，再打开编辑器。');
@@ -72,7 +65,7 @@ app.registerExtension({
             this.poseClearDataButton.serialize = false;
             this.poseClearDataButton.draw = function (ctx, node, width, y, height) {
                 const hasPose = !!node.poseSession;
-                drawActionButton(ctx, this, width, y, height, hasPose || hasSavedEdits(node) ? 'normal' : 'disabled');
+                drawActionButton(ctx, this, width, y, height, hasPose ? 'normal' : 'disabled');
             };
             updateButtons(this);
             compactNode(this);
@@ -81,7 +74,23 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             configured?.apply(this, arguments);
             compactNode(this);
+            const restoredSession = this.properties?.xzg_pose_session || this.poseSession || null;
+            this.poseSession = null;
             updateButtons(this);
+            if (restoredSession) {
+                const validation = {};
+                this.poseSessionValidation = validation;
+                api.fetchApi('/xiaozhuguang/pose/session/' + encodeURIComponent(restoredSession))
+                    .then(response => {
+                        if (this.poseSessionValidation !== validation) return;
+                        if (response.ok) this.poseSession = restoredSession;
+                        else if (response.status === 404 && this.properties) delete this.properties.xzg_pose_session;
+                        updateButtons(this);
+                    })
+                    .catch(() => {
+                        if (this.poseSessionValidation === validation) updateButtons(this);
+                    });
+            }
         };
         const connectionsChanged = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function () {
@@ -98,7 +107,11 @@ app.registerExtension({
         const executed = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (message) {
             executed?.apply(this, arguments);
+            this.poseSessionValidation = null;
             this.poseSession = message.pose_session?.[0] || null;
+            this.properties ??= {};
+            if (this.poseSession) this.properties.xzg_pose_session = this.poseSession;
+            else delete this.properties.xzg_pose_session;
             updateButtons(this);
         };
     },
@@ -159,6 +172,37 @@ async function runToNode(node) {
             throw new Error('当前工作流中找不到此节点');
         }
         const source = prompt.output;
+        const downstream = new Map();
+        const addConsumerLinks = (value, consumerId) => {
+            if (!Array.isArray(value)) return;
+            const upstreamId = value.length ? String(value[0]) : '';
+            if (source[upstreamId]) {
+                if (!downstream.has(upstreamId)) downstream.set(upstreamId, new Set());
+                downstream.get(upstreamId).add(consumerId);
+                return;
+            }
+            value.forEach(item => addConsumerLinks(item, consumerId));
+        };
+        for (const [consumerId, promptNode] of Object.entries(source)) {
+            for (const value of Object.values(promptNode.inputs || {})) addConsumerLinks(value, String(consumerId));
+        }
+        const reachable = new Set([nodeId]);
+        const queue = [nodeId];
+        while (queue.length) {
+            const currentId = queue.shift();
+            for (const consumerId of downstream.get(currentId) || []) {
+                if (reachable.has(consumerId)) continue;
+                reachable.add(consumerId);
+                queue.push(consumerId);
+            }
+        }
+        const target = app.graph._nodes?.find(candidate =>
+            reachable.has(String(candidate.id)) && candidate.constructor?.nodeData?.output_node && source[String(candidate.id)]
+        );
+        if (!target) {
+            api.queuePrompt = originalQueuePrompt;
+            throw new Error('请将 image 输出连接到下游输出节点，再执行；若惰性开关选择假分支，姿势编辑器会被跳过。');
+        }
         const output = {};
         const visited = new Set();
         const addNode = id => {
@@ -176,7 +220,7 @@ async function runToNode(node) {
             };
             Object.values(source[id].inputs || {}).forEach(visitInput);
         };
-        addNode(nodeId);
+        addNode(String(target.id));
         prompt.output = output;
         api.queuePrompt = originalQueuePrompt;
         return originalQueuePrompt.call(api, number, prompt, ...args);

@@ -452,7 +452,8 @@ import { xzgT } from "./xzg_i18n.js";
                     const options = origGetNodeMenuOptions.call(this, node);
                     if (node.type !== "XiaozhuguangSlider" || !options) return options;
                     const sliderItem = {
-                        content: `<span style="color:#FFD700;">${xzgT('小珠光滑条设置','Xiaozhuguang Slider Settings')}</span>`,
+                        content: xzgT('小珠光滑条设置','Xiaozhuguang Slider Settings'),
+                        color: '#FFD700',
                         callback: () => {
                             setupNodeSlider(node);
                             XzgSliderSettings.show(node);

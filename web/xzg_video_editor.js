@@ -517,6 +517,19 @@ export class XiaozhuguangVideoEditor {
         this._keyHandler = (e) => this._onKeyDown(e);
         // capture 阶段监听，确保在 LiteGraph 画布（bubble 阶段 stopPropagation）之前收到 keydown
         window.addEventListener("keydown", this._keyHandler, true);
+        // 重置预览快捷键按姿势编辑器的实现监听 document；仅编辑器打开期间接管 Z。
+        this._resetViewKeyHandler = (event) => {
+            if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey ||
+                event.altKey || event.shiftKey || event.key?.toLowerCase() !== "z") return;
+            const target = event.target;
+            if (target?.closest?.('textarea,select,[contenteditable]:not([contenteditable="false"])') ||
+                target?.matches?.('input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])')) return;
+            event.preventDefault();
+            // 快剪与 ComfyUI 共用同一页面，阻止 Z 继续触发 ComfyUI 的中断快捷键。
+            event.stopImmediatePropagation();
+            this._root?.querySelector(".xzg-ve-btn-reset-view")?.click();
+        };
+        document.addEventListener("keydown", this._resetViewKeyHandler, true);
         // 屏蔽 Alt 键激活浏览器菜单（Alt+滚轮缩放时间线时按 Alt 会触发 Edge 菜单）
         this._altKeyHandler = (e) => {
             if (e.key === "Alt") {
@@ -653,6 +666,10 @@ export class XiaozhuguangVideoEditor {
         if (this._keyHandler) {
             window.removeEventListener("keydown", this._keyHandler, true);
             this._keyHandler = null;
+        }
+        if (this._resetViewKeyHandler) {
+            document.removeEventListener("keydown", this._resetViewKeyHandler, true);
+            this._resetViewKeyHandler = null;
         }
         if (this._altKeyHandler) {
             window.removeEventListener("keydown", this._altKeyHandler, true);
@@ -1066,12 +1083,6 @@ export class XiaozhuguangVideoEditor {
             e.preventDefault();
             e.stopImmediatePropagation();
             if (!e.repeat) this._zoomToTenSeconds();
-            return;
-        }
-        // 重置预览视图（缩放 100% + 居中），和「重置视图」按钮一致
-        if (this._matchShortcut(e, this._shortcutKeys.resetzoom)) {
-            e.preventDefault();
-            this._resetPreviewZoom();
             return;
         }
     }

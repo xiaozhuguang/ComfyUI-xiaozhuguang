@@ -1516,6 +1516,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     const _lmNow = () => (typeof isLM === "function" ? !!isLM() : !!isLM);
     const _createPlayer = () => {
         player = new XiaozhuguangVideoPlayer({
+        node,
         container: playerContainer,
         fit: _ratioModeToFit(),
         onDblClick: triggerUpload,
@@ -2405,8 +2406,15 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 if (skipWidget) skipWidget._xzgMax = totalFrames - 1;
                 // 帧数上限：拖动时限制为剩余帧数，输入时不限制（用 BIGMAX）
                 if (limitWidget) {
-                    limitWidget._xzgDragMax = Math.max(0, totalFrames - skipVal);
+                    const remainingFrames = Math.max(1, totalFrames - skipVal);
+                    limitWidget._xzgDragMax = remainingFrames;
                     // _xzgMax 保持为后端定义的最大值，不限制手动输入
+                    // 跳过帧数增加后，若正数上限超过剩余帧数，节点实际会按剩余帧数截断；
+                    // 同步控件值，避免显示旧上限而与播放器范围不一致。0 仍表示加载全部剩余帧。
+                    const limitVal = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
+                    if (limitVal > 0 && limitVal > remainingFrames) {
+                        _xzgWriteLinkedValue(node, "帧数上限", remainingFrames);
+                    }
                 }
             }
             // 帧数上限最小值保持 0（0 表示无限制/加载全部剩余帧），不跟随跳过帧数变动

@@ -698,7 +698,7 @@ function openSyncPreview(items) {
     closeBtn.addEventListener("click", closeSyncPreview);
     const videoCompareTitle = document.createElement("span");
     videoCompareTitle.className = "xzg-sp-title";
-    videoCompareTitle.textContent = "视频对比";
+    videoCompareTitle.textContent = items.length === 1 ? "查看视频" : "视频对比";
 
     // 网格容器：视频加载完成后按实际宽高比重排；五/六路从一开始就固定三列两行。
     const grid = document.createElement("div");
@@ -770,12 +770,12 @@ function openSyncPreview(items) {
     };
 
     let playing = false;
-    const playPauseBtn = mkBtn("▶ 播放", "播放全部（从头开始）", "xzg-sp-btn-primary");
+    const playPauseBtn = mkBtn("▶ 播放", _n === 1 ? "播放视频（从头开始）" : "播放全部（从头开始）", "xzg-sp-btn-primary");
     const prevFrameBtn = mkBtn("◀ 上一帧", "上一帧（快捷键 ←）");
     const nextFrameBtn = mkBtn("下一帧 ▶", "下一帧（快捷键 →）");
-    const restartBtn = mkBtn("⏮ 回到开头", "全部回到开头重新播放");
+    const restartBtn = mkBtn("⏮ 回到开头", _n === 1 ? "回到开头重新播放" : "全部回到开头重新播放");
     const muteBtn = mkBtn("🔇", "静音开关（默认静音）");
-    const zoomSyncBtn = mkBtn("🔗 同步中", "切换视频缩放和移动同步状态；也可双击视频切换");
+    const zoomSyncBtn = mkBtn(_n === 1 ? "🔗 缩放联动" : "🔗 同步中", _n === 1 ? "切换缩放和移动模式；也可双击视频切换" : "切换视频缩放和移动同步状态；也可双击视频切换");
     const zoomBtn = mkBtn("🔍 100%", "滚轮缩放视频，点击重置");
     const wipeBtn = mkBtn("🔀 划像对比", "两个视频重叠，拖动金色分界线左右对比（仅 2 个视频可用）");
     if (_n !== 2) wipeBtn.style.display = "none"; // 仅两个视频时提供划像对比
@@ -814,7 +814,7 @@ function openSyncPreview(items) {
     const scrubRange = document.createElement("input");
     scrubRange.type = "range";
     scrubRange.min = 0; scrubRange.max = 1000; scrubRange.value = 0;
-    scrubRange.title = "同步控制所有视频的播放进度";
+    scrubRange.title = _n === 1 ? "控制视频的播放进度" : "同步控制所有视频的播放进度";
     scrubWrap.appendChild(scrubTime);
     scrubWrap.appendChild(scrubRange);
     const statusEl = document.createElement("span");
@@ -1168,7 +1168,9 @@ function openSyncPreview(items) {
     let _holderT = [];    // 各窗格累计 translate
     const applyZoomText = () => {
         zoomBtn.textContent = "🔍 " + Math.round((_zoomScales[activeIndex] || 1) * 100) + "%";
-        zoomSyncBtn.textContent = zoomSync ? "🔗 同步中" : "⛓ 不同步";
+        zoomSyncBtn.textContent = _n === 1
+            ? (zoomSync ? "🔗 缩放联动" : "⛓ 独立缩放")
+            : (zoomSync ? "🔗 同步中" : "⛓ 不同步");
         zoomSyncBtn.style.color = zoomSync ? "#42d392" : "#ffb74d";
         zoomSyncBtn.style.borderColor = zoomSync ? "#42d392" : "#ffb74d";
         zoomSyncBtn.style.background = zoomSync ? "rgba(35,145,96,.22)" : "rgba(190,112,24,.24)";
@@ -1535,7 +1537,7 @@ function patchContextMenus() {
     const LGC = (typeof LiteGraph !== "undefined") ? LiteGraph.LGraphCanvas : null;
     if (!LGC || !LGC.prototype) return;
 
-    // 节点右键菜单：视频节点置顶「▶ 同步预览」（金色，放在菜单最上面）
+    // 节点右键菜单：单视频查看，多视频对比，置顶显示。
     const origNodeMenu = LGC.prototype.getNodeMenuOptions;
     LGC.prototype.getNodeMenuOptions = function (node) {
         let options = origNodeMenu ? origNodeMenu.apply(this, arguments) : [];
@@ -1560,10 +1562,13 @@ function patchContextMenus() {
         // 图片保存节点在自身 getExtraMenuOptions 中加入图片对比，兼容不经过
         // LiteGraph 旧式节点菜单钩子的 ComfyUI 前端。
         if (Array.isArray(options) && isVideoCompareEnabled() && nodeHasMedia(node) && !isImageSaveNode(node)) {
+            const nodes = nodeHasVideo(node) ? getSelectedVideoNodes() : getSelectedMediaNodes();
+            if (!nodes.includes(node)) nodes.push(node);
             options.unshift({
-                content: `<span style='color:#dcc85b;font-weight:600'>${nodeHasImage(node) ? "▧ 图片对比" : "▶ 同步预览"}</span>`,
+                content: nodeHasImage(node) ? "▧ 图片对比" : (nodes.length === 1 ? "▶ 查看视频" : "▶ 对比视频"),
+                color: '#dcc85b',
                 callback: () => {
-                    let nodes = getSelectedMediaNodes();
+                    let nodes = nodeHasVideo(node) ? getSelectedVideoNodes() : getSelectedMediaNodes();
                     // 保证右键节点本身被包含（多选时选中集合应已含它，兜底补上）
                     if (!nodes.includes(node)) nodes.push(node);
                     previewNodes(nodes);
@@ -1573,14 +1578,18 @@ function patchContextMenus() {
         return options;
     };
 
-    // 画布空白右键菜单：存在选中的视频节点时提供「同步预览选中视频」
+    // 画布空白右键菜单：按选中媒体的数量显示查看或对比入口。
     const origCanvasMenu = LGC.prototype.getCanvasMenuOptions;
     LGC.prototype.getCanvasMenuOptions = function () {
         const options = origCanvasMenu ? origCanvasMenu.apply(this, arguments) : [];
-        if (Array.isArray(options) && isVideoCompareEnabled() && getSelectedMediaNodes().length > 0) {
+        const nodes = getSelectedMediaNodes();
+        if (Array.isArray(options) && isVideoCompareEnabled() && nodes.length > 0) {
+            const videosOnly = nodes.every(nodeHasVideo);
+            const label = videosOnly ? (nodes.length === 1 ? "▶ 查看视频" : "▶ 对比视频") : "▶ 对比选中的视频/图片";
             options.push(null);
             options.push({
-                content: "<span style='color:#dcc85b;font-weight:600'>▶ 对比选中的视频/图片</span>",
+                content: label,
+                color: '#dcc85b',
                 callback: () => previewSelection(),
             });
         }

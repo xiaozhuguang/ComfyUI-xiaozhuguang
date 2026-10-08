@@ -122,7 +122,8 @@ app.registerExtension({
                 options.length = 0;
                 // 复制当前展示的文本
                 options.push({
-                    content: `<span style="color:#4ade80;">${xzgT("复制文本", "Copy Text")}</span>`,
+                    content: xzgT("复制文本", "Copy Text"),
+                    color: '#4ade80',
                     callback: () => {
                         const txt = (this._texts || []).join("\n");
                         this.copyTextToClipboard(txt);
@@ -130,7 +131,8 @@ app.registerExtension({
                 });
                 // 收藏到提示词库：置于复制文本之后，收藏进「小珠光文本框-化神级」提示词库
                 options.push({
-                    content: `<span style="color:#4ade80;">★ ${xzgT("收藏到提示词库", "Favorite to Prompt Library")}</span>`,
+                    content: `★ ${xzgT("收藏到提示词库", "Favorite to Prompt Library")}`,
+                    color: '#4ade80',
                     callback: async () => {
                         const txt = (this._texts || []).join("\n");
                         if (!txt || !String(txt).trim()) {
@@ -151,7 +153,8 @@ app.registerExtension({
                 });
                 // 样式设置：置于收藏到提示词库之后
                 options.push(null, {
-                    content: `<span style="color:#FFD700;">${xzgT("样式设置", "Style…")}</span>`,
+                    content: xzgT("样式设置", "Style…"),
+                    color: '#FFD700',
                     callback: () => this._openStyleDialog(),
                 });
             };

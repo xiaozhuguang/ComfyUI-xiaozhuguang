@@ -1,0 +1,1472 @@
+{
+  "id": "79f3ddfc-7e70-44ed-8f9f-c00ab105c1b5",
+  "revision": 0,
+  "last_node_id": 21924,
+  "last_link_id": 62890,
+  "nodes": [
+    {
+      "id": 21867,
+      "type": "XiaozhuguangVideoSaveDaVinci",
+      "pos": [
+        11958.84256047111,
+        -506.17807018953044
+      ],
+      "size": [
+        360,
+        500
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "图像",
+          "type": "IMAGE",
+          "link": 62890
+        },
+        {
+          "name": "音频",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "2aad24445e6717f002eecaaec926dc8f6b21fed9",
+        "Node name for S&R": "XiaozhuguangVideoSaveDaVinci",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        25,
+        "xzg_video",
+        "mp4",
+        16,
+        "保存",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false
+      ],
+      "widgets_values_named": {
+        "帧率": 25,
+        "文件名前缀": "xzg_video",
+        "格式": "mp4",
+        "CRF": 16,
+        "模式": "保存",
+        "自动发送到快剪": false,
+        "use_default_output": true,
+        "base_dir": "",
+        "add_date_stamp": false,
+        "add_time_stamp": false,
+        "仅视频": false
+      }
+    },
+    {
+      "id": 21886,
+      "type": "XiaozhuguangVideoInfoReader",
+      "pos": [
+        10483.072880346142,
+        221.06514954564338
+      ],
+      "size": [
+        165.9,
+        126
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "link": 62849
+        }
+      ],
+      "outputs": [
+        {
+          "name": "帧率",
+          "type": "FLOAT",
+          "links": [
+            62889
+          ]
+        },
+        {
+          "name": "帧数",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "宽度",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "高度",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "名称",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "跳过帧数",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "df0c0d67cb6a902429e70acc1b72f4c7980bb33e",
+        "Node name for S&R": "XiaozhuguangVideoInfoReader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21860",
+            "21859",
+            "21886",
+            "21892",
+            "21898",
+            "21899",
+            "21900",
+            "21907"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    },
+    {
+      "id": 21901,
+      "type": "XiaozhuguangVideoLoader",
+      "pos": [
+        9569.062623386935,
+        -316.06479997904194
+      ],
+      "size": [
+        658.1959459439695,
+        819.1489603670451
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "label": "图像",
+          "name": "图像",
+          "type": "IMAGE",
+          "links": [
+            62873
+          ]
+        },
+        {
+          "label": "音频",
+          "name": "音频",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "label": "视频信息",
+          "name": "视频信息",
+          "type": "VHS_VIDEOINFO",
+          "links": [
+            62849
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "d3fcab75221e467e0b2fed7974d3fd4ef5ed2d7e",
+        "Node name for S&R": "XiaozhuguangVideoLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "导出.mp4",
+        0,
+        "自定义比例",
+        "裁剪(crop)",
+        0,
+        0,
+        653,
+        54,
+        "upload"
+      ],
+      "widgets_values_named": {
+        "视频": "导出.mp4",
+        "强制帧率": 0,
+        "视频比例": "自定义比例",
+        "比例模式": "裁剪(crop)",
+        "自定义宽度": 0,
+        "自定义高度": 0,
+        "跳过帧数": 653,
+        "帧数上限": 54,
+        "上传视频": "upload"
+      }
+    },
+    {
+      "id": 21909,
+      "type": "XiaozhuguangImageLoader",
+      "pos": [
+        9777.521916849213,
+        -742.1233172808511
+      ],
+      "size": [
+        270,
+        300
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "label": "图像",
+          "name": "图像",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "label": "遮罩",
+          "name": "遮罩",
+          "shape": 6,
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "d3fcab75221e467e0b2fed7974d3fd4ef5ed2d7e",
+        "Node name for S&R": "XiaozhuguangImageLoader",
+        "xzg_mask_output_enabled": false,
+        "xzg_remove_alpha": false,
+        "xzg_mask_close_enabled": false,
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        },
+        "xzg_image_list": "换装模特1 (1).png",
+        "xzg_upload_mode": "append",
+        "xzg_mask_preview_color": "#ff0000"
+      },
+      "widgets_values": [
+        "换装模特1 (1).png",
+        0,
+        true,
+        false,
+        0,
+        false,
+        "#ff0000",
+        false,
+        "",
+        "append",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "image_list": "换装模特1 (1).png",
+        "index": 0,
+        "batch_mode": true,
+        "batch_align": false,
+        "max_images": 0,
+        "mask_output_enabled": false,
+        "mask_output_color": "#ff0000",
+        "remove_alpha": false,
+        "mask_data": "",
+        "upload_mode": "append",
+        "crop_data": "",
+        "xzg_img_loader": ""
+      }
+    },
+    {
+      "id": 21911,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        10537.53639899802,
+        -511.043333774553
+      ],
+      "size": [
+        386.3828087971124,
+        98
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "ckpt_name",
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "ckpt_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            62866
+          ]
+        },
+        {
+          "label": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": []
+        },
+        {
+          "label": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            62867
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.16.4",
+        "Node name for S&R": "CheckpointLoaderSimple",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "sdpose_wholebody_fp16.safetensors"
+      ],
+      "widgets_values_named": {
+        "ckpt_name": "sdpose_wholebody_fp16.safetensors"
+      },
+      "_xzgGroupId": "g_muzmqx9fhynf9h",
+      "_xzgGroup": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21911",
+            "21912",
+            "21913",
+            "21915",
+            "21917",
+            "21922"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    },
+    {
+      "id": 21912,
+      "type": "UNETLoader",
+      "pos": [
+        10535.918136548593,
+        -345.0934581418424
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            62862
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.14.1",
+        "Node name for S&R": "UNETLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "models": [
+          {
+            "name": "rt_detr_v4-x-hgnet_fp16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors",
+            "directory": "diffusion_models"
+          }
+        ]
+      },
+      "widgets_values": [
+        "rt_detr_v4-x-hgnet_fp32.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "rt_detr_v4-x-hgnet_fp32.safetensors",
+        "weight_dtype": "default"
+      },
+      "_xzgGroupId": "g_muzmqx9fhynf9h",
+      "_xzgGroup": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21911",
+            "21912",
+            "21913",
+            "21915",
+            "21917",
+            "21922"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    },
+    {
+      "id": 21913,
+      "type": "RTDETR_detect",
+      "pos": [
+        10981.236625605026,
+        -266.96869036109814
+      ],
+      "size": [
+        210,
+        126
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 62862
+        },
+        {
+          "label": "image",
+          "name": "image",
+          "type": "IMAGE",
+          "link": 62863
+        }
+      ],
+      "outputs": [
+        {
+          "name": "bboxes",
+          "type": "BOUNDING_BOX",
+          "links": [
+            62869
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.15.1",
+        "Node name for S&R": "RTDETR_detect",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        1,
+        "person",
+        1
+      ],
+      "widgets_values_named": {
+        "threshold": 1,
+        "class_name": "person",
+        "max_detections": 1
+      },
+      "_xzgGroupId": "g_muzmqx9fhynf9h",
+      "_xzgGroup": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21911",
+            "21912",
+            "21913",
+            "21915",
+            "21917",
+            "21922"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    },
+    {
+      "id": 21915,
+      "type": "SDPoseKeypointExtractor",
+      "pos": [
+        11029.367878801728,
+        -488.2384314517562
+      ],
+      "size": [
+        230,
+        118
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 62866
+        },
+        {
+          "label": "vae",
+          "name": "vae",
+          "type": "VAE",
+          "link": 62867
+        },
+        {
+          "label": "image",
+          "name": "image",
+          "type": "IMAGE",
+          "link": 62868
+        },
+        {
+          "label": "bboxes",
+          "name": "bboxes",
+          "shape": 7,
+          "type": "BOUNDING_BOX",
+          "link": 62869
+        },
+        {
+          "label": "batch_size",
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "keypoints",
+          "name": "keypoints",
+          "type": "POSE_KEYPOINT",
+          "links": [
+            62887
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.16.4",
+        "Node name for S&R": "SDPoseKeypointExtractor",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        16
+      ],
+      "widgets_values_named": {
+        "batch_size": 16
+      },
+      "_xzgGroupId": "g_muzmqx9fhynf9h",
+      "_xzgGroup": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21911",
+            "21912",
+            "21913",
+            "21915",
+            "21917",
+            "21922"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    },
+    {
+      "id": 21917,
+      "type": "ResizeImageMaskNode",
+      "pos": [
+        10388.536738450895,
+        -78.81475582160294
+      ],
+      "size": [
+        270,
+        110
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input",
+          "type": "IMAGE,MASK",
+          "link": 62873
+        }
+      ],
+      "outputs": [
+        {
+          "name": "resized",
+          "type": "IMAGE",
+          "links": [
+            62863,
+            62868,
+            62888
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.15.0",
+        "Node name for S&R": "ResizeImageMaskNode",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "scale longer dimension",
+        1024,
+        "lanczos"
+      ],
+      "widgets_values_named": {
+        "resize_type": "scale longer dimension",
+        "resize_type.longer_size": 1024,
+        "scale_method": "lanczos"
+      },
+      "_xzgGroupId": "g_muzmqx9fhynf9h",
+      "_xzgGroup": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21911",
+            "21912",
+            "21913",
+            "21915",
+            "21917",
+            "21922"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    },
+    {
+      "id": 21922,
+      "type": "ComfyUIPoseSequenceEditor",
+      "pos": [
+        11307.63364525043,
+        -432.3412661098161
+      ],
+      "size": [
+        360,
+        294
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_keypoint",
+          "type": "POSE_KEYPOINT",
+          "link": 62887
+        },
+        {
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 62888
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "widget": {
+            "name": "fps"
+          },
+          "link": 62889
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            62890
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "xiaozhuguang/ComfyUI-xiaozhuguang",
+        "ver": "d3fcab75221e467e0b2fed7974d3fd4ef5ed2d7e",
+        "Node name for S&R": "ComfyUIPoseSequenceEditor",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        },
+        "_xzgGradient": {
+          "direction": "0",
+          "stops": [
+            {
+              "p": 0,
+              "color": "#232526"
+            },
+            {
+              "p": 0.5,
+              "color": "#414345"
+            },
+            {
+              "p": 1,
+              "color": "#5d6d7e"
+            }
+          ],
+          "titleDirection": "0",
+          "titleStops": [],
+          "useTitleGradient": false,
+          "titleText": "#ffffff",
+          "useGradient": true,
+          "fontSize": 14,
+          "textAlign": "left"
+        }
+      },
+      "widgets_values": [
+        30,
+        "{\"version\":1,\"operations\":[]}",
+        true,
+        true,
+        true,
+        true,
+        1,
+        1
+      ],
+      "widgets_values_named": {
+        "fps": 30,
+        "edits_json": "{\"version\":1,\"operations\":[]}",
+        "draw_hands": true,
+        "draw_face": true,
+        "draw_feet": true,
+        "stick_width": true,
+        "face_point_size": 1,
+        "score_threshold": 1
+      },
+      "color": "#232526",
+      "bgcolor": "#232526",
+      "_xzgGradient": {
+        "direction": "0",
+        "stops": [
+          {
+            "p": 0,
+            "color": "#232526"
+          },
+          {
+            "p": 0.5,
+            "color": "#414345"
+          },
+          {
+            "p": 1,
+            "color": "#5d6d7e"
+          }
+        ],
+        "titleDirection": "0",
+        "titleStops": [],
+        "useTitleGradient": false,
+        "titleText": "#ffffff",
+        "useGradient": true,
+        "fontSize": 14,
+        "textAlign": "left"
+      },
+      "_xzgGroupId": "g_muzmqx9fhynf9h",
+      "_xzgGroup": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      },
+      "extensions": {
+        "_xzgGroupId": "g_muzmqx9fhynf9h",
+        "_xzgGroup": {
+          "id": "g_muzmqx9fhynf9h",
+          "title": "右键标题栏设置",
+          "nodeIds": [
+            "21911",
+            "21912",
+            "21913",
+            "21915",
+            "21917",
+            "21922"
+          ],
+          "bypassed": false,
+          "locked": false,
+          "hidden": false,
+          "bounds": {
+            "x": 10502.348369969755,
+            "y": -582.2480859370102,
+            "w": 1364.0689607592722,
+            "h": 731.0453763388404
+          },
+          "fontSize": 37,
+          "colorHue": 64,
+          "colorSat": 100,
+          "colorLit": 50,
+          "effect": "none",
+          "effectSpeed": 3,
+          "borderWidth": 2,
+          "borderOpacity": 0.82,
+          "headerBgColor": "rgba(0,0,0,0.41)",
+          "bgColor": "rgba(0,98,173,0.2)",
+          "titleColor": "#ffffff",
+          "fadeEnabled": false,
+          "fadeOutDuration": 0,
+          "fadeInDuration": 2200,
+          "headerHidden": false
+        }
+      }
+    }
+  ],
+  "links": [
+    [
+      62849,
+      21901,
+      2,
+      21886,
+      0,
+      "VHS_VIDEOINFO"
+    ],
+    [
+      62862,
+      21912,
+      0,
+      21913,
+      0,
+      "MODEL"
+    ],
+    [
+      62863,
+      21917,
+      0,
+      21913,
+      1,
+      "IMAGE"
+    ],
+    [
+      62866,
+      21911,
+      0,
+      21915,
+      0,
+      "MODEL"
+    ],
+    [
+      62867,
+      21911,
+      2,
+      21915,
+      1,
+      "VAE"
+    ],
+    [
+      62868,
+      21917,
+      0,
+      21915,
+      2,
+      "IMAGE"
+    ],
+    [
+      62869,
+      21913,
+      0,
+      21915,
+      3,
+      "BOUNDING_BOX"
+    ],
+    [
+      62887,
+      21915,
+      0,
+      21922,
+      0,
+      "POSE_KEYPOINT"
+    ],
+    [
+      62888,
+      21917,
+      0,
+      21922,
+      1,
+      "IMAGE"
+    ],
+    [
+      62889,
+      21886,
+      0,
+      21922,
+      2,
+      "FLOAT"
+    ],
+    [
+      62873,
+      21901,
+      0,
+      21917,
+      0,
+      "IMAGE"
+    ],
+    [
+      62890,
+      21922,
+      0,
+      21867,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ue_links": [],
+    "xzgGroups": {
+      "g_muzmqx9fhynf9h": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      }
+    },
+    "ds": {
+      "scale": 0.6664038673633039,
+      "offset": [
+        -9425.173911575306,
+        913.8763915427754
+      ]
+    },
+    "links_added_by_ue": [],
+    "frontendVersion": "1.53.6",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "extensions": {
+    "_xzgGroups": {
+      "g_muzmqx9fhynf9h": {
+        "id": "g_muzmqx9fhynf9h",
+        "title": "右键标题栏设置",
+        "nodeIds": [
+          "21911",
+          "21912",
+          "21913",
+          "21915",
+          "21917",
+          "21922"
+        ],
+        "bypassed": false,
+        "locked": false,
+        "hidden": false,
+        "bounds": {
+          "x": 10502.348369969755,
+          "y": -582.2480859370102,
+          "w": 1364.0689607592722,
+          "h": 731.0453763388404
+        },
+        "fontSize": 37,
+        "colorHue": 64,
+        "colorSat": 100,
+        "colorLit": 50,
+        "effect": "none",
+        "effectSpeed": 3,
+        "borderWidth": 2,
+        "borderOpacity": 0.82,
+        "headerBgColor": "rgba(0,0,0,0.41)",
+        "bgColor": "rgba(0,98,173,0.2)",
+        "titleColor": "#ffffff",
+        "fadeEnabled": false,
+        "fadeOutDuration": 0,
+        "fadeInDuration": 2200,
+        "headerHidden": false
+      }
+    }
+  },
+  "version": 0.4,
+  "_xzgGroups": {
+    "g_muzmqx9fhynf9h": {
+      "id": "g_muzmqx9fhynf9h",
+      "title": "右键标题栏设置",
+      "nodeIds": [
+        "21911",
+        "21912",
+        "21913",
+        "21915",
+        "21917",
+        "21922"
+      ],
+      "bypassed": false,
+      "locked": false,
+      "hidden": false,
+      "bounds": {
+        "x": 10502.348369969755,
+        "y": -582.2480859370102,
+        "w": 1364.0689607592722,
+        "h": 731.0453763388404
+      },
+      "fontSize": 37,
+      "colorHue": 64,
+      "colorSat": 100,
+      "colorLit": 50,
+      "effect": "none",
+      "effectSpeed": 3,
+      "borderWidth": 2,
+      "borderOpacity": 0.82,
+      "headerBgColor": "rgba(0,0,0,0.41)",
+      "bgColor": "rgba(0,98,173,0.2)",
+      "titleColor": "#ffffff",
+      "fadeEnabled": false,
+      "fadeOutDuration": 0,
+      "fadeInDuration": 2200,
+      "headerHidden": false
+    }
+  },
+  "seed_widgets": {}
+}

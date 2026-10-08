@@ -23,4 +23,144 @@ aside .slider{position:relative;isolation:isolate}aside .slider::before{content:
 
 input:disabled,select:disabled{opacity:.4;cursor:default}button:disabled:hover{border-color:#3d4c5b}
 
-#adjustPose.confirm-completion{background:#e8bc58;border-color:#e8bc58;color:#241d0e;font-weight:600}#adjustPose.confirm-completion:hover{background:#f0c768;border-color:#f0c768}
+#adjustPose.confirm-completion{background:var(--completion-accent);border-color:var(--completion-accent);color:#241d0e;font-weight:600}#adjustPose.confirm-completion:hover{background:#f0c768;border-color:#f0c768}
+
+/* Per-person joint tracks; the pose and background retain their existing stage space. */
+.keyframe-panel{margin:0 0 8px;border:1px solid var(--line);border-radius:6px;overflow:hidden;min-height:0}
+.tracks-title{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;font-size:12px;background:#1b2530}.tracks-title span{font-size:10px;color:var(--muted)}
+.keyframe-tracks{max-height:180px;overflow:auto;padding:0 12px 5px 8px}.track-heading{font-size:11px;color:var(--accent);padding:6px 0 3px}
+.keyframe-row{display:grid;grid-template-columns:100px minmax(0,1fr);gap:8px;align-items:center;min-height:24px;border-bottom:1px solid #26313e}.track-label{font-size:11px;color:var(--muted);white-space:nowrap}
+.joint-track{position:relative;height:18px;background:#202c38;border-radius:3px;cursor:pointer;margin:0 6px}.joint-track .keyframe-marker{top:50%;width:10px;height:10px;padding:0;background:var(--accent);opacity:1}.joint-track .deleted-key{background:#f27979}
+.track-playhead{position:absolute;top:0;bottom:0;width:1px;background:#ffffff88;pointer-events:none}.joint-track .keyframe-marker:hover{outline:2px solid #fff}
+@media(min-width:801px){.viewer{grid-template-rows:auto minmax(0,1fr) auto auto auto auto}.keyframe-panel{max-height:220px}}
+
+.track-range{position:absolute;top:5px;height:8px;min-width:2px;background:#55b8f255;border:1px solid #55b8f2;pointer-events:none}
+
+.timeline-splitter{height:10px;cursor:row-resize;touch-action:none;display:flex;align-items:center;justify-content:center;flex-shrink:0}.timeline-splitter::before{content:"";height:3px;width:58px;background:var(--accent);border-radius:3px}.timeline-splitter:hover::before,.timeline-splitter:focus-visible::before{background:var(--accent)}.keyframe-tracks{height:var(--timeline-height,180px);max-height:none;min-height:0}.keyframe-panel{max-height:none}body.timeline-resizing{cursor:row-resize;user-select:none}body.timeline-resizing *{cursor:row-resize!important}@media(min-width:801px){.viewer{grid-template-rows:auto minmax(100px,1fr) auto 10px auto auto auto}.keyframe-panel{max-height:none}}
+
+/* Both timelines share the exact coordinate span, including the range thumb radius. */
+.viewer{--timeline-label-width:260px;--timeline-scrollbar:0px}
+.transport{display:grid;grid-template-columns:var(--timeline-label-width) minmax(0,1fr);gap:8px;padding-left:9px;padding-right:calc(13px + var(--timeline-scrollbar))}
+.transport-controls{display:flex;align-items:center;gap:8px}.transport-controls button{white-space:nowrap;padding:8px 10px}
+.timeline-wrap{min-width:0}.timeline-wrap #seek{box-sizing:border-box;margin:0;padding:0;border:0}
+.keyframe-row{grid-template-columns:var(--timeline-label-width) minmax(0,1fr)}.joint-track{margin-left:7px;margin-right:7px}
+.timeline-wrap #seek::-moz-range-thumb{box-sizing:content-box}
+@media(max-width:800px){.viewer{--timeline-label-width:110px}.transport-controls{flex-wrap:wrap;gap:3px}.transport-controls button{font-size:10px;padding:4px 6px}}
+
+.tracks-title,.track-heading{display:none}
+
+/* Prevent interface text selection while dragging editor controls. */
+body{-webkit-user-select:none;user-select:none}input:not([type=range]):not([type=checkbox]):not([type=button]):not([type=submit]),textarea,[contenteditable="true"]{-webkit-user-select:text;user-select:text}
+
+/* The full timeline height accepts seeking, including space above and below the line. */
+.timeline-wrap #seek{height:48px;touch-action:none}
+
+.timeline-wrap{position:relative}.timeline-ticks{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+
+/* Editing ruler: pointed handle, vertical cursor and tiered frame ticks. */
+.timeline-wrap #seek::-webkit-slider-runnable-track{background:transparent}
+.timeline-wrap #seek::-moz-range-track{background:transparent}
+.timeline-wrap #seek::-webkit-slider-thumb{background:transparent;border-color:transparent}
+.timeline-wrap #seek::-moz-range-thumb{background:transparent;border-color:transparent}
+.timeline-head{position:absolute;top:0;bottom:0;width:1px;background:var(--accent);pointer-events:none;z-index:2}
+.timeline-head::before{content:"";position:absolute;top:0;left:50%;transform:translateX(-50%);width:12px;height:13px;background:var(--accent);clip-path:polygon(0 0,100% 0,100% 58%,50% 100%,0 58%)}
+.track-playhead{background:var(--accent)}
+
+/* A dedicated transport strip; ruler ticks descend directly from its upper divider. */
+.transport{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#141d27;margin:12px 0 0;padding-top:0;padding-bottom:0;align-items:center}
+.timeline-wrap #seek{cursor:ew-resize}
+
+/* Keep video, frame background and editable pose in one shared zoom coordinate space. */
+.preview-viewport{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transform-origin:center}
+.heading{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center}
+#resetView{justify-self:center;font-size:11px;padding:3px 12px;line-height:1.4}
+#frameLabel{justify-self:end;text-align:right}
+
+#resetView{display:flex;align-items:center;justify-content:center;width:30px;height:26px;padding:4px}
+
+.keyframe-context-menu{position:fixed;z-index:10000;min-width:210px;padding:5px;background:#192530;border:1px solid #465869;border-radius:6px;box-shadow:0 6px 24px #0009}
+.keyframe-context-menu button{display:block;width:100%;text-align:left;border:0;background:transparent;border-radius:3px;padding:8px 10px;font-size:12px}
+.keyframe-context-menu button:hover,.keyframe-context-menu button:focus-visible{background:#2d4235;color:var(--accent)}
+.track-range.active-range{top:0;height:100%;background:#294b3b;border:0;z-index:0}
+.track-range.single-frame-range{min-width:8px;transform:translateX(-50%)}
+.track-playhead{z-index:2}.joint-track .keyframe-marker{z-index:3}
+
+.timeline-wrap,.joint-track{overflow:hidden}
+
+.completion-guide{margin:8px 0 12px;padding:10px;border:1px solid #a7ed7c55;border-radius:6px;background:#a7ed7c0b;color:#c8dfbf;font-size:12px;line-height:1.7}
+
+:root{--completion-accent:#e8bc58}
+.pose-completion-mode .completion-track .track-range.active-range{background:#294b3b;border:0}
+
+.completion-guide{color:var(--completion-accent);font-weight:600}
+
+#stage.preview-panning,#stage.preview-panning *{cursor:grabbing!important}
+#stage{touch-action:none}
+
+#stage canvas.completion-hint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:3}
+
+.track-label{display:flex;align-items:center;gap:6px}
+.completion-track-active .track-label{color:var(--accent)}
+
+.keyframe-row[data-completion-joint]{cursor:pointer;transition:background .12s}
+.keyframe-row[data-completion-joint]:hover{background:#ffffff06}
+.keyframe-row.completion-track-active .joint-track{outline:none;background:#252d35;border-radius:3px}
+.keyframe-row[data-completion-joint]:focus-visible{outline:1px solid #b4bec8;outline-offset:-1px}
+
+.pose-map-panel{border:1px solid var(--line);border-radius:7px;padding:8px;margin-top:8px;background:#141d27}
+#completeMissing{color:var(--accent);margin-top:8px}
+
+.joint-track .keyframe-marker.unadjusted-key{background:#ff6262;border-color:#ffd0d0}
+
+.pose-map-panel{border:2px solid #465869;background:#101820}
+.pose-map-panel #poseMap{border:0;border-radius:0;background:transparent}
+.pose-map-panel #completeMissing{border:0;background:transparent;font-weight:700}
+.pose-map-panel #completeMissing:hover:not(:disabled){background:#a7ed7c0b}
+
+.pose-map-panel #completeMissing{background:#263a2e;border:0}
+.pose-map-panel #completeMissing:hover:not(:disabled){background:#34503d}
+#poseSelection,#completionGuide{display:none}
+
+#usageHelp{color:#ffd76a;background:transparent;border:0;font-weight:500;white-space:nowrap}
+#usageHelp:hover{background:#ffd76a0c}
+#helpDialog{width:min(700px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;border:1px solid #465869;border-radius:9px;background:#19212c;color:#e6edf4;box-shadow:0 12px 60px #0009;overflow:auto;user-select:text}
+#helpDialog::backdrop{background:#0009}
+.help-header{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;background:#19212c;border-bottom:1px solid var(--line);z-index:1}
+.help-header strong{color:#ffd76a;font-size:15px}.help-header button{padding:2px 9px;font-size:22px}
+.help-content{padding:4px 20px 20px;font-size:13px;line-height:1.8}.help-content h3{color:var(--accent);font-size:14px;margin:16px 0 6px}.help-content ul,.help-content ol{padding-left:22px;margin:6px 0}.help-content li{margin:5px 0}
+.help-content table{width:100%;border-collapse:collapse}.help-content td{padding:6px 8px;border-bottom:1px solid var(--line)}.help-content td:first-child{width:110px;color:#ffd76a}
+
+/* Sidebar text uses the same family and size as the clear-all control. */
+aside,aside button,aside input,aside select,aside label,aside .field,aside .view-settings,aside .view-settings label,aside .drag-modes button,aside .slider,aside .slider-reset,aside output,aside .hint{font-family:'Segoe UI','Microsoft YaHei',sans-serif;font-size:14px}
+
+
+@media(min-width:801px){.viewer{grid-template-rows:auto minmax(100px,1fr) 10px auto auto auto auto}}
+.transport{margin-top:0}
+
+.joint-track{height:23px}.keyframe-row{min-height:29px}.track-label{font-size:14px;min-width:0}
+.track-lock{margin-left:auto;flex-shrink:0;display:flex;align-items:center;justify-content:center;width:24px;height:23px;padding:3px;border:0;background:transparent;color:#a4a7ab}
+.track-lock[hidden]{display:none}.track-lock:hover{background:#ffffff0b;color:#a4a7ab}.track-lock[aria-pressed="true"]{color:var(--accent);background:transparent}
+
+.scale-sides{display:flex;justify-content:space-between;gap:12px;margin:12px 0}.scale-sides label{display:flex;align-items:center;gap:6px;cursor:pointer}
+
+.scale-sides,.scale-sides label{font-family:inherit;font-size:14px;font-weight:400}
+
+.joint-track{background:#252d35}.track-label{color:#a4a7ab}.keyframe-row.completion-track-active .track-range.active-range{background:#4376A1;border:0}.keyframe-row.completion-track-active .keyframe-marker:not(.unadjusted-key):not(.deleted-key){background:#a7ed7c}
+
+.keyframe-row:not(.completion-track-active) .track-range.active-range{background:#5b5e62;border:0}
+
+.timeline-head,.timeline-head::before,.track-playhead{background:#E64B3D!important}
+
+.keyframe-row:not(.completion-track-active) .keyframe-marker:not(.unadjusted-key):not(.deleted-key){background:#c4c9ce;border-color:#eef1f4}.keyframe-row.completion-track-active .keyframe-marker:not(.unadjusted-key):not(.deleted-key){background:#a7ed7c}
+
+input[type=range]{accent-color:#c4c9ce}.slider output{color:#e6edf4}
+
+input[type=range]:not(#seek){appearance:none;-webkit-appearance:none;background:transparent;height:18px;cursor:pointer}
+input[type=range]:not(#seek)::-webkit-slider-runnable-track{height:6px;background:#50565d;border:1px solid #747b83;border-radius:4px}
+input[type=range]:not(#seek)::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;background:#fff;border:0;border-radius:50%}
+input[type=range]:not(#seek)::-moz-range-track{height:4px;background:#50565d;border:1px solid #747b83;border-radius:4px}
+input[type=range]:not(#seek)::-moz-range-progress{height:4px;background:#50565d;border-radius:4px}
+input[type=range]:not(#seek)::-moz-range-thumb{width:14px;height:14px;background:#fff;border:0;border-radius:50%}
+
+.pose-map-panel #completeMissing{display:block;width:fit-content;max-width:100%;margin:8px auto 0;padding:4px 12px;background:var(--completion-accent);color:#241d0e;border:0;font-weight:700}
+.pose-map-panel #completeMissing:hover:not(:disabled){background:#f0c768}

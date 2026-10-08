@@ -1,4 +1,22 @@
 {
+  "ComfyUIPoseSequenceEditor": {
+    "display_name": "Xiaozhuguang Video Pose Editor",
+    "inputs": {
+      "pose_keypoint": { "name": "pose keypoints" },
+      "fps": { "name": "frame rate" },
+      "edits_json": { "name": "pose edits" },
+      "images": { "name": "reference images" },
+      "draw_hands": { "name": "draw hands" },
+      "draw_face": { "name": "draw face" },
+      "draw_feet": { "name": "draw feet" },
+      "stick_width": { "name": "line width" },
+      "face_point_size": { "name": "face point size" },
+      "score_threshold": { "name": "score threshold" }
+    },
+    "outputs": {
+      "0": { "name": "image" }
+    }
+  },
   "XiaozhuguangPointsEditor": {
     "display_name": "Xiaozhuguang Points Editor",
     "inputs": {

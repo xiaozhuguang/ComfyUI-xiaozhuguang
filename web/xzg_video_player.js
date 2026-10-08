@@ -51,6 +51,7 @@ const SURFACE_BG = "#000";
 export class XiaozhuguangVideoPlayer {
     constructor(options = {}) {
         this.container = options.container || document.createElement("div");
+        this._node = options.node || null;
         this.onDblClick = options.onDblClick || null;
         this.onLoadedMetadata = options.onLoadedMetadata || null;
         this.onPlay = options.onPlay || null;
@@ -496,6 +497,25 @@ export class XiaozhuguangVideoPlayer {
             "box-shadow:0 4px 12px rgba(0,0,0,0.5);padding:4px 0;pointer-events:auto;";
         const menuItemStyle =
             "padding:6px 16px;color:#ddd;cursor:pointer;font-size:12px;white-space:nowrap;";
+
+        for (const [key, text] of [["View", "▶ 查看视频"], ["Compare", "▶ 对比视频"]]) {
+            const item = document.createElement("div");
+            item.style.cssText = menuItemStyle + "color:#dcc85b;font-weight:600;";
+            item.textContent = text;
+            item.addEventListener("mouseenter", () => { item.style.background = "#3a3a3a"; });
+            item.addEventListener("mouseleave", () => { item.style.background = ""; });
+            item.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this._hideContextMenu();
+                const preview = window.xzgSyncPreview;
+                if (!preview?.isEnabled?.() || !preview.nodeHasVideo(this._node)) return;
+                const nodes = key === "View" ? [this._node] : preview.getSelectedVideoNodes();
+                if (!nodes.includes(this._node)) nodes.push(this._node);
+                if (key === "View" || nodes.length >= 2) preview.previewNodes(nodes);
+            });
+            this["_contextMenu" + key] = item;
+            this._contextMenu.appendChild(item);
+        }
 
         this._contextMenuDesktop = document.createElement("div");
         this._contextMenuDesktop.style.cssText = menuItemStyle;
@@ -1124,6 +1144,7 @@ export class XiaozhuguangVideoPlayer {
     _onContextMenu = (e) => {
         e.preventDefault();
         if (!this._src) return;
+        e.stopPropagation();
         this._showContextMenu(e.clientX, e.clientY);
     };
 
@@ -1131,7 +1152,13 @@ export class XiaozhuguangVideoPlayer {
         const menu = this._contextMenu;
         if (!menu) return;
         const showDesktop = typeof this.onSaveToDesktop === "function";
-        if (!showDesktop) return;
+        const preview = window.xzgSyncPreview;
+        const showView = !!(preview?.isEnabled?.() && preview.nodeHasVideo(this._node));
+        const nodes = showView ? preview.getSelectedVideoNodes() : [];
+        if (showView && !nodes.includes(this._node)) nodes.push(this._node);
+        this._contextMenuView.style.display = showView ? "" : "none";
+        this._contextMenuCompare.style.display = nodes.length >= 2 ? "" : "none";
+        if (!showDesktop && !showView) return;
         this._contextMenuDesktop.style.display = showDesktop ? "" : "none";
         menu.style.left = x + "px";
         menu.style.top = y + "px";
@@ -1363,6 +1390,10 @@ export class XiaozhuguangVideoPlayer {
                 const _pst = this._pendingSeekTime;
                 this._pendingSeekTime = null;
                 this.seek(_pst);
+            } else if (!this._previewLoad && this._skipFrames > 0) {
+                // 源视频重新加载时从当前跳过帧位置起播；预览覆盖文件本身已从
+                // 跳过帧开始，仍由 setPreviewLoaded(true) 切换到预览坐标 0。
+                this.seek(this._skipFrames / (this._frameRate || 24));
             }
             // P4: 后台预解码音频（不阻塞首帧渲染），避免首次播放时音频延迟
             this._preloadAudio(decoder);
@@ -1411,6 +1442,10 @@ export class XiaozhuguangVideoPlayer {
         if (this._destroyed) return;
         this._src = src || "";
         this._previewLoad = !!(opts && opts.isPreview);
+        // 只有这一轮 load 的 onLoadedMetadata 完成后才能使用预览坐标。
+        // 在切换到新预览期间保留旧的 true 会令普通源视频也从 0 秒起播，
+        // 跳过帧数因此失效。
+        this._previewLoaded = false;
         this._backendFps = false;
         if (!this._manualFrameRate) {
             this._fpsDetected = false;
@@ -2258,6 +2293,9 @@ export class XiaozhuguangVideoPlayer {
             this._contextMenu.remove();
         }
         this._contextMenu = null;
+        this._contextMenuView = null;
+        this._contextMenuCompare = null;
+        this._node = null;
         this._contextMenuDesktop = null;
     }
 }

@@ -664,6 +664,7 @@ app.registerExtension({
             node._xzgUpdateBypassState = updateBypassState;
 
             const player = new XiaozhuguangVideoPlayer({
+                node,
                 container: playerContainer,
                 placeholderText: "🎬 暂无视频",
                 onSaveToDesktop: () => {

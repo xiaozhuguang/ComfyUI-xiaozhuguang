@@ -4012,8 +4012,8 @@ class XZGWorkflowsManager {
                 </svg>
             </span>
             <div class="xzg-wf-item-info">
-                <div class="xzg-wf-item-name">${isFavorite ? '<i class="pi pi-bookmark-fill xzg-wf-favorite-mark" title="' + xzgT('已收藏', 'Favorited') + '"></i>' : ''}${wfMeta.readOnly ? '<i class="pi pi-lock xzg-wf-readonly-mark" title="' + xzgT('只读工作流', 'Read-only workflow') + '"></i>' : ''}<span class="xzg-wf-item-name-text"></span></div>
-                <div class="xzg-wf-item-meta">${useCountText}${wfMeta.readOnly ? ' · <span class="xzg-wf-readonly-tag">只读</span>' : ''}</div>
+                <div class="xzg-wf-item-name">${isFavorite ? '<i class="pi pi-bookmark-fill xzg-wf-favorite-mark" title="' + xzgT('已收藏', 'Favorited') + '"></i>' : ''}${wfMeta.readOnly ? '<i class="pi pi-lock xzg-wf-readonly-mark" title="' + xzgT('只读工作流', 'Read-only workflow') + '"></i><span class="xzg-wf-readonly-tag">只读</span>' : ''}<span class="xzg-wf-item-name-text"></span></div>
+                <div class="xzg-wf-item-meta">${useCountText}</div>
             </div>
         `;
 

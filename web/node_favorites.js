@@ -2964,8 +2964,9 @@ class Xiaozhuguang {
                 const count = nodes.length;
                 const wfOption = {
                     content: wfId
-                        ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏多节点','Unfavorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})</span>`
-                        : `<span style="color:#FFD700;">🔗 ${xzgT('收藏多节点','Favorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})</span>`,
+                        ? `⭐ ${xzgT('取消收藏多节点','Unfavorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})`
+                        : `🔗 ${xzgT('收藏多节点','Favorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})`,
+                    color: '#FFD700',
                     callback: () => {
                         if (wfId) {
                             self.removeFavoriteWorkflow(wfId);
@@ -2981,7 +2982,8 @@ class Xiaozhuguang {
                 // 单节点收藏
                 const isFavorited = self.isNodeFavorited(node.type);
                 let favOption = {
-                    content: isFavorited ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏节点','Unfavorite Node')}</span>` : `<span style="color:#FFD700;">☆ ${xzgT('收藏节点','Favorite Node')}</span>`,
+                    content: isFavorited ? `⭐ ${xzgT('取消收藏节点','Unfavorite Node')}` : `☆ ${xzgT('收藏节点','Favorite Node')}`,
+                    color: '#FFD700',
                     callback: () => {
                         if (isFavorited) {
                             self.removeFavorite(node.type);
@@ -3021,8 +3023,9 @@ class Xiaozhuguang {
                 const count = nodes.length;
                 const wfOption = {
                     content: wfId
-                        ? `<span style="color:#FFD700;">⭐ ${xzgT('取消收藏工作流','Unfavorite workflow')} (${count}${xzgT('个节点',' nodes')})</span>`
-                        : `<span style="color:#FFD700;">🔗 ${xzgT('收藏多节点','Favorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})</span>`,
+                        ? `⭐ ${xzgT('取消收藏工作流','Unfavorite workflow')} (${count}${xzgT('个节点',' nodes')})`
+                        : `🔗 ${xzgT('收藏多节点','Favorite multiple nodes')} (${count}${xzgT('个节点',' nodes')})`,
+                    color: '#FFD700',
                     callback: () => {
                         if (wfId) {
                             self.removeFavoriteWorkflow(wfId);
@@ -3038,20 +3041,6 @@ class Xiaozhuguang {
                     options.push(null, wfOption);
                 }
             }
-
-            const sc = self.getShortcut();
-            const scParts = [];
-            if (sc.ctrl) scParts.push("Ctrl");
-            if (sc.alt) scParts.push("Alt");
-            if (sc.shift) scParts.push("Shift");
-            scParts.push(sc.key.toUpperCase());
-            const xzgItem = {
-                content: `<span style="display:flex;align-items:center;gap:8px;min-height:16px;line-height:1;white-space:nowrap;"><span style="display:inline-flex;align-items:center;gap:5px;color:#FFD700;line-height:1;">${favoritesManagerIconSvg(16)}<span>${xzgT('小珠光节点收藏管理','Xiaozhuguang Node Favorites Manager')}</span></span><span style="display:inline-flex;align-items:center;color:#4CAF50;font-size:10px;line-height:1;">${xzgT('快捷键','Shortcut')}${scParts.join("+")}</span></span>`,
-                callback: () => {
-                    self.togglePanel();
-                }
-            };
-            options.splice(0, 0, xzgItem);
 
             return options;
         };
@@ -6451,7 +6440,8 @@ app.registerExtension({
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 if (origGetExtra) origGetExtra.apply(this, arguments);
                 options.splice(0, 0, null, {
-                    content: `<span style="color:#FFD700;">${xzgT('小珠光选择器设置','Xiaozhuguang Selector Settings')}</span>`,
+                    content: xzgT('小珠光选择器设置','Xiaozhuguang Selector Settings'),
+                    color: '#FFD700',
                     callback: () => {
                         showLabelsSettingsDialog(this, () => { rebuildSelectorNode(this); });
                     }
@@ -7022,18 +7012,6 @@ app.registerExtension({
                 }
 
                 ctx.restore();
-            };
-
-            // 右键菜单：小珠光主题永远第13行（下标12）
-            const origTitleExtra = nodeType.prototype.getExtraMenuOptions;
-            nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
-                if (origTitleExtra) origTitleExtra.apply(this, arguments);
-                options.splice(12, 0, null, {
-                    content: `<span style="color:#FFD700;">${xzgT('小珠光主题','Xiaozhuguang Theme')}</span>`,
-                    callback: () => {
-                        if (this.onDblClick) this.onDblClick();
-                    }
-                });
             };
 
             nodeType.prototype.onDblClick = function () {

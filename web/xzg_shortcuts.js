@@ -357,6 +357,10 @@ async function saveShortcuts(list) {
 /** 全局 keydown 监听（capture 阶段，优先于输入框判断） */
 function onKeyDown(e) {
     if (!shortcuts.length) return;
+    // 快剪打开时，裸 Z 归预览重置；不能抢先中断并截断编辑器的键盘事件。
+    const editor = window._xzgVideoEditorInstance;
+    if (editor && !editor._destroyed && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&
+        (e.key?.toLowerCase() === "z" || e.code === "KeyZ")) return;
     // 快捷键设置对话框打开时，把键盘完全交给对话框的捕获逻辑（onCaptureKey），
     // 避免这里抢先处理导致"无法捕获 / 添加快捷键"。
     if (document.getElementById("xzg-shortcuts-dialog")) return;

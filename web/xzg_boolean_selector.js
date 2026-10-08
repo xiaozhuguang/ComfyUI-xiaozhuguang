@@ -708,7 +708,8 @@ app.registerExtension({
 
             chainCallback(this, "getExtraMenuOptions", function(_, options) {
                 options.splice(0, 0, null, {
-                    content: "⚙ <span style='color:#FFD700'>" + xzgT('小珠光布尔设置','Xiaozhuguang Boolean Settings') + "</span>",
+                    content: "⚙ " + xzgT('小珠光布尔设置','Xiaozhuguang Boolean Settings'),
+                    color: '#FFD700',
                     callback: () => openBoolSettingsPanel(node),
                 });
             });

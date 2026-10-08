@@ -1145,7 +1145,8 @@ app.registerExtension({
             }
             if (Array.isArray(options)) {
                 options.splice(0, 0, null, {
-                    content: '<span style="color:#FFD700;">' + xzgT('小珠光万能滑条 设置','Xiaozhuguang Universal Slider Settings') + '</span>',
+                    content: xzgT('小珠光万能滑条 设置','Xiaozhuguang Universal Slider Settings'),
+                    color: '#FFD700',
                     callback: () => showSettings(this),
                 });
             }

@@ -590,6 +590,28 @@ window.XZGMenuHide = {
                     }
 
                     const instance = new origContextMenu(filteredOptions, opts);
+                    // LiteGraph 的部分前端版本会忽略菜单项上的 color 字段，
+                    // 在菜单 DOM 创建后按 data-content 补上内联颜色，确保插件菜单颜色生效。
+                    try {
+                        if (instance.root) {
+                            const colorByContent = new Map();
+                            const collectColors = (items) => {
+                                if (!Array.isArray(items)) return;
+                                for (const item of items) {
+                                    if (!item || typeof item !== 'object') continue;
+                                    if (typeof item.content === 'string' && item.color) {
+                                        colorByContent.set(item.content, item.color);
+                                    }
+                                    if (Array.isArray(item)) collectColors(item);
+                                }
+                            };
+                            collectColors(filteredOptions);
+                            instance.root._xzgMenuColorByContent = colorByContent;
+                            self._applyMenuColors(instance.root);
+                        }
+                    } catch (e) {
+                        console.warn('[小珠光] ContextMenu color application error:', e);
+                    }
                     if (menuType) {
                         instance._xzgMenuType = menuType;
                         // 同步把类型打到 DOM 根上：_hideFromDOM 只处理带标记的菜单。
@@ -783,7 +805,10 @@ window.XZGMenuHide = {
                 // 观察周期内出现，若被误标为画布菜单，就会被隐藏规则清空。
                 // 已标记的画布/节点菜单仍需多次重试，因为容器和条目可能分批挂载。
                 if (!menuEl._xzgMenuType) return;
-                const tryHide = () => { if (self._enabled) self._hideFromDOM(menuEl); };
+                const tryHide = () => {
+                    self._applyMenuColors(menuEl);
+                    if (self._enabled) self._hideFromDOM(menuEl);
+                };
                 tryHide();
                 requestAnimationFrame(tryHide);
                 setTimeout(tryHide, 60);
@@ -873,6 +898,30 @@ window.XZGMenuHide = {
                 }
             }
         }
+    },
+
+    _applyMenuColors(menuEl) {
+        const colorByContent = menuEl?._xzgMenuColorByContent;
+        if (!colorByContent?.size) return;
+        const items = menuEl.querySelectorAll('.litemenu-entry, .context-menu-item, .menu-item, .lite-menu-item');
+        items.forEach(item => {
+            const content = item.dataset?.content;
+            const text = (item.textContent || item.innerText || '').trim();
+            let color = (content && colorByContent.get(content)) || (text && colorByContent.get(text));
+            if (!color && text) {
+                // Some LiteGraph builds add shortcut/arrow text or wrap the label,
+                // so use the full menu label as a contained match as a fallback.
+                for (const [label, labelColor] of colorByContent) {
+                    if (label.length > 3 && text.includes(label)) {
+                        color = labelColor;
+                        break;
+                    }
+                }
+            }
+            if (!color) return;
+            item.style.setProperty('color', color, 'important');
+            item.querySelectorAll('*').forEach(child => child.style.setProperty('color', color, 'important'));
+        });
     },
 
     _hideFromDOM(menuEl) {

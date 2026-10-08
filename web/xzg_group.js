@@ -681,22 +681,31 @@ const XZGGroup = {
             LG.LGraphCanvas.prototype.getCanvasMenuOptions = function() {
                 const opts = orig.apply(this, arguments);
                 if (!opts?.length) return opts;
-                opts.splice(0, 0, {
-                    content: '<span style="color:#FFD700;">📦 ' + xzgT('小珠光编组','Xiaozhuguang Group') + ' <span style="color:#4CAF50;font-size:10px;">' + xzgT('快捷键','Shortcut') + 'Ctrl+' + (self.shortcutKey || 'g').toUpperCase() + '</span></span>',
-                    callback: () => self.createGroupFromSelection()
-                });
-                // 编组开关面板快捷键文本（动态读取自定义值）
-                const ts = self.toggleShortcut || { key: 'b', ctrl: false, alt: false, shift: false, meta: false };
-                const tsParts = [];
-                if (ts.ctrl) tsParts.push('Ctrl');
-                if (ts.alt) tsParts.push('Alt');
-                if (ts.shift) tsParts.push('Shift');
-                if (ts.meta) tsParts.push('Meta');
-                tsParts.push(ts.key.toUpperCase());
-                opts.splice(1, 0, {
-                    content: '<span style="color:#FFD700;">🔧 ' + xzgT('编组开关面板','Group Toggle Panel') + ' <span style="color:#4CAF50;font-size:10px;">' + xzgT('快捷键','Shortcut') + ' ' + tsParts.join('+') + '</span></span>',
-                    callback: () => self.showTogglePanel()
-                });
+                const selectedNodes = Object.values(this.selected_nodes || {}).filter(
+                    node => node?.pos && typeof node.pos[0] === 'number'
+                );
+                if (selectedNodes.length >= 2) {
+                    opts.splice(0, 0, {
+                        content: '📦 ' + xzgT('小珠光编组','Xiaozhuguang Group') + ' (' + xzgT('快捷键','Shortcut') + 'Ctrl+' + (self.shortcutKey || 'g').toUpperCase() + ')',
+                        color: '#FFD700',
+                        callback: () => self.createGroupFromSelection()
+                    });
+                }
+                if (Object.keys(self.groups).length > 0) {
+                    // 编组开关面板快捷键文本（动态读取自定义值）
+                    const ts = self.toggleShortcut || { key: 'b', ctrl: false, alt: false, shift: false, meta: false };
+                    const tsParts = [];
+                    if (ts.ctrl) tsParts.push('Ctrl');
+                    if (ts.alt) tsParts.push('Alt');
+                    if (ts.shift) tsParts.push('Shift');
+                    if (ts.meta) tsParts.push('Meta');
+                    tsParts.push(ts.key.toUpperCase());
+                    opts.splice(1, 0, {
+                        content: '🔧 ' + xzgT('编组开关面板','Group Toggle Panel') + ' (' + xzgT('快捷键','Shortcut') + ' ' + tsParts.join('+') + ')',
+                        color: '#FFD700',
+                        callback: () => self.showTogglePanel()
+                    });
+                }
                 return opts;
             };
         } catch (e) {}

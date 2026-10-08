@@ -4135,7 +4135,6 @@ window.XZGThemeManager = {
         }
 
         this.setupSelectionListener();
-        this.setupCanvasContextMenu();
 
         const observer = new MutationObserver(() => {
             self.refreshDOMGradients();
@@ -4148,46 +4147,6 @@ window.XZGThemeManager = {
                 subtree: true 
             });
         }
-    },
-
-    setupCanvasContextMenu() {
-        const self = this;
-
-        if (!window.LGraphCanvas || !LGraphCanvas.prototype) return;
-
-        const origGetCanvasMenuOptions = LGraphCanvas.prototype.getCanvasMenuOptions;
-        LGraphCanvas.prototype.getCanvasMenuOptions = function() {
-            const options = origGetCanvasMenuOptions.apply(this, arguments);
-
-            let shortcutText = "";
-            try {
-                const stored = localStorage.getItem("xzg_theme_shortcut");
-                if (stored) {
-                    const sc = JSON.parse(stored);
-                    const parts = [];
-                    if (sc.ctrl) parts.push("Ctrl");
-                    if (sc.alt) parts.push("Alt");
-                    if (sc.shift) parts.push("Shift");
-                    parts.push(sc.key.toUpperCase());
-                    shortcutText = ` <span style="color:#888;font-size:10px;">${xzgT('快捷键','Shortcut')}${parts.join("+")}</span>`;
-                }
-            } catch (e) {}
-
-            options.push(null, {
-                content: `<span style="color:#FFD700;">🎨 ${xzgT('小珠光主题','Xiaozhuguang Theme')}${shortcutText}</span>`,
-                callback: (value, options, event) => {
-                    const nodes = self.getSelectedNodes();
-                    if (nodes.length > 0) {
-                        self.currentNodes = nodes;
-                        self.showPanelForNodes(nodes);
-                    } else {
-                        self.showPanel();
-                    }
-                }
-            });
-
-            return options;
-        };
     },
 
     setupSelectionListener() {
@@ -4940,48 +4899,6 @@ window.XZGThemeManager = {
                         app.graph?.setDirtyCanvas?.(true, true);
                         requestAnimationFrame(() => window.XZGThemeManager.refreshDOMGradients());
                     },
-                    
-                    getNodeMenuItems(node) {
-                        if (!window.XZGThemeManager) return [];
-                        
-                        const canvas = app.canvas;
-                        let nodes = [];
-                        if (canvas.selected_nodes && canvas.selected_nodes[node.id]) {
-                            nodes = Object.values(canvas.selected_nodes);
-                        } else {
-                            nodes = [node];
-                        }
-                        nodes = nodes.filter(n => n.type !== "XiaozhuguangTitle");
-                        if (!nodes.length) return [];
-                        
-                        let shortcutText = "";
-                        try {
-                            const stored = localStorage.getItem("xzg_theme_shortcut");
-                            if (stored) {
-                                const sc = JSON.parse(stored);
-                                const parts = [];
-                                if (sc.ctrl) parts.push("Ctrl");
-                                if (sc.alt) parts.push("Alt");
-                                if (sc.shift) parts.push("Shift");
-                                parts.push(sc.key.toUpperCase());
-                                shortcutText = ` <span style="color:#888;font-size:10px;">${xzgT('快捷键','Shortcut')}${parts.join("+")}</span>`;
-                            }
-                        } catch (e) {}
-                        return [
-                            null,
-                            {
-                                content: nodes.length > 1
-                                    ? `<span style="color:#FFD700;">🎨 ${xzgT('小珠光主题','Xiaozhuguang Theme')} (${nodes.length})${shortcutText}</span>`
-                                    : `<span style="color:#FFD700;">🎨 ${xzgT('小珠光主题','Xiaozhuguang Theme')}${shortcutText}</span>`,
-                                callback: () => {
-                                    if (window.XZGThemeManager) {
-                                        window.XZGThemeManager.currentNodes = nodes;
-                                        window.XZGThemeManager.showPanelForNodes(nodes);
-                                    }
-                                }
-                            }
-                        ];
-                    }
                 });
             } catch(e) {}
         } else {

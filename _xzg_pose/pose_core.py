@@ -48,8 +48,10 @@ def validate_edits(edits, count, source_digest=None):
     if not isinstance(hand_fixes, list) or len(hand_fixes) > 10000:
         raise ValueError('全片手部修正数量无效')
     for op in operations + hand_fixes:
-        if not isinstance(op, dict) or op.get('type') not in ('scale', 'translate', 'joint', 'set_joint', 'swap_hands', 'swap_arms', 'repair_hands', 'complete_pose'):
+        if not isinstance(op, dict) or op.get('type') not in ('scale', 'translate', 'joint', 'set_joint', 'swap_hands', 'swap_arms', 'repair_hands', 'complete_pose', 'set_arm_front', 'set_leg_front'):
             raise ValueError('未知编辑操作')
+        if op['type'] in ('set_arm_front', 'set_leg_front') and op.get('side') not in ('left', 'right'):
+            raise ValueError('前后层级必须指定左侧或右侧肢体')
         if op in hand_fixes and op.get('type') not in ('swap_hands', 'swap_arms', 'repair_hands'):
             raise ValueError('全片手部修正类型无效')
         person = op.get('person', -1)
@@ -63,7 +65,20 @@ def validate_edits(edits, count, source_digest=None):
             start, end = op.get('start', 0), op.get('end', count - 1)
             if any(type(v) is not int for v in (start, end)) or not 0 <= start <= end < count:
                 raise ValueError('操作帧范围无效')
+        if 'single_frame_only' in op and type(op['single_frame_only']) is not bool:
+            raise ValueError('单帧生效状态必须为布尔值')
+        if 'active_ranges' in op:
+            ranges = op['active_ranges']
+            if not isinstance(ranges, list) or len(ranges) > count:
+                raise ValueError('关键帧生效范围无效')
+            for span in ranges:
+                if (not isinstance(span, list) or len(span) != 2
+                        or any(type(v) is not int for v in span)
+                        or not 0 <= span[0] <= span[1] < count):
+                    raise ValueError('关键帧生效范围必须为有效帧区间')
         if op['type'] == 'scale':
+            if op.get('side', 'both') not in ('both', 'left', 'right'):
+                raise ValueError('比例调节侧必须为双侧、左侧或右侧')
             values = op.get('values', {})
             if not isinstance(values, dict) or any(k not in SCALE_KEYS or not isinstance(v, (int, float))
                                                    or not math.isfinite(v) or not .1 <= v <= 3
@@ -98,8 +113,13 @@ def _move_group(flat, dx, dy, sx=1, sy=1, anchor=(0, 0)):
         flat[i + 1] = anchor[1] + (flat[i + 1] - anchor[1]) * sy + dy
 
 
-def transform_person(person, values):
+def transform_person(person, values, side="both"):
     s = {k: values.get(k, 1) for k in SCALE_KEYS}
+    selected = {5, 6, 7, 11, 12, 13, 15, 17} if side == 'left' else {2, 3, 4, 8, 9, 10, 14, 16}
+    factor = lambda key, joint: s[key] if side == 'both' or joint in selected else 1
+    if side != 'both':
+        for key in ('head_x', 'head_y', 'neck', 'torso'):
+            s[key] = 1
     body = person['pose_keypoints_2d']
     old = [_point(body, i) for i in range(18)]
     new = copy.deepcopy(old)
@@ -113,24 +133,24 @@ def transform_person(person, values):
     for j in (14, 15, 16, 17):
         new[j] = [moved_head_anchor[i] + (old[j][i] - head_anchor[i]) * s['head_x' if i == 0 else 'head_y'] for i in (0, 1)]
     for j in (2, 5):
-        new[j] = [shoulder[i] + (old[j][i] - shoulder[i]) * s['shoulders'] for i in (0, 1)]
+        new[j] = [shoulder[i] + (old[j][i] - shoulder[i]) * factor('shoulders', j) for i in (0, 1)]
     target_hip = [shoulder[i] + (hip[i] - shoulder[i]) * s['torso'] for i in (0, 1)]
     for j in (8, 11):
-        new[j] = [target_hip[i] + (old[j][i] - hip[i]) * s['hips'] for i in (0, 1)]
+        new[j] = [target_hip[i] + (old[j][i] - hip[i]) * factor('hips', j) for i in (0, 1)]
     for parent, child, key in ((2, 3, 'upper_arm'), (3, 4, 'lower_arm'), (5, 6, 'upper_arm'),
                                (6, 7, 'lower_arm'), (8, 9, 'upper_leg'), (9, 10, 'lower_leg'),
                                (11, 12, 'upper_leg'), (12, 13, 'lower_leg')):
-        new[child] = [new[parent][i] + (old[child][i] - old[parent][i]) * s[key] for i in (0, 1)]
+        new[child] = [new[parent][i] + (old[child][i] - old[parent][i]) * factor(key, child) for i in (0, 1)]
     _move_group(person.get('face_keypoints_2d', []), head_delta[0],
                 head_delta[1], s['head_x'], s['head_y'], head_anchor)
     for key, joint in (('hand_right_keypoints_2d', 4), ('hand_left_keypoints_2d', 7)):
         _move_group(person.get(key, []), new[joint][0] - old[joint][0], new[joint][1] - old[joint][1],
-                    s['hands'], s['hands'], old[joint])
+                    factor('hands', joint), factor('hands', joint), old[joint])
     feet = person.get('foot_keypoints_2d', [])
     for offset, joint in ((0, 13), (9, 10)):
         part = feet[offset:offset + 9]
         _move_group(part, new[joint][0] - old[joint][0], new[joint][1] - old[joint][1],
-                    s['feet'], s['feet'], old[joint])
+                    factor('feet', joint), factor('feet', joint), old[joint])
         feet[offset:offset + len(part)] = part
     for j in range(18):
         if body[j * 3 + 2] > 0:
@@ -180,7 +200,7 @@ def apply_edits(frames, edits, source_digest=None):
         if 'frame' not in op:
             legacy.append(op)
         elif op['type'] in ('scale', 'translate', 'joint', 'set_joint'):
-            key = (op['type'], op.get('person', -1), op.get('joint') if op['type'] in ('joint', 'set_joint') else None)
+            key = (op['type'], op.get('person', -1), op.get('joint') if op['type'] in ('joint', 'set_joint') else op.get('side', 'both') if op['type'] == 'scale' else None)
             continuous.setdefault(key, []).append(op)
         else:
             discrete.setdefault((op['type'], op.get('person', -1)), []).append(op)
@@ -189,9 +209,20 @@ def apply_edits(frames, edits, source_digest=None):
     for events in discrete.values():
         events.sort(key=lambda op: op['frame'])
 
+    continuous_singles = {}
+    for track_key, keys in continuous.items():
+        continuous_singles[track_key] = {op['frame']: op for op in keys if op.get('single_frame_only')}
+        continuous[track_key] = [op for op in keys if not op.get('single_frame_only')]
+
     for frame_index, frame in enumerate(result):
         frame_ops = list(legacy)
-        for keys in continuous.values():
+        for track_key, keys in continuous.items():
+            single = continuous_singles[track_key].get(frame_index)
+            if single is not None:
+                frame_ops.append(single)
+                continue
+            if not keys:
+                continue
             left = keys[0]
             right = keys[-1]
             if frame_index <= left['frame']:
@@ -227,6 +258,8 @@ def apply_edits(frames, edits, source_digest=None):
                 chosen = next((op for op in reversed(events) if op['frame'] <= frame_index), events[0])
                 frame_ops.append(chosen)
         for op in frame_ops:
+            if 'active_ranges' in op and not any(start <= frame_index <= end for start, end in op['active_ranges']):
+                continue
             if 'frame' in op:
                 pass
             elif not op.get('start', 0) <= frame_index <= op.get('end', len(result) - 1):
@@ -234,8 +267,10 @@ def apply_edits(frames, edits, source_digest=None):
             person_index = op.get('person', -1)
             people = frame['people'] if person_index == -1 else frame['people'][person_index:person_index + 1]
             for person in people:
-                if op['type'] == 'scale':
-                    transform_person(person, op.get('values', {}))
+                if op['type'] in ('set_arm_front', 'set_leg_front'):
+                    continue  # Editor-only draw order; it does not alter pose coordinates.
+                elif op['type'] == 'scale':
+                    transform_person(person, op.get('values', {}), op.get('side', 'both'))
                 elif op['type'] in ('swap_hands', 'swap_arms'):
                     if op['type'] == 'swap_arms':
                         body = person['pose_keypoints_2d']
@@ -262,7 +297,7 @@ def apply_edits(frames, edits, source_digest=None):
                         attached = {4: 'hand_right_keypoints_2d', 7: 'hand_left_keypoints_2d'}.get(joint)
                         if attached:
                             _move_group(person.get(attached, []), dx, dy)
-                        if joint in (0, 1):
+                        if joint == 0:
                             for head_joint in (0, 14, 15, 16, 17):
                                 if head_joint == joint or body[head_joint * 3 + 2] <= 0:
                                     continue

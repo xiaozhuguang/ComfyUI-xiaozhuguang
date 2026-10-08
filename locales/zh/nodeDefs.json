@@ -1,4 +1,22 @@
 {
+  "ComfyUIPoseSequenceEditor": {
+    "display_name": "小珠光视频姿势编辑器",
+    "inputs": {
+      "pose_keypoint": { "name": "骨骼序列" },
+      "fps": { "name": "帧率" },
+      "edits_json": { "name": "姿势编辑数据" },
+      "images": { "name": "参考图像" },
+      "draw_hands": { "name": "绘制手部" },
+      "draw_face": { "name": "绘制面部" },
+      "draw_feet": { "name": "绘制脚部" },
+      "stick_width": { "name": "骨骼线宽" },
+      "face_point_size": { "name": "面部点大小" },
+      "score_threshold": { "name": "置信度阈值" }
+    },
+    "outputs": {
+      "0": { "name": "骨骼图像" }
+    }
+  },
   "XiaozhuguangPointsEditor": {
     "display_name": "小珠光点编辑器",
     "inputs": {

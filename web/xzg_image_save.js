@@ -1982,7 +1982,8 @@ app.registerExtension({
                     && selectedImageNodes.length >= 2
                     && w?.value?.images?.some((image) => !!image?.url)) {
                     const compareOption = ownItems.get("compare") || {
-                        content: "<span style='color:#dcc85b;font-weight:600'>▧ 图片对比</span>",
+                        content: "▧ 图片对比",
+                        color: '#dcc85b',
                         callback: () => {
                             const compare = window.xzgSyncPreview;
                             if (typeof compare?.previewNodes !== "function" || compare?.isEnabled?.() === false) return;
@@ -2004,31 +2005,36 @@ app.registerExtension({
                     }];
                     if (fmt === "PNG") {
                         saveOpts.push(ownItems.get("save") || {
-                            content: `<span style="color:#4CAF50;">${xzgTh("PNG保存", "Save PNG")}</span>`,
+                            content: xzgTh("PNG保存", "Save PNG"),
+                            color: '#4CAF50',
                             callback: () => { downloadImage(cur); },
                             _xzgImageSaveMenuItem: "save",
                         });
                     } else {
                         saveOpts.push(ownItems.get("save") || {
-                            content: `<span style="color:#4CAF50;">${xzgTh("JPG保存", "Save JPG")}</span>`,
+                            content: xzgTh("JPG保存", "Save JPG"),
+                            color: '#4CAF50',
                             callback: () => { downloadJpgImage(cur); },
                             _xzgImageSaveMenuItem: "save",
                         });
                     }
                     saveOpts.push({
-                        content: `<span style="color:#FFD700;">${xzgTh("收藏到媒体库", "Add to Media Library")}</span>`,
+                        content: xzgTh("收藏到媒体库", "Add to Media Library"),
+                        color: '#FFD700',
                         callback: () => { _xzgImageSaveMediaLibraryAction(cur, this); },
                         _xzgImageSaveMenuItem: "library",
                     });
                     if (this.type === XZG_IMAGE_SAVE_CUSTOM_TYPE) {
                         saveOpts.push({
-                            content: `<span style="color:#FFD700;">${xzgTh("发送到小珠光图片加载器", "Send to Image Loader")}</span>`,
+                            content: xzgTh("发送到小珠光图片加载器", "Send to Image Loader"),
+                            color: '#FFD700',
                             callback: () => { _xzgSendToImageLoader(cur); },
                             _xzgImageSaveMenuItem: "send",
                         });
                     }
                     saveOpts.push({
-                        content: `<span style="color:#8ecbff;">${xzgTh("查看原图", "View Original Image")}</span>`,
+                        content: xzgTh("查看原图", "View Original Image"),
+                        color: '#8ecbff',
                         callback: () => { _xzgImageSaveViewOriginalAction(cur, this); },
                         _xzgImageSaveMenuItem: "original",
                     });

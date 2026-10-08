@@ -1,3 +1,18 @@
+## v24.0.0 (2026-10-09)
+
+### 新增与优化
+
+- 姿态编辑器新增关节轨道视频补全：基于 CPU 光流在手工关键帧之间自动追踪单个关节（单次最多 600 帧），补全区间的端点必须为手工关键帧，支持 `joint` / `set_joint` 两种轨道类型，并提供逐帧失败提示。
+- 姿态编辑器新增帧缓存与追踪结果合并，已手工调整的关键帧不会被覆盖（pose-frame-cache.js、video-tracking.js）。
+- 姿态编辑器、视频编辑器前端整体增强：编辑器交互、样式、视频同步预览优化（editor.js / editor.css / editor.html / pose-core.js）。
+- 姿态核心与路由增强（nodes.py / pose_core.py / routes.py），新增追踪接口请求校验与中文错误提示。
+- 新增测试：`tests/test_pose_buffers.mjs`、`tests/test_pose_video_tracking.mjs`、`_xzg_pose/tests/test_video_tracking.py`。
+- 若干节点 UI 与快捷键细节优化（node_favorites、big_display、group、shortcuts、slider、theme 等）。
+- 中英文节点描述（locales/nodeDefs.json）同步更新。
+
+### 发布
+
+- `pyproject.toml` / `extension.json` 版本提升至 `24.0.0`；推送 `v24.0.0` 标签触发 GitHub Release 和 Comfy Registry 发布。
 ## v23.0.8 (2026-10-08)
 
 ### 新增与优化

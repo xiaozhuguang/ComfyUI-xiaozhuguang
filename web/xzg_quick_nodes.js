@@ -503,7 +503,8 @@ class XZGQuickNodes {
             const isQuick = self.isQuickNode(nodeType);
             
             const quickNodeOption = {
-                content: isQuick ? '<span style="color:#FFD700;">⭐ ' + xzgT('从快速连线移除','Remove from Quick Links') + '</span>' : '<span style="color:#FFD700;">☆ ' + xzgT('添加到快速连线','Add to Quick Links') + '</span>',
+                content: isQuick ? '⭐ ' + xzgT('从快速连线移除','Remove from Quick Links') : '☆ ' + xzgT('添加到快速连线','Add to Quick Links'),
+                color: '#FFD700',
                 callback: () => {
                     if (isQuick) {
                         self.removeQuickNode(nodeType);
