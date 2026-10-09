@@ -4,6 +4,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 import { xzgT } from "./xzg_i18n.js";
+import { updateVramState } from "./xzg_vram.js";
 
 /**
  * 悬浮窗系统监控（xiaozhuguang）
@@ -405,14 +406,20 @@ const XZG_CSS = `
 .xzg-monitor-toolbar.xzg-compact.xzg-brand-intro::before{content:"";position:absolute;inset:-60% -35%;z-index:-1;pointer-events:none;background:linear-gradient(105deg,transparent 38%,rgba(94,218,255,.08) 44%,rgba(255,255,255,.72) 50%,rgba(203,127,255,.22) 54%,transparent 61%);transform:translateX(-65%);animation:xzg-brand-scan 3.2s .25s ease-in-out both;}
 .xzg-brand-intro-content{display:flex;align-items:center;justify-content:center;gap:10px;white-space:nowrap;animation:xzg-brand-wordmark 5s ease both;transition:opacity .55s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .55s ease;}
 .xzg-monitor-toolbar.xzg-brand-intro-exit .xzg-brand-intro-content{opacity:0;transform:translateY(-8px) scale(.96);filter:blur(5px);transition:opacity .65s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .65s ease;}
-.xzg-brand-monitor-enter{animation:xzg-monitor-content-in .75s cubic-bezier(.22,1,.36,1) both;}
+.xzg-brand-monitor-enter > #xzg-toolbar-run-time,.xzg-brand-monitor-enter > #xzg-toolbar-monitor-stats{animation:xzg-monitor-content-in .75s cubic-bezier(.22,1,.36,1) both;}
+.xzg-monitor-toolbar.xzg-compact{width:min(var(--xzg-content-width,560px),76vw)!important;min-width:min(var(--xzg-content-width,560px),76vw)!important;max-width:min(var(--xzg-content-width,560px),76vw)!important;flex:0 0 auto!important;padding:0 10px!important;}
+.xzg-brand-intro-content{max-width:100%;min-width:0;}
+.xzg-brand-intro-name{font-size:var(--xzg-url-font-size,15px)!important;letter-spacing:.04em!important;}
+.xzg-monitor-toolbar.xzg-compact #xzg-toolbar-monitor-stats{flex:0 1 auto;min-width:0;}
+.xzg-monitor-toolbar.xzg-compact .xzg-vram-summary{flex:1 1 auto;max-width:none!important;text-align:center;}
+.xzg-monitor-toolbar.xzg-compact .xzg-vram-button{margin-left:0;padding-left:8px!important;border-left:1px solid var(--xzg-capsule-separator,#4c5360)!important;border-radius:0!important;width:36px!important;flex-basis:36px!important;}
 .xzg-monitor-reveal-scan{position:absolute;inset:-60% -35%;z-index:100;pointer-events:none;background:linear-gradient(105deg,transparent 38%,rgba(94,218,255,.08) 44%,rgba(255,255,255,.92) 50%,rgba(203,127,255,.28) 54%,transparent 61%);transform:translateX(-75%);animation:xzg-monitor-reveal-scan 3.4s .05s ease-in-out both;}
 @keyframes xzg-monitor-content-in{from{opacity:0;transform:translateY(7px);filter:blur(4px)}to{opacity:1;transform:none;filter:none}}
 @keyframes xzg-monitor-reveal-scan{0%{transform:translateX(-70%);opacity:0}14%{opacity:1}82%{opacity:.8}100%{transform:translateX(70%);opacity:0}}
 .xzg-brand-intro-mark{width:19px;height:19px;flex:none;border:1px solid rgba(151,214,255,.8);border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff 0 7%,#a8ecff 10%,#7b8cff 42%,rgba(65,224,239,.12) 72%);box-shadow:0 0 8px #72d9ff,0 0 18px rgba(131,116,255,.72);animation:xzg-brand-core .9s ease-in-out infinite alternate;}
 .xzg-brand-intro-name{font:700 15px/1 'Segoe UI',system-ui,sans-serif;letter-spacing:.075em;background:linear-gradient(90deg,#f5fbff,#9eeaff 35%,#d5b4ff 68%,#ffe9ae);color:transparent;background-clip:text;-webkit-background-clip:text;text-shadow:0 0 14px rgba(119,187,255,.26);}
 .xzg-brand-intro-caption{font:500 9px/1 'Segoe UI',system-ui,sans-serif;letter-spacing:.22em;color:rgba(204,222,247,.68);text-transform:uppercase;}
-@keyframes xzg-brand-capsule-in{from{opacity:0;transform:translateY(-5px) scale(.94);filter:blur(4px)}to{opacity:1;transform:none;filter:none}}
+@keyframes xzg-brand-capsule-in{from{opacity:0;filter:blur(4px)}to{opacity:1;filter:none}}
 @keyframes xzg-brand-scan{0%{transform:translateX(-65%);opacity:0}18%{opacity:1}82%{opacity:.8}100%{transform:translateX(65%);opacity:0}}
 @keyframes xzg-brand-core{to{transform:scale(1.16);filter:hue-rotate(32deg);box-shadow:0 0 12px #72d9ff,0 0 25px rgba(131,116,255,.9)}}
 @keyframes xzg-brand-shine{to{background-position:200% center}}
@@ -430,10 +437,10 @@ const XZG_CSS = `
 .xzg-monitor-toolbar.xzg-compact #xzg-toolbar-monitor-stats::-webkit-scrollbar{display:none;}
 .xzg-monitor-toolbar.xzg-orb #xzg-toolbar-monitor-stats{display:none;}
 .xzg-monitor-toolbar.xzg-compact.xzg-has-monitor-stats:not(.xzg-orb) #xzg-toolbar-run-time{box-sizing:content-box;padding-right:10px;border-right:1px solid var(--xzg-capsule-separator);}
-.xzg-monitor-toolbar.xzg-compact .xzg-cmp{display:flex;align-items:center;gap:8px;width:max-content;font-size:15px;line-height:1.6;white-space:nowrap;}
+.xzg-monitor-toolbar.xzg-compact .xzg-cmp{display:flex;align-items:center;gap:0;width:max-content;font-size:15px;line-height:1.6;white-space:nowrap;}
 .xzg-monitor-toolbar.xzg-compact .xzg-cmp b{font-weight:600;}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 0;border:0;border-radius:0;background:transparent;cursor:default;}
-.xzg-monitor-toolbar.xzg-compact .xzg-chip+.xzg-chip{margin-left:10px;padding-left:10px;border-left:1px solid var(--xzg-capsule-separator);}
+.xzg-monitor-toolbar.xzg-compact .xzg-chip+.xzg-chip{margin-left:7px;padding-left:7px;border-left:1px solid var(--xzg-capsule-separator);}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip-gpu b{color:var(--xzg-gpu-label);}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip-cpu b{color:var(--xzg-cpu-label);}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip-mem b{color:var(--xzg-mem-label);}
@@ -442,7 +449,7 @@ const XZG_CSS = `
 .xzg-monitor-toolbar.xzg-compact .xzg-v[data-xzg-metric="gpu_vram"]{margin-left:-5px;}
 .xzg-monitor-toolbar.xzg-compact .xzg-run-time{display:inline-block;min-width:54px;color:var(--xzg-timer-color,#DCC85B);font:600 20px/1 'Segoe UI',system-ui,sans-serif;font-variant-numeric:tabular-nums;text-align:center;white-space:nowrap;}
 .xzg-monitor-toolbar.xzg-compact .xzg-run-time:not(.xzg-lcd){color:#fff;font-size:22px;filter:none;}
-.xzg-monitor-toolbar.xzg-compact .xzg-run-time.xzg-lcd{display:inline-flex;align-items:center;gap:3px;min-width:60px;filter:none;transform:scale(var(--xzg-run-lcd-scale, .86));transform-origin:center;}
+.xzg-monitor-toolbar.xzg-compact .xzg-run-time.xzg-lcd{display:inline-flex;align-items:center;gap:3px;min-width:60px;filter:none;transform:scale(var(--xzg-run-lcd-scale, 1));transform-origin:center;}
 .xzg-run-time .xzg-lcd-digit{position:relative;display:inline-block;width:12px;height:22px;flex:none;}
 .xzg-run-time .xzg-lcd-seg{position:absolute;display:block;background:transparent;border:1px solid transparent;border-radius:2px;box-sizing:border-box;}
 .xzg-run-time .xzg-lcd-seg.on{background:var(--xzg-timer-color,#DCC85B);border-color:var(--xzg-timer-color,#DCC85B);box-shadow:0 0 3px var(--xzg-timer-glow-strong,rgba(220,200,91,.65)),0 0 7px var(--xzg-timer-glow,rgba(220,200,91,.34));}
@@ -807,8 +814,8 @@ function applyTimerEffect() {
     host.style.setProperty("--xzg-timer-dim-border", rgba(.12));
     host.style.setProperty("--xzg-timer-glow", rgba(effect.glow));
     host.style.setProperty("--xzg-timer-glow-strong", rgba(effect.activeGlow));
-    // 顶部胶囊数字时钟缩放（基准 .86，按字体因子缩放）
-    host.style.setProperty("--xzg-run-lcd-scale", String(.86 * fontScale));
+    // Keep the initial 22px digit size when timer styling is applied later.
+    host.style.setProperty("--xzg-run-lcd-scale", String(fontScale));
   }
 }
 
@@ -1260,13 +1267,15 @@ function createFloatWindow() {
       for (const [gpuPosition, gpu] of gpus.entries()) {
         const gpuIndex = String(gpu.index ?? gpuPosition);
         let values = "";
-        if (_display.gpu_util) values += valueHtml("gpu_util", gpu.util, "%", pctColor(gpu.util, gpu.temp), 4.6, 0, gpuIndex);
-        if (_display.gpu_temp) values += valueHtml("gpu_temp", gpu.temp, "°", pctColor(0, gpu.temp), 4.2, 0, gpuIndex);
+        if (_display.gpu_util) values += valueHtml("gpu_util", gpu.util, "%", pctColor(gpu.util, gpu.temp), 4, 0, gpuIndex);
+        if (_display.gpu_temp) values += valueHtml("gpu_temp", gpu.temp, "°", pctColor(0, gpu.temp), 3, 0, gpuIndex);
         if (_display.gpu_vram) {
           const pair = fmtMemPair(gpu.vram_used_mb, gpu.vram_total_mb);
-          values += `<span class="xzg-v" data-xzg-metric="gpu_vram" data-xzg-gpu-index="${esc(gpuIndex)}" style="min-width:6.5ch">${pair}</span>`;
+          const vramDigits = Math.max(1, String(Math.ceil(Number(gpu.vram_total_mb || 0) / 1024)).length);
+          const vramWidth = Math.max(3, vramDigits) + vramDigits + 1;
+          values += `<span class="xzg-v" data-xzg-metric="gpu_vram" data-xzg-gpu-index="${esc(gpuIndex)}" style="min-width:${vramWidth}ch">${pair}</span>`;
         }
-        if (_display.gpu_power && gpu.power_w != null) values += valueHtml("gpu_power", gpu.power_w, "W", "#ffd666", 5.5, 0, gpuIndex);
+        if (_display.gpu_power && gpu.power_w != null) values += valueHtml("gpu_power", gpu.power_w, "W", "#ffd666", 4, 0, gpuIndex);
         if (values) parts.push(`<span class="xzg-chip xzg-chip-gpu"><b>GPU${multi ? gpu.index ?? "" : ""}</b>${values}</span>`);
       }
     } else if (_display.gpu_util || _display.gpu_temp || _display.gpu_vram || _display.gpu_power) {
@@ -1276,11 +1285,13 @@ function createFloatWindow() {
     let cpuValues = "";
     if (_display.cpu_util) {
       const cpuUtil = cpu.util == null ? null : Math.max(0, Math.min(100, Number(cpu.util)));
-      cpuValues += valueHtml("cpu_util", cpuUtil, "%", pctColor(cpuUtil));
+      cpuValues += valueHtml("cpu_util", cpuUtil, "%", pctColor(cpuUtil), 4);
     }
     if (cpuValues) parts.push(`<span class="xzg-chip xzg-chip-cpu"><b>CPU</b>${cpuValues}</span>`);
     if (_display.mem_used && data?.mem) {
-      parts.push(`<span class="xzg-chip xzg-chip-mem"><b>内存</b><span class="xzg-v" data-xzg-metric="mem_used">${fmtMemPair(data.mem.used_mb, data.mem.total_mb)}</span></span>`);
+      const totalDigits = Math.max(1, String(Math.ceil(Number(data.mem.total_mb || 0) / 1024)).length);
+      const memoryWidth = totalDigits * 2 + 1;
+      parts.push(`<span class="xzg-chip xzg-chip-mem"><b>内存</b><span class="xzg-v" data-xzg-metric="mem_used" style="min-width:${memoryWidth}ch">${fmtMemPair(data.mem.used_mb, data.mem.total_mb)}</span></span>`);
     }
     _runTimerBtn?.classList.toggle("xzg-has-monitor-stats", parts.length > 0);
     const content = parts.join("") || (_display.run_timer !== false ? "" : "<span style='color:#8b8f9a'>无可显示项目</span>");
@@ -1289,6 +1300,7 @@ function createFloatWindow() {
 
   let _lastData = null;
   function render(data) {
+    updateVramState(data?.vram_reservation);
     _lastData = data;
     captureRunMetrics(data);
     const firstResponse = !_monitorInitialized;
@@ -1327,6 +1339,7 @@ function createFloatWindow() {
       statsEl.innerHTML = `<div class="xzg-note">⚠ 渲染出错: ${esc(e && e.message ? e.message : e)}</div>`;
     }
     // 首次数据到达后等待片头最短展示时长，再交给实时监测内容。
+    fitMonitorCapsuleWidth();
     const introBtn = document.getElementById(XZG_RUN_TIMER_BTN_ID);
     if (introBtn?.classList.contains("xzg-brand-intro")) {
       const introMinDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 5000;
@@ -2621,6 +2634,39 @@ function buildMenuButton() {
   return btn;
 }
 
+function fitMonitorCapsuleWidth() {
+  const btn = document.getElementById(XZG_RUN_TIMER_BTN_ID);
+  if (!btn) return;
+  const metrics = document.querySelector("#xzg-stats .xzg-cmp");
+  if (metrics) {
+    // Measure the normal metrics even while the preparation message hides their host.
+    const probe = metrics.cloneNode(true);
+    probe.style.cssText += ";position:fixed;visibility:hidden;display:flex;width:max-content;left:-10000px;";
+    btn.appendChild(probe);
+    const metricsWidth = probe.getBoundingClientRect().width;
+    probe.remove();
+    const timer = btn.querySelector("#xzg-toolbar-run-time");
+    const timerWidth = _display.run_timer === false ? 0 : Math.max(76, timer?.getBoundingClientRect().width || 0);
+    // Padding, control button and gaps are included; reserve timer digit growth.
+    const width = Math.ceil(metricsWidth + timerWidth + 36 + 16 + 22);
+    const layoutKey = JSON.stringify(_display);
+    if (btn._xzgWidthLayoutKey !== layoutKey) {
+      btn._xzgWidthLayoutKey = layoutKey;
+      btn._xzgMeasuredWidth = width;
+    } else btn._xzgMeasuredWidth = Math.max(btn._xzgMeasuredWidth || 0, width);
+    btn.style.setProperty("--xzg-content-width", `${btn._xzgMeasuredWidth}px`);
+  }
+  const url = btn.querySelector(".xzg-brand-intro-name");
+  if (url) {
+    const canvas = fitMonitorCapsuleWidth.canvas ||= document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    context.font = "700 15px 'Segoe UI',system-ui,sans-serif";
+    const width = context.measureText(url.textContent).width + url.textContent.length * .6;
+    const available = Math.max(1, btn.clientWidth - 22 - 19 - 10);
+    btn.style.setProperty("--xzg-url-font-size", `${Math.min(15, 15 * available / width)}px`);
+  }
+}
+
 function buildRunTimerButton() {
   const btn = document.createElement("div");
   btn.id = XZG_RUN_TIMER_BTN_ID;
@@ -2654,6 +2700,7 @@ function buildRunTimerButton() {
     if (_float) _float.setToolbarHosts(statsHost, timeHost);
   }
   updateRunTimerButton();
+  requestAnimationFrame(fitMonitorCapsuleWidth);
   return btn;
 }
 

@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 import warnings
+from . import xzg_vram as _vram
 
 from ctypes import wintypes
 
@@ -291,6 +292,7 @@ def _system_stats():
     gpus = _gpu_stats()
     return {
         "time": time.time(),
+        "vram_reservation": _vram.snapshot(),
         "gpu": {
             "available": len(gpus) > 0,
             "gpus": gpus,

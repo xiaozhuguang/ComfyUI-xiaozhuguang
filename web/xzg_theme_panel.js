@@ -28,6 +28,7 @@ const XZG_EXPORT_CATEGORIES = [
 function xzgExportCategoryForKey(key) {
     // Internal cloud snapshots combine several selectable categories; omit them from export
     // so they cannot smuggle unchecked categories into an otherwise granular backup.
+    if (key === "xzg_vram_settings") return null;
     if (key === "xzg_favorites_state" || key === "xzg_ui_state") return null;
     if (key === "xzg_audio_media_library_geometry") return "audioLibrary";
     if (key === "xzg_video_media_library_geometry") return "videoLibrary";
