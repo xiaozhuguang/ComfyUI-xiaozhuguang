@@ -5951,12 +5951,18 @@ app.registerExtension({
                     pointer-events: none;
                 `;
                 dialog.innerHTML = `
-                    <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 380px; margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
+                    <style>
+                        .nf-selector-settings-dialog .nf-dialog-body label,
+                        .nf-selector-settings-dialog .nf-dialog-body span:not(.nf-drag-handle) {
+                            font-size: 12px !important;
+                        }
+                    </style>
+                    <div class="nf-dialog nf-selector-settings-dialog" style="pointer-events: auto; max-height: 85vh; width: 480px; max-width: calc(100vw - 40px); margin: 0; display: flex; flex-direction: column; position: absolute; top: 50%; right: 20px; transform: translateY(-50%);">
                         <div class="nf-dialog-title nf-dialog-drag-handle" style="cursor: move;">${xzgT('设置标签','Label Settings')}</div>
                         <div class="nf-dialog-body" style="overflow-y: auto; padding: 12px 16px; max-height: 520px;">
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <label>${xzgT('标签颜色与方向：','Label color & direction:')}</label>
-                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;">
+                                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; white-space: nowrap; overflow-x: auto; margin-bottom: 10px;">
                                     <input type="color" id="nf-color-1" value="${colors.color1}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('颜色','Color')} 1" />
                                     <input type="color" id="nf-color-2" value="${colors.color2}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('颜色','Color')} 2" />
                                     <input type="color" id="nf-color-3" value="${colors.color3}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('颜色','Color')} 3" />
@@ -5965,7 +5971,7 @@ app.registerExtension({
                                         <option value="180deg" ${colors.direction === '180deg' ? 'selected' : ''}>↓</option>
                                         <option value="radial" ${colors.direction === 'radial' ? 'selected' : ''}>●</option>
                                     </select>
-                                    <span style="display: flex; align-items: center; gap: 6px;">
+                                    <span style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
                                         <label style="font-size: 12px; color: #aaa;">${xzgT('标签底色：','Label background:')}</label>
                                         <input type="color" id="nf-inactive-color" value="${settings.inactiveColor || '#2a2a2a'}" style="width: 28px; height: 28px; padding: 2px; border: 1px solid #444; border-radius: 4px; background: #2a2a2a; cursor: pointer;" title="${xzgT('标签底色','Label Background')}" />
                                         <label style="font-size: 12px; color: #aaa;">${xzgT('文字颜色：','Text color:')}</label>

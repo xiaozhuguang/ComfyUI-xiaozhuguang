@@ -298,8 +298,6 @@ function openBoolSettingsPanel(node) {
     const falseWidth = s.widths?.false !== undefined ? s.widths.false : s.btnWidth;
     const trueWidth = s.widths?.true !== undefined ? s.widths.true : s.btnWidth;
 
-    const btnHeightCtrl = mkRange(30, 80, 1, s.btnHeight);
-    addRow(xzgT('按钮高度','Button Height'), btnHeightCtrl.wrap);
 
     const falseWidthCtrl = mkRange(55, 300, 1, falseWidth);
     addRow(xzgT('左标签宽度','Left Label Width'), falseWidthCtrl.wrap);
@@ -465,7 +463,6 @@ function openBoolSettingsPanel(node) {
     function applyPreview() {
         if (_initializing) return;
         const ns = JSON.parse(JSON.stringify(s));
-        ns.btnHeight = clamp(parseInt(btnHeightCtrl.inp.value), 30, 80);
         const falseW = clamp(parseInt(falseWidthCtrl.inp.value), 55, 300);
         const trueW = clamp(parseInt(trueWidthCtrl.inp.value), 55, 300);
         ns.widths = { false: falseW, true: trueW };
@@ -495,7 +492,7 @@ function openBoolSettingsPanel(node) {
         node.setDirtyCanvas(true, true);
     }
 
-    [btnHeightCtrl, falseWidthCtrl, trueWidthCtrl, gapCtrl, fontSizeCtrl].forEach(ctrl => {
+    [falseWidthCtrl, trueWidthCtrl, gapCtrl, fontSizeCtrl].forEach(ctrl => {
         updateRangeFill(ctrl.inp);
         ctrl.inp.addEventListener("input", () => {
             ctrl.val.textContent = ctrl.inp.value;

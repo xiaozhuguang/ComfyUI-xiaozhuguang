@@ -5,6 +5,7 @@ import { api } from "../../../scripts/api.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 import { xzgT } from "./xzg_i18n.js";
 import { updateVramState } from "./xzg_vram.js";
+import { showRunAnalysisPicker } from "./xzg_monitor_analysis.js";
 
 /**
  * 悬浮窗系统监控（xiaozhuguang）
@@ -36,10 +37,10 @@ const XZG_DISPLAY_KEY = "xzg-display-v1";
 const MONITOR_METRICS = [
   { key: "gpu_temp", label: "GPU 温度", unit: "°C", color: (v) => pctColor(0, v), get: (d) => d?.gpu?.gpus?.[0]?.temp },
   { key: "gpu_util", label: "GPU 利用率", unit: "%", color: (v, d) => pctColor(v, d?.gpu?.gpus?.[0]?.temp), get: (d) => d?.gpu?.gpus?.[0]?.util },
-  { key: "gpu_vram", label: "GPU 显存占用", unit: "G", color: "#6fb3ff", get: (d) => { const g = d?.gpu?.gpus?.[0]; return g ? g.vram_used_mb / 1024 : null; } },
-  { key: "gpu_power", label: "GPU 功耗", unit: "W", color: "#ffd666", get: (d) => d?.gpu?.gpus?.[0]?.power_w },
+  { key: "gpu_vram", label: "GPU 显存占用", unit: "G", color: (_, d) => vramColor(d?.gpu?.gpus?.[0]?.vram_used_mb, d?.gpu?.gpus?.[0]?.vram_total_mb), get: (d) => { const g = d?.gpu?.gpus?.[0]; return g ? g.vram_used_mb / 1024 : null; } },
+  { key: "gpu_power", label: "GPU 功耗", unit: "W", color: "#FF6B6B", get: (d) => d?.gpu?.gpus?.[0]?.power_w },
   { key: "cpu_util", label: "CPU 使用率", unit: "%", color: (v) => pctColor(v), get: (d) => d?.cpu?.util },
-  { key: "mem_used", label: "内存占用", unit: "G", color: "#c99cff", get: (d) => d?.mem ? d.mem.used_mb / 1024 : null },
+  { key: "mem_used", label: "内存占用", unit: "G", color: "#c7a6ef", get: (d) => d?.mem ? d.mem.used_mb / 1024 : null },
 ];
 const XZG_DISPLAY_DEFAULT = {
   gpu_util: true,
@@ -353,6 +354,8 @@ function xzgWhenUiReady(cb) {
 // ---------------------------------------------------------------------------
 
 const XZG_CSS = `
+.xzg-run-chart-window{cursor:move;touch-action:none;}
+html.xzg-monitor-subgraph #xzg-run-timer-menu-btn{display:none!important;}
 #xzg-float{position:fixed;right:16px;bottom:60px;z-index:90001;width:166px;
   color:#e8e8e8;font:12px/1.5 'Segoe UI',system-ui,-apple-system,sans-serif;
   user-select:none;overflow:hidden;cursor:move;}
@@ -395,8 +398,8 @@ const XZG_CSS = `
   font-size:10px;line-height:1;color:transparent;flex:none;}
 .xzg-menu-it.on{color:#ffd76a;}
 .xzg-menu-it.on .xzg-menu-box{border-color:#d4af37;background:rgba(212,175,55,0.20);color:#ffd76a;}
-.xzg-run-chart-window select,.xzg-run-chart-window select:focus{background-color:#303030!important;color:#eee!important;border:1px solid rgba(255,255,255,.24)!important;outline:none!important;box-shadow:none!important;}
-.xzg-run-chart-window select option{background-color:#303030!important;color:#eee!important;}
+.xzg-run-chart-window select,.xzg-run-chart-window select:focus{background-color:#303030!important;color:var(--xzg-option-color,#eee)!important;border:1px solid rgba(255,255,255,.24)!important;outline:none!important;box-shadow:none!important;}
+.xzg-run-chart-window select option{background-color:#303030!important;color:var(--xzg-option-color,#eee)!important;}
 .xzg-chart-split-handle::before{content:"";position:absolute;top:4px;bottom:4px;left:2px;width:2px;border-radius:2px;background:rgba(255,255,255,.28);transition:background .15s,transform .15s;}
 .xzg-chart-split-handle:hover::before,.xzg-chart-split-handle:focus-visible::before{background:#DCC85B;transform:scaleX(1.5);}
 .xzg-monitor-toolbar.xzg-compact{display:flex;align-items:center;gap:8px;flex:0 1 auto;min-width:0;max-width:min(76vw,760px);height:36px;padding:0 10px;box-sizing:border-box;border:1px solid transparent;border-radius:999px;background:linear-gradient(var(--xzg-capsule-bg,#171a20),var(--xzg-capsule-bg,#171a20)) padding-box,var(--xzg-capsule-edge,linear-gradient(90deg,#6d9fc5,#cda56d,#9582bd)) border-box;color:#e8e8e8;user-select:none;}
@@ -404,10 +407,11 @@ const XZG_CSS = `
   --xzg-capsule-bg:#171c25;--xzg-capsule-edge:linear-gradient(100deg,#5698ca 0%,#718bb0 37%,#cda56d 68%,#9b83c1 100%);--xzg-capsule-separator:rgba(189,202,219,.27);}
 .xzg-monitor-toolbar.xzg-compact.xzg-brand-intro{justify-content:center;min-width:min(310px,76vw);max-width:min(420px,76vw);padding:0 18px;overflow:hidden;isolation:isolate;position:relative;background:linear-gradient(115deg,#10151f,#1b2030 48%,#151923) padding-box,var(--xzg-capsule-edge) border-box;box-shadow:0 0 18px rgba(106,160,220,.24),inset 0 0 18px rgba(128,156,220,.08);transition:min-width .85s cubic-bezier(.22,1,.36,1),max-width .85s cubic-bezier(.22,1,.36,1),padding .85s cubic-bezier(.22,1,.36,1),box-shadow .85s ease,background .85s ease;animation:xzg-brand-capsule-in 1.1s cubic-bezier(.2,.8,.2,1) both;}
 .xzg-monitor-toolbar.xzg-compact.xzg-brand-intro::before{content:"";position:absolute;inset:-60% -35%;z-index:-1;pointer-events:none;background:linear-gradient(105deg,transparent 38%,rgba(94,218,255,.08) 44%,rgba(255,255,255,.72) 50%,rgba(203,127,255,.22) 54%,transparent 61%);transform:translateX(-65%);animation:xzg-brand-scan 3.2s .25s ease-in-out both;}
-.xzg-brand-intro-content{display:flex;align-items:center;justify-content:center;gap:10px;white-space:nowrap;animation:xzg-brand-wordmark 5s ease both;transition:opacity .55s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .55s ease;}
+.xzg-brand-intro-content{display:flex;align-items:center;justify-content:center;gap:10px;white-space:nowrap;animation:xzg-brand-wordmark 3s ease both;transition:opacity .55s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .55s ease;}
 .xzg-monitor-toolbar.xzg-brand-intro-exit .xzg-brand-intro-content{opacity:0;transform:translateY(-8px) scale(.96);filter:blur(5px);transition:opacity .65s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .65s ease;}
 .xzg-brand-monitor-enter > #xzg-toolbar-run-time,.xzg-brand-monitor-enter > #xzg-toolbar-monitor-stats{animation:xzg-monitor-content-in .75s cubic-bezier(.22,1,.36,1) both;}
 .xzg-monitor-toolbar.xzg-compact{width:min(var(--xzg-content-width,560px),76vw)!important;min-width:min(var(--xzg-content-width,560px),76vw)!important;max-width:min(var(--xzg-content-width,560px),76vw)!important;flex:0 0 auto!important;padding:0 10px!important;}
+.xzg-monitor-toolbar.xzg-compact.xzg-brand-intro{width:min(var(--xzg-intro-width,560px),76vw)!important;min-width:min(var(--xzg-intro-width,560px),76vw)!important;max-width:min(var(--xzg-intro-width,560px),76vw)!important;padding:0 18px!important;}
 .xzg-brand-intro-content{max-width:100%;min-width:0;}
 .xzg-brand-intro-name{font-size:var(--xzg-url-font-size,15px)!important;letter-spacing:.04em!important;}
 .xzg-monitor-toolbar.xzg-compact #xzg-toolbar-monitor-stats{flex:0 1 auto;min-width:0;}
@@ -441,10 +445,14 @@ const XZG_CSS = `
 .xzg-monitor-toolbar.xzg-compact .xzg-cmp b{font-weight:600;}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 0;border:0;border-radius:0;background:transparent;cursor:default;}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip+.xzg-chip{margin-left:7px;padding-left:7px;border-left:1px solid var(--xzg-capsule-separator);}
-.xzg-monitor-toolbar.xzg-compact .xzg-chip-gpu b{color:var(--xzg-gpu-label);}
-.xzg-monitor-toolbar.xzg-compact .xzg-chip-cpu b{color:var(--xzg-cpu-label);}
-.xzg-monitor-toolbar.xzg-compact .xzg-chip-mem b{color:var(--xzg-mem-label);}
+.xzg-monitor-toolbar.xzg-compact .xzg-chip b{color:#c5c7cc;}
 .xzg-monitor-toolbar.xzg-compact .xzg-v{display:inline-block;position:relative;text-align:right;font-variant-numeric:tabular-nums;color:var(--xzg-chip-text);}
+.xzg-monitor-toolbar.xzg-compact .xzg-chip-mem .xzg-v{color:#c7a6ef;}
+.xzg-monitor-toolbar.xzg-compact .xzg-vram-value{text-shadow:0 0 8px rgba(255,215,0,.6);}
+.xzg-monitor-toolbar.xzg-compact .xzg-vram-glowing{animation:xzg-vram-glow 2.8s ease-in-out infinite;}
+@keyframes xzg-vram-glow{0%,100%{text-shadow:0 0 6px rgba(255,215,0,.45)}50%{text-shadow:0 0 10px rgba(255,215,0,.75)}}
+@media(prefers-reduced-motion:reduce){.xzg-monitor-toolbar.xzg-compact .xzg-vram-glowing{animation:none;}}
+
 .xzg-monitor-toolbar.xzg-compact .xzg-v::after{content:"";position:absolute;inset:-6px -3px;}
 .xzg-monitor-toolbar.xzg-compact .xzg-v[data-xzg-metric="gpu_vram"]{margin-left:-5px;}
 .xzg-monitor-toolbar.xzg-compact .xzg-run-time{display:inline-block;min-width:54px;color:var(--xzg-timer-color,#DCC85B);font:600 20px/1 'Segoe UI',system-ui,sans-serif;font-variant-numeric:tabular-nums;text-align:center;white-space:nowrap;}
@@ -520,6 +528,8 @@ let _activeRunMetrics = null;
 const XZG_RUN_METRICS_TAIL_MS = 2000; // 工作流结束后继续记录 2 秒资源释放过程，不计入运行时长
 let _runMetricsTailTimer = null;
 let _lastRunMetrics = null;
+let _monitorGpus = [];
+let _monitorMemoryTotalMb = null;
 let _currentRunNode = null;
 let _runOwnerGraph = null;
 const XZG_RUN_METRICS_MAX_SAMPLES = 7200; // 最多缓存两小时，每秒约一个点
@@ -642,6 +652,10 @@ function captureRunMetrics(data) {
   }
   const cpu = data.cpu || {};
   const mem = data.mem || {};
+  const enabledMetrics = _activeRunMetrics.enabledMetrics || {};
+  _activeRunMetrics.gpuCapacityMb = gpus.map((gpu) => gpu?.vram_total_mb ?? null);
+  _activeRunMetrics.gpuPowerLimitsW = gpus.map((gpu) => gpu?.power_limit_w ?? null);
+  _activeRunMetrics.memoryTotalMb = mem.total_mb ?? null;
   // 只归属到 executing 事件确认仍处于执行中的节点；不要用可能滞留的 runningNodeId。
   const executionId = _currentRunNode?.id ?? null;
   const activeNode = executionId != null ? resolveExecutionNode(executionId) : null;
@@ -650,8 +664,13 @@ function captureRunMetrics(data) {
     : (_currentRunNode ? { ..._currentRunNode } : null);
   _activeRunMetrics.samples.push([
     Math.max(0, now - _activeRunMetrics.startedAt),
-    gpus.map((gpu) => [gpu?.util, gpu?.temp, gpu?.vram_used_mb, gpu?.power_w]),
-    [cpu.util, mem.used_mb],
+    gpus.map((gpu) => [
+      enabledMetrics.gpu_util ? gpu?.util : null,
+      enabledMetrics.gpu_temp ? gpu?.temp : null,
+      enabledMetrics.gpu_vram ? gpu?.vram_used_mb : null,
+      enabledMetrics.gpu_power ? gpu?.power_w : null,
+    ]),
+    [enabledMetrics.cpu_util ? cpu.util : null, enabledMetrics.mem_used ? mem.used_mb : null],
     sampledNode,
   ]);
   try { _liveRunChartRefresh?.(); } catch (error) { console.warn("[小珠光] 实时曲线刷新失败:", error); }
@@ -692,12 +711,17 @@ function beginRunMetricsCapture(startedAt = Date.now()) {
     status: "运行中",
     lastSourceTime: 0,
     lastCapturedAt: 0,
-    gpuNames: [],
-    gpuIds: [],
+    gpuNames: _monitorGpus.map((gpu, index) => String(gpu.name || `GPU ${index}`)),
+    gpuIds: _monitorGpus.map((gpu, index) => String(gpu.index ?? index)),
+    gpuCapacityMb: _monitorGpus.map((gpu) => gpu.vram_total_mb ?? null),
+    gpuPowerLimitsW: _monitorGpus.map((gpu) => gpu.power_limit_w ?? null),
+    memoryTotalMb: _monitorMemoryTotalMb,
+    enabledMetrics: Object.fromEntries(["gpu_util", "gpu_temp", "gpu_vram", "gpu_power", "cpu_util", "mem_used"].map((key) => [key, _display[key] !== false])),
     samples: [],
     nodeIntervals: [], // 独立记录执行区间，避免短节点落在两次资源采样之间
   };
   _currentRunNode = null;
+  _liveRunChartRefresh?.();
 }
 
 function finishRunNodeInterval(at = Date.now()) {
@@ -900,6 +924,21 @@ function stopRun(status) {
   }
   _run.startTs = 0;
   if (_onRunChange) _onRunChange();
+}
+
+// 独立于胶囊的显示模式和初始化，避免轮询/重建工具栏重新占用子图标签栏。
+function watchMonitorSubgraph() {
+  let wasInside = false;
+  const sync = () => {
+    const graph = app.canvas?.graph;
+    const inside = !!graph && !!app.graph && graph !== app.graph;
+    if (inside !== wasInside) {
+      document.documentElement.classList.toggle("xzg-monitor-subgraph", inside);
+      wasInside = inside;
+    }
+    requestAnimationFrame(sync);
+  };
+  sync();
 }
 
 function registerRunEvents() {
@@ -1239,17 +1278,8 @@ function createFloatWindow() {
     const otherChartMetric = { cpu_util: 0, mem_used: 1 };
     const metricIndex = key.startsWith("gpu_") ? (gpuChartMetric[key] ?? 0) : (otherChartMetric[key] ?? 0);
     const gpuId = parameter?.dataset.xzgGpuIndex || "0";
-    const latestRun = _activeRunMetrics || _runMetricsHistory[0] || _lastRunMetrics;
-    const gpuPosition = latestRun?.gpuIds?.findIndex((id) => String(id) === String(gpuId)) ?? 0;
-    const schemaVersion = Number(latestRun?.schemaVersion) || 1;
-    const cpuSampleIndex = schemaVersion >= 3 ? metricIndex : schemaVersion >= 2 ? (metricIndex === 1 ? 2 : metricIndex) : (metricIndex === 1 ? 3 : metricIndex);
-    const hasTwoSamples = (latestRun?.samples || []).filter((sample) => {
-      const value = key.startsWith("gpu_") ? sample[1]?.[Math.max(0, gpuPosition)]?.[metricIndex] : sample[2]?.[cpuSampleIndex];
-      return value != null && Number.isFinite(Number(value));
-    }).length >= 2;
-    if (!hasTwoSamples) return;
     const chartKey = key.startsWith("gpu_") ? `gpu:${gpuId}:${metricIndex}` : `cpu:${metricIndex}`;
-    showContextMenu(parameter, { chartKey, metricKey: key });
+    showContextMenu(parameter || statsEl, { chartKey, metricKey: key });
   });
 
   function renderCompact(data) {
@@ -1271,11 +1301,13 @@ function createFloatWindow() {
         if (_display.gpu_temp) values += valueHtml("gpu_temp", gpu.temp, "°", pctColor(0, gpu.temp), 3, 0, gpuIndex);
         if (_display.gpu_vram) {
           const pair = fmtMemPair(gpu.vram_used_mb, gpu.vram_total_mb);
+          const color = vramColor(gpu.vram_used_mb, gpu.vram_total_mb);
+          const glow = color === "#FFD700" ? " xzg-vram-glowing" : "";
           const vramDigits = Math.max(1, String(Math.ceil(Number(gpu.vram_total_mb || 0) / 1024)).length);
           const vramWidth = Math.max(3, vramDigits) + vramDigits + 1;
-          values += `<span class="xzg-v" data-xzg-metric="gpu_vram" data-xzg-gpu-index="${esc(gpuIndex)}" style="min-width:${vramWidth}ch">${pair}</span>`;
+          values += `<span class="xzg-v xzg-vram-value${glow}" data-xzg-metric="gpu_vram" data-xzg-gpu-index="${esc(gpuIndex)}" style="min-width:${vramWidth}ch;color:${color}">${pair}</span>`;
         }
-        if (_display.gpu_power && gpu.power_w != null) values += valueHtml("gpu_power", gpu.power_w, "W", "#ffd666", 4, 0, gpuIndex);
+        if (_display.gpu_power && gpu.power_w != null) values += valueHtml("gpu_power", gpu.power_w, "W", "#FF6B6B", 4, 0, gpuIndex);
         if (values) parts.push(`<span class="xzg-chip xzg-chip-gpu"><b>GPU${multi ? gpu.index ?? "" : ""}</b>${values}</span>`);
       }
     } else if (_display.gpu_util || _display.gpu_temp || _display.gpu_vram || _display.gpu_power) {
@@ -1302,6 +1334,9 @@ function createFloatWindow() {
   function render(data) {
     updateVramState(data?.vram_reservation);
     _lastData = data;
+    _monitorGpus = data?.gpu?.gpus || [];
+    _monitorMemoryTotalMb = data?.mem?.total_mb;
+    if (!_activeRunMetrics) _liveRunChartRefresh?.();
     captureRunMetrics(data);
     const firstResponse = !_monitorInitialized;
     _monitorInitialized = true;
@@ -1342,7 +1377,7 @@ function createFloatWindow() {
     fitMonitorCapsuleWidth();
     const introBtn = document.getElementById(XZG_RUN_TIMER_BTN_ID);
     if (introBtn?.classList.contains("xzg-brand-intro")) {
-      const introMinDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 5000;
+      const introMinDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 3000;
       const remaining = Math.max(0, introMinDuration - (Date.now() - _brandIntroStartedAt));
       if (remaining === 0) finishBrandIntro(introBtn);
     }
@@ -1495,7 +1530,8 @@ function refreshMenuBtn() {
   }
 }
 
-function closeContextMenu() {
+function closeContextMenu(explicitClose = false) {
+  if (_menuEl?._xzgChartWindow && !explicitClose) return;
   if (_menuEl) {
     if (_menuEl._xzgOutsideHandler) document.removeEventListener("pointerdown", _menuEl._xzgOutsideHandler, true);
     if (_menuEl._xzgKeyHandler) document.removeEventListener("keydown", _menuEl._xzgKeyHandler, true);
@@ -1507,10 +1543,12 @@ function closeContextMenu() {
 }
 
 function showContextMenu(btn, chartRequest = null) {
+  if (_menuEl?._xzgChartWindow) return;
   closeContextMenu();
   const isChartWindow = !!chartRequest;
   const anchor = btn || _menuBtn;
   const menu = document.createElement("div");
+  menu._xzgChartWindow = isChartWindow;
   menu.id = "xzg-menu";
   menu.className = "xzg-menu";
   menu.addEventListener("contextmenu", (event) => {
@@ -1561,6 +1599,7 @@ function showContextMenu(btn, chartRequest = null) {
       row.querySelector(".xzg-menu-box").textContent = _display[it.key] ? "✓" : "";
       if (_float) _float.rerender();
       if (it.key === "run_timer") updateRunTimerButton();
+      _liveRunChartRefresh?.();
     });
     menu.appendChild(row);
   });
@@ -1637,22 +1676,51 @@ function showContextMenu(btn, chartRequest = null) {
       _lastRunMetrics = null;
       _lastRunDuration = 0;
       const activeId = _activeRunMetrics?.id;
+      const selectedMetric = chartSelect.value;
+      chartHoverInfo = null;
+      chartCanvas.style.display = "block";
       populateRunSelector(activeId);
-      if (activeId) {
-        chartCanvas.style.display = "block";
-        populateRunChart(chartSelect.value);
-      } else {
-        chartChoices = [];
-        chartSelect.replaceChildren();
-        chartCanvas.getContext("2d")?.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
-        chartCanvas.style.display = "none";
-      }
+      populateRunChart(selectedMetric);
+      syncInlineClearButton();
       renderRunHistoryPopup();
       if (runHistoryPopup.isConnected) positionRunHistoryPopup();
     } catch (error) {
       console.warn("[小珠光] 清理曲线历史失败:", error);
     } finally {
       enableTargets();
+    }
+  };
+  const deleteRunMetricsRecord = async (id, button) => {
+    if (_activeRunMetrics?.id === id) return;
+    button.disabled = true;
+    try {
+      await _runMetricsRestorePromise;
+      const db = await openRunMetricsDb();
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction("runs", "readwrite");
+        transaction.objectStore("runs").delete(id);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error || new Error("删除曲线记录失败"));
+        transaction.onabort = () => reject(transaction.error || new Error("删除曲线记录已取消"));
+      });
+      _runMetricsHistory = _runMetricsHistory.filter((record) => record.id !== id);
+      if (_lastRunMetrics?.id === id) {
+        _lastRunMetrics = _runMetricsHistory[0] || null;
+        _lastRunDuration = Number(_lastRunMetrics?.durationMs) || 0;
+      }
+      const selectedId = runSelect.value;
+      const selectedMetric = chartSelect.value;
+      chartHoverInfo = null;
+      chartCanvas.style.display = "block";
+      populateRunSelector(selectedId);
+      populateRunChart(selectedMetric);
+      syncInlineClearButton();
+      renderRunHistoryPopup();
+      if (runHistoryPopup.isConnected) positionRunHistoryPopup();
+    } catch (error) {
+      console.warn("[小珠光] 删除曲线记录失败:", error);
+    } finally {
+      button.disabled = false;
     }
   };
   const syncRunPickerButton = () => {
@@ -1710,7 +1778,25 @@ function showContextMenu(btn, chartRequest = null) {
         runSelect.dispatchEvent(new Event("change", { bubbles: true }));
         closeRunHistoryPopup();
       });
-      runHistoryPopup.appendChild(row);
+      const entry = document.createElement("div");
+      entry.style.cssText = "display:flex;align-items:center;gap:4px;";
+      row.style.flex = "1";
+      row.style.minWidth = "0";
+      entry.appendChild(row);
+      if (_activeRunMetrics?.id !== option.value) {
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.textContent = "×";
+        deleteButton.title = "删除这条曲线记录";
+        deleteButton.setAttribute("aria-label", `删除 ${option.dataset.workflowName || option.textContent}`);
+        deleteButton.style.cssText = "flex:none;width:28px;height:28px;padding:0;border:0;border-radius:4px;background:transparent;color:#FF6B6B;font:22px/1 sans-serif;cursor:pointer;";
+        deleteButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void deleteRunMetricsRecord(option.value, deleteButton);
+        });
+        entry.appendChild(deleteButton);
+      }
+      runHistoryPopup.appendChild(entry);
     }
   };
   const outsideRunPopupHandler = (event) => {
@@ -1846,7 +1932,17 @@ function showContextMenu(btn, chartRequest = null) {
   const drawRunChart = () => {
     const ctx = chartCanvas.getContext("2d");
     if (!ctx) return;
-    const choice = chartChoices.find((entry) => entry.value === chartSelect.value);
+    const choice = chartChoices.find((entry) => entry.value === chartSelect.value) || { unit: "" };
+    if (choice?.kind === "gpu" && [2, 3].includes(choice.metric)) {
+      const gpu = _monitorGpus.find((gpu, index) => String(gpu.index ?? index) === String(choice.gpuId)
+        && (!choice.gpuName || gpu.name === choice.gpuName))
+        || _monitorGpus.find((gpu) => gpu.name === choice.gpuName);
+      const limit = choice.metric === 2 ? Number(gpu?.vram_total_mb) / 1024 : Number(gpu?.power_limit_w);
+      choice.fixedMax = limit > 0 ? limit : null;
+    } else if (choice?.kind === "cpu" && choice.metric === 1) {
+      const totalGb = Number(_monitorMemoryTotalMb) / 1024;
+      choice.fixedMax = totalGb > 0 ? totalGb : null;
+    }
     const makeSeriesPoints = (record, seriesChoice) => {
       if (!record || !seriesChoice) return [];
       let gpuIndex = seriesChoice.gpu;
@@ -1879,15 +1975,16 @@ function showContextMenu(btn, chartRequest = null) {
     ctx.clearRect(0, 0, w, h);
     ctx.font = "18px Segoe UI, sans-serif";
     ctx.textBaseline = "middle";
-    const yTickLabels = points.length >= 2 && choice
-      ? Array.from({ length: 5 }, (_, i) => {
-          let minY = Math.min(...points.map((point) => point.y));
-          let maxY = Math.max(...points.map((point) => point.y));
-          if (choice.fixedMax != null) { minY = choice.fixedMin || 0; maxY = choice.fixedMax; }
-          else { const span = Math.max(1, maxY - minY); minY = Math.max(0, minY - span * .12); maxY += span * .12; }
-          if (maxY <= minY) maxY = minY + 1;
-          return `${(maxY - (maxY - minY) * i / 4).toFixed(choice.decimals || 0)}${choice.unit || ""}`;
-        })
+    let minY = points.length ? Math.min(...points.map((point) => point.y)) : 0;
+    let maxY = points.length ? Math.max(...points.map((point) => point.y)) : 100;
+    if (choice.fixedMax != null) { minY = choice.fixedMin || 0; maxY = choice.fixedMax; }
+    else { const span = Math.max(1, maxY - minY); minY = Math.max(0, minY - span * .12); maxY += span * .12; }
+    if (maxY <= minY) maxY = minY + 1;
+    const tickMaxY = maxY;
+    if (choice.fixedMax != null && choice.unit !== "%") maxY += (maxY - minY) * .12;
+    const yTickLabels = choice
+      ? Array.from({ length: 5 }, (_, i) =>
+          `${(tickMaxY - (tickMaxY - minY) * i / 4).toFixed(choice.decimals || 0)}${choice.unit || ""}`)
       : [];
     const yLabelWidth = Math.max(0, ...yTickLabels.map((label) => ctx.measureText(label).width));
     pad.l = Math.ceil(10 + yLabelWidth + 7);
@@ -1896,20 +1993,11 @@ function showContextMenu(btn, chartRequest = null) {
     ctx.strokeStyle = "rgba(255,255,255,.11)";
     ctx.fillStyle = "#9ba3af";
     for (let i = 0; i <= 4; i++) {
-      const y = pad.t + plotH * i / 4;
+      const value = tickMaxY - (tickMaxY - minY) * i / 4;
+      const y = pad.t + plotH * (maxY - value) / (maxY - minY);
       ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
     }
-    if (points.length < 2) {
-      ctx.fillStyle = "#aaa"; ctx.textAlign = "center";
-      ctx.fillText("没有足够的采样点", w / 2, h / 2);
-      return;
-    }
-    let minY = Math.min(...points.map((point) => point.y));
-    let maxY = Math.max(...points.map((point) => point.y));
-    if (choice.fixedMax != null) { minY = choice.fixedMin || 0; maxY = choice.fixedMax; }
-    else { const span = Math.max(1, maxY - minY); minY = Math.max(0, minY - span * .12); maxY += span * .12; }
-    if (maxY <= minY) maxY = minY + 1;
-    const maxX = Math.max(points[points.length - 1].x, 1);
+    const maxX = Math.max(points.length ? points[points.length - 1].x : 60, 1);
     const unit = choice.unit || "";
     const getPointPosition = (point) => ({
       x: pad.l + plotW * point.x / maxX,
@@ -1917,8 +2005,8 @@ function showContextMenu(btn, chartRequest = null) {
     });
     ctx.textAlign = "right";
     for (let i = 0; i <= 4; i++) {
-      const value = maxY - (maxY - minY) * i / 4;
-      const y = pad.t + plotH * i / 4;
+      const value = tickMaxY - (tickMaxY - minY) * i / 4;
+      const y = pad.t + plotH * (maxY - value) / (maxY - minY);
       ctx.fillText(`${value.toFixed(choice.decimals || 0)}${unit}`, pad.l - 7, y);
     }
     ctx.textAlign = "center";
@@ -1928,6 +2016,11 @@ function showContextMenu(btn, chartRequest = null) {
       const labelHalfWidth = ctx.measureText(label).width / 2;
       const labelX = Math.max(pad.l + labelHalfWidth + 2, Math.min(w - pad.r - labelHalfWidth - 2, pad.l + plotW * i / 4));
       ctx.fillText(label, labelX, h - 14);
+    }
+    if (points.length < 2) {
+      ctx.fillStyle = "#aaa"; ctx.textAlign = "center";
+      ctx.fillText(!chartChoices.length ? "请在胶囊设置中启用监控指标" : _selectedRunMetrics ? "没有足够的采样点" : "暂无记录，运行工作流后可查看曲线", w / 2, h / 2);
+      return;
     }
     const nodeColor = (point) => getNodeColor(point.node) || choice.color || "#60c8ff";
     const drawSeries = (seriesPoints) => {
@@ -2061,7 +2154,7 @@ function showContextMenu(btn, chartRequest = null) {
       if (!choice) return 0;
       const values = chartDataPoints.map((point) => point.y);
       let minY = Math.min(...values); let maxY = Math.max(...values);
-      if (choice.fixedMax != null) { minY = choice.fixedMin || 0; maxY = choice.fixedMax; }
+      if (choice.fixedMax != null) { minY = choice.fixedMin || 0; maxY = choice.fixedMax * (choice.unit === "%" ? 1 : 1.12); }
       else { const span = Math.max(1, maxY - minY); minY = Math.max(0, minY - span * .12); maxY += span * .12; }
       if (maxY <= minY) maxY = minY + 1;
       const label = `${(maxY - (maxY - minY) * i / 4).toFixed(choice.decimals || 0)}${choice.unit || ""}`;
@@ -2148,34 +2241,49 @@ function showContextMenu(btn, chartRequest = null) {
     _selectedRunMetrics = (_activeRunMetrics?.id === runSelect.value ? _activeRunMetrics : null)
       || _runMetricsHistory.find((item) => item.id === runSelect.value)
       || _lastRunMetrics;
-    const record = _selectedRunMetrics;
-    if (!record) return;
+    const record = _selectedRunMetrics || {
+      samples: [],
+      gpuNames: _monitorGpus.length ? _monitorGpus.map((gpu, index) => gpu.name || `GPU ${index}`) : ["GPU 0"],
+      gpuIds: _monitorGpus.map((gpu, index) => String(gpu.index ?? index)),
+    };
     const first = record.samples.find((sample) => sample[1]?.length);
     const gpuCount = first?.[1]?.length || record.gpuNames.length || 0;
     const gpuMetrics = [
       [0, "利用率", "%", 100, "#53a9ff"], [1, "温度", "°C", null, "#ff794f"],
-      [2, "显存", "GB", null, "#aa82ff"], [3, "功率", "W", null, "#ffd35a"],
+      [2, "显存", "GB", null, "#FFD700"], [3, "功率", "W", null, "#FF6B6B"],
     ];
     for (let gpu = 0; gpu < gpuCount; gpu++) {
       for (const [metric, label, unit, fixedMax, color] of gpuMetrics) {
+        if (_display[["gpu_util", "gpu_temp", "gpu_vram", "gpu_power"][metric]] === false) continue;
         const gpuId = record.gpuIds?.[gpu] ?? String(gpu);
-        chartChoices.push({ value: `gpu:${gpuId}:${metric}`, label: `${record.gpuNames[gpu] || `GPU ${gpu}`} · ${label}`, kind: "gpu", gpu, gpuId, gpuName: record.gpuNames[gpu], metric, unit, fixedMax, color, decimals: unit === "GB" ? 1 : 0 });
+      chartChoices.push({ value: `gpu:${gpuId}:${metric}`, label: `${record.gpuNames.length > 1 ? `GPU ${gpuId}` : "GPU"} · ${label}`, kind: "gpu", gpu, gpuId, gpuName: record.gpuNames[gpu], metric, unit, fixedMax, color, decimals: unit === "GB" ? 1 : 0 });
       }
     }
     const cpuMetrics = [
       [0, "CPU 利用率", "%", 100, "#56d6b5"],
-      [1, "内存占用", "GB", null, "#86d69b"],
+      [1, "内存占用", "GB", null, "#c7a6ef"],
     ];
     for (const [metric, label, unit, fixedMax, color] of cpuMetrics) {
+      if (_display[["cpu_util", "mem_used"][metric]] === false) continue;
       chartChoices.push({ value: `cpu:${metric}`, label, kind: "cpu", metric, unit, fixedMax, color, decimals: unit === "GB" ? 1 : 0 });
     }
     for (const choice of chartChoices) {
+      const metricKey = choice.kind === "gpu"
+        ? ["gpu_util", "gpu_temp", "gpu_vram", "gpu_power"][choice.metric]
+        : ["cpu_util", "mem_used"][choice.metric];
+      const valueEl = [...document.querySelectorAll(`[data-xzg-metric="${metricKey}"]`)]
+        .find((el) => choice.kind !== "gpu" || el.dataset.xzgGpuIndex === String(choice.gpuId));
+      choice.textColor = metricKey === "gpu_vram" ? "#FFD700" : "#FFFFFF";
       const option = document.createElement("option");
       option.value = choice.value;
       option.textContent = choice.label;
+      option.style.setProperty("--xzg-option-color", choice.textColor);
       chartSelect.appendChild(option);
     }
     if (preferredKey && chartChoices.some((choice) => choice.value === preferredKey)) chartSelect.value = preferredKey;
+    chartSelect.style.setProperty("--xzg-option-color", chartChoices.find((choice) => choice.value === chartSelect.value)?.textColor || "#eee");
+    if (preferredKey !== chartSelect.value) chartHoverInfo = null;
+    menu._xzgSyncChartTitle?.();
     drawRunChart();
   };
   runSelect.addEventListener("change", () => {
@@ -2186,30 +2294,27 @@ function showContextMenu(btn, chartRequest = null) {
   runSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
   _liveRunChartRefresh = () => {
     if (!isChartWindow && chartPanel.style.display !== "block") return;
+    chartCanvas.style.display = "block";
     const selectedId = _activeRunMetrics ? _activeRunMetrics.id : runSelect.value;
     const selectedMetric = chartSelect.value;
     populateRunSelector(selectedId);
     populateRunChart(selectedMetric);
   };
-  chartSelect.addEventListener("change", () => { chartHoverInfo = null; drawRunChart(); });
+  chartSelect.addEventListener("change", () => {
+    chartSelect.style.setProperty("--xzg-option-color", chartChoices.find((choice) => choice.value === chartSelect.value)?.textColor || "#eee");
+    chartHoverInfo = null;
+    drawRunChart();
+  });
   chartSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
   closeChartButton.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (isChartWindow) closeContextMenu();
+    if (isChartWindow) closeContextMenu(true);
     else chartPanel.style.display = "none";
   });
   closeChartButton.addEventListener("pointerdown", (event) => event.stopPropagation());
   chartButton.addEventListener("click", async (event) => {
     event.stopPropagation();
     await _runMetricsRestorePromise;
-    if (!_runMetricsHistory.length && !(_activeRunMetrics?.samples?.length >= 2)) {
-      chartSelect.replaceChildren();
-      runSelect.replaceChildren();
-      chartPanel.style.display = "block";
-      chartCanvas.style.display = "none";
-      closeChartButton.style.display = "none";
-      return;
-    }
     chartCanvas.style.display = "block";
     closeChartButton.style.display = "flex";
     populateRunSelector();
@@ -2366,7 +2471,12 @@ function showContextMenu(btn, chartRequest = null) {
       gpu_util: "GPU 利用率", gpu_temp: "GPU 温度", gpu_vram: "GPU 显存", gpu_power: "GPU 功率",
       cpu_util: "CPU 利用率", mem_used: "内存占用",
     };
-    chartMenuTitle.textContent = `${metricNames[chartRequest.metricKey] || "运行参数"} 曲线`;
+    // 标题文字放独立 span：曲线刷新（populateRunSelector → _xzgSyncChartTitle）只更新文字。
+    // 此前用 replaceChildren 重建标题栏，运行中约每秒一次、且运行刚结束时必触发一次，
+    // 会把「图表分析」按钮从 DOM 摘下再挂回；若恰逢用户按下与松开之间，click 会派发到
+    // 标题栏祖先而不是按钮，表现为「点击图表分析偶尔没反应，需要点第二次才生效」。
+    const chartTitleText = document.createElement("span");
+    chartTitleText.textContent = `${metricNames[chartRequest.metricKey] || "运行参数"} 曲线`;
     chartMenuTitle.style.cssText = "display:flex;align-items:center;gap:12px;flex:0 0 30px;height:30px;min-height:30px;padding:2px 8px 4px;margin:-2px 0 0;border:0;font:600 15px/1.2 'Segoe UI',system-ui,sans-serif;white-space:nowrap;cursor:move;touch-action:none;user-select:none;";
     const tutorialLink = document.createElement("a");
     tutorialLink.href = XZG_MONITOR_TUTORIAL_URL;
@@ -2377,7 +2487,18 @@ function showContextMenu(btn, chartRequest = null) {
     tutorialLink.style.cssText = "color:#ffd76a;text-decoration:none;font:500 13px/1.2 'Segoe UI',system-ui,sans-serif;cursor:pointer;";
     tutorialLink.addEventListener("pointerdown", (event) => event.stopPropagation());
     tutorialLink.addEventListener("click", (event) => event.stopPropagation());
-    chartMenuTitle.appendChild(tutorialLink);
+    chartMenuTitle.append(chartTitleText, tutorialLink);
+    const analysisButton = document.createElement("button");
+    analysisButton.type = "button";
+    analysisButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#54c8ff" d="M3 13h4v8H3z"/><path fill="#ffd34e" d="M10 8h4v13h-4z"/><path fill="#d38cff" d="M17 3h4v18h-4z"/></svg><span>图表分析</span>`;
+    analysisButton.style.cssText = "display:inline-flex;align-items:center;gap:6px;flex:none;padding:3px 5px;border:0;border-radius:0;background:transparent;color:#e8edf5;font:500 13px/1.2 'Segoe UI',system-ui,sans-serif;cursor:pointer;";
+    analysisButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+    analysisButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await _runMetricsRestorePromise;
+      showRunAnalysisPicker(_runMetricsHistory, runSelect.value, _display, persistRunMetricsRecord);
+    });
+    chartMenuTitle.appendChild(analysisButton);
     menu.replaceChildren(chartMenuTitle, chartPanel);
     // 联动：切换右侧曲线类型列表时，左上角标题同步更新。
     const syncChartWindowTitle = () => {
@@ -2391,8 +2512,11 @@ function showContextMenu(btn, chartRequest = null) {
         const metric = Number(value.split(":")[1]);
         metricKey = metric === 1 ? "mem_used" : "cpu_util";
       }
-      if (metricKey) chartMenuTitle.textContent = `${metricNames[metricKey] || "运行参数"} 曲线`;
+      // 只更新文字，不重建标题栏：保证 tutorialLink / analysisButton 始终挂载在同一 DOM 节点上，
+      // 用户点击不会因按钮被短暂脱离 DOM 而丢失 click 事件。
+      chartTitleText.textContent = `${metricNames[metricKey] || "运行参数"} 曲线`;
     };
+    menu._xzgSyncChartTitle = syncChartWindowTitle;
     chartSelect.addEventListener("change", syncChartWindowTitle);
     const savedChartWindow = normalizeChartWindow(_display.chart_window);
     menu.style.width = `min(${savedChartWindow.width}px,calc(100vw - 24px))`;
@@ -2430,14 +2554,16 @@ function showContextMenu(btn, chartRequest = null) {
     chartCanvas.height = 700;
     chartCanvas.style.width = "100%";
     let drag = null;
-    chartMenuTitle.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
+    menu.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest("select,button,a,.xzg-chart-split-handle")) return;
       const rect = menu.getBoundingClientRect();
+      // 右下角保留浏览器原生缩放手柄。
+      if (event.clientX >= rect.right - 18 && event.clientY >= rect.bottom - 18) return;
       drag = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
-      chartMenuTitle.setPointerCapture(event.pointerId);
+      menu.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
-    chartMenuTitle.addEventListener("pointermove", (event) => {
+    menu.addEventListener("pointermove", (event) => {
       if (!drag) return;
       menu.style.left = `${Math.max(0, Math.min(window.innerWidth - menu.offsetWidth, drag.left + event.clientX - drag.x))}px`;
       menu.style.top = `${Math.max(0, Math.min(window.innerHeight - 36, drag.top + event.clientY - drag.y))}px`;
@@ -2453,8 +2579,9 @@ function showContextMenu(btn, chartRequest = null) {
       drag = null;
       saveChartWindowGeometry();
     };
-    chartMenuTitle.addEventListener("pointerup", stopChartDrag);
-    chartMenuTitle.addEventListener("pointercancel", stopChartDrag);
+    menu.addEventListener("pointerup", stopChartDrag);
+    menu.addEventListener("pointercancel", stopChartDrag);
+    menu.addEventListener("lostpointercapture", stopChartDrag);
     let chartResizeSaveTimer = null;
     let chartCanvasResizeObserver = null;
     const cleanupRunHistoryPicker = menu._xzgCleanup;
@@ -2491,15 +2618,11 @@ function showContextMenu(btn, chartRequest = null) {
     closeChartButton.style.top = "4px";
     closeChartButton.style.right = "4px";
     chartMenuTitle.style.paddingRight = "36px";
-    if (_runMetricsHistory.length || _activeRunMetrics?.samples?.length >= 2) {
-      chartCanvas.style.display = "block";
-      closeChartButton.style.display = "flex";
-      populateRunSelector();
-      populateRunChart(chartRequest.chartKey);
-    } else {
-      chartCanvas.style.display = "none";
-      closeChartButton.style.display = "none";
-    }
+    chartCanvas.style.display = "block";
+    closeChartButton.style.display = "flex";
+    populateRunSelector();
+    populateRunChart(chartRequest.chartKey);
+    syncInlineClearButton();
   } else {
     chartButton.remove();
     chartPanel.remove();
@@ -2661,8 +2784,9 @@ function fitMonitorCapsuleWidth() {
     const canvas = fitMonitorCapsuleWidth.canvas ||= document.createElement("canvas");
     const context = canvas.getContext("2d");
     context.font = "700 15px 'Segoe UI',system-ui,sans-serif";
-    const width = context.measureText(url.textContent).width + url.textContent.length * .6;
-    const available = Math.max(1, btn.clientWidth - 22 - 19 - 10);
+    const width = context.measureText(url.textContent).width + Math.max(0, url.textContent.length - 1) * .6;
+    btn.style.setProperty("--xzg-intro-width", `${Math.ceil(width + 36 + 19 + 10 + 2)}px`);
+    const available = Math.max(1, btn.clientWidth - 36 - 19 - 10);
     btn.style.setProperty("--xzg-url-font-size", `${Math.min(15, 15 * available / width)}px`);
   }
 }
@@ -2687,7 +2811,7 @@ function buildRunTimerButton() {
     _brandIntroStartedAt = Date.now();
     btn.classList.add("xzg-brand-intro");
     btn.innerHTML = `<div class="xzg-brand-intro-content"><span class="xzg-brand-intro-mark" aria-hidden="true"></span><span class="xzg-brand-intro-name">https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang</span></div>`;
-    const introDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 5000;
+    const introDuration = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 3000;
     window.setTimeout(() => {
       finishBrandIntro(btn);
     }, introDuration);
@@ -2741,6 +2865,7 @@ function attachRunTimerContextMenu(btn) {
   btn.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    showContextMenu(btn, { chartKey: "gpu:0:0", metricKey: "gpu_util" });
   });
 }
 
@@ -2904,6 +3029,10 @@ function fmtMemPair(usedMb, totalMb) {
     return `${usedGb >= 1 ? Math.round(usedGb) : usedGb.toFixed(1)}/${totalGb}`;
   }
   return `${fmt(usedMb)}/${fmt(totalMb)}`;
+}
+
+function vramColor(usedMb) {
+  return usedMb == null || !Number.isFinite(Number(usedMb)) ? "#8b8f9a" : "#FFD700";
 }
 
 function pctColor(pct, temp) {
@@ -3260,6 +3389,8 @@ app.registerExtension({
     // 防重复加载：同一页面只允许一个实例创建浮窗/按钮/注册设置
     if (window[MONITOR_SINGLETON]) return;
     window[MONITOR_SINGLETON] = true;
+    watchMonitorSubgraph();
+    window.addEventListener("resize", fitMonitorCapsuleWidth);
     // 右键菜单：点击菜单外 / Esc 关闭
     document.addEventListener("mousedown", (e) => {
       if (_menuEl && !_menuEl.contains(e.target) && !e.target.closest?.(".xzg-run-history-popup") && e.target.id !== XZG_BTN_ID) closeContextMenu();

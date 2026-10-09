@@ -64,7 +64,7 @@ def _gpu_stats_nvidia_smi():
         proc = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw",
+                "--query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True, text=True, timeout=5, creationflags=_CREATE_NO_WINDOW,
@@ -81,6 +81,7 @@ def _gpu_stats_nvidia_smi():
                 "vram_used_mb": _to_float(parts[4]),
                 "vram_total_mb": _to_float(parts[5]),
                 "power_w": _to_float(parts[6]),
+                "power_limit_w": _to_float(parts[7], None) if len(parts) > 7 else None,
             })
     except Exception:
         gpus = []
@@ -117,6 +118,10 @@ def _gpu_stats_pynvml():
                 power_w = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
             except Exception:
                 power_w = None
+            try:
+                power_limit_w = pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0
+            except pynvml.NVMLError:
+                power_limit_w = None
             gpus.append({
                 "index": str(i),
                 "name": name,
@@ -126,6 +131,7 @@ def _gpu_stats_pynvml():
                 "vram_used_mb": mem.used / (1024 * 1024),
                 "vram_total_mb": mem.total / (1024 * 1024),
                 "power_w": power_w,
+                "power_limit_w": power_limit_w,
             })
     except Exception:
         gpus = []
