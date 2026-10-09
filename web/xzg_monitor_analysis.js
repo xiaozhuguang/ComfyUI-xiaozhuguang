@@ -1,10 +1,10 @@
 const METRICS = [
-  { key: "gpu_util", label: "GPU 利用率", unit: "%", index: 0 },
-  { key: "gpu_temp", label: "GPU 温度", unit: "°C", index: 1 },
   { key: "gpu_vram", label: "GPU 显存", unit: "GB", index: 2, scale: 1024 },
+  { key: "gpu_temp", label: "GPU 温度", unit: "°C", index: 1 },
   { key: "gpu_power", label: "GPU 功率", unit: "W", index: 3 },
-  { key: "cpu_util", label: "CPU 利用率", unit: "%", index: 0 },
+  { key: "gpu_util", label: "GPU 利用率", unit: "%", index: 0 },
   { key: "mem_used", label: "内存占用", unit: "GB", index: 1, scale: 1024 },
+  { key: "cpu_util", label: "CPU 利用率", unit: "%", index: 0 },
 ];
 
 export function analyzeRunRecords(records, display = {}) {
@@ -76,14 +76,14 @@ export function buildRunAnalysisHtml(records, display = {}) {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>小珠光 · 工作流运行分析</title>
 <style>
 :root{color-scheme:dark;font:14px/1.6 'Segoe UI',system-ui,sans-serif;background:#101319;color:#e6e8ef}*{box-sizing:border-box}body{margin:0}main{max-width:1440px;margin:auto;padding:30px 28px 60px}h1{font-size:28px;margin:0;color:#FFD700}h2{font-size:18px;margin:0 0 14px}p{color:#9ba5b6;margin:8px 0 18px}.card{background:#191e27;border:1px solid #303846;border-radius:12px;padding:20px;margin:18px 0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.grid .card{margin:0}button,select{font:inherit;border:1px solid #485162;background:#252d3a;color:#eceef5;border-radius:6px;padding:6px 12px}button{cursor:pointer}button:hover{border-color:#FFD700}label{cursor:pointer}input{accent-color:#FFD700}.controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:12px 0}.legend label{font-size:13px}.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}.chart{width:100%;max-width:100%;height:auto;display:block;overflow:visible}/* 与「资源采样峰值对比」的半宽网格列等宽（(100% - 18px 间距)/2），保证两区柱状图同比例缩放、行行对齐 */
-#duration{max-width:calc(50% - 9px)}.chart text{font-family:'Segoe UI',system-ui,sans-serif}.hint{font-size:12px;color:#98a4b8}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}th,td{padding:9px 12px;border-bottom:1px solid #303846;text-align:right}th:first-child,td:first-child{text-align:left}th{color:#acb6c9}.tooltip{position:fixed;display:none;pointer-events:none;background:#111722f2;border:1px solid #6c778b;border-radius:7px;padding:9px 12px;z-index:10;max-width:420px;font-size:12px;white-space:pre-line}.range-info{color:#FFD700;min-height:24px}.bar{cursor:pointer}.bar:hover{filter:brightness(1.2)}.badge{padding:3px 8px;background:#252c39;border-radius:4px}.empty{padding:40px;text-align:center;color:#99a4b6}@media(max-width:850px){main{padding:18px 12px}.grid{grid-template-columns:1fr}.card{padding:14px}h1{font-size:23px}#duration{max-width:100%}}@media print{button,.tooltip{display:none}.card{break-inside:avoid}}
+#duration{max-width:calc(50% - 9px)}.card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}.card-head h2{margin:0}.card-head select{max-width:min(420px,100%)}.chart text{font-family:'Segoe UI',system-ui,sans-serif}.hint{font-size:12px;color:#98a4b8}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}th,td{padding:9px 12px;border-bottom:1px solid #303846;text-align:right}th:first-child,td:first-child{text-align:left}th{color:#acb6c9}.tooltip{position:fixed;display:none;pointer-events:none;background:#111722f2;border:1px solid #6c778b;border-radius:7px;padding:9px 12px;z-index:10;max-width:420px;font-size:12px;white-space:pre-line}.range-info{color:#FFD700;min-height:24px}.bar{cursor:pointer}.bar:hover{filter:brightness(1.2)}.badge{padding:3px 8px;background:#252c39;border-radius:4px}.empty{padding:40px;text-align:center;color:#99a4b6}@media(max-width:850px){main{padding:18px 12px}.grid{grid-template-columns:1fr}.card{padding:14px}h1{font-size:23px}#duration{max-width:100%}}@media print{button,.tooltip{display:none}.card{break-inside:avoid}}
 button:focus,select:focus,input:focus{outline:none;box-shadow:none}select:focus{border-color:#485162}
 </style></head><body><main><header><div class="controls"><h1>工作流运行分析</h1><button id="download">保存分析网页</button></div><p>从运行开始对齐时间 · 物理显存口径 · 峰值为约每秒采样得到的峰值，短暂尖峰可能未被捕捉。此报告为生成时的记录快照。</p></header>
 <div id="records" class="legend"></div>
 <section class="card"><h2>资源曲线叠加</h2><div id="metrics" class="legend"></div><p class="hint">点选一个指标查看实际数值，不同记录用颜色区分；悬停查看采样值和执行节点。</p><div id="range-info" class="range-info"></div><div id="overlay"></div></section>
-<section class="card"><h2>总耗时对比</h2><div id="duration"></div></section>
-<section class="card"><h2>资源采样峰值对比</h2><p class="hint">点击柱子定位到峰值时间，查看对应曲线及执行节点。虚线标出记录当时的容量或功率上限；旧记录未保存上限时不显示容量线。</p><div id="peaks" class="grid"></div></section>
-<section class="card"><h2>节点耗时分析</h2><div id="node-runs" class="legend"></div><div id="node-order-controls" class="controls" style="display:flex;flex-wrap:nowrap;justify-content:flex-start;gap:20px;margin:10px 0 14px"><button type="button" data-node-order="duration"><span class="order-check" aria-hidden="true"></span>耗时从高到低</button><button type="button" data-node-order="execution"><span class="order-check" aria-hidden="true"></span>执行顺序</button></div><p class="hint">点击节点柱子或时间轴，曲线会高亮对应执行时间段。缓存命中的节点可能没有执行区间；旧记录缺少区间时无法还原准确节点耗时。</p><div class="grid"><div><h2>节点耗时</h2><div id="nodes"></div></div><div><h2>执行耗时占比</h2><div id="donut"></div></div></div><h2>执行时间轴</h2><div id="timeline"></div></section>
+<section class="card"><div class="card-head"><h2>耗时对比</h2><div id="duration-select"></div></div><div id="duration"></div></section>
+<section class="card"><div class="card-head"><h2>资源采样峰值对比</h2><div id="peaks-select"></div></div><p class="hint">点击柱子定位到峰值时间，查看对应曲线及执行节点。虚线标出记录当时的容量或功率上限；旧记录未保存上限时不显示容量线。右侧下拉选择节点后，峰值与平均值仅统计该节点执行区间。</p><div id="peaks" class="grid"></div></section>
+<section class="card"><div class="card-head"><h2>节点耗时分析</h2><div id="node-head" class="controls" style="display:flex;flex-wrap:wrap;align-items:center;gap:16px"><button type="button" data-node-order="duration"><span class="order-check" aria-hidden="true"></span>耗时从高到低</button><button type="button" data-node-order="execution"><span class="order-check" aria-hidden="true"></span>执行顺序</button></div></div><p class="hint">点击节点柱子或时间轴，曲线会高亮对应执行时间段。缓存命中的节点可能没有执行区间；旧记录缺少区间时无法还原准确节点耗时。</p><div class="grid"><div><h2>节点耗时</h2><div id="nodes"></div></div><div><h2>执行耗时占比</h2><div id="donut"></div></div></div><h2>执行时间轴</h2><div id="timeline"></div></section>
  </main><div id="tooltip" class="tooltip"></div>
 <script id="analysis-data" type="application/json">${data}</script><script>(${runAnalysisPage.toString()})();</script></body></html>`;
 }
@@ -227,16 +227,67 @@ function runAnalysisPage() {
   const hideTooltip = () => { $("tooltip").style.display = "none"; };
   const selectedRuns = new Set(runs.map((_, i) => i));
   const metrics = [...new Map(runs.flatMap((run) => run.series).map((series) => [series.key, series])).values()];
-  // 默认选中第一个确有有效采样（peak）的指标，让曲线在页面打开时直接显示，无需手动点选。
+  // 默认选中「GPU 显存」（有有效采样时）；否则退回第一个有有效采样的指标。
   const firstDataMetric = metrics.find((metric) => runs.some((run) => run.series.some((s) => s.key === metric.key && s.peak)));
-  let selectedMetric = (firstDataMetric || metrics[0])?.key || null;
-  for (const id of ["records", "metrics", "node-runs"]) $(id).replaceChildren();
+  const preferredMetric = metrics.find((metric) => metric.key === "gpu_vram" &&
+    runs.some((run) => run.series.some((s) => s.key === metric.key && s.peak)));
+  let selectedMetric = (preferredMetric || firstDataMetric || metrics[0])?.key || null;
+  for (const id of ["records", "metrics"]) $(id).replaceChildren();
   let selectedNodeRun = 0;
   let nodeOrder = "duration";
   hideTooltip();
   let range = null;
   const activeRuns = () => runs.map((run, i) => ({ run, i })).filter(({ i }) => selectedRuns.has(i));
   const empty = (id, message = "没有可展示的数据") => { $(id).innerHTML = `<div class="empty">${escape(message)}</div>`; };
+  // ---- 节点下拉（耗时对比与峰值对比各一个，默认统计整次运行） ----
+  // 聚合当前勾选记录的全部节点：按节点 id 排序，标题取该节点耗时最长记录的写法
+  const nodeUnion = () => {
+    const map = new Map();
+    for (const { run } of activeRuns()) {
+      for (const node of run.nodes) {
+        const key = String(node.id), prev = map.get(key);
+        if (!prev || node.seconds > prev.seconds) map.set(key, { title: node.title, seconds: node.seconds });
+      }
+    }
+    return [...map.keys()]
+      .sort((a, b) => (Number(a) || 0) - (Number(b) || 0) || String(a).localeCompare(String(b)))
+      .map((key) => ({ key, title: map.get(key).title }));
+  };
+  // 按执行区间统计峰值/平均值：不给区间时沿用整次运行的既有统计。
+  // 峰值取采样点 x 落在区间内的最大值；平均值沿用梯形积分，按段中点落在区间内计入。
+  const seriesStatsWithin = (s, intervals) => {
+    if (!s) return { peak: null, average: null };
+    if (!intervals) return { peak: s.peak, average: s.average };
+    let peak = null, integral = 0, covered = 0;
+    for (const point of s.points) {
+      if (point.y == null) continue;
+      if (!intervals.some((iv) => point.x >= iv.start && point.x <= iv.end)) continue;
+      if (!peak || point.y > peak.y) peak = point;
+    }
+    for (let i = 1; i < s.points.length; i++) {
+      const a = s.points[i - 1], b = s.points[i], dt = b.x - a.x;
+      if (a.y == null || b.y == null || dt <= 0) continue;
+      const mid = (a.x + b.x) / 2;
+      if (!intervals.some((iv) => mid >= iv.start && mid <= iv.end)) continue;
+      integral += (a.y + b.y) / 2 * dt;
+      covered += dt;
+    }
+    return { peak, average: covered > 0 ? integral / covered : null };
+  };
+  let durationNodeKey = "";
+  const durationSelect = document.createElement("select");
+  durationSelect.addEventListener("change", () => {
+    durationNodeKey = durationSelect.value;
+    render();
+  });
+  $("duration-select").appendChild(durationSelect);
+  let peakNodeKey = "";
+  const peakSelect = document.createElement("select");
+  peakSelect.addEventListener("change", () => {
+    peakNodeKey = peakSelect.value;
+    renderPeaks();
+  });
+  $("peaks-select").appendChild(peakSelect);
   for (const [i, run] of runs.entries()) {
     const label = document.createElement("div");
     label.style.cssText = "display:flex;align-items:center;gap:7px;";
@@ -246,18 +297,16 @@ function runAnalysisPage() {
       render();
     });
     $("records").appendChild(label);
-    const runButton = document.createElement("button");
-    runButton.type = "button"; runButton.textContent = name(run, i);
-    runButton.style.cssText = `display:inline-flex;align-items:center;gap:6px;padding:2px 0;border:0;background:transparent;color:#fff;font:13px/1.5 'Segoe UI',system-ui,sans-serif;cursor:pointer;`;
-    runButton.innerHTML = `<span aria-hidden="true" style="width:13px;height:13px;box-sizing:border-box;border:1px solid ${color(i)};border-radius:50%;display:inline-flex;align-items:center;justify-content:center">${i === selectedNodeRun ? `<span style="width:7px;height:7px;border-radius:50%;background:${color(i)}"></span>` : ""}</span><span>${escape(name(run, i))}</span>`;
-    runButton.addEventListener("click", () => { selectedNodeRun = i; updateNodeRunButtons(); renderNodes(); });
-    $("node-runs").appendChild(runButton);
   }
-  const orderControls = $("node-order-controls");
-  if (orderControls) {
-    for (const button of orderControls.querySelectorAll("[data-node-order]")) $("node-runs").appendChild(button);
-    orderControls.remove();
-  }
+  // 节点耗时分析的记录切换：标题行右侧下拉（与耗时对比 / 峰值对比一致）
+  const nodeRunSelect = document.createElement("select");
+  for (const [i, run] of runs.entries()) nodeRunSelect.append(new Option(name(run, i), String(i)));
+  nodeRunSelect.value = String(selectedNodeRun);
+  nodeRunSelect.addEventListener("change", () => {
+    selectedNodeRun = Number(nodeRunSelect.value) || 0;
+    renderNodes();
+  });
+  $("node-head").insertBefore(nodeRunSelect, $("node-head").querySelector("[data-node-order]"));
   for (const metric of metrics) {
     const label = document.createElement("label");
     label.innerHTML = `<input type="radio" name="resource-metric" value="${escape(metric.key)}" ${metric.key === selectedMetric ? "checked" : ""}> ${escape(metric.label)}`;
@@ -369,6 +418,14 @@ function runAnalysisPage() {
   }
   function renderPeaks() {
     $("peaks").replaceChildren();
+    // 节点下拉：选中节点后，峰值与平均值仅统计该节点的执行区间
+    const nodeItems = nodeUnion();
+    if (peakNodeKey && !nodeItems.some((item) => item.key === peakNodeKey)) peakNodeKey = "";
+    peakSelect.replaceChildren(new Option("整次运行", ""));
+    for (const item of nodeItems) peakSelect.append(new Option(`${item.key} · ${item.title}`, item.key));
+    peakSelect.value = peakNodeKey;
+    peakSelect.style.display = nodeItems.length ? "" : "none";
+    const scopeLabel = peakNodeKey ? `节点「${nodeItems.find((item) => item.key === peakNodeKey)?.title ?? peakNodeKey}」` : "整次运行";
     const priority = ["gpu_vram", "gpu_temp", "gpu_power", "mem_used"];
     const orderedMetrics = metrics.slice().sort((a, b) => {
       const rank = (key) => { const index = priority.indexOf(key); return index < 0 ? priority.length : index; };
@@ -379,10 +436,21 @@ function runAnalysisPage() {
       title.textContent = metric.label; plot.id = `peak-${j}`; card.append(title, plot); $("peaks").appendChild(card);
       const entries = activeRuns().map(({ run, i }) => {
         const s = run.series.find((s) => s.key === metric.key);
-        return { i, s, value: s?.peak?.y ?? null, color: color(i), label: name(run, i), detail: `${name(run, i)}\n${metric.label}峰值：${fmt(s?.peak?.y, metric.unit)}\n时间：${s?.peak?.x?.toFixed(2) ?? "—"} 秒\n节点：${s?.peak?.node?.title || "无节点信息"}\n平均：${fmt(s?.average, metric.unit)}` };
+        const intervals = peakNodeKey ? (run.nodes.find((node) => String(node.id) === peakNodeKey)?.intervals || []) : null;
+        const stats = seriesStatsWithin(s, intervals);
+        return { i, stats, metric, value: stats.peak?.y ?? null, color: color(i), label: name(run, i),
+          detail: `${name(run, i)} · ${scopeLabel}\n${metric.label}峰值：${fmt(stats.peak?.y, metric.unit)}\n时间：${stats.peak?.x?.toFixed(2) ?? "—"} 秒\n节点：${stats.peak?.node?.title || "无节点信息"}\n平均：${fmt(stats.average, metric.unit)}` };
       });
       const caps = activeRuns().flatMap(({ run, i }) => { const capacity = run.series.find((s) => s.key === metric.key)?.capacity; return capacity ? [{ value: capacity, color: color(i) }] : []; });
-      bars(plot.id, entries, metric.unit, (entry) => { if (entry.s?.peak) focus(entry.i, entry.s.peak.x, entry.s.peak.x, "资源峰值", metric.key); }, caps);
+      bars(plot.id, entries, metric.unit, (entry) => {
+        const peak = entry.stats?.peak;
+        if (!peak) return;
+        const intervals = entry.stats.peak && peakNodeKey
+          ? activeRuns().find(({ i }) => i === entry.i)?.run.nodes.find((node) => String(node.id) === peakNodeKey)?.intervals || []
+          : null;
+        const hit = intervals?.find((iv) => peak.x >= iv.start && peak.x <= iv.end);
+        focus(entry.i, hit ? hit.start : peak.x, hit ? hit.end : peak.x, hit ? `资源峰值 · ${scopeLabel}` : "资源峰值", metric.key);
+      }, caps);
     }
     if (!metrics.length) $("peaks").textContent = "胶囊未启用资源指标，可继续查看耗时分析。";
   }
@@ -424,12 +492,6 @@ function runAnalysisPage() {
       element.addEventListener("pointerleave", hideTooltip);
     });
   }
-  function updateNodeRunButtons() {
-    $("node-runs").querySelectorAll("button").forEach((button, index) => {
-      const dot = button.querySelector("span[aria-hidden='true']");
-      if (dot) dot.innerHTML = index === selectedNodeRun ? `<span style="width:7px;height:7px;border-radius:50%;background:${color(index)}"></span>` : "";
-    });
-  }
   function renderScatter() {
     const points = activeRuns().flatMap(({ run, i }) => {
       const peaks = run.series.filter((s) => s.metricKey === "gpu_vram" && s.peak).map((s) => s.peak.y);
@@ -453,7 +515,21 @@ function runAnalysisPage() {
   }
   function render() {
     renderOverlay(); renderPeaks();
-    bars("duration", activeRuns().map(({ run, i }) => ({ label: name(run, i), value: run.duration, color: color(i), detail: `${name(run, i)}\n${new Date(run.startedAt).toLocaleString()}\n总耗时 ${fmt(run.duration, "s")}\n${run.status}` })), "s", null, [], true);
+    // 节点下拉：聚合当前勾选记录的全部节点，按执行节点 id 排序
+    const nodeItems = nodeUnion();
+    const nodeKeys = nodeItems.map((item) => item.key);
+    if (durationNodeKey && !nodeKeys.includes(durationNodeKey)) durationNodeKey = "";
+    durationSelect.replaceChildren(new Option("总耗时", ""));
+    for (const item of nodeItems) durationSelect.append(new Option(`${item.key} · ${item.title}`, item.key));
+    durationSelect.value = durationNodeKey;
+    durationSelect.style.display = nodeKeys.length ? "" : "none";
+    const entries = activeRuns().map(({ run, i }) => {
+      const node = durationNodeKey ? run.nodes.find((item) => String(item.id) === durationNodeKey) : null;
+      const value = durationNodeKey ? (node ? node.seconds : null) : run.duration;
+      const what = durationNodeKey ? `节点「${node ? node.title : durationNodeKey}」耗时 ${fmt(value, "s")}` : `总耗时 ${fmt(run.duration, "s")}`;
+      return { label: name(run, i), value, color: color(i), detail: `${name(run, i)}\n${new Date(run.startedAt).toLocaleString()}\n${what}\n总耗时 ${fmt(run.duration, "s")}\n${run.status}` };
+    });
+    bars("duration", entries, "s", null, [], true);
   }
   const updateNodeOrderButtons = () => document.querySelectorAll("[data-node-order]").forEach((item) => {
     const active = item.dataset.nodeOrder === nodeOrder;

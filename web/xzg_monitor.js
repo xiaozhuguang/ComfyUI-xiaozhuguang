@@ -410,7 +410,9 @@ html.xzg-monitor-subgraph #xzg-run-timer-menu-btn{display:none!important;}
 .xzg-brand-intro-content{display:flex;align-items:center;justify-content:center;gap:10px;white-space:nowrap;animation:xzg-brand-wordmark 3s ease both;transition:opacity .55s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .55s ease;}
 .xzg-monitor-toolbar.xzg-brand-intro-exit .xzg-brand-intro-content{opacity:0;transform:translateY(-8px) scale(.96);filter:blur(5px);transition:opacity .65s ease,transform .7s cubic-bezier(.22,1,.36,1),filter .65s ease;}
 .xzg-brand-monitor-enter > #xzg-toolbar-run-time,.xzg-brand-monitor-enter > #xzg-toolbar-monitor-stats{animation:xzg-monitor-content-in .75s cubic-bezier(.22,1,.36,1) both;}
-.xzg-monitor-toolbar.xzg-compact{width:min(var(--xzg-content-width,560px),76vw)!important;min-width:min(var(--xzg-content-width,560px),76vw)!important;max-width:min(var(--xzg-content-width,560px),76vw)!important;flex:0 0 auto!important;padding:0 10px!important;}
+/* 宽度/内边距过渡：从品牌片头（GitHub 地址）切到参数显示时宽度平滑收缩，
+   不再瞬间跳变；后续因配置变化引起的宽度调整也同样缓动。 */
+.xzg-monitor-toolbar.xzg-compact{width:min(var(--xzg-content-width,560px),76vw)!important;min-width:min(var(--xzg-content-width,560px),76vw)!important;max-width:min(var(--xzg-content-width,560px),76vw)!important;flex:0 0 auto!important;padding:0 10px!important;transition:width .85s cubic-bezier(.22,1,.36,1),min-width .85s cubic-bezier(.22,1,.36,1),max-width .85s cubic-bezier(.22,1,.36,1),padding .85s cubic-bezier(.22,1,.36,1);}
 .xzg-monitor-toolbar.xzg-compact.xzg-brand-intro{width:min(var(--xzg-intro-width,560px),76vw)!important;min-width:min(var(--xzg-intro-width,560px),76vw)!important;max-width:min(var(--xzg-intro-width,560px),76vw)!important;padding:0 18px!important;}
 .xzg-brand-intro-content{max-width:100%;min-width:0;}
 .xzg-brand-intro-name{font-size:var(--xzg-url-font-size,15px)!important;letter-spacing:.04em!important;}
@@ -440,7 +442,10 @@ html.xzg-monitor-subgraph #xzg-run-timer-menu-btn{display:none!important;}
 .xzg-monitor-toolbar.xzg-compact #xzg-toolbar-monitor-stats{min-width:0;max-width:calc(76vw - 68px);overflow-x:auto;scrollbar-width:none;}
 .xzg-monitor-toolbar.xzg-compact #xzg-toolbar-monitor-stats::-webkit-scrollbar{display:none;}
 .xzg-monitor-toolbar.xzg-orb #xzg-toolbar-monitor-stats{display:none;}
-.xzg-monitor-toolbar.xzg-compact.xzg-has-monitor-stats:not(.xzg-orb) #xzg-toolbar-run-time{box-sizing:content-box;padding-right:10px;border-right:1px solid var(--xzg-capsule-separator);}
+/* 计时器吸收预留宽度的弹性余量：胶囊按最长计时格式预留，实际较窄时
+   多余空间全部留在计时文字左侧（文字右对齐贴住分隔线），与分隔线的间距
+   恒为 10px 内边距，不随富余变化；也不会堆到芯片按钮与胶囊右端之间。 */
+.xzg-monitor-toolbar.xzg-compact.xzg-has-monitor-stats:not(.xzg-orb) #xzg-toolbar-run-time{box-sizing:content-box;padding-right:10px;border-right:1px solid var(--xzg-capsule-separator);flex:1 1 auto;min-width:0;justify-content:flex-end;text-align:right;}
 .xzg-monitor-toolbar.xzg-compact .xzg-cmp{display:flex;align-items:center;gap:0;width:max-content;font-size:15px;line-height:1.6;white-space:nowrap;}
 .xzg-monitor-toolbar.xzg-compact .xzg-cmp b{font-weight:600;}
 .xzg-monitor-toolbar.xzg-compact .xzg-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 0;border:0;border-radius:0;background:transparent;cursor:default;}
@@ -1298,7 +1303,7 @@ function createFloatWindow() {
         const gpuIndex = String(gpu.index ?? gpuPosition);
         let values = "";
         if (_display.gpu_util) values += valueHtml("gpu_util", gpu.util, "%", pctColor(gpu.util, gpu.temp), 4, 0, gpuIndex);
-        if (_display.gpu_temp) values += valueHtml("gpu_temp", gpu.temp, "°", pctColor(0, gpu.temp), 3, 0, gpuIndex);
+        if (_display.gpu_temp) values += valueHtml("gpu_temp", gpu.temp, "°", pctColor(0, gpu.temp), 4, 0, gpuIndex);
         if (_display.gpu_vram) {
           const pair = fmtMemPair(gpu.vram_used_mb, gpu.vram_total_mb);
           const color = vramColor(gpu.vram_used_mb, gpu.vram_total_mb);
@@ -1307,7 +1312,7 @@ function createFloatWindow() {
           const vramWidth = Math.max(3, vramDigits) + vramDigits + 1;
           values += `<span class="xzg-v xzg-vram-value${glow}" data-xzg-metric="gpu_vram" data-xzg-gpu-index="${esc(gpuIndex)}" style="min-width:${vramWidth}ch;color:${color}">${pair}</span>`;
         }
-        if (_display.gpu_power && gpu.power_w != null) values += valueHtml("gpu_power", gpu.power_w, "W", "#FF6B6B", 4, 0, gpuIndex);
+        if (_display.gpu_power && gpu.power_w != null) values += valueHtml("gpu_power", gpu.power_w, "W", "#FF6B6B", 5, 0, gpuIndex);
         if (values) parts.push(`<span class="xzg-chip xzg-chip-gpu"><b>GPU${multi ? gpu.index ?? "" : ""}</b>${values}</span>`);
       }
     } else if (_display.gpu_util || _display.gpu_temp || _display.gpu_vram || _display.gpu_power) {
@@ -2769,10 +2774,26 @@ function fitMonitorCapsuleWidth() {
     const metricsWidth = probe.getBoundingClientRect().width;
     probe.remove();
     const timer = btn.querySelector("#xzg-toolbar-run-time");
-    const timerWidth = _display.run_timer === false ? 0 : Math.max(76, timer?.getBoundingClientRect().width || 0);
+    // 计时器占位按最长格式（含小时位 1:23:45）探测：跨过 1 小时数字增加一位时，
+    // 胶囊总长保持不变，不因位数增长而跳变。
+    let timerWidth = 0;
+    if (_display.run_timer !== false && timer) {
+      const probe = document.createElement("span");
+      probe.className = timer.className;
+      probe.removeAttribute("id");
+      probe.style.cssText = "position:fixed;visibility:hidden;left:-10000px;width:max-content;";
+      probe.innerHTML = _display.timer_effect === "none" ? "1:23:45" : renderLcdTime("1:23:45");
+      btn.appendChild(probe);
+      timerWidth = Math.max(76, probe.getBoundingClientRect().width);
+      probe.remove();
+    }
     // Padding, control button and gaps are included; reserve timer digit growth.
     const width = Math.ceil(metricsWidth + timerWidth + 36 + 16 + 22);
-    const layoutKey = JSON.stringify(_display);
+    // 布局键只取影响胶囊内容布局的配置项：_display 里的曲线窗口位置等字段变化时
+    // 不应重置宽度棘轮，否则胶囊会在运行中回缩跳变。
+    const layoutKey = JSON.stringify([_display.run_timer, _display.timer_effect, _display.timer_font_size,
+      _display.gpu_util, _display.gpu_temp, _display.gpu_vram, _display.gpu_power,
+      _display.cpu_util, _display.mem_used]);
     if (btn._xzgWidthLayoutKey !== layoutKey) {
       btn._xzgWidthLayoutKey = layoutKey;
       btn._xzgMeasuredWidth = width;
