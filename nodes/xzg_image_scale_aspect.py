@@ -110,7 +110,7 @@ class XiaozhuguangImageScaleByAspectRatioV2:
     RETURN_TYPES = ("IMAGE", "MASK", "INT", "INT")
     RETURN_NAMES = ("图像", "遮罩", "宽度", "高度")
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = "按宽高比特定目标尺寸缩放图像/遮罩（torch 批量提速版），支持 letterbox/crop/fill。"
 
     def _resize_pil_fallback(self, images, target_w, target_h, fit, method, bg_rgb, is_mask):

@@ -694,7 +694,7 @@ class XiaozhuguangQwenModelLoader:
     RETURN_TYPES = ("BSAI_QWEN_MODEL",)
     RETURN_NAMES = ("qwen_model",)
     FUNCTION = "load"
-    CATEGORY = "小珠光"
+    CATEGORY = "小珠光/提示词"
 
     def load(self, model_family, model_file, mmproj, context_length, gpu_layers, enable_thinking=False):
         if model_file.startswith("(将模型放入"):

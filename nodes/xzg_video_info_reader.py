@@ -25,7 +25,7 @@ class XiaozhuguangVideoInfoReader:
             },
         }
 
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
 
     RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "STRING", "INT")
     RETURN_NAMES = (

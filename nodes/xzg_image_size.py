@@ -11,7 +11,7 @@ class XiaozhuguangImageSize:
     RETURN_NAMES = ("宽度", "高度", "长边", "短边", "分辨率")
     OUTPUT_IS_LIST = (True, True, True, True, True)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = (
         "获取图像尺寸或遮罩非零区域的外接矩形尺寸（裁掉空白边缘）。"
         "同一接口可连接图像或遮罩，自动识别。"

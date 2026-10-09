@@ -33,7 +33,7 @@ class XiaozhuguangImageCompare(PreviewImage):
 
     RETURN_TYPES = ()
     FUNCTION = "compare_images"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     OUTPUT_NODE = True
 
     def compare_images(self, a=None, b=None, reduce_lag=False, show_line=True,
@@ -120,4 +120,4 @@ class XiaozhuguangImageCompare(PreviewImage):
 class XiaozhuguangImageCompareCustom(XiaozhuguangImageCompare):
     """小珠光图像对比-化神级：前端提供透明背景观察模式。"""
 
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"

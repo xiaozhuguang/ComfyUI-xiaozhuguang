@@ -190,7 +190,7 @@ class XiaozhuguangVFI:
     RETURN_TYPES = ("IMAGE", "FLOAT")
     RETURN_NAMES = ("images", "output_fps")
     FUNCTION = "execute"
-    CATEGORY = "小珠光"
+    CATEGORY = "小珠光/视频"
     DESCRIPTION = "小珠光VFI：GIMM-VFI 模型加载 + 帧插值合并节点，输出帧率 = 原始帧率 × 插值倍率"
 
     def execute(self, images, model, interpolation_factor, ds_factor,

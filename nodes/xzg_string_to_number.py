@@ -27,7 +27,7 @@ class XiaozhuguangStringToNumber:
     RETURN_TYPES = ("INT", "FLOAT", _XZG_TEXT_TYPE)
     RETURN_NAMES = ("integer", "float", "text")
     FUNCTION = "convert"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
     DESCRIPTION = "将字符串按所选方式转换为整数，同时输出浮点数与原文本；无效数值输出 0。"
 
     def convert(self, text, rounding="四舍五入"):

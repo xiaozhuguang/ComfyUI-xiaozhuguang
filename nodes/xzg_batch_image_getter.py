@@ -18,7 +18,7 @@ class XiaozhuguangBatchImageGetter:
     RETURN_TYPES = ("IMAGE",) * OUTPUT_COUNT
     RETURN_NAMES = tuple(str(i) for i in range(1, OUTPUT_COUNT + 1))
     FUNCTION = "get_images"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     INPUT_IS_LIST = (True, True)
     DESCRIPTION = (
         "填写输出数量后，将批次或列表图像按顺序拆到编号输出。第 N 个输出仅对应第 N 张图；"

@@ -339,7 +339,7 @@ def _extract_reference_window_no_resize(
 
 
 class XiaozhuguangFaceAlign:
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = "将参考图像中的人脸对齐到目标图像的人脸位置和比例"
 
     @classmethod

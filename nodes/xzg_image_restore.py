@@ -5,7 +5,7 @@ import cv2
 
 
 class XiaozhuguangImageRestore:
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = "将处理后的单张图像粘贴回原图，批次输入自动使用第一张图片和第一个遮罩"
 
     @classmethod

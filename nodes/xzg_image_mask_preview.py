@@ -161,7 +161,7 @@ class XiaozhuguangImageMaskPreview:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("composite",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     OUTPUT_NODE = False
     DESCRIPTION = """始终内置穿透模式：直接返回合成结果，不保存预览。
     仅图像：原样透传；仅遮罩：灰度 RGB 输出；两者都有：按 fill_mode 把遮罩区域

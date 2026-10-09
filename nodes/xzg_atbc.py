@@ -7,7 +7,7 @@ import re
 
 
 class XiaozhuguangATBC:
-    CATEGORY = "_legacy"
+    CATEGORY = "小珠光/其他"
     DEPRECATED = True
     DESCRIPTION = "根据mask裁剪图像区域并调整大小"
 

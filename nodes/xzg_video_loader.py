@@ -730,7 +730,7 @@ class XiaozhuguangVideoLoader:
     RETURN_TYPES = ("IMAGE", "AUDIO", "VHS_VIDEOINFO")
     RETURN_NAMES = ("图像", "音频", "视频信息")
     FUNCTION = "load_video"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
     OUTPUT_NODE = True
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,

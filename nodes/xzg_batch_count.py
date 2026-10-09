@@ -29,7 +29,7 @@ class XiaozhuguangBatchCount:
     RETURN_TYPES = ("INT",)
     RETURN_NAMES = ("整数",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = "计算输入批次中元素的数量：张量取形状 batch 维 size；LATENT 字典取 samples 张量的 batch 维；列表/字典取长度。完全参考 comfyui_essentials 的 Batch Count 节点。"
 
     def execute(self, 批次):

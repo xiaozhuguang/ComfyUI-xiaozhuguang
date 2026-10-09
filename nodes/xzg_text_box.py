@@ -808,7 +808,7 @@ class XiaozhuguangTextBox:
     RETURN_TYPES = (_XZG_TEXT_TYPE,)
     RETURN_NAMES = ("text",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/提示词"
 
     def execute(self, text):
         raw = text if text is not None else ""

@@ -565,7 +565,7 @@ class XiaozhuguangAudioLoader:
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("音频",)
     FUNCTION = "load_audio"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/音频"
 
     def load_audio(self, 音频, **kwargs):
         # 兼容不同参数名（带括号或下划线）

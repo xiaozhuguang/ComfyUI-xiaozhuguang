@@ -35,7 +35,7 @@ class XiaozhuguangBigDisplay:
     RETURN_TYPES = ()
     RETURN_NAMES = ()
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/其他"
     OUTPUT_NODE = True
     OUTPUT_IS_LIST = ()
     INPUT_IS_LIST = (True,)

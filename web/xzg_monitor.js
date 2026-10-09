@@ -17,7 +17,6 @@ import { xzgT } from "./xzg_i18n.js";
  */
 
 const XZG_API = "/xzg/system_monitor_stats";
-const XZG_NODE_TYPE = "XiaozhuguangSystemMonitor";
 // 小珠光设置：是否启用 GPU/CPU 监控（设置 → xiaozhuguang → 功能开关 可开关）
 const SETTING_ENABLED = "xiaozhuguang.Toggle.EnableMonitor";
 // 防重复加载：本插件在当前 ComfyUI 版本可能被重复挂载加载，
@@ -3146,27 +3145,6 @@ function injectMenuButton(retries) {
 // 设置项：启用/关闭 GPU/CPU 监控（与节点收藏器/工作流管理器同机制）
 // ---------------------------------------------------------------------------
 
-function registerSubgraphMonitorVisibility() {
-  const style = document.createElement("style");
-  style.textContent = `
-    html.xzg-monitor-subgraph #${XZG_RUN_TIMER_BTN_ID},
-    html.xzg-monitor-subgraph #${XZG_BTN_ID},
-    html.xzg-monitor-subgraph #xzg-float {
-      display: none !important;
-    }
-  `;
-  document.head.appendChild(style);
-  const sync = () => {
-    const graph = app.canvas?.graph;
-    const rootGraph = app.rootGraph || app.graph;
-    document.documentElement.classList.toggle("xzg-monitor-subgraph", !!graph && graph !== rootGraph);
-  };
-  // 使用画布切图事件，也覆盖面包屑导航、嵌套子图和工作流切换。
-  document.addEventListener("litegraph:set-graph", sync);
-  document.addEventListener("subgraph-opened", sync);
-  sync();
-}
-
 function isMonitorEnabled() {
   try {
     // 新版前端已废弃 getSettingValue 的第二个参数（默认值改由设置项定义提供）
@@ -3189,22 +3167,6 @@ function registerMonitorSetting() {
     });
   } catch (e) {
     console.warn("[小珠光] 注册 GPU/CPU 监控设置失败:", e);
-  }
-}
-
-// 浮窗延迟创建后，工作流里的 XiaozhuguangSystemMonitor 节点可能已先加载完成：
-// 按「显示悬浮窗」控件补一次显隐同步（与 beforeRegisterNodeDef 里 onNodeCreated 的 apply 等价）
-function applyMonitorNodeState() {
-  try {
-    const nodes = (app.graph && app.graph.nodes) || [];
-    for (const n of nodes) {
-      if (!n || (n.type !== XZG_NODE_TYPE && n.comfyClass !== XZG_NODE_TYPE)) continue;
-      const w = n.widgets ? n.widgets.find((x) => x.name === "show_float") : null;
-      if (window.__xzgFloat) window.__xzgFloat.setVisible(w ? !!w.value : true);
-      return;
-    }
-  } catch (e) {
-    /* ignore */
   }
 }
 
@@ -3251,7 +3213,6 @@ app.registerExtension({
     // 防重复加载：同一页面只允许一个实例创建浮窗/按钮/注册设置
     if (window[MONITOR_SINGLETON]) return;
     window[MONITOR_SINGLETON] = true;
-    registerSubgraphMonitorVisibility();
     // 右键菜单：点击菜单外 / Esc 关闭
     document.addEventListener("mousedown", (e) => {
       if (_menuEl && !_menuEl.contains(e.target) && !e.target.closest?.(".xzg-run-history-popup") && e.target.id !== XZG_BTN_ID) closeContextMenu();
@@ -3270,21 +3231,5 @@ app.registerExtension({
     if (!isMonitorEnabled()) return; // 设置里关闭了监控：不创建浮窗、不注入监控按钮、不轮询
     // 内部等待 UI 就绪（加载遮罩移除、主界面渲染完成）后再创建浮窗/注入顶部按钮
     setMonitorEnabled(true);
-  },
-  async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== XZG_NODE_TYPE) return;
-    const onNodeCreated = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function () {
-      const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
-      const widget = this.widgets ? this.widgets.find((w) => w.name === "show_float") : null;
-      const apply = () => {
-        if (window.__xzgFloat) window.__xzgFloat.setVisible(widget ? !!widget.value : true);
-      };
-      apply();
-      if (widget && widget.callback == null) {
-        widget.callback = () => apply();
-      }
-      return r;
-    };
   },
 });

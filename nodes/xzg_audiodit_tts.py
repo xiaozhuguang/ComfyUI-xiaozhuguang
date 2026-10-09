@@ -568,7 +568,7 @@ class XzgAudioDiTVoiceCloneTTS:
     RETURN_TYPES = ("AUDIO",)
     RETURN_NAMES = ("audio",)
     FUNCTION = "generate"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/音频"
 
     def generate(
         self,

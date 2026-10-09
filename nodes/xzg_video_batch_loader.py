@@ -130,7 +130,7 @@ class XiaozhuguangVideoBatchMerge:
     RETURN_TYPES = ("IMAGE", "AUDIO")
     RETURN_NAMES = ("图像", "音频")
     FUNCTION = "merge_videos"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
     # 必须为输出节点：逐段阶段下游保存节点被编排器排除后，
     # 只有靠本节点自身作为输出节点才会被执行（执行缓冲），否则缓冲区永远为空
     OUTPUT_NODE = True

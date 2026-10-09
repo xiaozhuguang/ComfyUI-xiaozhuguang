@@ -21,7 +21,7 @@ class XiaozhuguangSeed:
     RETURN_TYPES = ("INT",)
     RETURN_NAMES = ("SEED",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/其他"
     OUTPUT_NODE = True
 
     def execute(self, seed):

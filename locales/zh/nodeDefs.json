@@ -51,6 +51,17 @@
       "0": { "name": "布尔" }
     }
   },
+  "XiaozhuguangLazySwitch": {
+    "display_name": "小珠光惰性开关",
+    "inputs": {
+      "boolean": { "name": "布尔值" },
+      "ON_TRUE": { "name": "真" },
+      "ON_FALSE": { "name": "假" }
+    },
+    "outputs": {
+      "0": { "name": "输出" }
+    }
+  },
   "XiaozhuguangBoolNot": {
     "display_name": "小珠光反向布尔",
     "inputs": {

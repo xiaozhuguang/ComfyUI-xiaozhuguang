@@ -37,7 +37,7 @@ class XiaozhuguangGetWidget:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("widget_value",)
     FUNCTION = "get_widget"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/其他"
     OUTPUT_NODE = False
 
     @classmethod

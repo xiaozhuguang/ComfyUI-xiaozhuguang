@@ -747,7 +747,7 @@ class XiaozhuguangNinimaxH3Prompt:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("english_prompt", "chinese_prompt")
     FUNCTION = "optimize_prompt"
-    CATEGORY = "小珠光"
+    CATEGORY = "小珠光/提示词"
 
     @classmethod
     def VALIDATE_INPUTS(cls, input_types=None, **kwargs):

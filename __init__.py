@@ -226,6 +226,7 @@ from .nodes.xzg_image_save_custom import XiaozhuguangImageSaveCustom
 from .nodes.xzg_audio_save import XiaozhuguangAudioSaveDaVinci
 from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
+from .nodes.xzg_lazy_switch import XiaozhuguangLazySwitch
 from .nodes.xzg_text_box import XiaozhuguangTextBox, XiaozhuguangTextBoxGod
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt, XiaozhuguangNinimaxH3PromptNoSkill
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
@@ -256,7 +257,7 @@ from .nodes.xzg_star_upscale import StarUpscale
 # —— 小珠光 BrushNet 复刻节点（CutForInpaint / BlendInpaint，完全复刻自 ComfyUI-BrushNet，仅依赖 torch/torchvision）——
 from .nodes.xzg_brushnet_inpaint import BlendInpaint, CutForInpaint
 # —— 小珠光 · 系统监控悬浮窗（GPU/CPU/内存实时状态，含 /xzg/system_monitor_stats 接口）——
-from .nodes.xzg_monitor import XiaozhuguangSystemMonitor
+from .nodes import xzg_monitor  # 仅注册监控接口，系统监控通过前端独立提供，不作为工作流节点
 
 # ============ 小珠光 LongCat 离线 TTS（建模库已移植到本插件内部，无需外部插件） ============
 # 原插件 ComfyUI-LongCat-AudioDIT-TTS 的 audiodit/ 建模包与 loader/model_cache 工具
@@ -889,7 +890,7 @@ class XiaozhuguangPointsEditor:
     RETURN_TYPES = ("STRING", "STRING", "BOXES", "INT")
     RETURN_NAMES = ("positive_coords", "negative_coords", "bbox", "frame_index")
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
     OUTPUT_NODE = True
 
     def execute(self, image, info, preview_pixels=100):
@@ -1009,7 +1010,7 @@ class XiaozhuguangSelector:
     RETURN_TYPES = (_selector_any_type,)
     RETURN_NAMES = ("value",)
     FUNCTION = "select"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
 
     def select(self, label, _xz_settings=""):
         # 设置面板可为每个按钮定义输出内容。空值保持旧行为，继续输出按钮编号的 INT。
@@ -1048,7 +1049,7 @@ class XiaozhuguangBooleanSelector:
     RETURN_TYPES = ("BOOLEAN",)
     RETURN_NAMES = ("boolean",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
 
     def execute(self, boolean_value, _xz_settings=""):
         return (boolean_value,)
@@ -1072,7 +1073,7 @@ class XiaozhuguangBoolNot:
     RETURN_TYPES = ("BOOLEAN",)
     RETURN_NAMES = ("inverted_boolean",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
 
     def execute(self, boolean):
         return (not boolean,)
@@ -1096,7 +1097,7 @@ class XiaozhuguangDataBlock:
     RETURN_TYPES = ("*",)
     RETURN_NAMES = ("输出",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
 
     @classmethod
     def VALIDATE_INPUTS(cls, input_types):
@@ -1129,7 +1130,7 @@ class XiaozhuguangCompareDataBlock:
     RETURN_TYPES = ("*",)
     RETURN_NAMES = ("输出",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
 
     @classmethod
     def VALIDATE_INPUTS(cls, input_types):
@@ -1169,7 +1170,7 @@ class XiaozhuguangTitle:
     RETURN_TYPES = ()
     OUTPUT_NODE = False
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/其他"
 
     def execute(self):
         return ()
@@ -1198,7 +1199,7 @@ class XiaozhuguangNumberSwitch:
     RETURN_TYPES = ("*",)
     RETURN_NAMES = ("output",)
     FUNCTION = "switch"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
 
     def check_lazy_status(self, select, **kwargs):
         # 参考 easy-use anythingIndexSwitch 的惰性实现：
@@ -1258,7 +1259,7 @@ class XiaozhuguangUniversalSlider:
     RETURN_TYPES = (any_type,)
     RETURN_NAMES = ("output",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/其他"
 
     def execute(self, value, output_type="float"):
         processed_value = round(float(value), 10)
@@ -1306,6 +1307,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAudioSaveDaVinci": XiaozhuguangAudioSaveDaVinci,
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
+    "XiaozhuguangLazySwitch": XiaozhuguangLazySwitch,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangTextBoxGod": XiaozhuguangTextBoxGod,
     "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
@@ -1336,7 +1338,6 @@ NODE_CLASS_MAPPINGS = {
     "StarUpscale": StarUpscale,
     "BlendInpaint": BlendInpaint,
     "CutForInpaint": CutForInpaint,
-    "XiaozhuguangSystemMonitor": XiaozhuguangSystemMonitor,
 }
 NODE_CLASS_MAPPINGS.update({k: v[0] for k, v in _AUDIODIT_NODES.items()})
 
@@ -1373,6 +1374,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangAudioSaveDaVinci": "小珠光音频保存-化神级",
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
+    "XiaozhuguangLazySwitch": "小珠光惰性开关",
     "XiaozhuguangTextBox": "小珠光文本框",
     "XiaozhuguangTextBoxGod": "小珠光文本框-化神级",
     "XiaozhuguangNinimaxH3Prompt": "小珠光提示词-化神级",
@@ -1401,7 +1403,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "StarUpscale": "小珠光star_upscale",
     "BlendInpaint": "小珠光局部重绘（融合）",
     "CutForInpaint": "小珠光局部重绘（裁剪）",
-    "XiaozhuguangSystemMonitor": "小珠光系统监控",
 }
 NODE_DISPLAY_NAME_MAPPINGS.update({k: v[1] for k, v in _AUDIODIT_NODES.items()})
 

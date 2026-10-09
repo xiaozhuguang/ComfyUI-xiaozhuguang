@@ -38,7 +38,7 @@ class XiaozhuguangColorAdjust:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("图像",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = (
         "颜色调整极速版：亮度/对比度/饱和度（精度 0.01），支持批次图像输入输出。\n"
         "纯张量逐元素运算整批一次算完，无循环无 PIL；三参数全默认时零拷贝直通。"

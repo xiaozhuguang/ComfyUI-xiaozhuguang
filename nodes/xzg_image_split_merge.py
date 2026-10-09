@@ -37,7 +37,7 @@ class XiaozhuguangImageSplitter:
     INPUT_IS_LIST = ("image", "mask",)  # image和mask都是列表输入
     OUTPUT_IS_LIST = (True, True, False, True)
     FUNCTION = "split_image"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
 
     def create_feather_mask(self, h, w, overlap, pos, full_h, full_w, device):
         """创建羽化权重遮罩"""
@@ -197,7 +197,7 @@ class XiaozhuguangImageMerger:
     RETURN_NAMES = ("merged",)
     OUTPUT_IS_LIST = (True,)  # 返回多个合并后的图像
     FUNCTION = "merge_image"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
 
     def create_feather_mask(self, h, w, overlap, pos, full_h, full_w, device):
         mask = torch.zeros((h, w), dtype=torch.float32, device=device)

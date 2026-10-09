@@ -15,7 +15,6 @@
 
 import asyncio
 import ctypes
-import json
 import os
 import subprocess
 import threading
@@ -312,49 +311,3 @@ async def get_system_monitor_stats(request):
     loop = asyncio.get_event_loop()
     data = await loop.run_in_executor(None, _system_stats)
     return web.json_response(data)
-
-
-# ---------------------------------------------------------------------------
-# 节点定义
-# ---------------------------------------------------------------------------
-
-class XiaozhuguangSystemMonitor:
-    """小珠光 · 系统监控悬浮窗：读取当前 GPU / CPU / 内存状态。
-
-    该节点主要用于工作流内使用：
-      - “显示悬浮窗”开关可控制前端悬浮窗的显示/隐藏；
-      - “监控数据”输出当前状态 JSON 文本，可接入其它节点。
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "show_float": (
-                    "BOOLEAN",
-                    {"default": True, "label_on": "显示悬浮窗", "label_off": "隐藏悬浮窗"},
-                ),
-            }
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("监控数据",)
-    OUTPUT_NODE = True
-    FUNCTION = "run"
-    CATEGORY = "xiaozhuguang"
-
-    def run(self, show_float=True):
-        stats = _system_stats()
-        text = json.dumps(stats, ensure_ascii=False, indent=2)
-        return (text,)
-
-
-NODE_CLASS_MAPPINGS = {
-    "XiaozhuguangSystemMonitor": XiaozhuguangSystemMonitor,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangSystemMonitor": "小珠光系统监控",
-}
-
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

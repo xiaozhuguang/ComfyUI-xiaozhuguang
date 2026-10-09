@@ -21,7 +21,7 @@ class PoseSequenceEditor:
     RETURN_TYPES = ('IMAGE',)
     RETURN_NAMES = ('image',)
     FUNCTION = 'execute'
-    CATEGORY = 'xiaozhuguang'
+    CATEGORY = '小珠光/视频'
     # Do not force-run this node as a graph output. Downstream lazy switches
     # must be able to skip its session creation and image rendering entirely.
     OUTPUT_NODE = False

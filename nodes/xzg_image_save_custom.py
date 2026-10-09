@@ -109,7 +109,7 @@ class XiaozhuguangImageSaveCustom(PreviewImage):
 
     RETURN_TYPES = ()
     FUNCTION = "save_images"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     OUTPUT_NODE = True
 
     def save_images(self, images, base_dir="",

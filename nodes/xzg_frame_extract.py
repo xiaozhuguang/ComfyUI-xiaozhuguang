@@ -24,7 +24,7 @@ class XiaozhuguangFrameExtract:
     RETURN_TYPES = ("IMAGE", "MASK")
     RETURN_NAMES = ("image", "mask")
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
 
     @classmethod
     def IS_CHANGED(cls, image=None, mask=None, fetch_count=99999, front_fill=0):

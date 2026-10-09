@@ -1931,7 +1931,7 @@ class XiaozhuguangImageLoader:
     RETURN_NAMES = ("images", "mask")
     OUTPUT_IS_LIST = (True, True)
     FUNCTION = "load_images"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
 
     def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, remove_alpha=False, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000"):
         mask_output_enabled = mask_output_enabled is True or str(mask_output_enabled).strip().lower() in ("true", "1")

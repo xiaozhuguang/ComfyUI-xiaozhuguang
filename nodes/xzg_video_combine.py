@@ -475,7 +475,7 @@ class XiaozhuguangVideoCombine:
     RETURN_TYPES = ()
     RETURN_NAMES = ()
     FUNCTION = "combine_video"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
     OUTPUT_NODE = True
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,

@@ -31,7 +31,7 @@ class XiaozhuguangInputLazyCheck:
     INPUT_IS_LIST = (True, True)
     OUTPUT_IS_LIST = (True, True)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
     DESCRIPTION = "输入A有内容则输出A（跳过B的计算），输入A无内容则输出B。批次/列表整体透传；判断口每次只输出一个值：输出A时为false，输出B时为true。"
 
     @staticmethod

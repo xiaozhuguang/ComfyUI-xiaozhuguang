@@ -29,7 +29,7 @@ class XiaozhuguangListCount:
     RETURN_TYPES = ("INT",)
     RETURN_NAMES = ("数量",)
     FUNCTION = "count"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     INPUT_IS_LIST = (True,)
     DESCRIPTION = "计算输入列表的元素总数：列表取 len()；单个批处理张量按 batch 维统计；字典/其它容器取长度。"
 

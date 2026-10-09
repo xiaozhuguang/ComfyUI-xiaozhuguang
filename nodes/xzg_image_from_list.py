@@ -25,7 +25,7 @@ class XiaozhuguangImageFromList:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("图像",)
     FUNCTION = "get_image"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     INPUT_IS_LIST = (True, True, True)
     OUTPUT_IS_LIST = (True,)
     DESCRIPTION = "从 IMAGE 列表输入中，自 index 起连续取 length 张图（index 支持负数，越界自动钳制）。length 为取图数量：如列表 4 张、index=1、length=3，则取第 2、3、4 张。支持图片尺寸不一致，返回列表并广播，下游逐张执行（与小珠光图像加载器列表模式一致）。length=1 为单取。"

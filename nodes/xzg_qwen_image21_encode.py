@@ -34,7 +34,7 @@ class XiaozhuguangTextEncodeQwenImage21:
     RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT")
     RETURN_NAMES = ("positive", "negative", "latent")
     FUNCTION = "encode"
-    CATEGORY = "xiaozhuguang/Qwen Image"
+    CATEGORY = "小珠光/其他"
     DESCRIPTION = "稳定端口版 Qwen Image 2.1 文本编码；固定 16 个图片输入，支持安全转换/解开子图。"
 
     def encode(self, clip, prompt, negative_prompt, resolution=1024, vae=None, **kwargs):

@@ -9,7 +9,7 @@ class XiaozhuguangMaskInvert:
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("遮罩",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = "反转遮罩（白黑互换）：1.0 - mask，直接张量运算，支持 GPU 与批量。"
 
     def execute(self, mask):

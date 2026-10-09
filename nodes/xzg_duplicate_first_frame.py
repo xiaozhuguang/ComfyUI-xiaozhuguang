@@ -34,7 +34,7 @@ class XiaozhuguangDuplicateFirstFrame:
     RETURN_TYPES = ("IMAGE", "INT", "INT", "INT", "MASK")
     RETURN_NAMES = ("image", "frame_count", "original_count", "front_fill", "mask")
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/视频"
 
     @classmethod
     def IS_CHANGED(cls, multi_fill=False, image=None, mask=None):

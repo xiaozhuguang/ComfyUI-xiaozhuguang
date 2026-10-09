@@ -51,6 +51,17 @@
       "0": { "name": "boolean" }
     }
   },
+  "XiaozhuguangLazySwitch": {
+    "display_name": "Xiaozhuguang Lazy Switch",
+    "inputs": {
+      "boolean": { "name": "boolean" },
+      "ON_TRUE": { "name": "true" },
+      "ON_FALSE": { "name": "false" }
+    },
+    "outputs": {
+      "0": { "name": "output" }
+    }
+  },
   "XiaozhuguangBoolNot": {
     "display_name": "Xiaozhuguang Inverted Boolean",
     "inputs": {

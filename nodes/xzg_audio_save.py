@@ -331,7 +331,7 @@ class XiaozhuguangAudioSaveDaVinci:
     RETURN_TYPES = ()
     RETURN_NAMES = ()
     FUNCTION = "save_audio"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/音频"
     OUTPUT_NODE = True
 
     def save_audio(self, 音频, 格式, 质量, 文件名前缀,

@@ -126,7 +126,7 @@ class XiaozhuguangColorMatchFast:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("图像",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/图片"
     DESCRIPTION = (
         "颜色匹配高速版：把参考图的颜色统计迁移到目标图像。\n"
         "LAB：逐通道均值/方差匹配（Reinhard），色彩还原自然，适合大多数场景；\n"

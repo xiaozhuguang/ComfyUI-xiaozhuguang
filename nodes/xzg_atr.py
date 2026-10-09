@@ -6,7 +6,7 @@ import cv2
 
 
 class XiaozhuguangATR:
-    CATEGORY = "_legacy"
+    CATEGORY = "小珠光/其他"
     DEPRECATED = True
     DESCRIPTION = "将处理后的图像粘贴回原图"
 
