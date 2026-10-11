@@ -229,7 +229,7 @@ function runAnalysisPage() {
   const metrics = [...new Map(runs.flatMap((run) => run.series).map((series) => [series.key, series])).values()];
   // 默认选中「GPU 显存」（有有效采样时）；否则退回第一个有有效采样的指标。
   const firstDataMetric = metrics.find((metric) => runs.some((run) => run.series.some((s) => s.key === metric.key && s.peak)));
-  const preferredMetric = metrics.find((metric) => metric.key === "gpu_vram" &&
+  const preferredMetric = metrics.find((metric) => metric.metricKey === "gpu_vram" &&
     runs.some((run) => run.series.some((s) => s.key === metric.key && s.peak)));
   let selectedMetric = (preferredMetric || firstDataMetric || metrics[0])?.key || null;
   for (const id of ["records", "metrics"]) $(id).replaceChildren();
@@ -317,6 +317,10 @@ function runAnalysisPage() {
     });
     $("metrics").appendChild(label);
   }
+  // Draw the default selection as soon as the data controls exist.
+  // Auxiliary button setup must not block the initial charts.
+  render();
+  renderNodes();
   function focus(i, start, end, label, metricKey) {
     selectedRuns.add(i);
     $("records").querySelectorAll("input")[i].checked = true;
@@ -535,6 +539,7 @@ function runAnalysisPage() {
     const active = item.dataset.nodeOrder === nodeOrder;
     item.style.cssText = "display:inline-flex;align-items:center;gap:7px;padding:4px 0;border:0;background:transparent;color:#fff;font:13px/1.5 'Segoe UI',system-ui,sans-serif;cursor:pointer;";
     const check = item.querySelector(".order-check");
+    if (!check) return;
     check.style.cssText = `width:14px;height:14px;box-sizing:border-box;border:1px solid ${active ? "#FFD700" : "#9299a5"};border-radius:3px;background:${active ? "#FFD700" : "transparent"};color:#171a20;font:bold 11px/12px sans-serif;text-align:center;`;
     check.textContent = active ? "✓" : "";
   });
@@ -549,5 +554,4 @@ function runAnalysisPage() {
     const a = document.createElement("a"); a.href = url; a.download = `小珠光运行分析-${new Date().toISOString().slice(0, 10)}.html`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-  render(); renderNodes();
 }

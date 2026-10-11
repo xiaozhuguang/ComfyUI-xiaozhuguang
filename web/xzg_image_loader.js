@@ -1045,7 +1045,8 @@ function createImgBatchUI(node) {
         del: '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>',
         clear: '<svg viewBox="0 0 24 24"><path d="M19 5L9.5 14.5"/><path d="M8 19l-3 3"/><path d="M13 20.5l-4 4"/><path d="M6.5 8.5l.01 0"/><path d="M10 6l.01 0"/><path d="M15 17l-2 2"/><path d="M12.5 12.5L17 8"/></svg>',
         mask: '<svg class="xzg-ic-mask" viewBox="0 0 24 24"><circle class="mr" cx="12" cy="12" r="9.5"/><path class="ml" d="M12 2.5 A9.5 9.5 0 0 1 21.5 12 A9.5 9.5 0 0 1 12 21.5 A4.75 4.75 0 0 1 12 12 A4.75 4.75 0 0 0 12 2.5 Z"/><circle class="o" cx="12" cy="12" r="9.5"/><circle class="er" cx="12" cy="16.75" r="1.15"/></svg>',
-        crop: '<svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>'
+        crop: '<svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>',
+        restore: '<svg viewBox="0 0 24 24"><path d="M3.5 11.5a8.5 8.5 0 1 1 1.4 5.2"/><path d="M3.5 5.5v6h6"/></svg>'
     };
 
     if (!document.getElementById("xzg-side-ic-style")) {
@@ -1667,6 +1668,11 @@ function createImgBatchUI(node) {
     const cropSelClearBtn = _mkMaskBtn(xzgT("清除选框", "Clear Sel"), xzgT("清除当前裁剪选框，可重新框选", "Clear current crop selection"));
     // 应用裁剪：把当前选框正式应用到图片
     const cropApplyBtn = _mkMaskBtn(xzgT("应用裁剪", "Apply Crop"), xzgT("应用当前裁剪选框", "Apply current crop region"));
+    const clearAllEditsBtn = _mkMaskBtn(
+        xzgT("清除全部编辑", "Clear All Edits"),
+        xzgT("清除所有已加载图片的遮罩和裁剪状态", "Clear masks and crop states for all loaded images"),
+        "restore"
+    );
     // 比例按钮在裁剪预览区顶部单行展示，点击即切换，不再使用下拉列表。
     const _cropRatios = [["自由", null], ["9:16", 9 / 16], ["16:9", 16 / 9], ["1:1", 1], ["2:3", 2 / 3], ["3:2", 3 / 2], ["3:4", 3 / 4], ["4:3", 4 / 3]];
     const cropRatioRow = document.createElement("div");
@@ -1855,6 +1861,7 @@ function createImgBatchUI(node) {
         syncImageTransformControls(); commitImageTransform();
     });
     maskToolbar.appendChild(cropToggleBtn);
+    maskToolbar.appendChild(clearAllEditsBtn);
     maskToolbar.appendChild(cropApplyBtn);
     maskToolbar.appendChild(cropClearBtn);
     maskToolbar.appendChild(cropSelClearBtn);
@@ -2048,15 +2055,60 @@ function createImgBatchUI(node) {
 
     // ═══════════ 裁剪选区：widget 读写 ═══════════
     // 清除全部遮罩绘制数据（离屏 canvas + widget），打开裁剪模式时调用，防止裁剪/遮罩坐标系错位
-    function _clearMaskData() {
+    function _clearMaskData(imageName = null) {
         if (maskOffscreen.width > 0 && maskOffscreen.height > 0) {
             maskOffCtx.clearRect(0, 0, maskOffscreen.width, maskOffscreen.height);
         }
         _maskBoundImageName = null;
-        _maskByImage = {};
+        if (imageName) delete _maskByImage[imageName];
+        else _maskByImage = {};
         _writeMaskMap();
         _renderMaskOverlay();
     }
+    clearAllEditsBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const names = parseNameList(getImageListWidget(node)?.value);
+        for (const name of names) _invalidCropThumb(name);
+
+        _editWorkspaceInitialZoomPending = false;
+        maskEnabled = false;
+        cropEnabled = false;
+        _exitImageEditWorkspace();
+        _clearMaskData();
+
+        _cropByImage = {};
+        for (const name of Object.keys(_imageTransformByName)) delete _imageTransformByName[name];
+        cropRect = null;
+        _cropPending = null;
+        _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null; _cropResizeFromCenter = false;
+        _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
+        _cropSelStart = _cropSelCur = null;
+        _cropDrawing = false;
+        _cropPaddingColor = "#ffffff";
+        _lastCropPreviewKey = null;
+
+        const cropWidget = getCropDataWidget(node);
+        if (cropWidget) {
+            cropWidget.value = "";
+            cropWidget.callback?.(cropWidget.value);
+        }
+        if (node.properties) {
+            delete node.properties.xzg_crop_data;
+            delete node.properties.xzg_crop_orig_size;
+            delete node.properties.xzg_mask_orig_size;
+        }
+
+        syncCropPaddingControls();
+        syncImageTransformControls();
+        _resetImgZoom();
+        _refreshCropPreview();
+        _renderTransformPreview();
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+        _refreshMaskToolbar();
+        redraw(true);
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+    });
     function _syncMaskMapFromWidget() {
         const value = String(getMaskDataWidget(node)?.value || "");
         if (value === _maskWidgetSource) return value;
@@ -2708,7 +2760,7 @@ function createImgBatchUI(node) {
         _commitCropToWidget();
         // 裁剪优先于遮罩：画面一旦被裁剪，旧遮罩立即作废（坐标系已变），
         // 需在裁剪后的画面上重新绘制遮罩
-        _clearMaskData();
+        _clearMaskData(singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey || null);
         _refreshCropPreview(); // 应用后保留当前缩放和平移视图
         _renderTransformPreview();
         _renderMaskOverlay();
@@ -2760,9 +2812,13 @@ function createImgBatchUI(node) {
         cropRatioRow.style.display = cropEnabled ? "flex" : "none";
         syncImageTransformControls();
         _renderTransformPreview();
-        // 打开裁剪模式：立即清除现有遮罩信息（裁剪与遮罩不同坐标系，避免残留错位）
+        // setIndex() 上面刚切换时预览 DOM 仍可能绑定旧图；多图模式以索引 widget 为准。
+        const cropImageName = inMulti
+            ? parseNameList(getImageListWidget(node)?.value)[getIndex(node)] || null
+            : singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey || null;
+        // 打开裁剪模式：只清除当前图片的遮罩，保留其它图片的绘制。
         if (cropEnabled) {
-            _clearMaskData();
+            _clearMaskData(cropImageName);
         }
         if (cropEnabled) {
             _editWorkspaceInitialZoomPending = true;
@@ -2824,7 +2880,7 @@ function createImgBatchUI(node) {
         syncImageTransformControls();
         _commitCropToWidget();
         // 恢复原始 = 裁剪状态变化：遮罩是相对裁剪画面绘制的，一并清除
-        _clearMaskData();
+        _clearMaskData(currentName || null);
         _resetCropView(); // 恢复整图，并回到裁剪界面默认的 80% 视图
         _refreshCropPreview();
         _renderTransformPreview();
