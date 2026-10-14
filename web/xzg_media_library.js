@@ -414,8 +414,10 @@ let lastWindowKey = "";
         // ESC 关闭媒体库：有更高层子对话框（重命名/移动/新建/右键菜单）打开时由子层自行处理，不关整窗
         if (event.key === "Escape" && !event.repeat) {
             if (!overlay.isConnected) return;
-            const hasHigher = [...document.body.children].some(child => child !== overlay &&
-                getComputedStyle(child).position === "fixed" && Number(getComputedStyle(child).zIndex) > 200000 && child.isConnected);
+            // Only defer to overlays owned by this media library. Other extensions
+            // may keep unrelated fixed-position UI above this window permanently.
+            const hasHigher = !!contextMenu?.isConnected || [...document.body.children].some(child =>
+                child !== overlay && child.dataset?.xzgHigher === "1" && child.isConnected);
             if (hasHigher) return;
             event.preventDefault();
             event.stopPropagation();

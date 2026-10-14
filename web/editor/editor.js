@@ -75,7 +75,8 @@ document.addEventListener('keydown',event=>{
 previewStage.addEventListener('wheel',event=>{
  event.preventDefault();if(drag||previewPan||!frames.length)return;
  const delta=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?previewStage.clientHeight:1);
- const next=Math.max(.25,Math.min(8,previewZoom*Math.exp(-Math.max(-120,Math.min(120,delta))*.002)));
+ const maxZoom=event.altKey?32:8,zoomSpeed=event.altKey?.006:.002;
+ const next=Math.max(.25,Math.min(maxZoom,previewZoom*Math.exp(-Math.max(-120,Math.min(120,delta))*zoomSpeed)));
  const rect=previewStage.getBoundingClientRect(),x=event.clientX-rect.left-rect.width/2,y=event.clientY-rect.top-rect.height/2,ratio=next/previewZoom;
  previewOffsetX=x-(x-previewOffsetX)*ratio;previewOffsetY=y-(y-previewOffsetY)*ratio;previewZoom=next;applyPreviewView();
 },{passive:false});
@@ -90,7 +91,7 @@ function setTimelineHeight(height){
  const panelStyle=getComputedStyle(panel),titleHeight=panel.querySelector('.tracks-title').getBoundingClientRect().height;
  const padding=(parseFloat(style.paddingTop)||0)+(parseFloat(style.paddingBottom)||0);
  const panelSpace=titleHeight+(parseFloat(panelStyle.marginTop)||0)+(parseFloat(panelStyle.marginBottom)||0)+(parseFloat(panelStyle.borderTopWidth)||0)+(parseFloat(panelStyle.borderBottomWidth)||0);
- const max=Math.max(40,viewer.clientHeight-padding-fixed-panelSpace-100),value=Math.max(40,Math.min(max,height));
+ const max=Math.max(40,viewer.clientHeight-padding-fixed-panelSpace-40),value=Math.max(40,Math.min(max,height));
  document.documentElement.style.setProperty('--timeline-height',value+'px');splitter.setAttribute('aria-valuemin','40');splitter.setAttribute('aria-valuemax',String(Math.round(max)));splitter.setAttribute('aria-valuenow',String(Math.round(value)));
 }
 
@@ -174,6 +175,8 @@ function toggleLimbOrderDisplay(type){if(!frames.length)return;const person=Numb
 function setLimbFront(type,side,label){if(!frames.length)return;pause();upsert({type,frame:current,person:Number($('person').value),side});syncLimbOrderButtons();draw();status(`已设置${label}置于前方`);}
 let timelineZoom=1,timelineStart=0,timelineViewRequest=0;
 function timelineSpan(){return Math.max(1,frames.length-1)/timelineZoom;}
+function resetTimelineZoom(){timelineZoom=1;timelineStart=0;closeKeyframeMenu();scheduleTimelineView();}
+function zoomToRecentFrames(){if(frames.length<2)return;const span=Math.min(frames.length-1,99);timelineZoom=Math.max(1,(frames.length-1)/span);timelineStart=Math.max(0,Math.min(frames.length-1-span,current-span/2));closeKeyframeMenu();scheduleTimelineView();}
 function timelinePercent(frame){return (frame-timelineStart)/timelineSpan()*100;}
 function timelineFrame(fraction){return Math.max(0,Math.min(frames.length-1,timelineStart+fraction*timelineSpan()));}
 function positionTimelineBand(band,start,end){band.dataset.start=start;band.dataset.end=end;band.style.left=timelinePercent(start)+'%';band.style.width=((end-start)/timelineSpan()*100)+'%';}
@@ -183,6 +186,8 @@ function refreshTimelineView(){
  $('keyframeTrack').querySelectorAll('.track-range').forEach(band=>positionTimelineBand(band,Number(band.dataset.start),Number(band.dataset.end)));
 }
 function scheduleTimelineView(){if(timelineViewRequest)return;timelineViewRequest=requestAnimationFrame(()=>{timelineViewRequest=0;refreshTimelineView();});}
+$('resetTimelineZoom').onclick=resetTimelineZoom;
+$('zoomRecentFrames').onclick=zoomToRecentFrames;
 function updatePlayheads(){updateTimelineHead(current);const position=timelinePercent(current);playheads.forEach(head=>{head.style.left=position+'%';head.hidden=position<0||position>100;});}
 let keyframeMenu=null;
 function closeKeyframeMenu(){keyframeMenu?.remove();keyframeMenu=null;}
@@ -220,6 +225,10 @@ function mergeRanges(ranges){const sorted=ranges.map(span=>[...span]).sort((a,b)
 function deleteKeyframes(removed){
  remember();operations=operations.filter(op=>!removed.includes(op));updateOperations();resetPreview();
 }
+function setKeyframesForcedConfirmed(keys,confirmed){
+ remember();for(const op of keys){if(confirmed){op.force_confirmed=true;op.needs_adjustment=false;}else{delete op.force_confirmed;op.needs_adjustment=true;}}
+ updateOperations();draw();
+}
 function applyTrackRange(track,start,end,mode='replace'){
  if(mode==='remove'){
   if(track.ops.some(op=>Number.isInteger(op.frame)&&op.frame===start))start++;
@@ -241,6 +250,7 @@ function syncTrackActivation(){
  $('keyframeTrack').querySelectorAll('[data-track-type]').forEach(row=>{
   const joint=Number(row.dataset.completionJoint),active=activeTrackMatches(Number(row.dataset.completionPerson),joint===-1?undefined:joint,row.dataset.trackType,row.dataset.trackSide||'both');
   row.classList.toggle('completion-track-active',active);row.setAttribute('aria-selected',String(active));
+  const lock=row.querySelector('.track-lock');if(lock){const locked=trackActivationLocked&&active;lock.classList.toggle('locked',locked);lock.setAttribute('aria-pressed',String(locked));lock.title=locked?'解除关节锁定':'锁定为仅拖动此关节';lock.setAttribute('aria-label',lock.title);}
  });
 }
 function activateCompletionTrack(person,joint,type='joint',side='both'){
@@ -264,9 +274,10 @@ function renderKeyframes(){
   if(!tracks.length)continue;container.append(heading);
   for(const track of tracks){
    const row=document.createElement('div');row.className='keyframe-row';
-   const label=document.createElement('span');label.className='track-label';label.textContent=track.label;row.append(label);
+   const label=document.createElement('span');label.className='track-label';const labelText=document.createElement('span');labelText.className='track-label-text';labelText.textContent=track.label;label.append(labelText);
    const trackType=track.type||'joint',trackSide=track.side||'both';
    row.dataset.completionPerson=person;row.dataset.completionJoint=Number.isInteger(track.joint)?track.joint:-1;row.dataset.trackType=trackType;row.dataset.trackSide=trackSide;row.tabIndex=0;row.title='点击激活轨道';
+   if(Number.isInteger(track.joint)){const lock=document.createElement('button');lock.type='button';lock.className='track-lock';lock.textContent='🔒';lock.title='锁定为仅拖动此关节';lock.setAttribute('aria-label',lock.title);lock.setAttribute('aria-pressed','false');lock.onclick=event=>{event.stopPropagation();const wasLocked=trackActivationLocked&&activeTrackMatches(person,track.joint,trackType,trackSide);activateCompletionTrack(person,track.joint,trackType,trackSide);trackActivationLocked=!wasLocked;syncTrackActivation();};label.append(lock);}row.append(label);
    row.addEventListener('click',()=>activateCompletionTrack(person,track.joint,trackType,trackSide),{capture:true});
    row.addEventListener('keydown',event=>{if(event.target===row&&(event.key==='Enter'||event.key===' ')){event.preventDefault();activateCompletionTrack(person,track.joint,trackType,trackSide);}});
 
@@ -308,14 +319,15 @@ function renderKeyframes(){
    for(const ops of keyed.values()){const frame=ops[0].frame??ops[0].start;
     const marker=document.createElement('button');marker.type='button';marker.className='keyframe-marker';
     if(ops.some(op=>op.deleted))marker.classList.add('deleted-key');
-    if(ops.some(op=>op.needs_adjustment))marker.classList.add('unadjusted-key');
+    if(ops.some(op=>op.needs_adjustment&&!op.force_confirmed))marker.classList.add('unadjusted-key');
     marker.dataset.frame=frame;marker.style.left=timelinePercent(frame)+'%';
     if(isLimbOrderTrack){marker.classList.add('limb-order-marker');marker.textContent='';marker.setAttribute('aria-label',`${track.label}关键帧：${ops[0].side==='right'?'右':'左'}侧置于前`);}
     marker.title=isLimbOrderTrack?`${heading.textContent} · ${track.label} · ${ops[0].side==='right'?'右':'左'}侧置于前，从第 ${frame+1} 帧持续到下一设置`: `${heading.textContent} · ${track.label} · ${Number.isInteger(ops[0].frame)?'第 '+(frame+1)+' 帧':'补全第 '+(ops[0].start+1)+' 至 '+(ops[0].end+1)+' 帧'}（点击跳转，右键设置生效范围或删除）`;marker.setAttribute('aria-label',marker.title);
     marker.onclick=event=>{event.stopPropagation();if(scalesDirty)commitScale();pause();setFrame(frame);};
     marker.oncontextmenu=event=>{
      const deleteItem=['删除关键帧',()=>deleteKeyframes(ops)];
-     showKeyframeMenu(event,[deleteItem]);
+     const needsAdjustment=ops.some(op=>op.needs_adjustment&&!op.force_confirmed),confirmItem=[needsAdjustment?'强行标绿（视为已确认）':'恢复待调整状态',()=>setKeyframesForcedConfirmed(ops,needsAdjustment)];
+     showKeyframeMenu(event,[confirmItem,deleteItem]);
     };
     lane.append(marker);
    }
@@ -373,7 +385,7 @@ function drawJointDragReferences(){
  }
  ctx.restore();
 }
-function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);if(!frames.length)return;const displayed=drag?applyFrame(drag.baseFrame,current,[drag.op],frames.length):applyFrame(editFrame(),current,!scalesDirty&&!manualPreview?baseOperations().compiled:allOps(),frames.length);ctx.save();ctx.translate(previewPoseLeft,previewPoseTop);drawFrame(displayed);drawJointDragReferences();ctx.restore();if(manualMode){const person=Number($('person').value),body=displayed.people[person]?.pose_keypoints_2d,drawn=allOps().filter(op=>op.type==='set_joint'&&(op.person===person||op.person===-1)&&isOperationActive(op,current));document.querySelectorAll('#poseMap .pose-joint').forEach(item=>{const joint=Number(item.dataset.joint),missing=!(body?.[joint*3+2]>.3);item.classList.toggle('missing',missing);item.classList.toggle('has-missing-frames',missingFramesFor(person,joint).length>0);item.classList.toggle('drawn',!missing&&drawn.some(op=>op.joint===joint));item.querySelector('title').textContent=`${BODY_NAMES[joint]}${missing?'（缺失）':''}`;});}}
+function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);if(!frames.length)return;const displayed=drag?applyFrame(drag.baseFrame,current,[drag.op],frames.length):applyFrame(editFrame(),current,!scalesDirty&&!manualPreview?baseOperations().compiled:allOps(),frames.length);ctx.save();ctx.translate(previewPoseLeft,previewPoseTop);drawFrame(displayed);drawJointDragReferences();ctx.restore();if(manualMode){const person=Number($('person').value),body=displayed.people[person]?.pose_keypoints_2d,drawn=allOps().filter(op=>op.type==='set_joint'&&(op.person===person||op.person===-1)&&isOperationActive(op,current));document.querySelectorAll('#poseMap .pose-joint').forEach(item=>{const joint=Number(item.dataset.joint),missing=!(body?.[joint*3+2]>.3),matching=operations.filter(op=>op.type==='set_joint'&&op.joint===joint&&(op.person===person||op.person===-1)&&!op.deleted),hasPending=matching.some(op=>op.needs_adjustment),hasCompleted=matching.length>0&&!hasPending;item.classList.toggle('missing',missing);item.classList.toggle('has-missing-frames',missingFramesFor(person,joint).length>0&&!hasPending&&!hasCompleted);item.classList.toggle('has-pending-completion',hasPending);item.classList.toggle('has-completed-completion',hasCompleted);item.classList.toggle('drawn',!missing&&drawn.some(op=>op.joint===joint));item.querySelector('title').textContent=`${BODY_NAMES[joint]}${hasPending?'（有待调整的补全关键帧）':hasCompleted?'（补全已完成）':missing?'（缺失）':''}`;});}}
 const frameLoader=new FrameLoader(index=>new Promise((resolve,reject)=>{
  const img=new Image(),timer=setTimeout(()=>{img.onload=img.onerror=null;reject(Error('视频帧加载超时，请检查 ComfyUI 是否仍在运行'));},15000);
  img.onload=()=>{clearTimeout(timer);resolve(img);};img.onerror=()=>{clearTimeout(timer);reject(Error('视频帧加载失败，请重新执行编辑节点刷新预览缓存'));};
@@ -607,16 +619,16 @@ function drawTimelineTicks(){
  }
 }
 new ResizeObserver(drawTimelineTicks).observe(seekControl);
-seekControl.parentElement.title='滚轮缩放时间轴，右键重置缩放';
+seekControl.parentElement.title='以播放头为中心滚轮缩放时间轴，右键重置缩放';
 seekControl.parentElement.addEventListener('wheel',event=>{
  event.preventDefault();if(frames.length<2)return;
- const rect=seekControl.getBoundingClientRect(),fraction=Math.max(0,Math.min(1,(event.clientX-rect.left-7)/Math.max(1,rect.width-14))),anchor=timelineStart+fraction*timelineSpan();
+ const anchor=current,oldSpan=timelineSpan(),fraction=Math.max(0,Math.min(1,(anchor-timelineStart)/oldSpan));
  const delta=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?48:1);
  timelineZoom=Math.max(1,Math.min(Math.max(1,frames.length-1),timelineZoom*Math.exp(-Math.max(-120,Math.min(120,delta))*.003)));
  timelineStart=Math.max(0,Math.min(Math.max(0,frames.length-1-timelineSpan()),anchor-fraction*timelineSpan()));
  closeKeyframeMenu();scheduleTimelineView();
 },{passive:false});
-seekControl.parentElement.addEventListener('contextmenu',event=>{event.preventDefault();event.stopPropagation();timelineZoom=1;timelineStart=0;closeKeyframeMenu();scheduleTimelineView();});
+seekControl.parentElement.addEventListener('contextmenu',event=>{event.preventDefault();event.stopPropagation();resetTimelineZoom();});
 
 
 function seekAtPointer(event){const rect=seekControl.getBoundingClientRect(),span=Math.max(1,rect.width-14),fraction=Math.max(0,Math.min(1,(event.clientX-rect.left-7)/span));seekControl.value=Math.round(timelineFrame(fraction));updateTimelineHead();seekControl.dispatchEvent(new Event('input',{bubbles:true}));}
@@ -640,8 +652,12 @@ if(manualMode&&dragMode==='joint'){
    if(hitDistance<distance){distance=hitDistance;previewJoint={person,joint};}
   }
  });
- if(!previewJoint)return;
-}const op={type:dragMode==='move'?'translate':'joint',frame:current,person:Number($('person').value),dx:0,dy:0},baseFrame=applyFrame(editFrame(),current,allOps(),frames.length);if(op.type==='translate'&&trackActivationLocked&&activeCompletionTrack&&(activeCompletionTrack.type||'joint')==='joint')return;if(op.type==='joint'&&previewJoint){op.joint=previewJoint.joint;op.person=previewJoint.person;}else if(op.type==='joint'){if(trackActivationLocked&&activeCompletionTrack&&(activeCompletionTrack.type||'joint')!=='joint')return;let best=null,dist=18;baseFrame.people.forEach((p,person)=>{if(op.person!==-1&&person!==op.person)return;const flat=p.pose_keypoints_2d;for(let j=0;j<18;j++){if(trackActivationLocked&&activeCompletionTrack&&((activeCompletionTrack.person!==-1&&person!==activeCompletionTrack.person)||j!==activeCompletionTrack.joint))continue;if(flat[j*3+2]<=.3)continue;const d=Math.hypot((flat[j*3]/baseFrame.canvas_width-x)*box.width,(flat[j*3+1]/baseFrame.canvas_height-y)*box.height);if(d<dist){dist=d;best={joint:j,person};}}});if(!best)return;op.joint=best.joint;op.person=best.person;}const same=operations.filter(old=>old.type===op.type&&(old.person??-1)===op.person&&(op.type!=='joint'||old.joint===op.joint));
+   if(trackActivationLocked&&activeCompletionTrack&&(activeCompletionTrack.type||'joint')==='joint'){
+    const lockedPerson=activeCompletionTrack.person===-1?selected:activeCompletionTrack.person,lockedJoint=activeCompletionTrack.joint,lockedBody=frame.people[lockedPerson]?.pose_keypoints_2d;
+    if(!Number.isInteger(lockedJoint)||!lockedBody||!(lockedBody[lockedJoint*3+2]>.3))return;
+    previewJoint={person:lockedPerson,joint:lockedJoint};
+   }else if(!previewJoint)return;
+}const op={type:dragMode==='move'?'translate':'joint',frame:current,person:Number($('person').value),dx:0,dy:0},baseFrame=applyFrame(editFrame(),current,allOps(),frames.length);if(op.type==='translate'&&trackActivationLocked&&activeCompletionTrack&&(activeCompletionTrack.type||'joint')==='joint')return;if(op.type==='joint'&&previewJoint){op.joint=previewJoint.joint;op.person=previewJoint.person;}else if(op.type==='joint'){if(trackActivationLocked&&activeCompletionTrack&&(activeCompletionTrack.type||'joint')!=='joint')return;let best=null;if(trackActivationLocked&&activeCompletionTrack&&(activeCompletionTrack.type||'joint')==='joint'){const person=activeCompletionTrack.person===-1?op.person:activeCompletionTrack.person,flat=baseFrame.people[person]?.pose_keypoints_2d,joint=activeCompletionTrack.joint;if(Number.isInteger(joint)&&flat?.[joint*3+2]>.3)best={joint,person};}else{let dist=18;baseFrame.people.forEach((p,person)=>{if(op.person!==-1&&person!==op.person)return;const flat=p.pose_keypoints_2d;for(let j=0;j<18;j++){if(flat[j*3+2]<=.3)continue;const d=Math.hypot((flat[j*3]/baseFrame.canvas_width-x)*box.width,(flat[j*3+1]/baseFrame.canvas_height-y)*box.height);if(d<dist){dist=d;best={joint:j,person};}}});}if(!best)return;op.joint=best.joint;op.person=best.person;}const same=operations.filter(old=>old.type===op.type&&(old.person??-1)===op.person&&(op.type!=='joint'||old.joint===op.joint));
 const sampled=compileOperations(same),origin={canvas_width:baseFrame.canvas_width,canvas_height:baseFrame.canvas_height,people:baseFrame.people.map(p=>({...p,pose_keypoints_2d:p.pose_keypoints_2d.map((v,i)=>i%3===2?1:0),face_keypoints_2d:[],hand_left_keypoints_2d:[],hand_right_keypoints_2d:[],foot_keypoints_2d:[]}))};
 const deltaFrame=applyFrame(origin,current,sampled,frames.length),personIndex=op.person===-1?0:op.person,jointIndex=op.type==='joint'?op.joint:0,flat=deltaFrame.people[personIndex]?.pose_keypoints_2d;
 const inherited={dx:(flat?.[jointIndex*3]??0)/baseFrame.canvas_width,dy:(flat?.[jointIndex*3+1]??0)/baseFrame.canvas_height};

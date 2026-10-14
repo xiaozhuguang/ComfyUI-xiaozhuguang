@@ -140,6 +140,7 @@ function openEditor(node) {
     iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;';
     const url = new URL('/extensions/ComfyUI-xiaozhuguang/editor/index.html', location.origin);
     url.searchParams.set('session', node.poseSession);
+    url.searchParams.set('ui', 'timeline-toolbar-7');
     url.searchParams.set('api', api.apiURL('/xiaozhuguang/pose/session/'));
     iframe.src = url.href;
     dialog.append(iframe); document.body.append(dialog);

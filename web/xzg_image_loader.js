@@ -245,7 +245,14 @@ function getOriginalImageUrl(filename) {
         type = "temp";
         name = filename.slice(0, -" [temp]".length);
     }
-    return api.apiURL(`/view?filename=${encodeURIComponent(name)}&type=${type}`);
+    const normalized = name.replace(/\\/g, "/");
+    const slash = normalized.lastIndexOf("/");
+    const params = new URLSearchParams({
+        filename: slash >= 0 ? normalized.slice(slash + 1) : normalized,
+        type,
+    });
+    if (slash >= 0) params.set("subfolder", normalized.slice(0, slash));
+    return api.apiURL(`/view?${params.toString()}`);
 }
 
 async function addOriginalImageToMediaLibrary(imageName, crop = null, paddingColor = "#ffffff") {
@@ -357,11 +364,9 @@ const IMG_LOADER_MIME_MAP = {
  */
 async function xzgSaveImage(url, filename) {
     try {
-        const resp = await fetch(url);
-        if (!resp.ok) return;
-        const blob = await resp.blob();
         const ext = (filename || "").split(".").pop()?.toLowerCase() || "png";
-        const mimeType = blob.type || IMG_LOADER_MIME_MAP[ext] || "image/png";
+        const mimeType = IMG_LOADER_MIME_MAP[ext] || "image/png";
+        let fileHandle = null;
 
         // 优先使用 File System Access API
         if (typeof window.showSaveFilePicker === "function") {
@@ -379,17 +384,31 @@ async function xzgSaveImage(url, filename) {
                 } else {
                     pickerOpts.startIn = "desktop";
                 }
-                const handle = await window.showSaveFilePicker(pickerOpts);
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-                // 记住本次保存的 handle，下次默认打开同一文件夹
-                _lastImgLoaderSaveFileHandle = handle;
-                return true;
+                // 必须在用户点击触发的同步调用栈内打开选择器；先 fetch 会丢失浏览器的用户激活状态。
+                fileHandle = await window.showSaveFilePicker(pickerOpts);
             } catch (e) {
                 // 用户取消对话框，直接返回，不进行降级下载
                 if (e?.name === "AbortError") return false;
                 // 其他错误（权限不足等），继续降级
+            }
+        }
+
+        const resp = await fetch(url, { credentials: "same-origin" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const blob = await resp.blob();
+        if (!blob.size) throw new Error(xzgT("图片数据为空，未保存文件", "Image data is empty; the file was not saved."));
+
+        if (fileHandle) {
+            try {
+                const writable = await fileHandle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                // 记住本次保存的 handle，下次默认打开同一文件夹
+                _lastImgLoaderSaveFileHandle = fileHandle;
+                return true;
+            } catch (e) {
+                if (e?.name === "AbortError") return false;
+                throw e;
             }
         }
 
@@ -406,6 +425,7 @@ async function xzgSaveImage(url, filename) {
     } catch (e) {
         if (e?.name === "AbortError") return false; // 用户取消
         console.warn("[小珠光] 保存图片失败:", e);
+        xzgAlert(`${xzgT("保存图片失败", "Could not save image")}: ${e?.message || e}`);
         return false;
     }
 }
