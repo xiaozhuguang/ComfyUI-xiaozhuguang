@@ -4,13 +4,13 @@ import { xzgT } from "./xzg_i18n.js";
 app.registerExtension({
     name: "ComfyUI.xiaozhuguang.number_switch",
     async setup() {
-        // 加载工作流后，调整所有编号切换节点的输入口数量
+        // 加载工作流后只更新端口显示名称，不收缩已序列化的槽位。
         const origAfterConfigure = app.graph.afterConfigure;
         app.graph.afterConfigure = function () {
             const r = origAfterConfigure?.apply(this, arguments);
             for (const node of this._nodes) {
-                if (node.type === "XiaozhuguangNumberSwitch" && node.adjustInputSlots) {
-                    node.adjustInputSlots();
+                if (node.type === "XiaozhuguangNumberSwitch" && node.localizeValueInputs) {
+                    node.localizeValueInputs();
                 }
             }
             return r;
@@ -22,8 +22,10 @@ app.registerExtension({
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = origOnNodeCreated?.apply(this, arguments);
-            // 新创建的节点（非加载）立即修剪口数量
-            this.adjustInputSlots();
+            // 新建节点先只显示一个可接线口和一个后续空口。
+            // 加载工作流时 configure 会恢复已保存的输入列表；不要在 afterConfigure 中收缩它，
+            // 子图解包可能仍在按原槽位恢复连线。
+            this.initializeInputSlots();
             return r;
         };
 
@@ -31,61 +33,76 @@ app.registerExtension({
         nodeType.prototype.onConnectionsChange = function (inputType, slotIndex, isConnected, link, info) {
             const r = origOnConnectionsChange?.apply(this, arguments);
             if (inputType === LiteGraph.INPUT) {
-                this.adjustInputSlots();
+                this.updateInputSlots(slotIndex, isConnected);
             }
             return r;
         };
 
         /**
-         * 动态调整「值*」输入口数量：
-         * 只保留「最后一个有连接的值口 + 1个空口」，
-         * 最多 50，最少 1 个。
-         * 忽略「选择」口（forceInput 产生的端口不参与计数）。
+         * 只在新建时精简初始端口；工作流加载/子图恢复期间保留序列化的端口。
          */
-        nodeType.prototype.adjustInputSlots = function () {
+        nodeType.prototype.initializeInputSlots = function () {
             if (!this.inputs) return;
 
-            const localizeValueInput = (input) => {
-                if (!input || !/^value\d+$/.test(input.name || "")) return;
+            this.localizeValueInputs();
+            const valueInputs = this.inputs.filter((input) => /^value\d+$/.test(input.name || ""));
+            // 初始 schema 提供了最多 50 个可选口，新节点默认显示 value0 和 value1。
+            for (let i = valueInputs.length - 1; i >= 2; i--) {
+                const slot = this.inputs.indexOf(valueInputs[i]);
+                if (slot >= 0 && valueInputs[i].link == null) this.removeInput(slot);
+            }
+            this.refreshInputLayout();
+        };
+
+        nodeType.prototype.localizeValueInputs = function () {
+            if (!this.inputs) return;
+            for (const input of this.inputs) {
+                if (!input || !/^value\d+$/.test(input.name || "")) continue;
                 const index = Number(input.name.slice(5));
                 input.label = xzgT(`值${index}`, `Value ${index}`);
                 input.localized_name = input.label;
-            };
-
-            // 只统计 值* 的输入口
-            let lastConnected = -1;
-            let valueCount = 0;
-            for (const inp of this.inputs) {
-                if (!inp.name.startsWith("value")) continue;
-                localizeValueInput(inp);
-                if (inp.link != null) lastConnected = valueCount;
-                valueCount++;
             }
+        };
 
-            // 目标 值* 数量 = 最后一个连接下标 + 2（多一个空口）
-            const desiredLen = Math.min(Math.max(lastConnected + 2, 1), 50);
+        /**
+         * 与 easy-use 编号切换一致：所有现有值口都接上后才追加一个空口；
+         * 断开倒数第二个值口时，仅移除末尾多余的空口。最多 50 个值口。
+         */
+        nodeType.prototype.updateInputSlots = function (slotIndex, isConnected) {
+            if (!this.inputs) return;
+            this.localizeValueInputs();
 
-            if (valueCount < desiredLen) {
-                for (let i = valueCount; i < desiredLen; i++) {
-                    const input = this.addInput(`value${i}`, "*");
-                    localizeValueInput(input || this.inputs[this.inputs.length - 1]);
+            const valueInputs = this.inputs.filter((input) => /^value\d+$/.test(input.name || ""));
+            if (valueInputs.length === 0) return;
+
+            let changed = false;
+            if (isConnected && valueInputs.length < 50 && valueInputs.every((input) => input.link != null)) {
+                const nextIndex = valueInputs.length;
+                const input = this.addInput(`value${nextIndex}`, "*");
+                if (input) {
+                    input.label = xzgT(`值${nextIndex}`, `Value ${nextIndex}`);
+                    input.localized_name = input.label;
+                    changed = true;
                 }
-                this.setSize(this.computeSize());
-                if (app.graph) app.graph.setDirtyCanvas(true, true);
-            } else if (valueCount > desiredLen) {
-                // 从末尾移除多余的无连接 值* 口
-                let removed = 0;
-                for (let i = this.inputs.length - 1; i >= 0 && removed < valueCount - desiredLen; i--) {
-                    if (this.inputs[i] && this.inputs[i].link == null && this.inputs[i].name.startsWith("value")) {
-                        this.removeInput(i);
-                        removed++;
+            } else if (!isConnected) {
+                const changedInput = this.inputs[slotIndex];
+                const valueIndex = valueInputs.indexOf(changedInput);
+                // 当倒数第二个值口断开且末尾口为空时，移除末尾空口，保留断开的口作为新末尾。
+                if (valueIndex === valueInputs.length - 2 && valueInputs.length > 2) {
+                    const lastInput = valueInputs[valueInputs.length - 1];
+                    if (lastInput.link == null) {
+                        this.removeInput(this.inputs.indexOf(lastInput));
+                        changed = true;
                     }
                 }
-                if (removed > 0) {
-                    this.setSize(this.computeSize());
-                    if (app.graph) app.graph.setDirtyCanvas(true, true);
-                }
             }
+
+            if (changed) this.refreshInputLayout();
+        };
+
+        nodeType.prototype.refreshInputLayout = function () {
+            this.setSize(this.computeSize());
+            if (app.graph) app.graph.setDirtyCanvas(true, true);
         };
     },
 });
