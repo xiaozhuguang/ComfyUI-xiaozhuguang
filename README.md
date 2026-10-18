@@ -4,7 +4,7 @@
 
 ## 🎬 视频教程
 
-### 👉 [点击观看 B站详细使用教程](https://www.bilibili.com/video/BV13FT76QEBp/?share_source=copy_web&vd_source=250d70570d87e8baafae534d07d6066b)
+### 👉 [点击观看 B站详细使用教程](https://www.bilibili.com/video/BV1MsaU6AEKx/?vd_source=9f4017558881a867a72d61a265381ed4)
 
 [![B站视频教程](https://img.shields.io/badge/B站-视频教程-FF69B4?style=for-the-badge&logo=bilibili)](https://www.bilibili.com/video/BV13FT76QEBp/?share_source=copy_web&vd_source=250d70570d87e8baafae534d07d6066b)
 
