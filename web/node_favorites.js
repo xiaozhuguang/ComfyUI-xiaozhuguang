@@ -6220,10 +6220,13 @@ app.registerExtension({
                     if (targetIdx === srcIdx) return;
 
                     const { newLabels, newWidths, newOutputs, newCount } = getCurrentLabels();
-                    // 交换来源行与目标行的标签/输出/宽度
-                    [newLabels[srcIdx], newLabels[targetIdx]] = [newLabels[targetIdx], newLabels[srcIdx]];
-                    [newOutputs[srcIdx], newOutputs[targetIdx]] = [newOutputs[targetIdx], newOutputs[srcIdx]];
-                    [newWidths[srcIdx], newWidths[targetIdx]] = [newWidths[targetIdx], newWidths[srcIdx]];
+                    // 将整行移到目标位置，中间各行保持相对顺序。
+                    for (const values of [newLabels, newOutputs, newWidths]) {
+                        const ordered = Array.from({ length: newCount }, (_, i) => values[String(i)]);
+                        const [moved] = ordered.splice(Number(srcIdx), 1);
+                        ordered.splice(Number(targetIdx), 0, moved);
+                        ordered.forEach((value, i) => { values[String(i)] = value; });
+                    }
 
                     const curColumns = parseInt(columnsInput?.value, 10) || 1;
                     const body = dialog.querySelector(".nf-dialog-body");

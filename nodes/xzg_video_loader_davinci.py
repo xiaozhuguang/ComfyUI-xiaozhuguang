@@ -86,49 +86,14 @@ def _resolve_video_widget(视频):
 
 
 def _choose_video_save_path(source_path):
-    """用 Windows 原生另存为窗口选择视频副本位置。"""
-    if os.name != "nt":
-        raise RuntimeError("Windows 原生另存为窗口仅支持 Windows 后端")
-    powershell = os.path.join(
-        os.environ.get("WINDIR", r"C:\Windows"),
-        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    """用 Windows 原生另存为窗口选择视频副本位置（对话框强制置顶，不被其它窗口遮挡）。"""
+    from .xzg_audio_loader_davinci import _xzg_choose_save_path
+    return _xzg_choose_save_path(
+        source_path,
+        title="导出视频到达芬奇",
+        filter_label="视频文件",
+        default_ext=os.path.splitext(source_path)[1].lstrip(".") or "mp4",
     )
-    if not os.path.isfile(powershell):
-        powershell = shutil.which("powershell.exe")
-    if not powershell:
-        raise FileNotFoundError("找不到 Windows PowerShell（powershell.exe），无法打开另存为窗口")
-    ext = os.path.splitext(source_path)[1].lstrip(".") or "mp4"
-    env = os.environ.copy()
-    env["XZG_VIDEO_SAVE_NAME"] = os.path.basename(source_path)
-    env["XZG_VIDEO_SAVE_EXT"] = ext
-    script = r'''
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ext = $env:XZG_VIDEO_SAVE_EXT
-$dlg = New-Object System.Windows.Forms.SaveFileDialog
-$dlg.Title = '导出视频到达芬奇'
-$dlg.Filter = "视频文件 (*.$ext)|*.$ext|所有文件 (*.*)|*.*"
-$dlg.DefaultExt = $ext
-$dlg.AddExtension = $true
-$dlg.FileName = $env:XZG_VIDEO_SAVE_NAME
-$dlg.OverwritePrompt = $false
-$dlg.RestoreDirectory = $true
-if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($dlg.FileName)
-  [Console]::Write([Convert]::ToBase64String($bytes))
-}
-'''
-    proc = subprocess.run([powershell, "-NoProfile", "-STA", "-Command", script],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
-        env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or "").strip() or "无法打开 Windows 另存为窗口")
-    encoded = (proc.stdout or "").strip()
-    if not encoded:
-        return None
-    import base64
-    return base64.b64decode(encoded).decode("utf-8")
 
 
 class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
@@ -346,6 +311,10 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
             if not filename or not os.path.isfile(exported_path) or os.path.getsize(exported_path) <= 0:
                 return _web.json_response({"ok": False, "error": "达芬奇报告导出成功，但找不到有效的视频文件；请检查渲染格式与 input 目录"})
             result["filename"] = filename
+        else:
+            # 失败留痕：marks_raw 为达芬奇 GetMarkInOut 的原始返回，用于定位
+            # 「UI 上有出入点但 API 读不到」的状态不同步问题
+            print(f"[小珠光-达芬奇] 导出失败诊断: {json.dumps(result, ensure_ascii=False)}")
         return _web.json_response(result)
 
     @_PS.instance.routes.post("/xzg/davinci/loader-import")

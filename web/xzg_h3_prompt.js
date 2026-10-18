@@ -931,106 +931,46 @@ app.registerExtension({
                 }
             };
 
-            // 核心：统一调整图片输入接口（参照 number_switch 的简洁模式）
-            // 规则：已连接的接口左移填补空位，末尾保留一个空接口，最少 1 个，最多 10 个
-            nodeType.prototype._adjustImageInputs = function () {
+            // 只在末尾增减图片口；绝不搬动已连接口或重编号中间接口。
+            nodeType.prototype._updateImageInputs = function (changedSlotIndex = null, connected = null, allowTrim = false) {
                 if (!this.inputs) return;
-                if (this._adjustingImageInputs) return;
-                this._adjustingImageInputs = true;
-                try {
-                    // 收集所有图片接口
-                    let imgInputs = [];
-                    for (const inp of this.inputs) {
-                        if (this._isXzgImg(inp)) imgInputs.push(inp);
-                    }
+                const imgInputs = this.inputs.filter((inp) => this._isXzgImg(inp));
+                for (const inp of imgInputs) {
+                    const num = this._xzgImgNum(inp.name);
+                    inp.label = xzgLang() === "zh" ? `图片_${num}` : `Image_${num}`;
+                }
+                if (!imgInputs.length) return;
 
-                    // 统计已连接数量
-                    let connectedCount = 0;
-                    for (const inp of imgInputs) {
-                        if (inp.link != null) connectedCount++;
+                let changed = false;
+                // 与 easy-use 一样：现有图像口全部接通后，才在末尾追加空口。
+                if (connected === true && imgInputs.length < 10 && imgInputs.every((inp) => inp.link != null)) {
+                    const nextNum = Math.max(...imgInputs.map((inp) => this._xzgImgNum(inp.name))) + 1;
+                    const added = this.addInput(this._xzgImgName(nextNum), "IMAGE", {
+                        optional: true,
+                        tooltip: `可选：参考图片${nextNum} / Reference image ${nextNum}`,
+                    });
+                    if (added) {
+                        added.label = xzgLang() === "zh" ? `图片_${nextNum}` : `Image_${nextNum}`;
+                        changed = true;
                     }
+                } else if (allowTrim && connected === false && imgInputs.length > 2) {
+                    // 只在倒数第二个图像口断开且末尾口为空时，删除末尾空口。
+                    const changedImageIndex = imgInputs.indexOf(this.inputs[changedSlotIndex]);
+                    const lastInput = imgInputs[imgInputs.length - 1];
+                    if (changedImageIndex === imgInputs.length - 2 && lastInput.link == null) {
+                        this.removeInput(this.inputs.indexOf(lastInput));
+                        changed = true;
+                    }
+                }
 
-                    // 紧凑化：将已连接的 link 左移填补空位
-                    let writeIdx = 0;
-                    for (let readIdx = 0; readIdx < imgInputs.length; readIdx++) {
-                        const inp = imgInputs[readIdx];
-                        if (inp.link != null) {
-                            if (readIdx > writeIdx) {
-                                const target = imgInputs[writeIdx];
-                                target.link = inp.link;
-                                inp.link = null;
-                                // 更新 link 对象的 target_slot
-                                const linkObj = this.graph && this.graph.links[target.link];
-                                if (linkObj) {
-                                    const targetSlot = this.inputs.indexOf(target);
-                                    if (targetSlot >= 0) linkObj.target_slot = targetSlot;
-                                }
-                            }
-                            writeIdx++;
-                        }
-                    }
-
-                    // 重新统计（紧凑化后）
-                    imgInputs = [];
-                    for (const inp of this.inputs) {
-                        if (this._isXzgImg(inp)) imgInputs.push(inp);
-                    }
-                    connectedCount = 0;
-                    for (const inp of imgInputs) {
-                        if (inp.link != null) connectedCount++;
-                    }
-
-                    // 目标数量 = 已连接 + 1 个空位，最少 1，最多 10
-                    const desiredLen = Math.min(connectedCount + 1, 10);
-
-                    if (imgInputs.length < desiredLen) {
-                        // 添加不足的接口
-                        for (let i = imgInputs.length; i < desiredLen; i++) {
-                            this.addInput(this._xzgImgName(i + 1), "IMAGE", {
-                                optional: true,
-                                tooltip: `可选：参考图片${i + 1} / Reference image ${i + 1}`,
-                            });
-                            const addedInput = this.inputs[this.inputs.length - 1];
-                            if (addedInput) addedInput.label = xzgLang() === "zh" ? `图片_${i + 1}` : `Image_${i + 1}`;
-                        }
-                        // 仅在高度不足时增大，保持当前宽度不变
-                        const computed = this.computeSize();
-                        if (computed[1] > this.size[1]) {
-                            this.setSize([this.size[0], computed[1]]);
-                        }
-                        if (app.graph) app.graph.setDirtyCanvas(true, true);
-                    } else if (imgInputs.length > desiredLen) {
-                        // 从末尾移除多余的空图片接口
-                        let removed = 0;
-                        const toRemove = imgInputs.length - desiredLen;
-                        for (let i = this.inputs.length - 1; i >= 0 && removed < toRemove; i--) {
-                            if (this.inputs[i] && this.inputs[i].link == null && this._isXzgImg(this.inputs[i])) {
-                                this.removeInput(i);
-                                removed++;
-                            }
-                        }
-                        if (removed > 0) {
-                            if (app.graph) app.graph.setDirtyCanvas(true, true);
-                        }
-                    }
-
-                    // 重编号为 image_1, image_2, ...
-                    let num = 1;
-                    for (const inp of this.inputs) {
-                        if (this._isXzgImg(inp)) {
-                            const expected = this._xzgImgName(num);
-                            if (inp.name !== expected) inp.name = expected;
-                            inp.label = xzgLang() === "zh" ? `图片_${num}` : `Image_${num}`;
-                            num++;
-                        }
-                    }
-                } finally {
-                    this._adjustingImageInputs = false;
+                if (changed) {
+                    const computed = this.computeSize();
+                    if (computed[1] > this.size[1]) this.setSize([this.size[0], computed[1]]);
+                    if (app.graph) app.graph.setDirtyCanvas(true, true);
                 }
             };
 
-            // 连接/断连时延迟调用 _adjustImageInputs
-            // 用 setTimeout 合并连续的连接/断连事件，跳过子图操作的中间状态
+            // 连接变化后只处理末尾接口，不搬动任何现有连线。
             const origOnConnectionsChange = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function (slotType, slotIndex, connected, link, _info) {
                 const r = origOnConnectionsChange?.apply(this, arguments);
@@ -1038,7 +978,10 @@ app.registerExtension({
                     clearTimeout(this._adjustImgTimer);
                     this._adjustImgTimer = setTimeout(() => {
                         if (!this.graph || this._removed) return;
-                        try { this._adjustImageInputs(); }
+                        try {
+                            const allowTrim = Date.now() >= (this._xzgImageRestoreUntil || 0);
+                            this._updateImageInputs(slotIndex, connected, allowTrim);
+                        }
                         catch (e) { /* 节点状态不一致时忽略 */ }
                     }, 100);
                 }
@@ -1058,13 +1001,14 @@ app.registerExtension({
                     this._restorePromptRulePresets();
                 }
                 // 子图解包时 configure 早于连线恢复；此刻增删/重编号端口会让恢复目标槽位消失。
-                // 等到当前批次的连接变更全部完成后再统一整理。
+                // 恢复期间保留所有已序列化端口，只在末尾补空口，不重排已有连线。
+                this._xzgImageRestoreUntil = Date.now() + 700;
                 clearTimeout(this._adjustImgTimer);
                 this._adjustImgTimer = setTimeout(() => {
                     if (!this.graph || this._removed) return;
-                    try { this._adjustImageInputs(); }
+                    try { this._updateImageInputs(null, true, false); }
                     catch (e) { /* 子图操作时可能状态不一致，忽略 */ }
-                }, 350);
+                }, 750);
                 return r;
             };
         }

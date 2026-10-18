@@ -1,0 +1,45 @@
+{
+    "schema_version": 1,
+    "repositories": [
+        {
+            "repo_id": "MIUProject/VNCCS_PoseLibrary_Main",
+            "title": "VNCCS Pose Library Main",
+            "description": "Default curated VNCCS Pose Studio pose library.",
+            "manifest_path": "pose_library.json",
+            "enabled": true,
+            "status": "ok",
+            "pose_count": 16,
+            "animation_count": 0,
+            "asset_count": 16,
+            "last_checked": 1791994975.455477,
+            "last_error": "",
+            "transport": "http",
+            "sha": "baef0455ef9d3cc31ce3e2a407f722069355c617",
+            "downloaded_count": 0,
+            "skipped_count": 16,
+            "removed_count": 0,
+            "errors": [],
+            "updated_at": "2026-05-23T22:32:53.471063+00:00"
+        },
+        {
+            "repo_id": "Totemistyk/General_Poses_PoseStudio",
+            "title": "General Poses PoseStudio",
+            "description": "Default community pose library by Totemistyk.",
+            "manifest_path": "pose_library.json",
+            "enabled": true,
+            "status": "ok",
+            "pose_count": 50,
+            "animation_count": 0,
+            "asset_count": 50,
+            "last_checked": 1791994976.670961,
+            "last_error": "",
+            "transport": "http",
+            "sha": "23468b2be53ab91fe493754b241d27dcfeb965ed",
+            "downloaded_count": 0,
+            "skipped_count": 50,
+            "removed_count": 0,
+            "errors": [],
+            "updated_at": "2026-08-12T14:22:18.395040+00:00"
+        }
+    ]
+}

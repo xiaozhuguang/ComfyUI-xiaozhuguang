@@ -18,6 +18,7 @@ const XZG_EXPORT_CATEGORIES = [
     ["mediaLibrary", "资源媒体库图片", "Media Library Images", "服务端持久化", "Server-backed"],
     ["audioLibrary", "资源媒体库音频", "Media Library Audio", "服务端持久化", "Server-backed"],
     ["videoLibrary", "资源媒体库视频", "Media Library Videos", "服务端持久化", "Server-backed"],
+    ["poseLibrary", "姿势库", "Pose Library", "本地持久化", "Locally stored"],
     ["notes", "记事本", "Notepad", "已云端持久化", "Cloud-backed"],
     ["align", "田字格对齐", "Grid Alignment", "已云端持久化", "Cloud-backed"],
     ["sidebar", "侧边栏偏好", "Sidebar Preferences", "已云端持久化", "Cloud-backed"],
@@ -29,6 +30,7 @@ function xzgExportCategoryForKey(key) {
     // Internal cloud snapshots combine several selectable categories; omit them from export
     // so they cannot smuggle unchecked categories into an otherwise granular backup.
     if (key === "xzg_vram_settings") return null;
+    if (key === "xzg_pose_library_categories") return "poseLibrary";
     if (key === "xzg_favorites_state" || key === "xzg_ui_state") return null;
     if (key === "xzg_audio_media_library_geometry") return "audioLibrary";
     if (key === "xzg_video_media_library_geometry") return "videoLibrary";
@@ -2575,6 +2577,34 @@ window.XZGThemePanel = {
         }
     },
 
+    openPoseLibraryTransferDialog({ onImported = null } = {}) {
+        this._ensureGlobalDialogCSS();
+        const overlay = document.createElement("div");
+        overlay.className = "xzg-modal-overlay";
+        overlay.style.zIndex = "2147483647";
+        overlay.innerHTML = `<div class="xzg-modal-dialog">
+            <div class="xzg-modal-title">${xzgT("导入／导出姿势库", "Import / Export Pose Library")}</div>
+            <div class="xzg-modal-body">${xzgT("包含姿势、缩略图及分类设置，使用小珠光统一 ZIP 备份格式。导入后存回当前用户的姿势库目录。", "Includes poses, thumbnails and categories in XZG ZIP backup format. Imports use the current user's pose library folder.")}</div>
+            <div class="xzg-modal-footer">
+                <button type="button" class="xzg-modal-btn" data-action="cancel">${xzgT("取消", "Cancel")}</button>
+                <button type="button" class="xzg-modal-btn" data-action="import">${xzgT("导入姿势库", "Import Pose Library")}</button>
+                <button type="button" class="xzg-modal-btn" data-action="export">${xzgT("导出姿势库", "Export Pose Library")}</button>
+            </div></div>`;
+        const close = () => overlay.remove();
+        overlay.querySelector('[data-action="cancel"]').onclick = close;
+        overlay.onclick = event => { if (event.target === overlay) close(); };
+        overlay.querySelector('[data-action="import"]').onclick = () => {
+            close();
+            this.openConfigImportPicker({ poseLibraryOnly: true, onImported });
+        };
+        overlay.querySelector('[data-action="export"]').onclick = async () => {
+            close();
+            try { await this.exportAllConfig({ poseLibraryOnly: true }); }
+            catch (error) { alert(xzgT("导出姿势库失败：", "Pose library export failed: ") + error.message); }
+        };
+        document.body.appendChild(overlay);
+    },
+
     /** 从 XZG 顶部按钮的右键菜单打开统一配置导入/导出入口。 */
     async openConfigTransferDialog() {
         this._ensureGlobalDialogCSS();
@@ -2784,7 +2814,7 @@ window.XZGThemePanel = {
     },
 
     /** 选择并应用统一配置文件。 */
-    openConfigImportPicker() {
+    openConfigImportPicker({ poseLibraryOnly = false, onImported = null } = {}) {
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".zip,.json,application/zip,application/json";
@@ -2805,8 +2835,14 @@ window.XZGThemePanel = {
                 } else {
                     obj = JSON.parse(await file.text());
                 }
-                const result = await this.importAllConfig(obj, archiveToken);
+                const result = await this.importAllConfig(obj, archiveToken, { poseLibraryOnly });
                 if (result?.applied) {
+                    if (poseLibraryOnly) {
+                        await onImported?.(result);
+                        const count = result.restoredPoses || { imported: 0, skipped: 0 };
+                        alert(xzgT(`姿势库导入完成：新增 ${count.imported} 个，跳过 ${count.skipped} 个。`, `Pose library imported: ${count.imported} added, ${count.skipped} skipped.`));
+                        return;
+                    }
                     const parts = [];
                     if (result.appliedXzgConfig || result.appliedNotes) parts.push(xzgT('小珠光配置', 'Xiaozhuguang config'));
                     if (result.appliedComfySettings) parts.push(xzgT('ComfyUI 设置', 'ComfyUI settings'));
@@ -2814,6 +2850,7 @@ window.XZGThemePanel = {
                     if (result.restoredVideoCount != null) parts.push(xzgT(`媒体库 ${result.restoredVideoCount} 个视频`, `Media library: ${result.restoredVideoCount} videos`));
                     if (result.restoredMediaCount != null) parts.push(xzgT(`媒体库 ${result.restoredMediaCount} 张图片`, `Media library: ${result.restoredMediaCount} images`));
                     if (result.restoredTextBoxPreviews != null) parts.push(xzgT(`文本框缩略图 ${result.restoredTextBoxPreviews} 张`, `Text-box previews: ${result.restoredTextBoxPreviews}`));
+                    if (result.restoredPoses != null) parts.push(xzgT(`姿势库新增 ${result.restoredPoses.imported} 个`, `Pose library: ${result.restoredPoses.imported} added`));
                     alert(xzgT('导入成功（', 'Import succeeded (') + parts.join(' + ') + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
                     setTimeout(() => location.reload(), 300);
                 }
@@ -2923,14 +2960,17 @@ window.XZGThemePanel = {
         if (obj.videoLibrary && Array.isArray(obj.videoLibrary.files)) available.videoLibrary = true;
         if (obj.audioLibrary && Array.isArray(obj.audioLibrary.files)) available.audioLibrary = true;
         if (obj.textBoxPreviews && Array.isArray(obj.textBoxPreviews.files)) available.textBoxGodPresets = true;
+        if (obj.poseLibrary && typeof obj.poseLibrary === "object") available.poseLibrary = true;
         available.comfy = !!(obj.comfySettings && Object.keys(obj.comfySettings).length);
         return this.showExportDialog(available);
     },
 
     // ====== 小珠光统一配置导出 / 导入（覆盖收藏 / 工作流 / 快速连线 / 隐藏菜单 / 主题 / 备注 / ComfyUI设置 等所有模块） ======
-    async exportAllConfig() {
+    async exportAllConfig({ poseLibraryOnly = false } = {}) {
         // 1) 先弹导出选项，等用户确认各模块的勾选
-        const opt = await this.showExportDialog();
+        const opt = poseLibraryOnly
+            ? { categories: { poseLibrary: true }, includeComfySettings: false }
+            : await this.showExportDialog();
         if (!opt) return; // 用户取消
         const selected = opt.categories || Object.fromEntries(XZG_EXPORT_CATEGORIES.map(([id]) => [id, true]));
         const includeNotes = selected.notes === true;
@@ -2964,6 +3004,9 @@ window.XZGThemePanel = {
         }
 
         let ls = {};
+        if (selected.poseLibrary && localStorage.getItem("xzg_pose_library_categories") == null) {
+            await cloudLoad("xzg_pose_library_categories", { fallbackValue: { added: [], hidden: [] } });
+        }
         // 逐键按导出类别筛选，避免此前前缀匹配把未勾选类别也写进备份。
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
@@ -3084,6 +3127,7 @@ window.XZGThemePanel = {
             videoLibrary: videoLibrary,
             audioLibrary: audioLibrary,
             textBoxPreviews: selected.textBoxGodPresets ? {} : null,
+            poseLibrary: selected.poseLibrary ? {} : null,
             folderDialogGeometry: folderDialogGeometry
         };
         const blob = await this.configTransfer(xzgT("正在打包并下载 ZIP 备份，请稍候…", "Preparing and downloading ZIP backup…"), async () => {
@@ -3109,7 +3153,7 @@ window.XZGThemePanel = {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     },
 
-    async importAllConfig(obj, archive = null) {
+    async importAllConfig(obj, archive = null, { poseLibraryOnly = false } = {}) {
         if (!obj || typeof obj !== "object") throw new Error("not an object");
         if (obj.format && obj.format !== "xiaozhuguang-config") {
             throw new Error("unknown format: " + obj.format);
@@ -3118,7 +3162,12 @@ window.XZGThemePanel = {
         const NOTES_KEY = "xiaozhuguang.notes";
 
         // 与导出共享分类和编号，先过滤载荷，后续写入和运行时恢复仅接触勾选项。
-        const opt = await this.showImportDialog(obj);
+        if (poseLibraryOnly && (!archive || !obj.poseLibrary)) {
+            throw new Error(xzgT("请选择包含姿势库的 ZIP 备份文件。", "Select a ZIP backup containing a pose library."));
+        }
+        const opt = poseLibraryOnly
+            ? { categories: { poseLibrary: true }, includeComfySettings: false }
+            : await this.showImportDialog(obj);
         if (!opt) return { applied: false };
         const selected = opt.categories;
         obj = {
@@ -3131,6 +3180,7 @@ window.XZGThemePanel = {
             mediaLibrary: selected.mediaLibrary ? obj.mediaLibrary : null,
             videoLibrary: selected.videoLibrary ? obj.videoLibrary : null,
             audioLibrary: selected.audioLibrary ? obj.audioLibrary : null,
+            poseLibrary: selected.poseLibrary ? obj.poseLibrary : null,
             folderDialogGeometry: selected.mediaLibrary ? obj.folderDialogGeometry : null,
         };
         const includeXzg = Object.values(selected).some(Boolean);
@@ -3144,14 +3194,18 @@ window.XZGThemePanel = {
         let restoredVideoCount = null;
         let restoredAudioCount = null;
         let restoredTextBoxPreviews = null;
+        let restoredPoses = null;
         const restoreImages = !!(obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files));
         const restoreVideos = !!(obj.videoLibrary && Array.isArray(obj.videoLibrary.files));
         const restoreAudio = !!(obj.audioLibrary && Array.isArray(obj.audioLibrary.files));
         const restoreTextBoxPreviews = !!(selected.textBoxGodPresets && obj.textBoxPreviews && Array.isArray(obj.textBoxPreviews.files));
-        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio || restoreTextBoxPreviews)
-            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio, textBoxPreviews: restoreTextBoxPreviews })
+        const restorePoseLibrary = !!(selected.poseLibrary && obj.poseLibrary);
+        if (restorePoseLibrary && !archive) throw new Error(xzgT("姿势库需要 ZIP 备份文件", "Pose library requires a ZIP backup."));
+        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio || restoreTextBoxPreviews || restorePoseLibrary)
+            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio, textBoxPreviews: restoreTextBoxPreviews, poseLibrary: restorePoseLibrary })
             : null;
         if (restoreTextBoxPreviews && archiveResult) restoredTextBoxPreviews = archiveResult.restoredTextBoxPreviews ?? 0;
+        if (restorePoseLibrary && archiveResult) restoredPoses = archiveResult.restoredPoses ?? { imported: 0, skipped: 0, total: 0 };
         if (restoreVideos) {
             if (!archiveResult) throw new Error(xzgT("视频媒体库需要 ZIP 备份文件", "Video media library requires a ZIP backup."));
             restoredVideoCount = archiveResult.restoredVideos;
@@ -3254,13 +3308,20 @@ window.XZGThemePanel = {
         }
 
         // ============ 2) 导入小珠光配置（除 notes 外的所有 localStorage，以及收藏预览） ============
-        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null || restoredTextBoxPreviews != null;
+        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null || restoredTextBoxPreviews != null || restoredPoses != null;
         if (includeXzg) {
             if (obj.localStorage && typeof obj.localStorage === "object") {
                 for (const k in obj.localStorage) {
                     // notes 已在上面单独按 includeNotes 决策导入，此处跳过避免强制覆盖
                     if (k === NOTES_KEY) continue;
                     try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
+                    if (k === "xzg_pose_library_categories") {
+                        try {
+                            await cloudSave(k, JSON.parse(obj.localStorage[k]));
+                            window.dispatchEvent(new CustomEvent("xzg-pose-categories-changed"));
+                        }
+                        catch (e) { console.warn("[XZG] Failed to persist pose categories:", e); }
+                    }
                 }
                 importedXzg = true;
             }
@@ -3465,7 +3526,8 @@ window.XZGThemePanel = {
             restoredMediaCount: mediaRestored ? restoredMediaCount : null,
             restoredVideoCount: restoredVideoCount,
             restoredAudioCount: restoredAudioCount,
-            restoredTextBoxPreviews: restoredTextBoxPreviews
+            restoredTextBoxPreviews: restoredTextBoxPreviews,
+            restoredPoses: restoredPoses
         };
     },
 

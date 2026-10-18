@@ -107,6 +107,16 @@ def _routes():
 
 routes = _routes()
 
+# A browser reload keeps this identifier; restarting the ComfyUI backend
+# creates a new one so pose-editor-only state can be discarded at that point.
+_XZG_BACKEND_SESSION_ID = secrets.token_urlsafe(18)
+
+
+@routes.get("/xzg/backend-session")
+@xzg_safe_handler
+async def xzg_backend_session(request):
+    return web.json_response({"session_id": _XZG_BACKEND_SESSION_ID})
+
 _thumb_cache_dir = None
 _media_thumb_cache_dir = None
 DEFAULT_THUMB_SIZE = 256
@@ -1084,6 +1094,11 @@ def _media_discard_archive(token):
             os.remove(path)
 
 
+def _media_pose_library_module():
+    from .._xzg_pose.vnccs_pose_studio.nodes.posestudio import library
+    return library
+
+
 MEDIA_ARCHIVE_LIBRARIES = (("mediaLibrary", "images", "image"), ("videoLibrary", "videos", "video"), ("audioLibrary", "audio", "audio"))
 
 
@@ -1120,6 +1135,13 @@ def _media_build_archive(path, config):
                 if total > MEDIA_ARCHIVE_MAX_BYTES:
                     raise ValueError("archive exceeds 20 GB")
                 archive.write(source, "text_box_previews/" + preview_id + ".webp")
+        if config.get("poseLibrary") is not None:
+            pose_archive, pose_count = _media_pose_library_module().export_local_pose_library()
+            config["poseLibrary"] = {"version": 1, "count": pose_count, "file": "pose_library.zip"}
+            total += len(pose_archive)
+            if total > MEDIA_ARCHIVE_MAX_BYTES:
+                raise ValueError("archive exceeds 20 GB")
+            archive.writestr("pose_library.zip", pose_archive, compress_type=zipfile.ZIP_STORED)
         metadata = json.dumps(config, ensure_ascii=False).encode("utf-8")
         if len(metadata) > MEDIA_CONFIG_MAX_BYTES:
             raise ValueError("config exceeds 100 MB")
@@ -1145,6 +1167,10 @@ def _media_archive_config(archive):
                 raise ValueError("config exceeds 100 MB")
             continue
         prefix, separator, rel = entry.filename.partition("/")
+        if entry.filename == "pose_library.zip":
+            if entry.file_size > _media_pose_library_module().MAX_LIBRARY_IMPORT_BYTES:
+                raise ValueError("pose library archive exceeds size limit")
+            continue
         if not separator or prefix not in ("images", "videos", "audio", "text_box_previews"):
             raise ValueError("invalid archive path")
         if prefix == "text_box_previews":
@@ -1191,6 +1217,20 @@ def _media_archive_config(archive):
           or len(preview_manifest["files"]) != len(set(preview_manifest["files"]))
           or set(preview_manifest["files"]) != set(preview_ids)):
         raise ValueError("invalid text box preview manifest")
+    pose_manifest = config.get("poseLibrary")
+    pose_entries = [entry for entry in entries if entry.filename == "pose_library.zip"]
+    if pose_manifest is None:
+        if pose_entries:
+            raise ValueError("unexpected pose library archive")
+    else:
+        if (not isinstance(pose_manifest, dict) or pose_manifest.get("version") != 1
+                or pose_manifest.get("file") != "pose_library.zip"
+                or not isinstance(pose_manifest.get("count"), int) or pose_manifest["count"] < 0
+                or len(pose_entries) != 1):
+            raise ValueError("invalid pose library manifest")
+        pose_result = _media_pose_library_module().import_local_pose_library(archive.read("pose_library.zip"), dry_run=True)
+        if pose_result["total"] != pose_manifest["count"]:
+            raise ValueError("pose library count does not match manifest")
     return config
 
 
@@ -1199,11 +1239,12 @@ def _media_read_archive(path, restore=False):
         config = _media_archive_config(archive)
         if not restore:
             return config
-        selected = ({key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True}) if restore is True else restore
+        selected = ({key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True, "poseLibrary": True}) if restore is True else restore
         libraries = [(key, prefix, kind, config[key]) for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES
                      if selected.get(key) and config.get(key) is not None]
         restore_previews = bool(selected.get("textBoxPreviews") and config.get("textBoxPreviews") is not None)
-        if not libraries and not restore_previews:
+        restore_poses = bool(selected.get("poseLibrary") and config.get("poseLibrary") is not None)
+        if not libraries and not restore_previews and not restore_poses:
             raise ValueError("backup has no selected media library")
         root = os.path.dirname(_media_library_dir())
         # Validate both libraries before committing; keep originals for rollback.
@@ -1273,10 +1314,14 @@ def _media_read_archive(path, restore=False):
                 for target, temporary in staged_previews:
                     os.replace(temporary, target)
                 restored_previews = len(staged_previews)
+        restored_poses = None
+        if restore_poses:
+            restored_poses = _media_pose_library_module().import_local_pose_library(archive.read("pose_library.zip"))
         return {"restored": sum(len(media["order"]) for key, _, _, media in libraries if key == "mediaLibrary"),
                 "restoredVideos": sum(len(media["order"]) for key, _, _, media in libraries if key == "videoLibrary"),
                 "restoredAudios": sum(len(media["order"]) for key, _, _, media in libraries if key == "audioLibrary"),
-                "restoredTextBoxPreviews": restored_previews}
+                "restoredTextBoxPreviews": restored_previews,
+                "restoredPoses": restored_poses}
 
 
 @routes.post("/xzg/media-library/backup")
@@ -1349,8 +1394,8 @@ async def xzg_media_library_archive_restore(request):
     path, timer = pending
     timer.cancel()
     try:
-        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True})
-        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary", "textBoxPreviews") or not isinstance(value, bool) for key, value in selected.items()):
+        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True, "poseLibrary": True})
+        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary", "textBoxPreviews", "poseLibrary") or not isinstance(value, bool) for key, value in selected.items()):
             return web.json_response({"error": "invalid library selection"}, status=400)
         result = await _media_archive_io(_media_read_archive, path, selected)
         return web.json_response(result)

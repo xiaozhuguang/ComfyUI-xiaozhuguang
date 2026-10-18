@@ -257,7 +257,7 @@ let lastWindowKey = "";
     });
     const clearSelect = makeButton(xzgT("取消全选", "Deselect all"), () => {
         selected.clear();
-        lastClickedIndex = -1;
+        lastClickedName = null;
         paintSelection();
         updateCount();
     });
@@ -467,7 +467,7 @@ let lastWindowKey = "";
             dialog.focus();
         });
     });
-    let lastClickedIndex = -1;
+    let lastClickedName = null;
     const visibleItems = () => {
         const filter = search.value.trim().toLowerCase();
         return items.filter(item => item.name.toLowerCase().includes(filter));
@@ -574,7 +574,7 @@ let lastWindowKey = "";
                 const result = await request("/move", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names: targets, folder: target }) });
                 if (selected.has(name)) selected.clear();
                 else selected.delete(name);
-                lastClickedIndex = -1;
+                lastClickedName = null;
                 await refresh();
                 if (result.names) alertUser(xzgT(`已移动 ${result.names.length} 个文件`, `Moved ${result.names.length} files`));
             } catch (error) { alertUser(error.message); }
@@ -610,25 +610,24 @@ let lastWindowKey = "";
         const index = visible.findIndex(item => item.name === name);
         if (index < 0) return;
         if (shiftKey) {
-            const anchor = lastClickedIndex >= 0 && lastClickedIndex < visible.length
-                ? lastClickedIndex
-                : visible.findIndex(item => selected.has(item.name));
+            // Keep the anchor by item identity, not by index: search results and
+            // sorting can change the visible order between the two clicks.
+            const anchor = visible.findIndex(item => item.name === lastClickedName);
             if (anchor < 0) {
                 selected.add(name);
-                lastClickedIndex = index;
+                lastClickedName = name;
             } else {
                 for (let i = Math.min(index, anchor); i <= Math.max(index, anchor); i++) {
                     selected.add(visible[i].name);
                 }
-                lastClickedIndex = anchor;
             }
         } else if (additiveKey) {
             selected.has(name) ? selected.delete(name) : selected.add(name);
-            lastClickedIndex = index;
+            lastClickedName = name;
         } else {
             selected.clear();
             selected.add(name);
-            lastClickedIndex = index;
+            lastClickedName = name;
         }
         paintSelection();
     };
@@ -645,6 +644,13 @@ let lastWindowKey = "";
         number.textContent = String(items.indexOf(item) + 1);
         number.title = xzgT("媒体库顺序", "Library order");
         number.style.cssText = "position:absolute;top:3px;left:3px;z-index:1;min-width:16px;padding:2px 4px;border-radius:3px;background:rgba(0,0,0,.72);color:#fff;font-size:14px;line-height:1.2;pointer-events:none;";
+        if (!String(item.name || "").includes("/")) {
+            const uncategorized = document.createElement("span");
+            uncategorized.textContent = xzgT("未分类", "Uncategorized");
+            uncategorized.title = xzgT("尚未归入文件夹", "Not assigned to a folder");
+            uncategorized.style.cssText = "position:absolute;top:3px;right:3px;z-index:1;padding:2px 5px;border-radius:3px;background:rgba(217,119,6,.9);color:#fff;font-size:11px;line-height:1.2;pointer-events:none;";
+            imageBox.appendChild(uncategorized);
+        }
         const image = document.createElement("img");
         image.loading = "lazy";
         image.draggable = true;
@@ -705,20 +711,24 @@ let lastWindowKey = "";
         virtualStage.querySelector('[data-xzg-media-empty="1"]')?.remove();
         const gap = isAudio ? 6 : 2;
         const inset = 8;
-        // 列数按可用宽度动态计算，使缩略图大小随面板/窗口尺寸自适应：
-        // 目标单元格约 targetCell 宽，且不小于 minCell，也不超过图片数量与上限。
+        // 列数按可用宽度动态计算，使缩略图大小随面板/窗口尺寸自适应；
+        // 图片卡片最多 maxCell 宽，分类图片较少时靠左排列，不再拉伸填满整行。
         const availW = grid.clientWidth - inset * 2;
         const targetCell = 200;
         const minCell = 120;
+        const maxCell = 320;
         let cols;
         if (isAudio) {
             cols = 1;
         } else {
             const byTarget = Math.max(1, Math.floor((availW + gap) / (targetCell + gap)));
             const maxByMin = Math.max(1, Math.floor((availW + gap) / (minCell + gap)));
-            cols = Math.max(1, Math.min(byTarget, maxByMin, Math.max(1, visible.length), 20));
+            const minColsForCap = Math.max(1, Math.ceil((availW + gap) / (maxCell + gap)));
+            cols = Math.max(1, Math.min(Math.max(byTarget, minColsForCap), maxByMin, Math.max(1, visible.length), 20));
         }
-        const cellWidth = Math.max(1, (grid.clientWidth - inset * 2 - gap * (cols - 1)) / cols);
+        const cellWidth = isAudio
+            ? Math.max(1, (grid.clientWidth - inset * 2 - gap * (cols - 1)) / cols)
+            : Math.min(maxCell, Math.max(1, (grid.clientWidth - inset * 2 - gap * (cols - 1)) / cols));
         const labelHeight = 20;
         const cardHeight = isAudio ? 80 : cellWidth + labelHeight;
         const rowPitch = cardHeight + gap;
@@ -842,14 +852,12 @@ let lastWindowKey = "";
         event.stopPropagation();
         showContextMenu(name, event.clientX, event.clientY);
     });
-    let imageClickShift = false;
     grid.addEventListener("click", event => {
         const imageBox = event.target.closest(".xzg-media-image");
         if (!imageBox) return;
         event.stopPropagation();
         const name = imageBox.closest("[data-media-name]")?.dataset.mediaName;
-        if (name) selectClicked(name, event.shiftKey || shiftHeld || imageClickShift, event.ctrlKey || event.metaKey);
-        imageClickShift = false;
+        if (name) selectClicked(name, event.shiftKey || shiftHeld, event.ctrlKey || event.metaKey);
     });
     grid.addEventListener("dblclick", event => {
         const name = event.target.closest("[data-media-name]")?.dataset.mediaName;
@@ -859,10 +867,9 @@ let lastWindowKey = "";
         loadImages([name]);
     });
     grid.addEventListener("mousedown", event => {
-        imageClickShift = !!event.target.closest(".xzg-media-image") && (event.shiftKey || shiftHeld);
         if (event.button !== 0 || !visibleItems().length) return;
         event.stopPropagation();
-        if (!event.ctrlKey && !event.metaKey && event.target.closest(".xzg-media-image")) return;
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.target.closest(".xzg-media-image")) return;
         event.preventDefault();
 
         const startX = event.clientX;
@@ -909,11 +916,9 @@ let lastWindowKey = "";
             document.removeEventListener("contextmenu", onContextMenu, true);
             if (moved) return;
 
-            if (clickedName) {
-                selectClicked(clickedName, shiftSelect, event.ctrlKey || event.metaKey);
-            } else if (!additive) {
+            if (!clickedName && !additive) {
                 selected.clear();
-                lastClickedIndex = -1;
+                lastClickedName = null;
             }
             paintSelection();
         };
@@ -1014,7 +1019,7 @@ let lastWindowKey = "";
             row.onclick = () => {
                 if (value === currentFolder) return;
                 selected.clear();
-                lastClickedIndex = -1;
+                lastClickedName = null;
                 currentFolder = value;
                 refresh().catch(error => alertUser(error.message));
             };
@@ -1061,7 +1066,7 @@ let lastWindowKey = "";
         const result = await request(q);
         folders = result.folders || [];
         items = result.items || [];
-        lastClickedIndex = -1;
+        lastClickedName = null;
         renderSidebar();
         render();
     };

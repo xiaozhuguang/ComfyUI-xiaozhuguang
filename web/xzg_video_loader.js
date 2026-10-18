@@ -685,6 +685,55 @@ function _updateRatioWidgets(node) {
     node.setDirtyCanvas?.(true, true);
 }
 
+// 转为外部输入后仍保留原控件行；保留 converted-widget 类型及序列化逻辑。
+function _xzgKeepConvertedWidgetVisible(widget) {
+    if (widget._xzgKeepConvertedVisible) return;
+    widget._xzgKeepConvertedVisible = true;
+    const isExternal = () => widget.type === 'converted-widget';
+    let draw = widget.draw;
+    let mouse = widget.mouse;
+    let computeSize = widget.computeSize;
+    const drawVisible = function (ctx, ...args) {
+        ctx.save();
+        try {
+            if (isExternal()) ctx.globalAlpha *= 0.4;
+            return draw?.call(this, ctx, ...args);
+        } finally {
+            ctx.restore();
+        }
+    };
+    const mouseVisible = function (...args) {
+        if (isExternal()) return true;
+        return mouse?.apply(this, args);
+    };
+    const sizeVisible = function (width) {
+        if (isExternal()) return [width, 20];
+        return computeSize?.call(this, width) ?? [width, 20];
+    };
+    // ComfyUI 转换时会将 draw/mouse/computeSize 替换为空函数和负高度。
+    // 拦截这些隐藏操作，同时允许本节点继续切换数值/下拉框样式。
+    Object.defineProperties(widget, {
+        draw: {
+            configurable: true,
+            get: () => drawVisible,
+            set(value) {
+                if (value !== drawVisible && (!isExternal() ||
+                    value === _xzgDrawWidget || value === _xzgDrawComboWidget)) draw = value;
+            },
+        },
+        mouse: {
+            configurable: true,
+            get: () => mouseVisible,
+            set(value) { if (!isExternal() && value !== mouseVisible) mouse = value; },
+        },
+        computeSize: {
+            configurable: true,
+            get: () => sizeVisible,
+            set(value) { if (!isExternal() && value !== sizeVisible) computeSize = value; },
+        },
+    });
+}
+
 // 统一应用所有 widget 的样式（圆角、颜色、重置按钮等），可重复调用
 export function _applyWidgetStyles(node) {
     // 这些栏会随属性面板开/关改变绘制宽度（同「视频」栏修复）：
@@ -764,6 +813,9 @@ export function _applyWidgetStyles(node) {
             w.draw = _xzgDrawWidget;
             w.mouse = _xzgWidgetNumberWithResetMouse;
             w.label = _tr(w.name);
+        }
+        if (w.draw === _xzgDrawWidget || w.draw === _xzgDrawComboWidget) {
+            _xzgKeepConvertedWidgetVisible(w);
         }
     }
 }

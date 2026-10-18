@@ -3623,10 +3623,14 @@ class XZGWorkflowsManager {
         }
     }
 
-    async loadWorkflows() {
+    async loadWorkflows({ background = false } = {}) {
+        if (background && this._backgroundWorkflowRefresh) return;
+        if (background) this._backgroundWorkflowRefresh = true;
         try {
             const res = await api.fetchApi("/xzg/wf-manage/list", { cache: "no-store" });
             const tree = await res.json();
+            // 官方 store 的通知和兼容轮询不应在内容未变时重建面板。
+            if (background && JSON.stringify(tree) === JSON.stringify(this.tree)) return;
             this.tree = tree;
             this.workflows = this.flattenTree(tree);
             this.syncCategories();
@@ -3636,9 +3640,12 @@ class XZGWorkflowsManager {
             console.warn("[小珠光] 加载工作流列表失败:", e);
             this.workflows = [];
             return;
+        } finally {
+            if (background) this._backgroundWorkflowRefresh = false;
         }
         // 同步官方 store，保证本扩展面板与官方面板的工作流路径一致
-        await this._refreshOfficialStore();
+        // 官方通知引发的刷新不能再次同步 store，否则会循环触发通知。
+        if (!background) await this._refreshOfficialStore();
         // 说明：已彻底移除分类自动/手动排序重命名。分类按名称自然排列，永不改动磁盘文件夹名。
     }
 
@@ -3703,6 +3710,7 @@ class XZGWorkflowsManager {
 
     renderCategories() {
         if (!this.categoryList) return;
+        const scrollTop = this.categoryList.querySelector(".xzg-wf-cat-tree")?.scrollTop || 0;
         this.categoryList.innerHTML = "";
         const pinned = document.createElement("div");
         pinned.className = "xzg-wf-cat-pinned";
@@ -3742,6 +3750,7 @@ class XZGWorkflowsManager {
             }
         }
         this.categoryList.appendChild(treeList);
+        treeList.scrollTop = scrollTop;
     }
 
     renderFolderTree(folderData, depth) {
@@ -4059,7 +4068,7 @@ class XZGWorkflowsManager {
             const el = this.categoryList?.querySelector(`[data-cat-id="${catId}"]`);
             if (el) {
                 el.classList.add("xzg-wf-cat-hover");
-                el.scrollIntoView({ block: "nearest" });
+                el.scrollIntoView({ behavior: "smooth", block: "nearest" });
             }
         });
         item.addEventListener("mouseleave", () => {
@@ -4884,7 +4893,7 @@ app.registerExtension({
         // 监听官方 workflow store 变化（含原生 Save / 新建 / 删除工作流），
         // 一旦官方列表变动（磁盘新增了工作流），自动刷新本扩展面板，避免"新工作流不显示"。
         const refresh = () => {
-            try { workflowsInstance.loadWorkflows(); } catch (e) {}
+            try { workflowsInstance.loadWorkflows({ background: true }); } catch (e) {}
         };
         try {
             const wfStore = app.extensionManager?.workflow;

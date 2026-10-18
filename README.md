@@ -12,6 +12,10 @@
 
 ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题美化、编组管理、快速节点等功能。
 
+### 第三方许可与来源
+
+小珠光图片姿势编辑器基于 [AHEKOT/ComfyUI_VNCCS_Utils](https://github.com/AHEKOT/ComfyUI_VNCCS_Utils) 中的 VNCCS Pose Studio，并从其 XZG 派生版移植、适配后并入本插件。上游项目采用 MIT License；相关版权和许可文本见 [`_xzg_pose/vnccs_pose_studio/LICENSE`](_xzg_pose/vnccs_pose_studio/LICENSE) 与 [`ATTRIBUTION.md`](_xzg_pose/vnccs_pose_studio/ATTRIBUTION.md)。SAM 3D Body、MHR、Three.js、SparkJS 和 MakeHuman 等组件有各自独立的许可，详见 `vnccs_pose_studio` 子目录中的许可证和 NOTICE 文件；这些许可不由本插件顶层 MIT 文件取代。
+
 ## ✨ 功能特性一览
 
 | 模块 | 核心能力 |
@@ -1935,7 +1939,7 @@ ComfyUI-xiaozhuguang/
 
 ## 📝 许可证
 
-[MIT License](LICENSE)
+小珠光主插件代码采用 MIT License，版权声明见 [LICENSE](LICENSE)。仓库包含从其他项目移植的组件和第三方资源，各部分适用的许可证可能不同；请同时查看 [第三方许可与来源说明](_xzg_pose/vnccs_pose_studio/ATTRIBUTION.md) 及各组件目录中的 LICENSE、NOTICE 文件。主插件的 MIT 许可证不覆盖这些独立组件。
 
 ---
 

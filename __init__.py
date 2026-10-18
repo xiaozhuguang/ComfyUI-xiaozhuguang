@@ -1391,7 +1391,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBatchCount": "小珠光批次计数",
     "XiaozhuguangListCount": "小珠光列表计数",
     "XiaozhuguangImageFromList": "小珠光从列表获取图像",
-    "XiaozhuguangBatchImageGetter": "小珠光图像获取",
+    "XiaozhuguangBatchImageGetter": "小珠光批次或列表图像获取",
     "XiaozhuguangBigDisplay": "小珠光展示任意",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageSize": "小珠光尺寸获取",
@@ -1411,6 +1411,13 @@ from ._xzg_pose import NODE_CLASS_MAPPINGS as _XZG_POSE_NODE_CLASS_MAPPINGS
 from ._xzg_pose import NODE_DISPLAY_NAME_MAPPINGS as _XZG_POSE_NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS.update(_XZG_POSE_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(_XZG_POSE_NODE_DISPLAY_NAME_MAPPINGS)
+
+# ============ 图片姿势工作室（从 VNCCS Pose Studio 完整并入） ============
+# Import the vendored package entry point so it registers its pose library,
+# capture sync/cache, and SAM3D endpoints alongside the node definition.
+from ._xzg_pose.vnccs_pose_studio import NODE_CLASS_MAPPINGS as _VNCCS_POSE_NODE_CLASS_MAPPINGS
+NODE_CLASS_MAPPINGS.update(_VNCCS_POSE_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS["VNCCS_PoseStudio"] = "小珠光VNCCS姿势编辑器"
 
 WEB_DIRECTORY = "./web"
 # 内部辅助工具子包：仅合并其节点注册（导入即注册自身接口路由）

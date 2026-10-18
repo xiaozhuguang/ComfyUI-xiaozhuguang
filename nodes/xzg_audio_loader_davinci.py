@@ -87,8 +87,75 @@ class XiaozhuguangAudioLoaderDaVinci(XiaozhuguangAudioLoader):
     )
 
 
-def _choose_audio_save_path(source_path):
-    """Show the native Windows Save As dialog and return the selected path, or None."""
+_XZG_SAVE_DIALOG_PS = r'''
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+if (-not ('XzgWin32' -as [type])) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class XzgWin32 {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+}
+"@
+}
+$dlg = New-Object System.Windows.Forms.SaveFileDialog
+$dlg.Title = $env:XZG_SAVE_TITLE
+$dlg.Filter = $env:XZG_SAVE_FILTER
+$dlg.DefaultExt = $env:XZG_SAVE_EXT
+$dlg.AddExtension = $true
+$dlg.FileName = $env:XZG_SAVE_NAME
+$dlg.OverwritePrompt = $false
+$dlg.RestoreDirectory = $true
+# 隐藏的置顶宿主窗体（屏幕外）：对话框拥有它，弹出后浮在普通窗口之上
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+$owner.Bounds = New-Object System.Drawing.Rectangle(-32000, -32000, 1, 1)
+$owner.Show()
+[System.Windows.Forms.Application]::DoEvents()
+try {
+  # 本子进程无窗口、没有前台权限；临时把本线程挂到前台线程后即可调用
+  # SetForegroundWindow，避免对话框被压在其它窗口后面
+  $fg = [XzgWin32]::GetForegroundWindow()
+  if ($fg -ne [IntPtr]::Zero) {
+    $fgPid = [uint32]0
+    $fgThread = [XzgWin32]::GetWindowThreadProcessId($fg, [ref]$fgPid)
+    $myThread = [XzgWin32]::GetCurrentThreadId()
+    if ($fgThread -and $fgThread -ne $myThread) {
+      [void][XzgWin32]::AttachThreadInput($myThread, $fgThread, $true)
+      [void][XzgWin32]::SetForegroundWindow($owner.Handle)
+      [void][XzgWin32]::BringWindowToTop($owner.Handle)
+      [void][XzgWin32]::AttachThreadInput($myThread, $fgThread, $false)
+    }
+  }
+  if ($dlg.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($dlg.FileName)
+    [Console]::Write([Convert]::ToBase64String($bytes))
+  }
+} finally {
+  $owner.Dispose()
+}
+'''
+
+
+def _xzg_choose_save_path(source_path, title, filter_label, default_ext):
+    """弹出 Windows 原生另存为对话框并返回所选绝对路径，取消返回 None。
+
+    对话框由 ComfyUI 后端的无窗口子进程弹出：该进程不在前台，Windows 默认
+    拒绝其抢占前台，对话框常被压在其它窗口后面（需最小化所有窗口才能看到）。
+    这里用「屏幕外置顶宿主窗体 + AttachThreadInput 抢前台」双保险，确保
+    对话框始终显示在最前面。
+    """
     if os.name != "nt":
         raise RuntimeError("Windows 原生另存为窗口仅支持 Windows 后端")
     powershell = os.path.join(
@@ -99,30 +166,13 @@ def _choose_audio_save_path(source_path):
         powershell = shutil.which("powershell.exe")
     if not powershell:
         raise FileNotFoundError("找不到 Windows PowerShell（powershell.exe），无法打开另存为窗口")
-    ext = os.path.splitext(source_path)[1].lstrip(".") or "wav"
     env = os.environ.copy()
-    env["XZG_AUDIO_SAVE_NAME"] = os.path.basename(source_path)
-    env["XZG_AUDIO_SAVE_EXT"] = ext
-    script = r'''
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ext = $env:XZG_AUDIO_SAVE_EXT
-$dlg = New-Object System.Windows.Forms.SaveFileDialog
-$dlg.Title = '导出音频到达芬奇'
-$dlg.Filter = "音频文件 (*.$ext)|*.$ext|所有文件 (*.*)|*.*"
-$dlg.DefaultExt = $ext
-$dlg.AddExtension = $true
-$dlg.FileName = $env:XZG_AUDIO_SAVE_NAME
-$dlg.OverwritePrompt = $false
-$dlg.RestoreDirectory = $true
-if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($dlg.FileName)
-  [Console]::Write([Convert]::ToBase64String($bytes))
-}
-'''
+    env["XZG_SAVE_NAME"] = os.path.basename(source_path)
+    env["XZG_SAVE_EXT"] = default_ext
+    env["XZG_SAVE_TITLE"] = title
+    env["XZG_SAVE_FILTER"] = f"{filter_label} (*.{default_ext})|*.{default_ext}|所有文件 (*.*)|*.*"
     proc = subprocess.run(
-        [powershell, "-NoProfile", "-STA", "-Command", script],
+        [powershell, "-NoProfile", "-STA", "-Command", _XZG_SAVE_DIALOG_PS],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -135,6 +185,16 @@ if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         return None
     import base64
     return base64.b64decode(encoded_path).decode("utf-8")
+
+
+def _choose_audio_save_path(source_path):
+    """Show the native Windows Save As dialog and return the selected path, or None."""
+    return _xzg_choose_save_path(
+        source_path,
+        title="导出音频到达芬奇",
+        filter_label="音频文件",
+        default_ext=os.path.splitext(source_path)[1].lstrip(".") or "wav",
+    )
 
 
 def _file_sha256_cache_key(path):

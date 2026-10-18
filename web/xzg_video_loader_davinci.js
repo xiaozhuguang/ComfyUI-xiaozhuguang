@@ -164,7 +164,15 @@ async function _onImportClick(node, btn, labelSpan) {
         );
         return;
     }
-    if (!st.has_marked_range) {
+    if (!st.project) {
+        _toast("[达芬奇导入] 已连接达芬奇，但未打开项目；请在 Resolve 中打开项目后重试。", true);
+        return;
+    }
+    if (!st.timeline) {
+        _toast("[达芬奇导入] 已连接达芬奇，但未检测到时间线；请在 Resolve 中打开时间线后重试。", true);
+        return;
+    }
+    if (st.has_marked_range !== true) {
         _toast("[达芬奇导入] 请先在达芬奇时间线上手工设置视频入点（I）和出点（O）。", true);
         return;
     }

@@ -192,9 +192,16 @@ def _restore_playhead_timecode(timeline, timecode):
 
 def _manual_timeline_render_range(timeline):
     """读取用户手工设置的时间线视频入出点，返回渲染 API 使用的绝对帧号。"""
-    marks = timeline.GetMarkInOut() or {}
+    try:
+        marks = timeline.GetMarkInOut() or {}
+    except Exception:
+        marks = {}
     video_marks = marks.get("video") or {}
     mark_in, mark_out = video_marks.get("in"), video_marks.get("out")
+    if mark_in is None or mark_out is None:
+        # 兼容部分版本：个别版本直接在顶层返回 in/out，而非嵌套在 video 下
+        mark_in = marks.get("in") if mark_in is None else mark_in
+        mark_out = marks.get("out") if mark_out is None else mark_out
     if mark_in is None or mark_out is None:
         return None
     try:
@@ -207,6 +214,69 @@ def _manual_timeline_render_range(timeline):
     # 使用时间线记录帧号，因此加上时间线起始帧。
     timeline_start = int(timeline.GetStartFrame() or 0)
     return mark_in + timeline_start, mark_out + timeline_start
+
+
+def _read_manual_marks(resolve, project, timeline, restore_page=True):
+    """读取手工设置的入出点，带切页与重试兜底。
+
+    实测问题（Resolve 21）：时间线上明明有出入点，GetMarkInOut 偶发返回空，
+    用户重新按一次 I/O 才恢复——属于 API/UI 状态不同步。为避免误报，按以下
+    顺序读取：
+    1. 当前时间线对象直读；
+    2. 失败则重新拉取 project/timeline 对象后重试（长会话下对象可能失效）；
+    3. 仍失败且不在剪辑/快剪页时，切到剪辑页等待后重试（页面状态不同步）。
+
+    返回 (timeline, render_range, marks_raw)；marks_raw 为最后一次 GetMarkInOut
+    的原始 repr（或异常信息），供诊断「UI 有出入点但 API 读不到」的场景。
+    """
+    def _raw(tl):
+        try:
+            return repr(tl.GetMarkInOut())
+        except Exception as e:
+            return f"<exception {type(e).__name__}: {e}>"
+
+    def _try(tl):
+        if tl is None:
+            return None, "<no timeline>"
+        return _manual_timeline_render_range(tl), _raw(tl)
+
+    render_range, marks_raw = _try(timeline)
+    if render_range is not None:
+        return timeline, render_range, marks_raw
+
+    current_page = ""
+    try:
+        current_page = str(resolve.GetCurrentPage() or "").lower()
+    except Exception:
+        current_page = ""
+    switched = False
+    if current_page not in ("edit", "cut", ""):
+        try:
+            switched = bool(resolve.OpenPage("edit"))
+        except Exception:
+            switched = False
+        if switched:
+            time.sleep(0.6)  # 等剪辑页时间线 UI 就绪
+    try:
+        for wait in (0.0, 0.8, 1.2):
+            if wait:
+                time.sleep(wait)
+            try:
+                fresh_tl = project.GetCurrentTimeline() if project is not None else None
+            except Exception:
+                fresh_tl = None
+            if fresh_tl is not None:
+                timeline = fresh_tl
+            render_range, marks_raw = _try(timeline)
+            if render_range is not None:
+                return timeline, render_range, marks_raw
+        return timeline, None, marks_raw
+    finally:
+        if switched and restore_page and current_page:
+            try:
+                resolve.OpenPage(current_page)
+            except Exception:
+                pass
 
 
 def current_video_item(timeline):
@@ -734,6 +804,8 @@ def action_status():
     if project is None:
         result["error"] = "已连接达芬奇，但未打开项目"
         result["project"] = None
+        result["timeline"] = None
+        result["has_marked_range"] = None
         return result
     result["project"] = project.GetName() or ""
     try:
@@ -742,12 +814,15 @@ def action_status():
         tl = None
     if tl is None:
         result["timeline"] = None
+        result["has_marked_range"] = None
         return result
     result["timeline"] = tl.GetName() or ""
-    render_range = _manual_timeline_render_range(tl)
+    tl, render_range, marks_raw = _read_manual_marks(resolve, project, tl)
     result["has_marked_range"] = render_range is not None
     if render_range is None:
         result["clip_note"] = "请先在时间线上手工设置视频入点和出点"
+        # 诊断：UI 上有出入点但 API 读不到时，把原始返回打进日志/响应留痕
+        result["marks_raw"] = marks_raw
     else:
         timeline_start = int(tl.GetStartFrame() or 0)
         result["mark_in"] = render_range[0] - timeline_start
@@ -790,21 +865,14 @@ def action_export(pargs):
     except Exception:
         current_page = ""
 
-    # 小珠光视频加载器-化神级：当用户停留在「调色」页（color）时，直接读取手工
-    # 入出点并切到 Deliver 渲染，达芬奇内部状态可能不一致。按用户要求：先切到
-    # 「剪辑」页（edit）再继续读入出点、走渲染流程；导出结束后 finally 会把页面
-    # 切回 current_page（即调色页），实现「调色页 → 剪辑页 → 交付页渲染 → 调色页」。
-    if current_page == "color":
-        try:
-            if resolve.OpenPage("edit"):
-                time.sleep(0.6)  # 等剪辑页时间线 UI 就绪，再读入出点/切交付页
-        except Exception:
-            # 切页失败不阻断，交给后续渲染流程自然报错
-            pass
-
-    render_range = _manual_timeline_render_range(tl)
+    # 读手工入出点：调色/交付页或长会话下 GetMarkInOut 偶发读不到 UI 上已有的
+    # 出入点，_read_manual_marks 内部会切剪辑页 + 重取时间线对象 + 多次重试。
+    # restore_page=False：导出结束后由下方 finally 统一切回 current_page。
+    tl, render_range, marks_raw = _read_manual_marks(resolve, project, tl, restore_page=False)
     if render_range is None:
-        return {"ok": False, "error": "未检测到有效的手工视频入出点，请先在达芬奇时间线上按 I 和 O 设置出入点"}
+        return {"ok": False,
+                "error": "未检测到有效的手工视频入出点，请先在达芬奇时间线上按 I 和 O 设置出入点",
+                "debug": {"page": current_page, "marks_raw": marks_raw}}
 
     # 文件名：直接用播放头所在片段原名，不加短码/时间戳。
     # 同名时达芬奇 CustomName 会覆盖旧文件（用户已接受此行为）。

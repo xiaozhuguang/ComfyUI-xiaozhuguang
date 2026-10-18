@@ -47,6 +47,186 @@ const XZGGroup = {
     _canvasMoving: false,
     _moveStopTimer: null,
 
+    _copyGroups(groups) { return JSON.parse(JSON.stringify(groups || {})); },
+
+    _groupGraph() { return this._activeGraph || app?.canvas?.graph || app?.graph; },
+
+    _saveGraphGroups(graph) {
+        if (!graph || this._graphLoading || app.configuringGraph) return;
+        graph.extra ||= {};
+        const groups = graph === this._activeGraph ? this.groups : graph.extra.xzgGroups || {};
+        graph.extra.xzgGroups = this._copyGroups(groups);
+        this._groupsSource = graph === this._activeGraph ? graph.extra.xzgGroups : this._groupsSource;
+        const key = graph === app.graph ? 'xzg_groups_backup' : `xzg_groups_backup:${graph.id}`;
+        try {
+            if (Object.keys(groups).length) localStorage.setItem(key, JSON.stringify(groups));
+            else localStorage.removeItem(key);
+        } catch (e) {}
+    },
+
+    _activateGroupGraph(graph) {
+        this._activeGraph = graph;
+        this.groups = this._copyGroups(graph?.extra?.xzgGroups);
+        this._groupsSource = graph?.extra?.xzgGroups;
+        this._needRestore = false;
+        this._pendingGroups = null;
+        this._positionsPending = true;
+        this.rebuildAllEls();
+    },
+
+    _switchGraph() {
+        if (this._graphLoading || app.configuringGraph) return;
+        const graph = app.canvas?.graph || app.graph;
+        if (!graph) return;
+        this._installGroupGraphHooks(graph.constructor);
+        this._installGroupGraphHooks(graph);
+        if (graph !== this._activeGraph) {
+            this._saveGraphGroups(this._activeGraph);
+            this._activateGroupGraph(graph);
+        } else if (graph.extra?.xzgGroups !== this._groupsSource) {
+            // Initial hydration may happen after the extension has initialized.
+            this._activateGroupGraph(graph);
+        }
+    },
+
+    _installGroupGraphHooks(Graph) {
+        if (!Graph) return;
+        const self = this, proto = Graph.prototype || Graph;
+        if (Object.prototype.hasOwnProperty.call(proto, '_xzgGraphGroupsHooked')) return;
+        proto._xzgGraphGroupsHooked = true;
+        for (const method of ['serialize', 'asSerialisable']) {
+            const original = proto[method];
+            if (!original || original._xzgGroupHook) continue;
+            proto[method] = function(...args) {
+                self._switchGraph();
+                self._saveGraphGroups(this);
+                const data = original.apply(this, args);
+                if (self._isCopying || self._isPasting) {
+                    delete data._xzgGroups;
+                    if (data.extra) delete data.extra.xzgGroups;
+                    for (const node of data.nodes || []) { delete node._xzgGroupId; delete node._xzgGroup; }
+                } else {
+                    data.extra ||= {};
+                    data.extra.xzgGroups = self._copyGroups(this.extra?.xzgGroups);
+                }
+                return data;
+            };
+        }
+        const clear = proto.clear;
+        if (clear && !clear._xzgGroupHook) proto.clear = function(...args) {
+            const result = clear.apply(this, args);
+            if (this === app.graph) {
+                app.canvas?.setGraph?.(this);
+                if (app.canvas) app.canvas.graph = this;
+            }
+            if (this === self._activeGraph || this === app.graph) self._activateGroupGraph(this);
+            return result;
+        };
+        const configure = proto.configure;
+        if (configure && !configure._xzgGroupHook) proto.configure = function(data, ...args) {
+            const result = configure.call(this, data, ...args);
+            this.extra ||= {};
+            this.extra.xzgGroups = self._copyGroups(data?._xzgGroups || data?.extra?.xzgGroups);
+            if (this === self._activeGraph) self._activateGroupGraph(this);
+            return result;
+        };
+        const unpack = proto._unpackSubgraphImpl;
+        if (unpack && !unpack._xzgGroupHook) proto._unpackSubgraphImpl = function(container, ...args) {
+            const nodes = [...(container.subgraph?._nodes || [])];
+            const groups = self._copyGroups(container.subgraph?.extra?.xzgGroups);
+            const before = new Set(this._nodes);
+            const result = unpack.call(this, container, ...args);
+            self._restoreUnpackedGroups(this, container.id, nodes, groups, this._nodes.filter(n => !before.has(n)));
+            return result;
+        };
+        for (const name of ['serialize', 'asSerialisable', 'clear', 'configure', '_unpackSubgraphImpl']) {
+            if (Object.prototype.hasOwnProperty.call(proto, name) && typeof proto[name] === 'function') proto[name]._xzgGroupHook = true;
+        }
+    },
+
+    _onSubgraphOpened({ subgraph, closingGraph, fromNode }) {
+        this._openedSubgraphs ||= new WeakMap();
+        this._openedSubgraphs.set(subgraph, { graph: closingGraph, node: fromNode });
+        this._switchGraph();
+    },
+
+    _graphExecutionPath(target, graph = app.graph, seen = new Set()) {
+        if (target === graph) return [];
+        if (!graph || seen.has(graph)) return null;
+        seen.add(graph);
+        const opened = this._openedSubgraphs?.get(target);
+        if (opened?.graph === graph && opened.node?.subgraph === target) return [opened.node.id];
+        for (const node of graph._nodes || []) {
+            if (!node.subgraph) continue;
+            const path = this._graphExecutionPath(target, node.subgraph, seen);
+            if (path) return [node.id, ...path];
+        }
+        return null;
+    },
+
+    getGroupOutputExecutionIds(gid) {
+        const path = this._graphExecutionPath(this._groupGraph());
+        if (!path) return [];
+        const ids = [];
+        const visit = (node, prefix, seen) => {
+            if (!node || node.mode === 2 || node.mode === 4) return;
+            const next = [...prefix, node.id];
+            if (node.subgraph) {
+                if (seen.has(node.subgraph)) return;
+                const nested = new Set(seen); nested.add(node.subgraph);
+                for (const child of node.subgraph._nodes || []) visit(child, next, nested);
+            } else if (node.constructor?.nodeData?.output_node) ids.push(next.join(':'));
+        };
+        for (const node of this.getGroupNodes(gid)) visit(node, path, new Set());
+        return ids;
+    },
+
+    _onSubgraphConverted(container) {
+        const graph = container.graph || this._groupGraph(), sub = container.subgraph;
+        if (!sub) return;
+        const groups = graph === this._activeGraph ? this.groups : graph.extra?.xzgGroups || {};
+        sub.extra ||= {}; sub.extra.xzgGroups ||= {};
+        const moved = new Set((sub._nodes || []).map(n => String(n.id)));
+        for (const [id, group] of Object.entries(groups)) {
+            const selected = group.nodeIds.filter(id => moved.has(String(id)));
+            if (!selected.length) continue;
+            const hasChild = Object.values(groups).some(child => child !== group && child.nodeIds.some(id => !moved.has(String(id))) && child.bounds && group.bounds &&
+                child.bounds.w * child.bounds.h < group.bounds.w * group.bounds.h && this._isFullyContained(group.bounds, child.bounds));
+            if (selected.length === group.nodeIds.length && !hasChild) {
+                sub.extra.xzgGroups[id] = this._copyGroups(group);
+                delete groups[id];
+            } else {
+                group.nodeIds = [...group.nodeIds.filter(id => !moved.has(String(id))), container.id];
+                container._xzgGroupId = id;
+                for (const node of sub._nodes || []) if (node._xzgGroupId === id) node._xzgGroupId = null;
+            }
+        }
+        this._saveGraphGroups(graph);
+        this.rebuildAllEls();
+    },
+
+    _restoreUnpackedGroups(graph, containerId, sourceNodes, sourceGroups, newNodes) {
+        const groups = graph === this._activeGraph ? this.groups : ((graph.extra ||= {}).xzgGroups ||= {});
+        const mapping = new Map(sourceNodes.map((n, i) => [String(n.id), newNodes[i]]));
+        const offset = sourceNodes.length && newNodes.length ? [0, 1].map(i => (newNodes[0].pos?.[i] || 0) - (sourceNodes[0].pos?.[i] || 0)) : [0, 0];
+        for (const group of Object.values(groups)) {
+            if (group.nodeIds.some(id => String(id) === String(containerId)))
+                group.nodeIds = [...group.nodeIds.filter(id => String(id) !== String(containerId)), ...newNodes.map(n => n.id)];
+        }
+        for (const source of Object.values(sourceGroups)) {
+            const group = this._copyGroups(source);
+            let id = group.id, suffix = 1;
+            while (groups[id]) id = `${group.id}_${suffix++}`;
+            group.id = id;
+            group.nodeIds = group.nodeIds.map(id => mapping.get(String(id))?.id).filter(id => id != null);
+            if (group.bounds) { group.bounds.x += offset[0]; group.bounds.y += offset[1]; }
+            groups[id] = group;
+            for (const node of newNodes) if (group.nodeIds.includes(node.id)) node._xzgGroupId = id;
+        }
+        this._saveGraphGroups(graph);
+        this.rebuildAllEls();
+    },
+
     init() {
         if (this.initialized) return;
         this.initialized = true;
@@ -95,65 +275,12 @@ const XZGGroup = {
         this.startSyncLoop();
         this.waitForGraph();
 
-        // ── 实例方法 hook（防跨工作流窜流的关键） ──
-        // 视角锁定功能在 app.graph 实例上覆盖了 configure 和 clear，
-        // 导致原型 hook 不被调用。用 tryInjectLoop 在 app.graph 就绪后
-        // 包装实例方法，确保我们的逻辑在最外层执行。
-        const self = this;
-        const tryHookInstance = (retry = 0) => {
-            if (!app?.graph) {
-                if (retry < 60) setTimeout(() => tryHookInstance(retry + 1), 100);
-                return;
-            }
-            if (app.graph._xzgInstanceHooked) return;
-
-            // 包装实例的 clear
-            const origInstClear = app.graph.clear;
-            if (origInstClear) {
-                app.graph.clear = function() {
-                    self._loadingNewWorkflow = true;
-                    for (const gid of Object.keys(self.groups)) self.killGroup(gid);
-                    self.groups = {};
-                    try { localStorage.removeItem('xzg_groups_backup'); } catch(e) {}
-                    try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
-                    self._needRestore = true;
-                    if (!self._pendingGroups) self._pendingGroups = {};
-                    return origInstClear.apply(this, arguments);
-                };
-            }
-
-            // 包装实例的 configure
-            const origInstConfigure = app.graph.configure;
-            if (origInstConfigure) {
-                app.graph.configure = function(d) {
-                    if (self._isPasting || self._isCopying) {
-                        return origInstConfigure.apply(this, arguments);
-                    }
-                    const pendingFromTop = d?._xzgGroups || d?.extra?.xzgGroups || null;
-                    const isCrossWorkflow = !!self._loadingNewWorkflow;
-                    const result = origInstConfigure.apply(this, arguments);
-                    self._loadingNewWorkflow = false;
-                    if (app?.graph !== this) return result;
-                    if (self._isPasting) return result;
-
-                    // 跨工作流切换时清空旧编组，用新工作流数据恢复
-                    if (isCrossWorkflow && pendingFromTop) {
-                        for (const gid of Object.keys(self.groups)) self.killGroup(gid);
-                        self.groups = {};
-                        self._needRestore = true;
-                        self._pendingGroups = pendingFromTop;
-                        if (app.graph._nodes?.length) {
-                            self.restoreGroups();
-                        }
-                    }
-                    return result;
-                };
-            }
-
-            app.graph._xzgInstanceHooked = true;
-            console.log('[小珠光编组] app.graph 实例 clear/configure 钩子已安装');
-        };
-        tryHookInstance();
+        // Also cover instance methods installed by other frontend extensions.
+        this._installGroupGraphHooks(app.graph);
+        const canvas = app.canvas?.canvas;
+        canvas?.addEventListener('subgraph-opened', event => this._onSubgraphOpened(event.detail));
+        canvas?.addEventListener('subgraph-converted', event => this._onSubgraphConverted(event.detail.subgraphNode));
+        this._switchGraph();
 
         // 额外保障：基于 extra 的持久化（新版 ComfyUI 前端兼容）
         this._setupExtraBasedPersistence();
@@ -224,7 +351,7 @@ const XZGGroup = {
             // 兜底注入已改为空操作，下方为原逻辑（已禁用，保留备查）
             self._syncSelectedGroupsFollowNodes_DISABLED_ORIGINAL_FALLBACK = function() {
                 const c = app?.canvas;
-                const graph = app?.graph;
+                const graph = XZGGroup._groupGraph();
                 if (!c?.selected_nodes || !graph?._nodes) return;
                 const selMap = c.selected_nodes;
                 if (!selMap || typeof selMap !== 'object') return;
@@ -504,7 +631,7 @@ const XZGGroup = {
         const g = this.groups[gid];
         if (!g?.bounds) return [];
         const bounds = g.bounds;
-        const graph = app?.graph;
+        const graph = this._groupGraph();
         if (!graph?._nodes) return [];
         const nodes = [];
         for (const n of graph._nodes) {
@@ -540,43 +667,10 @@ const XZGGroup = {
     },
 
     async queueGroupOutputNodes(gid) {
-        const nodes = this.getGroupNodes(gid);
-        const outputNodes = this.getOutputNodes(nodes);
-        if (!outputNodes.length) return false;
-
-        // 不再委托 rgthree.queueOutputNodes：其 recursiveAddNodes 无空节点保护，输出节点不在默认
-        // 执行链 prompt.output 时会抛 inputs undefined 并触发全局「执行失败」弹窗。走自有 hook。
-        const nodeIds = outputNodes.map((n) => n.id);
-        const origApiQueuePrompt = api.queuePrompt;
-        let hookInstalled = false;
-
-        const self = this;
-        const hook = async function (index, prompt, ...args) {
-            if (prompt.output) {
-                const oldOutput = prompt.output;
-                let newOutput = {};
-                for (const queueNodeId of nodeIds) {
-                    self._recursiveAddQueueNodes(queueNodeId, oldOutput, newOutput);
-                }
-                prompt.output = newOutput;
-            }
-            api.queuePrompt = origApiQueuePrompt;
-            return origApiQueuePrompt.call(api, index, prompt, ...args);
-        };
-
-        try {
-            api.queuePrompt = hook;
-            hookInstalled = true;
-            await app.queuePrompt(0);
-            return true;
-        } catch (e) {
-            console.error("[小珠光编组] 执行编组内节点失败:", e);
-            return false;
-        } finally {
-            if (hookInstalled) {
-                api.queuePrompt = origApiQueuePrompt;
-            }
-        }
+        const ids = this.getGroupOutputExecutionIds(gid);
+        if (!ids.length) return false;
+        try { await app.queuePrompt(0, 1, ids); return true; }
+        catch (e) { console.error('[小珠光编组] 执行编组内节点失败:', e); return false; }
     },
 
     /* ── 云持久化（编组设置 + 标题配置） ── */
@@ -742,10 +836,12 @@ const XZGGroup = {
     startSyncLoop() {
         const self = this;
         const loop = () => {
+            self._switchGraph();
+            if (self._graphLoading || app.configuringGraph) { self._raf = requestAnimationFrame(loop); return; }
             self.syncOverlayPosition();
             self._updateRunButtonHover();
             // 有未恢复的编组数据且 graph 有节点时立即恢复（不依赖 canvas）
-            if (self._needRestore && self._pendingGroups && app?.graph?._nodes?.length) {
+            if (self._needRestore && self._pendingGroups && XZGGroup._groupGraph()?._nodes?.length) {
                 self.restoreGroups();
             }
             // 几何同步：updatePositions 原本只在 onDrawBackground（canvas 渲染帧）内调用，
@@ -757,7 +853,7 @@ const XZGGroup = {
             // 有特效时需逐帧驱动动画颜色。但画布正在缩放/平移（_canvasMoving）时，
             // 位置更新必须严格由 canvas 绘制帧（onDrawBackground→updatePositions）负责，
             // 否则 rAF 抢跑会与节点错位（缩放不同步）；静止时才由 rAF 驱动动画。
-            if (self._hasActiveEffect() && !self._canvasMoving) self.updatePositions();
+            if (self._positionsPending || (self._hasActiveEffect() && !self._canvasMoving)) { self.updatePositions(); self._positionsPending = false; }
             // 画布移动隐藏/渐入检测
             self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
@@ -871,7 +967,7 @@ const XZGGroup = {
             mouseY >= 0 && mouseY <= canvasRect.height;
 
         if (Object.keys(this.groups).length === 0) {
-            const graph = app?.graph;
+            const graph = XZGGroup._groupGraph();
             if (graph?._nodes?.length) {
                 let hasGroupData = false;
                 for (const n of graph._nodes) {
@@ -1151,7 +1247,7 @@ const XZGGroup = {
         }
         if (this._lastBgHash !== bgHash) {
             this._lastBgHash = bgHash;
-            app.graph?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
         }
     },
 
@@ -1445,7 +1541,7 @@ const XZGGroup = {
 
     /* ── 自动收纳/释放节点 ── */
     syncNodeMembership(group, bounds) {
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (!graph?._nodes) return;
         if (!bounds) return;
 
@@ -1482,7 +1578,7 @@ const XZGGroup = {
 
     /* ── 计算包围盒 ── */
     calcBounds(nodeIds) {
-        const g = app?.graph;
+        const g = XZGGroup._groupGraph();
         if (!g?._nodes) return null;
         let minX = 1/0, minY = 1/0, maxX = -1/0, maxY = -1/0, f = false;
         for (const nid of nodeIds) {
@@ -1523,8 +1619,8 @@ const XZGGroup = {
         group.title = "Group";
         group.pos = [minX - pad, minY - pad - 24];
         group.size = [maxX - minX + pad * 2, maxY - minY + pad * 2 + 24];
-        app.graph.add(group);
-        app.graph.setDirtyCanvas(true, true);
+        XZGGroup._groupGraph().add(group);
+        XZGGroup._groupGraph().setDirtyCanvas(true, true);
     },
 
     /** Ctrl+G 弹出编组类型选择菜单（官方编组 / 小珠光编组） */
@@ -1678,8 +1774,8 @@ const XZGGroup = {
         });
 
         this.renderGroup(gid);
-        app.graph?.setDirtyCanvas?.(true, true);
-        app.graph?.change?.();
+        XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
+        XZGGroup._groupGraph()?.change?.();
         this.syncGroupsToExtra();
         console.log('[小珠光编组] 创建:', gid, directNodeIds.length, '直接节点', childGroupIds.size, '子编组');
     },
@@ -2035,7 +2131,7 @@ const XZGGroup = {
             });
             // 重建 DOM 恢复视觉状态
             this.rebuildGroupEl(group);
-            app.graph?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
         };
 
         // 移除已有弹窗
@@ -2499,7 +2595,7 @@ const XZGGroup = {
             const rgba = `rgba(${r},${g},${b},${bgAlpha})`;
             group.bgColor = rgba;
             // 背景由画布在节点下层绘制（onDrawBackground），触发画布重绘即可实时预览
-            app.graph?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
         };
 
         bgColorPicker.addEventListener('input', () => {
@@ -2575,8 +2671,8 @@ const XZGGroup = {
             }
 
             // 标记工作流已修改，触发保存
-            app.graph?.setDirtyCanvas?.(true, true);
-            app.graph?.change?.();
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.change?.();
             this.syncGroupsToExtra();
             // 保存为上次使用的标题配置（供新建编组继承）
             this.saveLastTitleConfig(targetGroup);
@@ -2591,12 +2687,12 @@ const XZGGroup = {
             if (titleColorPicker && titleColorPicker.parentNode) titleColorPicker.remove();
             if (modal.parentNode) modal.remove();
         };
-        closeOutFn = e => { if (!modal.contains(e.target)) { revertSnapshot(); app.graph?.setDirtyCanvas?.(true, true); cleanupModal(); } };
+        closeOutFn = e => { if (!modal.contains(e.target)) { revertSnapshot(); XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true); cleanupModal(); } };
         setTimeout(() => document.addEventListener('mousedown', closeOutFn), 50);
 
         modal.querySelector('.xzg-set-cancel').addEventListener('click', () => {
             revertSnapshot();
-            app.graph?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
             cleanupModal();
         });
         modal.querySelector('.xzg-set-apply').addEventListener('click', () => {
@@ -2657,8 +2753,8 @@ const XZGGroup = {
                 }
             }
             // 标记工作流已修改
-            app.graph?.setDirtyCanvas?.(true, true);
-            app.graph?.change?.();
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.change?.();
             this.syncGroupsToExtra();
             cleanupModal();
         });
@@ -2734,7 +2830,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (!group?.bounds) return;
         if (group.locked) return;
         const canvas = app?.canvas;
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (!canvas?.ds || !graph?._nodes) return;
 
         const scale = canvas.ds.scale || 1;
@@ -2864,13 +2960,13 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             const dy = (e.clientY - startY) / scale;
             group.bounds.w = Math.max(120, startW + dx);
             group.bounds.h = Math.max(44, startH + dy);
-            app.graph?.setDirtyCanvas?.(true, true);
+            XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
         };
         const onUp = () => {
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
             self.syncGroupsToExtra();
-            app.graph?.change?.();
+            XZGGroup._groupGraph()?.change?.();
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
@@ -3258,8 +3354,8 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                     // 切换 hidden
                     g.hidden = !g.hidden;
                     self.syncGroupsToExtra();
-                    app?.graph?.setDirtyCanvas?.(true, true);
-                    app?.graph?.change?.();
+                    XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
+                    XZGGroup._groupGraph()?.change?.();
                     // 若主 tab 父被隐藏且 currentTab 仍为 main，子组是否仍隐藏也跟随父？
                     //   —— 用户要求是「该组不在主列表显示」，所以只动当前组的 hidden。
                     syncTabLabels();
@@ -3822,7 +3918,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     toggleBypass(gid) {
         const g = this.groups[gid];
         if (!g) return;
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (!graph) return;
 
         const willBypass = !g.bypassed;
@@ -3899,7 +3995,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
     /* ── 聚焦模式：点击编组开启，同级其他全部绕过 ── */
     toggleBypassUnified(gid) {
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (!graph || !this.groups[gid]) return;
 
         // 被点击的决定开启，同级的全部绕过
@@ -3923,7 +4019,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
     /* ── 静音模式：点击编组绕过，同级其他全部开启 ── */
     toggleBypassMute(gid) {
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (!graph || !this.groups[gid]) return;
 
         // 被点击的绕过，同级的全部开启
@@ -4050,7 +4146,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
     _syncSelectedGroupsFollowNodes_DISABLED_ORIGINAL() {
         const c = app?.canvas;
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (!c?.selected_nodes || !graph?._nodes) return;
         const selMap = c.selected_nodes;
         if (!selMap || typeof selMap !== 'object') return;
@@ -4239,7 +4335,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     removeGroup(gid) {
         const g = this.groups[gid];
         if (!g) return;
-        const graph = app?.graph;
+        const graph = XZGGroup._groupGraph();
         if (graph && g.bypassed) g.nodeIds.forEach(nid => { const n = graph._nodes.find(x => x.id === nid || x.id == nid); if (n) n.mode = MODE_ALWAYS; });
         // 清除节点上的编组残留数据，防止自动恢复
         g.nodeIds.forEach(nid => {
@@ -4262,21 +4358,9 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
     /* ── 持久化：同步到 app.graph.extra + localStorage ── */
     syncGroupsToExtra() {
-        if (!app?.graph) return;
-        const gd = {};
-        for (const [id, g] of Object.entries(this.groups)) {
-            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000, headerHidden: !!g.headerHidden };
-        }
-        app.graph.extra = app.graph.extra || {};
-        app.graph.extra.xzgGroups = gd;
-        // 立即写入 localStorage 兜底
-        try {
-            if (Object.keys(gd).length) {
-                localStorage.setItem('xzg_groups_backup', JSON.stringify(gd));
-            } else {
-                localStorage.removeItem('xzg_groups_backup');
-            }
-        } catch(e) {}
+        if (this._graphLoading || app.configuringGraph) return;
+        this._switchGraph();
+        this._saveGraphGroups(this._groupGraph());
     },
 
     setupSerializationHooks(retryCount = 0) {
@@ -4483,172 +4567,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
                 }
             } catch(e) {}
         }
-        if (LG.LGraph) {
-            try {
-                const s = LG.LGraph.prototype.serialize;
-                if (s) {
-                    LG.LGraph.prototype.serialize = function() {
-                        const d = s.apply(this, arguments);
-                        // ── 复制/粘贴期间：彻底不写编组到剪贴板（d._xzgGroups / d.extra.xzgGroups / d.nodes[i]._xzgGroupId）
-                        //    防止 LGraph.configure 钩子读到编组数据后触发 restore，造成粘贴后产生死标记 ──
-                        if (self._isCopying || self._isPasting) {
-                            delete d._xzgGroups;
-                            if (d.extra) delete d.extra.xzgGroups;
-                            if (d.nodes && d.nodes.length) {
-                                for (const nd of d.nodes) {
-                                    delete nd._xzgGroupId;
-                                    delete nd._xzgGroup;
-                                }
-                            }
-                            return d;
-                        }
-                        const gd = {};
-                        for (const [id, g] of Object.entries(self.groups)) {
-                            gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000, headerHidden: !!g.headerHidden };
-                        }
-                        if (Object.keys(gd).length) {
-                            d._xzgGroups = gd;
-                        }
-                        d.extra = d.extra || {};
-                        d.extra.xzgGroups = gd;
-
-                        if (d.nodes && d.nodes.length) {
-                            const nodeGroupMap = {};
-                            for (const [gid, g] of Object.entries(self.groups)) {
-                                const groupData = gd[gid];
-                                for (const nid of g.nodeIds) {
-                                    nodeGroupMap[nid] = { groupId: gid, groupData: groupData };
-                                }
-                            }
-                            for (const nd of d.nodes) {
-                                const nid = nd.id;
-                                const match = nodeGroupMap[nid] || Object.entries(nodeGroupMap).find(([k]) => k == nid)?.[1];
-                                if (match) {
-                                    nd._xzgGroupId = match.groupId;
-                                    nd._xzgGroup = JSON.parse(JSON.stringify(match.groupData));
-                                } else {
-                                    // 节点不在任何编组中，清除残留的编组字段（防止已删除编组通过节点数据复活）
-                                    delete nd._xzgGroupId;
-                                    delete nd._xzgGroup;
-                                }
-                            }
-                        }
-                        return d;
-                    };
-                }
-            } catch(e) {}
-            try {
-                const c = LG.LGraph.prototype.configure;
-                if (c) {
-                    LG.LGraph.prototype.configure = function(d) {
-                        // ── 粘贴/复制期间：最开头就拦截，避免 configure 钩子读到剪贴板残留数据触发 restore ──
-                        if (self._isPasting || self._isCopying) {
-                            c.apply(this, arguments);
-                            return;
-                        }
-                        const pendingFromTop = d?._xzgGroups || d?.extra?.xzgGroups || null;
-                        if (pendingFromTop) console.log('[小珠光编组] LGraph.configure检测到编组数据:', Object.keys(pendingFromTop).length, '个');
-                        // 加载新工作流时清空跨会话删除标记：xzg_deleted_groups 是全局的，
-                        // 不应跨工作流生效。加载新工作流时完全信任工作流 JSON 数据，
-                        // 防止「在工作流A删除编组 → 切换到工作流B → B中相同gid的编组被跳过 → 永久丢失」
-                        try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
-                        // 判断是否跨工作流切换（两条检测路径，任一命中即认为是跨工作流）：
-                        // 1. loadGraphData 钩子设置 _loadingNewWorkflow 标志（官方加载路径）
-                        // 2. graph.clear() 在 configure 之前被调用 → this._nodes 已空
-                        //    （小珠光工作流切换走 graph.clear()+graph.configure()，不走 loadGraphData）
-                        // 同工作流 reconfigure（auto-save/undo）时 _nodes 非空且不经过 loadGraphData
-                        const oldNodeIds = new Set();
-                        if (this._nodes) for (const n of this._nodes) oldNodeIds.add(n.id);
-                        const isCrossWorkflow = !!self._loadingNewWorkflow || oldNodeIds.size === 0;
-                        c.apply(this, arguments);
-                        // 消费标志：configure 完成后清除，后续的 reconfigure 不会误判
-                        self._loadingNewWorkflow = false;
-                        if (app?.graph !== this) return;
-
-                        // 粘贴期间跳过编组恢复，避免破坏粘贴钩子的处理
-                        if (self._isPasting) {
-                            console.log('[小珠光编组] 粘贴期间跳过configure编组恢复');
-                            return;
-                        }
-
-                        // 保存当前用户自定义属性（颜色、标题、效果等）
-                        const savedCustomProps = {};
-                        for (const [gid, g] of Object.entries(self.groups)) {
-                            savedCustomProps[gid] = {
-                                title: g.title,
-                                fontSize: g.fontSize,
-                                colorHue: g.colorHue,
-                                colorSat: g.colorSat,
-                                colorLit: g.colorLit,
-                                effect: g.effect,
-                                effectSpeed: g.effectSpeed,
-                                borderWidth: g.borderWidth,
-                                borderOpacity: g.borderOpacity,
-                                headerBgColor: g.headerBgColor,
-                                bgColor: g.bgColor,
-                                titleColor: g.titleColor,
-                                headerHidden: g.headerHidden,
-                            };
-                        }
-
-                        // 将自定义属性合并到序列化数据中，确保 restoreGroups 读取正确值
-                        // ⚠️ 仅在同工作流 reconfigure 时合并（保留用户未保存的视觉编辑）
-                        //    跨工作流切换时完全信任新工作流 JSON 数据，防止旧工作流的
-                        //    标题/颜色/特效窜入新工作流相同 gid 的编组（窜流根因）
-                        if (!isCrossWorkflow && pendingFromTop) {
-                            for (const [gid, props] of Object.entries(savedCustomProps)) {
-                                if (pendingFromTop[gid]) {
-                                    Object.assign(pendingFromTop[gid], props);
-                                }
-                            }
-                        } else if (isCrossWorkflow) {
-                            console.log('[小珠光编组] 检测到跨工作流切换，跳过旧工作流视觉属性合并（防窜流）');
-                            // 调试：打印 pendingFromTop 的实际内容，确认是否纯净
-                            if (pendingFromTop) {
-                                for (const [gid, g] of Object.entries(pendingFromTop)) {
-                                    console.log(`[小珠光编组][调试] pendingFromTop gid=${gid} title="${g.title}" hue=${g.colorHue}`);
-                                }
-                            }
-                        }
-
-                        for (const gid of Object.keys(self.groups)) self.killGroup(gid);
-                        self.groups = {};
-                        self._needRestore = true;
-                        self._pendingGroups = pendingFromTop;
-                        if (app.graph._nodes?.length) {
-                            console.log('[小珠光编组] LGraph.configure立即恢复');
-                            self.restoreGroups();
-                        }
-                    };
-                }
-            } catch(e) {}
-
-            // ── hook LGraph.prototype.clear（防跨工作流窜流的关键） ──
-            // 视角锁定功能在 app.graph 实例上覆盖了 configure，导致上面的原型 configure hook 不被调用。
-            // 但视角锁定没有 hook clear，所以 hook clear 来清空旧编组：
-            // 1. 工作流切换走 graph.clear() + graph.configure()
-            // 2. clear 时清空 self.groups，防止旧编组残留
-            // 3. 设置 _pendingGroups = {} 满足 syncLoop 的 _needRestore && _pendingGroups 条件
-            // 4. configure 后 graph.extra 有新数据，restoreGroups 从 graph.extra 补充（因 groups 已清空）
-            try {
-                const origClear = LG.LGraph.prototype.clear;
-                if (origClear) {
-                    LG.LGraph.prototype.clear = function() {
-                        // 工作流切换/新建：清空旧编组，防止跨工作流窜流
-                        self._loadingNewWorkflow = true;
-                        for (const gid of Object.keys(self.groups)) self.killGroup(gid);
-                        self.groups = {};
-                        try { localStorage.removeItem('xzg_groups_backup'); } catch(e) {}
-                        try { localStorage.removeItem('xzg_deleted_groups'); } catch(e) {}
-                        // 设空对象满足 syncLoop 条件；若 configure hook 也执行会覆盖为真实数据
-                        self._needRestore = true;
-                        if (!self._pendingGroups) self._pendingGroups = {};
-                        return origClear.apply(this, arguments);
-                    };
-                    console.log('[小珠光编组] LGraph.clear 钩子已安装（防跨工作流窜流）');
-                }
-            } catch(e) { console.warn('[小珠光编组] LGraph.clear 钩子安装失败:', e); }
-        }
+        this._installGroupGraphHooks(LG.LGraph);
     },
 
     /* ── 复制/粘贴：仅维护 _isCopying/_isPasting 标志，不再复制编组框 ──
@@ -4703,95 +4622,28 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         if (this._extraPersistenceReady) return;
         this._extraPersistenceReady = true;
         const self = this;
-
-        // ── 辅助：序列化所有编组数据 ──
-        const serializeGroups = () => {
-            const gd = {};
-            for (const [id, g] of Object.entries(self.groups)) {
-                gd[id] = { id: g.id, title: g.title, nodeIds: [...g.nodeIds], bypassed: g.bypassed, locked: g.locked || false, hidden: !!g.hidden, bounds: { ...g.bounds }, fontSize: g.fontSize, colorHue: g.colorHue, colorSat: g.colorSat, colorLit: g.colorLit, effect: g.effect, effectSpeed: g.effectSpeed, borderWidth: g.borderWidth, borderOpacity: g.borderOpacity, headerBgColor: g.headerBgColor, bgColor: g.bgColor ?? 'rgba(0,0,0,0)', titleColor: g.titleColor, fadeEnabled: g.fadeEnabled || false, fadeOutDuration: g.fadeOutDuration ?? 0, fadeInDuration: g.fadeInDuration ?? 1000, headerHidden: !!g.headerHidden };
-            }
-            return gd;
-        };
-
-        // ── 方案1：Hook graphToPrompt（保存时注入编组数据） ──
-        const tryHookGraphToPrompt = () => {
-            if (!app?.graphToPrompt) {
-                setTimeout(tryHookGraphToPrompt, 200);
-                return;
-            }
-            const orig = app.graphToPrompt;
-            app.graphToPrompt = async function() {
-                const result = await orig.apply(this, arguments);
-                // 直接修改序列化输出，确保编组数据被写入工作流 JSON
-                if (result?.workflow) {
-                    const gd = serializeGroups();
-                    console.log('[小珠光编组] graphToPrompt写入编组数据:', Object.keys(gd).length, '个');
-                    result.workflow.extra = result.workflow.extra || {};
-                    result.workflow.extra.xzgGroups = gd;
-                    // 也同步到 app.graph.extra（用于 loadGraphData 钩子恢复）
-                    self.syncGroupsToExtra();
-                }
-                return result;
-            };
-            console.log('[小珠光编组] graphToPrompt 钩子已安装');
-        };
-        tryHookGraphToPrompt();
-
-        // ── 方案2：Hook loadGraphData（加载时恢复编组数据） ──
-        const tryHookLoadGraphData = () => {
-            if (!app?.loadGraphData) {
-                setTimeout(tryHookLoadGraphData, 200);
-                return;
-            }
-            const origLoad = app.loadGraphData;
-            app.loadGraphData = async function(data, ...args) {
-                // 标记正在加载新工作流（loadGraphData 总是在 configure 之前被调用）
-                // 用于 LGraph.configure 钩子区分「跨工作流加载」与「同工作流 reconfigure」
-                self._loadingNewWorkflow = true;
-                // 清空全局 localStorage backup：xzg_groups_backup 是全局的，
-                // 加载新工作流时必须清除，防止 restoreGroups 兜底用旧工作流编组数据污染新工作流
-                try { localStorage.removeItem('xzg_groups_backup'); } catch(e) {}
-                // 从加载的数据中提取编组信息
-                const groups = data?.extra?.xzgGroups || data?._xzgGroups || null;
-                if (groups && Object.keys(groups).length) {
-                    self._pendingGroups = groups;
-                    self._needRestore = true;
-                    console.log('[小珠光编组] loadGraphData检测到编组数据:', Object.keys(groups).length, '个');
-                }
-                const result = await origLoad.apply(this, [data, ...args]);
-                return result;
-            };
-            console.log('[小珠光编组] loadGraphData 钩子已安装');
-        };
-        tryHookLoadGraphData();
-
-        // ── 方案3：localStorage 兜底（每10秒保存一次） ──
-        if (!this._extraSyncInterval) {
-            this._extraSyncInterval = setInterval(() => {
+        if (app.graphToPrompt) {
+            const original = app.graphToPrompt;
+            app.graphToPrompt = async function(...args) {
+                self._switchGraph();
                 self.syncGroupsToExtra();
-                // 同时备份到 localStorage
-                try {
-                    const gd = serializeGroups();
-                    if (Object.keys(gd).length) {
-                        localStorage.setItem('xzg_groups_backup', JSON.stringify(gd));
-                    } else {
-                        localStorage.removeItem('xzg_groups_backup');
-                    }
-                } catch(e) {}
-            }, 5000);
+                return original.apply(this, args);
+            };
         }
-
-        // ── 方案4：从 localStorage 恢复（兜底） ──
-        try {
-            const backup = localStorage.getItem('xzg_groups_backup');
-            if (backup) {
-                const gd = JSON.parse(backup);
-                if (gd && Object.keys(gd).length && !this._pendingGroups) {
-                    this._pendingGroups = gd;
-                    this._needRestore = true;
+        if (app.loadGraphData) {
+            const original = app.loadGraphData;
+            app.loadGraphData = async function(...args) {
+                self.syncGroupsToExtra();
+                self._graphLoading = true;
+                try { return await original.apply(this, args); }
+                finally {
+                    self._graphLoading = false;
+                    const graph = app.canvas?.graph || app.graph;
+                    self._activateGroupGraph(graph);
                 }
-            }
-        } catch(e) {}
+            };
+        }
+        if (!this._extraSyncInterval) this._extraSyncInterval = setInterval(() => self.syncGroupsToExtra(), 5000);
     },
 
     waitForGraph() {

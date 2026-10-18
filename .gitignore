@@ -41,6 +41,9 @@ repro_*.json
 node_modules/
 web/node_modules/
 
+# Pose Studio frontend is maintained only in the top-level web/ directory.
+/_xzg_pose/vnccs_pose_studio/web/
+
 # Arrow tool runtime data
 xzg_arrows/
 

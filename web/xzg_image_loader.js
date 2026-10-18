@@ -5,6 +5,21 @@ import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 import { xzgEnableCanvasPanOnSpace, xzgPickSaveDirectory, xzgWriteBlobToDir } from "./xzg_save_utils.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 
+let _xzgBackendSessionRequest = null;
+function getImageLoaderBackendSessionId() {
+    if (!_xzgBackendSessionRequest) {
+        const request = api.fetchApi("/xzg/backend-session")
+            .then(response => response.ok ? response.json() : null)
+            .then(result => typeof result?.session_id === "string" && result.session_id ? result.session_id : null)
+            .catch(() => null);
+        const wrapped = request.finally(() => {
+            if (_xzgBackendSessionRequest === wrapped) _xzgBackendSessionRequest = null;
+        });
+        _xzgBackendSessionRequest = wrapped;
+    }
+    return _xzgBackendSessionRequest;
+}
+
 // ═══════════════════════════════════════════════
 //  小珠光图像加载器 · 前端
 //  可视化图片卡片网格（参考 Apt_Preset 实现方式）
@@ -118,6 +133,14 @@ function setNameList(node, names) {
     const w = getImageListWidget(node);
     if (!w) return;
     const next = Array.isArray(names) ? names : [];
+    const savedPoseStates = node?.properties?.xzg_pose_capture_states;
+    if (savedPoseStates && typeof savedPoseStates === "object") {
+        const keep = new Set(next);
+        for (const imageName of Object.keys(savedPoseStates)) {
+            if (!keep.has(imageName)) delete savedPoseStates[imageName];
+        }
+        if (!Object.keys(savedPoseStates).length) delete node.properties.xzg_pose_capture_states;
+    }
     w.value = next.join("\n");
     w.callback?.(w.value);
 }
@@ -622,7 +645,8 @@ function createImgBatchUI(node) {
         input.click();
     }
 
-    const showContextMenu = (x, y, imageName, imageIndex) => {
+    const showContextMenu = async (x, y, imageName, imageIndex) => {
+        const backendSessionId = await getImageLoaderBackendSessionId();
         contextMenu.innerHTML = "";
         const imageCount = parseNameList(getImageListWidget(node)?.value).length;
         const selectedNames = getSelectedNames();
@@ -747,6 +771,31 @@ function createImgBatchUI(node) {
                 }
             });
             contextMenu.appendChild(libraryItem);
+        }
+
+        if (imageName) {
+            const savedPoseStates = node.properties?.xzg_pose_capture_states || {};
+            const savedPoseState = savedPoseStates[imageName];
+            const canContinuePose = !!backendSessionId
+                && savedPoseState?.backend_session_id === backendSessionId
+                && typeof savedPoseState?.pose_data === "string";
+            if (savedPoseState && !canContinuePose) {
+                delete savedPoseStates[imageName];
+                if (!Object.keys(savedPoseStates).length) delete node.properties.xzg_pose_capture_states;
+            }
+            const poseEditorItem = document.createElement("div");
+            poseEditorItem.textContent = canContinuePose
+                ? xzgT("继续编辑此姿势（VNCCS）", "Continue Editing Pose (VNCCS)")
+                : xzgT("以当前图片为背景进入姿势编辑器", "Open Pose Editor with Current Image as Background");
+            poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
+            poseEditorItem.addEventListener("mouseenter", () => { poseEditorItem.style.background = "var(--comfy-input-bg)"; });
+            poseEditorItem.addEventListener("mouseleave", () => { poseEditorItem.style.background = ""; });
+            poseEditorItem.addEventListener("click", () => {
+                hideContextMenu();
+                if (canContinuePose) openPoseStudio(null, savedPoseState.pose_data, imageName);
+                else openPoseStudio(imageName, null, imageName);
+            });
+            contextMenu.appendChild(poseEditorItem);
         }
 
         // 原图高清查看入口放在菜单最下方：多图模式单张右键，以及单图模式均可用。
@@ -1034,6 +1083,20 @@ function createImgBatchUI(node) {
         if (imgName) {
             const cell = e.target.closest("[data-xzg-img-card]");
             const imageIndex = cell ? parseInt(cell.dataset.xzgIndex, 10) : getIndex(node);
+            if (e.ctrlKey && !maskEnabled && Number.isInteger(imageIndex) && imageIndex >= 0) {
+                const names = parseNameList(getImageListWidget(node)?.value);
+                if (imageIndex >= names.length) return;
+                const currentIndex = getIndex(node);
+                const next = names.filter((_, i) => i !== imageIndex);
+                selectedIndexes = selectedIndexes.filter(i => i !== imageIndex)
+                    .map(i => i > imageIndex ? i - 1 : i);
+                lastClickedIndex = lastClickedIndex === imageIndex ? -1
+                    : lastClickedIndex > imageIndex ? lastClickedIndex - 1 : lastClickedIndex;
+                setNameList(node, next);
+                setIndex(node, Math.max(0, Math.min(currentIndex > imageIndex ? currentIndex - 1 : currentIndex, next.length - 1)));
+                redraw(true);
+                return;
+            }
             // 右键已选中的图片时保留多选集合，供「保存选中图片」使用；
             // 右键未选中的图片则将它设为唯一选择。
             if (Number.isInteger(imageIndex) && imageIndex >= 0) {
@@ -1062,6 +1125,7 @@ function createImgBatchUI(node) {
         input: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="M9 13l3 3 3-3"/></svg>',
         output: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 14V9"/><path d="M9 12l3-3 3 3"/></svg>',
         media: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="9" cy="12" r="1"/><path d="m6 17 4-3 2 2 2-2 4 3"/></svg>',
+        pose: '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><path d="m9 20 3-6 3 6M6 8l6 2 6-2M12 10v4"/></svg>',
         del: '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>',
         clear: '<svg viewBox="0 0 24 24"><path d="M19 5L9.5 14.5"/><path d="M8 19l-3 3"/><path d="M13 20.5l-4 4"/><path d="M6.5 8.5l.01 0"/><path d="M10 6l.01 0"/><path d="M15 17l-2 2"/><path d="M12.5 12.5L17 8"/></svg>',
         mask: '<svg class="xzg-ic-mask" viewBox="0 0 24 24"><circle class="mr" cx="12" cy="12" r="9.5"/><path class="ml" d="M12 2.5 A9.5 9.5 0 0 1 21.5 12 A9.5 9.5 0 0 1 12 21.5 A4.75 4.75 0 0 1 12 12 A4.75 4.75 0 0 0 12 2.5 Z"/><circle class="o" cx="12" cy="12" r="9.5"/><circle class="er" cx="12" cy="16.75" r="1.15"/></svg>',
@@ -1117,7 +1181,7 @@ function createImgBatchUI(node) {
         const b = document.createElement("button");
         b.title = title || label;
         b.className = "xzg-ic-btn";
-        if (iconKey) {
+        if (iconKey && ICON_STR[iconKey]) {
             const g = document.createElement("span");
             g.className = "xzg-ic-g";
             g.innerHTML = ICON_STR[iconKey];
@@ -1146,6 +1210,7 @@ function createImgBatchUI(node) {
     const folderBtn = mkBtn(xzgT(".input", ".input"), xzgT("从input文件夹选择", "Select from input folder"), "input");
     const outputBtn = mkBtn(xzgT(".output", ".output"), xzgT("从output文件夹选择", "Select from output folder"), "output");
     const mediaBtn = mkBtn(xzgT("资源媒体", "Media assets"), xzgT("打开资源媒体库", "Open media library"), "media");
+    const poseBtn = mkBtn(xzgT("姿势编辑器", "Pose editor"), xzgT("打开姿势编辑器，从姿势库加载并确认图片", "Open pose editor and load an image from the pose library"), "pose");
     const deleteBtn = mkBtn(xzgT("删除", "Delete"), xzgT("删除选中", "Delete selected"), "del");
     const clearBtn = mkBtn(xzgT("清空", "Clear"), xzgT("清空全部", "Clear all"), "clear");
 
@@ -1164,6 +1229,7 @@ function createImgBatchUI(node) {
     actionGroup.appendChild(folderBtn);
     actionGroup.appendChild(outputBtn);
     actionGroup.appendChild(mediaBtn);
+    actionGroup.appendChild(poseBtn);
     actionGroup.appendChild(mediaMaskDivider);
     const safetyActionGroup = document.createElement("div");
     safetyActionGroup.style.cssText = `display:flex;flex-direction:column;gap:${initialActionGap};width:100%;margin-top:4px;`;
@@ -1688,7 +1754,7 @@ function createImgBatchUI(node) {
     const cropSelClearBtn = _mkMaskBtn(xzgT("清除选框", "Clear Sel"), xzgT("清除当前裁剪选框，可重新框选", "Clear current crop selection"));
     // 应用裁剪：把当前选框正式应用到图片
     const cropApplyBtn = _mkMaskBtn(xzgT("应用裁剪", "Apply Crop"), xzgT("应用当前裁剪选框", "Apply current crop region"));
-    const clearAllEditsBtn = _mkMaskBtn(
+    const clearAllEditsBtn = mkBtn(
         xzgT("清除全部编辑", "Clear All Edits"),
         xzgT("清除所有已加载图片的遮罩和裁剪状态", "Clear masks and crop states for all loaded images"),
         "restore"
@@ -1978,7 +2044,7 @@ function createImgBatchUI(node) {
         cropRatioRow.style.display = cropEnabled && !maskEnabled ? "flex" : "none";
         cropPaddingRow.style.display = (!cropEnabled || maskEnabled) ? "none" : "";
         // 开启编辑模式时隐藏上传/.input/.output/删除/清空按钮及左下角单图/列表批次按钮，避免误操作
-        const actionBtns = [uploadBtn, folderBtn, outputBtn, mediaBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn, alignBtn, maxImgInput];
+        const actionBtns = [uploadBtn, folderBtn, outputBtn, mediaBtn, poseBtn, clearAllEditsBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn, alignBtn, maxImgInput];
         actionBtns.forEach(btn => { btn.style.display = editing ? "none" : ""; });
         safetyActionGroup.style.display = editing ? "none" : "flex";
         mediaMaskDivider.style.display = editing ? "none" : "block";
@@ -3014,16 +3080,19 @@ function createImgBatchUI(node) {
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("点击上传或双击预览区；支持多选", "Click Upload or double-click preview; multi-select supported")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh(".input 从输入文件夹选择", ".input Select from input folder")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh(".output 从输出文件夹选择", ".output Select from output folder")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("姿势编辑器：姿势库双击应用，确定姿势后载入图片", "Pose editor: Double-click a library pose to apply; confirm to load its image")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("多图模式可继续追加；单图模式会替换当前图片", "Multi mode appends images; Single mode replaces the current image")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖱️ 鼠标操作", "🖱️ Mouse Operations")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击选中；Shift范围选；Ctrl+左键多选，Ctrl+拖动框选", "Click to select; Shift-click for range; Ctrl-click to multi-select, Ctrl-drag to marquee-select")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("左键点击选中；Shift+左键范围选择；Ctrl+左键多选", "Click to select; Shift-click for range; Ctrl-click for multiple selection")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("Ctrl+右键点击图片：删除该图片（仅移出列表）", "Ctrl-right-click an image to remove it from the list")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("选中图片后按Delete：删除选中图片（仅移出列表）", "Press Delete to remove selected images from the list")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("右键缩略图 → 菜单最下方「查看原图」；滚轮缩放、拖动平移", "Right-click a thumbnail → View Original Image at the bottom; wheel to zoom, drag to pan")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("长按卡片拖动：调整顺序", "Long press card to drag: Reorder")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("卡片上拖动：框选多个图片", "Drag on card: Box select")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("悬停卡片右上角：删除单张", "Hover card corner: Delete")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("直接拖动图片：调整顺序", "Drag an image to reorder")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("图片上Ctrl+左键拖动：框选多张", "Ctrl-left-drag on images to select multiple")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("悬停卡片，点击右上角×：删除单张", "Hover a card, then click × at the top right to remove it")}</div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:1px;">
@@ -3035,7 +3104,7 @@ function createImgBatchUI(node) {
 
             <div style="display:flex;flex-direction:column;gap:1px;">
                 <div style="font-weight:bold;opacity:0.75;">${xzgTh("🖌️ 遮罩 / 裁剪", "🖌️ Mask / Crop")}</div>
-                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩：画笔绘制、橡皮擦除；退出后预览区保留半透明红色遮罩", "Mask: Paint or erase; the translucent red overlay stays in preview after Exit")}</div>
+                <div style="opacity:0.5;padding-left:12px;">${xzgTh("遮罩：画笔绘制、橡皮擦除；预览颜色可选，退出后保留半透明遮罩", "Mask: Paint or erase; choose the preview color; the translucent overlay stays after Exit")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("裁剪：拖拽选区后点【应用裁剪】或双击；支持自由/固定比例", "Crop: Drag a region, then Apply Crop or double-click; free/fixed ratios supported")}</div>
                 <div style="opacity:0.5;padding-left:12px;">${xzgTh("退出后预览显示裁剪结果并标记「已裁剪」；删除/清空图片会清除该图编辑数据", "After Exit, preview shows the crop with a Cropped badge; deleting/clearing an image removes its edits")}</div>
             </div>
@@ -4688,8 +4757,8 @@ function createImgBatchUI(node) {
             setIndex(node, clickedIndex);
         };
 
-        // Ctrl/Command + 左键拖动始终进入框选；普通卡片内拖动仍用于调整排序，
-        // 从卡片空隙拖动则保持原有框选方式。
+        // 直接拖动卡片排序；Ctrl/Command + 左键拖动框选。
+        // 从卡片间隙拖动也可框选。
         const forceMarquee = e.ctrlKey || e.metaKey;
         if (!cell || forceMarquee) enterMarqueeMode();
 
@@ -4953,7 +5022,7 @@ function createImgBatchUI(node) {
                 if (moved) {
                     redraw(true);
                 } else if (forceMarquee && cell && clickedIndex >= 0) {
-                    // Ctrl/Command 左键单击切换多选；按住拖动仍在上面的 moved 分支执行框选。
+                    // Ctrl/Command 左键单击切换多选；按住拖动仍执行框选。
                     const selectedAt = selectedIndexes.indexOf(clickedIndex);
                     if (selectedAt >= 0) {
                         // 仅单选时 Ctrl 再点当前缩略图不应清空选择；
@@ -5953,6 +6022,152 @@ function createImgBatchUI(node) {
         showFolderDialog("/xzg_output_files", "output", " [output]", true, getSelColor());
     });
 
+    let poseStudio = null;
+    let poseStudioRemoved = false;
+    let poseStudioReplaceImageName = null;
+    async function openPoseStudio(backgroundImageName = null, poseDataSnapshot = null, replaceImageName = null) {
+        if (poseBtn.disabled) return;
+        poseBtn.disabled = true;
+        poseStudioReplaceImageName = replaceImageName;
+        try {
+            const currentBackendSessionId = await getImageLoaderBackendSessionId();
+            if (!currentBackendSessionId) throw new Error(xzgT("无法确认后端会话，请检查 ComfyUI 连接。", "Could not verify the backend session. Check the ComfyUI connection."));
+            node.properties ||= {};
+            let storedBackendSessionId = node.properties.xzg_pose_backend_session_id;
+            if (!storedBackendSessionId && node.properties.xzg_pose_studio) {
+                try { storedBackendSessionId = JSON.parse(node.properties.xzg_pose_studio)?.backend_session_id || null; } catch (_) {}
+            }
+            if (storedBackendSessionId && storedBackendSessionId !== currentBackendSessionId) {
+                node.properties.xzg_pose_studio = "";
+                delete node.properties.xzg_pose_capture_states;
+                node.properties.xzg_pose_backend_session_id = currentBackendSessionId;
+                if (poseStudio?.node) {
+                    poseStudio.node._vnccsBackendSessionId = currentBackendSessionId;
+                    poseStudio.node._vnccsTransientStateClearedForBoot = null;
+                    poseStudio.node._vnccsBackendSessionPreparation = null;
+                    poseStudio.loadFromNode();
+                }
+            }
+            if (poseDataSnapshot) node.properties.xzg_pose_studio = poseDataSnapshot;
+            let backgroundFile = null;
+            if (backgroundImageName) {
+                const response = await fetch(getOriginalImageUrl(backgroundImageName));
+                if (!response.ok) throw new Error(xzgT("无法读取背景图片。", "Could not read background image."));
+                backgroundFile = new File([await response.blob()], "background.png");
+            if (poseStudioRemoved) return;
+            }
+            if (!poseStudio) {
+                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261018.backend-session-pose-reopen1");
+                if (poseStudioRemoved) return;
+                // Keep editor state in properties, without adding widgets that
+                // would shift the loader's existing serialized widget values.
+                const stateWidget = {
+                    name: "pose_data",
+                    get value() { return node.properties?.xzg_pose_studio || ""; },
+                    set value(value) {
+                        node.properties ||= {};
+                        node.properties.xzg_pose_studio = value;
+                    },
+                };
+                const editorNode = {
+                    id: `xzg_image_loader_${node.id}`,
+                    widgets: [stateWidget],
+                    setDirtyCanvas: (...args) => node.setDirtyCanvas?.(...args),
+                };
+                poseStudio = new PoseStudioWidget(editorNode, {
+                    standalone: true,
+                    onConfirm: async (capture) => {
+                        if (poseStudioRemoved) throw new Error("图片加载器已删除。");
+                        if (!poseStudio?.characters?.length || !poseStudio.getActiveCharacter?.()) return;
+                        const currentNames = parseNameList(getImageListWidget(node)?.value);
+                        const targetImageName = poseStudioReplaceImageName;
+                        const replaceIndex = targetImageName ? currentNames.indexOf(targetImageName) : -1;
+                        if (targetImageName && replaceIndex < 0) {
+                            throw new Error(xzgT("原姿势图片已不存在，无法替换。", "The original pose image no longer exists and cannot be replaced."));
+                        }
+                        const response = await fetch(capture);
+                        if (!response.ok) throw new Error("无法读取姿势图片。");
+                        const file = new File([await response.blob()], `xzg_pose_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`, { type: "image/png" });
+                        const name = await uploadOneImage(file);
+                        if (!name) throw new Error("姿势图片上传失败。");
+                        if (poseStudioRemoved) return;
+                        let nextIndex;
+                        if (targetImageName) {
+                            const names = parseNameList(getImageListWidget(node)?.value);
+                            const currentReplaceIndex = names.indexOf(targetImageName);
+                            if (currentReplaceIndex < 0) {
+                                throw new Error(xzgT("原姿势图片已不存在，无法替换。", "The original pose image no longer exists and cannot be replaced."));
+                            }
+                            names[currentReplaceIndex] = name;
+                            nextIndex = currentReplaceIndex;
+                            setNameList(node, names);
+                        } else {
+                            const names = uploadMode === "replace" ? [] : parseNameList(getImageListWidget(node)?.value);
+                            nextIndex = names.length;
+                            setNameList(node, names.concat(name));
+                        }
+                        setIndex(node, nextIndex);
+                        const poseData = node.properties?.xzg_pose_studio;
+                        let backendSessionId = node.properties?.xzg_pose_backend_session_id || null;
+                        try {
+                            const parsedPoseData = typeof poseData === "string" ? JSON.parse(poseData) : null;
+                            backendSessionId = parsedPoseData?.backend_session_id || backendSessionId;
+                        } catch (_) {}
+                        if (poseData && backendSessionId) {
+                            node.properties ||= {};
+                            node.properties.xzg_pose_backend_session_id = backendSessionId;
+                            node.properties.xzg_pose_capture_states ||= {};
+                            node.properties.xzg_pose_capture_states[name] = {
+                                backend_session_id: backendSessionId,
+                                pose_data: poseData,
+                            };
+                        }
+                        redraw(true);
+                    },
+                });
+                // Clear pose-editor-only state from the previous browser
+                // session before the first hydration or fullscreen paint.
+                await poseStudio.clearTransientStateForCurrentBoot?.();
+                poseStudio.loadFromNode();
+            } else if (poseDataSnapshot) {
+                poseStudio.node._vnccsBackendSessionPreparation = null;
+                poseStudio.node._vnccsBackendSessionId = currentBackendSessionId;
+                poseStudio.loadFromNode();
+            }
+            await poseStudio.openFullscreen();
+            // Restoring a saved scene already hydrates its models. Do not
+            // rebuild them on every open or race that hydration with loadModel.
+            await poseStudio.awaitReadyForCompositeCapture();
+            if (!poseStudioRemoved && poseStudio.characters.length > 0 && !poseStudio.viewer?.isInitialized()) {
+                await poseStudio.loadModel();
+            } else if (!poseStudioRemoved && poseStudio.characters.length === 0) {
+                poseStudio.viewer?.setMannequinVisible?.(false);
+                poseStudio.viewer?.requestRender?.();
+            }
+            if (!poseStudioRemoved) {
+                if (backgroundFile) {
+                    await poseStudio.clearAllCharacters();
+                    if (poseStudioRemoved) return;
+                    poseStudio.handleRefImport({ target: { files: [backgroundFile], value: "" } });
+                    await poseStudio._referenceReadPromise;
+                    if (poseStudioRemoved) return;
+                    if (poseStudio._referenceReadError) throw new Error(poseStudio._referenceReadError);
+                }
+                poseStudio.updateCaptureCameraPreview();
+                poseStudio.resize();
+            }
+        } catch (error) {
+            xzgAlert(`${xzgT("打开姿势编辑器失败", "Could not open pose editor")}: ${error?.message || error}`);
+        } finally {
+            poseBtn.disabled = false;
+        }
+    }
+    poseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        openPoseStudio();
+    });
+
     mediaBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         e.preventDefault();
@@ -5987,6 +6202,26 @@ function createImgBatchUI(node) {
             setIndex(node, Math.max(0, next.length - 1));
         }
     };
+
+    let thumbnailKeyboardActive = false;
+    const onThumbnailPointerDown = (e) => {
+        thumbnailKeyboardActive = container.contains(e.target);
+    };
+    const onThumbnailDeleteKey = (e) => {
+        if (e.key !== "Delete" || e.defaultPrevented || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return;
+        if (!thumbnailKeyboardActive || maskEnabled || cropEnabled || poseStudio?._fullscreenHost) return;
+        const target = document.activeElement;
+        if (target?.matches?.("input, textarea, select") || target?.isContentEditable) return;
+        if (!selectedIndexes.length && !e.repeat) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (e.repeat) return;
+        deleteBtn.onclick(e);
+        redraw(true);
+    };
+    window.addEventListener("pointerdown", onThumbnailPointerDown, true);
+    window.addEventListener("keydown", onThumbnailDeleteKey, true);
 
     clearBtn.onclick = (e) => {
         e.stopPropagation();
@@ -6146,6 +6381,12 @@ function createImgBatchUI(node) {
     // 节点销毁时移除 window 监听，防止泄漏
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
+        poseStudioRemoved = true;
+        poseStudio?.dispose();
+        poseStudio?.container?.remove();
+        poseStudio = null;
+        window.removeEventListener("pointerdown", onThumbnailPointerDown, true);
+        window.removeEventListener("keydown", onThumbnailDeleteKey, true);
         _editWorkspaceInitialZoomPending = false;
         _exitImageEditWorkspace();
         window.removeEventListener("keydown", _cropEscapeHandler, true);
@@ -6659,6 +6900,14 @@ app.registerExtension({
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (data) {
                 const r = origOnConfigure?.apply(this, arguments);
+                if (data?.properties?.xzg_pose_capture_states) {
+                    this.properties ||= {};
+                    this.properties.xzg_pose_capture_states = data.properties.xzg_pose_capture_states;
+                }
+                if (data?.properties?.xzg_pose_backend_session_id) {
+                    this.properties ||= {};
+                    this.properties.xzg_pose_backend_session_id = data.properties.xzg_pose_backend_session_id;
+                }
                 // configure 调用会从 data.outputs 恢复，刚好调用完覆盖
                 _forceCorrectOutputs(this);
                 const listWidget = getImageListWidget(this);
@@ -6863,6 +7112,12 @@ app.registerExtension({
                 const listWidget = getImageListWidget(this);
                 if (listWidget && listWidget.value) {
                     data.properties.xzg_image_list = listWidget.value;
+                }
+                if (this.properties?.xzg_pose_capture_states && typeof this.properties.xzg_pose_capture_states === "object") {
+                    data.properties.xzg_pose_capture_states = this.properties.xzg_pose_capture_states;
+                }
+                if (this.properties?.xzg_pose_backend_session_id) {
+                    data.properties.xzg_pose_backend_session_id = this.properties.xzg_pose_backend_session_id;
                 }
                 // upload_mode
                 const umWidget = getUploadModeWidget(this);

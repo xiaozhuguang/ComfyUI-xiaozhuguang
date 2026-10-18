@@ -27,7 +27,7 @@ for (const format of ['zip', 'json']) {
             xzgT: text => text,
             alert: message => { throw new Error(message); },
         };
-        const panel = method('    openConfigImportPicker() {', '    /**\n     * 显示导出选项对话框', context);
+        const panel = method('    openConfigImportPicker(', '    /**\n     * 显示导出选项对话框', context);
         panel.uploadConfigArchive = async () => ({ config, token: 'temporary-token' });
         panel.importAllConfig = async (obj, token) => {
             assert.equal(obj.format, config.format);
@@ -85,7 +85,7 @@ for (const selected of [
             audioLibrary: { files: [], geometry: { width: 1000, height: 700 } },
         }, 'temporary-token');
         assert.equal(requests.length, 1);
-        assert.deepEqual(JSON.parse(JSON.stringify(requests[0][2])), { audioLibrary: false, ...selected });
+        assert.deepEqual(JSON.parse(JSON.stringify(requests[0][2])), { audioLibrary: false, textBoxPreviews: false, poseLibrary: false, ...selected });
         assert.equal(result.restoredMediaCount, selected.mediaLibrary ? 2 : null);
         assert.equal(result.restoredVideoCount, selected.videoLibrary ? 1 : null);
         assert.equal(result.restoredAudioCount, selected.audioLibrary ? 3 : null);
@@ -93,6 +93,36 @@ for (const selected of [
         assert.equal(saved.some(([key]) => key === 'xzg_video_media_library_geometry'), selected.videoLibrary);
     });
 }
+
+test('pose-only import from a full backup restores only poses and categories', async () => {
+    const writes = [];
+    const requests = [];
+    const context = {
+        window: { dispatchEvent() {} }, CustomEvent: class {},
+        localStorage: { setItem: (...args) => writes.push(args) },
+        xzgExportCategoryForKey: key => key === 'xzg_pose_library_categories' ? 'poseLibrary' : 'theme',
+        xzgT: text => text, cloudSave: async () => {}, cloudUIQueueGeometry() {},
+    };
+    const panel = method('    async importAllConfig(', '    renderPresets() {', context);
+    panel.showImportDialog = () => { throw new Error('Must not open all-settings selector'); };
+    panel.uploadConfigArchive = async (...args) => {
+        requests.push(args);
+        return { restoredPoses: { imported: 2, skipped: 1 } };
+    };
+    const result = await panel.importAllConfig({ format: 'xiaozhuguang-config',
+        localStorage: { xzg_pose_library_categories: '{"added":["Test"]}', xzg_theme: 'do not import' },
+        poseLibrary: { file: 'pose_library.zip' }, mediaLibrary: { files: [] },
+        comfySettings: { 'Comfy.Test': true }, notes: { groups: [] },
+    }, 'token', { poseLibraryOnly: true });
+    assert.equal(requests.length, 1);
+    assert.deepEqual(JSON.parse(JSON.stringify(requests[0][2])), {
+        mediaLibrary: false, videoLibrary: false, audioLibrary: false, textBoxPreviews: false, poseLibrary: true,
+    });
+    assert.deepEqual(writes, [['xzg_pose_library_categories', '{"added":["Test"]}']]);
+    assert.equal(result.restoredPoses.imported, 2);
+    assert.equal(result.appliedComfySettings, false);
+    await assert.rejects(panel.importAllConfig({ format: 'xiaozhuguang-config' }, null, { poseLibraryOnly: true }), /ZIP/);
+});
 
 const videoSource = readFileSync(new URL('../web/xzg_video_loader_davinci.js', import.meta.url), 'utf8');
 test('video media buttons stay at top left; existing buttons stay on right', () => {

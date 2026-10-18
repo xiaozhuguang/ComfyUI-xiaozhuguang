@@ -580,6 +580,14 @@ window.XZGMenuHide = {
 
                         // 关键：无法确定为画布/节点菜单时（如工作流标签右键、侧边栏菜单、对话框菜单等），不过滤
                         // 此前 fallback 到 _lastMenuType||'canvas' 会误把标签菜单当画布菜单过滤，导致右键失效
+                        // Combo widgets also open ContextMenu from a canvas event.
+                        // Their string values are data, not node/canvas commands:
+                        // e.g. the prompt category 收藏 must not match a hidden
+                        // 收藏节点 command (including the DOM fuzzy-match pass).
+                        if (Array.isArray(options) && options.length > 0 &&
+                            options.every(option => typeof option === 'string' || option == null)) {
+                            menuType = null;
+                        }
                         if (menuType) {
                             self._lastMenuType = menuType;
                             self._collectItems(options, menuType);

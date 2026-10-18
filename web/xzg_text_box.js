@@ -313,7 +313,7 @@ function _installGodFavoritesGoldStyling() {
     if (window._xzgGodFavoritesGoldStyling) return;
     window._xzgGodFavoritesGoldStyling = true;
     const style = document.createElement("style");
-    style.textContent = ".xzg-god-favorites-category { color:#e7b94f !important; } .xzg-god-favorites-category::before { content:'★ '; color:#e7b94f !important; }";
+    style.textContent = ".xzg-god-favorites-category, .xzg-god-favorites-category * { color:#65e4a3 !important; -webkit-text-fill-color:#65e4a3 !important; } .xzg-god-favorites-category::before { content:'★ '; color:#65e4a3 !important; -webkit-text-fill-color:#65e4a3 !important; }";
     document.head.appendChild(style);
     const markFavoriteOptions = root => {
         if (!(root instanceof Element)) return;
@@ -321,7 +321,16 @@ function _installGodFavoritesGoldStyling() {
         if (root.matches?.(".litemenu-entry,[role='option'],option")) options.push(root);
         options.push(...(root.querySelectorAll?.(".litemenu-entry,[role='option'],option") || []));
         for (const option of options) {
-            if (String(option.textContent || "").trim() === _GOD_FAVORITES_CATEGORY) option.classList.add("xzg-god-favorites-category");
+            const label = String(option.getAttribute("data-value") || option.textContent || "").trim();
+            if (label === _GOD_FAVORITES_CATEGORY || label === `★ ${_GOD_FAVORITES_CATEGORY}`) {
+                option.classList.add("xzg-god-favorites-category");
+                option.style.setProperty("color", "#65e4a3", "important");
+                option.style.setProperty("-webkit-text-fill-color", "#65e4a3", "important");
+                for (const child of option.querySelectorAll("*")) {
+                    child.style.setProperty("color", "#65e4a3", "important");
+                    child.style.setProperty("-webkit-text-fill-color", "#65e4a3", "important");
+                }
+            }
         }
     };
     const observer = new MutationObserver(records => {
@@ -344,7 +353,7 @@ async function _addGodFavorite(prompt) {
     let key = base, suffix = 2;
     while (Object.prototype.hasOwnProperty.call(presets, key)) key = `${base} (${suffix++})`;
     const order = Object.values(presets).filter(item => item?.category === _GOD_FAVORITES_CATEGORY && !item?._categoryOnly)
-        .reduce((max, item) => Math.max(max, Number.isFinite(item.order) ? item.order : 0), 0) + 1000;
+        .reduce((min, item) => Math.min(min, Number.isFinite(item.order) ? item.order : 0), 0) - 1000;
     presets[key] = { category: _GOD_FAVORITES_CATEGORY, name: snippet, text, order, _xzgFavorite: true };
     _refreshGodPresetSelectionNames(presets);
     try { localStorage.setItem(_GOD_PRESETS_KEY, JSON.stringify(presets)); } catch (_) {}
@@ -399,8 +408,7 @@ function _readGodPromptHistory() {
 function _saveGodPromptHistory(prompt) {
     const text = String(prompt || "").trim();
     if (!text) return;
-    const history = _readGodPromptHistory();
-    if (history.includes(text)) return;
+    const history = _readGodPromptHistory().filter(item => item !== text);
     history.unshift(text);
     try { localStorage.setItem(_GOD_HISTORY_KEY, JSON.stringify(history.slice(0, _GOD_HISTORY_LIMIT))); } catch (_) {}
 }
@@ -519,9 +527,15 @@ function _showGodPromptHistory(node, textarea) {
 }
 
 function _installGodPromptHistory(node, textarea) {
-    if (!textarea || textarea._xzgGodHistoryReady) return;
+    if (!textarea) return;
     const container = textarea.parentElement;
     if (!container) return;
+    if (textarea._xzgGodHistoryReady) {
+        const existing = textarea._xzgGodHistoryButton;
+        if (existing && existing.parentElement !== container) container.appendChild(existing);
+        if (getComputedStyle(container).position === "static") container.style.position = "relative";
+        return;
+    }
     textarea._xzgGodHistoryReady = true;
     if (getComputedStyle(container).position === "static") container.style.position = "relative";
     const button = document.createElement("button");
@@ -529,12 +543,13 @@ function _installGodPromptHistory(node, textarea) {
     button.textContent = "◷";
     button.title = xzgLang() === "en" ? "Prompt history (last 100)" : "历史提示词（最近 100 条）";
     button.setAttribute("aria-label", button.title);
-    button.style.cssText = "position:absolute;left:0;bottom:0;z-index:20;width:26px;height:26px;padding:0;border:0;border-radius:0;background:transparent;color:#b8b8b8;font:19px/26px sans-serif;cursor:pointer;opacity:.3;transition:opacity .15s ease";
+    button.style.cssText = "position:absolute;left:0;bottom:0;z-index:20;width:26px;height:26px;padding:0;border:0;border-radius:0;background:transparent;color:#b8b8b8;font:19px/26px sans-serif;cursor:pointer;opacity:.72;transition:opacity .15s ease";
     button.addEventListener("mouseenter", () => { button.style.opacity = "1"; });
     button.addEventListener("mouseleave", () => { button.style.opacity = ".72"; });
     button.addEventListener("pointerdown", event => event.stopPropagation());
     button.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); _showGodPromptHistory(node, textarea); });
     container.appendChild(button);
+    textarea._xzgGodHistoryButton = button;
     node._xzgGodHistoryButton = button;
     if (!textarea._xzgGodFavoriteContextReady) {
         textarea._xzgGodFavoriteContextReady = true;
@@ -634,6 +649,10 @@ async function _loadGodPresets(force = false) {
 }
 
 function _syncGodPresetWidget(node, presets = _readGodPresetsLocal(), resetDetail = false) {
+    // Always merge the permanent Favorites category into the data passed by cloud
+    // restore/import as well as into local-storage reads. Otherwise a cloud payload
+    // without the marker can temporarily remove 收藏 from the node combo.
+    presets = _ensureGodFavoritesCategory(presets && typeof presets === "object" && !Array.isArray(presets) ? presets : {});
     presets = _refreshGodPresetSelectionNames(presets);
     const categoryWidget = _ensureGodPresetCombo(node, "preset_category");
     const detailWidget = _ensureGodPresetCombo(node, "preset_name");
@@ -643,7 +662,7 @@ function _syncGodPresetWidget(node, presets = _readGodPresetsLocal(), resetDetai
         ...Object.values(presets).filter(preset => preset?._categoryOnly).map(preset => String(preset.category || "")),
         ...names.map(name => String(presets[name].category || "")),
     ].filter(Boolean))];
-    const categories = ["无", _GOD_FAVORITES_CATEGORY, ...availableCategories.filter(category => category !== _GOD_FAVORITES_CATEGORY && category !== "无")];
+    const categories = ["无", _GOD_FAVORITES_CATEGORY, ...availableCategories.filter(category => category !== "无" && category !== _GOD_FAVORITES_CATEGORY)];
     const storedCategory = String(categoryWidget.value || "");
     const storedDetail = String(detailWidget.value || "");
     const selectedPreset = _godPresetKeyForSelection(presets, storedCategory === "无" ? "" : storedCategory, storedDetail === "无" ? "" : storedDetail);
@@ -660,10 +679,11 @@ function _syncGodPresetWidget(node, presets = _readGodPresetsLocal(), resetDetai
             let patched = false;
             try {
                 ctx.fillText = function (text, ...drawArgs) {
-                    if (String(text).trim() !== _GOD_FAVORITES_CATEGORY) return originalFillText.call(this, text, ...drawArgs);
+                    const label = String(text).trim();
+                    if (label !== _GOD_FAVORITES_CATEGORY && label !== `★ ${_GOD_FAVORITES_CATEGORY}`) return originalFillText.call(this, text, ...drawArgs);
                     const previous = this.fillStyle;
-                    this.fillStyle = "#e7b94f";
-                    try { return originalFillText.call(this, `★ ${_GOD_FAVORITES_CATEGORY}`, ...drawArgs); }
+                    this.fillStyle = "#65e4a3";
+                    try { return originalFillText.call(this, label.startsWith("★ ") ? text : `★ ${_GOD_FAVORITES_CATEGORY}`, ...drawArgs); }
                     finally { this.fillStyle = previous; }
                 };
                 patched = ctx.fillText !== originalFillText;
@@ -817,14 +837,18 @@ async function _openGodPresetManagerTree(node) {
     home.style.cssText = "display:flex;flex:1;min-height:0;padding:0;overflow:hidden;user-select:none;-webkit-user-select:none";
     home.innerHTML = `<aside data-left-pane style="box-sizing:border-box;flex:0 0 34%;width:34%;min-width:150px;max-width:80%;display:flex;flex-direction:column;min-height:0;padding:12px 10px;overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:0 4px 10px"><span style="flex:1;color:#ccc;font-weight:600">${zh ? "提示词类型" : "Prompt Types"}</span><button type="button" data-add-category style="width:28px;height:28px;background:#303030;color:#e7b94f;border:1px solid #454545;border-radius:4px;font-size:16px;cursor:pointer">+</button></div><div data-category-list style="display:flex;flex-direction:column;gap:4px;overflow:auto;min-height:0;flex:1"></div></aside><div data-split-divider style="width:4px;flex:none;background:#3a3a3a;cursor:col-resize"></div><section data-right-pane style="box-sizing:border-box;flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0;padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;padding:0 2px 10px;border-bottom:1px solid #3a3a3a"><span data-right-title style="flex:1;color:#ddd;font-weight:600">${zh ? "提示词细分" : "Prompt Subcategories"}</span><button type="button" data-clear-favorites style="display:none;background:transparent;color:#c75c5c;border:0;padding:4px 6px;cursor:pointer">${zh ? "清空收藏" : "Clear favorites"}</button><button type="button" data-add-sub style="background:transparent;color:#e7b94f;border:0;padding:2px 5px;font:14px Arial,sans-serif;cursor:pointer">${zh ? "+ 增加子项" : "+ Add item"}</button></div><div data-batch-bar style="display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #3a3a3a"><span data-batch-count style="color:#e7b94f;font-size:12px;font-weight:600;flex:none"></span><button type="button" data-batch-select-all style="background:transparent;color:#9db7a6;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "全选" : "Select all"}</button><button type="button" data-batch-move style="background:#3a3a3a;color:#e7b94f;border:1px solid #555;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:600">${zh ? "批量移动" : "Batch move"}</button><button type="button" data-batch-clear style="background:transparent;color:#ff5b5b;border:0;padding:3px 6px;cursor:pointer;font-size:12px">${zh ? "取消选择" : "Clear"}</button></div><div data-subcategory-list style="display:flex;flex-direction:column;gap:6px;overflow:auto;min-height:0;flex:1;padding-top:10px"></div></section>`;
     const categoryList = home.querySelector("[data-category-list]"), subcategoryList = home.querySelector("[data-subcategory-list]"), rightTitle = home.querySelector("[data-right-title]"), addSubButton = home.querySelector("[data-add-sub]"), clearFavoritesButton = home.querySelector("[data-clear-favorites]");
-    const batchBar = home.querySelector("[data-batch-bar]"), batchCount = home.querySelector("[data-batch-count]"), batchSelectAll = home.querySelector("[data-batch-select-all]"), batchMove = home.querySelector("[data-batch-move]"), batchClear = home.querySelector("[data-batch-clear]");
+    const batchBar = home.querySelector("[data-batch-bar]"), batchCount = home.querySelector("[data-batch-count]"), batchSelectAll = home.querySelector("[data-batch-select-all]"), batchMove = home.querySelector("[data-batch-move]"), batchDelete = document.createElement("button"), batchClear = home.querySelector("[data-batch-clear]");
+    batchDelete.type = "button";
+    batchDelete.textContent = zh ? "批量删除" : "Delete selected";
+    batchDelete.style.cssText = "background:transparent;color:#c75c5c;border:0;padding:3px 6px;cursor:pointer;font-size:13px";
+    batchMove.after(batchDelete);
     batchSelectAll.after(batchClear);
     batchMove.style.background = "transparent";
     batchMove.style.border = "0";
     batchMove.style.padding = "3px 6px";
     batchMove.style.fontWeight = "400";
     batchCount.style.width = "70px";
-    for (const [control, width] of [[batchSelectAll, "68px"], [batchClear, "68px"], [batchMove, "76px"]]) {
+    for (const [control, width] of [[batchSelectAll, "68px"], [batchClear, "68px"], [batchMove, "76px"], [batchDelete, "76px"]]) {
         control.style.width = width;
         control.style.boxSizing = "border-box";
         control.style.textAlign = "center";
@@ -846,7 +870,7 @@ async function _openGodPresetManagerTree(node) {
         if (marker) return marker.order;
         return entries.findIndex(p => p?.category === category);
     };
-    const categories = () => [...new Set(Object.values(working).map(p => String(p?.category || "")).filter(Boolean))]
+    const categories = () => [...new Set([_GOD_FAVORITES_CATEGORY, ...Object.values(working).map(p => String(p?.category || "")).filter(Boolean)])]
         .sort((a, b) => categoryOrder(a) - categoryOrder(b) || a.localeCompare(b));
     const hasDragType = (event, type) => event.dataTransfer && Array.from(event.dataTransfer.types).includes(type);
     const clearInsertMarker = list => list.querySelector("[data-insert-marker]")?.remove();
@@ -1209,6 +1233,10 @@ async function _openGodPresetManagerTree(node) {
         batchMove.style.setProperty("color", noSelection ? "#b5b5b5" : "#fff", "important");
         batchMove.style.setProperty("opacity", "1", "important");
         batchMove.style.cursor = batchMove.disabled ? "default" : "pointer";
+        batchDelete.disabled = noSelection;
+        batchDelete.style.setProperty("color", noSelection ? "#b5b5b5" : "#c75c5c", "important");
+        batchDelete.style.setProperty("opacity", "1", "important");
+        batchDelete.style.cursor = batchDelete.disabled ? "default" : "pointer";
         batchClear.disabled = noSelection;
         batchClear.style.setProperty("color", noSelection ? "#b5b5b5" : "#fff", "important");
         batchClear.style.setProperty("opacity", "1", "important");
@@ -1274,6 +1302,18 @@ async function _openGodPresetManagerTree(node) {
         const keys = [...selectedKeys].filter(k => working[k]);
         if (!keys.length) return;
         showMoveMenu(keys, e.clientX, e.clientY);
+    });
+    batchDelete.addEventListener("click", async () => {
+        const keys = [...selectedKeys].filter(key => working[key] && !working[key]?._categoryOnly);
+        if (!keys.length) return;
+        const message = zh
+            ? `确定删除选中的 ${keys.length} 个子项及其提示词？此操作不可撤销。`
+            : `Delete ${keys.length} selected items and their prompts? This cannot be undone.`;
+        if (!await askConfirm(message)) return;
+        keys.forEach(key => delete working[key]);
+        selectedKeys.clear();
+        await save();
+        render();
     });
     batchClear.addEventListener("click", () => { selectedKeys.clear(); render(); });
     onExternalPresets = event => {
@@ -1479,6 +1519,10 @@ function applyBilingual(node) {
 
 // 给 textarea 打 class + 占位符双语（onNodeCreated 里 DOM 可能还没 ready，用延时）
 function ensureTextarea(node) {
+    if (node._xzgTextareaObserver) {
+        node._xzgAttachTextarea?.();
+        return;
+    }
     const tag = (ta) => {
         if (!ta) return;
         if (!ta._xzgTagged) { ta._xzgTagged = true; ta.classList.add("xzg-text-box"); }
@@ -1491,6 +1535,9 @@ function ensureTextarea(node) {
     };
 
     const tryAttach = () => {
+        const textElement = node.widgets?.find(w => w?.name === "text")?.element;
+        const ownedTextarea = textElement?.matches?.("textarea") ? textElement : textElement?.querySelector?.("textarea");
+        if (ownedTextarea?.isConnected) { tag(ownedTextarea); return true; }
         const wid = node.id;
         const selectors = [
             `textarea[data-node-id="${wid}"]`,
@@ -1507,27 +1554,35 @@ function ensureTextarea(node) {
             if (ta) { tag(ta); return true; }
         }
         // 通过 widget.element 直接定位（最可靠，不依赖 placeholder 文本）
-        const txtWidget = node.widgets?.find(w => w?.name === "text");
-        if (txtWidget?.element) { tag(txtWidget.element); return true; }
         // ComfyUI can mount multiline widgets in a shared overlay without node-id
         // attributes. Fallback: match any textarea already tagged, or one inside this node.
         if (node.type === _NODE_TYPE_GOD || node.comfyClass === _NODE_TYPE_GOD) {
             const ta = [...document.querySelectorAll("textarea.xzg-text-box")].find(item => {
                 const nid = item.closest("[data-node-id]")?.getAttribute("data-node-id");
-                return nid == null || String(nid) === String(wid);
+                return nid != null && String(nid) === String(wid);
             });
             if (ta) { tag(ta); return true; }
         }
         return false;
     };
 
-    if (!tryAttach()) {
-        const obs = new MutationObserver(() => {
-            if (tryAttach()) obs.disconnect();
-        });
-        obs.observe(document.body, { childList: true, subtree: true });
-        setTimeout(() => obs.disconnect(), 30000);
-    }
+    node._xzgAttachTextarea = tryAttach;
+    let attachTimer = null;
+    const obs = new MutationObserver(() => {
+        if (attachTimer != null) return;
+        attachTimer = setTimeout(() => { attachTimer = null; tryAttach(); }, 0);
+    });
+    node._xzgTextareaObserver = obs;
+    obs.observe(document.body, { childList: true, subtree: true });
+    const originalRemoved = node.onRemoved;
+    node.onRemoved = function (...args) {
+        obs.disconnect();
+        clearTimeout(attachTimer);
+        node._xzgTextareaObserver = null;
+        node._xzgAttachTextarea = null;
+        return originalRemoved?.apply(this, args);
+    };
+    tryAttach();
     // 再补两次延时兜底（setSize 之后 textarea 才 ready）
     setTimeout(() => tryAttach(), 0);
     setTimeout(() => tryAttach(), 50);

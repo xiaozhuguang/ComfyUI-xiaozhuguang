@@ -37,17 +37,20 @@ poses.prefetch([1,2]);const callback=callbacks.get(id);callbacks.delete(id);call
 poses.get(3);assert.equal(poses.cache.size,3);
 poses.prefetch([4]);assert.equal(callbacks.size,1);revision++;poses.clear();assert.equal(callbacks.size,0);assert.equal(poses.get(0).revision,2);
 const bounded=new PoseFrameCache(index=>({people:[{pose_keypoints_2d:Array(54).fill(index)}]}),{maxBytes:1200});bounded.get(0);bounded.get(1);assert.equal(bounded.cache.size,1);
-// Pausing while video frames are warming up must never restart playback later.
+// Pausing during an asynchronous seek to the first frame must not restart playback.
 const editor=fs.readFileSync('web/editor/editor.js','utf8');
-const toggle=editor.slice(editor.indexOf('async function togglePlayback(){'),editor.indexOf('function background(){'));
+const playStart=editor.indexOf("$('play').onclick=()=>{");
+const playEnd=editor.indexOf('\n',playStart)-1;
+assert.ok(playStart>=0&&playEnd>playStart);
+const toggle=editor.slice(playStart,playEnd+1);
 const warmup=deferred(),playButton={textContent:''};let animationRequests=0;
 const playback=new Function('frameLoader','poseFrameCache','$','requestAnimationFrame',`
- let frames=Array(6).fill({}),scalesDirty=false,playing=false,playbackGeneration=0,current=0,lastTick=0,sessionData={has_images:true},videoURL=null;
- const setFrame=async()=>true,bufferAround=()=>{},tick=()=>{},commitScale=()=>{},status=()=>{};
+ let frames=Array(6).fill({}),scalesDirty=false,playing=false,playbackGeneration=0,current=5,lastTick=0;
+ const setFrame=()=>frameLoader.get(),tick=()=>{},commitScale=()=>{};
  const pause=()=>{playing=false;playbackGeneration++;$('play').textContent='▶ 播放';};
  ${toggle}
- return {toggle:togglePlayback};
+ return {toggle:$('play').onclick};
 `)({windowSize:4,prefetchWindow(){},get:()=>warmup.promise},{get(){}},id=>id==='play'?playButton:{checked:true},()=>animationRequests++);
-const starting=playback.toggle();await settle();assert.equal(playButton.textContent,'… 缓冲');
-await playback.toggle();warmup.resolve();await starting;assert.equal(animationRequests,0);assert.equal(playButton.textContent,'▶ 播放');
+playback.toggle();await settle();assert.equal(playButton.textContent,'Ⅱ 暂停');
+playback.toggle();warmup.resolve(true);await settle();assert.equal(animationRequests,0);assert.equal(playButton.textContent,'▶ 播放');
 console.log('Passed: image memory limits, foreground priority, stale preload cancellation, source replacement, skeleton reuse, edit invalidation and idle precomputation.');

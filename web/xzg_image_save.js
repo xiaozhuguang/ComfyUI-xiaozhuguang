@@ -463,22 +463,21 @@ function _xzgFindImageLoaders() {
     return loaders;
 }
 
-// LiteGraph: NEVER=2 表示停用，BYPASS=4 表示绕过。兼容运行时暴露的命名常量。
+// LiteGraph: NEVER=2 表示停用，BYPASS=4 表示绕过。允许向被绕过的加载器发送图片，
+// 但仍排除停用节点（停用节点不应作为可操作目标）。
 function _xzgIsImageLoaderAvailable(node) {
     if (!node || node.type !== "XiaozhuguangImageLoader") return false;
     const lg = globalThis.LiteGraph || {};
     const nodeModes = lg.NODE_MODES || {};
     const unavailableModes = new Set([
-        2, 4,
+        2,
         lg.NEVER,
-        lg.BYPASS,
         nodeModes.NEVER,
-        nodeModes.BYPASS,
     ].filter((value) => value !== undefined));
     return !unavailableModes.has(node.mode) && node.disabled !== true && node.flags?.disabled !== true;
 }
 
-// 向指定加载器节点添加图片名（遵循其 upload_mode：replace 替换，append 追加到头部）
+// 向指定加载器节点添加图片名（遵循其 upload_mode：replace 替换，append 追加到末尾）
 function _xzgAppendToLoader(loaderNode, annotatedName) {
     if (!_xzgIsImageLoaderAvailable(loaderNode)) {
         alert(xzgT("目标图像加载器已停用或被绕过，请选择一个启用中的加载器。", "The target Image Loader is disabled or bypassed. Choose an enabled loader."));
@@ -497,18 +496,18 @@ function _xzgAppendToLoader(loaderNode, annotatedName) {
     if (mode === "replace") {
         listWidget.value = annotatedName;
     } else {
-        // 多图模式：去重后插入到列表头部
+        // 多图模式：去重后追加到列表末尾，和加载器新增图片的顺序一致。
         const idx = existing.indexOf(annotatedName);
         if (idx >= 0) existing.splice(idx, 1);
-        existing.unshift(annotatedName);
+        existing.push(annotatedName);
         listWidget.value = existing.join("\n");
     }
     listWidget.callback?.(listWidget.value);
 
-    // 切换到新图片（索引 0）
+    // 切换到刚追加的末尾图片。
     const idxWidget = loaderNode.widgets?.find((w) => w.name === "index");
     if (idxWidget) {
-        idxWidget.value = 0;
+        idxWidget.value = mode === "replace" ? 0 : listWidget.value.split("\n").filter(Boolean).length - 1;
         idxWidget.callback?.(idxWidget.value);
     }
     app.graph.setDirtyCanvas(true);
