@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { installWorkflowDraftStorage } from "./lib/xzg_workflow_draft_storage.mjs";
+import { installWorkflowDraftStorage } from "./lib/xzg_workflow_draft_storage.mjs?v=20261019-restore3";
 
 // Keep the filename to replace the earlier disable-persistence workaround.
 const ready = installWorkflowDraftStorage().catch(error => {
@@ -7,6 +7,9 @@ const ready = installWorkflowDraftStorage().catch(error => {
     return false;
 });
 await ready;
+if (globalThis.__xzgWorkflowDraftStorageNeedsReload) {
+    location.reload();
+}
 
 app.registerExtension({
     name: "XZG.WorkflowDraftStorage",

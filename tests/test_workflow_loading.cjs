@@ -69,3 +69,41 @@ test('workflow missing from official index loads through the same canvas entry p
     await manager.loadWorkflow('missing');
     assert.equal(loaded, true);
 });
+
+test('deleting the last tab creates a valid blank workflow before unloading its tracker', async () => {
+    const { manager, app, store, workflows } = harness();
+    const deleted = workflows[0];
+    deleted.changeTracker = { deactivate() {} };
+    store.activeWorkflow = deleted;
+    store.openWorkflows = [deleted];
+    app.extensionManager.command = { async execute(command) {
+        assert.equal(command, 'Comfy.NewBlankWorkflow');
+        store.activeWorkflow.changeTracker.deactivate();
+        const blank = { path: 'workflows/Unsaved.json', changeTracker: { deactivate() {} } };
+        store.openWorkflows.push(blank);
+        store.activeWorkflow = blank;
+    } };
+    store.closeWorkflow = async workflow => {
+        assert.notEqual(store.activeWorkflow, workflow);
+        workflow.changeTracker = null;
+        store.openWorkflows = store.openWorkflows.filter(w => w !== workflow);
+    };
+    await manager._closeDeletedWorkflowTabs([deleted]);
+    await app.extensionManager.command.execute('Comfy.NewBlankWorkflow');
+    assert.equal(store.openWorkflows.includes(deleted), false);
+});
+
+test('deleting active tabs switches to a surviving workflow before closing them', async () => {
+    const { manager, store, workflows } = harness();
+    store.activeWorkflow = workflows[0];
+    store.openWorkflows = workflows;
+    manager._activateOwnedWorkflowTab = async workflow => { store.activeWorkflow = workflow; };
+    const closed = [];
+    store.closeWorkflow = async workflow => {
+        assert.notEqual(store.activeWorkflow, workflow);
+        closed.push(workflow);
+    };
+    await manager._closeDeletedWorkflowTabs(workflows.slice(0, 2));
+    assert.equal(store.activeWorkflow, workflows[2]);
+    assert.deepEqual(closed, workflows.slice(0, 2));
+});

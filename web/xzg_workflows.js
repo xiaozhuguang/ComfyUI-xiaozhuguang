@@ -4493,6 +4493,25 @@ class XZGWorkflowsManager {
         }
     }
 
+    async _closeDeletedWorkflowTabs(workflows) {
+        const store = app.extensionManager?.workflow;
+        if (!store || !workflows.length) return;
+        const active = store.activeWorkflow;
+        if (active && workflows.some(w => w.path === active.path)) {
+            const next = (store.openWorkflows || []).find(w => !workflows.some(deleted => deleted.path === w.path));
+            if (next) {
+                await this._activateOwnedWorkflowTab(next);
+            } else {
+                await app.extensionManager.command.execute("Comfy.NewBlankWorkflow");
+            }
+            // closeWorkflow 是底层 store 方法，不会切换画布；必须先离开待删除的工作流。
+            if (store.activeWorkflow?.path === active.path) {
+                throw new Error(xzgT('无法切换已删除的工作流', 'Could not switch away from the deleted workflow'));
+            }
+        }
+        for (const workflow of workflows) await store.closeWorkflow(workflow);
+    }
+
     async deleteWorkflow(wf) {
         if (this.getWorkflowMeta(wf.path).readOnly) {
             alert(xzgT('该工作流已设为只读，无法删除。请先右键取消只读。', 'This workflow is read-only. Right-click to disable read-only first.'));
@@ -4517,37 +4536,12 @@ class XZGWorkflowsManager {
                 this.saveMeta();
             }
 
-            // 同步删除 ComfyUI 原生工作流存储（IndexedDB），避免 URL 切换时恢复
             const wfStore = app.extensionManager?.workflow;
             if (wfStore) {
                 const officialPath = 'workflows/' + wf.path + '.json';
-                try {
-                    if (typeof wfStore.deleteWorkflow === 'function') {
-                        await wfStore.deleteWorkflow(officialPath);
-                    } else if (wfStore.getWorkflowByPath) {
-                        const persistedWf = wfStore.getWorkflowByPath(officialPath);
-                        if (persistedWf && typeof persistedWf.delete === 'function') {
-                            await persistedWf.delete();
-                        }
-                    }
-                } catch (e) {
-                    console.warn("[小珠光] 同步删除原生工作流失败:", e);
-                }
+                const toClose = (wfStore.openWorkflows || []).filter(w => w.path === officialPath);
+                await this._closeDeletedWorkflowTabs(toClose);
                 try { await wfStore.loadWorkflows(); } catch (e) {}
-
-                // 删除后若该工作流在顶部标签中打开，自动关闭对应标签，
-                // 避免用户在已删除的标签上再次保存导致文件重生。
-                if (typeof wfStore.closeWorkflow === "function" && Array.isArray(wfStore.openWorkflows)) {
-                    const officialPath = 'workflows/' + wf.path + '.json';
-                    const openWf = wfStore.openWorkflows.find(w => w.path === officialPath);
-                    if (openWf) {
-                        try {
-                            await wfStore.closeWorkflow(openWf);
-                        } catch (e1) {
-                            try { await wfStore.closeWorkflow(officialPath); } catch (e2) {}
-                        }
-                    }
-                }
             }
 
             await this.loadWorkflows();
@@ -4692,20 +4686,14 @@ class XZGWorkflowsManager {
                 this.currentCategory = "all";
             }
 
-            await this.loadWorkflows();
             const wfStore = app.extensionManager?.workflow;
-            if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
-
-            // 删除分类后，关闭该文件夹下所有已打开的工作流标签，避免保存重生
-            if (wfStore && typeof wfStore.closeWorkflow === "function" && Array.isArray(wfStore.openWorkflows)) {
+            if (wfStore) {
                 const folderPrefix = "workflows/" + cat.path + "/";
-                const toClose = wfStore.openWorkflows.filter(w => w.path && w.path.startsWith(folderPrefix));
-                for (const w of toClose) {
-                    try { await wfStore.closeWorkflow(w); } catch (e1) {
-                        try { await wfStore.closeWorkflow(w.path); } catch (e2) {}
-                    }
-                }
+                const toClose = (wfStore.openWorkflows || []).filter(w => w.path?.startsWith(folderPrefix));
+                await this._closeDeletedWorkflowTabs(toClose);
+                if (wfStore.loadWorkflows) await wfStore.loadWorkflows();
             }
+            await this.loadWorkflows();
         } catch (e) {
             alert(xzgT('删除分类失败: ','Failed to delete category: ') + e.message);
         }

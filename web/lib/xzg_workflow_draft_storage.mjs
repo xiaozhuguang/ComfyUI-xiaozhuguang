@@ -1,9 +1,12 @@
-const PREFIXES = [
-    "Comfy.Workflow.Draft.v2:", "Comfy.Workflow.DraftIndex.v2:",
+const METADATA_PREFIXES = [
+    "Comfy.Workflow.DraftIndex.v2:",
     "Comfy.Workflow.ActivePath:", "Comfy.Workflow.OpenPaths:",
     "Comfy.Workflow.LastActivePath:", "Comfy.Workflow.LastOpenPaths:",
 ];
-export const isWorkflowDraftKey = key => PREFIXES.some(prefix => String(key).startsWith(prefix));
+export const isWorkflowDraftKey = key => String(key).startsWith("Comfy.Workflow.Draft.v2:");
+const PAYLOAD_MARKER = '{"__xzgIndexedDBDraft":true}';
+const INLINE_LIMIT = 64 * 1024;
+const isDraftMetadataKey = key => METADATA_PREFIXES.some(prefix => String(key).startsWith(prefix));
 
 // Preserve ComfyUI's synchronous Storage API with a hydrated mirror, backed by
 // IndexedDB rather than localStorage's small quota. Other keys are untouched.
@@ -36,7 +39,7 @@ async function initialize() {
         request.onsuccess = () => {
             const cursor = request.result;
             if (!cursor) return;
-            if (isWorkflowDraftKey(cursor.key)) entries.set(cursor.key, cursor.value);
+            if (isWorkflowDraftKey(cursor.key) || isDraftMetadataKey(cursor.key)) entries.set(cursor.key, cursor.value);
             cursor.continue();
         };
         transaction.oncomplete = () => resolve(entries);
@@ -51,18 +54,56 @@ async function initialize() {
         }
         return keys;
     };
+    // The frontend reads/migrates the index before extension initialization.
+    // Keep metadata synchronous even before this IndexedDB mirror is hydrated.
+    for (const [key, value] of cache) {
+        if (!isDraftMetadataKey(key)) continue;
+        const physical = original.getItem.call(storage, key);
+        let restore = physical === null;
+        if (!restore && key.startsWith("Comfy.Workflow.DraftIndex.v2:")) {
+            try {
+                const current = JSON.parse(physical);
+                const previous = JSON.parse(value);
+                restore = !current.order?.length && previous.order?.length > 0;
+            } catch {}
+        }
+        if (restore) {
+            original.setItem.call(storage, key, value);
+            // The frontend may already have cached an empty index before
+            // extensions load. Restart once after recovering legacy metadata.
+            globalThis.__xzgWorkflowDraftStorageNeedsReload = true;
+        }
+        cache.delete(key);
+    }
     // Never remove the original drafts before their migration commits.
     const migrated = physicalKeys().filter(isWorkflowDraftKey);
-    for (const key of migrated) cache.set(key, original.getItem.call(storage, key));
+    for (const key of migrated) {
+        const value = original.getItem.call(storage, key);
+        if (value !== PAYLOAD_MARKER) cache.set(key, value);
+    }
     await new Promise((resolve, reject) => {
         const transaction = db.transaction("entries", "readwrite");
         const store = transaction.objectStore("entries");
         for (const [key, value] of cache) store.put(value, key);
+        for (const key of physicalKeys().filter(isDraftMetadataKey)) store.delete(key);
         transaction.oncomplete = resolve;
         transaction.onabort = () => reject(transaction.error);
         transaction.onerror = () => reject(transaction.error);
     });
-    for (const key of migrated) original.removeItem.call(storage, key);
+    const mirrorPayload = (key, value) => {
+        // Startup orphan cleanup runs before extensions load. Keep a physical
+        // key so it does not prune IndexedDB-backed drafts from its index.
+        if (value === null) original.removeItem.call(storage, key);
+        else {
+            try {
+                original.setItem.call(storage, key, value.length <= INLINE_LIMIT ? value : PAYLOAD_MARKER);
+            } catch (error) {
+                if (error.name !== "QuotaExceededError") throw error;
+                original.setItem.call(storage, key, PAYLOAD_MARKER);
+            }
+        }
+    };
+    for (const [key, value] of cache) mirrorPayload(key, value);
 
     let pending = new Map();
     let scheduled = false;
@@ -106,12 +147,14 @@ async function initialize() {
         key = String(key);
         value = String(value);
         if (this !== storage || !isWorkflowDraftKey(key)) return original.setItem.call(this, key, value);
+        mirrorPayload(key, value);
         persist(key, value);
         cache.set(key, value);
     };
     prototype.removeItem = function (key) {
         key = String(key);
         if (this !== storage || !isWorkflowDraftKey(key)) return original.removeItem.call(this, key);
+        mirrorPayload(key, null);
         persist(key, null);
         cache.delete(key);
     };

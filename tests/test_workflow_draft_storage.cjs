@@ -21,9 +21,26 @@ const { chromium } = require('playwright');
             localStorage.setItem('unrelated', 'keep');
             localStorage.setItem(key, 'existing draft');
             sessionStorage.setItem(key, 'session stays separate');
+            // Simulate metadata stored by the previous adapter, followed by the
+            // frontend's pre-extension migration creating an empty index.
+            const legacyKey = 'Comfy.Workflow.DraftIndex.v2:legacy';
+            localStorage.setItem(legacyKey, JSON.stringify({ order: [], entries: {} }));
+            await new Promise((resolve, reject) => {
+                const request = indexedDB.open('xzg-workflow-drafts', 1);
+                request.onupgradeneeded = () => request.result.createObjectStore('entries');
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    const db = request.result;
+                    const tx = db.transaction('entries', 'readwrite');
+                    tx.objectStore('entries').put(JSON.stringify({ order: ['old'], entries: { old: { path: 'old' } } }), legacyKey);
+                    tx.oncomplete = () => { db.close(); resolve(); };
+                    tx.onabort = () => reject(tx.error);
+                };
+            });
             const { installWorkflowDraftStorage } = await import('/storage.mjs');
             await installWorkflowDraftStorage();
             const migrated = localStorage.getItem(key);
+            const legacyRestored = JSON.parse(localStorage.getItem(legacyKey)).order[0] === 'old';
             // Exceeds Chrome's localStorage limit, even without other data.
             localStorage.setItem(key, JSON.stringify({ workflow: 'x'.repeat(8 * 1024 * 1024) }));
             localStorage.setItem('Comfy.Workflow.DraftIndex.v2:personal', '{"v":2}');
@@ -40,11 +57,17 @@ const { chromium } = require('playwright');
                 };
                 open.onerror = () => reject(open.error);
             });
-            return { migrated, enumerated: keys.includes(key), session: sessionStorage.getItem(key) };
+            return { migrated, legacyRestored, enumerated: keys.includes(key), session: sessionStorage.getItem(key) };
         }, key);
-        assert.deepEqual(result, { migrated: 'existing draft', enumerated: true, session: 'session stays separate' });
+        assert.deepEqual(result, { migrated: 'existing draft', legacyRestored: true, enumerated: true, session: 'session stays separate' });
         await page.reload();
         const restored = await page.evaluate(async key => {
+            // ComfyUI reads its index before loading extensions.
+            const earlyIndex = localStorage.getItem('Comfy.Workflow.DraftIndex.v2:personal');
+            // The real frontend prunes index entries whose payload key is
+            // missing, before extensions hydrate the IndexedDB mirror.
+            const earlyPayloadExists = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).includes(key);
+            if (!earlyPayloadExists) throw new Error('Frontend orphan cleanup would discard this imported temporary workflow');
             const { installWorkflowDraftStorage } = await import('/storage.mjs');
             await installWorkflowDraftStorage();
             const size = JSON.parse(localStorage.getItem(key)).workflow.length;
@@ -53,10 +76,10 @@ const { chromium } = require('playwright');
             localStorage.removeItem(key);
             const removed = localStorage.getItem(key) === null;
             const enumerated = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).includes(key);
-            return { size, unrelated, index, removed, enumerated };
+            return { size, unrelated, index, earlyIndex, removed, enumerated };
         }, key);
         assert.deepEqual(restored, {
-            size: 8 * 1024 * 1024, unrelated: 'keep', index: '{"v":2}', removed: true, enumerated: false,
+            size: 8 * 1024 * 1024, unrelated: 'keep', index: '{"v":2}', earlyIndex: '{"v":2}', removed: true, enumerated: false,
         });
         console.log('PASS: migrate existing draft, save 8 MiB, refresh/restore, enumerate/remove, preserve other storage');
     } finally {
