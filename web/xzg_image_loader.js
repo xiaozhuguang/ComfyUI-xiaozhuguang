@@ -645,6 +645,126 @@ function createImgBatchUI(node) {
         input.click();
     }
 
+    async function openResolutionDialog(imageName, imageIndex) {
+        try {
+            const image = new Image();
+            image.src = getOriginalImageUrl(imageName);
+            await image.decode();
+            const originalWidth = image.naturalWidth;
+            const originalHeight = image.naturalHeight;
+            let axis = "width";
+            const dialog = document.createElement("dialog");
+            dialog.style.cssText = "background:var(--comfy-menu-bg,#222);color:var(--input-text,#eee);padding:24px;border:1px solid #666;border-radius:10px;";
+            const title = document.createElement("h3");
+            title.textContent = xzgT("修改分辨率（保持纵横比）", "Resize Image (Keep Aspect Ratio)");
+            dialog.appendChild(title);
+            const info = document.createElement("p");
+            info.textContent = `${originalWidth} × ${originalHeight} · ${xzgT("另存新图片到 input，保留源文件", "Save a new image to input; keep source file")}`;
+            dialog.appendChild(info);
+            const spinnerStyle = document.createElement("style");
+            spinnerStyle.textContent = `.xzg-resolution-input { appearance: textfield; -moz-appearance: textfield; }
+                .xzg-resolution-input::-webkit-inner-spin-button,
+                .xzg-resolution-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }`;
+            dialog.appendChild(spinnerStyle);
+            const multipleRow = document.createElement("label");
+            multipleRow.style.cssText = "display:flex;gap:12px;align-items:center;margin:12px 0;";
+            multipleRow.append(document.createTextNode(xzgT("尺寸倍数", "Dimension Multiple")));
+            const multipleSelect = document.createElement("select");
+            for (const value of [1, 8, 16, 32]) {
+                const option = document.createElement("option");
+                option.value = String(value);
+                option.textContent = value === 1 ? xzgT("不限制", "Unrestricted") : String(value);
+                multipleSelect.append(option);
+            }
+            multipleRow.append(multipleSelect);
+            dialog.append(multipleRow);
+            const hint = document.createElement("div");
+            hint.style.cssText = "font-size:12px;opacity:.7;max-width:340px;";
+            hint.textContent = xzgT("按倍数就近取整，宽高比可能略有变化", "Round dimensions to the nearest multiple; aspect ratio may vary slightly");
+            dialog.append(hint);
+            const inputs = {};
+            for (const [key, label] of [["width", xzgT("宽度", "Width")], ["height", xzgT("高度", "Height")]]) {
+                const row = document.createElement("label");
+                row.style.cssText = "display:flex;gap:12px;align-items:center;margin:12px 0;";
+                row.append(document.createTextNode(label));
+                const input = document.createElement("input");
+                input.type = "number";
+                input.className = "xzg-resolution-input";
+                input.min = "1";
+                input.max = "32768";
+                input.step = "1";
+                row.append(input);
+                dialog.append(row);
+                inputs[key] = input;
+                input.addEventListener("input", () => { axis = key; update(); });
+                input.addEventListener("change", () => update(true));
+            }
+            function update(normalize = false) {
+                const value = Number(inputs[axis].value);
+                if (!Number.isInteger(value) || value < 1) return;
+                const multiple = Number(multipleSelect.value);
+                const snap = dimension => Math.max(multiple, Math.floor(dimension / multiple + 0.5) * multiple);
+                const primary = snap(value);
+                if (normalize) inputs[axis].value = primary;
+                if (axis === "width") inputs.height.value = snap(primary * originalHeight / originalWidth);
+                else inputs.width.value = snap(primary * originalWidth / originalHeight);
+            }
+            multipleSelect.addEventListener("change", () => update(true));
+            inputs.width.value = originalWidth;
+            inputs.height.value = originalHeight;
+            let saving = false;
+            async function commit() {
+                if (saving || !inputs.width.reportValidity() || !inputs.height.reportValidity()) return;
+                update(true);
+                if (!inputs.width.reportValidity() || !inputs.height.reportValidity()) return;
+                saving = true;
+                const buttons = dialog.querySelectorAll("button");
+                buttons.forEach(button => { button.disabled = true; });
+                try {
+                    const response = await api.fetchApi("/xzg/image-loader/resize", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ filename: imageName, axis, value: Number(inputs[axis].value), multiple: Number(multipleSelect.value) }),
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || response.statusText);
+                    const names = parseNameList(getImageListWidget(node)?.value);
+                    const index = names[imageIndex] === imageName ? imageIndex : names.indexOf(imageName);
+                    if (index >= 0) {
+                        names[index] = result.name;
+                        setNameList(node, names);
+                        setIndex(node, index);
+                        selectedIndexes = [index];
+                        lastClickedIndex = index;
+                        redraw(true);
+                        app.graph?.change?.();
+                    }
+                    dialog.close();
+                } catch (error) {
+                    xzgAlert(`${xzgT("无法修改分辨率", "Could not resize image")}: ${error.message || error}`);
+                } finally {
+                    saving = false;
+                    buttons.forEach(button => { button.disabled = false; });
+                }
+            }
+            for (const [label, action] of [
+                [xzgT("保存到 input 并使用", "Save to input and Use"), () => commit()],
+                [xzgT("取消", "Cancel"), () => dialog.close()],
+            ]) {
+                const button = document.createElement("button");
+                button.textContent = label;
+                button.style.marginRight = "10px";
+                button.addEventListener("click", action);
+                dialog.append(button);
+            }
+            dialog.addEventListener("close", () => dialog.remove(), { once: true });
+            document.body.append(dialog);
+            dialog.showModal();
+        } catch (error) {
+            xzgAlert(`${xzgT("无法修改分辨率", "Could not resize image")}: ${error.message || error}`);
+        }
+    }
+
     const showContextMenu = async (x, y, imageName, imageIndex) => {
         const backendSessionId = await getImageLoaderBackendSessionId();
         contextMenu.innerHTML = "";
@@ -786,7 +906,7 @@ function createImgBatchUI(node) {
             const poseEditorItem = document.createElement("div");
             poseEditorItem.textContent = canContinuePose
                 ? xzgT("继续编辑此姿势（VNCCS）", "Continue Editing Pose (VNCCS)")
-                : xzgT("以当前图片为背景进入姿势编辑器", "Open Pose Editor with Current Image as Background");
+                : xzgT("以此图为背景编辑姿势", "Edit Pose with This Image as Background");
             poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
             poseEditorItem.addEventListener("mouseenter", () => { poseEditorItem.style.background = "var(--comfy-input-bg)"; });
             poseEditorItem.addEventListener("mouseleave", () => { poseEditorItem.style.background = ""; });
@@ -796,6 +916,16 @@ function createImgBatchUI(node) {
                 else openPoseStudio(imageName, null, imageName);
             });
             contextMenu.appendChild(poseEditorItem);
+        }
+
+        if (imageName && !multi) {
+            const resizeItem = document.createElement("div");
+            resizeItem.textContent = xzgT("修改分辨率…", "Resize Image…");
+            resizeItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
+            resizeItem.addEventListener("mouseenter", () => { resizeItem.style.background = "var(--comfy-input-bg)"; });
+            resizeItem.addEventListener("mouseleave", () => { resizeItem.style.background = ""; });
+            resizeItem.addEventListener("click", () => { hideContextMenu(); openResolutionDialog(imageName, imageIndex); });
+            contextMenu.appendChild(resizeItem);
         }
 
         // 原图高清查看入口放在菜单最下方：多图模式单张右键，以及单图模式均可用。
@@ -1156,6 +1286,10 @@ function createImgBatchUI(node) {
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar .xzg-mask-setting-toggle:hover{background:rgba(255,255,255,.10)!important;filter:none!important;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar button.xzg-mask-setting-toggle > span:not([aria-hidden="true"]){font-size:16px!important;font-weight:400!important;line-height:1.2!important;color:#FFD700!important;}
             .xzg-img-edit-workspace .xzg-crop-ratio-bar .xzg-crop-ratio-btn{font-size:14px!important;line-height:1.2;text-align:center!important;}
+            .xzg-crop-ratio-bar button,
+            .xzg-crop-ratio-bar input,
+            .xzg-crop-ratio-bar select{height:28px!important;min-height:28px!important;max-height:28px!important;box-sizing:border-box!important;margin-top:0!important;margin-bottom:0!important;padding-top:0!important;padding-bottom:0!important;vertical-align:middle;}
+            .xzg-crop-ratio-bar button{display:inline-flex;align-items:center;justify-content:center;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar .xzg-crop-ratio-text{display:inline-grid;grid-template-columns:2ch 1ch 2ch;width:5ch;text-align:center;}
             .xzg-crop-ratio-options .xzg-crop-ratio-btn:hover{background:rgba(255,255,255,.12)!important;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar .xzg-ic-btn:not(.xzg-edit-exit-btn) .xzg-ic-lb{font-size:20px!important;line-height:1.2;}
@@ -1778,18 +1912,23 @@ function createImgBatchUI(node) {
         const currentBox = _cropPending || cropRect;
         _cropAspect = ratio;
         if (currentBox) {
-            let w = currentBox.w, h = currentBox.h;
-            if (ratio != null && w > 0 && h > 0) {
-                // 保持原裁剪框面积与中心：若每次都只缩短较长边，反复切换比例会累积缩小。
-                const area = currentBox.w * currentBox.h;
-                w = Math.sqrt(area * ratio);
-                h = Math.sqrt(area / ratio);
+            const imageW = _maskImgNaturalW || singleImgEl.naturalWidth || currentBox.w;
+            const imageH = _maskImgNaturalH || singleImgEl.naturalHeight || currentBox.h;
+            let w = Math.min(currentBox.w, imageW), h = Math.min(currentBox.h, imageH);
+            if (ratio != null && ratio > 0) {
+                // 从完整图片范围适配比例，反复切换不累积缩小，也不自动越界。
+                w = Math.min(imageW, imageH * ratio);
+                h = w / ratio;
             }
-            w = Math.max(1, Math.round(w));
-            h = Math.max(1, Math.round(h));
+            w = Math.max(1, Math.min(imageW, Math.round(w)));
+            h = Math.max(1, Math.min(imageH, Math.round(h)));
             const cx = currentBox.x + currentBox.w / 2;
             const cy = currentBox.y + currentBox.h / 2;
-            _cropPending = { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h };
+            _cropPending = {
+                x: Math.max(0, Math.min(imageW - w, Math.round(cx - w / 2))),
+                y: Math.max(0, Math.min(imageH - h, Math.round(cy - h / 2))),
+                w, h,
+            };
             if (!hadPending && cropRect) {
                 cropRect = null;
                 _lastCropPreviewKey = null;
@@ -1849,6 +1988,94 @@ function createImgBatchUI(node) {
     refreshCropRatioUI(); // 默认选中“自由”（_cropAspect 初始为 null）
     cropRatioRow.appendChild(cropRatioLabel);
     cropRatioRow.appendChild(cropRatioOptions);
+    const cropSizeRow = document.createElement("div");
+    cropSizeRow.style.cssText = "display:none;flex:0 0 auto;align-items:center;gap:7px;padding-left:8px;border-left:1px solid rgba(255,255,255,.22);box-sizing:border-box;white-space:nowrap;";
+    const cropSizeInputs = {};
+    for (const [key, caption] of [["width", xzgT("宽度", "Width")], ["height", xzgT("高度", "Height")]]) {
+        const label = document.createElement("label");
+        label.style.cssText = "display:flex;align-items:center;gap:4px;font-size:14px;white-space:nowrap;";
+        label.append(document.createTextNode(caption));
+        const input = document.createElement("input");
+        input.type = "text";
+        input.inputMode = "numeric";
+        input.pattern = "[0-9]+";
+        input.placeholder = "px";
+        input.setAttribute("aria-label", caption);
+        input.style.cssText = "width:64px;min-width:0;box-sizing:border-box;font-size:14px;padding:4px;";
+        label.append(input);
+        cropSizeRow.append(label);
+        cropSizeInputs[key] = input;
+        input.addEventListener("input", () => createCropFromSize({ normalize: false, silent: true }));
+        input.addEventListener("change", () => createCropFromSize({ silent: true }));
+        input.addEventListener("keydown", event => {
+            event.stopPropagation();
+            if (event.key === "Enter") { event.preventDefault(); createCropFromSize(); }
+        });
+    }
+    const cropMultipleSelect = document.createElement("select");
+    cropMultipleSelect.style.cssText = "width:98px;min-width:0;font-size:14px;";
+    cropMultipleSelect.setAttribute("aria-label", xzgT("尺寸倍数", "Dimension Multiple"));
+    for (const value of [1, 8, 16, 32]) {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = value === 1 ? xzgT("不限制", "Unrestricted") : xzgT(`${value} 的倍数`, `Multiple of ${value}`);
+        cropMultipleSelect.append(option);
+    }
+    cropSizeRow.append(cropMultipleSelect);
+    function cropOriginalScale() {
+        const previewWidth = _maskImgNaturalW || singleImgEl.naturalWidth;
+        return _singleOrigW > 0 && previewWidth > 0 ? _singleOrigW / previewWidth : 1;
+    }
+    function createCropFromSize({ normalize = true, silent = false } = {}) {
+        if (!cropEnabled) return;
+        const width = Number(cropSizeInputs.width.value), height = Number(cropSizeInputs.height.value);
+        if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 32768)) {
+            if (!silent) xzgAlert(xzgT("宽高请输入 1 到 32768 的整数", "Enter integer dimensions from 1 to 32768"));
+            return;
+        }
+        const multiple = Number(cropMultipleSelect.value);
+        const snap = value => Math.max(multiple, Math.floor(value / multiple + 0.5) * multiple);
+        const targetWidth = snap(width), targetHeight = snap(height);
+        if (targetWidth * targetHeight > 150000000) {
+            if (!silent) xzgAlert(xzgT("裁剪尺寸过大", "Crop dimensions are too large"));
+            return;
+        }
+        const scale = cropOriginalScale();
+        const box = _cropPending || cropRect;
+        const imageWidth = _maskImgNaturalW || singleImgEl.naturalWidth;
+        const imageHeight = _maskImgNaturalH || singleImgEl.naturalHeight;
+        if (!imageWidth || !imageHeight) return;
+        const cx = box ? box.x + box.w / 2 : imageWidth / 2;
+        const cy = box ? box.y + box.h / 2 : imageHeight / 2;
+        const w = targetWidth / scale, h = targetHeight / scale;
+        // 小数预览坐标保留原图像素精度，避免大图预览压缩导致尺寸偏差。
+        const pending = { x: Math.round((cx - w / 2) * scale) / scale, y: Math.round((cy - h / 2) * scale) / scale, w, h };
+        _clearCropBox();
+        _cropPending = pending;
+        _cropAspect = null;
+        if (normalize) {
+            cropSizeInputs.width.value = targetWidth;
+            cropSizeInputs.height.value = targetHeight;
+        }
+        refreshCropRatioUI();
+        _lastCropPreviewKey = null;
+        _refreshCropPreview();
+        _renderTransformPreview();
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+    }
+    cropMultipleSelect.addEventListener("change", () => {
+        if (cropSizeInputs.width.value && cropSizeInputs.height.value) createCropFromSize();
+    });
+    function syncCropSizeInputs() {
+        if (!cropEnabled || cropSizeRow.contains(document.activeElement)) return;
+        const box = _cropPending || cropRect;
+        const scale = cropOriginalScale();
+        const width = box ? Math.round(box.w * scale) : (_singleOrigW || _maskImgNaturalW);
+        const height = box ? Math.round(box.h * scale) : (_singleOrigH || _maskImgNaturalH);
+        if (width > 0) cropSizeInputs.width.value = width;
+        if (height > 0) cropSizeInputs.height.value = height;
+    }
     const cropPaddingRow = document.createElement("div");
     cropPaddingRow.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:4px;padding:3px 0;margin-top:5px;";
     const cropPaddingControlRow = document.createElement("div");
@@ -1924,6 +2151,13 @@ function createImgBatchUI(node) {
     cropTransformGroup.appendChild(flipHorizontalBtn);
     cropTransformGroup.appendChild(flipVerticalBtn);
     cropRatioRow.appendChild(cropTransformGroup);
+    cropRatioRow.appendChild(cropSizeRow);
+    cropRatioRow.style.flexWrap = "nowrap";
+    cropRatioRow.style.justifyContent = "flex-start";
+    cropRatioRow.style.width = "max-content";
+    cropRatioRow.style.overflowX = "auto";
+    cropRatioRow.style.overflowY = "hidden";
+    cropRatioOptions.style.flex = "0 0 auto";
     const syncImageTransformControls = () => {
         flipHorizontalBtn.style.color = _currentImageTransform.flip_x ? "#FFD700" : "var(--input-text)";
         flipVerticalBtn.style.color = _currentImageTransform.flip_y ? "#FFD700" : "var(--input-text)";
@@ -2042,6 +2276,7 @@ function createImgBatchUI(node) {
         cropClearBtn.style.display = !cropEnabled ? "none" : "";
         cropSelClearBtn.style.display = !cropEnabled ? "none" : "";
         cropRatioRow.style.display = cropEnabled && !maskEnabled ? "flex" : "none";
+        cropSizeRow.style.display = cropEnabled && !maskEnabled ? "flex" : "none";
         cropPaddingRow.style.display = (!cropEnabled || maskEnabled) ? "none" : "";
         // 开启编辑模式时隐藏上传/.input/.output/删除/清空按钮及左下角单图/列表批次按钮，避免误操作
         const actionBtns = [uploadBtn, folderBtn, outputBtn, mediaBtn, poseBtn, clearAllEditsBtn, deleteBtn, clearBtn, uploadModeBtn, modeBtn, alignBtn, maxImgInput];
@@ -2383,7 +2618,7 @@ function createImgBatchUI(node) {
             }
             if (Array.isArray(v) && v.length === 4) {
                 // 旧格式：纯数组 [x,y,w,h]，视为当前图片的裁剪区域
-                cropRect = { x: Math.round(+v[0]), y: Math.round(+v[1]), w: Math.round(+v[2]), h: Math.round(+v[3]) };
+                cropRect = { x: +v[0], y: +v[1], w: +v[2], h: +v[3] };
                 if (curName) _cropByImage[curName] = [cropRect.x, cropRect.y, cropRect.w, cropRect.h];
                 _currentImageTransform = _normalizeImageTransform(_imageTransformByName[curName]);
                 syncImageTransformControls(); _renderTransformPreview();
@@ -2409,7 +2644,7 @@ function createImgBatchUI(node) {
                 } catch (_e) {}
                 if (curName && _cropByImage[curName]) {
                     const a = _cropByImage[curName];
-                    cropRect = { x: Math.round(+a[0]), y: Math.round(+a[1]), w: Math.round(+a[2]), h: Math.round(+a[3]) };
+                    cropRect = { x: +a[0], y: +a[1], w: +a[2], h: +a[3] };
                 } else {
                     cropRect = null;
                 }
@@ -2875,6 +3110,21 @@ function createImgBatchUI(node) {
         _renderMaskOverlay();
     }
 
+    function _ensureInitialCropBox() {
+        if (!cropEnabled || _cropPending || !singleImgEl.complete || !singleImgEl.naturalWidth) return;
+        const names = parseNameList(getImageListWidget(node)?.value);
+        const target = names[Math.max(0, Math.min(getIndex(node), names.length - 1))];
+        const displayed = singleImgEl.dataset.currentName || singleImgEl.dataset.previewKey;
+        if (!target || displayed !== target) return;
+        _cropPending = cropRect ? { ...cropRect } : {
+            x: 0, y: 0,
+            w: _maskImgNaturalW || singleImgEl.naturalWidth,
+            h: _maskImgNaturalH || singleImgEl.naturalHeight,
+        };
+        _renderMaskOverlay();
+        _updateSingleResLabel();
+    }
+
     // 裁剪开关 / 清空（仅单图模式可用）
     cropToggleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -2943,6 +3193,7 @@ function createImgBatchUI(node) {
                 }
             }
         }
+        _ensureInitialCropBox();
         const cropTargetName = inMulti
             ? parseNameList(getImageListWidget(node)?.value)[getIndex(node)]
             : null;
@@ -2991,17 +3242,20 @@ function createImgBatchUI(node) {
     });
 
     const _cropEscapeHandler = (e) => {
-        if (e.key !== "Escape" || !cropEnabled) return;
-        if (!_cropPending && !_cropDrawing) return;
+        if (e.key !== "Escape" || (!cropEnabled && !maskEnabled)) return;
         e.preventDefault();
         e.stopImmediatePropagation();
+        if (maskEnabled) {
+            _commitMaskToWidget();
+            maskToggleBtn.click();
+            return;
+        }
         _cropPending = null;
         _cropDrawing = false;
         _cropSelStart = _cropSelCur = null;
         _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null; _cropResizeFromCenter = false;
         _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
-        _renderTransformPreview();
-        _renderMaskOverlay();
+        cropToggleBtn.click();
     };
     window.addEventListener("keydown", _cropEscapeHandler, true);
 
@@ -3170,6 +3424,7 @@ function createImgBatchUI(node) {
     }
 
     function _updateSingleResLabel() {
+        syncCropSizeInputs();
         _updateSingleCropBadge();
         // 存在裁剪选区：显示「真实输出分辨率」（原图像素），而非压缩预览图坐标尺寸。
         // 前端选区坐标取自最长边3840的预览图，需按 原图宽/预览图宽 换算回原图坐标；
@@ -3649,6 +3904,7 @@ function createImgBatchUI(node) {
 
     // 把离屏遮罩渲染到 singleMaskOverlay（同步 overlay canvas 尺寸到容器尺寸，缩放绘制）
     function _renderMaskOverlay() {
+        syncCropSizeInputs();
         const cw = singleImgContainer.clientWidth;
         const ch = singleImgContainer.clientHeight;
         if (cw <= 0 || ch <= 0) return;
@@ -4274,6 +4530,7 @@ function createImgBatchUI(node) {
         _loadMaskFromWidget(curName);
         // 从 widget 加载裁剪数据，并刷新裁剪结果预览（load 后 naturalWidth 已更新）
         _loadCropFromWidget();
+        _ensureInitialCropBox();
         _refreshCropPreview();
         _renderTransformPreview();
         _renderMaskOverlay();

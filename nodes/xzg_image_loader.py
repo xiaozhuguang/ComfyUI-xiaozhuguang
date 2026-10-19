@@ -1491,7 +1491,7 @@ def _parse_crop_data(crop_str, image_name=None):
                 names_to_try.append(base_name)
             for name in names_to_try:
                 if name in v and isinstance(v[name], (list, tuple)) and len(v[name]) == 4:
-                    x, y, w, h = [int(round(float(a))) for a in v[name]]
+                    x, y, w, h = [float(a) for a in v[name]]
                     if w > 0 and h > 0:
                         return (x, y, w, h)
     except Exception:
@@ -1858,6 +1858,63 @@ async def xzg_delete_images(request):
             errors.append(f"{fn}: {e}")
 
     return web.json_response({"deleted": deleted, "errors": errors})
+
+
+def _resize_image_to_input(filename, axis, value, multiple=1):
+    if axis not in ("width", "height") or isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 32768:
+        raise ValueError("请输入 1 到 32768 的整数宽度或高度")
+    if isinstance(multiple, bool) or not isinstance(multiple, int) or multiple not in (1, 8, 16, 32):
+        raise ValueError("invalid dimension multiple")
+    name = _normalize_annotated_filename(str(filename or ""))
+    root = os.path.realpath(folder_paths.get_input_directory())
+    relative = name
+    for suffix, getter in [(" [output]", folder_paths.get_output_directory),
+                           (" [temp]", folder_paths.get_temp_directory),
+                           (" [input]", folder_paths.get_input_directory)]:
+        if name.endswith(suffix):
+            root = os.path.realpath(getter())
+            relative = name[:-len(suffix)]
+            break
+    source_path = os.path.realpath(os.path.join(root, relative))
+    if os.path.commonpath([root, source_path]) != root:
+        raise ValueError("invalid image path")
+    with Image.open(source_path) as opened:
+        image = ImageOps.exif_transpose(opened)
+        width, height = image.size
+        def snap(dimension):
+            return max(multiple, int(dimension / multiple + 0.5) * multiple)
+        primary = snap(value)
+        target = (primary, snap(height * primary / width)) if axis == "width" else (snap(width * primary / height), primary)
+        if max(target) > 32768 or target[0] * target[1] > 150_000_000:
+            raise ValueError("调整后的图片尺寸过大")
+        image = image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB")
+        resized = image.resize(target, Image.Resampling.LANCZOS)
+    stem = os.path.splitext(os.path.basename(relative))[0]
+    input_dir = folder_paths.get_input_directory()
+    # 独占创建，任何同名文件（包括源文件）都不会被覆盖。
+    while True:
+        output_name = f"{stem}_{target[0]}x{target[1]}_{secrets.token_hex(4)}.png"
+        try:
+            handle = open(os.path.join(input_dir, output_name), "xb")
+            break
+        except FileExistsError:
+            continue
+    with handle:
+        resized.save(handle, format="PNG")
+    return {"name": output_name, "width": target[0], "height": target[1]}
+
+
+@routes.post("/xzg/image-loader/resize")
+@xzg_safe_handler
+async def xzg_resize_loader_image(request):
+    data = await request.json()
+    try:
+        result = await _xzg_asyncio.to_thread(_resize_image_to_input, data.get("filename"), data.get("axis"), data.get("value"), data.get("multiple", 1))
+    except (ValueError, TypeError) as error:
+        return web.json_response({"error": str(error)}, status=400)
+    except FileNotFoundError:
+        return web.json_response({"error": "source image not found"}, status=404)
+    return web.json_response(result)
 
 
 @routes.post("/xzg_copy_output_to_input")
