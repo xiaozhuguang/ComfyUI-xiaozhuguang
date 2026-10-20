@@ -424,7 +424,15 @@
     "inputs": {
       "image": { "name": "图像" },
       "mask": { "name": "遮罩" },
-      "resize_mode": { "name": "缩放模式" },
+      "resize_mode": {
+        "name": "缩小模式",
+        "options": {
+          "Pillow Lanczos": { "text": "Pillow Lanczos" },
+          "Pillow Lanczos (fast)": { "text": "Pillow Lanczos (fast)" },
+          "Pillow Bicubic": { "text": "Pillow Bicubic" },
+          "Pillow Bilinear": { "text": "Pillow Bilinear" }
+        }
+      },
       "Box_grow_factor": { "name": "扩展倍数" },
       "Box_grow_pixels": { "name": "像素扩展" },
       "kilopixels": { "name": "千像素" },
@@ -455,10 +463,20 @@
       "color_match_strength": { "name": "匹配强度" },
       "color_correction_range": { "name": "修正范围" },
       "color_temporal_smooth": { "name": "时间平滑" },
+      "resize_mode": {
+        "name": "缩小模式",
+        "options": {
+          "Pillow Lanczos": { "text": "Pillow Lanczos" },
+          "Pillow Lanczos (fast)": { "text": "Pillow Lanczos (fast)" },
+          "Pillow Bicubic": { "text": "Pillow Bicubic" },
+          "Pillow Bilinear": { "text": "Pillow Bilinear" }
+        }
+      },
       "compute_device": { "name": "计算设备" }
     },
     "outputs": {
-      "0": { "name": "还原图像" }
+      "0": { "name": "还原图像" },
+      "1": { "name": "接缝处理区域" }
     }
   },
   "BlendInpaint": {
@@ -727,6 +745,7 @@
   "XiaozhuguangImageRestore": {
     "display_name": "小珠光 图像回贴",
     "inputs": {
+      "resize_mode": { "name": "缩放模式" },
       "original_image": {
         "name": "原始图像"
       },
@@ -755,6 +774,9 @@
     "outputs": {
       "0": {
         "name": "还原图像"
+      },
+      "1": {
+        "name": "接缝处理区域"
       }
     }
   }

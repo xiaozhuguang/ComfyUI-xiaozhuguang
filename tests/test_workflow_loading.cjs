@@ -42,6 +42,43 @@ test('single click awaits canvas loading and preserves edited open workflow stat
     assert.equal(manager._loading, false);
 });
 
+test('repeated sidebar renders preserve the workflow item receiving a click', () => {
+    const { manager, app } = harness();
+    let render;
+    app.extensionManager.registerSidebarTab = tab => { render = tab.render; };
+    let creates = 0;
+    let opens = 0;
+    let refreshes = 0;
+    manager.enabled = true;
+    manager.observeSidebarForIcon = () => {};
+    manager.observePanelOpen = () => {};
+    manager.onPanelOpen = () => { opens++; };
+    manager.loadWorkflows = () => { refreshes++; };
+    manager.createPanel = el => { creates++; el.panel = {}; };
+    const container = () => ({ style: {}, querySelector() { return this.panel; } });
+    const first = container();
+    manager.registerSidebarTab();
+    render(first);
+    const pressedItem = first.panel;
+    render(first);
+    assert.equal(first.panel, pressedItem);
+    assert.equal(creates, 1);
+    assert.equal(opens, 1);
+    assert.equal(refreshes, 1);
+
+    let disconnected = false;
+    manager._panelObserver = { disconnect() { disconnected = true; } };
+    const remounted = container();
+    render(remounted);
+    assert.equal(creates, 2);
+    assert.equal(manager._panelEl, remounted);
+    assert.equal(disconnected, true);
+
+    delete remounted.panel;
+    render(remounted);
+    assert.equal(creates, 3);
+});
+
 test('rapid clicks wait for the current load and then open only the last target', async () => {
     const { manager, app, calls } = harness();
     let finish;
@@ -62,12 +99,20 @@ test('workflow missing from official index loads through the same canvas entry p
     const { manager, app } = harness();
     let loaded = false;
     app.loadGraphData = async (data, clean, restore, workflow) => {
-        assert.equal(workflow, undefined);
+        assert.equal(workflow, 'missing.json');
         assert.equal(data.nodes.length, 0);
         loaded = true;
     };
     await manager.loadWorkflow('missing');
     assert.equal(loaded, true);
+});
+
+test('opening a renamed workflow missing from the index preserves its current path and name', async () => {
+    const { manager, app } = harness();
+    app.loadGraphData = async (data, clean, restore, workflow) => {
+        assert.equal(workflow, '分类/重命名后的工作流.json');
+    };
+    await manager.loadWorkflow('分类/重命名后的工作流');
 });
 
 test('deleting the last tab creates a valid blank workflow before unloading its tracker', async () => {

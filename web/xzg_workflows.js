@@ -386,6 +386,10 @@ class XZGWorkflowsManager {
             tooltip: xzgT('工作流','Workflow'),
                 type: "custom",
                 render: (el) => {
+                    // 官方侧栏会重复调用 render，保留已有条目，避免按下与松开之间丢失点击。
+                    if (this._panelEl === el && el.querySelector(".xzg-wf-panel")) return;
+                    this._panelObserver?.disconnect();
+                    this._panelObserver = null;
                     this._panelEl = el;
                     el.style.height = '100%';
                     el.style.width = '100%';
@@ -4303,7 +4307,7 @@ class XZGWorkflowsManager {
 
             // 与官方标签切换使用同一个加载入口，等待图和激活工作流一起完成。
             // 不再先 openWorkflow 再延时 configure，避免两条异步加载路径互相覆盖。
-            await app.loadGraphData(data, true, true, persistedWf || undefined);
+            await app.loadGraphData(data, true, true, persistedWf || path + '.json');
 
             const savedDs = data.extra?.ds;
             if (!savedDs) this.centerCanvasOnNodes();

@@ -1138,6 +1138,9 @@ export class PoseViewerCore {
         this.initialized = false;
 
         // Undo/Redo History
+        this.lights = [];
+        this.pendingLights = null;
+        this._lightParamsSignature = null;
         this.history = [];
         this.future = [];
         this.maxHistory = 10;
@@ -1345,6 +1348,12 @@ export class PoseViewerCore {
     }
 
     dispose() {
+        for (const light of this.lights || []) {
+            this.scene?.remove(light);
+            light.dispose?.();
+        }
+        this.lights = [];
+        this.pendingLights = null;
         this._disposed = true;
         this.initialized = false;
         if (this._clearCharacterAxisHoverOnCtrlRelease) {
@@ -1467,6 +1476,10 @@ export class PoseViewerCore {
             this.setupScene();
 
             this.initialized = true;
+            if (this.pendingLights) {
+                this.updateLights(this.pendingLights);
+                this.pendingLights = null;
+            }
 
             // Apply buffered data after initialized=true
             if (this.pendingData) {
@@ -1641,15 +1654,16 @@ export class PoseViewerCore {
                 if (this._noCharacterSelection) return;
                 if (this._mannequinVisible === false || !this.skinnedMesh) return;
                 this.recordState();
+                // Character sizing uses a finer wheel step than viewport zoom:
+                // a typical 100-unit mouse-wheel tick changes size by at most 2%.
+                const factor = 1.0 - Math.sign(delta) * Math.min(0.0005 * absDelta, 0.02);
                 const group = this.createCharacterControlGroup?.();
                 if (group) {
-                    let factor = 1.0 - Math.sign(delta) * Math.min(0.004 * absDelta, 0.075);
-                    factor = Math.max(...group.items.map(item => 0.1 / item.zoom), Math.min(factor, ...group.items.map(item => 7 / item.zoom)));
-                    this.applyCharacterControlGroup(group, { scale: factor, commit: true });
+                    const groupFactor = Math.max(...group.items.map(item => 0.1 / item.zoom), Math.min(factor, ...group.items.map(item => 7 / item.zoom)));
+                    this.applyCharacterControlGroup(group, { scale: groupFactor, commit: true });
                     return;
                 }
                 const current = this._normalizedCharacterTransform(this.activeCharacterAppearance?.transform);
-                const factor = 1.0 - Math.sign(delta) * Math.min(0.004 * absDelta, 0.075);
                 const transform = {
                     ...current,
                     zoom: Math.max(0.1, Math.min(7, current.zoom * factor)),
@@ -1722,19 +1736,10 @@ export class PoseViewerCore {
         // Render on demand: transform change triggers render
         this.transform.addEventListener('change', () => this.requestRender());
 
-        // Soft studio lighting keeps the mannequin readable while preserving
-        // shape through gentle key, fill, and rim separation. These are fixed
-        // presentation lights rather than user-facing pose controls.
-        this.scene.add(new THREE.HemisphereLight(0xf2f6ff, 0x8f786c, 1.15));
-        const keyLight = new THREE.DirectionalLight(0xffeadb, 1.65);
-        keyLight.position.set(-7, 10, 12);
-        this.scene.add(keyLight);
-        const fillLight = new THREE.DirectionalLight(0xd8e8ff, 0.7);
-        fillLight.position.set(8, 4, 8);
-        this.scene.add(fillLight);
-        const rimLight = new THREE.DirectionalLight(0xfff1df, 0.85);
-        rimLight.position.set(2, 8, -9);
-        this.scene.add(rimLight);
+        const defaultLight = new THREE.AmbientLight(0xffffff, 0.5);
+        this.scene.add(defaultLight);
+        this.lights = [defaultLight];
+        this._lightParamsSignature = null;
 
         // Capture Camera (Independent of Orbit camera)
         this.captureCamera = new THREE.PerspectiveCamera(
@@ -1836,6 +1841,118 @@ export class PoseViewerCore {
 
         this.hoveredBoneName = null;
         this.directDrag = { active: false, chainKey: null, effector: null, effectorBone: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
+    }
+
+    // === Light Management ===
+    updateLights(lightParams) {
+        if (!this.initialized || !this.THREE || !this.scene) {
+            this.pendingLights = lightParams;
+            return;
+        }
+
+        const THREE = this.THREE;
+        if (!lightParams) return;
+
+        const sourceParams = [
+            { type: 'ambient', color: '#ffffff', intensity: 0.5 },
+            ...(Array.isArray(lightParams)
+                ? lightParams.filter(params => params?.type === 'directional')
+                : []),
+        ];
+        const signature = JSON.stringify(sourceParams.map((params) => ({
+            type: params?.type || '',
+            color: params?.color ?? '#ffffff',
+            intensity: Number(params?.intensity ?? (params?.type === 'ambient' ? 0.5 : 1.0)),
+            x: Number(params?.x ?? (params?.type === 'directional' ? 1 : 0)),
+            y: Number(params?.y ?? (params?.type === 'directional' ? 2 : 0)),
+            z: Number(params?.z ?? (params?.type === 'directional' ? 3 : 5)),
+            radius: Number(params?.radius ?? 100),
+        })));
+        if (signature === this._lightParamsSignature) return;
+
+        const matchesType = (light, params) => (
+            (params.type === 'ambient' && light?.isAmbientLight)
+            || (params.type === 'directional' && light?.isDirectionalLight)
+            || (params.type === 'point' && light?.isPointLight)
+        );
+        const setColor = (light, color) => {
+            if (!light?.color) return;
+            if (typeof color === 'string') light.color.set(color);
+            else if (Array.isArray(color)) light.color.setRGB(
+                Number(color[0] || 0) / 255,
+                Number(color[1] || 0) / 255,
+                Number(color[2] || 0) / 255,
+            );
+            else light.color.set(0xffffff);
+        };
+        const updateLight = (light, params) => {
+            setColor(light, params.color);
+            light.intensity = params.intensity ?? (params.type === 'ambient' ? 0.5 : 1.0);
+            if (params.type === 'directional') {
+                light.position.set(params.x ?? 1, params.y ?? 2, params.z ?? 3);
+            } else if (params.type === 'point') {
+                light.position.set(params.x ?? 0, params.y ?? 0, params.z ?? 5);
+                light.distance = params.radius ?? 100;
+            }
+        };
+
+        if (
+            this.lights?.length === sourceParams.length
+            && sourceParams.every((params, index) => matchesType(this.lights[index], params))
+        ) {
+            sourceParams.forEach((params, index) => updateLight(this.lights[index], params));
+            this._lightParamsSignature = signature;
+            this.requestRender();
+            return;
+        }
+
+        // Remove existing managed lights
+        if (this.lights && this.lights.length > 0) {
+            for (const light of this.lights) {
+                this.scene.remove(light);
+                if (light.dispose) light.dispose();
+            }
+        }
+        this.lights = [];
+
+        // Failsafe: if no lights are provided, or all were removed, add a default ambient light
+        // to prevent black silhouettes.
+        // Create new lights from params
+        for (const params of sourceParams) {
+            // Handle both hex string (#ffffff) and legacy RGB array formats
+            let color;
+            if (typeof params.color === 'string') {
+                color = new THREE.Color(params.color);
+            } else if (Array.isArray(params.color)) {
+                color = new THREE.Color(
+                    params.color[0] / 255,
+                    params.color[1] / 255,
+                    params.color[2] / 255
+                );
+            } else {
+                color = new THREE.Color(0xffffff);
+            }
+
+            let light;
+            if (params.type === 'ambient') {
+                light = new THREE.AmbientLight(color, params.intensity ?? 0.5);
+            } else if (params.type === 'directional') {
+                light = new THREE.DirectionalLight(color, params.intensity ?? 1.0);
+                light.position.set(params.x ?? 1, params.y ?? 2, params.z ?? 3);
+            } else if (params.type === 'point') {
+                light = new THREE.PointLight(color, params.intensity ?? 1.0, params.radius ?? 100);
+                light.position.set(params.x ?? 0, params.y ?? 0, params.z ?? 5);
+            }
+
+            if (light) {
+                updateLight(light, params);
+                this.scene.add(light);
+                this.lights.push(light);
+            }
+        }
+
+        this._lightParamsSignature = signature;
+        this.requestRender();
     }
 
     animate() {
@@ -4678,7 +4795,7 @@ export class PoseViewerCore {
             geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(data.uvs), 2));
         }
 
-        const skinType = this.currentSkinType || "naked_marks";
+        const skinType = this.currentSkinType || "naked";
         const textureSkinningEnabled = this.options.enableTextureSkinning
             && this.options.skinMode !== 'flat_color';
         const skinTex = textureSkinningEnabled
@@ -5115,34 +5232,38 @@ export class PoseViewerCore {
         this.future = []; // Clear redo stack on new action
     }
 
-    undo() {
-        if (this.history.length === 0) return;
-
-        const current = JSON.stringify(this.getHistoryPose());
-        this.future.push(current);
-
-        const prev = JSON.parse(this.history.pop());
-        this.setPose(prev);
-        this.options?.onHistoryRestore?.(prev);
-
-        // Sync after undo
-        if (this.syncCallback) this.syncCallback();
-        else this.dispatchPoseChange();
+    async undo() {
+        if (this._restoringHistory || this.history.length === 0) return;
+        this._restoringHistory = true;
+        try {
+            const current = JSON.stringify(this.getHistoryPose());
+            this.future.push(current);
+            const prev = JSON.parse(this.history.pop());
+            this.setPose(prev);
+            await this.options?.onHistoryRestore?.(prev);
+            // Sync after undo
+            if (this.syncCallback) this.syncCallback();
+            else this.dispatchPoseChange();
+        } finally {
+            this._restoringHistory = false;
+        }
     }
 
-    redo() {
-        if (this.future.length === 0) return;
-
-        const current = JSON.stringify(this.getHistoryPose());
-        this.history.push(current);
-
-        const next = JSON.parse(this.future.pop());
-        this.setPose(next);
-        this.options?.onHistoryRestore?.(next);
-
-        // Sync after redo
-        if (this.syncCallback) this.syncCallback();
-        else this.dispatchPoseChange();
+    async redo() {
+        if (this._restoringHistory || this.future.length === 0) return;
+        this._restoringHistory = true;
+        try {
+            const current = JSON.stringify(this.getHistoryPose());
+            this.history.push(current);
+            const next = JSON.parse(this.future.pop());
+            this.setPose(next);
+            await this.options?.onHistoryRestore?.(next);
+            // Sync after redo
+            if (this.syncCallback) this.syncCallback();
+            else this.dispatchPoseChange();
+        } finally {
+            this._restoringHistory = false;
+        }
     }
 
     setPose(pose, preserveCamera = false) {
@@ -5944,7 +6065,7 @@ export class PoseViewerCore {
                 const mesh = character.active ? this.skinnedMesh : this.passiveCharacters?.get(String(character.id))?.mesh;
                 return mesh?.material === material;
             });
-            if (highlighted) color = "#ffd45e";
+            if (highlighted) color = "#00d6c9";
         }
         const normalized = this._normalizedCharacterColor(color);
         const materials = Array.isArray(material) ? material : [material];
@@ -6016,8 +6137,11 @@ export class PoseViewerCore {
         this.requestRender();
     }
 
-    resetSceneCameraTarget() {
-        this.sceneCameraTarget = null;
+    resetSceneCameraTarget(target = null) {
+        this.sceneCameraTarget = Array.isArray(target) && target.length === 3
+            && target.every(value => Number.isFinite(value)) && this.THREE
+            ? new this.THREE.Vector3(...target)
+            : null;
     }
 
     _disposePassiveCharacter(entry) {

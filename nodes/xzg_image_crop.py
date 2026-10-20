@@ -3,6 +3,7 @@ import math
 import torch
 import numpy as np
 import cv2
+from PIL import Image
 import re
 
 
@@ -15,7 +16,7 @@ class XiaozhuguangImageCrop:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "resize_mode": (["lanczos", "nearest-exact", "bilinear", "bicubic"], {"default": "lanczos"}),
+                "resize_mode": (["Pillow Lanczos", "Pillow Lanczos (fast)", "Pillow Bicubic", "Pillow Bilinear"], {"default": "Pillow Lanczos", "tooltip": "与ATR高级一致：缩小时抗锯齿，放大保持Lanczos4。fast适合大倍率缩小。图像与遮罩使用相同模式。"}),
             },
             "optional": {
                 "mask": ("MASK", {"tooltip": "裁剪遮罩，可不连接；未连接时自动按输入图大小生成全黑遮罩（即整图裁剪）"}),
@@ -164,15 +165,30 @@ class XiaozhuguangImageCrop:
 
         return (crop_x1, crop_y1, crop_x2, crop_y2), best_aspect_ratio
 
-    _CV2_INTERP = {
-        "lanczos": cv2.INTER_LANCZOS4,
-        "nearest-exact": cv2.INTER_NEAREST,
-        "bilinear": cv2.INTER_LINEAR,
-        "bicubic": cv2.INTER_CUBIC,
-    }
+    @staticmethod
+    def _resize_numpy(image, width, height, resize_mode="Pillow Lanczos"):
+        legacy_modes = {"lanczos": cv2.INTER_LANCZOS4, "nearest-exact": cv2.INTER_NEAREST,
+                        "bilinear": cv2.INTER_LINEAR, "bicubic": cv2.INTER_CUBIC}
+        if resize_mode in legacy_modes:
+            return cv2.resize(image, (width, height), interpolation=legacy_modes[resize_mode])
+        if resize_mode == "Lanczos4 (legacy)" or (width >= image.shape[1] and height >= image.shape[0]):
+            return cv2.resize(image, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        if resize_mode == "OpenCV Area":
+            # Only reduce axes here; a mixed shrink/enlarge uses Lanczos4 afterward.
+            reduced = cv2.resize(image, (min(width, image.shape[1]), min(height, image.shape[0])), interpolation=cv2.INTER_AREA)
+            if reduced.shape[:2] != (height, width):
+                reduced = cv2.resize(reduced, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            return reduced
+        filters = {"Pillow Lanczos": Image.Resampling.LANCZOS,
+                   "Pillow Lanczos (fast)": Image.Resampling.LANCZOS,
+                   "Pillow Bicubic": Image.Resampling.BICUBIC,
+                   "Pillow Bilinear": Image.Resampling.BILINEAR}
+        return np.asarray(Image.fromarray(image).resize(
+            (width, height), filters[resize_mode],
+            reducing_gap=3.0 if resize_mode == "Pillow Lanczos (fast)" else None))
 
     def _process_single_image(self, img, mask, resize_mode, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255), Box_grow_pixels=0):
-        # img: (H,W,3) uint8，mask: (H,W) uint8 —— 用 numpy/vc2( C 实现) 替代 PIL，大幅提速
+        # img: (H,W,3) uint8; mask: (H,W) uint8.
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
 
         pad_left = max(0, -crop_x1)
@@ -205,9 +221,8 @@ class XiaozhuguangImageCrop:
 
         target_dimensions = self._calculate_target_dimensions(kilopixels, actual_aspect_ratio, divisible_by)
         target_width, target_height = target_dimensions
-        interp = self._CV2_INTERP.get(resize_mode, cv2.INTER_LANCZOS4)
-        resized_image = cv2.resize(cropped_image, (target_width, target_height), interpolation=interp)
-        resized_mask = cv2.resize(cropped_mask, (target_width, target_height), interpolation=interp)
+        resized_image = self._resize_numpy(cropped_image, target_width, target_height, resize_mode)
+        resized_mask = self._resize_numpy(cropped_mask, target_width, target_height, resize_mode)
 
         crop_info = {
             "original_coords": crop_box,

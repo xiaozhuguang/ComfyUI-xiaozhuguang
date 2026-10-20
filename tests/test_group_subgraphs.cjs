@@ -74,6 +74,25 @@ test('same local node IDs stay isolated while entering and leaving subgraphs', (
     assert.equal(manager.getGroupNodes('inner')[0], sub._nodes[0]);
 });
 
+test('recovering legacy node groups inside a subgraph never imports root groups', () => {
+    const { manager, app, root, Graph } = harness();
+    root._nodes = [output(1)];
+    manager.groups.main = group('main');
+    const sub = new Graph('sub');
+    sub._nodes = [output(1)];
+    sub._nodes[0]._xzgGroupId = 'inner';
+    sub._nodes[0]._xzgGroupData = group('inner');
+    app.canvas.graph = sub;
+    manager._switchGraph();
+    manager.restoreGroups();
+    assert.deepEqual(Object.keys(manager.groups), ['inner']);
+    manager.syncGroupsToExtra();
+    assert.deepEqual(Object.keys(sub.extra.xzgGroups), ['inner']);
+    app.canvas.graph = root;
+    manager._switchGraph();
+    assert.deepEqual(Object.keys(manager.groups), ['main']);
+});
+
 test('serializing and saving from inside a subgraph preserves both owners', async () => {
     const { manager, app, root, Graph } = harness();
     const sub = new Graph('sub');

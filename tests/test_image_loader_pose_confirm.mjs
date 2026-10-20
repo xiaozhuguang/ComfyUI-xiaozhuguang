@@ -51,4 +51,21 @@ for (const options of [{ ready: false }, { restoreError: 'bad saved scene' }, { 
     assert.equal(failed.studio._confirmingFullscreen, false);
     if (options.ready === false || options.restoreError) assert.ok(!failed.calls.includes('capture'));
 }
-console.log('Pose confirm regression checks passed (save, double click, restore/model/upload failures).');
+const empty = setup({ ready: false });
+empty.studio.characters = [];
+empty.studio.exportParams = { view_width: 1088, view_height: 1920 };
+empty.studio.applyCameraToViewer = () => {};
+Object.assign(empty.studio.viewer, {
+    initialized: true,
+    clearPassiveCharacters() { empty.calls.push('clear-passive'); },
+    setMannequinVisible(visible) { assert.equal(visible, false); empty.calls.push('hide-model'); },
+    capture(width, height) {
+        assert.equal(width, 1088);
+        assert.equal(height, 1920);
+        empty.calls.push('empty-scene-capture');
+        return 'background-only-image';
+    },
+});
+await empty.click();
+assert.deepEqual(empty.calls, ['capture', 'clear-passive', 'hide-model', 'empty-scene-capture', 'background-only-image', 'close']);
+console.log('Pose confirm regression checks passed, including replacing the image after deleting every character.');

@@ -13,7 +13,7 @@ export const DEFAULT_CHARACTER_COLORS = Object.freeze([
     "#8ec5ff",
     "#f0a6ca",
     "#a7e3a1",
-    "#f4d35e",
+    "#c4b5fd",
 ]);
 
 const cloneJSON = (value, fallback = null) => {
@@ -156,13 +156,11 @@ export function nextCharacterSlot(characters = [], preferredSlot = null) {
     return -1;
 }
 
-export function nextCharacterColor(characters = [], slot = nextCharacterSlot(characters)) {
+export function nextCharacterColor(characters = []) {
     const occupied = new Set(characters.map(character => normalizeCharacterColor(character?.color)));
-    const preferred = DEFAULT_CHARACTER_COLORS[
-        clamp(Math.floor(finite(slot, 0)), 0, DEFAULT_CHARACTER_COLORS.length - 1)
-    ];
-    if (!occupied.has(preferred)) return preferred;
-    return DEFAULT_CHARACTER_COLORS.find(color => !occupied.has(color)) || preferred;
+    const available = DEFAULT_CHARACTER_COLORS.filter(color => !occupied.has(color));
+    const choices = available.length ? available : DEFAULT_CHARACTER_COLORS;
+    return choices[Math.floor(Math.random() * choices.length)];
 }
 
 export function createPoseStudioCharacter({
@@ -172,6 +170,7 @@ export function createPoseStudioCharacter({
     name,
     color,
     transform,
+    initialTransform,
     mesh,
     poses,
     poseCount = 1,
@@ -195,6 +194,7 @@ export function createPoseStudioCharacter({
         name: String(name || (normalizedSlot === 0 ? "Main Character" : `Character ${normalizedSlot + 1}`)).slice(0, 64),
         color: normalizeCharacterColor(color, DEFAULT_CHARACTER_COLORS[normalizedSlot % DEFAULT_CHARACTER_COLORS.length]),
         transform: normalizeCharacterTransform(transform),
+        initialTransform: normalizeCharacterTransform(initialTransform ?? transform),
         mesh: cloneJSON(mesh, {}),
         poses: sourcePoses,
     };
@@ -321,6 +321,7 @@ export function serializePoseStudioCharacter(character) {
         name: String(character?.name || "Character").slice(0, 64),
         color: normalizeCharacterColor(character?.color),
         transform: normalizeCharacterTransform(character?.transform),
+        initialTransform: normalizeCharacterTransform(character?.initialTransform ?? character?.transform),
         mesh: cloneJSON(character?.mesh, {}),
         poses: cloneJSON(character?.poses, [{}]),
     };

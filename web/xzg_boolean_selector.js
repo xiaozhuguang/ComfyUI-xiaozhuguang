@@ -43,6 +43,12 @@ import { xzgT } from "./xzg_i18n.js";
 
 const clamp = (v, mn, mx) => Math.max(mn, Math.min(mx, v));
 
+// 字号是纯比例：fontScale（百分比）= 文字高度 / 标签高度，
+// 绘制时 fontPx = 标签实际高度 × fontScale%，拖动缩放时比例恒定。
+const DEFAULT_FONT_SCALE = 50;
+const LEGACY_FONT_BASE = 30; // 旧 fontSize 字段的基准标签高度
+const normalizeFontScale = (v) => clamp(Math.round(Number(v) || DEFAULT_FONT_SCALE), 20, 90);
+
 const chainCallback = (object, property, callback) => {
     if (object == undefined) {
         console.error("Tried to add callback to non-existant object");
@@ -113,7 +119,14 @@ function getNodeSettings(node, defaults) {
     s.widths = { ...defaults.widths, ...(parsed.widths || {}) };
     s.btnWidth = clamp(s.btnWidth, 55, 300);
     s.btnHeight = clamp(s.btnHeight, 30, 80);
-    s.fontSize = clamp(s.fontSize, 10, 24);
+    // 兼容旧字段：fontSize（标签高 30px 时的字号）→ fontScale 百分比
+    if (parsed.fontScale === undefined) {
+        const legacyPx = parsed.fontSize !== undefined
+            ? (Number(parsed.fontSize) || 12)
+            : (DEFAULT_FONT_SCALE / 100) * LEGACY_FONT_BASE;
+        s.fontScale = Math.round(legacyPx / LEGACY_FONT_BASE * 100);
+    }
+    s.fontScale = normalizeFontScale(s.fontScale);
     s.btnGap = clamp(s.btnGap, 0, 20);
     if (!s.widths || typeof s.widths !== "object") {
         s.widths = {};
@@ -144,7 +157,7 @@ function getButtonWidth(isTrue, settings) {
  * 计算布尔按钮布局矩形（参照小珠光选择器的边距/缩放算法）。
  * - 左右各 6px 边距：availableW = W - 12
  * - 顶部 4px、底部 8px 边距；节点高度空余时按钮等比放大填满，不足时等比缩小避免溢出
- * - 节点宽度空余时按钮等比放大填满，不足时保持自然宽度（节点宽度自适应，不压缩按钮）
+ * - 节点宽度空余时按钮等比放大填满，不足时等比压缩（保证不被节点边界裁掉）
  * - 按钮之间的比例关系（由 settings.widths / settings.btnWidth 决定）保持不变
  * @param {number} y - 控件顶部 y 坐标
  * @param {number} W - 节点宽度
@@ -175,18 +188,26 @@ function getButtonRects(y, W, settings, availableH) {
     const trueW = getButtonWidth(true, settings);
     const naturalTotalW = falseW + gap + trueW;
 
-    // 宽度自适应：节点够宽时等比放大填满，不够宽保持自然宽度
+    // 宽度自适应：节点够宽时等比放大填满；不够宽时等比压缩，
+    // 否则按钮会超出节点被裁掉（原先这里保持自然宽度，导致溢出）。
     let scaledFalseW = falseW;
     let scaledTrueW = trueW;
     let rowWidth;
     const totalGap = gap;
     const naturalContentW = falseW + trueW;
     const availableContentW = Math.max(0, availableW - totalGap);
-    if (availableContentW >= naturalContentW && naturalContentW > 0) {
+    if (naturalContentW > 0) {
         const scale = availableContentW / naturalContentW;
-        scaledFalseW = falseW * scale;
-        scaledTrueW = trueW * scale;
-        rowWidth = availableW;
+        if (availableContentW >= naturalContentW) {
+            scaledFalseW = falseW * scale;
+            scaledTrueW = trueW * scale;
+            rowWidth = availableW;
+        } else {
+            // 压缩时保底 20px，并用实际宽度重算行宽，避免最小值钳制后再次溢出
+            scaledFalseW = Math.max(20, falseW * scale);
+            scaledTrueW = Math.max(20, trueW * scale);
+            rowWidth = scaledFalseW + totalGap + scaledTrueW;
+        }
     } else {
         rowWidth = naturalTotalW;
     }
@@ -219,13 +240,352 @@ const DEFAULT_SETTINGS = {
     colors: { color1: "#000000", color2: "#FF0000", color3: "#000000", direction: "180deg" },
     btnWidth: 60,
     btnHeight: 30,
-    fontSize: 12,
+    fontScale: DEFAULT_FONT_SCALE,
     btnGap: 4,
     fontColor: "#FFFFFF",
     inactiveColor: "#2a2a2a",
     widths: {},
     invert: false,
 };
+
+// ═══════════════════════════════════════════════
+//  DOM 控件（Nodes 1 / Nodes 2.0 通用）
+// ═══════════════════════════════════════════════
+
+function getBoolMinContentHeight() {
+    // 字号是比例值，不能参与节点最小高度计算（同选择器）；
+    // 一行按钮的底线：12px 内容 + 上下各 4px 余量。
+    return 20;
+}
+
+// 加载/恢复尺寸时的最小高度：只做防负值兜底，
+// 避免用户压缩过的高度在刷新浏览器后被 getBoolMinNodeHeight() 撑回去。
+const BOOL_RESTORE_MIN_HEIGHT = 48;
+
+// 尺寸持久化：拖拽结束把尺寸写进 node.properties（properties 一定会写进工作流），
+// 这样即使前端没把 node.size 写回存档，刷新后也不会丢大小。
+const SIZE_HINT_KEY = "_xzgSize";
+function writeBoolNodeSizeHint(node, w, h) {
+    if (!node || !Number.isFinite(w) || !Number.isFinite(h)) return;
+    node.properties = node.properties || {};
+    const prev = node.properties[SIZE_HINT_KEY];
+    if (Array.isArray(prev) && Math.abs(prev[0] - w) < 0.5 && Math.abs(prev[1] - h) < 0.5) return;
+    node.properties[SIZE_HINT_KEY] = [Math.round(w), Math.round(h)];
+}
+function readBoolNodeSizeHint(node) {
+    const v = node?.properties?.[SIZE_HINT_KEY];
+    if (!Array.isArray(v) || v.length < 2) return null;
+    const w = Number(v[0]);
+    const h = Number(v[1]);
+    return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? [w, h] : null;
+}
+function applyBoolNodeSizeHint(node) {
+    const hint = readBoolNodeSizeHint(node);
+    if (!hint || !node?.size) return false;
+    const nextW = Math.max(hint[0], getBoolMinNodeWidth(node));
+    const nextH = Math.max(hint[1], BOOL_RESTORE_MIN_HEIGHT);
+    if (Math.abs(node.size[0] - nextW) > 0.5 || Math.abs(node.size[1] - nextH) > 0.5) {
+        node.size[0] = nextW;
+        node.size[1] = nextH;
+        node.setDirtyCanvas?.(true, true);
+    }
+    node._xzgBoolUI?.refresh?.();
+    return true;
+}
+
+function getBoolMinNodeWidth(node) {
+    const settings = getNodeSettings(node, DEFAULT_SETTINGS);
+    // 按两个标签的自然宽度定最小宽度，避免节点被缩到按钮放不下；
+    // 上限 420，再宽的部分交给按钮等比压缩吸收，不让节点无限撑大。
+    const natural = getButtonWidth(false, settings) + settings.btnGap + getButtonWidth(true, settings) + 12;
+    return Math.min(420, Math.max(120, Math.round(natural)));
+}
+
+function getBoolMinNodeHeight(node) {
+    // Nodes 2.0 的节点会为插槽/底部角标预留空间
+    const vueNode = node._xzgBoolUI?.canvas?.closest?.(".lg-node");
+    return Math.max(58, getBoolMinContentHeight() + (vueNode ? 64 : 32));
+}
+
+function createBoolDOMWidget(node, boolWidget) {
+    const root = document.createElement("div");
+    root.style.cssText = "width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;contain:size layout;pointer-events:none;position:relative;";
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "position:absolute;inset:0;display:block;min-width:0;min-height:0;width:100%;height:100%;touch-action:manipulation;cursor:pointer;pointer-events:auto;";
+    canvas.width = 1;
+    canvas.height = 1;
+    root.appendChild(canvas);
+    // Legacy LiteGraph 的原生缩放手柄会被 DOM 控件盖住，单独留一个右下角手柄
+    const resizeHandle = document.createElement("div");
+    resizeHandle.title = "拖动调整节点大小";
+    resizeHandle.style.cssText = "position:absolute;right:0;bottom:0;width:18px;height:18px;box-sizing:border-box;pointer-events:auto;touch-action:none;cursor:nwse-resize;z-index:2;background:transparent;";
+    root.appendChild(resizeHandle);
+
+    const ctx = canvas.getContext("2d");
+    let width = 0, height = 0, dpr = 1;
+    // 位图固定超采样倍数：不跟随画布缩放变化，缩放时浏览器只做整体缩放，
+    // 字体不会被重新栅格化，也就不会出现“缩放一次跳一下”的观感。
+    const RASTER_SUPERSAMPLE = 2;
+    // 最近一次绘制用的按钮矩形；点击时直接用它做命中判定，保证与画面完全一致。
+    let lastRects = null;
+    const fontFamily = `"Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
+
+    const paint = () => {
+        if (!width || !height) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        const settings = getNodeSettings(node, DEFAULT_SETTINGS);
+        const { rects } = getButtonRects(0, width, settings, Math.max(0, height - 8));
+        lastRects = rects;
+        const currentValue = !!boolWidget.value;
+        const fontRatio = (settings.fontScale ?? DEFAULT_FONT_SCALE) / 100;
+
+        // 两个标签共用同一个字号：取“高度比例字号”与“各自按宽度能容纳的字号”的最小值，
+        // 长短不同的标签不会出现大小不一致，也不会被横向压扁。
+        let fontSize = Infinity;
+        for (const r of rects) {
+            if (!r) continue;
+            const target = Math.max(1, r.h * fontRatio);
+            const label = getDisplayLabel(r.value, settings.labels);
+            let fitted = target;
+            if (label) {
+                ctx.font = `${target}px ${fontFamily}`;
+                const maxTextWidth = Math.max(1, r.w - 8);
+                const textWidth = ctx.measureText(label).width;
+                if (textWidth > maxTextWidth) {
+                    fitted = Math.max(1, target * maxTextWidth / textWidth);
+                }
+            }
+            fontSize = Math.min(fontSize, fitted);
+        }
+        if (!isFinite(fontSize)) fontSize = 1;
+        ctx.font = `${fontSize}px ${fontFamily}`;
+
+        for (const r of rects) {
+            if (!r) continue;
+            const isActive = currentValue === r.value;
+            if (isActive) {
+                ctx.fillStyle = settings.colors.direction === "radial"
+                    ? drawRadialGradient(ctx, r.x, r.y, r.w, r.h, settings.colors)
+                    : drawLinearGradient(ctx, r.x, r.y, r.w, r.h, settings.colors.direction, settings.colors);
+            } else {
+                ctx.fillStyle = settings.inactiveColor || "#2a2a2a";
+            }
+            rrect(ctx, r.x, r.y, r.w, r.h, 5);
+            ctx.fill();
+
+            ctx.strokeStyle = isActive ? settings.colors.color1 : "#444";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            const label = getDisplayLabel(r.value, settings.labels);
+            if (!label) continue;
+            ctx.fillStyle = settings.fontColor || "#FFFFFF";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "alphabetic";
+            // 按字形墨迹盒垂直居中：textBaseline="middle" 依据的是字体 em 框，中文字形会偏上。
+            const m = ctx.measureText(label);
+            const ascent = m.actualBoundingBoxAscent;
+            const descent = m.actualBoundingBoxDescent;
+            const baselineOffset = (Number.isFinite(ascent) && Number.isFinite(descent))
+                ? (ascent - descent) / 2
+                : fontSize * 0.38;
+            ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + baselineOffset);
+        }
+    };
+
+    const resize = () => {
+        // 用布局尺寸而不是 getBoundingClientRect()：画布缩放时节点层会给 DOM 加
+        // transform，视觉尺寸带缩放系数，用它算几何会让绘制/点击坐标错位。
+        const rect = root.getBoundingClientRect();
+        let w = root.clientWidth || rect.width;
+        const h = root.clientHeight || rect.height;
+        if (!w || !h) return;
+        // 部分前端会把 DOM 控件撑得比节点可视区更宽，这里再按父容器收一次，
+        // 避免按钮画到节点外面被裁剪。
+        const parentW = root.parentElement?.clientWidth || 0;
+        if (parentW && parentW < w) w = parentW;
+        width = Math.round(w);
+        height = Math.round(h);
+        // 显式对齐画布 CSS 尺寸，避免分数尺寸带来的亚像素缩放。
+        canvas.style.width = width + "px";
+        canvas.style.height = height + "px";
+        const superSample = width * height > 400000 ? 1 : RASTER_SUPERSAMPLE;
+        dpr = (window.devicePixelRatio || 1) * superSample;
+        const bw = Math.round(width * dpr);
+        const bh = Math.round(height * dpr);
+        if (canvas.width !== bw || canvas.height !== bh) {
+            canvas.width = bw;
+            canvas.height = bh;
+        }
+        paint();
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(root);
+    const onWindowResize = () => resize();
+    window.addEventListener("resize", onWindowResize);
+
+    const widget = node.addDOMWidget("xzg_bool_ui", "custom", root, {
+        hideOnZoom: false, margin: 0,
+        getMinHeight: () => getBoolMinContentHeight(),
+        getHeight: () => "100%",
+    });
+    widget.value = null;
+    Object.defineProperty(widget, "width", {
+        configurable: true,
+        get: () => node.size?.[0] || 0,
+        set(_) {},
+    });
+
+    // 命中判定：优先用最近一次绘制的矩形（与画面完全一致），
+    // 点在按钮缝隙（≤6px）时吸附到最近的按钮，避免“点了没反应”。
+    const hitTestButton = (x, y) => {
+        const rects = lastRects;
+        if (!rects) return null;
+        for (const r of rects) {
+            if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r;
+        }
+        let best = null;
+        let bestDist = Infinity;
+        for (const r of rects) {
+            if (!r) continue;
+            const dx = Math.max(r.x - x, 0, x - (r.x + r.w));
+            const dy = Math.max(r.y - y, 0, y - (r.y + r.h));
+            const dist = Math.hypot(dx, dy);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = r;
+            }
+        }
+        return bestDist <= 6 ? best : null;
+    };
+
+    const applyValue = (value) => {
+        if (!!boolWidget.value === value) return;
+        boolWidget.value = value;
+        try { boolWidget.callback?.(value, app.canvas, node); } catch (e) {}
+        paint();
+        node.setDirtyCanvas?.(true, true);
+    };
+
+    const selectButton = (event) => {
+        if (event.button !== 0) return;
+        const bounds = canvas.getBoundingClientRect();
+        if (!bounds.width || !bounds.height) return;
+        // 把鼠标坐标换算回画布本地坐标，抵消节点层 transform 带来的缩放。
+        const zoomX = (canvas.clientWidth || bounds.width) / bounds.width;
+        const zoomY = (canvas.clientHeight || bounds.height) / bounds.height;
+        const x = (event.clientX - bounds.left) * zoomX;
+        const y = (event.clientY - bounds.top) * zoomY;
+        if (!lastRects) {
+            const settings = getNodeSettings(node, DEFAULT_SETTINGS);
+            lastRects = getButtonRects(0, width || canvas.clientWidth, settings, Math.max(0, (height || canvas.clientHeight) - 8)).rects;
+        }
+        const rect = hitTestButton(x, y);
+        if (!rect) return;
+        applyValue(rect.value);
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
+    // 只监听 pointerdown：叠加 mousedown/click 会在节点被拖动后用新坐标重新命中，
+    // 导致切换结果被覆盖或看起来“点了没反应”。
+    canvas.addEventListener("pointerdown", selectButton);
+
+    // Nodes 1 下 DOM 控件盖住画布，滚轮到不了 LiteGraph，鼠标停在标签上无法缩放画布。
+    const forwardWheelToCanvas = (event) => {
+        if (globalThis.LiteGraph?.vueNodesMode) return; // Nodes 2.0 由 Vue 层统一处理
+        const lcanvas = app.canvas;
+        if (!lcanvas) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof lcanvas.processMouseWheel === "function") {
+            lcanvas.processMouseWheel(event);
+            return;
+        }
+        lcanvas.canvas?.dispatchEvent(new WheelEvent("wheel", {
+            deltaX: event.deltaX,
+            deltaY: event.deltaY,
+            deltaMode: event.deltaMode,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            ctrlKey: event.ctrlKey,
+            shiftKey: event.shiftKey,
+            altKey: event.altKey,
+            metaKey: event.metaKey,
+            bubbles: true,
+            cancelable: true,
+        }));
+    };
+    root.addEventListener("wheel", forwardWheelToCanvas, { passive: false });
+
+    resizeHandle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startWidth = node.size?.[0] || 120;
+        const startHeight = node.size?.[1] || 58;
+        const zoom = app.canvas?.ds?.scale || 1;
+        resizeHandle.setPointerCapture?.(event.pointerId);
+        const onMove = (moveEvent) => {
+            const nextSize = [
+                Math.max(getBoolMinNodeWidth(node), startWidth + (moveEvent.clientX - startX) / zoom),
+                Math.max(getBoolMinNodeHeight(node), startHeight + (moveEvent.clientY - startY) / zoom),
+            ];
+            node.size[0] = nextSize[0];
+            node.size[1] = nextSize[1];
+            node.onResize?.(nextSize);
+            // Nodes 2.0 的 resize 钩子可能回算 DOM 控件高度，这里以指针结果为准再写一次。
+            node.size[0] = nextSize[0];
+            node.size[1] = nextSize[1];
+            node.setDirtyCanvas?.(true, true);
+            requestAnimationFrame(resize);
+        };
+        const onUp = (upEvent) => {
+            const finalSize = [...node.size];
+            resizeHandle.removeEventListener("pointermove", onMove);
+            resizeHandle.removeEventListener("pointerup", onUp);
+            resizeHandle.removeEventListener("pointercancel", onUp);
+            try { resizeHandle.releasePointerCapture?.(upEvent.pointerId); } catch (_) {}
+            node.onResize?.(finalSize);
+            node.size[0] = finalSize[0];
+            node.size[1] = finalSize[1];
+            // 把尺寸写进 properties，刷新/重新加载后据此恢复
+            writeBoolNodeSizeHint(node, node.size[0], node.size[1]);
+            app.graph?.change?.();
+        };
+        resizeHandle.addEventListener("pointermove", onMove);
+        resizeHandle.addEventListener("pointerup", onUp);
+        resizeHandle.addEventListener("pointercancel", onUp);
+    });
+
+    const previousCallback = boolWidget.callback;
+    boolWidget.callback = function (...args) {
+        const result = previousCallback?.apply(this, args);
+        requestAnimationFrame(paint);
+        return result;
+    };
+
+    const previousRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        observer.disconnect();
+        root.removeEventListener("wheel", forwardWheelToCanvas);
+        window.removeEventListener("resize", onWindowResize);
+        return previousRemoved?.apply(this, arguments);
+    };
+
+    node._xzgBoolUI = {
+        refresh: () => requestAnimationFrame(resize),
+        canvas,
+        hitTest: hitTestButton,
+        // 供设置面板等外部改动尺寸后同步持久化
+        persistSize: () => writeBoolNodeSizeHint(node, node.size?.[0], node.size?.[1]),
+    };
+    requestAnimationFrame(resize);
+    return widget;
+}
 
 // ═══════════════════════════════════════════════
 //  设置控制面板
@@ -270,7 +630,7 @@ function openBoolSettingsPanel(node) {
         return r;
     }
 
-    function mkRange(min, max, step, value) {
+    function mkRange(min, max, step, value, suffix = "") {
         const wrap = document.createElement("div");
         wrap.style.cssText = "flex:1;display:flex;align-items:center;gap:8px;";
         const inp = document.createElement("input");
@@ -279,9 +639,9 @@ function openBoolSettingsPanel(node) {
         inp.min = min; inp.max = max; inp.step = step; inp.value = value;
         const val = document.createElement("span");
         val.className = "xzg-bs-val";
-        val.textContent = value;
+        val.textContent = value + suffix;
         wrap.append(inp, val);
-        return { wrap, inp, val };
+        return { wrap, inp, val, suffix };
     }
 
     function mkClrBtn(color) {
@@ -308,8 +668,11 @@ function openBoolSettingsPanel(node) {
     const gapCtrl = mkRange(0, 20, 1, s.btnGap);
     addRow(xzgT('按钮间距','Button Gap'), gapCtrl.wrap);
 
-    const fontSizeCtrl = mkRange(10, 24, 1, s.fontSize);
-    addRow(xzgT('标签字号','Label Font Size'), fontSizeCtrl.wrap);
+    // 字号是相对标签高度的比例（百分比），拖动缩放节点时比例保持不变
+    const fontSizeCtrl = mkRange(20, 90, 1, s.fontScale ?? DEFAULT_FONT_SCALE, "%");
+    fontSizeCtrl.inp.title = xzgT('文字高度占标签高度的比例，缩放时保持不变','Text height as a percentage of label height; constant while resizing');
+    const fontSizeRow = addRow(xzgT('标签字号','Label Font Size'), fontSizeCtrl.wrap);
+    fontSizeRow.firstChild.title = fontSizeCtrl.inp.title;
 
     const falseLabelInp = document.createElement("input");
     falseLabelInp.className = "xzg-bs-inp";
@@ -467,7 +830,7 @@ function openBoolSettingsPanel(node) {
         const trueW = clamp(parseInt(trueWidthCtrl.inp.value), 55, 300);
         ns.widths = { false: falseW, true: trueW };
         ns.btnGap = clamp(parseInt(gapCtrl.inp.value), 0, 20);
-        ns.fontSize = clamp(parseInt(fontSizeCtrl.inp.value), 10, 24);
+        ns.fontScale = normalizeFontScale(fontSizeCtrl.inp.value);
         ns.labels = {
             false: falseLabelInp.value,
             true: trueLabelInp.value,
@@ -484,18 +847,19 @@ function openBoolSettingsPanel(node) {
         Object.assign(s, ns);
         setNodeSettings(node, s);
         // 自由缩放模式：不强制修改节点尺寸，按钮在用户拖动的节点内自适应填满
-        // 仅确保不小于最小尺寸（一行时高度底线 58，与选择器一致）
+        // 仅确保不小于最小尺寸（Nodes 2.0 会额外预留插槽/底栏空间）
         if (node.size) {
-            if (node.size[0] < 120) node.size[0] = 120;
-            if (node.size[1] < 58) node.size[1] = 58;
+            node.size[0] = Math.max(node.size[0], getBoolMinNodeWidth(node));
+            node.size[1] = Math.max(node.size[1], getBoolMinNodeHeight(node));
         }
-        node.setDirtyCanvas(true, true);
+        node._xzgBoolUI?.refresh?.();
+        node.setDirtyCanvas?.(true, true);
     }
 
     [falseWidthCtrl, trueWidthCtrl, gapCtrl, fontSizeCtrl].forEach(ctrl => {
         updateRangeFill(ctrl.inp);
         ctrl.inp.addEventListener("input", () => {
-            ctrl.val.textContent = ctrl.inp.value;
+            ctrl.val.textContent = ctrl.inp.value + (ctrl.suffix || "");
             updateRangeFill(ctrl.inp);
             applyPreview();
         });
@@ -531,7 +895,8 @@ function openBoolSettingsPanel(node) {
             setNodeSettings(node, origSettings);
             node.size[0] = origSize[0];
             node.size[1] = origSize[1];
-            node.setDirtyCanvas(true, true);
+            node._xzgBoolUI?.refresh?.();
+            node.setDirtyCanvas?.(true, true);
         }
         overlay.remove();
         _boolSettingsPanel = null;
@@ -576,13 +941,14 @@ app.registerExtension({
             this.flags = this.flags || {};
             this.flags.resizable = true;
 
-            // 拖动缩放时强制最小尺寸（与选择器一致：一行时高度底线 58）
+            // 拖动缩放时强制最小尺寸（Nodes 2.0 需要额外预留插槽/底部角标空间）
             const origOnResize = this.onResize;
             this.onResize = function () {
                 if (origOnResize) origOnResize.apply(this, arguments);
                 if (this.size) {
-                    if (this.size[0] < 120) this.size[0] = 120;
-                    if (this.size[1] < 58) this.size[1] = 58;
+                    this.size[0] = Math.max(this.size[0], getBoolMinNodeWidth(this));
+                    // 高度最小值只在拖拽手柄里限制，这里不撑高，否则刷新会还原
+                    this.size[1] = Math.max(this.size[1], BOOL_RESTORE_MIN_HEIGHT);
                 }
             };
 
@@ -599,108 +965,76 @@ app.registerExtension({
 
             const node = this;
 
-            node.addCustomWidget({
-                name: "xzg_bool_ui",
-                type: "xzg_boolean",
-
-                draw(ctx, node, W, y, H) {
-                    const settings = getNodeSettings(node, DEFAULT_SETTINGS);
-                    // 用节点实际高度计算可用高度（参照选择器），而非 H 参数
-                    const nodeH = node.size[1] || 0;
-                    const availH = Math.max(0, nodeH - y - 8);
-                    const { rects, contentH } = getButtonRects(y, W, settings, availH);
-                    const currentValue = !!boolWidget.value;
-
-                    for (let i = 0; i < rects.length; i++) {
-                        const r = rects[i];
-                        if (!r) continue;
-                        const isActive = currentValue === r.value;
-
-                        ctx.save();
-                        if (isActive) {
-                            if (settings.colors.direction === "radial") {
-                                ctx.fillStyle = drawRadialGradient(ctx, r.x, r.y, r.w, r.h, settings.colors);
-                            } else {
-                                ctx.fillStyle = drawLinearGradient(ctx, r.x, r.y, r.w, r.h, settings.colors.direction, settings.colors);
-                            }
-                        } else {
-                            ctx.fillStyle = settings.inactiveColor || "#2a2a2a";
-                        }
-                        rrect(ctx, r.x, r.y, r.w, r.h, 5);
-                        ctx.fill();
-
-                        ctx.strokeStyle = isActive ? settings.colors.color1 : "#444";
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-
-                        const label = getDisplayLabel(r.value, settings.labels);
-                        ctx.fillStyle = settings.fontColor || "#FFFFFF";
-                        // 字体大小限制不超出按钮高度（参照选择器）
-                        const effectiveFont = clamp(settings.fontSize || 12, 8, r.h * 0.85);
-                        ctx.font = `${effectiveFont}px "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", "SimHei", Arial, sans-serif`;
-                        ctx.textAlign = "center";
-                        // 用实际字形度量精确垂直居中，避免大字体时偏上
-                        ctx.textBaseline = "alphabetic";
-                        const m = ctx.measureText(label);
-                        const ascent = m.actualBoundingBoxAscent || effectiveFont * 0.8;
-                        const descent = m.actualBoundingBoxDescent || effectiveFont * 0.2;
-                        ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + (ascent - descent) / 2);
-                        ctx.restore();
-                    }
-
-                    node._xzgBoolY = y;
-                    node._xzgBoolH = contentH + 8;
-                },
-
-                mouse(event, pos, node) {
-                    // 点击检测由 node.onMouseDown 处理（覆盖整个节点区域），这里不再响应
-                    return false;
-                },
-
-                computeSize(width) {
-                    // 返回极小值，不干预节点高度，让用户自由拖动（参照选择器）
-                    return [width, 4];
-                },
-            });
-
+            // 用 DOM 控件承载按钮（Nodes 2.0 下节点不再走 canvas 绘制，
+            // addCustomWidget 的 draw 不会被调用，必须改成 DOM）
+            createBoolDOMWidget(node, boolWidget);
             const custom = this.widgets.pop();
             this.widgets.splice(widgetIndex + 1, 0, custom);
-            // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，
-            // 一旦大于节点实际宽度，选项绘制/交互命中区就会溢出节点、且随属性面板开/关变化。
-            // 这里把 width 改为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
-            const _xzgBoolNode = this;
-            Object.defineProperty(custom, 'width', {
-                configurable: true,
-                get() { return _xzgBoolNode?.size?.[0] || 0; },
-                set(_) { /* 忽略外部写入，防止布尔选项溢出节点 */ },
-            });
 
-            // 节点级点击检测：覆盖整个节点区域，不受 computeSize 限制（参照选择器）
-            const _node = this;
-            _node.onMouseDown = function(event, pos) {
-                if (event.type === "wheel") return false;
-                if (event.button !== 0) return false;
-                const settings = getNodeSettings(_node, DEFAULT_SETTINGS);
-                const W = _node.size[0];
-                const yPos = _node._xzgBoolY !== undefined ? _node._xzgBoolY : 0;
-                const nodeH = _node.size[1] || 0;
-                const availH = Math.max(0, nodeH - yPos - 8);
-                const { rects } = getButtonRects(yPos, W, settings, availH);
-
-                for (let i = 0; i < rects.length; i++) {
-                    const r = rects[i];
-                    if (!r) continue;
-                    if (pos[0] >= r.x && pos[0] <= r.x + r.w &&
-                        pos[1] >= r.y && pos[1] <= r.y + r.h) {
-                        boolWidget.value = r.value;
-                        if (boolWidget.callback) {
-                            try { boolWidget.callback(r.value); } catch (e) {}
+            // Recover settings saved by an earlier DOM-widget build that shifted the slot.
+            const previousConfigure = this.onConfigure;
+            this.onConfigure = function (info) {
+                const result = previousConfigure?.apply(this, arguments);
+                const settings = this.widgets?.find(w => w.name === "_xz_settings");
+                const ui = this.widgets?.find(w => w.name === "xzg_bool_ui");
+                if ((!settings?.value || settings.value === "null") && typeof ui?.value === "string" && ui.value.trim().startsWith("{")) {
+                    settings.value = ui.value;
+                    ui.value = null;
+                }
+                // 恢复尺寸：优先用 properties 里持久化的尺寸，其次才是 configure 的 size。
+                const hint = readBoolNodeSizeHint(this);
+                const savedW = Number(info?.size?.[0]);
+                const savedH = Number(info?.size?.[1]);
+                const baseW = hint ? hint[0] : savedW;
+                const baseH = hint ? hint[1] : savedH;
+                if (Number.isFinite(baseW) && Number.isFinite(baseH) && baseW > 0 && baseH > 0) {
+                    const restoreSize = () => {
+                        if (!this.size) return;
+                        const nextW = Math.max(baseW, getBoolMinNodeWidth(this));
+                        const nextH = Math.max(baseH, BOOL_RESTORE_MIN_HEIGHT);
+                        if (Math.abs(this.size[0] - nextW) > 0.5 || Math.abs(this.size[1] - nextH) > 0.5) {
+                            this.size[0] = nextW;
+                            this.size[1] = nextH;
+                            this.setDirtyCanvas?.(true, true);
                         }
-                        _node.setDirtyCanvas(true, true);
+                        this._xzgBoolUI?.refresh?.();
+                    };
+                    requestAnimationFrame(() => {
+                        restoreSize();
+                        requestAnimationFrame(restoreSize);
+                    });
+                }
+                this._xzgBoolUI?.refresh?.();
+                return result;
+            };
+
+            // Fallback for frontends that route canvas input around DOM widgets.
+            const previousMouseDown = this.onMouseDown;
+            this.onMouseDown = function (event, pos) {
+                if (event.type === "wheel") return previousMouseDown?.apply(this, arguments) ?? false;
+                const ui = this._xzgBoolUI;
+                const uiCanvas = ui?.canvas;
+                const bounds = uiCanvas?.getBoundingClientRect();
+                if (event.button === 0 && bounds && bounds.width && bounds.height &&
+                    event.clientX >= bounds.left && event.clientX <= bounds.right &&
+                    event.clientY >= bounds.top && event.clientY <= bounds.bottom) {
+                    // 与 DOM 事件使用同一套本地坐标与命中逻辑，避免节点层缩放导致错位。
+                    const zoomX = (uiCanvas.clientWidth || bounds.width) / bounds.width;
+                    const zoomY = (uiCanvas.clientHeight || bounds.height) / bounds.height;
+                    const x = (event.clientX - bounds.left) * zoomX;
+                    const y = (event.clientY - bounds.top) * zoomY;
+                    const rect = typeof ui.hitTest === "function" ? ui.hitTest(x, y) : null;
+                    if (rect) {
+                        if (!!boolWidget.value !== rect.value) {
+                            boolWidget.value = rect.value;
+                            try { boolWidget.callback?.(rect.value, app.canvas, this); } catch (e) {}
+                        }
+                        this._xzgBoolUI?.refresh?.();
+                        this.setDirtyCanvas?.(true, true);
                         return true;
                     }
                 }
-                return false;
+                return previousMouseDown?.apply(this, arguments) ?? false;
             };
 
             chainCallback(this, "getExtraMenuOptions", function(_, options) {
@@ -717,8 +1051,11 @@ app.registerExtension({
             const trueW = getButtonWidth(true, settings);
             const naturalW = falseW + settings.btnGap + trueW + 12; // +12 左右边距
             const { contentH } = getButtonRects(0, naturalW, settings);
-            this.size[0] = Math.max(120, naturalW);
-            this.size[1] = Math.max(58, contentH + 28);
+            this.size[0] = Math.max(getBoolMinNodeWidth(this), naturalW);
+            this.size[1] = Math.max(getBoolMinNodeHeight(this), contentH + 28);
+            this._xzgBoolUI?.refresh?.();
+            // 加载工作流时 properties 可能晚于 onNodeCreated 才恢复，延迟再套用一次存档尺寸
+            setTimeout(() => applyBoolNodeSizeHint(this), 150);
         };
     },
 });

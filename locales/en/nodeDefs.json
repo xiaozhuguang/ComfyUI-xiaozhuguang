@@ -424,7 +424,7 @@
     "inputs": {
       "image": { "name": "image" },
       "mask": { "name": "mask" },
-      "resize_mode": { "name": "resize mode" },
+      "resize_mode": { "name": "Downscale Mode" },
       "Box_grow_factor": { "name": "box grow factor" },
       "Box_grow_pixels": { "name": "pixel expansion" },
       "kilopixels": { "name": "kilopixels" },
@@ -455,10 +455,12 @@
       "color_match_strength": { "name": "Match Strength" },
       "color_correction_range": { "name": "Correction Range" },
       "color_temporal_smooth": { "name": "Temporal Smoothing" },
+      "resize_mode": { "name": "Downscale Mode" },
       "compute_device": { "name": "Compute Device" }
     },
     "outputs": {
-      "0": { "name": "restored image" }
+      "0": { "name": "restored image" },
+      "1": { "name": "seam treatment preview" }
     }
   },
   "BlendInpaint": {
@@ -688,6 +690,7 @@
   "XiaozhuguangImageRestore": {
     "display_name": "Xiaozhuguang Image Restore",
     "inputs": {
+      "resize_mode": { "name": "Resize Mode" },
       "original_image": {
         "name": "original image"
       },
@@ -716,6 +719,9 @@
     "outputs": {
       "0": {
         "name": "restored image"
+      },
+      "1": {
+        "name": "seam treatment preview"
       }
     }
   }

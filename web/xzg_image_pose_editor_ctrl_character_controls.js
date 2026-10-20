@@ -16,7 +16,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=20261018.95";
+} from "./pose_studio/core.js?v=20261020.capture-target1";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { installCustomSelects } from "./vnccs_pose_shared/custom_select.mjs";
 import { observePoseStudioI18n, translatePoseStudioSubtree } from "./pose_studio/i18n.mjs?v=20261017.2";
@@ -982,6 +982,253 @@ const STYLES = `
     flex-shrink: 0;
     position: relative;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Lighting UI Styles */
+.vnccs-ps-light-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 15px;
+    padding-right: 4px;
+    padding-bottom: 8px;
+}
+
+/* Light Card */
+.vnccs-ps-light-card {
+    background: rgba(20, 16, 30, 0.7);
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    overflow: hidden;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    transition: all var(--ps-transition);
+}
+.vnccs-ps-light-card:hover {
+    border-color: var(--ps-border-hover);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    transform: translateY(-1px);
+}
+
+/* Header */
+.vnccs-ps-light-header {
+    background: rgba(0,0,0,0.2);
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--ps-border);
+}
+.vnccs-ps-light-title {
+    font-weight: 600;
+    font-size: 10px;
+    color: var(--ps-text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--ps-font);
+}
+.vnccs-ps-light-icon {
+    font-size: 14px;
+    opacity: 0.8;
+}
+
+/* Remove Button */
+.vnccs-ps-light-remove {
+    width: 20px; height: 20px;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--ps-text-dim);
+    border: 1px solid transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all var(--ps-transition);
+    padding: 0;
+}
+.vnccs-ps-light-remove:hover {
+    background: rgba(255, 71, 87, 0.12);
+    color: #ff4757;
+    border-color: rgba(255, 71, 87, 0.3);
+}
+
+/* Body */
+.vnccs-ps-light-body {
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Controls Grid */
+.vnccs-ps-light-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(40px, 0.75fr);
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+}
+
+/* Input Styles */
+.vnccs-ps-light-select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    color: var(--ps-text);
+    font-size: 10px;
+    padding: 4px 22px 4px 7px;
+    font-family: var(--ps-font);
+    cursor: pointer;
+    transition: border-color var(--ps-transition);
+    text-overflow: ellipsis;
+}
+.vnccs-ps-light-select:focus { border-color: var(--ps-accent-border); outline: none; }
+
+.vnccs-ps-light-color {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 22px;
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    padding: 2px;
+    cursor: pointer;
+    background: var(--ps-input-bg);
+    transition: border-color var(--ps-transition);
+}
+
+.vnccs-ps-light-color:hover { border-color: var(--ps-accent-border); }
+
+/* Sliders */
+.vnccs-ps-light-slider-row {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 42px;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.vnccs-ps-light-slider {
+    width: 100%;
+    min-width: 0;
+    height: 3px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    -webkit-appearance: none;
+}
+.vnccs-ps-light-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--ps-accent);
+    cursor: pointer;
+    box-shadow: 0 0 5px var(--ps-accent-glow);
+}
+
+/* Position Grid */
+.vnccs-ps-light-pos-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 10px;
+    align-items: center;
+    background: rgba(0,0,0,0.25);
+    padding: 8px;
+    border-radius: var(--ps-radius-sm);
+    border: 1px solid var(--ps-border);
+}
+.vnccs-ps-light-pos-label {
+    font-size: 9px;
+    color: var(--ps-text-muted);
+    font-weight: 700;
+    width: 10px;
+}
+.vnccs-ps-light-value {
+    width: 42px;
+    min-width: 42px;
+    box-sizing: border-box;
+    text-align: right;
+    font-size: 9px;
+    color: var(--ps-accent);
+    font-family: var(--ps-font-mono);
+}
+
+/* Light Radar */
+.vnccs-ps-light-radar-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(0,0,0,0.35);
+    padding: 10px;
+    border-radius: var(--ps-radius-sm);
+    border: 1px solid var(--ps-border);
+}
+.vnccs-ps-light-radar-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: center;
+    width: 100%;
+}
+.vnccs-ps-light-radar-canvas {
+    border-radius: 50%;
+    border: 1px solid var(--ps-border);
+    cursor: crosshair;
+    background: rgba(8, 6, 14, 0.9);
+    box-shadow: inset 0 0 12px rgba(0,0,0,0.6), 0 0 8px rgba(255,143,163,0.05);
+    flex-shrink: 0;
+}
+.vnccs-ps-light-slider-vert-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    height: 100px;
+    width: 35px;
+    flex-shrink: 0;
+}
+.vnccs-ps-light-slider-vert {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 6px;
+    height: 70px;
+    cursor: pointer;
+    background: rgba(255,255,255,0.1);
+    margin: 0;
+}
+.vnccs-ps-light-slider-vert::-webkit-slider-runnable-track {
+    background: transparent;
+}
+.vnccs-ps-light-slider-vert::-webkit-slider-thumb {
+    width: 12px; height: 12px;
+}
+.vnccs-ps-light-h-val {
+    font-size: 10px;
+    color: var(--ps-accent);
+    height: 12px;
+    line-height: 12px;
+    font-family: var(--ps-font-mono);
+}
+.vnccs-ps-light-h-label {
+    font-size: 9px;
+    color: var(--ps-text-dim);
+    font-weight: 700;
+    height: 12px;
+    line-height: 12px;
+}
+.vnccs-ps-light-angle-readout {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-self: stretch;
+    color: var(--ps-accent);
+    font-size: 9px;
+    line-height: 12px;
+    font-family: var(--ps-font-mono);
 }
 
 /* Luminous top highlight */
@@ -3458,7 +3705,8 @@ class PoseStudioWidget {
         };
 
         // Export settings
-        this.skinType = "naked_marks";
+        this.skinType = "naked";
+        this.lightParams = this.defaultLightParams();
         this.exportParams = {
             view_width: 1024,
             view_height: 1024,
@@ -3484,6 +3732,12 @@ class PoseStudioWidget {
                 z: 0,
                 zoom: this.exportParams.cam_zoom,
             },
+            initialTransform: {
+                x: this.exportParams.cam_offset_x,
+                y: this.exportParams.cam_offset_y,
+                z: 0,
+                zoom: this.exportParams.cam_zoom,
+            },
             mesh: this.meshParams,
             poses: this.poses,
         });
@@ -3492,6 +3746,7 @@ class PoseStudioWidget {
         primaryCharacter.mesh = this.meshParams;
         primaryCharacter.poses = this.poses;
         this.characters = [primaryCharacter];
+        this.initialCharacterTransform = normalizeCharacterTransform(primaryCharacter.initialTransform);
         this._temporarilyHiddenCharacters = new Set();
         this.activeCharacterId = primaryCharacter.id;
         this.charactersSection = null;
@@ -3576,6 +3831,8 @@ class PoseStudioWidget {
     }
 
     dispose() {
+        clearTimeout(this.lightingQuickSyncTimeout);
+        clearTimeout(this.lightingSyncTimeout);
         if (this._disposed) return;
         window.removeEventListener("xzg-pose-categories-changed", this._onCategorySettingsChanged);
         this.closeFullscreen({ sync: false });
@@ -3673,7 +3930,6 @@ class PoseStudioWidget {
     async openFullscreen() {
         await preparePoseStudioBackendSession(this.node, { refresh: true });
         if (this._fullscreenHost || !this.container || this._disposed) return;
-        this.clearSAMCameraMode();
         this.viewer?.setViewportProjection("parallel");
         this._updateProjectionButton?.();
         this.applyCameraToViewer(false);
@@ -3761,16 +4017,27 @@ class PoseStudioWidget {
                 if (this._poseDataRestoreError || this._poseDataRestorePending) {
                     throw new Error(this._poseDataRestoreError || "姿势仍在恢复，请稍后重试。");
                 }
-                if (!this.characters?.length || !this.getActiveCharacter()) {
-                    this.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
-                    this.closeFullscreen({ sync: false });
-                    return;
+                const hasCharacters = !!this.characters?.length && !!this.getActiveCharacter();
+                if (!this.viewer?.isInitialized() && (hasCharacters || !this.viewer?.initialized)) {
+                    throw new Error("姿势场景尚未加载完成。");
                 }
-                if (!this.viewer?.isInitialized()) throw new Error("姿势模型尚未加载完成。");
                 // Save the confirmed pose and capture its node preview. The
                 // downstream graph should run only when the user runs workflow.
-                this.syncToNode(false, { skipCapture: false });
-                const capture = this.poseCaptures?.[this.activeTab];
+                this.syncToNode(false, { skipCapture: !hasCharacters });
+                let capture = hasCharacters ? this.poseCaptures?.[this.activeTab] : null;
+                if (!hasCharacters) {
+                    this.viewer.clearPassiveCharacters?.();
+                    this.viewer.setMannequinVisible?.(false);
+                    this.applyCameraToViewer(false);
+                    capture = this.viewer.capture(
+                        this.exportParams.view_width || 1024,
+                        this.exportParams.view_height || 1024,
+                        1, [0, 0, 0], 0, 0,
+                        this.exportParams.cam_yaw_deg || 0,
+                        this.exportParams.cam_pitch_deg || 0,
+                        { roll_deg: this.exportParams.cam_roll_deg || 0 },
+                    );
+                }
                 if (this.host?.onConfirm) {
                     if (!capture) throw new Error("当前姿势尚未生成图片，请稍后重试。");
                     await this.host.onConfirm(capture);
@@ -3863,6 +4130,12 @@ class PoseStudioWidget {
         };
         document.addEventListener("keydown", this._fullscreenKeyHandler, true);
         this.syncToNode(false, { skipCapture: true });
+    }
+
+    async getPoseFromImageFile(file, options = {}) {
+        if (this._disposed) throw new Error("Pose Studio was disposed.");
+        this.syncToNode(false, { skipCapture: true });
+        return requestPoseFromImageFile(this, file, options);
     }
 
     closeFullscreen({ sync = true } = {}) {
@@ -4053,34 +4326,6 @@ class PoseStudioWidget {
         genderField.appendChild(genderToggle);
         meshSection.content.appendChild(genderField);
 
-        const skinField = document.createElement("div");
-        skinField.className = "vnccs-ps-field";
-        const skinLabel = document.createElement("div");
-        skinLabel.className = "vnccs-ps-label";
-        skinLabel.innerText = xzgTh("皮肤贴图", "Skin Texture");
-        const skinSelect = document.createElement("select");
-        skinSelect.className = "vnccs-ps-input";
-        for (const [value, labelZh, labelEn] of [
-            ["naked", "自然皮肤", "Natural Skin"],
-            ["naked_marks", "带标记皮肤", "Skin with Marks"],
-            ["dummy_white", "白色人偶", "White Mannequin"],
-        ]) {
-            const option = document.createElement("option");
-            option.value = value;
-            option.textContent = xzgTh(labelZh, labelEn);
-            skinSelect.appendChild(option);
-        }
-        skinSelect.value = this.skinType;
-        skinSelect.addEventListener("change", () => {
-            this.skinType = skinSelect.value;
-            this.exportParams.skin_type = this.skinType;
-            this.viewer?.setSkinTexture(this.skinType);
-            this.syncToNode(false, { skipCapture: true });
-        });
-        this.skinTypeSelect = skinSelect;
-        skinField.append(skinLabel, skinSelect);
-        meshSection.content.appendChild(skinField);
-
         // Base Mesh Sliders (gender-neutral)
         const baseSliderDefs = [
             { key: "age", label: "Age", min: 1, max: 90, step: 1, def: 25 },
@@ -4188,7 +4433,7 @@ class PoseStudioWidget {
         resetActivePoseBtn.style.marginTop = "6px";
         resetActivePoseBtn.style.fontSize = "14px";
         resetActivePoseBtn.textContent = "恢复当前角色初始姿势";
-        resetActivePoseBtn.title = "仅恢复当前角色的骨骼姿势，保留身材、角色位置和当前视图";
+        resetActivePoseBtn.title = "恢复当前角色的初始姿势、身体参数和身体比例，保留角色位置和当前视图";
         resetActivePoseBtn.disabled = !this.getActiveCharacter();
         resetActivePoseBtn.addEventListener("click", async () => {
             resetActivePoseBtn.disabled = true;
@@ -4202,6 +4447,28 @@ class PoseStudioWidget {
         });
         this.resetActivePoseBtn = resetActivePoseBtn;
         leftPanel.appendChild(resetActivePoseBtn);
+
+        const resetCharacterPoseTransformBtn = document.createElement("button");
+        resetCharacterPoseTransformBtn.type = "button";
+        resetCharacterPoseTransformBtn.className = "vnccs-ps-btn";
+        resetCharacterPoseTransformBtn.style.width = "100%";
+        resetCharacterPoseTransformBtn.style.marginTop = "6px";
+        resetCharacterPoseTransformBtn.style.fontSize = "14px";
+        resetCharacterPoseTransformBtn.textContent = "恢复角色姿势和大小位置";
+        resetCharacterPoseTransformBtn.title = "恢复当前角色的初始姿势、身体参数、大小和位置，保留场景视角";
+        resetCharacterPoseTransformBtn.disabled = !this.getActiveCharacter();
+        resetCharacterPoseTransformBtn.addEventListener("click", async () => {
+            resetCharacterPoseTransformBtn.disabled = true;
+            try {
+                await this.resetActiveCharacterPoseAndTransform();
+            } catch (error) {
+                this.showMessage(`恢复角色姿势和大小位置失败：${error?.message || error}`, true);
+            } finally {
+                resetCharacterPoseTransformBtn.disabled = !this.getActiveCharacter();
+            }
+        });
+        this.resetCharacterPoseTransformBtn = resetCharacterPoseTransformBtn;
+        leftPanel.appendChild(resetCharacterPoseTransformBtn);
 
         const resetPoseCharactersBtn = document.createElement("button");
         resetPoseCharactersBtn.className = "vnccs-ps-btn";
@@ -4269,16 +4536,6 @@ class PoseStudioWidget {
         // Canvas Container
         this.canvasContainer = document.createElement("div");
         this.canvasContainer.className = "vnccs-ps-canvas-wrap";
-
-        // SAM camera banner (top of viewport, toggle on click)
-        this._samCamBanner = document.createElement('div');
-        this._samCamBanner.className = 'vnccs-ps-sam-cam-banner';
-        this._samCamBanner.innerHTML =
-            '<span class="vnccs-sam-dot"></span>' +
-            '<span class="vnccs-sam-label">SAM Camera Applied</span>' +
-            '<small style="opacity:0.65;font-weight:400">· click to toggle</small>';
-        this._samCamBanner.addEventListener('click', () => this._toggleSAMCameraDisplay());
-        this.canvasContainer.appendChild(this._samCamBanner);
 
         this.canvas = document.createElement("canvas");
         this.canvas.tabIndex = 0;
@@ -4434,8 +4691,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         dimensionsSection.content.appendChild(dimRow);
 
         const presetGroups = [
-            { title: "常用生成尺寸", sizes: [[1024, 1024], [832, 1216], [1216, 832], [896, 1152], [1152, 896], [768, 1344], [1344, 768]] },
-            { title: "通用横竖幅（2:3 / 3:2）", sizes: [[1024, 1536], [1536, 1024]] },
+            { title: "常用生成尺寸", sizes: [[1024, 1024]] },
             { title: "宽屏常用尺寸", sizes: [[720, 1280], [1280, 720], [1080, 1920], [1920, 1080]] },
         ];
         for (const group of presetGroups) {
@@ -4634,7 +4890,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 this._updateProjectionButton?.();
             },
             transparentBackground: this.host.embedded === true,
-            skinMode: 'naked_marks',
+            skinMode: 'naked',
             enableTextureSkinning: true,
             enableMultiPass: true,
             showSkeletonHelper: true,
@@ -4687,6 +4943,11 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 this.commitViewerPoseToCurrentEditor({ syncOptions: { skipCapture: true } });
             },
             captureHistoryContext: () => ({
+                lights: JSON.parse(JSON.stringify(this.lightParams)),
+                characters: this.captureCharacterHistory(),
+                activeCharacterId: this.activeCharacterId,
+                selectedCharacterIds: [...(this._selectedCharacterIds || [])],
+                hiddenCharacterIds: [...this._temporarilyHiddenCharacters],
                 mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
                 cameraParams: this.currentCameraParams(),
                 group: this.characters.map(character => ({ id: character.id, transform: { ...character.transform }, pose: JSON.parse(JSON.stringify(character.id === this.activeCharacterId ? this.viewer.getPose() : this.characterPoseForScene(character))) })),
@@ -4702,6 +4963,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 this.syncToNode();
             }
         });
+        this.viewer.updateLights(this.lightParams);
         this._viewerInitPromise = this.viewer.init();
         this._viewerInitPromise.then(() => this._updateProjectionButton?.()).catch(error => {
             console.warn("Could not initialize the pose viewer:", error);
@@ -4758,6 +5020,19 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             || null;
     }
 
+    getInitialCharacterTransform() {
+        if (this.initialCharacterTransform) {
+            return normalizeCharacterTransform(this.initialCharacterTransform);
+        }
+        const firstCharacter = [...(this.characters || [])]
+            .sort((left, right) => (left.slot ?? 0) - (right.slot ?? 0))[0];
+        if (!firstCharacter) return null;
+        this.initialCharacterTransform = normalizeCharacterTransform(
+            firstCharacter.initialTransform || firstCharacter.transform,
+        );
+        return { ...this.initialCharacterTransform };
+    }
+
     ensureCharacterRuntime(character) {
         if (!character) return null;
         if (!character.mesh || typeof character.mesh !== "object") character.mesh = {};
@@ -4766,11 +5041,12 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         for (const key of ["penis_len", "penis_circ", "penis_test"]) {
             if (!Number.isFinite(Number(character.mesh[key]))) character.mesh[key] = 0.5;
         }
+        character.transform = normalizeCharacterTransform(character.transform);
+        character.initialTransform = normalizeCharacterTransform(character.initialTransform || character.transform);
         if (!Array.isArray(character.poses) || !character.poses.length) character.poses = [{}];
         const poseCount = Math.max(1, this.poses?.length || character.poses.length || 1);
         while (character.poses.length < poseCount) character.poses.push({});
         while (character.poses.length > poseCount) character.poses.pop();
-        character.transform = normalizeCharacterTransform(character.transform);
         return character;
     }
 
@@ -4914,8 +5190,9 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             index: slot,
             slot,
             name: `Character ${slot + 1}`,
-            color: nextCharacterColor(this.characters, slot),
+            color: nextCharacterColor(this.characters),
             transform: initialTransform,
+            initialTransform: this.getInitialCharacterTransform() || initialTransform,
             mesh: characterMesh,
             poses,
             poseCount: poses.length,
@@ -4940,6 +5217,10 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         const backAlignedZ = this.viewer?.getBackAlignedCharacterZ?.(character.transform.zoom);
         if (Number.isFinite(backAlignedZ)) character.transform.z = backAlignedZ;
         character.transform = normalizeCharacterTransform(character.transform);
+        if (addingFirstCharacter) {
+            this.initialCharacterTransform = normalizeCharacterTransform(character.transform);
+        }
+        character.initialTransform = this.getInitialCharacterTransform() || normalizeCharacterTransform(character.transform);
         const activePose = character.poses[this.activeTab] || character.poses[0];
         if (activePose) {
             activePose.cameraParams = {
@@ -4999,8 +5280,9 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             index: slot,
             slot,
             name: `${source.name || `Character ${slot}`} 副本`,
-            color: nextCharacterColor(this.characters, slot),
+            color: nextCharacterColor(this.characters),
             transform,
+            initialTransform: this.getInitialCharacterTransform() || transform,
             mesh: source.mesh,
             poses,
             poseCount: Math.max(1, this.poses?.length || poses.length),
@@ -5018,11 +5300,19 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         return this.selectCharacter(character.id, { rebuildScene });
     }
 
+    captureCharacterHistory() {
+        this.captureActiveCharacterRuntime();
+        return JSON.parse(JSON.stringify(this.characters));
+    }
+
     async deleteCharacter(id, { rebuildScene = true } = {}) {
-        if (this._switchingCharacter) return false;
+        if (this._switchingCharacter || this.viewer?._restoringHistory) return false;
         const characters = this.characters;
         const index = this.characters.findIndex(character => character.id === id);
         if (index < 0) return false;
+        this._finishPoseGesture?.();
+        const historyState = this.viewer?.getHistoryPose?.();
+        const history = this.viewer?.history.slice() || [];
         const deletingActive = this.activeCharacterId === id;
         const fallback = this.characters[index === 0 ? 1 : index - 1];
         if (deletingActive && fallback && !await this.selectCharacter(fallback.id, { rebuildScene })) return false;
@@ -5037,11 +5327,11 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             this._selectedCharacterIds = new Set();
             this.poses = this.poses.map(() => ({}));
             this.poseCaptures = [];
-            this.clearPoseHistory();
-            if (this.viewer) {
-                this.viewer.history = [];
-                this.viewer.future = [];
-            }
+            this.hideHandControlPopover();
+        }
+        if (this.viewer && historyState) {
+            this.viewer.history = [...history, JSON.stringify(historyState)].slice(-this.viewer.maxHistory);
+            this.viewer.future = [];
         }
         this.renderCharactersUI();
         this.updateCharacterScene();
@@ -5212,13 +5502,13 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
     }
 
-    hydrateCharacterSceneModels({ showOverlay = true, recenterViewport = true } = {}) {
+    hydrateCharacterSceneModels({ showOverlay = true, recenterViewport = true, cameraTarget = null } = {}) {
         const restoreToken = this._poseDataRestoreToken;
         if (this._sceneModelHydrationPromise) {
             if (this._sceneModelHydrationToken === restoreToken) return this._sceneModelHydrationPromise;
             return this._sceneModelHydrationPromise.catch(() => false).then(() => {
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
-                return this.hydrateCharacterSceneModels({ showOverlay, recenterViewport });
+                return this.hydrateCharacterSceneModels({ showOverlay, recenterViewport, cameraTarget });
             });
         }
         this._sceneModelHydrationToken = restoreToken;
@@ -5231,7 +5521,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 if (this._viewerInitPromise) await this._viewerInitPromise;
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 this.viewer?.clearPassiveCharacters?.();
-                this.viewer?.resetSceneCameraTarget?.();
+                this.viewer?.resetSceneCameraTarget?.(cameraTarget);
                 await this.loadModel(false, false, { updateScene: false });
                 if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 await this.viewer?.waitForCaptureReady?.();
@@ -5307,6 +5597,9 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         this.viewer?.setMultiCharacterSelection?.(selectedCount > 1, selectedCount > 0);
         if (this.resetActivePoseBtn) {
             this.resetActivePoseBtn.disabled = !this.getActiveCharacter() || this._hydratingCharacterScene || this._switchingCharacter;
+        }
+        if (this.resetCharacterPoseTransformBtn) {
+            this.resetCharacterPoseTransformBtn.disabled = !this.getActiveCharacter() || this._hydratingCharacterScene || this._switchingCharacter;
         }
         const content = this.charactersContent;
         if (!content) return;
@@ -6524,9 +6817,38 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
     }
 
-    restoreImageHistory(pose) {
+    async restoreImageHistory(pose) {
         this.pendingAgeCameraFit = false;
         const context = pose.editorState;
+        if (Array.isArray(context?.lights)) {
+            this.lightParams = this.normalizeUserLights(context.lights);
+            this.refreshLightUI();
+            this.viewer.updateLights(this.lightParams);
+        }
+        if (Array.isArray(context?.characters)
+            && (context.activeCharacterId !== this.activeCharacterId
+                || JSON.stringify(context.characters.map(item => item.id)) !== JSON.stringify(this.characters.map(item => item.id)))) {
+            this.characters = JSON.parse(JSON.stringify(context.characters));
+            this.activeCharacterId = context.activeCharacterId;
+            this._selectedCharacterIds = new Set(context.selectedCharacterIds || []);
+            this._temporarilyHiddenCharacters = new Set(context.hiddenCharacterIds || []);
+            const active = this.getActiveCharacter();
+            if (active) {
+                this.meshParams = active.mesh;
+                this.poses = active.poses;
+                await this.loadModel(false, false);
+                this.viewer.setPose(this.characterPoseForScene(active), true);
+                const { history, future } = this.viewer;
+                try {
+                    await this.hydrateCharacterSceneModels({ showOverlay: false, recenterViewport: false });
+                } finally {
+                    this.viewer.history = history;
+                    this.viewer.future = future;
+                }
+            }
+            this.renderCharactersUI();
+            this.updateCharacterScene();
+        }
         const character = this.getActiveCharacter();
         if (context?.mesh) {
             this.restoreMeshHistory(context.mesh);
@@ -6790,7 +7112,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         this.syncToNode(true, { skipCaptureUpload: true });
     }
 
-    async resetActiveCharacterPose() {
+    async resetActiveCharacterPose({ restoreTransform = false } = {}) {
         const active = this.getActiveCharacter();
         if (!active || !this.viewer?.isInitialized?.()) return false;
         this._finishPoseGesture?.();
@@ -6800,11 +7122,50 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
 
         const cameraParams = this.currentCameraParams();
         this.viewer.recordState?.();
+        Object.assign(this.meshParams, {
+            age: 25,
+            gender: 0.5,
+            weight: 0.5,
+            muscle: 0.5,
+            height: 0.5,
+            breast_size: 0.5,
+            firmness: 0.5,
+            show_genitals: false,
+            penis_len: 0.5,
+            penis_circ: 0.5,
+            penis_test: 0.5,
+        });
+        this.resetMeshProportions();
+        this.applyDefaultMeshSliders();
+        this.updateGenderUI();
+        active.mesh = this.meshParams;
+        this.onMeshParamsChanged();
+        await this.awaitReadyForCompositeCapture();
+        if (this._disposed || active.id !== this.activeCharacterId || !this.viewer?.isInitialized?.()) return false;
+
         this.viewer.resetPose();
         const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
         pose.cameraParams = cameraParams;
         this.poses[this.activeTab] = pose;
         active.poses = this.poses;
+        if (restoreTransform) {
+            active.transform = normalizeCharacterTransform(active.initialTransform || active.transform);
+            this.exportParams.cam_offset_x = active.transform.x;
+            this.exportParams.cam_offset_y = active.transform.y;
+            this.exportParams.cam_zoom = active.transform.zoom;
+            this.viewer.setActiveCharacterAppearance({ color: active.color, transform: active.transform });
+            this.persistActivePoseCameraParams();
+            for (const characterPose of active.poses || []) {
+                if (!characterPose || typeof characterPose !== "object") continue;
+                const savedCamera = this.cameraParamsForPose(characterPose, active);
+                characterPose.cameraParams = {
+                    ...savedCamera,
+                    offset_x: active.transform.x,
+                    offset_y: active.transform.y,
+                    zoom: active.transform.zoom,
+                };
+            }
+        }
         this.updateCharacterScene({ poseIndex: this.activeTab });
         this.updateRotationSliders();
         if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.length) {
@@ -6812,6 +7173,10 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
         this.syncToNode(true, { skipCaptureUpload: true });
         return true;
+    }
+
+    async resetActiveCharacterPoseAndTransform() {
+        return this.resetActiveCharacterPose({ restoreTransform: true });
     }
 
     async clearAllCharacters() {
@@ -6824,6 +7189,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         this.activeCharacterId = null;
         this._selectedCharacterIds = new Set();
         this._temporarilyHiddenCharacters.clear();
+        this.initialCharacterTransform = null;
         this.poses = this.poses.map(() => ({}));
         this.poseCaptures = [];
         this.clearPoseHistory();
@@ -7110,9 +7476,16 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
     }
 
     loadReference() {
+        if (this.exportParams.background_url || this._referenceReadPromise || this.viewer?.hasReferenceImage?.()) return;
         if (this.fileRefInput) {
             this.fileRefInput.click();
         }
+    }
+
+    updateBackgroundControls() {
+        if (!this._backgroundUploadButton) return;
+        this._backgroundUploadButton.disabled = !!(this.exportParams.background_url
+            || this._referenceReadPromise || this.viewer?.hasReferenceImage?.());
     }
 
     appendBackgroundControls(actions, className = "vnccs-ps-btn") {
@@ -7120,7 +7493,8 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         upload.type = "button";
         upload.className = className;
         upload.textContent = "添加背景";
-        upload.title = "上传或更换背景图片，确认姿势时将背景与模特一起输出";
+        upload.title = "添加背景图片；更换背景前请先移除现有背景";
+        this._backgroundUploadButton = upload;
         upload.addEventListener("click", () => this.loadReference());
         const remove = document.createElement("button");
         remove.type = "button";
@@ -7133,11 +7507,13 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             this._referenceReadError = null;
             this.exportParams.background_url = null;
             this.viewer?.removeReferenceImage();
+            this.updateBackgroundControls();
             this.poseCaptures = [];
             this.updateCaptureCameraPreview();
             this.syncToNode(false);
         });
         actions.append(upload, remove);
+        this.updateBackgroundControls();
     }
 
     handleRefImport(e) {
@@ -7196,9 +7572,11 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 if (token === this._referenceReadToken) {
                     this._referenceReadPromise = null;
                     e.target.value = "";
+                    this.updateBackgroundControls();
                 }
             }
         })();
+        this.updateBackgroundControls();
     }
 
     // === Pose Library Methods ===
@@ -8632,15 +9010,38 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             }
             return false;
         };
+        const defaultMeshParams = {
+            age: 25,
+            gender: 0.5,
+            weight: 0.5,
+            muscle: 0.5,
+            height: 0.5,
+            breast_size: 0.5,
+            firmness: 0.5,
+            show_genitals: false,
+            penis_len: 0.5,
+            penis_circ: 0.5,
+            penis_test: 0.5,
+            ...DEFAULT_POSE_STUDIO_MESH_PROPORTIONS,
+        };
+        const meshHasChanges = mesh => Object.entries(defaultMeshParams).some(([key, defaultValue]) => {
+            const value = mesh?.[key];
+            if (value === undefined || value === null) return false;
+            if (typeof defaultValue === "boolean") return value !== defaultValue;
+            const numericValue = Number(value);
+            return Number.isFinite(numericValue) && Math.abs(numericValue - defaultValue) > 1e-4;
+        });
         const livePose = this.viewer?.getPose?.();
         if (poseHasMotion(livePose)) return true;
+        const active = this.getActiveCharacter();
+        if (meshHasChanges(this.meshParams) || (active && meshHasChanges(active.mesh))) return true;
         return (this.characters || []).some(character =>
-            (character.poses || []).some(poseHasMotion));
+            meshHasChanges(character.mesh) || (character.poses || []).some(poseHasMotion));
     }
 
     showSaveToLibraryModal() {
         if (!this.hasPoseToSave()) {
-            this.showMessage(xzgTh("当前没有可保存的姿势，请先调整人物姿势。", "There is no pose to save yet. Adjust the character pose first."), true);
+            this.showMessage(xzgTh("当前没有可保存的姿势或人物参数，请先调整姿势、年龄或身材比例。", "There is no pose or character change to save yet. Adjust the pose, age, or body proportions first."), true);
             return;
         }
         this._activeSaveLibraryClose?.(true);
@@ -8863,7 +9264,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
     async saveToLibrary(name, includePreview = true, metadata = {}) {
         if (!this.viewer) return false;
         if (!this.hasPoseToSave()) {
-            this.showMessage(xzgTh("当前没有可保存的姿势，请先调整人物姿势。", "There is no pose to save yet. Adjust the character pose first."), true);
+            this.showMessage(xzgTh("当前没有可保存的姿势或人物参数，请先调整姿势、年龄或身材比例。", "There is no pose or character change to save yet. Adjust the pose, age, or body proportions first."), true);
             return false;
         }
         let preview = null;
@@ -8888,6 +9289,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 schema_version: 3,
                 active_character_id: this.activeCharacterId,
                 characters: sceneCharacters,
+                lights: JSON.parse(JSON.stringify(this.lightParams)),
                 activeTab: 0,
                 camera: {
                     yaw_deg: this.exportParams.cam_yaw_deg || 0,
@@ -9027,7 +9429,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             const originalId = character.id;
             character.id = nextCharacterId(this.characters);
             character.slot = nextCharacterSlot(this.characters);
-            character.color = nextCharacterColor(this.characters, character.slot);
+            character.color = nextCharacterColor(this.characters);
             this.characters.push(character);
             if (originalId === importedActiveId) this.activeCharacterId = character.id;
         }
@@ -9130,6 +9532,11 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 if (this._disposed || token !== this._libraryLoadToken) return;
             }
             this.clearSAMCameraMode();
+            if (Array.isArray(data.pose.lights)) {
+                this.lightParams = this.normalizeUserLights(data.pose.lights);
+                this.refreshLightUI();
+                this.applyLighting();
+            }
             if (data.pose?.type === "pose_set" && Array.isArray(data.pose.poses)) {
                 this.loadPoseSetAsset(data.pose);
             } else if (Array.isArray(data.pose.characters) && data.pose.characters.length) {
@@ -9403,7 +9810,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
 
         // Sync skin type to viewer before loading
         if (this.viewer) {
-            this.viewer.setSkinTexture(this.skinType || "naked_marks");
+            this.viewer.setSkinTexture(this.skinType || "naked");
             this.applyMeshProportionsToViewer(this.meshParams);
         }
 
@@ -9639,6 +10046,389 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 this.processMeshUpdate();
             }
         });
+    }
+
+    defaultLightParams() {
+        return [
+            { type: "directional", color: "#ffffff", intensity: 2, x: 27, y: 26, z: 10 },
+            { type: "directional", color: "#ffffff", intensity: 1.3, x: -41, y: 100, z: -39 },
+        ];
+    }
+
+    normalizeUserLights(lights) {
+        if (!Array.isArray(lights)) return this.defaultLightParams();
+        return lights
+            .filter(light => light?.type === "directional")
+            .map(light => ({ ...light, type: "directional" }));
+    }
+
+    createLightRadar(light, onPositionChange) {
+        const size = 100;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        canvas.className = "vnccs-ps-light-radar-canvas";
+        const ctx = canvas.getContext("2d");
+
+        let isDragging = false;
+        const range = (light.type === 'point') ? 10.0 : 100;
+
+        const draw = () => {
+            ctx.fillStyle = "#111";
+            ctx.fillRect(0, 0, size, size);
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Grid
+            ctx.beginPath();
+            ctx.strokeStyle = "#222";
+            ctx.lineWidth = 1;
+            ctx.moveTo(cx, 0); ctx.lineTo(cx, size);
+            ctx.moveTo(0, cy); ctx.lineTo(size, cy);
+            ctx.stroke();
+
+            // Circles
+            ctx.beginPath();
+            ctx.strokeStyle = "#1a1a1a";
+            ctx.arc(cx, cy, size / 4, 0, Math.PI * 2);
+            ctx.arc(cx, cy, size / 2 - 2, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Dot (X and Z)
+            const dotX = cx + ((light.x ?? 0) / range) * (size / 2);
+            const dotY = cy + ((light.z ?? 5) / range) * (size / 2);
+            const hex = this.parseColorToHex(light.color);
+
+            // Shadow/Glow
+            const grad = ctx.createRadialGradient(dotX, dotY, 2, dotX, dotY, 12);
+            grad.addColorStop(0, hex + "66");
+            grad.addColorStop(1, "transparent");
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 12, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Core
+            ctx.beginPath();
+            ctx.fillStyle = hex;
+            ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Labels
+            ctx.fillStyle = "#444";
+            ctx.font = "8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("BACK", cx, 10);
+            ctx.fillText("FRONT", cx, size - 4);
+        };
+
+        const updateFromMouse = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const pointer = { x: (e.clientX - rect.left) * size / rect.width, y: (e.clientY - rect.top) * size / rect.height };
+            const mouseX = pointer.x;
+            const mouseY = pointer.y;
+            const cx = size / 2;
+            const cy = size / 2;
+
+            let dx = (mouseX - cx);
+            let dy = (mouseY - cy);
+
+            const maxDrag = (size / 2) - 2;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > maxDrag) {
+                dx *= maxDrag / dist;
+                dy *= maxDrag / dist;
+            }
+
+            light.x = (dx / (size / 2)) * range;
+            light.z = (dy / (size / 2)) * range;
+
+            draw();
+            onPositionChange?.();
+            this.applyLighting();
+        };
+
+        canvas.addEventListener("pointerdown", (e) => {
+            canvas.setPointerCapture(e.pointerId);
+            isDragging = true;
+            updateFromMouse(e);
+        });
+
+        canvas.addEventListener("pointermove", (e) => {
+            if (isDragging) updateFromMouse(e);
+        });
+
+        canvas.addEventListener("pointerup", (e) => {
+            if (isDragging) {
+                if (canvas.hasPointerCapture(e.pointerId)) {
+                    canvas.releasePointerCapture(e.pointerId);
+                }
+                isDragging = false;
+                this.syncToNode(false, { skipCapture: true });
+            }
+        });
+
+        canvas.addEventListener("pointercancel", () => { isDragging = false; });
+        canvas.addEventListener("lostpointercapture", () => { isDragging = false; });
+        draw();
+        return canvas;
+    }
+
+
+    parseColorToHex(c) {
+        if (!c) return "#ffffff";
+        if (typeof c === 'string') return c.startsWith('#') ? c : "#ffffff";
+        if (Array.isArray(c)) {
+            const r = Math.round(c[0]).toString(16).padStart(2, '0');
+            const g = Math.round(c[1]).toString(16).padStart(2, '0');
+            const b = Math.round(c[2]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+        return "#ffffff";
+    }
+
+    refreshLightUI() {
+        if (!this.lightListContainer) return;
+        this.lightListContainer.innerHTML = '';
+
+        this.lightParams.forEach((light, index) => {
+            const item = document.createElement('div');
+            item.className = 'vnccs-ps-light-card';
+
+            // --- Header ---
+            const header = document.createElement('div');
+            header.className = 'vnccs-ps-light-header';
+
+            const title = document.createElement('span');
+            title.className = 'vnccs-ps-light-title';
+
+            // Icon
+            let iconChar = '💡';
+            if (light.type === 'directional') iconChar = '☀️';
+            else if (light.type === 'ambient') iconChar = '☁️';
+
+            title.innerHTML = `<span class="vnccs-ps-light-icon">${iconChar}</span> ${xzgTh("光源", "Light")} ${index + 1}`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'vnccs-ps-light-remove';
+            removeBtn.innerHTML = '×';
+            removeBtn.title = xzgTh("移除光源", "Remove Light");
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.lightParams.splice(index, 1);
+                this.refreshLightUI();
+                this.applyLighting();
+            };
+
+            header.appendChild(title);
+            header.appendChild(removeBtn);
+            item.appendChild(header);
+
+            // --- Body ---
+            const body = document.createElement('div');
+            body.className = 'vnccs-ps-light-body';
+
+            // Grid 1: Type & Color
+            const grid1 = document.createElement('div');
+            grid1.className = 'vnccs-ps-light-grid';
+
+            // Type
+            const typeLabel = document.createElement('span');
+            typeLabel.className = 'vnccs-ps-light-select';
+            typeLabel.textContent = xzgTh("平行光", "Directional");
+            grid1.appendChild(typeLabel);
+
+            // Color
+            const colorInput = document.createElement('input');
+            colorInput.type = 'color';
+            colorInput.className = 'vnccs-ps-light-color';
+            colorInput.value = this.parseColorToHex(light.color);
+            colorInput.oninput = (e) => {
+                light.color = colorInput.value;
+                this.applyLighting();
+            };
+            grid1.appendChild(colorInput);
+            body.appendChild(grid1);
+
+            // Intensity
+            const intensityRow = document.createElement('div');
+            intensityRow.className = 'vnccs-ps-light-slider-row';
+
+            const intLabel = document.createElement('span');
+            intLabel.className = 'vnccs-ps-light-pos-label';
+            intLabel.innerText = xzgTh("强度", "Int");
+
+            const isAmbient = light.type === 'ambient';
+            const intSlider = document.createElement('input');
+            intSlider.type = 'range';
+            intSlider.className = 'vnccs-ps-light-slider';
+            intSlider.min = 0;
+            intSlider.max = isAmbient ? 2 : 5;
+            intSlider.step = isAmbient ? 0.01 : 0.1;
+            intSlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
+
+            const intValue = document.createElement('span');
+            intValue.className = 'vnccs-ps-light-value';
+            intValue.innerText = parseFloat(intSlider.value).toFixed(2);
+
+            intSlider.oninput = () => {
+                light.intensity = parseFloat(intSlider.value);
+                intValue.innerText = light.intensity.toFixed(2);
+                this.applyLighting();
+            };
+
+            intensityRow.appendChild(intLabel);
+            intensityRow.appendChild(intSlider);
+            intensityRow.appendChild(intValue);
+            body.appendChild(intensityRow);
+
+            // Radius Slider (Point Light Only)
+            if (light.type === 'point') {
+                const radiusRow = document.createElement('div');
+                radiusRow.className = 'vnccs-ps-light-slider-row';
+
+                const radLabel = document.createElement('span');
+                radLabel.className = 'vnccs-ps-light-pos-label';
+                radLabel.innerText = xzgTh("范围", "Rad");
+
+                const radSlider = document.createElement('input');
+                radSlider.type = 'range';
+                radSlider.className = 'vnccs-ps-light-slider';
+                radSlider.min = 5; radSlider.max = 300; radSlider.step = 1;
+                radSlider.value = light.radius ?? 100;
+
+                const radValue = document.createElement('span');
+                radValue.className = 'vnccs-ps-light-value';
+                radValue.innerText = radSlider.value;
+
+                radSlider.oninput = () => {
+                    light.radius = parseFloat(radSlider.value);
+                    radValue.innerText = radSlider.value;
+                    this.applyLighting();
+                };
+
+                radiusRow.appendChild(radLabel);
+                radiusRow.appendChild(radSlider);
+                radiusRow.appendChild(radValue);
+                body.appendChild(radiusRow);
+            }
+
+            // Position Controls (if not Ambient)
+            if (light.type !== 'ambient') {
+                const radarWrap = document.createElement('div');
+                radarWrap.className = 'vnccs-ps-light-radar-wrap';
+
+                const radarMain = document.createElement('div');
+                radarMain.className = 'vnccs-ps-light-radar-main';
+
+                const angleReadout = document.createElement('div');
+                angleReadout.className = 'vnccs-ps-light-angle-readout';
+                angleReadout.title = xzgTh(
+                    "方位角以人物正前方为 0°，向人物右侧递增；仰角相对水平面计算。",
+                    "Azimuth starts at the character's front and increases toward their right; elevation is measured from the horizon."
+                );
+                const updateAngleReadout = () => {
+                    const x = Number(light.x ?? 0);
+                    const y = Number(light.y ?? 0);
+                    const z = Number(light.z ?? 0);
+                    const horizontal = Math.hypot(x, z);
+                    const azimuth = horizontal < 0.5
+                        ? "—"
+                        : `${((Math.round(Math.atan2(x, z) * 180 / Math.PI) + 360) % 360)}°`;
+                    const elevation = `${Math.round(Math.atan2(y, horizontal) * 180 / Math.PI)}°`;
+                    angleReadout.replaceChildren();
+                    const angles = document.createElement('span');
+                    angles.textContent = `${xzgTh("方位", "Azimuth")} ${azimuth} · ${xzgTh("仰角", "Elevation")} ${elevation}`;
+                    const plane = document.createElement('span');
+                    plane.textContent = `X ${Math.round(x)} · Z ${Math.round(z)}`;
+                    angleReadout.append(angles, plane);
+                };
+                updateAngleReadout();
+
+                // Radar (X and Z - Top Down)
+                const radar = this.createLightRadar(light, updateAngleReadout);
+                radarMain.appendChild(radar);
+
+                // Height Slider (Y) - Vertical
+                const hVertWrap = document.createElement('div');
+                hVertWrap.className = 'vnccs-ps-light-slider-vert-wrap';
+
+                const hLabel = document.createElement('span');
+                hLabel.className = 'vnccs-ps-light-h-label';
+                hLabel.innerText = xzgTh("高度", "Y-HGT");
+
+                const hVal = document.createElement('span');
+                hVal.className = 'vnccs-ps-light-h-val';
+                hVal.innerText = light.y || 0;
+
+                const hSlider = document.createElement('input');
+                hSlider.type = 'range';
+                hSlider.className = 'vnccs-ps-light-slider-vert';
+                hSlider.setAttribute('orient', 'vertical'); // Firefox support
+                const isPoint = light.type === 'point';
+                hSlider.min = isPoint ? -10 : -100;
+                hSlider.max = isPoint ? 10 : 100;
+                hSlider.step = isPoint ? 0.1 : 1;
+                hSlider.value = light.y || 0;
+
+                hSlider.oninput = () => {
+                    light.y = parseFloat(hSlider.value);
+                    hVal.innerText = hSlider.value;
+                    updateAngleReadout();
+                    this.applyLighting();
+                };
+
+                hVertWrap.appendChild(hVal);
+                hVertWrap.appendChild(hSlider);
+                hVertWrap.appendChild(hLabel);
+
+                radarMain.appendChild(hVertWrap);
+                radarWrap.appendChild(radarMain);
+                radarWrap.appendChild(angleReadout);
+                body.appendChild(radarWrap);
+            }
+
+            item.appendChild(body);
+            this.lightListContainer.appendChild(item);
+        });
+
+        // Add Light Button (Big)
+        const addBtn = document.createElement('button');
+        addBtn.className = 'vnccs-ps-btn-add-large';
+        addBtn.textContent = xzgTh("+ 添加平行光", "+ Add Directional Light");
+        addBtn.onclick = () => {
+            this.lightParams.push({
+                type: 'directional',
+                color: '#ffffff',
+                intensity: 1.0,
+                x: 0, y: 0, z: 5
+            });
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+        this.lightListContainer.appendChild(addBtn);
+    }
+
+    applyLighting() {
+        if (this.viewer && this.viewer.isInitialized()) {
+            this.viewer.updateLights(this.lightParams);
+        }
+
+        // Persist lighting without capturing a PNG on every drag event.
+        clearTimeout(this.lightingQuickSyncTimeout);
+        this.lightingQuickSyncTimeout = setTimeout(() => {
+            this.syncToNode(false, { skipCapture: true });
+        }, 100);
+
+        // Interactive lighting changes are captured immediately before execution.
+        // A synchronous 1024px PNG capture here blocks the UI after every drag,
+        // and a full capture repeats that work for every pose.
+        clearTimeout(this.lightingSyncTimeout);
+        this.lightingSyncTimeout = null;
     }
 
     updateRotationSliders() {
@@ -9981,6 +10771,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
 
         // Capture Image (CSR)
         if (!skipCapture && this.viewer && this.viewer.isInitialized()) {
+            this.viewer.updateLights(this.lightParams);
             const w = this.exportParams.view_width || 1024;
             const h = this.exportParams.view_height || 1024;
             const bg = [0, 0, 0];
@@ -10100,7 +10891,12 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             schema_version: 3,
             backend_session_id: this.node?._vnccsBackendSessionId || null,
             active_character_id: this.activeCharacterId,
+            scene_camera_target: (this.viewer?.sceneCameraTarget || this.viewer?.meshCenter)?.toArray?.() || null,
+            scene_projection: this._samCameraModeActive && this._samCamDisplayActive
+                ? normalizeSAMProjectionFrame(this._samCamStoredProjectionFrame) : null,
+            initial_character_transform: this.getInitialCharacterTransform(),
             characters: serializedCharacters,
+            lights: this.lightParams,
             // Legacy mirrors keep older Pose Studio builds able to open the
             // primary character without understanding the v3 scene schema.
             mesh: primaryCharacter?.mesh || this.meshParams,
@@ -10132,7 +10928,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
     }
 
-    loadFromNode() {
+    loadFromNode({ preserveViewport = false } = {}) {
         this._temporarilyHiddenCharacters.clear();
         const restoreToken = this._poseDataRestoreToken = (this._poseDataRestoreToken || 0) + 1;
         this.node._vnccsPoseAwaitingRestore = false;
@@ -10145,6 +10941,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             this._poseDataRestoreError = null;
             this._poseDataRestorePending = false;
             this.characters = [];
+            this.initialCharacterTransform = null;
             this.activeCharacterId = null;
             this.poses = [{}];
             this.activeTab = 0;
@@ -10171,7 +10968,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                     throw new Error(`pose_data.${key} must be an object`);
                 }
             }
-            for (const key of ["poses", "image_poses", "characters"]) {
+            for (const key of ["poses", "image_poses", "characters", "lights"]) {
                 if (data[key] != null && !Array.isArray(data[key])) {
                     throw new Error(`pose_data.${key} must be an array`);
                 }
@@ -10179,8 +10976,8 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             this._poseDataRestorePending = true;
             if (this.container) this.container.inert = true;
             const knownRootKeys = new Set([
-                "schema_version", "backend_session_id", "mesh", "export", "poses", "image_poses",
-                "captured_images", "node_id", "characters", "active_character_id", "pose_prompts", "prompt",
+                "schema_version", "backend_session_id", "scene_camera_target", "scene_projection", "mesh", "export", "poses", "image_poses",
+                "captured_images", "node_id", "characters", "active_character_id", "initial_character_transform", "pose_prompts", "prompt", "lights",
             ]);
             this._passthroughPoseData = Object.fromEntries(
                 Object.entries(data).filter(([key]) => !knownRootKeys.has(key)),
@@ -10269,12 +11066,8 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 delete this.exportParams.debugMode;
                 delete this.exportParams.debugShowSAMHelper;
                 delete this.exportParams.debugShowSAMMeshOverlay;
-                const skinTypes = new Set(["naked", "naked_marks", "dummy_white"]);
-                this.skinType = skinTypes.has(this.exportParams.skin_type)
-                    ? this.exportParams.skin_type
-                    : "naked_marks";
+                this.skinType = "naked";
                 this.exportParams.skin_type = this.skinType;
-                if (this.skinTypeSelect) this.skinTypeSelect.value = this.skinType;
                 delete this.exportParams.interface_mode;
                 delete this.exportParams.manager_auto_analyze_proportions;
                 delete this.exportParams.debugPortraitMode;
@@ -10299,7 +11092,9 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             }
             this.viewer?.setKpFigureVisible?.(false);
             this.viewer?.setUseHandControlPopover?.(true);
-            if (this.updateOverrideBtn) this.updateOverrideBtn();
+            this.lightParams = this.normalizeUserLights(data.lights);
+            this.refreshLightUI();
+            this.viewer?.updateLights(this.lightParams);
 
             if (Array.isArray(data.characters) && data.characters.length > MAX_POSE_STUDIO_CHARACTERS) {
                 console.warn(`[VNCCS PoseStudio] Scene contains ${data.characters.length} characters; only the first ${MAX_POSE_STUDIO_CHARACTERS} can be loaded.`);
@@ -10311,6 +11106,9 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 mesh: data.mesh || this.meshParams,
                 color: DEFAULT_CHARACTER_COLORS[0],
             });
+            this.initialCharacterTransform = data.initial_character_transform
+                ? normalizeCharacterTransform(data.initial_character_transform)
+                : null;
             // Keep genitals hidden whenever an editor session is opened. The
             // saved size values remain intact, so users can still enable and
             // adjust them explicitly during the session.
@@ -10319,6 +11117,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 mesh.show_genitals = false;
             }
             this.characters = normalizedScene.characters;
+            if (!this.initialCharacterTransform) this.getInitialCharacterTransform();
             this.activeCharacterId = normalizedScene.activeCharacterId;
             const restoredActiveCharacter = this.getActiveCharacter();
             if (restoredActiveCharacter) {
@@ -10358,6 +11157,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 }
             }
 
+            this.updateBackgroundControls();
             if (typeof data.activeTab === 'number') {
                 this.activeTab = Math.max(0, Math.min(data.activeTab, this.poses.length - 1));
             }
@@ -10374,7 +11174,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
 
             // Auto-load model
             // Restore skin type on the viewer before loading model
-            this.viewer?.setSkinTexture(this.skinType || "naked_marks");
+            this.viewer?.setSkinTexture(this.skinType || "naked");
 
             if (!this.characters.length) {
                 this.viewer?.clearPassiveCharacters?.();
@@ -10384,8 +11184,12 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 this._poseDataRestorePending = false;
                 if (this.container) this.container.inert = false;
             } else {
-                void this.hydrateCharacterSceneModels().then(() => {
+                void this.hydrateCharacterSceneModels({
+                    recenterViewport: !preserveViewport,
+                    cameraTarget: data.scene_camera_target,
+                }).then(() => {
                     if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
+                    if (data.scene_projection) this.applyLibrarySAMProjection(data.scene_projection);
                     this._poseDataRestorePending = false;
                     if (this.container) this.container.inert = false;
                 }).catch(error => {
@@ -10827,13 +11631,15 @@ app.registerExtension({
                     }
                 }
                 const sourceResolution = event.detail.source_resolution;
-                if (sourceResolution && Number.isFinite(Number(sourceResolution.width)) && Number.isFinite(Number(sourceResolution.height))) {
+                const preserveOutputSize = !!widget.exportParams.background_url
+                    || widget.viewer?.hasReferenceImage?.() === true;
+                if (!preserveOutputSize && sourceResolution && Number.isFinite(Number(sourceResolution.width)) && Number.isFinite(Number(sourceResolution.height))) {
                     const width = Math.max(64, Math.min(4096, Math.round(Number(sourceResolution.width))));
                     const height = Math.max(64, Math.min(4096, Math.round(Number(sourceResolution.height))));
                     widget.exportParams.view_width = width;
                     widget.exportParams.view_height = height;
-                    // Match the uploaded image for framing, then leave the size
-                    // controls editable so the user can choose a different output.
+                    // Without a background, both image-pose entry points adopt
+                    // the recognition image size, including after manual edits.
                     widget._outputSizeUserSet = false;
                     if (widget.exportWidgets.view_width) widget.exportWidgets.view_width.value = String(width);
                     if (widget.exportWidgets.view_height) widget.exportWidgets.view_height.value = String(height);

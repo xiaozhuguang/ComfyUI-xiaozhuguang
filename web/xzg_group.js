@@ -4650,7 +4650,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         let n = 0; const self = this;
         const ck = () => {
             n++;
-            if (app?.graph?._nodes?.length && self._needRestore && self._pendingGroups) {
+            if (self._groupGraph()?._nodes?.length && self._needRestore && self._pendingGroups) {
                 console.log('[小珠光编组] waitForGraph触发恢复');
                 self.restoreGroups();
                 return;
@@ -4661,7 +4661,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     },
 
     restoreGroups() {
-        if (!app?.graph) return;
+        if (this._graphLoading || app.configuringGraph) return;
+        this._switchGraph();
+        const graph = this._groupGraph();
+        if (!graph) return;
         this._needRestore = false;
 
         // 读取已删除的编组 ID 列表（防止 auto-save 未触发时刷新恢复）
@@ -4670,7 +4673,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
         // 保存此次恢复中所有数据源里的编组 ID（用于后续清理：auto-save 生效后移除）
         const _allDataGids = new Set([
             ...Object.keys(this._pendingGroups || {}),
-            ...Object.keys(app?.graph?.extra?.xzgGroups || {})
+            ...Object.keys(graph.extra?.xzgGroups || {})
         ]);
 
         console.log('[小珠光编组] 恢复编组...', this._pendingGroups ? Object.keys(this._pendingGroups).length + '个编组数据待恢复' : '无待恢复数据', '已删除:', _deletedGids.length);
@@ -4685,24 +4688,24 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             this._pendingGroups = null;
         }
 
-        // 额外：从 app.graph.extra 恢复（兼容新版 ComfyUI 前端）
+        // 额外：从当前图 extra 恢复（兼容新版 ComfyUI 前端）
         // graph.extra 来自 LiteGraph configure，也是工作流数据，同样不受 _deletedGids 影响
-        if (app?.graph?.extra?.xzgGroups && Object.keys(app.graph.extra.xzgGroups).length) {
-            for (const [id, g] of Object.entries(app.graph.extra.xzgGroups)) {
+        if (graph.extra?.xzgGroups && Object.keys(graph.extra.xzgGroups).length) {
+            for (const [id, g] of Object.entries(graph.extra.xzgGroups)) {
                 if (!this.groups[id]) {
                     this.groups[id] = { ...g };
                 }
             }
         }
 
-        if (!app.graph._nodes?.length) {
+        if (!graph._nodes?.length) {
             this.rebuildAllEls();
             return;
         }
 
         // 多重冗余恢复：从节点的多个备份位置恢复编组数据
         const groupDataMap = {};
-        app.graph._nodes.forEach(n => {
+        graph._nodes.forEach(n => {
             // 备份位置1：节点实例上的 _xzgGroupData（最新序列化时写入）
             let pg = n._xzgGroupData;
             // 备份位置2：节点序列化数据直接字段 _xzgGroup（configure时恢复到_xzgGroupData，这里再查一次）
@@ -4734,12 +4737,12 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
         // 根据节点上的 groupId 校正/补充 nodeIds（兼容旧工作流或节点恢复场景）
         const map = {};
-        app.graph._nodes.forEach(n => { if (n._xzgGroupId) (map[n._xzgGroupId] ??= []).push(n.id); });
+        graph._nodes.forEach(n => { if (n._xzgGroupId) (map[n._xzgGroupId] ??= []).push(n.id); });
         for (const [gid, nids] of Object.entries(map)) {
             if (_deletedGids.includes(gid)) continue;
             if (!this.groups[gid]) {
                 // 优先从 extra 恢复完整数据（含用户自定义颜色等），仅作兜底才用默认值
-                const fromExtra = app?.graph?.extra?.xzgGroups?.[gid];
+                const fromExtra = graph.extra?.xzgGroups?.[gid];
                 const bounds = this.calcBounds(nids) || { x: 0, y: 0, w: 300, h: 200 };
                 this.groups[gid] = fromExtra ? { ...fromExtra } : {
                     id: gid, title: '右键标题栏设置', nodeIds: nids, bypassed: false, locked: false, bounds,
@@ -4785,7 +4788,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
     },
 
     applyBypassStates() {
-        const g = app?.graph;
+        const g = this._groupGraph();
         if (!g?._nodes) return;
         // 不强制覆盖节点 mode：节点 mode 由 LiteGraph 原生序列化保存/恢复，
         // 保留用户对组内节点的手工绕过/开启状态。编组 bypassed 字段仅用于视觉显示。

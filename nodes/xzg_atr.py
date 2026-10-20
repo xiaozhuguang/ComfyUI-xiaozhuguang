@@ -3,12 +3,13 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import cv2
+from PIL import Image
 
 
 class XiaozhuguangATR:
     CATEGORY = "小珠光/其他"
     DEPRECATED = True
-    DESCRIPTION = "将处理后的图像粘贴回原图"
+    DESCRIPTION = "将处理后的图像粘贴回原图。接缝处理区域输出以红色显示当前接缝轮廓和羽化带，以蓝线显示相同羽化设置下遮罩扩张为0的参考接缝；重合时优先显示蓝线，不标示颜色修正范围。"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -22,20 +23,39 @@ class XiaozhuguangATR:
             },
             "optional": {
                 "mask": ("MASK",),
-                "compute_device": (["auto", "GPU", "CPU"], {"default": "auto", "tooltip": "auto 优先使用 GPU；CPU 使用原 OpenCV 算法。GPU 按小批次处理，缩放与羽化可能有少量像素舍入差异"}),
+                "compute_device": (["auto", "GPU", "CPU"], {"default": "auto", "tooltip": "auto 优先使用 GPU；缩放算法由缩小模式决定。GPU 按小批次处理，缩放与羽化可能有少量像素舍入差异"}),
                 "edge_color_match": ("BOOLEAN", {"default": False, "tooltip": "跟随遮罩收缩和羽化后的实际接缝，分析附近对应像素并修正色偏，中心保持原色"}),
                 "color_band_width": ("INT", {"default": 16, "min": 1, "max": 256, "step": 1, "tooltip": "沿最终融合遮罩的 50% 轮廓向内分析的带宽，单位为原图像素"}),
                 "color_match_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "color_correction_range": ("INT", {"default": 128, "min": 1, "max": 512, "step": 1, "tooltip": "始终覆盖最终羽化过渡带，并从实际接缝向内逐渐减弱；此值控制向内延伸范围，单位为原图像素"}),
                 "color_temporal_smooth": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "视频色偏参数的时间平滑；0为关闭，仅在本次批次内生效"}),
+                "resize_mode": (["Pillow Lanczos", "Pillow Lanczos (fast)", "Pillow Bicubic", "Pillow Bilinear"], {"default": "Pillow Lanczos", "tooltip": "缩小时的重采样模式：Lanczos细节优先；fast使用分阶段缩小；Bicubic折中；Bilinear更柔和。放大保持原Lanczos4。Pillow缩放在CPU执行，其余融合仍按计算设备执行。"}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("restored_image",)
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("restored_image", "seam_preview")
     FUNCTION = "restore_image"
 
-    def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None, color_options=None, color_state=None):
+    @staticmethod
+    def _resize_numpy(image, width, height, resize_mode="Pillow Lanczos"):
+        if resize_mode == "Lanczos4 (legacy)" or (width >= image.shape[1] and height >= image.shape[0]):
+            return cv2.resize(image, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        if resize_mode == "OpenCV Area":
+            # Only reduce axes here; a mixed shrink/enlarge uses Lanczos4 afterward.
+            reduced = cv2.resize(image, (min(width, image.shape[1]), min(height, image.shape[0])), interpolation=cv2.INTER_AREA)
+            if reduced.shape[:2] != (height, width):
+                reduced = cv2.resize(reduced, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            return reduced
+        filters = {"Pillow Lanczos": Image.Resampling.LANCZOS,
+                   "Pillow Lanczos (fast)": Image.Resampling.LANCZOS,
+                   "Pillow Bicubic": Image.Resampling.BICUBIC,
+                   "Pillow Bilinear": Image.Resampling.BILINEAR}
+        return np.asarray(Image.fromarray(image).resize(
+            (width, height), filters[resize_mode],
+            reducing_gap=3.0 if resize_mode == "Pillow Lanczos (fast)" else None))
+
+    def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos"):
         original_coords = crop_info["original_coords"]
         padded_size = crop_info["padded_size"]
         original_image_size = crop_info["original_image_size"]
@@ -48,9 +68,7 @@ class XiaozhuguangATR:
         crop_height = original_coords[3] - original_coords[1]
         x1, y1 = original_coords[0], original_coords[1]
 
-        resized_processed = cv2.resize(
-            proc_np, (crop_width, crop_height), interpolation=cv2.INTER_LANCZOS4
-        )
+        resized_processed = self._resize_numpy(proc_np, crop_width, crop_height, resize_mode)
 
         ow, oh = original_image_size
         if tuple(padded_size) == (ow, oh):
@@ -74,7 +92,7 @@ class XiaozhuguangATR:
                 single_mask,
                 blur_amount,
                 mask_expand,
-                color_options, color_state, crop_info
+                color_options, color_state, crop_info, seam_data, resize_mode
             )
         else:
             restored[y1:y1 + crop_height, x1:x1 + crop_width] = resized_processed
@@ -85,19 +103,21 @@ class XiaozhuguangATR:
                     original_coords,
                     blur_amount,
                     mask_expand,
-                    color_options, color_state, crop_info
+                    color_options, color_state, crop_info, seam_data
                 )
 
         if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
             restored = restored[pad_top:pad_top + oh, pad_left:pad_left + ow]
 
+        if seam_data is not None:
+            seam_data["preview"] = self._seam_preview_numpy(restored, crop_info, seam_data)
         return restored
 
-    def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask_expand=0, mask=None, compute_device="auto", edge_color_match=False, color_band_width=16, color_match_strength=0.5, color_correction_range=128, color_temporal_smooth=0.8):
+    def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask_expand=0, mask=None, compute_device="auto", edge_color_match=False, color_band_width=16, color_match_strength=0.5, color_correction_range=128, color_temporal_smooth=0.8, resize_mode="Pillow Lanczos"):
         color_options = (color_band_width, color_match_strength, color_correction_range, color_temporal_smooth) if edge_color_match and color_match_strength > 0 else None
         if compute_device != "CPU" and torch.cuda.is_available():
             try:
-                return self._restore_gpu(original_image, processed_image, crop_box, blur_amount, mask_expand, mask, color_options)
+                return self._restore_gpu(original_image, processed_image, crop_box, blur_amount, mask_expand, mask, color_options, resize_mode)
             except torch.cuda.OutOfMemoryError:
                 logging.warning("ATR GPU 显存不足，回退到 CPU；可将计算设备设为 CPU。")
         batch_size = original_image.shape[0]
@@ -125,6 +145,7 @@ class XiaozhuguangATR:
             mask8 = m
 
         output_images = []
+        previews = []
         color_state = [None]
         for i in range(batch_size):
             orig_np = orig8[i] if i < orig8.shape[0] else orig8[0]
@@ -135,13 +156,47 @@ class XiaozhuguangATR:
             if mask8 is not None:
                 single_mask = mask8[i if i < mask8.shape[0] else 0] if mask_batched else mask8
 
+            seam_data = {}
             restored = self._restore_single_image(
-                orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask, color_options, color_state
+                orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask, color_options, color_state, seam_data, resize_mode
             )
             output_images.append(restored.astype(np.float32) / 255.0)
+            previews.append(seam_data["preview"].astype(np.float32) / 255.0)
 
         output_image = torch.from_numpy(np.stack(output_images, axis=0))
-        return (output_image,)
+        return (output_image, torch.from_numpy(np.stack(previews, axis=0)))
+
+    def _seam_preview_numpy(self, restored, crop_info, seam_data):
+        original_coords = crop_info["original_coords"]
+        padded_size = crop_info["padded_size"]
+        ow, oh = crop_info["original_image_size"]
+        pad_left, pad_top, _, _ = crop_info["pad_info"]
+        crop_width = original_coords[2] - original_coords[0]
+        crop_height = original_coords[3] - original_coords[1]
+        x1, y1, x2, y2 = original_coords
+        final_mask = seam_data.get("mask", np.full((crop_height, crop_width), 255, dtype=np.uint8))
+        alpha = final_mask.astype(np.float32) / 255.0
+        support = torch.from_numpy((alpha >= 0.5).astype(np.float32))[None, None]
+        padded = self._color_pad(support, 1, crop_info)
+        inner = -F.max_pool2d(-padded, 3, stride=1)
+        border = (support - inner)[0, 0].numpy()
+        weight = np.maximum(4 * alpha * (1 - alpha), border)
+        # Only the crop contains processed pixels; remove padding like the image output.
+        full_weight = np.zeros((padded_size[1], padded_size[0]), dtype=np.float32)
+        full_weight[y1:y2, x1:x2] = weight
+        full_weight = full_weight[pad_top:pad_top + oh, pad_left:pad_left + ow]
+        tint = full_weight[..., None] * 0.65
+        preview = (restored * (1 - tint) + np.array([255, 32, 32]) * tint).astype(np.uint8)
+        reference_mask = seam_data.get("reference_mask", final_mask)
+        reference_support = torch.from_numpy((reference_mask >= 128).astype(np.float32))[None, None]
+        reference_padded = self._color_pad(reference_support, 1, crop_info)
+        reference_inner = -F.max_pool2d(-reference_padded, 3, stride=1)
+        reference_border = (reference_support - reference_inner)[0, 0].numpy() > 0
+        full_reference = np.zeros((padded_size[1], padded_size[0]), dtype=bool)
+        full_reference[y1:y2, x1:x2] = reference_border
+        full_reference = full_reference[pad_top:pad_top + oh, pad_left:pad_left + ow]
+        preview[full_reference] = (32, 128, 255)
+        return preview
 
     @staticmethod
     def _color_pad(support, radius, crop_info):
@@ -212,8 +267,18 @@ class XiaozhuguangATR:
         result = self._match_edge_color(processed_tensor, original_tensor, mask_tensor, crop_info, options, state)
         return result[0].movedim(0, -1).numpy().astype(np.uint8)
 
-    @staticmethod
-    def _gpu_resize(image, width, height):
+    @classmethod
+    def _gpu_resize(cls, image, width, height, resize_mode="Lanczos4 (legacy)"):
+        if resize_mode != "Lanczos4 (legacy)" and (width < image.shape[-1] or height < image.shape[-2]):
+            frames = []
+            for frame in image:
+                array = frame.movedim(0, -1).clamp(0, 255).byte().cpu().numpy()
+                if array.shape[-1] == 1:
+                    resized = cls._resize_numpy(array[..., 0], width, height, resize_mode)[..., None]
+                else:
+                    resized = cls._resize_numpy(array, width, height, resize_mode)
+                frames.append(torch.from_numpy(resized.copy()).movedim(-1, 0))
+            return torch.stack(frames).to(device=image.device, dtype=image.dtype)
         # OpenCV 使用 Lanczos4；按两个轴分别执行 8 tap 插值，避免生成大采样张量。
         for axis, size in ((-1, width), (-2, height)):
             old_size = image.shape[axis]
@@ -293,13 +358,13 @@ class XiaozhuguangATR:
                     torch.maximum(region, horizontal[:, :, start + offset:end + offset], out=region)
         return result
 
-    def _restore_gpu_chunk(self, original, processed, crop_info, radius, mask_expand, mask, color_options=None, color_state=None):
+    def _restore_gpu_chunk(self, original, processed, crop_info, radius, mask_expand, mask, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos"):
         x1, y1, x2, y2 = crop_info["original_coords"]
         width, height = x2 - x1, y2 - y1
         ow, oh = crop_info["original_image_size"]
         pw, ph = crop_info["padded_size"]
         left, top, _, _ = crop_info["pad_info"]
-        processed = self._gpu_resize(processed, width, height)
+        processed = self._gpu_resize(processed, width, height, resize_mode)
         if (pw, ph) == (ow, oh):
             restored = original.clone()
         else:
@@ -307,8 +372,9 @@ class XiaozhuguangATR:
             restored = color.reshape(1, 3, 1, 1).expand(original.shape[0], 3, ph, pw).clone()
             restored[:, :, top:top + oh, left:left + ow] = original
         if mask is not None:
-            mask = self._gpu_resize(mask, width, height)
+            mask = self._gpu_resize(mask, width, height, resize_mode)
         if mask is not None:
+            reference_mask = self._gpu_gaussian(mask, radius) if seam_data is not None else None
             if mask_expand > 0:
                 mask = self._gpu_dilate(mask, mask_expand)
             elif mask_expand < 0:
@@ -316,6 +382,9 @@ class XiaozhuguangATR:
             mask = self._gpu_gaussian(mask, radius)
             if color_options is not None:
                 processed = self._match_edge_color(processed, restored[:, :, y1:y2, x1:x2], mask, crop_info, color_options, color_state)
+            if seam_data is not None:
+                seam_data["mask"] = mask
+                seam_data["reference_mask"] = reference_mask
             mask = mask / 255
             original_crop = restored[:, :, y1:y2, x1:x2]
             original_crop[:] = (processed * mask + original_crop * (1 - mask)).floor().clamp_(0, 255)
@@ -326,6 +395,11 @@ class XiaozhuguangATR:
             roi = restored[:, :, ry1:ry2, rx1:rx2]
             original_roi = roi.clone()
             weights = torch.zeros((1, 1, ry2 - ry1, rx2 - rx1), device=original.device)
+            if seam_data is not None:
+                reference = torch.zeros_like(weights)
+                reference[:, :, y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1] = 255
+                reference = self._gpu_gaussian(reference, radius)
+                seam_data["reference_mask"] = reference[:, :, y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1]
             # 二值矩形的腐蚀可直接收缩坐标；贴着实际图像边界的一侧不收缩。
             ex1 = x1 - mask_expand if x1 > 0 else max(0, x1 - mask_expand)
             ey1 = y1 - mask_expand if y1 > 0 else max(0, y1 - mask_expand)
@@ -338,11 +412,13 @@ class XiaozhuguangATR:
                 final_mask = weights[:, :, y1 - ry1:y2 - ry1, x1 - rx1: x2 - rx1]
                 processed = self._match_edge_color(processed, restored[:, :, y1:y2, x1:x2], final_mask, crop_info, color_options, color_state)
             roi[:, :, y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1] = processed
+            if seam_data is not None:
+                seam_data["mask"] = weights[:, :, y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1]
             weights = weights / 255
             roi[:] = (roi * weights + original_roi * (1 - weights)).floor().clamp_(0, 255)
         return restored[:, :, top:top + oh, left:left + ow].movedim(1, -1) / 255
 
-    def _restore_gpu(self, original_image, processed_image, crop_box, blur_amount, mask_expand, mask, color_options=None):
+    def _restore_gpu(self, original_image, processed_image, crop_box, blur_amount, mask_expand, mask, color_options=None, resize_mode="Pillow Lanczos"):
         device = original_image.device if original_image.is_cuda else torch.device("cuda")
         batch_size = original_image.shape[0]
         infos = crop_box["crop_infos"] if "batch_size" in crop_box else [crop_box]
@@ -352,6 +428,7 @@ class XiaozhuguangATR:
             if mask.ndim == 2:
                 mask = mask.unsqueeze(0)
         output = torch.empty((*original_image.shape[:3], 3), dtype=torch.float32, device="cpu")
+        previews = torch.empty_like(output)
         start = 0
         color_state = [None]
         while start < batch_size:
@@ -376,10 +453,16 @@ class XiaozhuguangATR:
                 mask_indices = [i if i < mask.shape[0] else 0 for i in range(start, end)]
                 chunk_mask = mask[mask_indices].to(device=device, dtype=torch.float32).unsqueeze(1)
                 chunk_mask = (chunk_mask * 255).clamp_(0, 255).floor_()
-            result = self._restore_gpu_chunk(original, processed, info, blur_amount, mask_expand, chunk_mask, color_options, color_state)
+            seam_data = {}
+            result = self._restore_gpu_chunk(original, processed, info, blur_amount, mask_expand, chunk_mask, color_options, color_state, seam_data, resize_mode)
             output[start:end] = result.cpu()
+            masks = {key: value.cpu().numpy() for key, value in seam_data.items()}
+            for index in range(end - start):
+                frame_data = {key: value[min(index, value.shape[0] - 1), 0] for key, value in masks.items()}
+                frame = (output[start + index].numpy() * 255).round().astype(np.uint8)
+                previews[start + index] = torch.from_numpy(self._seam_preview_numpy(frame, info, frame_data).astype(np.float32) / 255)
             start = end
-        return (output,)
+        return (output, previews)
 
     def _erode_mask(self, mask, radius):
         # 将椭圆核按行拆为水平线段，保持原椭圆腐蚀结果。
@@ -399,13 +482,19 @@ class XiaozhuguangATR:
                     np.minimum(result[start:end], horizontal[start + offset:end + offset], out=result[start:end])
         return result
 
-    def _apply_mask_blend(self, restored_np, processed_np, original_np, crop_coords, input_mask, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None):
+    def _apply_mask_blend(self, restored_np, processed_np, original_np, crop_coords, input_mask, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None, seam_data=None, resize_mode="Pillow Lanczos"):
         x1, y1, x2, y2 = crop_coords
         crop_width = x2 - x1
         crop_height = y2 - y1
 
         # input_mask 已是 (H,W) uint8，resize 到裁剪尺寸
-        mask_np = cv2.resize(input_mask, (crop_width, crop_height), interpolation=cv2.INTER_LANCZOS4)
+        mask_np = self._resize_numpy(input_mask, crop_width, crop_height, resize_mode)
+        if seam_data is not None:
+            reference = mask_np.copy()
+            if blur_amount > 0:
+                reference = cv2.GaussianBlur(reference, (blur_amount * 2 + 1,) * 2, 0)
+            seam_data["reference_mask"] = reference
+
 
         if mask_expand != 0:
             abs_expand = abs(mask_expand)
@@ -419,6 +508,8 @@ class XiaozhuguangATR:
             kernel_size = blur_amount * 2 + 1
             mask_np = cv2.GaussianBlur(mask_np, (kernel_size, kernel_size), 0)
 
+        if seam_data is not None:
+            seam_data["mask"] = mask_np
         if color_options is not None:
             processed_np = self._match_edge_color_numpy(processed_np, original_np[y1:y2, x1:x2], mask_np, crop_info, color_options, color_state)
 
@@ -434,7 +525,7 @@ class XiaozhuguangATR:
 
         return restored_np
 
-    def _apply_bbox_edge_blur(self, restored_np, original_np, crop_coords, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None):
+    def _apply_bbox_edge_blur(self, restored_np, original_np, crop_coords, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None, seam_data=None):
         x1, y1, x2, y2 = crop_coords
         img_h, img_w = restored_np.shape[:2]
 
@@ -444,6 +535,12 @@ class XiaozhuguangATR:
         roi_x2, roi_y2 = min(img_w, x2 + margin), min(img_h, y2 + margin)
         bbox_mask = np.zeros((roi_y2 - roi_y1, roi_x2 - roi_x1), dtype=np.uint8)
         bbox_mask[y1 - roi_y1:y2 - roi_y1, x1 - roi_x1:x2 - roi_x1] = 255
+        if seam_data is not None:
+            reference = bbox_mask.copy()
+            if blur_amount > 0:
+                reference = cv2.GaussianBlur(reference, (blur_amount * 2 + 1,) * 2, 0)
+            seam_data["reference_mask"] = reference[y1 - roi_y1:y2 - roi_y1, x1 - roi_x1:x2 - roi_x1]
+
 
         if mask_expand != 0:
             abs_expand = abs(mask_expand)
@@ -459,6 +556,8 @@ class XiaozhuguangATR:
             kernel_size = blur_amount * 2 + 1
             bbox_mask = cv2.GaussianBlur(bbox_mask, (kernel_size, kernel_size), 0)
 
+        if seam_data is not None:
+            seam_data["mask"] = bbox_mask[y1 - roi_y1:y2 - roi_y1, x1 - roi_x1:x2 - roi_x1]
         if color_options is not None:
             final_mask = bbox_mask[y1 - roi_y1:y2 - roi_y1, x1 - roi_x1:x2 - roi_x1]
             restored_np[y1:y2, x1:x2] = self._match_edge_color_numpy(

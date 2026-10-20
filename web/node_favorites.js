@@ -5591,9 +5591,7 @@ app.registerExtension({
     name: "ComfyUI.xiaozhuguang",
 
     async setup() {
-        // 移除旧版 XiaozhuguangSelector 的 DOM widget 处理，改为 Canvas 版
-        // 新版实现位于 web/xzg_selector.js
-        // 这里仅注册扩展依赖，确保 node_favorites.js 依然加载，选择器功能由 xzg_selector.js 接管
+        // 选择器 DOM 控件由 web/xzg_selector.js 接管。
 
         if (nodeFavoritesInstance) return;
 
@@ -5767,15 +5765,16 @@ app.registerExtension({
             };
         }
         if (nodeData.name === "XiaozhuguangSelector") {
-            // 选择器 Canvas 绘制版已迁移到 xzg_selector.js
-            // 这里仅保留设置对话框和右键菜单，DOM widget 创建逻辑已移除
+            // 选择器渲染由 xzg_selector.js 负责；本处保留设置面板与右键菜单。
             const DEFAULT_COUNT = 2;
             const DEFAULT_COLUMNS = DEFAULT_COUNT;
             const DEFAULT_BTN_WIDTH = 60;
             const DEFAULT_BTN_HEIGHT = 30;
             const DEFAULT_BTN_GAP = 4;
             const DEFAULT_FONT_COLOR = "#FFFFFF";
-            const DEFAULT_FONT_BIAS = 15;
+            // 字体是纯比例（百分比）：文字高度 / 标签高度，拖动缩放时保持不变。
+            const DEFAULT_FONT_SCALE = 50;
+            const clampFontScale = (v) => Math.max(20, Math.min(90, Math.round(Number(v) || DEFAULT_FONT_SCALE)));
             const DEFAULT_GAP_BIAS = 10;
             const DEFAULT_COLORS = {
                 color1: "#000000",
@@ -5791,7 +5790,7 @@ app.registerExtension({
                 columns: DEFAULT_COLUMNS,
                 btnWidth: DEFAULT_BTN_WIDTH,
                 btnHeight: DEFAULT_BTN_HEIGHT,
-                fontSize: DEFAULT_FONT_BIAS,
+                fontScale: DEFAULT_FONT_SCALE,
                 gapBias: DEFAULT_GAP_BIAS,
                 fontColor: DEFAULT_FONT_COLOR,
                 inactiveColor: "#2a2a2a",
@@ -5807,11 +5806,19 @@ app.registerExtension({
                         const settings = { ...DEFAULT_SETTINGS, ...parsed };
                         const max = Math.max(1, settings.count);
                         settings.columns = Math.max(1, Math.min(settings.columns, max));
-                        // 兼容旧 fontBias 字段：转换为 fontSize（基准 = btnHeight/2）
-                        if (settings.fontSize === undefined && settings.fontBias !== undefined) {
-                            const base = (settings.btnHeight || DEFAULT_BTN_HEIGHT) / 2;
-                            settings.fontSize = Math.max(8, Math.min(60, Math.round(base * (1 + (settings.fontBias || 0) / 100))));
+                        // 兼容旧字段：fontSize（标签高 30px 时的字号）/ fontBias（-100~100）→ fontScale 百分比
+                        if (parsed.fontScale === undefined) {
+                            let legacyPx;
+                            if (parsed.fontSize !== undefined) {
+                                legacyPx = Number(parsed.fontSize) || 15;
+                            } else if (parsed.fontBias !== undefined) {
+                                legacyPx = (DEFAULT_BTN_HEIGHT / 2) * (1 + (Number(parsed.fontBias) || 0) / 100);
+                            } else {
+                                legacyPx = (DEFAULT_FONT_SCALE / 100) * DEFAULT_BTN_HEIGHT;
+                            }
+                            settings.fontScale = Math.round(legacyPx / DEFAULT_BTN_HEIGHT * 100);
                         }
+                        settings.fontScale = clampFontScale(settings.fontScale);
                         // 兼容旧 btnGap 字段：转换为 gapBias（0-100 线性映射到 0-40px）
                         if (settings.gapBias === undefined && settings.btnGap !== undefined) {
                             settings.gapBias = Math.max(0, Math.min(100, Math.round(settings.btnGap / 40 * 100)));
@@ -5995,9 +6002,9 @@ app.registerExtension({
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
                                 <div style="display: flex; align-items: center; gap: 6px;">
-                                    <label style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('字体大小：','Font size:')}</label>
-                                    <input type="range" id="nf-font-size" min="8" max="60" value="${settings.fontSize ?? DEFAULT_FONT_BIAS}" style="flex: 1; height: 14px;" />
-                                    <span id="nf-font-size-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.fontSize ?? DEFAULT_FONT_BIAS}</span>
+                                    <label title="${xzgT('文字高度占标签高度的比例；拖动缩放节点时该比例保持不变','Text height as a percentage of label height; the ratio stays constant while resizing')}" style="margin-bottom: 0; white-space: nowrap; width: 70px;">${xzgT('字体大小：','Font size:')}</label>
+                                    <input type="range" id="nf-font-size" min="20" max="90" value="${settings.fontScale ?? DEFAULT_FONT_SCALE}" style="flex: 1; height: 14px;" title="${xzgT('文字相对标签的比例，拖动缩放时保持不变','Text-to-label ratio, constant while resizing')}" />
+                                    <span id="nf-font-size-value" style="font-size: 11px; color: #ddd; white-space: nowrap; min-width: 24px; text-align: right;">${settings.fontScale ?? DEFAULT_FONT_SCALE}%</span>
                                 </div>
                             </div>
                             <div class="nf-form-item" style="margin-bottom: 10px;">
@@ -6018,6 +6025,12 @@ app.registerExtension({
                         </div>
                     </div>
                 `;
+
+                // 同一时间只保留一个设置面板：重复打开时旧面板会与新面板完全重叠，
+                // 表现为“点确定没反应”（其实只关掉了最上面那层）。
+                document.querySelectorAll(".nf-dialog-overlay").forEach((el) => {
+                    if (el.querySelector(".nf-selector-settings-dialog")) el.remove();
+                });
 
                 document.body.appendChild(dialog);
 
@@ -6067,17 +6080,20 @@ app.registerExtension({
                 };
 
                 const originalSettings = JSON.parse(JSON.stringify(settings));
+                const originalSize = node.size ? [...node.size] : null;
+                const layoutKey = s => JSON.stringify([
+                    s.count, s.columns, s.btnWidth, s.btnHeight, s.gapBias,
+                    Array.from({ length: s.count }, (_, i) => s.widths?.[String(i)] || 0)
+                ]);
 
                 const applyCurrentSettings = () => {
+                    const previousLayout = layoutKey(getNodeSettings(node));
                     const { newCount, newLabels, newWidths, newOutputs } = getCurrentLabels();
                     let newColumns = parseInt(columnsInput?.value, 10);
                     if (isNaN(newColumns) || newColumns < 1) newColumns = 1;
                     newColumns = Math.min(newColumns, newCount);
                     const newColors = getCurrentColors();
-                    let newFontSize = parseInt(fontSizeInput?.value, 10);
-                    if (isNaN(newFontSize)) newFontSize = DEFAULT_FONT_BIAS;
-                    if (newFontSize < 8) newFontSize = 8;
-                    if (newFontSize > 60) newFontSize = 60;
+                    const newFontScale = clampFontScale(fontSizeInput?.value);
                     let newGapBias = parseInt(btnGapInput?.value, 10);
                     if (isNaN(newGapBias) || newGapBias < 0) newGapBias = 0;
                     if (newGapBias > 100) newGapBias = 100;
@@ -6091,13 +6107,17 @@ app.registerExtension({
                         columns: newColumns,
                         btnWidth: settings.btnWidth || DEFAULT_BTN_WIDTH,
                         btnHeight: settings.btnHeight || DEFAULT_BTN_HEIGHT,
-                        fontSize: newFontSize,
+                        fontScale: newFontScale,
                         gapBias: newGapBias,
                         fontColor: newFontColor,
                         inactiveColor: newInactiveColor,
                         widths: newWidths
                     });
-                    rebuildSelectorNode(node);
+                    if (layoutKey(getNodeSettings(node)) !== previousLayout) {
+                        rebuildSelectorNode(node);
+                    } else {
+                        refreshSelectorNode(node);
+                    }
                 };
 
                 // 轻量级即时更新：只更新widget值和触发重绘，不重建节点
@@ -6245,9 +6265,9 @@ app.registerExtension({
                             const valEl = DBLCLICK_RESET_MAP[inp.id];
                             if (valEl) valEl.textContent = String(DEFAULT_GAP_BIAS);
                         } else {
-                            inp.value = String(DEFAULT_FONT_BIAS);
+                            inp.value = String(DEFAULT_FONT_SCALE);
                             const valEl = DBLCLICK_RESET_MAP[inp.id];
-                            if (valEl) valEl.textContent = String(DEFAULT_FONT_BIAS);
+                            if (valEl) valEl.textContent = DEFAULT_FONT_SCALE + "%";
                         }
                         applyCurrentSettings();
                     });
@@ -6264,12 +6284,9 @@ app.registerExtension({
                 });
 
                 fontSizeInput?.addEventListener("input", () => {
-                    let v = parseInt(fontSizeInput.value, 10);
-                    if (isNaN(v)) v = 0;
-                    if (v < -100) v = -100;
-                    if (v > 100) v = 100;
+                    const v = clampFontScale(fontSizeInput.value);
                     fontSizeInput.value = String(v);
-                    if (fontSizeValueEl) fontSizeValueEl.textContent = String(v);
+                    if (fontSizeValueEl) fontSizeValueEl.textContent = v + "%";
                     applyCurrentSettings();
                 });
 
@@ -6284,10 +6301,27 @@ app.registerExtension({
 
                 color1Input.focus();
 
-                const submit = () => {
-                    applyCurrentSettings();
-                    if (onSaved) onSaved();
+                // 面板只允许有一个实例关闭动作；任何异常都必须先关掉面板，
+                // 否则 Nodes 2.0 下设置应用出错会让“确定”看起来完全没反应。
+                let dialogClosed = false;
+                const closeSettingsDialog = () => {
+                    if (dialogClosed) return;
+                    dialogClosed = true;
+                    document.removeEventListener("mousemove", onDialogMouseMove);
+                    document.removeEventListener("mouseup", onDialogMouseUp);
                     dialog.remove();
+                };
+
+                const submit = () => {
+                    if (dialogClosed) return;
+                    try {
+                        applyCurrentSettings();
+                        if (onSaved) onSaved();
+                    } catch (e) {
+                        console.error("[小珠光] 选择器设置应用失败:", e);
+                    } finally {
+                        closeSettingsDialog();
+                    }
                 };
 
                 dialog.querySelector("#nf-dlg-reset").addEventListener("click", () => {
@@ -6303,8 +6337,8 @@ app.registerExtension({
                     color3Input.value = DEFAULT_COLORS.color3;
                     colorDirectionInput.value = DEFAULT_COLORS.direction;
                     if (columnsInput) columnsInput.value = String(Math.min(DEFAULT_COLUMNS, defaultCount));
-                    if (fontSizeInput) fontSizeInput.value = String(DEFAULT_FONT_BIAS);
-                    if (fontSizeValueEl) fontSizeValueEl.textContent = String(DEFAULT_FONT_BIAS);
+                    if (fontSizeInput) fontSizeInput.value = String(DEFAULT_FONT_SCALE);
+                    if (fontSizeValueEl) fontSizeValueEl.textContent = DEFAULT_FONT_SCALE + "%";
                     if (btnGapInput) btnGapInput.value = String(DEFAULT_GAP_BIAS);
                     if (btnGapValueEl) btnGapValueEl.textContent = String(DEFAULT_GAP_BIAS);
                     if (fontColorInput) fontColorInput.value = DEFAULT_FONT_COLOR;
@@ -6354,7 +6388,7 @@ app.registerExtension({
                     });
                 }
 
-                document.addEventListener("mousemove", (e) => {
+                const onDialogMouseMove = (e) => {
                     if (!isDragging) return;
                     let left = e.clientX - dragOffsetX;
                     let top = e.clientY - dragOffsetY;
@@ -6369,9 +6403,9 @@ app.registerExtension({
                     if (top < 0) top = 0;
                     dialogEl.style.left = left + "px";
                     dialogEl.style.top = top + "px";
-                });
+                };
 
-                document.addEventListener("mouseup", () => {
+                const onDialogMouseUp = () => {
                     if (isDragging) {
                         isDragging = false;
                         try {
@@ -6383,19 +6417,33 @@ app.registerExtension({
                             favQueueSave();
                         } catch (e) {}
                     }
-                });
+                };
+
+                // 面板关闭时一并摘掉文档级监听，避免多次打开后残留旧面板的处理器。
+                document.addEventListener("mousemove", onDialogMouseMove);
+                document.addEventListener("mouseup", onDialogMouseUp);
 
                 dialog.querySelector("#nf-dlg-cancel").addEventListener("click", () => {
-                    setNodeSettings(node, originalSettings);
-                    rebuildSelectorNode(node);
-                    dialog.remove();
+                    if (dialogClosed) return;
+                    try {
+                        setNodeSettings(node, originalSettings);
+                        if (originalSize) node.size = [...originalSize];
+                        refreshSelectorNode(node);
+                    } catch (e) {
+                        console.error("[小珠光] 选择器设置取消失败:", e);
+                    } finally {
+                        closeSettingsDialog();
+                    }
                 });
                 dialog.querySelector("#nf-dlg-ok").addEventListener("click", submit);
             }
 
             function refreshSelectorNode(node) {
-                // Canvas 版：重新触发重绘即可
-                if (app?.canvas) app.canvas.setDirtyCanvas(true, true);
+                node?._xzgSelectorUI?.refresh?.();
+                // 设置变更后同步持久化当前尺寸，避免刷新后回到旧大小
+                node?._xzgSelectorUI?.persistSize?.();
+                // Nodes 2.0 下画布对象可能不提供 setDirtyCanvas，缺方法时不能影响面板关闭。
+                if (app?.canvas) app.canvas.setDirtyCanvas?.(true, true);
             }
 
             function rebuildSelectorNode(node) {
@@ -6423,7 +6471,8 @@ app.registerExtension({
                     rowWidth += (rowCount - 1) * gap;
                     maxRowWidth = Math.max(maxRowWidth, rowWidth);
                 }
-                const naturalW = Math.max(210, maxRowWidth + 12);
+                // 与画布控件保持一致：最小宽度 = 标签自然宽度 + 边距（下限 120 / 上限 420）
+                const naturalW = Math.min(420, Math.max(120, Math.round(maxRowWidth + 12)));
 
                 const contentH = rows * btnHeight + (rows - 1) * gap;
                 // 与初始化 this.size[1] = 58 一致：默认 1 行 30px 内容 + 28 偏移 = 58
@@ -6437,12 +6486,15 @@ app.registerExtension({
                     node.size[1] = Math.max(node.size[1], naturalH);
                 }
 
+                node?._xzgSelectorUI?.refresh?.();
+                // 同步持久化校验后的尺寸（写入 node.properties），避免刷新后回到旧大小
+                node?._xzgSelectorUI?.persistSize?.();
                 if (app?.canvas) {
-                    app.canvas.setDirty(true, true);
-                    app.graph?.setDirtyCanvas(true, true);
+                    app.canvas.setDirty?.(true, true);
+                    app.graph?.setDirtyCanvas?.(true, true);
                     app.graph?.change?.();
                 }
-            }
+                }
 
             // 通过 getExtraMenuOptions 添加右键菜单（永远第一行）
             const origGetExtra = nodeType.prototype.getExtraMenuOptions;
@@ -6452,13 +6504,12 @@ app.registerExtension({
                     content: xzgT('小珠光选择器设置','Xiaozhuguang Selector Settings'),
                     color: '#FFD700',
                     callback: () => {
-                        showLabelsSettingsDialog(this, () => { rebuildSelectorNode(this); });
+                        showLabelsSettingsDialog(this, () => { refreshSelectorNode(this); });
                     }
                 });
             };
 
-            // 注：DOM widget 创建逻辑已移除，选择器 Canvas 绘制版在 xzg_selector.js 中实现
-            // 此处保留设置对话框和右键菜单即可
+            // 设置面板由 xzg_selector.js 创建的 DOM 控件刷新。
         }
 
         if (nodeData.name === "XiaozhuguangTitle") {

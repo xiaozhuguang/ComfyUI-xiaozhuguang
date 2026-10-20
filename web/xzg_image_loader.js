@@ -142,7 +142,7 @@ function setNameList(node, names) {
         if (!Object.keys(savedPoseStates).length) delete node.properties.xzg_pose_capture_states;
     }
     w.value = next.join("\n");
-    w.callback?.(w.value);
+    w.callback?.(w.value, app.canvas, node);
 }
 
 function getCardSize(node) {
@@ -193,7 +193,7 @@ function setIndex(node, idx) {
     if (!w) return;
     const v = Number(idx);
     w.value = Number.isFinite(v) ? Math.floor(v) : 0;
-    w.callback?.(w.value);
+    w.callback?.(w.value, app.canvas, node);
 }
 
 function xzgConfirm(message, onOk) {
@@ -552,10 +552,62 @@ function restoreCanvasSelection(canvas, previousNodes, loaderNode) {
     canvas.setDirty?.(true, true);
 }
 
+// Nodes 2.0 mounts DOM widgets without invoking the node's canvas draw hooks.
+function attachImageLoaderDOMWidget(node, ui, updateToolbar) {
+    const widget = node.addDOMWidget("xzg_img_loader", "customwidget", ui.container, {
+        hideOnZoom: false,
+        margin: 5,
+        getMinHeight: () => 240,
+        getHeight: () => "100%",
+    });
+    // The legacy property panel writes its own row width into this shared widget.
+    Object.defineProperty(widget, "width", {
+        configurable: true,
+        get: () => node.size?.[0] || 0,
+        set(_) {},
+    });
+    let wheelHost = null;
+    let lastMode, lastScale, lastHeight;
+    const sync = () => {
+        const parent = ui.container.parentElement;
+        if (parent !== wheelHost) {
+            wheelHost?.removeEventListener("wheel", ui._onWheel);
+            wheelHost = parent;
+            wheelHost?.addEventListener("wheel", ui._onWheel, { passive: false });
+        }
+        if (!ui.container.isConnected) return;
+        const height = ui.container.clientHeight;
+        if (height !== lastHeight) {
+            lastHeight = height;
+            updateToolbar(node);
+        }
+        const scale = app?.canvas?.ds?.scale ?? 1;
+        if (scale !== lastScale) {
+            lastScale = scale;
+            ui._updateLabelScale();
+        }
+        if (node.mode !== lastMode) {
+            lastMode = node.mode;
+            ui._updateBypassState();
+        }
+    };
+    const observer = new ResizeObserver(sync);
+    observer.observe(ui.container);
+    // Mode/zoom changes need no resize and do not draw the Vue node on canvas.
+    const timer = setInterval(sync, 150);
+    ui.disposeDOMWidget = () => {
+        clearInterval(timer);
+        observer.disconnect();
+        wheelHost?.removeEventListener("wheel", ui._onWheel);
+        wheelHost = null;
+    };
+    return widget;
+}
+
 function createImgBatchUI(node) {
     const container = document.createElement("div");
     container.style.cssText =
-        "width:100%;min-width:0;min-height:140px;box-sizing:border-box;overflow:hidden;padding:0;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:0;display:flex;flex-direction:row;gap:0;z-index:10;position:relative;";
+        "width:100%;height:100%;flex:1 1 0;min-width:0;min-height:140px;box-sizing:border-box;overflow:hidden;padding:0;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:0;display:flex;flex-direction:row;gap:0;z-index:10;position:relative;";
     container.style.userSelect = "none";
     container.style.webkitUserSelect = "none";
     // 启用空格+拖动平移画布（DOM widget 默认会拦截 pointer 事件）
@@ -774,6 +826,38 @@ function createImgBatchUI(node) {
         const multi = rightClickSelected && selectedNames.length > 1;
         const targetNames = multi ? selectedNames : [imageName];
 
+        if (imageName) {
+            const deleteItem = document.createElement("div");
+            deleteItem.textContent = multi
+                ? `${xzgT("删除选中图片", "Delete Selected Images")} (${selectedNames.length})`
+                : xzgT("删除图片", "Delete Image");
+            deleteItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#ff7777;";
+            deleteItem.addEventListener("mouseenter", () => { deleteItem.style.background = "var(--comfy-input-bg)"; });
+            deleteItem.addEventListener("mouseleave", () => { deleteItem.style.background = ""; });
+            deleteItem.addEventListener("click", (event) => {
+                hideContextMenu();
+                const names = parseNameList(getImageListWidget(node)?.value);
+                selectedIndexes = names.flatMap((name, index) => targetNames.includes(name) ? [index] : []);
+                if (!selectedIndexes.length) return;
+                deleteBtn.onclick(event);
+                redraw(true);
+            });
+            contextMenu.appendChild(deleteItem);
+            if (uploadMode === "replace") {
+                const uploadItem = document.createElement("div");
+                uploadItem.textContent = xzgT("上传图片", "Upload Image");
+                uploadItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC66;";
+                uploadItem.addEventListener("mouseenter", () => { uploadItem.style.background = "var(--comfy-input-bg)"; });
+                uploadItem.addEventListener("mouseleave", () => { uploadItem.style.background = ""; });
+                uploadItem.addEventListener("click", () => {
+                    hideContextMenu();
+                    openUploadDialog();
+                });
+                contextMenu.appendChild(uploadItem);
+            }
+            appendContextMenuDivider();
+        }
+
         const saveItem = document.createElement("div");
         saveItem.textContent = multi ? `${xzgT("保存选中图片", "Save Selected Images")} (${selectedNames.length}${xzgT("张", "")})` : xzgT("保存图片", "Save Image");
         saveItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
@@ -894,6 +978,7 @@ function createImgBatchUI(node) {
         }
 
         if (imageName) {
+            appendContextMenuDivider();
             const savedPoseStates = node.properties?.xzg_pose_capture_states || {};
             const savedPoseState = savedPoseStates[imageName];
             const canContinuePose = !!backendSessionId
@@ -905,9 +990,9 @@ function createImgBatchUI(node) {
             }
             const poseEditorItem = document.createElement("div");
             poseEditorItem.textContent = canContinuePose
-                ? xzgT("继续编辑此姿势（VNCCS）", "Continue Editing Pose (VNCCS)")
+                ? xzgT("继续编辑此姿势", "Continue Editing Pose")
                 : xzgT("以此图为背景编辑姿势", "Edit Pose with This Image as Background");
-            poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
+            poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
             poseEditorItem.addEventListener("mouseenter", () => { poseEditorItem.style.background = "var(--comfy-input-bg)"; });
             poseEditorItem.addEventListener("mouseleave", () => { poseEditorItem.style.background = ""; });
             poseEditorItem.addEventListener("click", () => {
@@ -916,6 +1001,20 @@ function createImgBatchUI(node) {
                 else openPoseStudio(imageName, null, imageName);
             });
             contextMenu.appendChild(poseEditorItem);
+
+            if (!canContinuePose) {
+                const poseFromImageItem = document.createElement("div");
+                poseFromImageItem.textContent = xzgT("以此图获取姿势", "Get Pose from This Image");
+                poseFromImageItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
+                poseFromImageItem.addEventListener("mouseenter", () => { poseFromImageItem.style.background = "var(--comfy-input-bg)"; });
+                poseFromImageItem.addEventListener("mouseleave", () => { poseFromImageItem.style.background = ""; });
+                poseFromImageItem.addEventListener("click", () => {
+                    hideContextMenu();
+                    openPoseStudio(null, null, imageName, imageName, { clearCharactersBeforePoseImport: true });
+                });
+                contextMenu.appendChild(poseFromImageItem);
+            }
+            appendContextMenuDivider();
         }
 
         if (imageName && !multi) {
@@ -1386,7 +1485,7 @@ function createImgBatchUI(node) {
         const m = mode === "replace" ? "replace" : "append";
         if (w.value !== m) {
             w.value = m;
-            w.callback?.(m);
+            w.callback?.(m, app.canvas, node);
         }
     }
     let uploadMode = _readUploadMode();
@@ -1444,7 +1543,7 @@ function createImgBatchUI(node) {
         let v = parseInt(maxImgInput.value.replace("∞", "").trim(), 10);
         if (isNaN(v) || v < 0) v = 0;
         w.value = v;
-        w.callback?.(v);
+        w.callback?.(v, app.canvas, node);
         setMaxImgDisplay();
         // 上限变化后刷新预览区，使其与后端输出（前 N 张）联动
         redraw(true);
@@ -1554,7 +1653,7 @@ function createImgBatchUI(node) {
         const w = getBatchModeWidget(node);
         if (!w) return;
         w.value = !w.value;
-        w.callback?.(w.value);
+        w.callback?.(w.value, app.canvas, node);
         updateModeBtn();
     };
 
@@ -1593,7 +1692,7 @@ function createImgBatchUI(node) {
         const w = getBatchAlignWidget(node);
         if (!w) return;
         w.value = !w.value;
-        w.callback?.(w.value);
+        w.callback?.(w.value, app.canvas, node);
         updateAlignBtn();
     };
 
@@ -2411,7 +2510,7 @@ function createImgBatchUI(node) {
         const cropWidget = getCropDataWidget(node);
         if (cropWidget) {
             cropWidget.value = "";
-            cropWidget.callback?.(cropWidget.value);
+            cropWidget.callback?.(cropWidget.value, app.canvas, node);
         }
         if (node.properties) {
             delete node.properties.xzg_crop_data;
@@ -2452,7 +2551,7 @@ function createImgBatchUI(node) {
         const value = Object.keys(_maskByImage).length ? JSON.stringify(_maskByImage) : "";
         w.value = value;
         _maskWidgetSource = value;
-        w.callback?.(value);
+        w.callback?.(value, app.canvas, node);
         if (node.properties) {
             if (value) node.properties.xzg_mask_data = value;
             else delete node.properties.xzg_mask_data;
@@ -2524,7 +2623,7 @@ function createImgBatchUI(node) {
         const hasCrop = Object.keys(_cropByImage).length > 0;
         const hasTransform = Object.keys(_imageTransformByName).length > 0;
         widget.value = hasCrop || hasTransform || _cropPaddingColor !== "#ffffff" ? JSON.stringify(payload) : "";
-        widget.callback?.(widget.value);
+        widget.callback?.(widget.value, app.canvas, node);
         if (node.properties) {
             if (widget.value) node.properties.xzg_crop_data = widget.value;
             else delete node.properties.xzg_crop_data;
@@ -2553,7 +2652,7 @@ function createImgBatchUI(node) {
         const cropWidget = getCropDataWidget(node);
         if (cropWidget) {
             cropWidget.value = "";
-            cropWidget.callback?.(cropWidget.value);
+            cropWidget.callback?.(cropWidget.value, app.canvas, node);
         }
 
         if (node.properties) {
@@ -2589,7 +2688,7 @@ function createImgBatchUI(node) {
         w.value = JSON.stringify(payload);
         w.options = w.options || {};
         w.options.serialize = true;
-        w.callback?.(w.value);
+        w.callback?.(w.value, app.canvas, node);
         node.properties = node.properties || {};
         node.properties.xzg_crop_data = w.value;
         // 标记工作流已修改，确保切换工作流/保存时 crop_data widget 的最新值被序列化
@@ -3324,7 +3423,7 @@ function createImgBatchUI(node) {
 
     const emptyTip = document.createElement("div");
     emptyTip.style.cssText =
-        "flex:1;display:flex;align-items:flex-start;justify-content:flex-start;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;padding:6px 4px 4px;box-sizing:border-box;";
+        "flex:1;display:flex;align-items:flex-start;justify-content:flex-start;background:transparent;border-radius:4px;color:var(--input-text);font-size:8px;opacity:0.55;min-height:40px;overflow:auto;padding:6px 4px 4px;box-sizing:border-box;";
     emptyTip.innerHTML = `
         <div style="display:flex;flex-direction:column;gap:5px;width:100%;max-width:280px;font-size:8px;color:var(--input-text);line-height:1.35;">
             <div style="text-align:left;font-size:9px;font-weight:bold;margin-bottom:1px;opacity:0.85;padding-left:12px;">${xzgTh("小珠光图像加载器-化神级", "Xiaozhuguang Image Loader - Godlike")}</div>
@@ -5395,12 +5494,13 @@ function createImgBatchUI(node) {
         overlay.height = Math.max(1, Math.round(cardSize * 2));
         const img = new Image();
         img.onload = () => {
-            if (!overlay.isConnected) return;
+            // 工作流恢复时网格可能尚未挂到页面；只丢弃已被网格重建移除的缩略图。
+            if (!grid.contains(overlay)) return;
             const ctx = overlay.getContext("2d", { willReadFrequently: true });
             const crop = _cropByImage[name];
             const preview = new Image();
             preview.onload = () => {
-                if (!overlay.isConnected) return;
+                if (!grid.contains(overlay)) return;
                 const hasCrop = Array.isArray(crop) && crop.length === 4 && crop[2] > 0 && crop[3] > 0;
                 const [cx, cy, cw, ch] = hasCrop ? crop : [0, 0, preview.naturalWidth, preview.naturalHeight];
                 const sx = cx * img.naturalWidth / preview.naturalWidth;
@@ -5430,6 +5530,7 @@ function createImgBatchUI(node) {
                 ctx.drawImage(maskCanvas, left, top);
             };
             preview.onerror = () => {
+                if (!grid.contains(overlay)) return;
                 const dw = Math.max(1, overlay.width), dh = Math.max(1, Math.round(dw * img.naturalHeight / img.naturalWidth));
                 overlay.width = dw; overlay.height = dh;
                 ctx.drawImage(img, 0, 0, dw, dh);
@@ -5494,11 +5595,46 @@ function createImgBatchUI(node) {
         prev.src = getPreviewUrl(name);
     }
 
+    let listFlipTimer = null;
+    let listFlipCells = [];
+    let listFlipHost = null;
+    const clearListFlip = () => {
+        if (listFlipTimer) clearTimeout(listFlipTimer);
+        listFlipTimer = null;
+        listFlipCells.forEach(cell => {
+            cell.style.animation = "";
+            cell.style.transition = "";
+        });
+        if (listFlipHost) listFlipHost.style.perspective = "";
+        listFlipCells = [];
+        listFlipHost = null;
+    };
+    const animateImageListChange = (single = false) => {
+        clearListFlip();
+        listFlipCells = single ? [singleImgContainer] : Array.from(grid.querySelectorAll("[data-xzg-img-card]"));
+        if (!listFlipCells.length) return;
+        listFlipHost = single ? singleImgContainer.parentElement : grid;
+        listFlipHost.style.perspective = "600px";
+        listFlipCells.forEach(cell => {
+            cell.style.transition = "none";
+            cell.style.animation = "none";
+        });
+        void listFlipHost.offsetWidth;
+        applyRandomFlip(listFlipCells);
+        listFlipCells.forEach(cell => {
+            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
+        });
+        listFlipTimer = setTimeout(clearListFlip, 1050);
+    };
+
     const redraw = (forceFull = false) => {
         const allNames = parseNameList(getImageListWidget(node)?.value);
         // 加载上限联动：预览区与后端输出保持一致，>0 时仅显示前 N 张
         const limit = getMaxImagesLimit(node);
         const names = limit > 0 ? allNames.slice(0, limit) : allNames;
+        const listChanged = lastNames !== null && (names.length !== lastNames.length ||
+            names.some((name, i) => name !== lastNames[i]));
+        if (listChanged) clearListFlip();
         const cardSize = getCardSize(node);
         const idx = getIndex(node);
 
@@ -5593,6 +5729,7 @@ function createImgBatchUI(node) {
             _renderTransformPreview();
             _refreshMaskToolbar();
             _updateMaskCursor();
+            if (listChanged) animateImageListChange(true);
             return;
         }
 
@@ -5667,7 +5804,8 @@ function createImgBatchUI(node) {
                     }
                 }
             };
-            thumbEl.src = getThumbUrl(name, 512);
+            // Reduce preview memory for larger image sets.
+            thumbEl.src = getThumbUrl(name, names.length > 5 ? 1024 : 2048);
 
             // 删除按钮尺寸跟随卡片缩放：卡片边长的 20%，贴近右上角
             const delBtn = document.createElement("div");
@@ -5735,6 +5873,9 @@ function createImgBatchUI(node) {
         });
 
         grid.appendChild(frag);
+        // A widget callback and its caller can both rebuild the grid in one turn.
+        // Restart the active list animation on the replacement cards as well.
+        if (listChanged || listFlipTimer !== null) animateImageListChange();
     };
 
     const openUploadDialog = () => {
@@ -6282,10 +6423,15 @@ function createImgBatchUI(node) {
     let poseStudio = null;
     let poseStudioRemoved = false;
     let poseStudioReplaceImageName = null;
-    async function openPoseStudio(backgroundImageName = null, poseDataSnapshot = null, replaceImageName = null) {
+    let poseStudioSourceImageName = null;
+    async function openPoseStudio(backgroundImageName = null, poseDataSnapshot = null, replaceImageName = null, poseImageName = null, {
+        clearCharactersBeforePoseImport = false,
+    } = {}) {
         if (poseBtn.disabled) return;
         poseBtn.disabled = true;
         poseStudioReplaceImageName = replaceImageName;
+        poseStudioSourceImageName = node.properties?.xzg_pose_capture_states?.[replaceImageName]?.source_image_name
+            || (!poseDataSnapshot ? replaceImageName : null);
         try {
             const currentBackendSessionId = await getImageLoaderBackendSessionId();
             if (!currentBackendSessionId) throw new Error(xzgT("无法确认后端会话，请检查 ComfyUI 连接。", "Could not verify the backend session. Check the ComfyUI connection."));
@@ -6307,14 +6453,22 @@ function createImgBatchUI(node) {
             }
             if (poseDataSnapshot) node.properties.xzg_pose_studio = poseDataSnapshot;
             let backgroundFile = null;
+            let poseImageFile = null;
             if (backgroundImageName) {
                 const response = await fetch(getOriginalImageUrl(backgroundImageName));
                 if (!response.ok) throw new Error(xzgT("无法读取背景图片。", "Could not read background image."));
                 backgroundFile = new File([await response.blob()], "background.png");
             if (poseStudioRemoved) return;
             }
+            if (poseImageName) {
+                const response = await fetch(getOriginalImageUrl(poseImageName));
+                if (!response.ok) throw new Error(xzgT("无法读取用于识别姿势的图片。", "Could not read the image for pose detection."));
+                const blob = await response.blob();
+                const filename = String(poseImageName).split(/[\\/]/).pop() || "pose-source.png";
+                poseImageFile = new File([blob], filename, { type: blob.type || "image/png" });
+            }
             if (!poseStudio) {
-                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261018.backend-session-pose-reopen1");
+                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261020.empty-scene-confirm7");
                 if (poseStudioRemoved) return;
                 // Keep editor state in properties, without adding widgets that
                 // would shift the loader's existing serialized widget values.
@@ -6335,12 +6489,23 @@ function createImgBatchUI(node) {
                     standalone: true,
                     onConfirm: async (capture) => {
                         if (poseStudioRemoved) throw new Error("图片加载器已删除。");
-                        if (!poseStudio?.characters?.length || !poseStudio.getActiveCharacter?.()) return;
                         const currentNames = parseNameList(getImageListWidget(node)?.value);
                         const targetImageName = poseStudioReplaceImageName;
                         const replaceIndex = targetImageName ? currentNames.indexOf(targetImageName) : -1;
                         if (targetImageName && replaceIndex < 0) {
                             throw new Error(xzgT("原姿势图片已不存在，无法替换。", "The original pose image no longer exists and cannot be replaced."));
+                        }
+                        if (!poseStudio?.characters?.length && targetImageName && poseStudioSourceImageName) {
+                            currentNames[replaceIndex] = poseStudioSourceImageName;
+                            const states = node.properties?.xzg_pose_capture_states;
+                            if (states) {
+                                delete states[targetImageName];
+                                if (!Object.keys(states).length) delete node.properties.xzg_pose_capture_states;
+                            }
+                            setNameList(node, currentNames);
+                            setIndex(node, replaceIndex);
+                            redraw(true);
+                            return;
                         }
                         const response = await fetch(capture);
                         if (!response.ok) throw new Error("无法读取姿势图片。");
@@ -6370,13 +6535,21 @@ function createImgBatchUI(node) {
                             const parsedPoseData = typeof poseData === "string" ? JSON.parse(poseData) : null;
                             backendSessionId = parsedPoseData?.backend_session_id || backendSessionId;
                         } catch (_) {}
-                        if (poseData && backendSessionId) {
+                        const savedPoseStates = node.properties?.xzg_pose_capture_states;
+                        if (savedPoseStates && targetImageName) delete savedPoseStates[targetImageName];
+                        const hasCharacters = !!poseStudio?.characters?.length;
+                        if (!hasCharacters && savedPoseStates) {
+                            delete savedPoseStates[name];
+                            if (!Object.keys(savedPoseStates).length) delete node.properties.xzg_pose_capture_states;
+                        }
+                        if (hasCharacters && poseData && backendSessionId) {
                             node.properties ||= {};
                             node.properties.xzg_pose_backend_session_id = backendSessionId;
                             node.properties.xzg_pose_capture_states ||= {};
                             node.properties.xzg_pose_capture_states[name] = {
                                 backend_session_id: backendSessionId,
                                 pose_data: poseData,
+                                source_image_name: poseStudioSourceImageName,
                             };
                         }
                         redraw(true);
@@ -6385,11 +6558,11 @@ function createImgBatchUI(node) {
                 // Clear pose-editor-only state from the previous browser
                 // session before the first hydration or fullscreen paint.
                 await poseStudio.clearTransientStateForCurrentBoot?.();
-                poseStudio.loadFromNode();
+                poseStudio.loadFromNode({ preserveViewport: !!poseDataSnapshot });
             } else if (poseDataSnapshot) {
                 poseStudio.node._vnccsBackendSessionPreparation = null;
                 poseStudio.node._vnccsBackendSessionId = currentBackendSessionId;
-                poseStudio.loadFromNode();
+                poseStudio.loadFromNode({ preserveViewport: true });
             }
             await poseStudio.openFullscreen();
             // Restoring a saved scene already hydrates its models. Do not
@@ -6410,8 +6583,57 @@ function createImgBatchUI(node) {
                     if (poseStudioRemoved) return;
                     if (poseStudio._referenceReadError) throw new Error(poseStudio._referenceReadError);
                 }
+                if (poseImageFile) {
+                    const button = poseStudio?._fullscreenImportButton;
+                    try {
+                        if (clearCharactersBeforePoseImport) {
+                            await poseStudio.clearAllCharacters();
+                            if (poseStudioRemoved) return;
+                            poseStudio._referenceReadToken = (poseStudio._referenceReadToken || 0) + 1;
+                            await poseStudio._referenceReadPromise;
+                            poseStudio._referenceReadError = null;
+                            poseStudio.exportParams.background_url = null;
+                            poseStudio.viewer?.removeReferenceImage?.();
+                            poseStudio.updateBackgroundControls();
+                            if (poseStudio.fileRefInput) poseStudio.fileRefInput.value = "";
+                            if (poseStudio.refBtn) {
+                                poseStudio.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
+                                poseStudio.refBtn.classList.remove("danger");
+                            }
+                        }
+                        await poseStudio.getPoseFromImageFile(poseImageFile, {
+                            autoUnload: false,
+                            applyMode: "pose_from_image",
+                            onProgress: (value, message = "") => {
+                                if (!button) return;
+                                const percent = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+                                button.disabled = true;
+                                button.textContent = `识别中 ${percent}%`;
+                                button.title = message || "正在根据所选缩略图获取姿势";
+                            },
+                        });
+                    } finally {
+                        if (button) {
+                            button.disabled = false;
+                            button.textContent = "通过图片获取姿势";
+                            button.title = "上传图片识别姿势；确定姿势并返回画布后卸载识别模型";
+                        }
+                    }
+                }
                 poseStudio.updateCaptureCameraPreview();
                 poseStudio.resize();
+                if (poseDataSnapshot) {
+                    // Fullscreen layout and model hydration can each update the
+                    // viewport after loadFromNode. Reapply the saved per-pose
+                    // framing last so the character stays in the same place
+                    // relative to its capture frame when continuing this pose.
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    if (poseStudioRemoved) return;
+                    await poseStudio.awaitReadyForCompositeCapture();
+                    poseStudio.restoreActivePoseCameraParams({ updateViewer: true });
+                    poseStudio.updateCharacterScene({ poseIndex: poseStudio.activeTab });
+                    poseStudio.updateCaptureCameraPreview();
+                }
             }
         } catch (error) {
             xzgAlert(`${xzgT("打开姿势编辑器失败", "Could not open pose editor")}: ${error?.message || error}`);
@@ -6482,8 +6704,16 @@ function createImgBatchUI(node) {
 
     clearBtn.onclick = (e) => {
         e.stopPropagation();
-        const names = parseNameList(getImageListWidget(node)?.value);
-        if (names.length === 0) return;
+        poseStudio?.dispose();
+        poseStudio?.container?.remove();
+        poseStudio = null;
+        poseStudioReplaceImageName = null;
+        poseStudioSourceImageName = null;
+        if (node.properties) {
+            delete node.properties.xzg_pose_studio;
+            delete node.properties.xzg_pose_capture_states;
+            delete node.properties.xzg_pose_backend_session_id;
+        }
         setNameList(node, []);
         setIndex(node, 0);
     };
@@ -6638,6 +6868,10 @@ function createImgBatchUI(node) {
     // 节点销毁时移除 window 监听，防止泄漏
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
+        clearListFlip();
+        _maskResizeObserver.disconnect();
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        if (flipAnimTimer) clearTimeout(flipAnimTimer);
         poseStudioRemoved = true;
         poseStudio?.dispose();
         poseStudio?.container?.remove();
@@ -6984,39 +7218,17 @@ app.registerExtension({
                     origSetSize([w, h]);
                 };
 
-                // hideOnZoom:false —— 画布缩小到细节阈值以下时仍显示图片预览，避免被灰色占位矩形替代（与内置图像/视频预览组件一致）
-                const _xzgImgDomWidget = this.addDOMWidget("xzg_img_loader", "customwidget", ui.container, {
-                    hideOnZoom: false,
-                    margin: 5,
-                });
-                // 修复（同「视频/音频」栏）：ComfyUI 会把 DOM widget 的 width 写成面板侧行宽度，
-                // 画布侧 DOM 宿主宽度 = width - margin*2，一旦大于节点实际宽度，图片预览区/按钮栏就会
-                // 溢出节点、且随属性面板开/关变化。这里把 width 改为只读访问器，始终跟随节点实际宽度。
-                Object.defineProperty(_xzgImgDomWidget, 'width', {
-                    configurable: true,
-                    get() { return _nodeSelf.size?.[0] || 0; },
-                    set(_) { /* 忽略外部写入，防止预览区溢出节点 */ },
-                });
-
-                // 容器 margin 区域落在 dom-widget 包裹器内，包裹器无滚轮转发，
-                // 导致上传按钮上方约 4-10px 区域滚轮失效。给父元素也绑定滚轮转发。
-                requestAnimationFrame(() => {
-                    const parent = ui.container.parentElement;
-                    if (parent && ui._onWheel) {
-                        parent.addEventListener("wheel", ui._onWheel, { passive: false });
-                    }
-                });
+                attachImageLoaderDOMWidget(this, ui, _updateToolbarIconSize);
 
                 const wIndex = getIndexWidget(this);
                 const wList = getImageListWidget(this);
                 const wSize = getCardSizeWidget(this);
-                const _nodeSelf = this;
 
                 if (wIndex) {
                     const origCallback = wIndex.callback;
                     wIndex._xzg_lastValue = wIndex.value;
                     wIndex.callback = function (value) {
-                        origCallback?.call(this, value);
+                        origCallback?.apply(this, arguments);
                         if (value === wIndex._xzg_lastValue) return;
                         wIndex._xzg_lastValue = value;
                         ui.commitCurrentMask?.();
@@ -7028,7 +7240,7 @@ app.registerExtension({
                     const origCallback = wList.callback;
                     wList._xzg_lastValue = wList.value;
                     wList.callback = function (value) {
-                        origCallback?.call(this, value);
+                        origCallback?.apply(this, arguments);
                         if (value === wList._xzg_lastValue) return;
                         wList._xzg_lastValue = value;
                         ui.commitCurrentMask?.();
@@ -7043,7 +7255,7 @@ app.registerExtension({
                     const origCallback = wSize.callback;
                     wSize._xzg_lastValue = wSize.value;
                     wSize.callback = function (value) {
-                        origCallback?.call(this, value);
+                        origCallback?.apply(this, arguments);
                         if (value === wSize._xzg_lastValue) return;
                         wSize._xzg_lastValue = value;
                         ui.redraw(true);
@@ -7054,7 +7266,7 @@ app.registerExtension({
                 if (wBatch) {
                     const origCallback = wBatch.callback;
                     wBatch.callback = function (value) {
-                        origCallback?.call(this, value);
+                        origCallback?.apply(this, arguments);
                         ui.updateModeBtn?.();
                     };
                 }
@@ -7425,6 +7637,8 @@ app.registerExtension({
 
             const origOnRemoved = nodeType.prototype.onRemoved;
             nodeType.prototype.onRemoved = function () {
+                this._xzgImgLoaderUI?.disposeDOMWidget?.();
+                if (this._xzgResizeTimer) clearTimeout(this._xzgResizeTimer);
                 if (this._xzgImgLoaderUI?.resizeObserver) {
                     this._xzgImgLoaderUI.resizeObserver.disconnect();
                     this._xzgImgLoaderUI.resizeObserver = null;
@@ -7437,7 +7651,7 @@ app.registerExtension({
                 const ui = nodeInst?._xzgImgLoaderUI;
                 const sidebar = ui?.sidebar;
                 if (!sidebar) return;
-                const h = nodeInst.size?.[1] || 300;
+                const h = ui.container?.clientHeight > 0 ? ui.container.clientHeight + 30 : (nodeInst.size?.[1] || 300);
                 const availableHeight = Math.max(0, h - 30);
                 const density = Math.max(0, Math.min(1, (availableHeight - 260) / 220));
                 // 0.5px 步进：拖拽缩放时所有间距随同一 density 连续平滑变化，
