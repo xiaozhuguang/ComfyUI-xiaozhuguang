@@ -50,7 +50,7 @@ app.registerExtension({
             chainCallback(nodeType.prototype, "onNodeCreated", function() {
                 const container = document.createElement("div");
                 // 高度由 ComfyUI 的 DOM widget 布局统一管理，避免画布缩放后出现透明溢出区域。
-                container.style.cssText = "position: relative; width: 100%; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
+                container.style.cssText = "position: relative; width: 100%; min-width: 0; min-height: 0; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
 
                 const toolbar = document.createElement("div");
                 toolbar.style.cssText = "flex: 0 0 32px; width: 100%; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 4px; box-sizing: border-box; border-bottom: 1px solid #333; z-index: 10;";
@@ -124,13 +124,13 @@ app.registerExtension({
                 container.appendChild(toolbar);
 
                 const canvasWrapper = document.createElement("div");
-                canvasWrapper.style.cssText = "flex: 1; width: 100%; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #0f1011;";
+                canvasWrapper.style.cssText = "flex: 1 1 0; width: 100%; min-width: 0; min-height: 0; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #0f1011;";
                 container.appendChild(canvasWrapper);
 
                 const canvas = document.createElement("canvas");
                 canvas.width = 512;
                 canvas.height = 512;
-                canvas.style.cssText = "display: block; width: 100%; height: 100%; object-fit: contain; cursor: crosshair;";
+                canvas.style.cssText = "display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; cursor: crosshair;";
                 canvasWrapper.appendChild(canvas);
 
                 const ctx = canvas.getContext("2d");

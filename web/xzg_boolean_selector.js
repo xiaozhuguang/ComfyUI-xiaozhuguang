@@ -258,9 +258,12 @@ function getBoolMinContentHeight() {
     return 20;
 }
 
-// 加载/恢复尺寸时的最小高度：只做防负值兜底，
-// 避免用户压缩过的高度在刷新浏览器后被 getBoolMinNodeHeight() 撑回去。
-const BOOL_RESTORE_MIN_HEIGHT = 48;
+// 是否处于 Nodes 2.0：优先用全局标志（加载早期也稳定），DOM 探测只作兜底。
+function isBoolVueNodesMode(node) {
+    const flag = globalThis.LiteGraph?.vueNodesMode;
+    if (typeof flag === "boolean") return flag;
+    return !!node?._xzgBoolUI?.canvas?.closest?.(".lg-node");
+}
 
 // 尺寸持久化：拖拽结束把尺寸写进 node.properties（properties 一定会写进工作流），
 // 这样即使前端没把 node.size 写回存档，刷新后也不会丢大小。
@@ -283,7 +286,7 @@ function applyBoolNodeSizeHint(node) {
     const hint = readBoolNodeSizeHint(node);
     if (!hint || !node?.size) return false;
     const nextW = Math.max(hint[0], getBoolMinNodeWidth(node));
-    const nextH = Math.max(hint[1], BOOL_RESTORE_MIN_HEIGHT);
+    const nextH = Math.max(hint[1], getBoolMinNodeHeight(node));
     if (Math.abs(node.size[0] - nextW) > 0.5 || Math.abs(node.size[1] - nextH) > 0.5) {
         node.size[0] = nextW;
         node.size[1] = nextH;
@@ -302,9 +305,8 @@ function getBoolMinNodeWidth(node) {
 }
 
 function getBoolMinNodeHeight(node) {
-    // Nodes 2.0 的节点会为插槽/底部角标预留空间
-    const vueNode = node._xzgBoolUI?.canvas?.closest?.(".lg-node");
-    return Math.max(58, getBoolMinContentHeight() + (vueNode ? 64 : 32));
+    // Nodes 2.0 的节点会为标题/插槽/底部角标预留空间，压缩过头按钮会被挤没
+    return Math.max(58, getBoolMinContentHeight() + (isBoolVueNodesMode(node) ? 64 : 32));
 }
 
 function createBoolDOMWidget(node, boolWidget) {
@@ -430,6 +432,9 @@ function createBoolDOMWidget(node, boolWidget) {
         getMinHeight: () => getBoolMinContentHeight(),
         getHeight: () => "100%",
     });
+    // Nodes 2 的布局器用 computeLayoutSize 分配 DOM 控件高度；只提供 getMinHeight
+    // 会让首次切换模式时控件被压到接近 0 高，按钮标签因此只剩一条。
+    widget.computeLayoutSize = () => ({ minHeight: getBoolMinContentHeight(), minWidth: 0 });
     widget.value = null;
     Object.defineProperty(widget, "width", {
         configurable: true,
@@ -569,10 +574,25 @@ function createBoolDOMWidget(node, boolWidget) {
     };
 
     const previousRemoved = node.onRemoved;
+    const onVueNodesModeChange = () => {
+        requestAnimationFrame(() => {
+            if (!node.size) return;
+            const minHeight = getBoolMinNodeHeight(node);
+            if (node.size[1] < minHeight) {
+                node.size[1] = minHeight;
+                writeBoolNodeSizeHint(node, node.size[0], node.size[1]);
+                node.setDirtyCanvas?.(true, true);
+                app.graph?.change?.();
+            }
+            requestAnimationFrame(resize);
+        });
+    };
+    app.ui?.settings?.addEventListener?.("Comfy.VueNodes.Enabled.change", onVueNodesModeChange);
     node.onRemoved = function () {
         observer.disconnect();
         root.removeEventListener("wheel", forwardWheelToCanvas);
         window.removeEventListener("resize", onWindowResize);
+        app.ui?.settings?.removeEventListener?.("Comfy.VueNodes.Enabled.change", onVueNodesModeChange);
         return previousRemoved?.apply(this, arguments);
     };
 
@@ -947,8 +967,8 @@ app.registerExtension({
                 if (origOnResize) origOnResize.apply(this, arguments);
                 if (this.size) {
                     this.size[0] = Math.max(this.size[0], getBoolMinNodeWidth(this));
-                    // 高度最小值只在拖拽手柄里限制，这里不撑高，否则刷新会还原
-                    this.size[1] = Math.max(this.size[1], BOOL_RESTORE_MIN_HEIGHT);
+                    // 最小高度要保证按钮可见；该值只由设置和运行模式决定，刷新前后一致
+                    this.size[1] = Math.max(this.size[1], getBoolMinNodeHeight(this));
                 }
             };
 
@@ -972,6 +992,17 @@ app.registerExtension({
             this.widgets.splice(widgetIndex + 1, 0, custom);
 
             // Recover settings saved by an earlier DOM-widget build that shifted the slot.
+            const previousSerialize = this.onSerialize;
+            this.onSerialize = function (info) {
+                const result = previousSerialize?.apply(this, arguments);
+                const width = Number(info?.size?.[0] ?? this.size?.[0]);
+                const height = Number(info?.size?.[1] ?? this.size?.[1]);
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    writeBoolNodeSizeHint(this, width, height);
+                    info.properties = { ...info.properties, [SIZE_HINT_KEY]: [...this.properties[SIZE_HINT_KEY]] };
+                }
+                return result;
+            };
             const previousConfigure = this.onConfigure;
             this.onConfigure = function (info) {
                 const result = previousConfigure?.apply(this, arguments);
@@ -981,17 +1012,20 @@ app.registerExtension({
                     settings.value = ui.value;
                     ui.value = null;
                 }
-                // 恢复尺寸：优先用 properties 里持久化的尺寸，其次才是 configure 的 size。
+                // 原生缩放更新工作流 size；旧的备用记录不能反过来覆盖它。
                 const hint = readBoolNodeSizeHint(this);
                 const savedW = Number(info?.size?.[0]);
                 const savedH = Number(info?.size?.[1]);
-                const baseW = hint ? hint[0] : savedW;
-                const baseH = hint ? hint[1] : savedH;
+                const hasSavedSize = Number.isFinite(savedW) && Number.isFinite(savedH) && savedW > 0 && savedH > 0;
+                const baseW = hasSavedSize ? savedW : hint?.[0];
+                const baseH = hasSavedSize ? savedH : hint?.[1];
                 if (Number.isFinite(baseW) && Number.isFinite(baseH) && baseW > 0 && baseH > 0) {
+                    writeBoolNodeSizeHint(this, baseW, baseH);
                     const restoreSize = () => {
                         if (!this.size) return;
                         const nextW = Math.max(baseW, getBoolMinNodeWidth(this));
-                        const nextH = Math.max(baseH, BOOL_RESTORE_MIN_HEIGHT);
+                        const nextH = Math.max(baseH, getBoolMinNodeHeight(this));
+                        writeBoolNodeSizeHint(this, nextW, nextH);
                         if (Math.abs(this.size[0] - nextW) > 0.5 || Math.abs(this.size[1] - nextH) > 0.5) {
                             this.size[0] = nextW;
                             this.size[1] = nextH;

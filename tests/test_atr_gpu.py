@@ -47,8 +47,8 @@ class ATRGPUTests(unittest.TestCase):
                 for masks in (None, mask, mask[0], mask.unsqueeze(-1)):
                     # CPU reference broadcasts a 2D single mask.
                     cpu_mask = None if masks is None else mask[0]
-                    expected = node.restore_image(image, processed, crop, radius, cpu_mask, 'CPU')[0]
-                    actual = node.restore_image(image, processed, crop, radius, masks, 'GPU')[0]
+                    expected = node.restore_image(image, processed, crop, radius, mask=cpu_mask, compute_device='CPU')[0]
+                    actual = node.restore_image(image, processed, crop, radius, mask=masks, compute_device='GPU')[0]
                     self.assertEqual(actual.shape, (10, 64, 96, 3))
                     self.assertEqual(actual.device.type, 'cpu')
                     self.assertLessEqual((actual - expected).abs().max().item(), 3 / 255 + 1e-6)

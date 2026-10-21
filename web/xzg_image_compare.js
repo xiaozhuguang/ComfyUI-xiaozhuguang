@@ -92,7 +92,16 @@ function compareImageAreaAt(canvas, x, y) {
     const bounds = widget?._previewBounds;
     if (!bounds || !widget.selected?.length) return null;
     const [bx, by, bw, bh] = bounds;
-    const lx = x - node.pos[0], ly = y - node.pos[1];
+    let lx = x - node.pos[0], ly = y - node.pos[1];
+    const wrapper = widget._usesWidgetCanvas && widget._widgetWrapper;
+    const ds = canvas?.ds;
+    const canvasRect = canvas?.canvas?.getBoundingClientRect?.();
+    if (wrapper && ds && canvasRect) {
+        const rect = wrapper.getBoundingClientRect();
+        const scale = Number(ds.scale) || 1;
+        lx = ((x + ds.offset[0]) * scale + canvasRect.left - rect.left) * wrapper.clientWidth / (rect.width || 1);
+        ly = ((y + ds.offset[1]) * scale + canvasRect.top - rect.top) * wrapper.clientHeight / (rect.height || 1);
+    }
     return bw > 0 && bh > 0 && lx >= bx && lx <= bx + bw && ly >= by && ly <= by + bh ? widget : null;
 }
 
@@ -278,6 +287,9 @@ class XzgImageCompareWidget {
         this.hitAreas = {};
         this.selected = [];        // [image_a_info, image_b_info]
         this._value = { images: [] };
+        // Nodes 2 lays legacy custom widgets out as flexible rows. Give the
+        // preview a real minimum so it can expand into the node's free height.
+        this.computeLayoutSize = () => ({ minHeight: 200, minWidth: 0 });
     }
 
     set value(v) {
@@ -328,6 +340,7 @@ class XzgImageCompareWidget {
                 // 要动一下鼠标或画布才刷新出来。
                 img.onload = () => {
                     if (this.node) this.node.setDirtyCanvas?.(true, true);
+                    this.triggerDraw?.();
                 };
                 sel.img = img;
             }
@@ -345,6 +358,25 @@ class XzgImageCompareWidget {
 
     draw(ctx, node, width, y) {
         this.hitAreas = {};
+        let drawAreaHeight = node.size[1];
+        const canvas = ctx.canvas;
+        const wrapper = canvas?.parentElement;
+        this._usesWidgetCanvas = canvas !== app.canvas?.canvas
+            && canvas?.classList?.contains("cursor-crosshair") && !!wrapper?.style?.minHeight;
+        if (this._usesWidgetCanvas && wrapper.clientWidth && wrapper.clientHeight) {
+            width = wrapper.clientWidth;
+            drawAreaHeight = wrapper.clientHeight;
+            canvas.style.width = width + "px";
+            canvas.style.height = drawAreaHeight + "px";
+            if (canvas.width !== width * 2 || canvas.height !== drawAreaHeight * 2) {
+                canvas.width = width * 2;
+                canvas.height = drawAreaHeight * 2;
+            }
+            ctx.setTransform(2, 0, 0, 2, 0, 0);
+            y = 0;
+            this._attachWidgetCanvas(wrapper);
+        }
+        this._drawAreaHeight = drawAreaHeight;
 
         // 绘制开关行：减少卡顿 + 划线 + 交换AB
         const lagWidget = node.widgets?.find(w => w.name === "reduce_lag");
@@ -354,7 +386,7 @@ class XzgImageCompareWidget {
             const isCustom = node.type === XZG_IMAGE_COMPARE_CUSTOM_TYPE;
             const btnCount = isCustom ? 4 : 3;
             // 延伸到节点最边界，按钮行不使用任何边距（边距仅作用于下方图像）
-            const btnW = node.size[0] / btnCount;
+            const btnW = width / btnCount;
             // 与「A -- B」交换按钮一致的颜色（统一 #aaaaaa）
             const SWAP_COLOR = "#aaaaaa";
             ctx.font = "11px Arial";
@@ -449,6 +481,7 @@ class XzgImageCompareWidget {
                                 newImg.src = clicked.url;
                                 newImg.onload = () => {
                                     if (this.node) this.node.setDirtyCanvas?.(true, true);
+                                    this.triggerDraw?.();
                                 };
                                 clicked.img = newImg;
                             }
@@ -461,6 +494,7 @@ class XzgImageCompareWidget {
                                 newImg.src = clicked.url;
                                 newImg.onload = () => {
                                     if (this.node) this.node.setDirtyCanvas?.(true, true);
+                                    this.triggerDraw?.();
                                 };
                                 clicked.img = newImg;
                             }
@@ -474,7 +508,7 @@ class XzgImageCompareWidget {
         }
 
         // Slide 模式对比
-        this._previewBounds = [0, y, width, Math.max(0, node.size[1] - y - IMAGE_MARGIN)];
+        this._previewBounds = [0, y, width, Math.max(0, drawAreaHeight - y - IMAGE_MARGIN)];
         this._drawSlide(ctx, node, width, y);
     }
 
@@ -484,7 +518,7 @@ class XzgImageCompareWidget {
         if (!imgA || !imgB) return;
         if (!imgA.img || !imgA.img.naturalWidth || !imgB.img || !imgB.img.naturalWidth) return;
 
-        const nodeHeight = node.size[1] - y - IMAGE_MARGIN;
+        const nodeHeight = this._drawAreaHeight - y - IMAGE_MARGIN;
         if (nodeHeight <= 0) return;
 
         // 实时从节点 widgets 读取划线参数
@@ -492,11 +526,12 @@ class XzgImageCompareWidget {
         const showLine = lineWidget ? lineWidget.value : true;
 
         // 画 image_a
-        this._drawImage(ctx, node, imgA, node.size[0], nodeHeight, y);
+        this._drawImage(ctx, node, imgA, width, nodeHeight, y);
 
         // 鼠标在节点上时，按鼠标 X 裁剪画 image_b
-        if (node.isPointerOver) {
-            this._drawImage(ctx, node, imgB, node.size[0], nodeHeight, y, node.pointerOverPos[0]);
+        const pointer = this._usesWidgetCanvas ? this._widgetPointerPos : (node.isPointerOver ? node.pointerOverPos : null);
+        if (pointer) {
+            this._drawImage(ctx, node, imgB, width, nodeHeight, y, pointer[0]);
 
             // 画分割线：实线，#aaaaaa，1px
             if (showLine) {
@@ -505,12 +540,101 @@ class XzgImageCompareWidget {
                 ctx.lineWidth = 1;
                 ctx.setLineDash([]);
                 ctx.beginPath();
-                ctx.moveTo(node.pointerOverPos[0], y);
-                ctx.lineTo(node.pointerOverPos[0], y + nodeHeight);
+                ctx.moveTo(pointer[0], y);
+                ctx.lineTo(pointer[0], y + nodeHeight);
                 ctx.stroke();
                 ctx.restore();
             }
         }
+    }
+
+    _attachWidgetCanvas(wrapper) {
+        if (this._widgetWrapper === wrapper) return;
+        this._widgetEvents?.abort();
+        this._widgetDragEvents?.abort();
+        this._widgetWrapper = wrapper;
+        this._widgetEvents = new AbortController();
+        const options = { signal: this._widgetEvents.signal };
+        const position = (event) => {
+            const rect = wrapper.getBoundingClientRect();
+            return [(event.clientX - rect.left) * wrapper.clientWidth / (rect.width || 1),
+                (event.clientY - rect.top) * wrapper.clientHeight / (rect.height || 1)];
+        };
+        const updatePointer = (event) => {
+            this._widgetPointerPos = position(event);
+            this.node.setDirtyCanvas?.(true, true);
+            this.triggerDraw?.();
+        };
+        // WidgetLegacy 的画布会消费冒泡的移动事件，必须先在捕获阶段记录划像位置。
+        wrapper.addEventListener("pointermove", updatePointer, { ...options, capture: true });
+        wrapper.addEventListener("pointerenter", updatePointer, options);
+        wrapper.addEventListener("pointerleave", () => {
+            this._widgetPointerPos = null;
+            this.node.setDirtyCanvas?.(true, true);
+            this.triggerDraw?.();
+        }, options);
+        wrapper.addEventListener("pointerdown", (event) => {
+            if (event.button !== 0) return;
+            const pos = position(event);
+            for (const area of Object.values(this.hitAreas)) {
+                const [x, y, w, h] = area.bounds;
+                if (pos[0] >= x && pos[0] <= x + w && pos[1] >= y && pos[1] <= y + h) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    area.onDown?.(event, pos, this.node, area);
+                    this.triggerDraw?.();
+                    return;
+                }
+            }
+            updatePointer(event);
+            this._forwardWidgetDrag(event, wrapper, updatePointer);
+        }, { ...options, capture: true });
+    }
+
+    _forwardWidgetDrag(event, wrapper, updatePointer) {
+        if (!globalThis.LiteGraph?.vueNodesMode) return;
+        const nodeElement = wrapper.closest?.("[data-node-id]")
+            || [...document.querySelectorAll("[data-node-id]")]
+                .find(element => String(element.getAttribute("data-node-id")) === String(this.node.id));
+        if (!nodeElement) return;
+        this._widgetDragEvents?.abort();
+        const controller = this._widgetDragEvents = new AbortController();
+        const pointerId = event.pointerId || 1;
+        const dispatch = (type, source, buttons) => {
+            if (!nodeElement.isConnected) return;
+            const forwarded = new PointerEvent(type, {
+                bubbles: true, cancelable: true, composed: true, view: window,
+                clientX: source.clientX, clientY: source.clientY,
+                screenX: source.screenX, screenY: source.screenY,
+                ctrlKey: source.ctrlKey, shiftKey: source.shiftKey,
+                altKey: source.altKey, metaKey: source.metaKey,
+                button: type === "pointermove" ? -1 : 0, buttons,
+                pointerId, pointerType: source.pointerType || "mouse",
+                isPrimary: source.isPrimary !== false,
+            });
+            Object.defineProperty(forwarded, "_xzgCompareForwarded", { value: true });
+            nodeElement.dispatchEvent(forwarded);
+        };
+        const options = { capture: true, signal: controller.signal };
+        window.addEventListener("pointermove", (move) => {
+            if (move._xzgCompareForwarded || move.pointerId !== pointerId) return;
+            updatePointer(move);
+            dispatch("pointermove", move, move.buttons);
+            move.preventDefault();
+            move.stopPropagation();
+        }, options);
+        const finish = (up) => {
+            if (up._xzgCompareForwarded || up.pointerId !== pointerId) return;
+            dispatch(up.type, up, 0);
+            up.preventDefault();
+            up.stopPropagation();
+            controller.abort();
+        };
+        window.addEventListener("pointerup", finish, options);
+        window.addEventListener("pointercancel", finish, options);
+        dispatch("pointerdown", event, 1);
+        event.preventDefault();
+        event.stopImmediatePropagation();
     }
 
 
@@ -567,8 +691,8 @@ class XzgImageCompareWidget {
         if (typeof w !== "number" || !isFinite(w)) {
             w = (Array.isArray(ns) ? ns[0] : (typeof ns === "number" ? ns : 270)) || 270;
         }
-        // 返回固定最小高度，实际绘制高度由 draw 中的 node.size[1] - y 决定
-        // 避免返回 ns[1] 导致与上方控件高度叠加引发无限增长
+        // Legacy canvas keeps its original fixed minimum; Nodes 2 uses the
+        // flexible computeLayoutSize contract declared in the constructor.
         return [w, 200];
     }
 
@@ -646,6 +770,7 @@ class XiaozhuguangImageCompareNode {
         this.canvasWidget.value = { images: imagesToShow };
 
         this.setDirtyCanvas(true, true);
+        this.canvasWidget.triggerDraw?.();
     }
 
     onSerialize(serialised) {
@@ -740,6 +865,8 @@ app.registerExtension({
             const origOnSerialize = nodeType.prototype.onSerialize;
             const origOnConfigure = nodeType.prototype.onConfigure;
             const origOnMouseDown = nodeType.prototype.onMouseDown;
+            const origOnResize = nodeType.prototype.onResize;
+            const origOnRemoved = nodeType.prototype.onRemoved;
             const origGetHelp = nodeType.prototype.getHelp;
 
             const proto = XiaozhuguangImageCompareNode.prototype;
@@ -775,6 +902,20 @@ app.registerExtension({
 
             nodeType.prototype.onExecuted = function (output) {
                 proto.onExecuted.call(this, output);
+            };
+
+            nodeType.prototype.onResize = function (size) {
+                const result = origOnResize?.apply(this, arguments);
+                const widget = this.canvasWidget;
+                requestAnimationFrame(() => widget?.triggerDraw?.());
+                this.setDirtyCanvas?.(true, true);
+                return result;
+            };
+
+            nodeType.prototype.onRemoved = function () {
+                this.canvasWidget?._widgetEvents?.abort();
+                this.canvasWidget?._widgetDragEvents?.abort();
+                return origOnRemoved?.apply(this, arguments);
             };
 
             // 不覆盖 onMouseDown → ComfyUI 原生拖拽 + 右键菜单正常工作

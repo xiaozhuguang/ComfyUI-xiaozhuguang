@@ -52,6 +52,10 @@ export class XiaozhuguangVideoPlayer {
     constructor(options = {}) {
         this.container = options.container || document.createElement("div");
         this._node = options.node || null;
+        // Nodes 2 的视频加载器预览会随节点剩余空间伸缩；允许 flex 子项收缩，
+        // 避免视频画面自身的宽高比反过来锁定整个节点的最小高度。
+        this._flexContainer = !!options.flexContainer;
+        this._flexMinHeight = Math.max(0, Number(options.flexMinHeight) || 0);
         this.onDblClick = options.onDblClick || null;
         this.onLoadedMetadata = options.onLoadedMetadata || null;
         this.onPlay = options.onPlay || null;
@@ -192,6 +196,13 @@ export class XiaozhuguangVideoPlayer {
         el.style.background = DEFAULT_BG;
         el.style.overflow = "hidden";
         el.style.pointerEvents = "none";
+        if (this._flexContainer) {
+            el.style.minWidth = "0";
+            el.style.minHeight = this._flexMinHeight + "px";
+            el.style.boxSizing = "border-box";
+            el.style.display = "flex";
+            el.style.flexDirection = "column";
+        }
 
         this._placeholder = document.createElement("div");
         this._placeholder.style.cssText =
@@ -208,6 +219,13 @@ export class XiaozhuguangVideoPlayer {
         this._stage.style.cssText =
             "position:relative;width:100%;height:100%;display:flex;align-items:center;" +
             "justify-content:center;z-index:1;pointer-events:auto;";
+        if (this._flexContainer) {
+            this._stage.style.flex = "1 1 0";
+            this._stage.style.height = "0";
+            this._stage.style.minWidth = "0";
+            this._stage.style.minHeight = "0";
+            this._stage.style.overflow = "hidden";
+        }
         this._stage.addEventListener("wheel", this._forwardWheel, { passive: false });
         this._stage.addEventListener("dblclick", this._onStageDblClick);
         this._stage.addEventListener("contextmenu", this._onContextMenu);
@@ -216,6 +234,10 @@ export class XiaozhuguangVideoPlayer {
         this._videoSurface.style.cssText =
             "position:relative;max-width:100%;max-height:100%;background:" + SURFACE_BG + ";" +
             "cursor:pointer;overflow:visible;display:none;pointer-events:auto;";
+        if (this._flexContainer) {
+            this._videoSurface.style.minWidth = "0";
+            this._videoSurface.style.minHeight = "0";
+        }
         this._videoSurface.addEventListener("click", this._onSurfaceClick);
         this._videoSurface.addEventListener("dblclick", this._onSurfaceDblClick);
         this._videoSurface.addEventListener("wheel", this._forwardWheel, { passive: false });
@@ -225,6 +247,10 @@ export class XiaozhuguangVideoPlayer {
         this._canvas = document.createElement("canvas");
         this._canvas.style.cssText =
             "width:100%;height:100%;display:block;background:#000;object-fit:fill;pointer-events:none;";
+        if (this._flexContainer) {
+            this._canvas.style.minWidth = "0";
+            this._canvas.style.minHeight = "0";
+        }
         this._videoSurface.appendChild(this._canvas);
 
         // 加载进度图：旋转圆环
@@ -1197,6 +1223,30 @@ export class XiaozhuguangVideoPlayer {
      */
     static async saveAsVideo(url, filename) {
         await downloadVideo(url, filename || `xzg-video-${xzgTimestamp()}.mp4`);
+    }
+
+    setFlexLayout(enabled, minHeight = 0) {
+        this._flexContainer = !!enabled;
+        this._flexMinHeight = Math.max(0, Number(minHeight) || 0);
+        Object.assign(this.container.style, {
+            display: enabled ? "flex" : "",
+            flexDirection: enabled ? "column" : "",
+            minWidth: enabled ? "0" : "",
+            minHeight: enabled ? this._flexMinHeight + "px" : "",
+            boxSizing: enabled ? "border-box" : "",
+        });
+        Object.assign(this._stage.style, {
+            flex: enabled ? "1 1 0" : "",
+            height: enabled ? "0" : "100%",
+            minWidth: enabled ? "0" : "",
+            minHeight: enabled ? "0" : "",
+            overflow: enabled ? "hidden" : "",
+        });
+        for (const element of [this._videoSurface, this._canvas]) {
+            element.style.minWidth = enabled ? "0" : "";
+            element.style.minHeight = enabled ? "0" : "";
+        }
+        this.resize();
     }
 
     resize() {

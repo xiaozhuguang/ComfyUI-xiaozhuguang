@@ -722,7 +722,8 @@ function _xzgImgSaveIsInImageArea(canvasX, canvasY) {
     if (!w) return null;
     const NODE_TITLE_HEIGHT = (typeof LiteGraph !== 'undefined' && LiteGraph.NODE_TITLE_HEIGHT) || 30;
     // widget.draw 的 y 参数是相对于节点左上角的（含 titleH），首次绘制未发生时后备用标题栏高度
-    const startY = w._startY ?? NODE_TITLE_HEIGHT;
+    const startX = w._xzgUsesWidgetCanvas ? (w._xzgWidgetOffsetX || 0) : 0;
+    const startY = w._xzgUsesWidgetCanvas ? (w._xzgWidgetOffsetY || 0) : (w._startY ?? NODE_TITLE_HEIGHT);
     let imgDrawY = w._imageDrawY;
     let imgDrawH = w._imageDrawH;
 
@@ -735,8 +736,9 @@ function _xzgImgSaveIsInImageArea(canvasX, canvasY) {
     }
 
     if (!imgDrawH || imgDrawH <= 0) return null;
+    const localX = canvasX - nd.pos[0] - startX;
     const localY = canvasY - nd.pos[1] - startY;
-    if (localY >= imgDrawY && localY <= imgDrawY + imgDrawH) {
+    if (localX >= 0 && localX <= nd.size[0] && localY >= imgDrawY && localY <= imgDrawY + imgDrawH) {
         return w;
     }
     return null;
@@ -969,6 +971,11 @@ class XzgImageSaveWidget {
         this._lastClickPos = null;
         this._imageDrawY = 0;
         this._imageDrawH = 0;
+        this._xzgPointerWrapper = null;
+        this._xzgDomPointerDown = null;
+        // Nodes 2.0 lays custom widgets out as flexible DOM rows. Without this,
+        // the legacy canvas keeps its initial height after the node is resized.
+        this.computeLayoutSize = () => ({ minHeight: 180, minWidth: 0 });
     }
 
     set value(v) {
@@ -999,6 +1006,8 @@ class XzgImageSaveWidget {
         const newImg = new Image();
         newImg.onload = () => {
             this.node.setDirtyCanvas(true, true);
+            // Nodes 2.0：独立 DOM canvas 只认 triggerDraw，主画布重绘不会更新它
+            this.triggerDraw?.();
         };
         newImg.src = imgData.url;
         imgData.img = newImg;
@@ -1047,6 +1056,53 @@ class XzgImageSaveWidget {
 
     draw(ctx, node, width, y) {
         this.hitAreas = {};
+        let drawAreaHeight = node.size?.[1] || 0;
+        // ── Nodes 2.0 兼容 ──
+        // 2.0 下本控件由前端 WidgetLegacy 的独立 canvas 渲染：它按"视口像素"设置位图
+        //（canvas.width = 宽度×缩放），CSS 高度再由位图比例推导，结果：
+        // 1 单位 ≠ 1 本地像素，画布高度只有容器的 1/缩放，预览图被缩小/裁掉。
+        // 这里把这块 canvas 归一化成"本地像素"：位图 = 布局尺寸×2，1 单位 = 1 本地像素，
+        // 并让 canvas 铺满容器（旧版画布模式用的是主画布，走不到这里）。
+        const _cvsEl = ctx && ctx.canvas;
+        const _wrap = _cvsEl?.parentElement;
+        const _isWidgetCanvas = _cvsEl
+            && _cvsEl !== app?.canvas?.canvas
+            && _cvsEl.classList?.contains("cursor-crosshair")   // WidgetLegacy 的画布类名
+            && _wrap?.style?.minHeight;                          // 容器由组件设置 minHeight
+        if (_isWidgetCanvas) {
+            this._xzgUsesWidgetCanvas = true;
+            const wrap = _wrap;
+            if (wrap && wrap.clientWidth && wrap.clientHeight) {
+                this._attachWidgetCanvasPointerHandlers(wrap, node);
+                const lw = wrap.clientWidth;
+                const lh = wrap.clientHeight;
+                if (_cvsEl.style.width !== lw + "px") _cvsEl.style.width = lw + "px";
+                if (_cvsEl.style.height !== lh + "px") _cvsEl.style.height = lh + "px";
+                if (_cvsEl.width !== lw * 2 || _cvsEl.height !== lh * 2) {
+                    _cvsEl.width = lw * 2;
+                    _cvsEl.height = lh * 2;
+                }
+                ctx.setTransform(2, 0, 0, 2, 0, 0);
+                width = lw;
+                drawAreaHeight = lh;
+                y = 0;
+
+                // Convert the separate DOM canvas origin back to node-local
+                // graph coordinates. Hit areas are drawn in widget-canvas
+                // coordinates, while LiteGraph mouse callbacks use node-local
+                // coordinates.
+                const graphCanvas = app?.canvas?.canvas;
+                const canvasRect = graphCanvas?.getBoundingClientRect?.();
+                const wrapRect = wrap.getBoundingClientRect?.();
+                const ds = app?.canvas?.ds;
+                const scale = Number(ds?.scale) || 1;
+                if (canvasRect && wrapRect && ds?.offset) {
+                    this._xzgWidgetOffsetX = (wrapRect.left - canvasRect.left) / scale - (Number(ds.offset[0]) || 0) - (Number(node.pos?.[0]) || 0);
+                    this._xzgWidgetOffsetY = (wrapRect.top - canvasRect.top) / scale - (Number(ds.offset[1]) || 0) - (Number(node.pos?.[1]) || 0);
+                }
+            }
+        }
+        this._drawAreaHeight = drawAreaHeight;
         this._startY = y;  // 记录图像控件起始 y，供 getWidgetOnPos 判断
         const btnH = 18;
         const imgs = this._value.images;
@@ -1157,7 +1213,7 @@ class XzgImageSaveWidget {
 
         // 记录图像区域位置（相对于节点内部的坐标）—— 即使没有图片也设置，用于右键检测
         this._imageDrawY = y - this._startY;
-        this._imageDrawH = node.size[1] - y - IMAGE_MARGIN;
+        this._imageDrawH = drawAreaHeight - y - IMAGE_MARGIN;
 
         if (!imgs.length) {
             return;
@@ -1176,7 +1232,7 @@ class XzgImageSaveWidget {
         if (!imgData) return;
         this._ensureImg(imgData);
 
-        const nodeHeight = node.size[1] - y - IMAGE_MARGIN;
+        const nodeHeight = (this._drawAreaHeight || node.size[1]) - y - IMAGE_MARGIN;
         if (nodeHeight <= 0) return;
         const effW = width - IMAGE_MARGIN * 2;
 
@@ -1332,7 +1388,7 @@ class XzgImageSaveWidget {
     _drawGrid(ctx, node, width, y, imgs) {
         const gap = 2;
         const effW = width - IMAGE_MARGIN * 2;
-        const nodeH = node.size[1] - y - IMAGE_MARGIN;
+        const nodeH = (this._drawAreaHeight || node.size[1]) - y - IMAGE_MARGIN;
         let bestCell = 0, bestCols = 1;
         const maxCols = Math.max(1, Math.floor(effW / 30));
         for (let c = 1; c <= maxCols; c++) {
@@ -1401,6 +1457,7 @@ class XzgImageSaveWidget {
             if (img && img.naturalWidth) {
                 this.hitAreas["grid_" + i] = {
                     bounds: [cx, cy, cell, cell],
+                    allowNodeDrag: true,
                     index: i,
                     onDown: () => {
                         this.currentIndex = i;
@@ -1431,11 +1488,8 @@ class XzgImageSaveWidget {
         if (typeof w !== "number" || !isFinite(w)) {
             w = (Array.isArray(ns) ? ns[0] : (typeof ns === "number" ? ns : 270)) || 270;
         }
-        // 返回当前节点实际高度，与 xzg_image_preview 一致。
-        // 注：原先返回固定 200 是为了防止上方文本控件被叠加计算导致无限增长，
-        // 但目前 mode/save_format/reduce_lag/base_dir 等 widget 均已被 hideWidget（computeSize=[0,0]），
-        // 原节点（非化神级）的 output_path/filename_prefix 等也已从 widgets 数组中完全移除，
-        // 因此 canvasWidget 的高度直接取 node.size[1] 是安全的，且能避免布局高度与绘制高度不一致造成的错位。
+        // The legacy canvas uses the node's full height; Nodes 2.0 uses the
+        // flexible computeLayoutSize contract declared in the constructor.
         const h = (Array.isArray(ns) && isFinite(ns[1])) ? ns[1] : 300;
         return [w, h];
     }
@@ -1454,6 +1508,12 @@ class XzgImageSaveWidget {
 
     // 命中测试：返回 pos（节点相对坐标）命中的 hitArea，未命中返回 null
     hitTest(pos) {
+        const px = pos[0] - (this._xzgUsesWidgetCanvas ? (this._xzgWidgetOffsetX || 0) : 0);
+        const py = pos[1] - (this._xzgUsesWidgetCanvas ? (this._xzgWidgetOffsetY || 0) : 0);
+        return this._hitTestLocal([px, py]);
+    }
+
+    _hitTestLocal(pos) {
         for (const [key, area] of Object.entries(this.hitAreas)) {
             const [bx, by, bw, bh] = area.bounds;
             if (pos[0] >= bx && pos[0] <= bx + bw && pos[1] >= by && pos[1] <= by + bh) {
@@ -1461,6 +1521,164 @@ class XzgImageSaveWidget {
             }
         }
         return null;
+    }
+
+    _selectPreviewNode(node, event) {
+        const graphCanvas = app.canvas;
+        if (!graphCanvas || !globalThis.LiteGraph?.vueNodesMode) return;
+        const additive = !!(event.shiftKey || event.ctrlKey || event.metaKey);
+        const selected = graphCanvas.selectedItems
+            ? [...graphCanvas.selectedItems]
+            : Object.values(graphCanvas.selected_nodes || {});
+        const alreadySelected = selected.some(item => item === node);
+        if (!alreadySelected) {
+            if (typeof graphCanvas.selectItems === "function") {
+                graphCanvas.selectItems(additive ? [...selected, node] : [node]);
+            } else {
+                graphCanvas.selectNode?.(node, additive);
+            }
+        }
+        graphCanvas.canvas?.focus?.({ preventScroll: true });
+        graphCanvas.setDirty?.(true, true);
+        node.setDirtyCanvas?.(true, true);
+    }
+
+    _attachWidgetCanvasPointerHandlers(wrapper, node) {
+        if (this._xzgPointerWrapper === wrapper) return;
+        this._xzgPreviewDragEvents?.abort();
+        this._xzgPointerWrapper?.removeEventListener?.("pointerdown", this._xzgPointerDownHandler, true);
+        this._xzgPointerWrapper?.removeEventListener?.("pointerup", this._xzgPointerUpHandler, true);
+        this._xzgPointerWrapper?.removeEventListener?.("pointercancel", this._xzgPointerCancelHandler, true);
+        this._xzgPointerWrapper = wrapper;
+
+        const pointFromEvent = (event) => {
+            const rect = wrapper.getBoundingClientRect();
+            if (!rect.width || !rect.height) return null;
+            return [
+                (event.clientX - rect.left) * wrapper.clientWidth / rect.width,
+                (event.clientY - rect.top) * wrapper.clientHeight / rect.height,
+            ];
+        };
+        const swallow = (event) => {
+            event.preventDefault?.();
+            event.stopPropagation?.();
+            event.stopImmediatePropagation?.();
+        };
+        this._xzgPointerDownHandler = (event) => {
+            if (event.button !== 0) return;
+            // WidgetLegacy 会阻止事件冒泡；无论命中图片、按钮还是空白，
+            // 都先同步原生节点选择，再继续处理控件自己的点击动作。
+            this._selectPreviewNode(node, event);
+            const point = pointFromEvent(event);
+            if (!point) return;
+            const area = this._hitTestLocal(point);
+            if (!area || area.allowNodeDrag) {
+                this._forwardPreviewDrag(wrapper, node, event, point, area);
+                return;
+            }
+            this._xzgDomPointerDown = { pointerId: event.pointerId, point };
+            try { wrapper.setPointerCapture?.(event.pointerId); } catch (_) {}
+            swallow(event);
+        };
+        this._xzgPointerUpHandler = (event) => {
+            const down = this._xzgDomPointerDown;
+            if (!down || down.pointerId !== event.pointerId) return;
+            this._xzgDomPointerDown = null;
+            const point = pointFromEvent(event);
+            if (!point || Math.hypot(point[0] - down.point[0], point[1] - down.point[1]) >= 8) {
+                swallow(event);
+                return;
+            }
+            if (this._hitTestLocal(point)) this.fireCanvasClick(point, node, event);
+            swallow(event);
+        };
+        this._xzgPointerCancelHandler = (event) => {
+            if (this._xzgDomPointerDown?.pointerId === event.pointerId) this._xzgDomPointerDown = null;
+        };
+        wrapper.addEventListener("pointerdown", this._xzgPointerDownHandler, true);
+        wrapper.addEventListener("pointerup", this._xzgPointerUpHandler, true);
+        wrapper.addEventListener("pointercancel", this._xzgPointerCancelHandler, true);
+    }
+
+    _forwardPreviewDrag(wrapper, node, event, point, area) {
+        if (!globalThis.LiteGraph?.vueNodesMode) return;
+        const nodeElement = wrapper.closest?.("[data-node-id]")
+            || [...document.querySelectorAll("[data-node-id]")]
+                .find(element => String(element.getAttribute("data-node-id")) === String(node.id));
+        if (!nodeElement) return;
+        this._xzgPreviewDragEvents?.abort();
+        const controller = this._xzgPreviewDragEvents = new AbortController();
+        const pointerId = event.pointerId || 1;
+        const startX = event.clientX, startY = event.clientY;
+        let moved = false;
+        const dispatch = (type, source, buttons) => {
+            if (!nodeElement.isConnected) return;
+            const forwarded = new PointerEvent(type, {
+                bubbles: true, cancelable: true, composed: true, view: window,
+                clientX: source.clientX, clientY: source.clientY,
+                screenX: source.screenX, screenY: source.screenY,
+                ctrlKey: source.ctrlKey, shiftKey: source.shiftKey,
+                altKey: source.altKey, metaKey: source.metaKey,
+                button: type === "pointermove" ? -1 : 0, buttons,
+                pointerId, pointerType: source.pointerType || "mouse",
+                isPrimary: source.isPrimary !== false,
+            });
+            Object.defineProperty(forwarded, "_xzgImageSaveForwarded", { value: true });
+            nodeElement.dispatchEvent(forwarded);
+        };
+        const swallow = source => {
+            source.preventDefault();
+            source.stopImmediatePropagation();
+        };
+        const updateMoved = source => {
+            moved ||= Math.hypot(source.clientX - startX, source.clientY - startY) >= 4;
+        };
+        const options = { capture: true, signal: controller.signal };
+        window.addEventListener("pointermove", move => {
+            if (move._xzgImageSaveForwarded || move.pointerId !== pointerId) return;
+            updateMoved(move);
+            dispatch("pointermove", move, move.buttons);
+            swallow(move);
+        }, options);
+        const finish = up => {
+            if (up._xzgImageSaveForwarded || up.pointerId !== pointerId) return;
+            updateMoved(up);
+            dispatch(up.type, up, 0);
+            controller.abort();
+            if (up.type === "pointerup" && !moved && area) this.fireCanvasClick(point, node, up);
+            swallow(up);
+        };
+        window.addEventListener("pointerup", finish, options);
+        window.addEventListener("pointercancel", finish, options);
+        dispatch("pointerdown", event, 1);
+        swallow(event);
+    }
+
+    onRemove() {
+        this._xzgPreviewDragEvents?.abort();
+        const wrapper = this._xzgPointerWrapper;
+        wrapper?.removeEventListener?.("pointerdown", this._xzgPointerDownHandler, true);
+        wrapper?.removeEventListener?.("pointerup", this._xzgPointerUpHandler, true);
+        wrapper?.removeEventListener?.("pointercancel", this._xzgPointerCancelHandler, true);
+        this._xzgPointerWrapper = null;
+        this._xzgDomPointerDown = null;
+    }
+
+    fireCanvasClick(pos, node, event) {
+        const now = performance.now();
+        const isDouble = this._lastClickPos &&
+            (now - this._lastClickT) < 300 &&
+            Math.abs(pos[0] - this._lastClickPos[0]) < 8 &&
+            Math.abs(pos[1] - this._lastClickPos[1]) < 8;
+        this._lastClickT = now;
+        this._lastClickPos = [pos[0], pos[1]];
+        const area = this._hitTestLocal(pos);
+        if (!area) return false;
+        if (isDouble && area.onDouble) area.onDouble(event, pos, node, area);
+        else if (!isDouble && area.onDown) area.onDown(event, pos, node, area);
+        this.triggerDraw?.();
+        node.setDirtyCanvas?.(true, true);
+        return true;
     }
 
     // 单击触发（由 node.onMouseUp 在“无拖动”时调用）：
@@ -1517,6 +1735,8 @@ class XiaozhuguangImageSaveNode {
         this.canvasWidget.value = { images: imagesToShow };
         this.canvasWidget.gridMode = imagesToShow.length > 1;
         this.setDirtyCanvas(true, true);
+        // Nodes 2.0：独立 DOM canvas 需要 triggerDraw 才会刷新
+        this.canvasWidget.triggerDraw?.();
     }
 
     onSerialize(serialised) {
@@ -1670,6 +1890,18 @@ class XiaozhuguangImageSaveNode {
                 const lx = x - node.pos[0];
                 const ly = y - node.pos[1];
                 const titleH = (typeof LiteGraph !== 'undefined' && LiteGraph.NODE_TITLE_HEIGHT) || 30;
+                const widget = node.canvasWidget;
+                if (widget?._xzgUsesWidgetCanvas) {
+                    const ox = widget._xzgWidgetOffsetX || 0;
+                    const oy = widget._xzgWidgetOffsetY || titleH;
+                    const wh = widget._drawAreaHeight || 0;
+                    if (lx >= ox && lx <= ox + node.size[0] && ly >= oy && ly <= oy + wh) {
+                        // Route all clicks inside the separate Nodes 2.0 canvas
+                        // through node handlers; hitTest translates them back
+                        // to widget-local coordinates for both toolbar and image.
+                        return null;
+                    }
+                }
                 // 画面区域不当作“控件”命中：返回 null → 新前端 _processNodeClick 走节点分支，
                 // 左键按下/拖动即原生移动节点；单击动作由 onMouseDown/onMouseUp/fireClick 处理。
                 const imgStartY = node.canvasWidget?._startY ?? titleH;
@@ -1752,6 +1984,7 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             const origOnExecuted = nodeType.prototype.onExecuted;
             const origOnDrawForeground = nodeType.prototype.onDrawForeground;
+            const origOnResize = nodeType.prototype.onResize;
             const origOnSerialize = nodeType.prototype.onSerialize;
             const origGetHelp = nodeType.prototype.getHelp;
 
@@ -1759,6 +1992,12 @@ app.registerExtension({
 
             nodeType.prototype.onNodeCreated = function () {
                 this.canvasWidget = null;
+                // 新版前端（ComfyUI 1.5x）会把 ui.images 渲染成节点体内的 ImagePreview
+                // （div.image-preview + 全分辨率 img）。本节点已有自定义画布预览，
+                // 不关闭该内置预览就会同时出现 canvas 与 img（一大一小两张图）。
+                // hideOutputImages 是官方内置节点（ImageCompositor/ImageCrop/Painter）用的开关，
+                // 只影响节点体内预览，不影响媒体资产登记。
+                this.hideOutputImages = true;
                 proto.onNodeCreated.call(this);
 
                 // 保存需要引用的 widget 引用，然后从 widgets 数组中完全移除
@@ -1855,12 +2094,27 @@ app.registerExtension({
                 proto.onDrawForeground.call(this, ctx, canvas);
             };
 
+            // Nodes 2.0 renders legacy custom widgets on a separate canvas.
+            // Redraw it after resize so the image follows the node's new bounds.
+            nodeType.prototype.onResize = function (size) {
+                const result = origOnResize?.apply(this, arguments);
+                const widget = this.canvasWidget;
+                // Let Nodes 2.0 finish its flex layout before resizing the
+                // separate widget canvas; setting computedHeight here freezes
+                // the canvas at a stale height on subsequent resizes.
+                requestAnimationFrame(() => widget?.triggerDraw?.());
+                this.setDirtyCanvas?.(true, true);
+                return result;
+            };
+
             nodeType.prototype.onSerialize = function (o) {
                 proto.onSerialize.call(this, o);
             };
 
             nodeType.prototype.onConfigure = function (o) {
                 proto.onConfigure.call(this, o);
+                // 工作流恢复后再次关闭内置图片预览，避免 configure 覆盖导致双图
+                this.hideOutputImages = true;
                 // 从工作流恢复后：白名单只保留 images 端口（ComfyUI configure 会恢复保存的全部 inputs）
                 this.__xzgSanitizeInputs?.call(this);
                 // 规范化 mode 值为英文（工作流可能保存了 i18n 翻译后的中文值）
@@ -1878,6 +2132,7 @@ app.registerExtension({
 
             const origOnRemoved = nodeType.prototype.onRemoved;
             nodeType.prototype.onRemoved = function () {
+                this.canvasWidget?.onRemove?.();
                 if (this._xzgImageSaveKeyHandler) {
                     window.removeEventListener("keydown", this._xzgImageSaveKeyHandler, true);
                     this._xzgImageSaveKeyHandler = null;

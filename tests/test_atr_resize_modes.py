@@ -12,6 +12,19 @@ ATBC = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'nodes/xzg_atbc.
 
 
 class ATRResizeModeTests(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA required')
+    def test_prepared_downscale_matches_existing_gpu_path(self):
+        source = torch.rand((3, 113, 157, 3), generator=torch.Generator().manual_seed(21))
+        for channels in (1, 3):
+            for mode in ATR.INPUT_TYPES()['optional']['resize_mode'][0]:
+                with self.subTest(mode=mode, channels=channels):
+                    image = source[..., :channels]
+                    old_input = (image.cuda().movedim(-1, 1) * 255).clamp_(0, 255).floor_()
+                    expected = ATR._gpu_resize(old_input, 31, 27, mode)
+                    actual = ATR._prepare_gpu_input(image, 31, 27, mode, 'cuda')
+                    self.assertTrue(torch.equal(actual, expected))
+                    self.assertTrue(torch.equal(ATR._gpu_resize(actual, 31, 27, mode), expected))
+
     def test_atbc_modes_match_atr_for_images_and_masks(self):
         rng = np.random.default_rng(8)
         node = ATBC()

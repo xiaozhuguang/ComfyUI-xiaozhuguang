@@ -400,42 +400,26 @@ window.XZGThemePanel = {
                             </button>
                         </div>
                         <div id="xzg-node-highlight-options" style="display:none;">
-                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-preset-row">
-                                <span class="xzg-swatch-label">${xzgT('预设','Presets')}</span>
-                                <select id="xzg-node-highlight-preset-select" title="${xzgT('渐变彩色预设','Gradient presets')}" style="flex:1;min-width:0;background:#2a2a2a;color:#ddd;border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 4px;font-size:11px;">
-                                    <option value="custom1">${xzgT('自定义单色','Custom Single')}</option>
-                                    <option value="fire">${xzgT('火','Fire')}</option>
-                                    <option value="cyber">${xzgT('赛博','Cyber')}</option>
-                                    <option value="ocean">${xzgT('海洋','Ocean')}</option>
-                                    <option value="rainbow">${xzgT('彩虹','Rainbow')}</option>
-                                </select>
-                            </div>
-                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-color-row" style="display:none;">
-                                <span class="xzg-swatch-label">${xzgT('自定义颜色','Custom Color')}</span>
+                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-color-row">
+                                <span class="xzg-swatch-label">${xzgT('颜色','Colors')}</span>
                                 <div style="display:flex;align-items:center;gap:6px;flex:1;">
-                                    <input type="color" id="xzg-node-highlight-color-1" value="#22FF22" title="${xzgT('颜色','Color')}" style="width:30px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
+                                    <input type="color" id="xzg-node-highlight-color-1" value="#22FF22" title="${xzgT('颜色1','Color 1')}" style="width:30px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
+                                    <input type="color" id="xzg-node-highlight-color-2" value="#FFFF00" title="${xzgT('颜色2','Color 2')}" style="width:30px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
+                                    <input type="color" id="xzg-node-highlight-color-3" value="#00FFFF" title="${xzgT('颜色3','Color 3')}" style="width:30px;height:24px;border:none;background:none;cursor:pointer;padding:0;">
                                 </div>
                             </div>
 
 
-                            <div class="xzg-link-highlight-section">
-                                <span class="xzg-swatch-label">${xzgT('呼吸动画','Breathing')}</span>
-                                <button type="button" id="xzg-node-highlight-breath-btn" class="xzg-toggle-switch xzg-node-highlight-breath-toggle" data-checked="false" title="${xzgT('开启后，高亮框明暗起伏（呼吸灯）','Breathing pulse on the highlight box')}">
-                                    <span class="xzg-toggle-slider"></span>
-                                    <span class="xzg-toggle-label">${xzgT('关','Off')}</span>
-                                </button>
-                            </div>
-
-                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-breath-row" style="display:none;">
-                                <span class="xzg-swatch-label">${xzgT('呼吸周期','Breath Periodic')}</span>
-                                <input type="range" id="xzg-node-highlight-breath-period" min="0.3" max="5" step="0.1" value="2" style="flex:1;accent-color:#FFD700;">
-                                <span id="xzg-node-highlight-breath-period-val" style="flex:0 0 44px;text-align:right;font-size:11px;color:#FFD700;">2.0s</span>
-                            </div>
-
-                            <div class="xzg-link-highlight-section">
-                                <span class="xzg-swatch-label">${xzgT('描边粗细','Stroke Width')}</span>
-                                <input type="range" id="xzg-node-highlight-width" min="1" max="12" step="1" value="3" style="flex:1;accent-color:#FFD700;">
-                                <span id="xzg-node-highlight-width-val" style="flex:0 0 44px;text-align:right;font-size:11px;color:#FFD700;">3px</span>
+                            <div class="xzg-link-highlight-section" id="xzg-node-highlight-anim-row">
+                                <span class="xzg-swatch-label">${xzgT('动画','Anim')}</span>
+                                <select id="xzg-node-highlight-anim-select" title="${xzgT('节点高亮动画方式','Node highlight animation mode')}" style="flex:1;min-width:0;background:#2a2a2a;color:#ddd;border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:2px 4px;font-size:11px;">
+                                    <option value="flow">${xzgT('三色','Tri-Color')}</option>
+                                    <option value="energy">${xzgT('能量脉冲','Energy')}</option>
+                                    <option value="stellar">${xzgT('恒星等离子','Stellar')}</option>
+                                    <option value="transfer">${xzgT('高速穿梭','Transfer')}</option>
+                                    <option value="diy1">${xzgT('金星流动','Gold Flow')}</option>
+                                    <option value="diy2">${xzgT('紫色箭头','Purple Arrow')}</option>
+                                </select>
                             </div>
                         </div>
                     </div>
@@ -857,23 +841,21 @@ window.XZGThemePanel = {
             }
         }
 
-        // 节点执行高亮开关（含颜色与呼吸动画选项）
+        // 节点执行高亮开关（含颜色与流速选项）
         const nodeHighlightBtn = panel.querySelector("#xzg-node-highlight-btn");
         const nodeHighlightOptions = panel.querySelector("#xzg-node-highlight-options");
-        const nodeHighlightColorInput = panel.querySelector("#xzg-node-highlight-color-1");
-        const nodeHighlightBreathBtn = panel.querySelector("#xzg-node-highlight-breath-btn");
-        const nodeHighlightBreathRow = panel.querySelector("#xzg-node-highlight-breath-row");
-        const nodeHighlightBreathPeriod = panel.querySelector("#xzg-node-highlight-breath-period");
-        const nodeHighlightBreathPeriodVal = panel.querySelector("#xzg-node-highlight-breath-period-val");
-        const nodeHighlightWidth = panel.querySelector("#xzg-node-highlight-width");
-        const nodeHighlightWidthVal = panel.querySelector("#xzg-node-highlight-width-val");
+        const nodeHighlightColorInputs = [
+            panel.querySelector("#xzg-node-highlight-color-1"),
+            panel.querySelector("#xzg-node-highlight-color-2"),
+            panel.querySelector("#xzg-node-highlight-color-3"),
+        ];
+        const nodeHighlightAnimSelect = panel.querySelector("#xzg-node-highlight-anim-select");
         const applySwatches = (tm) => {
-            const el = panel.querySelector("#xzg-node-highlight-color-1");
-            if (el) {
-                el.style.display = "";
-                const parts = ((tm && tm.nodeHighlightColor) || "#22FF22").split(",").map(s => s.trim()).filter(Boolean);
-                el.value = parts[0] || "#22FF22";
-            }
+            const parts = ((tm && tm.nodeHighlightColor) || "#22FF22").split(",").map(s => s.trim()).filter(Boolean);
+            const defaults = ["#22FF22", "#FFFF00", "#00FFFF"];
+            nodeHighlightColorInputs.forEach((el, i) => {
+                if (el) el.value = parts[i] || parts[parts.length - 1] || defaults[i];
+            });
         };
         const syncNodeHighlightUI = () => {
             if (!window.XZGThemeManager) return;
@@ -885,16 +867,7 @@ window.XZGThemePanel = {
             }
             if (nodeHighlightOptions) nodeHighlightOptions.style.display = tm.nodeHighlightActive ? "block" : "none";
             applySwatches(tm);
-            if (nodeHighlightBreathBtn) {
-                nodeHighlightBreathBtn.setAttribute("data-checked", tm.nodeHighlightBreath ? "true" : "false");
-                const breathLabel = nodeHighlightBreathBtn.querySelector(".xzg-toggle-label");
-                if (breathLabel) breathLabel.textContent = tm.nodeHighlightBreath ? xzgT("开","On") : xzgT("关","Off");
-            }
-            if (nodeHighlightBreathRow) nodeHighlightBreathRow.style.display = tm.nodeHighlightBreath ? "flex" : "none";
-            if (nodeHighlightBreathPeriod) nodeHighlightBreathPeriod.value = tm.nodeHighlightBreathPeriod || 2;
-            if (nodeHighlightBreathPeriodVal) nodeHighlightBreathPeriodVal.textContent = (tm.nodeHighlightBreathPeriod || 2).toFixed(1) + "s";
-            if (nodeHighlightWidth) nodeHighlightWidth.value = tm.nodeHighlightWidth || 3;
-            if (nodeHighlightWidthVal) nodeHighlightWidthVal.textContent = (tm.nodeHighlightWidth || 3) + "px";
+            if (nodeHighlightAnimSelect) nodeHighlightAnimSelect.value = tm.nodeHighlightColorAnim || 'flow';
         };
 
         if (nodeHighlightBtn) {
@@ -912,95 +885,25 @@ window.XZGThemePanel = {
 
         const syncFromSwatches = () => {
             if (!window.XZGThemeManager) return;
-            const el = panel.querySelector("#xzg-node-highlight-color-1");
-            if (el) window.XZGThemeManager.setNodeHighlightColor(el.value);
+            const parts = nodeHighlightColorInputs
+                .map(el => (el && el.value ? String(el.value).trim() : ""))
+                .filter(Boolean);
+            if (parts.length) window.XZGThemeManager.setNodeHighlightColor(parts.join(","));
         };
         {
-            const el = panel.querySelector("#xzg-node-highlight-color-1");
-            if (el) {
-                el.addEventListener("input", (e) => { e.stopPropagation(); syncFromSwatches(); if (nodeHighlightPresetSelect) syncPresetSelect(); });
-                el.addEventListener("change", (e) => { e.stopPropagation(); syncFromSwatches(); if (nodeHighlightPresetSelect) syncPresetSelect(); });
-            }
+            const bindColor = (el) => {
+                if (!el) return;
+                el.addEventListener("input", (e) => { e.stopPropagation(); syncFromSwatches(); });
+                el.addEventListener("change", (e) => { e.stopPropagation(); syncFromSwatches(); });
+            };
+            nodeHighlightColorInputs.forEach(bindColor);
         }
 
-        // 渐变彩色预设下拉框
-        const nodeHighlightPresetSelect = panel.querySelector("#xzg-node-highlight-preset-select");
-        const nodeHighlightPresetMap = {
-            fire: "#FF0000,#FFFF00",
-            cyber: "#00FFFF,#FF00FF",
-            ocean: "#0000FF,#00FFFF",
-            rainbow: "#FF0000,#FFFF00,#00FF00,#00FFFF,#0000FF,#FF00FF",
-        };
-        if (nodeHighlightPresetSelect) {
-            const syncPresetSelect = () => {
-                const tm = window.XZGThemeManager;
-                const cur = ((tm && tm.nodeHighlightColor) || "").replace(/\s+/g, "").toLowerCase();
-                const parts = cur.split(",").filter(Boolean);
-                let matched = "custom1";
-                for (const k of Object.keys(nodeHighlightPresetMap)) {
-                    if (cur === nodeHighlightPresetMap[k].toLowerCase()) { matched = k; break; }
-                }
-                nodeHighlightPresetSelect.value = matched;
-                applySwatches(tm);
-                const cr = panel.querySelector("#xzg-node-highlight-color-row");
-                if (cr) cr.style.display = matched === "custom1" ? "" : "none";
-            };
-            nodeHighlightPresetSelect.addEventListener("change", (e) => {
+        if (nodeHighlightAnimSelect) {
+            nodeHighlightAnimSelect.addEventListener("change", (e) => {
                 e.stopPropagation();
-                const v = e.target.value;
-                const cr = panel.querySelector("#xzg-node-highlight-color-row");
-                if (v === "custom1") {
-                    if (cr) cr.style.display = "";
-                    const tm = window.XZGThemeManager;
-                    if (tm) {
-                        const el = panel.querySelector("#xzg-node-highlight-color-1");
-                        if (el) {
-                            tm.setNodeHighlightColor(el.value);
-                            applySwatches(tm);
-                            el.focus();
-                        }
-                    }
-                    return;
-                }
-                if (cr) cr.style.display = "none";
-                if (window.XZGThemeManager && nodeHighlightPresetMap[v]) {
-                    window.XZGThemeManager.setNodeHighlightColor(nodeHighlightPresetMap[v]);
-                    syncNodeHighlightUI();
-                }
+                if (window.XZGThemeManager) window.XZGThemeManager.setNodeHighlightColorAnim(e.target.value);
             });
-            syncPresetSelect();
-        }
-
-        if (nodeHighlightBreathBtn) {
-            nodeHighlightBreathBtn.addEventListener("click", (e) => {
-                e.stopPropagation();
-                if (window.XZGThemeManager) {
-                    window.XZGThemeManager.setNodeHighlightBreath(!window.XZGThemeManager.nodeHighlightBreath);
-                    syncNodeHighlightUI();
-                }
-            });
-        }
-        if (nodeHighlightBreathPeriod) {
-            const updateBreathPeriod = () => {
-                const v = parseFloat(nodeHighlightBreathPeriod.value);
-                if (window.XZGThemeManager && !isNaN(v) && v > 0) {
-                    window.XZGThemeManager.setNodeHighlightBreathPeriod(v);
-                    if (nodeHighlightBreathPeriodVal) nodeHighlightBreathPeriodVal.textContent = v.toFixed(1) + "s";
-                }
-            };
-            nodeHighlightBreathPeriod.addEventListener("input", updateBreathPeriod);
-            nodeHighlightBreathPeriod.addEventListener("change", updateBreathPeriod);
-        }
-        if (nodeHighlightWidth) {
-            const updateWidth = () => {
-                const v = parseInt(nodeHighlightWidth.value, 10);
-                if (window.XZGThemeManager && !isNaN(v) && v > 0) {
-                    window.XZGThemeManager.setNodeHighlightWidth(v);
-                    if (nodeHighlightWidthVal) nodeHighlightWidthVal.textContent = v + "px";
-                }
-            };
-            nodeHighlightWidth.addEventListener("input", updateWidth);
-            nodeHighlightWidth.addEventListener("change", updateWidth);
         }
 
         syncNodeHighlightUI();

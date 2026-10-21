@@ -55,6 +55,8 @@ function _tr(zh) {
 const VIDEO_EXTS = ["webm", "mp4", "mkv", "gif", "mov", "avi", "flv", "wmv", "m4v", "mpg", "mpeg", "ts"];
 const VIDEO_PREVIEW_WIDGET_NAME = "xzg_video_preview";
 const VIDEO_PREVIEW_MIN_H = 100;
+const VIDEO_PREVIEW_HINT_H = 24;
+const VIDEO_PREVIEW_TOP_GAP = 1;
 
 // 工作流恢复时，多个视频节点若同时初始化 WebCodecs 解码器会抢占主线程/GPU。
 // 此队列只调度恢复首帧；用户主动选择/上传视频仍直接加载。
@@ -195,12 +197,39 @@ function _xzgWidgetNumberWithResetMouse(event, [x, y], node) {
     return _xzgWidgetNumberMouse.call(this, event, [x, y], node);
 }
 
-function _xzgDrawWidget(ctx, node, width, y, H) {
-    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
-    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
+export function _xzgVideoRowSize(width) {
+    // Nodes 1 的布局会再加 4px，而实际绘制仍以 20px 行高进行。
+    // 占位设为 16px 后，行距为 20px，18px 的圆角边框之间保留 2px。
+    return [width, globalThis.LiteGraph?.vueNodesMode ? 20 : 16];
+}
+
+export function _xzgVideoRowLayout(ctx, node, width, y, H) {
+    const canvas = ctx.canvas;
+    const wrapper = canvas?.parentElement;
+    if (canvas !== app.canvas?.canvas && canvas?.classList?.contains("cursor-crosshair")
+        && wrapper?.clientWidth && wrapper?.clientHeight) {
+        // Nodes 2 的控件使用独立画布。按真实行容器绘制，不能混用缓存行宽、
+        // 节点宽度和视口缩放后的位图宽度，否则首次加载和缩放后边距会漂移。
+        width = wrapper.clientWidth;
+        H = wrapper.clientHeight;
+        y = 0;
+        canvas.style.width = width + "px";
+        canvas.style.height = H + "px";
+        if (canvas.width !== width * 2 || canvas.height !== H * 2) {
+            canvas.width = width * 2;
+            canvas.height = H * 2;
+        }
+        ctx.setTransform(2, 0, 0, 2, 0, 0);
+        return [width, y, H];
+    }
     const _nW = node?.size?.[0], _nH = node?.size?.[1];
     if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
     if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
+    return [width, y, H];
+}
+
+function _xzgDrawWidget(ctx, node, width, y, H) {
+    [width, y, H] = _xzgVideoRowLayout(ctx, node, width, y, H);
     this._xzgDrawW = width;
     // 记录 LiteGraph 实际计算的 y/H，供激光线等需要精确定位的元素使用
     // 解决节点 resize 后硬编码 yOffset 导致位置错乱的问题
@@ -267,11 +296,7 @@ function _xzgDrawWidget(ctx, node, width, y, H) {
 
 // combo / button 同款圆角风格
 function _xzgDrawComboWidget(ctx, node, width, y, H) {
-    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
-    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
-    const _nW = node?.size?.[0], _nH = node?.size?.[1];
-    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
-    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
+    [width, y, H] = _xzgVideoRowLayout(ctx, node, width, y, H);
     this._xzgDrawW = width;
     this._xzgLastY = y;
     this._xzgLastH = H;
@@ -465,11 +490,7 @@ function _xzgShowComboDropdown(widget, node, event) {
 }
 
 export function _xzgDrawButtonWidget(ctx, node, width, y, H) {
-    // 属性面板切换等触发节点 reflow 时，widget 传入的宽/高可能与 node.size 暂时不一致，
-    // 强制把该行绘制限制在节点实际边界内，避免溢出节点（与波形钳制一致）
-    const _nW = node?.size?.[0], _nH = node?.size?.[1];
-    if (_nW != null && _nW > 0) width = Math.max(1, Math.min(width, _nW));
-    if (_nH != null && _nH > 0) H = Math.max(1, Math.min(H, Math.max(0, _nH - y)));
+    [width, y, H] = _xzgVideoRowLayout(ctx, node, width, y, H);
     const pad = 16, r = 6;
     const w = width - pad * 2;
     ctx.fillStyle = '#2a2a2a';
@@ -686,17 +707,20 @@ function _updateRatioWidgets(node) {
 }
 
 // 转为外部输入后仍保留原控件行；保留 converted-widget 类型及序列化逻辑。
-function _xzgKeepConvertedWidgetVisible(widget) {
+function _xzgKeepConvertedWidgetVisible(widget, node) {
     if (widget._xzgKeepConvertedVisible) return;
     widget._xzgKeepConvertedVisible = true;
-    const isExternal = () => widget.type === 'converted-widget';
+    const isExternal = () => widget.type === 'converted-widget' ||
+        node.inputs?.some(input => input.name === widget.name && input.link != null);
+    // 新前端在绘制前设置此状态，跳过自定义 draw，只留下输入插口。
+    widget.connectionSuppressed = false;
     let draw = widget.draw;
     let mouse = widget.mouse;
     let computeSize = widget.computeSize;
     const drawVisible = function (ctx, ...args) {
         ctx.save();
         try {
-            if (isExternal()) ctx.globalAlpha *= 0.4;
+            if (isExternal()) ctx.globalAlpha *= 0.65;
             return draw?.call(this, ctx, ...args);
         } finally {
             ctx.restore();
@@ -707,12 +731,17 @@ function _xzgKeepConvertedWidgetVisible(widget) {
         return mouse?.apply(this, args);
     };
     const sizeVisible = function (width) {
-        if (isExternal()) return [width, 20];
+        if (isExternal()) return _xzgVideoRowSize(width);
         return computeSize?.call(this, width) ?? [width, 20];
     };
     // ComfyUI 转换时会将 draw/mouse/computeSize 替换为空函数和负高度。
     // 拦截这些隐藏操作，同时允许本节点继续切换数值/下拉框样式。
     Object.defineProperties(widget, {
+        connectionSuppressed: {
+            configurable: true,
+            get: () => false,
+            set(_) { /* 参数行保持可见，外部输入仍由连线提供。 */ },
+        },
         draw: {
             configurable: true,
             get: () => drawVisible,
@@ -740,6 +769,7 @@ export function _applyWidgetStyles(node) {
     // ComfyUI 会把 widget.width 写成面板侧行宽度，导致行绘制/交互命中区超出节点。
     // 这里统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
     const _XRG_WIDGET_NAME_FIX = {
+        '视频': 1, '上传视频': 1,
         '强制帧率': 1, '视频比例': 1, '比例模式': 1, '自定义宽度': 1,
         '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1, '内存模式': 1,
     };
@@ -814,9 +844,90 @@ export function _applyWidgetStyles(node) {
             w.mouse = _xzgWidgetNumberWithResetMouse;
             w.label = _tr(w.name);
         }
-        if (w.draw === _xzgDrawWidget || w.draw === _xzgDrawComboWidget) {
-            _xzgKeepConvertedWidgetVisible(w);
+        if (w.draw === _xzgDrawWidget || w.draw === _xzgDrawComboWidget || w.draw === _xzgDrawButtonWidget) {
+            w.computeSize = _xzgVideoRowSize;
         }
+        if (w.draw === _xzgDrawWidget || w.draw === _xzgDrawComboWidget) {
+            _xzgKeepConvertedWidgetVisible(w, node);
+        }
+    }
+}
+
+function _xzgFixVueWidgetGutter(node) {
+    if (!globalThis.LiteGraph?.vueNodesMode) return;
+    const id = String(node?.id ?? "").replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!id || id === "-1") return;
+    const styleId = `xzg-video-widget-gutter-${id}`;
+    if (!document.getElementById(styleId)) {
+        const style = document.createElement("style");
+        style.id = styleId;
+        style.textContent = `
+        [data-node-id="${id}"] .lg-node-widgets {
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            row-gap: 2px !important;
+            /* 原生第一列给连接控件预留 12px。控件仍在左侧内边距内显示，
+               列本身不再把所有自绘行和 DOM 预览向右推。 */
+            grid-template-columns: 0 minmax(80px, min-content) minmax(125px, 1fr) !important;
+        }
+        [data-node-id="${id}"] .lg-node-widgets div:has(> canvas) {
+            width: 100% !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            min-width: 0 !important;
+            box-sizing: border-box;
+            line-height: 0;
+        }
+        [data-node-id="${id}"] .lg-node-widgets div > canvas { display: block; }
+        [data-node-id="${id}"] .xzg-video-preview-host {
+            padding-left: 8px;
+            padding-right: 8px;
+        }
+    `;
+        document.head.appendChild(style);
+    }
+
+    if (node._xzgVideoVueLayout?.id === id) return;
+    node._xzgVideoVueLayout?.dispose();
+    const state = { id, frame: 0, settlingFrames: 2, disposed: false, mountObserver: null, resizeObserver: null };
+    const redraw = () => {
+        state.frame = 0;
+        if (state.disposed || !globalThis.LiteGraph?.vueNodesMode) return;
+        // WidgetLegacy 的首次绘制可能早于行宽 CSS 生效；DOM 挂载和布局稳定后
+        // 重绘独立控件画布，避免一直保留创建时的宽度，直到用户手动 resize。
+        for (const widget of node.widgets || []) {
+            if (!widget.hidden) widget.triggerDraw?.();
+        }
+        node._xzgVideoPlayer?.resize?.();
+        if (state.settlingFrames > 0) {
+            state.settlingFrames--;
+            schedule();
+        }
+    };
+    const schedule = () => {
+        if (!state.disposed && !state.frame) state.frame = requestAnimationFrame(redraw);
+    };
+    const watchLayout = () => {
+        const grid = document.querySelector(`[data-node-id="${id}"] .lg-node-widgets`);
+        if (!grid) return false;
+        state.mountObserver?.disconnect();
+        state.mountObserver = null;
+        state.resizeObserver = new ResizeObserver(schedule);
+        state.resizeObserver.observe(grid);
+        schedule();
+        return true;
+    };
+    state.dispose = () => {
+        state.disposed = true;
+        state.mountObserver?.disconnect();
+        state.resizeObserver?.disconnect();
+        if (state.frame) cancelAnimationFrame(state.frame);
+        document.getElementById(styleId)?.remove();
+    };
+    node._xzgVideoVueLayout = state;
+    if (!watchLayout()) {
+        state.mountObserver = new MutationObserver(watchLayout);
+        state.mountObserver.observe(document.body, { childList: true, subtree: true });
     }
 }
 
@@ -830,7 +941,7 @@ export function _xzgCreateNumberWidget(node, inputName, inputData) {
         _xzgStep: opts.step || 1,
         _xzgMin: opts.min,
         _xzgMax: opts.max,
-        computeSize(width) { return [width, 20]; },
+        computeSize: _xzgVideoRowSize,
         draw: _xzgDrawWidget,
         mouse: _xzgWidgetNumberMouse,
         callback(v) { if (this._xzgCb) this._xzgCb(v); },
@@ -876,7 +987,7 @@ export function _xzgCreateComboWidget(node, inputName, inputData) {
         type: 'xzg_combo',
         value: opts.default != null ? opts.default : (values[0] != null ? values[0] : ""),
         options: { values: values },
-        computeSize(width) { return [width, 20]; },
+        computeSize: _xzgVideoRowSize,
         draw: _xzgDrawComboWidget,
         mouse: _xzgFpsComboMouse,
         callback(v) { if (this._xzgCb) this._xzgCb(v); },
@@ -1266,15 +1377,35 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     const _fastcutEnabled = opts?.fastcut !== false;
     node.resizable = true;
     node.minWidth = 300;
-    node.minHeight = 500;
-    // 强制 setSize 不得小于最小尺寸（防止拖动右下角缩小）
+    // Nodes 1 保留原来的尺寸下限；Nodes 2 的预览最小高度由布局控件提供。
+    if (!globalThis.LiteGraph?.vueNodesMode) node.minHeight = 500;
     const origSetSize = node.setSize;
-    node.setSize = function(size) {
-        size[0] = Math.max(size[0], this.minWidth || 300);
-        size[1] = Math.max(size[1], this.minHeight || 500);
-        return origSetSize?.apply(this, arguments);
+    node.setSize = function(sizeOrWidth, height) {
+        const args = Array.from(arguments);
+        // LiteGraph 的 node.size 可以是 Float32Array，不能仅用 Array.isArray 判断。
+        const usesNumbers = typeof sizeOrWidth === "number";
+        const size = usesNumbers ? [sizeOrWidth, height] : sizeOrWidth;
+        size[0] = Math.max(Number(size[0]) || 0, this.minWidth || 300);
+        // LiteGraph 的 computeSize 接收的是输出数组而不是宽度数字。
+        const requiredHeight = globalThis.LiteGraph?.vueNodesMode
+            ? (this.computeSize?.()?.[1] || 0)
+            : (this.minHeight || 500);
+        size[1] = Math.max(Number(size[1]) || 0, requiredHeight);
+        // LiteGraph setSize 的正式签名始终接收 [width, height]，
+        // 即使上游在 Nodes 2 路径传入两个数字，也统一归一化回数组。
+        args.splice(0, usesNumbers ? 2 : 1, size);
+        return origSetSize?.apply(this, args);
     };
     node.setSize([300, 500]);
+
+    // onNodeCreated 时 LiteGraph 还可能给节点临时 id=-1；等节点真正加入画布后
+    // 再按真实 data-node-id 注入 Nodes 2 的行宽修正样式。
+    const origOnAdded = node.onAdded;
+    node.onAdded = function () {
+        const result = origOnAdded?.apply(this, arguments);
+        _xzgFixVueWidgetGutter(this);
+        return result;
+    };
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
@@ -1368,6 +1499,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
 
     // 暴露预览区容器与快剪按钮，供派生节点（如达芬奇导入节点）在浏览区内追加/并排按钮
     node._xzgPreviewContainer = playerContainer;
+
     node._xzgFastcutBtn = fastcutBtn;
 
     if (fastcutBtn) {
@@ -1567,9 +1699,13 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     };
     const _lmNow = () => (typeof isLM === "function" ? !!isLM() : !!isLM);
     const _createPlayer = () => {
+        const useVueResizeLayout = !!globalThis.LiteGraph?.vueNodesMode;
         player = new XiaozhuguangVideoPlayer({
         node,
         container: playerContainer,
+        // 仅 Nodes 2 使用 flex 收缩布局；Nodes 1 保留原来的播放器布局。
+        flexContainer: useVueResizeLayout,
+        flexMinHeight: useVueResizeLayout ? VIDEO_PREVIEW_MIN_H + VIDEO_PREVIEW_HINT_H : 0,
         fit: _ratioModeToFit(),
         onDblClick: triggerUpload,
         // 低内存模式（小珠光视频加载低内存版/化神级内存模式）：B2 LRU 解码器池 / B3 流式打开。
@@ -1900,9 +2036,18 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         width: 100%; text-align: center; font-size: 11px; color: #666;
         padding: 4px 0 2px; pointer-events: none;
     `;
+    if (globalThis.LiteGraph?.vueNodesMode) {
+        Object.assign(hintText.style, { flex: "0 0 auto", minWidth: "0", boxSizing: "border-box" });
+    }
     playerContainer.appendChild(hintText);
 
-    const previewWidget = node.addDOMWidget(VIDEO_PREVIEW_WIDGET_NAME, "video", playerContainer, {
+    // 预览的背景和悬浮工具栏都留在内层，外层顶部保持透明，
+    // 避免 DOM 预览盖住上一行按钮画布的下边框。
+    const previewHost = document.createElement("div");
+    previewHost.className = "xzg-video-preview-host";
+    previewHost.style.cssText = `width:100%;height:100%;min-width:0;min-height:0;box-sizing:border-box;padding-top:${VIDEO_PREVIEW_TOP_GAP}px;overflow:hidden;pointer-events:none;`;
+    previewHost.appendChild(playerContainer);
+    const previewWidget = node.addDOMWidget(VIDEO_PREVIEW_WIDGET_NAME, "video", previewHost, {
         hideOnZoom: false,
         getValue() { return player._currentFile || ""; },
         setValue(v) {
@@ -1928,7 +2073,8 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     previewWidget.serialize = false;
     if (previewWidget.options) previewWidget.options.serialize = false;
     previewWidget.computeLayoutSize = function () {
-        return { minHeight: VIDEO_PREVIEW_MIN_H, minWidth: 0 };
+        const hintHeight = globalThis.LiteGraph?.vueNodesMode ? VIDEO_PREVIEW_HINT_H : 0;
+        return { minHeight: VIDEO_PREVIEW_MIN_H + hintHeight + VIDEO_PREVIEW_TOP_GAP, minWidth: 0 };
     };
     // 修复：ComfyUI（属性面板/线性模式渲染等）会把 DOM widget 的 width 写成
     // 面板侧行宽度（如 368px），而画布侧 DOM 宿主宽度 = widget.width - margin*2，
@@ -1951,9 +2097,38 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         return r;
     };
 
+    // 模式切换保留节点实例，不会重新执行 onAdded/onConfigure。
+    // 因此必须显式重建新 DOM 的布局监听，并同步播放器布局。
+    const modeSettings = app.ui?.settings;
+    let modeFrame = 0;
+    const onVideoModeChanged = () => {
+        if (modeFrame) cancelAnimationFrame(modeFrame);
+        modeFrame = requestAnimationFrame(() => {
+            modeFrame = 0;
+            node._xzgVideoVueLayout?.dispose();
+            node._xzgVideoVueLayout = null;
+            const enabled = !!globalThis.LiteGraph?.vueNodesMode;
+            if (enabled) delete node.minHeight;
+            else node.minHeight = 500;
+            player.setFlexLayout(enabled, VIDEO_PREVIEW_MIN_H + VIDEO_PREVIEW_HINT_H);
+            Object.assign(hintText.style, {
+                flex: enabled ? "0 0 auto" : "",
+                minWidth: enabled ? "0" : "",
+                boxSizing: enabled ? "border-box" : "",
+            });
+            _xzgFixVueWidgetGutter(node);
+            node.setDirtyCanvas?.(true, true);
+        });
+    };
+    modeSettings?.addEventListener?.("Comfy.VueNodes.Enabled.change", onVideoModeChanged);
+
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
         _xzgHideLaserLine();
+        modeSettings?.removeEventListener?.("Comfy.VueNodes.Enabled.change", onVideoModeChanged);
+        if (modeFrame) cancelAnimationFrame(modeFrame);
+        this._xzgVideoVueLayout?.dispose();
+        this._xzgVideoVueLayout = null;
         player.destroy();
         fileInput.remove();
         return origOnRemoved?.apply(this, arguments);
@@ -1963,6 +2138,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     node.onConfigure = function (info) {
         origOnConfigure?.apply(this, arguments);
         requestAnimationFrame(() => {
+            _xzgFixVueWidgetGutter(node);
             _applyWidgetStyles(node);
             _updateRatioWidgets(node);
             player.resize();
@@ -2778,6 +2954,7 @@ app.registerExtension({
                 bindVideoLoaderInteractions(this, isLM, { fastcut: false });
                 _xzgPatchCanvasPrompt();
                 _applyWidgetStyles(this);
+                _xzgFixVueWidgetGutter(this);
                 if (this.outputs) {
                     this.outputs.forEach((out, i) => {
                         if (correctOutputs[i]) {

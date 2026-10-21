@@ -6,6 +6,17 @@ import { api } from "../../scripts/api.js";
 // 主题状态云存储键：连线高亮/执行节点高亮/连线动画/壁纸小状态
 const THEME_STATE_KEY = "xzg_theme_state";
 
+// 找到当前画布实际解析 drawNode 的最近原型，兼容 LiteGraph 子类覆盖以及实例覆写。
+function _xzgGetDrawNodeOwner(canvas = window.app?.canvas) {
+    let owner = canvas;
+    while (owner && owner !== Object.prototype) {
+        if (Object.prototype.hasOwnProperty.call(owner, 'drawNode') && typeof owner.drawNode === 'function') return owner;
+        owner = Object.getPrototypeOf(owner);
+    }
+    const fallback = globalThis.LGraphCanvas?.prototype || globalThis.LiteGraph?.LGraphCanvas?.prototype;
+    return fallback && typeof fallback.drawNode === 'function' ? fallback : null;
+}
+
 // ===== 运行节点高亮的“按图归属”修复（对齐官方 ComfyUI）=====
 // 官方做法：执行/已执行事件（executing/executed）都携带 prompt_id，ComfyUI 把“正在执行/高亮”
 // 定位到 *发起该次执行的那个工作流图*（通过 prompt_id→graph 归属解析），而不是在当前激活图里
@@ -90,12 +101,21 @@ window.XZGThemeManager = {
     // 节点执行高亮（颜色）
     nodeHighlightActive: false,
     nodeHighlightHooked: false,
+    // 高亮钩子"成功装过一次"的标记：用于与 xzg_compose_tool 的 drawNode
+    // 轮询钩子（__xzgShadowGuard）共存，防止两个 200/500/750ms 轮询互相
+    // 重装包装形成互刷死循环。
+    _nodeHighlightHookedOnce: false,
     _runningNodeId: null,
+    _runningNodeDOMElements: new Set(),
+    _runningNodeDOMKey: null,
+    _runningNodeDOMGraph: null,
     nodeHighlightColor: '#22FF22',
-    // 呼吸动画开关 + 周期（秒）+ 基础描边粗细（px）
-    nodeHighlightBreath: false,
-    nodeHighlightBreathPeriod: 2.0,
-    nodeHighlightWidth: 3,
+    // 多色动画类型（flow 流动 / 连线效果移植系列）+ 流速（1-100，50=默认速度，按比例换算）
+    nodeHighlightSpeed: 50,
+    nodeHighlightColorAnim: 'flow',
+    // 移植连线动画时粒子大小（0-100 刻度，50=默认大小）与数量倍率
+    nodeHighlightParticleSize: 50,
+    nodeHighlightParticleCount: 1,
     // 主题状态云持久化
     _themeCloudTimer: null,
     _themeCloudRestored: false,
@@ -122,13 +142,16 @@ window.XZGThemeManager = {
             if (nhColor) {
                 this.nodeHighlightColor = nhColor;
             }
-            // 节点高亮呼吸动画 + 周期 + 描边粗细
-            const nhBreath = localStorage.getItem('xzg-node-highlight-breath');
-            if (nhBreath === 'true') this.nodeHighlightBreath = true;
-            const nhPeriod = parseFloat(localStorage.getItem('xzg-node-highlight-breath-period'));
-            if (!isNaN(nhPeriod) && nhPeriod > 0) this.nodeHighlightBreathPeriod = nhPeriod;
-            const nhWidth = parseInt(localStorage.getItem('xzg-node-highlight-width'), 10);
-            if (!isNaN(nhWidth) && nhWidth > 0) this.nodeHighlightWidth = nhWidth;
+            // 节点高亮多色流动周期 + 多色动画类型
+            const nhSpeed = parseInt(localStorage.getItem('xzg-node-highlight-speed'));
+            if (!isNaN(nhSpeed) && nhSpeed >= 1) this.nodeHighlightSpeed = Math.min(100, nhSpeed);
+            const nhAnim = localStorage.getItem('xzg-node-highlight-anim');
+            if (nhAnim && ['flow', 'energy', 'stellar', 'transfer', 'diy1', 'diy2'].includes(nhAnim)) this.nodeHighlightColorAnim = nhAnim;
+            // 粒子大小（0-100，50=默认）与数量倍率；旧版本存的是倍率（0.5-3），自动 ×50 换算
+            const nhPS = parseFloat(localStorage.getItem('xzg-node-highlight-particle-size'));
+            if (!isNaN(nhPS) && nhPS > 0) this.nodeHighlightParticleSize = nhPS <= 3 ? Math.min(100, nhPS * 50) : Math.min(100, nhPS);
+            const nhPC = parseFloat(localStorage.getItem('xzg-node-highlight-particle-count'));
+            if (!isNaN(nhPC) && nhPC > 0) this.nodeHighlightParticleCount = nhPC;
             // 连线动画（星芒效果），默认关闭
             const animSaved = localStorage.getItem('xzg-link-anim');
             if (animSaved === 'true') {
@@ -195,13 +218,55 @@ window.XZGThemeManager = {
             }
         } catch(e) {}
 
-        this.injectPanelStyles();
-        this.setupContextMenu();
-        this.ensureCanvasHook();
-        this.hookSerialize();
-        this._initWallpaperDB();
-        this.initWallpaper();
-        this._ensureNodeHighlightHook();
+        // 各步骤独立容错：任一步抛错只告警不中断，保证高亮钩子与监视器必然安装。
+        const safeStep = (name, fn) => {
+            try { fn.call(this); } catch (e) {
+                console.warn(`[小珠光主题] init步骤 ${name} 失败:`, e);
+            }
+        };
+        safeStep('injectPanelStyles', this.injectPanelStyles);
+        safeStep('setupContextMenu', this.setupContextMenu);
+        safeStep('ensureCanvasHook', this.ensureCanvasHook);
+        safeStep('hookSerialize', this.hookSerialize);
+        safeStep('_initWallpaperDB', this._initWallpaperDB);
+        safeStep('initWallpaper', this.initWallpaper);
+        // 执行事件监听与 LiteGraph 画布绘制钩子分开安装：Nodes 2 可能没有
+        // 可用的 LGraphCanvas.drawNode，但仍必须收到 executing 事件来标记 DOM 节点。
+        safeStep('_ensureNodeHighlightEvents', this._ensureNodeHighlightEvents);
+        safeStep('_ensureNodeHighlightHook', this._ensureNodeHighlightHook);
+        if (!this._nodeHighlightHookMonitor) {
+            // 独立监视执行描边钩子，避免初始化时处于 Nodes 2 或被其他扩展覆盖后，
+            // 切回 Nodes 1 时 drawNode 没有重新挂上高亮绘制。
+            this._nodeHighlightHookMonitor = setInterval(() => {
+                try { this._ensureNodeHighlightEvents(); } catch (e) { console.warn('[小珠光主题] 执行事件钩子维护失败:', e); }
+                try {
+                    const drawTarget = _xzgGetDrawNodeOwner();
+                    if (!drawTarget?.drawNode) return;
+                    // 共存判定：顶层已被 compose_tool 的 ShadowGuard 包装且我们已成功
+                    // 装过一次时，我们的包装在其下正常工作，不再重装（防互刷死循环）。
+                    if (this._nodeHighlightHookedOnce && drawTarget.drawNode.__xzgShadowGuard) {
+                        this.nodeHighlightHooked = true;
+                        return;
+                    }
+                    if (!drawTarget.drawNode._xzgNodeHighlightWrapped) {
+                        this.nodeHighlightHooked = false;
+                        this._ensureNodeHighlightHook();
+                    }
+                } catch (e) { console.warn('[小珠光主题] 高亮钩子监视失败:', e); }
+            }, 500);
+        }
+        if (!this._nodeHighlightPoller) {
+            // Nodes 2 的 DOM 画布不保证在 executing 事件到达时已经完成节点渲染；
+            // 轮询 Comfy 自身的 runningNodeId，确保短执行和事件源差异也能显示。
+            this._nodeHighlightPoller = setInterval(() => {
+                if (!this.nodeHighlightActive) return;
+                const flag = globalThis.LiteGraph?.vueNodesMode;
+                const isVue = typeof flag === 'boolean'
+                    ? flag
+                    : !!document.querySelector('.lg-node[data-node-id], .comfy-node[data-node-id]');
+                if (isVue) this.refreshRunningNodeHighlight();
+            }, 100);
+        }
         // 云持久化：保留上面的同步本地恢复，再异步以服务端为准覆盖
         this._cloudRestoreTheme();
     },
@@ -213,9 +278,10 @@ window.XZGThemeManager = {
             linkHighlightAnimType: this.linkHighlightAnimType || 'none',
             nodeHighlightActive: !!this.nodeHighlightActive,
             nodeHighlightColor: this.nodeHighlightColor || '#22FF22',
-            nodeHighlightBreath: !!this.nodeHighlightBreath,
-            nodeHighlightBreathPeriod: this.nodeHighlightBreathPeriod || 2.0,
-            nodeHighlightWidth: this.nodeHighlightWidth || 3,
+            nodeHighlightSpeed: this.nodeHighlightSpeed || 50,
+            nodeHighlightColorAnim: this.nodeHighlightColorAnim || 'flow',
+            nodeHighlightParticleSize: this.nodeHighlightParticleSize || 50,
+            nodeHighlightParticleCount: this.nodeHighlightParticleCount || 1,
             linkAnimActive: !!this.linkAnimActive,
             linkAnimType: this.linkAnimType || 'sparkle',
             linkAnimSpeed: this.linkAnimSpeed || 1.0,
@@ -242,9 +308,10 @@ window.XZGThemeManager = {
         set('xzg-link-highlight-anim-type', this.linkHighlightAnimType || 'none');
         set('xzg-node-highlight', this.nodeHighlightActive ? 'true' : 'false');
         set('xzg-node-highlight-color', this.nodeHighlightColor || '#22FF22');
-        set('xzg-node-highlight-breath', this.nodeHighlightBreath ? 'true' : 'false');
-        set('xzg-node-highlight-breath-period', String(this.nodeHighlightBreathPeriod || 2.0));
-        set('xzg-node-highlight-width', String(this.nodeHighlightWidth || 3));
+        set('xzg-node-highlight-speed', String(this.nodeHighlightSpeed || 50));
+        set('xzg-node-highlight-anim', this.nodeHighlightColorAnim || 'flow');
+        set('xzg-node-highlight-particle-size', String(this.nodeHighlightParticleSize || 50));
+        set('xzg-node-highlight-particle-count', String(this.nodeHighlightParticleCount || 1));
         set('xzg-link-anim', this.linkAnimActive ? 'true' : 'false');
         set('xzg-link-anim-type', this.linkAnimType || 'sparkle');
         set('xzg-link-anim-speed', String(this.linkAnimSpeed || 1.0));
@@ -263,20 +330,25 @@ window.XZGThemeManager = {
             const wpWasActive = this.wallpaperActive;
             const wpWasOpacity = this.wallpaperOpacity;
             const wpWasFit = this.wallpaperFit;
-            if (typeof s.linkHighlightActive === "boolean") this.linkHighlightActive = s.linkHighlightActive;
-            if (typeof s.linkHighlightAnimType === "string") this.linkHighlightAnimType = s.linkHighlightAnimType;
-            if (typeof s.nodeHighlightActive === "boolean") this.nodeHighlightActive = s.nodeHighlightActive;
-            if (typeof s.nodeHighlightColor === "string") this.nodeHighlightColor = s.nodeHighlightColor;
-            if (typeof s.nodeHighlightBreath === "boolean") this.nodeHighlightBreath = s.nodeHighlightBreath;
-            if (typeof s.nodeHighlightBreathPeriod === "number" && s.nodeHighlightBreathPeriod > 0) this.nodeHighlightBreathPeriod = s.nodeHighlightBreathPeriod;
-            if (typeof s.nodeHighlightWidth === "number" && s.nodeHighlightWidth > 0) this.nodeHighlightWidth = s.nodeHighlightWidth;
-            if (typeof s.linkAnimActive === "boolean") this.linkAnimActive = s.linkAnimActive;
-            if (typeof s.linkAnimType === "string") this.linkAnimType = s.linkAnimType;
-            if (typeof s.linkAnimSpeed === "number" && s.linkAnimSpeed > 0) this.linkAnimSpeed = s.linkAnimSpeed;
-            if (typeof s.wallpaperActive === "boolean") this.wallpaperActive = s.wallpaperActive;
-            if (typeof s.wallpaperType === "string") this.wallpaperType = s.wallpaperType;
-            if (typeof s.wallpaperOpacity === "number") this.wallpaperOpacity = s.wallpaperOpacity;
-            if (typeof s.wallpaperFit === "string") this.wallpaperFit = s.wallpaperFit;
+            // 本地是即时写入的最近状态；云端同步可能晚于开关操作，不能用旧值覆盖本地。
+            const hasLocal = (key) => {
+                try { return localStorage.getItem(key) !== null; } catch (_) { return false; }
+            };
+            if (!hasLocal('xzg-link-highlight') && typeof s.linkHighlightActive === "boolean") this.linkHighlightActive = s.linkHighlightActive;
+            if (!hasLocal('xzg-link-highlight-anim-type') && typeof s.linkHighlightAnimType === "string") this.linkHighlightAnimType = s.linkHighlightAnimType;
+            if (!hasLocal('xzg-node-highlight') && typeof s.nodeHighlightActive === "boolean") this.nodeHighlightActive = s.nodeHighlightActive;
+            if (!hasLocal('xzg-node-highlight-color') && typeof s.nodeHighlightColor === "string") this.nodeHighlightColor = s.nodeHighlightColor;
+            if (!hasLocal('xzg-node-highlight-speed') && typeof s.nodeHighlightSpeed === "number" && s.nodeHighlightSpeed >= 1) this.nodeHighlightSpeed = Math.min(100, s.nodeHighlightSpeed);
+            if (!hasLocal('xzg-node-highlight-anim') && typeof s.nodeHighlightColorAnim === "string" && ['flow', 'energy', 'stellar', 'transfer', 'diy1', 'diy2'].includes(s.nodeHighlightColorAnim)) this.nodeHighlightColorAnim = s.nodeHighlightColorAnim;
+            if (!hasLocal('xzg-node-highlight-particle-size') && typeof s.nodeHighlightParticleSize === "number" && s.nodeHighlightParticleSize > 0) this.nodeHighlightParticleSize = s.nodeHighlightParticleSize <= 3 ? Math.min(100, s.nodeHighlightParticleSize * 50) : Math.min(100, s.nodeHighlightParticleSize);
+            if (!hasLocal('xzg-node-highlight-particle-count') && typeof s.nodeHighlightParticleCount === "number" && s.nodeHighlightParticleCount > 0) this.nodeHighlightParticleCount = s.nodeHighlightParticleCount;
+            if (!hasLocal('xzg-link-anim') && typeof s.linkAnimActive === "boolean") this.linkAnimActive = s.linkAnimActive;
+            if (!hasLocal('xzg-link-anim-type') && typeof s.linkAnimType === "string") this.linkAnimType = s.linkAnimType;
+            if (!hasLocal('xzg-link-anim-speed') && typeof s.linkAnimSpeed === "number" && s.linkAnimSpeed > 0) this.linkAnimSpeed = s.linkAnimSpeed;
+            if (!hasLocal('xzg-wallpaper-active') && typeof s.wallpaperActive === "boolean") this.wallpaperActive = s.wallpaperActive;
+            if (!hasLocal('xzg-wallpaper-type') && typeof s.wallpaperType === "string") this.wallpaperType = s.wallpaperType;
+            if (!hasLocal('xzg-wallpaper-opacity') && typeof s.wallpaperOpacity === "number") this.wallpaperOpacity = s.wallpaperOpacity;
+            if (!hasLocal('xzg-wallpaper-fit') && typeof s.wallpaperFit === "string") this.wallpaperFit = s.wallpaperFit;
             this._persistThemeLocalKeys();
             // 重新应用壁纸（图片数据不进云，本地有才显示）
             if (this.wallpaperActive && this.wallpaperData && (wpWasActive !== this.wallpaperActive || wpWasOpacity !== this.wallpaperOpacity || wpWasFit !== this.wallpaperFit)) {
@@ -297,7 +369,14 @@ window.XZGThemeManager = {
             // 强制重绘，drawLink/节点高亮 hook 读取最新字段并自动启动动画循环。
             // 用 window.app 而非裸 app：本模块是 ES module，裸 app 依赖全局绑定 window.app，
             // 若此刻尚未赋值则抛 ReferenceError("app is not defined")，被外层 catch 吞掉导致云状态恢复静默失效。
+            this.setupLinkHighlight();
             if (window.app?.canvas?.setDirty) window.app.canvas.setDirty(true, true);
+            window.app?.graph?.setDirtyCanvas?.(true, true);
+            requestAnimationFrame(() => {
+                this.setupLinkHighlight();
+                window.app?.canvas?.setDirty?.(true, true);
+                window.app?.graph?.setDirtyCanvas?.(true, true);
+            });
         } catch (e) {
             console.warn("[小珠光主题] 从云同步主题状态失败:", e);
         }
@@ -1552,9 +1631,10 @@ window.XZGThemeManager = {
         
         function hookProto(proto, name, makeWrapper) {
             const orig = proto[name];
-            if (orig && orig._xzgWrapped) return;
+            if (orig && orig._xzgThemeSerializeHook) return;
             const wrapped = makeWrapper(orig);
             wrapped._xzgWrapped = true;
+            wrapped._xzgThemeSerializeHook = true;
             self.protoRefs[name] = orig;
             proto[name] = wrapped;
         }
@@ -1621,10 +1701,72 @@ window.XZGThemeManager = {
             setTimeout(() => this.ensureCanvasHook(), 100);
             return;
         }
-        this.hookDrawNodeShape();
-        this.setupLinkHighlight();
-        this.hookTitleEditDialog();
+        // 三个子钩子独立容错：任一失败不影响其余钩子，canvasHooked 必达，
+        // 后续 750ms 监视器才会被创建去持续维护各钩子。
+        try { this.ensureLegacyGradientHook(); } catch (e) { console.warn('[小珠光主题] ensureLegacyGradientHook 失败:', e); }
+        try { this.setupLinkHighlight(); } catch (e) { console.warn('[小珠光主题] setupLinkHighlight 失败:', e); }
+        try { this.hookTitleEditDialog(); } catch (e) { console.warn('[小珠光主题] hookTitleEditDialog 失败:', e); }
         this.canvasHooked = true;
+
+        // Nodes 1 扩展会在启动后继续加载，并可能再次替换背景绘制函数。
+        // 只在 Nodes 1 检查原生画布钩子；Nodes 2 使用 DOM 渐变管线。
+        if (!this._legacyGradientHookMonitor) {
+            this._legacyGradientHookMonitor = setInterval(() => {
+                try {
+                    this.ensureLegacyGradientHook();
+                    const pathRenderer = window.app?.canvas?.linkRenderer?.pathRenderer;
+                    const linkDraw = pathRenderer?.drawLink;
+                    if (linkDraw && !linkDraw._xzgLinkHighlightWrapped) this.setupLinkHighlight();
+                } catch (e) { console.warn('[小珠光主题] 连线钩子维护失败:', e); }
+                try { this._ensureNodeHighlightEvents(); } catch (e) { console.warn('[小珠光主题] 执行事件钩子维护失败:', e); }
+                try {
+                    const drawNode = (globalThis.LGraphCanvas || globalThis.LiteGraph?.LGraphCanvas)?.prototype?.drawNode;
+                    // 共存判定：顶层已被 compose_tool 的 ShadowGuard 包装且我们已成功装过
+                    // 一次时，我们的包装在其下正常工作，不再重装（防互刷死循环）。
+                    if (drawNode && !drawNode._xzgNodeHighlightWrapped
+                        && !(this._nodeHighlightHookedOnce && drawNode.__xzgShadowGuard)) {
+                        this.nodeHighlightHooked = false;
+                        this._ensureNodeHighlightHook();
+                    }
+                } catch (e) { console.warn('[小珠光主题] 高亮钩子维护失败:', e); }
+            }, 750);
+        }
+        if (!this._linkHighlightLifecycleHooked) {
+            this._linkHighlightLifecycleHooked = true;
+            const refreshLinks = () => {
+                if (!this.linkHighlightActive && !this.linkAnimActive && !this.linkLaserActive && !this.linkColorActive) return;
+                this.setupLinkHighlight();
+                this.refreshLinkHighlightCanvas();
+            };
+            window.addEventListener('focus', refreshLinks);
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) refreshLinks();
+            });
+        }
+        app.ui?.settings?.addEventListener?.('Comfy.VueNodes.Enabled.change', () => {
+            requestAnimationFrame(() => {
+                if (globalThis.LiteGraph?.vueNodesMode) this.refreshDOMGradients();
+                else this.ensureLegacyGradientHook();
+                this.setupLinkHighlight();
+                this.refreshLinkHighlightCanvas();
+                this.refreshRunningNodeHighlight();
+            });
+        });
+    },
+
+    refreshLinkHighlightCanvas() {
+        const canvas = window.app?.canvas;
+        const graph = window.app?.graph;
+        if (canvas?.setDirty) canvas.setDirty(true, true);
+        graph?.setDirtyCanvas?.(true, true);
+    },
+
+    ensureLegacyGradientHook() {
+        if (globalThis.LiteGraph?.vueNodesMode || !window.app?.canvas) return;
+        const drawShape = window.app.canvas.drawNodeShape;
+        if (typeof drawShape === 'function' && !drawShape._xzgThemeGradientHook) {
+            this.hookDrawNodeShape(window.app.canvas);
+        }
     },
 
     /* ── 标题编辑框对齐修复 ── */
@@ -1841,7 +1983,6 @@ window.XZGThemeManager = {
     },
 
     setupLinkHighlight() {
-        if (this.linkHighlightHooked) return;
         if (!window.app || !app.canvas) {
             setTimeout(() => this.setupLinkHighlight(), 100);
             return;
@@ -1857,19 +1998,31 @@ window.XZGThemeManager = {
             return;
         }
 
-        // 在原型上钩住 drawLink，对所有实例生效
-        const proto = Object.getPrototypeOf(canvas.linkRenderer.pathRenderer);
-        if (!proto || typeof proto.drawLink !== 'function') {
+        // 钩住实际解析到 drawLink 的最近一层；新版渲染器可能把方法放在实例自身。
+        const renderer = canvas.linkRenderer.pathRenderer;
+        let owner = Object.prototype.hasOwnProperty.call(renderer, 'drawLink') ? renderer : null;
+        let proto = Object.getPrototypeOf(renderer);
+        while (!owner && proto && proto !== Object.prototype) {
+            if (Object.prototype.hasOwnProperty.call(proto, 'drawLink') && typeof proto.drawLink === 'function') {
+                owner = proto;
+                break;
+            }
+            proto = Object.getPrototypeOf(proto);
+        }
+        if (!owner || typeof owner.drawLink !== 'function') {
             setTimeout(() => this.setupLinkHighlight(), 100);
             return;
         }
-        if (proto.drawLink._xzgLinkHighlightWrapped) {
+        if (owner.drawLink._xzgLinkHighlightWrapped) {
+            this._linkHighlightHookProto = owner;
             this.linkHighlightHooked = true;
+            // 状态可能在画布首次绘制之后恢复；钩子已存在时也需要主动重绘一次。
+            requestAnimationFrame(() => window.app?.canvas?.setDirty?.(true, true));
             return;
         }
 
-        const origDrawLink = proto.drawLink;
-        proto.drawLink = function(ctx, link, renderCtx) {
+        const origDrawLink = owner.drawLink;
+        owner.drawLink = function(ctx, link, renderCtx) {
             const hasFeature = self.linkHighlightActive || self.linkLaserActive || self.linkColorActive || self.linkAnimActive;
             if (!hasFeature) {
                 return origDrawLink.call(this, ctx, link, renderCtx);
@@ -1879,7 +2032,9 @@ window.XZGThemeManager = {
             const hasSelectedNodes = nodeIds.length > 0;
 
             // 查找原始 LLink 的 origin_id/target_id
-            const graph = self.canvas?.graph || (window.app && app.graph);
+            // 子图视图的 app.canvas.graph 指向当前子图；app.graph 在部分前端仍是根图。
+            // 端点 ID 必须从绘制所在的图查询，否则子图节点 ID 会与根图表错配。
+            const graph = window.app?.canvas?.graph || window.app?.canvas?.graphCanvas?.graph || window.app?.graph;
             // 不同 ComfyUI/LiteGraph 前端对图连线表的命名不同：
             // 旧版常用 _links，新版/部分托管前端使用 links。绘制器传入的 link
             // 可能只有 id，因此需要从原始图连线表回查端点节点 ID。
@@ -1957,26 +2112,35 @@ window.XZGThemeManager = {
                 self._ensureAnimLoop();
             }
         };
-        proto.drawLink._xzgLinkHighlightWrapped = true;
+        owner.drawLink._xzgLinkHighlightWrapped = true;
 
+        this._linkHighlightHookProto = owner;
         this.linkHighlightHooked = true;
         console.log('[小珠光主题] 连线高亮 Hook 已安装 ✓');
+        // 确保初次恢复设置或工作流加载后，效果无需用户切换开关才出现。
+        requestAnimationFrame(() => window.app?.canvas?.setDirty?.(true, true));
     },
 
     getHighlightNodeIds() {
         if (!window.app || !app.canvas) return [];
         const canvas = app.canvas;
-        const ids = [];
-
-        // 仅使用选中的节点（点击选中）
-        if (canvas.selected_nodes) {
-            const nodes = Object.values(canvas.selected_nodes);
-            for (const n of nodes) {
-                if (n && n.id != null) ids.push(n.id);
-            }
-        }
-
-        return ids;
+        const fromEntries = (entries) => entries.map(([id, item]) => {
+            if (item?.node || item?.item) return item.node || item.item;
+            if (item && typeof item === 'object') return item;
+            // 某些 LiteGraph 版本以 { nodeId: true } 保存选择状态。
+            return typeof item === 'boolean' || item == null ? id : item;
+        });
+        const selected = canvas.selectedItems instanceof Map
+            ? fromEntries([...canvas.selectedItems.entries()])
+            : canvas.selectedItems instanceof Set || Array.isArray(canvas.selectedItems)
+                ? [...canvas.selectedItems]
+                : canvas.selected_nodes instanceof Map
+                ? fromEntries([...canvas.selected_nodes.entries()])
+                : canvas.selected_nodes instanceof Set
+                    ? [...canvas.selected_nodes]
+                    : fromEntries(Object.entries(canvas.selected_nodes || {}));
+        return selected.map(item => item?.node || item?.item || item).map(node => node?.id ?? node)
+            .filter(id => id !== null && id !== undefined);
     },
 
     _saturateColor(color, saturateIncrease) {
@@ -2046,6 +2210,7 @@ window.XZGThemeManager = {
     toggleLinkHighlight() {
         const newState = !this.linkHighlightActive;
         this.linkHighlightActive = newState;
+        this.setupLinkHighlight();
         try {
             localStorage.setItem('xzg-link-highlight', this.linkHighlightActive ? 'true' : 'false');
         } catch(e) {}
@@ -2077,251 +2242,442 @@ window.XZGThemeManager = {
         try {
             localStorage.setItem('xzg-node-highlight', this.nodeHighlightActive ? 'true' : 'false');
         } catch(e) {}
-        if (window.app) {
-            if (app.canvas?.setDirty) {
-                app.canvas.setDirty(true, true);
-            } else if (app.graph?.setDirtyCanvas) {
-                app.graph.setDirtyCanvas(true, true);
-            }
-        }
+        this.refreshRunningNodeHighlight();
         this._queueThemeCloudSave();
         return this.nodeHighlightActive;
+    },
+
+    refreshRunningNodeHighlight() {
+        const clearDOM = () => {
+            for (const element of this._runningNodeDOMElements || []) {
+                element.classList?.remove('xzg-node-executing-highlight');
+                element.style?.removeProperty('--xzg-node-exec-color');
+            }
+            this._runningNodeDOMElements = new Set();
+            this._runningNodeDOMKey = null;
+            this._runningNodeDOMGraph = null;
+        };
+
+        const vueNodesFlag = globalThis.LiteGraph?.vueNodesMode;
+        const isVueNodesMode = typeof vueNodesFlag === 'boolean'
+            ? vueNodesFlag
+            : !!document.querySelector('.lg-node[data-node-id], .comfy-node[data-node-id]');
+        if (!isVueNodesMode) {
+            clearDOM();
+            this.refreshLinkHighlightCanvas();
+            return;
+        }
+        if (!this.nodeHighlightActive) {
+            clearDOM();
+            return;
+        }
+
+        const job = this._runningJob;
+        const appGraph = window.app?.graph;
+        const canvasGraph = window.app?.canvas?.graph || window.app?.canvas?.graphCanvas?.graph;
+        // 根工作流执行时优先使用发起执行的 app.graph 实例，避免 Nodes 2
+        // 暴露的画布代理图与节点的 graph 引用不同，导致 ID 匹配被跳过。
+        const graph = job?.ownerGraph && appGraph === job.ownerGraph
+            ? appGraph
+            : canvasGraph || appGraph;
+        const runningId = window.app?.runningNodeId || job?.nodeId;
+        if (!graph || runningId == null) {
+            clearDOM();
+            return;
+        }
+
+        const path = String(runningId).split(':').filter(Boolean);
+        if (!path.length) {
+            clearDOM();
+            return;
+        }
+
+        let targetId = null;
+        if (!job?.ownerGraph || graph === job.ownerGraph) {
+            // 根图视图高亮子图容器；普通节点路径只有一个 ID。
+            targetId = path[0];
+        } else {
+            // 子图视图只高亮执行路径中属于当前子图的末端节点。
+            let currentGraph = job.ownerGraph;
+            for (let i = 0; i < path.length - 1 && currentGraph; i++) {
+                const container = currentGraph.getNodeById?.(parseInt(path[i], 10));
+                const isSubgraph = container && (typeof container.isSubgraphNode === 'function'
+                    ? container.isSubgraphNode() : !!container.subgraph);
+                currentGraph = isSubgraph ? container.subgraph : null;
+            }
+            if (currentGraph === graph) targetId = path[path.length - 1];
+        }
+
+        if (targetId == null) {
+            clearDOM();
+            return;
+        }
+
+        const color = (this.nodeHighlightColor || '#22FF22').split(',')[0].trim() || '#22FF22';
+        const key = `${targetId}|${color}`;
+        if (this._runningNodeDOMKey === key && this._runningNodeDOMGraph === graph &&
+            this._runningNodeDOMElements.size && [...this._runningNodeDOMElements].every(el => el.isConnected)) return;
+
+        const styleId = 'xzg-node-executing-highlight-style';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `.xzg-node-executing-highlight { outline: 3px solid var(--xzg-node-exec-color, #22FF22) !important; outline-offset: 2px !important; box-shadow: inset 0 0 0 2px var(--xzg-node-exec-color, #22FF22), 0 0 12px var(--xzg-node-exec-color, #22FF22), 0 0 26px var(--xzg-node-exec-color, #22FF22) !important; }`;
+            document.head.appendChild(style);
+        }
+
+        clearDOM();
+        const elements = [...document.querySelectorAll('[data-node-id]')]
+            .filter(element => element.getAttribute('data-node-id') === String(targetId));
+        for (const element of elements) {
+            element.classList.add('xzg-node-executing-highlight');
+            element.style.setProperty('--xzg-node-exec-color', color);
+            this._runningNodeDOMElements.add(element);
+        }
+        this._runningNodeDOMKey = key;
+        this._runningNodeDOMGraph = graph;
     },
 
     setNodeHighlightColor(color) {
         this.nodeHighlightColor = color;
         try { localStorage.setItem('xzg-node-highlight-color', color); } catch(e) {}
-        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+        this.refreshRunningNodeHighlight();
         this._queueThemeCloudSave();
     },
 
-    setNodeHighlightBreath(v) {
-        this.nodeHighlightBreath = !!v;
-        try { localStorage.setItem('xzg-node-highlight-breath', this.nodeHighlightBreath ? 'true' : 'false'); } catch(e) {}
-        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    setNodeHighlightSpeed(v) {
+        const n = Math.round(parseFloat(v));
+        if (isNaN(n) || n < 1) return;
+        this.nodeHighlightSpeed = Math.min(100, n); // 流速 1-100，50=默认速度，按比例换算
+        try { localStorage.setItem('xzg-node-highlight-speed', String(this.nodeHighlightSpeed)); } catch(e) {}
+        this.refreshRunningNodeHighlight();
         this._queueThemeCloudSave();
     },
 
-    setNodeHighlightBreathPeriod(sec) {
-        const v = parseFloat(sec);
-        if (isNaN(v) || v <= 0) return;
-        this.nodeHighlightBreathPeriod = v;
-        try { localStorage.setItem('xzg-node-highlight-breath-period', String(v)); } catch(e) {}
-        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    setNodeHighlightColorAnim(type) {
+        if (!['flow', 'energy', 'stellar', 'transfer', 'diy1', 'diy2'].includes(type)) return;
+        this.nodeHighlightColorAnim = type;
+        try { localStorage.setItem('xzg-node-highlight-anim', type); } catch(e) {}
+        this.refreshRunningNodeHighlight();
         this._queueThemeCloudSave();
     },
 
-    setNodeHighlightWidth(w) {
-        const v = parseInt(w, 10);
-        if (isNaN(v) || v <= 0) return;
-        this.nodeHighlightWidth = v;
-        try { localStorage.setItem('xzg-node-highlight-width', String(v)); } catch(e) {}
-        if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+    setNodeHighlightParticleSize(v) {
+        const n = parseFloat(v);
+        if (isNaN(n) || n < 1) return;
+        this.nodeHighlightParticleSize = Math.min(100, n);
+        try { localStorage.setItem('xzg-node-highlight-particle-size', String(this.nodeHighlightParticleSize)); } catch(e) {}
+        this.refreshRunningNodeHighlight();
         this._queueThemeCloudSave();
+    },
+
+    setNodeHighlightParticleCount(v) {
+        const n = parseFloat(v);
+        if (isNaN(n) || n <= 0) return;
+        this.nodeHighlightParticleCount = n;
+        try { localStorage.setItem('xzg-node-highlight-particle-count', String(n)); } catch(e) {}
+        this.refreshRunningNodeHighlight();
+        this._queueThemeCloudSave();
+    },
+
+    _ensureNodeHighlightEvents() {
+        // queuePrompt 可能晚于扩展初始化，监视器会在 app 可用后补装包装器。
+        _xzgWrapQueueForRunningOwner();
+        const self = this;
+        const execHandler = (e) => {
+            const detail = e?.detail;
+            let nodeId = null;
+            let promptId = null;
+            if (detail == null) {
+                nodeId = null;
+            } else if (typeof detail === 'object') {
+                for (const candidate of [detail.display_node, detail.node, detail.node_id, detail.nodeId]) {
+                    if (candidate == null) continue;
+                    const candidateId = typeof candidate === 'object'
+                        ? (candidate.id ?? candidate.node_id ?? candidate.nodeId)
+                        : candidate;
+                    if (candidateId != null && candidateId !== '') {
+                        nodeId = candidateId;
+                        break;
+                    }
+                }
+                promptId = detail.prompt_id ?? detail.promptId ?? null;
+            } else {
+                nodeId = detail;
+            }
+
+            let ownerGraph = promptId != null ? (_xzgPromptOwnerGraph.get(String(promptId)) || null) : null;
+            if (ownerGraph == null) ownerGraph = _xzgRunOwnerGraph || window.app?.graph || null;
+            self._runningJob = {
+                ownerGraph,
+                nodeId: nodeId == null ? null : String(nodeId),
+            };
+            self._runningNodeId = self._runningJob.nodeId;
+            self.refreshRunningNodeHighlight();
+            window.app?.canvas?.setDirty?.(true, true);
+            window.app?.graph?.setDirtyCanvas?.(true, true);
+        };
+        const resetRunning = () => {
+            self._runningJob = null;
+            self._runningNodeId = null;
+            self.refreshRunningNodeHighlight();
+            // 旧版 LiteGraph 依赖 dirty 标记触发 drawNode；状态变化时主动刷新画布。
+            window.app?.canvas?.setDirty?.(true, true);
+            window.app?.graph?.setDirtyCanvas?.(true, true);
+        };
+        const startRunning = (e) => {
+            const detail = e?.detail;
+            const promptId = detail && typeof detail === 'object'
+                ? (detail.prompt_id ?? detail.promptId)
+                : null;
+            _xzgRunOwnerGraph = (promptId != null ? _xzgPromptOwnerGraph.get(String(promptId)) : null)
+                || window.app?.graph || _xzgRunOwnerGraph;
+            resetRunning();
+        };
+        const bindEmitter = (emitter) => {
+            if (!emitter || typeof emitter.addEventListener !== 'function' || emitter._xzgHLBound) return;
+            emitter._xzgHLBound = true;
+            emitter.addEventListener('executing', execHandler);
+            emitter.addEventListener('execution_start', startRunning);
+            emitter.addEventListener('execution_success', resetRunning);
+            emitter.addEventListener('execution_error', resetRunning);
+            emitter.addEventListener('execution_interrupted', resetRunning);
+        };
+        bindEmitter(api);
+        if (window.app?.api && window.app.api !== api) bindEmitter(window.app.api);
     },
 
     _ensureNodeHighlightHook() {
-        if (this.nodeHighlightHooked) return;
-        this.nodeHighlightHooked = true;
+        const drawTarget = _xzgGetDrawNodeOwner();
+        if (!drawTarget || typeof drawTarget.drawNode !== 'function') {
+            this.nodeHighlightHooked = false;
+            return;
+        }
+        const topDrawNode = drawTarget.drawNode;
+        if (topDrawNode._xzgNodeHighlightWrapped) {
+            this.nodeHighlightHooked = true;
+            return;
+        }
+        // 已成功装过一次后的补装仅限"链顶层连 xzg 系守卫标记都不剩"
+        // （被外部整体重置）的情形。xzg_compose_tool 的 200ms 轮询会把
+        // 顶层换成带 __xzgShadowGuard 的包装（我们的包装仍在其下正常执行），
+        // 此时若再包一层会与它形成互刷死循环，必须共存判定直接跳过。
+        if (this._nodeHighlightHookedOnce && topDrawNode.__xzgShadowGuard) {
+            this.nodeHighlightHooked = true;
+            return;
+        }
+        this.nodeHighlightHooked = false;
         const self = this;
-        const proto = LGraphCanvas.prototype;
-        if (!proto || typeof proto.drawNode !== 'function') return;
-
-        const origDrawNode = proto.drawNode;
-        proto.drawNode = function (node, ctx, ...args) {
-            // 屏蔽原生“运行中”绿色高亮环，避免与本插件高亮重叠露底
-            let patchedRunning = false;
-            if (self.nodeHighlightActive && node && node.strokeStyles && typeof node.strokeStyles.running === 'function') {
-                self._nativeRunningStroke = node.strokeStyles.running;
-                node.strokeStyles.running = () => null;
-                patchedRunning = true;
+        const origDrawNode = topDrawNode;
+        drawTarget.drawNode = function (node, ctx, ...args) {
+            if (!self.nodeHighlightActive || globalThis.LiteGraph?.vueNodesMode === true) {
+                return origDrawNode.call(this, node, ctx, ...args);
             }
-            origDrawNode.call(this, node, ctx, ...args);
-            if (patchedRunning) {
-                node.strokeStyles.running = self._nativeRunningStroke;
-                self._nativeRunningStroke = null;
-            }
-            if (!self.nodeHighlightActive) return;
-            let saved = false;
-            let barRedraw = false;
-            try {
-                // 归属判定（动态，随当前激活图变化）：仅当该执行由“当前激活图”发起才画运行高亮，
-            // 后台/他图执行一律不画 —— 消除 A 流执行、切到 B 流时 B 里同 id 节点被高亮（串台）。
-            // 判断用“节点所在图 node.graph 是否等于发起图 ownerGraph”，而不用 app.rootGraph 的
-            // 引用相等性：后者在多数构建中不稳定/未定义，会导致同一工作流内也恒不相等、高亮被吞。
+            // ===== 运行判定（与 V590 老版一致，修复 Nodes 1.0 模式高亮失效）=====
             const job = self._runningJob;
-            if (!job) return;
-            if (job.ownerGraph && node.graph !== job.ownerGraph) return;
-            const currentRunningId = app.runningNodeId || job.nodeId;
-            if (!currentRunningId) return;
-                // 支持子图：执行ID形如"容器id:内部id"（可多层）。父图匹配容器节点；子图视图匹配内部节点。
-                const runningStr = currentRunningId.toString();
-                const pathParts = runningStr.split(':').filter(Boolean);
-                if (pathParts.length === 0) return;
-                // 起始图必须用 app.graph（与 node.graph 同引用，已由 xzg_video_combine 验证），
-                // 不能用 app.rootGraph：后者的引用可能与本节点所在图不同，导致 2136 行
-                // node.graph===curGraph 恒为假、被误当"子图容器"走 getNodeById 而全部失败。
-                const rootGraph = app.graph;
-                let curGraph = rootGraph;
-                let isRunning = false;
-                for (let i = 0; i < pathParts.length; i++) {
-                    if (!curGraph) break;
-                    if (node.graph === curGraph) {
-                        isRunning = node.id.toString() === pathParts[i];
-                        break;
+            let isRunning = false;
+            if (job && (!job.ownerGraph || node.graph === job.ownerGraph)) {
+                const currentRunningId = window.app?.runningNodeId || job.nodeId;
+                if (currentRunningId) {
+                    const pathParts = String(currentRunningId).split(':').filter(Boolean);
+                    // 子图路径遍历：执行 ID 形如 "容器id:内部id"，逐层下钻子图，
+                    // 在节点所属的那一层判断 id 是否匹配。
+                    let curGraph = window.app?.graph;
+                    for (let i = 0; i < pathParts.length; i++) {
+                        if (!curGraph) break;
+                        if (node.graph === curGraph) {
+                            isRunning = node.id.toString() === pathParts[i];
+                            break;
+                        }
+                        const container = curGraph.getNodeById(parseInt(pathParts[i], 10));
+                        const isSub = container && (typeof container.isSubgraphNode === 'function'
+                            ? container.isSubgraphNode() : !!container.subgraph);
+                        if (!container || !isSub || !container.subgraph) break;
+                        curGraph = container.subgraph;
                     }
-                    const container = curGraph.getNodeById(parseInt(pathParts[i], 10));
-                    const isSub = container && (typeof container.isSubgraphNode === 'function' ? container.isSubgraphNode() : !!container.subgraph);
-                    if (!container || !isSub || !container.subgraph) break;
-                    curGraph = container.subgraph;
                 }
-                // [调试·高亮] 记录本次节点是否命中运行高亮判定
-                if (window.app && window.__xzgHighlightDebug) {
-                    console.warn("[小珠光高亮] draw", node.type, "id=" + node.id,
-                        "nodeGraph===app.graph=" + (node.graph === window.app.graph),
-                        "ownerGraph匹配=" + (!job.ownerGraph || node.graph === job.ownerGraph),
-                        "curGraph===nodeGraph=" + (curGraph === node.graph),
-                        "running=" + currentRunningId, "pathParts=" + pathParts.join(','), "isRunning=" + isRunning);
-                }
-                if (!isRunning) return;
-
+            }
+            // [调试·高亮] 记录本次节点是否命中运行高亮判定
+            if (window.app && window.__xzgHighlightDebug && job) {
+                console.warn("[小珠光高亮] draw", node.type, "id=" + node.id, "isRunning=" + isRunning);
+            }
+            // 屏蔽原生"运行中"描边（我们用自己的发光边框替代），绘制完恢复。
+            const nativeRunningStroke = node?.strokeStyles?.running;
+            if (typeof nativeRunningStroke === 'function') {
+                node.strokeStyles.running = () => null;
+            }
+            try {
+                origDrawNode.call(this, node, ctx, ...args);
+            } finally {
+                if (typeof nativeRunningStroke === 'function') node.strokeStyles.running = nativeRunningStroke;
+            }
+            // ===== 细线发光边框：不改变节点配色/内容，仅沿节点边缘（标题栏+body）画 3px
+            // 细光源线 + 模糊发光；无宽色带，模糊光掩盖轮廓偏差，四边四角视觉自然贴合。
+            // 不遮挡控件（内容区无覆盖），执行动画仅体现在颜色/亮度随时间变化上。 =====
+            if (isRunning) {
                 ctx.save();
-                saved = true;
-                barRedraw = true;
-                const shape = node._shape || LiteGraph.BOX_SHAPE;
-                const isCollapsed = !!(node.flags && node.flags.collapsed) || !!node.collapsed;
-                const titleHeight = LiteGraph.NODE_TITLE_HEIGHT || 30;
-                const width = isCollapsed
-                    ? (node._collapsed_width || LiteGraph.NODE_COLLAPSED_WIDTH || (node.size && node.size[0]) || 140)
-                    : ((node.size && node.size[0]) || 140);
-                const height = isCollapsed
-                    ? titleHeight
-                    : ((node.size && node.size[1]) || 60);
-                const bounds = isCollapsed
-                    ? { x: 0, y: -titleHeight, w: width, h: titleHeight }
-                    : { x: 0, y: -titleHeight, w: width, h: height + titleHeight };
-                const pad = 7;
-                const buildPath = (p) => {
-                    ctx.beginPath();
-                    if (shape === LiteGraph.CIRCLE_SHAPE) {
-                        const radius = Math.max(2, Math.max(bounds.w, bounds.h) * 0.5 + p);
-                        ctx.arc(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, radius, 0, Math.PI * 2);
-                    } else {
-                        const x = bounds.x - p;
-                        const y = bounds.y - p;
-                        const w = bounds.w + p * 2;
-                        const h = bounds.h + p * 2;
-                        if (ctx.roundRect) ctx.roundRect(x, y, w, h, 12);
-                        else ctx.rect(x, y, w, h);
-                    }
-                };
-
-                // 只在节点外部绘制高亮与光晕：用 evenodd 裁剪挖空节点内部区域，
-                // 防止 shadowBlur 内向光晕盖住节点内容（尤其是执行进度条）。
                 try {
-                    const _clipW = Math.max(1, self.nodeHighlightWidth || 3);
-                    const clipMargin = pad + _clipW * 5 + 60;
-                    ctx.beginPath();
-                    if (shape === LiteGraph.CIRCLE_SHAPE) {
-                        const outerR = Math.max(2, Math.max(bounds.w, bounds.h) * 0.5 + clipMargin);
-                        ctx.arc(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, outerR, 0, Math.PI * 2);
-                        const innerR = Math.max(2, Math.max(bounds.w, bounds.h) * 0.5);
-                        ctx.arc(bounds.x + bounds.w * 0.5, bounds.y + bounds.h * 0.5, innerR, 0, Math.PI * 2);
-                    } else if (ctx.roundRect) {
-                        ctx.roundRect(bounds.x - clipMargin, bounds.y - clipMargin, bounds.w + clipMargin * 2, bounds.h + clipMargin * 2, 12);
-                        ctx.roundRect(bounds.x, bounds.y, bounds.w, bounds.h, 10);
-                    } else {
-                        ctx.rect(bounds.x - clipMargin, bounds.y - clipMargin, bounds.w + clipMargin * 2, bounds.h + clipMargin * 2);
-                        ctx.rect(bounds.x, bounds.y, bounds.w, bounds.h);
-                    }
-                    ctx.clip('evenodd');
-                } catch (e) {}
-
-                // 颜色（支持逗号分隔的渐变）
-                const colors = (self.nodeHighlightColor || '#22FF22')
-                    .split(',')
-                    .map(s => s.trim())
-                    .filter(Boolean);
-                const solidColor = colors[0] || '#22FF22';
-                const isGradient = colors.length > 1;
-                let strokeStyle = solidColor;
-                if (isGradient) {
-                    const gw = (node.size && node.size[0]) || 140;
-                    const gh = (node.size && node.size[1]) || 60;
-                    const grad = ctx.createLinearGradient(0, 0, gw, gh);
-                    colors.forEach((c, i) => grad.addColorStop(i / (colors.length - 1), c));
-                    strokeStyle = grad;
-                }
-
-                // 呼吸动画：明暗正弦起伏（关闭时为恒定 1）。
-                // 幅度覆盖 0~1（全透明 → 100%）：sin=-1 时 alpha 归零淡出，sin=+1 时完全亮起；
-                // 开启时在本次绘制结束请求下一帧重绘，与 ComfyUI 渲染循环同节奏自持，消除独立 rAF 竞争导致的丢帧。
-                const wBase = Math.max(1, self.nodeHighlightWidth || 3);
-                const breathing = self.nodeHighlightBreath
-                    ? (0.5 + 0.5 * Math.sin((performance.now() / 1000) / Math.max(0.1, self.nodeHighlightBreathPeriod) * Math.PI * 2))
-                    : 1;
-                if (isGradient) {
-                    // 渐变彩色霓虹框（参考 ComfyUI-HAIGC-Extension）：环境光晕 + 渐变主体 + 白色核心
-                    ctx.save();
+                    // ===== 与原生 drawNodeShape 完全同源的轮廓几何 =====
+                    // 原生 body 轮廓不是 (0,-titleHeight,w,h+title)，而是 node.boundingRect
+                    // 的相对坐标 + renderingShape 形状 + Z.ROUND_RADIUS(=8) 圆角
+                    // （CARD 形状为 [r,r,0,0] 四角异形）。照抄才能保证发光带与边缘零偏差。
+                    const br = node.boundingRect;
+                    const ox = node.pos ? node.pos[0] : 0;
+                    const oy = node.pos ? node.pos[1] : 0;
+                    const shape = node.renderingShape ?? node._shape ?? LiteGraph.BOX_SHAPE;
+                    const RR = LiteGraph.ROUND_RADIUS || 8;
+                    const isCard = shape === LiteGraph.CARD_SHAPE;
+                    const b = br
+                        ? { x: br[0] - ox, y: br[1] - oy, w: br[2], h: br[3] }
+                        : { x: 0, y: -(LiteGraph.NODE_TITLE_HEIGHT || 30), w: (node.size && node.size[0]) || 140, h: ((node.size && node.size[1]) || 60) + (LiteGraph.NODE_TITLE_HEIGHT || 30) };
+                    // 画节点轮廓子路径（不 beginPath，由调用方控制）
+                    const outline = () => {
+                        if (shape === LiteGraph.CIRCLE_SHAPE) {
+                            ctx.arc(b.x + b.w * 0.5, b.y + b.h * 0.5, Math.max(2, b.w * 0.5), 0, Math.PI * 2);
+                        } else if (ctx.roundRect) {
+                            ctx.roundRect(b.x, b.y, b.w, b.h, isCard ? [RR, RR, 0, 0] : RR);
+                        } else {
+                            ctx.rect(b.x, b.y, b.w, b.h);
+                        }
+                    };
+                    const colors = (self.nodeHighlightColor || '#22FF22')
+                        .split(',').map(s => s.trim()).filter(Boolean);
+                    const solidColor = colors[0] || '#22FF22';
+                    // 动画类型：flow 流动 / 连线效果移植系列
+                    const anim = self.nodeHighlightColorAnim || 'flow';
+                    // 各效果内置钉死参数（不可调，优先于滑条）：speed 1-100（0=静止）/ size 1-100 / count 数量倍率 / glow 光晕倍率
+                    const _xzgAnimFixed = {
+                        stellar: { speed: 4, size: 20, count: 2.4 },
+                        energy: { speed: 0, size: 16, glow: 0.5 },
+                        transfer: { speed: 7, size: 22, count: 2.0 },
+                        diy1: { speed: 6, size: 18, count: 0.3 },
+                        diy2: { speed: 6, size: 48, count: 0.3 },
+                    };
+                    const _fixed = _xzgAnimFixed[anim];
+                    // 流速 1-100 按比例换算：50=默认（2s/圈基准），值越大越快；0=完全静止
+                    const _spd = (_fixed && _fixed.speed != null) ? _fixed.speed : (Number(self.nodeHighlightSpeed) || 50);
+                    const speedRatio = _spd <= 0 ? 0 : Math.max(0.02, _spd) / 50;
+                    const period = speedRatio <= 0 ? Infinity : Math.max(0.1, 2 / speedRatio);
+                    const now = performance.now() / 1000;
+                    // 颜色工具：hex→rgb（兜底流动分支用）
+                    const prs = (h) => {
+                        const hh = String(h).replace('#', '');
+                        const f = hh.length === 3 ? hh.split('').map(c => c + c).join('') : hh;
+                        return [(parseInt(f.slice(0, 2), 16) || 0), (parseInt(f.slice(2, 4), 16) || 0), (parseInt(f.slice(4, 6), 16) || 0)];
+                    };
                     ctx.lineJoin = 'round';
                     ctx.lineCap = 'round';
-                    const blurScale = Math.max(1, wBase / 3);
-                    // 环境光晕：以首色向外发光
-                    buildPath(pad);
-                    ctx.strokeStyle = solidColor;
-                    ctx.shadowColor = solidColor;
-                    ctx.shadowBlur = 26 * blurScale;
-                    ctx.globalAlpha = 0.45 * breathing;
-                    ctx.lineWidth = wBase * 4.5;
-                    ctx.stroke();
-                    // 渐变主体
-                    buildPath(pad);
-                    ctx.strokeStyle = strokeStyle;
-                    ctx.shadowColor = solidColor;
-                    ctx.shadowBlur = 12 * blurScale;
-                    ctx.globalAlpha = 0.9 * breathing;
-                    ctx.lineWidth = wBase * 2;
-                    ctx.stroke();
-                    // 白色核心：更醒目
-                    buildPath(pad);
-                    ctx.strokeStyle = '#FFFFFF';
-                    ctx.shadowColor = '#FFFFFF';
-                    ctx.shadowBlur = 6 * blurScale;
-                    ctx.globalAlpha = 1.0 * breathing;
-                    ctx.lineWidth = Math.max(1, wBase * 0.6);
-                    ctx.stroke();
-                    ctx.restore();
-                } else {
-                    // 单色：保持原有分层描边
-                    const layers = [
-                        { inset: 0, lw: wBase * 4, alpha: 0.15 },
-                        { inset: 0, lw: wBase * 2, alpha: 0.5 },
-                        { inset: 2, lw: wBase, alpha: 0.9 },
-                    ];
-                    ctx.strokeStyle = solidColor;
-                    ctx.shadowColor = 'transparent';
                     ctx.shadowBlur = 0;
-                    for (const lay of layers) {
-                        buildPath(pad - lay.inset);
-                        ctx.globalAlpha = lay.alpha * breathing;
-                        ctx.lineWidth = lay.lw;
+                    ctx.globalAlpha = 1;
+                    ctx.lineWidth = 3;
+                    // 沿节点边框顺时针参数化取点（连线效果移植共用；直角近似，视觉无感）
+                    const x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
+                    const perim = 2 * (b.w + b.h);
+                    const pt = (d) => {
+                        if (d < b.w) return [x0 + d, y0];
+                        d -= b.w;
+                        if (d < b.h) return [x1, y0 + d];
+                        d -= b.h;
+                        if (d < b.w) return [x1 - d, y1];
+                        d -= b.w;
+                        return [x0, y1 - d];
+                    };
+                    if (anim !== 'flow') {
+                        // 连线动画效果移植：构造沿节点边框的注入路径，
+                        // 直接复用连线动画各效果绘制函数（经 _getPointOnCurve/_xzgBuildPath 注入）
+                        const pathAt = (tVal) => {
+                            const d = (((tVal % 1) + 1) % 1) * perim;
+                            const p = pt(d);
+                            const ang = d < b.w ? 0
+                                : (d < b.w + b.h ? Math.PI / 2
+                                    : (d < 2 * b.w + b.h ? Math.PI : -Math.PI / 2));
+                            return { x: p[0], y: p[1], angle: ang };
+                        };
+                        const fakeCp = [];
+                        fakeCp._xzgPathAt = pathAt;
+                        fakeCp._xzgBuildPath = () => { ctx.beginPath(); outline(); };
+                        fakeCp._xzgSizeK = Math.max(0.1, ((_fixed && _fixed.size != null) ? _fixed.size : (Number(self.nodeHighlightParticleSize) || 50)) / 50); // 0-100 → 倍率（50=1.0x，钉死效果用内置值）
+                        fakeCp._xzgCountK = Math.max(0.2, (_fixed && _fixed.count != null) ? _fixed.count : (Number(self.nodeHighlightParticleCount) || 1));
+                        fakeCp._xzgGlowK = (_fixed && _fixed.glow != null) ? _fixed.glow : 1;
+                        const fakeLink = {
+                            startPoint: { x: b.x, y: b.y },
+                            endPoint: { x: b.x + b.w, y: b.y },
+                            controlPoints: fakeCp,
+                            origin_id: node.id, origin_slot: 0,
+                            target_id: node.id, target_slot: 0
+                        };
+                        const savedSpeed = self.linkAnimSpeed;
+                        // 各效果内部速度基数 K 不同，按流速滑条换算 linkAnimSpeed，使一圈耗时 = period 秒（与流动语义一致）
+                        const _xzgAnimSpeedK = { energy: 0.002, stellar: 0.00035, transfer: 0.0012, diy1: 0.0003, diy2: 0.00035 };
+                        self.linkAnimSpeed = 1 / ((_xzgAnimSpeedK[anim] || 0.0003) * 1000 * period);
+                        try {
+                            self._drawLinkAnim(ctx, fakeLink, anim);
+                        } catch (_) {
+                        } finally {
+                            self.linkAnimSpeed = savedSpeed;
+                        }
+                    } else if (colors.length > 1 && ctx.createConicGradient) {
+                        // 流动：锥形渐变起始角随时间旋转 → 颜色沿边框无缝循环流动
+                        const grad = ctx.createConicGradient((now / period) * Math.PI * 2, b.x + b.w * 0.5, b.y + b.h * 0.5);
+                        const seq = colors.concat(colors.slice(0, 1));
+                        seq.forEach((c, i) => grad.addColorStop(i / seq.length, c));
+                        ctx.beginPath();
+                        outline();
+                        ctx.strokeStyle = grad;
+                        ctx.stroke();
+                    } else if (colors.length > 1) {
+                        // 兜底（无锥形渐变环境）：分段直线近似流动（角部为直角）
+                        const phase = (now / period) % 1;
+                        const seq = colors.concat(colors.slice(0, 1)); // [A,B,C,A] 首尾同色循环
+                        const seqLoop = seq.map(prs);
+                        const x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
+                        const perim = 2 * (b.w + b.h);
+                        const N = Math.max(24, Math.min(72, Math.round(perim / 12)));
+                        const pt = (d) => {
+                            if (d < b.w) return [x0 + d, y0];
+                            d -= b.w;
+                            if (d < b.h) return [x1, y0 + d];
+                            d -= b.h;
+                            if (d < b.w) return [x1 - d, y1];
+                            d -= b.w;
+                            return [x0, y1 - d];
+                        };
+                        const L = seqLoop.length;
+                        for (let i = 0; i < N; i++) {
+                            const t = i / N;
+                            const u = ((t + phase) % 1) * L;
+                            const i0 = Math.floor(u) % L;
+                            const i1 = (i0 + 1) % L;
+                            const f = u - Math.floor(u);
+                            const ca = seqLoop[i0], cb = seqLoop[i1];
+                            const [ax, ay] = pt(t * perim);
+                            const [bx2, by2] = pt(((i + 1) / N) * perim);
+                            ctx.beginPath();
+                            ctx.moveTo(ax, ay);
+                            ctx.lineTo(bx2, by2);
+                            ctx.strokeStyle = `rgb(${Math.round(ca[0] + (cb[0] - ca[0]) * f)},${Math.round(ca[1] + (cb[1] - ca[1]) * f)},${Math.round(ca[2] + (cb[2] - ca[2]) * f)})`;
+                            ctx.stroke();
+                        }
+                    } else {
+                        // 单色：静态描边
+                        ctx.beginPath();
+                        outline();
+                        ctx.strokeStyle = solidColor;
                         ctx.stroke();
                     }
+                } catch (e) {
+                } finally {
+                    ctx.restore();
                 }
-                // 自持重绘：仅当呼吸开启时请求下一帧，驱动动画且与 ComfyUI 渲染循环同步
-                if (self.nodeHighlightBreath) {
+                // 自持重绘：多色 / 星芒 / 连线效果移植 均需每帧驱动，与 ComfyUI 渲染循环同步
+                if ((self.nodeHighlightColor || '').split(',').filter(Boolean).length > 1
+                    || anim !== 'flow') {
                     if (app.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
                     else if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
                 }
-            } catch(e) {
-            } finally {
-                if (saved) ctx.restore();
-            }
-            // 执行进度条保底重绘：必须在 finally 的 restore 之后（此时 evenodd 裁剪已解除、
-            // globalAlpha 已复位）。高亮描边/光晕以及主题渐变节点的 alpha=0 隐藏都可能影响
-            // 原生进度条（drawNodeShape 末尾的 drawProgressBar），这里最后以完全不透明再画
-            // 一次，保证视频加载器等耗时节点的加载进度条始终可见。
-            if (barRedraw) {
+                // 静态发光（无动画）：仅进度条场景需要保底重绘，不做每帧自持重绘
+                // 执行进度条保底重绘：在 restore 之后以完全不透明再画一次，
+                // 保证视频加载器等耗时节点的加载进度条始终可见。
                 try {
                     if (typeof node.drawProgressBar === 'function' && node.progress) {
                         const _barGa = ctx.globalAlpha;
@@ -2333,64 +2689,18 @@ window.XZGThemeManager = {
             }
         };
 
-        // 跟踪当前执行节点
-        _xzgWrapQueueForRunningOwner();
-        // 事件源：优先用导入的 api（scripts/api.js 单例，与 xzg_video_combine 已验证使用的
-        // 是同一事件源、其上 executing/executed 均正常派发），也兼容 app.api。两个若不是同一
-        // 实例，则都挂；用 emitter 上的 _xzgHLBound 标记去重，避免重复设置 _runningJob。
-        const execHandler = (e) => {
-            // 本前端 executing 事件 detail 是【裸节点 id】（dispatchCustomEvent('executing',
-            // t.data.display_node || t.data.node)，字符串/数字/null），不是对象。
-            // executed 事件 detail 才是 {node, display_node, prompt_id, output} 对象。
-            // 这里对两种形态都兼容，且必须直接取 detail 本体，否则对象式解构取到 undefined。
-            const detail = e?.detail;
-            let nodeId = null;
-            let promptId = null;
-            if (detail == null) {
-                nodeId = null;
-            } else if (typeof detail === 'object') {
-                nodeId = detail.node ?? detail.display_node ?? detail.node_id ?? detail.nodeId ?? null;
-                promptId = detail.prompt_id ?? detail.promptId ?? null;
-            } else {
-                nodeId = detail; // 裸节点 id
-            }
-            // 归属判定：优先按 prompt_id→发起图，其次用最近一次 Run 的发起图兜底。
-            // 发起图不是本节点所在图时不高亮（防跨工作流串台）。
-            let ownerGraph = null;
-            if (promptId != null) ownerGraph = _xzgPromptOwnerGraph.get(String(promptId)) || null;
-            if (ownerGraph == null) ownerGraph = _xzgRunOwnerGraph;
-            self._runningJob = {
-                ownerGraph,
-                nodeId: nodeId === undefined || nodeId === null ? null : nodeId.toString(),
-            };
-            // [调试·高亮] executing 事件体
-            if (window.__xzgHighlightDebug) {
-                console.warn("[小珠光高亮] executing detail=", detail, "=> nodeId=", self._runningJob.nodeId,
-                    "ownerGraph=" + (ownerGraph ? "set" : "null"), "promptId=" + promptId);
-            }
-            // 兼容旧字段（某些调用点仍读 _runningNodeId）
-            self._runningNodeId = self._runningJob.nodeId;
-            if (window.app?.canvas) window.app.canvas.setDirty(true, true);
-        };
-        const resetRunning = () => {
-            self._runningJob = null;
-            self._runningNodeId = null;
-        };
-        const bindEmitter = (emitter) => {
-            if (!emitter || emitter._xzgHLBound) return;
-            emitter._xzgHLBound = true;
-            emitter.addEventListener('executing', execHandler);
-            emitter.addEventListener('execution_start', resetRunning);
-            emitter.addEventListener('execution_success', resetRunning);
-            emitter.addEventListener('execution_interrupted', resetRunning);
-        };
-        bindEmitter(api);
-        if (window.app?.api && window.app.api !== api) bindEmitter(window.app.api);
+        drawTarget.drawNode._xzgNodeHighlightWrapped = true;
+        // 仅在挂在真实 app.canvas 实例链上时锁定"装过一次"：
+        // 缺 canvas 时走 globalThis 兜底原型，后续监视器还要对实例链补装，
+        // 不能过早锁定（否则 ShadowGuard 共存判定会阻止补装）。
+        if (window.app?.canvas) this._nodeHighlightHookedOnce = true;
+        this.nodeHighlightHooked = true;
     },
 
     toggleLinkAnim() {
         const newState = !this.linkAnimActive;
         this.linkAnimActive = newState;
+        this.setupLinkHighlight();
         try {
             localStorage.setItem('xzg-link-anim', this.linkAnimActive ? 'true' : 'false');
         } catch(e) {}
@@ -2637,6 +2947,8 @@ window.XZGThemeManager = {
     },
 
     _getPointOnCurve(sx, sy, ex, ey, cp, tVal) {
+        // 路径注入：节点高亮移植连线动画时，cp 携带 _xzgPathAt 沿节点边框取点
+        if (cp && cp._xzgPathAt) return cp._xzgPathAt(tVal);
         let px, py, dx, dy;
         const mt = 1 - tVal;
         if (cp.length >= 2) {
@@ -2678,6 +2990,8 @@ window.XZGThemeManager = {
         const ex = ep.x != null ? ep.x : ep[0];
         const ey = ep.y != null ? ep.y : ep[1];
         const cp = link.controlPoints || [];
+        const szK = (cp && cp._xzgSizeK) || 1;
+        const cntK = (cp && cp._xzgCountK) || 1;
         const key = `${link.origin_id}_${link.origin_slot}_${link.target_id}_${link.target_slot}`;
         const t = performance.now();
 
@@ -2691,13 +3005,13 @@ window.XZGThemeManager = {
         ctx.save();
 
         // 所有线都绘制豆子；当前线隐藏已吃掉的豆子
-        const dotCount = 8;
+        const dotCount = Math.max(1, Math.round(8 * cntK));
         for (let i = 0; i < dotCount; i++) {
             const dotT = (i + 0.5) / dotCount;
             if (isCurrent && dotT < progress) continue;
             const dp = this._getPointOnCurve(sx, sy, ex, ey, cp, dotT);
             ctx.beginPath();
-            ctx.arc(dp.x, dp.y, 4, 0, Math.PI * 2);
+            ctx.arc(dp.x, dp.y, 4 * szK, 0, Math.PI * 2);
             ctx.fillStyle = '#FFEE88';
             ctx.shadowBlur = 0;
             ctx.fill();
@@ -2707,7 +3021,7 @@ window.XZGThemeManager = {
         if (isCurrent) {
             const pacPos = this._getPointOnCurve(sx, sy, ex, ey, cp, progress);
             const pacAngle = pacPos.angle;
-            const pacRadius = 14;
+            const pacRadius = 14 * szK;
             const mouthOpen = (Math.sin(t * 0.012) * 0.5 + 0.5) * 0.6 + 0.1;
 
             ctx.translate(pacPos.x, pacPos.y);
@@ -2746,12 +3060,13 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.00025;
-        const count = 7;
+        const count = Math.max(1, Math.round(7 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed) + i / count) % 1;
             const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
-            const size = 5;
+            const size = 5 * szK;
             const rot = t * 0.001 + i;
             ctx.save();
             ctx.translate(p.x, p.y);
@@ -2779,17 +3094,18 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.0004;
-        const count = 14;
+        const count = Math.max(1, Math.round(14 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         const seed = Math.floor(t / 80);
         const rng = (i) => { const x = Math.sin(seed * 99.7 + i * 31.3) * 43758.5453; return x - Math.floor(x); };
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed * (0.5 + rng(i) * 0.8)) + i / count) % 1;
             const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
-            const jitter = 4;
+            const jitter = 4 * szK;
             const jx = (rng(i * 2 + 1) - 0.5) * jitter;
             const jy = (rng(i * 2 + 2) - 0.5) * jitter;
-            const size = 1 + rng(i * 3 + 5) * 2;
+            const size = (1 + rng(i * 3 + 5) * 2) * szK;
             const color = ['#74C0FC', '#A5D8FF', '#E7F5FF', '#4DABF7'][i % 4];
             ctx.beginPath();
             ctx.arc(p.x + jx, p.y + jy, size, 0, Math.PI * 2);
@@ -2810,8 +3126,9 @@ window.XZGThemeManager = {
         const pulse = 0.5 + 0.5 * Math.sin(t * speed);
         const hue = (t * 0.05) % 360;
         ctx.save();
-        // 构建路径
+        // 构建路径（路径注入时直接用节点边框轮廓）
         const buildPath = () => {
+            if (d.cp && d.cp._xzgBuildPath) { d.cp._xzgBuildPath(); return; }
             ctx.beginPath();
             ctx.moveTo(d.sx, d.sy);
             if (d.cp.length >= 2) {
@@ -2833,18 +3150,20 @@ window.XZGThemeManager = {
             }
         };
         // 外层：七彩变色
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
+        const glowK = (d.cp && d.cp._xzgGlowK) || 1; // 光晕扩展倍率（节点模式可钉死减半）
         buildPath();
         ctx.strokeStyle = `hsla(${hue}, 100%, 60%, ${0.2 + pulse * 0.3})`;
-        ctx.lineWidth = 6;
+        ctx.lineWidth = 6 * szK;
         ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
-        ctx.shadowBlur = 15 + pulse * 10;
+        ctx.shadowBlur = (15 + pulse * 10) * glowK;
         ctx.stroke();
         // 核心：白色
         buildPath();
         ctx.strokeStyle = `rgba(255, 255, 255, ${0.4 + pulse * 0.5})`;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.5 * szK;
         ctx.shadowColor = `hsl(${hue}, 100%, 70%)`;
-        ctx.shadowBlur = 4;
+        ctx.shadowBlur = 4 * glowK;
         ctx.stroke();
         ctx.restore();
     },
@@ -2854,12 +3173,13 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.0002;
-        const count = 6;
+        const count = Math.max(1, Math.round(6 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed) + i / count) % 1;
             const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
-            const size = 4 + Math.sin(t * 0.003 + i) * 1.5;
+            const size = (4 + Math.sin(t * 0.003 + i) * 1.5) * szK;
             const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size * 2);
             grad.addColorStop(0, 'rgba(255, 220, 100, 0.9)');
             grad.addColorStop(0.4, 'rgba(255, 140, 50, 0.6)');
@@ -2879,7 +3199,8 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.00035;
-        const count = 5;
+        const count = Math.max(1, Math.round(5 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed) + i / count) % 1;
@@ -2890,7 +3211,7 @@ window.XZGThemeManager = {
                 const tt = Math.max(0, tVal - j * 0.015);
                 const tp = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tt);
                 const alpha = (1 - j / trailLen) * 0.4;
-                const sz = (1 - j / trailLen) * 3 + 1;
+                const sz = ((1 - j / trailLen) * 3 + 1) * szK;
                 ctx.beginPath();
                 ctx.arc(tp.x, tp.y, sz, 0, Math.PI * 2);
                 ctx.fillStyle = `rgba(180, 220, 255, ${alpha})`;
@@ -2900,7 +3221,7 @@ window.XZGThemeManager = {
             }
             // 头部星点
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+            ctx.arc(p.x, p.y, 3 * szK, 0, Math.PI * 2);
             ctx.fillStyle = '#FFFFFF';
             ctx.shadowColor = '#74C0FC';
             ctx.shadowBlur = 15;
@@ -2914,7 +3235,8 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.0012;
-        const count = 3;
+        const count = Math.max(1, Math.round(3 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed) + i / count) % 1;
@@ -2924,7 +3246,7 @@ window.XZGThemeManager = {
                 const tt = Math.max(0, tVal - j * 0.02);
                 const tp = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tt);
                 const alpha = (1 - j / 8) * 0.5;
-                const sz = (1 - j / 8) * 4;
+                const sz = (1 - j / 8) * 4 * szK;
                 ctx.beginPath();
                 ctx.arc(tp.x, tp.y, Math.max(0.5, sz), 0, Math.PI * 2);
                 ctx.fillStyle = `rgba(120, 220, 255, ${alpha})`;
@@ -2934,7 +3256,7 @@ window.XZGThemeManager = {
             }
             // 头部
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+            ctx.arc(p.x, p.y, 5 * szK, 0, Math.PI * 2);
             ctx.fillStyle = '#FFFFFF';
             ctx.shadowColor = '#74C0FC';
             ctx.shadowBlur = 20;
@@ -2948,7 +3270,8 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.001;
-        const count = 10;
+        const count = Math.max(1, Math.round(10 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         const seed = Math.floor(t * speed / 5);
         const rng = (i) => { const x = Math.sin(seed * 78.3 + i * 52.7) * 43758.5453; return x - Math.floor(x); };
         const colors = ['#FFD700', '#FF6B6B', '#4DABF7', '#69DB7C', '#FF922B', '#B197FC'];
@@ -2959,7 +3282,7 @@ window.XZGThemeManager = {
             const lifePhase = (t * speed * 0.5 + i * 1.7) % 3;
             const alpha = lifePhase < 1 ? lifePhase : (lifePhase < 2 ? 1 : Math.max(0, 2 - lifePhase));
             if (alpha <= 0.01) continue;
-            const sz = 4 + rng(i * 5 + 3) * 5;
+            const sz = (4 + rng(i * 5 + 3) * 5) * szK;
             const color = colors[Math.floor(rng(i * 7 + 9) * colors.length)];
             const rotation = rng(i * 11) * Math.PI * 2 + t * 0.001;
 
@@ -3024,7 +3347,8 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.0003;
-        const count = 4;
+        const count = Math.max(1, Math.round(4 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed) + i / count) % 1;
@@ -3034,7 +3358,7 @@ window.XZGThemeManager = {
                 const tt = Math.max(0, tVal - j * 0.012);
                 const tp = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tt);
                 const alpha = (1 - j / 12) * 0.4;
-                const sz = (1 - j / 12) * 4 + 0.5;
+                const sz = ((1 - j / 12) * 4 + 0.5) * szK;
                 ctx.beginPath();
                 ctx.arc(tp.x, tp.y, sz, 0, Math.PI * 2);
                 ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
@@ -3044,7 +3368,7 @@ window.XZGThemeManager = {
             }
             // 头部
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+            ctx.arc(p.x, p.y, 5 * szK, 0, Math.PI * 2);
             ctx.fillStyle = '#FFF8DC';
             ctx.shadowColor = '#FFD700';
             ctx.shadowBlur = 18;
@@ -3058,12 +3382,13 @@ window.XZGThemeManager = {
         const d = this._getLinkData(link); if (!d) return;
         const t = performance.now();
         const speed = (this.linkAnimSpeed || 1) * 0.00035;
-        const count = 6;
+        const count = Math.max(1, Math.round(6 * ((d.cp && d.cp._xzgCountK) || 1)));
+        const szK = (d.cp && d.cp._xzgSizeK) || 1;
         ctx.save();
         for (let i = 0; i < count; i++) {
             const tVal = ((t * speed) + i / count) % 1;
             const p = this._getPointOnCurve(d.sx, d.sy, d.ex, d.ey, d.cp, tVal);
-            const size = 4 + Math.sin(t * 0.004 + i) * 1;
+            const size = (4 + Math.sin(t * 0.004 + i) * 1) * szK;
             ctx.save();
             ctx.translate(p.x, p.y);
             ctx.rotate(p.angle);
@@ -3098,8 +3423,11 @@ window.XZGThemeManager = {
         const ey = ep.y != null ? ep.y : ep[1];
         const cp = link.controlPoints || [];
         const t = performance.now();
+        const szK = (cp && cp._xzgSizeK) || 1;
+        const cntK = (cp && cp._xzgCountK) || 1;
 
-        const getPointAtT = (tVal) => {
+        // 路径注入：节点高亮移植时，cp 携带 _xzgPathAt 沿节点边框取点
+        const getPointAtT = cp._xzgPathAt || ((tVal) => {
             if (cp.length >= 2) {
                 const c0x = cp[0].x != null ? cp[0].x : cp[0][0];
                 const c0y = cp[0].y != null ? cp[0].y : cp[0][1];
@@ -3122,7 +3450,7 @@ window.XZGThemeManager = {
                     y: sy + (ey - sy) * tVal
                 };
             }
-        };
+        });
 
         const drawStarburst = (cx, cy, color, size, rotation) => {
             const rayCount = 8;
@@ -3190,7 +3518,7 @@ window.XZGThemeManager = {
             '#F06595'
         ];
 
-        const sparkleCount = 5;
+        const sparkleCount = Math.max(1, Math.round(5 * cntK));
         const speed = 0.00025 * (this.linkAnimSpeed || 1);
         const baseOffset = (t * speed) % 1;
 
@@ -3201,7 +3529,7 @@ window.XZGThemeManager = {
             const pos = getPointAtT(tVal);
             const color = rainbowColors[i % rainbowColors.length];
             const pulse = 0.7 + 0.3 * Math.sin(t * 0.004 + i * 1.2);
-            const size = 11 * pulse;
+            const size = 11 * pulse * szK;
             const rotation = t * 0.001 + i * 0.5;
 
             drawStarburst(pos.x, pos.y, color, size, rotation);
@@ -3468,10 +3796,7 @@ window.XZGThemeManager = {
 
     _hasSelectedNodes() {
         if (!window.app || !app.canvas) return false;
-        if (app.canvas.selected_nodes) {
-            return Object.keys(app.canvas.selected_nodes).length > 0;
-        }
-        return false;
+        return this.getHighlightNodeIds().length > 0;
     },
 
     _stopAnimLoop() {
@@ -3490,37 +3815,31 @@ window.XZGThemeManager = {
         }
     },
 
-    hookDrawNodeShape() {
-        const canvas = app.canvas;
+    hookDrawNodeShape(canvas = app.canvas) {
         if (!canvas) return;
 
         const self = this;
 
         function hookMethod(methodName, makeWrapper) {
-            const targets = [];
-            if (typeof canvas[methodName] === 'function' &&
-                Object.prototype.hasOwnProperty.call(canvas, methodName)) {
-                targets.push({ obj: canvas, orig: canvas[methodName] });
-            }
+            // 只包装属性查找时实际命中的最近一层。把整条原型链都包起来，
+            // 遇到子类调用 super 或扩展链式替换时会重复执行主题绘制。
+            if (typeof canvas[methodName] !== 'function') return false;
             let proto = Object.getPrototypeOf(canvas);
-            while (proto && proto !== Object.prototype) {
-                if (Object.prototype.hasOwnProperty.call(proto, methodName) &&
-                    typeof proto[methodName] === 'function') {
-                    targets.push({ obj: proto, orig: proto[methodName] });
+            let owner = Object.prototype.hasOwnProperty.call(canvas, methodName) ? canvas : null;
+            while (!owner && proto && proto !== Object.prototype) {
+                if (Object.prototype.hasOwnProperty.call(proto, methodName) && typeof proto[methodName] === 'function') {
+                    owner = proto;
+                    break;
                 }
                 proto = Object.getPrototypeOf(proto);
             }
-            if (targets.length === 0) {
-                const fn = canvas[methodName];
-                if (typeof fn === 'function') targets.push({ obj: canvas, orig: fn });
-                else return false;
-            }
-            for (const t of targets) {
-                if (t.orig._xzgWrapped) continue;
-                const w = makeWrapper(t.orig);
-                w._xzgWrapped = true;
-                t.obj[methodName] = w;
-            }
+            if (!owner) return false;
+            const orig = owner[methodName];
+            if (orig._xzgThemeGradientHook) return true;
+            const wrapper = makeWrapper(orig);
+            wrapper._xzgWrapped = true;
+            wrapper._xzgThemeGradientHook = true;
+            owner[methodName] = wrapper;
             return true;
         }
 
@@ -3531,12 +3850,13 @@ window.XZGThemeManager = {
                     origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                     return;
                 }
+                const gradientConfig = self.getNodeGradientConfig(node);
 
                 // 大字文本展示节点：主题只作用在标题栏。
                 // 正文（文字显示区）完全由节点自行绘制，主题一律不绘制、不覆盖，
                 // 因此无论绘制先后，正文区域都不会被主题渐变或底色盖住。
                 if (node.type === "XiaozhuguangBigDisplay") {
-                    if (!node._xzgGradient) {
+                    if (!gradientConfig) {
                         origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                         return;
                     }
@@ -3544,7 +3864,7 @@ window.XZGThemeManager = {
                     const _th = _LG?.NODE_TITLE_HEIGHT || 30;
                     const _w = size[0], _h = size[1];
                     const _r = node.borderRadius || _LG?.NODE_CORNER_RADIUS || 8;
-                    const _cfg = node._xzgGradient;
+                    const _cfg = gradientConfig;
                     const _titlePts = self._titleGradPts(_w, _th);
                     const _sym = self.degToSymbol(_cfg.titleDirection || _cfg.direction);
                     const [_x1, _y1, _x2, _y2] = _titlePts[_sym] || _titlePts['↓'];
@@ -3596,7 +3916,7 @@ window.XZGThemeManager = {
                     return;
                 }
 
-                if (!node._xzgGradient) {
+                if (!gradientConfig) {
                     origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                     return;
                 }
@@ -3605,7 +3925,7 @@ window.XZGThemeManager = {
                 const th = LG?.NODE_TITLE_HEIGHT || 30;
                 const w = size[0], h = size[1];
                 const r = node.borderRadius || LG?.NODE_CORNER_RADIUS || 8;
-                const cfg = node._xzgGradient;
+                const cfg = gradientConfig;
                 const pts = self._gradPts(w, h, th);
                 const titlePts = self._titleGradPts(w, th);
                 const bodyPts = self._bodyGradPts(w, h);
@@ -3703,6 +4023,10 @@ window.XZGThemeManager = {
                         ctx.restore();
                     }
                 } catch(e) {
+                    if (!node._xzgGradientDrawErrorLogged) {
+                        node._xzgGradientDrawErrorLogged = true;
+                        console.warn('[小珠光主题] 节点渐变绘制失败，已回退原背景', node.id, node.type, e);
+                    }
                     origFn.call(this, node, ctx, size, fgcolor, bgcolor, selected, mouseOver);
                 } finally {
                     ctx.restore();
@@ -3807,6 +4131,15 @@ window.XZGThemeManager = {
 
     applyThemeToNodes(nodes, colors) {
         if (!nodes || !nodes.length) return;
+
+        const vueNodesMode = !!globalThis.LiteGraph?.vueNodesMode;
+        if (vueNodesMode) {
+            // Nodes 2 的节点背景由 DOM 样式绘制，避免依赖 LiteGraph canvas 钩子。
+            this.refreshDOMGradients();
+        } else {
+            // Nodes 1 使用独立的原生画布绘制入口。
+            this.ensureLegacyGradientHook();
+        }
         
         const cfg = this.buildGradientConfig(colors);
         const gradCSS = this.buildGradientCSS(colors);
@@ -3837,6 +4170,8 @@ window.XZGThemeManager = {
 
     applyGradientToDOMNode(node) {
         if (!node || !node._xzgGradient) return;
+        // Nodes 1 的主题由主画布绘制，不能给其 DOM 控件覆盖层铺背景。
+        if (!globalThis.LiteGraph?.vueNodesMode) return;
         // 大字展示节点：正文完全由画布绘制，DOM 层任何主题渐变/透明都会盖住文字。
         // 一律跳过 DOM 操作，标题栏主题交给 makeDrawShapeWrapper 画布绘制。
         // 另外必须清理历史遗留的 DOM 样式（之前调用可能把 inner/body 背景设为渐变或透明）。
@@ -3846,8 +4181,8 @@ window.XZGThemeManager = {
         }
 
         const graphCanvas = document.getElementById("graph-canvas");
-        if (!graphCanvas) return;
-
+        // Nodes 2 的 DOM 节点是主 canvas 的兄弟元素，并不在 canvas 内部。
+        const graphRoot = graphCanvas?.parentElement || document;
         const cfg = node._xzgGradient;
         const useTitleGradient = cfg.useTitleGradient && cfg.titleStops && cfg.titleStops.length > 0;
         
@@ -3867,8 +4202,8 @@ window.XZGThemeManager = {
             useTitleGradient: true
         }) : null;
 
-        const nodeEls = graphCanvas.querySelectorAll(
-            `[data-node-id="${node.id}"], [data-id="${node.id}"], #node-${node.id}`
+        const nodeEls = graphRoot.querySelectorAll(
+            `.lg-node[data-node-id="${node.id}"]`
         );
         
         nodeEls.forEach(nodeEl => {
@@ -3948,10 +4283,10 @@ window.XZGThemeManager = {
 
     removeGradientFromDOMNode(node) {
         const graphCanvas = document.getElementById("graph-canvas");
-        if (!graphCanvas) return;
+        const graphRoot = graphCanvas?.parentElement || document;
 
-        const nodeEls = graphCanvas.querySelectorAll(
-            `[data-node-id="${node.id}"], [data-id="${node.id}"], #node-${node.id}`
+        const nodeEls = graphRoot.querySelectorAll(
+            `.lg-node[data-node-id="${node.id}"]`
         );
         
         nodeEls.forEach(nodeEl => {
@@ -3961,11 +4296,10 @@ window.XZGThemeManager = {
             inner.style.removeProperty('--component-node-background');
             inner.style.removeProperty('--component-node-header');
 
-            const allChilds = nodeEl.querySelectorAll('*');
-            allChilds.forEach(child => {
-                child.style.removeProperty('background');
-                child.style.removeProperty('background-color');
-            });
+            // 只清理主题改过的背景层，不清空视频、文本框等自定义控件的背景。
+            const body = nodeEl.querySelector('[data-testid*="body"], .comfy-body, .comfy-content, .node-body, .content');
+            body?.style.removeProperty('background');
+            body?.style.removeProperty('background-color');
 
             const headerSelectors = [
                 '[data-testid*="header"]', '.comfy-header', '.comfy-title', 
@@ -3974,6 +4308,8 @@ window.XZGThemeManager = {
             ];
             const header = nodeEl.querySelector(headerSelectors.join(', '));
             if (header) {
+                header.style.removeProperty('background');
+                header.style.removeProperty('background-color');
                 header.style.removeProperty('color');
                 header.style.removeProperty('font-size');
                 header.style.removeProperty('text-align');
@@ -4021,8 +4357,8 @@ window.XZGThemeManager = {
     },
 
     getNodeGradient(node) {
-        if (!node || !node._xzgGradient) return null;
-        const cfg = node._xzgGradient;
+        const cfg = this.getNodeGradientConfig(node);
+        if (!cfg) return null;
         const useTitleGradient = cfg.useTitleGradient && cfg.titleStops && cfg.titleStops.length > 0;
         return {
             color1: cfg.stops[0]?.color || '#e65c5c',
@@ -4039,6 +4375,13 @@ window.XZGThemeManager = {
             fontSize: cfg.fontSize || 14,
             textAlign: cfg.textAlign || 'left'
         };
+    },
+
+    getNodeGradientConfig(node) {
+        if (!node) return null;
+        const cfg = node._xzgGradient || node.properties?._xzgGradient;
+        if (cfg && !node._xzgGradient) node._xzgGradient = cfg;
+        return cfg || null;
     },
 
     setupContextMenu() {
@@ -4136,17 +4479,28 @@ window.XZGThemeManager = {
 
         this.setupSelectionListener();
 
-        const observer = new MutationObserver(() => {
-            self.refreshDOMGradients();
-        });
+        let refreshFrame = 0;
+        const scheduleDOMGradients = () => {
+            if (refreshFrame) return;
+            refreshFrame = requestAnimationFrame(() => {
+                refreshFrame = 0;
+                self.refreshDOMGradients();
+            });
+        };
+        const observer = new MutationObserver(scheduleDOMGradients);
         
         const graphCanvas = document.getElementById("graph-canvas");
-        if (graphCanvas) {
-            observer.observe(graphCanvas, { 
+        const graphRoot = graphCanvas?.parentElement || document.body;
+        if (graphRoot) {
+            observer.observe(graphRoot, {
                 childList: true, 
                 subtree: true 
             });
         }
+        // 本模块未 import app，且 init 可能在 window.app 就绪前执行；
+        // 裸 app 会 ReferenceError 并曾导致早期 init 整链夭折（高亮钩子装不上）。
+        window.app?.ui?.settings?.addEventListener?.("Comfy.VueNodes.Enabled.change", scheduleDOMGradients);
+        scheduleDOMGradients();
     },
 
     setupSelectionListener() {
@@ -4891,13 +5245,32 @@ window.XZGThemeManager = {
                 app.registerExtension({
                     name: "XZG.Theme",
                     loadedGraphNode(node) {
-                        const gradient = node.properties?._xzgGradient || node._xzgGradient;
-                        if (gradient) node._xzgGradient = JSON.parse(JSON.stringify(gradient));
+                        const manager = window.XZGThemeManager;
+                        const gradient = manager.getNodeGradientConfig(node);
+                        if (gradient) {
+                            node._xzgGradient = JSON.parse(JSON.stringify(gradient));
+                            if (!globalThis.LiteGraph?.vueNodesMode) manager.ensureLegacyGradientHook();
+                        }
                     },
                     afterConfigureGraph() {
-                        window.XZGThemeManager.refreshDOMGradients();
+                        const manager = window.XZGThemeManager;
+                        const nodes = app.graph?._nodes || app.graph?.nodes || [];
+                        nodes.forEach(node => {
+                            const gradient = manager.getNodeGradientConfig(node);
+                            if (gradient) node._xzgGradient = JSON.parse(JSON.stringify(gradient));
+                        });
+                        if (globalThis.LiteGraph?.vueNodesMode) manager.refreshDOMGradients();
+                        else manager.ensureLegacyGradientHook();
+                        manager.setupLinkHighlight();
                         app.graph?.setDirtyCanvas?.(true, true);
-                        requestAnimationFrame(() => window.XZGThemeManager.refreshDOMGradients());
+                        app.canvas?.setDirty?.(true, true);
+                        requestAnimationFrame(() => {
+                            if (globalThis.LiteGraph?.vueNodesMode) manager.refreshDOMGradients();
+                            else manager.ensureLegacyGradientHook();
+                            manager.setupLinkHighlight();
+                            app.graph?.setDirtyCanvas?.(true, true);
+                            app.canvas?.setDirty?.(true, true);
+                        });
                     },
                 });
             } catch(e) {}

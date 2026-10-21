@@ -482,6 +482,8 @@ function _xzgVideoSaveControlHit(event) {
     const canvas = app.canvas;
     const canvasEl = canvas?.canvas;
     if (!canvasEl || (event.target !== canvasEl && !canvasEl.contains?.(event.target))) return null;
+    // 画布尚未初始化完成时（如工作流 configure 早期）该方法不存在，直接放行
+    if (typeof canvas.convertEventToCanvasCoordinates !== "function") return null;
     const point = canvas.convertEventToCanvasCoordinates(event);
     for (const node of app.graph?.nodes || []) {
         if (node.type !== "XiaozhuguangVideoCombine" && node.type !== "XiaozhuguangVideoSaveDaVinci") continue;

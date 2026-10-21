@@ -3635,8 +3635,22 @@ class XZGWorkflowsManager {
             const tree = await res.json();
             // 官方 store 的通知和兼容轮询不应在内容未变时重建面板。
             if (background && JSON.stringify(tree) === JSON.stringify(this.tree)) return;
+            const previousPaths = new Set(this.workflows.map(w => w.path));
+            const metadataCount = Object.keys(this.meta.workflows).length;
             this.tree = tree;
             this.workflows = this.flattenTree(tree);
+            let addedWorkflow = false;
+            if (this._workflowListLoaded) {
+                const lastUsed = this.workflows.reduce((latest, w) => Math.max(latest, w.lastUsed || 0), Date.now()) + 1;
+                for (const workflow of this.workflows) {
+                    if (previousPaths.has(workflow.path)) continue;
+                    this.getWorkflowMeta(workflow.path).lastUsed = lastUsed;
+                    workflow.lastUsed = lastUsed;
+                    addedWorkflow = true;
+                }
+            }
+            this._workflowListLoaded = true;
+            if (addedWorkflow || Object.keys(this.meta.workflows).length !== metadataCount) this.saveMeta();
             this.syncCategories();
             this.renderCategories();
             this.renderWorkflowList();

@@ -246,15 +246,19 @@ function getSelectorMinContentHeight(node) {
     return rows * 12 + Math.max(0, rows - 1) * settings.btnGap + 8;
 }
 
-function getSelectorMinNodeHeight(node) {
-    // Vue nodes reserve space for slots, widget padding and the bottom badge.
-    const vueNode = node._xzgSelectorUI?.canvas?.closest?.('.lg-node');
-    return Math.max(58, getSelectorMinContentHeight(node) + (vueNode ? 64 : 32));
+// 是否处于 Nodes 2.0：优先用全局标志（加载早期也稳定），
+// 不能用 DOM 探测做唯一依据——加载时 DOM 还没挂载，判定会来回翻转，导致刷新后尺寸跳动。
+function isVueNodesMode(node) {
+    const flag = globalThis.LiteGraph?.vueNodesMode;
+    if (typeof flag === "boolean") return flag;
+    return !!node?._xzgSelectorUI?.canvas?.closest?.(".lg-node");
 }
 
-// 加载/恢复尺寸时的最小高度：只做防负值的兜底，
-// 不能再用 getSelectorMinNodeHeight()，否则用户压缩过的高度刷新后会被撑回去。
-const RESTORE_MIN_HEIGHT = 48;
+function getSelectorMinNodeHeight(node) {
+    // Nodes 2.0 需要为标题、插槽和底部角标预留空间，否则压缩后按钮会被挤没。
+    const reserve = isVueNodesMode(node) ? 64 : 32;
+    return Math.max(58, getSelectorMinContentHeight(node) + reserve);
+}
 
 // 尺寸持久化：拖拽结束后把尺寸写进 node.properties（properties 一定会写进工作流），
 // 这样即使前端没有把 node.size 写回存档，刷新后也不会丢大小。
@@ -277,7 +281,7 @@ function applyNodeSizeHint(node) {
     const hint = readNodeSizeHint(node);
     if (!hint || !node?.size) return false;
     const nextW = Math.max(hint[0], getSelectorMinNodeWidth(node));
-    const nextH = Math.max(hint[1], RESTORE_MIN_HEIGHT);
+    const nextH = Math.max(hint[1], getSelectorMinNodeHeight(node));
     if (Math.abs(node.size[0] - nextW) > 0.5 || Math.abs(node.size[1] - nextH) > 0.5) {
         node.size[0] = nextW;
         node.size[1] = nextH;
@@ -417,6 +421,8 @@ function createSelectorDOMWidget(node, tagWidget) {
         hideOnZoom: false, margin: 0,
         getMinHeight: () => getSelectorMinContentHeight(node), getHeight: () => "100%",
     });
+    // Nodes 2 使用布局约束分配 DOM 控件高度；仅 getMinHeight 会让首次布局分到零高度。
+    widget.computeLayoutSize = () => ({ minHeight: getSelectorMinContentHeight(node), minWidth: 0 });
     // Keep the legacy serialized placeholder between `label` and `_xz_settings`.
     // Existing workflows store settings in that widget position.
     widget.value = null;
@@ -602,9 +608,9 @@ app.registerExtension({
                 if (origOnResize) origOnResize.apply(this, arguments);
                 if (this.size) {
                     this.size[0] = Math.max(this.size[0], getSelectorMinNodeWidth(this));
-                    // 高度只在用户拖动时（resize 手柄）限制最小值，这里不强行撑高，
-                    // 否则刷新浏览器会把压缩过的高度还原回去。
-                    this.size[1] = Math.max(this.size[1], RESTORE_MIN_HEIGHT);
+                    // 最小高度必须够放下按钮，否则压缩后标签会被挤没；
+                    // 该值只由设置和运行模式决定，刷新前后一致，不会造成尺寸跳动。
+                    this.size[1] = Math.max(this.size[1], getSelectorMinNodeHeight(this));
                 }
             };
 
@@ -627,6 +633,17 @@ app.registerExtension({
 
             // Recover settings saved by the first DOM-widget build, which appended
             // the UI after `_xz_settings` and therefore shifted its workflow slot.
+            const previousSerialize = this.onSerialize;
+            this.onSerialize = function (info) {
+                const result = previousSerialize?.apply(this, arguments);
+                const width = Number(info?.size?.[0] ?? this.size?.[0]);
+                const height = Number(info?.size?.[1] ?? this.size?.[1]);
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    writeNodeSizeHint(this, width, height);
+                    info.properties = { ...info.properties, [SIZE_HINT_KEY]: [...this.properties[SIZE_HINT_KEY]] };
+                }
+                return result;
+            };
             const previousConfigure = this.onConfigure;
             this.onConfigure = function (info) {
                 const result = previousConfigure?.apply(this, arguments);
@@ -636,19 +653,20 @@ app.registerExtension({
                     settings.value = ui.value;
                     ui.value = null;
                 }
-                // 恢复尺寸：优先用拖拽时写进 node.properties 的尺寸（一定会被序列化），
-                // 没有时退回 configure 传入的 size。等布局稳定后再校正，
-                // 避免创建时写入的默认尺寸晚于 configure 生效。
+                // 原生缩放更新工作流 size；旧的备用记录不能反过来覆盖它。
                 const hint = readNodeSizeHint(this);
                 const savedW = Number(info?.size?.[0]);
                 const savedH = Number(info?.size?.[1]);
-                const baseW = hint ? hint[0] : savedW;
-                const baseH = hint ? hint[1] : savedH;
+                const hasSavedSize = Number.isFinite(savedW) && Number.isFinite(savedH) && savedW > 0 && savedH > 0;
+                const baseW = hasSavedSize ? savedW : hint?.[0];
+                const baseH = hasSavedSize ? savedH : hint?.[1];
                 if (Number.isFinite(baseW) && Number.isFinite(baseH) && baseW > 0 && baseH > 0) {
+                    writeNodeSizeHint(this, baseW, baseH);
                     const restoreSize = () => {
                         if (!this.size) return;
                         const nextW = Math.max(baseW, getSelectorMinNodeWidth(this));
-                        const nextH = Math.max(baseH, RESTORE_MIN_HEIGHT);
+                        const nextH = Math.max(baseH, getSelectorMinNodeHeight(this));
+                        writeNodeSizeHint(this, nextW, nextH);
                         if (Math.abs(this.size[0] - nextW) > 0.5 || Math.abs(this.size[1] - nextH) > 0.5) {
                             this.size[0] = nextW;
                             this.size[1] = nextH;
@@ -700,7 +718,9 @@ app.registerExtension({
 
             // 初始大小：宽度按标签自然宽度推导（同布尔选择器），高度用默认值
             this.size[0] = getSelectorMinNodeWidth(this);
-            this.size[1] = 58;
+            this.size[1] = isVueNodesMode(this)
+                ? Math.max(getSelectorMinNodeHeight(this), calcNaturalContentSize(getNodeSettings(this, DEFAULT_SETTINGS)).contentH + 72)
+                : 58;
             // 加载工作流时 properties 可能晚于 onNodeCreated 才恢复，延迟再套用一次存档尺寸
             setTimeout(() => applyNodeSizeHint(this), 150);
         };

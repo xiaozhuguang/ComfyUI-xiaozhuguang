@@ -1,5 +1,6 @@
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 import torch
 import numpy as np
 import cv2
@@ -17,7 +18,6 @@ class XiaozhuguangATBC:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "resize_mode": (["Pillow Lanczos", "Pillow Lanczos (fast)", "Pillow Bicubic", "Pillow Bilinear"], {"default": "Pillow Lanczos", "tooltip": "新增模式与ATR高级一致：缩小时抗锯齿，放大保持Lanczos4。fast适合大倍率缩小。图像与遮罩使用相同模式。"}),
             },
             "optional": {
                 "mask": ("MASK", {"tooltip": "裁剪遮罩，可不连接；未连接时自动按输入图大小生成全黑遮罩（即整图裁剪）"}),
@@ -247,7 +247,7 @@ class XiaozhuguangATBC:
                         "bilinear": cv2.INTER_LINEAR, "bicubic": cv2.INTER_CUBIC}
         if resize_mode in legacy_modes:
             return cv2.resize(image, (width, height), interpolation=legacy_modes[resize_mode])
-        if resize_mode == "Lanczos4 (legacy)" or (width >= image.shape[1] and height >= image.shape[0]):
+        if resize_mode == "Lanczos4 (legacy)":
             return cv2.resize(image, (width, height), interpolation=cv2.INTER_LANCZOS4)
         if resize_mode == "OpenCV Area":
             # Only reduce axes here; a mixed shrink/enlarge uses Lanczos4 afterward.
@@ -264,6 +264,14 @@ class XiaozhuguangATBC:
             reducing_gap=3.0 if resize_mode == "Pillow Lanczos (fast)" else None))
 
     def _process_single_image(self, img, mask, resize_mode, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255), Box_grow_pixels=0):
+        cropped_image, cropped_mask, crop_info, target_width, target_height = self._crop_single_image(
+            img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color
+        )
+        resized_image = self._resize_numpy(cropped_image, target_width, target_height, resize_mode)
+        resized_mask = self._resize_numpy(cropped_mask, target_width, target_height, resize_mode)
+        return resized_image, resized_mask, crop_info
+
+    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color):
         # img: (H,W,3) uint8; mask: (H,W) uint8.
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
 
@@ -297,9 +305,6 @@ class XiaozhuguangATBC:
 
         target_dimensions = self._calculate_target_dimensions(kilopixels, actual_aspect_ratio, divisible_by)
         target_width, target_height = target_dimensions
-        resized_image = self._resize_numpy(cropped_image, target_width, target_height, resize_mode)
-        resized_mask = self._resize_numpy(cropped_mask, target_width, target_height, resize_mode)
-
         crop_info = {
             "original_coords": crop_box,
             "padded_size": (padded_w, padded_h),
@@ -308,9 +313,10 @@ class XiaozhuguangATBC:
             "fill_color": fill_color
         }
 
-        return resized_image, resized_mask, crop_info
+        return cropped_image, cropped_mask, crop_info, target_width, target_height
 
-    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0):
+    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0):
+        resize_mode = "Pillow Lanczos"
         image_batch_size = image.shape[0]
 
         original_width = image.shape[2]
@@ -362,27 +368,28 @@ class XiaozhuguangATBC:
         if mask_smooth > 0 and batch_size > 1 and not sum_mask:
             crop_boxes = self._smooth_bboxes(crop_boxes, original_width, original_height, mask_smooth, smooth_aspect_ratio)
 
-        output_images = []
-        output_masks = []
-        crop_infos = []
-
+        frames = []
         for i in range(batch_size):
             img_i = img8[i] if i < image_batch_size else img8[0]
-            m_i = mask8[i] if mask_batched else mask8
-            resized_image, resized_mask, crop_info = self._process_single_image(
-                img_i, m_i, resize_mode,
-                kilopixels, divisible_by,
-                original_width, original_height,
-                crop_boxes[i],
-                fill_color_rgb, Box_grow_pixels
-            )
+            m_i = mask8[i] if mask_batched and i < mask_batch_size else mask8[0] if mask_batched else mask8
+            frames.append(self._crop_single_image(
+                img_i, m_i, kilopixels, divisible_by, original_width, original_height,
+                crop_boxes[i], fill_color_rgb
+            ))
 
-            img_tensor = resized_image.astype(np.float32) / 255.0
-            mask_tensor = resized_mask.astype(np.float32) / 255.0
+        def resize_frame(frame):
+            cropped_image, cropped_mask, _, target_width, target_height = frame
+            return (self._resize_numpy(cropped_image, target_width, target_height, resize_mode),
+                    self._resize_numpy(cropped_mask, target_width, target_height, resize_mode))
+        if batch_size > 1:
+            with ThreadPoolExecutor(max_workers=min(8, batch_size)) as pool:
+                resized_frames = list(pool.map(resize_frame, frames))
+        else:
+            resized_frames = [resize_frame(frames[0])]
 
-            output_images.append(img_tensor)
-            output_masks.append(mask_tensor)
-            crop_infos.append(crop_info)
+        output_images = [images.astype(np.float32) / 255.0 for images, _ in resized_frames]
+        output_masks = [masks.astype(np.float32) / 255.0 for _, masks in resized_frames]
+        crop_infos = [frame[2] for frame in frames]
 
         if batch_size > 1:
             max_h = max(img.shape[0] for img in output_images)

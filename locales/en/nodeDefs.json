@@ -424,7 +424,6 @@
     "inputs": {
       "image": { "name": "image" },
       "mask": { "name": "mask" },
-      "resize_mode": { "name": "Downscale Mode" },
       "Box_grow_factor": { "name": "box grow factor" },
       "Box_grow_pixels": { "name": "pixel expansion" },
       "kilopixels": { "name": "kilopixels" },
@@ -455,8 +454,7 @@
       "color_match_strength": { "name": "Match Strength" },
       "color_correction_range": { "name": "Correction Range" },
       "color_temporal_smooth": { "name": "Temporal Smoothing" },
-      "resize_mode": { "name": "Downscale Mode" },
-      "compute_device": { "name": "Compute Device" }
+      "seam_preview": { "name": "Seam Preview", "tooltip": "Enable only for seam debugging; disabling it skips preview calculation" }
     },
     "outputs": {
       "0": { "name": "restored image" },

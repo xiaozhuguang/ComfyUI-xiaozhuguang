@@ -23,8 +23,36 @@ function harness() {
     const manager = Object.create(context.Manager.prototype);
     Object.assign(manager, { _loading: false, _loadQueue: [], workflows: [],
         getWorkflowMeta: () => ({}), saveMeta() {}, renderWorkflowList() {}, centerCanvasOnNodes() {} });
-    return { manager, app, store, workflows, calls };
+    return { manager, app, store, workflows, calls, context };
 }
+
+test('newly saved workflow sorts first even when its metadata predates saving', async () => {
+    const { manager, context } = harness();
+    manager.meta = { workflows: { old: { lastUsed: 200, useCount: 5 } } };
+    manager.getWorkflowMeta = context.Manager.prototype.getWorkflowMeta;
+    manager.sortMode = 'time';
+    manager.syncCategories = () => {};
+    manager.renderCategories = () => {};
+    let saved = 0;
+    manager.saveMeta = () => { saved++; };
+    let tree = [{ type: 'workflow', path: 'old', name: 'old' }];
+    context.api.fetchApi = async () => ({ json: async () => tree });
+    await manager.loadWorkflows({ background: true });
+    assert.equal(manager.meta.workflows.old.lastUsed, 200);
+    // Tabs can create metadata before the workflow appears in the disk list.
+    manager.meta.workflows.new = { lastUsed: 100, useCount: 0, favorite: true };
+    tree = [...tree, { type: 'workflow', path: 'new', name: 'new' }];
+    await manager.loadWorkflows({ background: true });
+    assert.equal(manager.getFilteredWorkflows('all', '')[0].path, 'new');
+    assert.equal(manager.meta.workflows.new.lastUsed, manager.workflows[1].lastUsed);
+    assert.equal(manager.meta.workflows.new.useCount, 0);
+    assert.equal(manager.meta.workflows.new.favorite, true);
+    assert.equal(saved, 1);
+    const timestamp = manager.meta.workflows.new.lastUsed;
+    await manager.loadWorkflows({ background: true });
+    assert.equal(manager.meta.workflows.new.lastUsed, timestamp);
+    assert.equal(saved, 1);
+});
 
 test('single click awaits canvas loading and preserves edited open workflow state', async () => {
     const { manager, app, workflows } = harness();

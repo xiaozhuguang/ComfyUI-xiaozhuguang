@@ -1,4 +1,5 @@
-import { app } from "../../scripts/app.js";
+import { app } from "../../scripts/app.js";
+import { _xzgVideoRowLayout, _xzgVideoRowSize } from "./xzg_video_loader.js";
 import { api } from "../../scripts/api.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
@@ -1447,9 +1448,15 @@ app.registerExtension({
                     });
                     w.options = w.options || {};
                     w.options.serialize = false; // 按钮回调不可序列化，与「上传视频」按钮一致
-                    // 普通控件行高为 20px；LiteGraph 另加 4px，设 24 会多占一档高度。
-                    w.computeSize = (width) => [width, 20];
-                    w.draw = function (ctx, node, widget_width, y, H) {
+                    // 与加载器其他行共用布局高度，Nodes 1 收紧间距时按钮同步调整。
+                    w.computeSize = _xzgVideoRowSize;
+                    Object.defineProperty(w, "width", {
+                        configurable: true,
+                        get() { return node.size?.[0] || 0; },
+                        set(_) {},
+                    });
+                    w.draw = function (ctx, node, widget_width, y, H) {
+                        [widget_width, y, H] = _xzgVideoRowLayout(ctx, node, widget_width, y, H);
                         const pad = 16, r = 6;
                         ctx.fillStyle = "#2a2a2a";
                         ctx.beginPath();
@@ -1477,6 +1484,8 @@ app.registerExtension({
                         const hw = (node.widgets || []).find((x) => x.name === nm);
                         if (hw) {
                             // LiteGraph 会在每个 widget 高度上额外加 4px；用 -4 才能真正零占位。
+                            hw.hidden = true;
+                            hw.computeLayoutSize = () => ({ minHeight: 0, maxHeight: 0, minWidth: 0 });
                             hw.computeSize = () => [0, -4];
                             hw.draw = () => {};             // 不绘制
                         }

@@ -5626,7 +5626,9 @@ app.registerExtension({
                 node.resizable = false;
                 node.flags = node.flags || {};
                 node.flags.resizable = false;
-                if (node.onDrawBackground) {
+                // Nodes 2.0 draws the title on its DOM canvas in installTitleCanvas().
+                // Drawing it here as well makes the text appear doubled.
+                if (node.onDrawBackground && !LiteGraph.vueNodesMode) {
                     node.onDrawBackground(ctx);
                 }
                 return;
@@ -6558,6 +6560,52 @@ app.registerExtension({
 
             const DOM_PREFIX = "xz-title";
 
+            function installTitleCanvas(node) {
+                if (!node.addDOMWidget) return;
+                if (node._titleCanvas) {
+                    cancelAnimationFrame(node._titlePaintFrame);
+                    node._titlePaintFrame = requestAnimationFrame(node._paintTitle);
+                    return;
+                }
+                const surface = document.createElement("canvas");
+                surface.style.cssText = "display:block;width:100%;height:100%;pointer-events:none;";
+                const widget = node.addDOMWidget("xzg_title_canvas", "custom", surface, {
+                    serialize: false, hideOnZoom: false, margin: 0,
+                    getMinHeight: () => 1, getHeight: () => "100%"
+                });
+                widget.serialize = false;
+                widget.computeLayoutSize = () => ({ minHeight: 1, minWidth: 0 });
+                node._titleCanvas = surface;
+                const paint = () => {
+                    if (node._removed) return;
+                    const enabled = !!LiteGraph.vueNodesMode;
+                    widget.hidden = !enabled;
+                    if (enabled && surface.isConnected) {
+                        // This widget only paints the title. Let pointer events pass through
+                        // its wrapper so Nodes 2.0's node-level handlers can drag/select it.
+                        const widgetLayer = surface.closest('[data-testid="node-widgets"]');
+                        if (widgetLayer && widgetLayer.style.pointerEvents !== "none") {
+                            widgetLayer.style.pointerEvents = "none";
+                        }
+                        const [width, height] = node.size;
+                        const ratio = window.devicePixelRatio || 1;
+                        const bitmapWidth = Math.max(1, Math.ceil(width * ratio));
+                        const bitmapHeight = Math.max(1, Math.ceil(height * ratio));
+                        if (surface.width !== bitmapWidth) surface.width = bitmapWidth;
+                        if (surface.height !== bitmapHeight) surface.height = bitmapHeight;
+                        const ctx = surface.getContext("2d");
+                        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+                        ctx.clearRect(0, 0, width, height);
+                        node.onDrawBackground(ctx);
+                        attachVueDblClick(node);
+                    }
+                    node._titlePaintFrame = requestAnimationFrame(paint);
+                };
+                widget.hidden = !LiteGraph.vueNodesMode;
+                node._paintTitle = paint;
+                node._titlePaintFrame = requestAnimationFrame(paint);
+            }
+
             function hexToRgb(hex) {
                 const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
                 return result ? {
@@ -6650,12 +6698,14 @@ app.registerExtension({
                     el.id = tid;
                     document.head.appendChild(el);
                 }
-                const sels = vueSels(node.id).join(",");
+                const roots = vueSels(node.id);
+                const sels = roots.join(",");
+                const descendants = selectors => roots.flatMap(root => selectors.map(selector => `${root} ${selector}`)).join(",");
                 el.textContent =
                     `${sels}{background:transparent!important;background-color:transparent!important;border:none!important;box-shadow:none!important;border-radius:0!important;overflow:visible!important;}` +
-                    `${sels} *{background:transparent!important;background-color:transparent!important;border:none!important;box-shadow:none!important;}` +
-                    `${sels} .node-body,${sels} .litegraph-node-body,${sels} [class*='node-body'],${sels} [class*='node_body'],${sels} .litegraph-node,${sels} .node-container{background:transparent!important;background-color:transparent!important;border:none!important;box-shadow:none!important;overflow:visible!important;}` +
-                    `${sels} .node-title,${sels} .litegraph-node-title,${sels} .comfy-node-title,${sels} [class*='title'],${sels} .node-header,${sels} .litegraph-node-header,${sels} .comfy-node-header,${sels} [class*='header'],${sels} .node-type,${sels} .comfy-node-type,${sels} [class*='type'],${sels} .node-badge,${sels} .comfy-badge,${sels} [class*='badge'],${sels} .comfy-menu-button,${sels} .comfy-node-menu,${sels} .litegraph-node-type,${sels} .node-category,${sels} [class*='category'],${sels} .node-label,${sels} [class*='label']{display:none!important;opacity:0!important;height:0!important;width:0!important;overflow:hidden!important;margin:0!important;padding:0!important;}`;
+                    `${descendants(["*"])}{background:transparent!important;background-color:transparent!important;border:none!important;box-shadow:none!important;}` +
+                    `${descendants([".node-body", ".litegraph-node-body", "[class*='node-body']", "[class*='node_body']", ".litegraph-node", ".node-container"])}{background:transparent!important;background-color:transparent!important;border:none!important;box-shadow:none!important;overflow:visible!important;}` +
+                    `${descendants([".node-title", ".litegraph-node-title", ".comfy-node-title", ".node-header", ".litegraph-node-header", ".comfy-node-header", ".node-type", ".comfy-node-type", ".node-badge", ".comfy-badge", ".comfy-menu-button", ".comfy-node-menu", ".litegraph-node-type", ".node-category", ".node-label"])}{display:none!important;opacity:0!important;height:0!important;width:0!important;overflow:hidden!important;margin:0!important;padding:0!important;}`;
                 for (const sel of vueSels(node.id)) {
                     const dom = document.querySelector(sel);
                     if (!dom) continue;
@@ -6672,7 +6722,7 @@ app.registerExtension({
                         c.style.setProperty("box-shadow", "none", "important");
                         c.style.setProperty("overflow", "visible", "important");
                     });
-                    dom.querySelectorAll(".node-title,.litegraph-node-title,.comfy-node-title,[class*='title'],.node-header,.litegraph-node-header,.comfy-node-header,[class*='header'],.node-type,.comfy-node-type,.litegraph-node-type,[class*='type'],.node-badge,.comfy-badge,[class*='badge'],.comfy-menu-button,.comfy-node-menu,.node-category,[class*='category'],.node-label,[class*='label']").forEach(c => {
+                    dom.querySelectorAll(".node-title,.litegraph-node-title,.comfy-node-title,.node-header,.litegraph-node-header,.comfy-node-header,.node-type,.comfy-node-type,.litegraph-node-type,.node-badge,.comfy-badge,.comfy-menu-button,.comfy-node-menu,.node-category,.node-label").forEach(c => {
                         c.style.display = "none";
                         c.style.opacity = "0";
                         c.style.height = "0";
@@ -6698,6 +6748,7 @@ app.registerExtension({
                 const cs = this.computeSize();
                 this.size[0] = cs[0];
                 this.size[1] = cs[1];
+                installTitleCanvas(this);
                 let tries = 0;
                 const _tick = () => {
                     if (this._removed) return;
@@ -6750,6 +6801,8 @@ app.registerExtension({
             };
 
             nodeType.prototype.onAdded = function () {
+                this._removed = false;
+                installTitleCanvas(this);
                 this.properties = this.properties || { ...DEFAULT_PROPS };
                 this.color = "#fff0";
                 this.bgcolor = "transparent";
@@ -6769,6 +6822,7 @@ app.registerExtension({
 
             nodeType.prototype.onRemoved = function () {
                 this._removed = true;
+                cancelAnimationFrame(this._titlePaintFrame);
                 if (this.editTextarea) {
                     this.editTextarea.remove();
                     this.editTextarea = null;
@@ -7076,6 +7130,7 @@ app.registerExtension({
 
             nodeType.prototype.onDblClick = function () {
                 if (this.isEditing) return true;
+                createTitleEditor(this);
                 return true;
             };
 
@@ -7096,6 +7151,18 @@ app.registerExtension({
             };
 
             function getNodeViewportRect(node) {
+                if (LiteGraph.vueNodesMode) {
+                    for (const sel of vueSels(node.id)) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        const rect = el.getBoundingClientRect();
+                        const nodeWidth = Number(node.size?.[0]) || 0;
+                        const scale = nodeWidth > 0 ? rect.width / nodeWidth : 1;
+                        if (rect.width > 0 && rect.height > 0) {
+                            return { left: rect.left, top: rect.top, scale };
+                        }
+                    }
+                }
                 const cv = window.app?.canvas || LGraphCanvas.active_canvas;
                 if (!cv?.canvas || !cv?.ds) return null;
                 const rect = cv.canvas.getBoundingClientRect();
@@ -7108,7 +7175,8 @@ app.registerExtension({
             }
 
             function attachVueDblClick(node) {
-                if (node._vueDblClickBound) return;
+                if (node._vueDblClickBound?.el.isConnected) return;
+                if (node._vueDblClickBound) detachVueDblClick(node);
                 const handler = (e) => {
                     if (node._removed) return;
                     node._dblClickHandled = true;

@@ -148,6 +148,21 @@ function rrect(ctx, x, y, w, h, r) {
 // ── updateVis ────────────────────────────────
 function updateVis(n) {
     n.setDirtyCanvas(true, true);
+    const widget = n._xzgUs?.uiWidget;
+    if (widget && globalThis.LiteGraph?.vueNodesMode) {
+        widget.computedHeight = sliderVueLayout(n.properties).height;
+    }
+    widget?.triggerDraw?.();
+}
+
+function sliderVueLayout(p) {
+    const halfFont = (Number(p.fontSize) || 14) / 2;
+    const valueY = 12 + (Number(p.valueOffset) || 0);
+    const thumbY = 12 + (Number(p.trackHeight) || 4) / 2;
+    const thumbRadius = (Number(p.thumbSize) || 20) / 2;
+    const top = Math.max(0, Math.ceil(halfFont + 2 - valueY), Math.ceil(thumbRadius + 2 - thumbY));
+    const bottom = Math.max(22, valueY + halfFont + 2, thumbY + thumbRadius + 2);
+    return { top, height: Math.ceil(top + bottom) };
 }
 
 // ── syncWidgetType ───────────────────────────
@@ -732,6 +747,66 @@ function showSettings(node) {
     }, 0);
 }
 
+// Nodes 2 的独立控件画布不走 LiteGraph 的完整 mouse 拖动链。
+function attachSliderCanvasPointer(node, wrapper, track) {
+    const g = node._xzgUs;
+    if (g._pointerWrapper === wrapper) return;
+    cleanupDrag(node);
+    g._domEvents?.abort();
+    g._pointerWrapper = wrapper;
+    g._domEvents = new AbortController();
+    wrapper.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        cleanupDrag(node);
+        const events = new AbortController();
+        const pointerId = event.pointerId;
+        g._dragging = true;
+        const update = (source) => {
+            const rect = wrapper.getBoundingClientRect();
+            if (!rect.width || !track.trackW) return;
+            const localX = (source.clientX - rect.left) * track.drawWidth / rect.width;
+            const ratio = clamp((localX - track.trackLeft) / track.trackW, 0, 1);
+            const p = node.properties;
+            let value;
+            if (p.useSnaps && p.snaps?.length) {
+                value = p.snaps[Math.round(ratio * (p.snaps.length - 1))];
+            } else {
+                value = calcValue(p.sliderMin + ratio * (p.sliderMax - p.sliderMin),
+                    p.sliderMin, p.sliderMax, p.sliderStep, p.sliderType === "int");
+            }
+            if (g.widget) g.widget.value = value;
+            updateVis(node);
+        };
+        const stop = () => {
+            events.abort();
+            try { wrapper.releasePointerCapture?.(pointerId); } catch (_) {}
+        };
+        g._docCleanup = stop;
+        const options = { capture: true, signal: events.signal };
+        window.addEventListener("pointermove", (move) => {
+            if (move.pointerId !== pointerId) return;
+            move.preventDefault();
+            move.stopImmediatePropagation();
+            update(move);
+        }, options);
+        const finish = (up) => {
+            if (up.pointerId !== pointerId) return;
+            up.preventDefault();
+            up.stopImmediatePropagation();
+            if (up.type === "pointerup") update(up);
+            cleanupDrag(node);
+            updateVis(node);
+            node.graph?.change?.();
+        };
+        window.addEventListener("pointerup", finish, options);
+        window.addEventListener("pointercancel", finish, options);
+        try { wrapper.setPointerCapture?.(pointerId); } catch (_) {}
+        update(event);
+    }, { capture: true, signal: g._domEvents.signal });
+}
+
 // ── setupSlider ──────────────────────────────
 function setupSlider(node) {
     const D = {
@@ -805,10 +880,33 @@ function setupSlider(node) {
             const isInt = p.sliderType === "int";
             const color = p.trackColor;
 
+            const canvas = ctx.canvas;
+            const wrapper = canvas?.parentElement;
+            if (canvas && canvas !== app.canvas?.canvas && wrapper
+                && canvas.classList?.contains("cursor-crosshair")) {
+                // 默认数值在轨道上方 20px；独立画布不能绘制负坐标，
+                // 所以整体下移轨道，并把文字、旋钮所需高度算进控件布局。
+                const layout = sliderVueLayout(p);
+                W = wrapper.clientWidth || W;
+                y = layout.top;
+                canvas.style.width = W + "px";
+                canvas.style.height = layout.height + "px";
+                if (canvas.width !== W * 2 || canvas.height !== layout.height * 2) {
+                    canvas.width = W * 2;
+                    canvas.height = layout.height * 2;
+                }
+                ctx.setTransform(2, 0, 0, 2, 0, 0);
+            }
+
             const ml = 6;
             const mr = 8;
             ds.trackLeft = ml;
             ds.trackW    = W - ml - mr;
+            ds.drawWidth = W;
+            if (canvas && canvas !== app.canvas?.canvas && canvas.parentElement
+                && canvas.classList?.contains("cursor-crosshair")) {
+                attachSliderCanvasPointer(node, canvas.parentElement, ds);
+            }
 
             /* ── 轨道 ── */
             const trackY = y + 12;
@@ -1032,9 +1130,16 @@ function setupSlider(node) {
         },
 
         computeSize(width) {
-            return [width, 22];
+            return [width, globalThis.LiteGraph?.vueNodesMode ? sliderVueLayout(node.properties).height : 22];
         },
     });
+    node._xzgUs.uiWidget = _xzgUsUiWidget;
+    const previousRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        cleanupDrag(this);
+        this._xzgUs?._domEvents?.abort();
+        return previousRemoved?.apply(this, arguments);
+    };
     // 修复（同「视频/音频」栏）：ComfyUI 会把 widget.width 写成面板侧行宽度，
     // 一旦大于节点实际宽度，滑条轨道/交互命中区就会溢出节点、且随属性面板开/关变化。
     // 这里把 width 改为只读访问器，始终跟随节点实际宽度，忽略污染性写入。

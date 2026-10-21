@@ -114,6 +114,206 @@ app.registerExtension({
             }
         };
 
+        // Nodes 2.0 skips LiteGraph's canvas background rendering for Vue nodes.
+        // Keep the existing renderer, but host it in a DOM canvas widget on that surface.
+        const installBigDisplayDOMCanvas = (node) => {
+            if (typeof node?.addDOMWidget !== "function") return;
+
+            const root = document.createElement("div");
+            root.style.cssText = "position:relative;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;pointer-events:none;";
+            const canvas = document.createElement("canvas");
+            canvas.style.cssText = "position:absolute;inset:0;display:block;width:100%;height:100%;min-width:0;min-height:0;pointer-events:auto;touch-action:none;";
+            root.appendChild(canvas);
+            const ctx = canvas.getContext("2d");
+            let disposed = false;
+            let paintPending = false;
+            let forwardedPointerId = null;
+            let forwardedNodeElement = null;
+
+            const dispatchNodePointer = (type, source, buttons = source.buttons) => {
+                if (!forwardedNodeElement?.isConnected) return false;
+                const EventCtor = window.PointerEvent || window.MouseEvent;
+                const forwarded = new EventCtor(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: true,
+                    view: window,
+                    clientX: source.clientX,
+                    clientY: source.clientY,
+                    screenX: source.screenX,
+                    screenY: source.screenY,
+                    ctrlKey: source.ctrlKey,
+                    altKey: source.altKey,
+                    shiftKey: source.shiftKey,
+                    metaKey: source.metaKey,
+                    button: type === "pointermove" ? -1 : 0,
+                    buttons,
+                    pointerId: source.pointerId || 1,
+                    pointerType: source.pointerType || "mouse",
+                    isPrimary: source.isPrimary !== false,
+                });
+                Object.defineProperty(forwarded, "_xzgBigDisplayForwarded", { value: true });
+                forwardedNodeElement.dispatchEvent(forwarded);
+                return true;
+            };
+
+            const stopPointerForwarding = () => {
+                forwardedPointerId = null;
+                forwardedNodeElement = null;
+                window.removeEventListener("pointermove", onForwardPointerMove, true);
+                window.removeEventListener("pointerup", onForwardPointerUp, true);
+                window.removeEventListener("pointercancel", onForwardPointerUp, true);
+            };
+            const onForwardPointerMove = (event) => {
+                if (event._xzgBigDisplayForwarded || event.pointerId !== forwardedPointerId) return;
+                dispatchNodePointer("pointermove", event, event.buttons);
+                event.preventDefault();
+                event.stopPropagation();
+            };
+            const onForwardPointerUp = (event) => {
+                if (event._xzgBigDisplayForwarded || event.pointerId !== forwardedPointerId) return;
+                dispatchNodePointer(event.type === "pointercancel" ? "pointercancel" : "pointerup", event, 0);
+                event.preventDefault();
+                event.stopPropagation();
+                stopPointerForwarding();
+            };
+
+            const paint = () => {
+                paintPending = false;
+                if (disposed || !ctx) return;
+                const width = root.clientWidth;
+                const height = root.clientHeight;
+                if (!width || !height) return;
+
+                const dpr = Math.max(1, Number(window.devicePixelRatio) || 1);
+                const bitmapWidth = Math.max(1, Math.round(width * dpr));
+                const bitmapHeight = Math.max(1, Math.round(height * dpr));
+                if (canvas.width !== bitmapWidth || canvas.height !== bitmapHeight) {
+                    canvas.width = bitmapWidth;
+                    canvas.height = bitmapHeight;
+                }
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.clearRect(0, 0, width, height);
+
+                const draw = nodeType.prototype.onDrawBackground;
+                if (typeof draw !== "function") return;
+                // The original canvas renderer expects node-local dimensions and input
+                // positions. In this widget the input slots live outside the content
+                // surface, so expose the measured DOM surface as the drawing bounds.
+                const renderNode = new Proxy(node, {
+                    get(target, key, receiver) {
+                        if (key === "size") return [width, height];
+                        if (key === "inputs") return [];
+                        return Reflect.get(target, key, receiver);
+                    },
+                });
+                try { draw.call(renderNode, ctx); }
+                catch (error) { console.warn("[小珠光展示任意] Nodes 2.0 DOM 绘制失败:", error); }
+            };
+            const schedulePaint = () => {
+                if (disposed || paintPending) return;
+                paintPending = true;
+                requestAnimationFrame(paint);
+            };
+
+            const observer = new ResizeObserver(paint);
+            observer.observe(root);
+            const widget = node.addDOMWidget("xzg_big_display_canvas", "custom", root, {
+                hideOnZoom: false,
+                margin: 0,
+                getMinHeight: () => 1,
+                getHeight: () => "100%",
+            });
+            widget.hidden = !globalThis.LiteGraph?.vueNodesMode;
+            widget.serialize = false;
+            try { widget.options.serialize = false; } catch (_) {}
+            try { widget.computeLayoutSize = () => ({ minHeight: 1, minWidth: 0 }); } catch (_) {}
+            widget.triggerDraw = schedulePaint;
+            node._xzgBigDisplayUI = {
+                paint: schedulePaint,
+                refresh: schedulePaint,
+                canvas,
+                root,
+                setMode(enabled) {
+                    widget.hidden = !enabled;
+                    if (enabled) schedulePaint();
+                    node.setDirtyCanvas?.(true, true);
+                    app.graph?.setDirtyCanvas(true, true);
+                },
+            };
+
+            const selectNode = (event) => {
+                const graphCanvas = app?.canvas;
+                if (!graphCanvas || !node) return;
+                const additive = !!(event.shiftKey || event.ctrlKey || event.metaKey);
+                let selected = [];
+                if (additive) {
+                    try {
+                        const items = graphCanvas.selectedItems;
+                        if (items && typeof items[Symbol.iterator] === "function") selected = [...items];
+                        else if (graphCanvas.selected_nodes) selected = Object.values(graphCanvas.selected_nodes);
+                    } catch (_) {}
+                }
+                if (!selected.some((item) => String(item?.id) === String(node.id))) selected.push(node);
+                try {
+                    if (typeof graphCanvas.selectItems === "function") graphCanvas.selectItems(selected);
+                    else if ("selected_nodes" in graphCanvas) {
+                        graphCanvas.selected_nodes = Object.fromEntries(selected
+                            .filter((item) => item?.id != null)
+                            .map((item) => [String(item.id), item]));
+                    } else node.selected = true;
+                    graphCanvas.setDirty?.(true, true);
+                    schedulePaint();
+                } catch (error) {
+                    console.debug("[小珠光展示任意] 选择节点失败:", error);
+                }
+            };
+            const onCanvasPointerDown = (event) => {
+                if (event.button !== 0) return;
+                selectNode(event);
+                if (!globalThis.LiteGraph?.vueNodesMode) return;
+                const nodeElement = [...document.querySelectorAll("[data-node-id]")]
+                    .find((element) => String(element.getAttribute("data-node-id")) === String(node.id));
+                if (!nodeElement) return;
+                forwardedNodeElement = nodeElement;
+                forwardedPointerId = event.pointerId || 1;
+                if (!dispatchNodePointer("pointerdown", event, 1)) {
+                    stopPointerForwarding();
+                    return;
+                }
+                window.addEventListener("pointermove", onForwardPointerMove, true);
+                window.addEventListener("pointerup", onForwardPointerUp, true);
+                window.addEventListener("pointercancel", onForwardPointerUp, true);
+                event.preventDefault();
+                event.stopPropagation();
+            };
+            canvas.addEventListener("pointerdown", onCanvasPointerDown);
+
+            // Canvas invalidation still happens for selection, input execution, scrolling
+            // and style changes, but Nodes 2.0 does not repaint onDrawBackground.
+            const previousSetDirtyCanvas = node.setDirtyCanvas;
+            node.setDirtyCanvas = function () {
+                const result = previousSetDirtyCanvas?.apply(this, arguments);
+                schedulePaint();
+                return result;
+            };
+
+            const previousRemoved = node.onRemoved;
+            node.onRemoved = function () {
+                disposed = true;
+                try { observer.disconnect(); } catch (_) {}
+                stopPointerForwarding();
+                canvas.removeEventListener("pointerdown", onCanvasPointerDown);
+                return previousRemoved?.apply(this, arguments);
+            };
+
+            if (globalThis.LiteGraph?.vueNodesMode) {
+                requestAnimationFrame(paint);
+                setTimeout(paint, 0);
+                setTimeout(paint, 120);
+            }
+        };
+
         // 右键菜单：配置大字样式（getExtraMenuOptions 是 ComfyUI/LiteGraph 标准菜单钩子）
         {
             const origGetExtra = nodeType.prototype.getExtraMenuOptions;
@@ -351,17 +551,27 @@ app.registerExtension({
                     inputs.maxFontSize.value = cfg.maxFontSize;
                 }
                 node._cfg = cfg;
+                node.properties = node.properties || {};
+                node.properties.xzgBigDisplayCfg = { ...cfg };
                 inputs.minFontSize.disabled = !cfg.autoFit;
                 inputs.maxFontSize.disabled = !cfg.autoFit;
-                // 标记工作流为已修改，保存工作流时随该节点持久化
+                // 标记画布与工作流均已修改：前者立即重绘，后者让配置进入保存/自动保存流程。
                 app.graph?.setDirtyCanvas(true, true);
+                app.graph?.change?.();
                 node.setDirtyCanvas?.(true, true);
+                // Nodes 2.0 的 DOM 画布不随 LiteGraph 背景画布自动重绘。
+                node._xzgBigDisplayUI?.refresh?.();
             };
 
             for (const r of rows) {
                 const inp = inputs[r.key];
                 if (inp) {
-                    inp.addEventListener(r.type === "checkbox" ? "change" : "input", apply);
+                    inp.addEventListener(r.type === "checkbox" ? "change" : "input", () => {
+                        // 编辑“固定字号”时自动退出自适应模式，避免字号字段可编辑
+                        // 但绘制仍被 min/max 自适应范围覆盖，造成设置看起来无效。
+                        if (r.key === "fontSize" && inputs.autoFit.checked) inputs.autoFit.checked = false;
+                        apply();
+                    });
                 }
             }
             inputs.minFontSize.disabled = !cfg.autoFit;
@@ -414,33 +624,42 @@ app.registerExtension({
             this._cfg = { ...DEFAULT_CFG };
             this._texts = [];
             this.properties = this.properties || {};
+            this.properties.xzgBigDisplayCfg = { ...this._cfg };
             this.color = "#1a1a1a";
             this.bgcolor = "#1a1a1a";
             this.size = [220, 120];   // 仅初始大小，之后尺寸完全由用户拖动控制，不做自适应
             hideNodeHeader(this);
             suppressNodeBadges(this);
             hideNodeInputDecoration(this);
+            installBigDisplayDOMCanvas(this);
             return r;
         };
 
         const origConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () {
+        nodeType.prototype.onConfigure = function (info) {
             const r = origConfigure?.apply(this, arguments);
             hideNodeHeader(this);
             hideNodeInputDecoration(this);
-            // 从恢复的工作流读取该节点的配置与已显示文本
+            // Nodes 2.0 的属性序列化更稳定；保留 widgets_values 作为旧工作流兼容回退。
             const wv = this.widgets_values;
             try {
+                const savedCfg = info?.properties?.xzgBigDisplayCfg || this.properties?.xzgBigDisplayCfg;
+                if (savedCfg && typeof savedCfg === "object") {
+                    this._cfg = { ...DEFAULT_CFG, ...savedCfg };
+                }
                 if (wv && typeof wv === "object" && wv.length > 0) {
                     const first = wv.find((x) => x && (x.texts || x.cfg));
                     if (first) {
                         if (Array.isArray(first.texts)) this._texts = first.texts;
-                        if (first.cfg && typeof first.cfg === "object")
+                        if (!savedCfg && first.cfg && typeof first.cfg === "object")
                             this._cfg = { ...DEFAULT_CFG, ...first.cfg };
                     }
                 }
             } catch (e) {}
             if (!this._cfg) this._cfg = { ...DEFAULT_CFG };
+            this.properties = this.properties || {};
+            this.properties.xzgBigDisplayCfg = { ...this._cfg };
+            this._xzgBigDisplayUI?.refresh?.();
             return r;
         };
 
@@ -448,6 +667,7 @@ app.registerExtension({
         nodeType.prototype.onSerialize = function (o) {
             const r = origSerialize?.apply(this, arguments);
             try {
+                o.properties = { ...(o.properties || {}), xzgBigDisplayCfg: { ...this._cfg } };
                 if (!o.widgets_values) o.widgets_values = [];
                 o.widgets_values.push({ texts: this._texts || [], cfg: { ...this._cfg } });
             } catch (e) {}
@@ -463,6 +683,7 @@ app.registerExtension({
             this._xzgBigDisplayScrollTop = 0;
             this._xzgBigDisplayScrollTops = [];
             this.setDirtyCanvas?.(true, true);
+            this._xzgBigDisplayUI?.refresh?.();
             return r;
         };
 
@@ -955,6 +1176,18 @@ app.registerExtension({
     },
 
     async setup() {
+        const settings = app.ui?.settings;
+        if (settings?.addEventListener && !app._xzgBigDisplayVueModeListener) {
+            app._xzgBigDisplayVueModeListener = true;
+            settings.addEventListener("Comfy.VueNodes.Enabled.change", () => {
+                requestAnimationFrame(() => {
+                    const enabled = settings.getSettingValue?.("Comfy.VueNodes.Enabled") ?? globalThis.LiteGraph?.vueNodesMode;
+                    for (const node of app.graph?._nodes || []) {
+                        if (node.type === _NODE_TYPE) node._xzgBigDisplayUI?.setMode?.(!!enabled);
+                    }
+                });
+            });
+        }
         // 右键菜单白名单：只保留 复制文本 / 收藏到提示词库 / 样式设置 / 对所选输出节点进行排队 / 收藏 / 快速连线，
         // 隐藏其它（执行框内节点、修复重建、删除、添加获取/设置节点、小珠光主题等）。
         // ComfyUI 0.38 的最终菜单由 getNodeMenuOptionsWithExtensions 组装：原 getNodeMenuOptions 结果
