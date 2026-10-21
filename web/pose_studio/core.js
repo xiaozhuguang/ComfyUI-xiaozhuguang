@@ -1647,16 +1647,17 @@ export class PoseViewerCore {
             e.preventDefault();
             e.stopPropagation(); // capture before ComfyUI graph zoom/pan
             e.stopImmediatePropagation();
-            if (e.shiftKey && !e.ctrlKey) return;
+            if (e.shiftKey && !e.ctrlKey && !e.altKey) return;
             const delta = e.deltaY;
             const absDelta = Math.abs(delta);
-            if (e.ctrlKey) {
+            if (e.ctrlKey || e.altKey) {
                 if (this._noCharacterSelection) return;
                 if (this._mannequinVisible === false || !this.skinnedMesh) return;
                 this.recordState();
-                // Character sizing uses a finer wheel step than viewport zoom:
-                // a typical 100-unit mouse-wheel tick changes size by at most 2%.
-                const factor = 1.0 - Math.sign(delta) * Math.min(0.0005 * absDelta, 0.02);
+                // Ctrl provides quick sizing; Alt takes precedence for fine sizing.
+                const rate = e.altKey ? 0.00005 : 0.0008;
+                const maxStep = e.altKey ? 0.005 : 0.06;
+                const factor = 1.0 - Math.sign(delta) * Math.min(rate * absDelta, maxStep);
                 const group = this.createCharacterControlGroup?.();
                 if (group) {
                     const groupFactor = Math.max(...group.items.map(item => 0.1 / item.zoom), Math.min(factor, ...group.items.map(item => 7 / item.zoom)));
@@ -2094,26 +2095,38 @@ export class PoseViewerCore {
         axisGizmo.style.pointerEvents = "none";
         this._jointLockPointerDown = event => {
             if (event.button !== 0) return;
-            this._jointLockPress = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+            if (event.target !== this.canvas && !axisGizmo.contains(event.target)) {
+                this._jointLockClick = null;
+                return;
+            }
+            const bone = this._getLockableBoneAtPointer(event);
+            this._jointLockPress = {
+                id: event.pointerId, x: event.clientX, y: event.clientY, moved: false,
+                bone, characterHit: !bone && !!this.pickCharacterAtPointer(event),
+            };
         };
         this._jointLockPointerMove = event => {
             const press = this._jointLockPress;
-            if (press?.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 4) press.moved = true;
+            if (press?.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) press.moved = true;
         };
         this._jointLockPointerUp = event => {
             const press = this._jointLockPress;
             if (!press || press.id !== event.pointerId) return;
             this._jointLockPress = null;
-            if (event.button !== 0 || press.moved) return;
-            const bone = this._getLockableBoneAtPointer(event);
-            if (!bone && this.pickCharacterAtPointer(event)) {
+            if (event.type === "pointercancel" || event.button !== 0 || press.moved
+                || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) {
+                this._jointLockClick = null;
+                return;
+            }
+            const bone = press.bone;
+            if (press.characterHit) {
                 this._jointLockClick = null;
                 return;
             }
             const previous = this._jointLockClick;
             const now = performance.now();
             const isDouble = previous && previous.boneName === (bone?.name || null)
-                && now - previous.time <= 420
+                && now - previous.time <= 500
                 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 26;
             if (!isDouble) {
                 this._jointLockClick = { boneName: bone?.name || null, time: now, x: event.clientX, y: event.clientY };
@@ -3686,6 +3699,10 @@ export class PoseViewerCore {
 
     _getLockableBoneAtPointer(event) {
         const rect = this.canvas?.getBoundingClientRect?.();
+        // Surface hover has a wider activation region than the marker dot.
+        // Honor the yellow joint while still rejecting stale hover on empty space.
+        const hovered = this.boneList?.find(bone => bone.name === this.hoveredBoneName);
+        if (hovered && this.pickCharacterAtPointer(event)?.active) return hovered;
         const selectedBone = this.selectedBone;
         let bone = null;
         if (selectedBone && rect) {

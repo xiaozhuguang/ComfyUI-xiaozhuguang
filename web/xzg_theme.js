@@ -109,6 +109,8 @@ window.XZGThemeManager = {
     _runningNodeDOMElements: new Set(),
     _runningNodeDOMKey: null,
     _runningNodeDOMGraph: null,
+    // 节点高亮动画主动驱动循环（独立 rAF 每帧标脏，防止被动链被渲染调度合并导致跳帧）
+    _nhAnimRAF: null,
     nodeHighlightColor: '#22FF22',
     // 多色动画类型（flow 流动 / 连线效果移植系列）+ 流速（1-100，50=默认速度，按比例换算）
     nodeHighlightSpeed: 50,
@@ -2669,12 +2671,9 @@ window.XZGThemeManager = {
                 } finally {
                     ctx.restore();
                 }
-                // 自持重绘：多色 / 星芒 / 连线效果移植 均需每帧驱动，与 ComfyUI 渲染循环同步
-                if ((self.nodeHighlightColor || '').split(',').filter(Boolean).length > 1
-                    || anim !== 'flow') {
-                    if (app.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
-                    else if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
-                }
+                // 主动驱动：独立 rAF 标脏（幂等），带半帧率与超时自停（见方法注释）
+                self._nhAnimLastActive = performance.now();
+                self._ensureNodeHighlightAnimLoop();
                 // 静态发光（无动画）：仅进度条场景需要保底重绘，不做每帧自持重绘
                 // 执行进度条保底重绘：在 restore 之后以完全不透明再画一次，
                 // 保证视频加载器等耗时节点的加载进度条始终可见。
@@ -3804,6 +3803,41 @@ window.XZGThemeManager = {
         if (this.linkAnimFrameId) {
             cancelAnimationFrame(this.linkAnimFrameId);
             this.linkAnimFrameId = null;
+        }
+    },
+
+    // 节点高亮动画主动驱动：独立 rAF 标脏（幂等启动），条件消失自停；
+    // 替代旧「绘制时被动 setDirtyCanvas」链——被动链受宿主渲染调度合并影响，帧间隔不均导致跳帧。
+    // 性能策略：①半帧率标脏（每 2 帧，重绘成本减半，30fps 动画肉眼顺滑）；
+    // ②2 秒兜底超时——若持续无实际高亮绘制（渲染端未刷新 _nhAnimLastActive），
+    // 说明 _runningNodeId 残留，自停防止空转全量重绘拖垮帧率。
+    _ensureNodeHighlightAnimLoop() {
+        if (this._nhAnimRAF) return;
+        this._nhAnimLastActive = performance.now();
+        let frame = 0;
+        const loop = () => {
+            this._nhAnimRAF = null;
+            frame++;
+            const multi = (this.nodeHighlightColor || '').split(',').filter(Boolean).length > 1;
+            const anim = this.nodeHighlightColorAnim || 'flow';
+            const needAnim = this.nodeHighlightActive && this._runningNodeId != null && (multi || anim !== 'flow');
+            if (!needAnim) return;
+            if (performance.now() - (this._nhAnimLastActive || 0) > 2000) return;
+            if (frame % 2 === 0) {
+                try {
+                    if (app.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+                    else if (app.canvas?.setDirty) app.canvas.setDirty(true, true);
+                } catch (_) {}
+            }
+            this._nhAnimRAF = requestAnimationFrame(loop);
+        };
+        this._nhAnimRAF = requestAnimationFrame(loop);
+    },
+
+    _stopNodeHighlightAnimLoop() {
+        if (this._nhAnimRAF) {
+            cancelAnimationFrame(this._nhAnimRAF);
+            this._nhAnimRAF = null;
         }
     },
 

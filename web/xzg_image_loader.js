@@ -6468,7 +6468,7 @@ function createImgBatchUI(node) {
                 poseImageFile = new File([blob], filename, { type: blob.type || "image/png" });
             }
             if (!poseStudio) {
-                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261020.empty-scene-confirm7");
+                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261021.empty-confirm10");
                 if (poseStudioRemoved) return;
                 // Keep editor state in properties, without adding widgets that
                 // would shift the loader's existing serialized widget values.
@@ -6507,6 +6507,7 @@ function createImgBatchUI(node) {
                             redraw(true);
                             return;
                         }
+                        if (!poseStudio?.characters?.length && !capture) return;
                         const response = await fetch(capture);
                         if (!response.ok) throw new Error("无法读取姿势图片。");
                         const file = new File([await response.blob()], `xzg_pose_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`, { type: "image/png" });

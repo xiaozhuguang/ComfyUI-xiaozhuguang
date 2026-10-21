@@ -16,7 +16,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=20261020.capture-target1";
+} from "./pose_studio/core.js?v=20261021.character-zoom3";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { installCustomSelects } from "./vnccs_pose_shared/custom_select.mjs";
 import { observePoseStudioI18n, translatePoseStudioSubtree } from "./pose_studio/i18n.mjs?v=20261017.2";
@@ -4018,6 +4018,15 @@ class PoseStudioWidget {
                     throw new Error(this._poseDataRestoreError || "姿势仍在恢复，请稍后重试。");
                 }
                 const hasCharacters = !!this.characters?.length && !!this.getActiveCharacter();
+                const hasBackground = !!this.exportParams?.background_url || this.viewer?.hasReferenceImage?.() === true;
+                if (!hasCharacters && !hasBackground) {
+                    this.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+                    // Let the image loader restore an associated original, without
+                    // rendering or uploading an empty black scene.
+                    await this.host?.onConfirm?.(null);
+                    this.closeFullscreen({ sync: false });
+                    return;
+                }
                 if (!this.viewer?.isInitialized() && (hasCharacters || !this.viewer?.initialized)) {
                     throw new Error("姿势场景尚未加载完成。");
                 }
@@ -4556,7 +4565,8 @@ class PoseStudioWidget {
             ["人物控制：", [
                 "Ctrl＋左键平移人物",
                 "Ctrl＋右键自由旋转人物，以中心白点为轴心",
-                "Ctrl＋鼠标滚轮缩放人物",
+                "Ctrl＋鼠标滚轮快速缩放人物",
+                "Alt＋鼠标滚轮精细缩放人物",
                 "单击关节选择，拖动关节圆点调整姿势",
                 "双击关节锁定（红锁），双击空白解锁",
             ]],
@@ -4932,10 +4942,13 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 action.catch(error => console.error("Failed to select clicked character:", error));
             },
             onCharacterSelectionClear: () => {
-                if (this._switchingCharacter) return;
-                this._selectedCharacterIds = new Set();
+                if (this._switchingCharacter || this._hydratingCharacterScene) return;
+                const active = this.getActiveCharacter();
+                this._selectedCharacterIds = new Set(active ? [active.id] : []);
+                this.viewer?.deselectBone?.({ source: "external" });
                 this.viewer?.transform?.detach();
                 this.renderCharactersUI();
+                this.viewer?.requestRender?.();
             },
             onCharacterPoseChange: () => {
                 if (this._switchingCharacter || this._hydratingCharacterScene) return;
@@ -7631,7 +7644,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             <div class="vnccs-ps-library-modal-header">
                 <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
                 <div class="vnccs-ps-library-header-actions">
-                    <a class="vnccs-ps-btn primary vnccs-ps-library-download" href="https://pan.quark.cn/s/9a332350f6fc" target="_blank" rel="noopener noreferrer" style="white-space:nowrap;text-decoration:none">${xzgTh("下载姿势库", "Download Pose Library")}</a>
+                    <a class="vnccs-ps-btn primary vnccs-ps-library-download" href="https://pan.quark.cn/s/c64dc2e420b8" target="_blank" rel="noopener noreferrer" style="white-space:nowrap;text-decoration:none">${xzgTh("下载姿势库", "Download Pose Library")}</a>
                     <button class="vnccs-ps-btn primary vnccs-ps-library-transfer" style="white-space:nowrap">${xzgTh("导入／导出姿势库", "Import / Export Pose Library")}</button>
                 </div>
                 <button class="vnccs-ps-btn primary vnccs-ps-library-apply-selected" disabled>${xzgTh("应用姿势", "Apply Pose")}</button>
@@ -9510,6 +9523,17 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         this.syncToNode(true);
     }
 
+    restoreImportedCharacterSelection() {
+        const active = this.getActiveCharacter();
+        if (!active) return;
+        this._selectedCharacterIds = new Set([active.id]);
+        this._temporarilyHiddenCharacters.delete(active.id);
+        this.viewer?.resetJointSelectionLock?.();
+        this.updateCharacterScene({ poseIndex: this.activeTab });
+        this.renderCharactersUI();
+        this.viewer?.requestRender?.();
+    }
+
     async loadFromLibrary(poseOrName) {
         const token = this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         const characterId = this.activeCharacterId;
@@ -9569,6 +9593,8 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
                 this.updateRotationSliders();
                 this.commitViewerPoseToCurrentEditor();
             }
+            if (this._disposed || token !== this._libraryLoadToken) return;
+            this.restoreImportedCharacterSelection();
         } catch (err) {
             if (this._disposed || token !== this._libraryLoadToken) return;
             console.error("Failed to load pose:", err);
@@ -9576,7 +9602,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
     }
     showMessage(text, isError = false) {
-        const modelDownloadUrl = "https://pan.quark.cn/s/9a332350f6fc";
+        const modelDownloadUrl = "https://pan.quark.cn/s/c64dc2e420b8";
         const missingModel = String(text).includes(modelDownloadUrl);
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
@@ -11119,6 +11145,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             this.characters = normalizedScene.characters;
             if (!this.initialCharacterTransform) this.getInitialCharacterTransform();
             this.activeCharacterId = normalizedScene.activeCharacterId;
+            this._selectedCharacterIds = new Set(this.activeCharacterId ? [this.activeCharacterId] : []);
             const restoredActiveCharacter = this.getActiveCharacter();
             if (restoredActiveCharacter) {
                 this.meshParams = { ...this.meshParams, ...restoredActiveCharacter.mesh };

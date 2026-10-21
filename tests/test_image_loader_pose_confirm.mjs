@@ -53,7 +53,7 @@ for (const options of [{ ready: false }, { restoreError: 'bad saved scene' }, { 
 }
 const empty = setup({ ready: false });
 empty.studio.characters = [];
-empty.studio.exportParams = { view_width: 1088, view_height: 1920 };
+empty.studio.exportParams = { view_width: 1088, view_height: 1920, background_url: 'background.png' };
 empty.studio.applyCameraToViewer = () => {};
 Object.assign(empty.studio.viewer, {
     initialized: true,
@@ -68,4 +68,11 @@ Object.assign(empty.studio.viewer, {
 });
 await empty.click();
 assert.deepEqual(empty.calls, ['capture', 'clear-passive', 'hide-model', 'empty-scene-capture', 'background-only-image', 'close']);
+const blank = setup({ ready: false });
+blank.studio.characters = [];
+blank.studio.exportParams = {};
+blank.studio.poseCaptures = ['stale-character-image'];
+blank.studio.viewer.capture = () => { throw Error('Empty scenes must never render an image'); };
+await blank.click();
+assert.deepEqual(blank.calls, ['capture', null, 'close']);
 console.log('Pose confirm regression checks passed, including replacing the image after deleting every character.');

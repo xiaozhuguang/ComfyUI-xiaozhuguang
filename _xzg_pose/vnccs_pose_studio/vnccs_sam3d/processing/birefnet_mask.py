@@ -41,7 +41,7 @@ def _ensure_snapshot():
 
     raise RuntimeError(
         "缺少 BiRefNet Lite 模型，请手动下载并解压安装。\n"
-        "下载地址：https://pan.quark.cn/s/9a332350f6fc\n"
+        "下载地址：https://pan.quark.cn/s/c64dc2e420b8\n"
         f"存放目录：{_MODEL_DIR}\n"
         "请保留模型包内完整的配置、权重和代码文件。"
     )

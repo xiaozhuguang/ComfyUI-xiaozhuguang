@@ -63,7 +63,7 @@ class LoadSAM3DBodyModel:
         if not _model_files_exist(model_path):
             raise RuntimeError(
                 "缺少 SAM 3D Body 模型，请手动下载并解压安装。\n"
-                "下载地址：https://pan.quark.cn/s/9a332350f6fc\n"
+                "下载地址：https://pan.quark.cn/s/c64dc2e420b8\n"
                 f"存放目录：{MODEL_DIR}\n"
                 "目录中需包含 model.ckpt、model_config.yaml 和 assets/mhr_model.pt。"
             )
