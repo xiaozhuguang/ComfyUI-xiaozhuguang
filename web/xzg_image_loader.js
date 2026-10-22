@@ -89,6 +89,17 @@ function getMaskOutputColorWidget(node) {
     return getWidgetByName(node, "mask_output_color");
 }
 
+function getMaskOutputOpacityWidget(node) {
+    return getWidgetByName(node, "mask_output_opacity");
+}
+
+// 着色透明度：数值即百分比（0-100），非法值回落到 100（完全不透明）
+function normalizeMaskOutputOpacity(value, fallback = 100) {
+    const parsed = typeof value === "number" ? value : parseFloat(String(value ?? "").trim());
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(0, Math.min(100, Math.round(parsed * 100) / 100));
+}
+
 function getRemoveAlphaWidget(node) {
     return getWidgetByName(node, "remove_alpha");
 }
@@ -1173,11 +1184,18 @@ function createImgBatchUI(node) {
         ? node.properties.xzg_mask_preview_color : "#ff0000";
     let maskOutputEnabled = node.properties?.xzg_mask_output_enabled === true ||
         String(getMaskOutputEnabledWidget(node)?.value || "").toLowerCase() === "true";
+    // 着色输出的着色透明度（百分比 0-100），由遮罩工具栏的数值框控制
+    let maskOutputOpacity = normalizeMaskOutputOpacity(
+        node.properties?.xzg_mask_output_opacity ?? getMaskOutputOpacityWidget(node)?.value,
+        100
+    );
     let removeAlphaEnabled = node.properties?.xzg_remove_alpha === true || node.properties?.xzg_remove_alpha === 1 ||
         String(node.properties?.xzg_remove_alpha ?? getRemoveAlphaWidget(node)?.value ?? "false").toLowerCase() === "true";
     let maskCloseEnabled = node.properties?.xzg_mask_close_enabled === true || node.properties?.xzg_mask_close_enabled === 1 ||
         String(node.properties?.xzg_mask_close_enabled || "").toLowerCase() === "true";
     let _maskStrokePoints = [];
+    let _maskStrokeStartOnMask = false;    // 笔画起点是否压在已有遮罩上（靠遮罩闭合的场景）
+    let _maskStrokeEndOnMask = false;      // 笔画终点是否压在已有遮罩上
     const _maskPreviewRgb = () => {
         const hex = /^#[0-9a-f]{6}$/i.test(maskPreviewColor) ? maskPreviewColor : "#ff0000";
         return [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
@@ -1395,6 +1413,8 @@ function createImgBatchUI(node) {
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar select{font-size:20px!important;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar select{color:#fff!important;}
             .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar > div > span{font-size:20px!important;}
+            /* 着色透明度行：文案与「着色输出」同字号（16px），覆盖上面 20px 的通配规则 */
+            .xzg-img-edit-workspace .xzg-edit .xzg-mask-toolbar > .xzg-mask-opacity-row > span{font-size:16px!important;line-height:1.2!important;}
             :root{--xzg-mask-dark:#000000;--xzg-mask-light:#f5f5f5;}
             [data-theme="light"]{--xzg-mask-dark:#000000;--xzg-mask-light:#fafafa;}
             .xzg-ic-btn .xzg-ic-mask .o{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round;}
@@ -1881,6 +1901,72 @@ function createImgBatchUI(node) {
         };
     };
 
+    // ── 着色透明度（仅“着色输出”开启时显示）：控制 IMAGE 输出里着色覆盖的强度 ──
+    const maskOpacityRow = document.createElement("div");
+    maskOpacityRow.className = "xzg-mask-opacity-row";
+    maskOpacityRow.style.cssText = "display:none;align-items:center;justify-content:center;gap:4px;padding:2px 0 4px;width:100%;box-sizing:border-box;";
+    const maskOpacityLabel = document.createElement("span");
+    maskOpacityLabel.textContent = xzgT("透明度", "Opacity");
+    maskOpacityLabel.title = xzgT("着色输出的着色透明度（0-100%）", "Tint opacity applied to the IMAGE output (0-100%)");
+    // 与「着色输出」开关同一字号（11px），视觉上作为它的子项
+    maskOpacityLabel.style.cssText = "font-size:11px;color:var(--input-text);white-space:nowrap;";
+    const maskOpacityInput = document.createElement("input");
+    maskOpacityInput.type = "text";
+    maskOpacityInput.inputMode = "decimal";
+    maskOpacityInput.autocomplete = "off";
+    maskOpacityInput.value = String(maskOutputOpacity);
+    maskOpacityInput.title = maskOpacityLabel.title;
+    maskOpacityInput.setAttribute("aria-label", xzgT("着色透明度", "Tint opacity"));
+    maskOpacityInput.style.cssText =
+        "width:44px;height:24px;min-width:0;box-sizing:border-box;padding:0 2px;font-size:14px;line-height:1;color:var(--input-text);background:var(--comfy-input-bg,rgba(0,0,0,0.22));border:1px solid var(--border-color,rgba(255,255,255,0.25));border-radius:4px;outline:none;text-align:center;cursor:text;transition:border-color 0.12s ease,box-shadow 0.12s ease,background 0.12s ease;";
+    const maskOpacityUnit = document.createElement("span");
+    maskOpacityUnit.textContent = "%";
+    maskOpacityUnit.style.cssText = "font-size:11px;color:var(--input-text);";
+    const _setMaskOutputOpacity = (value, { commitInput = true } = {}) => {
+        const fallback = maskOutputOpacity;
+        const next = normalizeMaskOutputOpacity(value, fallback);
+        maskOutputOpacity = next;
+        const widget = getMaskOutputOpacityWidget(node)
+            || ensureHiddenWidget(node, "mask_output_opacity", "number", 100);
+        if (widget) widget.value = next;
+        if (node.properties) node.properties.xzg_mask_output_opacity = next;
+        if (commitInput) maskOpacityInput.value = String(next);
+        if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+        return next;
+    };
+    // 输入框交互不冒泡，避免触发节点/侧边栏拖动
+    for (const evt of ["pointerdown", "mousedown", "click", "wheel"]) {
+        maskOpacityInput.addEventListener(evt, (e) => e.stopPropagation());
+    }
+    maskOpacityInput.addEventListener("focus", () => {
+        maskOpacityInput.style.borderColor = "var(--input-text,#fff)";
+        maskOpacityInput.style.background = "var(--comfy-input-bg,rgba(0,0,0,0.4))";
+        maskOpacityInput.style.boxShadow = "0 0 0 1px color-mix(in srgb, var(--input-text,#fff) 25%, transparent)";
+    });
+    maskOpacityInput.addEventListener("blur", () => {
+        maskOpacityInput.style.borderColor = "var(--border-color,rgba(255,255,255,0.25))";
+        maskOpacityInput.style.background = "var(--comfy-input-bg,rgba(0,0,0,0.22))";
+        maskOpacityInput.style.boxShadow = "none";
+        _setMaskOutputOpacity(maskOpacityInput.value);
+    });
+    maskOpacityInput.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+            _setMaskOutputOpacity(maskOpacityInput.value);
+            maskOpacityInput.blur();
+        }
+    });
+    maskOpacityInput.addEventListener("change", () => _setMaskOutputOpacity(maskOpacityInput.value));
+    maskOpacityRow.appendChild(maskOpacityLabel);
+    maskOpacityRow.appendChild(maskOpacityInput);
+    maskOpacityRow.appendChild(maskOpacityUnit);
+    // 行显隐：遮罩编辑态 + 着色输出开启
+    const _updateMaskOpacityRowVisibility = () => {
+        const show = maskEnabled && !cropEnabled && maskOutputEnabled;
+        maskOpacityRow.style.display = show ? "flex" : "none";
+    };
+    _setMaskOutputOpacity(maskOutputOpacity, { commitInput: true });
+
     const maskOutputToggleBtn = _mkMaskBtn(xzgT("输出着色", "Tint Output"),
         xzgT("开关：把遮罩区域按预览色合成到图像输出（遮罩端口仍单独输出）", "Toggle tinting masked regions in IMAGE output; MASK output remains separate"));
     maskOutputToggleBtn.classList.add("xzg-mask-setting-toggle");
@@ -1901,6 +1987,7 @@ function createImgBatchUI(node) {
         maskOutputToggleBtn.style.color = "#FFD700";
         maskOutputToggleBtn.style.background = "transparent";
         maskOutputToggleIndicator.set(maskOutputEnabled);
+        _updateMaskOpacityRowVisibility();
         if (app?.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
     };
     maskOutputToggleBtn.addEventListener("click", (e) => {
@@ -1977,6 +2064,7 @@ function createImgBatchUI(node) {
     maskToolbar.appendChild(maskInvertBtn);
     maskToolbar.appendChild(brushSizeRow);
     maskToolbar.appendChild(maskOutputToggleBtn);
+    maskToolbar.appendChild(maskOpacityRow);
     maskToolbar.appendChild(maskCloseToggleBtn);
     maskToolbar.appendChild(removeAlphaToggleBtn);
 
@@ -2365,6 +2453,7 @@ function createImgBatchUI(node) {
         brushSizeRow.style.display = vis;
         maskColorRow.style.display = vis;
         maskOutputToggleBtn.style.display = vis;
+        _updateMaskOpacityRowVisibility();
         // Alpha 开关仅在点击「遮罩」进入编辑界面后显示，画布侧栏常驻状态不显示。
         removeAlphaToggleBtn.style.display = vis;
         maskCloseToggleBtn.style.display = vis;
@@ -4252,6 +4341,94 @@ function createImgBatchUI(node) {
         maskOffCtx.restore();
     }
 
+    // 当前笔刷在离屏遮罩坐标下的半径
+    function _maskOffscreenBrushRadius() {
+        const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
+        const displayScale = cp ? cp.s2 : (_getImageDisplayRect().scale || 1);
+        return Math.max(0.5, brushSize / (2 * (displayScale || 1)));
+    }
+
+    // 该点外圈是否已经有别处画好的遮罩（忽略本笔画自己压出的像素）。
+    // 用于识别「笔画首尾直接搭在已有遮罩上、靠遮罩闭合」的画法。
+    function _pointTouchesExistingMask(pt) {
+        if (!pt || maskOffscreen.width <= 0 || maskOffscreen.height <= 0) return false;
+        const brushRadius = _maskOffscreenBrushRadius();
+        const reach = Math.max(2, Math.round(brushRadius * 1.8));
+        const cx = Math.round(pt.x), cy = Math.round(pt.y);
+        const x0 = Math.max(0, cx - reach), y0 = Math.max(0, cy - reach);
+        const x1 = Math.min(maskOffscreen.width - 1, cx + reach);
+        const y1 = Math.min(maskOffscreen.height - 1, cy + reach);
+        const w = x1 - x0 + 1, h = y1 - y0 + 1;
+        if (w < 2 || h < 2) return false;
+        let data;
+        try { data = maskOffCtx.getImageData(x0, y0, w, h).data; } catch (_) { return false; }
+        // 笔刷自身覆盖范围（略放大）内的像素不算「已有遮罩」
+        const selfR = Math.max(1, brushRadius * 1.1);
+        for (let y = 0; y < h; y++) {
+            const dy = y0 + y - cy;
+            for (let x = 0; x < w; x++) {
+                if (data[(y * w + x) * 4] === 0) continue;
+                const dx = x0 + x - cx;
+                if (Math.hypot(dx, dy) <= selfR) continue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 沿笔画两侧找空白像素，把「被本次笔画 + 已有遮罩围住」的连通空白区填成遮罩。
+    // 只在洪水扩散没有触碰到画布边缘（= 真的被围死）时才填，因此不会误填开放区域，
+    // 也不会去填与本次笔画无关的旧空洞。
+    function _fillMaskEnclosedNearStroke(points, brushRadius) {
+        const w = maskOffscreen.width, h = maskOffscreen.height;
+        if (w <= 2 || h <= 2 || !points || points.length < 1) return;
+        let img;
+        try { img = maskOffCtx.getImageData(0, 0, w, h); } catch (_) { return; }
+        const d = img.data;
+        const seen = new Uint8Array(w * h);
+        let queue = null;
+        let changed = false;
+        const rings = [Math.max(2, brushRadius * 1.25), Math.max(3, brushRadius * 1.75)];
+        const dirs = [
+            [1, 0], [-1, 0], [0, 1], [0, -1],
+            [0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, 0.7071], [-0.7071, -0.7071]
+        ];
+        const step = Math.max(1, Math.floor(points.length / 60));
+        const trySeed = (sx, sy) => {
+            if (sx < 1 || sy < 1 || sx > w - 2 || sy > h - 2) return;
+            const s = sy * w + sx;
+            if (seen[s] || d[s * 4] !== 0) return;
+            if (!queue) queue = new Int32Array(w * h);
+            let head = 0, tail = 0, escaped = false;
+            queue[tail++] = s;
+            seen[s] = 1;
+            while (head < tail) {
+                const idx = queue[head++];
+                const y = (idx / w) | 0;
+                const x = idx - y * w;
+                // 扩散到画布边缘 → 这个空白区与外界连通，不填充
+                if (x === 0 || y === 0 || x === w - 1 || y === h - 1) { escaped = true; break; }
+                if (!seen[idx - 1] && d[(idx - 1) * 4] === 0) { seen[idx - 1] = 1; queue[tail++] = idx - 1; }
+                if (!seen[idx + 1] && d[(idx + 1) * 4] === 0) { seen[idx + 1] = 1; queue[tail++] = idx + 1; }
+                if (!seen[idx - w] && d[(idx - w) * 4] === 0) { seen[idx - w] = 1; queue[tail++] = idx - w; }
+                if (!seen[idx + w] && d[(idx + w) * 4] === 0) { seen[idx + w] = 1; queue[tail++] = idx + w; }
+            }
+            if (escaped) return;
+            for (let i = 0; i < tail; i++) {
+                const o = queue[i] * 4;
+                d[o] = 255; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 255;
+            }
+            changed = true;
+        };
+        for (let i = 0; i < points.length; i += step) {
+            const p = points[i];
+            for (const rr of rings) {
+                for (const [ux, uy] of dirs) trySeed(Math.round(p.x + ux * rr), Math.round(p.y + uy * rr));
+            }
+        }
+        if (changed) maskOffCtx.putImageData(img, 0, 0);
+    }
+
     function _closeAndFillMaskStroke() {
         const points = _maskStrokePoints;
         if (!maskCloseEnabled || points.length < 3 || maskTool !== "brush" || _maskRightErasing) return;
@@ -4262,22 +4439,27 @@ function createImgBatchUI(node) {
         }
         const diagonal = Math.hypot(maxX - minX, maxY - minY);
         const gap = Math.hypot(points[points.length - 1].x - points[0].x, points[points.length - 1].y - points[0].y);
-        const cp = _isCropPreviewActive() ? _cropPreviewDisplayRect() : null;
-        const displayScale = cp ? cp.s2 : (_getImageDisplayRect().scale || 1);
-        const brushRadius = Math.max(0.5, brushSize / (2 * displayScale));
-        // 仅把首尾已经接近的闭合轮廓当作圈选，避免普通开放笔划被大面积误填充。
-        if (diagonal < brushRadius * 4 || gap > Math.max(brushRadius * 4, diagonal * 0.18)) return;
-
-        _maskDrawSegment(points[points.length - 1], points[0]);
-        maskOffCtx.save();
-        maskOffCtx.globalCompositeOperation = "source-over";
-        maskOffCtx.fillStyle = "rgba(255,0,0,1)";
-        maskOffCtx.beginPath();
-        maskOffCtx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) maskOffCtx.lineTo(points[i].x, points[i].y);
-        maskOffCtx.closePath();
-        maskOffCtx.fill();
-        maskOffCtx.restore();
+        const brushRadius = _maskOffscreenBrushRadius();
+        if (diagonal < brushRadius * 4) return;
+        // ① 首尾已经靠拢：自身闭合成圈 → 补连线并填充轮廓内部（原有行为）。
+        // ② 首尾都压在已有遮罩上：靠已有遮罩闭合 → 不补连线（那条线可能横穿空白区），
+        //    改为填充被「本次笔画 + 已有遮罩」围住的空白区。
+        const selfClosed = gap <= Math.max(brushRadius * 4, diagonal * 0.18);
+        if (selfClosed) {
+            _maskDrawSegment(points[points.length - 1], points[0]);
+            maskOffCtx.save();
+            maskOffCtx.globalCompositeOperation = "source-over";
+            maskOffCtx.fillStyle = "rgba(255,0,0,1)";
+            maskOffCtx.beginPath();
+            maskOffCtx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) maskOffCtx.lineTo(points[i].x, points[i].y);
+            maskOffCtx.closePath();
+            maskOffCtx.fill();
+            maskOffCtx.restore();
+            return;
+        }
+        if (!(_maskStrokeStartOnMask && _maskStrokeEndOnMask)) return;
+        _fillMaskEnclosedNearStroke(points, brushRadius);
     }
 
     // 序列化离屏遮罩为 base64 PNG（数据 URL），保存到 widget
@@ -4451,6 +4633,9 @@ function createImgBatchUI(node) {
         _maskDrawing = true;
         _maskLastPt = pt;
         _maskStrokePoints = (maskTool === "brush" && !_maskRightErasing) ? [{ x: pt.x, y: pt.y }] : [];
+        // 起笔前先记录：起点外圈是否已有遮罩（本笔画还未落笔，不会被自身像素干扰）
+        _maskStrokeStartOnMask = _maskStrokePoints.length > 0 && _pointTouchesExistingMask(pt);
+        _maskStrokeEndOnMask = false;
         try {
             if (singleImgContainer.setPointerCapture) {
                 singleImgContainer.setPointerCapture(e.pointerId);
@@ -4497,6 +4682,8 @@ function createImgBatchUI(node) {
                 const zoomY = singleImgContainer.clientHeight > 0 ? rect.height / singleImgContainer.clientHeight : 1;
                 const innerPt = _containerPtToInner((e.clientX - rect.left) / zoomX, (e.clientY - rect.top) / zoomY);
                 const endPt = _overlayPtToOffscreen(innerPt.x, innerPt.y);
+                // 落笔前判断终点是否压在已有遮罩上（此时最后一小段尚未绘制，干扰最小）
+                _maskStrokeEndOnMask = !!(endPt && _maskStrokePoints.length > 0 && _pointTouchesExistingMask(endPt));
                 if (endPt && _maskLastPt && (endPt.x !== _maskLastPt.x || endPt.y !== _maskLastPt.y)) {
                     _maskDrawSegment(_maskLastPt, endPt);
                     if (maskCloseEnabled && maskTool === "brush" && !_maskRightErasing) {
@@ -4509,6 +4696,8 @@ function createImgBatchUI(node) {
             _maskDrawing = false;
             _maskLastPt = null;
             _maskStrokePoints = [];
+            _maskStrokeStartOnMask = false;
+            _maskStrokeEndOnMask = false;
             _maskRightErasing = false;
             try { singleImgContainer.releasePointerCapture?.(e.pointerId); } catch (_) {}
             _commitMaskToWidget();
@@ -6966,6 +7155,7 @@ function createImgBatchUI(node) {
         syncCropList: _syncCropList,
         reloadMaskFromWidget: _reloadCurrentMaskFromWidget,
         setMaskOutputEnabled: _setMaskOutputEnabled,
+        setMaskOutputOpacity: (value) => _setMaskOutputOpacity(value),
         syncRemoveAlphaFromWorkflow: _syncRemoveAlphaFromWorkflow,
         setMaskCloseEnabled: _setMaskCloseEnabled,
         setMaskPreviewColor: (value) => {
@@ -7095,6 +7285,7 @@ app.registerExtension({
                 }
                 ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
                 ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
+                ensureHiddenWidget(this, "mask_output_opacity", "number", 100);
                 ensureHiddenWidget(this, "remove_alpha", "toggle", false);
                 let maskWidget = getMaskDataWidget(this);
                 // 如果 hidden widget 没有被 ComfyUI 自动创建，手动创建它
@@ -7430,13 +7621,21 @@ app.registerExtension({
                 }
                 const overlayEnabledWidget = ensureHiddenWidget(this, "mask_output_enabled", "toggle", false);
                 const overlayColorWidget = ensureHiddenWidget(this, "mask_output_color", "string", "#ff0000");
+                const overlayOpacityWidget = ensureHiddenWidget(this, "mask_output_opacity", "number", 100);
                 const removeAlphaWidget = ensureHiddenWidget(this, "remove_alpha", "toggle", false);
                 if (data?.widgets_values && Array.isArray(data.widgets_values)) {
                     const enabledIndex = this.widgets?.indexOf(overlayEnabledWidget) ?? -1;
                     const colorIndex = this.widgets?.indexOf(overlayColorWidget) ?? -1;
+                    const opacityIndex = this.widgets?.indexOf(overlayOpacityWidget) ?? -1;
                     if (enabledIndex >= 0 && data.widgets_values[enabledIndex] != null) overlayEnabledWidget.value = data.widgets_values[enabledIndex];
                     if (colorIndex >= 0 && data.widgets_values[colorIndex] != null) overlayColorWidget.value = data.widgets_values[colorIndex];
+                    if (opacityIndex >= 0 && data.widgets_values[opacityIndex] != null) overlayOpacityWidget.value = data.widgets_values[opacityIndex];
                 }
+                // 着色透明度：properties 优先（不受 widget 索引变动影响），非法值收敛到 0-100
+                overlayOpacityWidget.value = normalizeMaskOutputOpacity(
+                    data?.properties?.xzg_mask_output_opacity ?? overlayOpacityWidget.value,
+                    100
+                );
                 if (data?.properties?.xzg_mask_output_enabled != null) {
                     const savedEnabled = data.properties.xzg_mask_output_enabled;
                     overlayEnabledWidget.value = savedEnabled === true || savedEnabled === 1 || String(savedEnabled).toLowerCase() === "true";
@@ -7535,6 +7734,10 @@ app.registerExtension({
                         ? (data.properties.xzg_mask_output_enabled === true || data.properties.xzg_mask_output_enabled === 1 || String(data.properties.xzg_mask_output_enabled).toLowerCase() === "true")
                         : String(overlayEnabledWidget?.value || "").toLowerCase() === "true"
                 );
+                // 着色透明度：同步到工具栏数值框（widget 值已在上面恢复）
+                this._xzgImgLoaderUI?.setMaskOutputOpacity?.(
+                    data?.properties?.xzg_mask_output_opacity ?? overlayOpacityWidget?.value ?? 100
+                );
                 if (umWidget) {
                     umWidget.type = "hidden";
                     umWidget.hidden = true;
@@ -7597,6 +7800,18 @@ app.registerExtension({
                 data.properties.xzg_mask_preview_color = this.properties?.xzg_mask_preview_color || "#ff0000";
                 const overlayEnabled = getMaskOutputEnabledWidget(this)?.value;
                 data.properties.xzg_mask_output_enabled = overlayEnabled === true || overlayEnabled === 1 || String(overlayEnabled).toLowerCase() === "true";
+                // 着色透明度（百分比 0-100）
+                const overlayOpacityWidget = getMaskOutputOpacityWidget(this);
+                const overlayOpacityValue = normalizeMaskOutputOpacity(
+                    overlayOpacityWidget?.value ?? this.properties?.xzg_mask_output_opacity,
+                    100
+                );
+                data.properties.xzg_mask_output_opacity = overlayOpacityValue;
+                if (overlayOpacityWidget) overlayOpacityWidget.value = overlayOpacityValue;
+                if (Array.isArray(data.widgets_values) && Array.isArray(this.widgets)) {
+                    const idx = this.widgets.indexOf(overlayOpacityWidget);
+                    if (idx >= 0) data.widgets_values[idx] = overlayOpacityValue;
+                }
                 const removeAlphaWidget = getRemoveAlphaWidget(this);
                 const removeAlphaValue = removeAlphaWidget?.value;
                 data.properties.xzg_remove_alpha = removeAlphaValue === true || removeAlphaValue === 1 || String(removeAlphaValue).toLowerCase() === "true";

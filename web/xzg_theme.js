@@ -109,7 +109,12 @@ window.XZGThemeManager = {
     _runningNodeDOMElements: new Set(),
     _runningNodeDOMKey: null,
     _runningNodeDOMGraph: null,
+    // Nodes 2.0：Vue 重渲染会把外部加的类/内联样式刷掉（采样器等带读条的节点每帧都在重渲染），
+    // 用 MutationObserver 即时补回，再配合轮询兜底。
+    _runningNodeDOMObserver: null,
+    _runningNodeDOMColor: null,
     // 节点高亮动画主动驱动循环（独立 rAF 每帧标脏，防止被动链被渲染调度合并导致跳帧）
+    _nhAnimRunning: false,   // 是否检测到运行中节点（事件 _runningNodeId 之外的原生 running 态）
     _nhAnimRAF: null,
     nodeHighlightColor: '#22FF22',
     // 多色动画类型（flow 流动 / 连线效果移植系列）+ 流速（1-100，50=默认速度，按比例换算）
@@ -2249,8 +2254,82 @@ window.XZGThemeManager = {
         return this.nodeHighlightActive;
     },
 
+    // ===== Nodes 2.0（Vue）执行高亮的 DOM 同步 =====
+    // Vue 节点是 DOM 元素：执行高亮靠给节点根元素加类实现。但 Vue 在节点状态/进度变化时会
+    // 重写该元素的 class 与内联样式（采样器这类上报读条的节点每次进度更新都会重渲染），
+    // 我们加的类会被整体刷掉；旧实现只在 "key 相同且元素仍在文档中" 时直接 return，
+    // 元素没被替换、类却被抹掉，于是高亮边框再也不恢复（表现为读条节点没有高亮）。
+    // 修复：① 刷新时校验类是否还在，缺失即补；② MutationObserver 即时补回；
+    // ③ CSS 额外挂到前端自身的 executing 类上，元素被整体替换时也能立刻出边框。
+    _ensureRunningNodeHighlightDOMStyle(color) {
+        if (typeof document === 'undefined' || !document.createElement) return;
+        const styleId = 'xzg-node-executing-highlight-style';
+        let style = document.getElementById?.(styleId) || null;
+        if (!style) {
+            style = document.createElement('style');
+            style.id = styleId;
+            (document.head || document.body)?.appendChild(style);
+        }
+        const css = `.xzg-node-executing-highlight,
+[data-node-id].xzg-node-executing-highlight,
+[data-node-id].outline-node-stroke-executing {
+    outline: 3px solid var(--xzg-node-exec-color, ${color}) !important;
+    outline-offset: 2px !important;
+    box-shadow: inset 0 0 0 2px var(--xzg-node-exec-color, ${color}), 0 0 12px var(--xzg-node-exec-color, ${color}), 0 0 26px var(--xzg-node-exec-color, ${color}) !important;
+}`;
+        if (style.textContent !== css) style.textContent = css;
+    },
+
+    _removeRunningNodeHighlightDOMStyle() {
+        if (typeof document === 'undefined') return;
+        try { document.getElementById?.('xzg-node-executing-highlight-style')?.remove(); } catch (_) {}
+    },
+
+    _disconnectRunningNodeDOMObserver() {
+        try { this._runningNodeDOMObserver?.disconnect(); } catch (_) {}
+        this._runningNodeDOMObserver = null;
+    },
+
+    /** 把被前端框架重渲染刷掉的类/颜色补回当前运行节点的 DOM 元素 */
+    _reassertRunningNodeDOM() {
+        const elements = this._runningNodeDOMElements;
+        if (!elements || !elements.size) return false;
+        const color = this._runningNodeDOMColor
+            || (this.nodeHighlightColor || '#22FF22').split(',')[0].trim() || '#22FF22';
+        let alive = false;
+        for (const element of elements) {
+            if (!element || !element.isConnected) continue;
+            alive = true;
+            try {
+                if (element.classList && !element.classList.contains('xzg-node-executing-highlight')) {
+                    element.classList.add('xzg-node-executing-highlight');
+                }
+                if (element.style && element.style.getPropertyValue('--xzg-node-exec-color') !== color) {
+                    element.style.setProperty('--xzg-node-exec-color', color);
+                }
+            } catch (_) {}
+        }
+        return alive;
+    },
+
+    _observeRunningNodeDOM(elements) {
+        this._disconnectRunningNodeDOMObserver();
+        if (typeof MutationObserver !== 'function' || !elements || !elements.length) return;
+        const self = this;
+        try {
+            const observer = new MutationObserver(() => { self._reassertRunningNodeDOM(); });
+            for (const element of elements) {
+                observer.observe(element, { attributes: true, attributeFilter: ['class', 'style'] });
+            }
+            this._runningNodeDOMObserver = observer;
+        } catch (_) {
+            this._runningNodeDOMObserver = null;
+        }
+    },
+
     refreshRunningNodeHighlight() {
         const clearDOM = () => {
+            this._disconnectRunningNodeDOMObserver();
             for (const element of this._runningNodeDOMElements || []) {
                 element.classList?.remove('xzg-node-executing-highlight');
                 element.style?.removeProperty('--xzg-node-exec-color');
@@ -2258,6 +2337,7 @@ window.XZGThemeManager = {
             this._runningNodeDOMElements = new Set();
             this._runningNodeDOMKey = null;
             this._runningNodeDOMGraph = null;
+            this._runningNodeDOMColor = null;
         };
 
         const vueNodesFlag = globalThis.LiteGraph?.vueNodesMode;
@@ -2266,11 +2346,14 @@ window.XZGThemeManager = {
             : !!document.querySelector('.lg-node[data-node-id], .comfy-node[data-node-id]');
         if (!isVueNodesMode) {
             clearDOM();
+            this._removeRunningNodeHighlightDOMStyle();
             this.refreshLinkHighlightCanvas();
             return;
         }
         if (!this.nodeHighlightActive) {
             clearDOM();
+            // 一并移出样式表：其中挂了前端自身 executing 类的兜底规则，关闭高亮后不应再生效
+            this._removeRunningNodeHighlightDOMStyle();
             return;
         }
 
@@ -2317,15 +2400,14 @@ window.XZGThemeManager = {
 
         const color = (this.nodeHighlightColor || '#22FF22').split(',')[0].trim() || '#22FF22';
         const key = `${targetId}|${color}`;
+        this._ensureRunningNodeHighlightDOMStyle(color);
+        const cachedElements = [...this._runningNodeDOMElements];
         if (this._runningNodeDOMKey === key && this._runningNodeDOMGraph === graph &&
-            this._runningNodeDOMElements.size && [...this._runningNodeDOMElements].every(el => el.isConnected)) return;
-
-        const styleId = 'xzg-node-executing-highlight-style';
-        if (!document.getElementById(styleId)) {
-            const style = document.createElement('style');
-            style.id = styleId;
-            style.textContent = `.xzg-node-executing-highlight { outline: 3px solid var(--xzg-node-exec-color, #22FF22) !important; outline-offset: 2px !important; box-shadow: inset 0 0 0 2px var(--xzg-node-exec-color, #22FF22), 0 0 12px var(--xzg-node-exec-color, #22FF22), 0 0 26px var(--xzg-node-exec-color, #22FF22) !important; }`;
-            document.head.appendChild(style);
+            cachedElements.length && cachedElements.every(el => el.isConnected)) {
+            // 元素仍在文档中：可能被 Vue 重渲染刷掉了类（读条节点每次进度都重渲染），
+            // 不能直接 return，否则高亮边框不会恢复。
+            this._reassertRunningNodeDOM();
+            return;
         }
 
         clearDOM();
@@ -2338,6 +2420,8 @@ window.XZGThemeManager = {
         }
         this._runningNodeDOMKey = key;
         this._runningNodeDOMGraph = graph;
+        this._runningNodeDOMColor = color;
+        this._observeRunningNodeDOM(elements);
     },
 
     setNodeHighlightColor(color) {
@@ -2475,43 +2559,61 @@ window.XZGThemeManager = {
             if (!self.nodeHighlightActive || globalThis.LiteGraph?.vueNodesMode === true) {
                 return origDrawNode.call(this, node, ctx, ...args);
             }
-            // ===== 运行判定（与 V590 老版一致，修复 Nodes 1.0 模式高亮失效）=====
+            // ===== 运行判定 =====
+            // 优先采用前端原生的 strokeStyles.running 结果：它由执行状态表按“节点定位 id”
+            // 计算，子图执行路径、进度上报(绿色读条)、事件时序都由前端自己维护，比我们自己
+            // 按事件 + 裸 node_id 匹配可靠。旧版前端没有该回调时才退回事件 ID 匹配。
+            const nativeRunningStroke = node?.strokeStyles?.running;
+            const hasNativeRunning = typeof nativeRunningStroke === 'function';
+            let nativeRunningStyle = null;
+            if (hasNativeRunning) {
+                // 屏蔽原生“运行中”描边（我们用自己的发光边框替代），绘制完恢复。
+                node.strokeStyles.running = () => null;
+                try { nativeRunningStyle = nativeRunningStroke.call(node) || null; } catch (_) { nativeRunningStyle = null; }
+            }
+            let isRunning = !!nativeRunningStyle;
             const job = self._runningJob;
-            let isRunning = false;
-            if (job && (!job.ownerGraph || node.graph === job.ownerGraph)) {
-                const currentRunningId = window.app?.runningNodeId || job.nodeId;
-                if (currentRunningId) {
+            if (!hasNativeRunning) {
+                // 旧版前端没有 strokeStyles.running，退回事件 ID 匹配。
+                const appRunningId = window.app?.runningNodeId;
+                const hasAppRunningId = appRunningId != null && appRunningId !== '';
+                const jobMatchesGraph = !job || !job.ownerGraph || node.graph === job.ownerGraph;
+                const currentRunningId = hasAppRunningId ? appRunningId : (jobMatchesGraph ? job?.nodeId : null);
+                if (currentRunningId != null && currentRunningId !== '') {
                     const pathParts = String(currentRunningId).split(':').filter(Boolean);
-                    // 子图路径遍历：执行 ID 形如 "容器id:内部id"，逐层下钻子图，
-                    // 在节点所属的那一层判断 id 是否匹配。
-                    let curGraph = window.app?.graph;
-                    for (let i = 0; i < pathParts.length; i++) {
-                        if (!curGraph) break;
-                        if (node.graph === curGraph) {
-                            isRunning = node.id.toString() === pathParts[i];
-                            break;
+                    if (hasAppRunningId) {
+                        // app.runningNodeId 反映当前视图里正在执行的节点，子图下为 "容器id:内部id"，
+                        // 取最内层 id 比较即可。
+                        isRunning = node.id.toString() === pathParts[pathParts.length - 1];
+                    } else {
+                        // 子图路径遍历：执行 ID 形如 "容器id:内部id"，逐层下钻子图，
+                        // 在节点所属的那一层判断 id 是否匹配。
+                        let curGraph = window.app?.graph;
+                        for (let i = 0; i < pathParts.length; i++) {
+                            if (!curGraph) break;
+                            if (node.graph === curGraph) {
+                                isRunning = node.id.toString() === pathParts[i];
+                                break;
+                            }
+                            if (typeof curGraph.getNodeById !== 'function') break;
+                            const container = curGraph.getNodeById(parseInt(pathParts[i], 10));
+                            const isSub = container && (typeof container.isSubgraphNode === 'function'
+                                ? container.isSubgraphNode() : !!container.subgraph);
+                            if (!container || !isSub || !container.subgraph) break;
+                            curGraph = container.subgraph;
                         }
-                        const container = curGraph.getNodeById(parseInt(pathParts[i], 10));
-                        const isSub = container && (typeof container.isSubgraphNode === 'function'
-                            ? container.isSubgraphNode() : !!container.subgraph);
-                        if (!container || !isSub || !container.subgraph) break;
-                        curGraph = container.subgraph;
                     }
                 }
             }
             // [调试·高亮] 记录本次节点是否命中运行高亮判定
-            if (window.app && window.__xzgHighlightDebug && job) {
-                console.warn("[小珠光高亮] draw", node.type, "id=" + node.id, "isRunning=" + isRunning);
-            }
-            // 屏蔽原生"运行中"描边（我们用自己的发光边框替代），绘制完恢复。
-            const nativeRunningStroke = node?.strokeStyles?.running;
-            if (typeof nativeRunningStroke === 'function') {
-                node.strokeStyles.running = () => null;
+            if (window.app && window.__xzgHighlightDebug && (job || hasNativeRunning)) {
+                console.warn("[小珠光高亮] draw", node.type, "id=" + node.id,
+                    "isRunning=" + isRunning, "native=" + hasNativeRunning);
             }
             try {
                 origDrawNode.call(this, node, ctx, ...args);
             } finally {
-                if (typeof nativeRunningStroke === 'function') node.strokeStyles.running = nativeRunningStroke;
+                if (hasNativeRunning) node.strokeStyles.running = nativeRunningStroke;
             }
             // ===== 细线发光边框：不改变节点配色/内容，仅沿节点边缘（标题栏+body）画 3px
             // 细光源线 + 模糊发光；无宽色带，模糊光掩盖轮廓偏差，四边四角视觉自然贴合。
@@ -2673,6 +2775,7 @@ window.XZGThemeManager = {
                 }
                 // 主动驱动：独立 rAF 标脏（幂等），带半帧率与超时自停（见方法注释）
                 self._nhAnimLastActive = performance.now();
+                self._nhAnimRunning = true;
                 self._ensureNodeHighlightAnimLoop();
                 // 静态发光（无动画）：仅进度条场景需要保底重绘，不做每帧自持重绘
                 // 执行进度条保底重绘：在 restore 之后以完全不透明再画一次，
@@ -3810,9 +3913,13 @@ window.XZGThemeManager = {
     // 替代旧「绘制时被动 setDirtyCanvas」链——被动链受宿主渲染调度合并影响，帧间隔不均导致跳帧。
     // 性能策略：①半帧率标脏（每 2 帧，重绘成本减半，30fps 动画肉眼顺滑）；
     // ②2 秒兜底超时——若持续无实际高亮绘制（渲染端未刷新 _nhAnimLastActive），
-    // 说明 _runningNodeId 残留，自停防止空转全量重绘拖垮帧率。
+    // 说明运行态残留，自停防止空转全量重绘拖垮帧率。
+    // 运行态来源可能是事件(_runningNodeId)或前端原生 running 回调(_nhAnimRunning)，
+    // 后者在采样器等带进度上报的节点上更可靠。
     _ensureNodeHighlightAnimLoop() {
         if (this._nhAnimRAF) return;
+        // 无 rAF 环境（单元测试 / 特殊宿主）直接跳过，不能影响节点绘制主流程
+        if (typeof requestAnimationFrame !== 'function') return;
         this._nhAnimLastActive = performance.now();
         let frame = 0;
         const loop = () => {
@@ -3820,7 +3927,8 @@ window.XZGThemeManager = {
             frame++;
             const multi = (this.nodeHighlightColor || '').split(',').filter(Boolean).length > 1;
             const anim = this.nodeHighlightColorAnim || 'flow';
-            const needAnim = this.nodeHighlightActive && this._runningNodeId != null && (multi || anim !== 'flow');
+            const hasRunning = this._nhAnimRunning === true || this._runningNodeId != null;
+            const needAnim = this.nodeHighlightActive && hasRunning && (multi || anim !== 'flow');
             if (!needAnim) return;
             if (performance.now() - (this._nhAnimLastActive || 0) > 2000) return;
             if (frame % 2 === 0) {
@@ -3836,7 +3944,7 @@ window.XZGThemeManager = {
 
     _stopNodeHighlightAnimLoop() {
         if (this._nhAnimRAF) {
-            cancelAnimationFrame(this._nhAnimRAF);
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._nhAnimRAF);
             this._nhAnimRAF = null;
         }
     },

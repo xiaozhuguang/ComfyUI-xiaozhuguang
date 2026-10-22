@@ -64,8 +64,7 @@ class LoadSAM3DBodyModel:
             raise RuntimeError(
                 "缺少 SAM 3D Body 模型，请手动下载并解压安装。\n"
                 "下载地址：https://pan.quark.cn/s/c64dc2e420b8\n"
-                f"存放目录：{MODEL_DIR}\n"
-                "目录中需包含 model.ckpt、model_config.yaml 和 assets/mhr_model.pt。"
+                "存放目录：将压缩包解压后，vnccs-xzg文件夹放入E:\\ComfyUI-aki-XZG\\ComfyUI\\models\\\n"
             )
 
         # Return config dict (not the actual model)

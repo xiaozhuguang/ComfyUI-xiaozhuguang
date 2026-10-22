@@ -2025,6 +2025,8 @@ class XiaozhuguangImageLoader:
                 "upload_mode": ("STRING", {"default": "append"}),  # append=多图 / replace=单图，前端持久化用
                 "mask_output_enabled": ("BOOLEAN", {"default": False}),
                 "mask_output_color": ("STRING", {"default": "#ff0000"}),
+                # 着色输出的着色透明度（百分比 0-100，前端“着色透明度”输入框写入）
+                "mask_output_opacity": ("FLOAT", {"default": 100.0, "min": 0.0, "max": 100.0, "step": 1.0}),
                 "remove_alpha": ("BOOLEAN", {"default": False}),
             },
         }
@@ -2035,8 +2037,15 @@ class XiaozhuguangImageLoader:
     FUNCTION = "load_images"
     CATEGORY = "小珠光/图片"
 
-    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, remove_alpha=False, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000"):
+    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, remove_alpha=False, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000", mask_output_opacity=100.0):
         mask_output_enabled = mask_output_enabled is True or str(mask_output_enabled).strip().lower() in ("true", "1")
+        # 着色透明度：数值即百分比（0-100），越界与非法值收敛到 0-100。
+        try:
+            _opacity_pct = float(mask_output_opacity)
+        except (TypeError, ValueError):
+            _opacity_pct = 100.0
+        _opacity_pct = max(0.0, min(100.0, _opacity_pct))
+        mask_output_alpha = _opacity_pct / 100.0
         remove_alpha = remove_alpha is True or str(remove_alpha).strip().lower() in ("true", "1")
         crop_padding_rgb = _parse_crop_padding_color(crop_data)
         # 空选/所列图片全部丢失时回退到内置占位图片（防报错，与视频加载器同一机制）。
@@ -2182,8 +2191,9 @@ class XiaozhuguangImageLoader:
             pass
 
         def _apply_mask_tint(image_tensor, mask_tensor):
-            # IMAGE 输出是硬边纯色覆盖，不沿用编辑器预览的半透明度。
-            alpha = (mask_tensor >= 0.5).to(dtype=image_tensor.dtype).unsqueeze(-1)
+            # IMAGE 输出为硬边纯色覆盖（不沿用编辑器预览的半透明度），
+            # 覆盖强度由“着色透明度”控制：100% 完全不透明，0% 等于不着色。
+            alpha = (mask_tensor >= 0.5).to(dtype=image_tensor.dtype).unsqueeze(-1) * mask_output_alpha
             color_tensor = torch.tensor(overlay_rgb, dtype=image_tensor.dtype, device=image_tensor.device)
             tinted_rgb = image_tensor[..., :3] * (1.0 - alpha) + color_tensor * alpha
             if image_tensor.shape[-1] > 3:

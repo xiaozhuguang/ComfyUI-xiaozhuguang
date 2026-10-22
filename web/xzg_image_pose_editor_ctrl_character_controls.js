@@ -9612,7 +9612,8 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
 
         const modal = document.createElement('div');
         modal.className = 'vnccs-ps-modal';
-        modal.style.maxWidth = missingModel ? "560px" : "300px";
+        modal.style.maxWidth = missingModel ? "calc(100vw - 40px)" : "300px";
+        if (missingModel) modal.style.width = "760px";
 
         const title = document.createElement('div');
         title.className = 'vnccs-ps-modal-title';
@@ -9626,7 +9627,13 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             title.textContent = "缺少识别模型";
             content.style.whiteSpace = "pre-wrap";
             content.style.overflowWrap = "anywhere";
-            const parts = String(text).split(modelDownloadUrl);
+            const parts = String(text).replace(
+                "获取图片姿势失败：缺少 SAM 3D Body 模型，",
+                "获取图片姿势失败，",
+            ).replace(
+                /存放目录：[\s\S]*$/,
+                "存放目录：将压缩包解压后，vnccs-xzg文件夹放入E:\\ComfyUI-aki-XZG\\ComfyUI\\models\\",
+            ).split(modelDownloadUrl);
             content.replaceChildren(document.createTextNode(parts[0]));
             for (const part of parts.slice(1)) {
                 const link = document.createElement("a");
