@@ -22,7 +22,7 @@ app.registerExtension({
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = origOnNodeCreated?.apply(this, arguments);
-            // 新建节点先只显示一个可接线口和一个后续空口。
+            // 新建节点先只显示值0；连上后再由连接回调追加下一个空口。
             // 加载工作流时 configure 会恢复已保存的输入列表；不要在 afterConfigure 中收缩它，
             // 子图解包可能仍在按原槽位恢复连线。
             this.initializeInputSlots();
@@ -46,8 +46,8 @@ app.registerExtension({
 
             this.localizeValueInputs();
             const valueInputs = this.inputs.filter((input) => /^value\d+$/.test(input.name || ""));
-            // 初始 schema 提供了最多 50 个可选口，新节点默认显示 value0 和 value1。
-            for (let i = valueInputs.length - 1; i >= 2; i--) {
+            // 初始 schema 提供了最多 50 个可选口，新节点默认仅显示 value0。
+            for (let i = valueInputs.length - 1; i >= 1; i--) {
                 const slot = this.inputs.indexOf(valueInputs[i]);
                 if (slot >= 0 && valueInputs[i].link == null) this.removeInput(slot);
             }
@@ -66,7 +66,8 @@ app.registerExtension({
 
         /**
          * 与 easy-use 编号切换一致：所有现有值口都接上后才追加一个空口；
-         * 断开倒数第二个值口时，仅移除末尾多余的空口。最多 50 个值口。
+         * 断开后清除多余末尾空口，并保留已连接口后的一个空口；仅值0未连接时不留额外空口。
+         * 最多 50 个值口。
          */
         nodeType.prototype.updateInputSlots = function (slotIndex, isConnected) {
             if (!this.inputs) return;
@@ -85,15 +86,15 @@ app.registerExtension({
                     changed = true;
                 }
             } else if (!isConnected) {
-                const changedInput = this.inputs[slotIndex];
-                const valueIndex = valueInputs.indexOf(changedInput);
-                // 当倒数第二个值口断开且末尾口为空时，移除末尾空口，保留断开的口作为新末尾。
-                if (valueIndex === valueInputs.length - 2 && valueInputs.length > 2) {
-                    const lastInput = valueInputs[valueInputs.length - 1];
-                    if (lastInput.link == null) {
-                        this.removeInput(this.inputs.indexOf(lastInput));
-                        changed = true;
-                    }
+                // 保留所有已连接口，并确保其后恰有一个空口；若只剩未连接的值0，则不留额外空口。
+                let lastConnectedIndex = -1;
+                for (let i = 0; i < valueInputs.length; i++) {
+                    if (valueInputs[i].link != null) lastConnectedIndex = i;
+                }
+                const desiredCount = lastConnectedIndex < 0 ? 1 : lastConnectedIndex + 2;
+                while (valueInputs.length > desiredCount) {
+                    this.removeInput(this.inputs.indexOf(valueInputs.pop()));
+                    changed = true;
                 }
             }
 

@@ -270,13 +270,13 @@ For multimodal fusion mode, reference labels can also include:
 
 ## 5. Writing Rules
 
-1. Write descriptions in English; preserve dialogue, lyrics, and visible scene text in their ORIGINAL language (Chinese stays Chinese, English stays English).
-2. Each shot must include: composition, subjects, environment, actions, camera movement, sound, and dialogue where applicable.
+1. Write description text in the language selected in Section 7: English for English-only output, Chinese for Chinese-only output, and English for the English version of bilingual output. Preserve dialogue, lyrics, and visible scene text in their ORIGINAL language.
+2. Describe the composition, subjects, environment, actions, camera movement, sound, and dialogue when relevant and supported by the user's input or reference materials. Do not force every element into every shot or invent unsupported details; use a static camera or omit a detail when appropriate.
 3. Avoid plot summaries — write what is visible and audible at each moment.
 4. Keep dialogue length proportional to shot length (avoid long dialogue in a 3s shot).
 5. The speaker's identifying phrase, ID, and delivery go outside `<d>`; inside `<d>` only the language tag and actual spoken content.
 6. If no reference images: skip the alignment instruction, begin with `integrated_multimodal_description`.
-7. Non-diegetic music: do not add N/A unless the user explicitly requests no background music.
+7. Use `N/A` for `non_diegetic_music` when there is no non-diegetic background score, including when the user requests no background music. Use `N/A` for `overall_soundscape` only when the user explicitly requests complete silence throughout the video.
 
 ## 6. Full-Reference Mode (Ref2VA) — Six-Section Format
 
@@ -366,7 +366,7 @@ The target video is in a cinematic, literary music-video style with soft lightin
 [Shot 1] The scene opens in a crowded urban street...
 ```
 
-- For generation tasks, `detailed_description` is normally 350-500 English words.
+- For generation tasks, `detailed_description` is normally 350-500 words in the selected output language. For video-editing tasks, scale the description to the source video's complexity; do not force the generation-task word count. When dialogue is dense, preserve the complete spoken timeline rather than mechanically reaching a word count.
 - At the first appearance of an important `<Subject N>`, describe its referenced characteristics, position, and current action. Reuse the same label in later shots without redefining it.
 - When a referenced subject speaks, write: `<Subject 2> (S1) turns toward the woman and says, <d>[English] ...</d>`
 - `<Subject N>` identifies the referenced subject; `(Sx)` identifies the actual speaker.
@@ -443,6 +443,7 @@ _H3_OUTPUT_FORMAT_CN = """
 ## 7. Output Format
 
 ⚠️ IMPORTANT: Output the CHINESE VERSION ONLY. Do NOT output an English version. Do NOT output separator lines.
+All descriptive prose in every section, including `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, and `non_diegetic_music`, must be in Chinese. This language instruction overrides English wording and examples elsewhere in the prompt. Keep required field names, reference labels, and fixed relationship markers such as `fully_preserved` in English; preserve dialogue, lyrics, and visible text in their original language.
 
 ### T2VA / I2VA / FL2VA / L2VA (three core fields):
 
@@ -643,7 +644,7 @@ _QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. 
 
 _QWEN_IMAGE21_SYSTEM_EDIT = """You are a Qwen-Image-2.1 image-editing prompt rewriting expert. Rewrite the user's request as one direct, precise English edit instruction. Identify the requested change and make it unambiguous; explicitly preserve all unrelated subjects, composition, identity, pose, lighting, scene, and visible text. When describing a person or object, state its natural relationship with the surrounding environment where relevant: placement, contact or interaction, depth, and physically coherent ambient light, cast shadows, reflected light, diffuse light, and material reflectance. For multiple reference images, use the exact tags <image1>, <image2>, etc. to name their roles; for one image, refer to it naturally as the image. Preserve every explicitly requested text string exactly, including spelling, capitalization, punctuation, line breaks, placement, and typography. Do not add negative prompts, parameters, headings, explanations, or commentary. Output only the final prompt."""
 
-_PROMPT_TRANSLATE_TO_CHINESE_SYSTEM = """Translate the supplied optimized generation prompt from English into Chinese.
+_PROMPT_TRANSLATE_TO_CHINESE_SYSTEM = """Translate the supplied optimized prompt from English into Chinese.
 
 Preserve every requirement, field name, reference label, tag, timestamp, number, quoted on-image text, dialogue, lyric, and formatting structure exactly. Translate descriptive prose only; dialogue, lyrics, and visible text must remain in their original language. Do not optimize, rewrite, add, omit, summarize, explain, or add headings. Output only the translated Chinese prompt."""
 
@@ -677,14 +678,25 @@ def _xzg_build_system_prompt(output_language):
 class XiaozhuguangNinimaxH3Prompt:
     """小珠光通用提示词优化节点
 
-    架构：单次 LLM 调用。可按需在同一次调用中附带中文版本，
-    避免双次调用的翻译式架构。
+    H3 输出先生成英文提示词；选择中文或双语时，再调用一次翻译生成中文版本。
 
     依赖 BSAI MiniMAX H3 Prompt 插件的模型加载器（BSAI_QWEN_MODEL 类型输入）。
     """
 
     @classmethod
     def INPUT_TYPES(s):
+        optional_inputs = {
+            "image_1": ("IMAGE", {"tooltip": "可选：参考图片1 / Reference image 1"}),
+            "image_2": ("IMAGE", {"tooltip": "可选：参考图片2 / Reference image 2"}),
+            "image_3": ("IMAGE", {"tooltip": "可选：参考图片3 / Reference image 3"}),
+            "image_4": ("IMAGE", {"tooltip": "可选：参考图片4 / Reference image 4"}),
+            "image_5": ("IMAGE", {"tooltip": "可选：参考图片5 / Reference image 5"}),
+            "image_6": ("IMAGE", {"tooltip": "可选：参考图片6 / Reference image 6"}),
+            "image_7": ("IMAGE", {"tooltip": "可选：参考图片7 / Reference image 7"}),
+            "image_8": ("IMAGE", {"tooltip": "可选：参考图片8 / Reference image 8"}),
+            "image_9": ("IMAGE", {"tooltip": "可选：参考图片9 / Reference image 9"}),
+            "image_10": ("IMAGE", {"tooltip": "可选：参考图片10 / Reference image 10"}),
+        }
         return {
             "required": {
                 "qwen_model": ("BSAI_QWEN_MODEL",),
@@ -717,18 +729,7 @@ class XiaozhuguangNinimaxH3Prompt:
                     },
                 ),
             },
-            "optional": {
-                "image_1": ("IMAGE", {"tooltip": "可选：参考图片1 / Reference image 1"}),
-                "image_2": ("IMAGE", {"tooltip": "可选：参考图片2 / Reference image 2"}),
-                "image_3": ("IMAGE", {"tooltip": "可选：参考图片3 / Reference image 3"}),
-                "image_4": ("IMAGE", {"tooltip": "可选：参考图片4 / Reference image 4"}),
-                "image_5": ("IMAGE", {"tooltip": "可选：参考图片5 / Reference image 5"}),
-                "image_6": ("IMAGE", {"tooltip": "可选：参考图片6 / Reference image 6"}),
-                "image_7": ("IMAGE", {"tooltip": "可选：参考图片7 / Reference image 7"}),
-                "image_8": ("IMAGE", {"tooltip": "可选：参考图片8 / Reference image 8"}),
-                "image_9": ("IMAGE", {"tooltip": "可选：参考图片9 / Reference image 9"}),
-                "image_10": ("IMAGE", {"tooltip": "可选：参考图片10 / Reference image 10"}),
-            },
+            "optional": optional_inputs,
             "hidden": {
                 "no_bgm": ("BOOLEAN", {"default": False}),
                 "aspect_ratio": (["16:9"], {"default": "16:9"}),
@@ -763,7 +764,7 @@ class XiaozhuguangNinimaxH3Prompt:
             "Image to Video (I2VA)": "Current mode: I2VA (Image to Video). First-frame instruction + T2VA body. The user will upload images. Use the first-frame alignment instruction: 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.' Develop forward from the first frame. If two images are provided, treat as first frame + last frame (FL2VA) — switch to the FL2VA alignment instruction and drop the angle brackets around Picture and square brackets around Shot (see FL2VA mode hint).",
             "First+Last Frame (FL2VA)": "Current mode: FL2VA (First+Last Frame). T2VA body + first-and-last-frame instruction. Picture 1 is the opening, Picture 2 is the ending. Describe the continuous path connecting them. Use alignment instruction: 'How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video.' IMPORTANT: In FL2VA only, write Picture 1/Picture 2 WITHOUT angle brackets and Shot 1/Shot N WITHOUT square brackets — both in the alignment instruction and in the body. Focus on how the subject moves, poses change, composition evolves. Generally favor a single shot so the model can interpolate continuously.",
             "Last Frame (L2VA)": "Current mode: L2VA (Last Frame). T2VA body + last-frame instruction. Picture 1 is the final frame, belonging to the last [Shot N]. Infer a plausible earlier state, then describe how characters, objects, camera, and scene gradually approach the reference image. Use alignment instruction: 'How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.' Recommended structure: plausible preceding state → explicit action/transition → gradual convergence in final shot → last-frame landing.",
-            "Full Reference (Ref2VA)": "Current mode: Ref2VA (Full Reference). The user may upload character images, action videos, scene images, music, etc. Use the full-reference six-section format (see Section 6 of the system prompt): subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Key rules: (1) Define reference labels <Subject N>, <Picture N>, <Video N>, <Audio N> in subject_definitions — each label keeps the same meaning across all sections. (2) summary begins with a task-type prefix: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference — combine with ' + ' when multiple apply. (3) retention_analysis uses markers: visible content → fully_preserved / partially_preserved / attribute_transfer / weak_reference; audio → fully_copy / partially_copy / reference / weak_reference. (4) The main field is detailed_description (NOT integrated_multimodal_description), 350-500 English words for generation tasks. Establish style in 1-2 sentences BEFORE [Shot 1]. Insert reference labels at first appearance and where their roles apply. (5) When a referenced subject speaks, write <Subject N> (Sx). No alignment instruction needed.",
+            "Full Reference (Ref2VA)": "Current mode: Ref2VA (Full Reference). The user may upload character images, action videos, scene images, music, etc. Use the full-reference six-section format (see Section 6 of the system prompt): subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Key rules: (1) Define reference labels <Subject N>, <Picture N>, <Video N>, <Audio N> in subject_definitions — each label keeps the same meaning across all sections. (2) summary begins with a task-type prefix: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference — combine with ' + ' when multiple apply. (3) retention_analysis uses markers: visible content → fully_preserved / partially_preserved / attribute_transfer / weak_reference; audio → fully_copy / partially_copy / reference / weak_reference. (4) The main field is detailed_description (NOT integrated_multimodal_description), normally 350-500 words in the selected output language for generation tasks. Establish style in 1-2 sentences BEFORE [Shot 1]. Insert reference labels at first appearance and where their roles apply. (5) When a referenced subject speaks, write <Subject N> (Sx). No alignment instruction needed.",
         }
 
         user_message_parts = [
@@ -1056,11 +1057,9 @@ class XiaozhuguangNinimaxH3Prompt:
                     f"规则预设“{preset_name}”未在 ComfyUI 用户目录中找到。"
                     "请打开自定义提示词规则管理器确认预设已保存并完成云持久化。"
                 )
-            if output_language == "中英双语":
-                system_prompt = rule_text + "\n\nWrite the optimized prompt in English only. Output the result directly, without explanation."
+            if output_language in ("中英双语", "仅中文"):
+                system_prompt = rule_text + "\n\nApply the rules above, but write the optimized prompt in English only. This output-language instruction overrides any conflicting language instruction in the rule text. Output the result directly, without explanation."
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
-            elif output_language == "仅中文":
-                system_prompt = rule_text + "\n\n用中文输出优化后的提示词，直接输出结果，不要解释。"
             else:
                 system_prompt = rule_text + "\n\nWrite the optimized prompt in English. Output the result directly, without explanation."
             user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
@@ -1069,7 +1068,7 @@ class XiaozhuguangNinimaxH3Prompt:
             )
             print(f"[小珠光提示词] 自定义提示词规则：{preset_name}")
         elif is_qwen_image:
-            if output_language == "中英双语":
+            if output_language in ("中英双语", "仅中文"):
                 system_prompt = _xzg_qwen_image_system_prompt(generation_mode, "仅英文")
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             else:
@@ -1081,9 +1080,8 @@ class XiaozhuguangNinimaxH3Prompt:
             print(f"[小珠光 Qwen-Image-2.1] 模式：{generation_mode}")
         else:
             generation_mode = generation_mode.removeprefix(_H3_OPTION_PREFIX)
-            # 双语使用两次独立推理，避免模型在一次长回复中省略中文段；
-            # 单语只执行一次，因此仍可节省对应的计算。
-            if output_language == "中英双语":
+            # 中文与双语均先生成标准英文 H3 提示词，再单独翻译，避免语言指令冲突。
+            if output_language in ("中英双语", "仅中文"):
                 system_prompt = _xzg_build_system_prompt("仅英文")
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             else:
@@ -1135,7 +1133,7 @@ class XiaozhuguangNinimaxH3Prompt:
         if normalized_seed is not None:
             params["seed"] = normalized_seed
 
-        # ── LLM 调用：双语时先优化英文，再将英文精确翻译为中文。 ──
+        # ── LLM 调用：中文/双语模式先优化英文，再将英文精确翻译为中文。 ──
         print(f"[小珠光 H3] 推理：{output_language}")
         try:
             out = _xzg_call_chat_completion(llm, messages=messages, params=params)
@@ -1162,7 +1160,7 @@ class XiaozhuguangNinimaxH3Prompt:
 
         chinese_text = ""
         if secondary_system_prompt is not None:
-            print("[小珠光 H3] 双语模式：翻译中文版本...")
+            print("[小珠光] 翻译中文版本...")
             translation_source = text.lstrip().removeprefix(": ").strip()
             chinese_messages = self._build_messages(
                 secondary_system_prompt,
@@ -1196,7 +1194,7 @@ class XiaozhuguangNinimaxH3Prompt:
         if output_language == "仅英文":
             return (text, "")
         if output_language == "仅中文":
-            return ("", text)
+            return ("", chinese_text if secondary_system_prompt is not None else text)
         if secondary_system_prompt is not None:
             return (text, chinese_text)
         english, chinese = _xzg_split_bilingual_output(text)

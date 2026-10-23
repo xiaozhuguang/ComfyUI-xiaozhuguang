@@ -35,6 +35,34 @@ function xzgOrderedPromptRulePresetNames(presets) {
         return a.localeCompare(b);
     });
 }
+function xzgOrderedPromptRuleCategoryNames(presets) {
+    if (!presets || typeof presets !== "object" || Array.isArray(presets)) return [];
+    const categories = new Map();
+    let insertionIndex = 0;
+    for (const entry of Object.values(presets)) {
+        if (!entry || typeof entry !== "object") continue;
+        const category = String(entry.category || "").trim();
+        if (!category) continue;
+        const info = categories.get(category) || { firstIndex: insertionIndex, markerOrder: null, firstOrder: null };
+        const order = Number.isFinite(entry.order) ? entry.order : null;
+        if (entry._typeOnly && order !== null && order >= 0) {
+            info.markerOrder = info.markerOrder === null ? order : Math.min(info.markerOrder, order);
+        }
+        if (order !== null) info.firstOrder = info.firstOrder === null ? order : Math.min(info.firstOrder, order);
+        categories.set(category, info);
+        insertionIndex++;
+    }
+    return [...categories.entries()]
+        .sort(([nameA, a], [nameB, b]) => {
+            const orderA = a.markerOrder ?? a.firstOrder;
+            const orderB = b.markerOrder ?? b.firstOrder;
+            if (orderA !== null && orderB !== null && orderA !== orderB) return orderA - orderB;
+            if (orderA !== null && orderB === null) return -1;
+            if (orderA === null && orderB !== null) return 1;
+            return a.firstIndex - b.firstIndex || nameA.localeCompare(nameB);
+        })
+        .map(([name]) => name);
+}
 function xzgRefreshPromptRuleSelectionNames(presets) {
     if (!presets || typeof presets !== "object" || Array.isArray(presets)) return presets;
     const groups = new Map();
@@ -466,7 +494,7 @@ app.registerExtension({
                     const isQwen = oldValue === QWEN_IMAGE_TARGET || oldValue === QWEN_IMAGE_TARGET_EN || oldValue === "QWEN";
                     const presetNames = presets && typeof presets === "object" && !Array.isArray(presets)
                         ? xzgOrderedPromptRulePresetNames(presets).filter(name => !presets[name]?._typeOnly) : [];
-                    const presetCategories = [...new Set(Object.values(presets || {}).map(entry => String(entry?.category || "").trim()).filter(Boolean))];
+                    const presetCategories = supportsCustomPromptRules ? xzgOrderedPromptRuleCategoryNames(presets) : [];
                     const isCustomCategory = presetCategories.includes(oldValue);
                     const isCustom = supportsCustomPromptRules && (["自定义 Skill", "Custom Skill", "自定义提示词规则", "Custom Prompt Rules"].includes(oldValue) || isCustomCategory);
                     if (gmWidget) gmWidget.label = isCustom
@@ -474,15 +502,22 @@ app.registerExtension({
                         : (lang === "zh" ? "提示词细分" : "Prompt Subtype");
                     const values = supportsCustomPromptRules ? [...new Set([labels.h3, labels.qwen, ...presetCategories])] : [labels.h3, labels.qwen];
                     targetWidget.options.values = values;
+                    targetWidget.options.getOptionLabel = value =>
+                        supportsCustomPromptRules && presetCategories.includes(String(value))
+                            ? `✦ ${value}`
+                            : String(value ?? "");
                     const selectedType = isCustomCategory ? oldValue : labels.custom;
                     targetWidget.value = isCustom ? selectedType : isQwen ? labels.qwen : labels.h3;
                     if (gmWidget?.options) {
                         if (isCustom) {
                             const subtypeNames = presetNames.filter(name => String(presets[name]?.category || "自定义提示词规则") === selectedType).map(name => String(presets[name]?.selectionName || presets[name]?.name || name));
                             gmWidget.options.values = subtypeNames.length ? subtypeNames : [lang === "zh" ? "（请先保存规则预设）" : "(Save a rule preset first)"];
+                            gmWidget.options.getOptionLabel = value =>
+                                subtypeNames.includes(String(value)) ? `✦ ${value}` : String(value ?? "");
                             const wanted = gmWidget.value;
                             gmWidget.value = subtypeNames.includes(wanted) ? wanted : (subtypeNames[0] || gmWidget.options.values[0]);
                         } else if (isQwen) {
+                            gmWidget.options.getOptionLabel = undefined;
                             const oldMode = gmWidget.value;
                             gmWidget.options.values = QWEN_MODE_LABELS[lang] || QWEN_MODE_LABELS.zh;
                             const canonical = ({
@@ -492,6 +527,7 @@ app.registerExtension({
                             })[oldMode];
                             gmWidget.value = gmWidget.options.values[canonical ?? 0];
                         } else {
+                            gmWidget.options.getOptionLabel = undefined;
                             gmWidget.options.values = H3_GEN_MODES;
                             gmWidget.value = H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0];
                         }
@@ -953,12 +989,16 @@ app.registerExtension({
                         added.label = xzgLang() === "zh" ? `图片_${nextNum}` : `Image_${nextNum}`;
                         changed = true;
                     }
-                } else if (allowTrim && connected === false && imgInputs.length > 2) {
-                    // 只在倒数第二个图像口断开且末尾口为空时，删除末尾空口。
-                    const changedImageIndex = imgInputs.indexOf(this.inputs[changedSlotIndex]);
-                    const lastInput = imgInputs[imgInputs.length - 1];
-                    if (changedImageIndex === imgInputs.length - 2 && lastInput.link == null) {
-                        this.removeInput(this.inputs.indexOf(lastInput));
+                } else if (allowTrim && connected === false) {
+                    // 保留所有已连接图像口，并在其后保留一个空口；全部断开时只保留 image_1。
+                    // 从末尾口直接断开时，该口会作为末尾空口留下。
+                    let lastConnectedIndex = -1;
+                    for (let i = 0; i < imgInputs.length; i++) {
+                        if (imgInputs[i].link != null) lastConnectedIndex = i;
+                    }
+                    const desiredCount = lastConnectedIndex < 0 ? 1 : lastConnectedIndex + 2;
+                    while (imgInputs.length > desiredCount) {
+                        this.removeInput(this.inputs.indexOf(imgInputs.pop()));
                         changed = true;
                     }
                 }
