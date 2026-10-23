@@ -7644,7 +7644,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             <div class="vnccs-ps-library-modal-header">
                 <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
                 <div class="vnccs-ps-library-header-actions">
-                    <a class="vnccs-ps-btn primary vnccs-ps-library-download" href="https://pan.quark.cn/s/c64dc2e420b8" target="_blank" rel="noopener noreferrer" style="white-space:nowrap;text-decoration:none">${xzgTh("下载姿势库", "Download Pose Library")}</a>
+                    <a class="vnccs-ps-btn primary vnccs-ps-library-download" href="https://pan.quark.cn/s/8100b8a02e11" target="_blank" rel="noopener noreferrer" style="white-space:nowrap;text-decoration:none">${xzgTh("下载姿势库", "Download Pose Library")}</a>
                     <button class="vnccs-ps-btn primary vnccs-ps-library-transfer" style="white-space:nowrap">${xzgTh("导入／导出姿势库", "Import / Export Pose Library")}</button>
                 </div>
                 <button class="vnccs-ps-btn primary vnccs-ps-library-apply-selected" disabled>${xzgTh("应用姿势", "Apply Pose")}</button>
@@ -9602,7 +9602,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
     }
     showMessage(text, isError = false) {
-        const modelDownloadUrl = "https://pan.quark.cn/s/c64dc2e420b8";
+        const modelDownloadUrl = "https://pan.quark.cn/s/8100b8a02e11";
         const missingModel = String(text).includes(modelDownloadUrl);
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
@@ -9612,7 +9612,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
 
         const modal = document.createElement('div');
         modal.className = 'vnccs-ps-modal';
-        modal.style.maxWidth = missingModel ? "calc(100vw - 40px)" : "300px";
+        modal.style.maxWidth = missingModel ? "calc(100vw - 40px)" : "min(560px, calc(100vw - 40px))";
         if (missingModel) modal.style.width = "760px";
 
         const title = document.createElement('div');
@@ -9622,11 +9622,13 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         const content = document.createElement('div');
         content.className = 'vnccs-ps-modal-content';
         content.style.textAlign = 'center';
+        // Backend messages are multi-line (checked paths, pip commands), so keep
+        // the original line breaks instead of collapsing them into one line.
+        content.style.whiteSpace = "pre-wrap";
+        content.style.overflowWrap = "anywhere";
         content.textContent = text;
         if (missingModel) {
             title.textContent = "缺少识别模型";
-            content.style.whiteSpace = "pre-wrap";
-            content.style.overflowWrap = "anywhere";
             // Keep the backend message as-is: it already lists the model
             // directories that were checked and the models root that should
             // receive the vnccs-xzg folder (cloud installs differ from local

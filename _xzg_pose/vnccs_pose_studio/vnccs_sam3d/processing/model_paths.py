@@ -132,7 +132,7 @@ def missing_model_message(relative_parts, label, required_files=()):
     tail = tuple(relative_parts)[1:]
     lines = [
         f"缺少 {label} 模型，请手动下载并解压安装。",
-        "下载地址：https://pan.quark.cn/s/c64dc2e420b8",
+        "下载地址：https://pan.quark.cn/s/8100b8a02e11",
         "已查找以下 models 目录（[缺失] 表示目录不存在或缺少必需文件）：",
     ]
     roots = candidate_models_roots()

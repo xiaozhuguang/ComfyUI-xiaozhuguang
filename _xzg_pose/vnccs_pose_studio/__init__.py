@@ -1,3 +1,9 @@
+from .deps import (
+    dependency_error_message,
+    ensure_pose_dependencies,
+    pose_dependency_state,
+)
+
 from .nodes.pose_studio import VNCCS_PoseStudio
 
 NODE_CLASS_MAPPINGS = {
@@ -132,6 +138,10 @@ def _vnccs_register_sam3d_pose_import():
 
                 progress.start_task(task_id)
                 with progress.task_context(task_id):
+                    progress.update("Step 0/6: 检查姿势识别依赖…", 1)
+                    deps_result = ensure_pose_dependencies()
+                    if deps_result["missing"]:
+                        raise RuntimeError(dependency_error_message())
                     progress.update("Step 1/6: Image uploaded. Preparing SAM 3D Body import...", 2)
                     try:
                         pose_result = sam3d.process_image_to_pose_json(image_tensor)
@@ -162,18 +172,19 @@ def _vnccs_register_sam3d_pose_import():
                 "model_unload": unload_result,
             })
         except Exception as e:
+            message = dependency_error_message(exc=e) if isinstance(e, ModuleNotFoundError) else str(e)
             try:
                 from .nodes.pose_studio import _load_bundled_sam3d
                 import importlib
                 sam3d = _load_bundled_sam3d()
                 progress = importlib.import_module(f"{sam3d.__name__}.progress")
                 with progress.task_context(task_id if "task_id" in locals() else ""):
-                    progress.fail(str(e))
+                    progress.fail(message)
             except Exception:
                 pass
             import traceback
             traceback.print_exc()
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": message}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/sam3d/render_mesh_overlay")
     async def vnccs_sam3d_render_mesh_overlay(request):
@@ -195,6 +206,9 @@ def _vnccs_register_sam3d_pose_import():
                 sam3d = _load_bundled_sam3d()
                 pose_import = importlib.import_module(f"{sam3d.__name__}.pose_import")
 
+                deps_result = ensure_pose_dependencies()
+                if deps_result["missing"]:
+                    raise RuntimeError(dependency_error_message())
                 return pose_import.process_pose_json_to_overlay_mesh(
                     pose_data,
                     body_preset=body_preset,
@@ -204,8 +218,13 @@ def _vnccs_register_sam3d_pose_import():
             mesh_data = await asyncio.to_thread(build_overlay)
             return web.json_response({"status": "success", "mesh": mesh_data})
         except Exception as e:
+            message = dependency_error_message(exc=e) if isinstance(e, ModuleNotFoundError) else str(e)
             import traceback
             traceback.print_exc()
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": message}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/sam3d/dependency_status")
+    async def vnccs_sam3d_dependency_status(request):
+        return web.json_response(pose_dependency_state())
 
 _vnccs_register_sam3d_pose_import()
