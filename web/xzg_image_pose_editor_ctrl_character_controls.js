@@ -9627,13 +9627,11 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             title.textContent = "缺少识别模型";
             content.style.whiteSpace = "pre-wrap";
             content.style.overflowWrap = "anywhere";
-            const parts = String(text).replace(
-                "获取图片姿势失败：缺少 SAM 3D Body 模型，",
-                "获取图片姿势失败，",
-            ).replace(
-                /存放目录：[\s\S]*$/,
-                "存放目录：将压缩包解压后，vnccs-xzg文件夹放入E:\\ComfyUI-aki-XZG\\ComfyUI\\models\\",
-            ).split(modelDownloadUrl);
+            // Keep the backend message as-is: it already lists the model
+            // directories that were checked and the models root that should
+            // receive the vnccs-xzg folder (cloud installs differ from local
+            // Windows paths), so only the download URL is linkified.
+            const parts = String(text).split(modelDownloadUrl);
             content.replaceChildren(document.createTextNode(parts[0]));
             for (const part of parts.slice(1)) {
                 const link = document.createElement("a");

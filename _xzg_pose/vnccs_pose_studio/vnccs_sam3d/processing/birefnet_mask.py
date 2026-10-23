@@ -4,19 +4,17 @@ Used when the ComfyUI node graph does not provide a MASK input.
 The model snapshot is stored under <ComfyUI>/models/vnccs-xzg/birefnet/BiRefNet_lite.
 """
 
-import os
 import threading
 
 import cv2
 import numpy as np
 from PIL import Image
 
-import folder_paths
-
 from .. import progress
+from .model_paths import missing_model_message, resolve_model_dir
 
-_MODEL_DIR = os.path.join(folder_paths.models_dir, "vnccs-xzg", "birefnet", "BiRefNet_lite")
-_LEGACY_MODEL_DIR = os.path.join(folder_paths.models_dir, "birefnet", "BiRefNet_lite")
+_BIREFNET_RELATIVE_PARTS = ("vnccs-xzg", "birefnet", "BiRefNet_lite")
+_BIREFNET_REQUIRED_FILES = ("config.json",)
 _MODEL_LOCK = threading.Lock()
 _MODEL = None
 _DEVICE = None
@@ -34,15 +32,16 @@ def _select_device():
 
 
 def _ensure_snapshot():
-    if os.path.isfile(os.path.join(_MODEL_DIR, "config.json")):
-        return _MODEL_DIR
-    if os.path.isfile(os.path.join(_LEGACY_MODEL_DIR, "config.json")):
-        return _LEGACY_MODEL_DIR
+    model_dir = resolve_model_dir(_BIREFNET_RELATIVE_PARTS, _BIREFNET_REQUIRED_FILES)
+    if model_dir:
+        return model_dir
 
     raise RuntimeError(
-        "缺少 BiRefNet Lite 模型，请手动下载并解压安装。\n"
-        "下载地址：https://pan.quark.cn/s/c64dc2e420b8\n"
-        "存放目录：将压缩包解压后，vnccs-xzg文件夹放入E:\\ComfyUI-aki-XZG\\ComfyUI\\models\\\n"
+        missing_model_message(
+            _BIREFNET_RELATIVE_PARTS,
+            "BiRefNet Lite",
+            _BIREFNET_REQUIRED_FILES,
+        )
     )
 
 

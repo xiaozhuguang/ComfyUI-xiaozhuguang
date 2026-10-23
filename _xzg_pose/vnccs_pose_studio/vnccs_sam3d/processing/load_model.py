@@ -1,10 +1,13 @@
 import os
-import folder_paths
 
+from .model_paths import missing_model_message, resolve_model_dir
 
-# Pose Studio models share a dedicated folder under ComfyUI/models.
-MODEL_DIR = os.path.join(folder_paths.models_dir, "vnccs-xzg", "sam3dbody")
-LEGACY_MODEL_DIR = os.path.join(folder_paths.models_dir, "sam3dbody")
+# Pose Studio model layout: <ComfyUI>/models/vnccs-xzg/sam3dbody/
+SAM3D_RELATIVE_PARTS = ("vnccs-xzg", "sam3dbody")
+# model_config.yaml is intentionally not required: sam_3d_body falls back to
+# the bundled copy under vnccs_sam3d/sam_3d_body/configs/ when the model
+# folder does not ship one.
+SAM3D_REQUIRED_FILES = ("model.ckpt", os.path.join("assets", "mhr_model.pt"))
 DEVICE_OPTIONS = ["Auto", "CUDA", "CPU"]
 
 
@@ -29,6 +32,8 @@ class LoadSAM3DBodyModel:
 
     Model files live in `<ComfyUI>/models/vnccs-xzg/sam3dbody/`;
     existing installations under `<ComfyUI>/models/sam3dbody/` remain usable.
+    Every plausible models root is searched (folder_paths.models_dir, the
+    ComfyUI install that contains this plugin, and XZG_VNCCS_MODEL_DIR).
     Missing weights require manual installation from the supplied download link.
     The actual model is loaded lazily inside the isolated worker when
     inference runs.
@@ -54,18 +59,15 @@ class LoadSAM3DBodyModel:
         """Prepare model config (actual loading happens in inference nodes)."""
         resolved_device = _resolve_device(device_mode)
 
-        model_path = MODEL_DIR
-        if not _model_files_exist(model_path) and _model_files_exist(LEGACY_MODEL_DIR):
-            model_path = LEGACY_MODEL_DIR
+        model_path = resolve_model_dir(SAM3D_RELATIVE_PARTS, SAM3D_REQUIRED_FILES)
+        if not model_path:
+            raise RuntimeError(
+                missing_model_message(SAM3D_RELATIVE_PARTS, "SAM 3D Body", SAM3D_REQUIRED_FILES)
+            )
+
         ckpt_path = os.path.join(model_path, "model.ckpt")
         mhr_path = os.path.join(model_path, "assets", "mhr_model.pt")
-
-        if not _model_files_exist(model_path):
-            raise RuntimeError(
-                "缺少 SAM 3D Body 模型，请手动下载并解压安装。\n"
-                "下载地址：https://pan.quark.cn/s/c64dc2e420b8\n"
-                "存放目录：将压缩包解压后，vnccs-xzg文件夹放入E:\\ComfyUI-aki-XZG\\ComfyUI\\models\\\n"
-            )
+        print(f"[SAM3DBody] Using SAM 3D Body model directory: {model_path}")
 
         # Return config dict (not the actual model)
         model_config = {
@@ -87,11 +89,3 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadSAM3DBodyModel": "Load SAM 3D Body Model",
 }
-
-
-def _model_files_exist(model_path):
-    return (
-        os.path.isfile(os.path.join(model_path, "model.ckpt"))
-        and os.path.isfile(os.path.join(model_path, "assets", "mhr_model.pt"))
-        and os.path.isfile(os.path.join(model_path, "model_config.yaml"))
-    )

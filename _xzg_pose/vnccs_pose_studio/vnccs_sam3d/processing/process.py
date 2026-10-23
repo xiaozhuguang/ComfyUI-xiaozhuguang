@@ -1095,13 +1095,14 @@ def _resolve_default_model_paths():
     can still find ``model.ckpt`` / ``mhr_model.pt`` under the standard
     ``<ComfyUI>/models/vnccs-xzg/sam3dbody/`` layout, while keeping
     compatibility with the former ``models/sam3dbody/`` location."""
-    import folder_paths
-    model_path = os.path.join(folder_paths.models_dir, "vnccs-xzg", "sam3dbody")
-    legacy_model_path = os.path.join(folder_paths.models_dir, "sam3dbody")
+    from .model_paths import model_dirs, resolve_model_dir
+
+    relative_parts = ("vnccs-xzg", "sam3dbody")
     required_files = ("model.ckpt", os.path.join("assets", "mhr_model.pt"))
-    if not all(os.path.isfile(os.path.join(model_path, item)) for item in required_files):
-        if all(os.path.isfile(os.path.join(legacy_model_path, item)) for item in required_files):
-            model_path = legacy_model_path
+    model_path = resolve_model_dir(relative_parts, required_files)
+    if not model_path:
+        candidates = model_dirs(relative_parts)
+        model_path = candidates[0] if candidates else os.path.join("models", *relative_parts)
     return {
         "model_path": model_path,
         "ckpt_path":  os.path.join(model_path, "model.ckpt"),
