@@ -1,6 +1,6 @@
 import os
 
-from .model_paths import missing_model_message, resolve_model_dir
+from .model_paths import ensure_sam3d_downloaded, missing_model_message, resolve_model_dir
 
 # Pose Studio model layout: <ComfyUI>/models/vnccs-xzg/sam3dbody/
 SAM3D_RELATIVE_PARTS = ("vnccs-xzg", "sam3dbody")
@@ -34,7 +34,7 @@ class LoadSAM3DBodyModel:
     existing installations under `<ComfyUI>/models/sam3dbody/` remain usable.
     Every plausible models root is searched (folder_paths.models_dir, the
     ComfyUI install that contains this plugin, and XZG_VNCCS_MODEL_DIR).
-    Missing weights require manual installation from the supplied download link.
+    Missing weights are fetched from the official gated Hugging Face repository.
     The actual model is loaded lazily inside the isolated worker when
     inference runs.
     """
@@ -60,6 +60,9 @@ class LoadSAM3DBodyModel:
         resolved_device = _resolve_device(device_mode)
 
         model_path = resolve_model_dir(SAM3D_RELATIVE_PARTS, SAM3D_REQUIRED_FILES)
+        if not model_path:
+            model_path = ensure_sam3d_downloaded()
+            model_path = resolve_model_dir(SAM3D_RELATIVE_PARTS, SAM3D_REQUIRED_FILES) or model_path
         if not model_path:
             raise RuntimeError(
                 missing_model_message(SAM3D_RELATIVE_PARTS, "SAM 3D Body", SAM3D_REQUIRED_FILES)

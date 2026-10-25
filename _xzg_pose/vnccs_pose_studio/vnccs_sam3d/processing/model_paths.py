@@ -16,10 +16,95 @@ models root or directly at the ``vnccs-xzg`` folder.
 from __future__ import annotations
 
 import os
+import shutil
+import threading
 
 NESTED_DIR = "vnccs-xzg"
 _ENV_VARS = ("XZG_VNCCS_MODEL_DIR", "VNCCS_XZG_MODEL_DIR")
 _MAX_NESTING = 2
+_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _download_repo_files(repo_id, relative_parts, filenames, label, revision="main"):
+    """Download only missing files from Hugging Face into the resolved model directory."""
+    roots = candidate_models_roots()
+    if not roots:
+        raise RuntimeError("无法定位 ComfyUI 的 models 目录，请设置 XZG_VNCCS_MODEL_DIR。")
+    model_dir = os.path.join(roots[0], *relative_parts)
+    os.makedirs(model_dir, exist_ok=True)
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            f"下载 {label} 需要 huggingface_hub。请在 ComfyUI Python 环境运行："
+            "python -m pip install -U huggingface_hub"
+        ) from exc
+
+    with _DOWNLOAD_LOCK:
+        for filename in filenames:
+            destination = os.path.join(model_dir, *filename.split("/"))
+            if os.path.isfile(destination) and os.path.getsize(destination) > 0:
+                continue
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            print(f"[VNCCS] Downloading {label}: {filename} from {repo_id}")
+            try:
+                cached = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    revision=revision,
+                )
+                if os.path.normcase(os.path.abspath(cached)) != os.path.normcase(os.path.abspath(destination)):
+                    shutil.copy2(cached, destination)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"自动下载 {label} 失败（{repo_id}/{filename}）：{exc}\n"
+                    "请确认网络可访问 Hugging Face；若仓库为 gated 模型，请先登录 Hugging Face、"
+                    "接受模型许可，并设置 HF_TOKEN 环境变量后重启 ComfyUI。"
+                ) from exc
+    return model_dir
+
+
+def ensure_sam3d_downloaded():
+    """Fetch the official gated SAM 3D Body files when they are absent locally."""
+    parts = (NESTED_DIR, "sam3dbody")
+    required = ("model.ckpt", "assets/mhr_model.pt")
+    existing = resolve_model_dir(parts, required)
+    if existing:
+        return existing
+    return _download_repo_files(
+        "facebook/sam-3d-body-dinov3", parts, required, "SAM 3D Body"
+    )
+
+
+def ensure_birefnet_downloaded():
+    """Fetch the public BiRefNet Lite snapshot when absent locally."""
+    parts = (NESTED_DIR, "birefnet", "BiRefNet_lite")
+    if resolve_model_dir(parts, ("config.json",)):
+        return resolve_model_dir(parts, ("config.json",))
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "下载 BiRefNet Lite 需要 huggingface_hub。请在 ComfyUI Python 环境运行："
+            "python -m pip install -U huggingface_hub"
+        ) from exc
+    roots = candidate_models_roots()
+    if not roots:
+        raise RuntimeError("无法定位 ComfyUI 的 models 目录，请设置 XZG_VNCCS_MODEL_DIR。")
+    model_dir = os.path.join(roots[0], *parts)
+    os.makedirs(model_dir, exist_ok=True)
+    with _DOWNLOAD_LOCK:
+        try:
+            snapshot_download(
+                repo_id="ZhengPeng7/BiRefNet_lite",
+                local_dir=model_dir,
+                ignore_patterns=["*.md", ".gitattributes"],
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"自动下载 BiRefNet Lite 失败：{exc}\n请确认网络可访问 Hugging Face。"
+            ) from exc
+    return model_dir
 
 
 def _add_unique(items, seen, path):
@@ -131,9 +216,7 @@ def missing_model_message(relative_parts, label, required_files=()):
     """Actionable error text listing the searched models roots."""
     tail = tuple(relative_parts)[1:]
     lines = [
-        f"缺少 {label} 模型，请手动下载并解压安装。",
-        "下载地址：https://pan.quark.cn/s/cc821bebe0fe?pwd=tVwP",
-        "提取码：tVwP",
+        f"缺少 {label} 模型，插件会尝试从 Hugging Face 自动下载。",
         "已查找以下 models 目录（[缺失] 表示目录不存在或缺少必需文件）：",
     ]
     roots = candidate_models_roots()
@@ -147,13 +230,9 @@ def missing_model_message(relative_parts, label, required_files=()):
         names = "、".join(item.replace(os.sep, "/") for item in required_files)
         lines.append(f"必需文件：{names}")
     root = roots[0] if roots else "models"
-    lines.append(f"存放目录：将压缩包解压后，把 {NESTED_DIR} 文件夹放入 {root}")
+    lines.append(f"存放目录：{os.path.join(root, NESTED_DIR)}")
     lines.append(f"正确结构示例：{os.path.join(root, NESTED_DIR, *tail)}")
-    lines.append(
-        f"解压时多套一层 {NESTED_DIR} 目录会被自动识别。"
-        "若模型在其他位置，可设置环境变量 XZG_VNCCS_MODEL_DIR "
-        f"指向包含 {NESTED_DIR} 的 models 目录后重启 ComfyUI。"
-    )
+    lines.append("若模型在其他位置，可设置环境变量 XZG_VNCCS_MODEL_DIR 指向模型目录后重启 ComfyUI。")
     return "\n".join(lines)
 
 

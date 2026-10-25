@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from .. import progress
-from .model_paths import missing_model_message, resolve_model_dir
+from .model_paths import ensure_birefnet_downloaded, missing_model_message, resolve_model_dir
 
 _BIREFNET_RELATIVE_PARTS = ("vnccs-xzg", "birefnet", "BiRefNet_lite")
 _BIREFNET_REQUIRED_FILES = ("config.json",)
@@ -35,14 +35,13 @@ def _ensure_snapshot():
     model_dir = resolve_model_dir(_BIREFNET_RELATIVE_PARTS, _BIREFNET_REQUIRED_FILES)
     if model_dir:
         return model_dir
-
-    raise RuntimeError(
-        missing_model_message(
-            _BIREFNET_RELATIVE_PARTS,
-            "BiRefNet Lite",
-            _BIREFNET_REQUIRED_FILES,
-        )
-    )
+    model_dir = ensure_birefnet_downloaded()
+    resolved = resolve_model_dir(_BIREFNET_RELATIVE_PARTS, _BIREFNET_REQUIRED_FILES)
+    if resolved:
+        return resolved
+    raise RuntimeError(missing_model_message(
+        _BIREFNET_RELATIVE_PARTS, "BiRefNet Lite", _BIREFNET_REQUIRED_FILES
+    ))
 
 
 def _load_model():
