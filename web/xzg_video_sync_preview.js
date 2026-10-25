@@ -75,7 +75,7 @@ function nodeHasVideo(node) {
     return false;
 }
 
-/** 从节点取视频 { url, name, skipFrames?, frameLimit? }，取不到返回 null */
+/** 从节点取视频 { url, name }（不带节点的裁剪区间），取不到返回 null */
 function getVideoFromNode(node) {
     const p = node && node._xzgVideoPlayer;
     if (!p) return null;
@@ -85,10 +85,14 @@ function getVideoFromNode(node) {
     }
     if (!src) return null;
     const item = { url: src, name: _extractFilename(src) };
-    // 携带节点播放器已应用的加载范围（跳过帧数/帧数上限）：
-    // 对比预览创建的是全新播放器，不传的话会播放完整视频，与节点内裁剪后预览不一致
-    if (typeof p._skipFrames === "number" && p._skipFrames > 0) item.skipFrames = p._skipFrames;
-    if (typeof p._frameLimit === "number" && p._frameLimit > 0) item.frameLimit = p._frameLimit;
+    // 携带节点自身播放器已应用的加载范围（跳过帧数/帧数上限）：
+    // 对比窗口里各视频可以各自有区间（左侧裁剪、右侧完整），
+    // 起播/逐帧/拖动都按「各自区间内的相对帧号」对齐（见 seekPlayerToOffset）
+    // 预览覆盖（批处理逐段产出的片段文件）本身就是裁好的，再套 skip/limit 会二次偏移
+    if (!p._previewLoaded) {
+        if (typeof p._skipFrames === "number" && p._skipFrames > 0) item.skipFrames = p._skipFrames;
+        if (typeof p._frameLimit === "number" && p._frameLimit > 0) item.frameLimit = p._frameLimit;
+    }
     return item;
 }
 
@@ -741,7 +745,8 @@ function openSyncPreview(items) {
             onPause: () => syncPause(),
         });
         player.setMuted(true); // 多视频同播默认静音，避免声音混杂
-        // 应用节点加载范围（跳过帧数/帧数上限）：对比播放器与节点内预览保持相同的裁剪
+        // 各自套用节点的裁剪区间（跳过帧数/帧数上限）：左侧可只播自己的区间、右侧播完整，
+        // 起播与逐帧都按「各自区间内的相对帧号」对齐（见 seekPlayerToOffset）
         if (it.skipFrames || it.frameLimit) {
             try { player.setLoadRange(it.skipFrames || 0, it.frameLimit || 0); } catch (_) {}
         }
@@ -829,25 +834,71 @@ function openSyncPreview(items) {
         }
         return players[0];
     };
+    // ── 按「各自区间内的相对帧号」对齐各路视频 ──────────────────────────
+    // 各路可以有自己的裁剪区间：左侧 100~200（100 帧）、右侧 0~100（100 帧）时，
+    // 左边第 100 帧对应右边第 0 帧 —— 两边都从「自己区间的起点」开始，按偏移一起播/逐帧。
+    const playerFps = (p) => (p.player.getFrameRate ? p.player.getFrameRate() : (p.player._frameRate || 24)) || 24;
+    const playerEndFrame = (p) => {
+        let end = 0;
+        try { end = p.player._computeEndFrame ? p.player._computeEndFrame() : 0; } catch (_) {}
+        if (!end || end <= 0) end = p.player.getSourceTotalFrames ? p.player.getSourceTotalFrames() : 0;
+        return end;
+    };
+    // 某一路的区间：skip=起点帧，len=区间帧数
+    const playerRange = (p) => {
+        const skip = Math.max(0, Number(p.player._skipFrames) || 0);
+        const stop = playerEndFrame(p);
+        return { skip, len: Math.max(0, stop - skip) };
+    };
+    // 对比长度 = 各路区间长度的最小值（某一路播完就没法再对比）
+    const compareLength = () => {
+        const lens = players.map((p) => playerRange(p).len).filter((n) => n > 0);
+        return lens.length ? Math.min(...lens) : 0;
+    };
+    // 对比时间轴长度（帧）：进度条/时间码都按它换算，与各路的跳过帧无关（始终从 0 开始）
+    const timelineFrames = () => {
+        const len = compareLength();
+        if (len > 0) return len;
+        const main = pickMain();
+        return playerRange(main).len || Math.round((main.player.duration || 0) * playerFps(main));
+    };
+    // 某一路当前位于「自己区间内」的第几帧
+    const playerOffsetFrames = (p) => {
+        const cur = Math.round((p.player.currentTime || 0) * playerFps(p));
+        return cur - playerRange(p).skip;
+    };
+    // 按「区间内偏移」seek：各自 seek 到自身起点 + offset，并 clamp 在自己的区间内
+    const seekPlayerToOffset = (p, offset) => {
+        const { skip, len } = playerRange(p);
+        const off = Math.max(0, len > 0 ? Math.min(offset, len) : offset);
+        try { p.player.seek((skip + off) / playerFps(p)); } catch (_) {}
+    };
+    const seekAllToOffset = (offset) => {
+        for (const p of players) seekPlayerToOffset(p, offset);
+    };
     const fmtTime = (t) => {
         if (!isFinite(t) || t < 0) t = 0;
         const m = Math.floor(t / 60), s = Math.floor(t % 60);
         return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
     };
     let _scrubbing = false;
+    let _loopRestarting = false; // 共享循环重启中（避免 rAF 重复触发）
+    // 拖动进度条：按对比时间轴长度换算「区间内偏移」，各路 seek 到自身起点 + 偏移
     const seekAllToRatio = (ratio) => {
-        for (const p of players) {
-            const d = p.player.duration;
-            if (d && isFinite(d) && d > 0) {
-                try { p.player.seek(d * ratio); } catch (_) {}
-            }
-        }
+        const main = pickMain();
+        const d = main.player.duration;
+        if (!d || !isFinite(d) || d <= 0) return;
+        seekAllToOffset(Math.round(ratio * timelineFrames()));
     };
     scrubRange.addEventListener("input", () => {
         _scrubbing = true;
         seekAllToRatio((+scrubRange.value) / 1000);
         const main = pickMain();
-        scrubTime.textContent = fmtTime(main.player.currentTime) + " / " + fmtTime(main.player.duration);
+        const fps = playerFps(main);
+        const len = timelineFrames();
+        const off = len * ((+scrubRange.value) / 1000);
+        // 时间码按对比时间轴显示（0 起 → 区间长度），不显示源片绝对时间
+        scrubTime.textContent = fmtTime(off / fps) + " / " + fmtTime(len / fps);
     });
     scrubRange.addEventListener("change", () => {
         _scrubbing = false;
@@ -865,18 +916,18 @@ function openSyncPreview(items) {
         if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
         _lastAlignAt = now;
         const main = pickMain();
-        const master = main.player.currentTime;
-        if (!isFinite(master)) return;
+        if (!isFinite(main.player.currentTime)) return;
+        // 以「各自区间内的偏移帧」比较漂移（绝对时间因起点不同不可直接比）
+        const mainOff = playerOffsetFrames(main);
         for (const p of players) {
             if (p === main) continue;
             const d = p.player.duration;
             if (!d || !isFinite(d) || d <= 0) continue;
-            const ct = p.player.currentTime || 0;
-            const drift = Math.abs(ct - master);
+            const drift = Math.abs(playerOffsetFrames(p) - mainOff) / Math.max(1, playerFps(p));
             const count = drift > HARD_DRIFT_SECONDS ? (driftCounts.get(p) || 0) + 1 : 0;
             driftCounts.set(p, count);
             if (count >= HARD_DRIFT_CONFIRMATIONS) {
-                try { p.player.seek(Math.max(0, Math.min(master, d))); } catch (_) {}
+                seekPlayerToOffset(p, mainOff);
                 driftCounts.set(p, 0);
             }
         }
@@ -905,16 +956,31 @@ function openSyncPreview(items) {
     const scrubTick = () => {
         const now = performance.now();
         if (!_scrubbing) {
+            // 共享循环：以左侧（第一路）的区间为准，播到它的终点就带着所有视频一起回到基准帧，
+            // 避免「左侧循环回自己起点、右侧继续往前」两边越走越远
+            if (playing && !_loopRestarting) {
+                const ref = players[0];
+                const len = timelineFrames();
+                if (ref && len > 0 && playerOffsetFrames(ref) >= len - 1) {
+                    _loopRestarting = true;
+                    try { syncPlayFromStart(); } catch (_) {}
+                    setTimeout(() => { _loopRestarting = false; }, 150);
+                }
+            }
             alignPlayers(now);
             updateBufferStatus();
             const main = pickMain();
-            const d = main.player.duration;
-            if (d && isFinite(d) && d > 0) {
-                const ct = main.player.currentTime || 0;
-                const v = Math.max(0, Math.min(1000, (ct / d) * 1000));
-                if (v !== scrubRange.value) scrubRange.value = v;
-                const txt = fmtTime(ct) + " / " + fmtTime(d);
-                if (txt !== scrubTime.textContent) scrubTime.textContent = txt;
+            if (main.player.duration > 0) {
+                // 进度条与时间码统一按「对比时间轴」：0 → 区间长度，不受跳过帧影响
+                const fps = playerFps(main);
+                const len = timelineFrames();
+                if (len > 0) {
+                    const off = Math.max(0, Math.min(len, playerOffsetFrames(main)));
+                    const v = Math.max(0, Math.min(1000, Math.round((off / len) * 1000)));
+                    if (v !== scrubRange.value) scrubRange.value = v;
+                    const txt = fmtTime(off / fps) + " / " + fmtTime(len / fps);
+                    if (txt !== scrubTime.textContent) scrubTime.textContent = txt;
+                }
             }
         }
         _scrubRAF = requestAnimationFrame(scrubTick);
@@ -937,13 +1003,14 @@ function openSyncPreview(items) {
             statusEl.textContent = "▶ 播放中（自动循环）";
         } finally { _syncing = false; }
     };
-    // 从头一起播放：seek 0 + play（"回到开头"重新播放时使用）
+    // 从头一起播放：各路回到「自己区间的起点」再一起播（左侧 100 帧 ↔ 右侧 0 帧）
     const syncPlayFromStart = () => {
         if (_syncing) return;
         _syncing = true;
         try {
+            seekAllToOffset(0);
             for (const p of players) {
-                if (!p.player.isPlaying) { p.player.seek(0); p.player.play(); }
+                if (!p.player.isPlaying) p.player.play();
             }
             playing = true;
             playPauseBtn.textContent = "⏸ 暂停";
@@ -966,16 +1033,13 @@ function openSyncPreview(items) {
     const restartAll = () => {
         _syncing = true; // 阻止 pause/seek 触发同步回调
         try {
-            for (const p of players) {
-                p.player.pause();
-                p.player.seek(0);
-            }
+            for (const p of players) p.player.pause();
+            seekAllToOffset(0); // 各路回到自己区间的起点（左侧区间首帧 ↔ 右侧首帧）
         } finally { _syncing = false; }
         if (playing) syncPlayFromStart();
     };
-    // 逐帧浏览：先暂停全部，然后各视频同步跳到「主视频当前帧号 ± delta」对应的帧。
-    // 以帧号（而非时间）为同步基准：对比场景下第 N 帧画面才有可比性；
-    // 各播放器按自己的帧率 seek 到第 N 帧，帧率不同也能逐帧对齐。
+    // 逐帧浏览：先暂停全部，然后按「区间内偏移 ± delta」同步跳帧。
+    // 左侧区间 100~200、右侧 0~100 时，左侧第 100+k 帧 ↔ 右侧第 0+k 帧，按偏移严格对齐。
     const stepFrame = (delta) => {
         _syncing = true;
         try {
@@ -985,17 +1049,8 @@ function openSyncPreview(items) {
         playPauseBtn.textContent = "▶ 播放";
         statusEl.textContent = "已暂停";
         const main = pickMain();
-        const mfps = main.player.getFrameRate ? main.player.getFrameRate() : (main.player._frameRate || 24);
-        const target = Math.round((main.player.currentTime || 0) * mfps) + delta;
-        for (const p of players) {
-            const pfps = p.player.getFrameRate ? p.player.getFrameRate() : (p.player._frameRate || 24);
-            const skip = p.player._skipFrames || 0;
-            let end = 0;
-            try { end = p.player._computeEndFrame ? p.player._computeEndFrame() : 0; } catch (_) {}
-            if (!end || end <= 0) end = p.player.getSourceTotalFrames ? p.player.getSourceTotalFrames() : 0;
-            const f = end > 0 ? Math.max(skip, Math.min(target, end)) : Math.max(0, target);
-            try { p.player.seek(f / pfps); } catch (_) {}
-        }
+        const targetOffset = Math.max(0, playerOffsetFrames(main) + delta);
+        seekAllToOffset(targetOffset);
     };
     prevFrameBtn.addEventListener("click", () => stepFrame(-1));
     nextFrameBtn.addEventListener("click", () => stepFrame(1));
@@ -1432,16 +1487,15 @@ function openSyncPreview(items) {
     for (const p of players) {
         p.player.onLoadedMetadata = () => {
             readyCount++;
-            if (forceStarted) {
-                p.player.seek(0); // 后就位的视频停在开头，保持暂停
-            } else {
-                tryStart();
-            }
+            // 暂停时也停在「自己区间的起点」：左侧第 100 帧 ↔ 右侧第 0 帧，直接可对比
+            seekPlayerToOffset(p, 0);
+            if (!forceStarted) tryStart();
         };
         p.player.onError = () => {
             statusEl.textContent = "部分视频加载失败，其余正常播放";
         };
-        p.player.setLoop(true);
+        // 关闭播放器自带的独立循环：改由对比窗口按「左侧区间」统一循环（见 scrubTick）
+        p.player.setLoop(false);
         p.player.load(p.url);
     }
     tryStart();

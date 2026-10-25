@@ -11,6 +11,7 @@ A1. 预分配 + 流式堆叠：按探测帧数一次性 np.empty 预分配输出
 其余行为（预览视频转码、音频提取、视频信息、上传/播放器前端）与原版一致；
 前端播放器配套流式音频/流式打开/ LRU 解码器池（见 web/xzg_video_loader.js LM 分支）。
 """
+import math
 import os
 import time
 
@@ -31,6 +32,7 @@ from .xzg_video_loader import (
     _build_framerate_filters,
     _finalize_source_frame_count,
     _resolve_video_widget,
+    float_or_int,
 )
 
 
@@ -50,7 +52,7 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, unique_id=None):
-        强制帧率 = int(强制帧率)
+        强制帧率 = float_or_int(强制帧率, 0)
         # 空选/文件丢失时回退到内置占位视频（与普通版/化神级一致）。
         视频, _used_fallback = _resolve_video_widget(视频)
         video_path = get_annotated_filepath(视频)
@@ -130,7 +132,8 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
         loaded_duration = loaded_count * target_frame_time
 
         # ── 音频提取（与原版一致）──
-        audio_start = 跳过帧数 / src_fps if src_fps > 0 else 0.0
+        skip_fps = 强制帧率 or src_fps
+        audio_start = 跳过帧数 / skip_fps if skip_fps > 0 else 0.0
         audio_duration = loaded_duration if loaded_duration > 0 else None
         pbar.update_absolute(700, 1000)
         waveform, sr = extract_audio(
@@ -169,6 +172,12 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
         video_info = {
             "source_fps": src_fps,
             "source_frame_count": src_frames_final,
+            "range_fps": 强制帧率 or src_fps,
+            # 与 ffmpeg 全局 floor(k*src/dst) 帧映射的边界算法一致，避免
+            # duration×fps 的尾帧舍入误差让前端少算 1 帧并改写跳过帧数。
+            "range_frame_count": (src_frames_final if not 强制帧率 or abs(强制帧率 - src_fps) < 1e-6
+                                  else max(1, math.ceil(src_frames_final * 强制帧率 / src_fps))
+                                  if src_frames_final > 0 and src_fps > 0 else src_frames_final),
             "source_duration": src_dur,
             "source_width": src_w,
             "source_height": src_h,
@@ -206,7 +215,11 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
                     vf_parts.append(f"scale={new_w}:{new_h}:flags=lanczos:force_original_aspect_ratio=increase")
                     vf_parts.append(f"crop={new_w}:{new_h}")
                 vf_parts.append("setsar=1")
-            fr_filters, _is_upscale = _build_framerate_filters(强制帧率, src_fps)
+            preview_fps = 强制帧率 or src_fps
+            preview_start_time = 跳过帧数 / preview_fps if preview_fps > 0 else 0.0
+            preview_source_start_frame = round(preview_start_time * src_fps) if src_fps > 0 else 0
+            fr_filters, _is_upscale = _build_framerate_filters(
+                强制帧率, src_fps, preview_source_start_frame)
             if _is_upscale:
                 fr_filters = [f"fps=fps={强制帧率}:round=down"]
             if fr_filters:
@@ -214,7 +227,7 @@ class XiaozhuguangVideoLoaderLM(XiaozhuguangVideoLoader):
 
             from .xzg_video_loader import ffmpeg_path
             cmd = [ffmpeg_path, "-y", "-v", "error"]
-            start_time = 跳过帧数 / src_fps if src_fps > 0 else 0.0
+            start_time = preview_start_time
             if start_time > 0:
                 if start_time > 4:
                     cmd += ["-ss", str(start_time - 4), "-i", video_path, "-ss", "4"]

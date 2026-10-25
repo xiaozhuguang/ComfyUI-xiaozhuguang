@@ -47,6 +47,22 @@ class XiaozhuguangVideoInfoReader:
         for key in keys:
             loaded_info.append(info.get(f"loaded_{key}", 0))
 
+        # 「帧数」输出真实帧数：加载器开「补帧到」（切点修复对齐）时会把 loaded_frame_count
+        # 改成补帧后的数量（末段 76 → 90），下游按时长/帧数计算会被虚增、成片变长。
+        # 这里减掉加载器记录的 padded_frame_count，还原本段真实解码到的帧数。
+        padded = 0
+        try:
+            padded = int(info.get("padded_frame_count", 0) or 0)
+        except (TypeError, ValueError):
+            padded = 0
+        if padded > 0:
+            try:
+                real = int(loaded_info[1] or 0) - padded
+            except (TypeError, ValueError):
+                real = None
+            if real is not None and real >= 0:
+                loaded_info[1] = real
+
         # 跳过帧数：加载器记录的已跳过的帧数（兼容旧版加载器未记录时回退 0）
         skip_frames = info.get("skip_frames", 0)
         try:

@@ -241,9 +241,14 @@ const XZG_MODE_LABELS = {
 const XZG_UI_ROW_H = 24;
 const XZG_UI_PAD = 6;
 const XZG_UI_GAP = 4;
-const XZG_UI_VGAP = 8;
+// 组间距与组内间距（GAP=4）接近，保持 DOM 控件布局紧凑。
+const XZG_UI_VGAP = 5;
+// Nodes 2.0 的 DOM widget 左侧有轻微偏移，校正约 2px 使左右边距接近。
+const XZG_VUE_CONTENT_SHIFT = -2;
 const XZG_UI_MODE_H = XZG_UI_ROW_H * 2 + XZG_UI_GAP;
 const XZG_UI_CONTENT_H = XZG_UI_ROW_H + XZG_UI_VGAP + XZG_UI_MODE_H + XZG_UI_VGAP + XZG_UI_ROW_H;
+const XZG_LEGACY_WIDTH = 220;
+const XZG_LEGACY_HEIGHT = 140;
 
 // 老虎机动画参数
 const REEL_START_SPEED = 20;
@@ -268,9 +273,16 @@ function createSeedUI(node) {
     const ROW_H = XZG_UI_ROW_H, PAD = XZG_UI_PAD, GAP = XZG_UI_GAP, VGAP = XZG_UI_VGAP;
 
     const root = document.createElement("div");
-    root.style.cssText = "width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;contain:size layout;pointer-events:none;position:relative;";
+    const isVueNodes = !!globalThis.LiteGraph?.vueNodesMode;
+    root.style.cssText = `width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;contain:size layout;position:relative;${isVueNodes ? `left:${XZG_VUE_CONTENT_SHIFT}px;` : ""}`;
+    // 纯展示容器必须整体穿透：内核给 DOM 控件默认设 pointer-events:auto，
+    // 会把右侧输出槽的鼠标事件一起吞掉（表现为拉不出连线）。用 !important 压死，
+    // 交互只由内部 canvas（pointer-events:auto）负责。
+    try { root.style.setProperty("pointer-events", "none", "important"); } catch (_) { /* ignore */ }
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "position:absolute;inset:0;display:block;min-width:0;min-height:0;width:100%;height:100%;touch-action:manipulation;cursor:pointer;pointer-events:auto;";
+    canvas.style.cssText = "position:absolute;inset:0;display:block;min-width:0;min-height:0;width:100%;height:100%;touch-action:manipulation;cursor:pointer;";
+    // 父容器穿透后，交互区域只由 canvas 自己承担。
+    try { canvas.style.setProperty("pointer-events", "auto", "important"); } catch (_) { /* ignore */ }
     canvas.width = 1;
     canvas.height = 1;
     root.appendChild(canvas);
@@ -472,7 +484,7 @@ function createSeedUI(node) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
         hitAreas = [];
-        // 容器多出来的高度上下均分，避免内容全部贴顶
+        // 节点内部控件按可用区域居中，沿用 V593 的紧凑排布。
         let y = Math.max(0, Math.round((height - XZG_UI_CONTENT_H) / 2));
         paintSeedRow(width, y);
         y += ROW_H + VGAP;
@@ -484,7 +496,11 @@ function createSeedUI(node) {
     // 尺寸：用 clientWidth/clientHeight（布局像素），不受画布缩放影响
     const resize = () => {
         if (disposed) return;
+        // 内核在布局阶段可能重设 DOM 控件样式，每次重算尺寸都再压一次指针穿透。
+        try { root.style.setProperty("pointer-events", "none", "important"); } catch (_) { /* ignore */ }
+        neutralWrappers();
         const rect = root.getBoundingClientRect();
+        // 右侧留白交给控件自身的 margin（见 addDOMWidget 处），这里按控件实际宽度铺满即可。
         const w = root.clientWidth || rect.width;
         const h = root.clientHeight || rect.height;
         if (!w || !h) return;
@@ -508,12 +524,14 @@ function createSeedUI(node) {
     // 让标题下方的留白与底部留白一致（Nodes 2.0 / 旧版画布的预留高度不同）。
     let fitting = false;
     const fitNodeHeight = (availH) => {
+        // V593 的 Nodes 1.0 节点固定为 220×140，不自动拉伸 DOM 容器。
+        if (!globalThis.LiteGraph?.vueNodesMode) return;
         if (fitting || disposed || !availH) return;
         const curr = Math.round(node.size?.[1] || 0);
         if (curr <= 0) return;
         const chrome = curr - availH;              // 标题、边距、角标等占用的高度
         if (chrome < 0) return;
-        const target = XZG_UI_CONTENT_H + 8 + chrome;
+        const target = XZG_UI_CONTENT_H + 4 + chrome;
         if (Math.abs(target - curr) < 4) return;
         fitting = true;
         if (typeof node._xzgLockSize === "function") {
@@ -750,6 +768,8 @@ function createSeedUI(node) {
     window.addEventListener("resize", resize);
 
     // 注册为 DOM 控件：value 固定 null，保持 widgets_values 的占位（与旧工作流兼容）
+    // V593 两侧边距由 canvas 内部 PAD=6 绘制，DOM 控件本身不额外加 margin。
+    const _xzgIsVueNodes = !!globalThis.LiteGraph?.vueNodesMode;
     const uiWidget = node.addDOMWidget("xzg_seed_ui", "custom", root, {
         hideOnZoom: false,
         margin: 0,
@@ -762,6 +782,25 @@ function createSeedUI(node) {
     try { uiWidget.options.serialize = false; } catch {}
     // 让 _xzgRefreshAll 也能刷新这块画布
     uiWidget.triggerDraw = () => resize();
+
+    // 部分内核会把 DOM 控件再套一层容器（尺寸与控件基本一致），那层默认接收指针事件，
+    // 仍会吞掉右侧输出槽的鼠标。只把「与控件几乎同尺寸」的包装层压成穿透，
+    // 避免误伤节点容器 / 画布容器（那会让整个画布失去交互）。
+    function neutralWrappers() {
+        try {
+            const rr = root.getBoundingClientRect();
+            if (!rr.width) return;
+            let el = root.parentElement;
+            for (let depth = 0; depth < 4 && el && el !== document.body; depth++) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.width <= rr.width + 4 && r.height <= rr.height + 12) {
+                    el.style.setProperty("pointer-events", "none", "important");
+                }
+                el = el.parentElement;
+            }
+        } catch (_) { /* ignore */ }
+    }
+    neutralWrappers();
 
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
@@ -789,6 +828,8 @@ app.registerExtension({
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== SEED_NODE_TYPE) return;
+        // Nodes 1.0 uses the V593 LiteGraph widget layout in xzg_seed_legacy.js.
+        if (!globalThis.LiteGraph?.vueNodesMode) return;
 
         // 确保拦截已安装（防止模块加载顺序问题）
         _xzgInterceptQueuePrompt();
@@ -799,12 +840,20 @@ app.registerExtension({
 
             this._xzgSeedHistory = loadHistory();
 
+            // 输出槽默认会画名字（“种子”），正好压在种子输入框的右端上，遮挡数值。
+            // label 设为空格可让 LiteGraph 跳过文字，只保留槽本身。
+            for (const o of this.outputs || []) {
+                try { o.label = " "; } catch (_) { /* ignore */ }
+            }
+
             // 锁定节点尺寸：宽度固定，高度先给初值，
             // 随后由自绘 UI 按"容器实测高度"自动校准（Nodes 2.0 与旧版画布预留高度不同）
-            const LOCK_W = 220;
-            let LOCK_H = 178;
+            const LOCK_W = XZG_LEGACY_WIDTH;
+            let LOCK_H = XZG_LEGACY_HEIGHT;
             const applySizeLock = (h) => {
-                LOCK_H = Math.max(XZG_UI_CONTENT_H + 8, Math.round(h) || LOCK_H);
+                LOCK_H = globalThis.LiteGraph?.vueNodesMode
+                    ? Math.max(XZG_UI_CONTENT_H + 4, Math.round(h) || LOCK_H)
+                    : XZG_LEGACY_HEIGHT;
                 this.minWidth = LOCK_W;
                 this.maxWidth = LOCK_W;
                 this.minHeight = LOCK_H;
@@ -816,11 +865,6 @@ app.registerExtension({
             };
             applySizeLock(LOCK_H);
             this._xzgLockSize = applySizeLock;
-
-            // 本节点不做画布内控件绘制（全部由 DOM 控件自绘），
-            // 把控件起始位置归零：否则旧版画布会把 DOM 控件整体下移一个标题高度，
-            // 导致标题下方留白远大于底部。
-            this.widgets_start_y = 0;
 
             // 覆写 onResize 强制尺寸为锁定值
             const origOnResize = this.onResize?.bind(this);
@@ -902,8 +946,7 @@ app.registerExtension({
                 setTimeout(() => { _xzgHideSeedWidget(node); seedUI.refresh(); }, 150);
                 // 加载工作流时：沿用工作流里保存的高度恢复锁定，随后 UI 会再校准一次
                 setTimeout(() => {
-                    node.widgets_start_y = 0;
-                    node._xzgLockSize?.(node.size?.[1] || 178);
+                    node._xzgLockSize?.(node.size?.[1] || (globalThis.LiteGraph?.vueNodesMode ? 178 : XZG_LEGACY_HEIGHT));
                     seedUI.refresh();
                 }, 0);
             };

@@ -31,40 +31,44 @@ async function _fetchJson(url, options) {
  * 优先级：服务端 > 本地 localStorage > fallbackValue。
  * 服务端有数据时会把服务端数据回写本地；服务端没有但有本地数据时，会把本地数据推送到服务端。
  */
-export function cloudLoad(key, { fallbackValue = null } = {}) {
+export function cloudLoad(key, { fallbackValue = null, strict = false } = {}) {
     let loc = null;
     const locStr = localGet(key);
     if (locStr != null) {
         try { loc = JSON.parse(locStr); } catch (e) { loc = null; }
     }
 
-    if (_pending.has(key)) {
-        const p = _pending.get(key);
-        return p.catch(() => loc ?? fallbackValue);
+    const pendingKey = `${strict ? "strict" : "normal"}:${key}`;
+    if (_pending.has(pendingKey)) {
+        const p = _pending.get(pendingKey);
+        return strict ? p : p.catch(() => loc ?? fallbackValue);
     }
 
     const p = (async () => {
         const url = api.apiURL("/xzg_cloud_store?key=" + encodeURIComponent(key));
         try {
             const r = await _fetchJson(url);
+            if (strict && (r?.error || typeof r?.found !== "boolean")) throw new Error(r?.error || "预设读取未得到服务器确认");
             if (r && r.found && r.data != null) {
                 localSet(key, JSON.stringify(r.data)); // 服务端为准，回写本地兜底
                 return r.data;
             }
             // 服务端暂无：把本地数据推上去，实现首次上云
             if (loc != null) {
-                cloudSave(key, loc).catch(() => {});
+                if (strict) await cloudSave(key, loc, { strict: true });
+                else cloudSave(key, loc).catch(() => {});
                 return loc;
             }
             return fallbackValue;
         } catch (e) {
+            if (strict) throw e;
             // 服务端不可用（离线/云平台没挂上）：回退本地
             return loc ?? fallbackValue;
         }
     })();
 
-    _pending.set(key, p);
-    const finish = () => _pending.delete(key);
+    _pending.set(pendingKey, p);
+    const finish = () => _pending.delete(pendingKey);
     p.then(finish, finish);
     return p;
 }
@@ -73,14 +77,29 @@ export function cloudLoad(key, { fallbackValue = null } = {}) {
  * 保存某个 key 的 JSON 数据到服务端，并同时写入本地做兜底。
  * 返回 Promise，服务端失败会被吞掉（数据仍保留在 localStorage）。
  */
-export function cloudSave(key, data) {
-    localSet(key, JSON.stringify(data)); // 本地总是先写，兜底
-    const url = api.apiURL("/xzg_cloud_store");
-    return _fetchJson(url, {
+const _strictSaves = new Map();
+export function cloudWaitForSave(key) {
+    return _strictSaves.get(key) || Promise.resolve();
+}
+export function cloudSave(key, data, { strict = false } = {}) {
+    const snapshot = JSON.stringify(data);
+    if (!strict) localSet(key, snapshot);
+    const send = () => _fetchJson(api.apiURL("/xzg_cloud_store"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, data }),
-    }).catch(() => { /* 服务端失败则依赖 localStorage */ });
+        body: JSON.stringify({ key, data: JSON.parse(snapshot) }),
+    }).then(result => {
+        if (strict && result?.ok !== true) throw new Error(result?.error || "保存未得到服务器确认");
+        if (strict) localSet(key, snapshot);
+        return result;
+    });
+    if (!strict) return send().catch(() => {});
+    // 同一个键严格按提交顺序保存，避免较早请求最后完成而覆盖新规则。
+    const pending = (_strictSaves.get(key) || Promise.resolve()).catch(() => {}).then(send);
+    _strictSaves.set(key, pending);
+    const finish = () => { if (_strictSaves.get(key) === pending) _strictSaves.delete(key); };
+    pending.then(finish, finish);
+    return pending;
 }
 
 // ----------------------------------------------------------------------------

@@ -1706,6 +1706,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         // 仅 Nodes 2 使用 flex 收缩布局；Nodes 1 保留原来的播放器布局。
         flexContainer: useVueResizeLayout,
         flexMinHeight: useVueResizeLayout ? VIDEO_PREVIEW_MIN_H + VIDEO_PREVIEW_HINT_H : 0,
+        maxVideoHeight: useVueResizeLayout ? VIDEO_PREVIEW_MIN_H : 0,
         fit: _ratioModeToFit(),
         onDblClick: triggerUpload,
         // 低内存模式（小珠光视频加载低内存版/化神级内存模式）：B2 LRU 解码器池 / B3 流式打开。
@@ -1727,7 +1728,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         },
         onSourceFpsDetected: (fps) => {
             if (typeof fps === "number" && fps > 0) {
-                node._xzgSourceFps = Math.round(fps);
+                node._xzgSourceFps = fps;
                 updateFpsLabel(fps);
                 updateFrameLimitLabel();
                 node.setDirtyCanvas?.(true, true);
@@ -1812,7 +1813,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         const segStart = info.segment_start || 0;
         const segEnd = info.segment_end || 0;
         if (!(segEnd > 0) && !(segStart > 0)) return null;
-        const fps = info.source_fps || player._sourceFps || player.getFrameRate?.() || 0;
+        const fps = info.range_fps || info.source_fps || player.getFrameRate?.() || 0;
         if (!fps || fps <= 0) return null;
         const skip = Math.max(0, Math.round(segStart * fps));
         let limit = 0;
@@ -2046,6 +2047,22 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     const previewHost = document.createElement("div");
     previewHost.className = "xzg-video-preview-host";
     previewHost.style.cssText = `width:100%;height:100%;min-width:0;min-height:0;box-sizing:border-box;padding-top:${VIDEO_PREVIEW_TOP_GAP}px;overflow:hidden;pointer-events:none;`;
+    // Nodes 2.0（Vue）：DOM widget 会同时被 grid 宿主（WidgetDOM 的 *:flex-1 拉伸）
+    // 和固定定位 overlay（DomWidgets，按画布侧 widget.y/computedHeight 定位）争抢挂载。
+    // height:100% 百分比在 auto 高度宿主里会退化，预览区高度与画布侧布局失同步，
+    // 视频就会溢出节点被裁剪。这里显式钉死 px 高度（与 computeLayoutSize.minHeight
+    // 完全一致），并关掉 flex 拉伸，让 grid 行高/节点测量/overlay 几何三边一致。
+    const applyPreviewHostLayout = (enabled) => {
+        if (enabled) {
+            previewHost.style.flex = "0 0 auto";
+            previewHost.style.height =
+                `${VIDEO_PREVIEW_MIN_H + VIDEO_PREVIEW_HINT_H + VIDEO_PREVIEW_TOP_GAP}px`;
+        } else {
+            previewHost.style.flex = "";
+            previewHost.style.height = "100%";
+        }
+    };
+    applyPreviewHostLayout(!!globalThis.LiteGraph?.vueNodesMode);
     previewHost.appendChild(playerContainer);
     const previewWidget = node.addDOMWidget(VIDEO_PREVIEW_WIDGET_NAME, "video", previewHost, {
         hideOnZoom: false,
@@ -2110,13 +2127,15 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             const enabled = !!globalThis.LiteGraph?.vueNodesMode;
             if (enabled) delete node.minHeight;
             else node.minHeight = 500;
-            player.setFlexLayout(enabled, VIDEO_PREVIEW_MIN_H + VIDEO_PREVIEW_HINT_H);
+            player.setFlexLayout(enabled, VIDEO_PREVIEW_MIN_H + VIDEO_PREVIEW_HINT_H, VIDEO_PREVIEW_MIN_H);
+            applyPreviewHostLayout(enabled);
             Object.assign(hintText.style, {
                 flex: enabled ? "0 0 auto" : "",
                 minWidth: enabled ? "0" : "",
                 boxSizing: enabled ? "border-box" : "",
             });
             _xzgFixVueWidgetGutter(node);
+            player.resize();
             node.setDirtyCanvas?.(true, true);
         });
     };
@@ -2184,6 +2203,8 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             _lastExecutedInfo = {
                 source_frame_count: typeof vi.source_frame_count === "number" ? vi.source_frame_count : 0,
                 source_fps: typeof vi.source_fps === "number" ? vi.source_fps : 0,
+                range_fps: typeof vi.range_fps === "number" ? vi.range_fps : 0,
+                range_frame_count: typeof vi.range_frame_count === "number" ? vi.range_frame_count : 0,
                 skip_frames: typeof vi.skip_frames === "number" ? vi.skip_frames : 0,
                 frame_limit: typeof vi.frame_limit === "number" ? vi.frame_limit : 0,
                 // 片段窗口（秒）：批处理逐段执行时红蓝杠应按片段在全片时间线上的位置定位，
@@ -2191,9 +2212,9 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 segment_start: typeof vi.segment_start === "number" ? vi.segment_start : 0,
                 segment_end: typeof vi.segment_end === "number" ? vi.segment_end : 0,
             };
-            const fps = vi.source_fps || vi.loaded_fps;
+            const fps = vi.range_fps || vi.loaded_fps || vi.source_fps;
             if (typeof fps === "number" && fps > 0) {
-                player.applyBackendFps(Math.round(fps));
+                player.applyBackendFps(fps, vi.source_fps, vi.range_frame_count);
             }
             // 原视频真实帧数（后端探测，权威值）优先写入：
             // setTotalFrames(loaded_frame_count) 在 _sourceTotalFrames 为 null 时（原视频尚未加载完即运行）
@@ -2624,31 +2645,16 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         // 更新控件的 min/max 边界约束
         updateWidgetBounds = () => {
             if (!skipWidget && !limitWidget) return;
-            const totalFrames = typeof player.getSourceTotalFrames === "function"
-                ? player.getSourceTotalFrames()
-                : (player._sourceTotalFrames || 0);
             // 支持上游连线输入：优先读取连线值（widget 转 input 后自身 value 不更新）
             const skipVal = Math.max(0, parseInt(_resolveLinkedValue("跳过帧数")) || 0);
-            if (totalFrames > 0) {
-                // 跳过帧数最大值 = 原始帧数 - 1
-                if (skipWidget) skipWidget._xzgMax = totalFrames - 1;
-                // 帧数上限：拖动时限制为剩余帧数，输入时不限制（用 BIGMAX）
-                if (limitWidget) {
-                    const remainingFrames = Math.max(1, totalFrames - skipVal);
-                    limitWidget._xzgDragMax = remainingFrames;
-                    // _xzgMax 保持为后端定义的最大值，不限制手动输入
-                    // 跳过帧数增加后，若正数上限超过剩余帧数，节点实际会按剩余帧数截断；
-                    // 同步控件值，避免显示旧上限而与播放器范围不一致。0 仍表示加载全部剩余帧。
-                    const limitVal = Math.max(0, parseInt(_resolveLinkedValue("帧数上限")) || 0);
-                    if (limitVal > 0 && limitVal > remainingFrames) {
-                        _xzgWriteLinkedValue(node, "帧数上限", remainingFrames);
-                    }
+            // 帧数上限只限制拖动时的位置；数值输入沿用节点 BIGMAX，不跟随跳过帧数变化。
+            if (limitWidget) {
+                const totalFrames = typeof player.getSourceTotalFrames === "function"
+                    ? player.getSourceTotalFrames()
+                    : (player._sourceTotalFrames || 0);
+                if (totalFrames > 0) {
+                    limitWidget._xzgDragMax = Math.max(1, totalFrames - skipVal);
                 }
-            }
-            // 帧数上限最小值保持 0（0 表示无限制/加载全部剩余帧），不跟随跳过帧数变动
-            // 约束当前值（跳过帧数严格限制，帧数上限只在拖动时限制，输入不限制）
-            if (skipWidget && skipWidget._xzgMax != null && skipWidget.value > skipWidget._xzgMax) {
-                skipWidget.value = skipWidget._xzgMax;
             }
         };
 
@@ -2711,6 +2717,10 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             limitWidget.callback = function (value) {
                 origLimitCb?.apply(this, arguments);
                 updateFrameLimitLabel();
+                // 记下用户设定的基准加载窗口：批处理逐段运行会把该控件改成每段的窗口，
+                // 任务被终止/异常退出后靠这个基准复位；「预览分段」也用它校正分段范围
+                node.properties = node.properties || {};
+                node.properties.xzgBaseLimit = Math.max(0, Math.floor(Number(value ?? limitWidget.value) || 0));
                 // 蓝杠拖动中：播放器 _showFrameAtSourceFrame 已实时 seek 截止画面，
                 // 此时 _syncLoadRange 会 _resetToSourceVideo 重新加载原视频，覆盖实时预览
                 // （表现为画面不跟蓝杠/不断重载）。松手后（isDraggingMarker=false）正常重置。
@@ -2722,6 +2732,9 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             const origSkipCb = skipWidget.callback;
             skipWidget.callback = function (value) {
                 origSkipCb?.apply(this, arguments);
+                // 同上：记录基准跳过帧数，供批处理结束后/重新分段时复位
+                node.properties = node.properties || {};
+                node.properties.xzgBaseSkip = Math.max(0, Math.floor(Number(value ?? skipWidget.value) || 0));
                 // 跳过帧数变化时，帧数上限的 min 跟随变化
                 _syncLoadRange();
             };

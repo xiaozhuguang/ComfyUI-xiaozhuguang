@@ -584,6 +584,9 @@
     "display_name": "小珠光展示任意",
     "inputs": {
       "input": { "name": "输入" }
+    },
+    "outputs": {
+      "0": { "name": "输出" }
     }
   },
   "XiaozhuguangMaskInvert": {

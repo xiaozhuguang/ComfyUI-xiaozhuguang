@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const source = readFileSync(new URL('../web/xzg_video_batch.js', import.meta.url), 'utf8');
+const start = source.indexOf('            const threshold = Number(findNodeWidget');
+const end = source.indexOf('            // 2) 末段补帧', start);
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const build = new AsyncFunction('api', 'findNodeWidget', 'schedProbeNode', 'filename', 'srcFps', 'sourceWindowStart', 'rangeStart', 'rangeEnd', source.slice(start, end) + '\nreturn nominal;');
+let body;
+const api = { fetchApi: async (url, options) => {
+    assert.equal(url, '/xzg_video_editor_detect_scenes');
+    body = JSON.parse(options.body);
+    return { ok: true, json: async () => ({ scenes: [0.5, 2, 2, 4, 9] }) };
+} };
+assert.deepEqual(await build(api, () => ({ value: 0.4 }), {}, 'clip.mp4', 25, 25, 0, 150), [[0,25],[25,75],[75,150]]);
+assert.equal(body.threshold, 0.4);
+assert.deepEqual(await build(api, () => null, null, 'clip.mp4', 25, 0, 25, 150), [[25,50],[50,100],[100,150]]);
+const noCuts = { fetchApi: async () => ({ ok: true, json: async () => ({ scenes: [] }) }) };
+assert.deepEqual(await build(noCuts, () => null, {}, 'clip.mp4', 25, 0, 0, 300), [[0,300]]);
+const failed = { fetchApi: async () => ({ ok: false, json: async () => ({ error: 'detect failed' }) }) };
+await assert.rejects(build(failed, () => null, {}, 'clip.mp4', 25, 0, 0, 300), /detect failed/);
+console.log('Scene cuts, window offsets, duplicates, no-cut and failure checks passed');

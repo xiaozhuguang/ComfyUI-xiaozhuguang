@@ -964,9 +964,6 @@ class XzgImageSaveWidget {
         this.gridMode = false;
         this._mousePos = null;
         this._btnFade = 0;
-        this._hoverHintNextAt = 0;
-        this._hoverHintUntil = 0;
-        this._hoverHintTimer = null;
         this._lastClickT = 0;
         this._lastClickPos = null;
         this._imageDrawY = 0;
@@ -1303,86 +1300,6 @@ class XzgImageSaveWidget {
             };
         }
 
-        // 鼠标悬浮时每 30 秒播放一次提示动画。
-        if (imgLoaded && imgs.length > 1) {
-            const inY = this._mousePos && this._mousePos[1] >= y && this._mousePos[1] <= y + nodeHeight;
-            const inX = this._mousePos && this._mousePos[0] >= drawX && this._mousePos[0] <= drawX + drawW;
-            const near = inY && inX;
-            const now = Date.now();
-            if (near && now >= this._hoverHintNextAt) {
-                this._hoverHintStart = now;
-                this._hoverHintNextAt = now + 30000;
-                // 圆环旋转 1 秒、竖线扫过 1 秒、暗色图标停留 10 秒、淡出 0.5 秒。
-                this._hoverHintUntil = now + 12500;
-                if (!this._hoverHintTimer) {
-                    // 定时刷新让动画即使鼠标静止时也能完整播放。
-                    this._hoverHintTimer = setInterval(() => {
-                        if (Date.now() >= this._hoverHintUntil) {
-                            clearInterval(this._hoverHintTimer);
-                            this._hoverHintTimer = null;
-                            const delay = Math.max(0, this._hoverHintNextAt - Date.now());
-                            setTimeout(() => node.setDirtyCanvas(true, true), delay);
-                        }
-                        node.setDirtyCanvas(true, true);
-                    }, 50);
-                }
-            }
-            // 触发后完整播放，不因指针短暂移出图片而中断。
-            if (now < this._hoverHintUntil) {
-                const elapsed = now - this._hoverHintStart;
-                const remaining = this._hoverHintUntil - now;
-                const fadeIn = Math.min(1, elapsed / 500);
-                const fadeOut = Math.min(1, remaining / 500);
-                const alpha = Math.min(fadeIn, fadeOut);
-                const ringDuration = 1000;
-                const scanDuration = 1000;
-                const [cx0, cx1, cx2] = iconCenters;
-                ctx.save();
-                ctx.globalAlpha *= alpha;
-                ctx.textBaseline = "middle";
-                ctx.textAlign = "center";
-
-                ctx.font = `${32 * iconScale}px Arial`;
-                ctx.fillStyle = "rgba(255,255,255,0.2)";
-                ctx.fillText("◀", cx0, iconY);
-
-                // 中间仅显示圆环，表示切换单图/网格视图。
-                ctx.strokeStyle = "rgba(255,255,255,0.2)";
-                ctx.lineWidth = 3 * iconScale;
-                ctx.beginPath();
-                if (elapsed < ringDuration) {
-                    const ringProgress = Math.max(0, elapsed / ringDuration);
-                    const angle = -Math.PI / 2 + ringProgress * Math.PI * 2;
-                    const arcLength = Math.PI * 1.5;
-                    ctx.arc(cx1, iconY, 20 * iconScale, angle, angle + arcLength);
-                    ctx.stroke();
-                    const headX = cx1 + Math.cos(angle + arcLength) * 20 * iconScale;
-                    const headY = iconY + Math.sin(angle + arcLength) * 20 * iconScale;
-                    ctx.beginPath();
-                    ctx.arc(headX, headY, 2.5 * iconScale, 0, Math.PI * 2);
-                    ctx.fill();
-                } else {
-                    ctx.arc(cx1, iconY, 20 * iconScale, 0, Math.PI * 2);
-                    ctx.stroke();
-                }
-
-                // 圆环转完后，竖向扫描线从节点图像控件左侧扫到右侧。
-                if (elapsed >= ringDuration && elapsed < ringDuration + scanDuration) {
-                    const scanProgress = (elapsed - ringDuration) / scanDuration;
-                    const scanX = nodeImageLeft + nodeImageWidth * scanProgress;
-                    ctx.strokeStyle = "rgba(255,255,255,0.35)";
-                    ctx.lineWidth = 2 * iconScale;
-                    ctx.beginPath();
-                    ctx.moveTo(scanX, y);
-                    ctx.lineTo(scanX, y + nodeHeight);
-                    ctx.stroke();
-                }
-
-                ctx.fillStyle = "rgba(255,255,255,0.2)";
-                ctx.fillText("▶", cx2, iconY);
-                ctx.restore();
-            }
-        }
     }
 
     _drawGrid(ctx, node, width, y, imgs) {
@@ -1804,10 +1721,10 @@ class XiaozhuguangImageSaveNode {
     }
 
     onMouseMove(e, pos) {
-        if (this.canvasWidget) { this.canvasWidget._mousePos = [pos[0], pos[1]]; this.setDirtyCanvas(true, true); }
+        // 悬停提示动画已移除：鼠标移动不再触发节点重绘，避免干扰拖拽/点击交互
     }
     onMouseLeave(e, pos) {
-        if (this.canvasWidget) { this.canvasWidget._mousePos = null; this.setDirtyCanvas(true, true); }
+        if (this.canvasWidget) this.canvasWidget._mousePos = null;
         this._xzgClick = null;
         this._xzgClickCleanup?.();
     }

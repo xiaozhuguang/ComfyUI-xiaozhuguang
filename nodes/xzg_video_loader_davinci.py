@@ -6,8 +6,8 @@
 
 1. 达芬奇导入：前端按钮触达本机 DaVinci Resolve Studio（xzg_davinci_bridge.py，subprocess 隔离），
    把剪辑页当前播放头所在片段自动渲染导出到 ComfyUI input 根目录并加载。
-2. 片段窗口：片段起点/片段终点 + 前端「场景逐段批处理」编排器（web/xzg_video_batch.js），
-   自动探测视频切点并逐段执行。
+2. 分段执行：前端「场景逐段批处理」编排器（web/xzg_video_batch.js）通过改写
+   「跳过帧数/帧数上限」逐段执行（加载器面板已无 片段起点/片段终点/补帧到）。
 
 继承 XiaozhuguangVideoBatchLoader，视频解码/预览/上传/快剪联动等能力完全复用。
 """
@@ -97,17 +97,18 @@ def _choose_video_save_path(source_path):
 
 
 class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
-    """小珠光视频加载-化神级：加载器全部功能 + 片段窗口（场景逐段批处理）+ 达芬奇导入。
+    """小珠光视频加载-化神级：加载器全部功能 + 场景逐段批处理 + 达芬奇导入。
 
     INPUT_TYPES / RETURN_TYPES / FUNCTION / CATEGORY 全部继承自
-    「小珠光视频批处理」父类（含片段起点/片段终点），由 __init__.py 注册为「小珠光视频加载-化神级」。
+    「小珠光视频批处理」父类（内存模式），由 __init__.py 注册为「小珠光视频加载-化神级」。
 
     空选兜底：节点上没选任何视频时，自动加载 _FALLBACK_VIDEO 占位视频，
     让节点能留在工作流上直接跑通而不报 "Invalid video file"。
     """
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", unique_id=None):
+                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
+                   补帧到=0, unique_id=None):
         视频, _used_fallback = _resolve_video_widget(视频)
         return super().load_video(
             视频=视频,
@@ -121,6 +122,7 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
             片段起点=片段起点,
             片段终点=片段终点,
             内存模式=内存模式,
+            补帧到=补帧到,
             unique_id=unique_id,
         )
 
@@ -135,7 +137,8 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
 
     @classmethod
     def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", **kwargs):
+                   帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
+                   补帧到=0, **kwargs):
         # 空选或文件被删时，与 load_video 走同一套兜底逻辑，保证缓存键稳定。
         视频, _ = _resolve_video_widget(视频)
         # 达芬奇导入会替换「视频」输入，IS_CHANGED 需与本节点名一致；父类实现已足够，
@@ -144,7 +147,7 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
             视频=视频, 强制帧率=强制帧率, 视频比例=视频比例, 比例模式=比例模式,
             自定义宽度=自定义宽度, 自定义高度=自定义高度, 帧数上限=帧数上限,
             跳过帧数=跳过帧数, 片段起点=片段起点, 片段终点=片段终点,
-            内存模式=内存模式, **kwargs)
+            内存模式=内存模式, 补帧到=补帧到, **kwargs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

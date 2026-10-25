@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 // 小珠光统一保存工具模块
-// - File System Access API（showSaveFilePicker）优先，首次默认桌面，二次默认上次路径
+// - File System Access API（showSaveFilePicker）优先，先弹窗选路径再取数据（激活
+//   有效期内弹窗，慢操作只影响写文件阶段），首次默认桌面，二次默认上次路径
 // - 不支持时降级为普通 a.download 下载（浏览器默认下载目录）
 // - 按文件类型分别记忆文件夹 handle（image / video / audio），互不干扰
 // ═══════════════════════════════════════════════════════════════════════
@@ -175,80 +176,73 @@ export async function xzgWriteBlobToDir(dirHandle, filename, blob) {
 export async function xzgDownload(url, filename, fileType = "image", opts = {}) {
     if (!url) return;
 
+    const ext = (filename || "").split(".").pop()?.toLowerCase() || "png";
+    const mimeMaps = { image: IMAGE_MIME_MAP, video: VIDEO_MIME_MAP, audio: AUDIO_MIME_MAP };
+    const defaultMimes = { image: "image/png", video: "video/mp4", audio: "audio/mpeg" };
+    const descMap = { image: "图片文件", video: "视频文件", audio: "音频文件" };
+    const mimeType = mimeMaps[fileType]?.[ext] || defaultMimes[fileType] || "application/octet-stream";
+    const description = descMap[fileType] || "文件";
+
+    // ─── File System Access API：先弹窗，后取数据 ─────────────
+    // showSaveFilePicker 需要 transient user activation（约 5 秒内有效）。
+    // 旧实现先 fetch 大文件/懒编码再弹窗，激活过期后抛 SecurityError 被
+    // 静默降级为 a.download 直接下载（偶发"不弹对话框"）。现在进入函数
+    // （用户手势上下文内）立即弹窗选路径，慢操作只影响写文件阶段。
+    let handle = opts.fileHandle || null;
+    if (!handle && typeof window.showSaveFilePicker === "function") {
+        try {
+            const pickerOpts = {
+                suggestedName: filename || `xzg-save.${ext}`,
+                types: [{
+                    description,
+                    accept: { [mimeType]: ["." + ext] },
+                }],
+                // 浏览器原生记忆同一 id 上次使用的目录（跨刷新有效）
+                id: "xzg_" + fileType,
+            };
+            const lastHandle = LAST_FOLDER[fileType];
+            pickerOpts.startIn = (lastHandle && lastHandle.kind === "directory") ? lastHandle : "desktop";
+            handle = await window.showSaveFilePicker(pickerOpts);
+            // 记忆本次保存位置（下次定位同目录）
+            try {
+                LAST_FOLDER[fileType] = handle;
+                _xzgSaveDirHandle(fileType, handle);
+            } catch (_) {}
+        } catch (e) {
+            // 用户取消对话框 → 静默返回，不降级
+            if (e?.name === "AbortError") return;
+            // 其他错误（激活过期/权限不足）→ handle 保持 null，走降级下载
+        }
+    }
+
+    // ─── 取数据 ──────────────────────────────────────────────
+    let blob;
     try {
         const resp = await fetch(url);
         if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const blob = await resp.blob();
-
-        const ext = (filename || "").split(".").pop()?.toLowerCase() || "png";
-        const mimeMaps = { image: IMAGE_MIME_MAP, video: VIDEO_MIME_MAP, audio: AUDIO_MIME_MAP };
-        const defaultMimes = { image: "image/png", video: "video/mp4", audio: "audio/mpeg" };
-        const descMap = { image: "图片文件", video: "视频文件", audio: "音频文件" };
-
-        const mimeType = blob.type || (mimeMaps[fileType]?.[ext]) || defaultMimes[fileType] || "application/octet-stream";
-        const description = descMap[fileType] || "文件";
-
-        // ─── File System Access API（优先） ──────────────────────
-        if (typeof window.showSaveFilePicker === "function") {
-            let handle = opts.fileHandle || null;
-            if (!handle) {
-                // 现场弹窗：仅适合点击后立刻调用的场景（需要用户激活）
-                try {
-                    const pickerOpts = {
-                        suggestedName: filename || `xzg-save.${ext}`,
-                        types: [{
-                            description,
-                            accept: { [mimeType]: ["." + ext] },
-                        }],
-                    };
-
-                    // 路径记忆策略：
-                    // 1. id 属性 — 浏览器原生记忆同一 id 上次使用的目录（最可靠，跨刷新有效）
-                    // 2. startIn + IndexedDB 存储的 directory handle — 补充记忆
-                    pickerOpts.id = "xzg_" + fileType;
-
-                    const lastHandle = LAST_FOLDER[fileType];
-                    if (lastHandle && lastHandle.kind === "directory") {
-                        pickerOpts.startIn = lastHandle;
-                    } else {
-                        pickerOpts.startIn = "desktop";
-                    }
-
-                    handle = await window.showSaveFilePicker(pickerOpts);
-                } catch (e) {
-                    // 用户取消对话框 → 静默返回，不降级
-                    if (e?.name === "AbortError") return;
-                    // 其他错误（权限不足等）→ 继续降级
-                }
-            }
-            if (handle) {
-                // 保存文件后，把 handle 记忆到内存 + IndexedDB（下次定位同目录）
-                try {
-                    LAST_FOLDER[fileType] = handle;
-                    _xzgSaveDirHandle(fileType, handle);
-                } catch (_) {}
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-                return;
-            }
-            // handle 为 null：环境不支持或弹窗失败 → 落到降级
-        }
-
-        // ─── 降级：普通 a.download ──────────────────────────────
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = filename || `xzg-save.${ext}`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        blob = await resp.blob();
     } catch (e) {
-        if (e?.name === "AbortError") return; // 用户取消
         console.warn(`[小珠光] ${fileType} 下载失败:`, e);
         try { opts.onError?.(e); } catch (_) {}
+        return;
     }
+
+    if (handle) {
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return;
+    }
+
+    // ─── 降级：普通 a.download（环境不支持 showSaveFilePicker） ──
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename || `xzg-save.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 /**
@@ -320,6 +314,20 @@ export async function xzgGetRealUrl(imgData, opts = {}) {
 export async function downloadLazyImage(imgData) {
     if (!imgData) return;
 
+    // 进入时立即预选保存位置（用户手势内激活最新鲜）。懒编码/大图传输可能
+    // 超过 transient activation 有效期，若等到取完数据再弹窗会 SecurityError
+    // → 静默降级为直接下载（无对话框）。
+    const filename = imgData.saved_filename || `xzg-save-${xzgTimestamp()}.png`;
+    let fileHandle = null;
+    if (typeof window.showSaveFilePicker === "function") {
+        try {
+            fileHandle = await xzgPickSaveHandle("image", filename);
+        } catch (e) {
+            return; // 用户关闭另存为对话框 → 中止导出
+        }
+    }
+    const dlOpts = fileHandle ? { fileHandle } : {};
+
     // 1) 优先：output 目录已有 PNG 文件，直接构造 /view URL 下载
     if (imgData.saved_filename && imgData.saved_type) {
         const savedUrl = api.apiURL(
@@ -328,14 +336,14 @@ export async function downloadLazyImage(imgData) {
             + `&subfolder=${encodeURIComponent(imgData.saved_subfolder || "")}`
             + `${app.getRandParam()}`
         );
-        await downloadImage(savedUrl, imgData.saved_filename || `xzg-save-${xzgTimestamp()}.png`);
+        await downloadImage(savedUrl, filename, dlOpts);
         return;
     }
 
     // 2) 回退：懒编码获取全分辨率 PNG
     let url = imgData.real_url || await xzgGetRealUrl(imgData);
     if (url) {
-        await downloadImage(url, `xzg-save-${xzgTimestamp()}.png`);
+        await downloadImage(url, filename, dlOpts);
     }
 }
 
@@ -348,6 +356,18 @@ export async function downloadLazyImage(imgData) {
 export async function downloadLazyJpg(imgData, opts = {}) {
     if (!imgData) return;
 
+    // 进入时立即预选保存位置（同 downloadLazyImage：先弹窗后慢操作）
+    const filename = imgData.saved_filename || `xzg-save-${xzgTimestamp()}.jpg`;
+    let fileHandle = null;
+    if (typeof window.showSaveFilePicker === "function") {
+        try {
+            fileHandle = await xzgPickSaveHandle("image", filename);
+        } catch (e) {
+            return; // 用户关闭另存为对话框 → 中止导出
+        }
+    }
+    const dlOpts = fileHandle ? { fileHandle } : {};
+
     // 1) 优先：output 目录已有 JPG 文件，直接构造 /view URL 下载（全分辨率，与懒编码结果一致）
     if (imgData.saved_filename && imgData.saved_type) {
         const savedUrl = api.apiURL(
@@ -356,7 +376,7 @@ export async function downloadLazyJpg(imgData, opts = {}) {
             + `&subfolder=${encodeURIComponent(imgData.saved_subfolder || "")}`
             + `${app.getRandParam()}`
         );
-        await downloadJpgImage(savedUrl, imgData.saved_filename || `xzg-save-${xzgTimestamp()}.jpg`);
+        await downloadJpgImage(savedUrl, filename, dlOpts);
         return;
     }
 
@@ -364,7 +384,7 @@ export async function downloadLazyJpg(imgData, opts = {}) {
     const quality = (opts.quality != null) ? opts.quality : 90;
     let url = imgData.real_url || await xzgGetRealUrl(imgData, { format: "jpg", quality });
     if (url) {
-        await downloadJpgImage(url, `xzg-save-${xzgTimestamp()}.jpg`);
+        await downloadJpgImage(url, filename, dlOpts);
     }
 }
 

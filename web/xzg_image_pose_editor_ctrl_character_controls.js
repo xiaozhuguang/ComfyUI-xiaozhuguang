@@ -7644,7 +7644,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
             <div class="vnccs-ps-library-modal-header">
                 <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
                 <div class="vnccs-ps-library-header-actions">
-                    <a class="vnccs-ps-btn primary vnccs-ps-library-download" href="https://pan.quark.cn/s/8100b8a02e11" target="_blank" rel="noopener noreferrer" style="white-space:nowrap;text-decoration:none">${xzgTh("下载姿势库", "Download Pose Library")}</a>
+                    <a class="vnccs-ps-btn primary vnccs-ps-library-download" href="https://pan.quark.cn/s/fe7083829b11?pwd=wf3T" target="_blank" rel="noopener noreferrer" title="提取码：wf3T" style="white-space:nowrap;text-decoration:none">${xzgTh("下载姿势库", "Download Pose Library")}</a>
                     <button class="vnccs-ps-btn primary vnccs-ps-library-transfer" style="white-space:nowrap">${xzgTh("导入／导出姿势库", "Import / Export Pose Library")}</button>
                 </div>
                 <button class="vnccs-ps-btn primary vnccs-ps-library-apply-selected" disabled>${xzgTh("应用姿势", "Apply Pose")}</button>
@@ -9602,7 +9602,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         }
     }
     showMessage(text, isError = false) {
-        const modelDownloadUrl = "https://pan.quark.cn/s/8100b8a02e11";
+        const modelDownloadUrl = "https://pan.quark.cn/s/cc821bebe0fe?pwd=tVwP";
         const missingModel = String(text).includes(modelDownloadUrl);
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';

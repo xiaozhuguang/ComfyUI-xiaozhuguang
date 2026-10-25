@@ -539,6 +539,8 @@ let _currentRunNode = null;
 let _runOwnerGraph = null;
 const XZG_RUN_METRICS_MAX_SAMPLES = 7200; // 最多缓存两小时，每秒约一个点
 const XZG_RUN_METRICS_HISTORY_LIMIT = 20;
+// 忽略 30 秒以下的碎片运行（快速测试/误触发）：不进历史曲线、不落盘、不进图表分析
+const XZG_RUN_METRICS_MIN_MS = 30000;
 const XZG_RUN_METRICS_DB_NAME = "xiaozhuguang-run-metrics";
 const XZG_RUN_METRICS_DB_VERSION = 1;
 let _runMetricsHistory = [];
@@ -599,9 +601,19 @@ async function restoreRunMetricsHistory() {
     const mergedRecords = new Map((records || []).map((record) => [record.id, record]));
     for (const record of _runMetricsHistory) mergedRecords.set(record.id, record);
     _runMetricsHistory = [...mergedRecords.values()]
-      .filter((record) => Array.isArray(record.samples) && record.samples.length >= 2)
+      .filter((record) => Array.isArray(record.samples) && record.samples.length >= 2
+        && runMetricsDurationMs(record) >= XZG_RUN_METRICS_MIN_MS)
       .sort((a, b) => Number(b.startedAt) - Number(a.startedAt))
       .slice(0, XZG_RUN_METRICS_HISTORY_LIMIT);
+    // 顺带清掉库里被忽略的记录（短于 30 秒 / 超出保留条数），不留垃圾数据
+    try {
+      const keptIds = new Set(_runMetricsHistory.map((record) => record.id));
+      const stale = (records || []).filter((record) => !keptIds.has(record.id));
+      if (stale.length) {
+        const transaction = db.transaction("runs", "readwrite");
+        for (const record of stale) transaction.objectStore("runs").delete(record.id);
+      }
+    } catch (_) { /* 清理失败不影响使用 */ }
     _lastRunMetrics = _runMetricsHistory[0] || null;
     _lastRunDuration = Number(_lastRunMetrics?.durationMs) || 0;
     for (const record of _runMetricsHistory) {
@@ -628,6 +640,8 @@ function finalizeActiveRunMetrics(status, finishedAt = Date.now()) {
   record.status = status;
   _activeRunMetrics = null;
   if (record.samples.length < 2) return record;
+  // 忽略 30 秒以下的碎片运行：状态复位已完成，但不进历史、不落盘、不刷新图表
+  if (record.durationMs < XZG_RUN_METRICS_MIN_MS) return record;
   _runMetricsHistory = [record, ..._runMetricsHistory.filter((item) => item.id !== record.id)]
     .sort((a, b) => Number(b.startedAt) - Number(a.startedAt))
     .slice(0, XZG_RUN_METRICS_HISTORY_LIMIT);

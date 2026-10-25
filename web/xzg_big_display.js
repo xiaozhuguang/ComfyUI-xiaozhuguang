@@ -687,6 +687,9 @@ app.registerExtension({
             return r;
         };
 
+        // 只接收自身 onExecuted 的结果。上游 ui.text 属于节点级消息，
+        // 不代表所连接输出端口的值，不能用它同步其他展示节点。
+
         const origOnMouseWheel = nodeType.prototype.onMouseWheel;
         nodeType.prototype.onMouseWheel = function (event, pos) {
             const metrics = this._xzgBigDisplayScrollMetrics;

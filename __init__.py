@@ -218,6 +218,7 @@ from .nodes.xzg_video_loader_davinci import XiaozhuguangVideoLoaderDaVinci
 from .nodes.xzg_audio_loader import XiaozhuguangAudioLoader
 from .nodes.xzg_audio_loader_davinci import XiaozhuguangAudioLoaderDaVinci
 from .nodes.xzg_video_info_reader import XiaozhuguangVideoInfoReader
+from .nodes.xzg_video_scheduler import XiaozhuguangVideoScheduler
 from .nodes.xzg_video_combine import XiaozhuguangVideoCombine
 from .nodes.xzg_video_save_davinci import XiaozhuguangVideoSaveDaVinci
 from .nodes.xzg_image_compare import XiaozhuguangImageCompare, XiaozhuguangImageCompareCustom
@@ -584,6 +585,7 @@ except Exception as _e:
 # 这里把数据写到 ComfyUI 用户目录磁盘，前端优先读写这里，localStorage 仅做离线兜底。
 try:
     import json as _cloud_json
+    import tempfile as _cloud_tempfile
 
     def _xzg_cloud_store_dir():
         try:
@@ -633,12 +635,22 @@ try:
             return web.json_response({"error": "invalid key"}, status=400)
         data = body.get("data")
         path = os.path.join(_xzg_cloud_store_dir(), key + ".json")
+        temp_path = None
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            fd, temp_path = _cloud_tempfile.mkstemp(dir=os.path.dirname(path), prefix=".xzg_store_", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 _cloud_json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, path)
+            temp_path = None
             return web.json_response({"ok": True})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
 except Exception as _cloud_err:
     print("[xiaozhuguang] 注册 /xzg_cloud_store 路由失败:", _cloud_err)
@@ -1298,6 +1310,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
     "XiaozhuguangAudioLoaderDaVinci": XiaozhuguangAudioLoaderDaVinci,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
+    "XiaozhuguangVideoScheduler": XiaozhuguangVideoScheduler,
     "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
     "XiaozhuguangVideoSaveDaVinci": XiaozhuguangVideoSaveDaVinci,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
@@ -1359,12 +1372,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangFrameExtract": "小珠光帧提取",
     "XiaozhuguangImageLoader": "小珠光图像加载器-化神级",
     "XiaozhuguangVideoLoader": "小珠光视频加载器",
-    "XiaozhuguangVideoBatchMerge": "小珠光视频批处理合并",
+    "XiaozhuguangVideoBatchMerge": "小珠光视频分段合并",
     "XiaozhuguangVideoLoaderLM": "小珠光视频加载低内存版",
     "XiaozhuguangVideoLoaderDaVinci": "小珠光视频加载-化神级",
     "XiaozhuguangAudioLoader": "小珠光音频加载器",
     "XiaozhuguangAudioLoaderDaVinci": "小珠光音频加载器-化神级",
     "XiaozhuguangVideoInfoReader": "小珠光视频信息读取",
+    "XiaozhuguangVideoScheduler": "小珠光场景切点分段",
     "XiaozhuguangVideoCombine": "小珠光合并视频",
     "XiaozhuguangVideoSaveDaVinci": "小珠光视频保存-化神级",
     "XiaozhuguangImageCompare": "小珠光图像对比",

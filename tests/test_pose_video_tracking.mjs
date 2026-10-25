@@ -33,7 +33,7 @@ assert.ok(merged.filter(op=>op.completion_source?.startsWith('video')).every(op=
 const adjustmentFrames=Array.from({length:6},(_,index)=>{
  const body=Array(54).fill(0);
  for(const [joint,x,y] of [[1,50,20],[2,20,20],[3,30,30],[4,40+index,40],[5,80,20],[8,40,65],[11,60,65]])body.splice(joint*3,3,x,y,.9);
- if(index===1||index===2)body[14]=0;
+ if(index===2)body[14]=0;
  return {canvas_width:100,canvas_height:100,people:[{pose_keypoints_2d:body,hand_left_keypoints_2d:[40+index,40,.9]}]};
 });
 const adjustmentKeys=[

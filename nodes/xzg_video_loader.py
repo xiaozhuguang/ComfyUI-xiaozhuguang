@@ -4,6 +4,7 @@
 支持视频上传、视频文件选择、强制帧率、自定义宽高、帧数上限、起始时间等
 """
 
+import math
 import os
 import shutil
 import subprocess
@@ -165,9 +166,9 @@ def _get_ffprobe_path():
 
 def _probe_source_frame_count(video, fps, duration):
     """源视频全片总帧数：优先读 ffprobe 的 nb_frames（容器真实帧数，不实际解码，快），
-    拿不到（无 ffprobe / 无该字段 / 非法值）时回退 round(fps × duration)。
-    注：ffmpeg 报告的 Duration 通常含尾帧展示时长（last PTS + 1 帧），round(fps×duration)
-    会虚高 1 帧（如实际 459 帧 → 460），导致前端播放条分母与真实帧数不符。
+    拿不到时再用 ffprobe -count_frames 实际计数；实际计数也失败时才回退
+    round(fps × duration)。计数结果按文件 mtime+size 缓存。
+    duration 可能含尾帧展示时长或有容器时间基舍入误差，不应优先用于帧数边界。
     结果按 文件mtime+size 缓存，避免同一文件反复探测。"""
     try:
         st = os.stat(video)
@@ -199,6 +200,23 @@ def _probe_source_frame_count(video, fps, duration):
                             nb = None
         except Exception:
             nb = None
+        if nb is None:
+            # 不少容器不写 nb_frames。此时让 ffprobe 解码并计数，避免 duration×fps
+            # 的尾帧精度误差把强制帧率时间线总帧数少算/多算 1 帧。
+            try:
+                r = subprocess.run(
+                    [fp, "-v", "error", "-count_frames", "-select_streams", "v:0",
+                     "-show_entries", "stream=nb_read_frames", "-of", "json", video],
+                    capture_output=True, timeout=300)
+                if r.returncode == 0:
+                    data = json.loads(r.stdout.decode(*ENCODE_ARGS) or "{}")
+                    streams = data.get("streams") or []
+                    if streams:
+                        nb = int(streams[0].get("nb_read_frames"))
+                        if nb <= 0:
+                            nb = None
+            except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+                nb = None
     if nb is None:
         nb = round(fps * duration) if fps > 0 else 0
     _nb_frames_cache[key] = nb
@@ -312,7 +330,7 @@ def target_size(width, height, custom_width, custom_height, downscale_ratio=8):
     return width, height
 
 
-def _build_framerate_filters(force_rate, source_fps):
+def _build_framerate_filters(force_rate, source_fps, source_frame_offset=0):
     """构建帧率转换滤镜，使用与达芬奇时间线相同的 Bresenham floor 映射算法。
 
     达芬奇算法（通过实测验证）：
@@ -363,9 +381,11 @@ def _build_framerate_filters(force_rate, source_fps):
     if p > 120:
         return [f"fps=fps={force_rate}:round=down"], False
 
-    # Bresenham/floor 映射：周期内保留的位置集合
-    keep_positions = sorted(set(int(k * p / q) for k in range(q)))
-    pos_exprs = [f"eq(mod(n\\,{p})\\,{pos})" for pos in keep_positions]
+    # Bresenham/floor 映射：周期内保留的位置集合。seek 后 select 的 n 从 0 重新计数，
+    # 因此要加回源视频绝对帧偏移，避免每段都从相同相位开始而在拼接处重复/漏帧。
+    keep_positions = sorted(set((k * p) // q for k in range(q)))
+    phase = int(source_frame_offset or 0) % p
+    pos_exprs = [f"eq(mod(n+{phase}\\,{p})\\,{pos})" for pos in keep_positions]
     select_expr = "+".join(pos_exprs)
     return [f"select={select_expr}"], False
 
@@ -430,8 +450,42 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
             seg_end = duration
         duration = max(0.0, seg_end - seg_start)
 
-    # 将跳过帧数转换为起始时间（基于源视频帧率）；片段模式下跳过帧数在片段窗口内偏移
-    start_time = seg_start + skip_frames / fps_base if fps_base > 0 else seg_start
+    # 源总帧数在设置解码区间前取得：CFR 下跳过、上限和总帧数都用同一条
+    # 全局输出帧序列计算，不能分别用浮点时长估算，否则分段边界会漂移。
+    source_frame_count = _probe_source_frame_count(video, fps_base, full_duration)
+    skip_count = max(0, int(skip_frames or 0))
+    output_fps = force_rate or fps_base
+    timeline_start = seg_start + skip_count / output_fps if output_fps > 0 else seg_start
+    source_start_frame = max(0, int(round(timeline_start * fps_base))) if fps_base > 0 else 0
+    output_start_frame = None
+    exact_cfr = (fps_base > 0 and float(fps_base).is_integer()
+                 and output_fps > 0 and float(output_fps).is_integer())
+    if exact_cfr and force_rate > 0 and force_rate <= fps_base:
+        from math import gcd
+        if int(fps_base) // gcd(int(fps_base), int(force_rate)) > 120:
+            # 此时帧率滤镜回退到基于时间戳的 fps filter，不能再用 select 的整数相位模型。
+            exact_cfr = False
+    if exact_cfr:
+        src_rate_i, dst_rate_i = int(fps_base), int(output_fps)
+        # 片段起止时间映射为源帧边界；全片区间用 ffprobe 帧数作为权威终点。
+        source_window_start = max(0, int(round(seg_start * src_rate_i)))
+        if seg_start <= 0 and seg_end <= 0 and source_frame_count > 0:
+            source_window_end = source_frame_count
+        else:
+            source_window_end = max(source_window_start,
+                                    int(round((seg_start + duration) * src_rate_i)))
+            if source_frame_count > 0:
+                source_window_end = min(source_window_end, source_frame_count)
+        # 输出区间为 [ceil(srcStart*dst/src), ceil(srcEnd*dst/src))；
+        # local skip 是输出帧数，精确作为全局输出序号增量。
+        output_window_start = (source_window_start * dst_rate_i + src_rate_i - 1) // src_rate_i
+        output_window_end = (source_window_end * dst_rate_i + src_rate_i - 1) // src_rate_i
+        output_start_frame = output_window_start + skip_count
+        source_start_frame = (output_start_frame * src_rate_i) // dst_rate_i
+        start_time = source_start_frame / src_rate_i
+        yieldable_frames = max(0, output_window_end - output_start_frame)
+    else:
+        start_time = timeline_start
 
     if start_time > 0:
         if start_time > 4:
@@ -482,7 +536,7 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
 
     vfilters = []
     # 帧率转换（与达芬奇相同的 Bresenham floor 映射）
-    fr_filters, is_upscale = _build_framerate_filters(force_rate, fps_base)
+    fr_filters, is_upscale = _build_framerate_filters(force_rate, fps_base, source_start_frame)
     vfilters.extend(fr_filters)
     if custom_width != 0 or custom_height != 0:
         size = target_size(size_base[0], size_base[1], custom_width,
@@ -518,15 +572,16 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     # 源总帧数优先用 ffprobe nb_frames（容器真实帧数），拿不到再回退 round(fps×duration)：
     # ffmpeg 报告的 duration 通常含尾帧展示时长（last PTS + 1 帧），round(fps×duration)
     # 会虚高 1 帧（如实际 459 帧 → 460），导致前端播放条分母与真实帧数不符。
-    source_frame_count = _probe_source_frame_count(video, fps_base, full_duration)
-    window_frame_count = round(fps_base * duration) if fps_base > 0 else 0
-    # 跳过帧：-ss seek 后实际可输出的帧数上限 = 窗口内剩余帧数，
-    # 否则进度上限偏大（跳过帧数越多，进度条越到不了 100%）
-    remaining_frames = max(0, window_frame_count - skip_frames) if skip_frames > 0 else window_frame_count
-    if force_rate and fps_base > 0:
-        yieldable_frames = remaining_frames * force_rate / fps_base
-    else:
-        yieldable_frames = remaining_frames
+    if not exact_cfr:
+        window_end_frame = round(fps_base * (seg_start + duration)) if fps_base > 0 else 0
+        remaining_frames = max(0, window_end_frame - source_start_frame) if fps_base > 0 else 0
+        if force_rate and fps_base > 0:
+            # 非整数/VFR 回退路径：这里仍按时间戳近似计算可读帧数。
+            from math import ceil
+            yieldable_frames = max(0, ceil(window_end_frame * force_rate / fps_base)
+                                   - ceil(source_start_frame * force_rate / fps_base))
+        else:
+            yieldable_frames = remaining_frames
     if frame_load_cap > 0:
         yieldable_frames = min(yieldable_frames, frame_load_cap)
 
@@ -584,7 +639,10 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                 src_n = 0
                 prev_frame = None
                 for k in range(int(yieldable_frames)):
-                    target = int(k * fps_base / force_rate)  # floor(k * src/dst)
+                    output_frame = (output_start_frame + k if output_start_frame is not None
+                                    else int(ceil(source_start_frame * force_rate / fps_base)) + k)
+                    target = int(output_frame * fps_base / force_rate) - source_start_frame
+                    # floor(k * src/dst)，但索引相对当前 seek 起点
                     # 读取直到 src_n > target，确保 prev_frame 是 target 帧数据
                     while src_n <= target:
                         prev_frame = _read_one_frame()
@@ -745,8 +803,9 @@ class XiaozhuguangVideoLoader:
         )
 
     def load_video_impl(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                        帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准", unique_id=None):
-        强制帧率 = int(强制帧率)
+                        帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
+                        补帧到=0, unique_id=None):
+        强制帧率 = float_or_int(强制帧率, 0)
         # 空选/文件丢失时回退到内置占位视频，避免 "Invalid video file" 中断（与化神级一致）。
         视频, _used_fallback = _resolve_video_widget(视频)
         video_path = folder_paths.get_annotated_filepath(视频)
@@ -801,6 +860,38 @@ class XiaozhuguangVideoLoader:
         (src_w, src_h, src_fps, src_dur, src_frames,
          target_frame_time, yieldable, new_w, new_h, alpha) = info
 
+        # ── 跳过帧数越界兜底 ────────────────────────────────────────────────
+        # 窗口内一帧都读不到（跳过帧数 ≥ 窗口可读帧数，典型：红蓝杠拖过片尾、
+        # 段表过期/误写、跳过帧数填得过大）时，钳到「保留窗口最后 1 帧」重读，
+        # 不再直接抛 "No frames decoded from video"
+        if yieldable <= 0 and max(0, int(跳过帧数 or 0)) > 0:
+            _out_fps = (float(强制帧率) if 强制帧率 and float(强制帧率) > 0
+                        else float(src_fps or 0))
+            if _out_fps > 0 and float(src_dur or 0) > 0:
+                _window_frames = int(round(float(src_dur) * _out_fps))
+                _clamped = max(0, _window_frames - 1)
+                if _clamped < int(跳过帧数 or 0):
+                    print(f"[小珠光] 跳过帧数 {跳过帧数} 超出可读范围"
+                          f"（窗口约 {_window_frames} 帧），已钳到 {_clamped}（保留最后 1 帧）")
+                    跳过帧数 = _clamped
+                    gen = ffmpeg_frame_generator(
+                        video=video_path,
+                        force_rate=强制帧率,
+                        frame_load_cap=帧数上限,
+                        skip_frames=跳过帧数,
+                        custom_width=cw,
+                        custom_height=ch,
+                        downscale_ratio=downscale_ratio,
+                        aspect_ratio=视频比例,
+                        ratio_mode=ratio_mode,
+                        ratio_dim=ratio_dim,
+                        fit_mode=fit_mode,
+                        progress_cb=progress_cb,
+                    )
+                    info = next(gen)
+                    (src_w, src_h, src_fps, src_dur, src_frames,
+                     target_frame_time, yieldable, new_w, new_h, alpha) = info
+
         # ── A1：帧堆叠（内存模式）──────────────────────────────────────────────────────────────────
         # 「标准」= list 累积 + np.stack/astype（峰值≈3×）；「低内存」= 预分配缓冲
         # 流式写入 + torch 零复制（峰值≈1~1.5×），与低内存版 load_video 一致。
@@ -820,7 +911,9 @@ class XiaozhuguangVideoLoader:
             except StopIteration:
                 pass
             if count == 0:
-                raise RuntimeError("No frames decoded from video")
+                raise RuntimeError(
+                    f"No frames decoded from video（窗口内没有可读帧：跳过帧数 {跳过帧数} / "
+                    f"帧数上限 {帧数上限}，请检查是否超出视频总帧数）")
             pbar.update_absolute(650, 1000)  # 读帧+流式堆叠完成
             # buf[:count] 是连续视图，torch.from_numpy 零复制
             image_tensor = torch.from_numpy(buf[:count]).view(-1, new_h, new_w, ch_count)
@@ -832,7 +925,9 @@ class XiaozhuguangVideoLoader:
             except StopIteration:
                 pass
             if not frames:
-                raise RuntimeError("No frames decoded from video")
+                raise RuntimeError(
+                    f"No frames decoded from video（窗口内没有可读帧：跳过帧数 {跳过帧数} / "
+                    f"帧数上限 {帧数上限}，请检查是否超出视频总帧数）")
             pbar.update_absolute(600, 1000)  # 读帧完成
             channels = 4 if alpha else 3
             image_tensor = torch.from_numpy(
@@ -844,7 +939,8 @@ class XiaozhuguangVideoLoader:
         loaded_count = image_tensor.shape[0]
         loaded_duration = loaded_count * target_frame_time
 
-        audio_start = 片段起点 + 跳过帧数 / src_fps if src_fps > 0 else 片段起点
+        skip_fps = 强制帧率 or src_fps
+        audio_start = 片段起点 + 跳过帧数 / skip_fps if skip_fps > 0 else 片段起点
         audio_duration = loaded_duration if loaded_duration > 0 else None
         pbar.update_absolute(700, 1000)  # 正在提取音频
         waveform, sr = extract_audio(
@@ -874,17 +970,29 @@ class XiaozhuguangVideoLoader:
         pbar.update_absolute(750, 1000)  # 音频就绪
 
         # 全片原样加载时用解码实测帧数修正源总帧数（播放条分母 459 vs 460 误差的直接兜底）
+        # 判据是"参数是否真的裁剪了取值范围"，而不是"参数是否为 0"：
+        #   强制帧率 == 源帧率（1:1 映射，不改变帧数）、帧数上限 >= 源总帧数（截断不生效）
+        # 都等价于原样全片加载，若按非 0 处理会让兜底逻辑失效，off-by-one 原样暴露给前端。
+        _force_eff = (强制帧率 if (强制帧率 and src_fps > 0
+                                   and abs(float(强制帧率) - src_fps) >= 1e-6) else 0)
+        _limit_eff = (帧数上限 if (帧数上限 and (src_frames <= 0 or 帧数上限 < src_frames)) else 0)
         src_frames_final = _finalize_source_frame_count(
             src_frames, loaded_count,
             skip_frames=max(0, int(跳过帧数 or 0)),
-            frame_limit=max(0, int(帧数上限 or 0)),
+            frame_limit=max(0, int(_limit_eff or 0)),
             segment_start=max(0.0, float(片段起点 or 0.0)),
             segment_end=max(0.0, float(片段终点 or 0.0)),
-            force_rate=强制帧率,
+            force_rate=_force_eff,
         )
         video_info = {
             "source_fps": src_fps,
             "source_frame_count": src_frames_final,
+            "range_fps": 强制帧率 or src_fps,
+            # 与 ffmpeg 全局 floor(k*src/dst) 帧映射的边界算法一致，
+            # 不用 duration×fps（容器时长的尾帧舍入会少算 1 帧，前端会把 skip N 改成 N-1）。
+            "range_frame_count": (src_frames_final if not 强制帧率 or abs(强制帧率 - src_fps) < 1e-6
+                                  else max(1, math.ceil(src_frames_final * 强制帧率 / src_fps))
+                                  if src_frames_final > 0 and src_fps > 0 else src_frames_final),
             "source_duration": src_dur,
             "source_width": src_w,
             "source_height": src_h,
@@ -927,7 +1035,11 @@ class XiaozhuguangVideoLoader:
                     vf_parts.append(f"crop={new_w}:{new_h}")
                 vf_parts.append("setsar=1")
             # 帧率滤镜：降帧用 select（与帧提取一致），升帧用 fps round=down（预览可接受末帧重复）
-            fr_filters, _is_upscale = _build_framerate_filters(强制帧率, src_fps)
+            preview_fps = 强制帧率 or src_fps
+            preview_start_time = 片段起点 + 跳过帧数 / preview_fps if preview_fps > 0 else 片段起点
+            preview_source_start_frame = round(preview_start_time * src_fps) if src_fps > 0 else 0
+            fr_filters, _is_upscale = _build_framerate_filters(
+                强制帧率, src_fps, preview_source_start_frame)
             if _is_upscale:
                 # 升帧：预览视频用 fps 滤镜（mp4 输出需要 PTS，无法 Python 端处理）
                 fr_filters = [f"fps=fps={强制帧率}:round=down"]
@@ -936,7 +1048,7 @@ class XiaozhuguangVideoLoader:
 
             cmd = [ffmpeg_path, "-y", "-v", "error"]
             # 起始时间（片段起点 + 跳过帧数 → 时间）
-            start_time = 片段起点 + 跳过帧数 / src_fps if src_fps > 0 else 片段起点
+            start_time = preview_start_time
             if start_time > 0:
                 if start_time > 4:
                     cmd += ["-ss", str(start_time - 4), "-i", video_path, "-ss", "4"]
@@ -1020,6 +1132,8 @@ class XiaozhuguangVideoLoader:
             pbar.update_absolute(950, 1000)  # 预览视频就绪
         except Exception as e:
             print(f"[小珠光视频加载器] 预览视频生成异常: {e}")
+
+        # 末尾补帧已移除：加载器只输出真实解码帧数（切点对齐改由分段处理节点负责）。
 
         if image_tensor.size(3) == 4:
             rgb = image_tensor[:, :, :, :3]

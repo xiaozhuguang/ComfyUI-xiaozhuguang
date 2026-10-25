@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { xzgLang } from "./xzg_i18n.js";
-import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
+import { cloudLoad, cloudSave, cloudWaitForSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 const H3_PREFIX = "Minimax-H3 ";
 const H3_GEN_MODES = [
@@ -14,6 +14,8 @@ const LEGACY_SKILL_PRESETS_KEY = "xzg_prompt_skill_presets";
 const PROMPT_RULE_MANAGER_GEOMETRY_KEY = "xzg_prompt_rule_manager_geometry";
 const LEGACY_PROMPT_RULE_MANAGER_GEOMETRY_KEY = "xzg_prompt_skill_manager_geometry";
 let promptRulePresetsRestorePromise = null;
+// 云端预设恢复完成前标记为 false：期间不得把已保存的规则类型/预设名当成非法值重置。
+let promptRulePresetsReady = false;
 const QWEN_IMAGE_MODES = [
     "Qwen-Image-2.1 文生图",
     "Qwen-Image-2.1 图像编辑",
@@ -66,9 +68,14 @@ function xzgOrderedPromptRuleCategoryNames(presets) {
 function xzgRefreshPromptRuleSelectionNames(presets) {
     if (!presets || typeof presets !== "object" || Array.isArray(presets)) return presets;
     const groups = new Map();
+    const ids = new Set();
     for (const key of xzgOrderedPromptRulePresetNames(presets)) {
         const entry = presets[key];
         if (!entry || typeof entry !== "object" || entry._typeOnly) continue;
+        let id = String(entry.id || `xzg-rule:${key}`);
+        while (ids.has(id)) id += ":duplicate";
+        entry.id = id;
+        ids.add(id);
         const category = String(entry.category || "自定义提示词规则");
         const name = String(entry.name || key);
         const groupKey = `${category}\u0000${name}`;
@@ -76,6 +83,16 @@ function xzgRefreshPromptRuleSelectionNames(presets) {
         groups.get(groupKey).push(key);
     }
     const usedByCategory = new Map();
+    // 先保留已有标签，排序不会再把同名规则的 (1)/(2) 身份交换。
+    for (const keys of groups.values()) {
+        for (const key of keys) {
+            const entry = presets[key], category = String(entry.category || "自定义提示词规则");
+            if (!usedByCategory.has(category)) usedByCategory.set(category, new Set());
+            const used = usedByCategory.get(category);
+            if (entry.selectionName && !used.has(entry.selectionName)) used.add(entry.selectionName);
+            else delete entry.selectionName;
+        }
+    }
     for (const keys of groups.values()) {
         const entry = presets[keys[0]];
         const category = String(entry.category || "自定义提示词规则");
@@ -83,6 +100,7 @@ function xzgRefreshPromptRuleSelectionNames(presets) {
         if (!usedByCategory.has(category)) usedByCategory.set(category, new Set());
         const used = usedByCategory.get(category);
         for (let index = 0; index < keys.length; index++) {
+            if (presets[keys[index]].selectionName) continue;
             let selectionName = keys.length === 1 ? name : `${name} (${index + 1})`;
             let suffix = 2;
             while (used.has(selectionName)) selectionName = `${name} (${index + 1}, ${suffix++})`;
@@ -236,7 +254,37 @@ async function openPromptRuleManager(node) {
     const buttonStyle = "background:transparent;color:#43ffa0 !important;border:0;padding:4px 7px;cursor:pointer;white-space:nowrap";
     const close = () => { overlay.remove(); node._xzgPromptRulePresetDialog = null; };
     const updateNode = () => { for (const n of new Set([node, ...(app.graph?._nodes || [])])) n?._syncTargetModel?.(); };
-    const persist = async () => { xzgRefreshPromptRuleSelectionNames(presets); localStorage.setItem(PROMPT_RULE_PRESETS_KEY, JSON.stringify(presets)); await cloudSave(PROMPT_RULE_PRESETS_KEY, presets).catch(() => {}); updateNode(); };
+    const captureSelections = () => [...new Set([node, ...(app.graph?._nodes || [])])].map(n => ({
+        node: n, values: (n.widgets || []).filter(w => ["target_model", "generation_mode", "rule_preset_id"].includes(w.name))
+            .map(w => [w.name, w.value]),
+    }));
+    let savedSelections = captureSelections();
+    const persist = async () => {
+        xzgRefreshPromptRuleSelectionNames(presets);
+        try {
+            await cloudSave(PROMPT_RULE_PRESETS_KEY, presets, { strict: true });
+            panel.querySelector("[data-rule-save-error]")?.remove();
+            updateNode();
+            savedSelections = captureSelections();
+        } catch (error) {
+            for (const saved of savedSelections) {
+                for (const [name, value] of saved.values) {
+                    const w = saved.node.widgets?.find(w => w.name === name);
+                    if (w) w.value = value;
+                }
+                saved.node._syncTargetModel?.();
+            }
+            let message = panel.querySelector("[data-rule-save-error]");
+            if (!message) {
+                message = document.createElement("div");
+                message.dataset.ruleSaveError = "1";
+                message.style.cssText = "padding:10px;color:#ff9090;background:#402020;white-space:normal";
+                panel.prepend(message);
+            }
+            message.textContent = `规则保存失败，服务器仍使用上次保存内容，请重试：${error.message || error}`;
+            throw error;
+        }
+    };
     const ask = (message, initial="") => new Promise(resolve => {
         const shade = document.createElement("div"); shade.style.cssText = "position:fixed;inset:0;z-index:100010;display:flex;align-items:center;justify-content:center;background:#0009;padding:20px;box-sizing:border-box";
         const box = document.createElement("div"); box.style.cssText = "box-sizing:border-box;width:min(420px,100%);padding:16px;background:#202124;color:#fff;border:1px solid #555;border-radius:7px;box-shadow:0 12px 36px #0009;font:13px Arial,sans-serif";
@@ -344,7 +392,7 @@ async function openPromptRuleManager(node) {
                     return target?.value === activeType && mode?.value === (p.selectionName || p.name || key);
                 });
                 const nextKey = presetKeyFor(activeType, next, key);
-                presets[nextKey] = { ...p, name: next };
+                presets[nextKey] = { ...p, name: next, selectionName: next };
                 delete presets[key];
                 if (activeName === key) activeName = nextKey;
                 await persist();
@@ -379,6 +427,22 @@ const OUTPUT_LANGUAGE_LABELS = {
 };
 app.registerExtension({
     name: "Xiaozhuguang.H3Prompt",
+    setup() {
+        const queuePrompt = app.queuePrompt;
+        app.queuePrompt = async function (...args) {
+            const rulesNode = (app.graph?._nodes || []).find(node =>
+                node.type === "XiaozhuguangNinimaxH3Prompt" && ![
+                    "MiniMax-H3", "MiniMax-H3 视频", "MiniMax-H3 Video", "QWEN", QWEN_IMAGE_TARGET, QWEN_IMAGE_TARGET_EN,
+                ].includes(node.widgets?.find(w => w.name === "target_model")?.value));
+            if (rulesNode) {
+                if (!promptRulePresetsRestorePromise) rulesNode._restorePromptRulePresets?.();
+                await promptRulePresetsRestorePromise;
+                // 在 graphToPrompt 之前等待保存确认，避免点击保存后马上运行仍提交旧规则。
+                await cloudWaitForSave(PROMPT_RULE_PRESETS_KEY);
+            }
+            return queuePrompt.apply(this, args);
+        };
+    },
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
         // ── 小珠光通用提示词 ──
         if (nodeData.name === "XiaozhuguangNinimaxH3Prompt" || nodeData.name === "XiaozhuguangNinimaxH3PromptNoSkill") {
@@ -420,9 +484,21 @@ app.registerExtension({
                 this._addComboControlInputs();
                 this._hideExtraImageInputs();
                 this._ensureTargetModelCombo();
+                const idWidget = this.widgets?.find(w => w.name === "rule_preset_id");
+                if (idWidget) {
+                    idWidget.type = "hidden";
+                    idWidget.computeSize = () => [0, -4];
+                    idWidget.draw = () => {};
+                    // 外部连线覆盖类型/预设时，按实际输入名称解析，不能沿用面板的 ID。
+                    idWidget.serializeValue = () => this.inputs?.some(input =>
+                        ["target_model", "generation_mode"].includes(input.name) && input.link != null)
+                        ? "" : String(idWidget.value || "");
+                }
                 this._syncTargetModel();
                 if (supportsCustomPromptRules) {
                     this._addPromptRulePresetControls();
+                    // 预设从云端恢复是异步的：恢复完成前 _syncTargetModel 保持已保存的
+                    // 规则选择不变，完成后再由 _refreshPromptRulePresetTypes 重建列表。
                     this._restorePromptRulePresets();
                 }
                 const targetWidget = this.widgets?.find(w => w.name === "target_model");
@@ -430,6 +506,21 @@ app.registerExtension({
                     const originalCallback = targetWidget.callback;
                     targetWidget.callback = (...args) => {
                         const result = originalCallback?.apply(targetWidget, args);
+                        const id = this.widgets?.find(w => w.name === "rule_preset_id");
+                        if (id) id.value = "";
+                        const mode = this.widgets?.find(w => w.name === "generation_mode");
+                        if (mode) mode.value = "";
+                        this._syncTargetModel();
+                        return result;
+                    };
+                }
+                const modeWidget = this.widgets?.find(w => w.name === "generation_mode");
+                if (modeWidget) {
+                    const callback = modeWidget.callback;
+                    modeWidget.callback = (...args) => {
+                        const result = callback?.apply(modeWidget, args);
+                        const id = this.widgets?.find(w => w.name === "rule_preset_id");
+                        if (id) id.value = "";
                         this._syncTargetModel();
                         return result;
                     };
@@ -501,22 +592,67 @@ app.registerExtension({
                         ? (lang === "zh" ? "规则预设" : "Rule Preset")
                         : (lang === "zh" ? "提示词细分" : "Prompt Subtype");
                     const values = supportsCustomPromptRules ? [...new Set([labels.h3, labels.qwen, ...presetCategories])] : [labels.h3, labels.qwen];
+                    // 云端预设恢复完成前 presetCategories 必然为空。此时若把工作流里已保存的
+                    // 规则类型当成非法值重置成普通 H3，就会出现"重开工作流后规则随机失效"，
+                    // 因此未就绪时先保留旧值，等恢复完成后再校正。
+                    const pendingRuleType = supportsCustomPromptRules && oldValue && !values.includes(oldValue)
+                        && !isQwen && !isCustom && !["MiniMax-H3 视频", "MiniMax-H3 Video", "MiniMax-H3"].includes(oldValue)
+                        ? oldValue : null;
+                    if (pendingRuleType !== null) values.push(pendingRuleType);
                     targetWidget.options.values = values;
                     targetWidget.options.getOptionLabel = value =>
                         supportsCustomPromptRules && presetCategories.includes(String(value))
                             ? `✦ ${value}`
                             : String(value ?? "");
-                    const selectedType = isCustomCategory ? oldValue : labels.custom;
-                    targetWidget.value = isCustom ? selectedType : isQwen ? labels.qwen : labels.h3;
+                    const selectedType = isCustomCategory ? oldValue
+                        : presetCategories.includes("自定义提示词规则") ? "自定义提示词规则" : labels.custom;
+                    targetWidget.value = pendingRuleType !== null
+                        ? pendingRuleType
+                        : isCustom ? selectedType : isQwen ? labels.qwen : labels.h3;
                     if (gmWidget?.options) {
-                        if (isCustom) {
+                        if (pendingRuleType !== null && !isCustom) {
+                            // 规则类型还未恢复：generation_mode 里保存的多半仍是预设名，原样保留。
+                            gmWidget.options.getOptionLabel = undefined;
+                            const kept = String(gmWidget.value ?? "");
+                            gmWidget.options.values = kept ? [kept] : [H3_GEN_MODES[0]];
+                            gmWidget.value = gmWidget.options.values[0];
+                        } else if (isCustom) {
+                            const idWidget = this.widgets?.find(w => w.name === "rule_preset_id");
+                            const selectedKey = presetNames.find(key => presets[key]?.id === idWidget?.value
+                                && String(presets[key]?.category || "自定义提示词规则") === selectedType);
+                            if (selectedKey) gmWidget.value = presets[selectedKey].selectionName || presets[selectedKey].name || selectedKey;
                             const subtypeNames = presetNames.filter(name => String(presets[name]?.category || "自定义提示词规则") === selectedType).map(name => String(presets[name]?.selectionName || presets[name]?.name || name));
-                            gmWidget.options.values = subtypeNames.length ? subtypeNames : [lang === "zh" ? "（请先保存规则预设）" : "(Save a rule preset first)"];
-                            gmWidget.options.getOptionLabel = value =>
-                                subtypeNames.includes(String(value)) ? `✦ ${value}` : String(value ?? "");
-                            const wanted = gmWidget.value;
-                            gmWidget.value = subtypeNames.includes(wanted) ? wanted : (subtypeNames[0] || gmWidget.options.values[0]);
+                            if (subtypeNames.length) {
+                                gmWidget.options.values = subtypeNames;
+                                gmWidget.options.getOptionLabel = value =>
+                                    subtypeNames.includes(String(value)) ? `✦ ${value}`
+                                        : `${value ?? ""}${lang === "zh" ? "（已失效，请重选）" : " (missing, reselect)"}`;
+                                const wanted = ["（请先保存规则预设）", "(Save a rule preset first)"].includes(gmWidget.value)
+                                    ? "" : gmWidget.value;
+                                // 缺失的已保存选择必须保持可见，不能静默换成第一条规则。
+                                gmWidget.value = wanted && !H3_GEN_MODES.includes(wanted) && !QWEN_IMAGE_MODES.includes(wanted)
+                                    ? wanted : subtypeNames[0];
+                                if (!subtypeNames.includes(gmWidget.value)) gmWidget.options.values = [gmWidget.value, ...subtypeNames];
+                                const key = idWidget?.value ? selectedKey : presetNames.find(key =>
+                                    String(presets[key]?.category || "自定义提示词规则") === selectedType
+                                    && (presets[key]?.selectionName || presets[key]?.name || key) === gmWidget.value);
+                                if (idWidget && key) idWidget.value = presets[key].id || "";
+                            } else if (pendingRuleType !== null) {
+                                // 尚未拿到预设列表，保留已保存的预设名，不要改成占位提示。
+                                gmWidget.options.getOptionLabel = undefined;
+                                const kept = String(gmWidget.value ?? "");
+                                gmWidget.options.values = kept ? [kept] : [H3_GEN_MODES[0]];
+                                gmWidget.value = gmWidget.options.values[0];
+                            } else {
+                                gmWidget.options.getOptionLabel = undefined;
+                                gmWidget.options.values = [idWidget?.value && gmWidget.value
+                                    ? gmWidget.value
+                                    : lang === "zh" ? "（请先保存规则预设）" : "(Save a rule preset first)"];
+                                gmWidget.value = gmWidget.options.values[0];
+                            }
                         } else if (isQwen) {
+                            const id = this.widgets?.find(w => w.name === "rule_preset_id");
+                            if (id) id.value = "";
                             gmWidget.options.getOptionLabel = undefined;
                             const oldMode = gmWidget.value;
                             gmWidget.options.values = QWEN_MODE_LABELS[lang] || QWEN_MODE_LABELS.zh;
@@ -527,6 +663,8 @@ app.registerExtension({
                             })[oldMode];
                             gmWidget.value = gmWidget.options.values[canonical ?? 0];
                         } else {
+                            const id = this.widgets?.find(w => w.name === "rule_preset_id");
+                            if (id) id.value = "";
                             gmWidget.options.getOptionLabel = undefined;
                             gmWidget.options.values = H3_GEN_MODES;
                             gmWidget.value = H3_GEN_MODES.includes(gmWidget.value) ? gmWidget.value : H3_GEN_MODES[0];
@@ -538,23 +676,32 @@ app.registerExtension({
             nodeType.prototype._restorePromptRulePresets = function () {
                 if (!promptRulePresetsRestorePromise) {
                     promptRulePresetsRestorePromise = (async () => {
-                        let data = await cloudLoad(PROMPT_RULE_PRESETS_KEY, { fallbackValue: null });
+                        let data = await cloudLoad(PROMPT_RULE_PRESETS_KEY, { fallbackValue: null, strict: true });
                         let migrated = false;
                         if (!data || typeof data !== "object" || Array.isArray(data)) {
-                            data = await cloudLoad(LEGACY_SKILL_PRESETS_KEY, { fallbackValue: {} });
+                            data = await cloudLoad(LEGACY_SKILL_PRESETS_KEY, { fallbackValue: {}, strict: true });
                             migrated = true;
                         }
                         const normalized = normalizePromptRulePresets(data);
-                        if (migrated || Object.values(data || {}).some(entry => entry && typeof entry === "object" && typeof entry.rule !== "string" && typeof entry.skill === "string")) {
-                            await cloudSave(PROMPT_RULE_PRESETS_KEY, normalized).catch(() => {});
+                        if (migrated || JSON.stringify(data) !== JSON.stringify(normalized)) {
+                            await cloudSave(PROMPT_RULE_PRESETS_KEY, normalized, { strict: true });
                         } else {
                             try { localStorage.setItem(PROMPT_RULE_PRESETS_KEY, JSON.stringify(normalized)); } catch (_) {}
                         }
                         try { localStorage.removeItem(LEGACY_SKILL_PRESETS_KEY); } catch (_) {}
                         return normalized;
-                    })().catch(() => ({}));
+                    })().catch(error => {
+                        console.error("[小珠光提示词] 规则恢复失败，保留原选择并等待重试:", error);
+                        promptRulePresetsRestorePromise = null;
+                        return null;
+                    });
                 }
-                promptRulePresetsRestorePromise.then(() => this._refreshPromptRulePresetTypes());
+                promptRulePresetsRestorePromise.then(result => {
+                    // 仅在成功拿到预设（含空对象）后才允许重置失效选择；
+                    // 加载失败时保持 false，避免把用户的规则选择冲掉。
+                    if (result !== null) promptRulePresetsReady = true;
+                    this._refreshPromptRulePresetTypes();
+                });
             };
 
             nodeType.prototype._refreshPromptRulePresetTypes = function () {

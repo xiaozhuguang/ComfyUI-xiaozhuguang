@@ -56,6 +56,11 @@ export class XiaozhuguangVideoPlayer {
         // 避免视频画面自身的宽高比反过来锁定整个节点的最小高度。
         this._flexContainer = !!options.flexContainer;
         this._flexMinHeight = Math.max(0, Number(options.flexMinHeight) || 0);
+        // Vue 模式下画面高度上限（扣除容器内提示行等非画面区域）；缺省等于 flexMinHeight
+        this._flexMaxVideoH =
+            options.maxVideoHeight != null
+                ? Math.max(0, Number(options.maxVideoHeight) || 0)
+                : this._flexMinHeight;
         this.onDblClick = options.onDblClick || null;
         this.onLoadedMetadata = options.onLoadedMetadata || null;
         this.onPlay = options.onPlay || null;
@@ -142,6 +147,7 @@ export class XiaozhuguangVideoPlayer {
         this._frameRate = 24;
         this._totalFrames = null; // 后端实际加载的帧数（优先使用）
         this._sourceTotalFrames = null; // 原始视频的总帧数（不受帧率调整影响）
+        this._rangeTotalFrames = null; // 当前强制帧率下，跳过/上限控件使用的帧数总量
         this._backendFrameCount = null; // 后端实测总帧数（保存节点/权威 video_info），load 不清空
         this._previewLoaded = false; // 预览视频已加载（转码从 skip 帧开始，播放用预览坐标，起点=0）
         this._previewLoad = false;   // 本次 load 是预览覆盖（片段/转码视频），不污染源视频总帧数/帧率
@@ -515,6 +521,20 @@ export class XiaozhuguangVideoPlayer {
 
         requestAnimationFrame(() => this._updateSurfaceSize());
 
+        // 后台标签页下解码管线（rAF/seek/drawImage）会停摆：隐藏期间收到的新视频
+        // 不能直接 load（会卡死在旧画面，回前台也没人重触发）。隐藏时消费方把地址
+        // 记入 _pendingVideoUrl，这里在回到前台时统一补加载 —— 不依赖尺寸变化
+        // （浏览器后台不改变 DOM 尺寸，ResizeObserver 不会触发）。
+        this._onVisibilityChange = () => {
+            if (this._destroyed || document.hidden) return;
+            const pending = this._pendingVideoUrl;
+            if (pending) {
+                this._pendingVideoUrl = null;
+                this.load(pending);
+            }
+        };
+        document.addEventListener("visibilitychange", this._onVisibilityChange);
+
         // === 右键菜单 ===
         this._contextMenu = document.createElement("div");
         this._contextMenu.style.cssText =
@@ -571,7 +591,13 @@ export class XiaozhuguangVideoPlayer {
         if (!this._videoSurface || this._destroyed) return;
         const el = this.container;
         const containerW = el.clientWidth || el.offsetWidth || 320;
-        const containerH = el.clientHeight || el.offsetHeight || 240;
+        let containerH = el.clientHeight || el.offsetHeight || 240;
+        // Nodes 2.0（Vue）下 DOM 宿主（grid/overlay）的百分比高度链会退化成错误的
+        // 大值，画面按宽度铺开后纵向溢出节点被裁剪。flex 布局时行高已由
+        // computeLayoutSize 钉死，直接以它为高度上限，不再信任宿主测量值。
+        if (this._flexContainer && this._flexMinHeight > 0) {
+            containerH = Math.min(containerH, this._flexMaxVideoH || this._flexMinHeight);
+        }
 
         // 三种模式（裁剪/拉伸/留边）surface 都按目标宽高比例等比缩放，模拟输出画面：
         // 输出视频宽高 = 自定义宽高（或预设比例），裁剪/拉伸/留边只改变画面内容
@@ -693,7 +719,9 @@ export class XiaozhuguangVideoPlayer {
     // 红=起点（跳过帧数 _skipFrames），蓝=终点（_computeEndFrame 计算结果）
     // 注意：预览视频（合成覆盖）加载后，_computeEndFrame 返回的是预览文件坐标（0 起算的帧数），
     // 而蓝标签/蓝条显示在源坐标进度条上，终点帧号必须加上红条偏移（skip + 预览帧数），
-    // 例如跳过100帧+上限200帧 → 预览文件200帧，蓝标签应显示300而非200。
+    // 例如跳过100帧+上限200帧 → 预览文件200帧，蓝杠覆盖 100…299 帧。
+    // 帧号一律 0-based：endFrame 是排他端，蓝标签显示 endFrame-1（337 帧 → 末帧 336），
+    // 与右下角「当前帧 / 末帧」（如 0 / 336）同一逻辑；中间蓝字仍是帧数（endFrame-startFrame）。
     _updateRangeDisplay() {
         const dur = this.duration;
         if (!this._redFrameDisplay || !this._canvas || dur <= 0) {
@@ -721,10 +749,11 @@ export class XiaozhuguangVideoPlayer {
             ? `${startFrame}`
             : "";
 
-        // 绿色标签（蓝杠处）：尾部实际帧号（0-based）——它不是帧数上限值，
-        // 而是红杠+帧数上限换算出的区间尾帧
+        // 绿色标签（蓝杠处）：区间末帧（0-based）——endFrame 是排他端，减 1 才是末帧；
+        // 与右下角「当前帧 / 末帧」一致（337 帧 → 0…336，蓝杠标 336，不是 337）
+        const endFrameLabel = Math.max(startFrame, endFrame - 1);
         this._blueFrameDisplay.textContent = this._fpsDetected
-            ? `${endFrame}`
+            ? `${endFrameLabel}`
             : "";
 
         // 蓝色标签（红蓝条中间）：帧数上限 = 区间长度（红杠到蓝杠的帧数）
@@ -789,16 +818,20 @@ export class XiaozhuguangVideoPlayer {
                 this._progressThumb.style.left = pct + "%";
                 this._progressThumb.style.display = "none";
             }
+            // 设了帧数上限时：帧号显示「当前源帧 / 区间末帧」（如跳过 102 + 上限 107 → 102 / 208），
+            // 与红蓝杠标注的段窗口一致；没设上限时才显示全片总帧数
+            const displayTotal = this._getDisplayTotalFrames(totalFrames);
             if (this._frameDisplay) {
                 if (!this._fpsDetected) {
                     this._frameDisplay.textContent = "";
                 } else {
-                    // 0-based：最左=0，最右=totalFrames（与编辑器时间线一致）
-                    this._frameDisplay.textContent = `${curFrameIdx} / ${totalFrames}`;
+                    // 最左=skip，最右=区间末帧（未设上限时=全片总帧数）
+                    const shownFrame = Math.min(curFrameIdx, displayTotal);
+                    this._frameDisplay.textContent = `${shownFrame} / ${displayTotal}`;
                 }
             }
-            // 时间显示与源坐标一致：预览播放从 skip 开始
-            this._timeDisplay.textContent = `${this._formatTime(cur + base / fps)} / ${this._formatTime(totalFrames / fps)}`;
+            // 时间显示与源坐标一致：预览播放从 skip 开始；总时间按段窗口末端显示
+            this._timeDisplay.textContent = `${this._formatTime(cur + base / fps)} / ${this._formatTime(displayTotal / fps)}`;
             this._updateRangeDisplay();
         }
     }
@@ -894,10 +927,12 @@ export class XiaozhuguangVideoPlayer {
         }
         // 预览模式：源帧号 → 预览文件时间（减去 skip）
         const curTime = this._previewLoaded ? (frameIdx - this._skipFrames) / fps : frameIdx / fps;
-        this._timeDisplay.textContent = `${this._formatTime(frameIdx / fps)} / ${this._formatTime(totalFrames / fps)}`;
+        // 分母与 _updateProgressDisplay 保持一致：设了帧数上限时显示段窗口末帧
+        const displayTotal = this._getDisplayTotalFrames(totalFrames);
+        this._timeDisplay.textContent = `${this._formatTime(frameIdx / fps)} / ${this._formatTime(displayTotal / fps)}`;
         if (this._frameDisplay) {
             if (!this._fpsDetected) this._frameDisplay.textContent = "";
-            else this._frameDisplay.textContent = `${frameIdx} / ${totalFrames}`;
+            else this._frameDisplay.textContent = `${Math.min(frameIdx, displayTotal)} / ${displayTotal}`;
         }
         this._updateRangeDisplay();
         this.seek(curTime);
@@ -1010,6 +1045,24 @@ export class XiaozhuguangVideoPlayer {
         return (this._skipFrames / totalFrames) * 100;
     }
 
+    // 帧号分母一律是「末帧帧号」（0-based）：337 帧 → 336；跳过102+上限107 → 208。
+    // 右下角显示「当前帧号 / 末帧帧号」，与红蓝杠绿标同一量纲。
+    _getDisplayTotalFrames(fallback) {
+        const totalFrames = this.getSourceTotalFrames()
+            || this._totalFrames
+            || fallback
+            || this.getTotalFrames()
+            || 0;
+        const lastIndex = totalFrames > 0 ? totalFrames - 1 : 0;
+        if (this._frameLimit > 0) {
+            const windowLast = this._skipFrames + this._frameLimit - 1;
+            if (windowLast > 0) {
+                return totalFrames > 0 ? Math.min(windowLast, lastIndex) : windowLast;
+            }
+        }
+        return lastIndex;
+    }
+
     _resetPlaybackToStart() {
         const startPct = this._getStartPct();
         if (this._progressFill) {
@@ -1021,18 +1074,17 @@ export class XiaozhuguangVideoPlayer {
             const seekTime = this._previewLoaded ? 0 : (this._skipFrames / fps);
             this.seek(seekTime);
             const dur = this.duration || 0;
+            // 分母与 _updateProgressDisplay 保持一致：设了帧数上限时显示段窗口末帧
+            const displayTotal = this._getDisplayTotalFrames(Math.max(1, Math.round(dur * fps)));
             if (this._timeDisplay) {
-                const srcTotal = this.getSourceTotalFrames() || Math.max(1, Math.round(dur * fps));
-                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(srcTotal / fps)}`;
+                this._timeDisplay.textContent = `${this._formatTime(this._skipFrames / fps)} / ${this._formatTime(displayTotal / fps)}`;
             }
             if (this._frameDisplay) {
                 if (!this._fpsDetected) {
                     this._frameDisplay.textContent = "";
                 } else {
-                    // 分母与 _updateProgressDisplay / _seekByClientX 保持一致：
-                    // 优先源总帧数（全片），批处理逐段时不得用段帧数（_totalFrames）当分母
-                    const totalFrames = this.getSourceTotalFrames() || this._totalFrames || this.getTotalFrames();
-                    this._frameDisplay.textContent = `${this._skipFrames} / ${totalFrames}`;
+                    // 起点=skip，分母=区间末帧（未设上限时=全片总帧数）
+                    this._frameDisplay.textContent = `${Math.min(this._skipFrames, displayTotal)} / ${displayTotal}`;
                 }
             }
             this._updateRangeDisplay();
@@ -1225,9 +1277,12 @@ export class XiaozhuguangVideoPlayer {
         await downloadVideo(url, filename || `xzg-video-${xzgTimestamp()}.mp4`);
     }
 
-    setFlexLayout(enabled, minHeight = 0) {
+    setFlexLayout(enabled, minHeight = 0, maxVideoH = -1) {
         this._flexContainer = !!enabled;
         this._flexMinHeight = Math.max(0, Number(minHeight) || 0);
+        if (maxVideoH >= 0) {
+            this._flexMaxVideoH = Math.max(0, Number(maxVideoH) || 0);
+        }
         Object.assign(this.container.style, {
             display: enabled ? "flex" : "",
             flexDirection: enabled ? "column" : "",
@@ -1383,23 +1438,24 @@ export class XiaozhuguangVideoPlayer {
             // 不得写入 _sourceTotalFrames/_sourceFps（否则播放条分母变成段帧数、随段变化）
             // 总帧数优先级：后端实测（setBackendFrameCount）> 解码器 frameCount > Math.round(duration×fps) 兜底
             // （容器时长含音轨尾差时 duration×fps 会虚高 1 帧，如 459→460）
-            if (this._backendFrameCount) {
-                // 权威值：仅补总帧数，不覆盖帧率（_manualFrameRate/_backendFps 由外部管理）
-                if (!this._previewLoad) this._sourceTotalFrames = this._backendFrameCount;
-            } else if (!this._manualFrameRate && !this._backendFps) {
-                const fps = decoder.fps || 30;
-                if (fps > 0 && fps <= 120) {
-                    this._frameRate = fps;
-                    if (!this._previewLoad) {
-                        this._sourceFps = fps;
-                        this._sourceTotalFrames = decoder.frameCount || Math.round(decoder.duration * fps);
+            const decoderFps = decoder.fps || 30;
+            if (decoderFps > 0 && decoderFps <= 120) {
+                if (!this._previewLoad) {
+                    this._sourceFps = decoderFps;
+                    this._sourceTotalFrames = this._backendFrameCount
+                        || decoder.frameCount || Math.round(decoder.duration * decoderFps);
+                    if (this._manualFrameRate) {
+                        this._rangeTotalFrames = Math.max(1, Math.round(
+                            (this._sourceTotalFrames / decoderFps) * this._frameRate));
                     }
-                    this._fpsDetected = true;
-                    this._updateFrameTicks();
-                    this._updateLoadRangeMarkers();
-                    this.onFpsChange?.(fps);
-                    this.onSourceFpsDetected?.(fps);
                 }
+                if (!this._manualFrameRate && !this._backendFps) this._frameRate = decoderFps;
+                this._fpsDetected = true;
+                this._updateFrameTicks();
+                this._updateDisplay();
+                this._updateLoadRangeMarkers();
+                this.onFpsChange?.(this._frameRate);
+                this.onSourceFpsDetected?.(decoderFps);
             }
             // P6: 同步 canvas 内部分辨率，避免 drawImage 拉伸模糊
             if (decoder.previewWidth && decoder.previewHeight) {
@@ -1984,9 +2040,13 @@ export class XiaozhuguangVideoPlayer {
     setFrameRate(fps) {
         if (typeof fps === "number" && fps > 0) {
             this._frameRate = fps;
+            const sourceDuration = this._sourceTotalFrames && this._sourceFps
+                ? this._sourceTotalFrames / this._sourceFps : this.duration;
+            this._rangeTotalFrames = sourceDuration > 0 ? Math.max(1, Math.round(sourceDuration * fps)) : null;
             this._manualFrameRate = true;
             this._backendFps = false;
             this._fpsDetected = true;
+            this._updateFrameTicks();
             this._updateProgressBarSize(this._videoSurface?.offsetHeight || 200);
             this._updateProgressDisplay(this._currentTime || 0, this.duration || 0);
             this._updateLoadRangeMarkers();
@@ -1998,8 +2058,10 @@ export class XiaozhuguangVideoPlayer {
         this._manualFrameRate = false;
         this._backendFps = false;
         this._fpsDetected = false;
+        this._rangeTotalFrames = null;
         this._totalFrames = null;
         this._frameRate = 24;
+        this._updateFrameTicks();
         this._updateProgressBarSize(this._videoSurface?.offsetHeight || 200);
         this._updateDisplay();
         this._updateLoadRangeMarkers();
@@ -2024,17 +2086,22 @@ export class XiaozhuguangVideoPlayer {
         }
     }
 
-    applyBackendFps(fps) {
+    applyBackendFps(fps, sourceFps = null, rangeFrameCount = null) {
         if (typeof fps === "number" && fps > 0) {
             this._frameRate = fps;
-            this._sourceFps = fps;
+            if (typeof sourceFps === "number" && sourceFps > 0) this._sourceFps = sourceFps;
+            const sourceDuration = this._sourceTotalFrames && this._sourceFps
+                ? this._sourceTotalFrames / this._sourceFps : this.duration;
+            this._rangeTotalFrames = typeof rangeFrameCount === "number" && rangeFrameCount > 0
+                ? Math.round(rangeFrameCount)
+                : (sourceDuration > 0 ? Math.max(1, Math.round(sourceDuration * fps)) : null);
             this._backendFps = true;
             this._fpsDetected = true;
             this._updateFrameTicks();
             this._updateDisplay();
             this._updateLoadRangeMarkers();
             this.onFpsChange?.(fps);
-            this.onSourceFpsDetected?.(fps);
+            this.onSourceFpsDetected?.(this._sourceFps || fps);
         }
     }
 
@@ -2060,6 +2127,7 @@ export class XiaozhuguangVideoPlayer {
     }
 
     getSourceTotalFrames() {
+        if (this._rangeTotalFrames) return this._rangeTotalFrames;
         if (this._sourceTotalFrames) return this._sourceTotalFrames;
         const dur = this.duration;
         if (dur > 0) {
@@ -2237,6 +2305,10 @@ export class XiaozhuguangVideoPlayer {
         this._stopAudio();
         this._stopStreamAudio();
         this._stopProgressRaf();
+        if (this._onVisibilityChange) {
+            document.removeEventListener("visibilitychange", this._onVisibilityChange);
+            this._onVisibilityChange = null;
+        }
         if (this._scrubRafId) {
             cancelAnimationFrame(this._scrubRafId);
             this._scrubRafId = null;

@@ -545,6 +545,9 @@
     "display_name": "Show Anything",
     "inputs": {
       "input": { "name": "input" }
+    },
+    "outputs": {
+      "0": { "name": "output" }
     }
   },
   "XiaozhuguangMaskInvert": {

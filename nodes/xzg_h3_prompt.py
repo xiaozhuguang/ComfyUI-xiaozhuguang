@@ -13,6 +13,7 @@ import json
 import base64
 import inspect
 import re
+import hashlib
 
 import folder_paths
 import comfy.model_management as mm
@@ -551,7 +552,7 @@ _QWEN_IMAGE_MODES = (
     "Qwen-Image-2.1 多参考图",
 )
 # ComfyUI 会在执行前用 INPUT_TYPES 校验值；Qwen 图像模式必须在此全局列表中。
-# 前端会按“提示词类型”仅展示当前适用的那一组。
+# 前端会按"提示词类型"仅展示当前适用的那一组。
 _GEN_MODE_VALUES = list(_GEN_MODE_VALUES) + list(_QWEN_IMAGE_MODES) + ["通用 Skill"]
 
 
@@ -572,16 +573,24 @@ def _xzg_prompt_rule_selection_names(presets):
                 pass
         return (1, 0.0, str(key))
 
+    selection_names = {}
     groups = {}
+    used_by_category = {}
     for key, entry in sorted(presets.items(), key=order_key):
         if not isinstance(entry, dict) or entry.get("_typeOnly"):
             continue
         category = str(entry.get("category") or "自定义提示词规则")
+        stored = entry.get("selectionName")
+        if isinstance(stored, str) and stored.strip():
+            # 前端已写入选择器标签时直接沿用：前端排序使用 localeCompare，Python 使用码点，
+            # 重名预设的 "(1)/(2)" 序号在两边可能相反，重算会让后端找不到用户选中的预设。
+            stored = stored.strip()
+            selection_names[str(key)] = stored
+            used_by_category.setdefault(category, set()).add(stored)
+            continue
         name = str(entry.get("name") or key)
         groups.setdefault((category, name), []).append(str(key))
 
-    selection_names = {}
-    used_by_category = {}
     for (category, name), keys in groups.items():
         used = used_by_category.setdefault(category, set())
         for index, key in enumerate(keys):
@@ -595,50 +604,45 @@ def _xzg_prompt_rule_selection_names(presets):
     return selection_names
 
 
-def _xzg_load_saved_prompt_rule(preset_name, preset_category=None):
-    """从 ComfyUI 用户目录读取全局提示词规则预设，不依赖工作流节点数据。"""
-    try:
-        user_dir = folder_paths.get_user_directory()
-        preset_dir = os.path.join(user_dir, "xiaozhuguang")
-        for filename in ("xzg_prompt_rule_presets.json", "xzg_prompt_skill_presets.json"):
-            preset_path = os.path.join(preset_dir, filename)
-            try:
-                with open(preset_path, "r", encoding="utf-8") as preset_file:
-                    presets = json.load(preset_file)
-            except (OSError, ValueError):
-                continue
-            computed_selection_names = _xzg_prompt_rule_selection_names(presets)
-            entry = None
-            if isinstance(presets, dict) and preset_category:
-                # Prefer the unique selector label used by the node combo. This avoids
-                # confusing a duplicate subtype with a different subtype whose literal
-                # name happens to look like the generated "Name (2)" label.
-                entry = next((value for key, value in presets.items()
-                              if isinstance(value, dict)
-                              and str(value.get("category", "自定义提示词规则")) == str(preset_category)
-                              and (str(value.get("selectionName", "")) == str(preset_name)
-                                   or computed_selection_names.get(str(key)) == str(preset_name))), None)
-            if entry is None and isinstance(presets, dict):
-                candidate = presets.get(preset_name)
-                if isinstance(candidate, dict):
-                    category_matches = not preset_category or str(candidate.get("category", "自定义提示词规则")) == str(preset_category)
-                    selector = str(candidate.get("selectionName", ""))
-                    computed_selector = computed_selection_names.get(str(preset_name))
-                    legacy_name_matches = not selector and not computed_selector and str(candidate.get("name", preset_name)) == str(preset_name)
-                    if category_matches and (selector == str(preset_name) or computed_selector == str(preset_name) or legacy_name_matches):
-                        entry = candidate
-            if entry is None and isinstance(presets, dict):
-                entry = next((value for key, value in presets.items()
-                              if isinstance(value, dict)
-                              and (str(value.get("selectionName", "")) == str(preset_name)
-                                   or computed_selection_names.get(str(key)) == str(preset_name))
-                              and (not preset_category or str(value.get("category", "自定义提示词规则")) == str(preset_category))), None)
-            rule = entry.get("rule", entry.get("skill")) if isinstance(entry, dict) else None
-            if isinstance(rule, str) and rule.strip():
-                return rule.strip()
+def _xzg_read_prompt_rule_presets():
+    directory = os.path.join(folder_paths.get_user_directory(), "xiaozhuguang")
+    for filename in ("xzg_prompt_rule_presets.json", "xzg_prompt_skill_presets.json"):
+        try:
+            with open(os.path.join(directory, filename), "r", encoding="utf-8") as stream:
+                data = json.load(stream)
+        except FileNotFoundError:
+            continue
+        if not isinstance(data, dict):
+            raise ValueError("提示词规则文件格式错误，请在规则管理器重新保存")
+        return data  # 新文件即使为空也具有权威性，不回退到已删除的旧规则。
+    return {}
+
+
+def _xzg_load_saved_prompt_rule(preset_name, preset_category=None, preset_id=None):
+    presets = _xzg_read_prompt_rule_presets()
+    categories = {str(entry.get("category") or "自定义提示词规则")
+                  for entry in presets.values() if isinstance(entry, dict)}
+    if (preset_category in {"自定义 Skill", "Custom Skill", "Custom Prompt Rules"}
+            and preset_category not in categories and "自定义提示词规则" in categories):
+        preset_category = "自定义提示词规则"
+    entries = [(key, entry) for key, entry in presets.items()
+               if isinstance(entry, dict) and not entry.get("_typeOnly")
+               and (not preset_category or str(entry.get("category") or "自定义提示词规则") == str(preset_category))]
+    if preset_id:
+        matches = [entry for _, entry in entries if str(entry.get("id") or "") == str(preset_id)]
+    else:
+        selectors = _xzg_prompt_rule_selection_names(presets)
+        matches = [entry for key, entry in entries if
+                   str(entry.get("selectionName") or selectors.get(str(key)) or entry.get("name") or key) == str(preset_name)]
+        if not matches:
+            matches = [entry for key, entry in entries if str(entry.get("name") or key) == str(preset_name)]
+    if len(matches) > 1:
+        raise ValueError(f"规则预设存在歧义：{preset_category} / {preset_name}，请重新选择并保存")
+    if not matches:
         return None
-    except (OSError, ValueError, TypeError, AttributeError):
-        return None
+    value = matches[0].get("rule", matches[0].get("skill"))
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
 
 _QWEN_IMAGE21_SYSTEM_T2I = """You are a Qwen-Image-2.1 prompt rewriting expert. Rewrite the user's request as one polished, richly detailed English image-generation prompt. When the request is brief, expand it into a fully visualized, coherent still image rather than merely paraphrasing it. Aim for roughly 120-220 words when the concept supports that level of detail; use fewer words only when the user explicitly asks for brevity or the idea is inherently minimal. Add concrete, mutually consistent visual information across these dimensions: image medium and style; main subject's appearance, pose, expression, clothing or surface features; setting and specific environmental details; foreground, middle ground, and background; subject placement, scale, gaze, contact, and interaction with nearby elements; composition, framing, viewpoint, lens or depth-of-field character where useful; direction, softness, colour, and falloff of light; cast shadows, reflected light, diffuse light, material response, and reflections; palette, texture, atmosphere, and small details that strengthen the scene. Describe observable visual facts, not abstract praise or a list of disconnected keywords. Make the subject feel physically present in its environment, with plausible depth, contact, shadows, ambient illumination, and material reflectance. Preserve the user's core idea, requested style, mood, named subjects, and every explicit constraint. Elaborate only with details that naturally support that intent; do not invent story-critical facts, extra prominent subjects, logos, or text. Preserve explicit constraints exactly, especially quoted on-image text, spelling, capitalization, line breaks, quantity, colour, and position. State on-image text in double quotes and identify its carrier, placement, typography, colour, and visual treatment. Do not add negative prompts, model parameters, headings, explanations, or commentary. Output only the final prompt."""
 
@@ -686,6 +690,7 @@ class XiaozhuguangNinimaxH3Prompt:
     @classmethod
     def INPUT_TYPES(s):
         optional_inputs = {
+            "rule_preset_id": ("STRING", {"default": "", "multiline": False}),
             "image_1": ("IMAGE", {"tooltip": "可选：参考图片1 / Reference image 1"}),
             "image_2": ("IMAGE", {"tooltip": "可选：参考图片2 / Reference image 2"}),
             "image_3": ("IMAGE", {"tooltip": "可选：参考图片3 / Reference image 3"}),
@@ -754,6 +759,18 @@ class XiaozhuguangNinimaxH3Prompt:
     def VALIDATE_INPUTS(cls, input_types=None, **kwargs):
         # 前端将两个 COMBO 字段暴露为通配连接口；实际值在下面按模式校验。
         return True
+
+    @classmethod
+    def IS_CHANGED(cls, target_model="", generation_mode="", rule_preset_id="", **kwargs):
+        # 外部规则文件不是普通输入，正文变更必须显式使 ComfyUI 缓存失效。
+        if not getattr(cls, "SUPPORTS_CUSTOM_PROMPT_RULES", True):
+            return "builtin"
+        if target_model in {_TARGET_MODEL_H3, "MiniMax-H3", "MiniMax-H3 Video",
+                            _TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT}:
+            return "builtin"
+        rule = _xzg_load_saved_prompt_rule(generation_mode, target_model, rule_preset_id)
+        payload = json.dumps([target_model, generation_mode, rule_preset_id, rule], ensure_ascii=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _build_user_message(self, user_prompt, generation_mode,
                             image_inputs=None,
@@ -825,21 +842,23 @@ class XiaozhuguangNinimaxH3Prompt:
 
         return "\n".join(user_message_parts), collected_images, total_image_count
 
-    def _build_qwen_image21_user_message(self, user_prompt, generation_mode, image_inputs=None, aspect_ratio="16:9", 风格提示=""):
+    def _build_qwen_image21_user_message(self, user_prompt, generation_mode, image_inputs=None, aspect_ratio="16:9", 风格提示="", custom_rules=False):
         """构造 Qwen-Image-2.1 的文本/编辑提示词优化请求。"""
         mode_hint = {
             "Qwen-Image-2.1 文生图": "Task: text-to-image. Build a complete image description from text.",
             "Qwen-Image-2.1 图像编辑": "Task: image editing. Apply only the requested changes and preserve every unrelated visual attribute.",
             "Qwen-Image-2.1 多参考图": "Task: multi-reference image composition/editing. State the role and retained attributes of each supplied reference image using <image1>, <image2>, etc.",
         }.get(generation_mode, "Task: image generation.")
+        if custom_rules:
+            mode_hint = "Task: follow the selected custom system rules and the user's request."
         # 画幅比例由下游图像生成节点控制，不交给 Qwen 提示词推理，
         # 避免模型将比例误写进画面描述或擅自推断构图比例。
         parts = [mode_hint]
 
         # 九宫格与故事板是按用户明确用词触发的任务约束；普通图像任务不加载这些规则。
         prompt_text = user_prompt or ""
-        has_nine_grid = "九宫格" in prompt_text
-        has_storyboard = "故事板" in prompt_text or "分镜头" in prompt_text
+        has_nine_grid = not custom_rules and "九宫格" in prompt_text
+        has_storyboard = not custom_rules and ("故事板" in prompt_text or "分镜头" in prompt_text)
         is_t2i = generation_mode == "Qwen-Image-2.1 文生图"
         is_multi_reference = generation_mode == "Qwen-Image-2.1 多参考图"
 
@@ -849,13 +868,13 @@ class XiaozhuguangNinimaxH3Prompt:
                     "[九宫格规则：已由用户明确触发] 按用户要求创作严格的三行三列九个画格，"
                     "明确从左到右、从上到下的阅读顺序，保持九格边界、间距和整体版式清楚。"
                     "逐格呈现用户要求的内容；若用户表达连续事件，保持人物、服装、道具、空间和动作状态连续。"
-                    "仅凭‘九宫格’不添加镜号、时间码、对白、标题或制作注释；只有同时触发故事板规则或用户明确要求时才添加。"
+                    "仅凭'九宫格'不添加镜号、时间码、对白、标题或制作注释；只有同时触发故事板规则或用户明确要求时才添加。"
                 )
             elif is_multi_reference:
                 grid_rule = (
                     "[九宫格规则：已由用户明确触发] 创作严格的三行三列九个画格，明确阅读顺序并保持版面清楚。"
                     "先逐张绑定参考图标签与用途，再说明每格实际使用哪些参考图；保持身份、服装、产品及场景来源对应稳定。"
-                    "若用户表达连续事件，保持跨格状态连续。仅凭‘九宫格’不添加镜号、时间码、对白、标题或制作注释；"
+                    "若用户表达连续事件，保持跨格状态连续。仅凭'九宫格'不添加镜号、时间码、对白、标题或制作注释；"
                     "只有同时触发故事板规则或用户明确要求时才添加。参考图标签是提示词引用，不是画面文字。"
                 )
             else:
@@ -863,7 +882,7 @@ class XiaozhuguangNinimaxH3Prompt:
                     "[九宫格规则：已由用户明确触发] 若输入图本身是九宫格，按用户指定的画格或区域执行编辑，"
                     "保持未指定画格、格线、间距、阅读顺序和整体布局不变；若用户要求重做整张版面，再按要求调整。"
                     "若输入图不是九宫格而用户要求将其编排成九宫格，明确新布局及原图内容的保留方式。"
-                    "仅凭‘九宫格’不添加镜号、时间码、对白、标题或制作注释；只有同时触发故事板规则或用户明确要求时才添加。"
+                    "仅凭'九宫格'不添加镜号、时间码、对白、标题或制作注释；只有同时触发故事板规则或用户明确要求时才添加。"
                 )
             parts.append(grid_rule)
 
@@ -907,7 +926,8 @@ class XiaozhuguangNinimaxH3Prompt:
         if total_image_count:
             refs = ", ".join(f"{label} ({len(uris)} image(s))" for label, uris in collected_images)
             parts.append(f"[Reference Images] {refs}. Analyze their visible details before writing the optimized prompt.")
-        parts.append("Output the optimized prompt directly without any explanation.")
+        parts.append("Follow the selected system rules for output structure and content." if custom_rules
+                     else "Output the optimized prompt directly without any explanation.")
         return "\n".join(parts), collected_images, total_image_count
 
     def _build_messages(self, system_prompt, user_message, collected_images, total_image_count):
@@ -961,7 +981,7 @@ class XiaozhuguangNinimaxH3Prompt:
             _XZG_QwenStorage is not None and _XZG_QwenStorage.unloaded
         )
         if not _xzg_is_model_valid(llm) or storage_unloaded:
-            # 诊断日志：区分“settings 为 None / loader 未在本进程成功加载 / 后端仍是旧代码”等场景
+            # 诊断日志：区分"settings 为 None / loader 未在本进程成功加载 / 后端仍是旧代码"等场景
             _storage_settings = (
                 _XZG_QwenStorage.settings if _XZG_QwenStorage is not None else None
             )
@@ -1003,14 +1023,11 @@ class XiaozhuguangNinimaxH3Prompt:
                 "Check workflow connections: 'qwen_model' should connect to BSAI H3 Model Loader output."
             )
 
-        custom_rule_categories = set()
-        if getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True)):
-            try:
-                user_dir = folder_paths.get_user_directory()
-                with open(os.path.join(user_dir, "xiaozhuguang", "xzg_prompt_rule_presets.json"), "r", encoding="utf-8") as preset_file:
-                    custom_rule_categories = {str(entry.get("category", "自定义提示词规则")) for entry in json.load(preset_file).values() if isinstance(entry, dict)}
-            except (OSError, ValueError, TypeError, AttributeError):
-                pass
+        custom_rule_categories = {
+            str(entry.get("category") or "自定义提示词规则")
+            for entry in _xzg_read_prompt_rule_presets().values()
+            if isinstance(entry, dict)
+        } if getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", True) else set()
         is_custom_prompt_rules = (
             getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True))
             and (target_model in (
@@ -1021,6 +1038,10 @@ class XiaozhuguangNinimaxH3Prompt:
             ) or target_model in custom_rule_categories)
         )
         secondary_system_prompt = None
+        builtin_targets = {_TARGET_MODEL_H3, "MiniMax-H3", "MiniMax-H3 Video",
+                           _TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT}
+        if not is_custom_prompt_rules and target_model not in builtin_targets:
+            raise ValueError(f"提示词类型不存在或已改名：{target_model}。请在规则管理器确认类型并重新选择，禁止回退到其他规则。")
         output_language = {
             "English Only": "仅英文",
             "Chinese Only": "仅中文",
@@ -1028,15 +1049,15 @@ class XiaozhuguangNinimaxH3Prompt:
         }.get(output_language, output_language)
         if output_language not in _H3_OUTPUT_FORMATS:
             output_language = "仅英文"
-        generation_mode = {
-            "Text to Image": "Qwen-Image-2.1 文生图",
-            "Image Editing": "Qwen-Image-2.1 图像编辑",
-            "Multi-Reference Image": "Qwen-Image-2.1 多参考图",
-        }.get(generation_mode, generation_mode)
+        if not is_custom_prompt_rules:
+            generation_mode = {
+                "Text to Image": "Qwen-Image-2.1 文生图",
+                "Image Editing": "Qwen-Image-2.1 图像编辑",
+                "Multi-Reference Image": "Qwen-Image-2.1 多参考图",
+            }.get(generation_mode, generation_mode)
         is_qwen_image = (
             not is_custom_prompt_rules and (
                 target_model in (_TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT)
-                or generation_mode in _QWEN_IMAGE_MODES
             )
         )
         valid_modes = set(_QWEN_IMAGE_MODES) if is_qwen_image else _GEN_MODE_DISPLAY_VALUES
@@ -1051,22 +1072,24 @@ class XiaozhuguangNinimaxH3Prompt:
             )
         if is_custom_prompt_rules:
             preset_name = generation_mode
-            rule_text = _xzg_load_saved_prompt_rule(preset_name, target_model)
+            rule_text = _xzg_load_saved_prompt_rule(preset_name, target_model, kwargs.get("rule_preset_id"))
             if not rule_text:
                 raise ValueError(
                     f"规则预设“{preset_name}”未在 ComfyUI 用户目录中找到。"
                     "请打开自定义提示词规则管理器确认预设已保存并完成云持久化。"
                 )
             if output_language in ("中英双语", "仅中文"):
-                system_prompt = rule_text + "\n\nApply the rules above, but write the optimized prompt in English only. This output-language instruction overrides any conflicting language instruction in the rule text. Output the result directly, without explanation."
+                system_prompt = rule_text + "\n\nOutput language: English (a Chinese translation will be produced separately). Preserve the structure, required fields, explanations and formatting specified by the rules above. The language setting changes language only."
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             else:
-                system_prompt = rule_text + "\n\nWrite the optimized prompt in English. Output the result directly, without explanation."
+                system_prompt = rule_text + "\n\nOutput language: English. Preserve the structure, required fields, explanations and formatting specified by the rules above. The language setting changes language only."
             user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
                 user_prompt, "通用", image_inputs=image_inputs,
-                aspect_ratio=aspect_ratio, 风格提示=风格提示,
+                aspect_ratio=aspect_ratio, 风格提示=风格提示, custom_rules=True,
             )
-            print(f"[小珠光提示词] 自定义提示词规则：{preset_name}")
+            print(f"[小珠光提示词] 规则类型={target_model}，预设={preset_name}，"
+                  f"ID={kwargs.get('rule_preset_id') or '旧版名称匹配'}，"
+                  f"内容校验={hashlib.sha256(rule_text.encode('utf-8')).hexdigest()[:12]}")
         elif is_qwen_image:
             if output_language in ("中英双语", "仅中文"):
                 system_prompt = _xzg_qwen_image_system_prompt(generation_mode, "仅英文")
@@ -1192,13 +1215,20 @@ class XiaozhuguangNinimaxH3Prompt:
         text = text.lstrip().removeprefix(": ").strip()
         chinese_text = chinese_text.lstrip().removeprefix(": ").strip()
         if output_language == "仅英文":
-            return (text, "")
-        if output_language == "仅中文":
-            return ("", chinese_text if secondary_system_prompt is not None else text)
-        if secondary_system_prompt is not None:
-            return (text, chinese_text)
-        english, chinese = _xzg_split_bilingual_output(text)
-        return (english, chinese)
+            english, chinese = text, ""
+        elif output_language == "仅中文":
+            english = ""
+            chinese = chinese_text if secondary_system_prompt is not None else text
+        elif secondary_system_prompt is not None:
+            english, chinese = text, chinese_text
+        else:
+            english, chinese = _xzg_split_bilingual_output(text)
+        # 中文文案随本节点完成即时放进 ui 消息广播（executed 事件）：
+        # 「小珠光展示任意」监听上游 executed 事件实时显示，不再等自身被引擎调度——
+        # 引擎按就绪顺序优先执行输出/异步节点，异步下游（视频生成 API 等）排在
+        # 展示节点前面时会抢先执行数分钟，展示内容被压到最后才出现
+        return {"ui": {"text": [chinese] if chinese else []},
+                "result": (english, chinese)}
 
 
 class XiaozhuguangNinimaxH3PromptNoSkill(XiaozhuguangNinimaxH3Prompt):

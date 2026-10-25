@@ -1245,10 +1245,16 @@ function wm_ensureViewer(node) {
         };
 
         // 仅执行到本节点（含上游）：按钮 / 右键菜单共用
-        const runUpstream = () => {
+        let queueingUpstream = false;
+        const runUpstream = async () => {
+            if (queueingUpstream) return;
+            queueingUpstream = true;
             const targetIds = new Set([String(node.id)]);
             const orig = api.queuePrompt;
             const hook = async function (index, prompt, ...args) {
+                if (!prompt?.output?.[String(node.id)]) {
+                    throw new Error("当前节点未包含在执行图中，请重新加载工作流后重试");
+                }
                 if (prompt && prompt.output) {
                     const oldOutput = prompt.output;
                     const newOutput = {};
@@ -1256,7 +1262,10 @@ function wm_ensureViewer(node) {
                     const collect = (val) => {
                         if (!Array.isArray(val)) return;
                         const sid = String(val[0]);
-                        if (oldOutput[sid]) { addNode(sid); return; }
+                        if (val.length === 2 && typeof val[0] === "string" && Number.isInteger(val[1]) && oldOutput[sid]) {
+                            addNode(sid);
+                            return;
+                        }
                         for (const it of val) collect(it);
                     };
                     const addNode = (id) => {
@@ -1271,17 +1280,22 @@ function wm_ensureViewer(node) {
                     };
                     for (const id of targetIds) addNode(id);
                     prompt.output = newOutput;
+                    // 前端批处理拦截器必须放行本次局部执行，不能重新启动整条工作流。
+                    prompt.xzgExecuteToNode = String(node.id);
                 }
-                api.queuePrompt = orig;
+                if (api.queuePrompt === hook) api.queuePrompt = orig;
                 return orig.call(api, index, prompt, ...args);
             };
             try {
                 api.queuePrompt = hook;
-                app.queuePrompt(0);
+                await app.queuePrompt(0);
             } catch (err) {
                 console.error("[小珠光][水印] 执行失败:", err);
+                hideProgress();
+            } finally {
+                if (api.queuePrompt === hook) api.queuePrompt = orig;
+                queueingUpstream = false;
             }
-            setTimeout(() => { if (api.queuePrompt !== orig) api.queuePrompt = orig; }, 3000);
         };
 
         // 右键菜单追加：仅执行到本节点
@@ -2309,29 +2323,37 @@ function wm_ensureViewer(node) {
         });
 
         // ---- 接收预览帧（后端 execute 发来的视频采样帧）----
+        let loadedPreview = "";
+        let previewGeneration = 0;
         chainCallback(node, "onExecuted", function (message) {
-            stopPlay();
             hideProgress();
             const pv = (Array.isArray(message.preview) ? message.preview[0] : message.preview) || {};
             if (!pv || !pv.preview_str) return;
+            // ComfyUI 每段都会重放上游节点的缓存预览，不能重新加载整片或复位播放头。
+            if (pv.preview_str === loadedPreview) return;
             try {
             const pd0 = JSON.parse(pv.preview_str);
                 const pd = (pd0 && pd0.frames) ? pd0.frames : pd0;
-                if (pd0 && pd0.sample_idx) state.sampleIdx = pd0.sample_idx;
-                if (pd && pd.length > 0) {
+                if (Array.isArray(pd) && pd.length > 0) {
+                    stopPlay();
+                    loadedPreview = pv.preview_str;
+                    const generation = ++previewGeneration;
+                    if (pd0 && pd0.sample_idx) state.sampleIdx = pd0.sample_idx;
                     // 载入「新视频」时才清空区域框：用后端下发的 video_id（视频特征哈希）判断，
                     // 仅当源视频变化时清理；排队/快捷键 D 重复执行同一视频不清，保留已画标注
                     const newKey = (pd0 && pd0.video_id) ? pd0.video_id : (pd[0] ? String(pd[0]).split(/[/\\?]/).pop() : '');
                     if (newKey && state.srcKey && newKey !== state.srcKey) clearRegions();
                     if (newKey) state.srcKey = newKey;
-                    state.frames = [];
+                    // 总帧数与图片加载进度无关，关键帧刻度从载入开始就固定。
+                    state.frames = new Array(pd.length);
                     state.frameIdx = 0;
                     state.image = null;
                     pd.forEach((p, i) => {
                         const img = new Image();
                         img.onload = () => {
+                            if (generation !== previewGeneration) return;
                             state.frames[i] = img;
-                            if (i === 0) { state.image = img; readData(); syncSize(); redraw(); }
+                            if (i === state.frameIdx) { state.image = img; readData(); syncSize(); redraw(); }
                         };
                         img.src = getRealURL(p);
                     });
