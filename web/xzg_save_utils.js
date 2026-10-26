@@ -255,8 +255,8 @@ export async function downloadImage(url, filename, opts = {}) {
 /**
  * 快捷方法：下载图片（JPG）
  */
-export async function downloadJpgImage(url, filename) {
-    await xzgDownload(url, filename || `xzg-save-${xzgTimestamp()}.jpg`, "image");
+export async function downloadJpgImage(url, filename, opts = {}) {
+    await xzgDownload(url, filename || `xzg-save-${xzgTimestamp()}.jpg`, "image", opts);
 }
 
 /**
