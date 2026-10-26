@@ -9,6 +9,8 @@ import sys
 import subprocess
 import json
 import re
+import hashlib
+import uuid
 import numpy as np
 import torch
 from PIL import Image
@@ -537,11 +539,14 @@ class XiaozhuguangVideoCombine:
                 # base_dir 为空 → 维持 output/ 根目录（与旧行为完全一致）
                 os.makedirs(output_dir, exist_ok=True)
         else:
-            # 预览模式：写入持久化 output/preview/<节点id>/ 子目录（而非 temp，temp 重启即清，
+            # 预览模式：写入持久化 output/preview/<工作流>/<节点id>/ 子目录（而非 temp，temp 重启即清，
             # 会导致「重启后文件消失 ↔ 前端判定内容未变不重载」的死循环）。返回 type="output"。
             output_dir = _safe_dir('get_output_directory', 'output')
             node_id = str(unique_id) if unique_id else (文件名前缀 or "preview")
-            prefix = os.path.join("preview", node_id, 文件名前缀 or "xzg_video")
+            workflow_id = (extra_pnginfo or {}).get("workflow", {}).get("id")
+            # 同编号节点在不同工作流中不能互删预览文件。
+            owner = hashlib.sha256(str(workflow_id).encode()).hexdigest()[:24] if workflow_id else uuid.uuid4().hex
+            prefix = os.path.join("preview", owner, node_id, 文件名前缀 or "xzg_video")
 
         # 输出根目录固定为 output_dir；文件名前缀可含子目录（如 "xzg_video/xxx"），
         # get_save_image_path 会解析出 subfolder 并把文件写到 output_dir/subfolder 下
@@ -605,9 +610,10 @@ class XiaozhuguangVideoCombine:
                 # isVideo 检查 mediaType==="video"（单数），复数 videos 会退化为依赖文件名后缀识别。
                 "video": [{
                     "filename": file,
+                    "preview_id": uuid.uuid4().hex,
                     "subfolder": subfolder,
                     # 保存模式输出到 output，返回 "output"；预览模式也写入持久化的
-                    # output/preview/<节点id>/ 子目录，故同样返回 "output"（文件跨重启存在）。
+                    # output/preview/<工作流>/<节点id>/ 子目录，故同样返回 "output"（文件跨重启存在）。
                     "type": "output",
                     "format": 格式,
                     "frame_rate": 帧率,

@@ -1,3 +1,4 @@
+import { createVideoOutputCache } from "./lib/xzg_video_output_cache.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
@@ -521,99 +522,21 @@ function _xzgFixVueWidgetGutter(node) {
     }
 }
 
-// 模块级全局视频输出缓存：跨 tab 重建节点后恢复预览的关键
-// key: `${工作流图指纹}|${节点 id}`；value: { filename, type, subfolder, frame_rate }
-// 借鉴 ComfyUI 原生 setNodeOutputsByExecutionId 全局 store 思路：
-// executed 事件到达时写入（节点实例存活时），切回 tab 重建节点后从此读取恢复。
-//
-// 关键：键必须含「工作流图指纹」——节点 id 只在单个工作流内唯一，不同工作流中
-// id 相同的视频保存节点若共享裸 id 键，切换工作流后新节点的预览恢复会读到旧工作流
-// 的输出（串台）。指纹随图结构变化而变化，跨工作流天然隔离。
-const _xzgVideoOutputCache = new Map();
+// 预览身份和执行归属集中管理，禁止按节点结构猜测工作流。
+const _xzgVideoOutputs = createVideoOutputCache();
 
-// 追踪「最近一次发起执行的图」：点击 Run 时会调用 app.queuePrompt，此刻 app.graph 即发起图。
-// 这是跨工作流隔离 executed 输出的关键依据 —— 仅仅用指纹区分「缓存键」还不够：全局 executed
-// 事件（api 的 "executed"）会广播给所有图里 id 相同的节点实例，若不判断「输出属于哪个图」，
-// 切换到 B 工作流观察 A 的执行时，B 里 id 相同的节点实例也会收到 A 的输出并 load 进自己的预览区（串台）。
-let _xzgRunningGraph = null;
-
-// 发起执行时同步捕获：发起图的内容指纹 + 图内所有视频保存节点的 id 集合。
-// 切走工作流 tab 可能销毁节点实例（节点级 executed 监听与播放器随之失效），
-// 原工作流在后台跑完时输出只能靠模块级监听捕获 —— 指纹在 queuePrompt 时刻
-// （发起图仍存活）计算并保存，不依赖图实例后续是否存活。
-let _xzgRunningGraphFp = null;
-let _xzgRunningGraphSaveIds = new Set();
-
-// 按「工作流指纹|节点id」键的输出缓存：节点实例被销毁期间完成的执行，
-// 切回工作流重建节点后由此恢复最新预览（与 localStorage 持久化等效的内存版）。
-const _xzgVideoOutputCacheByFp = new Map();
-
-// 工作流图结构指纹：以「节点 id→type 集合」为工作流身份。
-// - 跨刷新稳定：刷新后图按 JSON 还原，指纹不变 → localStorage 恢复仍命中；
-// - 跨工作流可区分：不同工作流结构不同 → 指纹不同 → 键不同 → 不串台；
-// - 移动节点 / 编辑 widget 值不影响指纹；增删节点会改变指纹（旧缓存自然失效，不会误恢复）。
-function _xzgGraphFingerprint(graph) {
-    const parts = [];
-    for (const n of (graph?.nodes || [])) {
-        if (n && n.id != null && n.type) parts.push(String(n.id) + ":" + n.type);
-    }
-    parts.sort();
-    // djb2 字符串哈希（稳定、无依赖），返回 32 位无符号数字字符串
-    let h = 5381;
-    for (const p of parts) {
-        for (let i = 0; i < p.length; i++) {
-            h = ((h << 5) + h + p.charCodeAt(i)) >>> 0;
-        }
-    }
-    return String(h);
-}
-
-// 每个存活图实例的唯一运行时令牌（WeakMap 弱引用，不泄漏）。
-// 根因：上面的指纹是「纯内容哈希（id:type 集合）」——两个结构完全相同的工作流（如复制得到）
-// 会算出相同指纹，若模块缓存键用「指纹|节点id」，A 运行写入、随后切到 B，B 的 ResizeObserver/
-// onConfigure 恢复就会从该共享键读到 A 的输出并 load 进 B 的预览区（跨工作流串台）。内容指纹
-// 无法区分「内容相同但不同」的两个工作流，唯有图实例对象可以。这里用 WeakMap 为每个图分配唯一
-// 递增令牌，让同会话内任意两个图（哪怕结构完全一致）都持有不同缓存键，从根源杜绝按共享键串台。
-const _xzgGraphTokenMap = new WeakMap();
-let _xzgGraphTokenSeq = 0;
-function _xzgGraphToken(graph) {
-    if (!graph) return "";
-    let t = _xzgGraphTokenMap.get(graph);
-    if (!t) { t = String(++_xzgGraphTokenSeq); _xzgGraphTokenMap.set(graph, t); }
-    return t;
-}
-
-// 跨浏览器刷新的持久化恢复：写入 localStorage（key = `${指纹}_${节点 id}`）。
-// 关键：绝不写入 node.properties / widget 序列化 —— 那会并入图/extra_pnginfo/签名，
-// 破坏「上游未变时不重编码」的缓存命中。localStorage 不进 prompt，因此不影响缓存。
-// 这样刷新后仍能恢复上次视频预览（对齐 VHS 刷新后仍有输出），又不牺牲缓存惰性。
-// 说明：localStorage 仍按“内容指纹”键存（刷新后图是新实例、令牌会变，无法按令牌跨刷新恢复，
-// 只能退回内容指纹）。刷新后同一标签页通常只加载一个工作流，指纹命中即本工作流，串台风险低；
-// 会话内的实时跨工作流串台则由下方按“图实例令牌”键的模块缓存彻底杜绝。
-const _xzgOutStoreKey = (wfFp, nodeId) => `xzg_video_combine_out_${wfFp}_${nodeId}`;
-function _xzgPersistOutput(wfFp, nodeId, info) {
-    try { localStorage.setItem(_xzgOutStoreKey(wfFp, nodeId), JSON.stringify(info)); } catch (e) { /* 忽略存储失败 */ }
-}
-function _xzgLoadPersistedOutput(wfFp, nodeId) {
-    try { return JSON.parse(localStorage.getItem(_xzgOutStoreKey(wfFp, nodeId))); } catch (e) { return null; }
-}
-// 模块缓存键：图实例令牌 + 节点 id —— 同会话内两个图（即使结构完全一致）令牌不同 → 键不同 → 不串台
-const _xzgCacheKey = (graph, nodeId) => `${_xzgGraphToken(graph)}|${nodeId}`;
-
-function getVideoUrl(filename, type, subfolder, absToken) {
+function getVideoUrl(filename, type, subfolder, absToken, previewId) {
     if (!filename) return "";
     // 绝对路径输出：文件在 output/ 之外，/view 无法服务，走会话令牌拉流（后端注册守卫）
     if (absToken) {
-        return `/xzg/davinci/view-abs?token=${encodeURIComponent(absToken)}`;
+        return `/xzg/davinci/view-abs?token=${encodeURIComponent(absToken)}&v=${encodeURIComponent(previewId || "")}`;
     }
     const params = new URLSearchParams({
         filename: filename,
         type: type || "output",
     });
     if (subfolder) params.set("subfolder", subfolder);
-    // 注意：这里不带随机数（rand）。刷新到最新内容靠「文件名自增」天然实现——
-    // 内容/输入变了文件名必变 → URL 变化 → 重新加载；同名文件（输入未变）则返回
-    // 缓存命中项，避免每次渲染/恢复都因 URL 不同而强制重新下载、转圈读条。
+    if (previewId) params.set("v", previewId);
     return `/view?${params.toString()}`;
 }
 
@@ -683,71 +606,8 @@ app.registerExtension({
     name: "xiaozhuguang.video_combine",
     init() {
         _xzgPatchVideoSaveControlPointer();
-        // 记录「发起执行的图」：点击 Run 会走 app.queuePrompt，此刻 app.graph 即发起执行的图。
-        // 之所以包 app.queuePrompt 而非 api.queuePrompt —— api.queuePrompt 会被本插件其它模块
-        // （编组 / 水印）做一次性临时包装后随即还原，永久包进会把临时包装链拉长；而 app.queuePrompt
-        // 无人永久包装，独立封装更稳。
-        if (!app._xzgVideoCombineQueueHookInstalled && typeof app.queuePrompt === "function") {
-            app._xzgVideoCombineQueueHookInstalled = true;
-            const _xzgOrigAppQueuePrompt = app.queuePrompt;
-            app.queuePrompt = function (...args) {
-                const g = app.graph; // 同步取发起图（调用时 app.graph 是当前激活的图）
-                const r = _xzgOrigAppQueuePrompt.apply(this, args);
-                if (g) {
-                    _xzgRunningGraph = g;
-                    // 同步捕获发起图指纹与视频保存节点 id 集合（此刻图必然存活，
-                    // 之后切 tab 销毁也不影响模块级 executed 兜底写入的键正确性）
-                    _xzgRunningGraphFp = _xzgGraphFingerprint(g);
-                    _xzgRunningGraphSaveIds = new Set(
-                        (g.nodes || [])
-                            .filter(n => n && n.id != null &&
-                                (n.type === "XiaozhuguangVideoCombine" || n.type === "XiaozhuguangVideoSaveDaVinci"))
-                            .map(n => String(n.id))
-                    );
-                }
-                return r;
-            };
-        }
+        _xzgVideoOutputs.install(api, app);
 
-        // 模块级 executed 兜底监听（仅做持久化写入，不直接操作任何播放器 —— 不存在串台加载）：
-        // 节点级 _onApiExecuted 能覆盖「节点实例存活」的全部场景；但切走工作流 tab 后节点实例
-        // 可能被销毁，原工作流在后台跑完时节点级监听已失效，新输出无人写入缓存 —— 切回后
-        // 重建的节点只能读到旧输出（用户反馈的"切回原工作流预览不更新"即此场景）。
-        // 这里在 queuePrompt 时刻已捕获的「发起图指纹 + 视频保存节点 id 集合」约束下，
-        // 把输出按「指纹|节点id」写入内存缓存与 localStorage，切回重建后即可恢复最新视频。
-        // 铁律不变：只接受「发起本次执行的图」里视频保存节点的输出，绝不跨工作流写入。
-        if (!app._xzgVideoCombineGlobalExecutedInstalled && typeof api?.addEventListener === "function") {
-            app._xzgVideoCombineGlobalExecutedInstalled = true;
-            api.addEventListener("executed", (event) => {
-                try {
-                    const detail = event.detail;
-                    if (!detail || !detail.output) return;
-                    if (!_xzgRunningGraphFp || _xzgRunningGraphSaveIds.size === 0) return;
-                    const execNode = String(detail.node || detail.display_node || "");
-                    const localId = execNode.split(":").pop();
-                    if (!_xzgRunningGraphSaveIds.has(localId)) return;
-                    const ui = detail.output.ui || detail.output;
-                    const videos = ui?.videos || ui?.video;
-                    if (!Array.isArray(videos) || videos.length === 0) return;
-                    const v = videos[0];
-                    const info = {
-                        filename: v.filename || "",
-                        type: v.type || "output",
-                        subfolder: v.subfolder || "",
-                    };
-                    if (!info.filename) return;
-                    // 绝对路径输出：令牌随缓存/持久化传递，供恢复时经 /xzg/davinci/view-abs 拉流
-                    if (v.abs_token) info.abs_token = v.abs_token;
-                    // 达芬奇节点在「预览 + 自定义输出」下使用的目录副本令牌。
-                    if (v.davinci_abs_token) info.davinci_abs_token = v.davinci_abs_token;
-                    if (v.is_absolute) info.is_absolute = v.is_absolute;
-                    if (typeof v.frame_rate === "number" && v.frame_rate > 0) info.frame_rate = v.frame_rate;
-                    if (typeof v.frame_count === "number" && v.frame_count > 0) info.frame_count = v.frame_count;
-                    _xzgVideoOutputCacheByFp.set(`${_xzgRunningGraphFp}|${localId}`, info);
-                    _xzgPersistOutput(_xzgRunningGraphFp, localId, info);
-                } catch (e) { /* 兜底监听不影响主流程 */ }
-            });
-        }
     },
     getCustomWidgets() {
         return {
@@ -789,11 +649,6 @@ app.registerExtension({
             origOnNodeCreated?.apply(this, arguments);
 
             const node = this;
-
-            // 工作流图指纹：跨工作流隔离预览缓存的关键（写入/恢复键的一部分）。
-            // 加载工作流时 configure 逐个创建节点、图此时未建全，这里只作兜底，
-            // 由 onConfigure 的 rAF 阶段（整图就绪）重算覆盖；用户手动新建节点时图已就绪。
-            node._xzgWfFp = _xzgGraphFingerprint(node.graph);
 
             const playerContainer = document.createElement("div");
             playerContainer.style.width = "100%";
@@ -905,53 +760,39 @@ app.registerExtension({
                 {
                     hideOnZoom: false,
                     getValue() {
-                        // 优先从 properties 读取（跨 tab 重建后 player._videoInfo 会丢失）
-                        const info = node.properties?._xzgVideoOutput || player._videoInfo;
+                        const info = _xzgVideoOutputs.get(node.graph, node.id);
                         return info ? {
                             filename: info.filename || "",
                             type: info.type || "output",
                             subfolder: info.subfolder || "",
+                            preview_id: info.preview_id,
+                            abs_token: info.abs_token,
                         } : null;
                     },
                     setValue(v) {
-                        if (!v) { player.load(""); return; }
-                        if (typeof v === "string") {
-                            // 旧版兼容：仅 URL 字符串
-                            if (v !== player.src) player.load(v);
-                            return;
-                        }
+                        if (!v || typeof v !== "object") return;
                         const filename = v.filename;
                         const type = v.type || "output";
                         const subfolder = v.subfolder || "";
-                        if (!filename) { player.load(""); return; }
-                        // 同 key 不重载（与 onExecuted / onConfigure 共用 player._lastAppliedKey）：
+                        if (!filename) return;
+                        // 同 key 不重载（与执行更新和 onConfigure 共用去重键）：
                         // 恢复/渲染时同名文件不再强制重新下载，消除无谓转圈读条。
-                        const key = `${filename}|${type}|${subfolder}`;
+                        const key = `${filename}|${type}|${subfolder}|${v.preview_id || ""}|${v.abs_token || ""}`;
                         if (player._lastAppliedKey === key) return;
-                        // 关键：只在「同一会话内」由真实执行事件写入模块级 cache 时才拉流（键含工作流指纹）。
-                        // 浏览器刷新后反序列化会触发 setValue，此时模块 cache 为空但 properties 里
-                        // 有旧文件 —— 若直接 load 就会一进界面就转圈读条（对齐 VHS，configure 不拉流）。
-                        // 切工作流后图实例令牌会变，令牌键必然落空，这里补查一次指纹键，
-                        // 避免「刚执行过、缓存里明明有最新输出」却被误判成刷新而拒绝加载。
-                        const sameGraphCached = node.graph
-                            ? _xzgVideoOutputCache.get(_xzgCacheKey(node.graph, String(node.id)))
-                            : null;
-                        const sameFpCached = node.graph
-                            ? _xzgVideoOutputCacheByFp.get(`${_xzgGraphFingerprint(node.graph)}|${String(node.id)}`)
-                            : null;
-                        if (!sameGraphCached && !sameFpCached) return;
+                        const saved = _xzgVideoOutputs.get(node.graph, node.id);
+                        if (!saved || saved.filename !== filename || saved.type !== type || saved.subfolder !== subfolder || saved.preview_id !== v.preview_id || saved.abs_token !== v.abs_token) return;
                         // 只有确认要加载后才占用去重键：否则这里 return 会把 key 提前标记成
                         // 「已应用」，后续 onConfigure / executed 的同 key 恢复全部被跳过。
                         player._lastAppliedKey = key;
-                        const url = getVideoUrl(filename, type, subfolder, v.abs_token);
+                        const url = getVideoUrl(filename, type, subfolder, v.abs_token, v.preview_id);
                         if (url) {
-                            const info = { filename, type, subfolder };
+                            const info = { ...saved };
                             // 权威总帧数：复用执行时写入的 player._videoInfo.frame_count（load 不清 _backendFrameCount）
                             if (player._videoInfo?.frame_count) info.frame_count = player._videoInfo.frame_count;
                             player._videoInfo = info;
                             if (info.frame_count) player.setBackendFrameCount?.(info.frame_count);
                             // 注意：不再把文件名写进 node.properties —— 那会并入图/extra_pnginfo，
-                            // 改变缓存签名导致每次运行都重编码。预览恢复只走模块级 _xzgVideoOutputCache。
+                            // 改变缓存签名导致每次运行都重编码。预览恢复只读取已确认的执行输出。
                             player.load(url);
                         }
                     },
@@ -991,7 +832,7 @@ app.registerExtension({
 
             const origOnRemoved = node.onRemoved;
             node.onRemoved = function () {
-                api.removeEventListener("executed", _onApiExecuted);
+                unsubscribeOutput();
                 _visibilityObserver.disconnect();
                 modeSettings?.removeEventListener?.("Comfy.VueNodes.Enabled.change", onVueModeChanged);
                 if (vueModeFrame) cancelAnimationFrame(vueModeFrame);
@@ -1005,35 +846,26 @@ app.registerExtension({
             node.onConfigure = function (info) {
                 origOnConfigure?.apply(this, arguments);
                 requestAnimationFrame(() => {
-                    // 加载工作流/切 tab 重建时，configure 是逐个节点执行的，同步阶段图中节点
-                    // 可能尚未建全；rAF 阶段整图已就绪，这里统一重算指纹（覆盖 onNodeCreated 兜底）
                     _xzgFixVueWidgetGutter(node);
-                    node._xzgWfFp = _xzgGraphFingerprint(node.graph);
-                    const wfFp = node._xzgWfFp;
                     player.resize();
                     if (player._destroyed) return;
-                    // 切 tab 重建 / 加载工作流 / 浏览器刷新后恢复视频预览。
-                    // 取值优先级：本会话模块 cache（图实例键，真实执行）→ 按指纹的模块 cache
-                    // （节点销毁期间由模块级兜底监听写入，见 init）→ localStorage 持久化（跨刷新）→ 旧 properties 兜底。
-                    // 键含工作流图指纹：不同工作流即使节点 id 相同也不会读到彼此的预览（防串台）。
-                    // 有可用的持久化输出就恢复加载（对齐 VHS 刷新后仍有图）；播放器加载动画已隐藏，不会转圈。
-                    const moduleCached = node.graph ? _xzgVideoOutputCache.get(_xzgCacheKey(node.graph, String(node.id))) : null;
-                    const fpCached = wfFp ? _xzgVideoOutputCacheByFp.get(`${wfFp}|${String(node.id)}`) : null;
-                    const saved = moduleCached || fpCached || (wfFp ? _xzgLoadPersistedOutput(wfFp, String(node.id)) : null) || node.properties?._xzgVideoOutput;
+                    // 只恢复本工作流已确认的最新输出。
+                    const saved = _xzgVideoOutputs.get(node.graph, node.id);
                     if (saved && saved.filename) {
-                        const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}`;
+                        const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}|${saved.preview_id || ""}|${saved.abs_token || ""}`;
                         // 同 key 恢复时跳过重复加载（避免无谓网络解码）
                         if (player._lastAppliedKey === key) return;
                         player._lastAppliedKey = key;
                         player._videoInfo = saved;
                         if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
                         if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
-                        const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token);
+                        const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token, saved.preview_id);
                         if (url) {
                             // 后台标签页不立即加载（解码管线停摆会卡死），记 pending 等回前台补加载
                             const visible = !document.hidden
                                 && playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
                             if (visible) {
+                                player._pendingVideoUrl = null;
                                 player.load(url);
                             } else {
                                 player._pendingVideoUrl = url;
@@ -1043,10 +875,7 @@ app.registerExtension({
                 });
             };
 
-            // 执行完成后加载输出视频
-            // 提取为独立函数，供 onExecuted 和 api executed 事件共用
-            // 关键：视频信息同步写入 node.properties，跨 tab 重建后可恢复
-            // （借鉴 ComfyUI 原生 setNodeOutputsByExecutionId 全局 store 思路）
+            // 仅接收已确认任务归属的视频输出。
             const _applyVideoOutput = (output) => {
                 if (!output || !player) return;
                 const ui = output.ui || output;
@@ -1065,6 +894,7 @@ app.registerExtension({
                         filename: v.filename || "",
                         type: v.type || "output",
                         subfolder: v.subfolder || "",
+                        preview_id: v.preview_id || "",
                     };
                     if (typeof v.frame_rate === "number" && v.frame_rate > 0) {
                         info.frame_rate = v.frame_rate;
@@ -1077,33 +907,13 @@ app.registerExtension({
                     // 达芬奇节点在「预览 + 自定义输出」下使用的目录副本令牌。
                     if (v.davinci_abs_token) info.davinci_abs_token = v.davinci_abs_token;
                     if (v.is_absolute) info.is_absolute = v.is_absolute;
-                    // 关键：先写入模块级全局 cache（按图实例令牌键，杜绝跨工作流串台）
-                    // 切 tab 重建节点后，onConfigure/ResizeObserver 从此读取恢复预览。
-                    // 指纹实时算：切工作流后节点实例可能被复用但不重走 onConfigure，
-                    // 缓存的 _xzgWfFp 会停留在上一个工作流，键一错下面的恢复就全部打不中。
-                    const wfFp = node.graph ? _xzgGraphFingerprint(node.graph) : node._xzgWfFp;
-                    if (node.graph) {
-                        node._xzgWfFp = wfFp;
-                        // 模块缓存按“图实例令牌”键 —— 同会话内两个结构完全相同的工作流也会分持不同键，杜绝串台。
-                        _xzgVideoOutputCache.set(_xzgCacheKey(node.graph, String(node.id)), info);
-                        // 同时写一份「指纹键」：节点重建（令牌变化）后仍能命中最新值，
-                        // 不必回落到 node.properties 里那份旧快照。
-                        _xzgVideoOutputCacheByFp.set(`${wfFp}|${String(node.id)}`, info);
-                        // localStorage 仍按“内容指纹”键（跨刷新恢复用，见 _xzgPersistOutput 注释）。
-                        if (wfFp) _xzgPersistOutput(wfFp, String(node.id), info);
-                    }
-                    // player 已销毁时只存信息，等重建后由 onConfigure 恢复
                     if (player._destroyed) return;
-                    // 去重：仅当输出 key（filename|type|subfolder）真变化时才重新加载，
-                    // 与 VHS VideoCombine 前端一致（对返回参数做内容 diff）。
-                    // - 同一次执行 onExecuted 与 api executed 重复触发 → key 相同 → 跳过
-                    // - 后端缓存命中返回同一文件（输入未变）→ key 相同 → 跳过，不再无谓读条
-                    // - 输入/内容真变了，后端重编码生成新文件名 → key 变化 → 重新加载刷新预览
-                    const key = `${info.filename}|${info.type}|${info.subfolder}`;
+                    // 相同文件版本保持播放，新导出的版本必须重新加载。
+                    const key = `${info.filename}|${info.type}|${info.subfolder}|${info.preview_id || ""}|${info.abs_token || ""}`;
                     if (player._lastAppliedKey === key) return;
                     player._lastAppliedKey = key;
                     player._videoInfo = info;
-                    const url = getVideoUrl(info.filename, info.type, info.subfolder, info.abs_token);
+                    const url = getVideoUrl(info.filename, info.type, info.subfolder, info.abs_token, info.preview_id);
                     if (url) {
                         if (info.frame_rate) player.setFrameRate?.(info.frame_rate);
                         // 总帧数优先用后端实测值：setBackendFrameCount 存入播放器权威帧数（load 不清空、
@@ -1116,6 +926,7 @@ app.registerExtension({
                         const visible = !document.hidden
                             && playerContainer.clientWidth > 0 && playerContainer.clientHeight > 0;
                         if (visible) {
+                            player._pendingVideoUrl = null;
                             player.load(url);
                         } else {
                             player._pendingVideoUrl = url;
@@ -1124,42 +935,9 @@ app.registerExtension({
                 }
             };
 
-            const origOnExecuted = node.onExecuted;
-            node.onExecuted = function (output) {
-                origOnExecuted?.apply(this, arguments);
-                // 跨工作流铁律：只有「发起本次执行的图」（_xzgRunningGraph）里的本节点才允许应用输出。
-                // 切到 B 工作流观察 A 的执行时，ComfyUI 会让当前图（B）里 id 相同的节点也触发
-                // onExecuted；此判断拒绝掉，避免 A 的输出串到 B 的预览区。
-                if (_xzgRunningGraph && this.graph && this.graph !== _xzgRunningGraph) return;
-                _applyVideoOutput(output);
-            };
-
-            // 补充：监听 api executed 事件，解决切换工作流后 onExecuted 不触发的问题。
-            // ComfyUI 前端只在当前 rootGraph 中查找节点调用 onExecuted，切换 tab 后
-            // 原工作流的节点不在当前 rootGraph 中，onExecuted 不会被调用。
-            const _onApiExecuted = (event) => {
-                const detail = event.detail;
-                if (!detail || !detail.output) return;
-                // 匹配节点 id（兼容子图 executionId 格式 "parentId:childId"，取最后一段）
-                const execNode = String(detail.node || detail.display_node || "");
-                const localId = execNode.split(":").pop();
-                if (localId !== String(node.id)) return;
-                // 跨工作流铁律：仅接受「发起本次执行的图」里本节点的输出。全局 executed 事件会
-                // 广播给所有图里 id 相同的节点实例；若不判断图归属，A 工作流的输出会被 B 里 id 相同
-                // 的节点写进自己的缓存并 load 到 B 的预览区（串台）。
-                if (_xzgRunningGraph && node.graph && node.graph !== _xzgRunningGraph) {
-                    // 新版前端的 app.graph 与 node.graph 可能是同一工作流的两个包装实例，
-                    // 直接用引用比较会把本图自己的输出误判成他图丢弃（预览一直停在旧视频）。
-                    // 引用不等时退一步比内容指纹，指纹一致就仍按本图处理。
-                    const runningFp = _xzgRunningGraphFp || _xzgGraphFingerprint(_xzgRunningGraph);
-                    const nodeFp = _xzgGraphFingerprint(node.graph);
-                    if (!runningFp || !nodeFp || runningFp !== nodeFp) return;
-                }
-                // 无条件调用：_applyVideoOutput 内部会先写模块级 cache（即使 player 销毁），
-                // 再判断 player 是否可用决定是否立即 load
-                _applyVideoOutput(detail.output);
-            };
-            api.addEventListener("executed", _onApiExecuted);
+            // 原生 onExecuted 没有任务编号，可能是当前图收到其他工作流的输出。
+            // 只通过已确认 prompt_id 归属的通道更新播放器。
+            const unsubscribeOutput = _xzgVideoOutputs.subscribe(node, _applyVideoOutput);
 
             // 监听容器可见性变化：切 tab 时 DOM widget 容器尺寸变为 0，
             // 切回时从 0 变为非 0。此时若有待加载视频就 load，确保预览刷新。
@@ -1178,22 +956,17 @@ app.registerExtension({
                         player.seek(player._currentTime || 0);
                         player._updateSurfaceSize?.();
                     } else {
-                        // player 无视频但有缓存记录：模块 cache（图实例键/指纹键）/ localStorage 持久化 / 旧 properties 兜底，
-                        // 恢复加载（覆盖 onConfigure 恢复时机遗漏的场景）；播放器加载动画已隐藏，不转圈。
-                        const wfFp = node.graph ? _xzgGraphFingerprint(node.graph) : node._xzgWfFp;
-                        if (node.graph) node._xzgWfFp = wfFp;
-                        const moduleCached = node.graph ? _xzgVideoOutputCache.get(_xzgCacheKey(node.graph, String(node.id))) : null;
-                        const fpCached = wfFp ? _xzgVideoOutputCacheByFp.get(`${wfFp}|${String(node.id)}`) : null;
-                        const saved = moduleCached || fpCached || (wfFp ? _xzgLoadPersistedOutput(wfFp, String(node.id)) : null) || node.properties?._xzgVideoOutput;
+                        // 容器重建后恢复本工作流输出。
+                        const saved = _xzgVideoOutputs.get(node.graph, node.id);
                         if (saved && saved.filename) {
-                            const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}`;
+                            const key = `${saved.filename}|${saved.type || ""}|${saved.subfolder || ""}|${saved.preview_id || ""}|${saved.abs_token || ""}`;
                             player._videoInfo = saved;
                             if (player._lastAppliedKey !== key) {
                                 player._lastAppliedKey = key;
                                 player._videoInfo = saved;
                                 if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
                                 if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
-                                const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token);
+                                const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token, saved.preview_id);
                                 if (url) player.load(url);
                             }
                         }
