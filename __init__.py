@@ -232,6 +232,7 @@ from .nodes.xzg_text_box import XiaozhuguangTextBox, XiaozhuguangTextBoxGod
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt, XiaozhuguangNinimaxH3PromptNoSkill
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
 from .nodes.xzg_qwen_image21_encode import XiaozhuguangTextEncodeQwenImage21
+from .nodes.xzg_minimax_h3_reference import XiaozhuguangMiniMaxH3ReferenceToVideo
 from .nodes.xzg_string_to_number import XiaozhuguangStringToNumber
 from .nodes.xzg_atbc import XiaozhuguangATBC
 from .nodes.xzg_atr import XiaozhuguangATR
@@ -1327,6 +1328,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangNinimaxH3PromptNoSkill": XiaozhuguangNinimaxH3PromptNoSkill,
     "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
     "XiaozhuguangTextEncodeQwenImage21": XiaozhuguangTextEncodeQwenImage21,
+    "XiaozhuguangMiniMaxH3ReferenceToVideo": XiaozhuguangMiniMaxH3ReferenceToVideo,
     "XiaozhuguangStringToNumber": XiaozhuguangStringToNumber,
     "XiaozhuguangATBC": XiaozhuguangATBC,
     "XiaozhuguangATR": XiaozhuguangATR,
@@ -1358,6 +1360,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangSelector": "小珠光选择器-化神级",
     "XiaozhuguangBooleanSelector": "小珠光布尔",
     "XiaozhuguangTextEncodeQwenImage21": "Text Encode Qwen Image 2.1-xzg",
+    "XiaozhuguangMiniMaxH3ReferenceToVideo": "MiniMax H3 参考转视频-xzg",
     "XiaozhuguangStringToNumber": "小珠光字符串转整数/浮点/文本",
     "XiaozhuguangBoolNot": "小珠光反向布尔",
     "XiaozhuguangDataBlock": "小珠光数据阻断",

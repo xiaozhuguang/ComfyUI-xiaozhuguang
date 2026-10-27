@@ -191,15 +191,20 @@
     "display_name": "Xiaozhuguang Frame Optimization",
     "inputs": {
       "image": { "name": "image" },
-      "multi_fill": { "name": "multi fill" },
-      "mask": { "name": "mask" }
+      "multi_fill": { "name": "enable minimum" },
+      "min_frames": { "name": "minimum frames" },
+      "frame_rule": { "name": "frame rule" },
+      "mask": { "name": "mask" },
+      "audio": { "name": "audio" },
+      "fps": { "name": "fps" }
     },
     "outputs": {
       "0": { "name": "image" },
       "1": { "name": "frame count" },
       "2": { "name": "original count" },
       "3": { "name": "front fill" },
-      "4": { "name": "mask" }
+      "4": { "name": "mask" },
+      "5": { "name": "audio" }
     }
   },
   "XiaozhuguangFrameExtract": {
@@ -208,11 +213,14 @@
       "image": { "name": "image" },
       "fetch_count": { "name": "original frame count" },
       "front_fill": { "name": "front fill" },
-      "mask": { "name": "mask" }
+      "mask": { "name": "mask" },
+      "audio": { "name": "audio" },
+      "fps": { "name": "fps" }
     },
     "outputs": {
       "0": { "name": "image" },
-      "1": { "name": "mask" }
+      "1": { "name": "mask" },
+      "2": { "name": "audio" }
     }
   },
   "XiaozhuguangImageLoader": {

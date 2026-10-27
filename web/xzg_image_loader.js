@@ -879,7 +879,13 @@ function createImgBatchUI(node) {
             const saveItems = [];
             for (let i = 0; i < targetNames.length; i++) {
                 const n = targetNames[i];
-                const url = getOriginalImageUrl(n);
+                const crop = _cropByImage[n];
+                const hasCrop = Array.isArray(crop) && crop.length === 4 && crop[2] > 0 && crop[3] > 0;
+                const url = hasCrop
+                    ? api.apiURL(`/xzg/image-loader/save-cropped-image?${new URLSearchParams({
+                        filename: n, crop: JSON.stringify(crop), padding_color: _cropPaddingColor,
+                    })}`)
+                    : getOriginalImageUrl(n);
                 // 从文件名中提取实际文件名（去掉 [output] [input] [temp] 后缀）
                 let realName = n;
                 for (const suffix of [" [output]", " [input]", " [temp]"]) {
@@ -888,6 +894,7 @@ function createImgBatchUI(node) {
                         break;
                     }
                 }
+                if (hasCrop) realName = realName.replace(/\.[^./\\]+$/, "") + ".png";
                 saveItems.push({ url, filename: realName });
             }
             if (saveItems.length > 1) await xzgSaveImagesBatch(saveItems);

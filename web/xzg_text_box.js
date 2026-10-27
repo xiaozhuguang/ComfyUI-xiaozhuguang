@@ -343,18 +343,84 @@ function _installGodFavoritesGoldStyling() {
     markFavoriteOptions(document.body);
 }
 
+function _askGodFavoriteDetails(presets, initialTitle) {
+    const zh = xzgLang() !== "en";
+    return new Promise(resolve => {
+        const previousFocus = document.activeElement;
+        const overlay = document.createElement("div");
+        overlay.className = "xzg-god-favorite-dialog";
+        overlay.style.cssText = "position:fixed;inset:0;z-index:2000010;background:#0009;display:flex;align-items:center;justify-content:center;padding:20px";
+        const form = document.createElement("form");
+        form.setAttribute("role", "dialog");
+        form.setAttribute("aria-modal", "true");
+        form.setAttribute("aria-label", zh ? "收藏文本" : "Favorite Text");
+        form.style.cssText = "box-sizing:border-box;width:420px;max-width:100%;padding:20px;background:#202124;color:#eee;border:1px solid #555;border-radius:8px;box-shadow:0 16px 48px #0009;font:14px Arial,sans-serif;display:flex;flex-direction:column;gap:14px";
+        const heading = document.createElement("strong");
+        heading.textContent = zh ? "收藏文本" : "Favorite Text";
+        form.appendChild(heading);
+        const addField = (caption, control) => {
+            const label = document.createElement("label");
+            label.textContent = caption;
+            label.style.cssText = "display:flex;flex-direction:column;gap:7px";
+            control.style.cssText = "box-sizing:border-box;width:100%;padding:8px;background:#151617;color:#eee;border:1px solid #555;border-radius:4px;font:14px Arial,sans-serif";
+            label.appendChild(control); form.appendChild(label);
+        };
+        const title = document.createElement("input");
+        title.type = "text"; title.value = initialTitle; title.required = true;
+        addField(zh ? "标题" : "Title", title);
+        const category = document.createElement("select");
+        const categories = [...new Set([_GOD_FAVORITES_CATEGORY, ...Object.values(presets).map(item => item?.category).filter(Boolean)])];
+        for (const name of categories) {
+            const option = document.createElement("option");
+            option.value = name; option.textContent = name; category.appendChild(option);
+        }
+        addField(zh ? "分类" : "Category", category);
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;justify-content:flex-end;gap:10px";
+        const cancel = document.createElement("button"), confirm = document.createElement("button");
+        cancel.type = "button"; cancel.textContent = zh ? "取消" : "Cancel";
+        confirm.type = "submit"; confirm.textContent = zh ? "收藏" : "Save";
+        for (const button of [cancel, confirm]) {
+            button.style.cssText = "padding:7px 16px;background:#353535;color:#eee;border:1px solid #555;border-radius:4px;cursor:pointer";
+            actions.appendChild(button);
+        }
+        form.appendChild(actions); overlay.appendChild(form);
+        const finish = value => { overlay.remove(); previousFocus?.focus?.(); resolve(value); };
+        cancel.addEventListener("click", () => finish(null));
+        overlay.addEventListener("pointerdown", event => { if (event.target === overlay) finish(null); });
+        form.addEventListener("submit", event => {
+            event.preventDefault();
+            if (!title.value.trim()) { title.focus(); return; }
+            finish({ title: title.value.trim(), category: category.value });
+        });
+        overlay.addEventListener("keydown", event => {
+            event.stopPropagation();
+            if (event.key === "Escape") { event.preventDefault(); finish(null); }
+            if (event.key === "Tab") {
+                const controls = [title, category, cancel, confirm];
+                const next = (controls.indexOf(document.activeElement) + (event.shiftKey ? 3 : 1)) % 4;
+                event.preventDefault(); controls[next].focus();
+            }
+        });
+        document.body.appendChild(overlay); title.focus(); title.select();
+    });
+}
+
 async function _addGodFavorite(prompt) {
     const text = String(prompt || "").trim();
     if (!text) return false;
     try { await cloudUIInit(); } catch (_) {}
+    const initialPresets = _ensureGodFavoritesCategory(await _loadGodPresets(true));
+    const details = await _askGodFavoriteDetails(initialPresets, text.replace(/\s+/g, " ").slice(0, 36) || "提示词");
+    if (!details) return null;
     const presets = _ensureGodFavoritesCategory(await _loadGodPresets(true));
-    const snippet = text.replace(/\s+/g, " ").slice(0, 36) || "提示词";
-    const base = `${_GOD_FAVORITES_CATEGORY} / ${snippet}`;
+    const { title: snippet, category } = details;
+    const base = `${category} / ${snippet}`;
     let key = base, suffix = 2;
     while (Object.prototype.hasOwnProperty.call(presets, key)) key = `${base} (${suffix++})`;
-    const order = Object.values(presets).filter(item => item?.category === _GOD_FAVORITES_CATEGORY && !item?._categoryOnly)
+    const order = Object.values(presets).filter(item => item?.category === category && !item?._categoryOnly)
         .reduce((min, item) => Math.min(min, Number.isFinite(item.order) ? item.order : 0), 0) - 1000;
-    presets[key] = { category: _GOD_FAVORITES_CATEGORY, name: snippet, text, order, _xzgFavorite: true };
+    presets[key] = { category, name: snippet, text, order, ...(category === _GOD_FAVORITES_CATEGORY ? { _xzgFavorite: true } : {}) };
     _refreshGodPresetSelectionNames(presets);
     try { localStorage.setItem(_GOD_PRESETS_KEY, JSON.stringify(presets)); } catch (_) {}
     _godPresetsRestorePromise = Promise.resolve(presets);

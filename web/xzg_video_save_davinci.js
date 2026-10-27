@@ -499,12 +499,12 @@ app.registerExtension({
                 _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动导出到达芬奇"));
                 _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动发送到快剪"));
 
-                // 清理多余的输入口：后端 INPUT_TYPES 只声明了 图像/帧率/音频 三个端口型 input。
+                // 清理多余的输入口：保留常规参数右键转换出的输入，包括尚未连线的口。
                 // 隐藏 widget（自动发送到快剪 / use_default_output / base_dir / 日期戳 / 时间戳）
                 // 在旧版本若被右键「转换为输入」、或被旧工作流序列化残留，会在 node.inputs 里
                 // 留下未连线的多余口，画在预览黑块左侧，拖拽连线时还能吸附。这里把不在白名单、
                 // 且未连接（link == null）的多余 input 口移除；已连接的保留，不破坏既有工作流。
-                const _expectedInputs = ["图像", "帧率", "音频"];
+                const _expectedInputs = ["图像", "帧率", "音频", "文件名前缀", "格式", "CRF", "模式"];
                 for (let i = this.inputs.length - 1; i >= 0; i--) {
                     const inp = this.inputs[i];
                     if (inp && !_expectedInputs.includes(inp.name) && inp.link == null) {
@@ -544,7 +544,7 @@ app.registerExtension({
 
                     // 加载旧工作流时 inputs 可能被序列化恢复出多余的未连接口（画在预览区左侧），
                     // 与 onNodeCreated 同一套白名单清理。已连接的口保留。
-                    const _expected = ["图像", "帧率", "音频"];
+                    const _expected = ["图像", "帧率", "音频", "文件名前缀", "格式", "CRF", "模式"];
                     for (let i = (node.inputs?.length || 0) - 1; i >= 0; i--) {
                         const inp = node.inputs[i];
                         if (inp && !_expected.includes(inp.name) && inp.link == null) {

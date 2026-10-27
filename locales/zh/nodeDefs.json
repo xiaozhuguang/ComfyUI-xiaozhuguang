@@ -191,15 +191,20 @@
     "display_name": "小珠光帧优化",
     "inputs": {
       "image": { "name": "图像" },
-      "multi_fill": { "name": "多参补帧" },
-      "mask": { "name": "遮罩" }
+      "multi_fill": { "name": "开启下限" },
+      "min_frames": { "name": "下限值" },
+      "frame_rule": { "name": "帧数规则" },
+      "mask": { "name": "遮罩" },
+      "audio": { "name": "音频" },
+      "fps": { "name": "帧率" }
     },
     "outputs": {
       "0": { "name": "图像" },
       "1": { "name": "实际帧数" },
       "2": { "name": "原始帧数" },
       "3": { "name": "前补帧" },
-      "4": { "name": "遮罩" }
+      "4": { "name": "遮罩" },
+      "5": { "name": "音频" }
     }
   },
   "XiaozhuguangFrameExtract": {
@@ -208,11 +213,14 @@
       "image": { "name": "图像" },
       "fetch_count": { "name": "原始帧数" },
       "front_fill": { "name": "前补帧" },
-      "mask": { "name": "遮罩" }
+      "mask": { "name": "遮罩" },
+      "audio": { "name": "音频" },
+      "fps": { "name": "帧率" }
     },
     "outputs": {
       "0": { "name": "图像" },
-      "1": { "name": "遮罩" }
+      "1": { "name": "遮罩" },
+      "2": { "name": "音频" }
     }
   },
   "XiaozhuguangImageLoader": {

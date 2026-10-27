@@ -5639,6 +5639,21 @@ app.registerExtension({
 
     beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "XiaozhuguangDuplicateFirstFrame") {
+            const moveFpsToBottom = (node) => {
+                const index = node.inputs?.findIndex(input => input.name === "fps") ?? -1;
+                if (index < 0 || index === node.inputs.length - 1) return;
+                node.inputs.push(node.inputs.splice(index, 1)[0]);
+                for (let slot = 0; slot < node.inputs.length; slot++) {
+                    const link = node.graph?.links?.[node.inputs[slot].link];
+                    if (link) link.target_slot = slot;
+                }
+            };
+            const origOnConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function () {
+                const result = origOnConfigure?.apply(this, arguments);
+                moveFpsToBottom(this);
+                return result;
+            };
             const translatedName = xzgT("小珠光帧优化", "Xiaozhuguang Frame Optimization");
             nodeType.title = translatedName;
             nodeData.display_name = translatedName;
@@ -5648,7 +5663,13 @@ app.registerExtension({
                     nodeData.inputs.image.name = xzgT("图像", "image");
                 }
                 if (nodeData.inputs.multi_fill) {
-                    nodeData.inputs.multi_fill.name = xzgT("多参补帧", "multi fill");
+                    nodeData.inputs.multi_fill.name = xzgT("开启下限", "enable minimum");
+                }
+                if (nodeData.inputs.min_frames) {
+                    nodeData.inputs.min_frames.name = xzgT("下限值", "minimum frames");
+                }
+                if (nodeData.inputs.frame_rule) {
+                    nodeData.inputs.frame_rule.name = xzgT("帧数规则", "frame rule");
                 }
             }
             if (nodeData.outputs) {
@@ -5677,14 +5698,27 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+                moveFpsToBottom(this);
                 const w = this.widgets?.find(w => w.name === "multi_fill");
                 if (w) {
-                    w.label = xzgT("多参补帧", "multi fill");
+                    w.label = xzgT("开启下限", "enable minimum");
+                }
+                const minFramesWidget = this.widgets?.find(w => w.name === "min_frames");
+                if (minFramesWidget) {
+                    minFramesWidget.label = xzgT("下限值", "minimum frames");
+                }
+                const fpsWidget = this.widgets?.find(w => w.name === "fps");
+                if (fpsWidget) fpsWidget.label = xzgT("帧率", "fps");
+                const frameRuleWidget = this.widgets?.find(w => w.name === "frame_rule");
+                if (frameRuleWidget) {
+                    frameRuleWidget.label = xzgT("帧数规则", "frame rule");
                 }
                 if (this.inputs) {
                     for (const inp of this.inputs) {
                         if (inp.name === "image") {
                             inp.label = xzgT("图像", "image");
+                        } else if (inp.name === "fps") {
+                            inp.label = xzgT("帧率", "fps");
                         }
                     }
                 }
@@ -5742,6 +5776,11 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+                const fpsWidget = this.widgets?.find(w => w.name === "fps");
+                if (fpsWidget) fpsWidget.label = xzgT("帧率", "fps");
+                for (const port of [...(this.inputs || []), ...(this.outputs || [])]) {
+                    if (port.name === "audio") port.label = xzgT("音频", "audio");
+                }
                 if (this.inputs) {
                     for (const inp of this.inputs) {
                         if (inp.name === "image") {

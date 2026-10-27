@@ -342,6 +342,7 @@ app.registerExtension({
                         }
                         try {
                             const ok = await window._xzgAddGodFavorite?.(txt);
+                            if (ok === null) return;
                             if (app?.extensionManager?.toast)
                                 app.extensionManager.toast.add({ title: ok ? xzgT("已收藏到提示词库", "Favorited to prompt library") : xzgT("收藏失败", "Favorite failed"), message: "", type: ok ? "success" : "error", life: 2 });
                         } catch (err) {

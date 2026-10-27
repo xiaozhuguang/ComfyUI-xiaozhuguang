@@ -894,10 +894,19 @@ async def xzg_media_library_move(request):
     return web.json_response({"names": moved})
 
 
+@routes.get("/xzg/image-loader/save-cropped-image")
 @routes.post("/xzg/media-library/add-cropped-loader-image")
 @xzg_safe_handler
 async def xzg_media_library_add_cropped_loader_image(request):
-    data = await request.json()
+    exporting = request.method == "GET"
+    if exporting:
+        data = dict(request.query)
+        try:
+            data["crop"] = json.loads(data.get("crop", "null"))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid crop rectangle"}, status=400)
+    else:
+        data = await request.json()
     annotated_name = _normalize_annotated_filename(str(data.get("filename") or "").strip())
     crop = data.get("crop")
     if not annotated_name or not isinstance(crop, (list, tuple)) or len(crop) != 4:
@@ -941,6 +950,15 @@ async def xzg_media_library_add_cropped_loader_image(request):
     sx1, sy1 = min(orig_w, x + w), min(orig_h, y + h)
     if sx1 > sx0 and sy1 > sy0:
         cropped.paste(source.crop((sx0, sy0, sx1, sy1)), (sx0 - x, sy0 - y))
+
+    if exporting:
+        try:
+            with io.BytesIO() as buffer:
+                cropped.save(buffer, format="PNG", compress_level=3)
+                return web.Response(body=buffer.getvalue(), content_type="image/png")
+        finally:
+            cropped.close()
+            source.close()
 
     base_name = annotated_name
     for suffix in (" [output]", " [input]", " [temp]"):
