@@ -5713,6 +5713,8 @@ app.registerExtension({
                 if (frameRuleWidget) {
                     frameRuleWidget.label = xzgT("帧数规则", "frame rule");
                 }
+                const fillPositionWidget = this.widgets?.find(w => w.name === "fill_position");
+                if (fillPositionWidget) fillPositionWidget.label = xzgT("补帧位置", "fill position");
                 if (this.inputs) {
                     for (const inp of this.inputs) {
                         if (inp.name === "image") {

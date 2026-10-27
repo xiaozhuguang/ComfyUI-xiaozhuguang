@@ -77,6 +77,7 @@ export class XiaozhuguangVideoPlayer {
         this._fitMode = options.fit || "contain";
         // 是否显示播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）；ui:false 时隐藏
         this._showUi = options.ui !== false;
+        this._frameCountOverlayMode = options.frameCountOverlay || null;
         // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
         // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
         this._exclusiveDecoder = !!options.exclusiveDecoder;
@@ -287,6 +288,15 @@ export class XiaozhuguangVideoPlayer {
         // 中央三角播放标记 → 已隐藏，改用左下角小图标
         this._playOverlay = document.createElement("div");
         this._playOverlay.style.display = "none";
+        if (this._frameCountOverlayMode) {
+            this._frameCountOverlay = document.createElement("div");
+            this._frameCountOverlay.style.cssText =
+                "position:absolute;right:12px;top:50%;transform:translateY(-50%);" +
+                "padding:8px 14px;border-radius:10px;background:rgba(0,0,0,.25);" +
+                "color:#fff;font:bold 32px/1.4 sans-serif;text-align:center;white-space:nowrap;" +
+                "text-shadow:0 2px 4px #000;pointer-events:none;z-index:3;display:none;";
+            this._videoSurface.appendChild(this._frameCountOverlay);
+        }
 
         // 播放模式按钮行（左下角，时间码上方）
         this._buttonRow = document.createElement("div");
@@ -723,6 +733,7 @@ export class XiaozhuguangVideoPlayer {
     // 帧号一律 0-based：endFrame 是排他端，蓝标签显示 endFrame-1（337 帧 → 末帧 336），
     // 与右下角「当前帧 / 末帧」（如 0 / 336）同一逻辑；中间蓝字仍是帧数（endFrame-startFrame）。
     _updateRangeDisplay() {
+        this._updateFrameCountOverlay();
         const dur = this.duration;
         if (!this._redFrameDisplay || !this._canvas || dur <= 0) {
             if (this._redFrameDisplay) this._redFrameDisplay.textContent = "";
@@ -773,6 +784,7 @@ export class XiaozhuguangVideoPlayer {
     // Canvas 架构：_onEndedEvt 仅在非循环模式下由 _startPlaybackLoop 调用
     // P12: 移除循环分支死代码（循环由 _startPlaybackLoop 内联处理）
     _onEndedEvt = () => {
+        this._updateFrameCountOverlay();
         this._stopProgressRaf();
         if (this._progressShine) {
             this._progressShine.style.display = "none";
@@ -795,6 +807,7 @@ export class XiaozhuguangVideoPlayer {
     };
 
     _updateProgressDisplay(cur, dur) {
+        this._updateFrameCountOverlay();
         if (this._isDragging) return;
         if (this._isDraggingMarker) return;
 
@@ -1582,6 +1595,7 @@ export class XiaozhuguangVideoPlayer {
         if (this._loadRangeEnd) this._loadRangeEnd.style.display = "none";
         if (this._loadRangeFill) this._loadRangeFill.style.display = "none";
         if (this._rangeLenDisplay) this._rangeLenDisplay.style.display = "none";
+        if (this._frameCountOverlay) this._frameCountOverlay.style.display = "none";
         if (src) {
             this._currentDecoder = null;  // 重置引用，_loadDecoderAsync 会重新赋值
             this._placeholder.style.display = "none";
@@ -1624,6 +1638,7 @@ export class XiaozhuguangVideoPlayer {
             this._playbackEnded = false;
         }
         this._isPlayingState = true;
+        this._updateFrameCountOverlay();
         this._startPlaybackLoop();
         this._startAudioPlayback();
         this._startProgressRaf();
@@ -1633,6 +1648,7 @@ export class XiaozhuguangVideoPlayer {
 
     pause() {
         this._isPlayingState = false;
+        this._updateFrameCountOverlay();
         this._stopPlaybackLoop();
         // P10: 暂停时停止音频源但不丢弃已解码的 buffer，避免重复解码
         this._stopAudioSource();
@@ -2034,6 +2050,7 @@ export class XiaozhuguangVideoPlayer {
         // 用于保存节点/权威 video_info 提供真实写入帧数，规避 duration×fps 推算虚高（如 459→460）
         if (typeof count === "number" && count > 0) {
             this._backendFrameCount = count;
+            this._updateFrameCountOverlay();
         }
     }
 
@@ -2264,6 +2281,22 @@ export class XiaozhuguangVideoPlayer {
             this.onFpsChange?.(fps);
             this.onSourceFpsDetected?.(fps);
         }
+    }
+
+    _updateFrameCountOverlay() {
+        const overlay = this._frameCountOverlay;
+        if (!overlay) return;
+        let count;
+        if (this._frameCountOverlayMode === "range") {
+            count = this._previewLoaded
+                ? this.getTotalFrames()
+                : Math.max(0, this._computeEndFrame() - this._skipFrames);
+        } else {
+            count = this._backendFrameCount || this.getTotalFrames();
+        }
+        overlay.textContent = String(Math.round(count || 0));
+        overlay.style.display = this._src && this._currentDecoder && !this._isPlayingState
+            && Number.isFinite(count) ? "block" : "none";
     }
 
     _updateDisplay() {

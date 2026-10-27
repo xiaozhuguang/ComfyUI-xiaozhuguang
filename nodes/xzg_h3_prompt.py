@@ -69,6 +69,35 @@ def _xzg_image_tensor_to_data_uri(image_input):
     return data_uris
 
 
+def _xzg_collect_video_frames(frames, video_info=None, fps=24.0, sample_count=8):
+    """Sample a loader's IMAGE batch without encoding every source frame."""
+    if frames.ndim != 4 or frames.shape[0] == 0:
+        raise ValueError("视频帧输入需要非空 IMAGE 批次 / Expected a non-empty video frame batch.")
+    fps = float((video_info or {}).get("loaded_fps", fps))
+    if fps <= 0:
+        raise ValueError("视频帧率必须大于 0 / Video FPS must be positive.")
+    count = int(frames.shape[0])
+    samples = min(count, max(1, min(32, int(sample_count))))
+    indices = [round(i * (count - 1) / (samples - 1)) for i in range(samples)] if samples > 1 else [0]
+    collected = []
+    for index in indices:
+        mm.throw_exception_if_processing_interrupted()
+        uris = _xzg_image_tensor_to_data_uri(frames[index:index + 1])
+        if not uris:
+            raise RuntimeError("无法转换视频帧，请检查 torch 和 Pillow / Cannot encode video frames.")
+        collected.append((f"<Video 1>, frame {index}, time {index / fps:.3f}s", uris))
+    description = (
+        f"[Reference Video] <Video 1>: {count} frames at {fps:g} FPS, duration {count / fps:.3f}s. "
+        f"{samples} uniformly sampled frames follow in chronological order, with frame indices and timestamps. "
+        "Times are relative to the supplied clip, not the original file before trimming. "
+        "These are frames of ONE video, not independent Picture references. "
+        "Analyze visible subjects, actions, composition, camera and continuity only from these samples. "
+        "Unsampled actions and exact cut times are unknown. No audio was supplied to the model; "
+        "do not infer dialogue, lyrics, music or lip-sync. Follow the user's requested reference role."
+    )
+    return description, collected, samples
+
+
 def _xzg_call_chat_completion(llm, messages, params):
     """安全的 create_chat_completion 调用，过滤不兼容参数。"""
     kwargs = dict(params or {})
@@ -701,6 +730,10 @@ class XiaozhuguangNinimaxH3Prompt:
             "image_8": ("IMAGE", {"tooltip": "可选：参考图片8 / Reference image 8"}),
             "image_9": ("IMAGE", {"tooltip": "可选：参考图片9 / Reference image 9"}),
             "image_10": ("IMAGE", {"tooltip": "可选：参考图片10 / Reference image 10"}),
+            "video_frames": ("IMAGE", {"tooltip": "视频加载器的图像帧批次，作为 <Video 1> 分析 / Video loader IMAGE batch"}),
+            "video_info": ("VHS_VIDEOINFO", {"tooltip": "可选：连接同一视频加载器的信息输出，读取实际帧率 / Matching video loader info"}),
+            "video_fps": ("FLOAT", {"default": 24.0, "min": 0.01, "max": 1000.0, "tooltip": "未连接视频信息时，输入帧批次的实际帧率 / FPS fallback"}),
+            "video_sample_count": ("INT", {"default": 8, "min": 1, "max": 32, "tooltip": "均匀采样；多帧时包含首尾帧 / Uniform video samples"}),
         }
         return {
             "required": {
@@ -921,7 +954,8 @@ class XiaozhuguangNinimaxH3Prompt:
                 continue
             data_uris = _xzg_image_tensor_to_data_uri(img)
             if data_uris:
-                collected_images.append((f"<image{idx + 1}>", data_uris))
+                label = f"<Picture {idx + 1}>" if custom_rules else f"<image{idx + 1}>"
+                collected_images.append((label, data_uris))
                 total_image_count += len(data_uris)
         if total_image_count:
             refs = ", ".join(f"{label} ({len(uris)} image(s))" for label, uris in collected_images)
@@ -1113,6 +1147,16 @@ class XiaozhuguangNinimaxH3Prompt:
                 user_prompt, generation_mode, image_inputs=image_inputs,
                 aspect_ratio=aspect_ratio, no_bgm=no_bgm, 风格提示=风格提示,
             )
+
+        video_frames = kwargs.get("video_frames")
+        if video_frames is not None:
+            video_description, video_images, video_count = _xzg_collect_video_frames(
+                video_frames, kwargs.get("video_info"), kwargs.get("video_fps", 24.0),
+                kwargs.get("video_sample_count", 8),
+            )
+            user_message += "\n\n" + video_description
+            collected_images.extend(video_images)
+            total_image_count += video_count
 
         # 构造 messages
         messages = self._build_messages(system_prompt, user_message, collected_images, total_image_count)

@@ -658,6 +658,31 @@ except Exception as _cloud_err:
 
 
 # ============ 小珠光自定义快捷键 API ============
+try:
+    from collections import deque as _focus_deque
+
+    _xzg_focus_events = _focus_deque(maxlen=200)
+
+    @_xzg_save_real_routes.post("/xzg/focus-diagnostics")
+    @xzg_safe_handler
+    async def xzg_focus_diagnostics_post(request):
+        body = await request.json()
+        if not isinstance(body, list) or len(body) > 20:
+            return web.json_response({"error": "invalid events"}, status=400)
+        for item in body:
+            if not isinstance(item, dict):
+                continue
+            _xzg_focus_events.append({key: str(item.get(key, ""))[:2400]
+                                     for key in ("time", "event", "target", "visibility", "stack")})
+        return web.json_response({"ok": True})
+
+    @_xzg_save_real_routes.get("/xzg/focus-diagnostics")
+    @xzg_safe_handler
+    async def xzg_focus_diagnostics_get(request):
+        return web.json_response(list(_xzg_focus_events), headers={"Cache-Control": "no-store"})
+except Exception as _focus_err:
+    print("[xiaozhuguang] 注册焦点诊断路由失败:", _focus_err)
+
 # 快捷键配置持久化在 <ComfyUI>/user/xiaozhuguang/xzg_shortcuts.json，
 # 位于插件目录之外，更新/整体替换插件目录时不会丢失；
 # 同一台服务器上所有浏览器/会话共享，解决云端环境浏览器 localStorage 丢失问题。

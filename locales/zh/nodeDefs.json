@@ -194,6 +194,7 @@
       "multi_fill": { "name": "开启下限" },
       "min_frames": { "name": "下限值" },
       "frame_rule": { "name": "帧数规则" },
+      "fill_position": { "name": "补帧位置" },
       "mask": { "name": "遮罩" },
       "audio": { "name": "音频" },
       "fps": { "name": "帧率" }

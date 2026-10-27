@@ -691,6 +691,7 @@ app.registerExtension({
             };
             applyPreviewHostLayout(useVueResizeLayout);
             const player = new XiaozhuguangVideoPlayer({
+                frameCountOverlay: "total",
                 node,
                 container: playerContainer,
                 placeholderText: "🎬 暂无视频",

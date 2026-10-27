@@ -4489,6 +4489,9 @@ app.registerExtension({
                 // 局部执行与编辑器加载画面不启动批处理；加载器、分段节点均在提交内才拦截。
                 const out = prompt?.output || {};
                 const inBranch = !!(loaderNode && out[String(loaderNode.id)] && schedNode && out[String(schedNode.id)]);
+                if (inBranch && loaderNode?.properties?.xzgMultiVideo) {
+                    return origQueuePrompt.call(api, index, prompt, ...rest);
+                }
                 if (!batchBusy && !prompt?.xzgExecuteToNode && inBranch) {
                     // 吞掉这次提交（不真正入队），改为跑批处理
                     setTimeout(() => {

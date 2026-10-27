@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 import { xzgT } from "./xzg_i18n.js";
+import { bindMultiVideoQueue } from "./xzg_multi_video_queue.js";
 import {
     bindVideoLoaderInteractions,
     _applyWidgetStyles,
@@ -124,6 +125,7 @@ async function _davinciExport(node, busyBtn, labelSpan, label) {
 
 async function _selectImportedVideo(node, filename) {
     if (!filename) return false;
+    node._xzgAppendVideoQueue?.([filename]);
     const w = node.widgets?.find((x) => x.name === "视频");
     const player = node._xzgVideoPlayer;
     if (!w && !player?.load) return false;
@@ -582,6 +584,7 @@ app.registerExtension({
                     const mw = this.widgets?.find((w) => w.name === "内存模式");
                     return (mw?.value || "标准") === "低内存";
                 }, { fastcut: true });
+                bindMultiVideoQueue(this);
                 // 化神级：最小宽度与默认宽度均为 500（基础加载器默认 300）
                 this.minWidth = 360;
                 this.setSize([360, Math.max(this.size?.[1] || 360, 360)]);

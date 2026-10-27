@@ -324,6 +324,23 @@ function _xzgDrawComboWidget(ctx, node, width, y, H) {
     } else {
         ctx.fillText(labelText, pad + 6, y + H / 2);
     }
+    if (this.type === 'toggle') {
+        const enabled = !!this.value;
+        const right = width - pad - 6;
+        const cy = y + H / 2;
+        ctx.fillStyle = enabled ? '#4c9b6a' : '#555';
+        ctx.beginPath();
+        ctx.roundRect(right - 30, cy - 6, 30, 12, 6);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(enabled ? right - 6 : right - 24, cy, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'right';
+        ctx.fillText(enabled ? '开启' : '关闭', right - 38, cy);
+        return;
+    }
     // 右侧：当前值（超长省略）
     const displayText = this._xzgDisplayVal ? this._xzgDisplayVal(String(this.value ?? '')) : String(this.value ?? '');
     ctx.fillStyle = '#fff';
@@ -769,7 +786,7 @@ export function _applyWidgetStyles(node) {
     // ComfyUI 会把 widget.width 写成面板侧行宽度，导致行绘制/交互命中区超出节点。
     // 这里统一将 width 定义为只读访问器，始终跟随节点实际宽度，忽略污染性写入。
     const _XRG_WIDGET_NAME_FIX = {
-        '视频': 1, '上传视频': 1,
+        '视频': 1, '上传视频': 1, '多视频队列': 1,
         '强制帧率': 1, '视频比例': 1, '比例模式': 1, '自定义宽度': 1,
         '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1, '内存模式': 1,
     };
@@ -822,6 +839,10 @@ export function _applyWidgetStyles(node) {
             }
             w._xzgDisplayVal = (v) => _tr(String(v));
             w.label = _tr("内存模式");
+        } else if (w.name === '多视频队列') {
+            w.draw = _xzgDrawComboWidget;
+            delete w.mouse;
+            w.label = "多视频队列";
         } else if (w.name === '上传视频') {
             w.draw = _xzgDrawButtonWidget;
             w.label = _tr("上传视频");
@@ -1416,6 +1437,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
 
     const triggerUpload = () => {
         app.canvas.node_widget = null;
+        fileInput.multiple = !!node.properties?.xzgMultiVideo;
         fileInput.value = "";
         fileInput.click();
     };
@@ -1701,6 +1723,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     const _createPlayer = () => {
         const useVueResizeLayout = !!globalThis.LiteGraph?.vueNodesMode;
         player = new XiaozhuguangVideoPlayer({
+        frameCountOverlay: "range",
         node,
         container: playerContainer,
         // 仅 Nodes 2 使用 flex 收缩布局；Nodes 1 保留原来的播放器布局。
@@ -2064,6 +2087,8 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     };
     applyPreviewHostLayout(!!globalThis.LiteGraph?.vueNodesMode);
     previewHost.appendChild(playerContainer);
+    node._xzgVideoPreviewHost = previewHost;
+    node._xzgVideoPreviewContainer = playerContainer;
     const previewWidget = node.addDOMWidget(VIDEO_PREVIEW_WIDGET_NAME, "video", previewHost, {
         hideOnZoom: false,
         getValue() { return player._currentFile || ""; },
@@ -2275,6 +2300,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         });
         if (flowToken !== _uploadFlowToken) return; // 已被新一次上传流程接管
         if (uploaded.length > 0) {
+            node._xzgAppendVideoQueue?.(uploaded);
             const videoWidget = node.widgets?.find(w => w.name === "视频");
             if (videoWidget) {
                 // 上传完成 → 进入"正在加载视频"阶段：刷新列表 + 播放器解码可能耗时
