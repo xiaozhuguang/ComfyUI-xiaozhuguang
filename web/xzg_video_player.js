@@ -27,6 +27,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
+    downloadImage,
     downloadVideo,
     xzgTimestamp,
 } from "./xzg_save_utils.js";
@@ -69,6 +70,7 @@ export class XiaozhuguangVideoPlayer {
         this.onEnded = options.onEnded || null;
         this.onError = options.onError || null;
         this.onSaveToDesktop = options.onSaveToDesktop || null;
+        this.allowSaveCurrentFrame = !!options.allowSaveCurrentFrame;
         this.onLoadRangeStartDrag = options.onLoadRangeStartDrag || null;
         this.onLoadRangeEndDrag = options.onLoadRangeEndDrag || null;
         this.onSourceFpsDetected = options.onSourceFpsDetected || null;
@@ -591,6 +593,29 @@ export class XiaozhuguangVideoPlayer {
         });
 
         this._contextMenu.appendChild(this._contextMenuDesktop);
+        this._contextMenuFrame = document.createElement("div");
+        this._contextMenuFrame.style.cssText = menuItemStyle;
+        this._contextMenuFrame.textContent = "📷 保存当前帧图片";
+        this._contextMenuFrame.addEventListener("mouseenter", () => {
+            this._contextMenuFrame.style.background = "#3a3a3a";
+        });
+        this._contextMenuFrame.addEventListener("mouseleave", () => {
+            this._contextMenuFrame.style.background = "";
+        });
+        this._contextMenuFrame.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            this._hideContextMenu();
+            if (!this.allowSaveCurrentFrame || !this._currentDecoder || !this._canvas?.width || !this._canvas?.height) return;
+            try {
+                // 在打开保存窗口前截取画面，避免播放继续后保存了另一帧。
+                const image = this._canvas.toDataURL("image/png");
+                await downloadImage(image, `xzg-frame-${xzgTimestamp()}.png`);
+            } catch (error) {
+                console.warn("[小珠光] 保存当前帧失败:", error);
+                app.extensionManager?.toast?.add({ severity: "error", summary: "保存当前帧失败", detail: error.message, life: 5000 });
+            }
+        });
+        this._contextMenu.appendChild(this._contextMenuFrame);
         document.body.appendChild(this._contextMenu);
 
         document.addEventListener("click", this._onDocClick);
@@ -1243,13 +1268,15 @@ export class XiaozhuguangVideoPlayer {
         const menu = this._contextMenu;
         if (!menu) return;
         const showDesktop = typeof this.onSaveToDesktop === "function";
+        const showFrame = this.allowSaveCurrentFrame && !!this._currentDecoder;
+        this._contextMenuFrame.style.display = showFrame ? "" : "none";
         const preview = window.xzgSyncPreview;
         const showView = !!(preview?.isEnabled?.() && preview.nodeHasVideo(this._node));
         const nodes = showView ? preview.getSelectedVideoNodes() : [];
         if (showView && !nodes.includes(this._node)) nodes.push(this._node);
         this._contextMenuView.style.display = showView ? "" : "none";
         this._contextMenuCompare.style.display = nodes.length >= 2 ? "" : "none";
-        if (!showDesktop && !showView) return;
+        if (!showDesktop && !showView && !showFrame) return;
         this._contextMenuDesktop.style.display = showDesktop ? "" : "none";
         menu.style.left = x + "px";
         menu.style.top = y + "px";

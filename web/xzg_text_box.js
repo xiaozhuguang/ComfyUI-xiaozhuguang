@@ -1429,6 +1429,42 @@ async function _openGodPresetManagerTree(node) {
     render();
 }
 
+function _installGodFavoriteDetailClick() {
+    const canvas = app.canvas;
+    if (!canvas || canvas._xzgGodFavoriteDetailClickInstalled || typeof canvas.processWidgetClick !== "function") return;
+    const originalProcessWidgetClick = canvas.processWidgetClick;
+    // Both canvas widgets and Vue hosts use this entry point. Only restore an
+    // unchanged selection when its menu entry is confirmed, never on menu open.
+    canvas.processWidgetClick = function (event, node, widget, ...args) {
+        const result = originalProcessWidgetClick.call(this, event, node, widget, ...args);
+        const pointer = args[0] || this.pointer;
+        if (event.button !== 0 || widget?.name !== "preset_name" || widget.disabled || widget.computedDisabled ||
+            (node?.type !== _NODE_TYPE_GOD && node?.comfyClass !== _NODE_TYPE_GOD) || typeof pointer?.onClick !== "function") return result;
+        const category = node.widgets?.find(item => item?.name === "preset_category");
+        if (category?.value !== _GOD_FAVORITES_CATEGORY) return result;
+        const originalClick = pointer.onClick;
+        pointer.onClick = function (...clickArgs) {
+            const existing = new Set(document.querySelectorAll(".litecontextmenu"));
+            const clickResult = originalClick.apply(this, clickArgs);
+            for (const menu of document.querySelectorAll(".litecontextmenu")) {
+                if (existing.has(menu)) continue;
+                menu.addEventListener("click", selectionEvent => {
+                    const entry = selectionEvent.target.closest?.(".litemenu-entry");
+                    if (!entry || entry.classList.contains("disabled") || !menu.contains(entry)) return;
+                    const value = typeof entry.value === "string" ? entry.value : entry.dataset.value;
+                    if (category.value !== _GOD_FAVORITES_CATEGORY || value !== String(widget.value)) return;
+                    const presets = _readGodPresetsLocal();
+                    const key = _godPresetKeyForSelection(presets, category.value, widget.value);
+                    if (Object.prototype.hasOwnProperty.call(presets, key)) _applyGodPreset(node, key, presets);
+                }, true);
+            }
+            return clickResult;
+        };
+        return result;
+    };
+    canvas._xzgGodFavoriteDetailClickInstalled = true;
+}
+
 function _installGodPresetControls(node) {
     if (node._xzgGodPresetControlsReady) {
         _syncGodPresetWidget(node);
@@ -1437,6 +1473,7 @@ function _installGodPresetControls(node) {
     node._xzgGodPresetControlsReady = true;
     const categoryWidget = _ensureGodPresetCombo(node, "preset_category");
     const presetWidget = _ensureGodPresetCombo(node, "preset_name");
+    _installGodFavoriteDetailClick();
     if (categoryWidget && !categoryWidget._xzgGodCategoryCallback) {
         const originalCallback = categoryWidget.callback;
         categoryWidget.callback = (...args) => {

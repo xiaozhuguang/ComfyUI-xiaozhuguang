@@ -263,6 +263,48 @@ async function _favoriteSavedVideo(node, btn) {
     finally { btn.disabled = false; }
 }
 
+// 默认节点宽度为 360；按钮缓慢放大，最多放大到 1.5 倍，避免大节点字体过大。
+function _syncHoverButtonSize(node) {
+    const pc = node._xzgPreviewContainer;
+    if (!pc) return;
+    const widthRatio = Math.max(1, (pc.clientWidth || 360) / 360);
+    const scale = Math.min(1.5, 1 + (widthRatio - 1) * 0.25);
+    const gap = 6 * scale;
+    let right = gap;
+    for (const btn of [node._xzgDavinciSaveBtn, node._xzgQuickCutBtn, node._xzgOutSettingsBtn]) {
+        if (!btn) continue;
+        btn.style.transformOrigin = "top right";
+        btn.style.transform = `scale(${scale})`;
+        btn.style.top = `${gap}px`;
+        btn.style.right = `${right}px`;
+        right += (btn.offsetWidth + 6) * scale;
+    }
+    const favorite = node._xzgVideoFavoriteBtn;
+    if (favorite) {
+        favorite.style.transformOrigin = "top left";
+        favorite.style.transform = `scale(${scale})`;
+        favorite.style.top = `${gap}px`;
+        favorite.style.left = `${gap}px`;
+    }
+}
+
+function _observeHoverButtonSize(node) {
+    const pc = node._xzgPreviewContainer;
+    if (!pc) return;
+    const observer = new ResizeObserver(() => _syncHoverButtonSize(node));
+    observer.observe(pc);
+    // 状态文字改变按钮宽度时，同步更新排列。
+    for (const btn of [node._xzgDavinciSaveBtn, node._xzgQuickCutBtn, node._xzgOutSettingsBtn]) {
+        if (btn) observer.observe(btn);
+    }
+    const onRemoved = node.onRemoved;
+    node.onRemoved = function () {
+        observer.disconnect();
+        return onRemoved?.apply(this, arguments);
+    };
+    _syncHoverButtonSize(node);
+}
+
 function _createQuickCutButton(node, favorite = false) {
     const buttonKey = favorite ? "_xzgVideoFavoriteBtn" : "_xzgQuickCutBtn";
     if (node[buttonKey]) return node[buttonKey];
@@ -294,13 +336,7 @@ function _createQuickCutButton(node, favorite = false) {
     iconSpan.title = "点击发送到快剪";
 
     // 排在「导出到达芬奇」按钮左侧：按其宽度留 12px 间隙对齐
-    const alignRight = () => {
-        if (favorite) return;
-        const dvBtn = node._xzgDavinciSaveBtn;
-        if (dvBtn && dvBtn.offsetWidth > 0) {
-            btn.style.right = (dvBtn.offsetWidth + 12) + "px";
-        }
-    };
+    const alignRight = () => _syncHoverButtonSize(node);
     const onOver = () => { alignRight(); btn.style.opacity = "1"; };
     const onOut = (e) => {
         if (!pc.contains(e.relatedTarget) && !btn.disabled) btn.style.opacity = "0";
@@ -376,12 +412,7 @@ function _createOutputSettingsButton(node) {
     btn.innerHTML = `<span style="cursor:pointer;">${_GEAR_SVG}</span><span>设置</span>`;
 
     // 排在最左侧：right = 导出按钮宽 + 快剪按钮宽 + 两处间隙
-    const alignRight = () => {
-        const dvBtn = node._xzgDavinciSaveBtn;
-        const qcBtn = node._xzgQuickCutBtn;
-        const w = (dvBtn?.offsetWidth || 0) + (qcBtn?.offsetWidth || 0);
-        btn.style.right = (w + 24) + "px";
-    };
+    const alignRight = () => _syncHoverButtonSize(node);
     const onOver = () => { alignRight(); btn.style.opacity = "1"; };
     const onOut = (e) => {
         if (!pc.contains(e.relatedTarget)) btn.style.opacity = "0";
@@ -495,6 +526,7 @@ app.registerExtension({
                 // 「仅视频轨道（不带音频）」勾选框双向绑定（弹窗读 node._xzgDvVideoOnlyWidget）。
                 this._xzgDvVideoOnlyWidget = this.widgets?.find(w => w.name === "仅视频") || null;
                 _createOutputSettingsButton(this);
+                _observeHoverButtonSize(this);
                 // 自动导出开关已取消；旧工作流字段保留隐藏以兼容序列化，但不再自动发送。
                 _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动导出到达芬奇"));
                 _hideVideoSettingWidget(this.widgets?.find(w => w.name === "自动发送到快剪"));

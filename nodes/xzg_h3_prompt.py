@@ -43,7 +43,7 @@ except Exception:
 # 辅助函数
 # ============================================================
 
-def _xzg_image_tensor_to_data_uri(image_input):
+def _xzg_image_tensor_to_data_uri(image_input, max_side=1024):
     """将 ComfyUI IMAGE 张量转换为 base64 JPEG data URI 列表。"""
     if image_input is None or PILImage is None or torch is None:
         return []
@@ -56,7 +56,6 @@ def _xzg_image_tensor_to_data_uri(image_input):
         img_np = (img_tensor.cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
         pil_img = PILImage.fromarray(img_np)
         buf = io.BytesIO()
-        max_side = 1024
         if max(pil_img.size) > max_side:
             ratio = max_side / max(pil_img.size)
             pil_img = pil_img.resize(
@@ -839,7 +838,7 @@ class XiaozhuguangNinimaxH3Prompt:
             if img is None:
                 continue
             label = f"<Picture {idx + 1}>"
-            data_uris = _xzg_image_tensor_to_data_uri(img)
+            data_uris = _xzg_image_tensor_to_data_uri(img, max_side=2048)
             if data_uris:
                 collected_images.append((label, data_uris))
                 total_image_count += len(data_uris)
@@ -952,7 +951,7 @@ class XiaozhuguangNinimaxH3Prompt:
         for idx, img in enumerate(image_inputs or []):
             if img is None:
                 continue
-            data_uris = _xzg_image_tensor_to_data_uri(img)
+            data_uris = _xzg_image_tensor_to_data_uri(img, max_side=2048)
             if data_uris:
                 label = f"<Picture {idx + 1}>" if custom_rules else f"<image{idx + 1}>"
                 collected_images.append((label, data_uris))

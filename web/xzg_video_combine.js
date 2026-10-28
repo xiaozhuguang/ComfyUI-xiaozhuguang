@@ -691,6 +691,7 @@ app.registerExtension({
             };
             applyPreviewHostLayout(useVueResizeLayout);
             const player = new XiaozhuguangVideoPlayer({
+                allowSaveCurrentFrame: true,
                 frameCountOverlay: "total",
                 node,
                 container: playerContainer,
