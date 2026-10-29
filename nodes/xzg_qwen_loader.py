@@ -305,19 +305,8 @@ def _xzg_get_free_vram_bytes():
     return None
 
 
-# 记录每个模型上次成功加载的 GPU 层数。
-# 用于“运行中断/卸载后再次重载”时的兜底：若此时空闲显存读数偏低（旧显存尚未完全归还 /
-# torch 缓存未释放等），避免把 GPU 层数压到接近 0（绝大部分层掉到 CPU）而长时间卡住。
-_LAST_GOOD_GPU_LAYERS = {}
-
-
-def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
-    """根据可用显存自动调整 GPU 层数，防止 OOM 导致段错误。
-
-    兜底逻辑：先释放 PyTorch 缓存块让 free 读数更真实；若本次算出的层数少于该模型
-    上次成功加载的层数（通常因中断/卸载后 free 读数偏低），则复用上次成功值，
-    避免模型整体掉到 CPU 推理而长时间无反应。
-    """
+def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers, vram_budget_gb=None):
+    """按当前空闲显存估算层数，并为多模态计算预留运行空间。"""
     if n_gpu_layers != -1:
         return n_gpu_layers, None
 
@@ -332,12 +321,15 @@ def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
     free_vram = _xzg_get_free_vram_bytes()
     if free_vram is None:
         return n_gpu_layers, None
+    if vram_budget_gb is not None:
+        free_vram = min(free_vram, int(vram_budget_gb) * 1024 ** 3)
 
     model_size = os.path.getsize(model_path) if os.path.exists(model_path) else 0
     mmproj_size = os.path.getsize(mmproj_path) if mmproj_path and os.path.exists(mmproj_path) else 0
 
     kv_cache_estimate = int(n_ctx * (model_size + mmproj_size) * 1.3e-5)
-    safety_margin = 1 * 1024 ** 3
+    # mmproj 文件大小不包含视觉编码器的计算缓冲区；多图推理需要额外余量。
+    safety_margin = (4 if mmproj_size else 1) * 1024 ** 3
     total_needed = model_size + mmproj_size + kv_cache_estimate + safety_margin
 
     free_vram_gb = free_vram / 1024 ** 3
@@ -356,7 +348,6 @@ def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
     )
 
     if total_needed <= free_vram:
-        _LAST_GOOD_GPU_LAYERS[model_path] = est_total_layers
         return n_gpu_layers, None
 
     available_for_model = free_vram - safety_margin - mmproj_size - kv_cache_estimate
@@ -377,20 +368,6 @@ def _xzg_auto_adjust_gpu_layers(model_path, mmproj_path, n_ctx, n_gpu_layers):
             f"  GPU层数从 -1（全部）自动调整为 {adjusted_layers}（部分 offload 到 CPU）"
         )
 
-    # ── 兜底：本次算出的层数明显少于该模型上次成功值（通常因中断/卸载后 free 偏低）──
-    known_good = _LAST_GOOD_GPU_LAYERS.get(model_path)
-    if known_good is not None and adjusted_layers < known_good:
-        print(
-            f"[小珠光 ModelLoader] 兜底：空闲显存读数偏低，"
-            f"复用该模型上次成功加载的 GPU 层数 {known_good}（避免整体掉到 CPU 推理）。"
-        )
-        return known_good, (
-            f"检测到空闲显存读数偏低，已复用上次成功加载的 GPU 层数 {known_good}，"
-            f"避免模型整体掉到 CPU 推理而长时间卡顿。\n"
-            f"（若更换了更大的显存占用场景后仍 OOM，请手动下调 gpu_layers）"
-        )
-
-    _LAST_GOOD_GPU_LAYERS[model_path] = adjusted_layers
     return adjusted_layers, message
 
 
@@ -462,6 +439,8 @@ class _XZG_QwenStorage:
             # Clear them before starting so H3 cannot auto-reload a stale model.
             cls.settings = None
 
+        print("[小珠光 ModelLoader] 正在解析模型文件路径...", flush=True)
+
         # 用 get_full_path 遍历所有注册的 LLM 路径（含 extra_model_paths.yaml 配置的额外路径），
         # 而非仅查主目录 folder_paths.models_dir/LLM，避免「下拉列表可见但加载失败」。
         model_path = folder_paths.get_full_path("LLM", config["model"])
@@ -489,13 +468,14 @@ class _XZG_QwenStorage:
 
         # VRAM 预检测
         n_gpu_layers, vram_warning = _xzg_auto_adjust_gpu_layers(
-            model_path, mmproj_path, n_ctx, n_gpu_layers
+            model_path, mmproj_path, n_ctx, n_gpu_layers, config.get("vram_budget_gb")
         )
         if vram_warning:
             print(f"[小珠光 ModelLoader] {vram_warning}")
 
         chat_handler = None
         if mmproj_path:
+            print(f"[小珠光 ModelLoader] 正在加载视觉编码器：{os.path.basename(mmproj_path)}", flush=True)
             if family in ("Qwen3.5-VL", "Qwen3.6-VL", "Qwen3.8-VL"):
                 if Qwen35ChatHandler is None:
                     print(
@@ -576,6 +556,11 @@ class _XZG_QwenStorage:
 
         try:
             sig = inspect.signature(Llama.__init__)
+            # 视觉 chunk 使用 n_batch；避免默认 2048 的批次造成显存峰值。
+            if mmproj_path:
+                for key in ("n_batch", "n_ubatch"):
+                    if key in sig.parameters:
+                        llama_kwargs[key] = 256
             if "flash_attn" in sig.parameters:
                 llama_kwargs["flash_attn"] = True
             if "verbosity" in sig.parameters:
@@ -587,7 +572,13 @@ class _XZG_QwenStorage:
 
         model = None
         try:
+            print(
+                f"[小珠光 ModelLoader] 正在加载语言模型：{os.path.basename(model_path)}，"
+                f"GPU层数={n_gpu_layers}，上下文={n_ctx}（大模型加载可能需要数分钟）",
+                flush=True,
+            )
             model = Llama(**llama_kwargs)
+            print("[小珠光 ModelLoader] 模型加载完成。", flush=True)
             cls.model = model
             cls.settings = dict(config)
             cls.unloaded = False
@@ -677,13 +668,19 @@ class XiaozhuguangQwenModelLoader:
                 ),
                 "context_length": (
                     "INT",
-                    {"default": 32768, "min": 1024, "max": 327680, "step": 256,
+                    {"default": 8192, "min": 1024, "max": 327680, "step": 256,
                      "tooltip": "上下文长度（KV cache 显存占用与长度成正比，显存不足时降低）/ Context length"},
                 ),
                 "gpu_layers": (
                     "INT",
                     {"default": -1, "min": -1, "max": 9999, "step": 1,
                      "tooltip": "-1=全部上GPU，显存不足时自动降级"},
+                ),
+            },
+            "optional": {
+                "vram_profile": (
+                    ["24GB", "48GB"],
+                    {"default": "24GB", "tooltip": "24GB：上下文最高8192；48GB：最高32768。GPU层数为-1时，按档位预算和实际空闲显存中较小值分配。/ VRAM profile; context cap 8192 / 32768"},
                 ),
             },
             "hidden": {
@@ -696,7 +693,7 @@ class XiaozhuguangQwenModelLoader:
     FUNCTION = "load"
     CATEGORY = "小珠光/提示词"
 
-    def load(self, model_family, model_file, mmproj, context_length, gpu_layers, enable_thinking=False):
+    def load(self, model_family, model_file, mmproj, context_length, gpu_layers, enable_thinking=False, vram_profile="24GB"):
         if model_file.startswith("(将模型放入"):
             raise RuntimeError(
                 "未找到模型文件。请将 .gguf 模型放入 ComfyUI/models/LLM/ 并重启。"
@@ -709,13 +706,23 @@ class XiaozhuguangQwenModelLoader:
                     "请在 'mmproj' 选项中选择对应的视觉投影文件。"
                 )
 
+        if vram_profile not in ("24GB", "48GB"):
+            raise ValueError(f"未知显存配置：{vram_profile}")
+        context_cap = 8192 if vram_profile == "24GB" else 32768
+        effective_context = min(int(context_length), context_cap)
+        print(
+            f"[小珠光 ModelLoader] 显存配置={vram_profile}，"
+            f"上下文={effective_context}（请求={context_length}，档位上限={context_cap}）",
+            flush=True,
+        )
         config = {
             "family": model_family,
             "model": model_file,
             "mmproj": mmproj,
             "think": bool(enable_thinking),
-            "n_ctx": int(context_length),
+            "n_ctx": effective_context,
             "n_gpu_layers": int(gpu_layers),
+            "vram_budget_gb": 24 if vram_profile == "24GB" else 48,
         }
         model = _XZG_QwenStorage.load(config)
         return (model,)

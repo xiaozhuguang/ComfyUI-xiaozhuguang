@@ -1,4 +1,36 @@
 {
+  "XiaozhuguangMaskCleanupRepair": {
+    "display_name": "Xiaozhuguang Video Mask Cleanup & Repair",
+    "inputs": {
+      "mask": { "name": "Video Masks" },
+      "cleanup_enabled": { "name": "Clean Noise" },
+      "threshold": { "name": "Detection Threshold" },
+      "method": { "name": "Cleanup Method" },
+      "shrink": { "name": "Shrink Distance" },
+      "min_pixels": { "name": "Minimum Region Pixels" },
+      "min_frames": { "name": "Minimum Frame Span" },
+      "edge_grow": { "name": "Soft Edge Retention" },
+      "repair_enabled": { "name": "Repair Shape" },
+      "erode_dilate": { "name": "Erode / Dilate" },
+      "fill_holes": { "name": "Close Small Holes" },
+      "remove_isolated_pixels": { "name": "Remove Thin Regions" },
+      "smooth": { "name": "Smooth" },
+      "blur": { "name": "Blur" }
+    },
+    "outputs": { "0": { "name": "Masks" } }
+  },
+  "XiaozhuguangImageMaskConvert": {
+    "display_name": "Xiaozhuguang Image ↔ Mask",
+    "inputs": {
+      "channel": { "name": "Image to Mask Channel" },
+      "image": { "name": "Image Input" },
+      "mask": { "name": "Mask Input" }
+    },
+    "outputs": {
+      "0": { "name": "Mask Output" },
+      "1": { "name": "Image Output" }
+    }
+  },
   "ComfyUIPoseSequenceEditor": {
     "display_name": "Xiaozhuguang Video Pose Editor",
     "inputs": {
@@ -300,7 +332,7 @@
   "XiaozhuguangVideoCombine": {
     "display_name": "Xiaozhuguang Video Save",
     "inputs": {
-      "图像": { "name": "images" },
+      "图像": { "name": "Images / Masks" },
       "帧率": { "name": "frame_rate" },
       "文件名前缀": { "name": "filename_prefix" },
       "格式": { "name": "format" },
@@ -371,6 +403,8 @@
   "XiaozhuguangNinimaxH3Prompt": {
     "display_name": "XZG Prompt Optimizer-Immortal",
     "inputs": {
+      "video_frames": { "name": "Video Frames" },
+      "video_fps": { "name": "Video FPS" },
         "qwen_model": { "name": "Qwen Model" },
         "target_model": { "name": "Prompt Type" },
         "user_prompt": { "name": "User Prompt" },
@@ -397,6 +431,8 @@
   "XiaozhuguangNinimaxH3PromptNoSkill": {
     "display_name": "XZG Prompt Optimizer",
     "inputs": {
+      "video_frames": { "name": "Video Frames" },
+      "video_fps": { "name": "Video FPS" },
       "qwen_model": { "name": "Qwen Model" },
       "target_model": { "name": "Prompt Type" },
       "user_prompt": { "name": "User Prompt" },
@@ -421,7 +457,8 @@
       "model_file": { "name": "Model File" },
       "mmproj": { "name": "MMProj" },
       "context_length": { "name": "Context Length" },
-      "gpu_layers": { "name": "GPU Layers" }
+      "gpu_layers": { "name": "GPU Layers" },
+      "vram_profile": { "name": "VRAM Profile" }
     },
     "outputs": {
       "0": { "name": "Qwen Model" }
@@ -431,13 +468,18 @@
     "display_name": "ATBC (Advanced)",
     "inputs": {
       "image": { "name": "image" },
-      "mask": { "name": "mask" },
+      "mask": { "name": "Mask / Image" },
       "Box_grow_factor": { "name": "box grow factor" },
       "Box_grow_pixels": { "name": "pixel expansion" },
       "kilopixels": { "name": "kilopixels" },
       "divisible_by": { "name": "divisible by" },
       "ratio": { "name": "ratio" },
-      "startup_threshold": { "name": "startup threshold" },
+      "enable_crop": { "name": "enable crop" },
+      "crop_mode": { "name": "Crop Mode" },
+      "tracking_preference": { "name": "Tracking Preference" },
+      "tracking_scale": { "name": "Tracking Scale" },
+      "mask_binarize": { "name": "Binarize Mask" },
+      "mask_threshold": { "name": "Binarization Threshold" },
       "fill_color": { "name": "fill color" },
       "mask_smooth": { "name": "mask smooth" },
       "sum_mask": { "name": "sum mask" }

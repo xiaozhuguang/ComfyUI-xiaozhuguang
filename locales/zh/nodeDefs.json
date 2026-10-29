@@ -1,4 +1,36 @@
 {
+  "XiaozhuguangMaskCleanupRepair": {
+    "display_name": "小珠光遮罩清理修复",
+    "inputs": {
+      "mask": { "name": "视频遮罩" },
+      "cleanup_enabled": { "name": "清理杂点" },
+      "threshold": { "name": "识别阈值" },
+      "method": { "name": "清理方式" },
+      "shrink": { "name": "收缩距离" },
+      "min_pixels": { "name": "最小区域像素" },
+      "min_frames": { "name": "最少持续帧数" },
+      "edge_grow": { "name": "软边保留范围" },
+      "repair_enabled": { "name": "修复形状" },
+      "erode_dilate": { "name": "收缩／膨胀" },
+      "fill_holes": { "name": "填补小孔" },
+      "remove_isolated_pixels": { "name": "去除细碎区域" },
+      "smooth": { "name": "平滑" },
+      "blur": { "name": "模糊" }
+    },
+    "outputs": { "0": { "name": "遮罩" } }
+  },
+  "XiaozhuguangImageMaskConvert": {
+    "display_name": "小珠光图像↔遮罩",
+    "inputs": {
+      "channel": { "name": "图像转遮罩通道" },
+      "image": { "name": "图像输入" },
+      "mask": { "name": "遮罩输入" }
+    },
+    "outputs": {
+      "0": { "name": "遮罩输出" },
+      "1": { "name": "图像输出" }
+    }
+  },
   "ComfyUIPoseSequenceEditor": {
     "display_name": "小珠光视频姿势编辑器",
     "inputs": {
@@ -301,7 +333,7 @@
   "XiaozhuguangVideoCombine": {
     "display_name": "小珠光视频保存",
     "inputs": {
-      "图像": { "name": "图像" },
+      "图像": { "name": "图像／遮罩" },
       "帧率": { "name": "帧率" },
       "文件名前缀": { "name": "文件名前缀" },
       "格式": { "name": "格式" },
@@ -372,6 +404,8 @@
   "XiaozhuguangNinimaxH3Prompt": {
     "display_name": "小珠光提示词-化神级",
     "inputs": {
+      "video_frames": { "name": "视频帧" },
+      "video_fps": { "name": "视频帧率" },
         "qwen_model": { "name": "Qwen模型" },
         "target_model": { "name": "提示词类型" },
         "user_prompt": { "name": "用户提示词" },
@@ -398,6 +432,8 @@
   "XiaozhuguangNinimaxH3PromptNoSkill": {
     "display_name": "小珠光提示词",
     "inputs": {
+      "video_frames": { "name": "视频帧" },
+      "video_fps": { "name": "视频帧率" },
       "qwen_model": { "name": "Qwen模型" },
       "target_model": { "name": "提示词类型" },
       "user_prompt": { "name": "用户提示词" },
@@ -422,7 +458,8 @@
       "model_file": { "name": "主模型GGUF" },
       "mmproj": { "name": "视觉模型" },
       "context_length": { "name": "上下文长度" },
-      "gpu_layers": { "name": "GPU层数" }
+      "gpu_layers": { "name": "GPU层数" },
+      "vram_profile": { "name": "显存配置" }
     },
     "outputs": {
       "0": { "name": "Qwen模型" }
@@ -432,13 +469,18 @@
     "display_name": "ATBC · 高级",
     "inputs": {
       "image": { "name": "图像" },
-      "mask": { "name": "遮罩" },
+      "mask": { "name": "遮罩／图片" },
       "Box_grow_factor": { "name": "扩展倍数" },
       "Box_grow_pixels": { "name": "像素扩展" },
       "kilopixels": { "name": "千像素" },
       "divisible_by": { "name": "整除数" },
       "ratio": { "name": "比例" },
-      "startup_threshold": { "name": "启动阈值" },
+      "enable_crop": { "name": "开启裁剪" },
+      "crop_mode": { "name": "裁剪模式" },
+      "tracking_preference": { "name": "跟踪偏好仅跟踪" },
+      "tracking_scale": { "name": "缩放模式仅跟踪" },
+      "mask_binarize": { "name": "遮罩二值化" },
+      "mask_threshold": { "name": "二值化阈值" },
       "fill_color": { "name": "填充颜色" },
       "mask_smooth": { "name": "遮罩平滑" },
       "sum_mask": { "name": "遮罩求和" }

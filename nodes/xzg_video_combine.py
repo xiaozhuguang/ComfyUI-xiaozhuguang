@@ -457,7 +457,7 @@ class XiaozhuguangVideoCombine:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "图像": ("IMAGE",),
+                "图像": ("IMAGE,MASK", {"tooltip": "支持图像序列或遮罩。遮罩转为RGB灰度视频帧，保留灰度，不做二值化。"}),
                 "帧率": ("FLOAT", {"default": 8, "min": 1, "step": 1}),
                 "文件名前缀": ("STRING", {"default": "xzg_video"}),
                 "格式": (["mp4", "webm", "gif"], {"default": "mp4"}),
@@ -480,12 +480,27 @@ class XiaozhuguangVideoCombine:
     CATEGORY = "小珠光/视频"
     OUTPUT_NODE = True
 
+    @staticmethod
+    def _normalize_video_frames(frames):
+        if not isinstance(frames, torch.Tensor) or frames.numel() == 0:
+            return None
+        if frames.ndim == 2:
+            frames = frames.unsqueeze(0)
+        if frames.ndim == 3:  # MASK: B,H,W
+            return frames.unsqueeze(-1).expand(-1, -1, -1, 3)
+        if frames.ndim == 4 and frames.shape[-1] == 1:
+            return frames.expand(-1, -1, -1, 3)
+        if frames.ndim == 4 and frames.shape[-1] in (3, 4):
+            return frames
+        raise ValueError("小珠光视频保存：输入需要IMAGE图像批次或MASK遮罩批次。")
+
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF,
                       模式, 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None,
                       use_default_output=True, base_dir="",
                       add_date_stamp=False, add_time_stamp=False):
-        if not isinstance(图像, torch.Tensor) or 图像.size(0) == 0:
+        图像 = self._normalize_video_frames(图像)
+        if 图像 is None:
             return ()
 
         is_save = (模式 == "保存")

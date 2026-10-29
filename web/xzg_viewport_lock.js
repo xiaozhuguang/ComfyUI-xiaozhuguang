@@ -7,6 +7,9 @@
 
 import { app } from "../../scripts/app.js";
 
+if (!window.__xzgViewportLockStarted) {
+window.__xzgViewportLockStarted = true;
+
 console.log("[小珠光] xzg_viewport_lock.js V4.0 加载...");
 
 const STORAGE_KEY = "xzg_viewport_lock_slots_v4";
@@ -856,8 +859,7 @@ if (!window.XZGOrderTopMenuButtons) {
 
 function injectIntoMenu() {
     // 移除旧按钮（如果存在）
-    const oldBtn = document.getElementById(PANEL_ID);
-    if (oldBtn) oldBtn.remove();
+    document.querySelectorAll(`[id="${PANEL_ID}"]`).forEach(button => button.remove());
 
     const container = findMenuContainer();
     if (container) {
@@ -1047,4 +1049,5 @@ if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", waitForApp);
 } else {
     waitForApp();
+}
 }

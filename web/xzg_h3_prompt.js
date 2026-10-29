@@ -566,6 +566,12 @@ app.registerExtension({
                 const labels = TARGET_LABELS[lang] || TARGET_LABELS.zh;
                 if (targetWidget) targetWidget.label = lang === "zh" ? "提示词类型" : "Prompt Type";
                 if (gmWidget) gmWidget.label = lang === "zh" ? "提示词细分" : "Prompt Subtype";
+                const videoLabels = lang === "zh"
+                    ? { video_frames: "视频帧（首中尾3帧）", video_fps: "视频帧率" }
+                    : { video_frames: "Video Frames (First / Middle / Last)", video_fps: "Video FPS" };
+                for (const item of [...(this.inputs || []), ...(this.widgets || [])]) {
+                    if (videoLabels[item.name]) item.label = videoLabels[item.name];
+                }
                 const outputLanguageWidget = this.widgets?.find(w => w.name === "output_language");
                 if (outputLanguageWidget?.options) {
                     const outputLanguageIndex = ({

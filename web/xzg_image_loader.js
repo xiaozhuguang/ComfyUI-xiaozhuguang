@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT, xzgTh } from "./xzg_i18n.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
-import { xzgEnableCanvasPanOnSpace, xzgPickSaveDirectory, xzgWriteBlobToDir } from "./xzg_save_utils.js";
+import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 
 let _xzgBackendSessionRequest = null;
@@ -464,69 +464,44 @@ async function xzgSaveImage(url, filename) {
     }
 }
 
-// 多图批量保存：目录选择器可用时只选一次文件夹，随后逐个写入；
-// 不支持目录选择器的浏览器则触发普通批量下载，不逐张弹另存为窗口。
+// 多选统一打包下载，避免逐张下载或目录授权反复弹窗。
+let _imgLoaderBatchSaving = false;
 async function xzgSaveImagesBatch(items) {
-    let dirHandle = null;
-    if (typeof window.showDirectoryPicker === "function") {
-        try {
-            dirHandle = await xzgPickSaveDirectory("image");
-        } catch (e) {
-            if (e?.name === "AbortError") return false;
-            console.warn("[小珠光] 选择批量保存文件夹失败:", e);
-        }
-    }
-
-    if (dirHandle) {
+    if (_imgLoaderBatchSaving || !items.length) return false;
+    _imgLoaderBatchSaving = true;
+    try {
+        const { zipSync } = await import("./vnccs_pose_vendor/spark/libs/fflate.module.js");
+        const files = Object.create(null);
         const usedNames = new Set();
         for (const item of items) {
             const response = await fetch(item.url);
-            if (!response.ok) continue;
-            const blob = await response.blob();
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const rawName = String(item.filename || "image.png").replace(/\\/g, "/").split("/").pop() || "image.png";
             const dot = rawName.lastIndexOf(".");
             const stem = dot > 0 ? rawName.slice(0, dot) : rawName;
             const ext = dot > 0 ? rawName.slice(dot) : "";
             let filename = rawName;
             let suffix = 2;
-            while (usedNames.has(filename.toLowerCase())) {
-                filename = `${stem} (${suffix++})${ext}`;
-            }
-            // 同名文件已存在时递增编号，避免批量保存静默覆盖目录中的旧文件。
-            while (true) {
-                try {
-                    await dirHandle.getFileHandle(filename);
-                    filename = `${stem} (${suffix++})${ext}`;
-                    while (usedNames.has(filename.toLowerCase())) filename = `${stem} (${suffix++})${ext}`;
-                } catch (e) {
-                    if (e?.name !== "NotFoundError") throw e;
-                    break;
-                }
-            }
+            while (usedNames.has(filename.toLowerCase())) filename = `${stem} (${suffix++})${ext}`;
             usedNames.add(filename.toLowerCase());
-            await xzgWriteBlobToDir(dirHandle, filename, blob);
+            files[filename] = new Uint8Array(await response.arrayBuffer());
         }
+        const blobUrl = URL.createObjectURL(new Blob([zipSync(files, { level: 0 })], { type: "application/zip" }));
+        const anchor = document.createElement("a");
+        anchor.href = blobUrl;
+        anchor.download = "images.zip";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
         return true;
+    } catch (e) {
+        console.warn("[小珠光] 批量保存图片失败:", e);
+        xzgAlert(`${xzgT("保存图片失败", "Could not save image")}: ${e?.message || e}`);
+        return false;
+    } finally {
+        _imgLoaderBatchSaving = false;
     }
-
-    // 浏览器不支持目录选择时，走默认下载目录；按序触发下载以减少浏览器拦截。
-    for (const item of items) {
-        try {
-            const response = await fetch(item.url);
-            if (!response.ok) continue;
-            const blobUrl = URL.createObjectURL(await response.blob());
-            const anchor = document.createElement("a");
-            anchor.href = blobUrl;
-            anchor.download = String(item.filename || "image.png").replace(/\\/g, "/").split("/").pop() || "image.png";
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-        } catch (e) {
-            console.warn("[小珠光] 批量保存图片失败:", item.filename, e);
-        }
-    }
-    return true;
 }
 
 function captureCanvasSelection(canvas) {
@@ -874,7 +849,9 @@ function createImgBatchUI(node) {
         saveItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;";
         saveItem.addEventListener("mouseenter", () => { saveItem.style.background = "var(--comfy-input-bg)"; });
         saveItem.addEventListener("mouseleave", () => { saveItem.style.background = ""; });
-        saveItem.addEventListener("click", async () => {
+        saveItem.addEventListener("click", async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
             hideContextMenu();
             const saveItems = [];
             for (let i = 0; i < targetNames.length; i++) {

@@ -407,6 +407,7 @@ class XZGWorkflowsManager {
 
             this.observeSidebarForIcon();
         } catch (error) {
+            this._tabRegistered = false;
             console.error("[小珠光] 注册侧边栏标签失败:", error);
         }
     }
@@ -4890,12 +4891,16 @@ class XZGWorkflowsManager {
     }
 }
 
-workflowsInstance = new XZGWorkflowsManager();
+const workflowsRuntime = window.__xzgWorkflowsRuntime ||= {};
+workflowsInstance = workflowsRuntime.instance ||= window.XZGWorkflows || new XZGWorkflowsManager();
 window.XZGWorkflows = workflowsInstance;
 
+if (!workflowsRuntime.extensionRegistered) {
 app.registerExtension({
     name: "xiaozhuguang.workflows",
     setup() {
+        if (workflowsRuntime.setupStarted) return;
+        workflowsRuntime.setupStarted = true;
         // 监听官方 workflow store 变化（含原生 Save / 新建 / 删除工作流），
         // 一旦官方列表变动（磁盘新增了工作流），自动刷新本扩展面板，避免"新工作流不显示"。
         const refresh = () => {
@@ -4941,6 +4946,8 @@ app.registerExtension({
         } catch (e) {}
     }
 });
+workflowsRuntime.extensionRegistered = true;
+}
 // 云同步统一入口：供“导入配置”后一键推送工作流面板设置（夺舍模式/强调色/快捷键）
 window.__xzgCloudPush = window.__xzgCloudPush || {};
 window.__xzgCloudPush.wfSettings = () => { try { window.XZGWorkflows?._queueWfSettingsSave?.(); } catch (e) {} };

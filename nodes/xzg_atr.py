@@ -55,7 +55,25 @@ class XiaozhuguangATR:
             (width, height), filters[resize_mode],
             reducing_gap=3.0 if resize_mode == "Pillow Lanczos (fast)" else None))
 
+    @staticmethod
+    def _remove_output_padding(image, crop_info):
+        """Remove ATBC alignment padding before resampling (HWC or BHWC)."""
+        box = crop_info.get("output_content_box")
+        size = crop_info.get("output_size")
+        if box is None or size is None:
+            return image
+        height, width = image.shape[-3:-1]
+        sx, sy = width / size[0], height / size[1]
+        x0 = max(0, min(width - 1, round(box[0] * sx)))
+        y0 = max(0, min(height - 1, round(box[1] * sy)))
+        x1 = max(x0 + 1, min(width, round(box[2] * sx)))
+        y1 = max(y0 + 1, min(height, round(box[3] * sy)))
+        return image[..., y0:y1, x0:x1, :]
+
     def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos", seam_preview=True):
+        if single_mask is not None and single_mask.shape[:2] == proc_np.shape[:2]:
+            single_mask = self._remove_output_padding(single_mask[..., None], crop_info)[..., 0]
+        proc_np = self._remove_output_padding(proc_np, crop_info)
         original_coords = crop_info["original_coords"]
         padded_size = crop_info["padded_size"]
         original_image_size = crop_info["original_image_size"]
@@ -425,11 +443,15 @@ class XiaozhuguangATR:
                 reference = self._gpu_gaussian(reference, radius)
                 seam_data["reference_mask"] = reference[:, :, y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1]
             # 二值矩形的腐蚀可直接收缩坐标；贴着实际图像边界的一侧不收缩。
-            ex1 = x1 - mask_expand if x1 > 0 else max(0, x1 - mask_expand)
-            ey1 = y1 - mask_expand if y1 > 0 else max(0, y1 - mask_expand)
-            ex2 = x2 + mask_expand if x2 < pw else min(pw, x2 + mask_expand)
-            ey2 = y2 + mask_expand if y2 < ph else min(ph, y2 + mask_expand)
-            if ex1 < ex2 and ey1 < ey2:
+            ex1 = x1 - mask_expand if x1 > 0 else 0
+            ey1 = y1 - mask_expand if y1 > 0 else 0
+            ex2 = x2 + mask_expand if x2 < pw else pw
+            ey2 = y2 + mask_expand if y2 < ph else ph
+            if mask_expand > 0:
+                # Match CPU's elliptical dilation, including rounded rectangle corners.
+                weights[:, :, y1 - ry1:y2 - ry1, x1 - rx1:x2 - rx1] = 255
+                weights = self._gpu_dilate(weights, mask_expand)
+            elif ex1 < ex2 and ey1 < ey2:
                 weights[:, :, ey1 - ry1:ey2 - ry1, ex1 - rx1:ex2 - rx1] = 255
             weights = self._gpu_gaussian(weights, radius)
             if color_options is not None:
@@ -470,12 +492,17 @@ class XiaozhuguangATR:
             original = original_image[start:end, ..., :3].to(device=device, dtype=torch.float32).movedim(-1, 1)
             proc_indices = [i if i < processed_image.shape[0] else 0 for i in range(start, end)]
             processed = processed_image[start:end, ..., :3] if end <= processed_image.shape[0] else processed_image[proc_indices, ..., :3]
+            padded_processed_size = processed.shape[1:3]
+            processed = self._remove_output_padding(processed, info)
             processed = self._prepare_gpu_input(processed, x2 - x1, y2 - y1, resize_mode, device)
             original = (original * 255).clamp_(0, 255).floor_()
             chunk_mask = None
             if mask is not None:
                 mask_indices = [i if i < mask.shape[0] else 0 for i in range(start, end)]
-                chunk_mask = self._prepare_gpu_input(mask[mask_indices].unsqueeze(-1), x2 - x1, y2 - y1, resize_mode, device)
+                source_mask = mask[mask_indices].unsqueeze(-1)
+                if source_mask.shape[1:3] == padded_processed_size:
+                    source_mask = self._remove_output_padding(source_mask, info)
+                chunk_mask = self._prepare_gpu_input(source_mask, x2 - x1, y2 - y1, resize_mode, device)
             seam_data = {} if seam_preview else None
             result = self._restore_gpu_chunk(original, processed, info, blur_amount, mask_expand, chunk_mask, color_options, color_state, seam_data, resize_mode)
             output[start:end] = result.cpu()

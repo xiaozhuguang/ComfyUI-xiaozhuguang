@@ -8,6 +8,7 @@
 torch
 torchvision
 numpy
+scipy>=1.10
 Pillow
 opencv-python
 # xzg_monitor 系统监控悬浮窗：CPU / 内存 / 温度数据来源（pynvml 随 ComfyUI 内置）

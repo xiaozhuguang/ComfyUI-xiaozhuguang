@@ -14,6 +14,7 @@ import base64
 import inspect
 import re
 import hashlib
+import time
 
 import folder_paths
 import comfy.model_management as mm
@@ -68,15 +69,15 @@ def _xzg_image_tensor_to_data_uri(image_input, max_side=1024):
     return data_uris
 
 
-def _xzg_collect_video_frames(frames, video_info=None, fps=24.0, sample_count=8):
-    """Sample a loader's IMAGE batch without encoding every source frame."""
+def _xzg_collect_video_frames(frames, fps=24.0):
+    """Encode only the first, middle and last frames of a video batch."""
     if frames.ndim != 4 or frames.shape[0] == 0:
         raise ValueError("视频帧输入需要非空 IMAGE 批次 / Expected a non-empty video frame batch.")
-    fps = float((video_info or {}).get("loaded_fps", fps))
+    fps = float(fps)
     if fps <= 0:
         raise ValueError("视频帧率必须大于 0 / Video FPS must be positive.")
     count = int(frames.shape[0])
-    samples = min(count, max(1, min(32, int(sample_count))))
+    samples = min(count, 3)
     indices = [round(i * (count - 1) / (samples - 1)) for i in range(samples)] if samples > 1 else [0]
     collected = []
     for index in indices:
@@ -122,17 +123,24 @@ def _xzg_call_chat_completion(llm, messages, params):
         kwargs = {k: v for k, v in kwargs.items() if k in allowed}
     kwargs["stream"] = True
     mm.throw_exception_if_processing_interrupted()
+    started = time.perf_counter()
+    first_content_at = None
     chunks = llm.create_chat_completion(**kwargs)
     content = []
     try:
         for chunk in chunks:
             mm.throw_exception_if_processing_interrupted()
-            content.append(chunk["choices"][0]["delta"].get("content") or "")
+            delta = chunk["choices"][0]["delta"].get("content") or ""
+            if delta and first_content_at is None:
+                first_content_at = time.perf_counter()
+                print(f"[小珠光 H3] 首段文本等待：{first_content_at - started:.1f}秒（含图像编码和输入处理）", flush=True)
+            content.append(delta)
         mm.throw_exception_if_processing_interrupted()
     finally:
         close = getattr(chunks, "close", None)
         if close is not None:
             close()
+    print(f"[小珠光 H3] 本次模型调用完成：{time.perf_counter() - started:.1f}秒", flush=True)
     return {"choices": [{"message": {"content": "".join(content)}}]}
 
 
@@ -729,10 +737,8 @@ class XiaozhuguangNinimaxH3Prompt:
             "image_8": ("IMAGE", {"tooltip": "可选：参考图片8 / Reference image 8"}),
             "image_9": ("IMAGE", {"tooltip": "可选：参考图片9 / Reference image 9"}),
             "image_10": ("IMAGE", {"tooltip": "可选：参考图片10 / Reference image 10"}),
-            "video_frames": ("IMAGE", {"tooltip": "视频加载器的图像帧批次，作为 <Video 1> 分析 / Video loader IMAGE batch"}),
-            "video_info": ("VHS_VIDEOINFO", {"tooltip": "可选：连接同一视频加载器的信息输出，读取实际帧率 / Matching video loader info"}),
-            "video_fps": ("FLOAT", {"default": 24.0, "min": 0.01, "max": 1000.0, "tooltip": "未连接视频信息时，输入帧批次的实际帧率 / FPS fallback"}),
-            "video_sample_count": ("INT", {"default": 8, "min": 1, "max": 32, "tooltip": "均匀采样；多帧时包含首尾帧 / Uniform video samples"}),
+            "video_frames": ("IMAGE", {"tooltip": "视频帧批次，固定采样首、中、尾3帧；不足3帧时全部使用 / Video batch: first, middle and last frames only"}),
+            "video_fps": ("FLOAT", {"default": 24.0, "min": 0.01, "max": 1000.0, "forceInput": True, "tooltip": "连接输入视频帧批次的实际帧率 / Actual FPS of the supplied video frame batch"}),
         }
         return {
             "required": {
@@ -1005,6 +1011,13 @@ class XiaozhuguangNinimaxH3Prompt:
     ):
         # 收集所有 image_* 输入
         image_inputs = [kwargs.get(f"image_{i}") for i in range(1, 11)]
+        for index, image in enumerate(image_inputs, 1):
+            if image is not None and image.ndim == 4 and image.shape[0] > 1:
+                print(
+                    f"[小珠光 H3] image_{index} 收到 {image.shape[0]} 张图片的批次，将全部分析。"
+                    "若来自视频加载器，请连接到“视频帧 / video_frames”入口，固定只分析首、中、尾3帧。",
+                    flush=True,
+                )
         llm = qwen_model
 
         # 校验模型有效性；若已卸载且有缓存的配置，自动重新加载
@@ -1150,12 +1163,15 @@ class XiaozhuguangNinimaxH3Prompt:
         video_frames = kwargs.get("video_frames")
         if video_frames is not None:
             video_description, video_images, video_count = _xzg_collect_video_frames(
-                video_frames, kwargs.get("video_info"), kwargs.get("video_fps", 24.0),
-                kwargs.get("video_sample_count", 8),
+                video_frames, kwargs.get("video_fps", 24.0),
             )
             user_message += "\n\n" + video_description
             collected_images.extend(video_images)
             total_image_count += video_count
+            print(
+                f"[小珠光 H3] 视频采样：输入 {video_frames.shape[0]} 帧，实际分析 {video_count} 帧",
+                flush=True,
+            )
 
         # 构造 messages
         messages = self._build_messages(system_prompt, user_message, collected_images, total_image_count)

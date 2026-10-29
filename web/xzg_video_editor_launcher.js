@@ -13,6 +13,10 @@
  */
 import { app } from "../../scripts/app.js";
 
+// A second installation or cache-busted module URL shares the same page runtime.
+if (!window.__xzgQuickCutLauncherStarted) {
+window.__xzgQuickCutLauncherStarted = true;
+
 const BTN_ID = "xzg-quick-edit-btn";
 const GOLD = "#CDA56D";
 
@@ -196,8 +200,11 @@ if (!window.XZGOrderTopMenuButtons) {
 function tryInject(retries) {
     const container = findMenuContainer();
     if (container) {
-        if (document.getElementById(BTN_ID)) {
-            if (_btn) applyVisibility();
+        const existing = [...document.querySelectorAll(`[id="${BTN_ID}"]`)];
+        if (existing.length) {
+            _btn = existing[0];
+            existing.slice(1).forEach(button => button.remove());
+            applyVisibility();
             return;
         }
         _btn = buildButton();
@@ -233,4 +240,5 @@ if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", waitForApp);
 } else {
     waitForApp();
+}
 }

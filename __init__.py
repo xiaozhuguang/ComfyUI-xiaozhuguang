@@ -247,6 +247,8 @@ from .nodes.xzg_image_from_list import XiaozhuguangImageFromList
 from .nodes.xzg_batch_image_getter import XiaozhuguangBatchImageGetter
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
+from .nodes.xzg_image_mask_convert import XiaozhuguangImageMaskConvert
+from .nodes.xzg_mask_cleanup_repair import XiaozhuguangMaskCleanupRepair
 from .nodes.xzg_image_size import XiaozhuguangImageSize
 from .nodes.xzg_color_match_fast import XiaozhuguangColorMatchFast
 from .nodes.xzg_color_adjust import XiaozhuguangColorAdjust
@@ -1369,6 +1371,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter,
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
+    "XiaozhuguangImageMaskConvert": XiaozhuguangImageMaskConvert,
+    "XiaozhuguangMaskCleanupRepair": XiaozhuguangMaskCleanupRepair,
     "XiaozhuguangImageSize": XiaozhuguangImageSize,
     "XiaozhuguangColorMatchFast": XiaozhuguangColorMatchFast,
     "XiaozhuguangColorAdjust": XiaozhuguangColorAdjust,
@@ -1436,7 +1440,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBatchImageGetter": "小珠光批次或列表图像获取",
     "XiaozhuguangBigDisplay": "小珠光展示任意",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
-    "XiaozhuguangImageSize": "小珠光尺寸获取",
+    "XiaozhuguangImageMaskConvert": "小珠光图像↔遮罩",
+    "XiaozhuguangMaskCleanupRepair": "小珠光遮罩清理修复",
+    "XiaozhuguangImageSize": "小珠光获取尺寸",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
     "XiaozhuguangColorAdjust": "小珠光颜色调整",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
