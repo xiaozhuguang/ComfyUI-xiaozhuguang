@@ -761,6 +761,15 @@ export class XiaozhuguangVideoPlayer {
     // 与右下角「当前帧 / 末帧」（如 0 / 336）同一逻辑；中间蓝字仍是帧数（endFrame-startFrame）。
     _updateRangeDisplay() {
         this._updateFrameCountOverlay();
+        if (!this._enableLoadRange) {
+            for (const label of [this._redFrameDisplay, this._blueFrameDisplay, this._rangeLenDisplay]) {
+                if (label) {
+                    label.textContent = "";
+                    label.style.display = "none";
+                }
+            }
+            return;
+        }
         const dur = this.duration;
         if (!this._redFrameDisplay || !this._canvas || dur <= 0) {
             if (this._redFrameDisplay) this._redFrameDisplay.textContent = "";
@@ -1612,6 +1621,7 @@ export class XiaozhuguangVideoPlayer {
             this._sourceFps = null;
             this._sourceTotalFrames = null;
             this._totalFrames = null;
+            this._rangeTotalFrames = null;
         }
         // 停止播放：加载新视频后进入暂停态。
         // 若不重置 _isPlayingState（旧播放残留 true），后续 seek 恢复播放头时会触发
@@ -2084,6 +2094,14 @@ export class XiaozhuguangVideoPlayer {
         // 用于保存节点/权威 video_info 提供真实写入帧数，规避 duration×fps 推算虚高（如 459→460）
         if (typeof count === "number" && count > 0) {
             this._backendFrameCount = count;
+            if (!this._enableLoadRange) {
+                this._totalFrames = count;
+                this._sourceTotalFrames = count;
+                this._rangeTotalFrames = null;
+                this._updateFrameTicks();
+                this._updateDisplay();
+                this._updateLoadRangeMarkers();
+            }
             this._updateFrameCountOverlay();
         }
     }
@@ -2169,6 +2187,7 @@ export class XiaozhuguangVideoPlayer {
     }
 
     getTotalFrames() {
+        if (!this._enableLoadRange && this._backendFrameCount) return this._backendFrameCount;
         if (this._totalFrames) return this._totalFrames;
         const dur = this.duration;
         if (dur > 0) {
@@ -2178,6 +2197,7 @@ export class XiaozhuguangVideoPlayer {
     }
 
     getSourceTotalFrames() {
+        if (!this._enableLoadRange) return this.getTotalFrames();
         if (this._rangeTotalFrames) return this._rangeTotalFrames;
         if (this._sourceTotalFrames) return this._sourceTotalFrames;
         const dur = this.duration;
@@ -2217,7 +2237,7 @@ export class XiaozhuguangVideoPlayer {
             this._loadRangeFill.style.display = visible ? "block" : "none";
             this._loadRangeFill.style.left = "0%";
             this._loadRangeFill.style.width = "100%";
-            this._rangeLenDisplay.style.display = visible ? "block" : "none";
+            this._rangeLenDisplay.style.display = "none";
             this._positionLenLabel(0, 100);
             this._redFrameDisplay.style.left = "5px";
             this._redFrameDisplay.style.transform = "translateX(0)";

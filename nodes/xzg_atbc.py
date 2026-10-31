@@ -264,9 +264,27 @@ class XiaozhuguangATBC:
         resized_mask = self._resize_numpy(cropped_mask, target_width, target_height, resize_mode)
         return resized_image, resized_mask, crop_info
 
-    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color):
+    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color, align_crop=True):
         # img: (H,W,3) uint8; mask: (H,W) uint8.
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
+        crop_width, crop_height = crop_x2 - crop_x1, crop_y2 - crop_y1
+        target_width, target_height = self._calculate_target_dimensions(
+            kilopixels, (crop_width, crop_height), divisible_by)
+        if align_crop:
+            # Match the output aspect in source coordinates before resizing.
+            # Integer multiples of the reduced ratio avoid geometric distortion.
+            divisor = math.gcd(target_width, target_height)
+            unit_w, unit_h = target_width // divisor, target_height // divisor
+            units = max(math.ceil(crop_width / unit_w), math.ceil(crop_height / unit_h))
+            aligned_w, aligned_h = units * unit_w, units * unit_h
+            x = crop_x1 - (aligned_w - crop_width) // 2
+            y = crop_y1 - (aligned_h - crop_height) // 2
+            # Shift the added margin while preserving the original crop window.
+            if 0 <= crop_x1 < crop_x2 <= original_width:
+                x = max(crop_x2 - aligned_w, min(crop_x1, max(0, min(original_width - aligned_w, x))))
+            if 0 <= crop_y1 < crop_y2 <= original_height:
+                y = max(crop_y2 - aligned_h, min(crop_y1, max(0, min(original_height - aligned_h, y))))
+            crop_x1, crop_y1, crop_x2, crop_y2 = x, y, x + aligned_w, y + aligned_h
 
         pad_left = max(0, -crop_x1)
         pad_top = max(0, -crop_y1)
@@ -292,12 +310,6 @@ class XiaozhuguangATBC:
         cropped_image = img[crop_y1:crop_y2, crop_x1:crop_x2]
         cropped_mask = mask[crop_y1:crop_y2, crop_x1:crop_x2]
 
-        crop_width = crop_x2 - crop_x1
-        crop_height = crop_y2 - crop_y1
-        actual_aspect_ratio = (crop_width, crop_height)
-
-        target_dimensions = self._calculate_target_dimensions(kilopixels, actual_aspect_ratio, divisible_by)
-        target_width, target_height = target_dimensions
         crop_info = {
             "original_coords": crop_box,
             "padded_size": (padded_w, padded_h),
@@ -417,7 +429,24 @@ class XiaozhuguangATBC:
         multiple = max(1, int(divisible_by))
         out_w = math.ceil(content_w / multiple) * multiple
         out_h = math.ceil(content_h / multiple) * multiple
-        left, top = (out_w - content_w) // 2, (out_h - content_h) // 2
+        # Extend the source window for alignment instead of adding an output
+        # border. Keep the planned window covered; move only the added margin
+        # towards available source pixels at frame edges.
+        aligned_boxes = []
+        for x0, y0, x1, y1 in boxes:
+            source_w, source_h = x1 - x0, y1 - y0
+            aligned_w = max(source_w, math.ceil(source_w * out_w / content_w))
+            aligned_h = max(source_h, math.ceil(source_h * out_h / content_h))
+            ax = x0 - (aligned_w - source_w) // 2
+            ay = y0 - (aligned_h - source_h) // 2
+            if 0 <= x0 < x1 <= width:
+                ax = max(x1 - aligned_w, min(x0, max(0, min(width - aligned_w, ax))))
+            if 0 <= y0 < y1 <= height:
+                ay = max(y1 - aligned_h, min(y0, max(0, min(height - aligned_h, ay))))
+            aligned_boxes.append((ax, ay, ax + aligned_w, ay + aligned_h))
+        boxes = aligned_boxes
+        content_w, content_h = out_w, out_h
+        left, top = 0, 0
         color = np.asarray(self._hex_to_rgb(fill_color), dtype=np.float32) / 255
         if channels == 4:
             color = np.r_[color, np.float32(1)]
@@ -465,6 +494,39 @@ class XiaozhuguangATBC:
         raise ValueError("ATBC · 高级：遮罩输入需要 [批次, 高, 宽] 或 [高, 宽] 的 MASK 格式。")
 
     def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小"):
+        # ComfyUI widgets may be replaced by arbitrary upstream values when
+        # converted to inputs, so validate every ATBC control at runtime.
+        enum_options = {
+            "ratio": ("auto", "1:1", "4:3", "3:4", "16:9", "9:16"),
+            "crop_mode": ("遮罩平滑", "视频稳定跟踪"),
+            "tracking_preference": ("稳定优先", "紧凑优先"),
+            "tracking_scale": ("固定大小", "动态缩放"),
+        }
+        for name, allowed in enum_options.items():
+            value = locals()[name]
+            if not isinstance(value, str) or value not in allowed:
+                raise ValueError(f"ATBC · 高级：{name} 输入无效：{value!r}。可选值：{'、'.join(allowed)}。")
+
+        numeric_ranges = {
+            "Box_grow_factor": (1.0, 5.0), "kilopixels": (100.0, 10000.0),
+            "divisible_by": (1, 1024), "mask_smooth": (0.0, 0.98),
+            "Box_grow_pixels": (0, 16384),
+        }
+        for name, (minimum, maximum) in numeric_ranges.items():
+            value = locals()[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum:
+                raise ValueError(f"ATBC · 高级：{name} 必须是 {minimum} 到 {maximum} 之间的有限数值，收到 {value!r}。")
+        if isinstance(divisible_by, bool) or not isinstance(divisible_by, int):
+            raise ValueError(f"ATBC · 高级：divisible_by 必须是整数，收到 {divisible_by!r}。")
+        for name, value in (("enable_crop", enable_crop), ("sum_mask", sum_mask)):
+            if not isinstance(value, bool):
+                raise ValueError(f"ATBC · 高级：{name} 必须是布尔值，收到 {value!r}。")
+        if not isinstance(fill_color, str):
+            raise ValueError(f"ATBC · 高级：fill_color 必须是颜色名称或十六进制字符串，收到 {fill_color!r}。")
+        color_names = {"white", "black", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "pink", "purple", "gray", "grey"}
+        normalized_color = fill_color.strip().lower().lstrip("#")
+        if normalized_color not in color_names and not re.fullmatch(r"(?:[0-9a-f]{3}|[0-9a-f]{6})", normalized_color):
+            raise ValueError(f"ATBC · 高级：无效填充颜色 {fill_color!r}，请输入支持的颜色名称或 #RGB/#RRGGBB。")
         resize_mode = "Pillow Lanczos"
         mask = self._normalize_mask_input(mask)
         enable_crop = bool(enable_crop) and mask is not None
@@ -537,7 +599,7 @@ class XiaozhuguangATBC:
             m_i = mask8[i] if mask_batched and i < mask_batch_size else mask8[0] if mask_batched else mask8
             frames.append(self._crop_single_image(
                 img_i, m_i, kilopixels, divisible_by, original_width, original_height,
-                crop_boxes[i], fill_color_rgb
+                crop_boxes[i], fill_color_rgb, align_crop=enable_crop
             ))
 
         def resize_frame(frame):

@@ -26,6 +26,8 @@
     "display_name": "小珠光图像遮罩智能互转",
     "inputs": {
       "channel": { "name": "图像转遮罩通道" },
+      "binarize": { "name": "二值化" },
+      "threshold": { "name": "二值化阈值" },
       "source": { "name": "图像／遮罩" }
     },
     "outputs": {
@@ -587,15 +589,16 @@
     }
   },
   "XiaozhuguangStringToNumber": {
-    "display_name": "小珠光字符串转整数/浮点/文本",
+    "display_name": "小珠光任意格式转换",
     "inputs": {
-      "text": { "name": "字符串" },
+      "text": { "name": "任意输入" },
       "rounding": { "name": "取整方式" }
     },
     "outputs": {
       "0": { "name": "整数" },
       "1": { "name": "浮点" },
       "2": { "name": "文本" }
+      ,"3": { "name": "字符串" }
     }
   },
   "XiaozhuguangBatchImageGetter": {

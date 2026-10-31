@@ -26,6 +26,8 @@
     "display_name": "Xiaozhuguang Smart Image/Mask Converter",
     "inputs": {
       "channel": { "name": "Image to Mask Channel" },
+      "binarize": { "name": "Binarize" },
+      "threshold": { "name": "Binarization Threshold" },
       "source": { "name": "Image / Mask" }
     },
     "outputs": {

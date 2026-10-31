@@ -1,5 +1,6 @@
-"""字符串数值转换节点。"""
+"""通用值类型转换节点。"""
 import math
+import json
 
 
 class _XzgTextType(str):
@@ -13,27 +14,48 @@ _XZG_TEXT_TYPE = _XzgTextType("*")
 
 
 class XiaozhuguangStringToNumber:
-    """将 STRING 同时输出为原文本、整数与浮点数。"""
+    """将任意输入转换为文本、整数、浮点数与字符串。"""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "text": ("STRING", {"forceInput": True}),
+                "text": ("*", {"forceInput": True}),
                 "rounding": (["四舍五入", "向上", "向下"], {"default": "四舍五入"}),
             },
         }
 
-    RETURN_TYPES = ("INT", "FLOAT", _XZG_TEXT_TYPE)
-    RETURN_NAMES = ("integer", "float", "text")
+    RETURN_TYPES = ("INT", "FLOAT", _XZG_TEXT_TYPE, "STRING")
+    RETURN_NAMES = ("integer", "float", "text", "string")
     FUNCTION = "convert"
     CATEGORY = "小珠光/逻辑"
-    DESCRIPTION = "将字符串按所选方式转换为整数，同时输出浮点数与原文本；无效数值输出 0。"
+    DESCRIPTION = "将任意输入转换为整数、浮点数、文本和字符串；无法解析为数值时整数与浮点输出 0。"
+
+    @staticmethod
+    def _to_text(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return str(value)
 
     def convert(self, text, rounding="四舍五入"):
+        text_value = self._to_text(text)
         try:
-            value = float(str(text).strip())
+            if isinstance(text, bool):
+                value = float(text)
+            elif isinstance(text, (int, float)):
+                value = float(text)
+            else:
+                value = float(text_value.strip())
         except (TypeError, ValueError):
+            value = 0.0
+        if not math.isfinite(value):
             value = 0.0
         if rounding == "向上":
             result = math.ceil(value)
@@ -41,4 +63,4 @@ class XiaozhuguangStringToNumber:
             result = math.floor(value)
         else:
             result = round(value)
-        return int(result), value, str(text)
+        return int(result), value, text_value, text_value
