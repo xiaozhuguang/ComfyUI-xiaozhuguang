@@ -371,6 +371,8 @@ let lastWindowKey = "";
 
     let items = [];
     let folders = [];
+    let libraryLoaded = false;
+    let libraryLoadError = "";
     let currentFolder = ALL_FOLDER;
     const selected = new Set();
     let shiftHeld = false;
@@ -703,7 +705,9 @@ let lastWindowKey = "";
             virtualStage.replaceChildren();
             const empty = document.createElement("div");
             empty.dataset.xzgMediaEmpty = "1";
-            empty.textContent = items.length ? xzgT("没有匹配的媒体", "No matching media") : isAudio ? xzgT("媒体库为空，点击“上传音频”添加", "Library is empty. Upload audio to get started.") : isVideo ? xzgT("媒体库为空，点击“上传视频”添加", "Library is empty. Upload videos to get started.") : xzgT("媒体库为空，点击“上传图片”添加", "Library is empty. Upload images to get started.");
+            empty.textContent = !libraryLoaded
+                ? libraryLoadError || xzgT("正在加载媒体库…", "Loading media library…")
+                : items.length ? xzgT("没有匹配的媒体", "No matching media") : isAudio ? xzgT("媒体库为空，点击“上传音频”添加", "Library is empty. Upload audio to get started.") : isVideo ? xzgT("媒体库为空，点击“上传视频”添加", "Library is empty. Upload videos to get started.") : xzgT("媒体库为空，点击“上传图片”添加", "Library is empty. Upload images to get started.");
             empty.style.cssText = "position:absolute;top:80px;left:0;right:0;text-align:center;opacity:.7;";
             virtualStage.appendChild(empty);
             return;
@@ -1063,9 +1067,20 @@ let lastWindowKey = "";
     });
     const refresh = async () => {
         const q = currentFolder ? `?folder=${encodeURIComponent(currentFolder)}` : "";
-        const result = await request(q);
+        let result;
+        try {
+            result = await request(q);
+        } catch (error) {
+            if (!libraryLoaded) {
+                libraryLoadError = xzgT("媒体库加载失败，请关闭后重试", "Failed to load media library. Close and try again.");
+                render();
+            }
+            throw error;
+        }
         folders = result.folders || [];
         items = result.items || [];
+        libraryLoaded = true;
+        libraryLoadError = "";
         lastClickedName = null;
         renderSidebar();
         render();
@@ -1094,5 +1109,6 @@ let lastWindowKey = "";
             dialog.style.top = `${Math.max(0, Math.min(window.innerHeight - dialog.offsetHeight, saved.y))}px`;
         }
     });
+    render();
     refresh().catch(error => alertUser(error.message));
 }

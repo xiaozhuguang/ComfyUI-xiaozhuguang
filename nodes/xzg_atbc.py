@@ -20,7 +20,7 @@ class XiaozhuguangATBC:
                 "image": ("IMAGE",),
             },
             "optional": {
-                "mask": ("MASK,IMAGE", {"tooltip": "支持MASK或IMAGE。图片按灰度亮度转换（与小珠光图像↔遮罩一致）；白1黑0，保留灰度。单张复用于整批，其他数量须与图片数一致。未连接时走整图缩放及补边，保留ATR回贴信息。"}),
+                "mask": ("MASK", {"tooltip": "输入遮罩，保留灰度。单张复用于整批，其他数量须与图片数一致。未连接时走整图缩放及补边，保留ATR回贴信息。"}),
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
                 "kilopixels": ("FLOAT", {"default": 1000.0, "min": 100.0, "max": 10000.0, "step": 10.0, "tooltip": "目标图像的千像素数（十进制，1千像素=1000像素）。1000千像素=1000*1000像素，4194千像素≈2048*2048像素"}),
                 "divisible_by": ("INT", {"default": 8, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
@@ -33,8 +33,6 @@ class XiaozhuguangATBC:
                 "mask_smooth": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "遮罩时间平滑系数，0为不开启，越大越平滑（0-0.98）。对视频帧的裁剪框位置进行指数移动平均，减少画面抖动"}),
                 "tracking_preference": (["稳定优先", "紧凑优先"], {"default": "稳定优先", "tooltip": "仅稳定跟踪生效。稳定优先使用较大范围减少移动；紧凑优先保持较小范围。均不缩减扩展参数要求的范围。"}),
                 "tracking_scale": (["固定大小", "动态缩放"], {"default": "固定大小", "tooltip": "仅稳定跟踪生效。固定大小只移动；动态缩放同时规划大小，输出分辨率统一，ATR按每帧记录恢复。"}),
-                "mask_binarize": ("BOOLEAN", {"default": False, "tooltip": "将输入遮罩或图片转换后的灰度遮罩二值化：大于阈值为白色1，其余为黑色0。关闭时保留灰度。"}),
-                "mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "仅开启遮罩二值化时生效；0表示所有非黑色变白，0.5表示大于0.5变白。等于阈值为黑色。"}),
             }
         }
 
@@ -464,15 +462,11 @@ class XiaozhuguangATBC:
         if mask.ndim == 4:
             if mask.shape[-1] == 1:
                 return mask[..., 0]
-            if mask.shape[-1] in (3, 4):
-                return (mask[..., :3] * mask.new_tensor([0.299, 0.587, 0.114])).sum(dim=-1)
-        raise ValueError("ATBC · 高级：遮罩／图片输入需要MASK或RGB、RGBA、灰度IMAGE格式。")
+        raise ValueError("ATBC · 高级：遮罩输入需要 [批次, 高, 宽] 或 [高, 宽] 的 MASK 格式。")
 
-    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小", mask_binarize=False, mask_threshold=0.5):
+    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小"):
         resize_mode = "Pillow Lanczos"
         mask = self._normalize_mask_input(mask)
-        if mask is not None and mask_binarize:
-            mask = (mask > float(mask_threshold)).to(dtype=mask.dtype)
         enable_crop = bool(enable_crop) and mask is not None
         if enable_crop and not sum_mask and crop_mode == "视频稳定跟踪":
             return self._tracked_crop_and_resize(image, mask, Box_grow_factor, Box_grow_pixels,

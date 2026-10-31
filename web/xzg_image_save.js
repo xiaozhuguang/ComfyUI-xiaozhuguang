@@ -1,3 +1,4 @@
+import { xzgBeginPreviewSettings, xzgBuildPreviewActionSettings } from "./xzg_loader_settings.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
@@ -2310,7 +2311,7 @@ function _xzgDirBrowserEnsureDlg() {
     const dlg = document.createElement("div");
     dlg.style.cssText = [
         "position: fixed", "top: 50%", "left: 50%", "transform: translate(-50%, -50%)",
-        "width: 420px", "height: 360px", `background: ${BG}`, `border: 1px solid ${BORDER}`,
+        "width: min(520px, calc(100vw - 24px))", "height: min(620px, calc(100vh - 24px))", "min-height: 280px", `background: ${BG}`, `border: 1px solid ${BORDER}`,
         "border-radius: 4px", "box-shadow: 0 6px 20px rgba(0,0,0,0.6)",
         "display: none", "flex-direction: column", "z-index: 1000001",
         "font-family: Arial, sans-serif", `color: ${TEXT}`, "overflow: hidden",
@@ -2548,6 +2549,11 @@ function _xzgDirBrowserEnsureDlg() {
     customRadio.addEventListener("change", _xzgApplyDefaultState);
 
     dlg.appendChild(settingsRow);
+    settingsRow.style.flex = "0 0 auto";
+    const previewSection = document.createElement("fieldset");
+    previewSection.style.cssText = "display:none;flex:0 1 auto;min-height:0;max-height:42vh;overflow-y:auto;margin:6px 10px;padding:6px 8px;border:1px solid #444;border-radius:3px;font-size:11px;";
+    dlg._previewSection = previewSection;
+    dlg.appendChild(previewSection);
     dlg._prefixInput = prefixInput;
     dlg._dateCheck = dateCheck;
     dlg._timeCheck = timeCheck;
@@ -2563,7 +2569,7 @@ function _xzgDirBrowserEnsureDlg() {
 
     // ── 底部：路径 + 取消/选择 ──
     const footer = document.createElement("div");
-    footer.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-top:1px solid #333;background:${BG3};gap:6px;flex-wrap:wrap;`;
+    footer.style.cssText = `display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;padding:5px 10px;border-top:1px solid #333;background:${BG3};gap:6px;flex-wrap:wrap;`;
     const curPathLabel = document.createElement("span");
     curPathLabel.style.cssText = "flex:1;font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;";
     footer.appendChild(curPathLabel);
@@ -2577,6 +2583,7 @@ function _xzgDirBrowserEnsureDlg() {
     cancelBtn.addEventListener("click", () => _xzgDirBrowserHide());
     const selectBtn = document.createElement("button");
     selectBtn.textContent = xzgT("选择", "Select");
+    dlg._confirmButton = selectBtn;
     selectBtn.style.cssText = `background:${GOLD};color:#1e1e1e;border:1px solid ${GOLD};border-radius:2px;padding:3px 14px;cursor:pointer;font-size:11px;font-weight:bold;`;
     selectBtn.addEventListener("mouseenter", () => selectBtn.style.filter = "brightness(1.08)");
     selectBtn.addEventListener("mouseleave", () => selectBtn.style.filter = "");
@@ -2969,17 +2976,62 @@ function _xzgDirBrowserConfirm() {
             node._xzgDvVideoOnlyWidget.value = v;
             if (node._xzgDvVideoOnlyWidget.callback) node._xzgDvVideoOnlyWidget.callback(v);
         }
+        if (dlg._previewChecks?.size) {
+            node.properties ||= {};
+            node.properties.xzg_preview_buttons = {
+                ...node.properties.xzg_preview_buttons,
+                ...Object.fromEntries([...dlg._previewChecks].map(([id, input]) => [id, input.checked])),
+            };
+            if (dlg._previewOrder) node.properties.xzg_preview_button_order = dlg._previewOrder();
+            if (dlg._previewFontSize) node.properties.xzg_preview_button_font_size = dlg._previewFontSize();
+            if (dlg._previewColors) node.properties.xzg_preview_button_colors = Object.fromEntries([...dlg._previewColors()].map(([id, input]) => [id, input.value]));
+            if (dlg._previewSizes) node.properties.xzg_preview_button_font_sizes = Object.fromEntries([...dlg._previewSizes()].map(([id, input]) => [id, Number(input.value)]));
+            dlg._previewSaved = true;
+            dlg._previewRefresh?.();
+            node.graph?.change?.();
+        }
         node.setDirtyCanvas(true);
     }
     _xzgDirBrowserHide();
 }
 
 function _xzgDirBrowserHide() {
-    if (_xzgDirBrowserDlg) _xzgDirBrowserDlg.style.display = "none";
+    if (_xzgDirBrowserDlg) {
+        _xzgDirBrowserDlg._previewSession?.finish(_xzgDirBrowserDlg._previewSaved);
+        _xzgDirBrowserDlg._previewSession = null;
+        _xzgDirBrowserDlg.style.display = "none";
+    }
 }
 
-async function _xzgShowDirBrowser(node) {
+async function _xzgShowDirBrowser(node, previewSettings = null) {
     const dlg = _xzgDirBrowserEnsureDlg();
+    dlg._previewSession?.finish(false);
+    dlg._previewSession = previewSettings?.sortable ? xzgBeginPreviewSettings(node, previewSettings.refresh) : null;
+    dlg._previewSaved = false;
+    dlg._previewFontSize = null;
+    dlg._previewColors = null;
+    dlg._previewSizes = null;
+    dlg._previewChecks = new Map();
+    dlg._previewOrder = null;
+    dlg._confirmButton.textContent = previewSettings ? xzgT("保存", "Save") : xzgT("选择", "Select");
+    dlg._previewRefresh = previewSettings?.refresh || null;
+    dlg._previewSection.replaceChildren();
+    dlg._previewSection.style.display = previewSettings?.actions?.length ? "block" : "none";
+    if (previewSettings?.actions?.length) {
+        const legend = document.createElement("legend");
+        legend.textContent = xzgT("预览区悬浮按钮（随工作流保存）", "Preview floating buttons (saved with workflow)");
+        dlg._previewSection.append(legend);
+        const list = document.createElement("div");
+        dlg._previewSection.append(list);
+        let controls;
+        controls = xzgBuildPreviewActionSettings(list, node, previewSettings.actions, !!previewSettings.sortable,
+            (checks, order) => dlg._previewSession?.update(checks, order, controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)]))),
+            previewSettings.fontSize ? size => dlg._previewSession?.update(controls?.checks || new Map(), controls?.order?.() || [], size, Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)]))) : null,
+            previewSettings.fontSize ? (checks, order, size, colors, sizes) => dlg._previewSession?.update(checks, order, size, colors, sizes) : null);
+        if (previewSettings.fontSize) { dlg._previewFontSize = controls.fontSize; dlg._previewColors = () => controls.colors; dlg._previewSizes = () => controls.sizes; }
+        dlg._previewChecks = controls.checks;
+        if (previewSettings.sortable) dlg._previewOrder = controls.order;
+    }
     _xzgDirBrowserState.targetNode = node;
 
     // 「另存为」仅对快剪导出（通过 fakeNode._xzgOutputModeWidget 接入）有意义：
@@ -3033,6 +3085,13 @@ async function _xzgShowDirBrowser(node) {
     // 根据输出模式，同步灰显/启用 自定义前缀/日期戳/时间戳 + 路径选择区
     if (typeof dlg._applyDefaultState === "function") dlg._applyDefaultState();
     dlg.style.display = "flex";
+    requestAnimationFrame(() => {
+        const rect = dlg.getBoundingClientRect();
+        dlg.style.height = `${Math.min(620, window.innerHeight - 24)}px`;
+        dlg.style.left = `${Math.max(12, window.innerWidth - rect.width - 24)}px`;
+        dlg.style.top = `${Math.max(12, Math.min(80, (window.innerHeight - rect.height) / 2))}px`;
+        dlg.style.transform = "none";
+    });
     // 恢复上次拖动后的位置（若有），否则保持居中
     try {
         const raw = localStorage.getItem("xzgDirBrowserPos");

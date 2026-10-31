@@ -11,7 +11,10 @@
       "min_frames": { "name": "最少持续帧数" },
       "edge_grow": { "name": "软边保留范围" },
       "repair_enabled": { "name": "修复形状" },
-      "erode_dilate": { "name": "收缩／膨胀" },
+      "erode_dilate": { "name": "扩展遮罩" },
+      "mask_binarize": { "name": "遮罩二值化" },
+      "mask_threshold": { "name": "二值化阈值" },
+      "tapered_corners": { "name": "扩展收尖角" },
       "fill_holes": { "name": "填补小孔" },
       "remove_isolated_pixels": { "name": "去除细碎区域" },
       "smooth": { "name": "平滑" },
@@ -20,15 +23,13 @@
     "outputs": { "0": { "name": "遮罩" } }
   },
   "XiaozhuguangImageMaskConvert": {
-    "display_name": "小珠光图像↔遮罩",
+    "display_name": "小珠光图像遮罩智能互转",
     "inputs": {
       "channel": { "name": "图像转遮罩通道" },
-      "image": { "name": "图像输入" },
-      "mask": { "name": "遮罩输入" }
+      "source": { "name": "图像／遮罩" }
     },
     "outputs": {
-      "0": { "name": "遮罩输出" },
-      "1": { "name": "图像输出" }
+      "0": { "name": "输出" }
     }
   },
   "ComfyUIPoseSequenceEditor": {
@@ -404,6 +405,7 @@
   "XiaozhuguangNinimaxH3Prompt": {
     "display_name": "小珠光提示词-化神级",
     "inputs": {
+      "skill": { "name": "Skill（优先规则）" },
       "video_frames": { "name": "视频帧" },
       "video_fps": { "name": "视频帧率" },
         "qwen_model": { "name": "Qwen模型" },
@@ -425,8 +427,7 @@
       "image_10": { "name": "图片_10" }
     },
       "outputs": {
-        "0": { "name": "英文提示词" },
-        "1": { "name": "中文提示词" }
+        "0": { "name": "英文提示词" }
       }
   },
   "XiaozhuguangNinimaxH3PromptNoSkill": {
@@ -469,7 +470,7 @@
     "display_name": "ATBC · 高级",
     "inputs": {
       "image": { "name": "图像" },
-      "mask": { "name": "遮罩／图片" },
+      "mask": { "name": "遮罩" },
       "Box_grow_factor": { "name": "扩展倍数" },
       "Box_grow_pixels": { "name": "像素扩展" },
       "kilopixels": { "name": "千像素" },
@@ -479,8 +480,6 @@
       "crop_mode": { "name": "裁剪模式" },
       "tracking_preference": { "name": "跟踪偏好仅跟踪" },
       "tracking_scale": { "name": "缩放模式仅跟踪" },
-      "mask_binarize": { "name": "遮罩二值化" },
-      "mask_threshold": { "name": "二值化阈值" },
       "fill_color": { "name": "填充颜色" },
       "mask_smooth": { "name": "遮罩平滑" },
       "sum_mask": { "name": "遮罩求和" }
@@ -634,10 +633,12 @@
   "XiaozhuguangBigDisplay": {
     "display_name": "小珠光展示任意",
     "inputs": {
-      "input": { "name": "输入" }
+      "input": { "name": "A" },
+      "input_b": { "name": "B" }
     },
     "outputs": {
-      "0": { "name": "输出" }
+      "0": { "name": "A" },
+      "1": { "name": "B" }
     }
   },
   "XiaozhuguangMaskInvert": {

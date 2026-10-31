@@ -24,8 +24,20 @@ export function bindMultiVideoQueue(node) {
     const preview = node._xzgVideoPreviewContainer;
     if (!host || !preview || node._xzgRenderVideoQueue) return;
     const panel = document.createElement("div");
-    panel.style.cssText = "flex:0 0 108px;min-width:0;max-height:100%;overflow-y:auto;pointer-events:auto;" +
+    panel.style.cssText = "flex:0 0 108px;min-width:0;min-height:0;max-height:100%;overflow-y:auto;pointer-events:auto;" +
         "box-sizing:border-box;background:#171a20;padding:5px;display:none;font:11px sans-serif;color:#eee;";
+    panel.addEventListener("wheel", event => {
+        const canvas = app.canvas?.canvas;
+        if (!canvas) return;
+        event.preventDefault();
+        event.stopPropagation();
+        canvas.dispatchEvent(new WheelEvent("wheel", {
+            deltaY: event.deltaY, deltaX: event.deltaX, deltaMode: event.deltaMode,
+            clientX: event.clientX, clientY: event.clientY,
+            ctrlKey: event.ctrlKey, shiftKey: event.shiftKey, altKey: event.altKey,
+            bubbles: true, cancelable: true,
+        }));
+    }, { passive: false });
     const divider = document.createElement("div");
     divider.title = "拖动调整列表与预览宽度";
     divider.style.cssText = "flex:0 0 6px;background:#353b44;cursor:col-resize;" +
@@ -77,8 +89,22 @@ export function bindMultiVideoQueue(node) {
         if (enabled) applySplit();
         panel.replaceChildren();
         const heading = document.createElement("div");
-        heading.textContent = `视频队列（${entries().length}）`;
-        heading.style.cssText = "padding:4px 0 8px;color:#ffd76a;font-weight:bold";
+        heading.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:4px;padding:4px 0 8px;color:#ffd76a;font-weight:bold";
+        const title = document.createElement("span");
+        title.textContent = `视频队列（${entries().length}）`;
+        const clear = document.createElement("button");
+        clear.textContent = "清空";
+        clear.disabled = !!node._xzgVideoQueuePending || !entries().length;
+        clear.title = "清空列表（不删除文件）";
+        clear.style.cssText = "flex-shrink:0;background:#222b;color:#eee;border:1px solid #444;border-radius:3px;padding:2px 5px;cursor:pointer";
+        clear.onclick = event => {
+            event.stopPropagation();
+            entries().length = 0;
+            states.clear();
+            render();
+            node.setDirtyCanvas?.(true, true);
+        };
+        heading.append(title, clear);
         panel.appendChild(heading);
         entries().forEach((filename, index) => {
             const card = document.createElement("div");

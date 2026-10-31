@@ -1440,7 +1440,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBatchImageGetter": "小珠光批次或列表图像获取",
     "XiaozhuguangBigDisplay": "小珠光展示任意",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
-    "XiaozhuguangImageMaskConvert": "小珠光图像↔遮罩",
+    "XiaozhuguangImageMaskConvert": "小珠光图像遮罩智能互转",
     "XiaozhuguangMaskCleanupRepair": "小珠光遮罩清理修复",
     "XiaozhuguangImageSize": "小珠光获取尺寸",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
@@ -1489,5 +1489,10 @@ except Exception as _xzg_wm_err:
 
 
 from . import workflows
+from . import xzg_codex_upload
+
+from .nodes.xzg_lora_manager import XiaozhuguangLoraManager
+NODE_CLASS_MAPPINGS["XiaozhuguangLoraManager"] = XiaozhuguangLoraManager
+NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangLoraManager"] = "小珠光 LoRA 管理加载器"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

@@ -4,6 +4,8 @@ import { xzgT, xzgTh } from "./xzg_i18n.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
+import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
+import { xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings } from "./xzg_loader_settings.js";
 
 let _xzgBackendSessionRequest = null;
 function getImageLoaderBackendSessionId() {
@@ -803,8 +805,7 @@ function createImgBatchUI(node) {
         }
     }
 
-    const showContextMenu = async (x, y, imageName, imageIndex) => {
-        const backendSessionId = await getImageLoaderBackendSessionId();
+    const showContextMenu = (x, y, imageName, imageIndex) => {
         contextMenu.innerHTML = "";
         const imageCount = parseNameList(getImageListWidget(node)?.value).length;
         const selectedNames = getSelectedNames();
@@ -976,28 +977,25 @@ function createImgBatchUI(node) {
             appendContextMenuDivider();
             const savedPoseStates = node.properties?.xzg_pose_capture_states || {};
             const savedPoseState = savedPoseStates[imageName];
-            const canContinuePose = !!backendSessionId
-                && savedPoseState?.backend_session_id === backendSessionId
-                && typeof savedPoseState?.pose_data === "string";
-            if (savedPoseState && !canContinuePose) {
-                delete savedPoseStates[imageName];
-                if (!Object.keys(savedPoseStates).length) delete node.properties.xzg_pose_capture_states;
-            }
             const poseEditorItem = document.createElement("div");
-            poseEditorItem.textContent = canContinuePose
-                ? xzgT("继续编辑此姿势", "Continue Editing Pose")
-                : xzgT("以此图为背景编辑姿势", "Edit Pose with This Image as Background");
+            poseEditorItem.textContent = xzgT("编辑姿势", "Edit Pose");
             poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
             poseEditorItem.addEventListener("mouseenter", () => { poseEditorItem.style.background = "var(--comfy-input-bg)"; });
             poseEditorItem.addEventListener("mouseleave", () => { poseEditorItem.style.background = ""; });
-            poseEditorItem.addEventListener("click", () => {
+            poseEditorItem.addEventListener("click", async () => {
                 hideContextMenu();
+                let canContinuePose = false;
+                if (savedPoseState) {
+                    const backendSessionId = await getImageLoaderBackendSessionId();
+                    canContinuePose = !!backendSessionId
+                        && savedPoseState.backend_session_id === backendSessionId
+                        && typeof savedPoseState.pose_data === "string";
+                }
                 if (canContinuePose) openPoseStudio(null, savedPoseState.pose_data, imageName);
                 else openPoseStudio(imageName, null, imageName);
             });
             contextMenu.appendChild(poseEditorItem);
-
-            if (!canContinuePose) {
+            {
                 const poseFromImageItem = document.createElement("div");
                 poseFromImageItem.textContent = xzgT("以此图获取姿势", "Get Pose from This Image");
                 poseFromImageItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
@@ -1302,7 +1300,7 @@ function createImgBatchUI(node) {
         return null;
     };
 
-    container.addEventListener("contextmenu", (e) => {
+    const onPreviewContextMenu = (e) => {
         e.preventDefault();
         e.stopPropagation();
         // 裁剪模式下右键弹出「应用裁剪 / 清空裁剪」菜单
@@ -1343,6 +1341,11 @@ function createImgBatchUI(node) {
             // 多图区域的空白处也可直接追加，不依赖已有图片。
             showContextMenu(e.clientX, e.clientY, null, -1);
         }
+    };
+    container.addEventListener("contextmenu", onPreviewContextMenu);
+    container.addEventListener("pointerdown", (e) => {
+        if (e.button !== 2 || e.ctrlKey || maskEnabled || cropEnabled) return;
+        onPreviewContextMenu(e);
     });
 
     const sidebar = document.createElement("div");
@@ -1357,6 +1360,7 @@ function createImgBatchUI(node) {
         output: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 14V9"/><path d="M9 12l3-3 3 3"/></svg>',
         media: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="9" cy="12" r="1"/><path d="m6 17 4-3 2 2 2-2 4 3"/></svg>',
         pose: '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1"/><path d="m9 20 3-6 3 6M6 8l6 2 6-2M12 10v4"/></svg>',
+        settings: '<svg viewBox="0 0 24 24"><path d="M19.73 9.93L21.85 10.26L21.85 13.74L19.73 14.07L18.93 16.00L20.19 17.74L17.74 20.19L16.00 18.93L14.07 19.73L13.74 21.85L10.26 21.85L9.93 19.73L8.00 18.93L6.26 20.19L3.81 17.74L5.07 16.00L4.27 14.07L2.15 13.74L2.15 10.26L4.27 9.93L5.07 8.00L3.81 6.26L6.26 3.81L8.00 5.07L9.93 4.27L10.26 2.15L13.74 2.15L14.07 4.27L16.00 5.07L17.74 3.81L20.19 6.26L18.93 8.00Z"/><circle cx="12" cy="12" r="3.2"/></svg>',
         del: '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>',
         clear: '<svg viewBox="0 0 24 24"><path d="M19 5L9.5 14.5"/><path d="M8 19l-3 3"/><path d="M13 20.5l-4 4"/><path d="M6.5 8.5l.01 0"/><path d="M10 6l.01 0"/><path d="M15 17l-2 2"/><path d="M12.5 12.5L17 8"/></svg>',
         mask: '<svg class="xzg-ic-mask" viewBox="0 0 24 24"><circle class="mr" cx="12" cy="12" r="9.5"/><path class="ml" d="M12 2.5 A9.5 9.5 0 0 1 21.5 12 A9.5 9.5 0 0 1 12 21.5 A4.75 4.75 0 0 1 12 12 A4.75 4.75 0 0 0 12 2.5 Z"/><circle class="o" cx="12" cy="12" r="9.5"/><circle class="er" cx="12" cy="16.75" r="1.15"/></svg>',
@@ -1448,8 +1452,46 @@ function createImgBatchUI(node) {
     const outputBtn = mkBtn(xzgT(".output", ".output"), xzgT("从output文件夹选择", "Select from output folder"), "output");
     const mediaBtn = mkBtn(xzgT("资源媒体", "Media assets"), xzgT("打开资源媒体库", "Open media library"), "media");
     const poseBtn = mkBtn(xzgT("姿势编辑器", "Pose editor"), xzgT("打开姿势编辑器，从姿势库加载并确认图片", "Open pose editor and load an image from the pose library"), "pose");
+    const codexBtn = document.createElement("button");
+    codexBtn.textContent = xzgT("＋ 添加到 Codex", "＋ Add to Codex");
+    codexBtn.title = xzgT("把选中的原图添加到 Codex 当前聊天，不自动发送", "Attach selected original images to the current Codex chat without sending");
+    codexBtn.style.cssText = "display:inline-flex;align-items:center;height:22px;padding:2px 6px;font-size:13px;white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ffd700;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
+    codexBtn.addEventListener("pointerdown", event => event.stopPropagation());
+    codexBtn.addEventListener("mousedown", event => event.stopPropagation());
+    codexBtn.addEventListener("dblclick", event => event.stopPropagation());
+    codexBtn.addEventListener("click", event => {
+        event.stopPropagation();
+        const selected = getSelectedNames();
+        const names = parseNameList(getImageListWidget(node)?.value);
+        const current = names[getIndex(node)];
+        xzgAddToCodex(selected.length ? selected : current ? [current] : [], "image", codexBtn);
+    });
+    const doubaoBtn = document.createElement("button");
+    doubaoBtn.textContent = xzgT("＋ 添加到豆包", "＋ Add to Doubao");
+    doubaoBtn.title = xzgT("把选中的原图添加到豆包当前聊天，不自动发送", "Attach selected original images to the current Doubao chat without sending");
+    doubaoBtn.style.cssText = "display:inline-flex;align-items:center;height:22px;padding:2px 6px;font-size:13px;white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ff9800;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
+    doubaoBtn.addEventListener("pointerdown", event => event.stopPropagation());
+    doubaoBtn.addEventListener("mousedown", event => event.stopPropagation());
+    doubaoBtn.addEventListener("dblclick", event => event.stopPropagation());
+    doubaoBtn.addEventListener("click", event => {
+        event.stopPropagation();
+        const selected = getSelectedNames();
+        const names = parseNameList(getImageListWidget(node)?.value);
+        const current = names[getIndex(node)];
+        xzgAddToDoubao(selected.length ? selected : current ? [current] : [], "image", doubaoBtn);
+    });
     const deleteBtn = mkBtn(xzgT("删除", "Delete"), xzgT("删除选中", "Delete selected"), "del");
     const clearBtn = mkBtn(xzgT("清空", "Clear"), xzgT("清空全部", "Clear all"), "clear");
+    const settingsBtn = mkBtn(xzgT("设置", "Settings"), xzgT("加载器设置", "Loader settings"), "settings");
+    settingsBtn.addEventListener("click", event => {
+        event.stopPropagation();
+        xzgShowLoaderSettings(node, [{ id: "codex", label: xzgT("添加到 Codex", "Add to Codex") }, { id: "doubao", label: xzgT("添加到豆包", "Add to Doubao") }], syncPreviewButtons);
+    });
+    function syncPreviewButtons() {
+        doubaoBtn.style.display = xzgPreviewButtonVisible(node, "doubao") ? "inline-flex" : "none";
+        codexBtn.style.display = xzgPreviewButtonVisible(node, "codex") ? "inline-flex" : "none";
+    }
+    syncPreviewButtons();
 
     // 操作按钮包在组内，加大间距
     const initialActionGap = "6px";
@@ -1474,6 +1516,8 @@ function createImgBatchUI(node) {
     safetyActionGroup.appendChild(cropDeleteDivider);
     safetyActionGroup.appendChild(deleteBtn);
     safetyActionGroup.appendChild(clearBtn);
+    safetyActionGroup.appendChild(createActionDivider());
+    safetyActionGroup.appendChild(settingsBtn);
     sidebar.appendChild(actionGroup);
 
     // 初始化：优先从 upload_mode widget 里恢复上次保存的值（append=多图 / replace=单图）
@@ -3317,6 +3361,12 @@ function createImgBatchUI(node) {
         }
         if (!cropEnabled && maskEnabled) maskEnabled = false; // 互斥：开启裁剪即关闭遮罩
         cropEnabled = !cropEnabled;
+        // 临时选框只属于本次编辑；重新打开时由当前图片的已应用裁剪初始化。
+        _cropPending = null;
+        _cropDrawing = false;
+        _cropSelStart = _cropSelCur = null;
+        _cropResizeCorner = null; _cropResizeBase = null; _cropResizeAnchorPos = null; _cropResizeFromCenter = false;
+        _cropMove = false; _cropMoveStart = null; _cropMoveBase = null;
         cropRatioRow.style.display = cropEnabled ? "flex" : "none";
         syncImageTransformControls();
         _renderTransformPreview();
@@ -3455,6 +3505,12 @@ function createImgBatchUI(node) {
     mainContent.style.cssText = "flex:1;display:flex;flex-direction:column;pointer-events:auto;min-width:0;min-height:120px;position:relative;overflow:visible;";
     mainContent.style.userSelect = "none";
     mainContent.style.webkitUserSelect = "none";
+    const chatButtons = document.createElement("div");
+    chatButtons.style.cssText = "position:absolute;top:6px;right:6px;z-index:102;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none;";
+    chatButtons.append(codexBtn, doubaoBtn);
+    mainContent.append(chatButtons);
+    mainContent.addEventListener("mouseenter", () => { codexBtn.style.opacity = "1"; codexBtn.style.pointerEvents = "auto"; doubaoBtn.style.opacity = "1"; doubaoBtn.style.pointerEvents = "auto"; });
+    mainContent.addEventListener("mouseleave", () => { codexBtn.style.opacity = "0"; codexBtn.style.pointerEvents = "none"; doubaoBtn.style.opacity = "0"; doubaoBtn.style.pointerEvents = "none"; });
 
     const grid = document.createElement("div");
     grid.style.cssText =
@@ -3693,11 +3749,11 @@ function createImgBatchUI(node) {
     // 裁剪结果预览画布：应用裁剪后显示裁剪画面（object-fit:contain 自适应放大），替代原图
     // 必须 absolute 定位（脱离文档流），否则会与原图在流内垂直堆叠、画布被挤到容器下方
     const singleCropPreviewCanvas = document.createElement("canvas");
-    // 保留裁剪结果画布的固有宽高比：明确设置 width/height 为 100% 会在部分节点布局下把画布拉伸。
-    singleCropPreviewCanvas.style.cssText = "position:absolute;left:50%;top:50%;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain;transform:translate(-50%,-50%);display:none;z-index:2;";
+    // 与原图及裁剪框共用 contain 映射，小尺寸裁剪结果也须等比放大到容器内。
+    singleCropPreviewCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;z-index:2;";
     singleImgInner.appendChild(singleCropPreviewCanvas);
     const singleTransformPreviewCanvas = document.createElement("canvas");
-    singleTransformPreviewCanvas.style.cssText = "position:absolute;left:50%;top:50%;width:auto;height:auto;max-width:100%;max-height:100%;object-fit:contain;transform:translate(-50%,-50%);display:none;z-index:3;pointer-events:none;";
+    singleTransformPreviewCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;z-index:3;pointer-events:none;";
     singleImgInner.appendChild(singleTransformPreviewCanvas);
     singleImgInner.appendChild(singleMaskOverlay);
     singleImgInner.appendChild(singleMaskEventLayer);
@@ -7122,6 +7178,7 @@ function createImgBatchUI(node) {
         sidebar,
         actionGroup,
         safetyActionGroup,
+        syncPreviewButtons,
         maskToolbar,
         toggleMask: () => maskToggleBtn.click(),
         redraw,
@@ -7749,6 +7806,7 @@ app.registerExtension({
                 _restoreWarpedNodeSize(data?.properties?.xzg_mask_orig_size);
                 if (this._xzgImgLoaderUI) {
                     // 先确保 upload_mode widget 值已恢复 → 再同步到闭包变量
+                    this._xzgImgLoaderUI.syncPreviewButtons?.();
                     this._xzgImgLoaderUI.syncUploadModeFromWidget?.();
                     this._xzgImgLoaderUI.syncRemoveAlphaFromWorkflow?.();
                     this._xzgImgLoaderUI.redraw(true);
@@ -7837,6 +7895,7 @@ app.registerExtension({
 
             const origOnRemoved = nodeType.prototype.onRemoved;
             nodeType.prototype.onRemoved = function () {
+                xzgCloseLoaderSettings(this);
                 this._xzgImgLoaderUI?.disposeDOMWidget?.();
                 if (this._xzgResizeTimer) clearTimeout(this._xzgResizeTimer);
                 if (this._xzgImgLoaderUI?.resizeObserver) {

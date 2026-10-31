@@ -71,6 +71,7 @@ export class XiaozhuguangVideoPlayer {
         this.onError = options.onError || null;
         this.onSaveToDesktop = options.onSaveToDesktop || null;
         this.allowSaveCurrentFrame = !!options.allowSaveCurrentFrame;
+        this._enableLoadRange = options.enableLoadRange !== false;
         this.onLoadRangeStartDrag = options.onLoadRangeStartDrag || null;
         this.onLoadRangeEndDrag = options.onLoadRangeEndDrag || null;
         this.onSourceFpsDetected = options.onSourceFpsDetected || null;
@@ -238,6 +239,7 @@ export class XiaozhuguangVideoPlayer {
         this._stage.addEventListener("wheel", this._forwardWheel, { passive: false });
         this._stage.addEventListener("dblclick", this._onStageDblClick);
         this._stage.addEventListener("contextmenu", this._onContextMenu);
+        this._stage.addEventListener("pointerdown", this._onContextMenuPointerDown);
 
         this._videoSurface = document.createElement("div");
         this._videoSurface.style.cssText =
@@ -293,7 +295,7 @@ export class XiaozhuguangVideoPlayer {
         if (this._frameCountOverlayMode) {
             this._frameCountOverlay = document.createElement("div");
             this._frameCountOverlay.style.cssText =
-                "position:absolute;right:12px;top:50%;transform:translateY(-50%);" +
+                "position:absolute;left:12px;top:50%;transform:translateY(-50%);" +
                 "padding:8px 14px;border-radius:10px;background:rgba(0,0,0,.25);" +
                 "color:#fff;font:bold 32px/1.4 sans-serif;text-align:center;white-space:nowrap;" +
                 "text-shadow:0 2px 4px #000;pointer-events:none;z-index:3;display:none;";
@@ -767,9 +769,11 @@ export class XiaozhuguangVideoPlayer {
             return;
         }
         const fps = this._frameRate || 24;
-        const startFrame = this._skipFrames;
+        const startFrame = this._enableLoadRange ? this._skipFrames : 0;
         let endFrame;
-        if (this._previewLoaded) {
+        if (!this._enableLoadRange) {
+            endFrame = this.getTotalFrames();
+        } else if (this._previewLoaded) {
             // 预览已加载：显示源坐标终点 = 红条 + 预览文件实际帧数（预览文件即最终输出片段）
             const previewFrames = this.getTotalFrames() || 0;
             const sourceTotal = this.getSourceTotalFrames() || 0;
@@ -1142,6 +1146,7 @@ export class XiaozhuguangVideoPlayer {
     }
 
     _onMarkerDown = (e) => {
+        if (!this._enableLoadRange) return;
         if (e.button !== 0) return;
         const dur = this.duration;
         if (!this._canvas || dur <= 0) return;
@@ -1264,6 +1269,10 @@ export class XiaozhuguangVideoPlayer {
         this._showContextMenu(e.clientX, e.clientY);
     };
 
+    _onContextMenuPointerDown = (e) => {
+        if (e.button === 2) this._onContextMenu(e);
+    };
+
     _showContextMenu(x, y) {
         const menu = this._contextMenu;
         if (!menu) return;
@@ -1282,11 +1291,9 @@ export class XiaozhuguangVideoPlayer {
         menu.style.top = y + "px";
         menu.style.display = "block";
         // 超出视口则反方向弹出
-        requestAnimationFrame(() => {
-            const rect = menu.getBoundingClientRect();
-            if (rect.right > window.innerWidth) menu.style.left = (x - rect.width) + "px";
-            if (rect.bottom > window.innerHeight) menu.style.top = (y - rect.height) + "px";
-        });
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) menu.style.left = Math.max(0, x - rect.width) + "px";
+        if (rect.bottom > window.innerHeight) menu.style.top = Math.max(0, y - rect.height) + "px";
     }
 
     _hideContextMenu = () => {
@@ -2194,6 +2201,7 @@ export class XiaozhuguangVideoPlayer {
     }
 
     setLoadRange(skipFrames, frameLimit) {
+        if (!this._enableLoadRange) return;
         this._skipFrames = Math.max(0, parseInt(skipFrames) || 0);
         this._frameLimit = Math.max(0, parseInt(frameLimit) || 0);
         this._updateLoadRangeMarkers();
@@ -2202,6 +2210,22 @@ export class XiaozhuguangVideoPlayer {
     }
 
     _updateLoadRangeMarkers() {
+        if (!this._enableLoadRange) {
+            this._loadRangeStart.style.display = "none";
+            this._loadRangeEnd.style.display = "none";
+            const visible = this.duration > 0 && this.getTotalFrames() > 0;
+            this._loadRangeFill.style.display = visible ? "block" : "none";
+            this._loadRangeFill.style.left = "0%";
+            this._loadRangeFill.style.width = "100%";
+            this._rangeLenDisplay.style.display = visible ? "block" : "none";
+            this._positionLenLabel(0, 100);
+            this._redFrameDisplay.style.left = "5px";
+            this._redFrameDisplay.style.transform = "translateX(0)";
+            this._blueFrameDisplay.style.left = "calc(100% - 5px)";
+            this._blueFrameDisplay.style.transform = "translateX(-100%)";
+            this._updateRangeDisplay();
+            return;
+        }
         const dur = this.duration;
         if (!this._progressBar || !this._canvas || dur <= 0) return;
         const totalSourceFrames = this.getSourceTotalFrames();
@@ -2442,6 +2466,7 @@ export class XiaozhuguangVideoPlayer {
             this._stage.removeEventListener("wheel", this._forwardWheel);
             this._stage.removeEventListener("dblclick", this._onStageDblClick);
             this._stage.removeEventListener("contextmenu", this._onContextMenu);
+            this._stage.removeEventListener("pointerdown", this._onContextMenuPointerDown);
             this._stage.remove();
         }
         this._canvas = null;

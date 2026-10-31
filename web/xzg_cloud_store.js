@@ -178,3 +178,11 @@ export function cloudUIQueueGeometry() {
         pushGeometryToCloud();
     }, 400);
 }
+
+/** 导入后在刷新页面前完成几何写入，避免防抖任务被刷新中断。 */
+export async function cloudUIFlushGeometry() {
+    if (_uiTimer) clearTimeout(_uiTimer);
+    _uiTimer = null;
+    const map = readGeometryMap();
+    if (Object.keys(map).length) await cloudSave(UI_KEY, map, { strict: true });
+}

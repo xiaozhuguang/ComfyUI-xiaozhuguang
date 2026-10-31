@@ -2,6 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 import { xzgT } from "./xzg_i18n.js";
+import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings } from "./xzg_loader_settings.js";
 import { bindMultiVideoQueue } from "./xzg_multi_video_queue.js";
 import {
     bindVideoLoaderInteractions,
@@ -325,32 +327,53 @@ function _openLoaderOutputSettings(node) {
     window._xzgShowDirBrowser(node);
 }
 
+const PREVIEW_ACTIONS = [
+    ["codex", "_xzgLoaderCodexBtn", "添加到 Codex", "Add to Codex"],
+    ["doubao", "_xzgLoaderDoubaoBtn", "添加到豆包", "Add to Doubao"],
+    ["davinci_export", "_xzgLoaderExportDavinciBtn", "导出到达芬奇", "Export to DaVinci"],
+    ["davinci_import", "_xzgDavinciBtn", "从达芬奇加载", "Load from DaVinci"],
+    ["quickcut_send", "_xzgLoaderQuickCutBtn", "发送到快剪", "Send to Quick Cut"],
+    ["quickcut_load", "_xzgFastcutBtn", "从快剪加载", "Load from Quick Cut"],
+    ["media_library", "_xzgVideoMediaLibraryBtn", "资源媒体", "Media assets"],
+    ["media_favorite", "_xzgVideoMediaFavoriteBtn", "收藏", "Save to media library"],
+    ["davinci_settings", "_xzgLoaderOutSettingsBtn", "达芬奇导出设置", "DaVinci export settings"],
+];
+
 function _layoutPreviewActions(node) {
-    // 视觉左→右：从快剪加载 · 发送到快剪 · 输出设置 · 从达芬奇加载 · 导出到达芬奇。
-    // 本数组按「右 → 左」（最右在前）排列：导出到达芬奇、从达芬奇加载、输出设置、发送到快剪、从快剪加载。
-    const buttons = [
-        node._xzgLoaderExportDavinciBtn,
-        node._xzgDavinciBtn,
-        node._xzgLoaderQuickCutBtn,
-        node._xzgFastcutBtn,
-    ].filter(Boolean);
-    let right = 6;
-    for (const btn of buttons) {
-        btn.style.right = right + "px";
-        right += (btn.offsetWidth || 0) + 6;
-    }
-    let left = 6;
-    let top = 6;
-    const width = node._xzgPreviewContainer?.clientWidth || node.size?.[0] || 360;
-    for (const btn of [node._xzgVideoMediaLibraryBtn, node._xzgVideoMediaFavoriteBtn].filter(Boolean)) {
-        if (left > 6 && left + (btn.offsetWidth || 0) + 6 > width - right) {
-            left = 6;
-            top += 28;
+    for (const [id, key] of [...PREVIEW_ACTIONS, ["settings", "_xzgLoaderSettingsBtn"]]) {
+        if (node[key]) {
+            const size = Math.max(9, Math.min(24, Number(node.properties?.xzg_preview_button_font_size) || 14));
+            node[key].style.color = node.properties?.xzg_preview_button_colors?.[id] || ({ davinci_export: "#3ef558", davinci_import: "#3ef558", quickcut_send: "#ff69b4", quickcut_load: "#ff69b4", codex: "#ffd700", doubao: "#ff9800" }[id] || "");
+            node[key].style.fontSize = `${Math.max(9, Math.min(48, Number(node.properties?.xzg_preview_button_font_sizes?.[id]) || size))}px`;
+            node[key].style.padding = `${Math.round(size * .28)}px ${Math.round(size * .5)}px`;
+            node[key].classList.add("xzg-video-hover-feedback");
+            if (!document.getElementById("xzg-video-hover-feedback-style")) {
+                const style = document.createElement("style");
+                style.id = "xzg-video-hover-feedback-style";
+                style.textContent = ".xzg-video-hover-feedback { background:transparent !important; transition:background-color .16s ease, filter .16s ease, box-shadow .16s ease; } .xzg-video-hover-feedback:hover { background:rgba(255,255,255,.16) !important; filter:brightness(1.16); box-shadow:0 0 0 1px rgba(255,255,255,.22); }";
+                document.head.append(style);
+            }
+            node[key].style.borderRadius = `${Math.max(3, Math.round(size * .35))}px`;
         }
-        btn.style.right = "auto";
-        btn.style.left = left + "px";
-        btn.style.top = top + "px";
-        left += (btn.offsetWidth || 0) + 6;
+    }
+    for (const [id, key] of PREVIEW_ACTIONS) {
+        if (node[key]) node[key].style.display = xzgPreviewButtonVisible(node, id) ? "inline-flex" : "none";
+    }
+    const settings = node._xzgLoaderSettingsBtn;
+    if (settings) {
+        settings.style.left = "6px";
+        settings.style.right = "auto";
+        settings.style.top = "6px";
+    }
+    let top = 6;
+    const actions = PREVIEW_ACTIONS.map(([id, key]) => ({ id, key }));
+    for (const { key } of xzgOrderedPreviewActions(node, actions)) {
+        const btn = node[key];
+        if (!btn || btn.style.display === "none") continue;
+        btn.style.left = "auto";
+        btn.style.right = "6px";
+        btn.style.top = `${top}px`;
+        top += (btn.offsetHeight || 22) + 6;
     }
 }
 
@@ -488,7 +511,7 @@ function _createLoaderActionButton(node, key, color, text, title, onClick, iconH
     const _refreshVis = () => {
         if (node._xzgFastcutEditorOpen) { btn.style.opacity = "0"; return; }  // 快剪编辑器打开时全隐藏
         if (btn.disabled) { btn.style.opacity = "1"; return; }  // busy 按钮常显
-        const anyBusy = ["_xzgLoaderQuickCutBtn","_xzgLoaderExportDavinciBtn","_xzgDavinciBtn"].some(k => node[k]?.disabled);
+        const anyBusy = key !== "_xzgLoaderSettingsBtn" && ["_xzgLoaderQuickCutBtn","_xzgLoaderExportDavinciBtn","_xzgDavinciBtn"].some(k => node[k]?.disabled);
         btn.style.opacity = anyBusy ? "0" : (pc.matches(":hover") ? "1" : btn.style.opacity);
     };
     const onOver = () => { _layoutPreviewActions(node); _refreshVis(); };
@@ -509,6 +532,43 @@ function _createLoaderActionButton(node, key, color, text, title, onClick, iconH
     node[key] = btn;
     requestAnimationFrame(() => _layoutPreviewActions(node));
     return btn;
+}
+
+function _createLoaderCodexButton(node) {
+    return _createLoaderActionButton(
+        node, "_xzgLoaderCodexBtn", "#ffd76a", xzgT("添加到 Codex", "Add to Codex"),
+        xzgT("把原视频添加到 Codex 当前聊天，不自动发送", "Attach the original video to the current Codex chat without sending"),
+        btn => {
+            const info = _getLoadedVideoInfo(node);
+            const name = info?.filename ? `${info.filename} [${info.type}]` : "";
+            xzgAddToCodex(name ? [name] : [], "video", btn);
+        },
+        '<span style="font-size:13px;line-height:1;">＋</span>'
+    );
+}
+
+function _createLoaderDoubaoButton(node) {
+    return _createLoaderActionButton(
+        node, "_xzgLoaderDoubaoBtn", "#ffd76a", xzgT("添加到豆包", "Add to Doubao"),
+        xzgT("把原视频添加到豆包当前聊天，不自动发送", "Attach the original video to the current Doubao chat without sending"),
+        btn => {
+            const info = _getLoadedVideoInfo(node);
+            const name = info?.filename ? `${info.filename} [${info.type}]` : "";
+            xzgAddToDoubao(name ? [name] : [], "video", btn);
+        },
+        '<span style="font-size:13px;line-height:1;">＋</span>'
+    );
+}
+
+function _createLoaderSettingsButton(node) {
+    return _createLoaderActionButton(
+        node, "_xzgLoaderSettingsBtn", "#aeb8c8", xzgT("设置", "Settings"),
+        xzgT("加载器设置", "Loader settings"),
+        () => xzgShowLoaderSettings(node,
+            PREVIEW_ACTIONS.filter(([, key]) => node[key]).map(([id, , zh, en]) => ({ id, label: xzgT(zh, en) })),
+            () => _layoutPreviewActions(node)),
+        '<span style="font-size:13px;line-height:1;">⚙</span>'
+    );
 }
 
 function _createLoaderQuickCutButton(node) {
@@ -603,6 +663,9 @@ app.registerExtension({
                 _createPreviewDavinciButton(this);
                 _createLoaderExportDavinciButton(this);
                 _createLoaderQuickCutButton(this);
+                _createLoaderCodexButton(this);
+                _createLoaderDoubaoButton(this);
+                _createLoaderSettingsButton(this);
                 _createVideoMediaLibraryButtons(this);
                 requestAnimationFrame(() => _layoutPreviewActions(this));
                 if (this.outputs) {
@@ -625,6 +688,7 @@ app.registerExtension({
             const origOnConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (data) {
                 const r = origOnConfigure?.apply(this, arguments);
+                _layoutPreviewActions(this);
                 try {
                     requestAnimationFrame(() => _restoreVideoLoaderDavinciTarget(this));
                     // 工作流加载后同步内存模式：widget 值恢复可能与当前播放器构建模式不一致（无变化时内部自动跳过）
@@ -656,6 +720,12 @@ app.registerExtension({
                     }
                 } catch (e) { /* ignore */ }
                 return r;
+            };
+
+            const origOnRemoved = nodeType.prototype.onRemoved;
+            nodeType.prototype.onRemoved = function () {
+                xzgCloseLoaderSettings(this);
+                return origOnRemoved?.apply(this, arguments);
             };
 
             const origOnDrawBackground = nodeType.prototype.onDrawBackground;

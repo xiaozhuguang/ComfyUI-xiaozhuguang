@@ -362,6 +362,7 @@ export class XiaozhuguangVideoEditor {
         // _confirmCallback: 由视频加载器等打开时传入，点"确认"后导出并回调；
         //   直接打开（菜单栏）时为 null，点"确认"仅关闭窗口
         this._confirmCallback = typeof options.confirmCallback === "function" ? options.confirmCallback : null;
+        this._allowMultiClipOutput = !!options.allowMultiClipOutput;
         // _modeFilter: 加载器限定模式 —— "audio"（音频加载器打开：只留音频格式，隐藏导出按钮）
         //                                          "video"（视频加载器打开：只留视频格式，隐藏导出按钮）
         //               null = 独立打开（菜单栏），完整 UI
@@ -10663,6 +10664,9 @@ export class XiaozhuguangVideoEditor {
             menu.appendChild(it);
         };
         addItem("输出当前片段", !cur, () => this._confirmExport("current"));
+        if (this._allowMultiClipOutput) {
+            addItem("输出多个片段", !this.timeline.some(c => c.kind !== "audio"), () => this._confirmExport("clips"));
+        }
         addItem("输出整个时间线", false, () => this._confirmExport("video"));
         this._root.appendChild(menu);
         const r = anchorBtn.getBoundingClientRect();
@@ -10709,8 +10713,25 @@ export class XiaozhuguangVideoEditor {
             this._setStatus(`正在导出${scopeLabel}的${kindLabel}...`);
             const totalDur = (renderOpts.timeline || []).reduce((a, c) => a + Math.max(0, ((c.end - c.start) || 0)), 0);
             this._progressStart(Math.max(3, totalDur * (audioOnly ? 0.3 : 2)));
-            const data = await _postJson(API_RENDER, renderOpts);
-            if (data.error) throw new Error(data.error);
+            let data;
+            if (kind === "clips") {
+                const targets = this.timeline.filter(c => c.kind !== "audio")
+                    .sort((a, b) => (a.tlStart ?? 0) - (b.tlStart ?? 0));
+                if (!targets.length) throw new Error("时间线中没有视频片段");
+                const clips = [];
+                for (let i = 0; i < targets.length; i++) {
+                    this._setStatus(`正在导出片段 ${i + 1}/${targets.length}...`);
+                    const clip = await _postJson(API_RENDER, {
+                        ...renderOpts, timeline: this._singleClipTimelineData(targets[i]),
+                    });
+                    if (clip.error) throw new Error(`片段 ${i + 1} 导出失败: ${clip.error}`);
+                    clips.push(clip);
+                }
+                data = { ...clips[0], clips };
+            } else {
+                data = await _postJson(API_RENDER, renderOpts);
+                if (data.error) throw new Error(data.error);
+            }
             this._progressStop(true);
             // 调用外部回调（视频/音频加载器注册的接收函数）——传完整 data
             if (typeof window._xzgOnVideoEditorExport === 'function') {

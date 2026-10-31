@@ -226,7 +226,16 @@ async function openPromptRuleManager(node) {
     const types = panel.querySelector("[data-types]"), subtypes = panel.querySelector("[data-subtypes]"), editorView = panel.querySelector("[data-editor]"), content = panel.querySelector("[data-content]"), header = panel.querySelector("header");
     for (const button of panel.querySelectorAll("button")) { button.style.cssText = "padding:5px 9px;background:#343b49;border:1px solid #555;border-radius:4px;cursor:pointer;white-space:nowrap"; button.style.setProperty("color", "#43ffa0", "important"); }
     for (const element of editorView.querySelectorAll("*")) element.style.setProperty("color", "#fff", "important");
-    const setEditorConfirmDisabled = disabled => { const button = panel.querySelector("header [data-close]"); button.disabled = disabled; button.style.opacity = disabled ? ".45" : "1"; button.style.cursor = disabled ? "not-allowed" : "pointer"; };
+    const saveContentButton = panel.querySelector("[data-save]");
+    saveContentButton.style.background = "#e7b94f";
+    saveContentButton.style.borderColor = "#f3ce73";
+    saveContentButton.style.fontWeight = "600";
+    saveContentButton.style.setProperty("color", "#201a0d", "important");
+    const setEditorActive = editing => {
+        const button = panel.querySelector("header [data-close]");
+        button.disabled = editing;
+        button.style.display = editing ? "none" : "";
+    };
     const closeButton = panel.querySelector("[data-close]"); closeButton.style.cssText = "padding:4px 5px;background:transparent;border:0;border-radius:0;font:17px Arial,sans-serif;cursor:pointer"; closeButton.style.setProperty("color", "#43ffa0", "important");
     const addTypeButton = panel.querySelector("[data-add-type]"); addTypeButton.style.cssText = "box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;padding:0;background:transparent;border:0;border-radius:0;font:32px/32px Arial,sans-serif;cursor:pointer"; addTypeButton.style.setProperty("color", "#fff", "important");
     const addSubtypeButton = panel.querySelector("[data-add-sub]"); addSubtypeButton.style.cssText = "box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;padding:0;background:transparent;border:0;border-radius:0;font:32px/32px Arial,sans-serif;cursor:pointer"; addSubtypeButton.style.setProperty("color", "#fff", "important");
@@ -404,17 +413,17 @@ async function openPromptRuleManager(node) {
                 }
                 render();
             };
-            const edit = document.createElement("button"); edit.textContent = zh ? "编辑内容" : "Edit Content"; edit.style.cssText = buttonStyle; edit.style.setProperty("color", "#fff", "important"); edit.onclick = () => { activeName = key; panel.querySelector("[data-editor-label]").textContent = `${p.category} / ${p.name || key}`; content.value = p.rule || ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorConfirmDisabled(true); };
+            const edit = document.createElement("button"); edit.textContent = zh ? "编辑内容" : "Edit Content"; edit.style.cssText = buttonStyle; edit.style.setProperty("color", "#fff", "important"); edit.onclick = () => { activeName = key; panel.querySelector("[data-editor-label]").textContent = `${p.category} / ${p.name || key}`; content.value = p.rule || ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorActive(true); };
             const del = document.createElement("button"); del.textContent = zh ? "删除" : "Delete"; del.style.cssText = buttonStyle; del.style.setProperty("color", "#c75c5c", "important"); del.onclick = async () => { if (!await askConfirm(zh ? `删除细分“${p.name || key}”及其规则？` : `Delete subtype “${p.name || key}” and its rule?`)) return; delete presets[key]; await persist(); render(); };
             row.append(dragHandle); if (ruleContentDot) row.append(ruleContentDot); row.append(label,rename,edit,del); subtypes.appendChild(row);
         }
     };
     panel.querySelector("[data-add-type]").onclick = async () => { const type = await ask(zh ? "新建提示词类型" : "New prompt type"); const reserved = ["MiniMax-H3", "QWEN", "Qwen-Image-2.1 图像", "Qwen-Image-2.1 Image", "自定义提示词规则", "Custom Prompt Rules", "自定义 Skill", "Custom Skill"]; if (!type || typeNames().includes(type) || reserved.includes(type)) return; const nextOrder = typeNames().reduce((max, name) => Math.max(max, typeOrder(name)), 0) + 1000; presets[`__type__${Date.now()}`] = {category:type,name:"",rule:"",order:nextOrder,_typeOnly:true}; activeType = type; await persist(); render(); };
-    panel.querySelector("[data-add-sub]").onclick = async () => { if (!activeType) return; const name = await ask(zh ? "新增提示词细分" : "New prompt subtype"); if (!name) return; const key = presetKeyFor(activeType,name); const nextOrder = itemsFor(activeType).reduce((max, [,item]) => Math.max(max, Number.isFinite(item.order) ? item.order : 0), 0) + 1000; presets[key] = {category:activeType,name,rule:"",order:nextOrder}; activeName = key; await persist(); render(); panel.querySelector("[data-editor-label]").textContent = `${activeType} / ${name}`; content.value = ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorConfirmDisabled(true); };
+    panel.querySelector("[data-add-sub]").onclick = async () => { if (!activeType) return; const name = await ask(zh ? "新增提示词细分" : "New prompt subtype"); if (!name) return; const key = presetKeyFor(activeType,name); const nextOrder = itemsFor(activeType).reduce((max, [,item]) => Math.max(max, Number.isFinite(item.order) ? item.order : 0), 0) + 1000; presets[key] = {category:activeType,name,rule:"",order:nextOrder}; activeName = key; await persist(); render(); panel.querySelector("[data-editor-label]").textContent = `${activeType} / ${name}`; content.value = ""; panel.querySelector("main").style.display = "none"; editorView.style.display = "flex"; setEditorActive(true); };
     panel.querySelector("[data-import]").onclick = () => panel.querySelector("[data-file]").click();
     panel.querySelector("[data-file]").onchange = async e => { const file=e.target.files?.[0]; if (file && /\.(txt|md)$/i.test(file.name)) { content.value=await file.text(); if (!activeName) { const name=file.name.replace(/\.(txt|md)$/i,""); presets[name]={category:activeType || "自定义提示词规则",name,rule:content.value}; activeName=name; panel.querySelector("[data-editor-label]").textContent=`${activeType} / ${name}`; } } e.target.value=""; };
-    panel.querySelector("[data-save]").onclick = async () => { if (!activeName || !presets[activeName]) return; presets[activeName].rule=content.value; presets[activeName].updatedAt=new Date().toISOString(); await persist(); editorView.style.display="none"; panel.querySelector("main").style.display="flex"; setEditorConfirmDisabled(false); render(); };
-    panel.querySelector("[data-back]").onclick = () => { editorView.style.display="none"; panel.querySelector("main").style.display="flex"; setEditorConfirmDisabled(false); render(); };
+    panel.querySelector("[data-save]").onclick = async () => { if (!activeName || !presets[activeName]) return; presets[activeName].rule=content.value; presets[activeName].updatedAt=new Date().toISOString(); await persist(); editorView.style.display="none"; panel.querySelector("main").style.display="flex"; setEditorActive(false); render(); };
+    panel.querySelector("[data-back]").onclick = () => { editorView.style.display="none"; panel.querySelector("main").style.display="flex"; setEditorActive(false); render(); };
     panel.querySelector("[data-close]").onclick = close; render();
 }
 const QWEN_MODE_LABELS = {
@@ -567,8 +576,8 @@ app.registerExtension({
                 if (targetWidget) targetWidget.label = lang === "zh" ? "提示词类型" : "Prompt Type";
                 if (gmWidget) gmWidget.label = lang === "zh" ? "提示词细分" : "Prompt Subtype";
                 const videoLabels = lang === "zh"
-                    ? { video_frames: "视频帧（首中尾3帧）", video_fps: "视频帧率" }
-                    : { video_frames: "Video Frames (First / Middle / Last)", video_fps: "Video FPS" };
+                    ? { skill: "Skill（优先规则）", video_frames: "视频帧（首中尾3帧）", video_fps: "视频帧率" }
+                    : { skill: "Skill (Override Rules)", video_frames: "Video Frames (First / Middle / Last)", video_fps: "Video FPS" };
                 for (const item of [...(this.inputs || []), ...(this.widgets || [])]) {
                     if (videoLabels[item.name]) item.label = videoLabels[item.name];
                 }
@@ -579,8 +588,10 @@ app.registerExtension({
                         "仅中文": 1, "Chinese Only": 1,
                         "中英双语": 2, "Chinese + English": 2,
                     })[outputLanguageWidget.value] ?? 0;
-                    outputLanguageWidget.options.values = OUTPUT_LANGUAGE_LABELS[lang] || OUTPUT_LANGUAGE_LABELS.zh;
-                    outputLanguageWidget.value = outputLanguageWidget.options.values[outputLanguageIndex];
+                    outputLanguageWidget.options.values = supportsCustomPromptRules
+                        ? [lang === "zh" ? "仅英文" : "English Only"]
+                        : OUTPUT_LANGUAGE_LABELS[lang] || OUTPUT_LANGUAGE_LABELS.zh;
+                    outputLanguageWidget.value = outputLanguageWidget.options.values[supportsCustomPromptRules ? 0 : outputLanguageIndex];
                 }
                 if (targetWidget?.options) {
                     let presets = {};

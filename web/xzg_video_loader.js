@@ -1723,6 +1723,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     const _createPlayer = () => {
         const useVueResizeLayout = !!globalThis.LiteGraph?.vueNodesMode;
         player = new XiaozhuguangVideoPlayer({
+        allowSaveCurrentFrame: true,
         frameCountOverlay: "range",
         node,
         container: playerContainer,
@@ -2422,6 +2423,13 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 const type = data ? (data.type || "output") : (secondArg || "output");
                 // 纯音频导出时交给回调消费，当前节点（视频加载器）不处理
                 if (data && data.audio_only) return;
+                if (data?.clips?.length && node._xzgAppendVideoQueue) {
+                    node.properties.xzgMultiVideo = true;
+                    const toggle = node.widgets?.find(w => w.name === "多视频队列");
+                    if (toggle) toggle.value = true;
+                    node._xzgAppendVideoQueue(data.clips.map(clip => `${clip.filename} [${clip.type || "output"}]`));
+                    node._xzgVideoPlayer?.resize();
+                }
                 const annotated = `${filename} [${type}]`;
                 if (videoWidget) {
                     videoWidget.value = annotated;
@@ -2469,14 +2477,17 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             node._xzgFastcutEditorOpen = true;
             try {
                 [fastcutBtn, node._xzgDavinciBtn, node._xzgLoaderQuickCutBtn,
-                 node._xzgLoaderExportDavinciBtn, node._xzgLoaderOutSettingsBtn].forEach(b => {
+                 node._xzgLoaderExportDavinciBtn, node._xzgLoaderOutSettingsBtn,
+                 node._xzgLoaderCodexBtn, node._xzgLoaderSettingsBtn,
+                 node._xzgVideoMediaLibraryBtn, node._xzgVideoMediaFavoriteBtn].forEach(b => {
                     b && (b.style.opacity = "0");
                 });
             } catch (e) {}
             // 打开快剪编辑器，并传入 confirmCallback
             // modeFilter: "video" → 快剪只显示视频格式、隐藏「导出」按钮（仅「确认」导出）
             if (typeof window._xzgOpenVideoEditor === "function") {
-                window._xzgOpenVideoEditor({ confirmCallback, modeFilter: "video" });
+                window._xzgOpenVideoEditor({ confirmCallback, modeFilter: "video",
+                    allowMultiClipOutput: !!node._xzgAppendVideoQueue && !node._xzgVideoQueuePending });
             } else {
                 // 兼容：启动器未加载（理论上不会发生），恢复按钮
                 _setFastcutText("快剪未加载");

@@ -39,6 +39,11 @@ class PoseSequenceEditor:
         validate_frames(pose_keypoint)
         source_digest = digest(pose_keypoint)
         edits = json.loads(edits_json)
+        source_changed = (isinstance(edits, dict) and edits.get('version') == 1
+                          and bool(edits.get('source_digest'))
+                          and edits['source_digest'] != source_digest)
+        if source_changed:
+            edits = {'version': 1, 'operations': []}
         edited = apply_edits(pose_keypoint, edits, source_digest)
         if images is not None and len(images) not in (1, len(pose_keypoint)):
             raise ValueError('预览图像帧数必须等于骨骼帧数，或为单张参考图')
@@ -47,7 +52,8 @@ class PoseSequenceEditor:
             edited, draw_hands, draw_face, draw_feet,
             stick_width, face_point_size, score_threshold,
         )
-        return {'ui': {'pose_session': [token], 'frame_count': [len(edited)]},
+        return {'ui': {'pose_session': [token], 'frame_count': [len(edited)],
+                       'source_changed': [source_changed], 'source_digest': [source_digest]},
                 'result': (pose_images,)}
 
     @staticmethod

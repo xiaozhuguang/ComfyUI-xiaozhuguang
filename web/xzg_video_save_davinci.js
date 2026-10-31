@@ -1,5 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible } from "./xzg_loader_settings.js";
+import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
 
 // 小珠光视频保存-化神级（XiaozhuguangVideoSaveDaVinci）
 // 复用「小珠光视频保存」的全部交互（预览/缓存/恢复见父类 xzg_video_combine.js 注册器），
@@ -264,27 +266,57 @@ async function _favoriteSavedVideo(node, btn) {
 }
 
 // 默认节点宽度为 360；按钮缓慢放大，最多放大到 1.5 倍，避免大节点字体过大。
+const SAVE_PREVIEW_ACTIONS = [
+    { id: "davinci_export", key: "_xzgDavinciSaveBtn", label: "导出到达芬奇" },
+    { id: "quickcut_send", key: "_xzgQuickCutBtn", label: "发送到快剪" },
+    { id: "media_favorite", key: "_xzgVideoFavoriteBtn", label: "收藏" },
+    { id: "codex", key: "_xzgVideoCodexBtn", label: "添加到 Codex" },
+    { id: "doubao", key: "_xzgVideoDoubaoBtn", label: "添加到豆包" },
+];
+
 function _syncHoverButtonSize(node) {
+    for (const { id, key } of [...SAVE_PREVIEW_ACTIONS, { id: "settings", key: "_xzgOutSettingsBtn" }]) {
+        if (node[key]) {
+            const size = Math.max(9, Math.min(24, Number(node.properties?.xzg_preview_button_font_size) || 14));
+            node[key].style.color = node.properties?.xzg_preview_button_colors?.[id] || ({ davinci_export: "#3ef558", davinci_import: "#3ef558", quickcut_send: "#ff69b4", quickcut_load: "#ff69b4", codex: "#ffd700", doubao: "#ff9800" }[id] || "");
+            node[key].style.fontSize = `${Math.max(9, Math.min(48, Number(node.properties?.xzg_preview_button_font_sizes?.[id]) || size))}px`;
+            node[key].style.padding = `${Math.round(size * .28)}px ${Math.round(size * .5)}px`;
+            node[key].classList.add("xzg-video-hover-feedback");
+            if (!document.getElementById("xzg-video-hover-feedback-style")) {
+                const style = document.createElement("style");
+                style.id = "xzg-video-hover-feedback-style";
+                style.textContent = ".xzg-video-hover-feedback { background:transparent !important; transition:background-color .16s ease, filter .16s ease, box-shadow .16s ease; } .xzg-video-hover-feedback:hover { background:rgba(255,255,255,.16) !important; filter:brightness(1.16); box-shadow:0 0 0 1px rgba(255,255,255,.22); }";
+                document.head.append(style);
+            }
+            node[key].style.borderRadius = `${Math.max(3, Math.round(size * .35))}px`;
+        }
+    }
     const pc = node._xzgPreviewContainer;
     if (!pc) return;
     const widthRatio = Math.max(1, (pc.clientWidth || 360) / 360);
     const scale = Math.min(1.5, 1 + (widthRatio - 1) * 0.25);
     const gap = 6 * scale;
-    let right = gap;
-    for (const btn of [node._xzgDavinciSaveBtn, node._xzgQuickCutBtn, node._xzgOutSettingsBtn]) {
-        if (!btn) continue;
+    for (const { id, key } of SAVE_PREVIEW_ACTIONS) {
+        if (node[key]) node[key].style.display = xzgPreviewButtonVisible(node, id) ? "inline-flex" : "none";
+    }
+    const settings = node._xzgOutSettingsBtn;
+    if (settings) {
+        settings.style.transformOrigin = "top left";
+        settings.style.transform = `scale(${scale})`;
+        settings.style.top = `${gap}px`;
+        settings.style.left = `${gap}px`;
+        settings.style.right = "auto";
+    }
+    let top = gap;
+    for (const { key } of xzgOrderedPreviewActions(node, SAVE_PREVIEW_ACTIONS)) {
+        const btn = node[key];
+        if (!btn || btn.style.display === "none") continue;
         btn.style.transformOrigin = "top right";
         btn.style.transform = `scale(${scale})`;
-        btn.style.top = `${gap}px`;
-        btn.style.right = `${right}px`;
-        right += (btn.offsetWidth + 6) * scale;
-    }
-    const favorite = node._xzgVideoFavoriteBtn;
-    if (favorite) {
-        favorite.style.transformOrigin = "top left";
-        favorite.style.transform = `scale(${scale})`;
-        favorite.style.top = `${gap}px`;
-        favorite.style.left = `${gap}px`;
+        btn.style.top = `${top}px`;
+        btn.style.right = `${gap}px`;
+        btn.style.left = "auto";
+        top += ((btn.offsetHeight || 22) + 6) * scale;
     }
 }
 
@@ -305,8 +337,8 @@ function _observeHoverButtonSize(node) {
     _syncHoverButtonSize(node);
 }
 
-function _createQuickCutButton(node, favorite = false) {
-    const buttonKey = favorite ? "_xzgVideoFavoriteBtn" : "_xzgQuickCutBtn";
+function _createQuickCutButton(node, favorite = false, codex = false, doubao = false) {
+    const buttonKey = doubao ? "_xzgVideoDoubaoBtn" : codex ? "_xzgVideoCodexBtn" : favorite ? "_xzgVideoFavoriteBtn" : "_xzgQuickCutBtn";
     if (node[buttonKey]) return node[buttonKey];
     const pc = node._xzgPreviewContainer;
     if (!pc) return null;
@@ -329,6 +361,11 @@ function _createQuickCutButton(node, favorite = false) {
     }
     const iconSpan = btn.querySelector("span:first-child");
     const labelSpan = btn.querySelector("span:last-child");
+    if (codex || doubao) {
+        btn.title = doubao ? "把当前保存的原视频添加到豆包，不自动发送" : "把当前保存的原视频添加到 Codex，不自动发送";
+        iconSpan.textContent = "＋";
+        labelSpan.textContent = doubao ? "添加到豆包" : "添加到 Codex";
+    }
     pc.appendChild(btn);
 
     // 图标保持金色常亮；点击图标或文字都执行一次手动发送，不再切换自动发送状态。
@@ -356,7 +393,13 @@ function _createQuickCutButton(node, favorite = false) {
     });
     btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
     btn.onclick = () => { if (!btn.disabled) {
-        if (favorite) _favoriteSavedVideo(node, btn);
+        if (codex || doubao) {
+            const info = _getSavedVideoInfo(node);
+            if (!info?.filename) return _toast("请先执行节点生成视频。", true);
+            const name = [info.subfolder, info.filename].filter(Boolean).join("/");
+            (doubao ? xzgAddToDoubao : xzgAddToCodex)([`${name} [${info.type || "output"}]`], "video", btn, info.davinci_abs_token || info.abs_token || "");
+        }
+        else if (favorite) _favoriteSavedVideo(node, btn);
         else _sendToQuickCut(node, btn, labelSpan);
     } };
 
@@ -392,7 +435,12 @@ function _xzgOpenVideoOutputSettings(node) {
         _toast("输出设置弹窗不可用（图像保存模块未加载），请刷新页面重试。", true);
         return;
     }
-    window._xzgShowDirBrowser(node);
+    window._xzgShowDirBrowser(node, {
+        sortable: true,
+        fontSize: true,
+        actions: SAVE_PREVIEW_ACTIONS.map(({ id, label }) => ({ id, label })),
+        refresh: () => _syncHoverButtonSize(node),
+    });
 }
 
 function _createOutputSettingsButton(node) {
@@ -401,7 +449,7 @@ function _createOutputSettingsButton(node) {
     if (!pc) return null;
 
     const btn = document.createElement("button");
-    btn.title = "输出设置（与小珠光图片保存-化神级同一设置框）：默认输出 / 自定义目录 / 自定义前缀 / 日期戳 / 时间戳";
+    btn.title = "输出设置与悬浮按钮：默认输出 / 自定义目录 / 自定义前缀 / 日期戳 / 时间戳 / 悬浮按钮显示开关";
     btn.style.cssText =
         "position:absolute;top:6px;right:0;z-index:102;" +
         "display:inline-flex;align-items:center;gap:4px;" +
@@ -411,7 +459,7 @@ function _createOutputSettingsButton(node) {
         "transition:color 0.15s,opacity 0.2s;opacity:0;";
     btn.innerHTML = `<span style="cursor:pointer;">${_GEAR_SVG}</span><span>设置</span>`;
 
-    // 排在最左侧：right = 导出按钮宽 + 快剪按钮宽 + 两处间隙
+    // 固定在预览区左侧，并为收藏按钮预留位置。
     const alignRight = () => _syncHoverButtonSize(node);
     const onOver = () => { alignRight(); btn.style.opacity = "1"; };
     const onOut = (e) => {
@@ -499,6 +547,8 @@ app.registerExtension({
                 _createExportDavinciButton(this);
                 _createQuickCutButton(this);
                 _createQuickCutButton(this, true);
+                _createQuickCutButton(this, false, true);
+                _createQuickCutButton(this, false, false, true);
                 // 输出设置：隐藏 use_default_output / base_dir / add_date_stamp / add_time_stamp 参数
                 // widget（保留在数组中参与序列化），由预览区「输出设置」悬浮按钮打开与小珠光图片
                 // 保存-化神级同一个共享设置弹窗统一设置。自定义前缀映射到「文件名前缀」widget；
@@ -568,6 +618,7 @@ app.registerExtension({
                     node.size = savedSize.slice();
                 }
                 requestAnimationFrame(() => {
+                    _syncHoverButtonSize(node);
                     const parts = (node.graph?.nodes || []).filter(n => n?.id != null && n.type)
                         .map(n => `${n.id}:${n.type}`).sort();
                     let h = 5381;

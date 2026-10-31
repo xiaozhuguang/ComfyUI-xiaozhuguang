@@ -1,7 +1,7 @@
 
 import { xzgT } from "./xzg_i18n.js";
 import { api } from "../../scripts/api.js";
-import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
+import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry, cloudUIFlushGeometry } from "./xzg_cloud_store.js";
 
 // 主题面板设置云存储键（预设/快捷键/最近色/标签页）
 const THEME_PANEL_STATE_KEY = "xzg_theme_panel_state";
@@ -19,6 +19,7 @@ const XZG_EXPORT_CATEGORIES = [
     ["audioLibrary", "资源媒体库音频", "Media Library Audio", "服务端持久化", "Server-backed"],
     ["videoLibrary", "资源媒体库视频", "Media Library Videos", "服务端持久化", "Server-backed"],
     ["poseLibrary", "姿势库", "Pose Library", "本地持久化", "Locally stored"],
+    ["loraLibrary", "LoRA 管理资料（含缩略图）", "LoRA Library (with thumbnails)", "本地持久化", "Locally stored"],
     ["notes", "记事本", "Notepad", "已云端持久化", "Cloud-backed"],
     ["align", "田字格对齐", "Grid Alignment", "已云端持久化", "Cloud-backed"],
     ["sidebar", "侧边栏偏好", "Sidebar Preferences", "已云端持久化", "Cloud-backed"],
@@ -2635,7 +2636,7 @@ window.XZGThemePanel = {
     async initializePersistedState() {
         const fetchFn = (typeof api !== "undefined" && api?.fetchApi) ? api.fetchApi.bind(api) : fetch;
 
-        // ComfyUI 将功能开关值保存在服务器设置中；这些开关的注册默认值均为 true。
+        // ComfyUI 将功能开关值保存在服务器设置中；LoRA 侧栏入口默认关闭。
         // 只初始化小珠光功能开关，不改动用户的 ComfyUI 核心设置。
         try {
             const settingsResponse = await fetchFn("/settings", { method: "GET", cache: "no-store" });
@@ -2643,7 +2644,9 @@ window.XZGThemePanel = {
                 const savedSettings = await settingsResponse.json();
                 const defaults = {};
                 for (const [key, value] of Object.entries(savedSettings || {})) {
-                    if (key.startsWith("xiaozhuguang.Toggle.Enable") && typeof value === "boolean") defaults[key] = true;
+                    if (key.startsWith("xiaozhuguang.Toggle.Enable") && typeof value === "boolean") {
+                        defaults[key] = key !== "xiaozhuguang.Toggle.EnableLoraSidebar";
+                    }
                 }
                 if (Object.keys(defaults).length) {
                     const resetSettingsResponse = await fetchFn("/settings", {
@@ -2754,6 +2757,7 @@ window.XZGThemePanel = {
                     if (result.restoredMediaCount != null) parts.push(xzgT(`媒体库 ${result.restoredMediaCount} 张图片`, `Media library: ${result.restoredMediaCount} images`));
                     if (result.restoredTextBoxPreviews != null) parts.push(xzgT(`文本框缩略图 ${result.restoredTextBoxPreviews} 张`, `Text-box previews: ${result.restoredTextBoxPreviews}`));
                     if (result.restoredPoses != null) parts.push(xzgT(`姿势库新增 ${result.restoredPoses.imported} 个`, `Pose library: ${result.restoredPoses.imported} added`));
+                    if (result.restoredLoras != null) parts.push(xzgT(`LoRA 资料 ${result.restoredLoras} 条`, `LoRA library: ${result.restoredLoras} records`));
                     alert(xzgT('导入成功（', 'Import succeeded (') + parts.join(' + ') + xzgT('），正在刷新以应用全部配置…', '). Refreshing to apply all settings…'));
                     setTimeout(() => location.reload(), 300);
                 }
@@ -2864,6 +2868,7 @@ window.XZGThemePanel = {
         if (obj.audioLibrary && Array.isArray(obj.audioLibrary.files)) available.audioLibrary = true;
         if (obj.textBoxPreviews && Array.isArray(obj.textBoxPreviews.files)) available.textBoxGodPresets = true;
         if (obj.poseLibrary && typeof obj.poseLibrary === "object") available.poseLibrary = true;
+        if (obj.loraLibrary && typeof obj.loraLibrary === "object") available.loraLibrary = true;
         available.comfy = !!(obj.comfySettings && Object.keys(obj.comfySettings).length);
         return this.showExportDialog(available);
     },
@@ -3031,6 +3036,7 @@ window.XZGThemePanel = {
             audioLibrary: audioLibrary,
             textBoxPreviews: selected.textBoxGodPresets ? {} : null,
             poseLibrary: selected.poseLibrary ? {} : null,
+            loraLibrary: selected.loraLibrary ? {} : null,
             folderDialogGeometry: folderDialogGeometry
         };
         const blob = await this.configTransfer(xzgT("正在打包并下载 ZIP 备份，请稍候…", "Preparing and downloading ZIP backup…"), async () => {
@@ -3084,6 +3090,7 @@ window.XZGThemePanel = {
             videoLibrary: selected.videoLibrary ? obj.videoLibrary : null,
             audioLibrary: selected.audioLibrary ? obj.audioLibrary : null,
             poseLibrary: selected.poseLibrary ? obj.poseLibrary : null,
+            loraLibrary: selected.loraLibrary ? obj.loraLibrary : null,
             folderDialogGeometry: selected.mediaLibrary ? obj.folderDialogGeometry : null,
         };
         const includeXzg = Object.values(selected).some(Boolean);
@@ -3098,17 +3105,21 @@ window.XZGThemePanel = {
         let restoredAudioCount = null;
         let restoredTextBoxPreviews = null;
         let restoredPoses = null;
+        let restoredLoras = null;
         const restoreImages = !!(obj.mediaLibrary && Array.isArray(obj.mediaLibrary.files));
         const restoreVideos = !!(obj.videoLibrary && Array.isArray(obj.videoLibrary.files));
         const restoreAudio = !!(obj.audioLibrary && Array.isArray(obj.audioLibrary.files));
         const restoreTextBoxPreviews = !!(selected.textBoxGodPresets && obj.textBoxPreviews && Array.isArray(obj.textBoxPreviews.files));
         const restorePoseLibrary = !!(selected.poseLibrary && obj.poseLibrary);
+        const restoreLoraLibrary = !!(selected.loraLibrary && obj.loraLibrary);
+        if (restoreLoraLibrary && !archive) throw new Error(xzgT("LoRA 资料需要 ZIP 备份文件", "LoRA library requires a ZIP backup."));
         if (restorePoseLibrary && !archive) throw new Error(xzgT("姿势库需要 ZIP 备份文件", "Pose library requires a ZIP backup."));
-        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio || restoreTextBoxPreviews || restorePoseLibrary)
-            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio, textBoxPreviews: restoreTextBoxPreviews, poseLibrary: restorePoseLibrary })
+        const archiveResult = archive && (restoreImages || restoreVideos || restoreAudio || restoreTextBoxPreviews || restorePoseLibrary || restoreLoraLibrary)
+            ? await this.uploadConfigArchive(archive, true, { mediaLibrary: restoreImages, videoLibrary: restoreVideos, audioLibrary: restoreAudio, textBoxPreviews: restoreTextBoxPreviews, poseLibrary: restorePoseLibrary, loraLibrary: restoreLoraLibrary })
             : null;
         if (restoreTextBoxPreviews && archiveResult) restoredTextBoxPreviews = archiveResult.restoredTextBoxPreviews ?? 0;
         if (restorePoseLibrary && archiveResult) restoredPoses = archiveResult.restoredPoses ?? { imported: 0, skipped: 0, total: 0 };
+        if (restoreLoraLibrary && archiveResult) restoredLoras = archiveResult.restoredLoras ?? 0;
         if (restoreVideos) {
             if (!archiveResult) throw new Error(xzgT("视频媒体库需要 ZIP 备份文件", "Video media library requires a ZIP backup."));
             restoredVideoCount = archiveResult.restoredVideos;
@@ -3211,7 +3222,7 @@ window.XZGThemePanel = {
         }
 
         // ============ 2) 导入小珠光配置（除 notes 外的所有 localStorage，以及收藏预览） ============
-        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null || restoredTextBoxPreviews != null || restoredPoses != null;
+        let importedXzg = mediaRestored || restoredVideoCount != null || restoredAudioCount != null || restoredTextBoxPreviews != null || restoredPoses != null || restoredLoras != null;
         if (includeXzg) {
             if (obj.localStorage && typeof obj.localStorage === "object") {
                 for (const k in obj.localStorage) {
@@ -3336,7 +3347,7 @@ window.XZGThemePanel = {
                 }
                 // 面板几何（位置/尺寸，位于 xiaozhuguang.* / xzg_* 前缀，已随上面循环写入本地）——
                 // 一并推送云端，避免刷新后旧云端几何覆盖刚导入的几何。
-                cloudUIQueueGeometry();
+                await cloudUIFlushGeometry();
             }
             if (obj.favoritesPreviews && window.xiaozhuguangFavorites &&
                 typeof window.xiaozhuguangFavorites._saveAllPreviewImages === "function") {
@@ -3430,7 +3441,8 @@ window.XZGThemePanel = {
             restoredVideoCount: restoredVideoCount,
             restoredAudioCount: restoredAudioCount,
             restoredTextBoxPreviews: restoredTextBoxPreviews,
-            restoredPoses: restoredPoses
+            restoredPoses: restoredPoses,
+            restoredLoras: restoredLoras
         };
     },
 

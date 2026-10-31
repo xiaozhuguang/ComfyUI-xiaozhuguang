@@ -109,6 +109,19 @@ app.registerExtension({
             executed?.apply(this, arguments);
             this.poseSessionValidation = null;
             this.poseSession = message.pose_session?.[0] || null;
+            if (message.source_changed?.[0]) {
+                const widget = this.poseEditsWidget;
+                // Do not overwrite edits saved while this execution was running.
+                if (widget) {
+                    try {
+                        const edits = JSON.parse(widget.value);
+                        if (edits.source_digest && edits.source_digest !== message.source_digest?.[0]) {
+                            widget.value = '{"version":1,"operations":[]}';
+                            widget.callback?.(widget.value);
+                        }
+                    } catch {}
+                }
+            }
             this.properties ??= {};
             if (this.poseSession) this.properties.xzg_pose_session = this.poseSession;
             else delete this.properties.xzg_pose_session;

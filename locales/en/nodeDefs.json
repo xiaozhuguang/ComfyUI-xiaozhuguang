@@ -11,7 +11,10 @@
       "min_frames": { "name": "Minimum Frame Span" },
       "edge_grow": { "name": "Soft Edge Retention" },
       "repair_enabled": { "name": "Repair Shape" },
-      "erode_dilate": { "name": "Erode / Dilate" },
+      "erode_dilate": { "name": "Expand Mask" },
+      "mask_binarize": { "name": "Binarize Mask" },
+      "mask_threshold": { "name": "Binarization Threshold" },
+      "tapered_corners": { "name": "Tapered Expansion Corners" },
       "fill_holes": { "name": "Close Small Holes" },
       "remove_isolated_pixels": { "name": "Remove Thin Regions" },
       "smooth": { "name": "Smooth" },
@@ -20,15 +23,13 @@
     "outputs": { "0": { "name": "Masks" } }
   },
   "XiaozhuguangImageMaskConvert": {
-    "display_name": "Xiaozhuguang Image ↔ Mask",
+    "display_name": "Xiaozhuguang Smart Image/Mask Converter",
     "inputs": {
       "channel": { "name": "Image to Mask Channel" },
-      "image": { "name": "Image Input" },
-      "mask": { "name": "Mask Input" }
+      "source": { "name": "Image / Mask" }
     },
     "outputs": {
-      "0": { "name": "Mask Output" },
-      "1": { "name": "Image Output" }
+      "0": { "name": "Output" }
     }
   },
   "ComfyUIPoseSequenceEditor": {
@@ -403,6 +404,7 @@
   "XiaozhuguangNinimaxH3Prompt": {
     "display_name": "XZG Prompt Optimizer-Immortal",
     "inputs": {
+      "skill": { "name": "Skill (Override Rules)" },
       "video_frames": { "name": "Video Frames" },
       "video_fps": { "name": "Video FPS" },
         "qwen_model": { "name": "Qwen Model" },
@@ -424,8 +426,7 @@
       "image_10": { "name": "Image_10" }
     },
       "outputs": {
-        "0": { "name": "English Prompt" },
-        "1": { "name": "Chinese Prompt" }
+        "0": { "name": "English Prompt" }
       }
   },
   "XiaozhuguangNinimaxH3PromptNoSkill": {
@@ -468,7 +469,7 @@
     "display_name": "ATBC (Advanced)",
     "inputs": {
       "image": { "name": "image" },
-      "mask": { "name": "Mask / Image" },
+      "mask": { "name": "Mask" },
       "Box_grow_factor": { "name": "box grow factor" },
       "Box_grow_pixels": { "name": "pixel expansion" },
       "kilopixels": { "name": "kilopixels" },
@@ -478,8 +479,6 @@
       "crop_mode": { "name": "Crop Mode" },
       "tracking_preference": { "name": "Tracking Preference" },
       "tracking_scale": { "name": "Tracking Scale" },
-      "mask_binarize": { "name": "Binarize Mask" },
-      "mask_threshold": { "name": "Binarization Threshold" },
       "fill_color": { "name": "fill color" },
       "mask_smooth": { "name": "mask smooth" },
       "sum_mask": { "name": "sum mask" }
@@ -594,10 +593,12 @@
   "XiaozhuguangBigDisplay": {
     "display_name": "Show Anything",
     "inputs": {
-      "input": { "name": "input" }
+      "input": { "name": "A" },
+      "input_b": { "name": "B" }
     },
     "outputs": {
-      "0": { "name": "output" }
+      "0": { "name": "A" },
+      "1": { "name": "B" }
     }
   },
   "XiaozhuguangMaskInvert": {

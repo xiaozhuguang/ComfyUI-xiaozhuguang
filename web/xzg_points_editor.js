@@ -956,7 +956,8 @@ function wm_ensureViewer(node) {
                 b.onclick = (e) => {
                     e.stopPropagation();
                     trackUnlocked.add(t);
-                    state.trackId = t;
+                    state.curveDraft = null; state.curveDrag = null; state.rectDrag = null;
+                    state.trackId = t; state.shapeSelected = true;
                     refreshTrackBtns();
                     drawKfBar();
                     redraw();
@@ -1192,7 +1193,7 @@ function wm_ensureViewer(node) {
         toolBtn.style.cssText = "height:20px;min-width:64px;padding:0 8px;margin-left:4px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:18px;font-weight:400;user-select:none;border:none;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
         toolBtn.onmouseover = () => { toolBtn.style.backgroundColor = "#4a4a4e"; };
         toolBtn.onmouseout = () => { toolBtn.style.backgroundColor = "#3a3a3c"; };
-        toolBtn.title = "标注工具：框选 / 手绘";
+        toolBtn.title = "标注工具：框选 / 曲线；点击打点自动生成弧线，可拖动方向手柄，点击首点闭合；当前关键帧可拖点调整";
         toolbar.insertBefore(toolBtn, trackBar);
         const refreshToolBtn = () => {
             const c = TRACK_COLORS[(state.trackId-1) % TRACK_COLORS.length];
@@ -1200,13 +1201,13 @@ function wm_ensureViewer(node) {
             toolBtn.style.color = c;
             toolBtn.style.borderColor = "transparent";
             if (state.tool === "brush") {
-                toolBtn.innerHTML = "<span>✎</span> 手绘";
+                toolBtn.innerHTML = "<span>✎</span> 曲线";
             } else {
                 // 长方形框图标（宽>高），与文字同为块级 flex 项，保证垂直居中
                 toolBtn.innerHTML = '<svg style="display:block;flex-shrink:0" width="16" height="13" viewBox="0 0 12 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="9" height="7" rx="1"/></svg><span style="display:block;line-height:13px">框选</span>';
             }
         };
-        toolBtn.onclick = (e) => { e.stopPropagation(); state.tool = (state.tool === "rect") ? "brush" : "rect"; refreshToolBtn(); redraw(); };
+        toolBtn.onclick = (e) => { e.stopPropagation(); state.curveDraft = null; state.curveDrag = null; state.rectDrag = null; state.tool = (state.tool === "rect") ? "brush" : "rect"; refreshToolBtn(); redraw(); };
 
         const right = document.createElement("div");
         right.style.display = "flex";
@@ -1494,8 +1495,11 @@ function wm_ensureViewer(node) {
         canvasWrapper.appendChild(brushOverlay);
         const syncBrushOverlaySize = () => {
             const dpr = window.devicePixelRatio || 1;
-            const bw = Math.max(1, Math.round((canvasWrapper.clientWidth || 1) * dpr));
-            const bh = Math.max(1, Math.round((canvasWrapper.clientHeight || 1) * dpr));
+            // 位图跟随实际屏幕尺寸，而非未缩放的节点布局尺寸。
+            // 放大预览时增加像素数量，避免控制点和曲线被拉伸模糊。
+            const rect = brushOverlay.getBoundingClientRect();
+            const bw = Math.max(1, Math.round((rect.width || 1) * dpr));
+            const bh = Math.max(1, Math.round((rect.height || 1) * dpr));
             if (brushOverlay.width !== bw || brushOverlay.height !== bh) {
                 brushOverlay.width = bw;
                 brushOverlay.height = bh;
@@ -1506,43 +1510,62 @@ function wm_ensureViewer(node) {
             brushOverlay.getContext("2d").clearRect(0, 0, brushOverlay.width, brushOverlay.height);
         };
         const drawActiveOverlay = () => {
-            const hasBrush = state.brushActive && state.brushPts.length > 0;
+            const curve = state.curveDraft || (state.shapeSelected ? state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0]?.curve : null);
+            const region = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
+            const rect = state.shapeSelected && !state.curveDraft && region && !region.poly ? region : null;
+            const hasBrush = !!curve?.length;
             const hasRect = !!state.drawing;
-            if (!hasBrush && !hasRect) { clearBrushOverlay(); return; }
+            if (!hasBrush && !hasRect && !rect) { clearBrushOverlay(); return; }
             syncBrushOverlaySize();
             const bctx = brushOverlay.getContext("2d");
-            const dpr = window.devicePixelRatio || 1;
-            // ComfyUI 画布缩放修正：getBoundingClientRect 返回的是被 zoom 放大后的
-            // 视觉尺寸，而 overlay 位图按 wrapper 的布局尺寸×dpr 同步。k = 视觉/布局，
-            // 坐标必须除以 k，否则原点重合但越往右下偏差被 k 放大（画笔不跟手）。
+            // 用 overlay 位图和实际屏幕尺寸的比例映射绘图坐标。
+            // 控制点按屏幕 CSS 像素绘制，画布放大时不反向缩小。
             const or = brushOverlay.getBoundingClientRect();
-            const k = or.width > 0 && brushOverlay.clientWidth > 0 ? or.width / brushOverlay.clientWidth : 1;
             bctx.setTransform(1, 0, 0, 1, 0, 0);
             bctx.clearRect(0, 0, brushOverlay.width, brushOverlay.height);
-            bctx.setTransform(dpr / k, 0, 0, dpr / k, 0, 0);
+            if (!or.width || !or.height) return;
+            bctx.setTransform(brushOverlay.width / or.width, 0, 0, brushOverlay.height / or.height, 0, 0);
             const cr = canvas.getBoundingClientRect();
-            if (!cr.width || !or.width) return;
+            if (!cr.width) return;
+            const anchorHalf = 5;
+            const handleRadius = 4;
             const cc = state.mode === "manual" ? TRACK_COLORS[(state.trackId - 1) % 8] : "#22c55e";
             bctx.lineJoin = "round";
             bctx.lineCap = "round";
             if (hasBrush) {
-                // 手绘：轨迹不钳制，黑边内照常显示
+                const pos = p => [cr.left - or.left + p.x * cr.width, cr.top - or.top + p.y * cr.height];
                 bctx.strokeStyle = cc;
                 bctx.fillStyle = cc;
-                bctx.lineWidth = Math.max(1, (cr.width / (canvas.width || 1)) * 1.2);
+                bctx.lineWidth = 1.5;
                 bctx.beginPath();
-                state.brushPts.forEach((p, i) => {
-                    const px = cr.left - or.left + p.x * cr.width;
-                    const py = cr.top - or.top + p.y * cr.height;
-                    if (i === 0) bctx.moveTo(px, py); else bctx.lineTo(px, py);
+                bctx.moveTo(...pos(curve[0]));
+                const count = state.curveDraft ? curve.length - 1 : curve.length;
+                for (let i = 0; i < count; i++) {
+                    const a = curve[i], b = curve[(i + 1) % curve.length];
+                    bctx.bezierCurveTo(...pos(a.out), ...pos(b.in), ...pos(b));
+                }
+                if (!state.curveDraft) bctx.closePath();
+                bctx.stroke();
+                curve.forEach(a => {
+                    for (const h of [a.in, a.out]) {
+                        // Handle guides and tips use cyan, independent of the track colour.
+                        bctx.strokeStyle = "#80ffff";
+                        bctx.beginPath(); bctx.moveTo(...pos(a)); bctx.lineTo(...pos(h)); bctx.stroke();
+                        bctx.fillStyle = "#80ffff"; bctx.strokeStyle = "#101820";
+                        bctx.beginPath(); bctx.arc(...pos(h), handleRadius, 0, Math.PI * 2); bctx.fill(); bctx.stroke();
+                    }
+                    const [x, y] = pos(a);
+                    bctx.fillStyle = "#FFD700"; bctx.strokeStyle = "#101820";
+                    bctx.fillRect(x - anchorHalf, y - anchorHalf, anchorHalf * 2, anchorHalf * 2);
+                    bctx.strokeRect(x - anchorHalf, y - anchorHalf, anchorHalf * 2, anchorHalf * 2);
                 });
-                if (state.brushPts.length === 1) {
-                    // 单点（刚起笔未移动）：画一个小圆点作为落笔反馈
-                    const p0 = state.brushPts[0];
-                    bctx.arc(cr.left - or.left + p0.x * cr.width, cr.top - or.top + p0.y * cr.height, Math.max(1.5, bctx.lineWidth), 0, 2 * Math.PI);
-                    bctx.fill();
-                } else {
-                    bctx.stroke();
+            }
+            if (rect) {
+                bctx.strokeStyle = "#101820"; bctx.fillStyle = "#FFD700"; bctx.lineWidth = 1.5;
+                for (const [x, y] of [[rect.x1, rect.y1], [rect.x2, rect.y1], [rect.x2, rect.y2], [rect.x1, rect.y2]]) {
+                    const px = cr.left-or.left+x*cr.width, py = cr.top-or.top+y*cr.height;
+                    bctx.fillRect(px-anchorHalf, py-anchorHalf, anchorHalf*2, anchorHalf*2);
+                    bctx.strokeRect(px-anchorHalf, py-anchorHalf, anchorHalf*2, anchorHalf*2);
                 }
             }
             if (hasRect) {
@@ -1671,9 +1694,8 @@ function wm_ensureViewer(node) {
             excludeRegions: [],     // 排除区（归一化 0~1 {x1,y1,x2,y2}）
             // (mode 已在上方定义)         // 'detect' | 'exclude'
             drawing: null,          // 正在画的框（图像坐标）
-            tool: 'rect',           // manual 模式标注工具：'rect' 框选 | 'brush' 涂抹
-            brushPts: [],           // 当前涂抹轨迹（归一化 0~1）
-            brushActive: false,     // 是否正在涂抹
+            shapeSelected: true, curveDraft: null, curveDrag: null, rectDrag: null,
+            tool: 'rect',           // 'rect' 框选 | 'brush' 贝塞尔曲线
         };
 
         // ---- 图像 contain 居中布局 ----
@@ -1745,6 +1767,119 @@ function wm_ensureViewer(node) {
             }
             return out;
         };
+        // Automatic smooth tangents: short edges limit handles to avoid large overshoots.
+        // Explicitly adjusted handles remain manual when neighbouring anchors change.
+        const smoothCurve = (curve, closed) => {
+            if (curve.length < 2) return;
+            curve.forEach((a, i) => {
+                if (!a.auto) return;
+                const prev = curve[i > 0 ? i-1 : closed ? curve.length-1 : 0];
+                const next = curve[i+1 < curve.length ? i+1 : closed ? 0 : i];
+                const dx = next.x-prev.x, dy = next.y-prev.y;
+                const length = Math.hypot(dx,dy);
+                const before = Math.hypot(a.x-prev.x,a.y-prev.y)/3;
+                const after = Math.hypot(next.x-a.x,next.y-a.y)/3;
+                const ux = length > 1e-9 ? dx/length : 0;
+                const uy = length > 1e-9 ? dy/length : 0;
+                a.in = {x:a.x-ux*before, y:a.y-uy*before};
+                a.out = {x:a.x+ux*after, y:a.y+uy*after};
+            });
+        };
+        const isCurveCorner = a => Math.hypot(a.in.x-a.x,a.in.y-a.y)<1e-9 && Math.hypot(a.out.x-a.x,a.out.y-a.y)<1e-9;
+        const toggleCurveCorner = (curve, i, closed) => {
+            const a=curve[i];
+            if (isCurveCorner(a)) {
+                if (a.smoothHandles) {
+                    const h=a.smoothHandles;
+                    a.in={x:a.x+h.in.x,y:a.y+h.in.y};
+                    a.out={x:a.x+h.out.x,y:a.y+h.out.y};
+                    a.auto=h.auto;
+                    delete a.smoothHandles;
+                } else a.auto=true;
+                smoothCurve(curve,closed);
+            } else {
+                a.smoothHandles={in:{x:a.in.x-a.x,y:a.in.y-a.y},out:{x:a.out.x-a.x,y:a.out.y-a.y},auto:a.auto};
+                a.in={x:a.x,y:a.y}; a.out={x:a.x,y:a.y}; a.auto=false;
+            }
+        };
+        const cubicPoint = (a, b, t) => {
+            const u = 1-t;
+            const value = k => u*u*u*a[k]+3*u*u*t*a.out[k]+3*u*t*t*b.in[k]+t*t*t*b[k];
+            return {x:value('x'), y:value('y')};
+        };
+        // Hit tolerance is in screen pixels, independent of video resolution and node zoom.
+        const CONTROL_HIT_RADIUS = 15;
+        const OUTLINE_HIT_RADIUS = 18;
+        const hitCurveSegment = (curve, p, width, height, closed) => {
+            let best = null;
+            const distance = q => ((q.x-p.x)*width)**2+((q.y-p.y)*height)**2;
+            for (let i=0; i<(closed ? curve.length : curve.length-1); i++) {
+                const a=curve[i], b=curve[(i+1)%curve.length];
+                // Search each small interval, including curves with multiple local minima.
+                for (let j=0; j<64; j++) {
+                    let lo=j/64, hi=(j+1)/64;
+                    for (let k=0; k<12; k++) {
+                        const l=lo+(hi-lo)/3, r=hi-(hi-lo)/3;
+                        if (distance(cubicPoint(a,b,l)) < distance(cubicPoint(a,b,r))) hi=r; else lo=l;
+                    }
+                    const t=(lo+hi)/2, d=distance(cubicPoint(a,b,t));
+                    if (d<OUTLINE_HIT_RADIUS**2 && (!best || d<best.d)) best={i,t,d};
+                }
+            }
+            return best;
+        };
+        const hitEditableRegion = (r, p, cr) => {
+            // Selection and hover share a screen-space band around the outline only.
+            if (r.curve) return !!hitCurveSegment(r.curve,p,cr.width,cr.height,true);
+            const vertices=r.poly || [[r.x1,r.y1],[r.x2,r.y1],[r.x2,r.y2],[r.x1,r.y2]];
+            const px=p.x*cr.width, py=p.y*cr.height;
+            return vertices.some((v,i) => {
+                const w=vertices[(i+1)%vertices.length];
+                const ax=v[0]*cr.width, ay=v[1]*cr.height;
+                const dx=(w[0]-v[0])*cr.width, dy=(w[1]-v[1])*cr.height;
+                const length=dx*dx+dy*dy;
+                const t=length ? Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/length)) : 0;
+                return Math.hypot(px-ax-t*dx,py-ay-t*dy)<OUTLINE_HIT_RADIUS;
+            });
+        };
+        const splitCurveSegment = (curve, i, t) => {
+            const a=curve[i], b=curve[(i+1)%curve.length];
+            const lerp=(p,q)=>({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t});
+            const p=lerp(a,a.out), q=lerp(a.out,b.in), r=lerp(b.in,b);
+            const u=lerp(p,q), v=lerp(q,r), point=lerp(u,v);
+            a.out=p; b.in=r; a.auto=false; b.auto=false;
+            curve.splice(i+1,0,{...point,in:u,out:v,auto:false});
+            return i+1;
+        };
+        // Keep editable cubic anchors alongside the polygon consumed by the mask backend.
+        const curvePoly = (curve) => {
+            const pts = [];
+            curve.forEach((a, i) => {
+                const b = curve[(i + 1) % curve.length];
+                for (let j = 0; j < 32; j++) {
+                    const t = j / 32, u = 1 - t;
+                    const value = k => u*u*u*a[k] + 3*u*u*t*a.out[k] + 3*u*t*t*b.in[k] + t*t*t*b[k];
+                    pts.push({x: value('x'), y: value('y')});
+                }
+            });
+            pts.push({...pts[0]});
+            return resamplePoly(pts, 96);
+        };
+        const saveCurve = curve => {
+            const tid = state.trackId;
+            state.manualKeyframes[tid] ||= {};
+            state.manualKeyframes[tid][state.frameIdx] = [{curve, poly: curvePoly(curve)}];
+            writeData(); refreshTrackBtns();
+        };
+        const cancelCurve = () => {
+            if (state.curveDrag && !state.curveDraft) saveCurve(state.curveDrag.curve);
+            finishRectDrag();
+            state.curveDraft = null; state.curveDrag = null; redraw();
+        };
+        window.addEventListener('keydown', e => {
+            if (!_panelHover || e.key !== 'Escape') return;
+            e.preventDefault(); e.stopPropagation(); cancelCurve();
+        });
         // 多边形有向面积（符号判定绕向；归一化坐标与像素坐标绕向一致）
         const polySignedArea = (pts) => {
             let s = 0;
@@ -1872,6 +2007,7 @@ function wm_ensureViewer(node) {
                 // 方框/涂抹的实时预览均已迁移至 brushOverlay（覆盖含黑边的整个 wrapper 区域）：
                 // 主画布位图=图像本身，黑边内笔画会被位图边界裁掉，主画布不再负责实时预览
             }
+            drawActiveOverlay();
         };
 
         // 读取原生 range thumb 的真实半径（WebKit/Moz），读不到兜底 8px。
@@ -2102,9 +2238,9 @@ function wm_ensureViewer(node) {
             i = Math.max(0, Math.min(nf - 1, i));
             // 跳帧预览不做任何清空：检测区/排除区框是跨帧全局的，画框后拖动播放头应保持；
             // 清空只发生在「载入新视频」时（见 onExecuted 里的 video_id 判断）
-            state.frameIdx = i;
+            state.frameIdx = i; state.shapeSelected = true;
             state.image = state.frames[i];
-            state.brushActive = false; state.brushPts = [];
+            state.curveDraft = null; state.curveDrag = null; state.rectDrag = null;
             clearBrushOverlay();
             frameInfo.innerText = `${i}/${nf - 1}`;
             slider.value = i;
@@ -2121,6 +2257,49 @@ function wm_ensureViewer(node) {
             if (_drawRAF) return;
             _drawRAF = requestAnimationFrame(() => { _drawRAF = null; redraw(); });
         };
+        const curveToggleCursor = rounded => {
+            const shape=rounded ? 'M12 27 Q12 12 27 12' : 'M12 27 L12 12 L27 12';
+            const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><path d="M2 2 L2 17 L6 13 L10 21 L13 19 L9 11 L15 11 Z" fill="white" stroke="black" stroke-width="1.5"/><path d="${shape}" fill="none" stroke="#101820" stroke-width="5"/><path d="${shape}" fill="none" stroke="#80ffff" stroke-width="2.5"/></svg>`;
+            return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 2 2, pointer`;
+        };
+        const cornerCursor=curveToggleCursor(false), smoothCursor=curveToggleCursor(true);
+        let curveHoverPointer=null, curveAltDown=false;
+        const updateCurveCursor = () => {
+            let cursor='crosshair', title='';
+            if (curveHoverPointer && state.image && state.mode==='manual') {
+                const cr=canvas.getBoundingClientRect();
+                const p={x:(curveHoverPointer.clientX-cr.left)/cr.width,y:(curveHoverPointer.clientY-cr.top)/cr.height};
+                const near=q=>Math.hypot((q.x-p.x)*cr.width,(q.y-p.y)*cr.height)<CONTROL_HIT_RADIUS;
+                const curve=state.curveDraft || (state.shapeSelected ? state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0]?.curve : null);
+                const anchor=curve?.find(near);
+                if (anchor && curveAltDown && !state.curveDrag) {
+                    const rounded=isCurveCorner(anchor);
+                    cursor=rounded?smoothCursor:cornerCursor;
+                    title=rounded?'Alt 单击：恢复平滑曲线':'Alt 单击：转换为尖角';
+                } else if (anchor || curve?.some(a=>near(a.in)||near(a.out))) cursor='pointer';
+                else if (state.curveDrag || state.rectDrag) cursor='grabbing';
+                else if (state.curveDraft) {
+                    if (hitCurveSegment(state.curveDraft,p,cr.width,cr.height,false)) cursor='pointer';
+                } else {
+                    for (const tid of Object.keys(state.manualKeyframes).map(Number)) {
+                        if (_solo && tid!==state.trackId) continue;
+                        const r=state.manualKeyframes[tid]?.[state.frameIdx]?.[0];
+                        if (r && hitEditableRegion(r,p,cr)) { cursor='pointer'; break; }
+                    }
+                }
+            }
+            // The canvas has its own cursor style, so update both the image and its black border.
+            canvasWrapper.style.cursor=cursor;
+            canvas.style.cursor=cursor;
+            canvasWrapper.title=title;
+        };
+        canvasWrapper.addEventListener('pointerenter', e => {
+            curveHoverPointer={clientX:e.clientX,clientY:e.clientY}; curveAltDown=e.altKey; updateCurveCursor();
+        });
+        canvasWrapper.addEventListener('pointerleave', () => { curveHoverPointer=null; updateCurveCursor(); });
+        window.addEventListener('keydown', e => { if(e.key==='Alt') { if (_panelHover) e.preventDefault(); curveAltDown=true; updateCurveCursor(); } });
+        window.addEventListener('keyup', e => { if(e.key==='Alt') { curveAltDown=false; updateCurveCursor(); } });
+        window.addEventListener('blur', () => { curveAltDown=false; updateCurveCursor(); });
         canvasWrapper.addEventListener('pointerdown', (e) => {
             stopPlay();
             if (!state.image) return;
@@ -2130,31 +2309,106 @@ function wm_ensureViewer(node) {
             if (e.button !== 0) return;
             try { canvasWrapper.setPointerCapture(e.pointerId); } catch (_) {}
             const c = toImg(e);
-            // 涂抹工具（仅手工跟踪模式）：开始记录轨迹
-            if (state.mode === "manual" && state.tool === "brush") {
-                const L = calcLayout();
-                state.brushActive = true;
-                // 手绘允许画进黑边：不做 [0,1] 钳制。轨迹可以绕到图像外侧再回来，
-                // 黑边内轨迹照常实时显示；遮罩光栅化时超出部分天然被画布裁剪，
-                // 从而能完整覆盖到视频边角（钳制会把贴边笔迹压扁在边缘上，覆盖不到角）。
-                state.brushPts = [{ x: c.x / L.imgW, y: c.y / L.imgH }];
-                redraw();
-                drawActiveOverlay();
-                return;
+            if (!state.curveDraft && state.mode === 'manual') {
+                const L=calcLayout(), cr=canvas.getBoundingClientRect();
+                const p={x:c.x/L.imgW,y:c.y/L.imgH};
+                const tids=Object.keys(state.manualKeyframes).map(Number).sort((a,b)=>(a===state.trackId?-1:b===state.trackId?1:a-b));
+                for (const tid of tids) {
+                    if (_solo && tid!==state.trackId) continue;
+                    if (tid===state.trackId && state.shapeSelected) continue;
+                    const r=state.manualKeyframes[tid]?.[state.frameIdx]?.[0];
+                    if (!r) continue;
+                    const curve=r.curve;
+                    const hit=hitEditableRegion(r,p,cr);
+                    if (hit) {
+                        state.trackId=tid; state.shapeSelected=true; state.tool=curve?'brush':'rect';
+                        refreshTrackBtns(); refreshToolBtn(); redraw(); return;
+                    }
+                }
             }
+            const region = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
+            if (state.shapeSelected && !state.curveDraft && region && !region.poly) {
+                const cr = canvas.getBoundingClientRect(), L = calcLayout();
+                const corners = [['x1','y1'], ['x2','y1'], ['x2','y2'], ['x1','y2']];
+                const corner = corners.find(([x,y]) => Math.hypot((region[x]-c.x/L.imgW)*cr.width, (region[y]-c.y/L.imgH)*cr.height) < CONTROL_HIT_RADIUS);
+                if (corner) { state.rectDrag = {region, corner}; return; }
+            }
+            if (state.mode === "manual" && (state.curveDraft || (region?.curve && state.shapeSelected) || (!region && state.tool === "brush"))) {
+                const L = calcLayout(), p = {x: c.x / L.imgW, y: c.y / L.imgH};
+                const cr = canvas.getBoundingClientRect();
+                const near = q => Math.hypot((q.x-p.x)*cr.width, (q.y-p.y)*cr.height) < CONTROL_HIT_RADIUS;
+                let curve = state.curveDraft || state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0]?.curve;
+                if (!e.altKey && state.curveDraft?.length >= 3 && near(curve[0])) {
+                    smoothCurve(curve, true); state.curveDraft = null; saveCurve(curve); redraw(); return;
+                }
+                if (curve) {
+                    // Anchors take priority over coincident handles. Alt-drag separates a handle.
+                    for (let i = 0; i < curve.length; i++) {
+                        if (near(curve[i])) { state.curveDrag = {curve, i, kind:e.altKey ? 'out' : 'anchor', p, fresh:e.altKey, cornerClick:e.altKey}; return; }
+                    }
+                    for (let i = 0; i < curve.length; i++) {
+                        for (const kind of ['in', 'out']) if (near(curve[i][kind])) {
+                            state.curveDrag = {curve, i, kind, p}; return;
+                        }
+                    }
+                }
+                if (curve?.length >= 2 && !e.altKey) {
+                    const hit = hitCurveSegment(curve,p,cr.width,cr.height,!state.curveDraft);
+                    if (hit) {
+                        const i=splitCurveSegment(curve,hit.i,hit.t);
+                        state.curveDrag={curve,i,kind:'anchor',p};
+                        if (!state.curveDraft) saveCurve(curve);
+                        redraw(); return;
+                    }
+                }
+                if (!state.curveDraft && region) {
+                    state.shapeSelected=hitEditableRegion(region,{x:c.x/calcLayout().imgW,y:c.y/calcLayout().imgH},canvas.getBoundingClientRect()); updateCurveCursor(); redraw(); return;
+                }
+                if (!state.curveDraft) { curve = state.curveDraft = []; state.shapeSelected=true; }
+                curve.push({...p, in:{...p}, out:{...p}, auto:true});
+                smoothCurve(curve, false);
+                state.curveDrag = {curve, i:curve.length-1, kind:'out', p, fresh:true};
+                redraw(); return;
+            }
+            if (state.mode === 'manual' && region) {
+                state.shapeSelected=hitEditableRegion(region,{x:c.x/calcLayout().imgW,y:c.y/calcLayout().imgH},canvas.getBoundingClientRect()); updateCurveCursor(); redraw(); return;
+            }
+            state.shapeSelected=true;
             state.drawing = { x1: c.x, y1: c.y, x2: c.x, y2: c.y };
         });
 
         canvasWrapper.addEventListener('pointermove', (e) => {
-            // 涂抹中：逐事件追加轨迹点（不做 8px 节流——节流会让线尾滞后鼠标，
-            // 表现为"不跟手"；提交时 resamplePoly 统一重采样为 24 点，点数无影响）
-            if (state.brushActive) {
-                const c = toImg(e);
-                const L = calcLayout();
-                // 与起笔一致：轨迹点不钳制（允许黑边内绘制，见 pointerdown 注释）
-                state.brushPts.push({ x: c.x / L.imgW, y: c.y / L.imgH });
-                drawActiveOverlay();
-                return;
+            curveHoverPointer={clientX:e.clientX,clientY:e.clientY}; curveAltDown=e.altKey;
+            updateCurveCursor();
+            if (state.rectDrag) {
+                const {region, corner} = state.rectDrag, c = toImg(e), L = calcLayout();
+                region[corner[0]] = Math.max(0, Math.min(1, c.x/L.imgW));
+                region[corner[1]] = Math.max(0, Math.min(1, c.y/L.imgH));
+                redraw(); return;
+            }
+            if (state.curveDrag) {
+                const d = state.curveDrag, a = d.curve[d.i], c = toImg(e), L = calcLayout();
+                const p = {x:c.x/L.imgW, y:c.y/L.imgH};
+                if (d.fresh) {
+                    const cr = canvas.getBoundingClientRect();
+                    if (Math.hypot((p.x-d.p.x)*cr.width,(p.y-d.p.y)*cr.height) < 3) return;
+                    d.fresh = false; d.cornerClick = false;
+                }
+                if (d.kind === 'anchor') {
+                    const dx = p.x-d.p.x, dy = p.y-d.p.y;
+                    for (const q of [a, a.in, a.out]) { q.x += dx; q.y += dy; }
+                    smoothCurve(d.curve, !state.curveDraft);
+                } else {
+                    a.auto = false;
+                    a[d.kind] = {...p};
+                    if (!e.altKey) a[d.kind === 'in' ? 'out' : 'in'] = {x:2*a.x-p.x, y:2*a.y-p.y};
+                }
+                d.p = p;
+                if (!state.curveDraft) {
+                    const r = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
+                    if (r?.curve === d.curve) r.poly = curvePoly(d.curve);
+                }
+                redraw(); return;
             }
             if (!state.drawing) return;
             const c = toImg(e);
@@ -2165,22 +2419,15 @@ function wm_ensureViewer(node) {
         });
 
         canvasWrapper.addEventListener('pointerup', (e) => {
-            // 涂抹结束：轨迹闭合成多边形 → 按弧长重采样 24 点 → 存为当前帧关键帧
-            if (state.brushActive) {
-                state.brushActive = false;
-                const pts = state.brushPts;
-                state.brushPts = [];
-                clearBrushOverlay();
-                if (state.mode !== "manual" || pts.length < 3) { redraw(); return; }
-                const poly = resamplePoly(pts, 24);
-                const r = { poly };
-                const tid = state.trackId;
-                if (!state.manualKeyframes[tid]) state.manualKeyframes[tid] = {};
-                state.manualKeyframes[tid][state.frameIdx] = [r];
-                writeData();
-                redraw();
-                refreshTrackBtns();
-                return;
+            if (state.rectDrag) { finishRectDrag(); redraw(); return; }
+            if (state.curveDrag) {
+                const d = state.curveDrag, curve = d.curve;
+                if (d.cornerClick) {
+                    toggleCurveCorner(curve,d.i,!state.curveDraft);
+                }
+                state.curveDrag = null;
+                if (!state.curveDraft) saveCurve(curve);
+                updateCurveCursor(); redraw(); return;
             }
             if (!state.drawing) return;
             const c = toImg(e);
@@ -2208,6 +2455,18 @@ function wm_ensureViewer(node) {
             refreshTrackBtns();
         });
 
+        const finishRectDrag = () => {
+            if (!state.rectDrag) return;
+            const r = state.rectDrag.region;
+            [r.x1, r.x2] = [Math.min(r.x1,r.x2), Math.max(r.x1,r.x2)];
+            [r.y1, r.y2] = [Math.min(r.y1,r.y2), Math.max(r.y1,r.y2)];
+            state.rectDrag = null; writeData();
+        };
+        canvasWrapper.addEventListener('pointercancel', () => {
+            finishRectDrag();
+            if (state.curveDrag && !state.curveDraft) saveCurve(state.curveDrag.curve);
+            state.curveDrag = null; state.drawing = null; redraw();
+        });
         canvasWrapper.addEventListener('contextmenu', (e) => e.preventDefault());
 
         // 滚轮事件转发给 ComfyUI 画布（预览区不拦截滚轮，保持画布缩放）
@@ -2259,7 +2518,7 @@ function wm_ensureViewer(node) {
             const active = m !== "off";
             overlay.style.display = active ? "none" : "";
             hint.innerText = (m === "filter") ? "左键框选 (检测区)"
-                           : (m === "manual") ? "左键画框 / 涂抹（关键帧）" : "未启用";
+                           : (m === "manual") ? "框选 / 曲线打点；点击首点闭合，Esc 取消" : "未启用";
             runBtn.className = "xzg-wmdet-run-gold";
             updateRunBtn();
             if (!active) { if (state.detectRegions.length) { state.detectRegions = []; writeData(); } }
@@ -2429,6 +2688,29 @@ function wm_ensureViewer(node) {
 
         // 画面适配：节点/布局尺寸变化时重算视频 contain 尺寸与播放条（不再写容器高度）
         chainCallback(node, "onResize", () => { syncSize(); });
+        // CSS transform/zoom 不触发 ResizeObserver。缩放后若保留旧位图，
+        // 控制点会随位图放大，直到拖动重绘才恢复屏幕尺寸。
+        // 在 DOM 布局完成后同步实际显示几何，使静止与拖动采用同一绘制比例。
+        let overlayGeometry = "", overlayWatchStopped = false, overlayWatchFrame = 0;
+        const watchOverlayGeometry = () => {
+            if (overlayWatchStopped) return;
+            if (brushOverlay.isConnected) {
+                const r = brushOverlay.getBoundingClientRect();
+                const c = canvas.getBoundingClientRect();
+                const geometry = [r.width, r.height, c.width, c.height,
+                    c.left - r.left, c.top - r.top, window.devicePixelRatio].join(",");
+                if (geometry !== overlayGeometry) {
+                    overlayGeometry = geometry;
+                    drawActiveOverlay();
+                }
+            }
+            overlayWatchFrame = requestAnimationFrame(watchOverlayGeometry);
+        };
+        overlayWatchFrame = requestAnimationFrame(watchOverlayGeometry);
+        chainCallback(node, "onRemoved", () => {
+            overlayWatchStopped = true;
+            cancelAnimationFrame(overlayWatchFrame);
+        });
         if (typeof ResizeObserver !== "undefined") {
             try {
                 const ro = new ResizeObserver(() => { try { syncSize(); } catch (e) {} });
@@ -2479,7 +2761,7 @@ function showWmDetHelp() {
 
             <h4>手工跟踪</h4>
             <ul>
-                <li>1、轨道 1-8 各自颜色不同，先选轨道再画框；可选「方框」或「涂抹（手绘）」画目标轮廓</li>
+                <li>1、轨道 1-8 各自颜色不同，先选轨道再画框；可选「框选」或「曲线」画目标轮廓。在对应关键帧，框选显示四个角点，拖动角点可实时调整矩形大小。曲线模式点击添加锚点，自动生成平滑弧线；也可按住拖动手动调整弯度手柄，至少三个点后点击首点闭合；Esc 取消未完成曲线。当前关键帧可拖动锚点或手柄调整，单击曲线可选中并显示控制点，选中后再单击线段可增加锚点；Alt 单击锚点切换尖角／平滑曲线，按住 Alt 悬停锚点时鼠标图标提示即将切换的形状；Alt 拖锚点可拉出手柄，Alt 拖手柄可单独调整一侧；点击空白处取消选中，点击已有框体重新选中；同一颜色分类每帧只保留一个框体，已有框体时空白处不会新建或覆盖；在其他帧绘制可添加该分类的跟踪关键帧</li>
                 <li>2、右键播放条上的三角可删除 / 跳转 / 复制关键帧到播放头 / 移动关键帧到播放头（移动会把关键帧搬到播放头所在帧并删除原位置）</li>
                 <li>3、在某一颜色分类，在播放头不同进度位置画框，自动跟踪过渡。若当前颜色分类，只画一个框，则代表全帧遮罩。</li>
                 <li>4、播放条上方三角标记定位关键帧，点击三角播放头即跳转到该帧</li>

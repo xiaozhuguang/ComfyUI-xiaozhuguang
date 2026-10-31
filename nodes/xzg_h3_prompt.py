@@ -718,7 +718,7 @@ def _xzg_build_system_prompt(output_language):
 class XiaozhuguangNinimaxH3Prompt:
     """小珠光通用提示词优化节点
 
-    H3 输出先生成英文提示词；选择中文或双语时，再调用一次翻译生成中文版本。
+    化神级仅生成英文提示词，不调用中文生成或翻译。
 
     依赖 BSAI MiniMAX H3 Prompt 插件的模型加载器（BSAI_QWEN_MODEL 类型输入）。
     """
@@ -740,6 +740,12 @@ class XiaozhuguangNinimaxH3Prompt:
             "video_frames": ("IMAGE", {"tooltip": "视频帧批次，固定采样首、中、尾3帧；不足3帧时全部使用 / Video batch: first, middle and last frames only"}),
             "video_fps": ("FLOAT", {"default": 24.0, "min": 0.01, "max": 1000.0, "forceInput": True, "tooltip": "连接输入视频帧批次的实际帧率 / Actual FPS of the supplied video frame batch"}),
         }
+        # Append widgets to preserve positional values in existing workflows.
+        if getattr(s, "SUPPORTS_CUSTOM_PROMPT_RULES", True):
+            optional_inputs["skill"] = ("STRING", {
+                "default": "", "multiline": True,
+                "tooltip": "可手填或转换为输入端口连接外部文本；非空时优先使用此 Skill，忽略提示词类型和规则预设；留空沿用原选择 / Non-empty Skill overrides prompt type and rule preset; supports text connections",
+            })
         return {
             "required": {
                 "qwen_model": ("BSAI_QWEN_MODEL",),
@@ -765,10 +771,10 @@ class XiaozhuguangNinimaxH3Prompt:
                     {"default": True, "tooltip": "执行后卸载模型释放显存 / Unload model after execution"},
                 ),
                 "output_language": (
-                    ["仅英文", "仅中文", "中英双语"],
+                    ["仅英文"] if s.SUPPORTS_CUSTOM_PROMPT_RULES else ["仅英文", "仅中文", "中英双语"],
                     {
                         "default": "仅英文",
-                        "tooltip": "仅 H3：选择输出语言。仅输出一种语言可减少生成 token 和耗时 / H3 only: choose output language; a single language reduces generation tokens and time",
+                        "tooltip": "化神级仅生成英文 / Godlike generates English only" if s.SUPPORTS_CUSTOM_PROMPT_RULES else "仅 H3：选择输出语言。仅英文/仅中文为单次调用（仅中文直接生成中文，字段名保留英文）；中英双语为生成+翻译两次调用，耗时更长 / H3 only: English only & Chinese only use a single call; Bilingual uses two calls (generate + translate) and takes longer",
                     },
                 ),
             },
@@ -788,8 +794,10 @@ class XiaozhuguangNinimaxH3Prompt:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("english_prompt", "chinese_prompt")
+    SUPPORTS_CUSTOM_PROMPT_RULES = True
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("english_prompt",)
     FUNCTION = "optimize_prompt"
     CATEGORY = "小珠光/提示词"
 
@@ -803,6 +811,9 @@ class XiaozhuguangNinimaxH3Prompt:
         # 外部规则文件不是普通输入，正文变更必须显式使 ComfyUI 缓存失效。
         if not getattr(cls, "SUPPORTS_CUSTOM_PROMPT_RULES", True):
             return "builtin"
+        external_skill = str(kwargs.get("skill") or "").strip()
+        if external_skill:
+            return hashlib.sha256(external_skill.encode("utf-8")).hexdigest()
         if target_model in {_TARGET_MODEL_H3, "MiniMax-H3", "MiniMax-H3 Video",
                             _TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT}:
             return "builtin"
@@ -1069,12 +1080,16 @@ class XiaozhuguangNinimaxH3Prompt:
                 "Check workflow connections: 'qwen_model' should connect to BSAI H3 Model Loader output."
             )
 
+        external_skill = (
+            str(kwargs.get("skill") or "").strip()
+            if getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", True) else ""
+        )
         custom_rule_categories = {
             str(entry.get("category") or "自定义提示词规则")
             for entry in _xzg_read_prompt_rule_presets().values()
             if isinstance(entry, dict)
-        } if getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", True) else set()
-        is_custom_prompt_rules = (
+        } if not external_skill and getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", True) else set()
+        is_custom_prompt_rules = bool(external_skill) or (
             getattr(type(self), "SUPPORTS_CUSTOM_PROMPT_RULES", getattr(type(self), "SUPPORTS_CUSTOM_SKILL", True))
             and (target_model in (
                 _TARGET_MODEL_CUSTOM_RULES,
@@ -1093,6 +1108,8 @@ class XiaozhuguangNinimaxH3Prompt:
             "Chinese Only": "仅中文",
             "Chinese + English": "中英双语",
         }.get(output_language, output_language)
+        if self.SUPPORTS_CUSTOM_PROMPT_RULES:
+            output_language = "仅英文"
         if output_language not in _H3_OUTPUT_FORMATS:
             output_language = "仅英文"
         if not is_custom_prompt_rules:
@@ -1117,16 +1134,19 @@ class XiaozhuguangNinimaxH3Prompt:
                 f"{sorted(valid_modes)}"
             )
         if is_custom_prompt_rules:
-            preset_name = generation_mode
-            rule_text = _xzg_load_saved_prompt_rule(preset_name, target_model, kwargs.get("rule_preset_id"))
+            preset_name = "外部 Skill" if external_skill else generation_mode
+            rule_text = external_skill or _xzg_load_saved_prompt_rule(preset_name, target_model, kwargs.get("rule_preset_id"))
             if not rule_text:
                 raise ValueError(
                     f"规则预设“{preset_name}”未在 ComfyUI 用户目录中找到。"
                     "请打开自定义提示词规则管理器确认预设已保存并完成云持久化。"
                 )
-            if output_language in ("中英双语", "仅中文"):
+            if output_language == "中英双语":
                 system_prompt = rule_text + "\n\nOutput language: English (a Chinese translation will be produced separately). Preserve the structure, required fields, explanations and formatting specified by the rules above. The language setting changes language only."
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
+            elif output_language == "仅中文":
+                # 仅中文：单次直出中文，省一次翻译调用
+                system_prompt = rule_text + "\n\nOutput language: Chinese. Write all descriptive prose and explanations in Chinese. Preserve required field names, reference labels, tags, timestamps, numbers, quoted on-image text, dialogue and lyrics exactly as the rules specify. The language setting changes language only."
             else:
                 system_prompt = rule_text + "\n\nOutput language: English. Preserve the structure, required fields, explanations and formatting specified by the rules above. The language setting changes language only."
             user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
@@ -1137,10 +1157,11 @@ class XiaozhuguangNinimaxH3Prompt:
                   f"ID={kwargs.get('rule_preset_id') or '旧版名称匹配'}，"
                   f"内容校验={hashlib.sha256(rule_text.encode('utf-8')).hexdigest()[:12]}")
         elif is_qwen_image:
-            if output_language in ("中英双语", "仅中文"):
+            if output_language == "中英双语":
                 system_prompt = _xzg_qwen_image_system_prompt(generation_mode, "仅英文")
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             else:
+                # 仅英文/仅中文均为单次调用；_xzg_qwen_image_system_prompt 已处理仅中文提示词
                 system_prompt = _xzg_qwen_image_system_prompt(generation_mode, output_language)
             user_message, collected_images, total_image_count = self._build_qwen_image21_user_message(
                 user_prompt, generation_mode, image_inputs=image_inputs,
@@ -1149,8 +1170,9 @@ class XiaozhuguangNinimaxH3Prompt:
             print(f"[小珠光 Qwen-Image-2.1] 模式：{generation_mode}")
         else:
             generation_mode = generation_mode.removeprefix(_H3_OPTION_PREFIX)
-            # 中文与双语均先生成标准英文 H3 提示词，再单独翻译，避免语言指令冲突。
-            if output_language in ("中英双语", "仅中文"):
+            # 双语：先生成标准英文 H3 提示词，再单独翻译，保证双语都符合官方结构；
+            # 仅中文：单次直出（H3 官方 CN 输出格式，字段名/标签保留英文），省一次翻译调用。
+            if output_language == "中英双语":
                 system_prompt = _xzg_build_system_prompt("仅英文")
                 secondary_system_prompt = _PROMPT_TRANSLATE_TO_CHINESE_SYSTEM
             else:
@@ -1271,6 +1293,10 @@ class XiaozhuguangNinimaxH3Prompt:
                     "（可能使用了 BSAI loader），卸载后将无法自动重新加载。"
                 )
 
+        if self.SUPPORTS_CUSTOM_PROMPT_RULES:
+            english = text.lstrip().removeprefix(": ").strip()
+            return {"ui": {"text": [english]}, "result": (english,)}
+
         text = text.lstrip().removeprefix(": ").strip()
         chinese_text = chinese_text.lstrip().removeprefix(": ").strip()
         if output_language == "仅英文":
@@ -1292,6 +1318,9 @@ class XiaozhuguangNinimaxH3Prompt:
 
 class XiaozhuguangNinimaxH3PromptNoSkill(XiaozhuguangNinimaxH3Prompt):
     """标准版提示词节点，不提供自定义 Skill 预设功能。"""
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("english_prompt", "chinese_prompt")
 
     SUPPORTS_CUSTOM_PROMPT_RULES = False
     SUPPORTS_CUSTOM_SKILL = False  # legacy alias

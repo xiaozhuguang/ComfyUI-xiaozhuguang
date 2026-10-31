@@ -2,13 +2,7 @@ import torch
 
 
 class XiaozhuguangImageFromList:
-    """小珠光从列表获取图像
-    从 IMAGE 输入（可为 Python 列表 / 已堆叠的 batch / 单张）中，自 index 起连续取 length 张。
-    - index 支持负数（-1 取最后一张），越界自动钳制到首张/末张
-    - length 为连续取图的「数量」：如共有 4 张、index=1、length=3，则取第 2、3、4 张；
-      length=1（默认）等价于原来的单取逻辑
-    - 多张时返回列表，靠 OUTPUT_IS_LIST 广播，下游对每张图各执行一次（与图像加载器列表模式一致，尺寸不一致可分别预览）
-    """
+    """按索引从图像或遮罩的列表、批次中连续取出指定数量。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -16,51 +10,35 @@ class XiaozhuguangImageFromList:
             "required": {
                 # input_is_list：一次接收完整列表（上游若为图像加载器列表模式的 IMAGE 输出，
                 # 因本端口声明了 INPUT_IS_LIST，会拿到整段 list 而非被逐元素拆开）
-                "images": ("IMAGE", {"input_is_list": True}),
-                "index": ("INT", {"default": 0, "min": -999999, "max": 999999, "step": 1}),
+                "images": ("IMAGE,MASK", {"input_is_list": True}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 999999, "step": 1}),
                 "length": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
+                "output_mode": (["列表", "批次"], {"default": "列表"}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("图像",)
+    RETURN_TYPES = ("IMAGE,MASK",)
+    RETURN_NAMES = ("图像／遮罩",)
     FUNCTION = "get_image"
     CATEGORY = "小珠光/图片"
-    INPUT_IS_LIST = (True, True, True)
+    INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (True,)
-    DESCRIPTION = "从 IMAGE 列表输入中，自 index 起连续取 length 张图（index 支持负数，越界自动钳制）。length 为取图数量：如列表 4 张、index=1、length=3，则取第 2、3、4 张。支持图片尺寸不一致，返回列表并广播，下游逐张执行（与小珠光图像加载器列表模式一致）。length=1 为单取。"
-
-    def _to_4d(self, it):
-        # 归一为 4 维 [1,H,W,C]；兼容：4D 单张 [1,H,W,C]、3D [H,W,C]
-        if isinstance(it, torch.Tensor):
-            if it.dim() == 4:
-                return it.clone()
-            if it.dim() == 3:
-                return it.unsqueeze(0).clone()
-        return it
+    DESCRIPTION = "支持 IMAGE 或 MASK 的批次、列表输入。自 index 起取 length 项，index 从 0 开始，0 为第一项，越界自动钳制。列表输出支持不同尺寸；批次输出要求尺寸一致。"
 
     def _to_list(self, images):
-        # 统一为「元素是 4 维单张图 [1,H,W,C]」的列表
-        if isinstance(images, torch.Tensor):
-            if images.dim() == 4:
-                # batch [N,H,W,C]：按行拆成单张
-                return [self._to_4d(torch.unbind(images, dim=0)[i]) for i in range(images.shape[0])]
-            return [self._to_4d(images)]
         if isinstance(images, (list, tuple)):
-            # 展平一层，兼容 [[...]] 双重包裹；元素可能是 4D(单张或小 batch)/3D
             out = []
-            for it in images:
-                if it is None:
-                    continue
-                if isinstance(it, torch.Tensor) and it.dim() == 4 and it.shape[0] > 1:
-                    for i in range(it.shape[0]):
-                        out.append(self._to_4d(torch.unbind(it, dim=0)[i]))
-                else:
-                    out.append(self._to_4d(it))
+            for item in images:
+                if item is not None:
+                    out.extend(self._to_list(item))
             return out
-        return [self._to_4d(images)]
+        if not isinstance(images, torch.Tensor) or images.dim() not in (2, 3, 4):
+            raise ValueError("输入需要 IMAGE [N,H,W,C] 或 MASK [N,H,W] / [H,W]")
+        if images.dim() == 2:
+            images = images.unsqueeze(0)
+        return [images[i:i + 1] for i in range(images.shape[0])]
 
-    def get_image(self, images, index, length):
+    def get_image(self, images, index, length, output_mode="列表"):
         # 剥掉标量控件被执行器套的一层 list（上游 OUTPUT_IS_LIST 广播时，非 list 端口也会收到长度为 1 的列表）
         if isinstance(index, (list, tuple)):
             index = index[0]
@@ -76,13 +54,14 @@ class XiaozhuguangImageFromList:
         except (TypeError, ValueError):
             length = 1
 
+        if isinstance(output_mode, (list, tuple)):
+            output_mode = output_mode[0]
+
         all_imgs = self._to_list(images)
         if len(all_imgs) == 0:
-            raise ValueError("图像列表为空，无法从列表中取图")
+            raise ValueError("图像／遮罩列表为空，无法选取")
 
-        # 负数索引：从末尾倒数；越界自动钳制
-        if idx < 0:
-            idx = len(all_imgs) + idx
+        # 越界索引钳制到首项或末项。
         start = max(0, min(idx, len(all_imgs) - 1))
         end = start + length
 
@@ -91,7 +70,11 @@ class XiaozhuguangImageFromList:
         _out = all_imgs[start:end]
         if len(_out) <= 0:
             _out = [all_imgs[start]]
-        return (_out,)
+        if output_mode == "批次":
+            if any(item.shape[1:] != _out[0].shape[1:] for item in _out):
+                raise ValueError("批次输出要求图像／遮罩尺寸一致，请改用列表输出")
+            return ([torch.cat(_out, dim=0)],)
+        return ([item.clone() for item in _out],)
 
 
 NODE_CLASS_MAPPINGS = {

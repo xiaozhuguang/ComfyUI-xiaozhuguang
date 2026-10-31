@@ -8,12 +8,15 @@ class XiaozhuguangMaskCleanupRepair:
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("mask",)
     FUNCTION = "execute"
-    DESCRIPTION = "视频遮罩：先清理碎片和短暂杂点，再修复形状。自动选择CPU/GPU，分批控制显存，处理后返回CPU并释放本节点GPU临时缓存。无输入返回None。"
+    DESCRIPTION = "视频遮罩：清理碎片和短暂杂点，扩展/收缩遮罩，修复形状，最后可选二值化。自动选择CPU/GPU，分批控制显存。扩展和二值化独立于清理/修复开关，无输入返回None。"
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "erode_dilate": ("INT", {"default": 0, "min": -128, "max": 128,
+                                          "tooltip": "独立扩展遮罩：负值收缩、正值扩张；绝对值为每侧像素数。不受清理杂点和修复形状开关控制，0不处理。"}),
+                "tapered_corners": ("BOOLEAN", {"default": False, "tooltip": "扩展/收缩时使用十字核逐像素处理，收尖角；关闭时使用方形核。"}),
                 "cleanup_enabled": ("BOOLEAN", {"default": True}),
                 "threshold": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.01,
                                          "tooltip": "只用于识别清理区域；存活区域保留原遮罩的软边数值。"}),
@@ -27,8 +30,6 @@ class XiaozhuguangMaskCleanupRepair:
                 "edge_grow": ("INT", {"default": 4, "min": 0, "max": 128,
                                        "tooltip": "扩展存活区域的保留范围，保护原有软边；不会生成原遮罩中不存在的白色像素。"}),
                 "repair_enabled": ("BOOLEAN", {"default": False}),
-                "erode_dilate": ("INT", {"default": 0, "min": -128, "max": 128,
-                                          "tooltip": "负值收缩、正值膨胀；绝对值为每侧像素半径。"}),
                 "fill_holes": ("INT", {"default": 0, "min": 0, "max": 128,
                                         "tooltip": "灰度闭运算的像素半径，修补小孔和窄缺口；不是无条件填满所有封闭孔洞。"}),
                 "remove_isolated_pixels": ("INT", {"default": 0, "min": 0, "max": 32,
@@ -37,6 +38,9 @@ class XiaozhuguangMaskCleanupRepair:
                                     "tooltip": "先以0.5二值化，再高斯平滑；数值为核半径，会改变原有软边。"}),
                 "blur": ("INT", {"default": 0, "min": 0, "max": 128,
                                   "tooltip": "直接对灰度遮罩做高斯模糊，数值为核半径。0不处理。"}),
+                "mask_binarize": ("BOOLEAN", {"default": False, "tooltip": "最后一步二值化：大于阈值变为1，其余变为0。独立于清理和修复开关。"}),
+                "mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
+                                            "tooltip": "二值化阈值；等于阈值时为0。仅开启二值化时生效。"}),
             },
             "optional": {"mask": ("MASK",)},
         }
@@ -78,10 +82,16 @@ class XiaozhuguangMaskCleanupRepair:
         return values * selected
 
     @staticmethod
-    def _repair_cpu(values, erode_dilate, fill_holes, remove_isolated_pixels, smooth, blur, ndi, check):
+    def _repair_cpu(values, erode_dilate, fill_holes, remove_isolated_pixels, smooth, blur, ndi, check, tapered_corners=False):
         for i, frame in enumerate(values):
             check()
-            if erode_dilate < 0:
+            if erode_dilate and tapered_corners:
+                operation = ndi.grey_dilation if erode_dilate > 0 else ndi.grey_erosion
+                cross = ndi.generate_binary_structure(2, 1)
+                for _ in range(abs(erode_dilate)):
+                    check()
+                    frame = operation(frame, footprint=cross, mode="nearest")
+            elif erode_dilate < 0:
                 frame = ndi.grey_erosion(frame, size=2 * abs(erode_dilate) + 1, mode="nearest")
             elif erode_dilate > 0:
                 frame = ndi.grey_dilation(frame, size=2 * erode_dilate + 1, mode="nearest")
@@ -97,7 +107,7 @@ class XiaozhuguangMaskCleanupRepair:
         return values
 
     @staticmethod
-    def _repair_gpu(values, erode_dilate, fill_holes, remove_isolated_pixels, smooth, blur, check):
+    def _repair_gpu(values, erode_dilate, fill_holes, remove_isolated_pixels, smooth, blur, check, tapered_corners=False):
         import torch.nn.functional as F
         device = torch.device("cuda", torch.cuda.current_device())
         free = torch.cuda.mem_get_info(device)[0]
@@ -108,7 +118,15 @@ class XiaozhuguangMaskCleanupRepair:
         chunk_size = max(1, min(8, int(free * 0.2) // max(1, frame_bytes)))
         result = np.empty_like(values)
 
-        def morph(x, radius, dilate):
+        def morph(x, radius, dilate, tapered=False):
+            if tapered:
+                x = x if dilate else -x
+                for _ in range(radius):
+                    check()
+                    horizontal = F.max_pool2d(F.pad(x, (1, 1, 0, 0), mode="replicate"), (1, 3), stride=1)
+                    vertical = F.max_pool2d(F.pad(x, (0, 0, 1, 1), mode="replicate"), (3, 1), stride=1)
+                    x = torch.maximum(horizontal, vertical)
+                return x if dilate else -x
             padded = F.pad(x if dilate else -x, (radius,) * 4, mode="replicate")
             filtered = F.max_pool2d(padded, 2 * radius + 1, stride=1)
             return filtered if dilate else -filtered
@@ -126,7 +144,7 @@ class XiaozhuguangMaskCleanupRepair:
                 check()
                 x = torch.from_numpy(values[start:start + chunk_size]).unsqueeze(1).to(device)
                 if erode_dilate:
-                    x = morph(x, abs(erode_dilate), erode_dilate > 0)
+                    x = morph(x, abs(erode_dilate), erode_dilate > 0, tapered_corners)
                 if fill_holes:
                     x = morph(morph(x, fill_holes, True), fill_holes, False)
                 if remove_isolated_pixels:
@@ -142,10 +160,11 @@ class XiaozhuguangMaskCleanupRepair:
     def execute(self, cleanup_enabled=True, threshold=0.3,
                 method="收缩重建", shrink=4, min_pixels=32, min_frames=2, edge_grow=4,
                 repair_enabled=False, erode_dilate=0, fill_holes=0,
-                remove_isolated_pixels=0, smooth=0, blur=0, mask=None):
+                remove_isolated_pixels=0, smooth=0, blur=0, mask=None,
+                mask_binarize=False, mask_threshold=0.5, tapered_corners=False):
         if mask is None or mask.numel() == 0:
             return (None,)
-        if not cleanup_enabled and not repair_enabled:
+        if not cleanup_enabled and not repair_enabled and not erode_dilate and not mask_binarize:
             return (mask,)
         from scipy import ndimage as ndi
         try:
@@ -171,13 +190,13 @@ class XiaozhuguangMaskCleanupRepair:
                 for i in range(len(values)):
                     check()
                     values[i] = self._cleanup(values[i], False, threshold, method, shrink, min_pixels, 1, edge_grow, ndi)
-        if repair_enabled and any((erode_dilate, fill_holes, remove_isolated_pixels, smooth, blur)):
-            options = (erode_dilate, fill_holes, remove_isolated_pixels, smooth, blur)
+        if erode_dilate or (repair_enabled and any((fill_holes, remove_isolated_pixels, smooth, blur))):
+            options = (erode_dilate,) + ((fill_holes, remove_isolated_pixels, smooth, blur) if repair_enabled else (0, 0, 0, 0))
             # Small jobs cost less on CPU than a round trip across PCIe.
             use_gpu = torch.cuda.is_available() and values.size >= 256 * 256
             if use_gpu:
                 try:
-                    values = self._repair_gpu(values, *options, check)
+                    values = self._repair_gpu(values, *options, check, tapered_corners)
                     print("[小珠光遮罩清理修复] 修复使用GPU分批处理，输出已转回CPU。")
                 except torch.cuda.OutOfMemoryError:
                     print("[小珠光遮罩清理修复] GPU显存不足，回退CPU。")
@@ -186,6 +205,8 @@ class XiaozhuguangMaskCleanupRepair:
                     # GPU helper scope has ended; release only unused allocator blocks.
                     torch.cuda.empty_cache()
             if not use_gpu:
-                values = self._repair_cpu(values, *options, ndi, check)
+                values = self._repair_cpu(values, *options, ndi, check, tapered_corners)
+        if mask_binarize:
+            values = (values > float(mask_threshold)).astype(np.float32)
         check()
         return (torch.from_numpy(np.clip(values, 0, 1)).to(dtype=mask.dtype),)

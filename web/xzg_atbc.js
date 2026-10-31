@@ -1,10 +1,16 @@
 import { app } from "../../scripts/app.js";
+import { xzgT } from "./xzg_i18n.js";
 
 app.registerExtension({
     name: "xiaozhuguang.atbcCropToggle",
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "XiaozhuguangATBC") return;
         const sync = node => {
+            const mask = node.inputs?.find(input => input.name === "mask");
+            if (mask) {
+                mask.type = "MASK";
+                mask.label = mask.localized_name = xzgT("遮罩", "Mask");
+            }
             const widget = name => node.widgets?.find(w => w.name === name);
             // Older saved nodes have no serialized values for the appended controls.
             for (const [name, values] of Object.entries({

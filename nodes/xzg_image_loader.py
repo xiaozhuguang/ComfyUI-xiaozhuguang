@@ -1120,7 +1120,7 @@ def _media_pose_library_module():
 MEDIA_ARCHIVE_LIBRARIES = (("mediaLibrary", "images", "image"), ("videoLibrary", "videos", "video"), ("audioLibrary", "audio", "audio"))
 
 
-def _media_build_archive(path, config):
+def _media_build_archive(path, config, lora_user=None):
     total = 0
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
         for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES:
@@ -1160,6 +1160,16 @@ def _media_build_archive(path, config):
             if total > MEDIA_ARCHIVE_MAX_BYTES:
                 raise ValueError("archive exceeds 20 GB")
             archive.writestr("pose_library.zip", pose_archive, compress_type=zipfile.ZIP_STORED)
+        if config.get("loraLibrary") is not None:
+            from .xzg_lora_manager import export_library, read_library, LOCK
+            with LOCK:
+                lora_archive = export_library(lora_user)
+                count = len(read_library(lora_user)["items"])
+            config["loraLibrary"] = {"version": 1, "count": count, "file": "lora_library.zip"}
+            total += len(lora_archive)
+            if total > MEDIA_ARCHIVE_MAX_BYTES:
+                raise ValueError("archive exceeds 20 GB")
+            archive.writestr("lora_library.zip", lora_archive, compress_type=zipfile.ZIP_STORED)
         metadata = json.dumps(config, ensure_ascii=False).encode("utf-8")
         if len(metadata) > MEDIA_CONFIG_MAX_BYTES:
             raise ValueError("config exceeds 100 MB")
@@ -1185,6 +1195,10 @@ def _media_archive_config(archive):
                 raise ValueError("config exceeds 100 MB")
             continue
         prefix, separator, rel = entry.filename.partition("/")
+        if entry.filename == "lora_library.zip":
+            if entry.file_size > 512 * 1024 * 1024:
+                raise ValueError("LoRA library archive exceeds size limit")
+            continue
         if entry.filename == "pose_library.zip":
             if entry.file_size > _media_pose_library_module().MAX_LIBRARY_IMPORT_BYTES:
                 raise ValueError("pose library archive exceeds size limit")
@@ -1249,20 +1263,36 @@ def _media_archive_config(archive):
         pose_result = _media_pose_library_module().import_local_pose_library(archive.read("pose_library.zip"), dry_run=True)
         if pose_result["total"] != pose_manifest["count"]:
             raise ValueError("pose library count does not match manifest")
+    lora_manifest = config.get("loraLibrary")
+    lora_entries = [entry for entry in entries if entry.filename == "lora_library.zip"]
+    if lora_manifest is None:
+        if lora_entries:
+            raise ValueError("unexpected LoRA library archive")
+    elif (not isinstance(lora_manifest, dict) or lora_manifest.get("version") != 1
+          or lora_manifest.get("file") != "lora_library.zip"
+          or not isinstance(lora_manifest.get("count"), int) or lora_manifest["count"] < 0
+          or len(lora_entries) != 1):
+        raise ValueError("invalid LoRA library manifest")
     return config
 
 
-def _media_read_archive(path, restore=False):
+def _media_read_archive(path, restore=False, lora_user=None):
     with zipfile.ZipFile(path) as archive:
         config = _media_archive_config(archive)
+        if config.get("loraLibrary") is not None:
+            from .xzg_lora_manager import import_library
+            count = import_library(lora_user, archive.read("lora_library.zip"), dry_run=True)
+            if count != config["loraLibrary"]["count"]:
+                raise ValueError("LoRA library count does not match manifest")
         if not restore:
             return config
-        selected = ({key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True, "poseLibrary": True}) if restore is True else restore
+        selected = ({key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True, "poseLibrary": True, "loraLibrary": True}) if restore is True else restore
         libraries = [(key, prefix, kind, config[key]) for key, prefix, kind in MEDIA_ARCHIVE_LIBRARIES
                      if selected.get(key) and config.get(key) is not None]
         restore_previews = bool(selected.get("textBoxPreviews") and config.get("textBoxPreviews") is not None)
         restore_poses = bool(selected.get("poseLibrary") and config.get("poseLibrary") is not None)
-        if not libraries and not restore_previews and not restore_poses:
+        restore_loras = bool(selected.get("loraLibrary") and config.get("loraLibrary") is not None)
+        if not libraries and not restore_previews and not restore_poses and not restore_loras:
             raise ValueError("backup has no selected media library")
         root = os.path.dirname(_media_library_dir())
         # Validate both libraries before committing; keep originals for rollback.
@@ -1335,11 +1365,14 @@ def _media_read_archive(path, restore=False):
         restored_poses = None
         if restore_poses:
             restored_poses = _media_pose_library_module().import_local_pose_library(archive.read("pose_library.zip"))
+        restored_loras = None
+        if restore_loras:
+            restored_loras = import_library(lora_user, archive.read("lora_library.zip"))
         return {"restored": sum(len(media["order"]) for key, _, _, media in libraries if key == "mediaLibrary"),
                 "restoredVideos": sum(len(media["order"]) for key, _, _, media in libraries if key == "videoLibrary"),
                 "restoredAudios": sum(len(media["order"]) for key, _, _, media in libraries if key == "audioLibrary"),
                 "restoredTextBoxPreviews": restored_previews,
-                "restoredPoses": restored_poses}
+                "restoredPoses": restored_poses, "restoredLoras": restored_loras}
 
 
 @routes.post("/xzg/media-library/backup")
@@ -1355,7 +1388,7 @@ async def xzg_media_library_archive_backup(request):
     os.close(fd)
     try:
         try:
-            await _media_archive_io(_media_build_archive, path, config)
+            await _media_archive_io(_media_build_archive, path, config, PromptServer.instance.user_manager.get_request_user_id(request))
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         response = web.StreamResponse(headers={"Content-Type": "application/zip",
@@ -1388,7 +1421,7 @@ async def xzg_media_library_archive_upload(request):
                 if size > MEDIA_ARCHIVE_MAX_BYTES:
                     return web.json_response({"error": "archive exceeds 20 GB"}, status=413)
                 await _media_archive_io(out.write, chunk)
-        config = await _media_archive_io(_media_read_archive, path)
+        config = await _media_archive_io(_media_read_archive, path, False, PromptServer.instance.user_manager.get_request_user_id(request))
         token = secrets.token_urlsafe(32)
         timer = _xzg_asyncio.get_running_loop().call_later(30 * 60, _media_discard_archive, token)
         _media_pending_archives[token] = (path, timer)
@@ -1412,10 +1445,10 @@ async def xzg_media_library_archive_restore(request):
     path, timer = pending
     timer.cancel()
     try:
-        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True, "poseLibrary": True})
-        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary", "textBoxPreviews", "poseLibrary") or not isinstance(value, bool) for key, value in selected.items()):
+        selected = data.get("libraries", {key: True for key, _, _ in MEDIA_ARCHIVE_LIBRARIES} | {"textBoxPreviews": True, "poseLibrary": True, "loraLibrary": True})
+        if not isinstance(selected, dict) or any(key not in ("mediaLibrary", "videoLibrary", "audioLibrary", "textBoxPreviews", "poseLibrary", "loraLibrary") or not isinstance(value, bool) for key, value in selected.items()):
             return web.json_response({"error": "invalid library selection"}, status=400)
-        result = await _media_archive_io(_media_read_archive, path, selected)
+        result = await _media_archive_io(_media_read_archive, path, selected, PromptServer.instance.user_manager.get_request_user_id(request))
         return web.json_response(result)
     except (ValueError, KeyError, OSError, zipfile.BadZipFile, RuntimeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)

@@ -8,6 +8,129 @@ import { xzgLang, xzgT } from "./xzg_i18n.js";
 // ═══════════════════════════════════════════════════
 const _NODE_TYPE = "XiaozhuguangBigDisplay";
 
+// 「小珠光展示任意」右键菜单：发送到文本框·化神级
+//   · 目标：画布上已有的「小珠光文本框-化神级」（text 输入槽被连线占用时禁用），或新建一个
+//   · 写入方式：追加到末尾 / 替换内容（与图像加载器 upload_mode 同一套约定）
+//   · 写入路径与 _applyGodPreset / _xzgAppendToLoader 一致：widget.value + textarea input 事件 + callback
+function sendToTextBox(source) {
+    const text = (source._texts || []).join("\n");
+    const notify = (summary, severity = "warn") => app.extensionManager?.toast?.add({ summary, severity, life: 4000 });
+    if (!text.trim()) { notify(xzgT("无内容可发送", "Nothing to send")); return; }
+    const graph = source.graph;
+    if (!graph) return;
+    if (source._xzgSendTextDialog?.open) { source._xzgSendTextDialog.focus(); return; }
+    const dialog = document.createElement("dialog");
+    source._xzgSendTextDialog = dialog;
+    dialog.style.cssText = "width:460px;max-width:90vw;padding:20px;border:1px solid var(--border-color,#555);border-radius:8px;background:var(--comfy-menu-bg,#222);color:var(--input-text,#eee);font:14px sans-serif;";
+    const title = document.createElement("h3");
+    title.textContent = xzgT("发送到文本框·化神级", "Send to Godlike Text Box");
+    title.style.marginTop = "0";
+    dialog.append(title);
+
+    // ── 发送内容预览（只读） ──
+    const previewLabel = document.createElement("label");
+    previewLabel.textContent = xzgT("发送内容", "Content");
+    previewLabel.style.cssText = "display:flex;flex-direction:column;gap:8px;margin:12px 0 0;";
+    const preview = document.createElement("textarea");
+    preview.readOnly = true;
+    preview.value = text;
+    preview.style.cssText = "width:100%;box-sizing:border-box;min-height:80px;max-height:220px;resize:vertical;background:var(--comfy-input-bg,#1a1a1a);color:var(--input-text,#ddd);border:1px solid var(--border-color,#555);border-radius:4px;padding:8px;font:12px/1.5 Consolas,monospace;";
+    previewLabel.append(preview);
+    dialog.append(previewLabel);
+
+    // ── 目标文本框选择 ──
+    const targetLabel = document.createElement("label");
+    targetLabel.textContent = xzgT("目标文本框", "Destination");
+    targetLabel.style.cssText = "display:flex;flex-direction:column;gap:8px;margin:16px 0 0;";
+    const targetSelect = document.createElement("select");
+    targetSelect.style.cssText = "width:100%;box-sizing:border-box;padding:6px 8px;background:var(--comfy-input-bg,#1a1a1a);color:var(--input-text,#fff);border:1px solid var(--border-color,#555);border-radius:4px;";
+    const newOption = document.createElement("option");
+    newOption.value = "new";
+    newOption.textContent = xzgT("新建小珠光文本框-化神级", "Create a Godlike Text Box");
+    targetSelect.append(newOption);
+    const targets = (graph._nodes || []).filter(node => node.type === "XiaozhuguangTextBoxGod" || node.comfyClass === "XiaozhuguangTextBoxGod");
+    for (const target of targets) {
+        const option = document.createElement("option");
+        option.value = String(target.id);
+        option.disabled = target.inputs?.some(input => input.name === "text" && input.link != null) || false;
+        option.textContent = `${target.title || xzgT("文本框·化神级", "Godlike Text Box")} #${target.id}` +
+            (option.disabled ? xzgT("（文本由上游连线控制）", " (text is connected)") : "");
+        targetSelect.append(option);
+    }
+    if (targets.length === 1 && !targetSelect.options[1].disabled) targetSelect.value = String(targets[0].id);
+    targetLabel.append(targetSelect);
+    dialog.append(targetLabel);
+
+    // ── 写入方式 ──
+    const modeLabel = document.createElement("label");
+    modeLabel.style.cssText = "display:flex;align-items:center;gap:8px;margin:16px 0 0;";
+    modeLabel.textContent = xzgT("写入方式", "Write mode");
+    const mode = document.createElement("select");
+    mode.style.cssText = "padding:6px 8px;background:var(--comfy-input-bg,#1a1a1a);color:var(--input-text,#fff);border:1px solid var(--border-color,#555);border-radius:4px;";
+    for (const [value, label] of [["append", xzgT("追加到末尾", "Append")], ["replace", xzgT("替换内容", "Replace")]]) {
+        const option = document.createElement("option");
+        option.value = value; option.textContent = label; mode.append(option);
+    }
+    modeLabel.append(mode);
+    dialog.append(modeLabel);
+
+    // ── 按钮 ──
+    const footer = document.createElement("div");
+    footer.style.cssText = "display:flex;justify-content:flex-end;gap:10px;margin-top:18px;";
+    const cancel = document.createElement("button");
+    cancel.textContent = xzgT("取消", "Cancel");
+    cancel.style.cssText = "padding:6px 16px;background:#3a3a3a;border:1px solid #555;border-radius:4px;color:#fff;cursor:pointer;";
+    cancel.onclick = () => dialog.close();
+    const send = document.createElement("button");
+    send.textContent = xzgT("发送", "Send");
+    send.style.cssText = "padding:6px 16px;background:#FFD700;border:none;border-radius:4px;color:#000;font-weight:600;cursor:pointer;";
+    send.onclick = () => {
+        if (source.graph !== graph) { dialog.close(); return; }
+        let target;
+        if (targetSelect.value === "new") {
+            target = LiteGraph.createNode("XiaozhuguangTextBoxGod");
+            if (!target) { notify(xzgT("文本框节点不可用，请刷新页面", "Text Box is unavailable; refresh the page")); return; }
+            target.pos = [source.pos[0] + source.size[0] + 40, source.pos[1]];
+            graph.add(target);
+        } else {
+            target = graph.getNodeById(targetSelect.value);
+        }
+        const widget = target?.widgets?.find(item => item.name === "text");
+        if (!widget || target.inputs?.some(input => input.name === "text" && input.link != null)) {
+            notify(xzgT("目标文本框不可写，请重新选择", "Destination is unavailable; choose another Text Box"));
+            return;
+        }
+        const previous = String(widget.value ?? "");
+        const value = mode.value === "append" && previous ? previous + (previous.endsWith("\n") ? "" : "\n") + text : text;
+        widget.value = value;
+        const element = widget.element;
+        const textarea = element?.matches?.("textarea") ? element : element?.querySelector?.("textarea");
+        if (textarea) { textarea.value = value; textarea.dispatchEvent(new Event("input", { bubbles: true })); }
+        widget.callback?.(value);
+        target.setDirtyCanvas?.(true, true);
+        graph.change?.();
+        app.canvas?.setDirty?.(true, true);
+        dialog.close();
+        notify(xzgT("已发送到文本框·化神级", "Sent to Godlike Text Box"), "success");
+    };
+    footer.append(cancel, send);
+    dialog.append(footer);
+    // Enter 直接发送（预览 textarea 换行不触发；select 上保留原生 Enter 展开下拉的行为）
+    dialog.addEventListener("keydown", (event) => {
+        const tag = event.target?.tagName;
+        if (event.key === "Enter" && !event.shiftKey && tag !== "TEXTAREA" && tag !== "SELECT") {
+            event.preventDefault();
+            send.click();
+        }
+    });
+    dialog.addEventListener("close", () => {
+        if (source._xzgSendTextDialog === dialog) delete source._xzgSendTextDialog;
+        dialog.remove();
+    }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+}
+
 // 每项文本的大字配置（右键设置可调）
 const DEFAULT_CFG = {
     fontSize: 16,        // 固定字号；自适应开启时由可用空间决定
@@ -288,6 +411,25 @@ app.registerExtension({
                 event.stopPropagation();
             };
             canvas.addEventListener("pointerdown", onCanvasPointerDown);
+            canvas.addEventListener("dblclick", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                node.onDblClick?.(event);
+            });
+            canvas.addEventListener("wheel", (event) => {
+                const graphCanvas = app.canvas?.canvas;
+                if (!graphCanvas) return;
+                event.preventDefault();
+                event.stopPropagation();
+                graphCanvas.dispatchEvent(new WheelEvent("wheel", {
+                    deltaX: event.deltaX, deltaY: event.deltaY, deltaZ: event.deltaZ,
+                    deltaMode: event.deltaMode,
+                    clientX: event.clientX, clientY: event.clientY,
+                    ctrlKey: event.ctrlKey, shiftKey: event.shiftKey,
+                    altKey: event.altKey, metaKey: event.metaKey,
+                    bubbles: true, cancelable: true,
+                }));
+            }, { passive: false });
 
             // Canvas invalidation still happens for selection, input execution, scrolling
             // and style changes, but Nodes 2.0 does not repaint onDrawBackground.
@@ -329,7 +471,12 @@ app.registerExtension({
                         this.copyTextToClipboard(txt);
                     },
                 });
-                // 收藏到提示词库：置于复制文本之后，收藏进「小珠光文本框-化神级」提示词库
+                options.push({
+                    content: xzgT("发送到文本框·化神级", "Send to Godlike Text Box"),
+                    color: '#4ade80',
+                    callback: () => sendToTextBox(this),
+                });
+                // 收藏到提示词库：收藏进「小珠光文本框-化神级」提示词库
                 options.push({
                     content: `★ ${xzgT("收藏到提示词库", "Favorite to Prompt Library")}`,
                     color: '#4ade80',
@@ -624,6 +771,8 @@ app.registerExtension({
             // 每个节点用独立的配置（默认值副本），由 onConfigure/onSerialize 随工作流持久化
             this._cfg = { ...DEFAULT_CFG };
             this._texts = [];
+            this._xzgDisplayChannels = null;
+            this._xzgDisplayChannel = 0;
             this.properties = this.properties || {};
             this.properties.xzgBigDisplayCfg = { ...this._cfg };
             this.color = "#1a1a1a";
@@ -639,6 +788,9 @@ app.registerExtension({
         const origConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             const r = origConfigure?.apply(this, arguments);
+            if (!this.inputs?.some(input => input.name === "input_b")) this.addInput("input_b", "*");
+            if ((this.outputs?.length || 0) < 2) this.addOutput("B", "*");
+            if (this.outputs?.[0]) this.outputs[0].name = "A";
             hideNodeHeader(this);
             hideNodeInputDecoration(this);
             // Nodes 2.0 的属性序列化更稳定；保留 widgets_values 作为旧工作流兼容回退。
@@ -652,6 +804,10 @@ app.registerExtension({
                     const first = wv.find((x) => x && (x.texts || x.cfg));
                     if (first) {
                         if (Array.isArray(first.texts)) this._texts = first.texts;
+                        if (first.channels) {
+                            this._xzgDisplayChannels = first.channels;
+                            this._showDisplayChannel(0);
+                        }
                         if (!savedCfg && first.cfg && typeof first.cfg === "object")
                             this._cfg = { ...DEFAULT_CFG, ...first.cfg };
                     }
@@ -670,47 +826,45 @@ app.registerExtension({
             try {
                 o.properties = { ...(o.properties || {}), xzgBigDisplayCfg: { ...this._cfg } };
                 if (!o.widgets_values) o.widgets_values = [];
-                o.widgets_values.push({ texts: this._texts || [], cfg: { ...this._cfg } });
+                o.widgets_values.push({ texts: this._texts || [], channels: this._xzgDisplayChannels, cfg: { ...this._cfg } });
             } catch (e) {}
             return r;
         };
 
-        // 执行后接收文本并大字显示（easy-use showAnything 模式）
+        nodeType.prototype._showDisplayChannel = function (index) {
+            const channels = this._xzgDisplayChannels;
+            if (channels) {
+                if (!channels.connected[index] && channels.connected[1 - index]) index = 1 - index;
+                this._xzgDisplayChannel = index;
+                this._texts = channels.texts[index] || [];
+            }
+            this._xzgBigDisplayScrollTop = 0;
+            this._xzgBigDisplayScrollTops = [];
+            this.setDirtyCanvas?.(true, true);
+            this._xzgBigDisplayUI?.refresh?.();
+        };
+
+        nodeType.prototype.onDblClick = function () {
+            this._showDisplayChannel(1 - (this._xzgDisplayChannel || 0));
+            return true;
+        };
+
+        // 执行后默认显示 A；只接 B 时直接显示 B。
         const origExecuted = nodeType.prototype.onExecuted;
         nodeType.prototype.onExecuted = function (message) {
             const r = origExecuted?.apply(this, arguments);
             const texts = (message && message.text) || [];
             this._texts = Array.isArray(texts) ? texts : [texts];
-            this._xzgBigDisplayScrollTop = 0;
-            this._xzgBigDisplayScrollTops = [];
-            this.setDirtyCanvas?.(true, true);
-            this._xzgBigDisplayUI?.refresh?.();
+            this._xzgDisplayChannels = message?.text_a ? {
+                texts: [message.text_a, message.text_b || []],
+                connected: [!!message.connected_a?.[0], !!message.connected_b?.[0]],
+            } : null;
+            this._showDisplayChannel(0);
             return r;
         };
 
         // 只接收自身 onExecuted 的结果。上游 ui.text 属于节点级消息，
         // 不代表所连接输出端口的值，不能用它同步其他展示节点。
-
-        const origOnMouseWheel = nodeType.prototype.onMouseWheel;
-        nodeType.prototype.onMouseWheel = function (event, pos) {
-            const metrics = this._xzgBigDisplayScrollMetrics;
-            const cell = metrics?.cells?.find((entry) => pos && pos[1] >= entry.top && pos[1] <= entry.top + entry.height);
-            if (cell?.maxScroll > 0) {
-                const tops = this._xzgBigDisplayScrollTops || (this._xzgBigDisplayScrollTops = []);
-                tops[cell.index] = Math.max(0, Math.min(cell.maxScroll, (tops[cell.index] || 0) + (event?.deltaY || 0) * 0.8));
-                this.setDirtyCanvas?.(true, true);
-                return true;
-            }
-            if (!metrics?.cells && metrics?.maxScroll > 0) {
-                this._xzgBigDisplayScrollTop = Math.max(0, Math.min(
-                    metrics.maxScroll,
-                    (this._xzgBigDisplayScrollTop || 0) + (event?.deltaY || 0) * 0.8,
-                ));
-                this.setDirtyCanvas?.(true, true);
-                return true;
-            }
-            return origOnMouseWheel?.apply(this, arguments);
-        };
 
         const origOnMouseDown = nodeType.prototype.onMouseDown;
         nodeType.prototype.onMouseDown = function (event, pos) {
@@ -841,7 +995,6 @@ app.registerExtension({
             for (const t of this._texts || []) {
                 for (const ln of String(t).split("\n")) lines.push(ln);
             }
-            if (lines.length === 0) lines.push(xzgT("等待输入…", "Awaiting input…"));
 
             ctx.save();
             // 节点默认主体底色（非主题）：主题模式下级联主题绘制会跳过本节点主体填充，
@@ -1200,6 +1353,7 @@ app.registerExtension({
         // getNodeMenuOptions 的返回结果做白名单过滤。
         // —— 过滤函数 ——
         const catOf = (content) => {
+            if (content.includes("发送到文本框") || content.includes("Send to Godlike Text Box")) return 1;
             if (content.includes("对所选输出节点进行排队") || content.includes("Queue Selected Output")) return 0; // 排队 → 第一行
             if (content.includes("复制文本")) return 1; // 复制文本 + 收藏到提示词库 同一组
             if (content.includes("收藏到提示词库")) return 1;
@@ -1270,51 +1424,6 @@ app.registerExtension({
             };
             window.addEventListener("pointerup", releaseScrollbars, true);
             window.addEventListener("mouseup", releaseScrollbars, true);
-        }
-
-        if (!window._xzgBigDisplayWheelCaptureInstalled) {
-            window._xzgBigDisplayWheelCaptureInstalled = true;
-            window.addEventListener("wheel", (event) => {
-                const canvas = app.canvas;
-                const canvasElement = canvas?.canvas;
-                if (!canvasElement || (event.target !== canvasElement && !canvasElement.contains?.(event.target))) return;
-                let graphPos;
-                try {
-                    const canvasPos = canvas.convertEventToCanvasOffset?.(event);
-                    graphPos = canvasPos && canvas.convertCanvasToGraph?.(canvasPos);
-                } catch (_) {}
-                if (!graphPos && Array.isArray(canvas?.graph_mouse)) graphPos = canvas.graph_mouse;
-                if (!graphPos) return;
-
-                const node = [...(app.graph?._nodes || [])].reverse().find((candidate) =>
-                    candidate.type === _NODE_TYPE && candidate.pos && candidate.size &&
-                    graphPos[0] >= candidate.pos[0] && graphPos[0] <= candidate.pos[0] + candidate.size[0] &&
-                    graphPos[1] >= candidate.pos[1] && graphPos[1] <= candidate.pos[1] + candidate.size[1]);
-                if (!node) return;
-
-                const localX = graphPos[0] - node.pos[0];
-                const localY = graphPos[1] - node.pos[1];
-                const metrics = node._xzgBigDisplayScrollMetrics;
-                if (!metrics) return;
-                if (metrics.cells) {
-                    const cell = metrics.cells.find((entry) => localY >= entry.rowTop && localY <= entry.rowTop + entry.rowHeight && localX >= entry.left && localX <= entry.right);
-                    if (!cell) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.stopImmediatePropagation();
-                    if (cell.maxScroll > 0) {
-                        const tops = node._xzgBigDisplayScrollTops || (node._xzgBigDisplayScrollTops = []);
-                        tops[cell.index] = Math.max(0, Math.min(cell.maxScroll, (tops[cell.index] || 0) + (event.deltaY || 0) * 0.8));
-                        node.setDirtyCanvas?.(true, true);
-                    }
-                } else if (metrics.maxScroll > 0 && localX >= metrics.left && localX <= metrics.right && localY >= metrics.top && localY <= metrics.top + metrics.height) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.stopImmediatePropagation();
-                    node._xzgBigDisplayScrollTop = Math.max(0, Math.min(metrics.maxScroll, (node._xzgBigDisplayScrollTop || 0) + (event.deltaY || 0) * 0.8));
-                    node.setDirtyCanvas?.(true, true);
-                }
-            }, { capture: true, passive: false });
         }
 
         // 热修复入口

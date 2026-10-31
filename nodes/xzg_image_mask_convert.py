@@ -8,17 +8,18 @@ class XiaozhuguangImageMaskConvert:
                     "tooltip": "灰度亮度：将RGB按亮度加权转换为遮罩；也可单独提取红、绿、蓝通道。仅影响图像转遮罩。",
                 }),
             },
+            # source 为可选输入：未连接时不触发内核校验报错（Required input is missing），
+            # execute 收到 None 直接输出空值
             "optional": {
-                "image": ("IMAGE", {"tooltip": "转换为遮罩；无输入时遮罩输出为 None。"}),
-                "mask": ("MASK", {"tooltip": "转换为RGB灰度图像；无输入时图像输出为 None。"}),
+                "source": ("IMAGE,MASK", {"tooltip": "连接图像时输出遮罩；连接遮罩时输出 RGB 灰度图像。未连接时输出空值，不报错。"}),
             },
         }
 
-    RETURN_TYPES = ("MASK", "IMAGE")
-    RETURN_NAMES = ("mask", "image")
+    RETURN_TYPES = ("IMAGE,MASK",)
+    RETURN_NAMES = ("输出",)
     FUNCTION = "execute"
     CATEGORY = "小珠光/图片"
-    DESCRIPTION = "图像与遮罩双向独立转换，支持批量。缺少对应输入时返回 None，与小珠光数据阻断一致。"
+    DESCRIPTION = "一个输入、一个输出，自动识别图像或遮罩并转换为另一种类型，支持批量。通道选项仅影响图像转遮罩。未连接输入时输出空值，不报错。"
 
     @classmethod
     def VALIDATE_INPUTS(cls, channel):
@@ -26,14 +27,13 @@ class XiaozhuguangImageMaskConvert:
             return "未知的图像转遮罩通道。"
         return True
 
-    def execute(self, channel="灰度亮度", image=None, mask=None):
+    def execute(self, source, channel="灰度亮度"):
         channel = {"灰度亮度": "luminance", "红通道": "red", "绿通道": "green", "蓝通道": "blue"}.get(channel, channel)
-        output_image = None
-        output_mask = None
-        if image is not None and image.numel() > 0:
-            if image.ndim == 3:
-                image = image.unsqueeze(0)
-            if image.ndim != 4 or image.shape[-1] not in (1, 3, 4):
+        if source is None:
+            return (None,)
+        if source.ndim == 4:
+            image = source
+            if image.shape[-1] not in (1, 3, 4):
                 raise ValueError("图像需要 [批次, 高, 宽, 通道] 格式，支持灰度、RGB 或 RGBA。")
             if image.shape[-1] == 1:
                 output_mask = image[..., 0]
@@ -41,12 +41,11 @@ class XiaozhuguangImageMaskConvert:
                 output_mask = (image[..., :3] * image.new_tensor([0.299, 0.587, 0.114])).sum(dim=-1)
             else:
                 output_mask = image[..., {"red": 0, "green": 1, "blue": 2}[channel]]
-        if mask is not None and mask.numel() > 0:
-            if mask.ndim == 4 and mask.shape[-1] == 1:
-                mask = mask[..., 0]
+            return (output_mask,)
+        if source.ndim in (2, 3):
+            mask = source
             if mask.ndim == 2:
                 mask = mask.unsqueeze(0)
-            if mask.ndim != 3:
-                raise ValueError("遮罩需要 [批次, 高, 宽] 或 [高, 宽] 格式。")
             output_image = mask.unsqueeze(-1).repeat(1, 1, 1, 3)
-        return output_mask, output_image
+            return (output_image,)
+        raise ValueError("输入需要 IMAGE [批次, 高, 宽, 通道] 或 MASK [批次, 高, 宽] / [高, 宽] 格式。")

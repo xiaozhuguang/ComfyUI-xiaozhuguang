@@ -216,6 +216,33 @@ def _manual_timeline_render_range(timeline):
     return mark_in + timeline_start, mark_out + timeline_start
 
 
+def _capture_timeline_marks(timeline, render_range):
+    """Snapshot relative marks before render presets can reset the timeline range."""
+    try:
+        raw = timeline.GetMarkInOut() or {}
+    except Exception:
+        raw = {}
+    saved = {}
+    for kind in ("video", "audio"):
+        marks = raw.get(kind) or {}
+        if marks.get("in") is not None and marks.get("out") is not None:
+            saved[kind] = (int(marks["in"]), int(marks["out"]))
+    # The successful manual-range read is authoritative even if a subsequent
+    # GetMarkInOut intermittently returns an empty dictionary.
+    start = int(timeline.GetStartFrame() or 0)
+    saved["video"] = (int(render_range[0]) - start, int(render_range[1]) - start)
+    return saved
+
+
+def _restore_timeline_marks(timeline, saved):
+    for kind, (mark_in, mark_out) in saved.items():
+        try:
+            if timeline.SetMarkInOut(mark_in, mark_out, kind) is False:
+                print(f"[XZG DaVinci] Failed to restore {kind} in/out marks", file=sys.stderr)
+        except Exception as error:
+            print(f"[XZG DaVinci] Failed to restore {kind} in/out marks: {error}", file=sys.stderr)
+
+
 def _read_manual_marks(resolve, project, timeline, restore_page=True):
     """读取手工设置的入出点，带切页与重试兜底。
 
@@ -874,6 +901,8 @@ def action_export(pargs):
                 "error": "未检测到有效的手工视频入出点，请先在达芬奇时间线上按 I 和 O 设置出入点",
                 "debug": {"page": current_page, "marks_raw": marks_raw}}
 
+    original_marks = _capture_timeline_marks(tl, render_range)
+
     # 文件名：直接用播放头所在片段原名，不加短码/时间戳。
     # 同名时达芬奇 CustomName 会覆盖旧文件（用户已接受此行为）。
     clip_display_name = ""
@@ -910,6 +939,7 @@ def action_export(pargs):
             except Exception:
                 pass
         _restore_playhead_timecode(tl, original_playhead_tc)
+        _restore_timeline_marks(tl, original_marks)
     if render_error is not None:
         return {"ok": False, "error": f"导出失败：{render_error}"}
 

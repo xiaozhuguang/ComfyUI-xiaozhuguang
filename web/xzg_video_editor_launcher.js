@@ -101,6 +101,7 @@ async function openEditor(options = {}) {
         _editorInstance._confirmCallback =
             typeof options.confirmCallback === "function" ? options.confirmCallback : null;
         _editorInstance._confirmCallbackCalled = false;
+        _editorInstance._allowMultiClipOutput = !!options.allowMultiClipOutput;
         _editorInstance._modeFilter =
             (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
         _editorInstance._applyModeFilter?.();
@@ -113,6 +114,7 @@ async function openEditor(options = {}) {
         _editorInstance._confirmCallback =
             typeof options.confirmCallback === "function" ? options.confirmCallback : null;
         _editorInstance._confirmCallbackCalled = false;
+        _editorInstance._allowMultiClipOutput = !!options.allowMultiClipOutput;
         _editorInstance._modeFilter =
             (options.modeFilter === "audio" || options.modeFilter === "video") ? options.modeFilter : null;
         _editorInstance._applyModeFilter?.();
