@@ -1,6 +1,7 @@
 ﻿import { app } from "../../scripts/app.js";
 
 import { api } from "../../scripts/api.js";
+import { prepareSchedulerPrompt, useSchedulerCache } from "./lib/xzg_scheduler_prompt.mjs";
 
 
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
@@ -38,11 +39,6 @@ const BUFFER_RESET_API = "/xzg_video_batch_buffer_reset";
 const BUFFER_LIST_API = "/xzg_video_batch_buffer_list";
 
 
-// 后端视频探测：给「小珠光场景切点分段」自己解码的视频量真实帧数/帧率
-// （分段只按本节点视频算，不用加载器播放器 duration×fps 的估算值）
-const VIDEO_PROBE_API = "/xzg_video_editor_probe";
-
-
 const BATCH_NODE_TYPE = "XiaozhuguangVideoLoaderDaVinci"; // 小珠光视频加载-化神级
 
 
@@ -78,6 +74,7 @@ async function restoreBatchAfterRefreshLocked(lockHeld) {
     batchRestoring = true;
     const status = text => { sched._xzgBatchStatus = {text, warn: true}; xzgRenderSegRows(sched); };
     try {
+        if (!saved.cacheBatch) throw new Error("旧版任务缺少素材缓存标识，请重新运行工作流");
         status("刷新恢复：正在确认后台当前段状态，请勿重复提交…");
         // 提交响应尚未返回就刷新：从服务端按节点、片源、段号及提交时间找回任务。
         if (saved.submitting && !saved.promptId) {
@@ -88,7 +85,7 @@ async function restoreBatchAfterRefreshLocked(lockHeld) {
                 ]);
                 const matches = new Set();
                 const matchesInput = output => output?.[saved.schedulerId]?.inputs?.["当前段"] === saved.segmentIndex
-                    && output?.[saved.nodeId]?.inputs?.["视频"] === saved.video;
+                    && output?.[saved.schedulerId]?.inputs?.["缓存批次"] === saved.cacheBatch;
                 for (const item of [...(queue.queue_running || []), ...(queue.queue_pending || [])]) {
                     if (matchesInput(item[2])) matches.add(String(item[1]));
                 }
@@ -888,7 +885,7 @@ async function runOnce(downIds, idBox, collected, promptPatch = null, session = 
 
             // 本轮提交的就地改写（如最终合并时摘掉合并节点的上游依赖），失败不影响排队
             if (promptPatch) {
-                try { promptPatch(prompt); } catch (e) { console.error("[小珠光批处理] prompt 改写失败:", e); }
+                promptPatch(prompt);
             }
 
 
@@ -1111,29 +1108,6 @@ const BATCH_SETTINGS_DEFAULTS = Object.freeze({
 function findSchedulerNode() {
     const nodes = (typeof app !== "undefined" && app.graph?._nodes) || [];
     return nodes.find((n) => n?.type === SCHEDULER_NODE_TYPE) || null;
-}
-
-// 探测视频的真实帧数与帧率（后端 ffprobe / ffmpeg 计数）：
-// 调度节点自己整片解码，分段必须以它自己那份视频的实测帧数为准，
-// 不能用加载器播放器的 duration×fps 估算值（VFR/音轨更长时会明显虚高）
-async function probeVideoMeta(filename) {
-    const name = String(filename || "").trim();
-    if (!name) return null;
-    try {
-        const resp = await fetch(VIDEO_PROBE_API, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename: name, type: "input" }),
-        });
-        if (!resp.ok) return null;
-        const info = await resp.json();
-        const frames = Math.floor(Number(info?.frame_count) || 0);
-        const fps = Number(info?.fps) || 0;
-        if (frames <= 0 || fps <= 0) return null;
-        return { frames, fps };
-    } catch (_) {
-        return null;
-    }
 }
 
 // ── 分段信息镜像到调度节点：直接显示在节点上，免开批处理弹窗 ─────────────────
@@ -1938,7 +1912,8 @@ function findLiveNode(id, type) {
     return (app.graph?._nodes || []).find((n) =>
 
 
-        String(n.id) === String(id) && (!type || n.type === type)) || null;
+        String(n.id) === String(id) && (!type || n.type === type
+            || (type === BATCH_NODE_TYPE && n.type === SCHEDULER_NODE_TYPE))) || null;
 
 
 }
@@ -2107,6 +2082,16 @@ async function interruptSessionPrompt(s, reason) {
 /** 清理前端会话；只有明确要求时才中断该会话的后台任务。 */
 
 
+async function releaseSchedulerCache(session) {
+    if (!session?.cacheBatch || !session.schedulerId) return;
+    try {
+        await api.fetchApi("/xzg_video_scheduler_release", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({node_id: session.schedulerId, batch: session.cacheBatch}),
+        });
+    } catch (error) { console.error("[小珠光分段] 释放缓存失败", error); }
+}
+
 function abortSession(s, reason = "清理旧会话", interrupt = false) {
 
 
@@ -2130,7 +2115,8 @@ function abortSession(s, reason = "清理旧会话", interrupt = false) {
 
 
     console.info("[小珠光批处理] 清理会话:", { reason, interrupt });
-    if (interrupt && s.isRunning) interruptSessionPrompt(s, reason);
+    if (interrupt && (s.isRunning || s.isPreparing)) interruptSessionPrompt(s, reason);
+    if (!s.isRunning && !s.isPreparing) releaseSchedulerCache(s);
 
 
 }
@@ -2293,7 +2279,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
     // 「片段起点/片段终点」（秒）置 0，避免两套窗口参数叠加造成双重偏移。
 
 
-    if (!wSkip || !wLimit) {
+    if ((!wSkip || !wLimit) && !findSchedulerNode()) {
 
 
         throw new Error("加载器缺少「跳过帧数/帧数上限」控件，请刷新页面后重试");
@@ -2305,7 +2291,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
     // 段边界秒→帧换算需要源帧率（视频加载后由解码探测，onSourceFpsDetected 写入）
 
 
-    const srcFps = Number(session?.resume?.fps) || Number(node._xzgVideoPlayer?.getFrameRate?.()) || Number(node._xzgSourceFps) || 0;
+    const srcFps = Number(session?.sceneFps) || Number(session?.resume?.fps) || Number(findWidget(node, "强制帧率")?.value) || Number(node._xzgVideoPlayer?.getFrameRate?.()) || Number(node._xzgSourceFps) || 0;
 
 
     if (!srcFps || srcFps <= 0) {
@@ -2320,10 +2306,10 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
     // 批处理前的控件原值：结束后恢复，避免影响用户后续手动执行
 
 
-    const origSkip = Number(wSkip.value) || 0;
+    const origSkip = Number(wSkip?.value) || 0;
 
 
-    const origLimit = Number(wLimit.value) || 0;
+    const origLimit = Number(wLimit?.value) || 0;
 
 
     // 旧工作流没有基准属性时，用本次运行前的值补记一次（下次「预览分段」用它复位）
@@ -2382,7 +2368,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
     // 下游的合并节点，不属于本链的（其他加载器的）保持原样并在日志明确提示
 
 
-    // 方案 B：存在分段处理节点时，执行分支从它开始（上游加载器不在执行图里）
+    // 存在分段节点时，执行分支从它开始，图像等输入依赖在提交时移除
     const rootNode = findSchedulerNode() || node;
     const loaderDownIds = collectDownstream(rootNode);
 
@@ -2538,7 +2524,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
             state: "running", signature: graphSignature(), nodeId, schedulerId: String(rootNode.id),
             video: String(findWidget(liveNode, "视频")?.value || ""),
             segments: segments.map(segment => ({...segment})), lastPadFrames: segments.lastPadFrames || 0, fps: srcFps,
-            table: String(findWidget(rootNode, "段表")?.value || ""), mergeIds,
+            table: String(findWidget(rootNode, "段表")?.value || ""), cacheBatch: session.cacheBatch, mergeIds,
             nextIndex: 0, promptId: null, outputs: [], skippedByNode: {},
         };
         saveBatchCheckpoint(session);
@@ -2710,7 +2696,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
             let pendingIds = mergeIds.slice();
 
 
-            // 方案 B：存在「小珠光场景切点分段」时，由它自己解码本段，加载器不再被逐段改写
+            // 存在分段节点时，只从后端已准备的素材缓存切片
             const schedNode = findSchedulerNode();
 
 
@@ -2745,7 +2731,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                 if (attempt === 1) {
 
 
-                    // 方案 B：只写「当前段」，由分段处理节点自己解码本段（加载器不参与执行）
+                    // 只写「当前段」，后端从本轮素材缓存切片
                     if (schedNode) {
                         setNodeWidgetValue(schedNode, "当前段", i);
                     } else {
@@ -2798,7 +2784,11 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                     const segDownIds = mergeNodes.length
                         ? (attempt === 1 ? downIds : new Set(pendingIds))
                         : downIds;
-                    await runOnce(segDownIds, idBox, collected, null, session);
+                    await runOnce(segDownIds, idBox, collected, schedNode ? prompt => {
+                        useSchedulerCache(prompt, schedNode.id, session.cacheBatch);
+                        // Remove the now-unneeded upstream nodes from the execution graph.
+                        filterPromptOutput(prompt, segDownIds);
+                    } : null, session);
 
 
                 } catch (e) {
@@ -4066,246 +4056,55 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
     };
 
     $("xzg-batch-detect").onclick = async () => {
-        if (running) return;
-
-
-        const dNode = session.node; // 切回后 syncSession 已重绑为实时实例
-
-        // 探测基线图：探测是异步的（取视频信息需要网络往返），期间切到其他工作流
-        // 标签的话 app.graph 会变成别的图——若不校验，本图视频算出的段表会写进
-        // 别的工作流的调度节点（其视频帧数对不上 → 报「当前段没有帧」），
-        // 自动开始执行也会跑错图
-        const probeGraph = app.graph;
-
-        const filename = findWidget(dNode, "视频")?.value;
-
-
-        if (!filename) { ui.status("加载器未选择视频", true); return; }
-
-        // ── 每次分段前先把加载器复位到「用户设定的加载窗口」────────────────
-        // 逐段运行会把 跳过帧数/帧数上限 改成每段的窗口；若上次任务被终止或异常退出，
-        // 残留值会让这次分段基于上一段的窗口计算（表现为「不读 200 帧加载上限」）。
-        // 基准值取自加载器在用户手动修改时写入的 node.properties.xzgBaseSkip / xzgBaseLimit。
-        const resetLoaderWindow = async () => {
-            const wS = findWidget(dNode, "跳过帧数");
-            const wL = findWidget(dNode, "帧数上限");
-            const props = dNode.properties || {};
-            const asInt = (v, dflt) => {
-                const n = Math.floor(Number(v));
-                return Number.isFinite(n) && n >= 0 ? n : dflt;
-            };
-            const baseSkip = asInt(props.xzgBaseSkip, asInt(wS?.value, 0));
-            const baseLimit = asInt(props.xzgBaseLimit, asInt(wL?.value, 0));
-            if (wS && asInt(wS.value, 0) !== baseSkip) wS.value = baseSkip;
-            if (wL && asInt(wL.value, 0) !== baseLimit) wL.value = baseLimit;
-            // 回到源视频（清掉上一次执行覆盖的分段预览），再按基准窗口应用红蓝杠
-            try { dNode._xzgResetLoaderPreview?.(); } catch (e) { /* ignore */ }
-            dNode.setDirtyCanvas?.(true, true);
-            await new Promise((r) => setTimeout(r, 200)); // 等播放器重新加载源视频、刷新总帧数
-        };
-        await resetLoaderWindow();
-
-
-        ui.status("正在探测场景切点…");
-
-        $("xzg-batch-log").style.display = "none";
-
-        $("xzg-batch-log").innerHTML = "";
-
-
+        if (running || session.isPreparing) return;
+        const sched = findSchedulerNode();
+        if (!sched) return;
+        const graph = app.graph;
+        session.isPreparing = true;
+        session.schedulerId = String(sched.id);
+        session.cacheBatch = globalThis.crypto.randomUUID();
+        setNodeWidgetValue(sched, "缓存批次", session.cacheBatch);
+        setUiLocked(true);
+        ui.status("正在接收并缓存图像，分析场景切点…");
         try {
-
-
-            // 用户预设的裁剪窗口（跳过帧数/帧数上限）：分段限制在该范围内（相当于先按红蓝杠裁剪再分段）
-            // 有「小珠光场景切点分段」节点时该窗口不适用：它自己整片解码再按段切片，
-            // 加载器的跳过/上限完全作用不到它身上（见下方按其自身视频重新取帧数）
-
-
-            let srcFps = Number(dNode._xzgVideoPlayer?.getFrameRate?.()) || Number(dNode._xzgSourceFps) || 0;
-
-
-            // 源总帧数：末段 end=0（到片尾）时用它算出真实帧数，不再显示「片尾」
-
-
-            let totalFrames = Number(dNode._xzgVideoPlayer?.getSourceTotalFrames?.()) || 0;
-
-
-            const wSkipD = findWidget(dNode, "跳过帧数");
-
-
-            const wLimitD = findWidget(dNode, "帧数上限");
-
-
-            let skipF = Number(wSkipD?.value) || 0;
-            const sourceWindowStart = Math.max(0, Math.floor(skipF));
-
-
-            let limitF = Number(wLimitD?.value) || 0;
-
-            // ── 以「小珠光场景切点分段」实际收到的整片图像为准 ─────────────────
-            // 节点收到的就是加载器按「跳过帧数 / 帧数上限」裁好的那段图像：它的第 0 帧
-            // 对应窗口起点，总帧数 = 窗口长度（不是源视频总帧数）。段表若按源片总帧数
-            // 生成，就会报「当前段没有帧（50-183）：段表与当前视频不匹配（实际只有 50 帧）」。
-            const schedProbeNode = findSchedulerNode();
-            if (schedProbeNode) {
-                const loaderVideo = String(findWidget(dNode, "视频")?.value || "");
-                const meta = await probeVideoMeta(loaderVideo);
-                if (meta) {
-                    // 源片实测帧数 + 加载窗口 → 窗口长度（帧数上限 50 就按 50 帧分段）
-                    const winStart = Math.min(Math.max(0, Math.floor(skipF)), meta.frames);
-                    const winEnd = limitF > 0
-                        ? Math.min(meta.frames, winStart + Math.floor(limitF))
-                        : meta.frames;
-                    totalFrames = Math.max(0, winEnd - winStart);
-                    srcFps = meta.fps;
-                    // 段表坐标系 = 窗口内坐标：起点归零，区间就是 0..窗口长度
-                    skipF = 0;
-                    limitF = 0;
-                }
-            }
-
-
-            if (!srcFps || totalFrames <= 0) throw new Error("请先加载视频并探测到有效帧率和总帧数");
-            const rangeStart = Math.max(0, Math.min(totalFrames, Math.floor(skipF)));
-            const rangeEnd = limitF > 0 ? Math.min(totalFrames, rangeStart + Math.floor(limitF)) : totalFrames;
-            const threshold = Number(findNodeWidget(schedProbeNode, "场景阈值")?.value ?? 0.35);
-            const response = await api.fetchApi("/xzg_video_editor_detect_scenes", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ filename, file_type: "input", threshold }),
-            });
-            const detection = await response.json();
-            if (!response.ok || !Array.isArray(detection.scenes)) {
-                throw new Error(detection.error || "场景切点探测失败");
-            }
-            // 场景时间属于源视频；调度节点的段表属于加载窗口，从窗口起点归零。
-            const origin = schedProbeNode ? sourceWindowStart : 0;
-            const cuts = [...new Set(detection.scenes
-                .map(time => Math.round(Number(time) * srcFps) - origin)
-                .filter(frame => Number.isFinite(frame) && frame > rangeStart && frame < rangeEnd))]
-                .sort((a, b) => a - b);
-            const points = [rangeStart, ...cuts, rangeEnd];
-            const nominal = points.slice(0, -1).map((start, i) => [start, points[i + 1]]);
-            segments = nominal.map(([a, b], i) => ({
-                start: a / srcFps,
-                end: (i === nominal.length - 1 && limitF <= 0 && b >= totalFrames) ? 0 : b / srcFps,
-            }));
+            const idBox = {id: null};
+            await runOnce(new Set([String(sched.id)]), idBox, [], prompt => {
+                prepareSchedulerPrompt(prompt, sched.id, session.cacheBatch);
+            }, session);
+            if (app.graph !== graph || session.abortFlag.v) throw new Error("工作流已切换或任务已停止");
+            if (!idBox.id) throw new Error("当前 ComfyUI 未返回任务 ID，无法读取缓存段表");
+            const history = await api.fetchApi(`/history/${idBox.id}`).then(r => r.json());
+            const info = history[idBox.id]?.outputs?.[String(sched.id)];
+            const table = info?.scene_table?.[0];
+            const fps = Number(info?.scene_fps?.[0]);
+            if (!table || !(fps > 0)) throw new Error("未收到分段节点生成的缓存段表，请重启 ComfyUI 后重试");
+            session.sceneFps = fps;
+            setNodeWidgetValue(sched, "段表", table);
+            setNodeWidgetValue(sched, "当前段", 0);
+            const ranges = table.split(",").map(part => part.split(":").map(Number));
+            segments = ranges.map(([a, b]) => ({start: a / fps, end: b / fps}));
             segments.lastPadFrames = 0;
-            $("xzg-batch-status").textContent = `场景切点探测完成：${cuts.length} 个切点，共 ${segments.length} 段（${srcFps} fps）`;
-            // 全部段参与执行（不支持点选）
-            // 段表写回「小珠光场景切点分段」：节点上直接可见本次分段结果（下游节点/后端也能读到）
-            // 写入前校验仍在探测开始时的图：期间切走了就放弃写入与自动执行，
-            // 避免把段表污染到别的工作流（切回后重新探测即可）
-            if (app.graph !== probeGraph) {
-                session.autoStart = false;
-                ui.status("探测期间切换到了其他工作流：已取消写入段表与自动执行，请切回本工作流重新预览分段", true);
-                return;
-            }
-            // 段行数据先收集，等段列表渲染完成后再一次性镜像到调度节点（免弹窗）
-            const nodeRows = [];
-            const schedNode = findSchedulerNode();
-            if (schedNode) {
-                const table = segments.map((s) => {
-                    const a = Math.max(0, Math.round(Number(s.start || 0) * srcFps));
-                    const b = Number(s.end) > 0 ? Math.round(Number(s.end) * srcFps) : totalFrames;
-                    return `${a}:${Math.max(a, b)}`;
-                }).join(",");
-                setNodeWidgetValue(schedNode, "段表", table);
-                setNodeWidgetValue(schedNode, "当前段", 0);
-            }
-
-            // 探测完即显示每段预计帧数（秒→帧换算，与 runBatch 段窗口公式一致）：
-
-            // 段 end>0 时终点=段末秒；end=0 表示到片尾，终点=源总帧数。
-
-            // 执行后 segFrames 会用实际缓冲帧数覆盖，二者通常一致。
-
-            $("xzg-batch-segments").innerHTML = segments
-
-                .map((s, i) => {
-
-                    const startFrame = Math.max(0, Math.round(s.start * srcFps));
-
-                    const endFrame = s.end > 0
-
-                        ? Math.round(s.end * srcFps)
-
-                        : (totalFrames > 0 ? totalFrames : 0);
-
-                    const lenFrames = endFrame > 0 ? Math.max(0, endFrame - startFrame) : 0;
-
-                    // 帧区间按真实帧数显示；末段为满足 17N+5 复制末帧补齐的部分单独标注
-                    const padFrames = 0;
-                    const rangeEndShown = Math.max(startFrame, endFrame - 1);
-                    const frameRange = `${startFrame}-${rangeEndShown}`;
-                    const frameText = (srcFps > 0 && lenFrames > 0)
-                        ? `${lenFrames} 帧 ${frameRange}${padFrames > 0 ? `（含补 ${padFrames} 帧）` : ""}`
-                        : "";
-
-                    const endTimeStr = s.end > 0
-
-                        ? fmtTime(s.end)
-
-                        : (totalFrames > 0 && srcFps > 0 ? fmtTime(totalFrames / srcFps) : "片尾");
-
-                    nodeRows.push({
-                        time: `#${i + 1}  ${fmtTime(s.start)} → ${endTimeStr}`,
-                        frames: frameText,
-                        status: "待执行",
-                        color: "#888",
-                    });
-
-                    return `<div id="xzg-batch-seg-row-${i}" class="xzg-batch-seg-row" style="display:flex;align-items:center;gap:6px;">` +
-
-                        `<span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">#${i + 1} &nbsp;${fmtTime(s.start)} → ${endTimeStr}</span>` +
-
-                        `<span id="xzg-batch-seg-f-${i}" style="color:#7a9;flex:none;">${frameText}</span>` +
-
-                        `<span id="xzg-batch-seg-s-${i}" style="color:#888;flex:none;">待执行</span>` +
-
-                    `</div>`;
-
-                })
-
-                .join("");
-
-            // 段列表渲染完成后再镜像到调度节点：此前在 nodeRows 还没填充（甚至还没声明）时就调用，
-            // 会抛 "Cannot access 'nodeRows' before initialization"，节点上也显示不出分段行
-            xzgMirrorSegRows(schedNode, nodeRows);
-
-            const rangeNote = (skipF > 0 || limitF > 0)
-                ? `（裁剪范围 ${rangeStart}-${Math.max(rangeStart, rangeEnd - 1)} 帧）`
-                : "";
-
-            ui.status(`分段预览完成，共 ${segments.length} 段${rangeNote}，自动开始执行…`);
-
-            // 自动触发：分段就绪后直接开始任务（等价于用户点一次「开始任务」），只消费一次
+            const rows = ranges.map(([a, b], i) => ({
+                time: `#${i + 1}  ${fmtTime(a / fps)} → ${fmtTime(b / fps)}`,
+                frames: `${b - a} 帧 ${a}-${b - 1}`, status: "待执行", color: "#888",
+            }));
+            xzgMirrorSegRows(sched, rows);
+            $("xzg-batch-segments").innerHTML = rows.map((row, i) =>
+                `<div id="xzg-batch-seg-row-${i}">${row.time} <span id="xzg-batch-seg-f-${i}">${row.frames}</span> <span id="xzg-batch-seg-s-${i}">待执行</span></div>`).join("");
+            ui.status(`缓存完成：${info.scene_frames[0]} 帧，共 ${segments.length} 段，自动开始执行…`);
             if (session.autoStart) {
                 session.autoStart = false;
-                setTimeout(() => {
-                    try { $("xzg-batch-run").click(); }
-                    catch (e) { console.error("[小珠光批处理] 自动开始失败:", e); }
-                }, 0);
+                setTimeout(() => $("xzg-batch-run").click(), 0);
             }
-
-
-        } catch (e) {
-
-
-            // 自动触发时探测失败：消费掉标记，避免残留导致后续手动探测后自动开始任务
+        } catch (error) {
             session.autoStart = false;
-
-            ui.status(String(e.message || e), true);
-
-
+            await releaseSchedulerCache(session);
+            ui.status(String(error.message || error), true);
+        } finally {
+            session.isPreparing = false;
+            setUiLocked(false);
         }
-
-
     };
-
-
-
-
 
     const startBatch = async () => {
 
@@ -4408,6 +4207,7 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
 
         } finally {
 
+            await releaseSchedulerCache(session);
             running = false;
 
             removeBatchFocusGuard(); // 任务结束：还原 alert/confirm/prompt/focus/open
@@ -4430,6 +4230,8 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
         });
     };
     if (resume) {
+        session.cacheBatch = resume.cacheBatch;
+        session.schedulerId = String(resume.schedulerId);
         segments = resume.segments.map(segment => ({...segment}));
         segments.lastPadFrames = resume.lastPadFrames || 0;
         const sched = findLiveNode(resume.schedulerId, SCHEDULER_NODE_TYPE);
@@ -4483,12 +4285,12 @@ app.registerExtension({
         api.queuePrompt = async function (index, prompt, ...rest) {
             try {
                 const nodes = app.graph?._nodes || [];
-                const batchBusy = !!activeSession && activeSession.isRunning;
+                const batchBusy = !!activeSession && (activeSession.isRunning || activeSession.isPreparing);
                 const schedNode = nodes.find((n) => n?.type === SCHEDULER_NODE_TYPE) || null;
-                const loaderNode = nodes.find((n) => n?.type === BATCH_NODE_TYPE) || null;
-                // 局部执行与编辑器加载画面不启动批处理；加载器、分段节点均在提交内才拦截。
+                const loaderNode = schedNode;
+                // 局部执行与编辑器加载画面不启动批处理；分段节点在提交内才拦截。
                 const out = prompt?.output || {};
-                const inBranch = !!(loaderNode && out[String(loaderNode.id)] && schedNode && out[String(schedNode.id)]);
+                const inBranch = !!(schedNode && out[String(schedNode.id)]);
                 if (inBranch && loaderNode?.properties?.xzgMultiVideo) {
                     return origQueuePrompt.call(api, index, prompt, ...rest);
                 }
@@ -4521,7 +4323,7 @@ app.registerExtension({
             const origSchedCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const ret = origSchedCreated?.apply(this, arguments);
-                const hiddenNames = new Set(["段表", "当前段"]);
+                const hiddenNames = new Set(["段表", "当前段", "缓存批次"]);
                 for (const w of this.widgets || []) {
                     if (w && hiddenNames.has(w.name)) {
                         w.type = "hidden";

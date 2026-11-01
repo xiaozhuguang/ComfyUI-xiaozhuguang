@@ -13,23 +13,17 @@
 
 段表格式："0:124,124:248,248:372"（起始帧:结束帧，0-based 右开区间，逗号/分号分隔）。
 段与段首尾相接（相邻段不重复读任何帧）。
-段表由前端场景切点探测生成，不再按固定帧数均分。
+段表由本节点分析实际输入图像生成；前端只编排缓存片段的执行。
 """
-import os
-
 import torch
+from comfy.model_management import throw_exception_if_processing_interrupted
 
 from .xzg_video_loader import AUDIO_SAMPLE_RATE
 
-# 一次批处理内的素材快照：unique_id -> {"frames", "audio", "fps", "mask"}。
-# 只持有上游对象引用，不复制张量；第 0 段写入，最后一段执行后清除。
+# 一次批处理内的素材快照：unique_id:batch -> {"frames", "audio", "fps", "mask"}。
+# 只持有实际输入的引用；准备阶段写入，最后一段/中断/异常时清除。
 _SCHEDULER_SNAPSHOT = {}
 
-# 快照锁定开关：默认开启。设置环境变量 XZG_SCHEDULER_SNAPSHOT=0 可退回
-# 「每段都从上游取素材」的旧行为，用于排查或临时绕过。
-_SNAPSHOT_ENABLED = str(os.environ.get("XZG_SCHEDULER_SNAPSHOT", "1")).strip().lower() not in (
-    "0", "false", "off", "no",
-)
 
 
 class XiaozhuguangVideoScheduler:
@@ -50,6 +44,7 @@ class XiaozhuguangVideoScheduler:
                 "音频": ("AUDIO",),
                 "帧率": ("FLOAT", {"forceInput": True}),
                 "遮罩": ("MASK",),
+                "缓存批次": ("STRING", {"default": ""}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -66,52 +61,42 @@ class XiaozhuguangVideoScheduler:
     )
     FUNCTION = "schedule"
     CATEGORY = "小珠光/视频"
+    OUTPUT_NODE = True
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        # 每段/每次重试都真实解码：段参数变化必然重算，重试时不至于命中缓存而跳过执行
+        # 每段/每次重试都执行缓存切片，避免执行结果缓存跳过本轮缓冲
         return float("NaN")
 
     @staticmethod
-    def _parse_table(text, total):
-        """解析场景段表，非法项忽略，按全片帧数裁剪。"""
-        segs = []
-        for part in str(text or "").replace(";", ",").replace("，", ",").split(","):
-            part = part.strip()
-            if not part:
-                continue
-            sep = ":" if ":" in part else ("-" if "-" in part else "")
-            if not sep:
-                continue
-            fields = part.split(sep)
-            if len(fields) < 2:
-                continue
-            try:
-                start, end = int(float(fields[0])), int(float(fields[1]))
-            except (TypeError, ValueError):
-                continue
-            start = max(0, start)
-            if total > 0:
-                start = min(start, total)
-            if end > start:
-                segs.append((start, end, 0))
-        return segs
-
-    @staticmethod
-    def _table_fits_video(segs, total):
-        """场景区间必须连续覆盖当前素材，仅末段允许少量补帧。"""
-        if total <= 0 or not segs or segs[0][0] != 0:
-            return False
-        if any(left[1] != right[0] for left, right in zip(segs, segs[1:])):
-            return False
-        return segs[-1][0] < total and segs[-1][1] == total
-
-    def _build_segments(self, table, total):
-        """仅使用场景探测段表，缺失或不匹配时要求重新探测。"""
-        segs = self._parse_table(table, total)
-        if not segs or not self._table_fits_video(segs, total):
-            raise ValueError("请运行工作流，重新探测当前视频的场景切点后分段")
-        return [(start, end, 0) for start, end, _ in segs]
+    def _detect_segments(frames, threshold):
+        """在实际图像上计算相邻帧变化；小批缩略图避免复制整片高清素材。"""
+        total = int(frames.shape[0])
+        cuts = [0]
+        previous = None
+        previous_mafd = 0.0
+        with torch.no_grad():
+            for offset in range(0, total, 32):
+                throw_exception_if_processing_interrupted()
+                # Subsample before converting dtype: bound temporary memory for 4K inputs.
+                sample = frames[offset:offset + 32,
+                                ::max(1, frames.shape[1] // 128),
+                                ::max(1, frames.shape[2] // 128), :3]
+                small = torch.nn.functional.interpolate(
+                    sample.permute(0, 3, 1, 2).float(),
+                    size=(64, 64), mode="area")
+                for local, frame in enumerate(small):
+                    if previous is not None:
+                        mafd = float((frame - previous).abs().mean().item())
+                        # scene 阈值采用 8-bit 平均差 / 100 的尺度。
+                        # IMAGE 是 0..1；漏乘 255/100 会让默认 0.35 过于保守。
+                        score = min(1.0, min(mafd, abs(mafd - previous_mafd)) * 2.55)
+                        if score >= float(threshold):
+                            cuts.append(offset + local)
+                        previous_mafd = mafd
+                    previous = frame
+        cuts.append(total)
+        return [(a, b, 0) for a, b in zip(cuts, cuts[1:]) if b > a]
 
     @staticmethod
     def _slice_audio(waveform, sr, start_sec, end_sec):
@@ -123,11 +108,10 @@ class XiaozhuguangVideoScheduler:
             w = w.unsqueeze(0)
         total = w.shape[-1]
         a = max(0, int(round(start_sec * sr))) if sr > 0 else 0
-        a = min(a, total)
         b = int(round(end_sec * sr)) if (sr > 0 and end_sec > start_sec) else total
         b = max(a, b)
-        seg = w[:, a:min(b, total)]
-        pad = b - seg.shape[-1]
+        seg = w[:, min(a, total):min(b, total)]
+        pad = (b - a) - seg.shape[-1]
         if pad > 0:
             seg = torch.nn.functional.pad(seg, (0, pad))
         return seg.unsqueeze(0)
@@ -150,14 +134,14 @@ class XiaozhuguangVideoScheduler:
         return segment
 
     def schedule(self, 段表="", 当前段=0, 场景阈值=0.35,
-                 帧率=0, 图像=None, 音频=None, unique_id=None, 遮罩=None):
+                 帧率=0, 图像=None, 音频=None, unique_id=None, 遮罩=None, 缓存批次=""):
         # 外层只负责快照生命周期：任何异常都先清掉本节点快照。快照持有整片张量引用，
         # 不清理会让 ComfyUI 也无法回收这块内存，中断的批处理会一直占着。
-        snapshot_key = str(unique_id or "")
+        snapshot_key = f"{unique_id}:{缓存批次}" if unique_id else ""
         try:
             return self._schedule_segment(
                 段表, 当前段,
-                帧率, 图像, 音频, 遮罩, snapshot_key,
+                帧率, 图像, 音频, 遮罩, snapshot_key, 场景阈值,
             )
         except Exception:
             if snapshot_key:
@@ -165,39 +149,21 @@ class XiaozhuguangVideoScheduler:
             raise
 
     def _schedule_segment(self, 段表, 当前段,
-                          帧率, 图像, 音频, 遮罩, snapshot_key):
-        # 本节点只按段切片：整片帧必须由上游「图像」提供（不再自己解码视频文件）
-        if 图像 is None:
-            raise ValueError("请把整片「图像」接到本节点（从第 0 帧起覆盖全片）；"
-                             "本节点只按段切片，不再自己解码视频")
-        # 一次批处理内锁定素材：每次运行都从第 0 段开始，故第 0 段抓取上游引用
-        # （不复制张量），其余段复用同一份，中途换片/上游重跑不会污染这一批。
-        material_source = "上游"
-        if _SNAPSHOT_ENABLED and snapshot_key:
-            segment_index = max(0, int(当前段 or 0))
-            snapshot = _SCHEDULER_SNAPSHOT.get(snapshot_key)
-            # 分辨率可在上游加载器动态修改。若快照残留自上一次中断/手动执行，
-            # 即使当前段不是 0，也要按输入张量的形状刷新，不能继续切旧尺寸的帧。
-            snapshot_shape = tuple(snapshot["frames"].shape) if snapshot is not None else None
-            input_shape = tuple(图像.shape)
-            resolution_changed = (
-                snapshot_shape is not None
-                and len(snapshot_shape) >= 3
-                and len(input_shape) >= 3
-                and snapshot_shape[-3:-1] != input_shape[-3:-1]
-            )
-            if segment_index == 0 or snapshot is None or resolution_changed:
-                snapshot = {"frames": 图像, "audio": 音频, "fps": 帧率, "mask": 遮罩}
+                          帧率, 图像, 音频, 遮罩, snapshot_key, threshold):
+        preparing = int(当前段 or 0) == 1000000
+        snapshot = _SCHEDULER_SNAPSHOT.get(snapshot_key) if snapshot_key else None
+        if 图像 is not None:
+            if int(图像.shape[0]) <= 0:
+                raise ValueError("上游「图像」为空，无法分段")
+            snapshot = {"frames": 图像, "audio": 音频, "fps": 帧率, "mask": 遮罩,
+                        "segments": self._detect_segments(图像, threshold)}
+            if snapshot_key:
                 _SCHEDULER_SNAPSHOT[snapshot_key] = snapshot
-                material_source = "上游（分辨率变化，已刷新快照）" if resolution_changed else "上游（已锁定）"
-            else:
-                material_source = "快照"
-            full_frames = snapshot["frames"]
-            音频 = snapshot["audio"]
-            帧率 = snapshot["fps"]
-            遮罩 = snapshot["mask"]
-        else:
-            full_frames = 图像
+        if snapshot is None:
+            raise ValueError("本轮分段素材缓存已释放，请重新运行工作流以接收图像并生成分段")
+        full_frames = snapshot["frames"]
+        音频, 帧率, 遮罩 = snapshot["audio"], snapshot["fps"], snapshot["mask"]
+        material_source = "节点缓存"
         total = int(full_frames.shape[0])
         if total <= 0:
             raise ValueError("上游「图像」为空，无法分段")
@@ -217,8 +183,16 @@ class XiaozhuguangVideoScheduler:
             full_wave = 音频.get("waveform")
             full_sr = int(音频.get("sample_rate") or AUDIO_SAMPLE_RATE)
 
-        segs = self._build_segments(段表, total)
-        index = max(0, min(int(当前段 or 0), len(segs) - 1))
+        segs = snapshot["segments"]
+        table = ",".join(f"{a}:{b}" for a, b, _ in segs)
+        if preparing:
+            return {"ui": {"scene_table": [table], "scene_fps": [fps], "scene_frames": [total]},
+                    "result": (full_frames[:1], {"waveform": full_frames.new_zeros((1, 2, 1)),
+                                               "sample_rate": AUDIO_SAMPLE_RATE}, fps, 1,
+                               self._slice_masks(遮罩, 0, 1, full_frames[:1]))}
+        index = int(当前段 or 0)
+        if index < 0 or index >= len(segs):
+            raise ValueError(f"当前段 {index} 超出缓存段表范围（共 {len(segs)} 段），请重新运行工作流")
         start, end = int(segs[index][0]), int(segs[index][1])
         head = max(0, int(segs[index][2] or 0)) if len(segs[index]) > 2 else 0
         if total > 0:
@@ -262,8 +236,8 @@ class XiaozhuguangVideoScheduler:
                 "sample_rate": int(full_sr or AUDIO_SAMPLE_RATE),
             }
 
-        # 最后一段执行完即释放快照，避免整片张量长期驻留；下一次运行第 0 段会重新抓取。
-        if _SNAPSHOT_ENABLED and snapshot_key and index >= len(segs) - 1:
+        # 最后一段执行完即释放快照，下一轮准备阶段重新接收素材。
+        if snapshot_key and index >= len(segs) - 1:
             _SCHEDULER_SNAPSHOT.pop(snapshot_key, None)
 
         return (
@@ -282,3 +256,15 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangVideoScheduler": "小珠光场景切点分段",
 }
+
+
+# Explicit release for interruption/errors outside the scheduler (e.g. downstream failures).
+from aiohttp import web
+from server import PromptServer
+
+
+@PromptServer.instance.routes.post("/xzg_video_scheduler_release")
+async def release_scheduler_cache(request):
+    data = await request.json()
+    _SCHEDULER_SNAPSHOT.pop(f"{data.get('node_id')}:{data.get('batch', '')}", None)
+    return web.json_response({"ok": True})
