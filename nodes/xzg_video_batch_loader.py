@@ -107,8 +107,8 @@ class XiaozhuguangVideoBatchMerge:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "AUDIO")
-    RETURN_NAMES = ("图像", "音频")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT")
+    RETURN_NAMES = ("图像", "音频", "帧率")
     FUNCTION = "merge_videos"
     CATEGORY = "小珠光/视频"
     # 必须为输出节点：逐段阶段下游保存节点被编排器排除后，
@@ -181,7 +181,7 @@ class XiaozhuguangVideoBatchMerge:
         image_tensor, audio = self._trim_output_tail(
             image_tensor, audio, tail_trim, float(segments[-1]["fps"] or fps or 0))
         clear_node_segments(node_id)
-        return (image_tensor, audio)
+        return (image_tensor, audio, float(segments[0]["fps"]))
 
     @staticmethod
     def _trim_output_tail(image, audio, frames, fps):
@@ -211,7 +211,7 @@ class XiaozhuguangVideoBatchMerge:
         fps = self._resolve_fps(帧率)
         info = self._buffer_segment(图像, 音频, fps, unique_id, trim_tail=末尾裁帧)
         info["node"] = str(unique_id)
-        return {"result": (图像, 音频), "ui": {"buffered": [info]}}
+        return {"result": (图像, 音频, fps), "ui": {"buffered": [info]}}
 
 
 NODE_CLASS_MAPPINGS = {

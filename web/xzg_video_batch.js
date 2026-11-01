@@ -1,7 +1,7 @@
 ﻿import { app } from "../../scripts/app.js";
 
 import { api } from "../../scripts/api.js";
-import { prepareSchedulerPrompt, useSchedulerCache } from "./lib/xzg_scheduler_prompt.mjs";
+import { prepareSchedulerPrompt, useSchedulerCache, prepareMergePrompt } from "./lib/xzg_scheduler_prompt.mjs";
 
 
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
@@ -3307,44 +3307,10 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                         // 上游处理链/模型完全不执行（不再为了触发合并白跑一遍上游）。
                         // 漏掉「帧率」时：它连着加载器/分段节点，后端仍会连带执行整条上游，
                         // 表现为「明明跑完了又激活上游再跑一次」。
-                        const mergeApiId = String(nid);
-                        const stripUpstreamInputs = (p) => {
-                            const out = p?.output;
-                            const mergeNode = out?.[mergeApiId];
-                            if (!mergeNode?.inputs) {
-                                console.warn(
-                                    "[小珠光批处理] 合并节点不在本次提交里，跳过上游裁剪:",
-                                    mergeApiId,
-                                    Object.keys(out || {}),
-                                );
-                                return;
-                            }
-                            delete mergeNode.inputs["图像"];
-                            delete mergeNode.inputs["音频"];
-                            delete mergeNode.inputs["帧率"];
-                            // filterPromptOutput 是按「下游 + 其依赖」重建 output 的，摘掉输入后
-                            // 上游节点仍留在表里；而加载器是 OUTPUT_NODE=true，即使没人引用也会被
-                            // 执行，表现就是"合并已经出片，上游又白跑一次"。这里按摘掉输入后的
-                            // 真实引用关系重算可达集，未达的节点（整条上游链）从本次提交里移除。
-                            const keep = new Set();
-                            const visit = (id) => {
-                                const key = String(id);
-                                if (keep.has(key) || !out[key]) return;
-                                keep.add(key);
-                                for (const v of Object.values(out[key].inputs || {})) {
-                                    if (Array.isArray(v) && v.length >= 1) visit(v[0]);
-                                }
-                            };
-                            visit(mergeApiId);
-                            for (const id of collectDownstream(liveMerge)) visit(id);
-                            const beforeCount = Object.keys(out).length;
-                            for (const id of Object.keys(out)) {
-                                if (!keep.has(id)) delete out[id];
-                            }
-                            console.log(
-                                "[小珠光批处理] 合并阶段裁剪上游:",
-                                { before: beforeCount, after: Object.keys(out).length, kept: [...keep] },
-                            );
+                        const stripUpstreamInputs = prompt => {
+                            const downstream = collectDownstream(liveMerge);
+                            prepareMergePrompt(prompt, nid, downstream);
+                            filterPromptOutput(prompt, downstream);
                         };
 
                         await runOnce(collectDownstream(liveMerge), mBox, mCollected, stripUpstreamInputs, session);
