@@ -229,6 +229,7 @@ from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_lazy_switch import XiaozhuguangLazySwitch
 from .nodes.xzg_text_box import XiaozhuguangTextBox, XiaozhuguangTextBoxGod
+from .nodes.xzg_batch_prompt_list import XiaozhuguangBatchPromptList
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt, XiaozhuguangNinimaxH3PromptNoSkill
 from .nodes.xzg_qwen_loader import XiaozhuguangQwenModelLoader
 from .nodes.xzg_qwen_image21_encode import XiaozhuguangTextEncodeQwenImage21
@@ -1351,6 +1352,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangLazySwitch": XiaozhuguangLazySwitch,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangTextBoxGod": XiaozhuguangTextBoxGod,
+    "XiaozhuguangBatchPromptList": XiaozhuguangBatchPromptList,
     "XiaozhuguangNinimaxH3Prompt": XiaozhuguangNinimaxH3Prompt,
     "XiaozhuguangNinimaxH3PromptNoSkill": XiaozhuguangNinimaxH3PromptNoSkill,
     "XiaozhuguangQwenModelLoader": XiaozhuguangQwenModelLoader,
@@ -1423,6 +1425,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangLazySwitch": "小珠光惰性开关",
     "XiaozhuguangTextBox": "小珠光文本框",
     "XiaozhuguangTextBoxGod": "小珠光文本框-化神级",
+    "XiaozhuguangBatchPromptList": "小珠光批次提示词列表",
     "XiaozhuguangNinimaxH3Prompt": "小珠光提示词-化神级",
     "XiaozhuguangNinimaxH3PromptNoSkill": "小珠光提示词",
     "XiaozhuguangQwenModelLoader": "小珠光 Qwen Model Loader",

@@ -329,7 +329,8 @@
       "2": { "name": "loaded_width" },
       "3": { "name": "loaded_height" },
       "4": { "name": "filename" },
-      "5": { "name": "skip_frames" }
+      "5": { "name": "skip_frames" },
+      "6": { "name": "index" }
     }
   },
   "XiaozhuguangVideoCombine": {
@@ -693,6 +694,16 @@
     "outputs": {
       "0": { "name": "Raw Text" },
       "1": { "name": "Num → Chinese" }
+    }
+  },
+  "XiaozhuguangBatchPromptList": {
+    "display_name": "Xiaozhuguang Batch Prompt List",
+    "inputs": {
+      "索引": { "name": "index", "tooltip": "Connect the index output of Video Info Reader. Index starts at 0." },
+      "提示词列表": { "name": "prompt card data", "tooltip": "Managed by the individual prompt card editor on this node." }
+    },
+    "outputs": {
+      "0": { "name": "prompt" }
     }
   },
   "XiaozhuguangImageCrop": {

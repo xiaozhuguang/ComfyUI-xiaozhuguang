@@ -22,12 +22,14 @@ class XiaozhuguangVideoInfoReader:
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
 
     CATEGORY = "小珠光/视频"
 
-    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "STRING", "INT")
+    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "STRING", "INT", "INT")
     RETURN_NAMES = (
         "帧率",
         "帧数",
@@ -35,10 +37,17 @@ class XiaozhuguangVideoInfoReader:
         "高度",
         "名称",
         "跳过帧数",
+        "索引",
     )
     FUNCTION = "get_video_info"
 
-    def get_video_info(self, video_info, unique_id=None):
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Queue position lives in the submitted prompt, including when the same
+        # source video occurs twice and its decoded output is cached.
+        return float("nan")
+
+    def get_video_info(self, video_info, unique_id=None, prompt=None, extra_pnginfo=None):
         info = video_info or {}
         keys = ["fps", "frame_count", "width", "height"]
 
@@ -74,4 +83,26 @@ class XiaozhuguangVideoInfoReader:
         # 去掉文件扩展名
         filename = os.path.splitext(filename)[0]
 
-        return (*loaded_info, filename, skip_frames)
+        index_value = info.get("xzg_video_index", 0)
+        if prompt and unique_id is not None:
+            link = prompt.get(str(unique_id), {}).get("inputs", {}).get("video_info")
+            if isinstance(link, (list, tuple)) and len(link) == 2:
+                source = prompt.get(str(link[0]), {})
+                if source.get("class_type") == "XiaozhuguangVideoLoaderDaVinci":
+                    index_value = source.get("inputs", {}).get("xzg_video_index", 0)
+                    if "xzg_video_index" not in source.get("inputs", {}):
+                        # Older browser modules submit only the filename. Recover
+                        # its position from this task's saved queue, not live UI state.
+                        nodes = (extra_pnginfo or {}).get("workflow", {}).get("nodes", [])
+                        saved = next((n for n in nodes if str(n.get("id")) == str(link[0])), {})
+                        props = saved.get("properties", {})
+                        queue = props.get("xzgVideoQueue", [])
+                        filename_value = source.get("inputs", {}).get("视频")
+                        if props.get("xzgMultiVideo") and filename_value in queue:
+                            index_value = queue.index(filename_value)
+        try:
+            video_index = max(0, int(str(index_value or "0").strip()))
+        except (TypeError, ValueError):
+            video_index = 0
+
+        return (*loaded_info, filename, skip_frames, video_index)

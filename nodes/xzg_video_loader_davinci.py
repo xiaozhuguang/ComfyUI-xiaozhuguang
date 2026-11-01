@@ -108,7 +108,7 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
-                   补帧到=0, unique_id=None):
+                   补帧到=0, unique_id=None, xzg_video_index="0"):
         视频, _used_fallback = _resolve_video_widget(视频)
         return super().load_video(
             视频=视频,
@@ -124,6 +124,7 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
             内存模式=内存模式,
             补帧到=补帧到,
             unique_id=unique_id,
+            xzg_video_index=xzg_video_index,
         )
 
     @classmethod

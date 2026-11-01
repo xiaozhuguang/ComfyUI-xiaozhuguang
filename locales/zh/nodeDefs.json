@@ -330,7 +330,8 @@
       "2": { "name": "宽度" },
       "3": { "name": "高度" },
       "4": { "name": "名称" },
-      "5": { "name": "跳过帧数" }
+      "5": { "name": "跳过帧数" },
+      "6": { "name": "索引" }
     }
   },
   "XiaozhuguangVideoCombine": {
@@ -734,6 +735,16 @@
     "outputs": {
       "0": { "name": "原文" },
       "1": { "name": "数字转中文" }
+    }
+  },
+  "XiaozhuguangBatchPromptList": {
+    "display_name": "小珠光批次提示词列表",
+    "inputs": {
+      "索引": { "name": "索引", "tooltip": "连接视频信息读取节点的索引输出，索引从 0 开始；超过条数时按条数循环取值。" },
+      "提示词列表": { "name": "提示词卡片数据", "tooltip": "由节点内的独立提示词卡片编辑器管理。" }
+    },
+    "outputs": {
+      "0": { "name": "*" }
     }
   },
   "XiaozhuguangImageCrop": {

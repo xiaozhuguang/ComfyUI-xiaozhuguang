@@ -782,6 +782,7 @@ class XiaozhuguangVideoLoader:
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
+                "xzg_video_index": "STRING",
             },
         }
 
@@ -792,7 +793,7 @@ class XiaozhuguangVideoLoader:
     OUTPUT_NODE = True
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
-                   帧数上限=0, 跳过帧数=0, unique_id=None):
+                   帧数上限=0, 跳过帧数=0, unique_id=None, xzg_video_index="0"):
         """原「小珠光视频加载器」入口：行为与旧版完全一致（不启用片段窗口）。
         片段窗口能力由子类「小珠光视频加载-化神级」（xzg_video_loader_davinci.py，继承批处理基类）提供。"""
         return self.load_video_impl(
@@ -800,11 +801,12 @@ class XiaozhuguangVideoLoader:
             自定义宽度=自定义宽度, 自定义高度=自定义高度,
             帧数上限=帧数上限, 跳过帧数=跳过帧数,
             片段起点=0.0, 片段终点=0.0, unique_id=unique_id,
+            xzg_video_index=xzg_video_index,
         )
 
     def load_video_impl(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                         帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
-                        补帧到=0, unique_id=None):
+                        补帧到=0, unique_id=None, xzg_video_index="0"):
         强制帧率 = float_or_int(强制帧率, 0)
         # 空选/文件丢失时回退到内置占位视频，避免 "Invalid video file" 中断（与化神级一致）。
         视频, _used_fallback = _resolve_video_widget(视频)
@@ -1006,6 +1008,9 @@ class XiaozhuguangVideoLoader:
             "segment_start": max(0.0, float(片段起点 or 0.0)),
             "segment_end": max(0.0, float(片段终点 or 0.0)),
             "filename": 视频,
+            # Hidden frontend input used by the multi-video queue. Ordinary runs
+            # (including a single video with queue mode disabled) default to 0.
+            "xzg_video_index": str(xzg_video_index or "0"),
         }
 
         # ═══════════════════════════════════════════════════════════════════

@@ -33,6 +33,8 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
     @classmethod
     def INPUT_TYPES(cls):
         t = super().INPUT_TYPES()
+        # Keep the queue index hidden while allowing each queued prompt to carry it.
+        t.setdefault("hidden", {})["xzg_video_index"] = "STRING"
         # 内存模式（低内存版功能并入）：标准=list+堆叠；低内存=预分配流式写入
         t["required"]["内存模式"] = (["标准", "低内存"], {"default": "标准"})
         # 把可见控件放在「帧数上限」之后，保持节点面板紧凑
@@ -51,7 +53,7 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
-                   补帧到=0, unique_id=None):
+                   补帧到=0, unique_id=None, xzg_video_index="0"):
         return self.load_video_impl(
             视频=视频,
             强制帧率=强制帧率,
@@ -66,6 +68,7 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
             内存模式=内存模式,
             补帧到=补帧到,
             unique_id=unique_id,
+            xzg_video_index=xzg_video_index,
         )
 
     @classmethod
