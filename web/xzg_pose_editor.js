@@ -155,6 +155,9 @@ function openEditor(node) {
     url.searchParams.set('session', node.poseSession);
     url.searchParams.set('ui', 'timeline-toolbar-7');
     url.searchParams.set('api', api.apiURL('/xiaozhuguang/pose/session/'));
+    // Editor shell assets are versioned (editor.js?v=N); bump v here so the
+    // cached index.html cannot keep serving a stale editor.js after updates.
+    url.searchParams.set('v', '153');
     iframe.src = url.href;
     dialog.append(iframe); document.body.append(dialog);
     const widget = node.poseEditsWidget;

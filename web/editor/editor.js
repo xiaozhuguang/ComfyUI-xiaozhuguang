@@ -578,6 +578,22 @@ document.addEventListener('keydown',event=>{
 },{capture:true});
 SCALE_KEYS.forEach(key=>{const row=document.createElement('div');row.className='slider';row.dataset.key=key;row.onpointerenter=()=>{hoveredScale=key;status(`${labels[key]}：${scaleHelp[key]}`);draw();};row.onfocusin=()=>{hoveredScale=key;status(`${labels[key]}：${scaleHelp[key]}`);draw();};row.innerHTML=`<span>${labels[key]}</span><input type="range" min="0.1" max="3" step="0.01" value="1"><output>1.00</output><button type="button" class="slider-reset" title="重置为 1" aria-label="${labels[key]}重置为 1">↺</button>`;const input=row.querySelector('input');input.addEventListener('input',()=>updateScalePreview(key,input));input.addEventListener('pointermove',e=>{if(e.buttons)updateScalePreview(key,input);});input.onchange=commitScale;row.querySelector('.slider-reset').onclick=()=>{if(scales[key]===1)return;scales[key]=1;input.value=1;row.querySelector('output').value='1.00';scalesDirty=true;commitScale();};$('sliders').append(row);});
 $('sliders').onpointerleave=()=>{hoveredScale=null;draw();};$('sliders').onfocusout=e=>{if(!$('sliders').contains(e.relatedTarget)&&!$('sliders').matches(':hover')){hoveredScale=null;draw();}};
+// 悬停滑条时滚轮微调：步进为滑条自身 step，上滚增大、下滚减小；
+// 比例滑条经 input 事件实时预览，停顿 350ms 后统一触发 change 提交，避免每格写一条历史。
+const wheelCommitTimers=new WeakMap();
+function scheduleWheelCommit(input){if(!input.onchange)return;clearTimeout(wheelCommitTimers.get(input));wheelCommitTimers.set(input,setTimeout(()=>input.dispatchEvent(new Event('change')),350));}
+document.querySelectorAll('aside input[type=range]').forEach(input=>{
+ input.addEventListener('wheel',event=>{
+  if(event.ctrlKey||event.metaKey)return;
+  event.preventDefault();event.stopPropagation();
+  const step=Number(input.step)||0.01,min=Number(input.min),max=Number(input.max);
+  const next=Math.min(max,Math.max(min,Number(input.value)+(event.deltaY<0?step:-step)));
+  if(next===Number(input.value))return;
+  input.value=next;
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+  scheduleWheelCommit(input);
+ },{passive:false});
+});
  document.querySelectorAll('#dragModes button').forEach(button=>{button.onclick=()=>{dragMode=button.dataset.mode;document.querySelectorAll('#dragModes button').forEach(item=>{const active=item.dataset.mode===dragMode;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active));});};});
 function updateScaleSideControls(){
  const single=scaleSide()!=='both';document.querySelectorAll('.slider').forEach(row=>{const key=row.dataset.key;row.querySelector('input').disabled=(single&&['head_x','head_y','neck','torso'].includes(key));row.querySelector('button').disabled=(single&&['head_x','head_y','neck','torso'].includes(key));});resetPreview();

@@ -1,5 +1,7 @@
 # ComfyUI 小珠光插件
 
+Windows 依赖安装：双击根目录 **一键安装依赖.exe**，选择 ComfyUI 的 Python 和下载源即可检查或安装。只显示安装界面，不弹出命令窗口。支持自动选源、基础/完整范围及安装日志；保留已有 PyTorch/NumPy 配置。详见 [安装器说明](installer/README.md)。
+
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
 ## 🎬 视频教程
@@ -117,7 +119,7 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 | **小珠光音频保存** | 保存音频到文件 |
 | **🤖 大模型节点** | |
 | **小珠光提示词** | MiniMax-H3 / Qwen-Image-2.1 专用提示词优化；不含自定义 Skill；支持中英文输出 |
-| **小珠光提示词-化神级** | 提示词优化节点，包含规则预设管理；提示词规则分类仅显示用户自定义分类，并支持细分规则、TXT/MD 导入、全局云端持久化及配置备份恢复 |
+| **小珠光提示词-化神级** | 仅生成英文提示词，已取消中文生成及翻译；包含规则预设管理，支持 TXT/MD 导入、全局云端持久化及配置备份恢复 |
 | **小珠光 Qwen Model Loader** | Qwen 3 / 3.5 / 3.6 / 3.8 系列模型加载器（支持 mmproj 与 vision 视觉投影） |
 | **小珠光 AudioDiT 零样本TTS** | 严格离线版 LongCat-AudioDiT 零样本合成（与原插件共享模型目录，永不触发 HF 下载） |
 | **小珠光 AudioDiT 音色克隆TTS** | 严格离线版音色克隆：参考音频 3–15s + 转录文本 → 目标语音，最常用节点 |

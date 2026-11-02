@@ -16,7 +16,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=20261021.character-zoom3";
+} from "./pose_studio/core.js?v=20261102.axis-highlight1";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { installCustomSelects } from "./vnccs_pose_shared/custom_select.mjs";
 import { observePoseStudioI18n, translatePoseStudioSubtree } from "./pose_studio/i18n.mjs?v=20261017.2";
@@ -100,15 +100,21 @@ function clearPoseStudioTransientStateOnConfigure(node, backendSessionId) {
         data.background_url = null;
         delete data.captured_images;
         data.capture_id = `vnccs_capture_${node.id}_session_${backendSessionId}`;
-        if (data.export && typeof data.export === "object") {
-            data.export.background_url = null;
-            data.export.cam_offset_x = 0;
-            data.export.cam_offset_y = 0;
-            data.export.cam_zoom = 1;
-            data.export.cam_yaw_deg = 0;
-            data.export.cam_pitch_deg = 0;
-            data.export.cam_roll_deg = 0;
-        }
+        // 重启后端后导出参数也一并复位：画布尺寸、配色、皮肤样式、
+        // 相机与其余历史遗留键全部回到默认，不随工作流常驻。
+        data.export = {
+            view_width: 1024,
+            view_height: 1024,
+            cam_zoom: 1.0,
+            cam_offset_x: 0,
+            cam_offset_y: 0,
+            cam_yaw_deg: 0,
+            cam_pitch_deg: 0,
+            cam_roll_deg: 0,
+            bg_color: [0, 0, 0],
+            background_url: null,
+            skin_type: "naked",
+        };
         data.characters = [];
         data.active_character_id = null;
         data.backend_session_id = backendSessionId;
@@ -3600,6 +3606,7 @@ function enablePoseStudioCanvasNavigationForwarding(root) {
             "[role='button']",
             ".vnccs-ps-toggle",
             ".vnccs-ps-slider-wrap",
+            ".vnccs-ps-axis-panel",
             ".vnccs-ps-tabs-shell",
             ".vnccs-ps-canvas-wrap",
             ".vnccs-ps-radar-wrap",
@@ -4553,8 +4560,55 @@ class PoseStudioWidget {
             this.canvas.focus({ preventScroll: true });
         }, true);
         this.canvasContainer.appendChild(this.canvas);
+        // 使用说明默认收起，只留一个小图标；点图标才展开完整文案。
+        const hintShell = document.createElement("div");
+        hintShell.className = "vnccs-ps-canvas-hint-shell";
+        Object.assign(hintShell.style, {
+            position: "absolute", top: "12px", left: "32px", zIndex: "20",
+            display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "6px",
+            maxWidth: "calc(100% - 44px)",
+        });
+
+        const hintToggle = document.createElement("button");
+        hintToggle.type = "button";
+        hintToggle.className = "vnccs-ps-hint-toggle";
+        hintToggle.textContent = "?";
+        Object.assign(hintToggle.style, {
+            width: "22px", height: "22px", padding: "0", flex: "0 0 auto",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            borderRadius: "50%", border: "1px solid rgba(255,255,255,.32)",
+            background: "rgba(16,16,20,.66)", color: "rgba(232,232,242,.92)",
+            fontSize: "13px", fontWeight: "700", lineHeight: "1",
+            cursor: "pointer", backdropFilter: "blur(4px)",
+        });
+
         const canvasControlHint = document.createElement("div");
         canvasControlHint.className = "vnccs-ps-canvas-control-hint";
+        Object.assign(canvasControlHint.style, {
+            display: "none", padding: "8px 10px", borderRadius: "8px",
+            background: "rgba(16,16,20,.86)", border: "1px solid rgba(255,255,255,.12)",
+            boxShadow: "0 6px 20px rgba(0,0,0,.45)",
+            whiteSpace: "nowrap", fontSize: "13px", lineHeight: "1.45",
+            color: "rgba(220,220,230,.9)", maxHeight: "60vh",
+            maxWidth: "100%", overflow: "auto",
+        });
+
+        let hintExpanded = false;
+        const setHintExpanded = (next) => {
+            hintExpanded = !!next;
+            canvasControlHint.style.display = hintExpanded ? "block" : "none";
+            hintToggle.textContent = hintExpanded ? "×" : "?";
+            hintToggle.title = hintExpanded ? "收起使用说明" : "使用说明";
+            hintToggle.setAttribute("aria-expanded", String(hintExpanded));
+        };
+        hintToggle.addEventListener("pointerdown", event => event.stopPropagation());
+        hintToggle.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setHintExpanded(!hintExpanded);
+        });
+        setHintExpanded(false);
+
         const controlHintGroups = [
             ["视图控制：", [
                 "左键移动视图",
@@ -4574,6 +4628,12 @@ class PoseStudioWidget {
                 "大白点：箭头移动，扇形平移，弧线旋转",
                 "关节：拖原点调姿势，弧线旋转",
                 "右键切换屏幕坐标；重新选择后恢复",
+                "右侧栏「鼠标滚轮微调」：旋转 XYZ／移动 XYZ，共 6 项",
+            ]],
+            ["滑条操作：", [
+                "鼠标悬停在任意参数滑条上，滚动滚轮即可微调数值",
+                "上滚增大、下滚减小，步长与滑条自身一致，到上下限自动停止",
+                "坐标滑条的“归零”会撤销该轴（或全部）调整，回到调整前的状态",
             ]],
             ["人物选择：", ["点击人物或编号激活，Tab切换", "Ctrl＋点击多选，Ctrl＋A全选", "多选后可整体平移、旋转、缩放"]],
         ];
@@ -4592,13 +4652,11 @@ class PoseStudioWidget {
             }
             canvasControlHint.appendChild(section);
         }
-        Object.assign(canvasControlHint.style, {
-            position: "absolute", top: "12px", left: "32px",
-            zIndex: "20", pointerEvents: "none", whiteSpace: "nowrap", fontSize: "13px", lineHeight: "1.45",
-            color: "rgba(220, 220, 230, .72)", textShadow: "0 1px 3px rgba(0, 0, 0, .9)",
-        });
+        hintShell.append(hintToggle, canvasControlHint);
         this.canvasControlHint = canvasControlHint;
-        this.canvasContainer.appendChild(canvasControlHint);
+        this.canvasHintToggle = hintToggle;
+        this.setCanvasHintExpanded = setHintExpanded;
+        this.canvasContainer.appendChild(hintShell);
         translatePoseStudioSubtree(canvasControlHint, app);
         this._createHandPopover();
         centerPanel.appendChild(this.canvasContainer);
@@ -4672,6 +4730,187 @@ class PoseStudioWidget {
         refInput.addEventListener("change", (e) => this.handleRefImport(e));
         this.fileRefInput = refInput;
         this.container.appendChild(refInput);
+    }
+
+    // 坐标微调面板：对应 gizmo 的 3 条弧线（旋转）与 3 个箭头（轴向移动），
+    // 共 6 项，每项都支持鼠标滚轮微调（平面拖拽仍由 gizmo 直接拖动完成）。
+    // 面板挂在右侧栏独立的「鼠标滚轮微调」区块里，与「背景设置」各有一条边界。
+    _createAxisSlidersPanel(container, { showTitle = true } = {}) {
+        if (!container) return;
+        const panel = document.createElement("div");
+        panel.className = "vnccs-ps-axis-panel";
+        Object.assign(panel.style, {
+            display: "flex", flexDirection: "column", gap: "6px",
+            boxSizing: "border-box",
+        });
+        panel.addEventListener("pointerdown", event => event.stopPropagation());
+
+        const resetBtn = document.createElement("button");
+        resetBtn.type = "button";
+        resetBtn.className = "vnccs-ps-reset-btn";
+        resetBtn.textContent = "归零";
+        resetBtn.title = "撤销全部滑条调整，回到调整之前的状态";
+        Object.assign(resetBtn.style, {
+            width: "auto", flex: "0 0 auto", padding: "0 6px", fontSize: "10px", fontWeight: "700",
+            letterSpacing: "0.5px", height: "18px", whiteSpace: "nowrap",
+        });
+
+        if (showTitle) {
+            const title = document.createElement("div");
+            title.className = "vnccs-ps-label";
+            title.textContent = "鼠标滚轮微调";
+            title.title = "鼠标滚轮微调：滑条可拖动，悬停滚轮可微调";
+            Object.assign(title.style, {
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px",
+                whiteSpace: "nowrap",
+            });
+            title.appendChild(resetBtn);
+            panel.appendChild(title);
+        } else {
+            // 已经在外层分区的标题里写明用途，这里只保留右对齐的「归零」。
+            const toolbar = document.createElement("div");
+            Object.assign(toolbar.style, { display: "flex", justifyContent: "flex-end" });
+            toolbar.appendChild(resetBtn);
+            panel.appendChild(toolbar);
+        }
+
+        const entries = [];
+        // 面板内已施加的增量，按施加顺序记录；归零时从后往前逐条反向施加，
+        // 才能真正回到「调整之前的状态」（只清滑条数值不会撤销已发生的位移/旋转）。
+        const appliedStack = [];
+        const rollback = (onlyEntry = null) => {
+            let changed = false;
+            for (let index = appliedStack.length - 1; index >= 0; index -= 1) {
+                const item = appliedStack[index];
+                if (onlyEntry && item.entry !== onlyEntry) continue;
+                appliedStack.splice(index, 1);
+                this.viewer?.jogCharacterAxis?.({ ...item.args, delta: -item.delta });
+                changed = true;
+            }
+            return changed;
+        };
+        // 结构与样式对齐左侧面板的 createSliderField：
+        // 标签行（名称 + 数值 + ↺ 复位）+ 滑条框（.vnccs-ps-slider-wrap > .vnccs-ps-slider）。
+        const makeRow = (label, spec) => {
+            const field = document.createElement("div");
+            field.className = "vnccs-ps-field";
+
+            const labelRow = document.createElement("div");
+            labelRow.className = "vnccs-ps-label-row";
+
+            const nameEl = document.createElement("span");
+            nameEl.className = "vnccs-ps-label";
+            nameEl.textContent = label;
+            nameEl.style.whiteSpace = "nowrap";
+
+            const valueRow = document.createElement("div");
+            Object.assign(valueRow.style, { display: "flex", alignItems: "center", gap: "6px" });
+
+            const valueEl = document.createElement("span");
+            valueEl.className = "vnccs-ps-value";
+            valueEl.textContent = spec.format(0);
+
+            const rowResetBtn = document.createElement("button");
+            rowResetBtn.type = "button";
+            rowResetBtn.className = "vnccs-ps-reset-btn";
+            rowResetBtn.textContent = "↺";
+            rowResetBtn.title = `${label} 归零（撤销该轴调整，回到调整前的状态）`;
+
+            valueRow.append(valueEl, rowResetBtn);
+            labelRow.append(nameEl, valueRow);
+
+            const wrap = document.createElement("div");
+            wrap.className = "vnccs-ps-slider-wrap";
+
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.className = "vnccs-ps-slider";
+            slider.min = String(spec.min);
+            slider.max = String(spec.max);
+            slider.step = String(spec.step);
+            slider.value = "0";
+            slider.title = `${label}：拖动或悬停滚轮微调`;
+            wrap.appendChild(slider);
+
+            const entry = { slider, valueEl, applied: 0 };
+            entry.reset = ({ commit = true } = {}) => {
+                // 先按逆序撤销这条滑条累计施加的增量，再把它自己的显示归零。
+                const changed = rollback(entry);
+                entry.applied = 0;
+                slider.value = "0";
+                valueEl.textContent = spec.format(0);
+                if (changed && commit) this.viewer?.commitPoseChange?.();
+                return changed;
+            };
+            rowResetBtn.addEventListener("click", event => {
+                event.preventDefault();
+                event.stopPropagation();
+                entry.reset();
+            });
+
+            let commitTimer = null;
+            const applyDelta = () => {
+                const value = parseFloat(slider.value) || 0;
+                const diff = value - entry.applied;
+                if (!diff) return;
+                entry.applied = value;
+                const delta = spec.scale ? diff * spec.scale : diff;
+                const applied = this.viewer?.jogCharacterAxis?.({ ...spec.args, delta });
+                if (applied) appliedStack.push({ entry, args: spec.args, delta });
+                valueEl.textContent = spec.format(value);
+                clearTimeout(commitTimer);
+                commitTimer = setTimeout(() => {
+                    commitTimer = null;
+                    this.viewer?.commitPoseChange?.();
+                }, 320);
+            };
+            slider.addEventListener("input", applyDelta);
+            this.attachWheelAdjust(slider);
+
+            // 悬停/滚轮微调时点亮 gizmo 上对应的轴，鼠标离开即取消。
+            const highlightKey = spec.args.rotationAxisName
+                ? `rotation:${spec.args.rotationAxisName}`
+                : (spec.args.axisName || null);
+            if (highlightKey) {
+                field.addEventListener("pointerenter", () => {
+                    this.viewer?.setCharacterAxisHighlight?.(highlightKey);
+                });
+                field.addEventListener("pointerleave", () => {
+                    this.viewer?.setCharacterAxisHighlight?.(null);
+                });
+            }
+
+            entries.push(entry);
+            field.append(labelRow, wrap);
+            panel.appendChild(field);
+        };
+
+        const fmtAngle = value => `${Math.round(value)}°`;
+        const fmtDist = value => value.toFixed(2);
+        // 旋转是相对微调（滑条值的变化量＝要旋转的角度），所以范围取 ±360°：
+        // 单次拖动最大一整圈，正反两个方向都留出空间；步进 1° 保证精度。
+        for (const axis of ["X", "Y", "Z"]) {
+            makeRow(`旋转 ${axis}`, {
+                min: -360, max: 360, step: 1, scale: Math.PI / 180, format: fmtAngle,
+                args: { rotationAxisName: axis },
+            });
+        }
+        for (const axis of ["X", "Y", "Z"]) {
+            makeRow(`移动 ${axis}`, {
+                min: -50, max: 50, step: 0.01, format: fmtDist,
+                args: { axisName: axis },
+            });
+        }
+
+        resetBtn.addEventListener("click", event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const changed = rollback(null);
+            for (const entry of entries) entry.reset({ commit: false });
+            if (changed) this.viewer?.commitPoseChange?.();
+        });
+        this.axisSlidersPanel = panel;
+        container.appendChild(panel);
     }
 
     commitViewerPoseToCurrentEditor({ fullCapture = false, syncOptions = {} } = {}) {
@@ -4761,6 +5000,12 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         this.appendBackgroundControls(backgroundControls);
         backgroundSection.content.appendChild(backgroundControls);
         rightSidebar.appendChild(backgroundSection.el);
+
+        // 微调与「背景设置」拆成两个分区，各自有独立的边框边界。
+        const fineTuneSection = this.createSection("鼠标滚轮微调", true);
+        fineTuneSection.el.classList.add("vnccs-ps-finetune-section");
+        this._createAxisSlidersPanel(fineTuneSection.content, { showTitle: false });
+        rightSidebar.appendChild(fineTuneSection.el);
 
     }
 
@@ -6107,6 +6352,44 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         control.addEventListener("blur", finish);
     }
 
+    // 悬停滑条时滚轮微调：步进为滑条自身 step，上滚增大、下滚减小。
+    // 事件必须【不冒泡】：冒泡到 DOM widget 宿主会让 ComfyUI 误判 widget 值变更，
+    // 触发整体序列化/重绘（1~2 秒级卡顿）。滑条自身的处理器绑在元素上，不冒泡同样能收到。
+    // 同时以 80ms 节流合并连续滚动：相机类参数每次 input 都会触发视图重算与 syncToNode，
+    // 逐 tick 触发会明显拖慢主线程。停顿 350ms 后再派发 change 完成提交（一次撤销记录）。
+    attachWheelAdjust(control) {
+        let commitTimer = null;
+        let tickTimer = null;
+        let pendingValue = null;
+        const flush = () => {
+            tickTimer = null;
+            if (pendingValue === null) return;
+            const next = pendingValue;
+            pendingValue = null;
+            if (next === parseFloat(control.value)) return;
+            control.value = next;
+            control.dispatchEvent(new Event("input"));
+            clearTimeout(commitTimer);
+            commitTimer = setTimeout(() => {
+                commitTimer = null;
+                control.dispatchEvent(new Event("change"));
+            }, 350);
+        };
+        control.addEventListener("wheel", event => {
+            if (event.ctrlKey || event.metaKey) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const step = parseFloat(control.step) || 0.01;
+            const min = parseFloat(control.min);
+            const max = parseFloat(control.max);
+            const base = pendingValue ?? parseFloat(control.value);
+            const next = Math.min(max, Math.max(min, base + (event.deltaY < 0 ? step : -step)));
+            if (!Number.isFinite(next) || next === base) return;
+            pendingValue = next;
+            if (!tickTimer) tickTimer = setTimeout(flush, 80);
+        }, { passive: false });
+    }
+
     createSliderField(label, key, min, max, step, defaultValue, target, isExport = false, mirrorKey = null) {
         const field = document.createElement("div");
         field.className = "vnccs-ps-field";
@@ -6157,6 +6440,7 @@ if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.lengt
         slider.value = value;
         slider._vnccsValueSpan = valueSpan;
         this.trackPoseGesture(slider, { recordPose: true });
+        this.attachWheelAdjust(slider);
         const isLiveMorphSlider = !isExport && this.isLiveMorphKey?.(key);
 
         // Reset logic

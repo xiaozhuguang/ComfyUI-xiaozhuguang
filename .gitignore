@@ -28,6 +28,8 @@ _thumb_out2.txt
 custom-node-list.json
 _tmp_*.ps1
 _tmp_*.py
+.codebuddy-tmp/
+.agents/
 _tmp_src/
 _tmp_probe*.py
 _repro_*.py

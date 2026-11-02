@@ -1556,7 +1556,9 @@ export class PoseViewerCore {
                 this._selectionClickStart = null;
                 return;
             }
-            this._selectionClickStart = { x: event.clientX, y: event.clientY, id: event.pointerId, ctrl: event.ctrlKey, hit: this.pickCharacterAtPointer(event) };
+            // Defer the skinned-mesh pick to pointerup: an orbit drag never
+            // needs it, and picks are the most expensive per-press operation.
+            this._selectionClickStart = { x: event.clientX, y: event.clientY, id: event.pointerId, ctrl: event.ctrlKey, hit: null };
             if (this._noCharacterSelection && (event.shiftKey || event.ctrlKey && event.button !== 0)) {
                 this._blockedSelectionPointerId = event.pointerId;
                 this.canvas.setPointerCapture(event.pointerId);
@@ -1569,13 +1571,14 @@ export class PoseViewerCore {
             this._selectionClickStart = null;
             if (event.button !== 0 || !start || start.id !== event.pointerId || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return;
             const hit = this.pickCharacterAtPointer(event);
-            if (hit && start.hit && hit.id === start.hit.id && hit.active === start.hit.active) {
+            const startHit = start.hit ?? hit;
+            if (hit && startHit && hit.id === startHit.id && hit.active === startHit.active) {
                 if (start.ctrl || !hit.active || this._multiCharacterSelection || this._noCharacterSelection) {
                     // Finish the old character's gesture before switching rigs.
                     this.finishCharacterControlDrag(event);
                     this.options.onCharacterPick?.(hit.active ? null : hit.id, start.ctrl);
                 }
-            } else if (!hit && !start.hit && !start.ctrl) this.options.onCharacterSelectionClear?.();
+            } else if (!hit && !startHit && !start.ctrl) this.options.onCharacterSelectionClear?.();
         }, true);
         this.canvas.addEventListener("pointerup", event => {
             if (event.pointerId !== this._blockedSelectionPointerId) return;
@@ -2899,6 +2902,17 @@ export class PoseViewerCore {
         if (!this.initialized || !this.camera || !this.scene) return null;
         const rect = this.canvas.getBoundingClientRect();
         if (!rect.width || !rect.height) return null;
+        // Skinned-mesh raycasting is expensive (per-vertex bone transforms and
+        // freshly rebuilt bounds). The same pointer position is picked by both
+        // the capture-phase selection handler and handlePointerDown, so reuse
+        // the result for a short window instead of paying twice per press.
+        const now = performance.now();
+        const cache = this._pickCache;
+        if (cache && cache.x === event.clientX && cache.y === event.clientY
+            && Math.abs(cache.w - rect.width) < 0.5 && Math.abs(cache.h - rect.height) < 0.5
+            && now - cache.t < 120) {
+            return cache.result;
+        }
         const pointer = new this.THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, 1 - (event.clientY - rect.top) / rect.height * 2);
         const characters = [
             { id: null, active: true, mesh: this.skinnedMesh },
@@ -2918,14 +2932,114 @@ export class PoseViewerCore {
         }
         this._raycaster.setFromCamera(pointer, this.camera);
         const hit = this._raycaster.intersectObjects(characters.map(character => character.mesh), true)[0];
-        if (!hit) return null;
+        const cacheResult = result => {
+            this._pickCache = { x: event.clientX, y: event.clientY, w: rect.width, h: rect.height, t: performance.now(), result };
+            return result;
+        };
+        if (!hit) return cacheResult(null);
         let object = hit.object;
         while (object) {
             const character = characters.find(character => character.mesh === object);
-            if (character) return character;
+            if (character) return cacheResult(character);
             object = object.parent;
         }
-        return null;
+        return cacheResult(null);
+    }
+
+    // 数值驱动的坐标微调，供右侧坐标滑条/滚轮使用。
+    // 与 gizmo 拖拽共用同一套轴向量、旋转枢轴与提交逻辑：
+    //   rotationAxisName: 绕该轴旋转（delta 为弧度）
+    //   axisName:         沿该轴平移（delta 为世界单位）
+    //   planeName:        在该平面内平移（XY / YZ / ZX，delta 为世界单位）
+    // 默认作用于选中骨骼；未选中骨骼时作用于角色整体。
+    jogCharacterAxis({ axisName = null, rotationAxisName = null, planeName = null, delta = 0 } = {}) {
+        if (!this.initialized || !this.skinnedMesh) return false;
+        if (!Number.isFinite(delta) || !delta) return false;
+        const THREE = this.THREE;
+        this.skinnedMesh.updateMatrixWorld(true);
+        const targetBone = this.selectedBone || null;
+        const normalAxisName = rotationAxisName || axisName
+            || (planeName === "XY" ? "Z" : planeName === "YZ" ? "X" : "Y");
+        const characterOrientation = this._temporaryAxisOrientation?.clone()
+            || (targetBone || this.skinnedMesh).getWorldQuaternion(new THREE.Quaternion());
+        const axis = editorAxisVector(THREE, normalAxisName).applyQuaternion(characterOrientation).normalize();
+        const planeAxes = planeName === "XY" ? ["X", "Y"]
+            : planeName === "YZ" ? ["Y", "Z"]
+                : planeName === "ZX" ? ["Z", "X"] : null;
+        const planeBasis = planeAxes?.map(name => editorAxisVector(THREE, name).applyQuaternion(characterOrientation).normalize()) || null;
+        const hip = this.bones?.[this._centerHipBoneName]
+            || this.boneList?.find(bone => bone.name === this._centerHipBoneName);
+        const origin = (targetBone || hip)?.getWorldPosition(new THREE.Vector3())
+            || this.skinnedMesh.getWorldPosition(new THREE.Vector3());
+
+        this.recordState();
+
+        if (targetBone) {
+            if (rotationAxisName) {
+                const worldRotation = new THREE.Quaternion().setFromAxisAngle(axis, delta)
+                    .multiply(targetBone.getWorldQuaternion(new THREE.Quaternion()));
+                const parentRotation = targetBone.parent?.getWorldQuaternion(new THREE.Quaternion())
+                    || new THREE.Quaternion();
+                targetBone.quaternion.copy(parentRotation.invert().multiply(worldRotation));
+            } else {
+                const movement = planeBasis
+                    ? planeBasis[0].clone().multiplyScalar(delta).addScaledVector(planeBasis[1], delta)
+                    : axis.clone().multiplyScalar(delta);
+                const position = targetBone.getWorldPosition(new THREE.Vector3()).add(movement);
+                targetBone.position.copy(targetBone.parent ? targetBone.parent.worldToLocal(position) : position);
+            }
+            targetBone.updateMatrixWorld(true);
+            this.updateIKEffectorPositions?.();
+            this.updateMarkers();
+            this.requestRender();
+            return true;
+        }
+
+        if (rotationAxisName) {
+            this.applyCharacterControlRotation({
+                startTransform: this._normalizedCharacterTransform(this.activeCharacterAppearance?.transform),
+                rotationPivot: origin.clone(),
+                startObjectPosition: this.skinnedMesh.getWorldPosition(new THREE.Vector3()),
+                startObjectQuaternion: this.skinnedMesh.getWorldQuaternion(new THREE.Quaternion()),
+            }, new THREE.Quaternion().setFromAxisAngle(axis, delta));
+            return true;
+        }
+
+        const worldDelta = planeBasis
+            ? planeBasis[0].clone().multiplyScalar(delta).addScaledVector(planeBasis[1], delta)
+            : axis.clone().multiplyScalar(delta);
+        const parentQuaternion = this.skinnedMesh.parent?.getWorldQuaternion(new THREE.Quaternion())
+            || new THREE.Quaternion();
+        this.skinnedMesh.position.add(worldDelta.applyQuaternion(parentQuaternion.invert()));
+        this.skinnedMesh.updateMatrixWorld(true);
+        const transform = this._normalizedCharacterTransform({
+            ...(this.activeCharacterAppearance?.transform || {}),
+            x: this.skinnedMesh.position.x,
+            y: this.skinnedMesh.position.y,
+            z: this.skinnedMesh.position.z,
+        });
+        this.setActiveCharacterAppearance({ transform });
+        // 与 gizmo 拖拽一致：把新位置回传给宿主，用于持久化角色 transform。
+        this.options?.onCharacterTransformChange?.(transform);
+        this.updateIKEffectorPositions?.();
+        this.updateMarkers();
+        this.requestRender();
+        return true;
+    }
+
+    // 供 UI 联动：悬停/操作右侧坐标滑条时点亮 gizmo 上对应的轴。
+    // target: "X" | "rotation:X" | "plane:XY"，传 null 取消高亮。
+    setCharacterAxisHighlight(target = null) {
+        const next = target || null;
+        if (this._characterAxisHovered === next) return false;
+        this._characterAxisHovered = next;
+        this._updateCharacterRotationGuide?.();
+        return true;
+    }
+
+    // 供 UI 在连续微调结束后统一提交（写入 pose / 同步节点）。
+    commitPoseChange() {
+        this.dispatchPoseChange();
     }
 
     createCharacterControlGroup() {
@@ -3204,7 +3318,11 @@ export class PoseViewerCore {
             if (bone?.name !== this._lockedBoneName) return;
         }
         if (this._multiCharacterSelection || this._noCharacterSelection) return;
-        const characterHit = this.pickCharacterAtPointer(e);
+        // The pick here only guards against editing an inactive character, which
+        // can only exist when other character meshes are present. Skip the costly
+        // skinned raycast in the common single-character case.
+        const hasInactiveCharacters = [...(this.passiveCharacters?.values?.() || [])].some(entry => entry?.mesh?.visible);
+        const characterHit = hasInactiveCharacters ? this.pickCharacterAtPointer(e) : null;
         if (characterHit && !characterHit.active) return;
         if (!this.initialized || !this.skinnedMesh) return;
         if (this._mannequinVisible === false) return;
