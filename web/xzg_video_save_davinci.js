@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { xzgOrderedPreviewActions, xzgPreviewButtonVisible } from "./xzg_loader_settings.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden } from "./xzg_loader_settings.js";
 import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
 
 // 小珠光视频保存-化神级（XiaozhuguangVideoSaveDaVinci）
@@ -295,7 +295,8 @@ function _syncHoverButtonSize(node) {
     if (!pc) return;
     const widthRatio = Math.max(1, (pc.clientWidth || 360) / 360);
     const scale = Math.min(1.5, 1 + (widthRatio - 1) * 0.25);
-    const gap = 6 * scale;
+    // 标签间距：设置值 × 节点宽度自适应系数（1→1.5×）
+    const gap = xzgGetPreviewButtonGap(node) * scale;
     for (const { id, key } of SAVE_PREVIEW_ACTIONS) {
         if (node[key]) node[key].style.display = xzgPreviewButtonVisible(node, id) ? "inline-flex" : "none";
     }
@@ -316,7 +317,7 @@ function _syncHoverButtonSize(node) {
         btn.style.top = `${top}px`;
         btn.style.right = `${gap}px`;
         btn.style.left = "auto";
-        top += ((btn.offsetHeight || 22) + 6) * scale;
+        top += (btn.offsetHeight || 22) * scale + gap;
     }
 }
 
@@ -532,6 +533,9 @@ app.registerExtension({
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = origOnNodeCreated?.apply(this, arguments);
+
+            // 新建节点默认隐藏全部悬浮按钮（设置 ⚙ 不在 actions 列表内，保持常显）
+            xzgSetPreviewButtonsDefaultHidden(this, SAVE_PREVIEW_ACTIONS.map(a => a.id));
 
             // 化神级：最小宽度与默认宽度均为 360。
             this.minWidth = 360;

@@ -5,7 +5,7 @@ import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
-import { xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings } from "./xzg_loader_settings.js";
+import { xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden } from "./xzg_loader_settings.js";
 
 let _xzgBackendSessionRequest = null;
 function getImageLoaderBackendSessionId() {
@@ -122,6 +122,26 @@ function ensureHiddenWidget(node, name, type, value) {
     widget.options = widget.options || {};
     widget.options.serialize = true;
     return widget;
+}
+
+// 移除隐藏控件遗留的控件输入端口：控件被转为输入后又整体隐藏时，
+// 左侧会残留一个可连线但无 UI 语义的端口（如 image_list），创建/加载工作流时统一清掉
+function pruneHiddenWidgetInputs(node) {
+    const hiddenNames = new Set((node?.widgets || []).filter((w) => w.hidden).map((w) => w.name));
+    if (!hiddenNames.size) return;
+    let removed = false;
+    for (let i = (node.inputs?.length || 0) - 1; i >= 0; i--) {
+        const inp = node.inputs[i];
+        const name = inp?.widget?.name || inp?.name;
+        if (name && hiddenNames.has(name)) {
+            node.removeInput?.(i);
+            removed = true;
+        }
+    }
+    if (removed) {
+        node._widgetSlotsDirty = true;
+        node.setDirtyCanvas?.(true, true);
+    }
 }
 
 function normalizeAnnotatedName(name) {
@@ -544,10 +564,13 @@ function restoreCanvasSelection(canvas, previousNodes, loaderNode) {
 function attachImageLoaderDOMWidget(node, ui, updateToolbar) {
     const widget = node.addDOMWidget("xzg_img_loader", "customwidget", ui.container, {
         hideOnZoom: false,
-        margin: 5,
+        margin: 0,
         getMinHeight: () => 240,
         getHeight: () => "100%",
     });
+    // Nodes 2 布局器用 computeLayoutSize 分配 DOM 控件高度，兜底避免首次布局压到 0 高；
+    // margin 0 消除预览区与上方插槽行之间的空隙（与选择器/seed 等节点一致）
+    widget.computeLayoutSize = () => ({ minHeight: 240, minWidth: 0 });
     // The legacy property panel writes its own row width into this shared widget.
     Object.defineProperty(widget, "width", {
         configurable: true,
@@ -556,12 +579,22 @@ function attachImageLoaderDOMWidget(node, ui, updateToolbar) {
     });
     let wheelHost = null;
     let lastMode, lastScale, lastHeight;
+    // margin:0 时引擎渲染的 .dom-widget 包裹层铺满节点，会盖住右下角缩放手柄热区；
+    // 在包裹层上裁掉右下角 18px 三角，让该区域指针事件穿透回画布（容器自身的同名裁剪保留兜底）。
+    const RESIZE_CORNER_CLIP =
+        "polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%)";
     const sync = () => {
         const parent = ui.container.parentElement;
         if (parent !== wheelHost) {
             wheelHost?.removeEventListener("wheel", ui._onWheel);
             wheelHost = parent;
             wheelHost?.addEventListener("wheel", ui._onWheel, { passive: false });
+        }
+        // 仅对常规态的 .dom-widget 包裹层生效；全屏编辑态（overlay）跳过
+        if (parent?.classList?.contains("dom-widget")) {
+            if (parent.style.clipPath !== RESIZE_CORNER_CLIP) {
+                parent.style.clipPath = RESIZE_CORNER_CLIP;
+            }
         }
         if (!ui.container.isConnected) return;
         const height = ui.container.clientHeight;
@@ -598,6 +631,11 @@ function createImgBatchUI(node) {
         "width:100%;height:100%;flex:1 1 0;min-width:0;min-height:140px;box-sizing:border-box;overflow:hidden;padding:0;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:4px;margin:0;display:flex;flex-direction:row;gap:0;z-index:10;position:relative;";
     container.style.userSelect = "none";
     container.style.webkitUserSelect = "none";
+    // margin:0 后容器铺满整个节点，会盖住右下角的节点缩放手柄热区；
+    // 用 clip-path 剪掉右下角 18px 三角，让该区域指针事件穿透回画布，恢复拖拽缩放。
+    // 全屏编辑态（遮罩/裁剪）下由 _enterImageEditWorkspace 临时取消。
+    container.style.clipPath =
+        "polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%)";
     // 启用空格+拖动平移画布（DOM widget 默认会拦截 pointer 事件）
     xzgEnableCanvasPanOnSpace(container);
 
@@ -1238,6 +1276,8 @@ function createImgBatchUI(node) {
         container.style.minHeight = "0";
         container.style.flex = "1 1 auto";
         container.style.borderRadius = "8px";
+        // 全屏编辑态铺满视口，无需给节点缩放手柄留角（退出时随 cssText 还原）
+        container.style.clipPath = "none";
         document.body.appendChild(overlay);
         requestAnimationFrame(() => _renderMaskOverlay());
     }
@@ -1455,7 +1495,7 @@ function createImgBatchUI(node) {
     const codexBtn = document.createElement("button");
     codexBtn.textContent = xzgT("＋ 添加到 Codex", "＋ Add to Codex");
     codexBtn.title = xzgT("把选中的原图添加到 Codex 当前聊天，不自动发送", "Attach selected original images to the current Codex chat without sending");
-    codexBtn.style.cssText = "display:inline-flex;align-items:center;height:22px;padding:2px 6px;font-size:13px;white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ffd700;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
+    codexBtn.style.cssText = "display:inline-flex;align-items:center;height:calc(var(--xzg-chat-font,13px) + 9px);padding:2px 6px;font-size:var(--xzg-chat-font,13px);white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ffd700;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
     codexBtn.addEventListener("pointerdown", event => event.stopPropagation());
     codexBtn.addEventListener("mousedown", event => event.stopPropagation());
     codexBtn.addEventListener("dblclick", event => event.stopPropagation());
@@ -1469,7 +1509,7 @@ function createImgBatchUI(node) {
     const doubaoBtn = document.createElement("button");
     doubaoBtn.textContent = xzgT("＋ 添加到豆包", "＋ Add to Doubao");
     doubaoBtn.title = xzgT("把选中的原图添加到豆包当前聊天，不自动发送", "Attach selected original images to the current Doubao chat without sending");
-    doubaoBtn.style.cssText = "display:inline-flex;align-items:center;height:22px;padding:2px 6px;font-size:13px;white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ff9800;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
+    doubaoBtn.style.cssText = "display:inline-flex;align-items:center;height:calc(var(--xzg-chat-font,13px) + 9px);padding:2px 6px;font-size:var(--xzg-chat-font,13px);white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ff9800;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
     doubaoBtn.addEventListener("pointerdown", event => event.stopPropagation());
     doubaoBtn.addEventListener("mousedown", event => event.stopPropagation());
     doubaoBtn.addEventListener("dblclick", event => event.stopPropagation());
@@ -1488,8 +1528,28 @@ function createImgBatchUI(node) {
         xzgShowLoaderSettings(node, [{ id: "codex", label: xzgT("添加到 Codex", "Add to Codex") }, { id: "doubao", label: xzgT("添加到豆包", "Add to Doubao") }], syncPreviewButtons);
     });
     function syncPreviewButtons() {
-        doubaoBtn.style.display = xzgPreviewButtonVisible(node, "doubao") ? "inline-flex" : "none";
-        codexBtn.style.display = xzgPreviewButtonVisible(node, "codex") ? "inline-flex" : "none";
+        // 与视频加载器-化神级一致：除显示/隐藏外，同步应用设置面板里的
+        // 每按钮字体颜色（xzg_preview_button_colors）与字体大小（xzg_preview_button_font_sizes）；
+        // 设置面板打开期间按钮容器带 xzg-preview-settings-open 类强制常显，便于实时观察调整效果
+        const defaults = { codex: "#ffd700", doubao: "#ff9800" };
+        const applyBtn = (btn, id) => {
+            btn.style.display = xzgPreviewButtonVisible(node, id) ? "inline-flex" : "none";
+            const color = node.properties?.xzg_preview_button_colors?.[id] || defaults[id];
+            if (color) btn.style.color = color;
+            const size = Number(node.properties?.xzg_preview_button_font_sizes?.[id])
+                || Number(node.properties?.xzg_preview_button_font_size) || 0;
+            if (size > 0) {
+                const f = Math.max(9, Math.min(48, size));
+                btn.style.fontSize = `${f}px`;
+                btn.style.height = `${f + 9}px`;
+            } else {
+                // 未在设置中指定时回退到随节点密度缩放的默认值
+                btn.style.fontSize = "";
+                btn.style.height = "";
+            }
+        };
+        applyBtn(doubaoBtn, "doubao");
+        applyBtn(codexBtn, "codex");
     }
     syncPreviewButtons();
 
@@ -1516,7 +1576,8 @@ function createImgBatchUI(node) {
     safetyActionGroup.appendChild(cropDeleteDivider);
     safetyActionGroup.appendChild(deleteBtn);
     safetyActionGroup.appendChild(clearBtn);
-    safetyActionGroup.appendChild(createActionDivider());
+    const clearSettingsDivider = createActionDivider();
+    safetyActionGroup.appendChild(clearSettingsDivider);
     safetyActionGroup.appendChild(settingsBtn);
     sidebar.appendChild(actionGroup);
 
@@ -1568,7 +1629,7 @@ function createImgBatchUI(node) {
     maxImgInput.title = xzgT("加载图片上限，0/∞ 表示无限制", "Max images to load, 0/∞ = unlimited");
     maxImgInput.setAttribute("aria-label", xzgT("加载图片上限", "Maximum images to load"));
     maxImgInput.style.cssText =
-        "width:calc(2 * var(--xzg-ui-font,10px));max-width:100%;min-width:0;height:20px;flex:0 0 auto;align-self:flex-start;margin:0 0 2px 2px;box-sizing:border-box;padding:0 1px 3px 1px;font-size:var(--xzg-ui-font,10px);line-height:1;font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:var(--comfy-input-bg,rgba(0,0,0,0.22));border:1px solid var(--border-color,rgba(255,255,255,0.25));border-radius:4px;outline:none;text-align:center;cursor:text;transition:border-color 0.12s ease,box-shadow 0.12s ease,background 0.12s ease;";
+        "width:calc(2 * var(--xzg-ui-font,10px));max-width:100%;min-width:0;height:calc(var(--xzg-ui-font,10px) + 5px);flex:0 0 auto;align-self:flex-start;margin:0 0 2px 2px;box-sizing:border-box;padding:0 1px;font-size:var(--xzg-ui-font,10px);line-height:calc(var(--xzg-ui-font,10px) + 3px);font-family:'Segoe UI Symbol','Noto Sans Symbols 2','DejaVu Sans',sans-serif;color:var(--input-text);background:var(--comfy-input-bg,rgba(0,0,0,0.22));border:1px solid var(--border-color,rgba(255,255,255,0.25));border-radius:4px;outline:none;text-align:center;cursor:text;transition:border-color 0.12s ease,box-shadow 0.12s ease,background 0.12s ease;";
     // 输入框交互不冒泡，避免触发节点/侧边栏拖动
     maxImgInput.addEventListener("pointerdown", (e) => e.stopPropagation());
     maxImgInput.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -2435,6 +2496,9 @@ function createImgBatchUI(node) {
 
     // 刷新遮罩工具栏按钮高亮状态
     const _refreshMaskToolbar = () => {
+        // 遮罩/裁剪工具栏显隐会改变侧栏内容高度（容器高度不变），
+        // 标记布局失效，让下一帧的防截断测量重新收敛 density
+        node._xzgFitDirty = true;
         // 遮罩/裁剪工具在单图与多图模式下均可用（多图下聚焦选中图）；子按钮由 editing 状态控制显示
         maskToolbar.style.display = "flex";
         const editing = maskEnabled || cropEnabled;
@@ -3506,9 +3570,11 @@ function createImgBatchUI(node) {
     mainContent.style.userSelect = "none";
     mainContent.style.webkitUserSelect = "none";
     const chatButtons = document.createElement("div");
-    chatButtons.style.cssText = "position:absolute;top:6px;right:6px;z-index:102;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none;";
+    chatButtons.style.cssText = "position:absolute;top:4px;right:6px;z-index:102;display:flex;flex-direction:column;align-items:flex-end;gap:2px;pointer-events:none;";
     chatButtons.append(codexBtn, doubaoBtn);
     mainContent.append(chatButtons);
+    // 挂到加载器设置约定的容器属性：设置面板打开期间强制悬浮按钮常显，便于实时观察字体/颜色调整
+    node._xzgPreviewContainer = chatButtons;
     mainContent.addEventListener("mouseenter", () => { codexBtn.style.opacity = "1"; codexBtn.style.pointerEvents = "auto"; doubaoBtn.style.opacity = "1"; doubaoBtn.style.pointerEvents = "auto"; });
     mainContent.addEventListener("mouseleave", () => { codexBtn.style.opacity = "0"; codexBtn.style.pointerEvents = "none"; doubaoBtn.style.opacity = "0"; doubaoBtn.style.pointerEvents = "none"; });
 
@@ -4961,6 +5027,43 @@ function createImgBatchUI(node) {
     let resizeRaf = null;
     let lastCols = 0;
     let flipAnimTimer = null;
+    let flipRestartTimer = null;
+    let gridFlipPending = false;
+
+    // 播放一次网格随机翻转动画（尺寸变化结束后调用）
+    const playGridFlip = () => {
+        flipRestartTimer = null;
+        const flipCells = grid.querySelectorAll("[data-xzg-img-card]");
+        if (!flipCells.length) return;
+        grid.style.perspective = "600px";
+        flipCells.forEach(cell => { cell.style.animation = "none"; });
+        // 统一强制 reflow 一次，确保 animation:none 已提交
+        void grid.offsetWidth;
+        applyRandomFlip(flipCells);
+        flipCells.forEach(cell => {
+            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
+        });
+        // 动画结束后恢复默认 transition（防重入：清除旧定时器）
+        if (flipAnimTimer) clearTimeout(flipAnimTimer);
+        flipAnimTimer = setTimeout(() => {
+            flipAnimTimer = null;
+            flipCells.forEach(cell => {
+                cell.style.animation = "";
+                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
+                cell.style.transform = "";
+            });
+            grid.style.perspective = "";
+        }, 1050);
+    };
+
+    // 拖拽缩放节点时挂起翻转动画，鼠标完全松开后立即播放
+    const onGridFlipPointerUp = () => {
+        if (!gridFlipPending) return;
+        gridFlipPending = false;
+        playGridFlip();
+    };
+    window.addEventListener("pointerup", onGridFlipPointerUp, true);
+    window.addEventListener("pointercancel", onGridFlipPointerUp, true);
 
     // 随机翻转动画：给每张卡片设置随机轴、角度、方向
     const applyRandomFlip = (cells) => {
@@ -5021,86 +5124,32 @@ function createImgBatchUI(node) {
                 const currentSize = getCardSize(node);
                 
                 if (finalSize !== currentSize) {
-                    // 列数变化时，卡片翻转动画
-                    if (newCols !== lastCols && lastCols > 0) {
-                        const cells = grid.querySelectorAll("[data-xzg-img-card]");
-
-                        // 更新布局
-                        setCardSize(node, finalSize);
-                        lastCardSize = finalSize;
-                        grid.style.setProperty("--card-size", `${finalSize}px`);
-                        grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
-                        grid.style.perspective = "600px";
-
-                        // 先清除旧动画状态
-                        cells.forEach(cell => {
-                            cell.style.width = `${finalSize}px`;
-                            cell.style.height = `${finalSize}px`;
-                            cell.style.transition = "none";
-                            cell.style.animation = "none";
-                            _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
-                            _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
-                            _applyCropBadgeSize(cell.querySelector(".xzg-img-cropbadge"), finalSize);
-                        });
-                        // 统一强制 reflow 一次，确保所有 cell 的 animation:none 已提交
-                        void grid.offsetWidth;
-                        // 设置翻转动画，每张卡片随机角度和方向
-                        applyRandomFlip(cells);
-                        cells.forEach(cell => {
-                            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
-                        });
-
-                        // 动画结束后恢复默认 transition（防重入：清除旧定时器）
-                        if (flipAnimTimer) clearTimeout(flipAnimTimer);
-                        flipAnimTimer = setTimeout(() => {
-                            flipAnimTimer = null;
-                            cells.forEach(cell => {
-                                cell.style.animation = "";
-                                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
-                                cell.style.transform = "";
-                            });
-                            grid.style.perspective = "";
-                        }, 1050);
-                    } else {
-                        // 只更新尺寸（列数不变），随机翻转动画
-                        setCardSize(node, finalSize);
-                        lastCardSize = finalSize;
-                        grid.style.setProperty("--card-size", `${finalSize}px`);
-                        grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
-                        grid.style.perspective = "600px";
-                        const cells = grid.querySelectorAll("[data-xzg-img-card]");
-
-                        // 先清除旧动画状态
-                        cells.forEach(cell => {
-                            cell.style.width = `${finalSize}px`;
-                            cell.style.height = `${finalSize}px`;
-                            cell.style.transition = "none";
-                            cell.style.animation = "none";
-                            _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
-                            _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
-                            _applyCropBadgeSize(cell.querySelector(".xzg-img-cropbadge"), finalSize);
-                        });
-                        // 统一强制 reflow
-                        void grid.offsetWidth;
-                        // 随机翻转动画
-                        applyRandomFlip(cells);
-                        cells.forEach(cell => {
-                            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
-                        });
-
-                        // 动画结束后恢复默认 transition（防重入：清除旧定时器）
-                        if (flipAnimTimer) clearTimeout(flipAnimTimer);
-                        flipAnimTimer = setTimeout(() => {
-                            flipAnimTimer = null;
-                            cells.forEach(cell => {
-                                cell.style.animation = "";
-                                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
-                                cell.style.transform = "";
-                            });
-                            grid.style.perspective = "";
-                        }, 1050);
-                    }
+                    // 更新布局（即时，不重启动画）：拖拽缩放过程中每帧都走这里，
+                    // 翻转动画改为防抖延迟到拖动结束后播放一次，避免动画持续被重置
+                    setCardSize(node, finalSize);
+                    lastCardSize = finalSize;
+                    grid.style.setProperty("--card-size", `${finalSize}px`);
+                    grid.style.gridTemplateColumns = `repeat(${newCols}, ${finalSize}px)`;
+                    const cells = grid.querySelectorAll("[data-xzg-img-card]");
+                    cells.forEach(cell => {
+                        cell.style.width = `${finalSize}px`;
+                        cell.style.height = `${finalSize}px`;
+                        cell.style.transition = "none";
+                        cell.style.animation = "";
+                        _applyDelBtnSize(cell.querySelector(".del-btn"), finalSize);
+                        _applyIndexBadgeSize(cell.querySelector(".xzg-img-index"), finalSize);
+                        _applyCropBadgeSize(cell.querySelector(".xzg-img-cropbadge"), finalSize);
+                    });
                     lastCols = newCols;
+
+                    // 拖拽缩放（鼠标按住）时只标记待播，鼠标完全松开（pointerup）后播放一次；
+                    // 非拖拽引起的尺寸变化（如加载工作流）保留 250ms 防抖
+                    if (window.app?.canvas?.pointer?.isDown) {
+                        gridFlipPending = true;
+                    } else {
+                        if (flipRestartTimer) clearTimeout(flipRestartTimer);
+                        flipRestartTimer = setTimeout(playGridFlip, 250);
+                    }
                 }
             }
         });
@@ -6074,11 +6123,15 @@ function createImgBatchUI(node) {
             _applyIndexBadgeSize(indexBadge, contentSize);
 
             const label = document.createElement("div");
-            label.textContent = name;
-            label.title = name;
+            // 网格卡片显示图片分辨率（异步获取，带缓存），悬停 title 仍保留文件名
             label.className = "xzg-img-label";
+            label.title = name;
             label.style.cssText =
-                "position:absolute;left:2px;right:2px;bottom:2px;font-size:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;z-index:1;";
+                "position:absolute;left:50%;transform:translateX(-50%);bottom:2px;max-width:calc(100% - 4px);font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;background:rgba(0,0,0,0.35);border-radius:2px;padding:0 3px;z-index:1;";
+            _xzgFetchOriginalSize(name).then((info) => {
+                if (!info || !label.isConnected) return;
+                label.textContent = `${info.width}×${info.height}`;
+            });
 
             // 该图已裁剪 → 缩略图显示裁剪后的画面，并加「已裁剪」角标
             if (_gridHasCrop(name)) {
@@ -6697,7 +6750,7 @@ function createImgBatchUI(node) {
                 poseImageFile = new File([blob], filename, { type: blob.type || "image/png" });
             }
             if (!poseStudio) {
-                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261021.empty-confirm10");
+                const { PoseStudioWidget } = await import("./xzg_image_pose_editor_ctrl_character_controls.js?v=20261102.hint-toggle1");
                 if (poseStudioRemoved) return;
                 // Keep editor state in properties, without adding widgets that
                 // would shift the loader's existing serialized widget values.
@@ -7102,6 +7155,9 @@ function createImgBatchUI(node) {
         _maskResizeObserver.disconnect();
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (flipAnimTimer) clearTimeout(flipAnimTimer);
+        if (flipRestartTimer) clearTimeout(flipRestartTimer);
+        window.removeEventListener("pointerup", onGridFlipPointerUp, true);
+        window.removeEventListener("pointercancel", onGridFlipPointerUp, true);
         poseStudioRemoved = true;
         poseStudio?.dispose();
         poseStudio?.container?.remove();
@@ -7178,6 +7234,8 @@ function createImgBatchUI(node) {
         sidebar,
         actionGroup,
         safetyActionGroup,
+        chatButtons,
+        dividers: [mediaMaskDivider, cropDeleteDivider, clearSettingsDivider],
         syncPreviewButtons,
         maskToolbar,
         toggleMask: () => maskToggleBtn.click(),
@@ -7413,6 +7471,12 @@ app.registerExtension({
                     cw.options.serialize = true;
                 }
 
+                // 控件已全部隐藏：清掉被转成输入的控件遗留端口（如 image_list）
+                pruneHiddenWidgetInputs(this);
+
+                // 新建节点默认隐藏全部悬浮按钮（设置 ⚙ 在左侧图标栏，不受影响）
+                xzgSetPreviewButtonsDefaultHidden(this, ["codex", "doubao"]);
+
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
                 const originalOnDeselected = this.onDeselected;
@@ -7435,7 +7499,7 @@ app.registerExtension({
                 _updateToolbarIconSize(this);
 
                 const MIN_W = 250;
-                const MIN_H = 300;
+                const MIN_H = 320;
 
                 if (!this.size || this.size[0] < MIN_W || this.size[1] < MIN_H) {
                     this.setSize([Math.max(this.size?.[0] || 0, MIN_W), Math.max(this.size?.[1] || 0, MIN_H)]);
@@ -7452,6 +7516,28 @@ app.registerExtension({
                 };
 
                 attachImageLoaderDOMWidget(this, ui, _updateToolbarIconSize);
+
+                // canvas 侧控件命中让位：DOM 控件铺满整个节点，pointermove 里
+                // overWidget=true 会抑制 findResizeDirection，右下角缩放手柄失效。
+                // 在手柄热区（resizeHandleSize，默认 15px）内不把光标判为「悬停在控件上」。
+                const origGetWidgetOnPos = this.getWidgetOnPos;
+                if (typeof origGetWidgetOnPos === "function") {
+                    const domWidget = (this.widgets || []).find((w) => w.name === "xzg_img_loader");
+                    if (domWidget) {
+                        this.getWidgetOnPos = function (x, y) {
+                            const w = origGetWidgetOnPos.apply(this, arguments);
+                            if (w && w === domWidget) {
+                                const dx = this.pos[0] + this.size[0] - x;
+                                const dy = this.pos[1] + this.size[1] - y;
+                                const handle = window.LiteGraph?.LGraphNode?.resizeHandleSize ?? 15;
+                                if (dx <= handle && dy <= handle && dx > -handle * 2 && dy > -handle * 2) {
+                                    return null;
+                                }
+                            }
+                            return w;
+                        };
+                    }
+                }
 
                 const wIndex = getIndexWidget(this);
                 const wList = getImageListWidget(this);
@@ -7787,6 +7873,8 @@ app.registerExtension({
                     umWidget.options.serialize = true;
                     umWidget.value = restoredMode;
                 }
+                // 工作流恢复后同样清理隐藏控件遗留的输入端口
+                pruneHiddenWidgetInputs(this);
                 // 放大模式残留恢复：若工作流里存的是裁剪/遮罩放大后的尺寸(1280x720)，
                 // 且带原始大小标记，则恢复为原始大小并清理标记，避免刷新后节点无法还原大小
                 const _restoreWarpedNodeSize = (saved) => {
@@ -7906,55 +7994,114 @@ app.registerExtension({
             };
 
             // 画布缩放时同步更新图片名称字体大小，以及 bypass 状态更新
+            // 防截断测量的节流缓存（每个节点实例独立）
+            let _xzgFitLastH = -1;
+            let _xzgFitLastT = 0;
+            let _xzgFitDensity = -1;
             function _updateToolbarIconSize(nodeInst) {
                 const ui = nodeInst?._xzgImgLoaderUI;
                 const sidebar = ui?.sidebar;
                 if (!sidebar) return;
-                const h = ui.container?.clientHeight > 0 ? ui.container.clientHeight + 30 : (nodeInst.size?.[1] || 300);
+                const container = ui.container;
+                const h = container?.clientHeight > 0 ? container.clientHeight + 30 : (nodeInst.size?.[1] || 300);
                 const availableHeight = Math.max(0, h - 30);
-                const density = Math.max(0, Math.min(1, (availableHeight - 260) / 220));
+                let density = Math.max(0, Math.min(1, (availableHeight - 260) / 220));
                 // 0.5px 步进：拖拽缩放时所有间距随同一 density 连续平滑变化，
                 // 分割线与按钮之间不再出现原先 Math.round 整跳带来的不均匀跳变。
                 const px = (v) => `${Math.round(v * 2) / 2}px`;
 
-                // 图标与按钮内边距：随 density 平滑放大
-                const iconSize = px(14 + density * 18);
-                if (sidebar.style.getPropertyValue("--xzg-ic-size") !== iconSize) {
-                    sidebar.style.setProperty("--xzg-ic-size", iconSize);
-                }
-                const buttonPadding = px(1 + density * 3);
-                if (sidebar.style.getPropertyValue("--xzg-btn-pad-y") !== buttonPadding) {
-                    sidebar.style.setProperty("--xzg-btn-pad-y", buttonPadding);
-                }
-
-                // 组内按钮间距：侧栏、操作组、安全组、遮罩工具栏共用同一节奏
-                const itemGapV = 1 + density * 5;   // 按钮间距（1→6px）
-                const sideGapV = density * 2;        // 侧栏组间间距（0→2px）
-                const itemGap = px(itemGapV);
-                const sideGap = px(sideGapV);
-                if (sidebar.style.gap !== sideGap) sidebar.style.gap = sideGap;
-                if (ui.actionGroup && ui.actionGroup.style.gap !== itemGap) {
-                    ui.actionGroup.style.gap = itemGap;
-                }
-
-                // 分割线（cropDeleteDivider）是安全组（删除/清空）的首个子元素，为其上方
-                // 预留与按钮间距相同的间隙：使「裁剪→垃圾桶」与「资源媒体→遮罩」两处分隔
-                // 都等于 2×itemGap，整列节奏均匀，不再出现明显偏大的空隙。
-                const sectionGap = px(itemGapV - sideGapV);
-                if (ui.safetyActionGroup) {
-                    if (ui.safetyActionGroup.style.gap !== itemGap) ui.safetyActionGroup.style.gap = itemGap;
-                    if (ui.safetyActionGroup.style.marginTop !== sectionGap) {
-                        ui.safetyActionGroup.style.marginTop = sectionGap;
+                const applyDensity = (d) => {
+                    // 图标与按钮内边距：随 density 平滑放大
+                    const iconSize = px(14 + d * 18);
+                    if (sidebar.style.getPropertyValue("--xzg-ic-size") !== iconSize) {
+                        sidebar.style.setProperty("--xzg-ic-size", iconSize);
                     }
-                }
-                if (ui.maskToolbar && ui.maskToolbar.style.gap !== itemGap) {
-                    ui.maskToolbar.style.gap = itemGap;
-                }
-                // 底部文字按钮（上限∞/批量/列表/批次）字号也随 density 缩放，
-                // 与上方图标按钮保持同一节奏（8→14px），节点拖大后不再大小不变。
-                const uiFont = px(8 + density * 6);
-                if (sidebar.style.getPropertyValue("--xzg-ui-font") !== uiFont) {
-                    sidebar.style.setProperty("--xzg-ui-font", uiFont);
+                    const buttonPadding = px(1 + d * 3);
+                    if (sidebar.style.getPropertyValue("--xzg-btn-pad-y") !== buttonPadding) {
+                        sidebar.style.setProperty("--xzg-btn-pad-y", buttonPadding);
+                    }
+
+                    // 组内按钮间距：侧栏、操作组、安全组、遮罩工具栏共用同一节奏
+                    const itemGapV = 1 + d * 5;   // 按钮间距（1→6px）
+                    const sideGapV = d * 2;        // 侧栏组间间距（0→2px）
+                    const itemGap = px(itemGapV);
+                    const sideGap = px(sideGapV);
+                    if (sidebar.style.gap !== sideGap) sidebar.style.gap = sideGap;
+                    if (ui.actionGroup && ui.actionGroup.style.gap !== itemGap) {
+                        ui.actionGroup.style.gap = itemGap;
+                    }
+
+                    // 分割线（cropDeleteDivider）是安全组（删除/清空）的首个子元素，为其上方
+                    // 预留与按钮间距相同的间隙：使「裁剪→垃圾桶」与「资源媒体→遮罩」两处分隔
+                    // 都等于 2×itemGap，整列节奏均匀，不再出现明显偏大的空隙。
+                    const sectionGap = px(itemGapV - sideGapV);
+                    if (ui.safetyActionGroup) {
+                        if (ui.safetyActionGroup.style.gap !== itemGap) ui.safetyActionGroup.style.gap = itemGap;
+                        if (ui.safetyActionGroup.style.marginTop !== sectionGap) {
+                            ui.safetyActionGroup.style.marginTop = sectionGap;
+                        }
+                    }
+                    if (ui.maskToolbar && ui.maskToolbar.style.gap !== itemGap) {
+                        ui.maskToolbar.style.gap = itemGap;
+                    }
+                    // 分割线宽度跟随图标列：图标 14→32px + 左右各 2px 内边距，
+                    // 原先 82% 百分比宽因侧栏宽度被底部文字撑住而感知不到缩放，改为显式随 density 缩放
+                    const dividerW = px(18 + d * 18);
+                    if (ui.dividers) {
+                        for (const dv of ui.dividers) {
+                            if (dv.style.width !== dividerW) dv.style.width = dividerW;
+                        }
+                    }
+                    // 预览区右上角「添加到 Codex/豆包」按钮：字号随 density 缩放（8→14px），
+                    // 标签间距取设置值并随 density 自适应缩放（0.5×→1.25×）
+                    if (ui.chatButtons) {
+                        const chatFont = px(8 + d * 6);
+                        if (ui.chatButtons.style.getPropertyValue("--xzg-chat-font") !== chatFont) {
+                            ui.chatButtons.style.setProperty("--xzg-chat-font", chatFont);
+                        }
+                        const gapPx = px(xzgGetPreviewButtonGap(nodeInst) * (0.5 + d * 0.75));
+                        if (ui.chatButtons.style.gap !== gapPx) ui.chatButtons.style.gap = gapPx;
+                        if (ui.chatButtons.style.top !== gapPx) ui.chatButtons.style.top = gapPx;
+                    }
+                    // 底部文字按钮（上限∞/批量/列表/批次）字号也随 density 缩放，
+                    // 与上方图标按钮保持同一节奏（8→14px），节点拖大后不再大小不变。
+                    const uiFont = px(8 + d * 6);
+                    if (sidebar.style.getPropertyValue("--xzg-ui-font") !== uiFont) {
+                        sidebar.style.setProperty("--xzg-ui-font", uiFont);
+                    }
+                };
+                // 防截断：左栏加入遮罩/裁剪/恢复原始等图标后按钮总数变多，
+                // 节点高度不足时底部（设置/∞/单图多图/列表批次）会被容器裁掉。
+                // 实测侧栏内容高度超出可视高度时，按比例回缩 density 直至完整显示。
+                // 性能：scrollHeight 读取会强制同步排版，本函数随画布每帧调用，
+                // 仅在高度变化/布局失效/周期复核时测量；其余帧沿用上次收敛后的 density。
+                // 注意测量前必须先套用满密度：否则量到的是上次回缩后的布局，
+                // 会误判「放得下」而回满密度，造成按钮周期性满/缩振荡。
+                if (container && container.clientHeight > 0) {
+                    const contH0 = container.clientHeight;
+                    const now = performance.now();
+                    const due = contH0 !== _xzgFitLastH || nodeInst._xzgFitDirty || now - _xzgFitLastT >= 400;
+                    if (due) {
+                        _xzgFitLastH = contH0;
+                        _xzgFitLastT = now;
+                        nodeInst._xzgFitDirty = false;
+                        applyDensity(density);
+                        for (let i = 0; i < 6; i++) {
+                            const contentH = sidebar.scrollHeight;
+                            const contH = container.clientHeight;
+                            if (contentH <= contH) break;
+                            const next = Math.max(0, density * (contH / contentH) - 0.02);
+                            if (next >= density) break;
+                            density = next;
+                            applyDensity(density);
+                        }
+                        _xzgFitDensity = density;
+                    } else {
+                        if (_xzgFitDensity >= 0) density = _xzgFitDensity;
+                        applyDensity(density);
+                    }
+                } else {
+                    applyDensity(density);
                 }
             }
 
@@ -8000,7 +8147,7 @@ app.registerExtension({
                     const excessH = ui.grid.clientHeight - idealH;
                     // 只缩小不放大，且差值 >= 2px 才调整
                     if (Math.max(0, excessW) < 2 && Math.max(0, excessH) < 2) return;
-                    const MIN_W = 250, MIN_H = 300;
+                    const MIN_W = 250, MIN_H = 320;
                     const newW = Math.max(MIN_W, Math.round(self.size[0] - Math.max(0, excessW)));
                     const newH = Math.max(MIN_H, Math.round(self.size[1] - Math.max(0, excessH)));
                     if (newW !== self.size[0] || newH !== self.size[1]) {

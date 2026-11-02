@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 import { xzgT } from "./xzg_i18n.js";
 import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
-import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings } from "./xzg_loader_settings.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden } from "./xzg_loader_settings.js";
 import { bindMultiVideoQueue } from "./xzg_multi_video_queue.js";
 import {
     bindVideoLoaderInteractions,
@@ -359,21 +359,25 @@ function _layoutPreviewActions(node) {
     for (const [id, key] of PREVIEW_ACTIONS) {
         if (node[key]) node[key].style.display = xzgPreviewButtonVisible(node, id) ? "inline-flex" : "none";
     }
+    // 标签间距：设置值 × 节点宽度自适应系数（1→1.5×，与视频保存节点同款公式）
+    const widthRatio = Math.max(1, (node._xzgPreviewContainer?.clientWidth || 360) / 360);
+    const gapScale = Math.min(1.5, 1 + (widthRatio - 1) * 0.25);
+    const gap = xzgGetPreviewButtonGap(node) * gapScale;
     const settings = node._xzgLoaderSettingsBtn;
     if (settings) {
-        settings.style.left = "6px";
+        settings.style.left = `${gap}px`;
         settings.style.right = "auto";
-        settings.style.top = "6px";
+        settings.style.top = `${gap}px`;
     }
-    let top = 6;
+    let top = gap;
     const actions = PREVIEW_ACTIONS.map(([id, key]) => ({ id, key }));
     for (const { key } of xzgOrderedPreviewActions(node, actions)) {
         const btn = node[key];
         if (!btn || btn.style.display === "none") continue;
         btn.style.left = "auto";
-        btn.style.right = "6px";
+        btn.style.right = `${gap}px`;
         btn.style.top = `${top}px`;
-        top += (btn.offsetHeight || 22) + 6;
+        top += (btn.offsetHeight || 22) + gap;
     }
 }
 
@@ -637,6 +641,9 @@ app.registerExtension({
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = origOnNodeCreated?.apply(this, arguments);
+                // 新建节点默认隐藏全部悬浮按钮，仅保留「达芬奇导出设置」⚙ 用于重新打开设置面板
+                xzgSetPreviewButtonsDefaultHidden(this,
+                    PREVIEW_ACTIONS.map(([id]) => id).filter(id => id !== "davinci_settings"));
                 requestAnimationFrame(() => _restoreVideoLoaderDavinciTarget(this));
                 // 内存模式（低内存版功能并入）：由 widget 值动态决定 isLM，
                 // 切换时通过 _xzgSetVideoLoaderMode 销毁重建播放器并重载当前视频。

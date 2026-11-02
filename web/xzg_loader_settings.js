@@ -24,6 +24,22 @@ export function xzgOrderedPreviewActions(node, actions) {
     return [...result, ...remaining.values()];
 }
 
+// 标签（悬浮按钮）间距：节点属性 xzg_preview_button_gap（0-40px）。
+// 未设置时用默认值：图像加载器 2px（紧凑），其余节点 6px。
+export function xzgGetPreviewButtonGap(node) {
+    const v = Number(node?.properties?.xzg_preview_button_gap);
+    if (Number.isFinite(v) && v >= 0) return Math.min(40, v);
+    return node?._xzgImgLoaderUI ? 2 : 6;
+}
+
+// 新建节点默认隐藏全部悬浮按钮（设置面板中全部不勾选）；仅 onNodeCreated 调用，
+// 工作流恢复（onConfigure）会覆盖 properties，不受影响。设置按钮由调用方排除在外。
+export function xzgSetPreviewButtonsDefaultHidden(node, ids) {
+    node.properties ||= {};
+    if (node.properties.xzg_preview_buttons) return;
+    node.properties.xzg_preview_buttons = Object.fromEntries(ids.map(id => [id, false]));
+}
+
 export function xzgBeginPreviewSettings(node, refresh) {
     const original = {
         buttons: node.properties?.xzg_preview_buttons,
@@ -31,6 +47,7 @@ export function xzgBeginPreviewSettings(node, refresh) {
         order: node.properties?.xzg_preview_button_order,
         colors: node.properties?.xzg_preview_button_colors,
         sizes: node.properties?.xzg_preview_button_font_sizes,
+        gap: node.properties?.xzg_preview_button_gap,
     };
     const pc = node._xzgPreviewContainer;
     if (!document.getElementById("xzg-preview-settings-style")) {
@@ -41,19 +58,20 @@ export function xzgBeginPreviewSettings(node, refresh) {
     }
     pc?.classList.add("xzg-preview-settings-open");
     return {
-        update(checks, order, fontSize = node.properties?.xzg_preview_button_font_size ?? 14, colors = node.properties?.xzg_preview_button_colors ?? {}, sizes = node.properties?.xzg_preview_button_font_sizes ?? {}) {
+        update(checks, order, fontSize = node.properties?.xzg_preview_button_font_size ?? 14, colors = node.properties?.xzg_preview_button_colors ?? {}, sizes = node.properties?.xzg_preview_button_font_sizes ?? {}, gap = xzgGetPreviewButtonGap(node)) {
             node.properties ||= {};
             node.properties.xzg_preview_buttons = { ...original.buttons, ...Object.fromEntries([...checks].map(([id, input]) => [id, input.checked])) };
             node.properties.xzg_preview_button_order = order;
             node.properties.xzg_preview_button_font_size = Number(fontSize);
             node.properties.xzg_preview_button_colors = { ...colors };
             node.properties.xzg_preview_button_font_sizes = { ...sizes };
+            node.properties.xzg_preview_button_gap = Math.max(0, Math.min(40, Number(gap) || 0));
             refresh?.();
         },
         finish(saved = false) {
             if (!saved) {
                 node.properties ||= {};
-                for (const [key, value] of [["xzg_preview_buttons", original.buttons], ["xzg_preview_button_order", original.order], ["xzg_preview_button_font_size", original.fontSize], ["xzg_preview_button_colors", original.colors], ["xzg_preview_button_font_sizes", original.sizes]]) {
+                for (const [key, value] of [["xzg_preview_buttons", original.buttons], ["xzg_preview_button_order", original.order], ["xzg_preview_button_font_size", original.fontSize], ["xzg_preview_button_colors", original.colors], ["xzg_preview_button_font_sizes", original.sizes], ["xzg_preview_button_gap", original.gap]]) {
                     if (value === undefined) delete node.properties[key];
                     else node.properties[key] = value;
                 }
@@ -67,11 +85,25 @@ export function xzgBeginPreviewSettings(node, refresh) {
     };
 }
 
-export function xzgBuildPreviewActionSettings(container, node, actions, sortable = false, onPreview = null, onFontSize = null, onColors = null, onSizes = null) {
+export function xzgBuildPreviewActionSettings(container, node, actions, sortable = false, onPreview = null, onFontSize = null, onColors = null, onSizes = null, onGap = null) {
     const ordered = xzgOrderedPreviewActions(node, actions);
     const checks = new Map();
     const colorInputs = new Map();
     const sizeInputs = new Map();
+    // 「标签间距」输入框：放在可排序列表外层（列表 re-render 会清空子元素），取消时可还原
+    const gapRow = document.createElement("div");
+    gapRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 0 2px;";
+    const gapLabel = document.createElement("label");
+    gapLabel.textContent = xzgT("标签间距", "Label spacing");
+    gapLabel.title = xzgT("悬浮按钮之间的间距（像素），随节点大小自适应缩放", "Spacing between floating buttons (px), auto-scales with node size");
+    gapLabel.style.cssText = "flex:1;cursor:default;";
+    const gapInput = document.createElement("input");
+    gapInput.type = "number"; gapInput.min = "0"; gapInput.max = "40"; gapInput.step = "1";
+    gapInput.value = String(xzgGetPreviewButtonGap(node));
+    gapInput.style.cssText = "width:52px;box-sizing:border-box;";
+    gapInput.addEventListener("input", () => onGap?.(Math.max(0, Math.min(40, Number(gapInput.value) || 0))));
+    gapRow.append(gapLabel, gapInput);
+    if (container.parentElement) container.parentElement.insertBefore(gapRow, container);
     const render = () => {
         container.replaceChildren();
         ordered.forEach(({ id, label }) => {
@@ -150,7 +182,7 @@ export function xzgBuildPreviewActionSettings(container, node, actions, sortable
         });
     };
     render();
-    return { checks, colors: colorInputs, sizes: sizeInputs, order: () => ordered.map(action => action.id), fontSize: () => node.properties?.xzg_preview_button_font_size ?? 14 };
+    return { checks, colors: colorInputs, sizes: sizeInputs, gap: gapInput, order: () => ordered.map(action => action.id), fontSize: () => node.properties?.xzg_preview_button_font_size ?? 14 };
 }
 
 export function xzgCloseLoaderSettings(node) {
@@ -209,9 +241,11 @@ export function xzgShowLoaderSettings(node, actions, refresh) {
     const preview = xzgBeginPreviewSettings(node, refresh);
     let saved = false;
     let controls;
-    controls = xzgBuildPreviewActionSettings(list, node, actions, true, (checks, order) => preview.update(checks, order, controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value]))),
+    controls = xzgBuildPreviewActionSettings(list, node, actions, true, (checks, order) => preview.update(checks, order, controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)]))),
         fontSize => preview.update(controls?.checks || new Map(), controls?.order() || [], fontSize, Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)]))),
-        (checks, order, size, colors, sizes) => preview.update(checks, order, size, colors, sizes));
+        (checks, order, size, colors, sizes) => preview.update(checks, order, size, colors, sizes),
+        (checks, order, size, colors, sizes) => preview.update(checks, order, size, colors, sizes),
+        gap => preview.update(controls?.checks || new Map(), controls?.order() || [], controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)])), gap));
     dialog.append(section);
     const hint = document.createElement("p");
     hint.textContent = xzgT("仅作用于当前节点，随工作流保存。", "Applies to this node and is saved with the workflow.");
@@ -231,6 +265,7 @@ export function xzgShowLoaderSettings(node, actions, refresh) {
         node.properties.xzg_preview_button_font_size = controls.fontSize();
         node.properties.xzg_preview_button_colors = Object.fromEntries([...controls.colors].map(([id, input]) => [id, input.value]));
         node.properties.xzg_preview_button_font_sizes = Object.fromEntries([...controls.sizes].map(([id, input]) => [id, Number(input.value)]));
+        node.properties.xzg_preview_button_gap = Math.max(0, Math.min(40, Number(controls.gap?.value) || 0));
         saved = true;
         refresh();
         node.graph?.change?.();

@@ -2986,6 +2986,7 @@ function _xzgDirBrowserConfirm() {
             if (dlg._previewFontSize) node.properties.xzg_preview_button_font_size = dlg._previewFontSize();
             if (dlg._previewColors) node.properties.xzg_preview_button_colors = Object.fromEntries([...dlg._previewColors()].map(([id, input]) => [id, input.value]));
             if (dlg._previewSizes) node.properties.xzg_preview_button_font_sizes = Object.fromEntries([...dlg._previewSizes()].map(([id, input]) => [id, Number(input.value)]));
+            if (dlg._previewGap) node.properties.xzg_preview_button_gap = Math.max(0, Math.min(40, Number(dlg._previewGap().value) || 0));
             dlg._previewSaved = true;
             dlg._previewRefresh?.();
             node.graph?.change?.();
@@ -3011,6 +3012,7 @@ async function _xzgShowDirBrowser(node, previewSettings = null) {
     dlg._previewFontSize = null;
     dlg._previewColors = null;
     dlg._previewSizes = null;
+    dlg._previewGap = null;
     dlg._previewChecks = new Map();
     dlg._previewOrder = null;
     dlg._confirmButton.textContent = previewSettings ? xzgT("保存", "Save") : xzgT("选择", "Select");
@@ -3027,8 +3029,9 @@ async function _xzgShowDirBrowser(node, previewSettings = null) {
         controls = xzgBuildPreviewActionSettings(list, node, previewSettings.actions, !!previewSettings.sortable,
             (checks, order) => dlg._previewSession?.update(checks, order, controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)]))),
             previewSettings.fontSize ? size => dlg._previewSession?.update(controls?.checks || new Map(), controls?.order?.() || [], size, Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)]))) : null,
-            previewSettings.fontSize ? (checks, order, size, colors, sizes) => dlg._previewSession?.update(checks, order, size, colors, sizes) : null);
-        if (previewSettings.fontSize) { dlg._previewFontSize = controls.fontSize; dlg._previewColors = () => controls.colors; dlg._previewSizes = () => controls.sizes; }
+            previewSettings.fontSize ? (checks, order, size, colors, sizes) => dlg._previewSession?.update(checks, order, size, colors, sizes) : null,
+            previewSettings.fontSize ? gap => dlg._previewSession?.update(controls?.checks || new Map(), controls?.order?.() || [], controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)])), gap) : null);
+        if (previewSettings.fontSize) { dlg._previewFontSize = controls.fontSize; dlg._previewColors = () => controls.colors; dlg._previewSizes = () => controls.sizes; dlg._previewGap = () => controls.gap; }
         dlg._previewChecks = controls.checks;
         if (previewSettings.sortable) dlg._previewOrder = controls.order;
     }
