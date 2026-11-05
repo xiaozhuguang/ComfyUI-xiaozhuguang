@@ -1,11 +1,10 @@
-"""Copy existing media files to the Windows clipboard and paste into Codex or Doubao."""
+"""Copy original media files to the Windows file clipboard without activating apps."""
 
 import asyncio
-import ctypes
-from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 from aiohttp import web
@@ -47,75 +46,32 @@ def resolve_media_files(names, kind):
     return paths
 
 
-def activate_target_window(target):
-    if os.name != "nt":
-        return None
-    user = ctypes.WinDLL("user32", use_last_error=True)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    for function, args, result in [
-        (user.EnumWindows, [callback_type, wintypes.LPARAM], wintypes.BOOL),
-        (user.IsWindowVisible, [wintypes.HWND], wintypes.BOOL),
-        (user.GetClassNameW, [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
-        (user.GetWindowThreadProcessId, [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
-        (user.GetForegroundWindow, [], wintypes.HWND),
-        (user.SetForegroundWindow, [wintypes.HWND], wintypes.BOOL),
-        (user.IsIconic, [wintypes.HWND], wintypes.BOOL),
-        (user.ShowWindowAsync, [wintypes.HWND, ctypes.c_int], wintypes.BOOL),
-        (kernel.OpenProcess, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
-        (kernel.QueryFullProcessImageNameW, [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL),
-        (kernel.CloseHandle, [wintypes.HANDLE], wintypes.BOOL),
-    ]:
-        function.argtypes, function.restype = args, result
-    windows = []
-    process_names = {"doubao": {"doubao.exe", "豆包.exe"}, "codex": {"codex.exe", "chatgpt.exe"}}[target]
-
-    @callback_type
-    def collect_window(hwnd, _):
-        if not user.IsWindowVisible(hwnd):
-            return True
-        name = ctypes.create_unicode_buffer(256)
-        user.GetClassNameW(hwnd, name, len(name))
-        if name.value == "#32770":
-            return True
-        pid = wintypes.DWORD()
-        user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        process = kernel.OpenProcess(0x1000, False, pid.value)
-        if not process:
-            return True
-        try:
-            path = ctypes.create_unicode_buffer(32768)
-            length = wintypes.DWORD(len(path))
-            if kernel.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(length)):
-                if Path(path.value).name.casefold() in process_names:
-                    windows.append(hwnd)
-        finally:
-            kernel.CloseHandle(process)
-        return True
-
-    if not user.EnumWindows(collect_window, 0) or len(windows) != 1:
-        return None
-    source = user.GetForegroundWindow()
-    if not source:
-        return None
-    handle = windows[0]
-    if user.IsIconic(handle):
-        user.ShowWindowAsync(handle, 9)
-    user.SetForegroundWindow(handle)
-    # Preserve the original window even when Windows delays foreground activation.
-    return int(source)
+def _powershell_executable():
+    # Embedded Python / launchers may omit Windows PowerShell from PATH.
+    for variable in ("SystemRoot", "WINDIR"):
+        root = os.environ.get(variable)
+        if not root:
+            continue
+        # Sysnative reaches native PowerShell from a 32-bit Python process.
+        for system_dir in ("Sysnative", "System32"):
+            executable = Path(root) / system_dir / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            if executable.is_file():
+                return str(executable)
+    executable = shutil.which("powershell.exe")
+    if executable:
+        return executable
+    raise RuntimeError("找不到 Windows PowerShell，请检查 Windows 系统目录及 PowerShell 安装")
 
 
-def add_codex_attachments(paths, target="codex"):
-    if target not in {"codex", "doubao"}:
+def add_codex_attachments(paths, target="clipboard"):
+    """Legacy function name retained; all targets now only copy files."""
+    if target not in {"codex", "doubao", "clipboard"}:
         raise ValueError("未知附件目标")
-    label = "豆包" if target == "doubao" else "Codex"
     script = Path(__file__).with_name("xzg_codex_upload.ps1")
-    source_window = activate_target_window(target)
-    args = ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-File", str(script)]
-    if source_window is not None:
-        args.extend(["-SourceWindow", str(source_window)])
-    args.extend(["-Target", target])
+    if not script.is_file():
+        raise RuntimeError(f"文件复制助手脚本不存在：{script}，请重新安装或完整更新此插件")
+    powershell = _powershell_executable()
+    args = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-File", str(script)]
     completed = subprocess.run(
         args,
         input=json.dumps(paths, ensure_ascii=False),
@@ -125,14 +81,21 @@ def add_codex_attachments(paths, target="codex"):
     try:
         result = json.loads(completed.stdout.strip())
     except json.JSONDecodeError as error:
-        raise RuntimeError(f"无法启动{label}上传助手，请检查 PowerShell 脚本执行权限") from error
+        raise RuntimeError("无法启动文件复制助手，请检查 PowerShell 脚本执行权限") from error
     if not isinstance(result, dict):
-        raise RuntimeError(f"{label}上传助手返回了无效结果")
+        raise RuntimeError("文件复制助手返回了无效结果")
     if completed.returncode or not result.get("ok"):
-        raise RuntimeError(result.get("error") or "添加附件失败")
+        raise RuntimeError(result.get("error") or result.get("warning") or "复制原文件失败")
     return result
 
 
+@PromptServer.instance.routes.post("/xzg/clipboard/files")
+@xzg_safe_handler
+async def clipboard_files(request):
+    return await _attachments(request, "clipboard")
+
+
+# Compatibility routes for previously loaded browser assets: copy only.
 @PromptServer.instance.routes.post("/xzg/doubao/attachments")
 @xzg_safe_handler
 async def doubao_attachments(request):
@@ -146,11 +109,10 @@ async def codex_attachments(request):
 
 
 async def _attachments(request, target):
-    label = "豆包" if target == "doubao" else "Codex"
     if not is_local_clipboard_request(request):
-        return web.json_response({"error": f"添加到{label}仅支持通过 localhost 或 127.0.0.1 本机访问"}, status=403)
+        return web.json_response({"error": "复制到剪贴板仅支持通过 localhost 或 127.0.0.1 本机访问"}, status=403)
     if os.name != "nt":
-        return web.json_response({"error": f"自动添加到{label}目前仅支持 Windows"}, status=501)
+        return web.json_response({"error": "复制到剪贴板目前仅支持 Windows"}, status=501)
     try:
         data = await request.json()
         if not isinstance(data, dict):
@@ -171,12 +133,12 @@ async def _attachments(request, target):
     except (ValueError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
     if _upload_lock.locked():
-        return web.json_response({"error": "正在添加附件，请等待当前操作完成"}, status=409)
+        return web.json_response({"error": "正在复制文件，请等待当前操作完成"}, status=409)
     async with _upload_lock:
         try:
             result = await asyncio.to_thread(add_codex_attachments, paths, target)
         except subprocess.TimeoutExpired:
-            return web.json_response({"error": f"操作超时，请检查{label}输入框，确认附件是否已添加后再重试"}, status=504)
+            return web.json_response({"error": "复制超时，请稍后重试"}, status=504)
         except (RuntimeError, OSError) as error:
             return web.json_response({"error": str(error)}, status=502)
     return web.json_response(result)

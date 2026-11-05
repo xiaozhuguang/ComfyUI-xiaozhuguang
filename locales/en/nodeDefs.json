@@ -1,4 +1,40 @@
 {
+  "XiaozhuguangAPITranslate": {
+    "display_name": "Xiaozhuguang API Translate",
+    "inputs": {
+      "provider": { "name": "Provider" },
+      "seed": { "name": "Seed" },
+      "text": {
+        "name": "Text"
+      },
+      "api_url": {
+        "name": "Api Url"
+      },
+      "api_key": {
+        "name": "Api Key"
+      },
+      "model": {
+        "name": "Model"
+      },
+      "target_language": {
+        "name": "Target Language"
+      },
+      "instructions": {
+        "name": "Instructions"
+      },
+      "timeout": {
+        "name": "Timeout"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Translation"
+      },
+      "1": {
+        "name": "Original"
+      }
+    }
+  },
   "XiaozhuguangMaskCleanupRepair": {
     "display_name": "Xiaozhuguang Video Mask Cleanup & Repair",
     "inputs": {
@@ -451,7 +487,7 @@
       "image_9": { "name": "Image_9" }, "image_10": { "name": "Image_10" }
     },
     "outputs": {
-      "0": { "name": "English Prompt" }, "1": { "name": "Chinese Prompt" }
+      "0": { "name": "English Prompt" }
     }
   },
   "XiaozhuguangQwenModelLoader": {
@@ -471,6 +507,7 @@
   "XiaozhuguangATBC": {
     "display_name": "ATBC (Advanced)",
     "inputs": {
+      "min_margin": { "name": "Minimum Margin" },
       "image": { "name": "image" },
       "mask": { "name": "Mask" },
       "Box_grow_factor": { "name": "box grow factor" },
@@ -590,8 +627,151 @@
   },
   "XiaozhuguangBatchImageGetter": {
     "display_name": "Xiaozhuguang Image Getter",
-    "description": "Set the output count to split a loader batch or image list into numbered outputs. Outputs beyond the available images are empty and block downstream data.",
-    "inputs": { "图像": { "name": "images" }, "输出数量": { "name": "output count" } }
+    "description": "Split image batches or lists into numbered images. Output count controls visible sockets; missing items are empty.",
+    "inputs": {
+      "图像": {
+        "name": "images"
+      },
+      "输出数量": {
+        "name": "output count"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "1"
+      },
+      "1": {
+        "name": "2"
+      },
+      "2": {
+        "name": "3"
+      },
+      "3": {
+        "name": "4"
+      },
+      "4": {
+        "name": "5"
+      },
+      "5": {
+        "name": "6"
+      },
+      "6": {
+        "name": "7"
+      },
+      "7": {
+        "name": "8"
+      },
+      "8": {
+        "name": "9"
+      },
+      "9": {
+        "name": "10"
+      },
+      "10": {
+        "name": "11"
+      },
+      "11": {
+        "name": "12"
+      },
+      "12": {
+        "name": "13"
+      },
+      "13": {
+        "name": "14"
+      },
+      "14": {
+        "name": "15"
+      },
+      "15": {
+        "name": "16"
+      },
+      "16": {
+        "name": "17"
+      },
+      "17": {
+        "name": "18"
+      },
+      "18": {
+        "name": "19"
+      },
+      "19": {
+        "name": "20"
+      }
+    }
+  },
+  "XiaozhuguangBatchMaskGetter": {
+    "display_name": "Xiaozhuguang Mask Getter",
+    "description": "Split mask batches or lists into numbered masks. Output count controls visible sockets; missing items are empty.",
+    "inputs": {
+      "遮罩": {
+        "name": "masks"
+      },
+      "输出数量": {
+        "name": "output count"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "1"
+      },
+      "1": {
+        "name": "2"
+      },
+      "2": {
+        "name": "3"
+      },
+      "3": {
+        "name": "4"
+      },
+      "4": {
+        "name": "5"
+      },
+      "5": {
+        "name": "6"
+      },
+      "6": {
+        "name": "7"
+      },
+      "7": {
+        "name": "8"
+      },
+      "8": {
+        "name": "9"
+      },
+      "9": {
+        "name": "10"
+      },
+      "10": {
+        "name": "11"
+      },
+      "11": {
+        "name": "12"
+      },
+      "12": {
+        "name": "13"
+      },
+      "13": {
+        "name": "14"
+      },
+      "14": {
+        "name": "15"
+      },
+      "15": {
+        "name": "16"
+      },
+      "16": {
+        "name": "17"
+      },
+      "17": {
+        "name": "18"
+      },
+      "18": {
+        "name": "19"
+      },
+      "19": {
+        "name": "20"
+      }
+    }
   },
   "XiaozhuguangBigDisplay": {
     "display_name": "Show Anything",
@@ -709,6 +889,7 @@
   "XiaozhuguangImageCrop": {
     "display_name": "Xiaozhuguang Image Crop",
     "inputs": {
+      "min_margin": { "name": "Minimum Margin" },
       "image": {
         "name": "image"
       },
@@ -787,6 +968,31 @@
       },
       "1": {
         "name": "seam treatment preview"
+      }
+    }
+  },
+  "XiaozhuguangVideoColorCalibrator": {
+    "display_name": "XZG Video Color Calibrator",
+    "description": "Robust global paired calibration: estimates overall color alignment before downweighting changed content; bridges brief correspondence losses within a scene and fades correction during prolonged loss. Robust quantile matching corrects the luminance tone curve. A chroma matrix corrects hue, saturation and tint. All parameters are temporally smoothed and reset on large changes in both streams. Requires equal frame counts and spatial/temporal alignment; no optical flow.",
+    "inputs": {
+      "video_original": {
+        "name": "original video"
+      },
+      "video_edited": {
+        "name": "edited video"
+      },
+      "smooth": {
+        "name": "temporal smoothing",
+        "tooltip": "EMA for all correction parameters: 0 = independent frames; higher = smoother but slower response. Resets on large frame changes."
+      },
+      "strength": {
+        "name": "correction strength",
+        "tooltip": "0 = exactly preserve the edited image; 1 = full estimated correction; intermediate values blend linearly."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "image"
       }
     }
   }

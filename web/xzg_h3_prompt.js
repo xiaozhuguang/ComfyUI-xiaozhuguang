@@ -431,8 +431,8 @@ const QWEN_MODE_LABELS = {
     en: ["Text to Image", "Image Editing", "Multi-Reference Image"],
 };
 const OUTPUT_LANGUAGE_LABELS = {
-    zh: ["仅英文", "仅中文", "中英双语"],
-    en: ["English Only", "Chinese Only", "Chinese + English"],
+    zh: ["仅英文"],
+    en: ["English Only"],
 };
 app.registerExtension({
     name: "Xiaozhuguang.H3Prompt",
@@ -486,9 +486,29 @@ app.registerExtension({
                 }
             };
 
+            // Saved workflows can restore sockets that no longer exist in the schema.
+            nodeType.prototype._xzgCleanObsoleteSlots = function () {
+                const removedInputs = new Set(["rule_preset_id"]);
+                if (!supportsCustomPromptRules) {
+                    for (const name of ["skill", "video_frames", "video_fps", "front_fill", "back_fill"]) removedInputs.add(name);
+                }
+                for (let i = (this.inputs?.length || 0) - 1; i >= 0; i--) {
+                    if (removedInputs.has(this.inputs[i].name)) this.removeInput(i);
+                }
+                for (let i = (this.outputs?.length || 0) - 1; i >= 1; i--) this.removeOutput(i);
+                const idWidget = this.widgets?.find(w => w.name === "rule_preset_id");
+                if (idWidget) {
+                    idWidget.type = "hidden";
+                    idWidget.hidden = true;
+                    idWidget.computeSize = () => [0, -4];
+                    idWidget.draw = () => {};
+                }
+            };
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated?.apply(this, arguments);
+                this._xzgCleanObsoleteSlots();
                 this.setSize([300, 400]);
                 this._addComboControlInputs();
                 this._hideExtraImageInputs();
@@ -576,22 +596,15 @@ app.registerExtension({
                 if (targetWidget) targetWidget.label = lang === "zh" ? "提示词类型" : "Prompt Type";
                 if (gmWidget) gmWidget.label = lang === "zh" ? "提示词细分" : "Prompt Subtype";
                 const videoLabels = lang === "zh"
-                    ? { skill: "Skill（优先规则）", video_frames: "视频帧（首中尾3帧）", video_fps: "视频帧率" }
-                    : { skill: "Skill (Override Rules)", video_frames: "Video Frames (First / Middle / Last)", video_fps: "Video FPS" };
+                    ? { skill: "Skill（优先规则）", video_frames: "视频帧（自动3–17帧）", video_fps: "视频帧率", front_fill: "前补帧", back_fill: "后补帧" }
+                    : { skill: "Skill (Override Rules)", video_frames: "Video Frames (Auto 3–17)", video_fps: "Video FPS", front_fill: "Front Fill", back_fill: "Back Fill" };
                 for (const item of [...(this.inputs || []), ...(this.widgets || [])]) {
                     if (videoLabels[item.name]) item.label = videoLabels[item.name];
                 }
                 const outputLanguageWidget = this.widgets?.find(w => w.name === "output_language");
                 if (outputLanguageWidget?.options) {
-                    const outputLanguageIndex = ({
-                        "仅英文": 0, "English Only": 0,
-                        "仅中文": 1, "Chinese Only": 1,
-                        "中英双语": 2, "Chinese + English": 2,
-                    })[outputLanguageWidget.value] ?? 0;
-                    outputLanguageWidget.options.values = supportsCustomPromptRules
-                        ? [lang === "zh" ? "仅英文" : "English Only"]
-                        : OUTPUT_LANGUAGE_LABELS[lang] || OUTPUT_LANGUAGE_LABELS.zh;
-                    outputLanguageWidget.value = outputLanguageWidget.options.values[supportsCustomPromptRules ? 0 : outputLanguageIndex];
+                    outputLanguageWidget.options.values = OUTPUT_LANGUAGE_LABELS[lang] || OUTPUT_LANGUAGE_LABELS.zh;
+                    outputLanguageWidget.value = outputLanguageWidget.options.values[0];
                 }
                 if (targetWidget?.options) {
                     let presets = {};
@@ -650,7 +663,8 @@ app.registerExtension({
                                 gmWidget.value = wanted && !H3_GEN_MODES.includes(wanted) && !QWEN_IMAGE_MODES.includes(wanted)
                                     ? wanted : subtypeNames[0];
                                 if (!subtypeNames.includes(gmWidget.value)) gmWidget.options.values = [gmWidget.value, ...subtypeNames];
-                                const key = idWidget?.value ? selectedKey : presetNames.find(key =>
+                                const malformedLegacyId = /^\d+(?:\.\d+)?$/.test(String(idWidget?.value || ""));
+                                const key = idWidget?.value && !malformedLegacyId ? selectedKey : presetNames.find(key =>
                                     String(presets[key]?.category || "自定义提示词规则") === selectedType
                                     && (presets[key]?.selectionName || presets[key]?.name || key) === gmWidget.value);
                                 if (idWidget && key) idWidget.value = presets[key].id || "";
@@ -1197,6 +1211,7 @@ app.registerExtension({
             nodeType.prototype.configure = function (info) {
                 const callArgs = [...arguments];
                 const r = origConfigure?.apply(this, callArgs);
+                this._xzgCleanObsoleteSlots();
                 // configure 会在 onNodeCreated 之后恢复 widget 值；恢复后重建细分列表。
                 this._ensureTargetModelCombo();
                 this._syncTargetModel();

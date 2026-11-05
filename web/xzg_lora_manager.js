@@ -11,6 +11,50 @@ function setSidebarEnabled(enabled) {
     document.documentElement.classList.toggle("xzg-hide-lora-sidebar", !enabled);
 }
 
+function installCompactToggle(node, actions) {
+    const toggle = button("", () => {
+        node.properties ||= {};
+        const compact = node.properties.xzgLoraCompact !== true;
+        node.properties.xzgLoraCompact = compact;
+        node.properties.xzgLoraHoverPreview = !compact;
+        node._xzgLoraPreview?.remove();
+        node._xzgLoraPreviewId = null;
+        if (compact) node._xzgLoraExpandedSize = [...node.size];
+        node._xzgRenderLoras?.();
+        node.setSize(compact ? [320, Math.max(140, Math.min(360, 100 + selection(node).length * 20))] : (node._xzgLoraExpandedSize || [500, 360]));
+        node.graph?.change?.();
+        node.setDirtyCanvas?.(true, true);
+        updateLabel();
+    }, actions);
+    toggle.title = "开启极小化：单行显示，隐藏缩略图及悬浮预览；关闭后恢复普通显示";
+    function updateLabel() {
+        const compact = node.properties?.xzgLoraCompact === true;
+        toggle.textContent = compact ? "极小化：开" : "极小化：关";
+        toggle.setAttribute("aria-pressed", String(compact));
+    }
+    node._xzgUpdateCompactToggle = updateLabel;
+    updateLabel();
+    // DOM 按钮位于画布之上，滚轮继续交给画布处理。
+    actions.addEventListener("wheel", event => {
+        const canvas = app.canvas?.canvas;
+        if (!canvas) return;
+        event.preventDefault();
+        event.stopPropagation();
+        canvas.dispatchEvent(new WheelEvent("wheel", {
+            deltaX: event.deltaX, deltaY: event.deltaY, deltaZ: event.deltaZ, deltaMode: event.deltaMode,
+            clientX: event.clientX, clientY: event.clientY,
+            ctrlKey: event.ctrlKey, shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey,
+            bubbles: true, cancelable: true,
+        }));
+    }, { passive: false });
+    const removed = node.onRemoved;
+    node.onRemoved = function () {
+        node._xzgLoraPreview?.remove();
+        node._xzgLoraPreviewId = null;
+        return removed?.apply(this, arguments);
+    };
+}
+
 function matchesSearch(item, query) {
     const text = [item.path, item.notes, item.tags, item.triggers].join(" ").toLowerCase();
     return query.toLowerCase().trim().split(/\s+/).filter(Boolean).every(word => text.includes(word));
@@ -138,15 +182,6 @@ function saveSelection(node, list) {
     app.graph?.change?.();
 }
 
-function loraMode(node) { return node.properties?.xzg_lora_mode === "parallel" ? "parallel" : "serial"; }
-function saveLoraMode(node, mode) {
-    node.properties ||= {};
-    node.properties.xzg_lora_mode = mode;
-    node._xzgRenderLoras?.();
-    node.setDirtyCanvas(true, true);
-    app.graph?.change?.();
-}
-
 function filePicker(accept, action) {
     const input = element("input");
     input.type = "file";
@@ -227,9 +262,8 @@ function style() {
     .xzg-lora-node-actions{display:flex;gap:5px;align-items:center;box-sizing:border-box;width:100%;height:100%;padding:2px 6px;font:12px system-ui}
     .xzg-lora-node-actions button{flex:1;min-width:max-content;white-space:nowrap;background:#343434;color:#eee;border:1px solid #62605a;border-radius:4px;padding:5px 8px;cursor:pointer}
     .xzg-lora-node-actions button:hover{border-color:#eee}
-    .xzg-lora-node-actions button.xzg-lora-mode{font-weight:700;color:#dfbd8e}
     .xzg-lora-stack-row{padding:8px 0;border-bottom:1px solid #555;overflow-wrap:anywhere;white-space:normal}
-    .xzg-lora-stack-row>.xzg-lora-name{cursor:grab;user-select:none}
+    .xzg-lora-stack-row>.xzg-lora-name{cursor:grab;user-select:none;font-size:12px;font-weight:400;line-height:1.4}
     .xzg-lora-stack-row.xzg-lora-has-thumbnail{display:grid;grid-template-columns:minmax(0,1fr) 50px;column-gap:8px;align-items:center;min-height:50px}
     .xzg-lora-has-thumbnail>.xzg-lora-name{grid-column:1;grid-row:1}
     .xzg-lora-has-thumbnail>.xzg-lora-stack-controls{grid-column:1;grid-row:2}
@@ -256,6 +290,19 @@ function style() {
     .xzg-lora-stack-row.xzg-lora-disabled{color:#777}
     .xzg-lora-stack-row.xzg-lora-disabled .xzg-lora-strength{background:#202020;border-color:#444}
     .xzg-lora-stack-row.xzg-lora-disabled img{opacity:.4;filter:grayscale(1)}
+    .xzg-lora-stack.xzg-lora-compact{padding:2px 6px}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-stack-row{display:flex;align-items:center;gap:4px;box-sizing:border-box;height:20px;min-height:20px;margin:0;padding:0;white-space:nowrap}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-stack-controls{flex:0 0 auto;width:auto;margin:0;gap:4px}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-strength{height:18px;min-height:0;margin:0;padding:0 3px;font:12px/16px system-ui}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-remove{box-sizing:border-box;width:18px;height:18px;min-height:0;margin:0;padding:1px}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-remove svg{width:14px;height:14px}
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-row-thumbnail,
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-stack-controls>span,
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-stack-controls>input[type=checkbox],
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-copy,
+    .xzg-lora-stack.xzg-lora-compact .xzg-lora-icon:not(.xzg-lora-remove){display:none}
+    .xzg-lora-node-actions.xzg-lora-compact button{min-width:0;padding:2px;font-size:10px;white-space:nowrap}
     @media(max-width:950px){.xzg-lora-sidebar{width:180px}.xzg-lora-detail{width:260px}}
     `;
     document.head.append(s);
@@ -660,21 +707,7 @@ app.registerExtension({
             }
             const actions = element("div", "xzg-lora-node-actions");
             button("打开 LoRA 管理器", () => openManager(this), actions);
-            const modeButton = button("", () => {
-                const next = loraMode(this) === "serial" ? "parallel" : "serial";
-                if (next === "parallel") {
-                    const list = selection(this);
-                    const firstEnabled = list.find(item => item.enabled !== false);
-                    if (firstEnabled) list.forEach(item => { item.enabled = item === firstEnabled; });
-                    saveSelection(this, list);
-                }
-                saveLoraMode(this, next);
-                modeButton.textContent = next === "serial" ? "模式：串联（多选）" : "模式：并联（单选）";
-                modeButton.title = next === "serial" ? "多个已启用 LoRA 按列表顺序叠加" : "每次只启用一个 LoRA";
-            }, actions);
-            modeButton.className = "xzg-lora-mode";
-            modeButton.textContent = loraMode(this) === "serial" ? "模式：串联（多选）" : "模式：并联（单选）";
-            modeButton.title = loraMode(this) === "serial" ? "多个已启用 LoRA 按列表顺序叠加" : "每次只启用一个 LoRA";
+            installCompactToggle(this, actions);
             button("一键清除 LoRA", () => saveSelection(this, []), actions);
             this.addDOMWidget("lora_actions", "div", actions, { serialize: false, getMinHeight: () => 36, getMaxHeight: () => 36, getHeight: () => 36 });
             const stack = element("div", "xzg-lora-stack");
@@ -690,8 +723,14 @@ app.registerExtension({
                     bubbles: true, cancelable: true,
                 }));
             }, { capture: true, passive: false });
-            this.addDOMWidget("lora_stack", "div", stack, { serialize: false, getMinHeight: () => 180, getHeight: () => 260 });
+            this.addDOMWidget("lora_stack", "div", stack, { serialize: false,
+                getMinHeight: () => this.properties?.xzgLoraCompact === true ? 40 : 180,
+                getHeight: () => this.properties?.xzgLoraCompact === true ? Math.max(40, Math.min(260, selection(this).length * 20 + 4)) : 260 });
             this._xzgRenderLoras = () => {
+                this._xzgUpdateCompactToggle?.();
+                const compact = this.properties?.xzgLoraCompact === true;
+                stack.classList.toggle("xzg-lora-compact", compact);
+                actions.classList.toggle("xzg-lora-compact", compact);
                 this._xzgLoraPreview?.remove();
                 this._xzgLoraPreviewId = null;
                 stack.replaceChildren();
@@ -741,14 +780,11 @@ app.registerExtension({
                         row.append(img);
                     }
                     const name = element("div", "xzg-lora-name", item.path.split("/").pop());
-                    name.title = item.enabled === false ? "点击启用此 LoRA" : "点击停用此 LoRA";
+                    name.title = item.path + "\n" + (item.enabled === false ? "点击启用此 LoRA" : "点击停用此 LoRA");
                     name.setAttribute("role", "button");
                     name.tabIndex = 0;
                     const toggleEnabled = () => {
                         item.enabled = item.enabled === false;
-                        if (item.enabled && loraMode(this) === "parallel") {
-                            list.forEach(other => { if (other !== item) other.enabled = false; });
-                        }
                         saveSelection(this, list);
                     };
                     name.addEventListener("click", event => { event.stopPropagation(); toggleEnabled(); });
@@ -760,9 +796,6 @@ app.registerExtension({
                     const enabled = element("input"); enabled.type = "checkbox"; enabled.checked = item.enabled !== false; enabled.title = "启用";
                     enabled.onchange = () => {
                         item.enabled = enabled.checked;
-                        if (enabled.checked && loraMode(this) === "parallel") {
-                            list.forEach(other => { if (other !== item) other.enabled = false; });
-                        }
                         saveSelection(this, list);
                     }; controls.append(enabled);
                     for (const [key, label] of [["strength_model", "模型强度"]]) {
@@ -795,6 +828,7 @@ app.registerExtension({
                     const preview = element("div", "xzg-lora-node-preview");
                     preview.style.cssText = "position:fixed;z-index:12002;display:none;box-sizing:border-box;width:320px;padding:14px;background:#252525;border:1px solid #eee;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;color:#eee;font:13px/1.6 system-ui;pointer-events:none;overflow:hidden;box-shadow:0 6px 20px #0008";
                     const showPreview = async () => {
+                        if (this.properties?.xzgLoraCompact === true) return;
                         this._xzgLoraPreview?.remove();
                         this._xzgLoraPreview = preview;
                         this._xzgLoraPreviewId = item.id;
@@ -871,7 +905,7 @@ app.registerExtension({
                         const thumbnailWidth = controls.parentElement.classList.contains("xzg-lora-has-thumbnail") ? 58 : 0;
                         return width + thumbnailWidth + 44;
                     }));
-                    this._xzgLoraMinWidth = Math.max(320, actionsWidth, controlWidth);
+                    this._xzgLoraMinWidth = compact ? 240 : Math.max(320, actionsWidth, controlWidth);
                     if (this.size[0] < this._xzgLoraMinWidth) this.setSize([this._xzgLoraMinWidth, this.size[1]]);
                 });
             };
@@ -879,9 +913,9 @@ app.registerExtension({
         };
         const resize = nodeType.prototype.onResize;
         nodeType.prototype.onResize = function (size) {
-            size[0] = Math.max(size[0], this._xzgLoraMinWidth || 320);
+            size[0] = Math.max(size[0], this.properties?.xzgLoraCompact === true ? 240 : (this._xzgLoraMinWidth || 320));
             const result = resize?.apply(this, arguments);
-            this.size[0] = Math.max(this.size[0], this._xzgLoraMinWidth || 320);
+            this.size[0] = Math.max(this.size[0], this.properties?.xzgLoraCompact === true ? 240 : (this._xzgLoraMinWidth || 320));
             return result;
         };
         const configure = nodeType.prototype.onConfigure;

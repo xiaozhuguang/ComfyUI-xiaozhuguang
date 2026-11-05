@@ -82,5 +82,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangImageFromList": "小珠光从列表获取图像",
+    "XiaozhuguangImageFromList": "小珠光批次列表遮罩图像获取",
 }

@@ -11,6 +11,7 @@ import json
 import re
 import hashlib
 import uuid
+import tempfile
 import numpy as np
 import torch
 from PIL import Image
@@ -332,6 +333,49 @@ def _build_main_pass(format_name, crf):
     return base
 
 
+def _embed_video_workflow(path, video_format, prompt, extra_pnginfo):
+    """Write native container metadata; use a file input to avoid command-line limits."""
+    metadata = {"workflow": (extra_pnginfo or {}).get("workflow")}
+    if prompt is not None:
+        metadata["prompt"] = prompt
+    if metadata["workflow"] is None:
+        raise ValueError("保存工作流已开启，但未收到当前工作流信息")
+    if video_format == "gif":
+        payload = b"XZG_WORKFLOW:" + json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+        with open(path, "r+b") as output:
+            output.seek(-1, os.SEEK_END)
+            if output.read(1) != b";":
+                raise ValueError("无效的 GIF 文件尾")
+            output.seek(-1, os.SEEK_END)
+            output.write(b"!\xfe")
+            for offset in range(0, len(payload), 255):
+                chunk = payload[offset:offset + 255]
+                output.write(bytes([len(chunk)]) + chunk)
+            output.write(b"\x00;")
+        return
+    def escape(value):
+        return value.replace("\\", "\\\\").replace("=", "\\=").replace(";", "\\;").replace("#", "\\#").replace("\n", "\\\n").replace("\r", "")
+    # Keep the metadata and remux output beside the destination, including custom drives.
+    fd, metadata_path = tempfile.mkstemp(suffix=".ffmetadata", dir=os.path.dirname(path))
+    remux_path = metadata_path + "." + video_format
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(";FFMETADATA1\n")
+            for key, value in metadata.items():
+                output.write(key + "=" + escape(json.dumps(value, ensure_ascii=False)) + "\n")
+        args = [ffmpeg_path, "-v", "error", "-y", "-i", path,
+                "-f", "ffmetadata", "-i", metadata_path,
+                "-map", "0", "-map_metadata", "1", "-c", "copy"]
+        if video_format == "mp4":
+            args += ["-movflags", "+faststart+use_metadata_tags"]
+        subprocess.run(args + [remux_path], check=True, capture_output=True)
+        os.replace(remux_path, path)
+    finally:
+        for temporary in (metadata_path, remux_path):
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+
 def export_to_video(image_tensors, output_file, frame_rate, format="mp4",
                     audio=None, crf=16):
     """将图像 tensor 列表导出为视频文件
@@ -498,7 +542,7 @@ class XiaozhuguangVideoCombine:
                       模式, 音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None,
                       use_default_output=True, base_dir="",
-                      add_date_stamp=False, add_time_stamp=False):
+                      add_date_stamp=False, add_time_stamp=False, save_workflow=False):
         图像 = self._normalize_video_frames(图像)
         if 图像 is None:
             return ()
@@ -601,6 +645,9 @@ class XiaozhuguangVideoCombine:
             crf=CRF,
             audio=音频,
         )
+
+        if save_workflow:
+            _embed_video_workflow(file_path, 格式, prompt, extra_pnginfo)
 
         # 预览模式：清理本子目录内的旧同前缀文件（只保留最新），避免累积。
         # 每次真实重跑都会因计数器递增而生成新文件名 → 前端 key 变化 → 触发重载刷新预览；

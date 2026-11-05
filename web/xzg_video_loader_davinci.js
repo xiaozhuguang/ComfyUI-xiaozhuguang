@@ -2,8 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 import { xzgT } from "./xzg_i18n.js";
-import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
-import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden } from "./xzg_loader_settings.js";
+import { xzgCopyFiles } from "./xzg_codex_upload.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden, XZG_MENU_CAPTURE_FRAME } from "./xzg_loader_settings.js";
 import { bindMultiVideoQueue } from "./xzg_multi_video_queue.js";
 import {
     bindVideoLoaderInteractions,
@@ -11,12 +11,40 @@ import {
     _xzgCreateNumberWidget,
     _xzgCreateComboWidget,
 } from "./xzg_video_loader.js";
+import { xzgAddFrameCaptureMenu } from "./xzg_frame_capture.js";
 
 // 小珠光视频加载-化神级（XiaozhuguangVideoLoaderDaVinci）
 // 复用「小珠光视频加载器」全部交互（播放器预览 / 上传 / 视频下拉 / 快剪联动等），
 // 额外新增「加载视频」按钮，通过后端路由触达本机 DaVinci Resolve Studio，
 // 把剪辑页当前播放头所在片段自动导出为视频并加载到本节点。
 const DAVINCI_NODE = "XiaozhuguangVideoLoaderDaVinci";
+
+function _clearVideoMenuItem(node) {
+    return {
+        content: xzgT("清除加载视频", "Clear loaded video"),
+        disabled: !!node._xzgVideoQueuePending,
+        callback: () => {
+            node.graph?.beforeChange?.();
+            node.properties ||= {};
+            node.properties.xzgVideoQueue = [];
+            node.properties.xzgMultiVideo = false;
+            const toggle = node.widgets?.find(w => w.name === "多视频队列");
+            if (toggle) { toggle.value = false; toggle.callback?.(false); }
+            node._xzgClearLoadedVideo?.();
+            node._xzgRenderVideoQueue?.();
+            node.graph?.afterChange?.();
+        },
+    };
+}
+
+function _installClearVideoPlayerMenu(node) {
+    const original = node._xzgPlayerMenuItems;
+    node._xzgPlayerMenuItems = function (player) {
+        const items = original?.call(this, player) || [];
+        return [...items, _clearVideoMenuItem(node)];
+    };
+}
+
 function _videoLoaderDavinciKey(node) {
     const parts = (node?.graph?.nodes || []).filter(n => n?.id != null && n.type).map(n => `${n.id}:${n.type}`).sort();
     let h = 5381;
@@ -328,8 +356,7 @@ function _openLoaderOutputSettings(node) {
 }
 
 const PREVIEW_ACTIONS = [
-    ["codex", "_xzgLoaderCodexBtn", "添加到 Codex", "Add to Codex"],
-    ["doubao", "_xzgLoaderDoubaoBtn", "添加到豆包", "Add to Doubao"],
+    ["clipboard", "_xzgLoaderClipboardBtn", "复制到剪贴板", "Copy to clipboard"],
     ["davinci_export", "_xzgLoaderExportDavinciBtn", "导出到达芬奇", "Export to DaVinci"],
     ["davinci_import", "_xzgDavinciBtn", "从达芬奇加载", "Load from DaVinci"],
     ["quickcut_send", "_xzgLoaderQuickCutBtn", "发送到快剪", "Send to Quick Cut"],
@@ -343,7 +370,7 @@ function _layoutPreviewActions(node) {
     for (const [id, key] of [...PREVIEW_ACTIONS, ["settings", "_xzgLoaderSettingsBtn"]]) {
         if (node[key]) {
             const size = Math.max(9, Math.min(24, Number(node.properties?.xzg_preview_button_font_size) || 14));
-            node[key].style.color = node.properties?.xzg_preview_button_colors?.[id] || ({ davinci_export: "#3ef558", davinci_import: "#3ef558", quickcut_send: "#ff69b4", quickcut_load: "#ff69b4", codex: "#ffd700", doubao: "#ff9800" }[id] || "");
+            node[key].style.color = node.properties?.xzg_preview_button_colors?.[id] || ({ davinci_export: "#3ef558", davinci_import: "#3ef558", quickcut_send: "#ff69b4", quickcut_load: "#ff69b4", clipboard: "#ffd700" }[id] || "");
             node[key].style.fontSize = `${Math.max(9, Math.min(48, Number(node.properties?.xzg_preview_button_font_sizes?.[id]) || size))}px`;
             node[key].style.padding = `${Math.round(size * .28)}px ${Math.round(size * .5)}px`;
             node[key].classList.add("xzg-video-hover-feedback");
@@ -538,31 +565,19 @@ function _createLoaderActionButton(node, key, color, text, title, onClick, iconH
     return btn;
 }
 
-function _createLoaderCodexButton(node) {
+function _createLoaderClipboardButton(node) {
     return _createLoaderActionButton(
-        node, "_xzgLoaderCodexBtn", "#ffd76a", xzgT("添加到 Codex", "Add to Codex"),
-        xzgT("把原视频添加到 Codex 当前聊天，不自动发送", "Attach the original video to the current Codex chat without sending"),
+        node, "_xzgLoaderClipboardBtn", "#ffd76a", xzgT("复制到剪贴板", "Copy to clipboard"),
+        xzgT("复制原视频文件，在目标应用按 Ctrl+V 粘贴", "Copy the original video file; paste with Ctrl+V in the target app"),
         btn => {
             const info = _getLoadedVideoInfo(node);
             const name = info?.filename ? `${info.filename} [${info.type}]` : "";
-            xzgAddToCodex(name ? [name] : [], "video", btn);
+            xzgCopyFiles(name ? [name] : [], "video", btn);
         },
         '<span style="font-size:13px;line-height:1;">＋</span>'
     );
 }
 
-function _createLoaderDoubaoButton(node) {
-    return _createLoaderActionButton(
-        node, "_xzgLoaderDoubaoBtn", "#ffd76a", xzgT("添加到豆包", "Add to Doubao"),
-        xzgT("把原视频添加到豆包当前聊天，不自动发送", "Attach the original video to the current Doubao chat without sending"),
-        btn => {
-            const info = _getLoadedVideoInfo(node);
-            const name = info?.filename ? `${info.filename} [${info.type}]` : "";
-            xzgAddToDoubao(name ? [name] : [], "video", btn);
-        },
-        '<span style="font-size:13px;line-height:1;">＋</span>'
-    );
-}
 
 function _createLoaderSettingsButton(node) {
     return _createLoaderActionButton(
@@ -570,7 +585,8 @@ function _createLoaderSettingsButton(node) {
         xzgT("加载器设置", "Loader settings"),
         () => xzgShowLoaderSettings(node,
             PREVIEW_ACTIONS.filter(([, key]) => node[key]).map(([id, , zh, en]) => ({ id, label: xzgT(zh, en) })),
-            () => _layoutPreviewActions(node)),
+            () => _layoutPreviewActions(node),
+            [{ id: XZG_MENU_CAPTURE_FRAME, label: xzgT("右键菜单：截取当前帧发送到加载器", "Context menu: Capture Current Frame to Image Loader") }]),
         '<span style="font-size:13px;line-height:1;">⚙</span>'
     );
 }
@@ -638,6 +654,13 @@ app.registerExtension({
                     .map((n, i) => correctOutputs[i] || n);
             }
 
+            const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+            nodeType.prototype.getExtraMenuOptions = function (_, options) {
+                const result = origGetExtraMenuOptions?.apply(this, arguments);
+                options.unshift(_clearVideoMenuItem(this));
+                return result;
+            };
+
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = origOnNodeCreated?.apply(this, arguments);
@@ -670,8 +693,7 @@ app.registerExtension({
                 _createPreviewDavinciButton(this);
                 _createLoaderExportDavinciButton(this);
                 _createLoaderQuickCutButton(this);
-                _createLoaderCodexButton(this);
-                _createLoaderDoubaoButton(this);
+                _createLoaderClipboardButton(this);
                 _createLoaderSettingsButton(this);
                 _createVideoMediaLibraryButtons(this);
                 requestAnimationFrame(() => _layoutPreviewActions(this));
@@ -741,6 +763,17 @@ app.registerExtension({
                     this._xzgUpdateBypassState();
                 }
                 return origOnDrawBackground?.apply(this, arguments);
+            };
+
+            // 右键菜单：截取播放器当前帧 → 上传 input → 发送到小珠光图像加载器
+            // （菜单项可在 设置 → 小珠光 中关闭，见 xzg_frame_capture.js）
+            xzgAddFrameCaptureMenu(nodeType, "loader");
+            // Install after frame capture has supplied its own player menu provider.
+            const onCreatedWithCapture = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                const result = onCreatedWithCapture?.apply(this, arguments);
+                _installClearVideoPlayerMenu(this);
+                return result;
             };
         }
     },

@@ -697,8 +697,7 @@ class XzgImageCompareWidget {
     }
 
     serializeValue(node, index) {
-        // 不持久化图片，刷新后自动消失
-        return { images: [] };
+        return { images: this._value.images.map(({ img, ...data }) => ({ ...data })) };
     }
 
     mouse(event, pos, node) {
@@ -782,7 +781,7 @@ class XiaozhuguangImageCompareNode {
         if (this.canvasWidget) {
             for (let [index, wv] of (serialised.widgets_values || []).entries()) {
                 if (this.widgets[index] && this.widgets[index].name === "xzg_image_compare") {
-                    serialised.widgets_values[index] = [];
+                    serialised.widgets_values[index] = this.canvasWidget.serializeValue();
                 }
             }
         }
@@ -943,6 +942,9 @@ app.registerExtension({
 
             nodeType.prototype.onConfigure = function (o) {
                 origOnConfigure?.apply(this, arguments);
+                const previewIndex = this.widgets?.findIndex(w => w.name === "xzg_image_compare");
+                const preview = o?.widgets_values?.[previewIndex];
+                if (preview !== undefined && this.canvasWidget) this.canvasWidget.value = preview;
                 if (this.type === XZG_IMAGE_COMPARE_CUSTOM_TYPE) {
                     const props = o?.properties || {};
                     this._xzgPreviewBackground = ["checker", "red", "blue", "custom"].includes(props.xzg_preview_background)

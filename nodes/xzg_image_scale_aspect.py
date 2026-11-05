@@ -111,7 +111,7 @@ class XiaozhuguangImageScaleByAspectRatioV2:
     RETURN_NAMES = ("图像", "遮罩", "宽度", "高度")
     FUNCTION = "execute"
     CATEGORY = "小珠光/图片"
-    DESCRIPTION = "按宽高比特定目标尺寸缩放图像/遮罩（torch 批量提速版），支持 letterbox/crop/fill。"
+    DESCRIPTION = "按宽高比特定目标尺寸缩放图像/遮罩（torch 批量提速版），支持 letterbox/crop/fill。输入为空时输出为空。"
 
     def _resize_pil_fallback(self, images, target_w, target_h, fit, method, bg_rgb, is_mask):
         """lanczos 等方法回退到 PIL 逐图处理。"""
@@ -193,7 +193,8 @@ class XiaozhuguangImageScaleByAspectRatioV2:
                     orig_width, orig_height = _w, _h
 
         if orig_width + orig_height == 0:
-            raise ValueError("小珠光图片缩放：image 与 mask 至少输入一个")
+            # 允许输入为空：image 与 mask 都未连接时不报错，直接输出空（None）
+            return (None, None, 0, 0)
 
         if aspect_ratio == '尺寸输入':
             # 直接把下方两个数值输入当作目标宽/高，忽略比例与缩放边逻辑
@@ -251,6 +252,12 @@ class XiaozhuguangImageScaleByAspectRatioV2:
                     target_height = orig_height
                     target_width = int(target_height * ratio)
 
+        if aspect_ratio == '原始比例' and scale_to_side == 'total_pixel(kilo pixel)':
+            # 从同一个缩放系数计算两边，避免截断产生额外的比例误差。
+            scale = math.sqrt(scale_to_length * 1000 / (orig_width * orig_height))
+            target_width = max(1, round(orig_width * scale))
+            target_height = max(1, round(orig_height * scale))
+
         if aspect_ratio != '尺寸输入' and round_to_multiple != 'None':
             multiple = int(round_to_multiple)
             target_width = _round_up_to_multiple(target_width, multiple)
@@ -258,6 +265,11 @@ class XiaozhuguangImageScaleByAspectRatioV2:
 
         target_width = max(1, target_width)
         target_height = max(1, target_height)
+
+        if aspect_ratio == '原始比例' and round_to_multiple == 'None':
+            # 整数尺寸不可避免有亚像素比例误差；原始比例无需再裁剪或补边。
+            # torch 与 PIL 共用此规则，图像和遮罩也保持同一坐标映射。
+            fit = 'fill'
 
         bg_rgb = _hex_to_rgb(background_color)
 

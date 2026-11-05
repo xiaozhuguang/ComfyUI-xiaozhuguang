@@ -57,13 +57,14 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
         # True 时仅导视频、不导音频轨道。前端隐藏 widget，由输出设置弹窗里的
         # 「仅视频轨道（不带音频）」勾选框控制（弹窗已实现双向绑定 _xzgDvVideoOnlyWidget）。
         base["required"]["仅视频"] = ("BOOLEAN", {"default": False, "label_on": "仅视频", "label_off": "带音频"})
+        base["required"]["save_workflow"] = ("BOOLEAN", {"default": False})
         return base
 
     def combine_video(self, 图像, 帧率, 文件名前缀, 格式, CRF, 模式,
                       自动发送到快剪=False,
                       use_default_output=True, base_dir="",
                       add_date_stamp=False, add_time_stamp=False,
-                      仅视频=False,
+                      仅视频=False, save_workflow=False,
                       音频=None,
                       prompt=None, extra_pnginfo=None, unique_id=None):
         # 调用父类保存逻辑，得到完整 ui（含保存文件信息）
@@ -73,6 +74,7 @@ class XiaozhuguangVideoSaveDaVinci(XiaozhuguangVideoCombine):
             prompt=prompt, extra_pnginfo=extra_pnginfo, unique_id=unique_id,
             use_default_output=use_default_output, base_dir=base_dir,
             add_date_stamp=add_date_stamp, add_time_stamp=add_time_stamp,
+            save_workflow=save_workflow,
         )
         if not ui or not ui.get("ui"):
             return ui

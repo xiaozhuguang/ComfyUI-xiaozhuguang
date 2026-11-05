@@ -5682,6 +5682,8 @@ app.registerExtension({
                         out.name = xzgT("原始帧数", "original count");
                     } else if (out.name === "front_fill") {
                         out.name = xzgT("前补帧", "front fill");
+                    } else if (out.name === "back_fill") {
+                        out.name = xzgT("后补帧", "back fill");
                     }
                 }
             }
@@ -5691,6 +5693,7 @@ app.registerExtension({
                     if (n === "frame_count") return xzgT("实际帧数", "frame count");
                     if (n === "original_count") return xzgT("原始帧数", "original count");
                     if (n === "front_fill") return xzgT("前补帧", "front fill");
+                    if (n === "back_fill") return xzgT("后补帧", "back fill");
                     return n;
                 });
             }
@@ -5734,6 +5737,8 @@ app.registerExtension({
                             out.label = xzgT("原始帧数", "original count");
                         } else if (out.name === "front_fill") {
                             out.label = xzgT("前补帧", "front fill");
+                        } else if (out.name === "back_fill") {
+                            out.label = xzgT("后补帧", "back fill");
                         }
                     }
                 }

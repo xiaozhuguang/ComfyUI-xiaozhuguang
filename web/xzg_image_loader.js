@@ -4,7 +4,7 @@ import { xzgT, xzgTh } from "./xzg_i18n.js";
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 import { xzgEnableCanvasPanOnSpace } from "./xzg_save_utils.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
-import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
+import { xzgCopyFiles } from "./xzg_codex_upload.js";
 import { xzgPreviewButtonVisible, xzgShowLoaderSettings, xzgCloseLoaderSettings, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden } from "./xzg_loader_settings.js";
 
 let _xzgBackendSessionRequest = null;
@@ -1015,25 +1015,38 @@ function createImgBatchUI(node) {
             appendContextMenuDivider();
             const savedPoseStates = node.properties?.xzg_pose_capture_states || {};
             const savedPoseState = savedPoseStates[imageName];
-            const poseEditorItem = document.createElement("div");
-            poseEditorItem.textContent = xzgT("编辑姿势", "Edit Pose");
-            poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
-            poseEditorItem.addEventListener("mouseenter", () => { poseEditorItem.style.background = "var(--comfy-input-bg)"; });
-            poseEditorItem.addEventListener("mouseleave", () => { poseEditorItem.style.background = ""; });
-            poseEditorItem.addEventListener("click", async () => {
+            const hasPoseData = typeof savedPoseState?.pose_data === "string" && !!savedPoseState.pose_data;
+            if (hasPoseData) {
+                const poseEditorItem = document.createElement("div");
+                poseEditorItem.textContent = xzgT("编辑姿势", "Edit Pose");
+                poseEditorItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
+                poseEditorItem.addEventListener("mouseenter", () => { poseEditorItem.style.background = "var(--comfy-input-bg)"; });
+                poseEditorItem.addEventListener("mouseleave", () => { poseEditorItem.style.background = ""; });
+                poseEditorItem.addEventListener("click", async () => {
+                    hideContextMenu();
+                    let canContinuePose = false;
+                    if (savedPoseState) {
+                        const backendSessionId = await getImageLoaderBackendSessionId();
+                        canContinuePose = !!backendSessionId
+                            && savedPoseState.backend_session_id === backendSessionId
+                            && typeof savedPoseState.pose_data === "string";
+                    }
+                    if (canContinuePose) openPoseStudio(null, savedPoseState.pose_data, imageName);
+                    else openPoseStudio(imageName, null, imageName);
+                });
+                contextMenu.appendChild(poseEditorItem);
+            }
+            const poseBackgroundItem = document.createElement("div");
+            poseBackgroundItem.textContent = xzgT("以此图为背景编辑姿势", "Edit Pose with This Image as Background");
+            poseBackgroundItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
+            poseBackgroundItem.addEventListener("mouseenter", () => { poseBackgroundItem.style.background = "var(--comfy-input-bg)"; });
+            poseBackgroundItem.addEventListener("mouseleave", () => { poseBackgroundItem.style.background = ""; });
+            poseBackgroundItem.addEventListener("click", () => {
                 hideContextMenu();
-                let canContinuePose = false;
-                if (savedPoseState) {
-                    const backendSessionId = await getImageLoaderBackendSessionId();
-                    canContinuePose = !!backendSessionId
-                        && savedPoseState.backend_session_id === backendSessionId
-                        && typeof savedPoseState.pose_data === "string";
-                }
-                if (canContinuePose) openPoseStudio(null, savedPoseState.pose_data, imageName);
-                else openPoseStudio(imageName, null, imageName);
+                openPoseStudio(imageName, null, imageName);
             });
-            contextMenu.appendChild(poseEditorItem);
-            {
+            contextMenu.appendChild(poseBackgroundItem);
+            if (!hasPoseData) {
                 const poseFromImageItem = document.createElement("div");
                 poseFromImageItem.textContent = xzgT("以此图获取姿势", "Get Pose from This Image");
                 poseFromImageItem.style.cssText = "padding:6px 14px;cursor:pointer;white-space:nowrap;color:#66CC99;";
@@ -1492,46 +1505,32 @@ function createImgBatchUI(node) {
     const outputBtn = mkBtn(xzgT(".output", ".output"), xzgT("从output文件夹选择", "Select from output folder"), "output");
     const mediaBtn = mkBtn(xzgT("资源媒体", "Media assets"), xzgT("打开资源媒体库", "Open media library"), "media");
     const poseBtn = mkBtn(xzgT("姿势编辑器", "Pose editor"), xzgT("打开姿势编辑器，从姿势库加载并确认图片", "Open pose editor and load an image from the pose library"), "pose");
-    const codexBtn = document.createElement("button");
-    codexBtn.textContent = xzgT("＋ 添加到 Codex", "＋ Add to Codex");
-    codexBtn.title = xzgT("把选中的原图添加到 Codex 当前聊天，不自动发送", "Attach selected original images to the current Codex chat without sending");
-    codexBtn.style.cssText = "display:inline-flex;align-items:center;height:calc(var(--xzg-chat-font,13px) + 9px);padding:2px 6px;font-size:var(--xzg-chat-font,13px);white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ffd700;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
-    codexBtn.addEventListener("pointerdown", event => event.stopPropagation());
-    codexBtn.addEventListener("mousedown", event => event.stopPropagation());
-    codexBtn.addEventListener("dblclick", event => event.stopPropagation());
-    codexBtn.addEventListener("click", event => {
+    const clipboardBtn = document.createElement("button");
+    clipboardBtn.textContent = xzgT("复制到剪贴板", "Copy to clipboard");
+    clipboardBtn.title = xzgT("复制选中的原图文件，在目标应用按 Ctrl+V 粘贴", "Copy selected original files; paste with Ctrl+V in the target app");
+    clipboardBtn.style.cssText = "display:inline-flex;align-items:center;height:calc(var(--xzg-chat-font,13px) + 9px);padding:2px 6px;font-size:var(--xzg-chat-font,13px);white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ffd700;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
+    clipboardBtn.addEventListener("pointerdown", event => event.stopPropagation());
+    clipboardBtn.addEventListener("mousedown", event => event.stopPropagation());
+    clipboardBtn.addEventListener("dblclick", event => event.stopPropagation());
+    clipboardBtn.addEventListener("click", event => {
         event.stopPropagation();
         const selected = getSelectedNames();
         const names = parseNameList(getImageListWidget(node)?.value);
         const current = names[getIndex(node)];
-        xzgAddToCodex(selected.length ? selected : current ? [current] : [], "image", codexBtn);
-    });
-    const doubaoBtn = document.createElement("button");
-    doubaoBtn.textContent = xzgT("＋ 添加到豆包", "＋ Add to Doubao");
-    doubaoBtn.title = xzgT("把选中的原图添加到豆包当前聊天，不自动发送", "Attach selected original images to the current Doubao chat without sending");
-    doubaoBtn.style.cssText = "display:inline-flex;align-items:center;height:calc(var(--xzg-chat-font,13px) + 9px);padding:2px 6px;font-size:var(--xzg-chat-font,13px);white-space:nowrap;flex-shrink:0;line-height:1;background:transparent;color:#ff9800;border:none;cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s;";
-    doubaoBtn.addEventListener("pointerdown", event => event.stopPropagation());
-    doubaoBtn.addEventListener("mousedown", event => event.stopPropagation());
-    doubaoBtn.addEventListener("dblclick", event => event.stopPropagation());
-    doubaoBtn.addEventListener("click", event => {
-        event.stopPropagation();
-        const selected = getSelectedNames();
-        const names = parseNameList(getImageListWidget(node)?.value);
-        const current = names[getIndex(node)];
-        xzgAddToDoubao(selected.length ? selected : current ? [current] : [], "image", doubaoBtn);
+        xzgCopyFiles(selected.length ? selected : current ? [current] : [], "image", clipboardBtn);
     });
     const deleteBtn = mkBtn(xzgT("删除", "Delete"), xzgT("删除选中", "Delete selected"), "del");
     const clearBtn = mkBtn(xzgT("清空", "Clear"), xzgT("清空全部", "Clear all"), "clear");
     const settingsBtn = mkBtn(xzgT("设置", "Settings"), xzgT("加载器设置", "Loader settings"), "settings");
     settingsBtn.addEventListener("click", event => {
         event.stopPropagation();
-        xzgShowLoaderSettings(node, [{ id: "codex", label: xzgT("添加到 Codex", "Add to Codex") }, { id: "doubao", label: xzgT("添加到豆包", "Add to Doubao") }], syncPreviewButtons);
+        xzgShowLoaderSettings(node, [{ id: "clipboard", label: xzgT("复制到剪贴板", "Copy to clipboard") }], syncPreviewButtons);
     });
     function syncPreviewButtons() {
         // 与视频加载器-化神级一致：除显示/隐藏外，同步应用设置面板里的
         // 每按钮字体颜色（xzg_preview_button_colors）与字体大小（xzg_preview_button_font_sizes）；
         // 设置面板打开期间按钮容器带 xzg-preview-settings-open 类强制常显，便于实时观察调整效果
-        const defaults = { codex: "#ffd700", doubao: "#ff9800" };
+        const defaults = { clipboard: "#ffd700" };
         const applyBtn = (btn, id) => {
             btn.style.display = xzgPreviewButtonVisible(node, id) ? "inline-flex" : "none";
             const color = node.properties?.xzg_preview_button_colors?.[id] || defaults[id];
@@ -1548,8 +1547,7 @@ function createImgBatchUI(node) {
                 btn.style.height = "";
             }
         };
-        applyBtn(doubaoBtn, "doubao");
-        applyBtn(codexBtn, "codex");
+        applyBtn(clipboardBtn, "clipboard");
     }
     syncPreviewButtons();
 
@@ -3571,12 +3569,12 @@ function createImgBatchUI(node) {
     mainContent.style.webkitUserSelect = "none";
     const chatButtons = document.createElement("div");
     chatButtons.style.cssText = "position:absolute;top:4px;right:6px;z-index:102;display:flex;flex-direction:column;align-items:flex-end;gap:2px;pointer-events:none;";
-    chatButtons.append(codexBtn, doubaoBtn);
+    chatButtons.append(clipboardBtn);
     mainContent.append(chatButtons);
     // 挂到加载器设置约定的容器属性：设置面板打开期间强制悬浮按钮常显，便于实时观察字体/颜色调整
     node._xzgPreviewContainer = chatButtons;
-    mainContent.addEventListener("mouseenter", () => { codexBtn.style.opacity = "1"; codexBtn.style.pointerEvents = "auto"; doubaoBtn.style.opacity = "1"; doubaoBtn.style.pointerEvents = "auto"; });
-    mainContent.addEventListener("mouseleave", () => { codexBtn.style.opacity = "0"; codexBtn.style.pointerEvents = "none"; doubaoBtn.style.opacity = "0"; doubaoBtn.style.pointerEvents = "none"; });
+    mainContent.addEventListener("mouseenter", () => { clipboardBtn.style.opacity = "1"; clipboardBtn.style.pointerEvents = "auto"; });
+    mainContent.addEventListener("mouseleave", () => { clipboardBtn.style.opacity = "0"; clipboardBtn.style.pointerEvents = "none"; });
 
     const grid = document.createElement("div");
     grid.style.cssText =
@@ -3602,11 +3600,6 @@ function createImgBatchUI(node) {
             }
             .xzg-img-grid::-webkit-scrollbar-thumb:hover {
                 background: rgba(255,255,255,0.2);
-            }
-            @keyframes xzgCardFlipIn {
-                0% { transform: rotate3d(var(--fx,0), var(--fy,1), 0, var(--fdeg,90deg)) scale(0.8); opacity: 0; }
-                50% { opacity: 1; }
-                100% { transform: rotate3d(0, 0, 0, 0deg) scale(1); opacity: 1; }
             }
             @keyframes xzgDragSortGlow {
                 0%, 100% { box-shadow: 0 0 7px var(--xzg-sort-color); }
@@ -3686,7 +3679,7 @@ function createImgBatchUI(node) {
     singleResLabel.style.cssText =
         "position:absolute;left:50%;bottom:3px;transform:translateX(-50%);z-index:5;" +
         "pointer-events:none;padding:2px 8px;border-radius:3px;" +
-        "background:rgba(0,0,0,0.55);color:#fff;font-size:11px;line-height:16px;font-family:Arial,sans-serif;" +
+        "background:rgba(0,0,0,0.75);color:#fff;text-shadow:0 1px 2px #000;font-size:11px;line-height:16px;font-family:Arial,sans-serif;" +
         "display:flex;align-items:center;justify-content:center;white-space:nowrap;";
 
     const singleCropBadge = document.createElement("div");
@@ -5033,27 +5026,6 @@ function createImgBatchUI(node) {
     // 播放一次网格随机翻转动画（尺寸变化结束后调用）
     const playGridFlip = () => {
         flipRestartTimer = null;
-        const flipCells = grid.querySelectorAll("[data-xzg-img-card]");
-        if (!flipCells.length) return;
-        grid.style.perspective = "600px";
-        flipCells.forEach(cell => { cell.style.animation = "none"; });
-        // 统一强制 reflow 一次，确保 animation:none 已提交
-        void grid.offsetWidth;
-        applyRandomFlip(flipCells);
-        flipCells.forEach(cell => {
-            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
-        });
-        // 动画结束后恢复默认 transition（防重入：清除旧定时器）
-        if (flipAnimTimer) clearTimeout(flipAnimTimer);
-        flipAnimTimer = setTimeout(() => {
-            flipAnimTimer = null;
-            flipCells.forEach(cell => {
-                cell.style.animation = "";
-                cell.style.transition = "width 0.30s ease-out,height 0.30s ease-out";
-                cell.style.transform = "";
-            });
-            grid.style.perspective = "";
-        }, 1050);
     };
 
     // 拖拽缩放节点时挂起翻转动画，鼠标完全松开后立即播放
@@ -5622,7 +5594,7 @@ function createImgBatchUI(node) {
                         void grid.offsetWidth;
                         applyRandomFlip(cells);
                         cells.forEach(cell => {
-                            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
+                            cell.style.animation = "none";
                         });
                         // 放下后从拖动中的 70% 状态恢复正常尺寸。
                         const droppedCard = cells[droppedIndex]?.querySelector(":scope > div");
@@ -5887,22 +5859,8 @@ function createImgBatchUI(node) {
         listFlipCells = [];
         listFlipHost = null;
     };
-    const animateImageListChange = (single = false) => {
+    const animateImageListChange = () => {
         clearListFlip();
-        listFlipCells = single ? [singleImgContainer] : Array.from(grid.querySelectorAll("[data-xzg-img-card]"));
-        if (!listFlipCells.length) return;
-        listFlipHost = single ? singleImgContainer.parentElement : grid;
-        listFlipHost.style.perspective = "600px";
-        listFlipCells.forEach(cell => {
-            cell.style.transition = "none";
-            cell.style.animation = "none";
-        });
-        void listFlipHost.offsetWidth;
-        applyRandomFlip(listFlipCells);
-        listFlipCells.forEach(cell => {
-            cell.style.animation = "xzgCardFlipIn 1s ease-out forwards";
-        });
-        listFlipTimer = setTimeout(clearListFlip, 1050);
     };
 
     const redraw = (forceFull = false) => {
@@ -6127,7 +6085,7 @@ function createImgBatchUI(node) {
             label.className = "xzg-img-label";
             label.title = name;
             label.style.cssText =
-                "position:absolute;left:50%;transform:translateX(-50%);bottom:2px;max-width:calc(100% - 4px);font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.7;line-height:1.2;text-align:center;color:#fff;background:rgba(0,0,0,0.35);border-radius:2px;padding:0 3px;z-index:1;";
+                "position:absolute;left:50%;transform:translateX(-50%);bottom:2px;max-width:calc(100% - 4px);font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:1;line-height:1.2;text-align:center;color:#fff;background:rgba(0,0,0,0.75);text-shadow:0 1px 2px #000;border-radius:2px;padding:1px 4px;z-index:1;";
             _xzgFetchOriginalSize(name).then((info) => {
                 if (!info || !label.isConnected) return;
                 label.textContent = `${info.width}×${info.height}`;
@@ -7273,6 +7231,8 @@ function createImgBatchUI(node) {
                 .map((name) => ({
                     name: name.replace(/\s+\[(?:input|output|temp)\]$/i, "").split(/[\\/]/).pop() || name,
                     url: getOriginalImageUrl(name),
+                    crop: _cropByImage[name] ? [..._cropByImage[name]] : null,
+                    paddingColor: _cropPaddingColor,
                 }));
         },
         clearThumbnailSelection: () => {
@@ -7475,7 +7435,7 @@ app.registerExtension({
                 pruneHiddenWidgetInputs(this);
 
                 // 新建节点默认隐藏全部悬浮按钮（设置 ⚙ 在左侧图标栏，不受影响）
-                xzgSetPreviewButtonsDefaultHidden(this, ["codex", "doubao"]);
+                xzgSetPreviewButtonsDefaultHidden(this, ["clipboard"]);
 
                 const ui = createImgBatchUI(this);
                 this._xzgImgLoaderUI = ui;
@@ -8052,7 +8012,7 @@ app.registerExtension({
                             if (dv.style.width !== dividerW) dv.style.width = dividerW;
                         }
                     }
-                    // 预览区右上角「添加到 Codex/豆包」按钮：字号随 density 缩放（8→14px），
+                    // 预览区右上角「复制到剪贴板」按钮：字号随 density 缩放（8→14px），
                     // 标签间距取设置值并随 density 自适应缩放（0.5×→1.25×）
                     if (ui.chatButtons) {
                         const chatFont = px(8 + d * 6);

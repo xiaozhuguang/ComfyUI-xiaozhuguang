@@ -17,10 +17,13 @@ app.registerExtension({
                 crop_mode: ["遮罩平滑", "视频稳定跟踪"],
                 tracking_preference: ["稳定优先", "紧凑优先"],
                 tracking_scale: ["固定大小", "动态缩放"],
+                alignment_mode: ["扩充", "变形"],
             })) {
                 const item = widget(name);
                 if (item && !values.includes(item.value)) item.value = values[0];
             }
+            const margin = widget("min_margin");
+            if (margin && !Number.isFinite(margin.value)) margin.value = 30;
             // Runtime input values, including external connections, decide applicability.
             for (const name of ["tracking_preference", "tracking_scale", "mask_smooth", "crop_mode"]) {
                 const item = widget(name);
@@ -67,6 +70,13 @@ app.registerExtension({
             if (index >= 0 && Array.isArray(values) && typeof values[index] === "number") {
                 info = { ...info, widgets_values: [...info.widgets_values] };
                 info.widgets_values[index] = true;
+            }
+            // Remove the retired pixel-expansion slot after normalizing the old order.
+            const normalized = info?.widgets_values;
+            if (Array.isArray(normalized) && typeof normalized[7] === "number"
+                && ["遮罩平滑", "视频稳定跟踪"].includes(normalized[8])) {
+                info = { ...info, widgets_values: [...normalized] };
+                info.widgets_values.splice(7, 1);
             }
             const result = configure?.call(this, info, ...args);
             sync(this);

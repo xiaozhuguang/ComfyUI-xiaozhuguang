@@ -325,8 +325,7 @@ function createBoolDOMWidget(node, boolWidget) {
 
     const ctx = canvas.getContext("2d");
     let width = 0, height = 0, dpr = 1;
-    // 位图固定超采样倍数：不跟随画布缩放变化，缩放时浏览器只做整体缩放，
-    // 字体不会被重新栅格化，也就不会出现“缩放一次跳一下”的观感。
+    // 保留基础超采样，放大时按实际显示倍率提高位图分辨率。
     const RASTER_SUPERSAMPLE = 2;
     // 最近一次绘制用的按钮矩形；点击时直接用它做命中判定，保证与画面完全一致。
     let lastRects = null;
@@ -413,7 +412,8 @@ function createBoolDOMWidget(node, boolWidget) {
         canvas.style.width = width + "px";
         canvas.style.height = height + "px";
         const superSample = width * height > 400000 ? 1 : RASTER_SUPERSAMPLE;
-        dpr = (window.devicePixelRatio || 1) * superSample;
+        const zoom = Math.max(rect.width / (root.clientWidth || w), rect.height / h);
+        dpr = (window.devicePixelRatio || 1) * Math.max(superSample, zoom);
         const bw = Math.round(width * dpr);
         const bh = Math.round(height * dpr);
         if (canvas.width !== bw || canvas.height !== bh) {
@@ -424,6 +424,22 @@ function createBoolDOMWidget(node, boolWidget) {
     };
     const observer = new ResizeObserver(resize);
     observer.observe(root);
+    // CSS transform 缩放不触发 ResizeObserver，单独检测显示倍率变化。
+    let zoomFrame;
+    let lastDisplayScale = 0;
+    const checkZoom = () => {
+        if (root.isConnected && root.clientWidth && root.clientHeight) {
+            const rect = root.getBoundingClientRect();
+            const scale = (window.devicePixelRatio || 1) * Math.max(
+                rect.width / root.clientWidth, rect.height / root.clientHeight);
+            if (Math.abs(scale - lastDisplayScale) > 0.01) {
+                lastDisplayScale = scale;
+                resize();
+            }
+        }
+        zoomFrame = requestAnimationFrame(checkZoom);
+    };
+    zoomFrame = requestAnimationFrame(checkZoom);
     const onWindowResize = () => resize();
     window.addEventListener("resize", onWindowResize);
 
@@ -589,6 +605,7 @@ function createBoolDOMWidget(node, boolWidget) {
     };
     app.ui?.settings?.addEventListener?.("Comfy.VueNodes.Enabled.change", onVueNodesModeChange);
     node.onRemoved = function () {
+        cancelAnimationFrame(zoomFrame);
         observer.disconnect();
         root.removeEventListener("wheel", forwardWheelToCanvas);
         window.removeEventListener("resize", onWindowResize);

@@ -1,4 +1,4 @@
-import { xzgBeginPreviewSettings, xzgBuildPreviewActionSettings } from "./xzg_loader_settings.js";
+import { xzgBeginPreviewSettings, xzgBuildPreviewActionSettings, xzgBuildMenuItemsSection } from "./xzg_loader_settings.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
@@ -680,25 +680,29 @@ async function _xzgSendToImageLoader(imgData) {
         alert(msg);
         return;
     }
+    await xzgSendAnnotatedNameToImageLoader(annotatedName);
+}
+
+// 把已标注文件名（如 "xxx.png [input]"）发送到小珠光图像加载器：
+// 无加载器提示、单个直发、多个弹选择框。供图像保存节点与视频节点
+// 「截取当前帧发送到加载器」（xzg_frame_capture.js）共用。
+export async function xzgSendAnnotatedNameToImageLoader(annotatedName) {
+    if (!annotatedName) return;
     const loaders = _xzgFindImageLoaders();
 
     if (loaders.length === 0) {
         const anyLoaders = (app.graph?.nodes || []).some((n) => n?.type === "XiaozhuguangImageLoader");
         if (anyLoaders) {
-            const msg = xzgTh(
+            alert(xzgTh(
                 "画布中的图像加载器都已停用或被绕过，请先启用一个。",
                 "All Image Loader nodes on the canvas are disabled or bypassed. Enable one first."
-            );
-            console.warn("[小珠光图像保存] " + msg);
-            alert(msg);
+            ));
             return;
         }
-        const msg = xzgTh(
+        alert(xzgTh(
             "未找到小珠光图像加载器节点，请先添加一个",
             "No Xiaozhuguang Image Loader found. Please add one first."
-        );
-        console.warn("[小珠光图像保存] " + msg);
-        alert(msg);
+        ));
         return;
     }
 
@@ -2507,6 +2511,15 @@ function _xzgDirBrowserEnsureDlg() {
     dlg._videoOnlyCheck = videoOnlyCheck;
     dlg._videoOnlyRow = videoOnlyToggle;
 
+    const workflowRow = document.createElement("label");
+    workflowRow.style.cssText = "display:flex;align-items:center;gap:6px;color:#ddd;font-size:12px;cursor:pointer;";
+    const workflowCheck = document.createElement("input");
+    workflowCheck.type = "checkbox";
+    workflowRow.append(workflowCheck, document.createTextNode(xzgT("保存工作流（拖入视频恢复）", "Save workflow (drop video to restore)")));
+    modeRow.after(workflowRow);
+    dlg._workflowRow = workflowRow;
+    dlg._workflowCheck = workflowCheck;
+
     // 读取当前选中的输出模式（"default" | "saveas" | "custom"）
     const _xzgGetOutputMode = () => {
         if (saveAsRadio.checked) return "saveas";
@@ -2971,6 +2984,11 @@ function _xzgDirBrowserConfirm() {
             node._xzgTimeStampWidget.value = v;
             if (node._xzgTimeStampWidget.callback) node._xzgTimeStampWidget.callback(v);
         }
+        if (dlg._workflowCheck && node._xzgSaveWorkflowWidget) {
+            const widget = node._xzgSaveWorkflowWidget;
+            widget.value = !!dlg._workflowCheck.checked;
+            widget.callback?.(widget.value);
+        }
         if (dlg._videoOnlyCheck && node._xzgDvVideoOnlyWidget) {
             const v = !!dlg._videoOnlyCheck.checked;
             node._xzgDvVideoOnlyWidget.value = v;
@@ -2991,6 +3009,12 @@ function _xzgDirBrowserConfirm() {
             dlg._previewRefresh?.();
             node.graph?.change?.();
         }
+        // 右键菜单分节：与悬浮按钮同一套保存语义
+        if (dlg._menuItemsSection?.el) {
+            dlg._menuItemsSection.save(node);
+            dlg._previewSaved = true;
+            node.graph?.change?.();
+        }
         node.setDirtyCanvas(true);
     }
     _xzgDirBrowserHide();
@@ -2999,6 +3023,8 @@ function _xzgDirBrowserConfirm() {
 function _xzgDirBrowserHide() {
     if (_xzgDirBrowserDlg) {
         _xzgDirBrowserDlg._previewSession?.finish(_xzgDirBrowserDlg._previewSaved);
+        if (!_xzgDirBrowserDlg._previewSaved) _xzgDirBrowserDlg._menuItemsSection?.restore();
+        _xzgDirBrowserDlg._menuItemsSection = null;
         _xzgDirBrowserDlg._previewSession = null;
         _xzgDirBrowserDlg.style.display = "none";
     }
@@ -3015,10 +3041,11 @@ async function _xzgShowDirBrowser(node, previewSettings = null) {
     dlg._previewGap = null;
     dlg._previewChecks = new Map();
     dlg._previewOrder = null;
+    dlg._menuItemsSection = null;
     dlg._confirmButton.textContent = previewSettings ? xzgT("保存", "Save") : xzgT("选择", "Select");
     dlg._previewRefresh = previewSettings?.refresh || null;
     dlg._previewSection.replaceChildren();
-    dlg._previewSection.style.display = previewSettings?.actions?.length ? "block" : "none";
+    dlg._previewSection.style.display = (previewSettings?.actions?.length || previewSettings?.menuItems?.length) ? "block" : "none";
     if (previewSettings?.actions?.length) {
         const legend = document.createElement("legend");
         legend.textContent = xzgT("预览区悬浮按钮（随工作流保存）", "Preview floating buttons (saved with workflow)");
@@ -3034,6 +3061,11 @@ async function _xzgShowDirBrowser(node, previewSettings = null) {
         if (previewSettings.fontSize) { dlg._previewFontSize = controls.fontSize; dlg._previewColors = () => controls.colors; dlg._previewSizes = () => controls.sizes; dlg._previewGap = () => controls.gap; }
         dlg._previewChecks = controls.checks;
         if (previewSettings.sortable) dlg._previewOrder = controls.order;
+    }
+    // 右键菜单分节：与悬浮按钮同一套保存/取消语义
+    if (previewSettings?.menuItems?.length) {
+        dlg._menuItemsSection = xzgBuildMenuItemsSection(node, previewSettings.menuItems);
+        if (dlg._menuItemsSection.el) dlg._previewSection.append(dlg._menuItemsSection.el);
     }
     _xzgDirBrowserState.targetNode = node;
 
@@ -3076,6 +3108,10 @@ async function _xzgShowDirBrowser(node, previewSettings = null) {
         dlg._timeCheck.checked = !!node._xzgTimeStampWidget.value;
     } else if (dlg._timeCheck) {
         dlg._timeCheck.checked = false;
+    }
+    if (dlg._workflowRow) {
+        dlg._workflowRow.style.display = node?._xzgSaveWorkflowWidget ? "flex" : "none";
+        dlg._workflowCheck.checked = !!node?._xzgSaveWorkflowWidget?.value;
     }
     // 仅视频轨道行：仅视频节点（挂有 _xzgDvVideoOnlyWidget）显示
     if (dlg._videoOnlyRow) {

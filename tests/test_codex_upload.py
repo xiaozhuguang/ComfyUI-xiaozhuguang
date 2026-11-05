@@ -38,9 +38,6 @@ bridge = load_bridge()
 
 class MediaFilesTest(unittest.TestCase):
     def setUp(self):
-        activation = patch.object(bridge, "activate_target_window", return_value=None)
-        activation.start()
-        self.addCleanup(activation.stop)
         self.root = ROOT / "tests" / ("codex-" + uuid.uuid4().hex)
         self.root.mkdir()
         assert self.root.resolve().is_relative_to((ROOT / "tests").resolve())
@@ -62,6 +59,22 @@ class MediaFilesTest(unittest.TestCase):
 
         bridge.folder_paths.annotated_filepath = annotated
         bridge.folder_paths.get_input_directory = lambda: str(self.input)
+
+    def test_powershell_resolves_without_path(self):
+        executable = self.root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"")
+        with patch.dict(bridge.os.environ, {"SystemRoot": str(self.root), "PATH": ""}, clear=True):
+            self.assertEqual(bridge._powershell_executable(), str(executable))
+            result = subprocess.CompletedProcess([], 0, '{"ok":true}', "")
+            with patch.object(bridge.subprocess, "run", return_value=result) as run:
+                bridge.add_codex_attachments(["原视频.mp4"], "doubao")
+            self.assertEqual(run.call_args.args[0][0], str(executable))
+
+    def test_missing_powershell_has_actionable_error(self):
+        with patch.dict(bridge.os.environ, {}, clear=True), patch.object(bridge.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "找不到 Windows PowerShell"):
+                bridge.add_codex_attachments(["原视频.mp4"], "doubao")
 
     def test_original_files_and_deduplication(self):
         paths = bridge.resolve_media_files(["子目录/测试 原图.png", "子目录/测试 原图.png [input]"], "image")
@@ -97,33 +110,17 @@ class MediaFilesTest(unittest.TestCase):
         self.assertNotIn("-ExecutionPolicy", args[0])
         self.assertNotIn(paths[0], args[0])
 
-    def test_doubao_target_is_passed_as_fixed_argument(self):
-        result = subprocess.CompletedProcess([], 0, '{"ok":true,"copied":true,"pasted":false}', "")
-        with patch.object(bridge, "activate_target_window", return_value=None), \
-                patch.object(bridge.subprocess, "run", return_value=result) as run:
-            bridge.add_codex_attachments(["原视频.mp4"], "doubao")
-        self.assertEqual(run.call_args.args[0][-2:], ["-Target", "doubao"])
+    def test_all_targets_only_copy_without_window_or_target_arguments(self):
+        result = subprocess.CompletedProcess([], 0, '{"ok":true,"copied":true}', "")
+        for target in ("codex", "doubao", "clipboard"):
+            with self.subTest(target=target), patch.object(bridge.subprocess, "run", return_value=result) as run:
+                self.assertTrue(bridge.add_codex_attachments(["原视频.mp4"], target)["copied"])
+                args = run.call_args.args[0]
+                self.assertNotIn("-Target", args)
+                self.assertNotIn("-SourceWindow", args)
+                self.assertEqual(Path(args[-1]).name, "xzg_codex_upload.ps1")
         with self.assertRaises(ValueError):
             bridge.add_codex_attachments(["x.png"], "unknown")
-
-    def test_targets_activate_before_helper_and_preserve_source_window(self):
-        result = subprocess.CompletedProcess([], 0, '{"ok":true,"pasted":true}', "")
-        for target in ("codex", "doubao"):
-            with self.subTest(target=target):
-                events = []
-                def activate(selected):
-                    self.assertEqual(selected, target)
-                    events.append("activate")
-                    return 123456
-                def run_helper(*args, **kwargs):
-                    events.append("helper")
-                    self.assertIn("-SourceWindow", args[0])
-                    self.assertEqual(args[0][args[0].index("-SourceWindow") + 1], "123456")
-                    return result
-                with patch.object(bridge, "activate_target_window", side_effect=activate), \
-                        patch.object(bridge.subprocess, "run", side_effect=run_helper):
-                    bridge.add_codex_attachments(["原视频.mp4"], target)
-                self.assertEqual(events, ["activate", "helper"])
 
     def test_manual_paste_fallback_is_preserved(self):
         result = subprocess.CompletedProcess([], 0, '{"ok":true,"copied":true,"pasted":false,"warning":"Press Ctrl+V"}', "")
@@ -138,6 +135,20 @@ class MediaFilesTest(unittest.TestCase):
                        subprocess.CompletedProcess([], 1, "", "policy blocked")]:
             with self.subTest(result=result), patch.object(bridge.subprocess, "run", return_value=result), self.assertRaises(RuntimeError):
                 bridge.add_codex_attachments(["test.png"])
+
+    def test_helper_failure_preserves_warning_as_error(self):
+        result = subprocess.CompletedProcess([], 0, '{"ok":false,"warning":"clipboard busy"}', "")
+        with patch.object(bridge.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "clipboard busy"):
+                bridge.add_codex_attachments(["test.png"], "doubao")
+
+    def test_doubao_window_failure_after_copy_keeps_manual_fallback(self):
+        result = subprocess.CompletedProcess([], 0, '{"ok":true,"copied":true,"pasted":false,"warning":"No unique window"}', "")
+        with patch.object(bridge.subprocess, "run", return_value=result):
+            response = bridge.add_codex_attachments(["test.png"], "doubao")
+        self.assertTrue(response["copied"])
+        self.assertFalse(response["pasted"])
+        self.assertEqual(response["warning"], "No unique window")
 
 
 class LocalOnlyTest(unittest.IsolatedAsyncioTestCase):
@@ -157,12 +168,12 @@ class LocalOnlyTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_routes_select_target_with_or_without_api_prefix(self):
         for prefix in ("", "/api"):
-            for target in ("codex", "doubao"):
+            for target in ("codex", "doubao", "clipboard"):
                 with self.subTest(prefix=prefix, target=target):
-                    request = types.SimpleNamespace(path=f"{prefix}/xzg/{target}/attachments",
+                    request = types.SimpleNamespace(path=f"{prefix}/xzg/{target}/" + ("files" if target == "clipboard" else "attachments"),
                         json=unittest.mock.AsyncMock(return_value={"filenames": ["a.mp4"], "kind": "video"}))
                     bridge._upload_lock = asyncio.Lock()
-                    handler = bridge.doubao_attachments if target == "doubao" else bridge.codex_attachments
+                    handler = {"doubao": bridge.doubao_attachments, "codex": bridge.codex_attachments, "clipboard": bridge.clipboard_files}[target]
                     with patch.object(bridge, "is_local_clipboard_request", return_value=True), \
                             patch.object(bridge, "resolve_media_files", return_value=["a.mp4"]), \
                             patch.object(bridge, "add_codex_attachments", return_value={"ok": True, "pasted": False}) as upload:
@@ -170,23 +181,23 @@ class LocalOnlyTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(response.status, 200)
                     upload.assert_called_once_with(["a.mp4"], target)
 
-    async def test_saved_video_token_and_expired_token(self):
-        request = types.SimpleNamespace(path="/xzg/doubao/attachments",
+    async def test_clipboard_saved_video_token_and_expired_token(self):
+        request = types.SimpleNamespace(path="/xzg/clipboard/files",
             json=unittest.mock.AsyncMock(return_value={"filenames": ["clip.mp4"], "kind": "video", "abs_token": "registered"}))
         bridge._upload_lock = asyncio.Lock()
         with patch.object(bridge, "is_local_clipboard_request", return_value=True), \
                 patch.object(bridge, "_lookup_abs_token", return_value=None), \
                 patch.object(bridge, "add_codex_attachments") as upload:
-            response = await bridge.doubao_attachments(request)
+            response = await bridge.clipboard_files(request)
             self.assertEqual(response.status, 400)
             upload.assert_not_called()
         with patch.object(bridge, "is_local_clipboard_request", return_value=True), \
                 patch.object(bridge, "_lookup_abs_token", return_value=str(ROOT / "saved.mp4")), \
                 patch.object(Path, "is_file", return_value=True), \
                 patch.object(bridge, "add_codex_attachments", return_value={"ok": True}) as upload:
-            response = await bridge.doubao_attachments(request)
+            response = await bridge.clipboard_files(request)
             self.assertEqual(response.status, 200)
-            upload.assert_called_once_with([str((ROOT / "saved.mp4").resolve())], "doubao")
+            upload.assert_called_once_with([str((ROOT / "saved.mp4").resolve())], "clipboard")
 
     async def test_busy_request_is_not_queued_for_later_chat(self):
         request = types.SimpleNamespace(path="/xzg/codex/attachments", json=unittest.mock.AsyncMock(return_value={"filenames": ["a.png"], "kind": "image"}))

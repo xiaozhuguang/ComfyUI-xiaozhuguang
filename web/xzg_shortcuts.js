@@ -159,18 +159,20 @@ const ACTION_HANDLERS = {
         }
     },
 
-    /** 只执行选中的节点及其上游依赖（无选中时回退为执行整个工作流） */
+    /** 只执行选中的节点及其上游依赖（未选中任何节点时不执行任何动作） */
     queue_selected: async () => {
         try {
             const graph = app.graph;
-            if (!graph?._nodes) { app.queuePrompt?.(); return; }
+            if (!graph?._nodes) return;
             const selected = graph._nodes.filter(n => n.selected && n.mode !== 4);
-            if (selected.length === 0) { app.queuePrompt?.(); return; }
-            const ok = await executeNodes(selected);
-            if (!ok) app.queuePrompt?.();
+            if (selected.length === 0) {
+                console.log("[小珠光快捷键] 未选中任何节点，跳过执行");
+                return;
+            }
+            // 执行失败也不回退到整个工作流：避免误触发全图运行
+            await executeNodes(selected);
         } catch (e) {
             console.warn("[小珠光快捷键] 执行选中节点失败:", e);
-            app.queuePrompt?.();
         }
     },
 

@@ -16,8 +16,6 @@ class XiaozhuguangImageRestore:
                 "original_image": ("IMAGE",),
                 "processed_image": ("IMAGE",),
                 "crop_box": ("XZG_IMAGE_CROPBOX",),
-                "blur_amount": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "tooltip": "接缝羽化半径；未连接遮罩时作用于裁剪框边缘"}),
-                "mask_expand": ("INT", {"default": 0, "min": -500, "max": 500, "step": 1, "tooltip": "独立调整遮罩范围：正值向外扩张，负值向内收缩，0=不变"}),
                 "edge_color_match": ("BOOLEAN", {"default": False, "tooltip": "根据最终遮罩的接缝区域修正处理图像的颜色偏差"}),
                 "color_band_width": ("INT", {"default": 16, "min": 1, "max": 256, "step": 1, "tooltip": "沿最终融合遮罩的50%轮廓向内分析的带宽，单位为原图像素"}),
                 "color_match_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}),
@@ -26,6 +24,7 @@ class XiaozhuguangImageRestore:
             },
             "optional": {
                 "mask": ("MASK",),
+                "seam_preview": ("BOOLEAN", {"default": False, "tooltip": "显示自动接缝轮廓和过渡带"}),
                 "resize_mode": (["Pillow Lanczos", "Pillow Lanczos (fast)", "Pillow Bicubic", "Pillow Bilinear"], {"default": "Pillow Lanczos", "tooltip": "缩小时使用所选抗锯齿算法，放大保持Lanczos4。fast适合大倍率缩小。"}),
             }
         }
@@ -131,25 +130,24 @@ class XiaozhuguangImageRestore:
             seam_data["preview"] = preview
         return restored
 
-    def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask_expand=0, edge_color_match=False, color_band_width=16, color_match_strength=0.5, color_correction_range=128, color_temporal_smooth=0.8, mask=None, resize_mode="Pillow Lanczos"):
-        if "batch_size" in crop_box:
+    def restore_image(self, original_image, processed_image, crop_box, blur_amount=0,
+                      mask_expand=0, edge_color_match=False, color_band_width=16,
+                      color_match_strength=.5, color_correction_range=128,
+                      color_temporal_smooth=.8, mask=None, resize_mode="Pillow Lanczos",
+                      seam_preview=False):
+        from .xzg_atr import XiaozhuguangATR
+        if "crop_infos" in crop_box:
             crop_box = crop_box["crop_infos"][0]
-        orig8 = np.clip(original_image[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)[..., :3]
-        proc8 = np.clip(processed_image[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)[..., :3]
-        mask8 = None
-        if mask is not None:
-            single_mask = mask if mask.ndim == 2 else mask[0]
-            if single_mask.ndim == 3:
-                single_mask = single_mask[..., 0]
-            mask8 = np.clip(single_mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        color_options = (color_band_width, color_match_strength, color_correction_range, color_temporal_smooth) if edge_color_match and color_match_strength > 0 else None
-        color_state = [None]
-        seam_data = {}
-        restored = self._restore_single_image(
-            orig8, proc8, crop_box, blur_amount, mask_expand, mask8, color_options, color_state, seam_data, resize_mode
-        )
-        return tuple(torch.from_numpy(img.astype(np.float32) / 255.0).unsqueeze(0)
-                     for img in (restored, seam_data["preview"]))
+        if mask is not None and mask.ndim >= 3:
+            mask = mask[:1]
+        if not hasattr(self, "_automatic_restore"):
+            self._automatic_restore = XiaozhuguangATR()
+        return self._automatic_restore.restore_image(
+            original_image[:1], processed_image[:1], crop_box, mask=mask,
+            edge_color_match=edge_color_match, color_band_width=color_band_width,
+            color_match_strength=color_match_strength,
+            color_correction_range=color_correction_range, color_temporal_smooth=0,
+            seam_preview=seam_preview)
 
     def _apply_mask_blend(self, restored_np, processed_np, original_np, crop_coords, input_mask, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None, seam_data=None):
         x1, y1, x2, y2 = crop_coords

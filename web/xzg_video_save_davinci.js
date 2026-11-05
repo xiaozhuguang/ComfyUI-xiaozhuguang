@@ -1,7 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden } from "./xzg_loader_settings.js";
-import { xzgAddToCodex, xzgAddToDoubao } from "./xzg_codex_upload.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden, XZG_MENU_CAPTURE_FRAME } from "./xzg_loader_settings.js";
+import { xzgCopyFiles } from "./xzg_codex_upload.js";
+import { xzgAddFrameCaptureMenu } from "./xzg_frame_capture.js";
 
 // 小珠光视频保存-化神级（XiaozhuguangVideoSaveDaVinci）
 // 复用「小珠光视频保存」的全部交互（预览/缓存/恢复见父类 xzg_video_combine.js 注册器），
@@ -270,15 +271,14 @@ const SAVE_PREVIEW_ACTIONS = [
     { id: "davinci_export", key: "_xzgDavinciSaveBtn", label: "导出到达芬奇" },
     { id: "quickcut_send", key: "_xzgQuickCutBtn", label: "发送到快剪" },
     { id: "media_favorite", key: "_xzgVideoFavoriteBtn", label: "收藏" },
-    { id: "codex", key: "_xzgVideoCodexBtn", label: "添加到 Codex" },
-    { id: "doubao", key: "_xzgVideoDoubaoBtn", label: "添加到豆包" },
+    { id: "clipboard", key: "_xzgVideoClipboardBtn", label: "复制到剪贴板" },
 ];
 
 function _syncHoverButtonSize(node) {
     for (const { id, key } of [...SAVE_PREVIEW_ACTIONS, { id: "settings", key: "_xzgOutSettingsBtn" }]) {
         if (node[key]) {
             const size = Math.max(9, Math.min(24, Number(node.properties?.xzg_preview_button_font_size) || 14));
-            node[key].style.color = node.properties?.xzg_preview_button_colors?.[id] || ({ davinci_export: "#3ef558", davinci_import: "#3ef558", quickcut_send: "#ff69b4", quickcut_load: "#ff69b4", codex: "#ffd700", doubao: "#ff9800" }[id] || "");
+            node[key].style.color = node.properties?.xzg_preview_button_colors?.[id] || ({ davinci_export: "#3ef558", davinci_import: "#3ef558", quickcut_send: "#ff69b4", quickcut_load: "#ff69b4", clipboard: "#ffd700" }[id] || "");
             node[key].style.fontSize = `${Math.max(9, Math.min(48, Number(node.properties?.xzg_preview_button_font_sizes?.[id]) || size))}px`;
             node[key].style.padding = `${Math.round(size * .28)}px ${Math.round(size * .5)}px`;
             node[key].classList.add("xzg-video-hover-feedback");
@@ -338,8 +338,8 @@ function _observeHoverButtonSize(node) {
     _syncHoverButtonSize(node);
 }
 
-function _createQuickCutButton(node, favorite = false, codex = false, doubao = false) {
-    const buttonKey = doubao ? "_xzgVideoDoubaoBtn" : codex ? "_xzgVideoCodexBtn" : favorite ? "_xzgVideoFavoriteBtn" : "_xzgQuickCutBtn";
+function _createQuickCutButton(node, favorite = false, clipboard = false) {
+    const buttonKey = clipboard ? "_xzgVideoClipboardBtn" : favorite ? "_xzgVideoFavoriteBtn" : "_xzgQuickCutBtn";
     if (node[buttonKey]) return node[buttonKey];
     const pc = node._xzgPreviewContainer;
     if (!pc) return null;
@@ -362,16 +362,16 @@ function _createQuickCutButton(node, favorite = false, codex = false, doubao = f
     }
     const iconSpan = btn.querySelector("span:first-child");
     const labelSpan = btn.querySelector("span:last-child");
-    if (codex || doubao) {
-        btn.title = doubao ? "把当前保存的原视频添加到豆包，不自动发送" : "把当前保存的原视频添加到 Codex，不自动发送";
+    if (clipboard) {
+        btn.title = "复制当前保存的原视频文件，在目标应用按 Ctrl+V 粘贴";
         iconSpan.textContent = "＋";
-        labelSpan.textContent = doubao ? "添加到豆包" : "添加到 Codex";
+        labelSpan.textContent = "复制到剪贴板";
     }
     pc.appendChild(btn);
 
     // 图标保持金色常亮；点击图标或文字都执行一次手动发送，不再切换自动发送状态。
     iconSpan.style.color = "#ffd76a";
-    iconSpan.title = "点击发送到快剪";
+    iconSpan.title = clipboard ? "复制到剪贴板" : favorite ? "收藏视频" : "点击发送到快剪";
 
     // 排在「导出到达芬奇」按钮左侧：按其宽度留 12px 间隙对齐
     const alignRight = () => _syncHoverButtonSize(node);
@@ -394,11 +394,11 @@ function _createQuickCutButton(node, favorite = false, codex = false, doubao = f
     });
     btn.addEventListener("wheel", _forwardCanvasWheel, { passive: false });
     btn.onclick = () => { if (!btn.disabled) {
-        if (codex || doubao) {
+        if (clipboard) {
             const info = _getSavedVideoInfo(node);
             if (!info?.filename) return _toast("请先执行节点生成视频。", true);
             const name = [info.subfolder, info.filename].filter(Boolean).join("/");
-            (doubao ? xzgAddToDoubao : xzgAddToCodex)([`${name} [${info.type || "output"}]`], "video", btn, info.davinci_abs_token || info.abs_token || "");
+            xzgCopyFiles([`${name} [${info.type || "output"}]`], "video", btn, info.davinci_abs_token || info.abs_token || "");
         }
         else if (favorite) _favoriteSavedVideo(node, btn);
         else _sendToQuickCut(node, btn, labelSpan);
@@ -440,6 +440,7 @@ function _xzgOpenVideoOutputSettings(node) {
         sortable: true,
         fontSize: true,
         actions: SAVE_PREVIEW_ACTIONS.map(({ id, label }) => ({ id, label })),
+        menuItems: [{ id: XZG_MENU_CAPTURE_FRAME, label: "右键菜单：截取当前帧发送到加载器" }],
         refresh: () => _syncHoverButtonSize(node),
     });
 }
@@ -552,7 +553,6 @@ app.registerExtension({
                 _createQuickCutButton(this);
                 _createQuickCutButton(this, true);
                 _createQuickCutButton(this, false, true);
-                _createQuickCutButton(this, false, false, true);
                 // 输出设置：隐藏 use_default_output / base_dir / add_date_stamp / add_time_stamp 参数
                 // widget（保留在数组中参与序列化），由预览区「输出设置」悬浮按钮打开与小珠光图片
                 // 保存-化神级同一个共享设置弹窗统一设置。自定义前缀映射到「文件名前缀」widget；
@@ -563,6 +563,8 @@ app.registerExtension({
                 const prefixW = this.widgets?.find(w => w.name === "文件名前缀") || null;
                 const dateW = this.widgets?.find(w => w.name === "add_date_stamp") || null;
                 const timeW = this.widgets?.find(w => w.name === "add_time_stamp") || null;
+                this._xzgSaveWorkflowWidget = this.widgets?.find(w => w.name === "save_workflow") || null;
+                _hideVideoSettingWidget(this._xzgSaveWorkflowWidget);
                 this._xzgDefaultOutputWidget = defW;
                 this._xzgBaseDirWidget = baseW;
                 this._xzgPrefixCustomWidget = prefixW;
@@ -647,5 +649,9 @@ app.registerExtension({
             } catch (e) { /* ignore */ }
             return r;
         };
+
+        // 右键菜单：截取预览当前帧 → 上传 input → 发送到小珠光图像加载器
+        // （菜单项可在 设置 → 小珠光 中关闭，见 xzg_frame_capture.js）
+        xzgAddFrameCaptureMenu(nodeType, "save");
     },
 });

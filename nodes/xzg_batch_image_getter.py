@@ -1,17 +1,6 @@
 import torch
 
 
-class _AnyType(str):
-    def __eq__(self, other):
-        return True
-
-    def __ne__(self, other):
-        return False
-
-
-ANY_TYPE = _AnyType("*")
-
-
 class XiaozhuguangBatchImageGetter:
     """把图像加载器的批次/列表输出拆为固定编号的单图输出。"""
 
@@ -21,21 +10,22 @@ class XiaozhuguangBatchImageGetter:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                # 保留历史输入键“图像”，使旧工作流的图像连线继续匹配；通用类型同时接受 MASK。
-                "图像": (ANY_TYPE, {"input_is_list": True}),
                 "输出数量": ("INT", {"default": 7, "min": 1, "max": cls.OUTPUT_COUNT, "step": 1}),
+            },
+            "optional": {
+                # 保留历史输入键“图像”，使旧工作流的图像连线继续匹配。
+                # 可选端口：允许输入为空（未连接）或上游被绕过（前端会直接删除该连线，
+                # 导致后端调用时图像参数缺失），两种情况都等同于阻断，所有输出为空（None）。
+                "图像": ("IMAGE", {"input_is_list": True}),
             },
         }
 
-    RETURN_TYPES = ("IMAGE",) * OUTPUT_COUNT + ("MASK",) * OUTPUT_COUNT
-    RETURN_NAMES = tuple(str(i) for i in range(1, OUTPUT_COUNT + 1)) + tuple(f"遮罩{i}" for i in range(1, OUTPUT_COUNT + 1))
+    RETURN_TYPES = ("IMAGE",) * OUTPUT_COUNT
+    RETURN_NAMES = tuple(str(i) for i in range(1, OUTPUT_COUNT + 1))
     FUNCTION = "get_images"
     CATEGORY = "小珠光/图片"
     INPUT_IS_LIST = (True, True)
-    DESCRIPTION = (
-        "一个通用输入端口自动识别 IMAGE 或 MASK：批次/列表中的图像按顺序拆到 1 至 20，遮罩拆到遮罩1至遮罩20。"
-        "输入不足输出数量时，对应输出为 None。"
-    )
+    DESCRIPTION = "把图像批次或列表按顺序拆为单图；输出数量控制端口数量，缺少的图像输出为空。"
 
     @staticmethod
     def _single_image(image):
@@ -108,13 +98,13 @@ class XiaozhuguangBatchImageGetter:
         # ComfyUI 的 IMAGE 标准形状为 [B,H,W,C]，MASK 为 [B,H,W]。
         return False
 
-    def get_images(self, 图像, 输出数量):
-        if self._looks_like_image(图像):
-            images = self._flatten_images(图像)
-            masks = []
-        else:
-            images = []
-            masks = self._flatten_masks(图像)
+    def get_images(self, 图像=None, 输出数量=None):
+        # 图像参数带默认值：上游被绕过时前端会删除该连线，后端调用时参数完全缺失，
+        # 若无默认值会直接 TypeError；缺参/传 None/传非图像值（如旧版旁路直通来的
+        # 字符串控件值）一律视为阻断，所有输出为空。
+        if 输出数量 is None:
+            输出数量 = 7
+        images = self._flatten_images(图像) if self._looks_like_image(图像) else []
         # INPUT_IS_LIST 会把普通数值控件包成一层 list。
         if isinstance(输出数量, (list, tuple)):
             输出数量 = 输出数量[0] if 输出数量 else 1
@@ -124,9 +114,36 @@ class XiaozhuguangBatchImageGetter:
             output_count = 1
         # 缺图严格返回 None，绝不钳制或复用最后一张图。
         image_outputs = tuple(images[i] if i < len(images) and i < output_count else None for i in range(self.OUTPUT_COUNT))
-        mask_outputs = tuple(masks[i] if i < len(masks) and i < output_count else None for i in range(self.OUTPUT_COUNT))
-        return image_outputs + mask_outputs
+        return image_outputs
 
 
-NODE_CLASS_MAPPINGS = {"XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter}
-NODE_DISPLAY_NAME_MAPPINGS = {"XiaozhuguangBatchImageGetter": "小珠光批次或列表图像获取"}
+class XiaozhuguangBatchMaskGetter(XiaozhuguangBatchImageGetter):
+    """把遮罩批次或列表拆为固定编号的单张遮罩。"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "输出数量": ("INT", {"default": 7, "min": 1, "max": cls.OUTPUT_COUNT, "step": 1}),
+            },
+            "optional": {"遮罩": ("MASK", {"input_is_list": True})},
+        }
+
+    RETURN_TYPES = ("MASK",) * 20
+    RETURN_NAMES = tuple(str(i) for i in range(1, 21))
+    FUNCTION = "get_masks"
+    DESCRIPTION = "把遮罩批次或列表按顺序拆为单张遮罩；输出数量控制端口数量，缺少的遮罩输出为空。"
+
+    def get_masks(self, 遮罩=None, 输出数量=None):
+        masks = self._flatten_masks(遮罩)
+        if isinstance(输出数量, (list, tuple)):
+            输出数量 = 输出数量[0] if 输出数量 else 1
+        try:
+            count = max(1, min(self.OUTPUT_COUNT, int(7 if 输出数量 is None else 输出数量)))
+        except (TypeError, ValueError):
+            count = 1
+        return tuple(masks[i] if i < len(masks) and i < count else None for i in range(self.OUTPUT_COUNT))
+
+
+NODE_CLASS_MAPPINGS = {"XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter, "XiaozhuguangBatchMaskGetter": XiaozhuguangBatchMaskGetter}
+NODE_DISPLAY_NAME_MAPPINGS = {"XiaozhuguangBatchImageGetter": "小珠光批次列表图像获取-阻断", "XiaozhuguangBatchMaskGetter": "小珠光批次列表遮罩获取-阻断"}

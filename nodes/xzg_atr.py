@@ -1,4 +1,6 @@
 import logging
+import math
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import torch
 import torch.nn.functional as F
@@ -19,16 +21,14 @@ class XiaozhuguangATR:
                 "original_image": ("IMAGE",),
                 "processed_image": ("IMAGE",),
                 "crop_box": ("CROPBOX",),
-                "blur_amount": ("INT", {"default": 0, "min": 0, "max": 500, "step": 1, "tooltip": "接缝高斯羽化半径；只控制边缘模糊，不改变遮罩范围。未连接遮罩时作用于裁剪框边缘"}),
-                "mask_expand": ("INT", {"default": 0, "min": -500, "max": 500, "step": 1, "tooltip": "独立调整遮罩范围：正值向外扩张，负值向内收缩，0=不变"}),
             },
             "optional": {
                 "mask": ("MASK",),
-                "edge_color_match": ("BOOLEAN", {"default": False, "tooltip": "跟随遮罩收缩和羽化后的实际接缝，分析附近对应像素并修正色偏，中心保持原色"}),
-                "color_band_width": ("INT", {"default": 16, "min": 1, "max": 256, "step": 1, "tooltip": "沿最终融合遮罩的 50% 轮廓向内分析的带宽，单位为原图像素"}),
-                "color_match_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}),
-                "color_correction_range": ("INT", {"default": 128, "min": 1, "max": 512, "step": 1, "tooltip": "始终覆盖最终羽化过渡带，并从实际接缝向内逐渐减弱；此值控制向内延伸范围，单位为原图像素"}),
-                "color_temporal_smooth": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "视频色偏参数的时间平滑；0为关闭，仅在本次批次内生效"}),
+                "edge_color_match": ("BOOLEAN", {"default": False, "tooltip": "分析接缝附近可靠的对应背景，分离亮度与色度进行稳健修正；只作用于羽化过渡区，主体内部保持原色"}),
+                "color_band_width": ("INT", {"default": 16, "min": 1, "max": 256, "step": 1, "tooltip": "沿最终融合权重50%轮廓向内取样的带宽，单位为原图像素；异常样本自动降权；短暂失配参考历史，持续失配逐渐减弱修正"}),
+                "color_match_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "过渡区颜色修正强度；1仍受样本可靠程度及增益、偏移上限约束，0关闭修正"}),
+                "color_correction_range": ("INT", {"default": 128, "min": 1, "max": 512, "step": 1, "tooltip": "控制接缝附近修正权重的空间衰减，单位为原图像素；实际作用受自动羽化区限制，不修改完全保留的主体内部"}),
+                "color_temporal_smooth": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "亮度增益、亮度偏移和色度偏移的时间平滑；0关闭。短暂失配延续历史，持续失配逐渐减弱；双路画面结构明显变化时重置，仅在本批次内生效"}),
                 "seam_preview": ("BOOLEAN", {"default": False, "tooltip": "仅调试接缝时开启；关闭可跳过预览计算"}),
             }
         }
@@ -70,10 +70,80 @@ class XiaozhuguangATR:
         y1 = max(y0 + 1, min(height, round(box[3] * sy)))
         return image[..., y0:y1, x0:x1, :]
 
-    def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos", seam_preview=True):
+    @classmethod
+    def _restore_valid_crop(cls, image, info, resize_mode="Pillow Lanczos"):
+        """Invert the separately resized real-image region without sampling fill."""
+        valid = info.get("output_valid_box")
+        source = info.get("source_valid_box")
+        if valid is None or source is None:
+            return image
+        height, width = image.shape[-3:-1]
+        out_w, out_h = info["output_size"]
+        x0 = max(0, min(width-1, round(valid[0] * width / out_w)))
+        y0 = max(0, min(height-1, round(valid[1] * height / out_h)))
+        x1 = max(x0+1, min(width, round(valid[2] * width / out_w)))
+        y1 = max(y0+1, min(height, round(valid[3] * height / out_h)))
+        sx0, sy0, sx1, sy1 = source
+        coords = info["original_coords"]
+        crop_w, crop_h = coords[2]-coords[0], coords[3]-coords[1]
+
+        def restore(frame):
+            content = frame[y0:y1, x0:x1]
+            if content.shape[-1] == 1:
+                content = cls._resize_numpy(content[..., 0], sx1-sx0, sy1-sy0, resize_mode)[..., None]
+            else:
+                content = cls._resize_numpy(content, sx1-sx0, sy1-sy0, resize_mode)
+            # Padding is discarded after blending; edge extension prevents any
+            # subsequent image filter from pulling fill into real boundary pixels.
+            return np.pad(content, ((sy0, crop_h-sy1), (sx0, crop_w-sx1), (0, 0)), mode="edge")
+
+        if isinstance(image, torch.Tensor):
+            frames = np.clip(image.detach().float().cpu().numpy() * 255, 0, 255).astype(np.uint8)
+            restored = np.stack([restore(frame) for frame in frames])
+            return torch.from_numpy(restored.astype(np.float32) / 255)
+        return restore(image)
+
+    @staticmethod
+    def _seam_rect(info):
+        """Map the unexpanded source-image seam into the processing crop."""
+        if "seam_box" not in info:
+            return None
+        x0, y0, x1, y1 = info["original_coords"]
+        left, top, _, _ = info["pad_info"]
+        a, b, c, d = info["seam_box"]
+        ow, oh = info["original_image_size"]
+        return (0 if a <= 0 else max(0, min(x1-x0, a+left-x0)),
+                0 if b <= 0 else max(0, min(y1-y0, b+top-y0)),
+                x1-x0 if c >= ow else max(0, min(x1-x0, c+left-x0)),
+                y1-y0 if d >= oh else max(0, min(y1-y0, d+top-y0)))
+
+    @staticmethod
+    def _pad_seam_mask(mask, margin, info):
+        """Keep physical image edges solid; crop edges inside the image are seams."""
+        x0, y0, x1, y1 = info["original_coords"]
+        left, top, _, _ = info["pad_info"]
+        ow, oh = info["original_image_size"]
+        if isinstance(mask, torch.Tensor):
+            padded = F.pad(mask, (margin,) * 4, mode="replicate")
+        else:
+            padded = np.pad(mask, margin, mode="edge")
+        if x0 > left:
+            padded[..., :margin] = 0
+        if x1 < left + ow:
+            padded[..., -margin:] = 0
+        if y0 > top:
+            padded[..., :margin, :] = 0
+        if y1 < top + oh:
+            padded[..., -margin:, :] = 0
+        return padded
+
+    def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos", seam_preview=True, auto_seam=False):
         if single_mask is not None and single_mask.shape[:2] == proc_np.shape[:2]:
-            single_mask = self._remove_output_padding(single_mask[..., None], crop_info)[..., 0]
-        proc_np = self._remove_output_padding(proc_np, crop_info)
+            single_mask = self._restore_valid_crop(single_mask[..., None], crop_info, resize_mode)
+            single_mask = (single_mask if "output_valid_box" in crop_info else self._remove_output_padding(single_mask, crop_info))[..., 0]
+        proc_np = self._restore_valid_crop(proc_np, crop_info, resize_mode)
+        if "output_valid_box" not in crop_info:
+            proc_np = self._remove_output_padding(proc_np, crop_info)
         original_coords = crop_info["original_coords"]
         padded_size = crop_info["padded_size"]
         original_image_size = crop_info["original_image_size"]
@@ -87,6 +157,11 @@ class XiaozhuguangATR:
         x1, y1 = original_coords[0], original_coords[1]
 
         resized_processed = self._resize_numpy(proc_np, crop_width, crop_height, resize_mode)
+        rect = self._seam_rect(crop_info) if single_mask is None and not auto_seam else None
+        if rect is not None:
+            a, b, c, d = rect
+            single_mask = np.zeros((crop_height, crop_width), dtype=np.uint8)
+            single_mask[b:d, a:c] = 255
 
         ow, oh = original_image_size
         if tuple(padded_size) == (ow, oh):
@@ -101,7 +176,20 @@ class XiaozhuguangATR:
             restored[pad_top:pad_top + oh, pad_left:pad_left + ow] = orig_np
 
         padded_original = restored.copy()
-        if single_mask is not None:
+        if auto_seam:
+            weights = self._cached_auto_seam_weights(crop_info, single_mask, crop_width, crop_height)
+            if seam_data is not None:
+                seam_data["mask"] = weights * 255
+                seam_data["reference_mask"] = weights * 255
+            if color_options is not None:
+                resized_processed = self._match_edge_color_numpy(
+                    resized_processed, padded_original[y1:y1+crop_height, x1:x1+crop_width],
+                    weights * 255, crop_info, color_options, color_state)
+            alpha = weights[..., None]
+            original_crop = padded_original[y1:y1+crop_height, x1:x1+crop_width]
+            restored[y1:y1+crop_height, x1:x1+crop_width] = np.clip(
+                resized_processed * alpha + original_crop * (1-alpha), 0, 255).astype(np.uint8)
+        elif single_mask is not None:
             restored = self._apply_mask_blend(
                 restored,
                 resized_processed,
@@ -110,7 +198,7 @@ class XiaozhuguangATR:
                 single_mask,
                 blur_amount,
                 mask_expand,
-                color_options, color_state, crop_info, seam_data, resize_mode
+                color_options, color_state, crop_info, seam_data, resize_mode, bbox_seam=rect is not None
             )
         else:
             restored[y1:y1 + crop_height, x1:x1 + crop_width] = resized_processed
@@ -131,7 +219,76 @@ class XiaozhuguangATR:
             seam_data["preview"] = self._seam_preview_numpy(restored, crop_info, seam_data)
         return restored
 
-    def restore_image(self, original_image, processed_image, crop_box, blur_amount, mask_expand=0, mask=None, compute_device="GPU", edge_color_match=False, color_band_width=16, color_match_strength=0.5, color_correction_range=128, color_temporal_smooth=0.8, resize_mode="Pillow Lanczos", seam_preview=False):
+    def _cached_auto_seam_weights(self, info, mask, width, height):
+        geometry = tuple((name, tuple(info[name]) if info.get(name) is not None else None)
+                         for name in ("original_coords", "pad_info", "original_image_size", "subject_box", "seam_box"))
+        key = (geometry, width, height, None if mask is None else
+               (mask.shape, hashlib.blake2b(np.ascontiguousarray(mask).tobytes(), digest_size=16).digest()))
+        cached = getattr(self, "_auto_weight_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        weights = self._auto_seam_weights(info, mask, width, height)
+        self._auto_weight_cache = (key, weights)
+        return weights
+
+    @classmethod
+    def _auto_seam_weights(cls, info, mask, width, height):
+        """Outward-only smooth transition, constrained by actual crop/image edges."""
+        from scipy.ndimage import distance_transform_edt
+        x0, y0, x1, y1 = info["original_coords"]
+        left, top, _, _ = info["pad_info"]
+        ow, oh = info["original_image_size"]
+        yy, xx = np.ogrid[:height, :width]
+        # Only boundaries inside the real image need a seam. Physical image
+        # boundaries cannot reveal an unprocessed neighbour and stay solid.
+        edge = np.full((height, width), np.inf, dtype=np.float32)
+        for active, distance in ((x0 > left, xx), (x1 < left+ow, width-1-xx),
+                                 (y0 > top, yy), (y1 < top+oh, height-1-yy)):
+            if active:
+                edge = np.minimum(edge, distance)
+        if mask is not None:
+            soft = cls._resize_numpy(mask, width, height).astype(np.float32) / 255
+            core = soft > 1/255
+        else:
+            box = info.get("subject_box") or info.get("seam_box")
+            core = np.zeros((height, width), dtype=bool)
+            if box is None:
+                # Legacy crop metadata has no subject location: protect an
+                # inset rectangle and feather only a conservative outer band.
+                inset = max(1, round(min(width, height) * .08))
+                core[inset:max(inset+1,height-inset), inset:max(inset+1,width-inset)] = True
+            else:
+                a,b,c,d = box
+                a,b,c,d = a+left-x0,b+top-y0,c+left-x0,d+top-y0
+                core[max(0,b):min(height,d), max(0,a):min(width,c)] = True
+            soft = core.astype(np.float32)
+        if not core.any():
+            return np.zeros((height, width), dtype=np.float32)
+        if mask is None:
+            ys, xs = np.where(core)
+            dx = np.maximum(np.maximum(xs.min()-xx, xx-xs.max()), 0)
+            dy = np.maximum(np.maximum(ys.min()-yy, yy-ys.max()), 0)
+            distance = np.hypot(dx, dy).astype(np.float32)
+        else:
+            distance = distance_transform_edt(~core).astype(np.float32)
+        # Scale the automatic cap with subject size. Local edge distance narrows
+        # the band point by point rather than limiting all sides to the tightest.
+        size = max(1., float(np.sqrt(core.sum())))
+        cap = max(1., size * .15)
+        protection = min(30., size * .03) if mask is None else 0.
+        safe_protection = np.minimum(protection, np.maximum(0, (distance + edge) * .2))
+        outer = np.maximum(0, distance - safe_protection)
+        span = np.minimum(cap, outer + edge)
+        t = np.clip(outer / np.maximum(span, 1e-6), 0, 1)
+        weights = 1 - t*t*(3-2*t)
+        weights = np.maximum(weights, soft)
+        weights[core] = 1
+        return weights.astype(np.float32)
+
+    def restore_image(self, original_image, processed_image, crop_box, blur_amount=0, mask_expand=0, mask=None, compute_device="GPU", edge_color_match=False, color_band_width=16, color_match_strength=0.5, color_correction_range=128, color_temporal_smooth=0.8, resize_mode="Pillow Lanczos", seam_preview=False, auto_seam=True):
+        # Retired controls remain accepted for old API callers; seams are always automatic.
+        auto_seam = True
+        blur_amount = mask_expand = 0
         resize_mode = "Pillow Lanczos"
         color_options = (color_band_width, color_match_strength, color_correction_range, color_temporal_smooth) if edge_color_match and color_match_strength > 0 else None
         if compute_device != "CPU" and torch.cuda.is_available():
@@ -177,7 +334,7 @@ class XiaozhuguangATR:
 
             seam_data = {} if seam_preview else None
             restored = self._restore_single_image(
-                orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask, color_options, color_state, seam_data, resize_mode, seam_preview
+                orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask, color_options, color_state, seam_data, resize_mode, seam_preview, auto_seam
             )
             output_images.append(restored.astype(np.float32) / 255.0)
             if seam_preview:
@@ -235,6 +392,70 @@ class XiaozhuguangATR:
             padded[..., -radius:, :] = 0
         return padded
 
+    @staticmethod
+    def _estimate_seam_color(y, target, chroma, base):
+        """Bounded paired fit with a persistent prior for unchanged background."""
+        neutral = y.new_tensor([1., 0., 0., 0.])
+        if y.numel() < 32 or base.sum() < 1e-6:
+            return None
+
+        def fit(weights):
+            total = weights.sum().clamp_min(1e-6)
+            mean_y = (y*weights).sum()/total
+            mean_t = (target*weights).sum()/total
+            variance = ((y-mean_y).square()*weights).sum()/total
+            covariance = ((y-mean_y)*(target-mean_t)*weights).sum()/total
+            gain = ((covariance+16)/(variance+16)).clamp(.8, 1.25)
+            shift = (mean_t-gain*mean_y).clamp(-24, 24)
+            tint = ((chroma*weights[:, None]).sum(0)/total).clamp(-16,16)
+            residual = ((target-gain*y-shift).square() +
+                        (chroma-tint).square().mean(1)).sqrt()
+            return torch.stack((gain,shift,tint[0],tint[1])), residual
+
+        _, initial_residual = fit(base)
+        identity_residual = ((target-y).square()+chroma.square().mean(1)).sqrt()
+        support = (base*(identity_residual<10)).sum()/base.sum()
+        initial_error = (initial_residual*base).sum()/base.sum()
+        # Do not let a large replaced foreground choose the initial model and
+        # later re-enter as an inlier. A clean global exposure shift still uses
+        # all paired samples, including its shadow/highlight range.
+        prior = ((1-(identity_residual/20).square()).clamp_min(0).square()
+                 if support > .2 and initial_error > 4 else torch.ones_like(base))
+        weights = base*prior
+        for _ in range(5):
+            _, residual = fit(weights)
+            selected = residual[weights>0.01]
+            if selected.numel()<24:
+                return None
+            median = selected.median()
+            mad = (selected-median).abs().median()
+            cutoff = (median+3*1.4826*mad).clamp(4,28)
+            weights = base*prior*(1-(residual/cutoff).square()).clamp_min(0).square()
+        current, residual = fit(weights)  # Refit using the final accepted weights.
+        ratio = weights.sum()/base.sum()
+        error = (residual*weights).sum()/weights.sum().clamp_min(1e-6)
+        if (weights>.05).sum()<24 or ratio<.1 or error>=16:
+            return None
+        confidence = (ratio/.7).clamp(0,1)
+        return neutral+(current-neutral)*confidence
+
+    @staticmethod
+    def _seam_scene_cut(source, reference, previous):
+        """Use full-crop structure in both streams, independent of sample masks."""
+        if previous is None:
+            return False
+        changed = []
+        for current, old in ((source,previous['source']),
+                             (reference,previous['reference'])):
+            raw = (current-old).abs().mean()
+            # Normalizing each channel removes simple exposure/tint changes.
+            def structure(value):
+                value = value-value.mean((-2,-1),keepdim=True)
+                return value/value.square().mean((-2,-1),keepdim=True).sqrt().clamp_min(8)
+            difference = (structure(current)-structure(old)).abs().mean()
+            changed.append(bool(raw>40 and difference>.65))
+        return all(changed)
+
     def _match_edge_color(self, processed, original, mask, crop_info, options, state):
         band, strength, reach, smoothing = options
         height, width = processed.shape[-2:]
@@ -252,33 +473,64 @@ class XiaozhuguangATR:
         inner = -F.max_pool2d(-padded, (1, band * 2 + 1), stride=1)
         inner = -F.max_pool2d(-inner, (band * 2 + 1, 1), stride=1)
         ring = (support - inner).clamp_(0, 1) * valid_region
-        usable = ((processed > 8) & (processed < 247) & (original > 8) & (original < 247)).all(dim=1, keepdim=True)
-        samples = ring * (0.25 + 0.75 * transition) * usable
-        count = samples.sum(dim=(-2, -1), keepdim=True)
-        differences = (original - processed).clamp(-64, 64)
-        offsets = ((differences * samples).sum(dim=(-2, -1), keepdim=True) / count.clamp_min(1)).clamp(-32, 32)
-        smoothed = []
-        previous, previous_valid = state[0] if state[0] is not None else (None, None)
+        # Estimate in luma/chroma coordinates; fit only paired seam pixels.
+        luma = processed.new_tensor([.299, .587, .114]).reshape(1, 3, 1, 1)
+        src_y = (processed * luma).sum(1, keepdim=True)
+        ref_y = (original * luma).sum(1, keepdim=True)
+        src_c = processed[:, [0, 2]] - src_y
+        ref_c = original[:, [0, 2]] - ref_y
+        usable = (src_y > 5) & (src_y < 250) & (ref_y > 5) & (ref_y < 250)
+        samples = ring * (0.1 + 0.9 * transition) * usable
+        params = []
+        previous = state[0]
+        source_signature = F.adaptive_avg_pool2d(processed, (12,12))
+        reference_signature = F.adaptive_avg_pool2d(original, (12,12))
+        neutral = processed.new_tensor([1.,0.,0.,0.])
         for i in range(processed.shape[0]):
-            current = offsets[i:i + 1]
-            enough = count[i:i + 1] >= 16
-            if previous is not None:
-                current = torch.where(previous_valid, previous * smoothing + current * (1 - smoothing), current)
-                previous = torch.where(enough, current, previous)
-                previous_valid = previous_valid | enough
-            else:
-                previous = torch.where(enough, current, 0)
-                previous_valid = enough
-            smoothed.append(torch.where(enough, previous, 0))
-        state[0] = (previous, previous_valid)
-        offsets = torch.cat(smoothed)
+            chosen = samples[i,0]>0
+            y = src_y[i,0][chosen]
+            target = ref_y[i,0][chosen]
+            chroma = (ref_c[i]-src_c[i])[:,chosen].T
+            base = samples[i,0][chosen]
+            stride = max(1, math.ceil(y.numel()/8192))
+            y,target,chroma,base = y[::stride],target[::stride],chroma[::stride],base[::stride]
+            current = self._estimate_seam_color(y,target,chroma,base)
+            source, reference = source_signature[i], reference_signature[i]
+            cut = self._seam_scene_cut(source,reference,previous)
+            old = None if previous is None or cut or smoothing==0 else previous['params']
+            missing = 0
+            if current is None:
+                missing = 1 if previous is None or cut else previous['missing']+1
+                if old is not None:
+                    # Same causal policy for CPU frames and GPU chunks: hold
+                    # short losses, then fade gradually instead of switching off.
+                    current = old if missing<=6 else torch.lerp(old,neutral,.25)
+            elif old is not None:
+                current = old*smoothing+current*(1-smoothing)
+            previous = dict(params=None if current is None else current.detach(),
+                            missing=missing,source=source.detach(),reference=reference.detach())
+            params.append(neutral if current is None else current)
+        state[0] = previous
+        parameters = torch.stack(params)
+        gain = parameters[:, 0, None, None, None]
+        shift = parameters[:, 1, None, None, None]
+        tint = parameters[:, 2:, None, None]
+        delta_y = src_y * (gain-1) + shift
+        dr, db = tint[:, :1], tint[:, 1:]
+        dg = -(.299*dr + .114*db)/.587
+        correction = delta_y + torch.cat((dr, dg, db), dim=1)
         padded = self._color_pad(support, reach, crop_info)
-        average = F.avg_pool2d(padded, (1, reach * 2 + 1), stride=1)
-        average = F.avg_pool2d(average, (reach * 2 + 1, 1), stride=1)
+        kernel = reach * 2 + 1
+        sums = F.pad(padded.cumsum(-1), (1, 0))
+        average = (sums[..., kernel:] - sums[..., :-kernel]) / kernel
+        sums = F.pad(average.cumsum(-2), (0, 0, 1, 0))
+        average = (sums[..., kernel:, :] - sums[..., :-kernel, :]) / kernel
         inward_weight = (2 * (1 - average)).clamp_(0, 1) * support
         # 覆盖最终羽化过渡带的两侧，避免在 50% 融合轮廓处突然开启修正。
         weight = torch.maximum(inward_weight, transition) * (alpha > 0) * valid_region
-        return (processed + offsets * weight * strength).round().clamp_(0, 255)
+        # Never recolor the fully retained subject interior.
+        weight = weight * (alpha < 1 - 1e-6)
+        return (processed + correction * weight * strength).round().clamp_(0, 255)
 
     def _match_edge_color_numpy(self, processed, original, final_mask, crop_info, options, state):
         processed_tensor = torch.from_numpy(processed.astype(np.float32)).movedim(-1, 0).unsqueeze(0)
@@ -400,28 +652,55 @@ class XiaozhuguangATR:
                     torch.maximum(region, horizontal[:, :, start + offset:end + offset], out=region)
         return result
 
-    def _restore_gpu_chunk(self, original, processed, crop_info, radius, mask_expand, mask, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos"):
+    def _restore_gpu_chunk(self, original, processed, crop_info, radius, mask_expand, mask, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos", auto_seam=False):
         x1, y1, x2, y2 = crop_info["original_coords"]
         width, height = x2 - x1, y2 - y1
         ow, oh = crop_info["original_image_size"]
         pw, ph = crop_info["padded_size"]
         left, top, _, _ = crop_info["pad_info"]
         processed = self._gpu_resize(processed, width, height, resize_mode)
+        rect = self._seam_rect(crop_info) if mask is None else None
+        if rect is not None:
+            a, b, c, d = rect
+            mask = torch.zeros((1, 1, height, width), device=original.device)
+            mask[:, :, b:d, a:c] = 255
         if (pw, ph) == (ow, oh):
             restored = original.clone()
         else:
             color = torch.as_tensor(crop_info.get("fill_color", (255, 255, 255)), device=original.device, dtype=torch.float32)
             restored = color.reshape(1, 3, 1, 1).expand(original.shape[0], 3, ph, pw).clone()
             restored[:, :, top:top + oh, left:left + ow] = original
+        if auto_seam:
+            weights = []
+            for i in range(processed.shape[0]):
+                source = None if mask is None else mask[min(i, len(mask)-1), 0].clamp(0,255).byte().cpu().numpy()
+                weights.append(torch.from_numpy(self._cached_auto_seam_weights(crop_info, source, width, height)))
+            alpha = torch.stack(weights).unsqueeze(1).to(original.device)
+            if color_options is not None:
+                processed = self._match_edge_color(processed, restored[:, :, y1:y2, x1:x2],
+                                                   alpha*255, crop_info, color_options, color_state)
+            if seam_data is not None:
+                seam_data["mask"] = alpha*255
+                seam_data["reference_mask"] = alpha*255
+            region = restored[:, :, y1:y2, x1:x2]
+            region[:] = (processed*alpha + region*(1-alpha)).floor().clamp_(0,255)
+            return restored[:, :, top:top+oh, left:left+ow].movedim(1,-1)/255
         if mask is not None:
             mask = self._gpu_resize(mask, width, height, resize_mode)
         if mask is not None:
+            seam_margin = abs(mask_expand) + radius + 1 if rect is not None else 0
+            if seam_margin:
+                mask = self._pad_seam_mask(mask, seam_margin, crop_info)
             reference_mask = self._gpu_gaussian(mask, radius) if seam_data is not None else None
             if mask_expand > 0:
                 mask = self._gpu_dilate(mask, mask_expand)
             elif mask_expand < 0:
                 mask = self._gpu_erode(mask, -mask_expand)
             mask = self._gpu_gaussian(mask, radius)
+            if seam_margin:
+                mask = mask[..., seam_margin:-seam_margin, seam_margin:-seam_margin]
+                if reference_mask is not None:
+                    reference_mask = reference_mask[..., seam_margin:-seam_margin, seam_margin:-seam_margin]
             if color_options is not None:
                 processed = self._match_edge_color(processed, restored[:, :, y1:y2, x1:x2], mask, crop_info, color_options, color_state)
             if seam_data is not None:
@@ -493,7 +772,8 @@ class XiaozhuguangATR:
             proc_indices = [i if i < processed_image.shape[0] else 0 for i in range(start, end)]
             processed = processed_image[start:end, ..., :3] if end <= processed_image.shape[0] else processed_image[proc_indices, ..., :3]
             padded_processed_size = processed.shape[1:3]
-            processed = self._remove_output_padding(processed, info)
+            processed = (self._restore_valid_crop(processed, info, resize_mode) if "output_valid_box" in info
+                         else self._remove_output_padding(processed, info))
             processed = self._prepare_gpu_input(processed, x2 - x1, y2 - y1, resize_mode, device)
             original = (original * 255).clamp_(0, 255).floor_()
             chunk_mask = None
@@ -501,10 +781,11 @@ class XiaozhuguangATR:
                 mask_indices = [i if i < mask.shape[0] else 0 for i in range(start, end)]
                 source_mask = mask[mask_indices].unsqueeze(-1)
                 if source_mask.shape[1:3] == padded_processed_size:
-                    source_mask = self._remove_output_padding(source_mask, info)
+                    source_mask = (self._restore_valid_crop(source_mask, info, resize_mode) if "output_valid_box" in info
+                                   else self._remove_output_padding(source_mask, info))
                 chunk_mask = self._prepare_gpu_input(source_mask, x2 - x1, y2 - y1, resize_mode, device)
             seam_data = {} if seam_preview else None
-            result = self._restore_gpu_chunk(original, processed, info, blur_amount, mask_expand, chunk_mask, color_options, color_state, seam_data, resize_mode)
+            result = self._restore_gpu_chunk(original, processed, info, blur_amount, mask_expand, chunk_mask, color_options, color_state, seam_data, resize_mode, auto_seam=True)
             output[start:end] = result.cpu()
             if seam_preview:
                 masks = {key: value.cpu().numpy() for key, value in seam_data.items()}
@@ -533,17 +814,22 @@ class XiaozhuguangATR:
                     np.minimum(result[start:end], horizontal[start + offset:end + offset], out=result[start:end])
         return result
 
-    def _apply_mask_blend(self, restored_np, processed_np, original_np, crop_coords, input_mask, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None, seam_data=None, resize_mode="Pillow Lanczos"):
+    def _apply_mask_blend(self, restored_np, processed_np, original_np, crop_coords, input_mask, blur_amount, mask_expand, color_options=None, color_state=None, crop_info=None, seam_data=None, resize_mode="Pillow Lanczos", bbox_seam=False):
         x1, y1, x2, y2 = crop_coords
         crop_width = x2 - x1
         crop_height = y2 - y1
 
         # input_mask 已是 (H,W) uint8，resize 到裁剪尺寸
         mask_np = self._resize_numpy(input_mask, crop_width, crop_height, resize_mode)
+        seam_margin = abs(mask_expand) + blur_amount + 1 if bbox_seam else 0
+        if seam_margin:
+            mask_np = self._pad_seam_mask(mask_np, seam_margin, crop_info)
         if seam_data is not None:
             reference = mask_np.copy()
             if blur_amount > 0:
                 reference = cv2.GaussianBlur(reference, (blur_amount * 2 + 1,) * 2, 0)
+            if seam_margin:
+                reference = reference[seam_margin:-seam_margin, seam_margin:-seam_margin]
             seam_data["reference_mask"] = reference
 
 
@@ -558,6 +844,9 @@ class XiaozhuguangATR:
         if blur_amount > 0:
             kernel_size = blur_amount * 2 + 1
             mask_np = cv2.GaussianBlur(mask_np, (kernel_size, kernel_size), 0)
+
+        if seam_margin:
+            mask_np = mask_np[seam_margin:-seam_margin, seam_margin:-seam_margin]
 
         if seam_data is not None:
             seam_data["mask"] = mask_np

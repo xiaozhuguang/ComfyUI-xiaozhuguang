@@ -23,10 +23,10 @@ class XiaozhuguangImageCrop:
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
                 "kilopixels": ("FLOAT", {"default": 1000.0, "min": 100.0, "max": 10000.0, "step": 10.0, "tooltip": "目标图像的千像素数（十进制，1千像素=1000像素）。1000千像素=1000*1000像素，4194千像素≈2048*2048像素"}),
                 "divisible_by": ("INT", {"default": 8, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
-                "ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
+                "ratio": (["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
                 "startup_threshold": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "当mask的box面积与输入图像的面积占比达到此阈值时，跳过ratio和box_grow_factor判断"}),
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
-                "Box_grow_pixels": ("INT", {"default": 0, "min": 0, "max": 16384, "step": 1, "tooltip": "在倍数扩展后，裁剪框上下左右每边增加的原图像素数，仅扩大裁剪范围，不膨胀遮罩；10表示50×50裁剪框扩为70×70，倍数为2时裁剪框为120×120。裁剪框按所选比例进一步补齐；auto达到启动阈值时跳过裁剪框扩展。遮罩随图像正常裁剪和缩放。0为不扩展"}),
+                "min_margin": ("INT", {"default": 30, "min": 0, "max": 16384, "step": 1, "tooltip": "主体到裁剪框四边的最小原图像素距离，0关闭。为自动接缝提供周围画面。"}),
             }
         }
 
@@ -34,8 +34,23 @@ class XiaozhuguangImageCrop:
     RETURN_NAMES = ("cropped_image", "crop_box", "cropped_mask")
     FUNCTION = "crop_and_resize"
 
+    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None,
+                        Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=8,
+                        ratio="auto", startup_threshold=.4, fill_color="#FFFFFF",
+                        Box_grow_pixels=0, min_margin=30):
+        from .xzg_atbc import XiaozhuguangATBC
+        if mask is not None and mask.ndim >= 3:
+            mask = mask[:1]
+        result, boxes, cropped_mask = XiaozhuguangATBC().crop_and_resize(
+            image[:1], mask=mask, Box_grow_factor=Box_grow_factor,
+            kilopixels=kilopixels, divisible_by=divisible_by, ratio=ratio,
+            fill_color=fill_color, min_margin=min_margin)
+        info = boxes["crop_infos"][0]
+        info["full_image_restore"] = mask is None
+        return result, info, cropped_mask
+
     def _find_best_aspect_ratio(self, width, height):
-        aspect_ratios = [(1, 1), (4, 3), (3, 4), (16, 9), (9, 16)]
+        aspect_ratios = [(1, 1), (3, 2), (2, 3), (16, 9), (9, 16)]
         input_ratio = width / height
         best_ratio = aspect_ratios[0]
         min_diff = float('inf')
@@ -234,27 +249,6 @@ class XiaozhuguangImageCrop:
 
         return resized_image, resized_mask, crop_info
 
-    def crop_and_resize(self, image, resize_mode, mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", Box_grow_pixels=0):
-        original_height, original_width = image.shape[1:3]
-        img8 = np.clip(image[0].cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        if mask is None:
-            mask8 = np.zeros((original_height, original_width), dtype=np.uint8)
-        else:
-            single_mask = mask if mask.ndim == 2 else mask[0]
-            if single_mask.ndim == 3:
-                single_mask = single_mask[..., 0]
-            mask8 = np.clip(single_mask.cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        fill_color_rgb = self._hex_to_rgb(fill_color)
-        crop_coords, _ = self._compute_crop_box(
-            mask8, original_width, original_height, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels
-        )
-        resized_image, resized_mask, crop_info = self._process_single_image(
-            img8, mask8, resize_mode, kilopixels, divisible_by,
-            original_width, original_height, crop_coords, fill_color_rgb, Box_grow_pixels
-        )
-        output_image = torch.from_numpy(resized_image.astype(np.float32) / 255.0).unsqueeze(0)
-        output_mask = torch.from_numpy(resized_mask.astype(np.float32) / 255.0).unsqueeze(0)
-        return (output_image, crop_info, output_mask)
 
 
 NODE_CLASS_MAPPINGS = {

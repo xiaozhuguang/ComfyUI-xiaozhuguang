@@ -1,5 +1,70 @@
 import { app } from "../../scripts/app.js";
 import { xzgLang, xzgT } from "./xzg_i18n.js";
+import { normalizeDisplayState, addDisplayHistory, getDisplayHistory, DISPLAY_HISTORY_LIMIT } from "./xzg_display_history.js";
+
+async function showDisplayHistory(node) {
+    if (node._xzgHistoryDialog?.open) { node._xzgHistoryDialog.focus(); return; }
+    const graph = node.graph;
+    const entries = await getDisplayHistory();
+    if (node.graph !== graph || node._xzgHistoryDialog?.open) return;
+    const dialog = document.createElement("dialog");
+    node._xzgHistoryDialog = dialog;
+    dialog.style.cssText = "width:calc(100vw - 32px);height:calc(100dvh - 32px);max-width:none;max-height:calc(100dvh - 32px);box-sizing:border-box;overflow:hidden;padding:20px;border:1px solid #555;border-radius:8px;background:var(--comfy-menu-bg,#222);color:var(--input-text,#eee);font:14px sans-serif";
+    const layout = document.createElement("div");
+    layout.style.cssText = "display:flex;flex-direction:column;height:100%;min-height:0;gap:12px";
+    const title = document.createElement("h3");
+    title.style.cssText = "margin:0;flex-shrink:0";
+    title.textContent = xzgT("展示任意 · 历史记录", "Display Anything · History");
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0";
+    const hint = document.createElement("p");
+    hint.style.cssText = "margin:0;flex-shrink:0";
+    hint.textContent = xzgT(`自动保存最近 ${DISPLAY_HISTORY_LIMIT} 条，连续重复内容不重复记录。通过小珠光 Logo 设置统一导入导出。`, `Keeps the latest ${DISPLAY_HISTORY_LIMIT} entries, skipping consecutive duplicates. Back up via XZG Logo settings.`);
+    const search = document.createElement("input");
+    search.placeholder = xzgT("搜索历史内容", "Search history");
+    search.style.cssText = "width:100%;box-sizing:border-box;padding:8px;flex-shrink:0";
+    const list = document.createElement("div");
+    list.style.cssText = "flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable";
+    const expanded = new Set();
+    const render = () => {
+        list.replaceChildren();
+        const query = search.value.toLowerCase();
+        const filtered = entries.filter(e => JSON.stringify(e.state).toLowerCase().includes(query) || String(e.title).toLowerCase().includes(query));
+        if (!filtered.length) list.textContent = xzgT("暂无匹配的历史内容", "No matching history");
+        for (const entry of filtered) {
+            const row = document.createElement("details");
+            row.open = expanded.has(entry);
+            row.addEventListener("toggle", () => { if (row.open) expanded.add(entry); else expanded.delete(entry); });
+            row.style.cssText = "border:1px solid #555;border-radius:6px;padding:12px;margin-bottom:12px";
+            const label = document.createElement("summary");
+            label.style.cssText = "cursor:pointer;overflow-wrap:anywhere;line-height:1.6";
+            const state = entry.state;
+            const snippet = (state.channels?.texts[state.channel] || state.texts).join(" ").replace(/\s+/g, " ").slice(0, 160);
+            label.textContent = `${new Date(entry.time).toLocaleString()} · ${entry.title} #${entry.nodeId} · ${snippet}`;
+            const preview = document.createElement("textarea");
+            preview.readOnly = true;
+            preview.value = state.channels ? state.channels.texts.map((texts, i) => `${i ? "B" : "A"}:\n${texts.join("\n")}`).join("\n\n") : state.texts.join("\n");
+            preview.style.cssText = "width:100%;box-sizing:border-box;height:clamp(180px,45dvh,600px);margin:8px 0;resize:vertical;background:var(--comfy-input-bg,#111);color:inherit;font:14px/1.6 Consolas,monospace;padding:12px";
+            const copy = document.createElement("button");
+            copy.textContent = xzgT("复制文本", "Copy Text");
+            copy.onclick = () => node.copyTextToClipboard((state.channels?.texts[state.channel] || state.texts).join("\n"));
+            row.append(label, preview, copy);
+            list.append(row);
+        }
+    };
+    search.oninput = render;
+    const close = document.createElement("button");
+    close.textContent = xzgT("关闭", "Close");
+    close.style.cssText = "flex-shrink:0;padding:8px 24px;cursor:pointer;background:#dc2626;color:#fff;border:1px solid #f87171;border-radius:6px;font-weight:700";
+    close.onclick = () => dialog.close();
+    dialog.addEventListener("close", () => { delete node._xzgHistoryDialog; dialog.remove(); }, { once: true });
+    header.append(title, close);
+    layout.append(header, hint, search, list);
+    dialog.append(layout);
+    document.body.append(dialog);
+    render();
+    dialog.showModal();
+}
 
 // ═══════════════════════════════════════════════════
 //  小珠光大字展示 / Xiaozhuguang Big Display
@@ -9,8 +74,8 @@ import { xzgLang, xzgT } from "./xzg_i18n.js";
 const _NODE_TYPE = "XiaozhuguangBigDisplay";
 
 // 「小珠光展示任意」右键菜单：发送到文本框·化神级
-//   · 目标：画布上已有的「小珠光文本框-化神级」（text 输入槽被连线占用时禁用），或新建一个
-//   · 写入方式：追加到末尾 / 替换内容（与图像加载器 upload_mode 同一套约定）
+//   · 目标：当前图已有的「小珠光文本框-化神级」，只有一个时直接发送，不创建节点
+//   · 默认替换内容；多个目标时弹窗选择，允许手动改为追加
 //   · 写入路径与 _applyGodPreset / _xzgAppendToLoader 一致：widget.value + textarea input 事件 + callback
 function sendToTextBox(source) {
     const text = (source._texts || []).join("\n");
@@ -19,6 +84,29 @@ function sendToTextBox(source) {
     const graph = source.graph;
     if (!graph) return;
     if (source._xzgSendTextDialog?.open) { source._xzgSendTextDialog.focus(); return; }
+    const targets = (graph._nodes || []).filter(node => node.type === "XiaozhuguangTextBoxGod" || node.comfyClass === "XiaozhuguangTextBoxGod");
+    if (!targets.length) { notify(xzgT("当前图中没有文本框·化神级", "No Godlike Text Box in the current graph")); return; }
+    const writeToTarget = (target, mode = "replace") => {
+        if (source.graph !== graph) return false;
+        const widget = target?.widgets?.find(item => item.name === "text");
+        if (!widget || target.inputs?.some(input => input.name === "text" && input.link != null)) {
+            notify(xzgT("目标文本框不可写，文本可能由上游连线控制", "Destination is unavailable; text may be connected"));
+            return false;
+        }
+        const previous = String(widget.value ?? "");
+        const value = mode === "append" && previous ? previous + (previous.endsWith("\n") ? "" : "\n") + text : text;
+        widget.value = value;
+        const element = widget.element;
+        const textarea = element?.matches?.("textarea") ? element : element?.querySelector?.("textarea");
+        if (textarea) { textarea.value = value; textarea.dispatchEvent(new Event("input", { bubbles: true })); }
+        widget.callback?.(value);
+        target.setDirtyCanvas?.(true, true);
+        graph.change?.();
+        app.canvas?.setDirty?.(true, true);
+        notify(xzgT("已发送到文本框·化神级", "Sent to Godlike Text Box"), "success");
+        return true;
+    };
+    if (targets.length === 1) { writeToTarget(targets[0]); return; }
     const dialog = document.createElement("dialog");
     source._xzgSendTextDialog = dialog;
     dialog.style.cssText = "width:460px;max-width:90vw;padding:20px;border:1px solid var(--border-color,#555);border-radius:8px;background:var(--comfy-menu-bg,#222);color:var(--input-text,#eee);font:14px sans-serif;";
@@ -44,11 +132,6 @@ function sendToTextBox(source) {
     targetLabel.style.cssText = "display:flex;flex-direction:column;gap:8px;margin:16px 0 0;";
     const targetSelect = document.createElement("select");
     targetSelect.style.cssText = "width:100%;box-sizing:border-box;padding:6px 8px;background:var(--comfy-input-bg,#1a1a1a);color:var(--input-text,#fff);border:1px solid var(--border-color,#555);border-radius:4px;";
-    const newOption = document.createElement("option");
-    newOption.value = "new";
-    newOption.textContent = xzgT("新建小珠光文本框-化神级", "Create a Godlike Text Box");
-    targetSelect.append(newOption);
-    const targets = (graph._nodes || []).filter(node => node.type === "XiaozhuguangTextBoxGod" || node.comfyClass === "XiaozhuguangTextBoxGod");
     for (const target of targets) {
         const option = document.createElement("option");
         option.value = String(target.id);
@@ -57,7 +140,8 @@ function sendToTextBox(source) {
             (option.disabled ? xzgT("（文本由上游连线控制）", " (text is connected)") : "");
         targetSelect.append(option);
     }
-    if (targets.length === 1 && !targetSelect.options[1].disabled) targetSelect.value = String(targets[0].id);
+    const defaultTarget = targets.find(target => !target.inputs?.some(input => input.name === "text" && input.link != null));
+    if (defaultTarget) targetSelect.value = String(defaultTarget.id);
     targetLabel.append(targetSelect);
     dialog.append(targetLabel);
 
@@ -67,7 +151,7 @@ function sendToTextBox(source) {
     modeLabel.textContent = xzgT("写入方式", "Write mode");
     const mode = document.createElement("select");
     mode.style.cssText = "padding:6px 8px;background:var(--comfy-input-bg,#1a1a1a);color:var(--input-text,#fff);border:1px solid var(--border-color,#555);border-radius:4px;";
-    for (const [value, label] of [["append", xzgT("追加到末尾", "Append")], ["replace", xzgT("替换内容", "Replace")]]) {
+    for (const [value, label] of [["replace", xzgT("替换内容", "Replace")], ["append", xzgT("追加到末尾", "Append")]]) {
         const option = document.createElement("option");
         option.value = value; option.textContent = label; mode.append(option);
     }
@@ -86,32 +170,8 @@ function sendToTextBox(source) {
     send.style.cssText = "padding:6px 16px;background:#FFD700;border:none;border-radius:4px;color:#000;font-weight:600;cursor:pointer;";
     send.onclick = () => {
         if (source.graph !== graph) { dialog.close(); return; }
-        let target;
-        if (targetSelect.value === "new") {
-            target = LiteGraph.createNode("XiaozhuguangTextBoxGod");
-            if (!target) { notify(xzgT("文本框节点不可用，请刷新页面", "Text Box is unavailable; refresh the page")); return; }
-            target.pos = [source.pos[0] + source.size[0] + 40, source.pos[1]];
-            graph.add(target);
-        } else {
-            target = graph.getNodeById(targetSelect.value);
-        }
-        const widget = target?.widgets?.find(item => item.name === "text");
-        if (!widget || target.inputs?.some(input => input.name === "text" && input.link != null)) {
-            notify(xzgT("目标文本框不可写，请重新选择", "Destination is unavailable; choose another Text Box"));
-            return;
-        }
-        const previous = String(widget.value ?? "");
-        const value = mode.value === "append" && previous ? previous + (previous.endsWith("\n") ? "" : "\n") + text : text;
-        widget.value = value;
-        const element = widget.element;
-        const textarea = element?.matches?.("textarea") ? element : element?.querySelector?.("textarea");
-        if (textarea) { textarea.value = value; textarea.dispatchEvent(new Event("input", { bubbles: true })); }
-        widget.callback?.(value);
-        target.setDirtyCanvas?.(true, true);
-        graph.change?.();
-        app.canvas?.setDirty?.(true, true);
-        dialog.close();
-        notify(xzgT("已发送到文本框·化神级", "Sent to Godlike Text Box"), "success");
+        const target = graph.getNodeById(targetSelect.value);
+        if (writeToTarget(target, mode.value)) dialog.close();
     };
     footer.append(cancel, send);
     dialog.append(footer);
@@ -443,6 +503,8 @@ app.registerExtension({
             const previousRemoved = node.onRemoved;
             node.onRemoved = function () {
                 disposed = true;
+                node._xzgHistoryDialog?.close();
+                node._xzgSendTextDialog?.close();
                 try { observer.disconnect(); } catch (_) {}
                 stopPointerForwarding();
                 canvas.removeEventListener("pointerdown", onCanvasPointerDown);
@@ -462,6 +524,7 @@ app.registerExtension({
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 // 屏蔽其他默认菜单项，只保留本节点的自定义菜单
                 options.length = 0;
+                options.push({ content: xzgT("历史记录", "Display History"), callback: () => showDisplayHistory(this) });
                 // 复制当前展示的文本
                 options.push({
                     content: xzgT("复制文本", "Copy Text"),
@@ -794,7 +857,10 @@ app.registerExtension({
             hideNodeHeader(this);
             hideNodeInputDecoration(this);
             // Nodes 2.0 的属性序列化更稳定；保留 widgets_values 作为旧工作流兼容回退。
-            const wv = this.widgets_values;
+            const wv = info?.widgets_values || this.widgets_values;
+            this._texts = [];
+            this._xzgDisplayChannels = null;
+            this._xzgDisplayChannel = 0;
             try {
                 const savedCfg = info?.properties?.xzgBigDisplayCfg || this.properties?.xzgBigDisplayCfg;
                 if (savedCfg && typeof savedCfg === "object") {
@@ -806,17 +872,19 @@ app.registerExtension({
                         if (Array.isArray(first.texts)) this._texts = first.texts;
                         if (first.channels) {
                             this._xzgDisplayChannels = first.channels;
-                            this._showDisplayChannel(0);
+                            this._showDisplayChannel(first.channel || 0);
                         }
                         if (!savedCfg && first.cfg && typeof first.cfg === "object")
                             this._cfg = { ...DEFAULT_CFG, ...first.cfg };
                     }
                 }
+                const state = info?.properties?.xzgBigDisplayState;
+                if (state) this._restoreDisplayState(state);
             } catch (e) {}
             if (!this._cfg) this._cfg = { ...DEFAULT_CFG };
             this.properties = this.properties || {};
             this.properties.xzgBigDisplayCfg = { ...this._cfg };
-            this._xzgBigDisplayUI?.refresh?.();
+            this._showDisplayChannel(this._xzgDisplayChannel || 0);
             return r;
         };
 
@@ -824,11 +892,20 @@ app.registerExtension({
         nodeType.prototype.onSerialize = function (o) {
             const r = origSerialize?.apply(this, arguments);
             try {
-                o.properties = { ...(o.properties || {}), xzgBigDisplayCfg: { ...this._cfg } };
+                o.properties = { ...(o.properties || {}), xzgBigDisplayCfg: { ...this._cfg },
+                    xzgBigDisplayState: normalizeDisplayState({ texts: this._texts, channels: this._xzgDisplayChannels, channel: this._xzgDisplayChannel }) };
                 if (!o.widgets_values) o.widgets_values = [];
-                o.widgets_values.push({ texts: this._texts || [], channels: this._xzgDisplayChannels, cfg: { ...this._cfg } });
+                o.widgets_values = o.widgets_values.filter(value => !(value && typeof value === "object" && (value.texts || value.cfg)));
+                o.widgets_values.push({ texts: this._texts || [], channels: this._xzgDisplayChannels, channel: this._xzgDisplayChannel, cfg: { ...this._cfg } });
             } catch (e) {}
             return r;
+        };
+
+        nodeType.prototype._restoreDisplayState = function (value) {
+            const state = normalizeDisplayState(value);
+            this._texts = state.texts;
+            this._xzgDisplayChannels = state.channels;
+            this._showDisplayChannel(state.channel);
         };
 
         nodeType.prototype._showDisplayChannel = function (index) {
@@ -840,6 +917,8 @@ app.registerExtension({
             }
             this._xzgBigDisplayScrollTop = 0;
             this._xzgBigDisplayScrollTops = [];
+            this.properties = this.properties || {};
+            this.properties.xzgBigDisplayState = normalizeDisplayState({ texts: this._texts, channels: this._xzgDisplayChannels, channel: this._xzgDisplayChannel });
             this.setDirtyCanvas?.(true, true);
             this._xzgBigDisplayUI?.refresh?.();
         };
@@ -860,6 +939,7 @@ app.registerExtension({
                 connected: [!!message.connected_a?.[0], !!message.connected_b?.[0]],
             } : null;
             this._showDisplayChannel(0);
+            addDisplayHistory(this);
             return r;
         };
 
@@ -1353,6 +1433,7 @@ app.registerExtension({
         // getNodeMenuOptions 的返回结果做白名单过滤。
         // —— 过滤函数 ——
         const catOf = (content) => {
+            if (content.includes("历史记录") || content.includes("Display History")) return 1;
             if (content.includes("发送到文本框") || content.includes("Send to Godlike Text Box")) return 1;
             if (content.includes("对所选输出节点进行排队") || content.includes("Queue Selected Output")) return 0; // 排队 → 第一行
             if (content.includes("复制文本")) return 1; // 复制文本 + 收藏到提示词库 同一组

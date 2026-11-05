@@ -1137,7 +1137,7 @@ ComfyUI-xiaozhuguang/
 
 **✨ 新增节点**
 
-- **小珠光从列表获取图像（`XiaozhuguangImageFromList`）**：从 IMAGE 输入（列表/已堆叠 batch/单张）中自 `index` 起连续取 `length` 张图。`index` 支持负数（-1 取最后一张），越界自动钳制；`length` 为连续取图数量（如列表 4 张、index=1、length=3，取第 2/3/4 张；length=1 等价单取）；多张时返回列表并广播，下游逐张执行。与图像加载器「列表」模式一致，支持图片尺寸不一致、可分别预览
+- **小珠光批次列表遮罩图像获取（`XiaozhuguangImageFromList`）**：从 IMAGE 输入（列表/已堆叠 batch/单张）中自 `index` 起连续取 `length` 张图。`index` 支持负数（-1 取最后一张），越界自动钳制；`length` 为连续取图数量（如列表 4 张、index=1、length=3，取第 2/3/4 张；length=1 等价单取）；多张时返回列表并广播，下游逐张执行。与图像加载器「列表」模式一致，支持图片尺寸不一致、可分别预览
 - **小珠光列表计数（`XiaozhuguangListCount`）**：计算输入列表的元素总数，常用于小珠光图像加载器「列表」模式等多元素输出；单个批处理张量按 batch 维统计，保证"总数=图片张数"的直觉
 
 **🖼️ 小珠光图像加载器增强**

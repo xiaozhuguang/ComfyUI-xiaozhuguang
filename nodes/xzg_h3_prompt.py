@@ -69,16 +69,64 @@ def _xzg_image_tensor_to_data_uri(image_input, max_side=1024):
     return data_uris
 
 
-def _xzg_collect_video_frames(frames, fps=24.0):
-    """Encode only the first, middle and last frames of a video batch."""
+def _xzg_collect_video_frames(frames, fps=24.0, front_fill=0, back_fill=0):
+    """Keep temporal coverage and add visual-change frames, up to 17 samples."""
     if frames.ndim != 4 or frames.shape[0] == 0:
         raise ValueError("视频帧输入需要非空 IMAGE 批次 / Expected a non-empty video frame batch.")
     fps = float(fps)
-    if fps <= 0:
+    if not 0 < fps < float("inf"):
         raise ValueError("视频帧率必须大于 0 / Video FPS must be positive.")
     count = int(frames.shape[0])
-    samples = min(count, 3)
-    indices = [round(i * (count - 1) / (samples - 1)) for i in range(samples)] if samples > 1 else [0]
+    front_fill, back_fill = int(front_fill), int(back_fill)
+    if front_fill < 0 or back_fill < 0 or front_fill + back_fill >= count:
+        raise ValueError("前后补帧数量必须非负，且总和必须小于视频帧数。")
+    source_count = count - front_fill - back_fill
+    duration = source_count / fps
+    base_samples = next((n for limit, n in ((1, 3), (3, 5), (6, 9), (12, 13))
+                         if duration <= limit), 17)
+    base_samples = min(source_count, base_samples)
+    indices = {front_fill + round(i * (source_count - 1) / (base_samples - 1))
+               for i in range(base_samples)} if base_samples > 1 else {front_fill}
+    # Probe at most 129 tiny thumbnails, without encoding them for the LLM.
+    # This is a visual-change heuristic, not semantic action/lip-sync detection.
+    changes = []
+    if source_count > 3 and torch is not None:
+        probe_count = min(source_count, 129)
+        previous = None
+        previous_index = None
+        with torch.no_grad():
+            for i in range(probe_count):
+                mm.throw_exception_if_processing_interrupted()
+                index = front_fill + round(i * (source_count - 1) / (probe_count - 1))
+                thumb = frames[index, ::max(1, frames.shape[1] // 64),
+                               ::max(1, frames.shape[2] // 64), :3]
+                thumb = torch.nn.functional.adaptive_avg_pool2d(
+                    thumb.permute(2, 0, 1).unsqueeze(0).float(), (32, 32))
+                if previous is not None:
+                    changes.append(((thumb - previous).abs().mean().item(), previous_index, index))
+                previous = thumb
+                previous_index = index
+    dense = (max((score for score, _, _ in changes), default=0.0) >= 0.08
+             or sum(score for score, _, _ in changes) / max(1, len(changes)) >= 0.025)
+    if dense:
+        target = min(source_count, 17, max(9, base_samples + 4))
+        if base_samples == 17:
+            # Reserve four slots for changes even in long clips at the sample cap.
+            indices = {front_fill + round(i * (source_count - 1) / 12) for i in range(13)}
+        # Prefer the two sides of the strongest changes; never discard uniform anchors.
+        for score, before, after in sorted(changes, key=lambda item: (-item[0], item[1])):
+            if score < 0.025 or len(indices) >= target:
+                break
+            for index in (after, before):
+                if len(indices) < target:
+                    indices.add(index)
+        # If changes cluster in one place, fill remaining slots in the largest gaps.
+        while len(indices) < target:
+            ordered = sorted(indices)
+            left, right = max(zip(ordered, ordered[1:]), key=lambda pair: pair[1] - pair[0])
+            indices.add((left + right) // 2)
+    indices = sorted(indices)
+    samples = len(indices)
     collected = []
     for index in indices:
         mm.throw_exception_if_processing_interrupted()
@@ -88,7 +136,16 @@ def _xzg_collect_video_frames(frames, fps=24.0):
         collected.append((f"<Video 1>, frame {index}, time {index / fps:.3f}s", uris))
     description = (
         f"[Reference Video] <Video 1>: {count} frames at {fps:g} FPS, duration {count / fps:.3f}s. "
-        f"{samples} uniformly sampled frames follow in chronological order, with frame indices and timestamps. "
+        f"{samples} frames follow in chronological order, with frame indices and timestamps: "
+        "uniform temporal anchors plus visual-change samples when significant changes were detected. "
+        f"Original content: {source_count} frames, duration {source_count / fps:.3f}s, "
+        f"occupying [{front_fill / fps:.3f}s, {(count - back_fill) / fps:.3f}s) on the full clip timeline. "
+        f"Leading padding: {front_fill} frames ({front_fill / fps:.3f}s), copies of the first original frame. "
+        f"Trailing padding: {back_fill} frames ({back_fill / fps:.3f}s), copies of the last original frame. "
+        "Only original content was sampled; sample count was selected using its duration and visual change. "
+        "Frame indices and timestamps retain their positions in the FULL supplied clip including padding. "
+        "Treat padding as static holds, not additional actions; preserve the full duration and action timing "
+        "when the user requests video timing or continuity to be retained. "
         "Times are relative to the supplied clip, not the original file before trimming. "
         "These are frames of ONE video, not independent Picture references. "
         "Analyze visible subjects, actions, composition, camera and continuity only from these samples. "
@@ -666,7 +723,9 @@ def _xzg_load_saved_prompt_rule(preset_name, preset_category=None, preset_id=Non
                and (not preset_category or str(entry.get("category") or "自定义提示词规则") == str(preset_category))]
     if preset_id:
         matches = [entry for _, entry in entries if str(entry.get("id") or "") == str(preset_id)]
-    else:
+    # Older positional widget values can put video FPS (e.g. "24") in the ID slot.
+    # Only recover malformed numeric IDs; missing real IDs must not select a replacement rule.
+    if not preset_id or (not matches and re.fullmatch(r"\d+(?:\.\d+)?", str(preset_id))):
         selectors = _xzg_prompt_rule_selection_names(presets)
         matches = [entry for key, entry in entries if
                    str(entry.get("selectionName") or selectors.get(str(key)) or entry.get("name") or key) == str(preset_name)]
@@ -737,14 +796,26 @@ class XiaozhuguangNinimaxH3Prompt:
             "image_8": ("IMAGE", {"tooltip": "可选：参考图片8 / Reference image 8"}),
             "image_9": ("IMAGE", {"tooltip": "可选：参考图片9 / Reference image 9"}),
             "image_10": ("IMAGE", {"tooltip": "可选：参考图片10 / Reference image 10"}),
-            "video_frames": ("IMAGE", {"tooltip": "视频帧批次，固定采样首、中、尾3帧；不足3帧时全部使用 / Video batch: first, middle and last frames only"}),
+            "video_frames": ("IMAGE", {"tooltip": "视频帧批次，按时长和画面变化自动采样3–17帧；不足时全部使用 / Automatically sample 3–17 frames based on duration and visual change"}),
             "video_fps": ("FLOAT", {"default": 24.0, "min": 0.01, "max": 1000.0, "forceInput": True, "tooltip": "连接输入视频帧批次的实际帧率 / Actual FPS of the supplied video frame batch"}),
         }
+        if not s.SUPPORTS_VIDEO_INPUT:
+            optional_inputs.pop("video_frames")
+            optional_inputs.pop("video_fps")
         # Append widgets to preserve positional values in existing workflows.
         if getattr(s, "SUPPORTS_CUSTOM_PROMPT_RULES", True):
             optional_inputs["skill"] = ("STRING", {
                 "default": "", "multiline": True,
                 "tooltip": "可手填或转换为输入端口连接外部文本；非空时优先使用此 Skill，忽略提示词类型和规则预设；留空沿用原选择 / Non-empty Skill overrides prompt type and rule preset; supports text connections",
+            })
+        if s.SUPPORTS_VIDEO_INPUT:
+            optional_inputs["front_fill"] = ("INT", {
+                "default": 0, "min": 0, "forceInput": True,
+                "tooltip": "连接帧优化的前补帧输出；采样时排除，时间轴仍保留。未连接按0处理。",
+            })
+            optional_inputs["back_fill"] = ("INT", {
+                "default": 0, "min": 0, "forceInput": True,
+                "tooltip": "连接帧优化的后补帧输出（包含下限补帧）；采样时排除，时间轴仍保留。未连接按0处理。",
             })
         return {
             "required": {
@@ -771,10 +842,10 @@ class XiaozhuguangNinimaxH3Prompt:
                     {"default": True, "tooltip": "执行后卸载模型释放显存 / Unload model after execution"},
                 ),
                 "output_language": (
-                    ["仅英文"] if s.SUPPORTS_CUSTOM_PROMPT_RULES else ["仅英文", "仅中文", "中英双语"],
+                    ["仅英文"],
                     {
                         "default": "仅英文",
-                        "tooltip": "化神级仅生成英文 / Godlike generates English only" if s.SUPPORTS_CUSTOM_PROMPT_RULES else "仅 H3：选择输出语言。仅英文/仅中文为单次调用（仅中文直接生成中文，字段名保留英文）；中英双语为生成+翻译两次调用，耗时更长 / H3 only: English only & Chinese only use a single call; Bilingual uses two calls (generate + translate) and takes longer",
+                        "tooltip": "仅生成英文提示词 / Generates English prompts only",
                     },
                 ),
             },
@@ -788,13 +859,14 @@ class XiaozhuguangNinimaxH3Prompt:
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "top_k": ("INT", {"default": 20, "min": 0, "max": 200, "step": 1}),
-                "repeat_penalty": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 2.0, "step": 0.01}),
+                "repeat_penalty": ("FLOAT", {"default": 1.1, "min": 0.5, "max": 2.0, "step": 0.01}),
                 "frequency_penalty": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "presence_penalty": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.01}),
             }
         }
 
     SUPPORTS_CUSTOM_PROMPT_RULES = True
+    SUPPORTS_VIDEO_INPUT = True
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("english_prompt",)
@@ -1013,7 +1085,7 @@ class XiaozhuguangNinimaxH3Prompt:
         temperature=0.7,
         top_p=0.9,
         top_k=20,
-        repeat_penalty=1.0,
+        repeat_penalty=1.1,
         frequency_penalty=0.0,
         presence_penalty=0.0,
         seed=0,
@@ -1023,10 +1095,10 @@ class XiaozhuguangNinimaxH3Prompt:
         # 收集所有 image_* 输入
         image_inputs = [kwargs.get(f"image_{i}") for i in range(1, 11)]
         for index, image in enumerate(image_inputs, 1):
-            if image is not None and image.ndim == 4 and image.shape[0] > 1:
+            if self.SUPPORTS_VIDEO_INPUT and image is not None and image.ndim == 4 and image.shape[0] > 1:
                 print(
                     f"[小珠光 H3] image_{index} 收到 {image.shape[0]} 张图片的批次，将全部分析。"
-                    "若来自视频加载器，请连接到“视频帧 / video_frames”入口，固定只分析首、中、尾3帧。",
+                    "若来自视频加载器，请连接到“视频帧 / video_frames”入口，按时长和画面变化自动分析3–17帧。",
                     flush=True,
                 )
         llm = qwen_model
@@ -1103,15 +1175,7 @@ class XiaozhuguangNinimaxH3Prompt:
                            _TARGET_MODEL_QWEN_IMAGE, _TARGET_MODEL_QWEN_IMAGE_EN, _TARGET_MODEL_QWEN_SHORT}
         if not is_custom_prompt_rules and target_model not in builtin_targets:
             raise ValueError(f"提示词类型不存在或已改名：{target_model}。请在规则管理器确认类型并重新选择，禁止回退到其他规则。")
-        output_language = {
-            "English Only": "仅英文",
-            "Chinese Only": "仅中文",
-            "Chinese + English": "中英双语",
-        }.get(output_language, output_language)
-        if self.SUPPORTS_CUSTOM_PROMPT_RULES:
-            output_language = "仅英文"
-        if output_language not in _H3_OUTPUT_FORMATS:
-            output_language = "仅英文"
+        output_language = "仅英文"
         if not is_custom_prompt_rules:
             generation_mode = {
                 "Text to Image": "Qwen-Image-2.1 文生图",
@@ -1183,15 +1247,18 @@ class XiaozhuguangNinimaxH3Prompt:
             )
 
         video_frames = kwargs.get("video_frames")
-        if video_frames is not None:
+        if self.SUPPORTS_VIDEO_INPUT and video_frames is not None:
             video_description, video_images, video_count = _xzg_collect_video_frames(
                 video_frames, kwargs.get("video_fps", 24.0),
+                kwargs.get("front_fill", 0), kwargs.get("back_fill", 0),
             )
             user_message += "\n\n" + video_description
             collected_images.extend(video_images)
             total_image_count += video_count
             print(
-                f"[小珠光 H3] 视频采样：输入 {video_frames.shape[0]} 帧，实际分析 {video_count} 帧",
+                f"[小珠光 H3] 视频采样：输入 {video_frames.shape[0]} 帧，"
+                f"排除前补 {kwargs.get('front_fill', 0)} / 后补 {kwargs.get('back_fill', 0)} 帧，"
+                f"实际分析 {video_count} 帧（保留完整时间轴）",
                 flush=True,
             )
 
@@ -1232,6 +1299,10 @@ class XiaozhuguangNinimaxH3Prompt:
             "max_tokens": safe_max_tokens,
             "temperature": float(temperature),
             "top_p": float(top_p),
+            "top_k": int(top_k),
+            "repeat_penalty": float(repeat_penalty),
+            "frequency_penalty": float(frequency_penalty),
+            "presence_penalty": float(presence_penalty),
             "stream": False,
         }
         if normalized_seed is not None:
@@ -1293,36 +1364,18 @@ class XiaozhuguangNinimaxH3Prompt:
                     "（可能使用了 BSAI loader），卸载后将无法自动重新加载。"
                 )
 
-        if self.SUPPORTS_CUSTOM_PROMPT_RULES:
-            english = text.lstrip().removeprefix(": ").strip()
-            return {"ui": {"text": [english]}, "result": (english,)}
-
-        text = text.lstrip().removeprefix(": ").strip()
-        chinese_text = chinese_text.lstrip().removeprefix(": ").strip()
-        if output_language == "仅英文":
-            english, chinese = text, ""
-        elif output_language == "仅中文":
-            english = ""
-            chinese = chinese_text if secondary_system_prompt is not None else text
-        elif secondary_system_prompt is not None:
-            english, chinese = text, chinese_text
-        else:
-            english, chinese = _xzg_split_bilingual_output(text)
-        # 中文文案随本节点完成即时放进 ui 消息广播（executed 事件）：
-        # 「小珠光展示任意」监听上游 executed 事件实时显示，不再等自身被引擎调度——
-        # 引擎按就绪顺序优先执行输出/异步节点，异步下游（视频生成 API 等）排在
-        # 展示节点前面时会抢先执行数分钟，展示内容被压到最后才出现
-        return {"ui": {"text": [chinese] if chinese else []},
-                "result": (english, chinese)}
+        english = text.lstrip().removeprefix(": ").strip()
+        return {"ui": {"text": [english]}, "result": (english,)}
 
 
 class XiaozhuguangNinimaxH3PromptNoSkill(XiaozhuguangNinimaxH3Prompt):
     """标准版提示词节点，不提供自定义 Skill 预设功能。"""
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("english_prompt", "chinese_prompt")
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("english_prompt",)
 
     SUPPORTS_CUSTOM_PROMPT_RULES = False
+    SUPPORTS_VIDEO_INPUT = False
     SUPPORTS_CUSTOM_SKILL = False  # legacy alias
 
     @classmethod

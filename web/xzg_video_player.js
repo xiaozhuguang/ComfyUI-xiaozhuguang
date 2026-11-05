@@ -65,6 +65,7 @@ export class XiaozhuguangVideoPlayer {
         this.onDblClick = options.onDblClick || null;
         this.onLoadedMetadata = options.onLoadedMetadata || null;
         this.onPlay = options.onPlay || null;
+        this.playbackReadyGate = options.playbackReadyGate || null;
         this.onPause = options.onPause || null;
         this.onTimeUpdate = options.onTimeUpdate || null;
         this.onEnded = options.onEnded || null;
@@ -81,6 +82,7 @@ export class XiaozhuguangVideoPlayer {
         // 是否显示播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）；ui:false 时隐藏
         this._showUi = options.ui !== false;
         this._frameCountOverlayMode = options.frameCountOverlay || null;
+        this._showResolutionOverlay = options.resolutionOverlay ?? (this._frameCountOverlayMode === "total");
         // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
         // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
         this._exclusiveDecoder = !!options.exclusiveDecoder;
@@ -135,6 +137,7 @@ export class XiaozhuguangVideoPlayer {
         this._contextMenu = null;
         this._contextMenuDesktop = null;
         this._contextMenuSaveAs = null;
+        this._contextMenuExtra = null;
         this._src = "";
         this._currentFilename = "";  // 当前视频文件名（用于 decoderPool key）
         this._currentType = "input";  // 当前视频类型
@@ -299,6 +302,13 @@ export class XiaozhuguangVideoPlayer {
                 "padding:8px 14px;border-radius:10px;background:rgba(0,0,0,.25);" +
                 "color:#fff;font:bold 32px/1.4 sans-serif;text-align:center;white-space:nowrap;" +
                 "text-shadow:0 2px 4px #000;pointer-events:none;z-index:3;display:none;";
+            this._frameCountLabel = document.createElement("div");
+            this._frameCountOverlay.appendChild(this._frameCountLabel);
+            if (this._showResolutionOverlay) {
+                this._resolutionLabel = document.createElement("div");
+                this._resolutionLabel.style.cssText = "font-size:16px;line-height:1.4;";
+                this._frameCountOverlay.appendChild(this._resolutionLabel);
+            }
             this._videoSurface.appendChild(this._frameCountOverlay);
         }
 
@@ -618,6 +628,10 @@ export class XiaozhuguangVideoPlayer {
             }
         });
         this._contextMenu.appendChild(this._contextMenuFrame);
+        // 节点级动态菜单项容器：宿主节点通过 node._xzgPlayerMenuItems() 注入
+        // （如化神级视频节点的「截取当前帧发送到加载器」），每次显示菜单时重建。
+        this._contextMenuExtra = document.createElement("div");
+        this._contextMenu.appendChild(this._contextMenuExtra);
         document.body.appendChild(this._contextMenu);
 
         document.addEventListener("click", this._onDocClick);
@@ -1294,7 +1308,10 @@ export class XiaozhuguangVideoPlayer {
         if (showView && !nodes.includes(this._node)) nodes.push(this._node);
         this._contextMenuView.style.display = showView ? "" : "none";
         this._contextMenuCompare.style.display = nodes.length >= 2 ? "" : "none";
-        if (!showDesktop && !showView && !showFrame) return;
+        // 宿主节点注入的动态菜单项（node._xzgPlayerMenuItems），如「截取当前帧发送到加载器」
+        const extraItems = this._collectNodeMenuItems();
+        this._renderExtraContextMenu(extraItems);
+        if (!showDesktop && !showView && !showFrame && extraItems.length === 0) return;
         this._contextMenuDesktop.style.display = showDesktop ? "" : "none";
         menu.style.left = x + "px";
         menu.style.top = y + "px";
@@ -1308,6 +1325,45 @@ export class XiaozhuguangVideoPlayer {
     _hideContextMenu = () => {
         if (this._contextMenu) this._contextMenu.style.display = "none";
     };
+
+    // 收集宿主节点注入的动态菜单项：node._xzgPlayerMenuItems(player) => [{content,color,disabled,callback}]
+    // 放在节点上而非播放器实例上，内存模式切换等销毁重建播放器后依然生效。
+    _collectNodeMenuItems() {
+        try {
+            const provider = this._node?._xzgPlayerMenuItems;
+            const items = typeof provider === "function" ? provider(this) : null;
+            return Array.isArray(items) ? items.filter((i) => i && i.content) : [];
+        } catch (e) {
+            console.warn("[小珠光] 读取播放器动态菜单项失败:", e);
+            return [];
+        }
+    }
+
+    // 渲染动态菜单项（置于「保存当前帧图片」之后，带分隔线）
+    _renderExtraContextMenu(items) {
+        const container = this._contextMenuExtra;
+        if (!container) return;
+        container.replaceChildren();
+        for (const item of items || []) {
+            const el = document.createElement("div");
+            el.style.cssText =
+                "padding:6px 16px;font-size:12px;white-space:nowrap;border-top:1px solid #3a3a3a;" +
+                "color:" + (item.color || "#ddd") + ";" +
+                (item.disabled ? "opacity:.5;cursor:not-allowed;" : "cursor:pointer;");
+            el.textContent = item.content;
+            if (!item.disabled) {
+                el.addEventListener("mouseenter", () => { el.style.background = "#3a3a3a"; });
+                el.addEventListener("mouseleave", () => { el.style.background = ""; });
+                el.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    this._hideContextMenu();
+                    item.callback?.();
+                });
+            }
+            container.appendChild(el);
+        }
+        container.style.display = items?.length ? "" : "none";
+    }
 
     _onDocClick = () => {
         this._hideContextMenu();
@@ -1433,6 +1489,8 @@ export class XiaozhuguangVideoPlayer {
 
     async _loadDecoderAsync(src) {
         // P1: 竞态 guard —— 每次 load 递增 token，异步完成后校验是否仍是最新
+        this._comparisonCacheReady = false;
+        this._comparisonFrames = null;
         const token = ++this._loadToken;
         // 对齐 VHS：使用原生 <video> 的节点加载时不弹转圈（即便每次都在 reload 也不显示"读条"）。
         // 加载期间保留上一帧画面，避免黑屏 + 转圈动画造成的"读条"观感。
@@ -1649,6 +1707,8 @@ export class XiaozhuguangVideoPlayer {
                 this._updateSurfaceSize();
             });
         } else {
+            // Clearing must invalidate a decoder load already in flight.
+            this._loadToken++;
             this._currentDecoder = null;
             this._currentFilename = "";
             this._placeholder.style.display = "flex";
@@ -1659,6 +1719,7 @@ export class XiaozhuguangVideoPlayer {
     }
 
     play() {
+        if (this._destroyed) return;
         if (!this._canvas || !this._src || !this._currentDecoder) return;
         const fps = this._frameRate || 24;
         // P11: 边界保护 —— _skipFrames 越界时纠正
@@ -1684,7 +1745,7 @@ export class XiaozhuguangVideoPlayer {
         this._isPlayingState = true;
         this._updateFrameCountOverlay();
         this._startPlaybackLoop();
-        this._startAudioPlayback();
+        if (!this.playbackReadyGate) this._startAudioPlayback();
         this._startProgressRaf();
         if (this._progressShine) this._progressShine.style.display = "block";
         this.onPlay?.(this);
@@ -1726,6 +1787,14 @@ export class XiaozhuguangVideoPlayer {
         const dur = this.duration;
         const target = Math.max(0, Math.min(time, dur));
         this._currentTime = target;
+        if (this._comparisonCacheReady && !this._isPlayingState) {
+            const frames = this._comparisonFrames;
+            const frame = frames[Math.max(0, Math.min(frames.length - 1,
+                Math.round((target - frames[0].timestamp) * (this._frameRate || 24))))];
+            this._canvas.getContext("2d").drawImage(frame.canvas, 0, 0, this._canvas.width, this._canvas.height);
+            this._updateProgressDisplay(target, dur);
+            return;
+        }
         this._updateProgressDisplay(target, dur);
         // P5: 若正在播放，重置音频位置以保持同步
         if (this._isPlayingState) {
@@ -1737,7 +1806,7 @@ export class XiaozhuguangVideoPlayer {
             this._playbackStartTime = performance.now();
             this._playbackLastFrame = this._playbackStartFrame - 1;
             try {
-                this._playbackIterator = this._currentDecoder.createPlaybackIterator(target);
+                this._playbackIterator = this._createPlaybackIterator(target);
                 this._playbackIteratorDone = false;
                 this._playbackBuffer = [];
                 this._fillPlaybackBuffer();
@@ -1752,6 +1821,13 @@ export class XiaozhuguangVideoPlayer {
                 Math.round(t * fps),
                 Math.max(0, this._currentDecoder.frameCount - 1)
             ));
+            if (this._comparisonCacheReady) {
+                const frames = this._comparisonFrames;
+                const index = Math.max(0, Math.min(frames.length - 1,
+                    Math.round((t - frames[0].timestamp) * fps)));
+                this._canvas.getContext("2d").drawImage(frames[index].canvas, 0, 0, this._canvas.width, this._canvas.height);
+                return;
+            }
             this._currentDecoder.renderFrame(targetFrame, this._canvas, true);
         });
     }
@@ -1828,6 +1904,52 @@ export class XiaozhuguangVideoPlayer {
     // ═══════════════════════════════════════════════════════════════════════════
     // 播放循环：播放迭代器 + 预缓冲队列（参考编辑器架构）
     // ═══════════════════════════════════════════════════════════════════════════
+    // Comparison owns this cache for the lifetime of its window.
+    async prepareComparisonCache(byteBudget, onProgress = () => {}) {
+        const decoder = this._currentDecoder;
+        if (!decoder || this._destroyed) throw new Error("视频尚未加载");
+        const token = this._loadToken;
+        const fps = this._frameRate || 24;
+        const start = this._previewLoaded ? 0 : this._skipFrames;
+        const end = this._computeEndFrame();
+        const count = Math.max(1, end - start);
+        const width = decoder.previewWidth || decoder.width;
+        const height = decoder.previewHeight || decoder.height;
+        const scale = Math.min(1, Math.sqrt(byteBudget / (count * width * height * 4)));
+        const w = Math.max(1, Math.floor(width * scale));
+        const h = Math.max(1, Math.floor(height * scale));
+        const frames = [];
+        this._comparisonFrames = frames;
+        const iterator = decoder.createPlaybackIterator(start / fps);
+        try {
+            while (frames.length < count) {
+                const result = await iterator.next();
+                if (this._destroyed || token !== this._loadToken) throw new Error("已关闭视频");
+                if (result.done || result.value.timestamp >= end / fps) break;
+                const frame = result.value;
+                const canvas = document.createElement("canvas");
+                canvas.width = w; canvas.height = h;
+                canvas.getContext("2d").drawImage(frame.canvas, 0, 0, w, h);
+                frames.push({canvas, timestamp: frame.timestamp});
+                onProgress(Math.min(1, frames.length / count));
+            }
+            if (!frames.length) throw new Error("没有可缓存的视频帧");
+            this._comparisonCacheReady = true;
+            onProgress(1);
+        } finally {
+            decoder.stopPlaybackIterator();
+        }
+    }
+
+    _createPlaybackIterator(time) {
+        if (!this._comparisonCacheReady) return this._currentDecoder.createPlaybackIterator(time);
+        const frames = this._comparisonFrames;
+        let index = frames.findIndex(frame => frame.timestamp >= time - 0.5 / (this._frameRate || 24));
+        if (index < 0) index = frames.length;
+        return {next: async () => index < frames.length
+            ? {value: frames[index++], done: false} : {done: true}};
+    }
+
     _startPlaybackLoop() {
         this._stopPlaybackLoop();
         if (!this._canvas || !this._currentDecoder) return;
@@ -1836,7 +1958,7 @@ export class XiaozhuguangVideoPlayer {
         const startLocalTime = this._currentTime;
         const startFrame = Math.max(0, Math.round(startLocalTime * fps));
         // 创建播放迭代器
-        this._playbackIterator = decoder.createPlaybackIterator(startLocalTime);
+        this._playbackIterator = this._createPlaybackIterator(startLocalTime);
         this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._playbackStartFrame = startFrame;
@@ -1848,12 +1970,24 @@ export class XiaozhuguangVideoPlayer {
         const frameDuration = 1000 / fps / rate;
         this._playbackLastFrame = startFrame;
         let lastRafTime = performance.now();
+        let waitingForGroup = !!this.playbackReadyGate;
         const loop = () => {
             if (!this._isPlayingState || !this._currentDecoder) {
                 this._playbackRaf = 0;
                 return;
             }
             const now = performance.now();
+            if (waitingForGroup) {
+                const startTime = this.playbackReadyGate();
+                if (startTime == null) {
+                    this._playbackRaf = requestAnimationFrame(loop);
+                    return;
+                }
+                waitingForGroup = false;
+                this._playbackStartTime = startTime;
+                lastRafTime = now;
+                this._startAudioPlayback();
+            }
             // P17: 标签页后台恢复时 RAF 间隔过大，重置计时避免快进追赶
             const rafDelta = now - lastRafTime;
             lastRafTime = now;
@@ -1872,7 +2006,7 @@ export class XiaozhuguangVideoPlayer {
                         ctx.drawImage(frame.canvas, 0, 0, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
                         this._currentTime = frame.timestamp;
                         this._playbackLastFrame++;
-                        this._fillPlaybackBuffer();
+                        if (!this._comparisonCacheReady) this._fillPlaybackBuffer();
                     } else {
                         break;
                     }
@@ -1889,7 +2023,7 @@ export class XiaozhuguangVideoPlayer {
                     // P3: 循环回到起点时重建迭代器和清空 buffer，避免第二轮卡死
                     const startTime = this._previewLoaded ? 0 : (this._skipFrames / fps);
                     this._currentTime = startTime;
-                    this._playbackIterator = decoder.createPlaybackIterator(startTime);
+                    this._playbackIterator = this._createPlaybackIterator(startTime);
                     this._playbackIteratorDone = false;
                     this._playbackBuffer = [];
                     this._playbackStartTime = performance.now();
@@ -1917,10 +2051,19 @@ export class XiaozhuguangVideoPlayer {
     async _fillPlaybackBuffer() {
         if (this._isBuffering || !this._isPlayingState) return;
         if (!this._playbackIterator) return;
+        if (this._comparisonCacheReady) {
+            const frames = this._comparisonFrames;
+            const index = frames.findIndex(f => f.timestamp >= this._currentTime - 0.5 / (this._frameRate || 24));
+            this._playbackBuffer = index < 0 ? [] : frames.slice(index);
+            this._playbackIteratorDone = true;
+            return;
+        }
         this._isBuffering = true;
+        const iterator = this._playbackIterator;
         try {
             while (this._playbackBuffer.length < this._playbackBufferSize && this._isPlayingState) {
-                const result = await this._playbackIterator.next();
+                const result = await iterator.next();
+                if (iterator !== this._playbackIterator) return;
                 if (result.done) {
                     this._playbackIteratorDone = true;  // 所有源帧已解码完
                     break;
@@ -1937,7 +2080,7 @@ export class XiaozhuguangVideoPlayer {
         } catch (e) {
             console.error("[小珠光] 预缓冲失败:", e);
         } finally {
-            this._isBuffering = false;
+            if (iterator === this._playbackIterator) this._isBuffering = false;
         }
     }
 
@@ -1972,7 +2115,9 @@ export class XiaozhuguangVideoPlayer {
     }
 
     async _startAudioPlayback() {
-        if (!this._currentDecoder || !this._currentDecoder.hasAudio) return;
+        if (this._destroyed || !this._isPlayingState || !this._currentDecoder || !this._currentDecoder.hasAudio) return;
+        const decoder = this._currentDecoder;
+        const loadToken = this._loadToken;
         this._ensureAudioContext();
         // 低内存版（B1）：流式音频——不整段解码 PCM 驻留，按 WebAudio 时钟前视调度
         if (this._audioMode === "stream") {
@@ -1980,7 +2125,9 @@ export class XiaozhuguangVideoPlayer {
             return;
         }
         if (!this._fullAudioBuffer) {
-            this._fullAudioBuffer = await this._currentDecoder.decodeFullAudio();
+            const buffer = await decoder.decodeFullAudio();
+            if (this._destroyed || !this._isPlayingState || this._currentDecoder !== decoder || this._loadToken !== loadToken) return;
+            this._fullAudioBuffer = buffer;
         }
         if (!this._fullAudioBuffer) return;
         const localTime = this._currentTime;
@@ -2365,7 +2512,14 @@ export class XiaozhuguangVideoPlayer {
         } else {
             count = this._backendFrameCount || this.getTotalFrames();
         }
-        overlay.textContent = String(Math.round(count || 0));
+        this._frameCountLabel.textContent = String(Math.round(count || 0));
+        if (this._resolutionLabel) {
+            const width = this.videoWidth;
+            const height = this.videoHeight;
+            const hasResolution = width > 0 && height > 0;
+            this._resolutionLabel.textContent = hasResolution ? `${width} × ${height}` : "";
+            this._resolutionLabel.style.display = hasResolution ? "block" : "none";
+        }
         overlay.style.display = this._src && this._currentDecoder && !this._isPlayingState
             && Number.isFinite(count) ? "block" : "none";
     }
@@ -2399,8 +2553,11 @@ export class XiaozhuguangVideoPlayer {
     }
 
     destroy() {
+        this._comparisonCacheReady = false;
+        this._comparisonFrames = null;
         if (this._destroyed) return;
         this._destroyed = true;
+        this._isPlayingState = false;
         // 使仍在进行的 _loadDecoderAsync 结果失效。配合其完成后的 close，
         // 保证关闭同步对比窗口不会留下迟到的独占解码器。
         this._loadToken++;
@@ -2524,5 +2681,6 @@ export class XiaozhuguangVideoPlayer {
         this._contextMenuCompare = null;
         this._node = null;
         this._contextMenuDesktop = null;
+        this._contextMenuExtra = null;
     }
 }

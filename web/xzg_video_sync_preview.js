@@ -46,13 +46,15 @@ function registerVideoCompareSetting() {
 // 工具函数
 // ═══════════════════════════════════════════════════════════════
 
-function getVideoUrl(filename, type, subfolder) {
+function getVideoUrl(filename, type, subfolder, absToken, previewId) {
     if (!filename) return "";
+    if (absToken) return `/xzg/davinci/view-abs?token=${encodeURIComponent(absToken)}&v=${encodeURIComponent(previewId || "")}`;
     const params = new URLSearchParams({
         filename,
         type: type || "output",
     });
     if (subfolder) params.set("subfolder", subfolder);
+    if (previewId) params.set("v", previewId);
     return `/view?${params.toString()}`;
 }
 
@@ -79,9 +81,18 @@ function nodeHasVideo(node) {
 function getVideoFromNode(node) {
     const p = node && node._xzgVideoPlayer;
     if (!p) return null;
+    // 保存输出可能尚在等待节点变为可见后加载，getSrc() 此时仍指向旧文件。
+    // 保存节点应使用最新执行输出，并保留版本参数以隔离解码缓存。
+    if (["XiaozhuguangVideoCombine", "XiaozhuguangVideoSaveDaVinci"].includes(node.type)) {
+        const info = p._videoInfo;
+        if (info?.filename) return {
+            url: getVideoUrl(info.filename, info.type, info.subfolder, info.abs_token, info.preview_id),
+            name: info.filename,
+        };
+    }
     let src = typeof p.getSrc === "function" ? p.getSrc() : null;
     if (!src && p._videoInfo && p._videoInfo.filename) {
-        src = getVideoUrl(p._videoInfo.filename, p._videoInfo.type, p._videoInfo.subfolder);
+        src = getVideoUrl(p._videoInfo.filename, p._videoInfo.type, p._videoInfo.subfolder, p._videoInfo.abs_token, p._videoInfo.preview_id);
     }
     if (!src) return null;
     const item = { url: src, name: _extractFilename(src) };
@@ -155,6 +166,27 @@ async function getImagesFromNode(node) {
     }
     const image = getImageFromNode(node);
     return image ? [image] : [];
+}
+
+// 使用原图像素坐标生成裁剪画面；越界部分沿用加载器的补边颜色。
+function cropCompareImage(image, crop, paddingColor) {
+    if (!Array.isArray(crop) || crop.length !== 4 || !crop.every(Number.isFinite)) return null;
+    const [x, y, w, h] = crop;
+    if (w <= 0 || h <= 0) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(w));
+    canvas.height = Math.max(1, Math.round(h));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = paddingColor || "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const sx = Math.max(0, x), sy = Math.max(0, y);
+    const ex = Math.min(image.naturalWidth, x + w), ey = Math.min(image.naturalHeight, y + h);
+    if (ex > sx && ey > sy) {
+        ctx.drawImage(image, sx, sy, ex - sx, ey - sy,
+            (sx - x) * canvas.width / w, (sy - y) * canvas.height / h,
+            (ex - sx) * canvas.width / w, (ey - sy) * canvas.height / h);
+    }
+    return canvas.toDataURL("image/png");
 }
 
 function nodeHasMedia(node) { return nodeHasVideo(node) || nodeHasImage(node); }
@@ -249,6 +281,13 @@ function openImageCompare(items) {
         const label = document.createElement("div"); label.className = "xzg-sp-label"; label.textContent = item.name;
         const holder = document.createElement("div"); holder.className = "xzg-sp-player";
         const img = document.createElement("img");
+        if (item.crop) {
+            img.onload = () => {
+                img.onload = null;
+                const cropped = cropCompareImage(img, item.crop, item.paddingColor);
+                if (cropped) img.src = cropped;
+            };
+        }
         img.src = item.url; img.alt = item.name; img.draggable = false;
         img.style.cssText = "width:100%;height:100%;object-fit:contain;display:block";
         holder.appendChild(img); cell.append(label, holder); grid.appendChild(cell);
@@ -511,7 +550,7 @@ function openImageCompare(items) {
         const rect = wipe.getBoundingClientRect();
         if (!rect.width) return;
         const pointerPct = (e.clientX - rect.left) / rect.width * 100;
-        const onTopImage = pointerPct >= wipeX;
+        const onTopImage = pointerPct <= wipeX;
         const index = onTopImage ? (swapped ? 0 : 1) : (swapped ? 1 : 0);
         activeIndex = index;
         updateZoomModeUI();
@@ -523,7 +562,6 @@ function openImageCompare(items) {
     overlay._xzgWipeUp = () => { dragging = false; };
     window.addEventListener("mousemove", moveWipe, true);
     window.addEventListener("mouseup", overlay._xzgWipeUp, true);
-    if (cells.length === 2) setWipe(true);
     win.append(header, grid, wipe); overlay.appendChild(win); document.body.appendChild(overlay);
     overlay._xzgOnKey = (e) => { if (e.key === "Escape") closeSyncPreview(); };
     document.addEventListener("keydown", overlay._xzgOnKey, true);
@@ -539,7 +577,13 @@ let _players = [];
 let _forceTimer = null;
 let _scrubRAF = null;
 let _syncLoopOn = true;
-let _syncMuted = true;
+let _syncMuted = false;
+
+function applyCompareAudio(players, muted) {
+    // Silence the previous leftmost player before enabling the new one.
+    for (const p of players) p.player.setMuted(true);
+    if (!muted && players.length) players[0].player.setMuted(false);
+}
 
 function closeSyncPreview() {
     if (_forceTimer) {
@@ -661,7 +705,7 @@ function _ensureStyle() {
     }
     .xzg-sp-wipe .xzg-sp-player.wipe-top {                          /* 上层：按 --wipe 裁剪 */
         z-index: 2;
-        clip-path: inset(0 0 0 var(--wipe, 50%));
+        clip-path: inset(0 calc(100% - var(--wipe, 50%)) 0 0);
     }
     .xzg-sp-wipe-divider {
         position: absolute; top: 0; bottom: 0; left: var(--wipe, 50%);
@@ -744,15 +788,45 @@ function openSyncPreview(items) {
             onPlay: () => syncResume(),
             onPause: () => syncPause(),
         });
-        player.setMuted(true); // 多视频同播默认静音，避免声音混杂
+        player.setMuted(players.length !== 0); // 默认只播放最左侧视频的音频。
         // 各自套用节点的裁剪区间（跳过帧数/帧数上限）：左侧可只播自己的区间、右侧播完整，
         // 起播与逐帧都按「各自区间内的相对帧号」对齐（见 seekPlayerToOffset）
         if (it.skipFrames || it.frameLimit) {
             try { player.setLoadRange(it.skipFrames || 0, it.frameLimit || 0); } catch (_) {}
         }
         players.push({ player, url: it.url, holder, cell });
+        // closeSyncPreview owns disposal, including players still loading.
+        _players.push(player);
     }
     win.appendChild(grid);
+    const bufferPanel = document.createElement("div");
+    bufferPanel.style.cssText = "position:absolute;inset:48px 0 65px;z-index:30;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.7);color:white";
+    bufferPanel.setAttribute("role", "status");
+    const bufferText = document.createElement("span");
+    const bufferProgress = document.createElement("progress");
+    bufferProgress.max = 100;
+    bufferProgress.value = 0;
+    bufferProgress.style.cssText = "width: min(360px, 70%);height:16px;accent-color:#e5b55a";
+    bufferPanel.append(bufferText, bufferProgress);
+    win.appendChild(bufferPanel);
+    let mediaReady = false;
+    let groupStartTime = null;
+    const showBuffer = (text, progress) => {
+        bufferText.textContent = text;
+        bufferProgress.value = progress;
+        bufferPanel.style.display = "flex";
+    };
+    const playbackReadyGate = () => {
+        if (groupStartTime != null) return groupStartTime;
+        const states = players.map(p => p.player.getPlaybackBufferState());
+        const progress = Math.min(...states.map(s => s.exhausted ? 1 : Math.min(1, s.bufferedFrames / Math.max(1, s.targetFrames))));
+        if (progress < 1) showBuffer(`正在缓冲 · ${Math.floor(progress * 100)}%`, progress * 100);
+        if (!mediaReady || states.some(s => !s.exhausted && s.bufferedFrames < s.targetFrames)) return null;
+        groupStartTime = performance.now();
+        bufferPanel.style.display = "none";
+        return groupStartTime;
+    };
+    for (const p of players) p.player.playbackReadyGate = playbackReadyGate;
 
     // 划像对比容器（仅两个视频时使用）：两视频重叠，拖动金色分界线左右对比
     const wipe = document.createElement("div");
@@ -779,7 +853,7 @@ function openSyncPreview(items) {
     const prevFrameBtn = mkBtn("◀ 上一帧", "上一帧（快捷键 ←）");
     const nextFrameBtn = mkBtn("下一帧 ▶", "下一帧（快捷键 →）");
     const restartBtn = mkBtn("⏮ 回到开头", _n === 1 ? "回到开头重新播放" : "全部回到开头重新播放");
-    const muteBtn = mkBtn("🔇", "静音开关（默认静音）");
+    const muteBtn = mkBtn("🔊", "静音开关（默认仅播放最左侧视频的音频）");
     const zoomSyncBtn = mkBtn(_n === 1 ? "🔗 缩放联动" : "🔗 同步中", _n === 1 ? "切换缩放和移动模式；也可双击视频切换" : "切换视频缩放和移动同步状态；也可双击视频切换");
     const zoomBtn = mkBtn("🔍 100%", "滚轮缩放视频，点击重置");
     const wipeBtn = mkBtn("🔀 划像对比", "两个视频重叠，拖动金色分界线左右对比（仅 2 个视频可用）");
@@ -794,6 +868,7 @@ function openSyncPreview(items) {
         _swapped = s;
         // 交换 players 顺序：并排左右 与 划像底层/上层 都随之对调
         [players[0], players[1]] = [players[1], players[0]];
+        applyCompareAudio(players, _syncMuted);
         // 同步交换累计平移：_holderT 与 players 索引一一对应，
         // 基线重录（recordHolderBase）依赖它反推布局矩形，错位会导致缩放锚点错乱
         [_holderT[0], _holderT[1]] = [_holderT[1], _holderT[0]];
@@ -850,9 +925,11 @@ function openSyncPreview(items) {
         const stop = playerEndFrame(p);
         return { skip, len: Math.max(0, stop - skip) };
     };
-    // 对比长度 = 各路区间长度的最小值（某一路播完就没法再对比）
+    // Use the main video's frame units on the shared timeline. Other frame
+    // rates must map through seconds, not through equal source frame numbers.
     const compareLength = () => {
-        const lens = players.map((p) => playerRange(p).len).filter((n) => n > 0);
+        const fps = playerFps(pickMain());
+        const lens = players.map((p) => playerRange(p).len / playerFps(p) * fps).filter((n) => n > 0);
         return lens.length ? Math.min(...lens) : 0;
     };
     // 对比时间轴长度（帧）：进度条/时间码都按它换算，与各路的跳过帧无关（始终从 0 开始）
@@ -864,13 +941,14 @@ function openSyncPreview(items) {
     };
     // 某一路当前位于「自己区间内」的第几帧
     const playerOffsetFrames = (p) => {
-        const cur = Math.round((p.player.currentTime || 0) * playerFps(p));
-        return cur - playerRange(p).skip;
+        const elapsed = (p.player.currentTime || 0) - playerRange(p).skip / playerFps(p);
+        return elapsed * playerFps(pickMain());
     };
     // 按「区间内偏移」seek：各自 seek 到自身起点 + offset，并 clamp 在自己的区间内
     const seekPlayerToOffset = (p, offset) => {
         const { skip, len } = playerRange(p);
-        const off = Math.max(0, len > 0 ? Math.min(offset, len) : offset);
+        const localOffset = offset / playerFps(pickMain()) * playerFps(p);
+        const off = Math.max(0, len > 0 ? Math.min(localOffset, len) : localOffset);
         try { p.player.seek((skip + off) / playerFps(p)); } catch (_) {}
     };
     const seekAllToOffset = (offset) => {
@@ -903,15 +981,12 @@ function openSyncPreview(items) {
     scrubRange.addEventListener("change", () => {
         _scrubbing = false;
     });
-    // 多视频同步播放：以主视频为基准做“硬漂移才校准”。
-    // 高码率时频繁 seek 会让解码器反复跳回关键帧附近，造成更严重的卡顿与不同步；
-    // 因此允许短暂掉帧自行追上，只有明显漂移连续出现才触发一次 seek。
+    // Check time drift frequently; tolerate frame timestamp quantization,
+    // rather than allowing a visible quarter-second gap to persist.
     let _lastAlignAt = 0;
-    const ALIGN_INTERVAL = 750;          // 对齐检查间隔（ms）
-    const HARD_DRIFT_SECONDS = 0.25;     // 小于约 6 帧（24fps）的偏差不抢占解码
-    const HARD_DRIFT_CONFIRMATIONS = 2;  // 连续两次仍明显漂移才硬校准
-    const driftCounts = new Map();
+    const ALIGN_INTERVAL = 100;
     const alignPlayers = (now) => {
+        if (groupStartTime == null) return;
         if (!playing) return; // 暂停时不强制对齐：避免逐帧浏览时各播放器帧位被拉回主时间
         if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
         _lastAlignAt = now;
@@ -923,12 +998,10 @@ function openSyncPreview(items) {
             if (p === main) continue;
             const d = p.player.duration;
             if (!d || !isFinite(d) || d <= 0) continue;
-            const drift = Math.abs(playerOffsetFrames(p) - mainOff) / Math.max(1, playerFps(p));
-            const count = drift > HARD_DRIFT_SECONDS ? (driftCounts.get(p) || 0) + 1 : 0;
-            driftCounts.set(p, count);
-            if (count >= HARD_DRIFT_CONFIRMATIONS) {
+            const drift = Math.abs(playerOffsetFrames(p) - mainOff) / playerFps(main);
+            const tolerance = 1.5 / Math.min(playerFps(main), playerFps(p));
+            if (drift > tolerance) {
                 seekPlayerToOffset(p, mainOff);
-                driftCounts.set(p, 0);
             }
         }
     };
@@ -992,7 +1065,8 @@ function openSyncPreview(items) {
     let _syncing = false;
     // 从暂停处继续播放：不 seek，各视频从自己的当前进度继续
     const syncResume = () => {
-        if (_syncing) return;
+        if (_syncing || !mediaReady) return;
+        groupStartTime = null;
         _syncing = true;
         try {
             for (const p of players) {
@@ -1005,7 +1079,9 @@ function openSyncPreview(items) {
     };
     // 从头一起播放：各路回到「自己区间的起点」再一起播（左侧 100 帧 ↔ 右侧 0 帧）
     const syncPlayFromStart = () => {
-        if (_syncing) return;
+        if (_syncing || !mediaReady) return;
+        syncPause();
+        groupStartTime = null;
         _syncing = true;
         try {
             seekAllToOffset(0);
@@ -1024,6 +1100,7 @@ function openSyncPreview(items) {
             for (const p of players) p.player.pause();
             playing = false;
             playPauseBtn.textContent = "▶ 播放";
+            bufferPanel.style.display = mediaReady ? "none" : "flex";
             statusEl.textContent = "已暂停";
         } finally { _syncing = false; }
     };
@@ -1041,6 +1118,7 @@ function openSyncPreview(items) {
     // 逐帧浏览：先暂停全部，然后按「区间内偏移 ± delta」同步跳帧。
     // 左侧区间 100~200、右侧 0~100 时，左侧第 100+k 帧 ↔ 右侧第 0+k 帧，按偏移严格对齐。
     const stepFrame = (delta) => {
+        if (!mediaReady) return;
         _syncing = true;
         try {
             for (const p of players) p.player.pause();
@@ -1062,7 +1140,7 @@ function openSyncPreview(items) {
     muteBtn.addEventListener("click", () => {
         _syncMuted = !_syncMuted;
         muteBtn.textContent = _syncMuted ? "🔇" : "🔊";
-        for (const p of players) p.player.setMuted(_syncMuted);
+        applyCompareAudio(players, _syncMuted);
     });
 
     // ── 划像对比（仅两个视频）──────────────────────────────
@@ -1079,7 +1157,7 @@ function openSyncPreview(items) {
                 p.holder.style.position = "absolute";
                 p.holder.style.inset = "0";
             }
-            // 底层 = 第 1 个视频（全显示），上层 = 第 2 个视频（按 --wipe 裁剪）
+            // 底层 = 第 1 个视频（右侧），上层 = 第 2 个视频（按 --wipe 裁剪显示左侧）
             wipe.insertBefore(players[0].holder, wipeDivider);
             wipe.insertBefore(players[1].holder, wipeDivider);
             players[1].holder.classList.add("wipe-top");
@@ -1389,10 +1467,9 @@ function openSyncPreview(items) {
     overlay._xzgPanUp = onPanUp;
     recordHolderBase(); // 初始布局下记录各窗格基线
     applyZoomText();
-    // 缩放状态与基线初始化后再默认启用双视频划像，避免访问尚未初始化的 let 状态。
-    if (_n === 2) setWipeMode(true);
     _syncLoopOn = true;
-    _syncMuted = true;
+    _syncMuted = false;
+    applyCompareAudio(players, _syncMuted);
 
     // 全部就绪后统一从头播放（8 秒超时兜底：强制播放已就绪的）
     let readyCount = 0;
@@ -1469,30 +1546,42 @@ function openSyncPreview(items) {
         if (forceStarted) return;
         if (readyCount >= players.length) {
             forceStarted = true;
+            mediaReady = true;
+            bufferPanel.style.display = "none";
+            for (const b of [playPauseBtn, prevFrameBtn, nextFrameBtn, restartBtn, scrubRange]) b.disabled = false;
             applyGridLayout(); // 全部就绪后按比例重排
             statusEl.textContent = "已暂停（点击播放开始）";
             // 保持暂停：进入对比界面停在开头，由用户手动开始
         } else {
             statusEl.textContent = "加载中... (" + readyCount + "/" + players.length + ")";
+            showBuffer(`正在加载视频 · ${readyCount}/${players.length}`, readyCount / players.length * 100);
         }
     };
-    _forceTimer = setTimeout(() => {
-        if (forceStarted) return;
-        forceStarted = true;
-        applyGridLayout(); // 超时兜底：用已加载的比例重排
-        statusEl.textContent = "已暂停（部分视频仍在加载）";
-        // 超时兜底同样不自动播放
-    }, 8000);
+    for (const b of [playPauseBtn, prevFrameBtn, nextFrameBtn, restartBtn, scrubRange]) b.disabled = true;
 
     for (const p of players) {
-        p.player.onLoadedMetadata = () => {
+        p.player.onLoadedMetadata = async () => {
+            p.cacheProgress = 0;
+            try {
+                await p.player.prepareComparisonCache(768 * 1024 * 1024 / players.length, progress => {
+                    if (_overlay !== overlay) return;
+                    p.cacheProgress = progress;
+                    const total = players.reduce((sum, item) => sum + (item.cacheProgress || 0), 0) / players.length;
+                    showBuffer(`正在缓存视频 · ${Math.floor(total * 100)}%（完成后可反复播放）`, total * 100);
+                });
+            } catch (error) {
+                if (_overlay === overlay) p.player.onError?.(error);
+                return;
+            }
+            if (_overlay !== overlay) return;
             readyCount++;
             // 暂停时也停在「自己区间的起点」：左侧第 100 帧 ↔ 右侧第 0 帧，直接可对比
             seekPlayerToOffset(p, 0);
             if (!forceStarted) tryStart();
         };
         p.player.onError = () => {
-            statusEl.textContent = "部分视频加载失败，其余正常播放";
+            statusEl.textContent = "视频加载失败，请关闭后重试";
+            showBuffer("视频加载失败，请关闭后重试", 0);
         };
         // 关闭播放器自带的独立循环：改由对比窗口按「左侧区间」统一循环（见 scrubTick）
         p.player.setLoop(false);

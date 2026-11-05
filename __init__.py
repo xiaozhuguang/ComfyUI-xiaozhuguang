@@ -245,14 +245,17 @@ from .nodes.xzg_seed import XiaozhuguangSeed
 from .nodes.xzg_batch_count import XiaozhuguangBatchCount
 from .nodes.xzg_list_count import XiaozhuguangListCount
 from .nodes.xzg_image_from_list import XiaozhuguangImageFromList
-from .nodes.xzg_batch_image_getter import XiaozhuguangBatchImageGetter
+from .nodes.xzg_batch_image_getter import XiaozhuguangBatchImageGetter, XiaozhuguangBatchMaskGetter
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
+from .nodes.xzg_api_translate import XiaozhuguangAPITranslate
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_image_mask_convert import XiaozhuguangImageMaskConvert
 from .nodes.xzg_mask_cleanup_repair import XiaozhuguangMaskCleanupRepair
 from .nodes.xzg_image_size import XiaozhuguangImageSize
 from .nodes.xzg_color_match_fast import XiaozhuguangColorMatchFast
 from .nodes.xzg_color_adjust import XiaozhuguangColorAdjust
+# —— 小珠光视频颜色矫正（完全复刻自 ComfyUI-BlueBox 的 Video Color Calibrator，自包含无外部依赖）——
+from .nodes.xzg_video_color_calibrator import XiaozhuguangVideoColorCalibrator
 from .nodes.xzg_image_mask_preview import XiaozhuguangImageMaskPreview
 from .nodes.xzg_image_scale_aspect import XiaozhuguangImageScaleByAspectRatioV2
 # —— 小珠光VFI（合并自 ComfyUI-GIMM-VFI 的模型加载 + 插值；依赖宿主插件，内部惰性导入）——
@@ -1318,6 +1321,7 @@ class XiaozhuguangUniversalSlider:
 
 
 NODE_CLASS_MAPPINGS = {
+    "XiaozhuguangAPITranslate": XiaozhuguangAPITranslate,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
     "XiaozhuguangSelector": XiaozhuguangSelector,
     "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
@@ -1371,6 +1375,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangListCount": XiaozhuguangListCount,
     "XiaozhuguangImageFromList": XiaozhuguangImageFromList,
     "XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter,
+    "XiaozhuguangBatchMaskGetter": XiaozhuguangBatchMaskGetter,
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangImageMaskConvert": XiaozhuguangImageMaskConvert,
@@ -1378,6 +1383,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageSize": XiaozhuguangImageSize,
     "XiaozhuguangColorMatchFast": XiaozhuguangColorMatchFast,
     "XiaozhuguangColorAdjust": XiaozhuguangColorAdjust,
+    "XiaozhuguangVideoColorCalibrator": XiaozhuguangVideoColorCalibrator,
     "XiaozhuguangImageMaskPreview": XiaozhuguangImageMaskPreview,
     "XiaozhuguangImageScaleByAspectRatioV2": XiaozhuguangImageScaleByAspectRatioV2,
     "XiaozhuguangVFI": XiaozhuguangVFI,
@@ -1388,6 +1394,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_CLASS_MAPPINGS.update({k: v[0] for k, v in _AUDIODIT_NODES.items()})
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "XiaozhuguangAPITranslate": "小珠光API翻译",
     "XiaozhuguangSelector": "小珠光选择器-化神级",
     "XiaozhuguangBooleanSelector": "小珠光布尔",
     "XiaozhuguangTextEncodeQwenImage21": "Text Encode Qwen Image 2.1-xzg",
@@ -1439,8 +1446,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangSeed": "小珠光随机种子",
     "XiaozhuguangBatchCount": "小珠光批次计数",
     "XiaozhuguangListCount": "小珠光列表计数",
-    "XiaozhuguangImageFromList": "小珠光从列表获取图像",
-    "XiaozhuguangBatchImageGetter": "小珠光批次或列表图像获取",
+    "XiaozhuguangImageFromList": "小珠光批次列表遮罩图像获取",
+    "XiaozhuguangBatchImageGetter": "小珠光批次列表图像获取-阻断",
+    "XiaozhuguangBatchMaskGetter": "小珠光批次列表遮罩获取-阻断",
     "XiaozhuguangBigDisplay": "小珠光展示任意",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskConvert": "小珠光图像遮罩智能互转",
@@ -1448,6 +1456,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageSize": "小珠光获取尺寸",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
     "XiaozhuguangColorAdjust": "小珠光颜色调整",
+    "XiaozhuguangVideoColorCalibrator": "小珠光视频颜色矫正",
     "XiaozhuguangImageMaskPreview": "小珠光图像-蒙版预览",
     "XiaozhuguangImageScaleByAspectRatioV2": "小珠光图片缩放高速版",
     "XiaozhuguangVFI": "小珠光VFI防丢帧",

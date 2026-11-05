@@ -1,4 +1,40 @@
 {
+  "XiaozhuguangAPITranslate": {
+    "display_name": "小珠光API翻译",
+    "inputs": {
+      "provider": { "name": "翻译服务" },
+      "seed": { "name": "种子" },
+      "text": {
+        "name": "原文"
+      },
+      "api_url": {
+        "name": "API 地址"
+      },
+      "api_key": {
+        "name": "API 密钥"
+      },
+      "model": {
+        "name": "模型 ID"
+      },
+      "target_language": {
+        "name": "目标语言"
+      },
+      "instructions": {
+        "name": "翻译要求"
+      },
+      "timeout": {
+        "name": "超时秒数"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "译文"
+      },
+      "1": {
+        "name": "原文"
+      }
+    }
+  },
   "XiaozhuguangMaskCleanupRepair": {
     "display_name": "小珠光遮罩清理修复",
     "inputs": {
@@ -239,8 +275,9 @@
       "1": { "name": "实际帧数" },
       "2": { "name": "原始帧数" },
       "3": { "name": "前补帧" },
-      "4": { "name": "遮罩" },
-      "5": { "name": "音频" }
+      "4": { "name": "后补帧" },
+      "5": { "name": "遮罩" },
+      "6": { "name": "音频" }
     }
   },
   "XiaozhuguangFrameExtract": {
@@ -452,7 +489,7 @@
       "image_9": { "name": "图片_9" }, "image_10": { "name": "图片_10" }
     },
     "outputs": {
-      "0": { "name": "英文提示词" }, "1": { "name": "中文提示词" }
+      "0": { "name": "英文提示词" }
     }
   },
   "XiaozhuguangQwenModelLoader": {
@@ -475,7 +512,6 @@
       "image": { "name": "图像" },
       "mask": { "name": "遮罩" },
       "Box_grow_factor": { "name": "扩展倍数" },
-      "Box_grow_pixels": { "name": "像素扩展" },
       "kilopixels": { "name": "千像素" },
       "divisible_by": { "name": "整除数" },
       "ratio": { "name": "比例" },
@@ -483,6 +519,8 @@
       "crop_mode": { "name": "裁剪模式" },
       "tracking_preference": { "name": "跟踪偏好仅跟踪" },
       "tracking_scale": { "name": "缩放模式仅跟踪" },
+      "alignment_mode": { "name": "整除对齐模式" },
+      "min_margin": { "name": "最小边距" },
       "fill_color": { "name": "填充颜色" },
       "mask_smooth": { "name": "遮罩平滑" },
       "sum_mask": { "name": "遮罩求和" }
@@ -603,35 +641,151 @@
     }
   },
   "XiaozhuguangBatchImageGetter": {
-    "display_name": "小珠光批次或列表图像获取",
-    "description": "单个通用输入端口自动识别 IMAGE 或 MASK，并按批次或列表顺序拆分到对应编号输出；数量不足时，对应输出为空并阻断下游数据。",
-    "inputs": { "图像": { "name": "图像或遮罩" }, "输出数量": { "name": "输出数量" } },
+    "display_name": "小珠光批次列表图像获取-阻断",
+    "description": "把图像批次或列表拆为单图，输出数量控制端口数量，缺少的图像输出为空。",
+    "inputs": {
+      "图像": {
+        "name": "图像"
+      },
+      "输出数量": {
+        "name": "输出数量"
+      }
+    },
     "outputs": {
-      "0": { "name": "1" }, "1": { "name": "2" }, "2": { "name": "3" }, "3": { "name": "4" },
-      "4": { "name": "5" }, "5": { "name": "6" }, "6": { "name": "7" }, "7": { "name": "8" },
-      "8": { "name": "9" }, "9": { "name": "10" }, "10": { "name": "11" }, "11": { "name": "12" },
-      "12": { "name": "13" }, "13": { "name": "14" }, "14": { "name": "15" }, "15": { "name": "16" },
-      "16": { "name": "17" }, "17": { "name": "18" }, "18": { "name": "19" }, "19": { "name": "20" },
-      "20": { "name": "遮罩1" },
-      "21": { "name": "遮罩2" },
-      "22": { "name": "遮罩3" },
-      "23": { "name": "遮罩4" },
-      "24": { "name": "遮罩5" },
-      "25": { "name": "遮罩6" },
-      "26": { "name": "遮罩7" },
-      "27": { "name": "遮罩8" },
-      "28": { "name": "遮罩9" },
-      "29": { "name": "遮罩10" },
-      "30": { "name": "遮罩11" },
-      "31": { "name": "遮罩12" },
-      "32": { "name": "遮罩13" },
-      "33": { "name": "遮罩14" },
-      "34": { "name": "遮罩15" },
-      "35": { "name": "遮罩16" },
-      "36": { "name": "遮罩17" },
-      "37": { "name": "遮罩18" },
-      "38": { "name": "遮罩19" },
-      "39": { "name": "遮罩20" }
+      "0": {
+        "name": "1"
+      },
+      "1": {
+        "name": "2"
+      },
+      "2": {
+        "name": "3"
+      },
+      "3": {
+        "name": "4"
+      },
+      "4": {
+        "name": "5"
+      },
+      "5": {
+        "name": "6"
+      },
+      "6": {
+        "name": "7"
+      },
+      "7": {
+        "name": "8"
+      },
+      "8": {
+        "name": "9"
+      },
+      "9": {
+        "name": "10"
+      },
+      "10": {
+        "name": "11"
+      },
+      "11": {
+        "name": "12"
+      },
+      "12": {
+        "name": "13"
+      },
+      "13": {
+        "name": "14"
+      },
+      "14": {
+        "name": "15"
+      },
+      "15": {
+        "name": "16"
+      },
+      "16": {
+        "name": "17"
+      },
+      "17": {
+        "name": "18"
+      },
+      "18": {
+        "name": "19"
+      },
+      "19": {
+        "name": "20"
+      }
+    }
+  },
+  "XiaozhuguangBatchMaskGetter": {
+    "display_name": "小珠光批次列表遮罩获取-阻断",
+    "description": "把遮罩批次或列表拆为单张遮罩，输出数量控制端口数量，缺少的遮罩输出为空。",
+    "inputs": {
+      "遮罩": {
+        "name": "遮罩"
+      },
+      "输出数量": {
+        "name": "输出数量"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "1"
+      },
+      "1": {
+        "name": "2"
+      },
+      "2": {
+        "name": "3"
+      },
+      "3": {
+        "name": "4"
+      },
+      "4": {
+        "name": "5"
+      },
+      "5": {
+        "name": "6"
+      },
+      "6": {
+        "name": "7"
+      },
+      "7": {
+        "name": "8"
+      },
+      "8": {
+        "name": "9"
+      },
+      "9": {
+        "name": "10"
+      },
+      "10": {
+        "name": "11"
+      },
+      "11": {
+        "name": "12"
+      },
+      "12": {
+        "name": "13"
+      },
+      "13": {
+        "name": "14"
+      },
+      "14": {
+        "name": "15"
+      },
+      "15": {
+        "name": "16"
+      },
+      "16": {
+        "name": "17"
+      },
+      "17": {
+        "name": "18"
+      },
+      "18": {
+        "name": "19"
+      },
+      "19": {
+        "name": "20"
+      }
     }
   },
   "XiaozhuguangBigDisplay": {
@@ -750,6 +904,7 @@
   "XiaozhuguangImageCrop": {
     "display_name": "小珠光图像裁剪",
     "inputs": {
+      "min_margin": { "name": "最小边距" },
       "image": {
         "name": "图像"
       },
@@ -828,6 +983,31 @@
       },
       "1": {
         "name": "接缝处理区域"
+      }
+    }
+  },
+  "XiaozhuguangVideoColorCalibrator": {
+    "display_name": "小珠光视频颜色矫正",
+    "description": "先估计整体颜色变换，再降低内容差异区域的统计权重；短暂失配参考邻帧，持续失配逐步减弱校正。稳健亮度分位数曲线匹配；色度矩阵校正色相、饱和度和偏色。所有参数时间平滑，检测到双路大幅画面变化时重置。两段视频必须帧数相同、时间和位置对齐，不含光流。",
+    "inputs": {
+      "video_original": {
+        "name": "原版视频"
+      },
+      "video_edited": {
+        "name": "编辑版视频"
+      },
+      "smooth": {
+        "name": "时间平滑",
+        "tooltip": "全部校正参数的时间平滑：0=逐帧独立；越大越平滑但响应越慢。大幅画面变化时重置。"
+      },
+      "strength": {
+        "name": "校正强度",
+        "tooltip": "0=严格保留编辑图；1=应用估计的完整校正；中间值线性混合。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "图像"
       }
     }
   }

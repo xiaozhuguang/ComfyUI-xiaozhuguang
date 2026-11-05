@@ -106,9 +106,18 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
     让节点能留在工作流上直接跑通而不报 "Invalid video file"。
     """
 
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        video = inputs["required"]["视频"]
+        inputs["required"]["视频"] = ([*video[0], "（不加载视频）"], *video[1:])
+        return inputs
+
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
                    补帧到=0, unique_id=None, xzg_video_index="0"):
+        if 视频 == "（不加载视频）":
+            视频 = ""  # 清除仅影响选择/预览；执行时沿用内置占位视频兜底。
         视频, _used_fallback = _resolve_video_widget(视频)
         return super().load_video(
             视频=视频,
@@ -140,6 +149,8 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
     def IS_CHANGED(cls, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
                    补帧到=0, **kwargs):
+        if 视频 == "（不加载视频）":
+            视频 = ""
         # 空选或文件被删时，与 load_video 走同一套兜底逻辑，保证缓存键稳定。
         视频, _ = _resolve_video_widget(视频)
         # 达芬奇导入会替换「视频」输入，IS_CHANGED 需与本节点名一致；父类实现已足够，

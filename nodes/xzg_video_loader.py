@@ -1327,8 +1327,13 @@ def _xzg_clear_video_proxy_cache_on_startup():
 
 
 def _xzg_loader_abs(filename, file_type="input", subfolder=""):
-    """把文件名(+subfolder)解析为绝对路径。temp 类型走临时目录，其余走 input 目录。"""
-    base = folder_paths.get_temp_directory() if file_type == "temp" else folder_paths.get_input_directory()
+    """按媒体类型解析目录，避免输出视频误读 input 中的同名文件。"""
+    if file_type == "output":
+        base = folder_paths.get_output_directory()
+    elif file_type == "temp":
+        base = folder_paths.get_temp_directory()
+    else:
+        base = folder_paths.get_input_directory()
     rel = []
     if subfolder:
         sf = _xzg_secure_subfolder(subfolder)

@@ -146,7 +146,7 @@ export function bindMultiVideoQueue(node) {
         node.properties.xzgMultiVideo = !!value;
         if (value && !node._xzgVideoQueuePending) {
             const current = node.widgets?.find(widget => widget.name === "视频")?.value;
-            if (current && current !== "xzg_fallback_reference.mp4") {
+            if (current && current !== "xzg_fallback_reference.mp4" && current !== "（不加载视频）") {
                 node.properties.xzgVideoQueue = [current, ...entries().filter(filename => filename !== current)];
                 states.clear();
             }

@@ -23,16 +23,17 @@ class XiaozhuguangATBC:
                 "mask": ("MASK", {"tooltip": "输入遮罩，保留灰度。单张复用于整批，其他数量须与图片数一致。未连接时走整图缩放及补边，保留ATR回贴信息。"}),
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
                 "kilopixels": ("FLOAT", {"default": 1000.0, "min": 100.0, "max": 10000.0, "step": 10.0, "tooltip": "目标图像的千像素数（十进制，1千像素=1000像素）。1000千像素=1000*1000像素，4194千像素≈2048*2048像素"}),
-                "divisible_by": ("INT", {"default": 8, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
-                "ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
+                "divisible_by": ("INT", {"default": 32, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
+                "ratio": (["auto", "1:1", "4:3", "3:4", "16:9", "9:16"], {"default": "auto", "tooltip": "auto以整批裁剪框宽、高的中位数和目标千像素统一估算输出尺寸，在宽高上下相邻的32倍数候选中优先选择总像素最接近目标的尺寸，各帧扩充裁剪框完整覆盖遮罩，整批输出尺寸相同。整除数与32共同对齐；视频稳定跟踪使用全片统一尺寸。"}),
                 "enable_crop": ("BOOLEAN", {"default": True, "tooltip": "开启：按遮罩、比例和扩展裁剪。关闭：保留整图，按原图比例执行目标千像素缩放和整除对齐，忽略裁剪比例、扩展、平滑和遮罩求和。"}),
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
                 "sum_mask": ("BOOLEAN", {"default": False, "tooltip": "开启后，将所有帧的遮罩求和（截断到0-1）后统一计算裁剪框，所有帧输出尺寸一致"}),
-                "Box_grow_pixels": ("INT", {"default": 0, "min": 0, "max": 16384, "step": 1, "tooltip": "在倍数扩展后，裁剪框上下左右每边增加的原图像素数，仅扩大裁剪范围，不膨胀遮罩；10表示50×50裁剪框扩为70×70，倍数为2时裁剪框为120×120。裁剪框按所选比例进一步补齐；关闭裁剪时忽略此项。遮罩随图像正常裁剪和缩放。0为不扩展"}),
                 "crop_mode": (["遮罩平滑", "视频稳定跟踪"], {"default": "遮罩平滑", "tooltip": "稳定跟踪分析整段遮罩规划轨迹；关闭裁剪、未接遮罩或开启遮罩求和时不生效。"}),
                 "mask_smooth": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "遮罩时间平滑系数，0为不开启，越大越平滑（0-0.98）。对视频帧的裁剪框位置进行指数移动平均，减少画面抖动"}),
                 "tracking_preference": (["稳定优先", "紧凑优先"], {"default": "稳定优先", "tooltip": "仅稳定跟踪生效。稳定优先使用较大范围减少移动；紧凑优先保持较小范围。均不缩减扩展参数要求的范围。"}),
                 "tracking_scale": (["固定大小", "动态缩放"], {"default": "固定大小", "tooltip": "仅稳定跟踪生效。固定大小只移动；动态缩放同时规划大小，输出分辨率统一，ATR按每帧记录恢复。"}),
+                "alignment_mode": (["扩充", "变形"], {"default": "扩充", "tooltip": "仅控制整除对齐：扩充保持内容比例并扩展范围或补色；变形直接缩放到整除尺寸，不额外扩大裁剪框。图像和遮罩同步处理，ATR自动按原裁剪框还原。"}),
+                "min_margin": ("INT", {"default": 30, "min": 0, "max": 16384, "step": 1, "tooltip": "遮罩外接框到裁剪框四边的最小原图像素距离；现有倍数和像素扩展不足时才补足，并保持所选比例。0关闭。超出原图部分按填充色补齐；不移动遮罩接缝，关闭裁剪时忽略。"}),
             }
         }
 
@@ -40,18 +41,10 @@ class XiaozhuguangATBC:
     RETURN_NAMES = ("cropped_image", "crop_box", "cropped_mask")
     FUNCTION = "crop_and_resize"
 
-    def _find_best_aspect_ratio(self, width, height):
-        aspect_ratios = [(1, 1), (4, 3), (3, 4), (16, 9), (9, 16)]
-        input_ratio = width / height
-        best_ratio = aspect_ratios[0]
-        min_diff = float('inf')
-        for ratio in aspect_ratios:
-            ratio_value = ratio[0] / ratio[1]
-            diff = abs(input_ratio - ratio_value)
-            if diff < min_diff:
-                min_diff = diff
-                best_ratio = ratio
-        return best_ratio
+    def _auto_aspect_ratio(self, width, height):
+        # Normalize to height=1 so tracking size rounding stays at pixel scale,
+        # even for arbitrary dimensions or half-pixel batch medians.
+        return (float(width) / float(height), 1.0)
 
     def _hex_to_rgb(self, hex_color):
         color_names = {
@@ -81,6 +74,21 @@ class XiaozhuguangATBC:
         g = int(hex_color[2:4], 16)
         b = int(hex_color[4:6], 16)
         return (r, g, b)
+
+    def _calculate_auto_dimensions(self, kilopixels, aspect_ratio, divisible_by=32):
+        """Choose the closest pixel budget among grid neighbors of the mask shape."""
+        total = kilopixels * 1000
+        aspect = aspect_ratio[0] / aspect_ratio[1]
+        multiple = math.lcm(32, max(1, int(divisible_by)))
+        ideal_w = math.sqrt(total * aspect)
+        ideal_h = math.sqrt(total / aspect)
+        widths = {max(multiple, int(fn(ideal_w / multiple)) * multiple)
+                  for fn in (math.floor, math.ceil)}
+        heights = {max(multiple, int(fn(ideal_h / multiple)) * multiple)
+                   for fn in (math.floor, math.ceil)}
+        return min(((w, h) for w in widths for h in heights),
+                   key=lambda size: (abs(size[0] * size[1] - total),
+                                     abs(math.log((size[0] / size[1]) / aspect)), size))
 
     def _calculate_target_dimensions(self, kilopixels, aspect_ratio, divisible_by=1):
         # 千像素→总像素（十进制）：1千像素=1000像素，故总像素 = 千像素*1000；如2048*2048=4194304像素≈4194千像素
@@ -168,7 +176,7 @@ class XiaozhuguangATBC:
             smoothed.append((x0, y0, x1, y1))
         return smoothed
 
-    def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold=None, Box_grow_pixels=0, enable_crop=True):
+    def _compute_crop_box(self, mask_np, width, height, Box_grow_factor, ratio, startup_threshold=None, Box_grow_pixels=0, enable_crop=True, min_margin=0):
         """根据 mask（numpy 灰度图 (H,W)）计算裁剪框，返回 (crop_x1,crop_y1,crop_x2,crop_y2), best_aspect_ratio"""
         # Resize/smoothing filters can leave tiny non-zero values across the
         # whole frame. Ignore those tails when finding the mask bounding box.
@@ -192,10 +200,10 @@ class XiaozhuguangATBC:
             best_aspect_ratio = (width, height)
         else:
             if ratio != "auto":
-                width_ratio, height_ratio = map(int, ratio.split(":"))
+                width_ratio, height_ratio = map(float, ratio.split(":"))
                 best_aspect_ratio = (width_ratio, height_ratio)
             else:
-                best_aspect_ratio = self._find_best_aspect_ratio(bbox_width, bbox_height)
+                best_aspect_ratio = self._auto_aspect_ratio(bbox_width, bbox_height)
             width_ratio, height_ratio = best_aspect_ratio
 
             center_x = (x1 + x2) // 2
@@ -232,6 +240,18 @@ class XiaozhuguangATBC:
                 crop_x2 = crop_x1 + crop_width
                 crop_y2 = crop_y1 + crop_height
 
+        if (enable_crop and min_margin > 0 and coords.shape[0] > 0
+                and min(x1 - crop_x1, y1 - crop_y1, crop_x2 - x2, crop_y2 - y2) < min_margin):
+            # Preserve all existing expansion; only grow when a side lacks context.
+            cx, cy = (crop_x1 + crop_x2) / 2, (crop_y1 + crop_y2) / 2
+            ar_w, ar_h = best_aspect_ratio
+            half_w = max(cx - crop_x1, cx - (x1 - min_margin), x2 + min_margin - cx)
+            half_h = max(cy - crop_y1, cy - (y1 - min_margin), y2 + min_margin - cy)
+            units = math.ceil(max(2 * half_w / ar_w, 2 * half_h / ar_h))
+            w, h = math.ceil(units * ar_w), math.ceil(units * ar_h)
+            crop_x1, crop_y1 = math.floor(cx - w / 2), math.floor(cy - h / 2)
+            crop_x2, crop_y2 = crop_x1 + w, crop_y1 + h
+
         return (crop_x1, crop_y1, crop_x2, crop_y2), best_aspect_ratio
 
     @staticmethod
@@ -256,19 +276,56 @@ class XiaozhuguangATBC:
             (width, height), filters[resize_mode],
             reducing_gap=3.0 if resize_mode == "Pillow Lanczos (fast)" else None))
 
+    @staticmethod
+    def _subject_box(mask):
+        ys, xs = np.where(mask > 1)
+        if not len(xs):
+            return None
+        return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+    def _unexpanded_seam_box(self, mask, width, height, ratio):
+        box, _ = self._compute_crop_box(mask, width, height, 1.0, ratio, Box_grow_pixels=0)
+        return self._clamp_bbox(box, width, height)
+
     def _process_single_image(self, img, mask, resize_mode, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color=(255, 255, 255), Box_grow_pixels=0):
         cropped_image, cropped_mask, crop_info, target_width, target_height = self._crop_single_image(
             img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color
         )
-        resized_image = self._resize_numpy(cropped_image, target_width, target_height, resize_mode)
-        resized_mask = self._resize_numpy(cropped_mask, target_width, target_height, resize_mode)
+        resize = lambda data, w, h: self._resize_numpy(data, w, h, resize_mode)
+        resized_image = self._resize_valid_crop(cropped_image, target_width, target_height, crop_info, fill_color, resize)
+        resized_mask = self._resize_valid_crop(cropped_mask, target_width, target_height, crop_info, 0, resize)
         return resized_image, resized_mask, crop_info
 
-    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color, align_crop=True):
+    @staticmethod
+    def _resize_valid_crop(image, width, height, info, fill, resize):
+        """Resample real pixels separately from source padding; record its inverse."""
+        x0, y0, x1, y1 = info["original_coords"]
+        left, top, _, _ = info["pad_info"]
+        ow, oh = info["original_image_size"]
+        sw, sh = x1 - x0, y1 - y0
+        valid = (max(0, left - x0), max(0, top - y0),
+                 min(sw, left + ow - x0), min(sh, top + oh - y0))
+        vx0, vy0, vx1, vy1 = valid
+        if vx1 <= vx0 or vy1 <= vy0 or valid == (0, 0, sw, sh):
+            return resize(image, width, height)
+        dx0 = max(0, min(width - 1, round(vx0 * width / sw)))
+        dy0 = max(0, min(height - 1, round(vy0 * height / sh)))
+        dx1 = max(dx0 + 1, min(width, round(vx1 * width / sw)))
+        dy1 = max(dy0 + 1, min(height, round(vy1 * height / sh)))
+        result = np.empty((height, width) + image.shape[2:], dtype=image.dtype)
+        result[...] = fill
+        result[dy0:dy1, dx0:dx1] = resize(image[vy0:vy1, vx0:vx1], dx1-dx0, dy1-dy0)
+        info["source_valid_box"] = valid
+        info["output_valid_box"] = (dx0, dy0, dx1, dy1)
+        info["output_size"] = (width, height)
+        return result
+
+    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color, align_crop=True, auto_ratio=False, target_dimensions=None):
         # img: (H,W,3) uint8; mask: (H,W) uint8.
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
         crop_width, crop_height = crop_x2 - crop_x1, crop_y2 - crop_y1
-        target_width, target_height = self._calculate_target_dimensions(
+        dimensions = self._calculate_auto_dimensions if auto_ratio else self._calculate_target_dimensions
+        target_width, target_height = target_dimensions or dimensions(
             kilopixels, (crop_width, crop_height), divisible_by)
         if align_crop:
             # Match the output aspect in source coordinates before resizing.
@@ -314,6 +371,8 @@ class XiaozhuguangATBC:
             "original_coords": crop_box,
             "padded_size": (padded_w, padded_h),
             "original_image_size": (original_width, original_height),
+            "output_size": (target_width, target_height),
+            "output_content_box": (0, 0, target_width, target_height),
             "pad_info": (pad_left, pad_top, pad_right, pad_bottom),
             "fill_color": fill_color
         }
@@ -350,7 +409,7 @@ class XiaozhuguangATBC:
             raise RuntimeError(f"ATBC视频轨迹规划失败：{result.message}")
         return result.x[:n]
 
-    def _tracking_boxes(self, masks, width, height, factor, pixels, ratio, preference, scaling):
+    def _tracking_boxes(self, masks, width, height, factor, pixels, ratio, preference, scaling, min_margin=0):
         from scipy.ndimage import gaussian_filter1d, maximum_filter1d
         n = len(masks)
         valid = [i for i, frame in enumerate(masks) if np.any(frame > 1 / 255)]
@@ -362,13 +421,13 @@ class XiaozhuguangATBC:
             raw.append((xs.min(), ys.min(), xs.max() + 1, ys.max() + 1))
         raw = np.asarray(raw, dtype=float)
         if ratio == "auto":
-            ar = self._find_best_aspect_ratio(np.median(raw[:, 2] - raw[:, 0]), np.median(raw[:, 3] - raw[:, 1]))
+            ar = self._auto_aspect_ratio(np.median(raw[:, 2] - raw[:, 0]), np.median(raw[:, 3] - raw[:, 1]))
             ratio = f"{ar[0]}:{ar[1]}"
         else:
             ar = tuple(map(int, ratio.split(":")))
         required = []
         for i in valid:
-            box, _ = self._compute_crop_box(masks[i] * 255, width, height, factor, ratio, None, pixels)
+            box, _ = self._compute_crop_box(masks[i] * 255, width, height, factor, ratio, None, pixels, min_margin=min_margin)
             required.append(box)
         # Missing detections interpolate between valid frames; ends hold nearest detection.
         required = np.asarray(required, dtype=float)
@@ -403,7 +462,7 @@ class XiaozhuguangATBC:
         return boxes
 
     def _tracked_crop_and_resize(self, image, mask, factor, pixels, ratio, preference, scaling,
-                                 kilopixels, divisible_by, fill_color):
+                                 kilopixels, divisible_by, fill_color, alignment_mode="扩充", min_margin=30):
         n, height, width, channels = image.shape
         if channels not in (3, 4):
             raise ValueError("ATBC · 高级：稳定跟踪需要RGB或RGBA图像。")
@@ -420,7 +479,8 @@ class XiaozhuguangATBC:
             masks = np.broadcast_to(masks, (n, height, width))
         if preference not in ("稳定优先", "紧凑优先") or scaling not in ("固定大小", "动态缩放"):
             raise ValueError("ATBC · 高级：未知跟踪选项。")
-        boxes = self._tracking_boxes(masks, width, height, factor, pixels, ratio, preference, scaling)
+        boxes = self._tracking_boxes(masks, width, height, factor, pixels, ratio, preference, scaling, min_margin)
+        seam_boxes = [self._unexpanded_seam_box(frame * 255, width, height, ratio) for frame in masks]
         # One output resolution for the whole clip; each frame has its own inverse geometry.
         first = boxes[0]
         aspect = (first[2] - first[0]) / (first[3] - first[1])
@@ -429,14 +489,22 @@ class XiaozhuguangATBC:
         multiple = max(1, int(divisible_by))
         out_w = math.ceil(content_w / multiple) * multiple
         out_h = math.ceil(content_h / multiple) * multiple
+        if ratio == "auto":
+            out_w, out_h = self._calculate_auto_dimensions(kilopixels, (aspect, 1), divisible_by)
         # Extend the source window for alignment instead of adding an output
         # border. Keep the planned window covered; move only the added margin
         # towards available source pixels at frame edges.
         aligned_boxes = []
         for x0, y0, x1, y1 in boxes:
             source_w, source_h = x1 - x0, y1 - y0
-            aligned_w = max(source_w, math.ceil(source_w * out_w / content_w))
-            aligned_h = max(source_h, math.ceil(source_h * out_h / content_h))
+            if ratio == "auto":
+                divisor = math.gcd(out_w, out_h)
+                unit_w, unit_h = out_w // divisor, out_h // divisor
+                units = max(math.ceil(source_w / unit_w), math.ceil(source_h / unit_h))
+                aligned_w, aligned_h = units * unit_w, units * unit_h
+            else:
+                aligned_w = max(source_w, math.ceil(source_w * out_w / content_w))
+                aligned_h = max(source_h, math.ceil(source_h * out_h / content_h))
             ax = x0 - (aligned_w - source_w) // 2
             ay = y0 - (aligned_h - source_h) // 2
             if 0 <= x0 < x1 <= width:
@@ -444,7 +512,8 @@ class XiaozhuguangATBC:
             if 0 <= y0 < y1 <= height:
                 ay = max(y1 - aligned_h, min(y0, max(0, min(height - aligned_h, ay))))
             aligned_boxes.append((ax, ay, ax + aligned_w, ay + aligned_h))
-        boxes = aligned_boxes
+        if alignment_mode == "扩充":
+            boxes = aligned_boxes
         content_w, content_h = out_w, out_h
         left, top = 0, 0
         color = np.asarray(self._hex_to_rgb(fill_color), dtype=np.float32) / 255
@@ -465,8 +534,13 @@ class XiaozhuguangATBC:
             if sx1 > sx0 and sy1 > sy0:
                 crop[sy0-y0:sy1-y0, sx0-x0:sx1-x0] = source[sy0:sy1, sx0:sx1]
                 crop_mask[sy0-y0:sy1-y0, sx0-x0:sx1-x0] = masks[i, sy0:sy1, sx0:sx1]
-            resized = cv2.resize(crop, (content_w, content_h), interpolation=cv2.INTER_LANCZOS4)
-            resized_mask = cv2.resize(crop_mask, (content_w, content_h), interpolation=cv2.INTER_LINEAR)
+            pl, pt, pr, pb = max(0, -x0), max(0, -y0), max(0, x1-width), max(0, y1-height)
+            valid_info = {"original_coords": (x0+pl, y0+pt, x1+pl, y1+pt),
+                          "pad_info": (pl, pt, pr, pb), "original_image_size": (width, height)}
+            resized = self._resize_valid_crop(crop, content_w, content_h, valid_info, color,
+                lambda data, w, h: cv2.resize(data, (w, h), interpolation=cv2.INTER_LANCZOS4))
+            resized_mask = self._resize_valid_crop(crop_mask, content_w, content_h, valid_info, 0,
+                lambda data, w, h: cv2.resize(data, (w, h), interpolation=cv2.INTER_LINEAR))
             canvas = np.empty((out_h, out_w, channels), dtype=np.float32); canvas[:] = color
             canvas_mask = np.zeros((out_h, out_w), dtype=np.float32)
             canvas[top:top+content_h, left:left+content_w] = np.clip(resized, 0, 1)
@@ -478,7 +552,11 @@ class XiaozhuguangATBC:
                           "fill_color": tuple(self._hex_to_rgb(fill_color)),
                           "output_size": (out_w, out_h),
                           "output_content_box": (left, top, left+content_w, top+content_h),
-                          "source_crop_size": (pw, ph)})
+                          "source_crop_size": (pw, ph), "alignment_mode": alignment_mode})
+            infos[-1]["seam_box"] = seam_boxes[i]
+            infos[-1]["subject_box"] = self._subject_box(masks[i] * 255)
+            if "output_valid_box" in valid_info:
+                infos[-1].update({key: valid_info[key] for key in ("source_valid_box", "output_valid_box")})
             outputs.append(torch.from_numpy(canvas)); output_masks.append(torch.from_numpy(canvas_mask))
         return torch.stack(outputs), {"batch_size": n, "crop_infos": infos}, torch.stack(output_masks)
 
@@ -493,11 +571,14 @@ class XiaozhuguangATBC:
                 return mask[..., 0]
         raise ValueError("ATBC · 高级：遮罩输入需要 [批次, 高, 宽] 或 [高, 宽] 的 MASK 格式。")
 
-    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=1, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小"):
+    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=32, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小", alignment_mode="扩充", min_margin=30):
+        # Legacy API keyword remains accepted; pixel expansion is superseded by min_margin.
+        Box_grow_pixels = 0
         # ComfyUI widgets may be replaced by arbitrary upstream values when
         # converted to inputs, so validate every ATBC control at runtime.
         enum_options = {
-            "ratio": ("auto", "1:1", "4:3", "3:4", "16:9", "9:16"),
+            "alignment_mode": ("扩充", "变形"),
+            "ratio": ("auto", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"),
             "crop_mode": ("遮罩平滑", "视频稳定跟踪"),
             "tracking_preference": ("稳定优先", "紧凑优先"),
             "tracking_scale": ("固定大小", "动态缩放"),
@@ -510,12 +591,14 @@ class XiaozhuguangATBC:
         numeric_ranges = {
             "Box_grow_factor": (1.0, 5.0), "kilopixels": (100.0, 10000.0),
             "divisible_by": (1, 1024), "mask_smooth": (0.0, 0.98),
-            "Box_grow_pixels": (0, 16384),
+            "min_margin": (0, 16384),
         }
         for name, (minimum, maximum) in numeric_ranges.items():
             value = locals()[name]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not minimum <= value <= maximum:
                 raise ValueError(f"ATBC · 高级：{name} 必须是 {minimum} 到 {maximum} 之间的有限数值，收到 {value!r}。")
+        if isinstance(min_margin, bool) or not isinstance(min_margin, int):
+            raise ValueError("ATBC · 高级：min_margin 必须是整数。")
         if isinstance(divisible_by, bool) or not isinstance(divisible_by, int):
             raise ValueError(f"ATBC · 高级：divisible_by 必须是整数，收到 {divisible_by!r}。")
         for name, value in (("enable_crop", enable_crop), ("sum_mask", sum_mask)):
@@ -533,7 +616,7 @@ class XiaozhuguangATBC:
         if enable_crop and not sum_mask and crop_mode == "视频稳定跟踪":
             return self._tracked_crop_and_resize(image, mask, Box_grow_factor, Box_grow_pixels,
                                                  ratio, tracking_preference, tracking_scale,
-                                                 kilopixels, divisible_by, fill_color)
+                                                 kilopixels, divisible_by, fill_color, alignment_mode, min_margin)
         image_batch_size = image.shape[0]
 
         original_width = image.shape[2]
@@ -561,6 +644,17 @@ class XiaozhuguangATBC:
             )
         batch_size = image_batch_size
 
+        seam_boxes = None
+        if enable_crop:
+            if sum_mask and batch_size > 1:
+                seam_mask = (np.clip(mask8.astype(np.float32).sum(axis=0), 0, 255)
+                             if mask_batched else mask8)
+                seam_boxes = [self._unexpanded_seam_box(seam_mask, original_width, original_height, ratio)] * batch_size
+            else:
+                seam_boxes = [self._unexpanded_seam_box(
+                    mask8[i if mask_batch_size > 1 else 0] if mask_batched else mask8,
+                    original_width, original_height, ratio) for i in range(batch_size)]
+
         if not enable_crop:
             crop_boxes = [(0, 0, original_width, original_height)] * batch_size
             smooth_aspect_ratio = None
@@ -570,7 +664,7 @@ class XiaozhuguangATBC:
             else:
                 sum_mask_np = mask8
             unified_crop_coords, _ = self._compute_crop_box(
-                sum_mask_np, img8.shape[2], img8.shape[1], Box_grow_factor, ratio, startup_threshold, Box_grow_pixels
+                sum_mask_np, img8.shape[2], img8.shape[1], Box_grow_factor, ratio, startup_threshold, Box_grow_pixels, min_margin=min_margin
             )
             crop_boxes = [unified_crop_coords] * batch_size
             smooth_aspect_ratio = None
@@ -581,7 +675,7 @@ class XiaozhuguangATBC:
             img_h = img8.shape[1]
             for i in range(batch_size):
                 m_i = mask8[i if i < mask_batch_size else 0] if mask_batched else mask8
-                crop_coords, ar = self._compute_crop_box(m_i, img_w, img_h, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels)
+                crop_coords, ar = self._compute_crop_box(m_i, img_w, img_h, Box_grow_factor, ratio, startup_threshold, Box_grow_pixels, min_margin=min_margin)
                 crop_boxes.append(crop_coords)
                 aspect_ratios.append(ar)
             if ratio != "auto":
@@ -593,17 +687,34 @@ class XiaozhuguangATBC:
         if enable_crop and mask_smooth > 0 and batch_size > 1 and not sum_mask:
             crop_boxes = self._smooth_bboxes(crop_boxes, original_width, original_height, mask_smooth, smooth_aspect_ratio)
 
+        # Pick one resolution before processing any frame. Per-frame source
+        # windows may vary, but must fit this shared output aspect and budget.
+        target_dimensions = None
+        if enable_crop:
+            if ratio == "auto":
+                batch_aspect = (np.median([box[2] - box[0] for box in crop_boxes]),
+                                np.median([box[3] - box[1] for box in crop_boxes]))
+                target_dimensions = self._calculate_auto_dimensions(kilopixels, batch_aspect, divisible_by)
+            else:
+                target_dimensions = self._calculate_target_dimensions(
+                    kilopixels, tuple(map(int, ratio.split(":"))), divisible_by)
+
         frames = []
         for i in range(batch_size):
             img_i = img8[i] if i < image_batch_size else img8[0]
             m_i = mask8[i] if mask_batched and i < mask_batch_size else mask8[0] if mask_batched else mask8
             frames.append(self._crop_single_image(
                 img_i, m_i, kilopixels, divisible_by, original_width, original_height,
-                crop_boxes[i], fill_color_rgb, align_crop=enable_crop
+                crop_boxes[i], fill_color_rgb, align_crop=enable_crop and alignment_mode == "扩充",
+                auto_ratio=enable_crop and ratio == "auto", target_dimensions=target_dimensions
             ))
+            if seam_boxes is not None:
+                frames[-1][2]["seam_box"] = seam_boxes[i]
+                frames[-1][2]["subject_box"] = self._subject_box(m_i)
 
         def resize_frame(frame):
             cropped_image, cropped_mask, info, target_width, target_height = frame
+            info["alignment_mode"] = alignment_mode
             if not enable_crop:
                 height, width = cropped_image.shape[:2]
                 scale = math.sqrt(kilopixels * 1000 / (width * height))
@@ -612,6 +723,11 @@ class XiaozhuguangATBC:
                 multiple = max(1, int(divisible_by))
                 target_width = math.ceil(content_width / multiple) * multiple
                 target_height = math.ceil(content_height / multiple) * multiple
+                if alignment_mode == "变形":
+                    info["output_size"] = (target_width, target_height)
+                    info["output_content_box"] = (0, 0, target_width, target_height)
+                    return (self._resize_numpy(cropped_image, target_width, target_height, resize_mode),
+                            self._resize_numpy(cropped_mask, target_width, target_height, resize_mode))
                 image = self._resize_numpy(cropped_image, content_width, content_height, resize_mode)
                 mask = self._resize_numpy(cropped_mask, content_width, content_height, resize_mode)
                 padded_image = np.full((target_height, target_width, image.shape[2]), fill_color_rgb, dtype=image.dtype)
@@ -625,8 +741,9 @@ class XiaozhuguangATBC:
                 info["output_size"] = (target_width, target_height)
                 info["output_content_box"] = (left, top, right, bottom)
                 return padded_image, padded_mask
-            return (self._resize_numpy(cropped_image, target_width, target_height, resize_mode),
-                    self._resize_numpy(cropped_mask, target_width, target_height, resize_mode))
+            resize = lambda data, w, h: self._resize_numpy(data, w, h, resize_mode)
+            return (self._resize_valid_crop(cropped_image, target_width, target_height, info, fill_color_rgb, resize),
+                    self._resize_valid_crop(cropped_mask, target_width, target_height, info, 0, resize))
         if batch_size > 1:
             with ThreadPoolExecutor(max_workers=min(8, batch_size)) as pool:
                 resized_frames = list(pool.map(resize_frame, frames))

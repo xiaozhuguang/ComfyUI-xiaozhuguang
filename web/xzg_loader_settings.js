@@ -6,15 +6,32 @@ const PREVIEW_BUTTON_DEFAULT_COLORS = {
     davinci_import: "#3ef558",
     quickcut_send: "#ff69b4",
     quickcut_load: "#ff69b4",
-    codex: "#ffd700",
-    doubao: "#ff9800",
+    clipboard: "#ffd700",
 };
 
+function migrateClipboardSettings(node) {
+    const properties = node.properties;
+    if (!properties) return;
+    for (const key of ["xzg_preview_buttons", "xzg_preview_button_colors", "xzg_preview_button_font_sizes"]) {
+        const values = properties[key];
+        if (!values || values.clipboard !== undefined || !("codex" in values || "doubao" in values)) continue;
+        values.clipboard = key === "xzg_preview_buttons"
+            ? values.codex !== false || values.doubao !== false
+            : values.codex ?? values.doubao;
+    }
+    if (Array.isArray(properties.xzg_preview_button_order)) {
+        properties.xzg_preview_button_order = [...new Set(properties.xzg_preview_button_order.map(
+            id => id === "codex" || id === "doubao" ? "clipboard" : id))];
+    }
+}
+
 export function xzgPreviewButtonVisible(node, id) {
+    if (id === "clipboard") migrateClipboardSettings(node);
     return node.properties?.xzg_preview_buttons?.[id] !== false;
 }
 
 export function xzgOrderedPreviewActions(node, actions) {
+    if (actions.some(action => action.id === "clipboard")) migrateClipboardSettings(node);
     const order = node.properties?.xzg_preview_button_order;
     const remaining = new Map(actions.map(action => [action.id, action]));
     const result = [];
@@ -35,6 +52,7 @@ export function xzgGetPreviewButtonGap(node) {
 // 新建节点默认隐藏全部悬浮按钮（设置面板中全部不勾选）；仅 onNodeCreated 调用，
 // 工作流恢复（onConfigure）会覆盖 properties，不受影响。设置按钮由调用方排除在外。
 export function xzgSetPreviewButtonsDefaultHidden(node, ids) {
+    if (ids.includes("clipboard")) migrateClipboardSettings(node);
     node.properties ||= {};
     if (node.properties.xzg_preview_buttons) return;
     node.properties.xzg_preview_buttons = Object.fromEntries(ids.map(id => [id, false]));
@@ -189,7 +207,59 @@ export function xzgCloseLoaderSettings(node) {
     node._xzgLoaderSettingsDialog?.close();
 }
 
-export function xzgShowLoaderSettings(node, actions, refresh) {
+// ── 节点右键菜单项显示管理（与悬浮按钮同一套：随节点/工作流保存，取消可还原） ──
+// 存储：node.properties.xzg_menu_items = { [id]: true|false }，缺省视为显示。
+
+export const XZG_MENU_CAPTURE_FRAME = "capture_frame_send_loader";
+
+export function xzgMenuItemVisible(node, id) {
+    return node.properties?.xzg_menu_items?.[id] !== false;
+}
+
+// 构建「右键菜单」设置分节。defs: [{id, label}]。
+// 返回 { el, save(node), restore() }；无 defs 时返回 { el: null, ... }。
+export function xzgBuildMenuItemsSection(node, defs) {
+    if (!Array.isArray(defs) || defs.length === 0) {
+        return { el: null, save() {}, restore() {} };
+    }
+    const section = document.createElement("fieldset");
+    section.style.cssText = "margin:10px 0 0;padding:8px 12px;border:1px solid var(--border-color);border-radius:6px;";
+    const legend = document.createElement("legend");
+    legend.textContent = xzgT("右键菜单（随工作流保存）", "Context menu (saved with workflow)");
+    section.append(legend);
+    const original = node.properties?.xzg_menu_items;
+    const checks = new Map();
+    for (const def of defs) {
+        if (!def?.id) continue;
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 0;";
+        const label = document.createElement("label");
+        label.style.cssText = "display:flex;align-items:center;gap:8px;flex:1;cursor:pointer;";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = xzgMenuItemVisible(node, def.id);
+        checks.set(def.id, input);
+        label.append(input, document.createTextNode(def.label || def.id));
+        row.append(label);
+        section.append(row);
+    }
+    return {
+        el: section,
+        save(target = node) {
+            target.properties ||= {};
+            target.properties.xzg_menu_items = {
+                ...original,
+                ...Object.fromEntries([...checks].map(([id, input]) => [id, input.checked])),
+            };
+        },
+        restore() {
+            if (original === undefined) delete node.properties?.xzg_menu_items;
+            else node.properties.xzg_menu_items = original;
+        },
+    };
+}
+
+export function xzgShowLoaderSettings(node, actions, refresh, menuItems = []) {
     if (node._xzgLoaderSettingsDialog?.open) {
         node._xzgLoaderSettingsDialog.focus();
         return;
@@ -247,6 +317,9 @@ export function xzgShowLoaderSettings(node, actions, refresh) {
         (checks, order, size, colors, sizes) => preview.update(checks, order, size, colors, sizes),
         gap => preview.update(controls?.checks || new Map(), controls?.order() || [], controls?.fontSize(), Object.fromEntries([...(controls?.colors || [])].map(([id, input]) => [id, input.value])), Object.fromEntries([...(controls?.sizes || [])].map(([id, input]) => [id, Number(input.value)])), gap));
     dialog.append(section);
+    // 右键菜单分节：与悬浮按钮同一套保存/取消语义
+    const menuSection = xzgBuildMenuItemsSection(node, menuItems);
+    if (menuSection.el) dialog.append(menuSection.el);
     const hint = document.createElement("p");
     hint.textContent = xzgT("仅作用于当前节点，随工作流保存。", "Applies to this node and is saved with the workflow.");
     hint.style.cssText = "font-size:12px;opacity:.65;margin:12px 0;";
@@ -267,6 +340,7 @@ export function xzgShowLoaderSettings(node, actions, refresh) {
         node.properties.xzg_preview_button_font_sizes = Object.fromEntries([...controls.sizes].map(([id, input]) => [id, Number(input.value)]));
         node.properties.xzg_preview_button_gap = Math.max(0, Math.min(40, Number(controls.gap?.value) || 0));
         saved = true;
+        menuSection.save(node);
         refresh();
         node.graph?.change?.();
         app.graph?.setDirtyCanvas?.(true, true);
@@ -282,6 +356,7 @@ export function xzgShowLoaderSettings(node, actions, refresh) {
     });
     dialog.addEventListener("close", () => {
         preview.finish(saved);
+        if (!saved) menuSection.restore();
         if (node._xzgLoaderSettingsDialog === dialog) delete node._xzgLoaderSettingsDialog;
         dialog.remove();
     }, { once: true });

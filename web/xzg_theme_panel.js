@@ -1,11 +1,13 @@
 
 import { xzgT } from "./xzg_i18n.js";
 import { api } from "../../scripts/api.js";
+import { DISPLAY_HISTORY_KEY, getDisplayHistory } from "./xzg_display_history.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry, cloudUIFlushGeometry } from "./xzg_cloud_store.js";
 
 // 主题面板设置云存储键（预设/快捷键/最近色/标签页）
 const THEME_PANEL_STATE_KEY = "xzg_theme_panel_state";
 const XZG_EXPORT_CATEGORIES = [
+    ["displayHistory", "展示任意历史记录", "Display Anything History", "已云端持久化", "Cloud-backed"],
     ["theme", "主题与外观", "Theme & Appearance", "已云端持久化", "Cloud-backed"],
     ["favorites", "节点收藏", "Node Favorites", "部分云端同步", "Partially cloud-backed"],
     ["title", "标题与标题样式", "Titles & Styles", "已云端持久化", "Cloud-backed"],
@@ -28,6 +30,7 @@ const XZG_EXPORT_CATEGORIES = [
 ];
 
 function xzgExportCategoryForKey(key) {
+    if (key === DISPLAY_HISTORY_KEY) return "displayHistory";
     // Internal cloud snapshots combine several selectable categories; omit them from export
     // so they cannot smuggle unchecked categories into an otherwise granular backup.
     if (key === "xzg_vram_settings") return null;
@@ -2889,6 +2892,7 @@ window.XZGThemePanel = {
 
         if (includeXzg) {
             await cloudUIInit();
+            if (selected.displayHistory) localStorage.setItem(DISPLAY_HISTORY_KEY, JSON.stringify(await getDisplayHistory()));
             if (selected.skills) try {
                 const presets = await cloudLoad("xzg_prompt_rule_presets", { fallbackValue: null })
                     ?? await cloudLoad("xzg_prompt_skill_presets", { fallbackValue: null });
@@ -3229,12 +3233,12 @@ window.XZGThemePanel = {
                     // notes 已在上面单独按 includeNotes 决策导入，此处跳过避免强制覆盖
                     if (k === NOTES_KEY) continue;
                     try { localStorage.setItem(k, obj.localStorage[k]); } catch (e) {}
-                    if (k === "xzg_pose_library_categories") {
+                    if (k === "xzg_pose_library_categories" || k === DISPLAY_HISTORY_KEY) {
                         try {
                             await cloudSave(k, JSON.parse(obj.localStorage[k]));
-                            window.dispatchEvent(new CustomEvent("xzg-pose-categories-changed"));
+                            if (k === "xzg_pose_library_categories") window.dispatchEvent(new CustomEvent("xzg-pose-categories-changed"));
                         }
-                        catch (e) { console.warn("[XZG] Failed to persist pose categories:", e); }
+                        catch (e) { console.warn("[XZG] Failed to persist imported data:", k, e); }
                     }
                 }
                 importedXzg = true;

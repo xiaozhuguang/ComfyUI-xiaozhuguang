@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 
-const NODE_TYPE = "XiaozhuguangBatchImageGetter";
+const NODE_TYPES = new Set(["XiaozhuguangBatchImageGetter", "XiaozhuguangBatchMaskGetter"]);
 const MAX_OUTPUTS = 20;
 
 function clampCount(value) {
@@ -18,9 +18,13 @@ function requestedOutputCount(node, prefer) {
 
 function resizeOutputs(node, prefer) {
     const count = requestedOutputCount(node, prefer);
-    // 仅在保存的“输出数量”之外移除端口；有效编号（1..count）的槽位索引始终不变。
+    const type = node.type === "XiaozhuguangBatchMaskGetter" ? "MASK" : "IMAGE";
     while ((node.outputs || []).length > count) node.removeOutput(node.outputs.length - 1);
-    while ((node.outputs || []).length < count) node.addOutput(String(node.outputs.length + 1), "IMAGE");
+    while ((node.outputs || []).length < count) node.addOutput(String(node.outputs.length + 1), type);
+    for (let index = 0; index < count; index++) {
+        node.outputs[index].name = String(index + 1);
+        node.outputs[index].type = type;
+    }
     node.setSize(node.computeSize());
     node.setDirtyCanvas?.(true, true);
 }
@@ -41,13 +45,13 @@ app.registerExtension({
         app.graph.afterConfigure = function () {
             const result = originalAfterConfigure?.apply(this, arguments);
             for (const node of this._nodes || []) {
-                if (node.type === NODE_TYPE) resizeOutputs(node);
+                if (NODE_TYPES.has(node.type)) resizeOutputs(node);
             }
             return result;
         };
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== NODE_TYPE) return;
+        if (!NODE_TYPES.has(nodeData.name)) return;
 
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -55,6 +59,19 @@ app.registerExtension({
             resizeOutputs(this);
             const widget = (this.widgets || []).find((item) => item?.name === "输出数量");
             if (widget) {
+                // Easy Use 刷新节点直接赋回 value，不调用 callback 或 onConfigure。
+                const descriptor = Object.getOwnPropertyDescriptor(widget, "value");
+                let value = widget.value;
+                Object.defineProperty(widget, "value", {
+                    configurable: true,
+                    enumerable: descriptor?.enumerable ?? true,
+                    get: () => descriptor?.get ? descriptor.get.call(widget) : value,
+                    set: (next) => {
+                        if (descriptor?.set) descriptor.set.call(widget, next);
+                        else value = next;
+                        resizeOutputs(this);
+                    },
+                });
                 const originalCallback = widget.callback;
                 widget.callback = (...args) => {
                     const callbackResult = originalCallback?.apply(widget, args);

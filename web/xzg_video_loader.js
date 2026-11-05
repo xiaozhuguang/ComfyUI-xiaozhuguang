@@ -1049,7 +1049,7 @@ function isVideoFilename(name) {
 }
 
 function getVideoUrl(filename) {
-    if (!filename) return "";
+    if (!filename || filename === "（不加载视频）") return "";
     let name = filename;
     let type = "input";
     let subfolder = "";
@@ -1681,6 +1681,19 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     let _restoreRequestToken = 0;
     let _finishRestorePreview = null;
     let _restoreFadePending = false;
+    let _restorePreviewTimer = null;
+
+    const _scheduleVideoPreviewRestore = () => {
+        clearTimeout(_restorePreviewTimer);
+        // 工作流的控件值可能晚于节点创建恢复，必须在配置完成后读取。
+        _restorePreviewTimer = setTimeout(() => {
+            _restorePreviewTimer = null;
+            if (player?._destroyed) return;
+            const value = node.widgets?.find(w => w.name === "视频")?.value;
+            _isPreviewLoaded = false;
+            _restoreVideoPreviewInQueue(getVideoUrl(value));
+        }, 0);
+    };
 
     const _playRestoreFade = () => {
         if (!_restoreFadePending) return;
@@ -1693,12 +1706,35 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     };
 
     const _cancelRestorePreview = () => {
+        clearTimeout(_restorePreviewTimer);
         _restoreRequestToken++;
         _finishRestorePreview?.();
     };
 
+    node._xzgClearLoadedVideo = () => {
+        _cancelRestorePreview();
+        _isPreviewLoaded = false;
+        _lastExecutedInfo = null;
+        const widget = node.widgets?.find(w => w.name === "视频");
+        if (widget) {
+            widget.value = "（不加载视频）";
+            widget.callback?.(widget.value);
+        }
+        fileInput.value = "";
+        player.load("");
+        node.setDirtyCanvas?.(true, true);
+    };
+
     const _restoreVideoPreviewInQueue = (url) => {
+        // 配置恢复可能重复触发；先释放旧任务，避免等待其首帧或超时。
+        _finishRestorePreview?.();
         const token = ++_restoreRequestToken;
+        // 空视频不会触发 metadata/error，不能占住全局队列等待 20 秒。
+        if (!url) {
+            _restoreFadePending = false;
+            player?.load("");
+            return;
+        }
         _xzgEnqueueVideoRestore(() => new Promise((resolve) => {
             let completed = false;
             const finish = () => {
@@ -1710,7 +1746,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             };
             // 解码异常或不支持时也不能让一个节点永久卡住整个恢复队列。
             const timeout = setTimeout(finish, 20000);
-            if (token !== _restoreRequestToken || !player) {
+            if (token !== _restoreRequestToken || !player || player._destroyed) {
                 finish();
                 return;
             }
@@ -1725,6 +1761,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         player = new XiaozhuguangVideoPlayer({
         allowSaveCurrentFrame: true,
         frameCountOverlay: "range",
+        resolutionOverlay: node.type === "XiaozhuguangVideoLoaderDaVinci",
         node,
         container: playerContainer,
         // 仅 Nodes 2 使用 flex 收缩布局；Nodes 1 保留原来的播放器布局。
@@ -2129,6 +2166,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         set(_) { /* 忽略外部写入，防止预览区溢出节点 */ },
     });
     previewWidget.onRemove = () => {
+        _cancelRestorePreview();
         player.destroy();
         fileInput.remove();
     };
@@ -2169,6 +2207,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
 
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
+        _cancelRestorePreview();
         _xzgHideLaserLine();
         modeSettings?.removeEventListener?.("Comfy.VueNodes.Enabled.change", onVideoModeChanged);
         if (modeFrame) cancelAnimationFrame(modeFrame);
@@ -2182,6 +2221,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
     const origOnConfigure = node.onConfigure;
     node.onConfigure = function (info) {
         origOnConfigure?.apply(this, arguments);
+        _scheduleVideoPreviewRestore();
         requestAnimationFrame(() => {
             _xzgFixVueWidgetGutter(node);
             _applyWidgetStyles(node);
@@ -2383,9 +2423,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 player.load(url || "");
                 applyRatioForNewVideo();
             };
-            if (videoWidget.value) {
-                _restoreVideoPreviewInQueue(getVideoUrl(videoWidget.value));
-            }
+            _scheduleVideoPreviewRestore();
         }
 
         // 快剪联动按钮：静默导出快剪时间线 → 自动加载到当前节点（仅化神级保留）
@@ -2478,7 +2516,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             try {
                 [fastcutBtn, node._xzgDavinciBtn, node._xzgLoaderQuickCutBtn,
                  node._xzgLoaderExportDavinciBtn, node._xzgLoaderOutSettingsBtn,
-                 node._xzgLoaderCodexBtn, node._xzgLoaderSettingsBtn,
+                 node._xzgLoaderClipboardBtn, node._xzgLoaderSettingsBtn,
                  node._xzgVideoMediaLibraryBtn, node._xzgVideoMediaFavoriteBtn].forEach(b => {
                     b && (b.style.opacity = "0");
                 });

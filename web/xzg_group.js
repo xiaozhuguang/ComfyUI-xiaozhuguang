@@ -51,6 +51,15 @@ const XZGGroup = {
 
     _groupGraph() { return this._activeGraph || app?.canvas?.graph || app?.graph; },
 
+    _canRestoreNodeGroup(graph, gid) {
+        // 子图中的节点可能仍带着主图的编组备份。子图仅恢复自身明确保存的编组，
+        // 不能仅凭节点上的旧标记重建主图框体；主图继续兼容旧工作流的节点备份。
+        return graph === app.graph || !!gid && (
+            Object.prototype.hasOwnProperty.call(graph?.extra?.xzgGroups || {}, gid) ||
+            Object.prototype.hasOwnProperty.call(this.groups, gid)
+        );
+    },
+
     _saveGraphGroups(graph) {
         if (!graph || this._graphLoading || app.configuringGraph) return;
         graph.extra ||= {};
@@ -72,6 +81,7 @@ const XZGGroup = {
         this._pendingGroups = null;
         this._positionsPending = true;
         this.rebuildAllEls();
+        app.canvas?.setDirty?.(true, true);
     },
 
     _switchGraph() {
@@ -198,7 +208,7 @@ const XZGGroup = {
             } else {
                 group.nodeIds = [...group.nodeIds.filter(id => !moved.has(String(id))), container.id];
                 container._xzgGroupId = id;
-                for (const node of sub._nodes || []) if (node._xzgGroupId === id) node._xzgGroupId = null;
+                for (const node of sub._nodes || []) if (node._xzgGroupId === id) this._clearNodeGroupData(node);
             }
         }
         this._saveGraphGroups(graph);
@@ -951,6 +961,7 @@ const XZGGroup = {
     },
 
     updatePositions() {
+        this._switchGraph();
         // 功能1：编组内所有节点被选中并拖动 → bounds 跟随节点平移（增量更新）
         // 放在所有编组 bounds 计算之前，先让编组位移更新
         this._syncSelectedGroupsFollowNodes();
@@ -971,7 +982,8 @@ const XZGGroup = {
             if (graph?._nodes?.length) {
                 let hasGroupData = false;
                 for (const n of graph._nodes) {
-                    if (n._xzgGroupId || n._xzgGroupData || n.properties?._xzgGroup) {
+                    const gid = n._xzgGroupId || n._xzgGroupData?.id || n._xzgGroup?.id || n.properties?._xzgGroup?.id;
+                    if (gid && this._canRestoreNodeGroup(graph, gid)) {
                         hasGroupData = true;
                         break;
                     }
@@ -1488,6 +1500,8 @@ const XZGGroup = {
         }
         if (c._xzgBgDrawHooked) return;
         c._xzgBgDrawHooked = true;
+        // 面包屑返回主图/进入嵌套子图也走 setGraph，立即清掉上一张图的覆盖层。
+        c.canvas?.addEventListener('litegraph:set-graph', () => self._switchGraph());
         // 挂载到 onDrawBackground：在背景网格之后、连线与节点之前绘制（节点下层）
         const prevFn = c.onDrawBackground;
         c.onDrawBackground = function(ctx, vis) {
@@ -4712,7 +4726,7 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
             if (!pg && n._xzgGroup) pg = n._xzgGroup;
             // 备份位置3：节点 properties._xzgGroup
             if (!pg) pg = n.properties?._xzgGroup;
-            if (pg && pg.id) {
+            if (pg && pg.id && this._canRestoreNodeGroup(graph, pg.id)) {
                 // 用最新的数据覆盖（同一编组多个节点，取第一个找到的完整数据）
                 if (!groupDataMap[pg.id] || (pg.nodeIds && pg.nodeIds.length)) {
                     groupDataMap[pg.id] = pg;
@@ -4737,7 +4751,10 @@ Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 
         // 根据节点上的 groupId 校正/补充 nodeIds（兼容旧工作流或节点恢复场景）
         const map = {};
-        graph._nodes.forEach(n => { if (n._xzgGroupId) (map[n._xzgGroupId] ??= []).push(n.id); });
+        graph._nodes.forEach(n => {
+            if (n._xzgGroupId && this._canRestoreNodeGroup(graph, n._xzgGroupId))
+                (map[n._xzgGroupId] ??= []).push(n.id);
+        });
         for (const [gid, nids] of Object.entries(map)) {
             if (_deletedGids.includes(gid)) continue;
             if (!this.groups[gid]) {

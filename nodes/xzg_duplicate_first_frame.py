@@ -38,10 +38,9 @@ class XiaozhuguangDuplicateFirstFrame:
             },
         }
 
-    # mask 输出放在末尾：旧工作流节点刷新定义时只需在末尾追加新输出槽，
-    # 既有连线（image/frame_count/original_count/front_fill）位置不变、无需重连
-    RETURN_TYPES = ("IMAGE", "INT", "INT", "INT", "MASK", "AUDIO")
-    RETURN_NAMES = ("image", "frame_count", "original_count", "front_fill", "mask", "audio")
+    # 前后补帧数量相邻显示，随后为遮罩和音频。
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "INT", "INT", "MASK", "AUDIO")
+    RETURN_NAMES = ("image", "frame_count", "original_count", "front_fill", "back_fill", "mask", "audio")
     FUNCTION = "execute"
     CATEGORY = "小珠光/视频"
 
@@ -58,12 +57,12 @@ class XiaozhuguangDuplicateFirstFrame:
         if (image is not None and image.shape[0] == 0) or (mask is not None and mask.shape[0] == 0):
             empty_img = torch.zeros(1, 1, 1, 3) if image is not None else None
             empty_mask = torch.zeros(1, 1, 1) if mask is not None else None
-            return (empty_img, 0, 0, 0, empty_mask, None)
+            return (empty_img, 0, 0, 0, 0, empty_mask, None)
 
         # 参考帧数：优先图像，未连图像时用遮罩
         batch_count = image.shape[0] if image is not None else mask.shape[0]
         if fill_position == "不补帧":
-            return (image, batch_count, batch_count, 0, mask, audio)
+            return (image, batch_count, batch_count, 0, 0, mask, audio)
 
         period, offset = (17, 5) if frame_rule == "17N+5" else (4, 1)
         front_fill = ((batch_count + period - 1) // period) * period + 5 - batch_count
@@ -129,4 +128,4 @@ class XiaozhuguangDuplicateFirstFrame:
             aligned = waveform[..., :source_samples]
             aligned = F.pad(aligned, (0, max(0, source_samples - aligned.shape[-1])))
             audio_out = {**audio, "waveform": F.pad(aligned, (start, total - end))}
-        return (result, out_batch, batch_count, front_fill, mask_out, audio_out)
+        return (result, out_batch, batch_count, front_fill, back_fill, mask_out, audio_out)
