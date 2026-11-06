@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { xzgT } from "./xzg_i18n.js";
+import { applySelectorStyleToOthers } from "./xzg_selector_style.js";
 
 // ═══════════════════════════════════════════════
 //  小珠光布尔 · Canvas 绘制版
@@ -34,7 +35,7 @@ import { xzgT } from "./xzg_i18n.js";
 .xzg-bs-color-row label{font-size:11px;color:#888;width:32px;flex-shrink:0}
 .xzg-bs-color-row input[type=color]{flex:1;height:28px;border:none;border-radius:4px;cursor:pointer;background:transparent}
 .xzg-bs-select{flex:1;padding:5px 8px;border-radius:4px;border:1px solid #444;background:#222;color:#ddd;font-size:12px;outline:none;font-family:inherit}
-.xzg-bs-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid #3a3a3a}
+.xzg-bs-btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end;margin-top:14px;padding-top:12px;border-top:1px solid #3a3a3a}
 .xzg-bs-btn{padding:7px 18px;border-radius:6px;border:1px solid #555;background:transparent;color:#aaa;cursor:pointer;font-size:13px;font-family:inherit}
 .xzg-bs-btn:hover{background:rgba(255,255,255,0.08)}
 `;
@@ -812,6 +813,10 @@ function openBoolSettingsPanel(node) {
 
     const btns = document.createElement("div");
     btns.className = "xzg-bs-btns";
+    const applyStyleBtn = document.createElement("button");
+    applyStyleBtn.className = "xzg-bs-btn";
+    applyStyleBtn.textContent = xzgT('一键应用到其他','Apply to Others');
+    applyStyleBtn.title = xzgT('将颜色和字号应用到当前工作流的其他小珠光布尔选择器','Apply colors and text size to other boolean selectors in this workflow');
     const resetBtn = document.createElement("button");
     resetBtn.className = "xzg-bs-btn";
     resetBtn.textContent = xzgT('恢复默认','Reset');
@@ -821,7 +826,7 @@ function openBoolSettingsPanel(node) {
     const applyBtn = document.createElement("button");
     applyBtn.className = "xzg-bs-btn";
     applyBtn.textContent = xzgT('确定','OK');
-    btns.append(resetBtn, cancelBtn, applyBtn);
+    btns.append(applyStyleBtn, resetBtn, cancelBtn, applyBtn);
     dialog.appendChild(btns);
 
     document.body.appendChild(overlay);
@@ -858,6 +863,22 @@ function openBoolSettingsPanel(node) {
     const color2Inp = colorInputs[1];
     const color3Inp = colorInputs[2];
 
+    const getCurrentStyle = () => ({
+        fontScale: normalizeFontScale(fontSizeCtrl.inp.value),
+        fontColor: rgbToHex(fontColorBtn._input.value),
+        inactiveColor: rgbToHex(inactiveColorBtn._input.value),
+        colors: {
+            color1: rgbToHex(color1Inp.value),
+            color2: rgbToHex(color2Inp.value),
+            color3: rgbToHex(color3Inp.value),
+            direction: dirSel.value,
+        },
+    });
+
+    applyStyleBtn.addEventListener("click", () => {
+        applySelectorStyleToOthers(node, getCurrentStyle(), target => target._xzgBoolUI?.refresh?.());
+    });
+
     let _initializing = true;
 
     function applyPreview() {
@@ -867,19 +888,11 @@ function openBoolSettingsPanel(node) {
         const trueW = clamp(parseInt(trueWidthCtrl.inp.value), 55, 300);
         ns.widths = { false: falseW, true: trueW };
         ns.btnGap = clamp(parseInt(gapCtrl.inp.value), 0, 20);
-        ns.fontScale = normalizeFontScale(fontSizeCtrl.inp.value);
         ns.labels = {
             false: falseLabelInp.value,
             true: trueLabelInp.value,
         };
-        ns.fontColor = rgbToHex(fontColorBtn._input.value);
-        ns.inactiveColor = rgbToHex(inactiveColorBtn._input.value);
-        ns.colors = {
-            color1: rgbToHex(color1Inp.value),
-            color2: rgbToHex(color2Inp.value),
-            color3: rgbToHex(color3Inp.value),
-            direction: dirSel.value,
-        };
+        Object.assign(ns, getCurrentStyle());
         ns.invert = !!s.invert;
         Object.assign(s, ns);
         setNodeSettings(node, s);

@@ -1,8 +1,12 @@
 {
   "XiaozhuguangAPITranslate": {
-    "display_name": "Xiaozhuguang API Translate",
+    "display_name": "Xiaozhuguang Translate",
     "inputs": {
       "provider": { "name": "Provider" },
+      "gguf_model": { "name": "GGUF Model" },
+      "gguf_style": { "name": "GGUF Translation Style" },
+      "gguf_target": { "name": "GGUF Target Language" },
+      "gguf_unload": { "name": "Unload GGUF After Run" },
       "seed": { "name": "Seed" },
       "text": {
         "name": "Text"
@@ -29,9 +33,6 @@
     "outputs": {
       "0": {
         "name": "Translation"
-      },
-      "1": {
-        "name": "Original"
       }
     }
   },

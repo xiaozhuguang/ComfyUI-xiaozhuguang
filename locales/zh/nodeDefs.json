@@ -1,8 +1,12 @@
 {
   "XiaozhuguangAPITranslate": {
-    "display_name": "小珠光API翻译",
+    "display_name": "小珠光翻译",
     "inputs": {
       "provider": { "name": "翻译服务" },
+      "gguf_model": { "name": "GGUF 模型" },
+      "gguf_style": { "name": "GGUF 翻译风格" },
+      "gguf_target": { "name": "GGUF 目标语言" },
+      "gguf_unload": { "name": "GGUF 翻译后卸载模型" },
       "seed": { "name": "种子" },
       "text": {
         "name": "原文"
@@ -29,9 +33,6 @@
     "outputs": {
       "0": {
         "name": "译文"
-      },
-      "1": {
-        "name": "原文"
       }
     }
   },

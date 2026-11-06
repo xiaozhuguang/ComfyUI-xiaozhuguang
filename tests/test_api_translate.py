@@ -12,6 +12,32 @@ spec.loader.exec_module(m)
 
 
 class TranslationTest(unittest.TestCase):
+    def test_gguf_delegates_to_installed_node(self):
+        class Backend:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"required": {
+                    "model": (["Hy-MT2.gguf"], {"default": "Hy-MT2.gguf"}),
+                    "translate_style": (["Default"],),
+                    "translate_to": (["Auto", "Japanese"],),
+                    "unload_after_run": ("BOOLEAN", {"default": False}),
+                }}
+
+        node = m.XiaozhuguangAPITranslate()
+        with patch.object(m, "gguf_backend", return_value=Backend), \
+                patch.object(Backend, "translate", return_value=("こんにちは",), create=True) as translate, \
+                patch.object(m.requests, "post") as post:
+            self.assertEqual(node.INPUT_TYPES()["optional"]["gguf_model"][0], ["Hy-MT2.gguf"])
+            result = node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
+                                    gguf_target="Japanese", gguf_unload=True)
+            self.assertEqual(result, ("こんにちは",))
+            translate.assert_called_once_with(model="Hy-MT2.gguf", translate_style="Default",
+                                              translate_to="Japanese", text="Hello", unload_after_run=True)
+            with self.assertRaises(ValueError):
+                node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
+                               gguf_model="../other.gguf")
+            post.assert_not_called()
+
     def test_provider_presets_and_model_override(self):
         node = m.XiaozhuguangAPITranslate()
         for provider, (address, default_model) in m.PROVIDERS.items():
@@ -51,7 +77,7 @@ class TranslationTest(unittest.TestCase):
             original = "Keep the character from《作品名》.\nKeep paragraphs."
             result = m.XiaozhuguangAPITranslate().translate(
                 original, f"http://127.0.0.1:{server.server_port}/v1/", "test-key", "test-model", "简体中文")
-            self.assertEqual(result, ("保留《作品名》的角色。", original))
+            self.assertEqual(result, ("保留《作品名》的角色。",))
             self.assertEqual(received["path"], "/v1/chat/completions")
             self.assertEqual(received["auth"], "Bearer test-key")
             self.assertEqual(received["body"]["messages"][1]["content"], original)
@@ -62,7 +88,7 @@ class TranslationTest(unittest.TestCase):
 
     def test_empty_input_no_request(self):
         with patch.object(m.requests, "post") as post:
-            self.assertEqual(m.XiaozhuguangAPITranslate().translate("", "", "", "", "English"), ("", ""))
+            self.assertEqual(m.XiaozhuguangAPITranslate().translate("", "", "", "", "English"), ("",))
             post.assert_not_called()
 
     def test_failures_do_not_return_original_or_expose_key(self):

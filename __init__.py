@@ -617,21 +617,33 @@ try:
             return None
         return key
 
+    def _xzg_favorite_previews_dir(directory):
+        return os.path.join(directory, "favorites", "previews")
+
+    def _xzg_cloud_store_paths(key):
+        directory = _xzg_cloud_store_dir()
+        filename = key + ".json"
+        legacy_path = os.path.join(directory, filename)
+        if key.startswith("xzg_fav_preview_"):
+            return os.path.join(_xzg_favorite_previews_dir(directory), filename), legacy_path
+        return (legacy_path,)
+
     @_xzg_save_real_routes.get("/xzg_cloud_store")
     @xzg_safe_handler
     async def xzg_cloud_store_get(request):
         key = _xzg_cloud_safe_key(request.rel_url.query.get("key", ""))
         if not key:
             return web.json_response({"error": "invalid key"}, status=400)
-        path = os.path.join(_xzg_cloud_store_dir(), key + ".json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = _cloud_json.load(f)
-            return web.json_response({"key": key, "data": data, "found": True})
-        except FileNotFoundError:
-            return web.json_response({"key": key, "data": None, "found": False})
-        except Exception as e:
-            return web.json_response({"key": key, "data": None, "found": False, "error": str(e)})
+        for path in _xzg_cloud_store_paths(key):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = _cloud_json.load(f)
+                return web.json_response({"key": key, "data": data, "found": True})
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                return web.json_response({"key": key, "data": None, "found": False, "error": str(e)})
+        return web.json_response({"key": key, "data": None, "found": False})
 
     @_xzg_save_real_routes.post("/xzg_cloud_store")
     @xzg_safe_handler
@@ -644,9 +656,10 @@ try:
         if not key:
             return web.json_response({"error": "invalid key"}, status=400)
         data = body.get("data")
-        path = os.path.join(_xzg_cloud_store_dir(), key + ".json")
+        path = _xzg_cloud_store_paths(key)[0]
         temp_path = None
         try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             fd, temp_path = _cloud_tempfile.mkstemp(dir=os.path.dirname(path), prefix=".xzg_store_", suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 _cloud_json.dump(data, f, ensure_ascii=False, indent=2)
@@ -852,17 +865,19 @@ try:
         try:
             directory = _xzg_shortcuts_dir()
             removed = 0
-            # 该目录专用于小珠光的持久化配置。只处理目录第一层 JSON 文件，
-            # 不触碰子目录或 ComfyUI 工作流/模型等用户数据。
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if not entry.is_file(follow_symlinks=False) or not entry.name.lower().endswith(".json"):
-                        continue
-                    try:
-                        os.remove(entry.path)
-                        removed += 1
-                    except FileNotFoundError:
-                        pass
+            # 只清理根目录和收藏预览目录中的 JSON，不递归处理其他数据。
+            for path in (directory, _xzg_favorite_previews_dir(directory)):
+                try:
+                    with os.scandir(path) as entries:
+                        for entry in entries:
+                            if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".json"):
+                                try:
+                                    os.remove(entry.path)
+                                    removed += 1
+                                except FileNotFoundError:
+                                    pass
+                except FileNotFoundError:
+                    pass
             if os.path.isfile(_xzg_shortcuts_default):
                 _xzg_reset_shutil.copy2(_xzg_shortcuts_default, _xzg_shortcuts_file)
             return web.json_response({"ok": True, "removed": removed, "shortcutsRestored": os.path.isfile(_xzg_shortcuts_file)})
@@ -1399,7 +1414,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_CLASS_MAPPINGS.update({k: v[0] for k, v in _AUDIODIT_NODES.items()})
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "XiaozhuguangAPITranslate": "小珠光API翻译",
+    "XiaozhuguangAPITranslate": "小珠光翻译",
     "XiaozhuguangSelector": "小珠光选择器-化神级",
     "XiaozhuguangBooleanSelector": "小珠光布尔",
     "XiaozhuguangTextEncodeQwenImage21": "Text Encode Qwen Image 2.1-xzg",

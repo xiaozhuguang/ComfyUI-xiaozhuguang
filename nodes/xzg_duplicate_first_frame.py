@@ -8,7 +8,7 @@ class XiaozhuguangDuplicateFirstFrame:
     """
     小珠光帧优化
     根据原始帧数自动计算补帧数量，可复制首帧前补或尾帧后补
-    4N+1：ceil(a/4)*4 + 5 - a；17N+5：ceil(a/17)*17 + 5 - a
+    4N+1：ceil(a/4)*4 + 5 - a；17N+5：补到不小于原始帧数的最小 17N+5
     开启下限：开启后，用尾帧补至下限值（向上对齐到所选帧数规则）
 
     图像与遮罩均可独立输入（至少连一个）：
@@ -64,8 +64,12 @@ class XiaozhuguangDuplicateFirstFrame:
         if fill_position == "不补帧":
             return (image, batch_count, batch_count, 0, 0, mask, audio)
 
-        period, offset = (17, 5) if frame_rule == "17N+5" else (4, 1)
-        front_fill = ((batch_count + period - 1) // period) * period + 5 - batch_count
+        if frame_rule == "17N+5":
+            period, offset = 17, 5
+            front_fill = (offset - batch_count) % period
+        else:
+            period, offset = 4, 1
+            front_fill = ((batch_count + period - 1) // period) * period + 5 - batch_count
 
         back_fill = 0
         if multi_fill:

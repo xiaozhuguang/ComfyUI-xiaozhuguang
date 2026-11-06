@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
+import { applySelectorStyleToOthers } from "./xzg_selector_style.js";
 import { getPinyin, warmupPinyinWhenIdle } from "./xzg_pinyin_loader.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
@@ -6035,6 +6036,9 @@ app.registerExtension({
                 `;
                 dialog.innerHTML = `
                     <style>
+                        .nf-selector-settings-dialog .nf-dialog-footer {
+                            flex-wrap: wrap;
+                        }
                         .nf-selector-settings-dialog .nf-dialog-body label,
                         .nf-selector-settings-dialog .nf-dialog-body span:not(.nf-drag-handle) {
                             font-size: 12px !important;
@@ -6095,6 +6099,7 @@ app.registerExtension({
                             </div>
                         </div>
                         <div class="nf-dialog-footer">
+                            <button class="nf-btn nf-btn-cancel" id="nf-dlg-apply-style" title="${xzgT('将颜色和字号应用到当前工作流的其他小珠光选择器','Apply colors and text size to other selectors in this workflow')}">${xzgT('一键应用到其他','Apply to Others')}</button>
                             <button class="nf-btn nf-btn-cancel" id="nf-dlg-reset">${xzgT('恢复默认','Reset')}</button>
                             <button class="nf-btn nf-btn-cancel" id="nf-dlg-cancel">${xzgT('取消','Cancel')}</button>
                             <button class="nf-btn nf-btn-ok" id="nf-dlg-ok">${xzgT('确定','OK')}</button>
@@ -6132,6 +6137,12 @@ app.registerExtension({
                     color3: color3Input.value,
                     direction: colorDirectionInput.value
                 });
+                const getCurrentStyle = () => ({
+                    colors: getCurrentColors(),
+                    fontScale: clampFontScale(fontSizeInput?.value),
+                    fontColor: fontColorInput?.value || DEFAULT_FONT_COLOR,
+                    inactiveColor: inactiveColorInput?.value || "#2a2a2a"
+                });
 
                 const getCurrentLabels = () => {
                     const newCount = parseInt(countSelect.value, 10);
@@ -6168,25 +6179,18 @@ app.registerExtension({
                     let newColumns = parseInt(columnsInput?.value, 10);
                     if (isNaN(newColumns) || newColumns < 1) newColumns = 1;
                     newColumns = Math.min(newColumns, newCount);
-                    const newColors = getCurrentColors();
-                    const newFontScale = clampFontScale(fontSizeInput?.value);
                     let newGapBias = parseInt(btnGapInput?.value, 10);
                     if (isNaN(newGapBias) || newGapBias < 0) newGapBias = 0;
                     if (newGapBias > 100) newGapBias = 100;
-                    const newFontColor = fontColorInput?.value || DEFAULT_FONT_COLOR;
-                    const newInactiveColor = inactiveColorInput?.value || "#2a2a2a";
                     setNodeSettings(node, {
                         labels: newLabels,
                         outputs: newOutputs,
-                        colors: newColors,
+                        ...getCurrentStyle(),
                         count: newCount,
                         columns: newColumns,
                         btnWidth: settings.btnWidth || DEFAULT_BTN_WIDTH,
                         btnHeight: settings.btnHeight || DEFAULT_BTN_HEIGHT,
-                        fontScale: newFontScale,
                         gapBias: newGapBias,
-                        fontColor: newFontColor,
-                        inactiveColor: newInactiveColor,
                         widths: newWidths
                     });
                     if (layoutKey(getNodeSettings(node)) !== previousLayout) {
@@ -6399,6 +6403,10 @@ app.registerExtension({
                         closeSettingsDialog();
                     }
                 };
+
+                dialog.querySelector("#nf-dlg-apply-style").addEventListener("click", () => {
+                    applySelectorStyleToOthers(node, getCurrentStyle(), target => target._xzgSelectorUI?.refresh?.());
+                });
 
                 dialog.querySelector("#nf-dlg-reset").addEventListener("click", () => {
                     const body = dialog.querySelector(".nf-dialog-body");

@@ -524,7 +524,11 @@ app.registerExtension({
             nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
                 // 屏蔽其他默认菜单项，只保留本节点的自定义菜单
                 options.length = 0;
-                options.push({ content: xzgT("历史记录", "Display History"), callback: () => showDisplayHistory(this) });
+                options.push({
+                    content: xzgT("历史记录", "Display History"),
+                    color: '#60a5fa',
+                    callback: () => showDisplayHistory(this),
+                });
                 // 复制当前展示的文本
                 options.push({
                     content: xzgT("复制文本", "Copy Text"),
