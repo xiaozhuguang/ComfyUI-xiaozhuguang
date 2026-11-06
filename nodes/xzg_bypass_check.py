@@ -41,12 +41,10 @@ class XiaozhuguangBypassCheck:
     RETURN_NAMES = ("判断",)
     FUNCTION = "execute"
     CATEGORY = "xiaozhuguang"
-    DESCRIPTION = "检测「输入」所连接的上游节点是否为绕过状态。返回 true=已绕过，false=开启。上游绕过检测由前端提交时完成并注入，本节点自身始终执行。"
+    DESCRIPTION = "检测「输入」所连接的上游节点是否为绕过状态。返回 true=已绕过，false=开启。前端每次提交时检测并注入状态，状态未变时复用缓存。"
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        # 保证每次运行都重新执行，避免结果被缓存成常 false
-        return float("NaN")
+    # bypass_status is a submitted input, so ComfyUI already invalidates the
+    # cache when the frontend detects a different bypass state.
 
     def check_lazy_status(self, 输入=None, bypass_status=False):
         # 「输入」永远不需要求值——本节点只看 bypass_status，不消费上游数据

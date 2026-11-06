@@ -190,6 +190,31 @@ class ColorCalibrationTest(unittest.TestCase):
         self.assertLess(abs(curve[96].item()-.765), .01)
         self.assertTrue(torch.all(torch.diff(curve)>0))
 
+    def test_slight_spatial_shift_does_not_wash_out_contrast(self):
+        base=torch.rand((1,64,64,1),generator=torch.Generator().manual_seed(16))*.16+.12
+        ref=(base*torch.tensor([1.5,.8,.35])+torch.randn((1,64,64,3),generator=torch.Generator().manual_seed(19))*.01).clamp(0,1)
+        src=torch.roll(ref,1,2)
+        out=self.run_node(ref,src)
+        self.assertGreater(m._luma(out).std().item()/m._luma(src).std().item(),.98)
+
+    def test_shadow_only_samples_cannot_regrade_whole_frame_contrast(self):
+        source=torch.linspace(.02,.9,4096)[:,None].expand(-1,3)
+        ref=source.clone()
+        weights=((source[:,0]>.06)&(source[:,0]<.16)).float()
+        # A locally plausible curve is not justified outside the sampled shadows.
+        ref[weights>0]=source[weights>0]*.65+.04
+        grid=torch.linspace(0,1,129)
+        curve=m._tone_curve(ref,source,weights,grid)
+        safe=m._protect_tone_curve(ref,source,weights,grid,curve)
+        self.assertTrue(torch.allclose(torch.diff(safe),torch.diff(grid),atol=1e-6))
+
+    def test_supported_real_contrast_reduction_is_preserved(self):
+        src=torch.linspace(.12,.88,4096).reshape(1,64,64,1).expand(-1,-1,-1,3)
+        ref=(src-.5)*.65+.5
+        out=self.run_node(ref,src)
+        self.assertLess((out-ref).abs().mean().item(),.015)
+        self.assertLess(m._luma(out).std().item()/m._luma(src).std().item(),.7)
+
     def test_invalid_input(self):
         with self.assertRaises(ValueError):
             self.run_node(self.ref.expand(2,-1,-1,-1), self.ref)

@@ -227,6 +227,8 @@ from .nodes.xzg_image_save_custom import XiaozhuguangImageSaveCustom
 from .nodes.xzg_audio_save import XiaozhuguangAudioSaveDaVinci
 from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
+from .nodes.xzg_data_is_empty import XiaozhuguangDataIsEmpty
+from .nodes.xzg_bypass_check import XiaozhuguangBypassCheck
 from .nodes.xzg_lazy_switch import XiaozhuguangLazySwitch
 from .nodes.xzg_text_box import XiaozhuguangTextBox, XiaozhuguangTextBoxGod
 from .nodes.xzg_batch_prompt_list import XiaozhuguangBatchPromptList
@@ -1353,6 +1355,8 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAudioSaveDaVinci": XiaozhuguangAudioSaveDaVinci,
     "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
+    "XiaozhuguangDataIsEmpty": XiaozhuguangDataIsEmpty,
+    "XiaozhuguangBypassCheck": XiaozhuguangBypassCheck,
     "XiaozhuguangLazySwitch": XiaozhuguangLazySwitch,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangTextBoxGod": XiaozhuguangTextBoxGod,
@@ -1429,6 +1433,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangAudioSaveDaVinci": "小珠光音频保存-化神级",
     "XiaozhuguangAudioSave": "小珠光音频保存",
     "XiaozhuguangInputLazyCheck": "小珠光输入惰性判断",
+    "XiaozhuguangDataIsEmpty": "小珠光数据是否为空",
+    "XiaozhuguangBypassCheck": "小珠光绕过判断",
     "XiaozhuguangLazySwitch": "小珠光惰性开关",
     "XiaozhuguangTextBox": "小珠光文本框",
     "XiaozhuguangTextBoxGod": "小珠光文本框-化神级",

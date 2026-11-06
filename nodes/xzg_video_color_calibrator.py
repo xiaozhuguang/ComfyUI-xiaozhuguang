@@ -145,6 +145,32 @@ def _tone_curve(ref, src, weights, grid):
     return torch.where(grid > xs[-1], grid + ys[-1]-xs[-1], curve)
 
 
+def _protect_tone_curve(ref, src, weights, grid, curve):
+    """Reject contrast estimates unsupported by tonal coverage or paired spread."""
+    y0, y1 = _luma(ref)[:,0], _luma(src)[:,0]
+    chosen = weights>0.01
+    source, target, w = y1[chosen], y0[chosen], weights[chosen]
+    levels = source.new_tensor([.05,.25,.5,.75,.95])
+    src_q = _weighted_quantile(source,w,levels)
+    ref_q = _weighted_quantile(target,w,levels)
+    full_q = torch.quantile(y1,source.new_tensor([.05,.95]))
+    supported_span = src_q[-1]-src_q[0]
+    full_span = full_q[-1]-full_q[0]
+    delta = _weighted_quantile(target-source,w,source.new_tensor([.5]))[0].clamp(-.25,.25)
+    # A shadow-only fit cannot determine whole-frame contrast. Brightness-only
+    # correction preserves the information that the selected samples do support.
+    if full_span>.04 and supported_span<full_span*.5:
+        return grid+delta
+    mapped_q = _interp(src_q,grid,curve)
+    # Conditional means regress toward the mean when content is slightly shifted.
+    # Use marginal spread only as a veto, never to pair independently sorted RGB.
+    for lo,hi in ((0,4),(1,3)):
+        required = torch.minimum(src_q[hi]-src_q[lo],ref_q[hi]-ref_q[lo])
+        if required>.015 and mapped_q[hi]-mapped_q[lo]<required*.95:
+            return grid+delta
+    return curve
+
+
 def _chroma(rgb):
     y = _luma(rgb)
     return torch.cat((rgb[..., :1] - y, rgb[..., 2:3] - y), -1)
@@ -336,6 +362,7 @@ class XiaozhuguangVideoColorCalibrator:
             else:
                 confidence = min(1.0, count / (weights.numel() * 0.3))
                 curve = _tone_curve(a, b, weights, grid)
+                curve = _protect_tone_curve(a,b,weights,grid,curve)
                 matrix, offset = _fit_chroma(a, b, weights)
                 current = (grid + (curve - grid) * confidence,
                            identity + (matrix - identity) * confidence,

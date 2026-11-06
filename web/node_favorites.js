@@ -141,6 +141,7 @@ class Xiaozhuguang {
         this.init();
         // 云平台持久化：初始化后异步从云端拉取收藏，服务端有则覆盖本地
         this.syncFromCloud();
+        this._migratePreviewImages();
     }
 
     loadFavorites() {
@@ -4427,6 +4428,22 @@ class Xiaozhuguang {
         });
     }
 
+    async _previewCloudKey(type) {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(type));
+        return "xzg_fav_preview_" + Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async _migratePreviewImages() {
+        const previews = await this._getAllPreviewImages();
+        for (const [type, dataUrl] of Object.entries(previews)) {
+            try {
+                const key = await this._previewCloudKey(type);
+                const remote = await cloudLoad(key, { strict: true });
+                if (remote == null) await cloudSave(key, { dataUrl }, { strict: true });
+            } catch (e) { console.warn("[小珠光] 缩略图迁移失败，保留本地数据:", e); }
+        }
+    }
+
     // ===== IndexedDB 节点预览截图存储 =====
     _openPreviewDB() {
         return new Promise((resolve, reject) => {
@@ -4443,6 +4460,9 @@ class Xiaozhuguang {
     }
 
     async _savePreviewImage(nodeType, dataUrl) {
+        this._previewCloudKey(nodeType)
+            .then(key => cloudSave(key, { dataUrl: dataUrl }, { strict: true }))
+            .catch(e => console.warn("[小珠光] 保存缩略图到服务端失败:", e));
         try {
             const db = await this._openPreviewDB();
             return new Promise((resolve, reject) => {
@@ -4459,6 +4479,11 @@ class Xiaozhuguang {
 
     async _getPreviewImage(nodeType) {
         try {
+            const remote = await cloudLoad(await this._previewCloudKey(nodeType), { strict: true });
+            if (remote?.dataUrl) return remote.dataUrl;
+        } catch (e) { console.warn("[小珠光] 读取服务端缩略图失败，使用本地缓存:", e); }
+
+        try {
             const db = await this._openPreviewDB();
             return new Promise((resolve, reject) => {
                 const tx = db.transaction("nodePreviews", "readonly");
@@ -4474,6 +4499,9 @@ class Xiaozhuguang {
     }
 
     async _deletePreviewImage(nodeType) {
+        this._previewCloudKey(nodeType)
+            .then(key => cloudSave(key, { dataUrl: null }, { strict: true }))
+            .catch(e => console.warn("[小珠光] 保存缩略图到服务端失败:", e));
         try {
             const db = await this._openPreviewDB();
             return new Promise((resolve, reject) => {

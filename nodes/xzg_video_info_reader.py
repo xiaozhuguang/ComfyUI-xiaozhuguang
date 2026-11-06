@@ -41,11 +41,8 @@ class XiaozhuguangVideoInfoReader:
     )
     FUNCTION = "get_video_info"
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        # Queue position lives in the submitted prompt, including when the same
-        # source video occurs twice and its decoded output is cached.
-        return float("nan")
+    # The loader submits xzg_video_index as an input. ComfyUI tracks it, loading
+    # parameters and file changes through video_info's upstream cache signature.
 
     def get_video_info(self, video_info, unique_id=None, prompt=None, extra_pnginfo=None):
         info = video_info or {}

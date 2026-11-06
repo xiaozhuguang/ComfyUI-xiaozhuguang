@@ -122,6 +122,9 @@ function findLink(graphLike, linkId) {
         } else if (links && typeof links.get === "function") {
             const l = links.get(linkId);
             if (l) return l;
+        } else if (links && typeof links === "object") {
+            const l = links[linkId];
+            if (l) return l;
         }
     }
     return null;
@@ -156,6 +159,8 @@ function resolveUpstreamBypassed(node) {
 // 面向 prompt 的一次性注入：按 prompt 的 node id 反查画布节点，写回 bypass_status
 function injectIntoPrompt(prompt) {
     if (!prompt || typeof prompt !== "object") return;
+    // graphToPrompt and api.queuePrompt receive { workflow, output }.
+    prompt = prompt.output ?? prompt;
     for (const id of Object.keys(prompt)) {
         const node = findNodeById(id);
         if (!node || node.type !== NODE_TYPE) continue;
