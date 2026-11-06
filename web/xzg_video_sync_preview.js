@@ -694,6 +694,10 @@ function _ensureStyle() {
     .xzg-sp-scrub input[type=range] {
         flex: 1; accent-color: #dcc85b; cursor: pointer;
     }
+    .xzg-sp-scrub input[type=range]:focus,
+    .xzg-sp-scrub input[type=range]:focus-visible {
+        outline: none;
+    }
     .xzg-sp-scrub-time { font-size: 12px; color: #bbb; white-space: nowrap; }
     .xzg-sp-wipe {
         position: relative; flex: 1; overflow: hidden; background: #000;
@@ -813,6 +817,7 @@ function openSyncPreview(items) {
     let groupStartTime = null;
     let groupStallStarted = null;
     let groupStalledMs = 0;
+    let groupFrame = 0;
     let clockTick = null;
     let clockValue = null;
     const showBuffer = (text, progress) => {
@@ -827,6 +832,7 @@ function openSyncPreview(items) {
         groupStartTime = performance.now();
         groupStallStarted = null;
         groupStalledMs = 0;
+        groupFrame = 0;
         clockTick = null;
         bufferPanel.style.display = "none";
         return groupStartTime;
@@ -847,7 +853,10 @@ function openSyncPreview(items) {
             groupStalledMs += tick - groupStallStarted;
             groupStallStarted = null;
         }
-        clockValue = tick - groupStalledMs;
+        const frameMs = 1000 / playerFps(pickMain());
+        const dueFrame = Math.floor((tick - groupStalledMs - groupStartTime + 0.1) / frameMs);
+        if (dueFrame > groupFrame) groupFrame++;
+        clockValue = groupStartTime + groupFrame * frameMs;
         return clockValue;
     };
     for (const p of players) {
@@ -927,13 +936,14 @@ function openSyncPreview(items) {
     statusEl.className = "xzg-sp-status";
     statusEl.textContent = "加载中...";
 
-    // 主视频（用于进度条/时间显示）：取第一个已有有效时长的
+    // 最高帧率作为时间轴锚点，同帧率时保留画布顺序。
     const pickMain = () => {
+        let main = null;
         for (const p of players) {
             const d = p.player.duration;
-            if (d && isFinite(d) && d > 0) return p;
+            if (d > 0 && isFinite(d) && (!main || playerFps(p) > playerFps(main))) main = p;
         }
-        return players[0];
+        return main || players[0];
     };
     // ── 按「各自区间内的相对帧号」对齐各路视频 ──────────────────────────
     // 各路可以有自己的裁剪区间：左侧 100~200（100 帧）、右侧 0~100（100 帧）时，
@@ -1006,6 +1016,12 @@ function openSyncPreview(items) {
     });
     scrubRange.addEventListener("change", () => {
         _scrubbing = false;
+        try { scrubRange.blur(); } catch (_) {}
+    });
+    // 点击/拖动进度条结束后主动释放焦点，避免播放条被键盘焦点高亮边框包裹
+    scrubRange.addEventListener("pointerup", () => {
+        // 延后一拍，先让原生 change 事件完成（重置拖动标记），再释放焦点
+        setTimeout(() => { try { scrubRange.blur(); } catch (_) {} }, 0);
     });
     // Check time drift frequently; tolerate frame timestamp quantization,
     // rather than allowing a visible quarter-second gap to persist.
@@ -1042,10 +1058,9 @@ function openSyncPreview(items) {
     const scrubTick = () => {
         const now = performance.now();
         if (!_scrubbing) {
-            // 共享循环：以左侧（第一路）的区间为准，播到它的终点就带着所有视频一起回到基准帧，
-            // 避免「左侧循环回自己起点、右侧继续往前」两边越走越远
+            // 最高帧率一路走到共同区间末尾时，所有视频一起回到各自的起点。
             if (playing && !_loopRestarting) {
-                const ref = players[0];
+                const ref = pickMain();
                 const len = timelineFrames();
                 if (ref && len > 0 && playerOffsetFrames(ref) >= len - 1) {
                     _loopRestarting = true;
@@ -1630,14 +1645,18 @@ function openSyncPreview(items) {
 
     // Esc 关闭；←/→ 逐帧浏览（焦点在输入控件时不响应，避免干扰进度条等）
     const onKey = (e) => {
-        const blurPreviewButton = () => {
+        if (e.__xzgKeyHandled) return;
+        e.__xzgKeyHandled = true;
+        const blurPreviewControl = () => {
             const focused = document.activeElement;
-            if (focused?.tagName === "BUTTON" && overlay.contains(focused)) focused.blur();
+            if (focused === scrubRange || (focused?.tagName === "BUTTON" && overlay.contains(focused))) {
+                focused.blur();
+            }
         };
         if (e.code === "Space" || e.key === " ") {
             e.preventDefault();
             e.stopImmediatePropagation();
-            blurPreviewButton();
+            blurPreviewControl();
             if (!e.repeat && mediaReady) {
                 if (playing) pauseAll(); else playAll();
             }
@@ -1648,18 +1667,21 @@ function openSyncPreview(items) {
             return;
         }
         const t = e.target;
-        const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+        const typing = t && t !== scrubRange &&
+            (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
         if (typing) return;
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
             e.preventDefault();
             e.stopPropagation();
-            blurPreviewButton();
+            blurPreviewControl();
             stepFrame(e.key === "ArrowLeft" ? -1 : 1);
         }
     };
     overlay._xzgOnKey = onKey;
     overlay.dataset.xzgVideoPreview = "";
     document.addEventListener("keydown", onKey, true);
+    // 焦点在进度条上时也保证方向键/空格优先走同步预览逻辑，而不是浏览器原生 range 行为
+    scrubRange.addEventListener("keydown", onKey, true);
 
     return true;
 }

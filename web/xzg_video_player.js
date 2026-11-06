@@ -2221,11 +2221,8 @@ export class XiaozhuguangVideoPlayer {
             const framesToAdvance = Math.min(expectedFrame - this._playbackLastFrame, 5); // P17: 限制单次追赶帧数
             if (this._comparisonFile) {
                 const targetTime = this._playbackMediaStartTime + Math.max(0, elapsedMs) * rate / 1000;
-                let frame;
-                while (this._playbackBuffer[0]?.timestamp <= targetTime + 0.000001) {
-                    frame = this._playbackBuffer.shift();
-                }
-                if (frame) {
+                if (this._playbackBuffer[0]?.timestamp <= targetTime + 0.000001) {
+                    const frame = this._playbackBuffer.shift();
                     this._drawComparisonFrame(frame);
                     this._currentTime = frame.timestamp;
                     if (!this._comparisonCacheReady) this._fillPlaybackBuffer();

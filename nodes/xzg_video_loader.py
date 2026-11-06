@@ -12,6 +12,7 @@ import threading
 import re
 import time
 import hashlib
+import asyncio
 import json
 import numpy as np
 import torch
@@ -1230,10 +1231,7 @@ _XZG_VIDEO_MAX_SIZE = 1024 * 1024 * 1024  # 1GB
 _XZG_VIDEO_SESSION_TIMEOUT = 3600  # 会话超时 1 小时
 
 
-def _xzg_secure_video_filename(name, upload_dir=None):
-    """生成安全的文件名，防止路径穿越。重名时加序号后缀，不加时间戳前缀
-    保留中文、字母、数字、点、连字符、下划线、空格等常见字符
-    """
+def _xzg_sanitize_video_filename(name):
     import re as _re
     # 只保留文件名部分（去掉路径）
     name = os.path.basename(name)
@@ -1241,8 +1239,12 @@ def _xzg_secure_video_filename(name, upload_dir=None):
     name = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
     # 去除首尾空格和点（Windows 不允许）
     name = name.strip().strip('.')
-    if not name:
-        name = 'video.mp4'
+    return name or 'video.mp4'
+
+
+def _xzg_secure_video_filename(name, upload_dir=None):
+    """生成安全的文件名，重名时加序号后缀。"""
+    name = _xzg_sanitize_video_filename(name)
     # 重名时加序号后缀（如 video.mp4 → video_1.mp4）
     if upload_dir is None:
         upload_dir = folder_paths.get_input_directory()
@@ -1253,6 +1255,23 @@ def _xzg_secure_video_filename(name, upload_dir=None):
         final_name = f"{base}_{seq}{ext}"
         seq += 1
     return final_name
+
+
+def _xzg_find_identical_video(file_path, candidates, size):
+    for candidate in candidates:
+        try:
+            if os.path.getsize(candidate) != size:
+                continue
+            with open(file_path, "rb") as uploaded, open(candidate, "rb") as existing:
+                while True:
+                    block = uploaded.read(1024 * 1024)
+                    if block != existing.read(1024 * 1024):
+                        break
+                    if not block:
+                        return candidate
+        except OSError:
+            continue
+    return None
 
 
 def _xzg_secure_subfolder(subfolder):
@@ -1570,6 +1589,7 @@ if getattr(_xzg_PS, 'instance', None) is not None:
         with _xzg_video_sessions_lock:
             _xzg_video_sessions[session_id] = {
                 'filename': safe_name,
+                'reuse_name': _xzg_sanitize_video_filename(filename) if data.get("reuse_identical") is True else None,
                 'subfolder': subfolder,
                 'file_path': file_path,
                 'total_size': total_size,
@@ -1637,7 +1657,6 @@ if getattr(_xzg_PS, 'instance', None) is not None:
 
             # 所有分块已接收 → 验证文件大小并标记完成
             if received_count >= total_chunks:
-                session['done'] = True
                 # 验证最终文件大小与预期一致（防止损坏文件残留）
                 actual_size = 0
                 try:
@@ -1653,12 +1672,44 @@ if getattr(_xzg_PS, 'instance', None) is not None:
                     return _xzg_web2.json_response({
                         "error": f"文件大小不匹配 (预期 {session['total_size']}，实际 {actual_size})，已删除损坏文件",
                     }, status=500)
-                return _xzg_web2.json_response({
-                    "status": "done",
-                    "filename": session['filename'],
-                    "received": received_count,
-                    "total": total_chunks,
-                })
+        if received_count == total_chunks:
+            original = session['reuse_name']
+            if original and original != session['filename']:
+                directory = os.path.dirname(file_path)
+                base, ext = os.path.splitext(original)
+                active_paths = {
+                    item['file_path'] for item in _xzg_video_sessions.values() if not item['done']
+                }
+                candidates = []
+                candidate = original
+                index = 0
+                while candidate != session['filename']:
+                    path = os.path.join(directory, candidate)
+                    if path not in active_paths and os.path.isfile(path) and not os.path.islink(path):
+                        candidates.append(path)
+                    index += 1
+                    candidate = f"{base}_{index}{ext}"
+                existing = await asyncio.to_thread(
+                    _xzg_find_identical_video, file_path, candidates, session['total_size']
+                )
+                if existing:
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    else:
+                        session['filename'] = os.path.basename(existing)
+                        session['file_path'] = existing
+            session['done'] = True
+            filename = session['filename']
+            if session['subfolder'] and session['reuse_name']:
+                filename = f"{session['subfolder']}/{filename}"
+            return _xzg_web2.json_response({
+                "status": "done",
+                "filename": filename,
+                "received": received_count,
+                "total": total_chunks,
+            })
 
         return _xzg_web2.json_response({
             "status": "ok",

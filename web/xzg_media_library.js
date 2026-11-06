@@ -856,11 +856,12 @@ let lastWindowKey = "";
         event.stopPropagation();
         showContextMenu(name, event.clientX, event.clientY);
     });
+    const selectionTarget = isAudio ? "[data-media-name]" : ".xzg-media-image";
     grid.addEventListener("click", event => {
-        const imageBox = event.target.closest(".xzg-media-image");
-        if (!imageBox) return;
+        const target = event.target.closest(selectionTarget);
+        if (!target) return;
         event.stopPropagation();
-        const name = imageBox.closest("[data-media-name]")?.dataset.mediaName;
+        const name = target.closest("[data-media-name]")?.dataset.mediaName;
         if (name) selectClicked(name, event.shiftKey || shiftHeld, event.ctrlKey || event.metaKey);
     });
     grid.addEventListener("dblclick", event => {
@@ -873,7 +874,7 @@ let lastWindowKey = "";
     grid.addEventListener("mousedown", event => {
         if (event.button !== 0 || !visibleItems().length) return;
         event.stopPropagation();
-        if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.target.closest(".xzg-media-image")) return;
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.target.closest(selectionTarget)) return;
         event.preventDefault();
 
         const startX = event.clientX;

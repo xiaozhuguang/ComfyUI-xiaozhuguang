@@ -1282,6 +1282,7 @@ async function uploadVideoFiles(files, onProgress) {
                         filename: file.name,
                         total_size: file.size,
                         total_chunks: totalChunks,
+                        reuse_identical: true,
                     }),
                     headers: { "Content-Type": "application/json" },
                 });
