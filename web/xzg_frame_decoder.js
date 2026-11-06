@@ -205,7 +205,7 @@ class VideoDecoderInstance {
         }
         this._duration = dur || 0;
 
-        this._canvasSink = new mb.CanvasSink(vt);
+        this._canvasSink = new mb.CanvasSink(vt, { poolSize: 0 });
 
         // 帧率：优先用 packet stats，否则 30
         let fps = 30;
@@ -227,6 +227,7 @@ class VideoDecoderInstance {
                 width: this._previewWidth,
                 height: this._previewHeight,
                 fit: 'contain',
+                poolSize: 0,
             });
         }
 
@@ -302,13 +303,11 @@ class VideoDecoderInstance {
      * 否则旧迭代器占用 sink，后续 getCanvas 随机寻址渲染全部失败）
      */
     stopPlaybackIterator() {
-        if (this._playbackIter) {
-            try {
-                const r = this._playbackIter.return?.();
-                if (r && typeof r.then === "function") r.catch(() => {});
-            } catch (_) {}
-            this._playbackIter = null;
-        }
+        const iterator = this._playbackIter;
+        this._playbackIter = null;
+        try {
+            return iterator?.return?.()?.catch(() => {});
+        } catch (_) {}
     }
 
     /**

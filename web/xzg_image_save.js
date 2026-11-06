@@ -96,34 +96,39 @@ function _xzgImageSaveMediaLibraryAction(imgData, node) {
     });
 }
 
-async function _xzgShowOriginalImage(imgData, node) {
+async function _xzgResolveOriginalImage(imgData) {
     if (!imgData) throw new Error(xzgTh("没有可查看的图片", "No image is available to view"));
-    let filename = "";
-    let subfolder = "";
-    let type = "";
+    let filename = imgData.saved_filename;
+    let subfolder = imgData.saved_subfolder || "";
+    let type = imgData.saved_type || "output";
     if (imgData.real_token) {
-        const format = _xzgImageSaveFormat(imgData, node).toLowerCase() === "png" ? "png" : "jpg";
-        const encoded = await api.fetchApi("/xzg_save_real", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index, format, quality: 90 }),
-        });
-        if (!encoded.ok) throw new Error(xzgTh("读取高清原图失败", "Could not retrieve the full-resolution image") + ` (HTTP ${encoded.status})`);
-        const info = await encoded.json();
-        filename = info.filename || "";
-        subfolder = info.subfolder || "";
-        type = info.type || "temp";
-    } else if (imgData.saved_filename) {
-        filename = imgData.saved_filename;
-        subfolder = imgData.saved_subfolder || "";
-        type = imgData.saved_type || "output";
-    } else {
+        try {
+            const encoded = await api.fetchApi("/xzg_save_real", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: imgData.real_token, index: imgData.real_index, format: "png" }),
+            });
+            if (!encoded.ok) throw new Error(`HTTP ${encoded.status}`);
+            const info = await encoded.json();
+            if (!info?.filename) throw new Error("Missing original image filename");
+            filename = info.filename;
+            subfolder = info.subfolder || "";
+            type = info.type || "temp";
+        } catch (error) {
+            console.warn("[小珠光图像保存] 原图缓存读取失败", error);
+        }
+    }
+    if (!filename) {
         throw new Error(xzgTh("当前图片没有可用的高清原图，请重新执行保存节点", "Full-resolution source is unavailable. Re-run the image save node."));
     }
-    if (!filename) throw new Error(xzgTh("后端没有返回高清图片", "The server did not return a full-resolution image"));
+    return {
+        url: api.apiURL(`/view?${new URLSearchParams({ filename, subfolder, type }).toString()}`),
+        name: imgData.saved_filename || imgData.name || filename,
+    };
+}
 
-    const src = api.apiURL(`/view?${new URLSearchParams({ filename, subfolder, type }).toString()}`);
-    const label = imgData.saved_filename || imgData.name || filename;
+async function _xzgShowOriginalImage(imgData) {
+    const { url: src, name: label } = await _xzgResolveOriginalImage(imgData);
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;z-index:200000;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;overflow:hidden;";
     const stage = document.createElement("div");
@@ -185,8 +190,8 @@ async function _xzgShowOriginalImage(imgData, node) {
     document.body.appendChild(overlay);
 }
 
-function _xzgImageSaveViewOriginalAction(imgData, node) {
-    _xzgShowOriginalImage(imgData, node).catch((error) => {
+function _xzgImageSaveViewOriginalAction(imgData) {
+    _xzgShowOriginalImage(imgData).catch((error) => {
         const message = error?.message || String(error);
         if (app?.extensionManager?.toast?.add) {
             app.extensionManager.toast.add({ title: xzgTh("打开原图失败", "Could not open original image"), message, type: "error", life: 4 });
@@ -318,7 +323,7 @@ function _xzgImgSaveEnsureCtxMenu() {
         if (!w) return;
         const imgs = w._value?.images || [];
         const cur = imgs[w.currentIndex] || imgs[0];
-        if (cur) _xzgImageSaveViewOriginalAction(cur, w.node);
+        if (cur) _xzgImageSaveViewOriginalAction(cur);
     });
     // 发送到小珠光图片加载器
     const sendItem = document.createElement("div");
@@ -1022,36 +1027,7 @@ class XzgImageSaveWidget {
             ? images
             : [images[this.currentIndex] || images[0]].filter(Boolean);
         return Promise.all(visibleImages.map(async (image) => {
-            let filename = image.saved_filename || "";
-            let subfolder = image.saved_subfolder || "";
-            let type = image.saved_type || "output";
-            let url = image.url || "";
-            // 保存节点保留原始像素缓存；生成全分辨率 PNG 后通过 /view 加载，
-            // 不使用节点画布上的缩小预览图作为对比源。
-            if (image.real_token) {
-                try {
-                    const response = await api.fetchApi("/xzg_save_real", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ token: image.real_token, index: image.real_index, format: "png" }),
-                    });
-                    if (!response.ok) throw new Error(`原图读取失败（HTTP ${response.status}）`);
-                    const info = await response.json();
-                    filename = info.filename || filename;
-                    subfolder = info.subfolder || "";
-                    type = info.type || "temp";
-                } catch (error) {
-                    // 旧工作流/已过期 token 仍可用节点当前的预览图参加对比；
-                    // 有有效原图 token 时仍优先生成全分辨率 PNG。
-                    if (url) console.warn("[小珠光图像保存] 原图读取失败，改用节点预览图对比：", error);
-                    else throw error;
-                }
-            }
-            if (filename) {
-                url = api.apiURL(`/view?${new URLSearchParams({ filename, subfolder, type }).toString()}`);
-            }
-            if (!url) throw new Error("当前图片没有可用的预览或原图数据，请重新执行图片保存节点");
-            const name = image.saved_filename || filename || image.name || "image";
+            const { url, name } = await _xzgResolveOriginalImage(image);
             return { name: name.split(/[\\/]/).pop() || name, url };
         }));
     }
@@ -2211,7 +2187,7 @@ app.registerExtension({
                     saveOpts.push({
                         content: xzgTh("查看原图", "View Original Image"),
                         color: '#8ecbff',
-                        callback: () => { _xzgImageSaveViewOriginalAction(cur, this); },
+                        callback: () => { _xzgImageSaveViewOriginalAction(cur); },
                         _xzgImageSaveMenuItem: "original",
                     });
                     const ordered = [];

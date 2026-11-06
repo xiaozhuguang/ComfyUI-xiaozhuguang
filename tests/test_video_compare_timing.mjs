@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 const source = fs.readFileSync(new URL("../web/xzg_video_sync_preview.js", import.meta.url), "utf8");
 const timeline = source.slice(source.indexOf("    const playerFps ="), source.indexOf("    const fmtTime ="));
-const alignment = source.slice(source.indexOf("    let _lastAlignAt ="), source.indexOf('    let _lastBufferStatusText ='));
+const alignment = source.slice(source.indexOf("    let _lastAlignAt ="), source.indexOf("    const updateBufferStatus ="));
 function setup(fps, frames) {
     const players = fps.map((rate, i) => ({ player: {
         duration: frames[i] / rate, currentTime: 0, _skipFrames: 0,

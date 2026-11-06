@@ -753,13 +753,11 @@ function openSyncPreview(items) {
     grid.className = "xzg-sp-grid";
     const _n = items.length;
     const fixedThreeByTwo = _n === 5 || _n === 6;
-    grid.style.gridTemplateColumns = fixedThreeByTwo ? "repeat(3, minmax(0, 1fr))" : "repeat(" + _n + ", 1fr)";
-    grid.style.gridTemplateRows = fixedThreeByTwo ? "repeat(2, minmax(0, 1fr))" : "repeat(1, 1fr)";
-    // 同时播放多路视频时，解码成本远高于画面实际显示尺寸。对比窗口优先流畅度：
-    // 两路保留 1440p 细节，三至四路用 1080p，更多路用 720p；逐帧查看仍可精确对齐。
-    const previewMaxSide = _n <= 2 ? 1440 : (_n <= 4 ? 1080 : 720);
-    // 预读按预览分辨率控制：双路 6 帧（约 0.2 秒）、多路 4 帧。
-    // 比原先 4/2 更能吸收高码率瞬时解码波动，同时仍受分辨率上限约束。
+    const initialColumns = fixedThreeByTwo ? 3 : (_n === 4 ? 2 : _n);
+    const initialRows = fixedThreeByTwo || _n === 4 ? 2 : 1;
+    grid.style.gridTemplateColumns = `repeat(${initialColumns}, minmax(0, 1fr))`;
+    grid.style.gridTemplateRows = `repeat(${initialRows}, minmax(0, 1fr))`;
+    // 多路播放时减少预读帧数，控制全分辨率帧的内存占用。
     const playbackBufferFrames = _n <= 2 ? 6 : 4;
     const players = [];
     for (const it of items) {
@@ -780,10 +778,9 @@ function openSyncPreview(items) {
             fit: "contain", // 保持原比例、不裁剪，在播放区域内居中最大化
             ui: false, // 隐藏播放器内置 UI（进度条/红蓝条/时间码/循环·静音按钮）
             exclusiveDecoder: true, // 多视频同时 seek 对比：每个播放器独立解码，避免共享解码器渲染状态互相抢占
-            previewMaxSide,
+            preserveSourceQuality: true,
             playbackBufferFrames,
-            streamSource: true, // 支持 Range 时按需读取，避免整段高码率原片常驻内存
-            transcodeMaxBitrateKbps: 10000, // 高于 10 Mbps 的原片生成可复用代理，降低实时解码压力
+            // Read the source once before caching, so frame decoding never waits on Range requests.
             // 点击任一视频画面切换播放/暂停时，同步所有视频（与左下角按钮一致：从暂停处继续）
             onPlay: () => syncResume(),
             onPause: () => syncPause(),
@@ -798,9 +795,12 @@ function openSyncPreview(items) {
         // closeSyncPreview owns disposal, including players still loading.
         _players.push(player);
     }
-    win.appendChild(grid);
+    const videoArea = document.createElement("div");
+    videoArea.style.cssText = "position:relative;display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden";
+    videoArea.appendChild(grid);
+    win.appendChild(videoArea);
     const bufferPanel = document.createElement("div");
-    bufferPanel.style.cssText = "position:absolute;inset:48px 0 65px;z-index:30;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.7);color:white";
+    bufferPanel.style.cssText = "position:absolute;inset:0;z-index:30;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.7);color:white";
     bufferPanel.setAttribute("role", "status");
     const bufferText = document.createElement("span");
     const bufferProgress = document.createElement("progress");
@@ -808,9 +808,13 @@ function openSyncPreview(items) {
     bufferProgress.value = 0;
     bufferProgress.style.cssText = "width: min(360px, 70%);height:16px;accent-color:#e5b55a";
     bufferPanel.append(bufferText, bufferProgress);
-    win.appendChild(bufferPanel);
+    videoArea.appendChild(bufferPanel);
     let mediaReady = false;
     let groupStartTime = null;
+    let groupStallStarted = null;
+    let groupStalledMs = 0;
+    let clockTick = null;
+    let clockValue = null;
     const showBuffer = (text, progress) => {
         bufferText.textContent = text;
         bufferProgress.value = progress;
@@ -819,14 +823,36 @@ function openSyncPreview(items) {
     const playbackReadyGate = () => {
         if (groupStartTime != null) return groupStartTime;
         const states = players.map(p => p.player.getPlaybackBufferState());
-        const progress = Math.min(...states.map(s => s.exhausted ? 1 : Math.min(1, s.bufferedFrames / Math.max(1, s.targetFrames))));
-        if (progress < 1) showBuffer(`正在缓冲 · ${Math.floor(progress * 100)}%`, progress * 100);
         if (!mediaReady || states.some(s => !s.exhausted && s.bufferedFrames < s.targetFrames)) return null;
         groupStartTime = performance.now();
+        groupStallStarted = null;
+        groupStalledMs = 0;
+        clockTick = null;
         bufferPanel.style.display = "none";
         return groupStartTime;
     };
-    for (const p of players) p.player.playbackReadyGate = playbackReadyGate;
+    const playbackGroupClock = (tick) => {
+        if (tick === clockTick) return clockValue;
+        clockTick = tick;
+        const missingFrames = players.some(({ player }) => {
+            const state = player.getPlaybackBufferState();
+            return !state.exhausted && state.bufferedFrames === 0;
+        });
+        if (missingFrames) {
+            groupStallStarted ??= tick;
+            clockValue = null;
+            return clockValue;
+        }
+        if (groupStallStarted != null) {
+            groupStalledMs += tick - groupStallStarted;
+            groupStallStarted = null;
+        }
+        clockValue = tick - groupStalledMs;
+        return clockValue;
+    };
+    for (const p of players) {
+        p.player.playbackReadyGate = playbackReadyGate;
+    }
 
     // 划像对比容器（仅两个视频时使用）：两视频重叠，拖动金色分界线左右对比
     const wipe = document.createElement("div");
@@ -835,7 +861,7 @@ function openSyncPreview(items) {
     wipeDivider.className = "xzg-sp-wipe-divider";
     wipeDivider.title = "拖动分界线进行划像对比";
     wipe.appendChild(wipeDivider);
-    win.appendChild(wipe);
+    videoArea.appendChild(wipe);
 
     // 控制栏
     const ctrl = document.createElement("div");
@@ -988,6 +1014,7 @@ function openSyncPreview(items) {
     const alignPlayers = (now) => {
         if (groupStartTime == null) return;
         if (!playing) return; // 暂停时不强制对齐：避免逐帧浏览时各播放器帧位被拉回主时间
+        if (players.every(({ player }) => player._comparisonFile)) return;
         if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
         _lastAlignAt = now;
         const main = pickMain();
@@ -1005,25 +1032,11 @@ function openSyncPreview(items) {
             }
         }
     };
-    let _lastBufferStatusText = "";
-    const updateBufferStatus = () => {
+    const updateBufferStatus = (now) => {
         if (!playing) return;
-        const states = players
-            .filter((p) => p.player.duration > 0)
-            .map((p) => p.player.getPlaybackBufferState?.());
-        if (!states.length) return;
-        const minBuffered = Math.min(...states.map((s) => s.bufferedFrames));
-        const maxBuffered = Math.max(...states.map((s) => s.bufferedFrames));
-        const target = Math.max(...states.map((s) => s.targetFrames));
-        const filling = states.some((s) => s.isFilling);
-        const range = minBuffered === maxBuffered ? String(minBuffered) : `${minBuffered}-${maxBuffered}`;
-        const text = minBuffered === 0 && filling
-            ? `⏳ 解码缓冲中 0/${target} 帧`
-            : `▶ 播放中 · 缓冲 ${range}/${target} 帧`;
-        if (text !== _lastBufferStatusText) {
-            statusEl.textContent = text;
-            _lastBufferStatusText = text;
-        }
+        const stalled = groupStallStarted != null && now - groupStallStarted >= 300;
+        const text = stalled ? "⏳ 等待帧缓存" : "▶ 播放中（自动循环）";
+        if (statusEl.textContent !== text) statusEl.textContent = text;
     };
     // 播放中每帧平滑刷新进度条（拖动时暂停刷新；仅数值变化时写入 DOM，避免无谓开销）
     const scrubTick = () => {
@@ -1041,7 +1054,7 @@ function openSyncPreview(items) {
                 }
             }
             alignPlayers(now);
-            updateBufferStatus();
+            updateBufferStatus(now);
             const main = pickMain();
             if (main.player.duration > 0) {
                 // 进度条与时间码统一按「对比时间轴」：0 → 区间长度，不受跳过帧影响
@@ -1099,6 +1112,7 @@ function openSyncPreview(items) {
         try {
             for (const p of players) p.player.pause();
             playing = false;
+            groupStallStarted = null;
             playPauseBtn.textContent = "▶ 播放";
             bufferPanel.style.display = mediaReady ? "none" : "flex";
             statusEl.textContent = "已暂停";
@@ -1280,7 +1294,7 @@ function openSyncPreview(items) {
     closeBtn.style.marginLeft = "auto";
     ctrl.appendChild(closeBtn);
     // 控制栏（菜单 + 播放台）置于窗口最顶部，视频区之下
-    win.insertBefore(ctrl, grid);
+    win.insertBefore(ctrl, videoArea);
     overlay.appendChild(win);
 
     document.body.appendChild(overlay);
@@ -1547,41 +1561,59 @@ function openSyncPreview(items) {
         if (readyCount >= players.length) {
             forceStarted = true;
             mediaReady = true;
+            if (players.some(({ player }) => player._comparisonFile)) {
+                for (const { player } of players) player.playbackGroupClock = playbackGroupClock;
+            }
             bufferPanel.style.display = "none";
             for (const b of [playPauseBtn, prevFrameBtn, nextFrameBtn, restartBtn, scrubRange]) b.disabled = false;
             applyGridLayout(); // 全部就绪后按比例重排
             statusEl.textContent = "已暂停（点击播放开始）";
             // 保持暂停：进入对比界面停在开头，由用户手动开始
         } else {
-            statusEl.textContent = "加载中... (" + readyCount + "/" + players.length + ")";
+            statusEl.textContent = "正在加载视频";
             showBuffer(`正在加载视频 · ${readyCount}/${players.length}`, readyCount / players.length * 100);
         }
     };
     for (const b of [playPauseBtn, prevFrameBtn, nextFrameBtn, restartBtn, scrubRange]) b.disabled = true;
 
+    let loadFailed = false;
+    let cacheQueue = Promise.resolve();
     for (const p of players) {
-        p.player.onLoadedMetadata = async () => {
-            p.cacheProgress = 0;
-            try {
-                await p.player.prepareComparisonCache(768 * 1024 * 1024 / players.length, progress => {
-                    if (_overlay !== overlay) return;
-                    p.cacheProgress = progress;
-                    const total = players.reduce((sum, item) => sum + (item.cacheProgress || 0), 0) / players.length;
-                    showBuffer(`正在缓存视频 · ${Math.floor(total * 100)}%（完成后可反复播放）`, total * 100);
+        p.player.onLoadedMetadata = () => {
+            cacheQueue = cacheQueue.then(async () => {
+                if (_overlay !== overlay || loadFailed) return;
+                let displayedPercent = -1;
+                const name = p.cell.firstChild.textContent;
+                const renderCacheProgress = () => {
+                    const percent = Math.max(0, displayedPercent);
+                    statusEl.textContent = players.length === 1
+                        ? `正在准备 · ${percent}%`
+                        : `正在准备 · 第 ${readyCount + 1}/${players.length} 路 · ${percent}%`;
+                    showBuffer(`正在准备视频 · ${readyCount + 1}/${players.length} · ${name} · ${percent}%`,
+                        (readyCount + percent / 100) * 100 / players.length);
+                };
+                renderCacheProgress();
+                await p.player.prepareBackendComparisonCache(p.url, progress => {
+                    if (_overlay !== overlay || loadFailed) return;
+                    const percent = Math.floor(progress * 100);
+                    if (percent === displayedPercent) return;
+                    displayedPercent = percent;
+                    renderCacheProgress();
                 });
-            } catch (error) {
-                if (_overlay === overlay) p.player.onError?.(error);
-                return;
-            }
-            if (_overlay !== overlay) return;
-            readyCount++;
-            // 暂停时也停在「自己区间的起点」：左侧第 100 帧 ↔ 右侧第 0 帧，直接可对比
-            seekPlayerToOffset(p, 0);
-            if (!forceStarted) tryStart();
+                if (_overlay !== overlay || loadFailed) return;
+                readyCount++;
+                seekPlayerToOffset(p, 0);
+                if (readyCount === players.length) tryStart();
+            }).catch(error => p.player.onError?.(error));
         };
-        p.player.onError = () => {
-            statusEl.textContent = "视频加载失败，请关闭后重试";
-            showBuffer("视频加载失败，请关闭后重试", 0);
+        p.player.onError = (error) => {
+            if (_overlay !== overlay || loadFailed) return;
+            loadFailed = true;
+            if (playing) syncPause();
+            console.warn("[小珠光同步预览] 视频加载或缓存失败:", p.url, error);
+            const message = `视频加载或缓存失败 · ${p.cell.firstChild.textContent}`;
+            statusEl.textContent = message;
+            showBuffer(message, 0);
         };
         // 关闭播放器自带的独立循环：改由对比窗口按「左侧区间」统一循环（见 scrubTick）
         p.player.setLoop(false);
@@ -1598,6 +1630,19 @@ function openSyncPreview(items) {
 
     // Esc 关闭；←/→ 逐帧浏览（焦点在输入控件时不响应，避免干扰进度条等）
     const onKey = (e) => {
+        const blurPreviewButton = () => {
+            const focused = document.activeElement;
+            if (focused?.tagName === "BUTTON" && overlay.contains(focused)) focused.blur();
+        };
+        if (e.code === "Space" || e.key === " ") {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            blurPreviewButton();
+            if (!e.repeat && mediaReady) {
+                if (playing) pauseAll(); else playAll();
+            }
+            return;
+        }
         if (e.key === "Escape") {
             closeSyncPreview();
             return;
@@ -1605,17 +1650,15 @@ function openSyncPreview(items) {
         const t = e.target;
         const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
         if (typing) return;
-        if (e.key === "ArrowLeft") {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
             e.preventDefault();
             e.stopPropagation();
-            stepFrame(-1);
-        } else if (e.key === "ArrowRight") {
-            e.preventDefault();
-            e.stopPropagation();
-            stepFrame(1);
+            blurPreviewButton();
+            stepFrame(e.key === "ArrowLeft" ? -1 : 1);
         }
     };
     overlay._xzgOnKey = onKey;
+    overlay.dataset.xzgVideoPreview = "";
     document.addEventListener("keydown", onKey, true);
 
     return true;
@@ -1636,6 +1679,10 @@ async function previewNodes(nodes) {
                 items.push(...await getImagesFromNode(n));
             } catch (error) {
                 console.warn("[小珠光同步预览] 读取图片原图失败:", error);
+                const message = error?.message || String(error);
+                const toast = app?.extensionManager?.toast;
+                if (toast?.add) toast.add({ title: "打开图片对比失败", message, type: "error", life: 4 });
+                else alert(message);
                 return false;
             }
         }

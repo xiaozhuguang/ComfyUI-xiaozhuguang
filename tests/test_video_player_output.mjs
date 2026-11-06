@@ -10,6 +10,39 @@ const context = vm.createContext({});
 vm.runInContext(source, context);
 const Player = vm.runInContext("XiaozhuguangVideoPlayer", context);
 
+test("source-quality preview uses the supplied URL at full resolution even when decoding fails", async () => {
+    const ctx = vm.createContext({
+        VideoDecoder: class {},
+        window: { mb: {} },
+        console: { error() {}, warn() {} },
+    });
+    vm.runInContext(source, ctx);
+    const player = Object.create(vm.runInContext("XiaozhuguangVideoPlayer", ctx).prototype);
+    const url = "/view?filename=original.mp4";
+    const failure = new Error("unsupported codec");
+    const opens = [];
+    const errors = [];
+    let transcodes = 0;
+    Object.assign(player, {
+        _loadToken: 0,
+        _exclusiveDecoder: true,
+        _preserveSourceQuality: true,
+        _parseVideoUrl: () => ({ filename: "original.mp4", type: "input" }),
+        _ensureDecodableUrl: async () => { transcodes++; return "/proxy.mp4"; },
+        _decoderPool: {
+            async getExclusive(_key, _type, src, maxSide) {
+                opens.push([src, maxSide]);
+                throw failure;
+            },
+        },
+        _onErrorEvt: error => errors.push(error),
+    });
+    await player._loadDecoderAsync(url);
+    assert.equal(transcodes, 0);
+    assert.deepEqual(opens, [[url, Infinity]]);
+    assert.deepEqual(errors, [failure]);
+});
+
 test("audio decoding finishing after pause or close cannot restart playback", async () => {
     for (const destroyed of [false, true]) {
         let finishDecode;
@@ -110,13 +143,15 @@ test("comparison caches the interval once and reuses frames after pause and seek
             createPlaybackIterator() {
                 decodes++;
                 let i = 0;
-                return {next: async () => i < 3 ? {value: {canvas: {}, timestamp: i++ / 24}} : {done: true}};
+                return {next: async () => i < 3 ? {value: {canvas: {width: 100, height: 100}, timestamp: i++ / 24}} : {done: true}};
             },
             stopPlaybackIterator() {stops++;},
         },
     });
-    await player.prepareComparisonCache(120000);
+    await player.prepareComparisonCache();
     assert.equal(player._comparisonFrames.length, 3);
+    assert.equal(player._comparisonFrames[0].canvas.width, 100);
+    assert.equal(player._comparisonFrames[0].canvas.height, 100);
     assert.equal(stops, 1);
     player._isPlayingState = true;
     player._playbackIterator = player._createPlaybackIterator(0);
@@ -128,4 +163,26 @@ test("comparison caches the interval once and reuses frames after pause and seek
     await player._fillPlaybackBuffer();
     assert.equal(player._playbackBuffer.length, 2);
     assert.equal(decodes, 1, "resume must reuse the completed cache");
+});
+
+test("comparison caches the entire 1080p interval at original dimensions", async () => {
+    let index = 0;
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+        _frameRate: 64, _skipFrames: 0, _loadToken: 1,
+        _computeEndFrame: () => 792,
+        _currentDecoder: {
+            width: 1920, height: 1080,
+            createPlaybackIterator() {
+                return { next: async () => ({ value: { canvas: { width: 1920, height: 1080 }, timestamp: index++ / 64 }, done: false }) };
+            },
+            stopPlaybackIterator() {},
+        },
+    });
+    const progress = [];
+    await player.prepareComparisonCache(value => progress.push(value));
+    assert.equal(player._comparisonCacheReady, true);
+    assert.equal(player._comparisonFrames.length, 792);
+    assert.ok(player._comparisonFrames.every(({ canvas }) => canvas.width === 1920 && canvas.height === 1080));
+    assert.equal(progress.at(-1), 1);
 });

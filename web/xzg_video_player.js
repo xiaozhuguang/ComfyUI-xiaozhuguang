@@ -86,15 +86,9 @@ export class XiaozhuguangVideoPlayer {
         // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
         // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
         this._exclusiveDecoder = !!options.exclusiveDecoder;
-        // 对比预览可指定更小的解码边长及预读帧数，避免多路 4K 原片同时解码时
-        // 每个播放器都按全分辨率占用 CPU/GPU 和大量 Canvas 内存。
-        this._previewMaxSide = Number.isFinite(options.previewMaxSide)
-            ? Math.max(320, Math.round(options.previewMaxSide)) : 0;
+        this._preserveSourceQuality = !!options.preserveSourceQuality;
         this._playbackBufferMaxFrames = Number.isFinite(options.playbackBufferFrames)
             ? Math.max(2, Math.min(10, Math.round(options.playbackBufferFrames))) : 10;
-        // 同步对比可请求后端生成有码率上限的 H.264 代理；0 表示仅做编码兼容转码。
-        this._transcodeMaxBitrateKbps = Number.isFinite(options.transcodeMaxBitrateKbps)
-            ? Math.max(0, Math.round(options.transcodeMaxBitrateKbps)) : 0;
         // 低内存版选项（小珠光视频加载低内存版专用，默认关闭不影响既有播放器）：
         // - decoderPool：自带 LRU 上限的独立解码器池（B2，切换视频自动释放旧解码器）
         // - streamSource：流式打开（B3，UrlSource 按 Range 拉取，整文件不驻留内存）
@@ -1468,7 +1462,6 @@ export class XiaozhuguangVideoPlayer {
                     filename,
                     type: type || "input",
                     subfolder: subfolder || "",
-                    max_video_bitrate_kbps: this._transcodeMaxBitrateKbps,
                 }),
             });
             const data = await resp.json();
@@ -1508,7 +1501,7 @@ export class XiaozhuguangVideoPlayer {
             const poolType = filename ? type : "blob";
             // 解码源切换：HEVC 等 WebCodecs 解不了的编码 → 用后端转码的 H.264 源（懒触发、有缓存）
             let playSrc = src;
-            if (filename) {
+            if (filename && !this._preserveSourceQuality) {
                 const switched = await this._ensureDecodableUrl(filename, type, subfolder);
                 if (switched) playSrc = switched;
             }
@@ -1518,13 +1511,10 @@ export class XiaozhuguangVideoPlayer {
             // 降采样伪影（显示端始终是"缩小"）。
             // 但 4K 全分辨率解码在低配/大文件/WebCodecs 资源受限场景可能失败，失败时自动降级到
             // 1280 低分辨率保底显示，避免预览丢失（出现"双击上传视频"空态）。
-            const PREVIEW_SIDES = this._previewMaxSide > 0
-                // 对比预览的首选档位失败时继续以 720p 兜底，不能因性能优化反而失去预览。
-                ? [...new Set([this._previewMaxSide, Math.min(720, this._previewMaxSide)])]
-                : [4320, 1280];
+            const previewSides = this._preserveSourceQuality ? [Infinity] : [4320, 1280];
             let lastError = null;
             let loaded = false;
-            for (const maxPreviewSide of PREVIEW_SIDES) {
+            for (const maxPreviewSide of previewSides) {
                 try {
             // 独占解码：池化共享时同一 decoder 的 _renderRafId/_targetFrame/_displayedFrame 为单例状态，
             // 多个播放器连续 seek 时后一个的渲染请求会被前一个抢占（表现为左侧动、右侧静止）
@@ -1625,7 +1615,9 @@ export class XiaozhuguangVideoPlayer {
                 } catch (e) {
                     lastError = e;
                     if (token !== this._loadToken) return;
-                    console.warn("[小珠光] 预览解码失败（分辨率上限 " + maxPreviewSide + "），自动降级重试:", e);
+                    if (maxPreviewSide !== previewSides.at(-1)) {
+                        console.warn("[小珠光] 预览解码失败（分辨率上限 " + maxPreviewSide + "），自动降级重试:", e);
+                    }
                 }
             }
             if (!loaded) {
@@ -1787,11 +1779,18 @@ export class XiaozhuguangVideoPlayer {
         const dur = this.duration;
         const target = Math.max(0, Math.min(time, dur));
         this._currentTime = target;
+        if (this._comparisonFile && !this._comparisonCacheReady && !this._isPlayingState) {
+            this._updateProgressDisplay(target, dur);
+            this._seekComparisonFile(target);
+            return;
+        }
         if (this._comparisonCacheReady && !this._isPlayingState) {
             const frames = this._comparisonFrames;
-            const frame = frames[Math.max(0, Math.min(frames.length - 1,
-                Math.round((target - frames[0].timestamp) * (this._frameRate || 24))))];
-            this._canvas.getContext("2d").drawImage(frame.canvas, 0, 0, this._canvas.width, this._canvas.height);
+            const index = this._comparisonFile ? this._comparisonFrameIndex(target)
+                : Math.max(0, Math.min(frames.length - 1,
+                    Math.round((target - frames[0].timestamp) * (this._frameRate || 24))));
+            const frame = frames[index];
+            this._drawComparisonFrame(frame);
             this._updateProgressDisplay(target, dur);
             return;
         }
@@ -1803,15 +1802,19 @@ export class XiaozhuguangVideoPlayer {
             // （否则循环按旧基准推进 expectedFrame，会覆盖 seek 结果，导致对齐/拖动进度条失效）
             const fps = this._frameRate || 24;
             this._playbackStartFrame = Math.max(0, Math.round(target * fps));
-            this._playbackStartTime = performance.now();
+            this._playbackMediaStartTime = target;
+            this._playbackStartTime = this._comparisonClockTime ?? performance.now();
             this._playbackLastFrame = this._playbackStartFrame - 1;
             try {
+                this._currentDecoder.stopPlaybackIterator();
                 this._playbackIterator = this._createPlaybackIterator(target);
                 this._playbackIteratorDone = false;
                 this._playbackBuffer = [];
+                this._isBuffering = false;
                 this._fillPlaybackBuffer();
             } catch (_) {}
         }
+        if (this._comparisonFile) return;
         if (this._scrubRafId) return;
         this._scrubRafId = requestAnimationFrame(() => {
             this._scrubRafId = null;
@@ -1825,7 +1828,7 @@ export class XiaozhuguangVideoPlayer {
                 const frames = this._comparisonFrames;
                 const index = Math.max(0, Math.min(frames.length - 1,
                     Math.round((t - frames[0].timestamp) * fps)));
-                this._canvas.getContext("2d").drawImage(frames[index].canvas, 0, 0, this._canvas.width, this._canvas.height);
+                this._drawComparisonFrame(frames[index]);
                 return;
             }
             this._currentDecoder.renderFrame(targetFrame, this._canvas, true);
@@ -1905,46 +1908,244 @@ export class XiaozhuguangVideoPlayer {
     // 播放循环：播放迭代器 + 预缓冲队列（参考编辑器架构）
     // ═══════════════════════════════════════════════════════════════════════════
     // Comparison owns this cache for the lifetime of its window.
-    async prepareComparisonCache(byteBudget, onProgress = () => {}) {
+    async prepareComparisonCache(onProgress = () => {}) {
         const decoder = this._currentDecoder;
         if (!decoder || this._destroyed) throw new Error("视频尚未加载");
         const token = this._loadToken;
         const fps = this._frameRate || 24;
-        const start = this._previewLoaded ? 0 : this._skipFrames;
-        const end = this._computeEndFrame();
-        const count = Math.max(1, end - start);
-        const width = decoder.previewWidth || decoder.width;
-        const height = decoder.previewHeight || decoder.height;
-        const scale = Math.min(1, Math.sqrt(byteBudget / (count * width * height * 4)));
-        const w = Math.max(1, Math.floor(width * scale));
-        const h = Math.max(1, Math.floor(height * scale));
+        const startTime = (this._previewLoaded ? 0 : this._skipFrames) / fps;
+        const endTime = Math.min(this._computeEndFrame() / fps, decoder.duration || Infinity);
         const frames = [];
         this._comparisonFrames = frames;
-        const iterator = decoder.createPlaybackIterator(start / fps);
+        const iterator = decoder.createPlaybackIterator(startTime);
         try {
-            while (frames.length < count) {
+            while (true) {
                 const result = await iterator.next();
                 if (this._destroyed || token !== this._loadToken) throw new Error("已关闭视频");
-                if (result.done || result.value.timestamp >= end / fps) break;
-                const frame = result.value;
-                const canvas = document.createElement("canvas");
-                canvas.width = w; canvas.height = h;
-                canvas.getContext("2d").drawImage(frame.canvas, 0, 0, w, h);
-                frames.push({canvas, timestamp: frame.timestamp});
-                onProgress(Math.min(1, frames.length / count));
+                if (result.done || result.value.timestamp >= endTime) break;
+                frames.push(result.value);
+                onProgress(Math.max(0, (result.value.timestamp - startTime) / (endTime - startTime)));
             }
             if (!frames.length) throw new Error("没有可缓存的视频帧");
-            this._comparisonCacheReady = true;
-            onProgress(1);
         } finally {
-            decoder.stopPlaybackIterator();
+            await decoder.stopPlaybackIterator();
+        }
+        if (this._destroyed || token !== this._loadToken) throw new Error("已关闭视频");
+        this._comparisonCacheReady = true;
+        onProgress(1);
+    }
+
+    async prepareBackendComparisonCache(src, onProgress) {
+        const decoder = this._currentDecoder;
+        const fps = this._frameRate || 24;
+        const start = (this._previewLoaded ? 0 : this._skipFrames) / fps;
+        const end = Math.min(this._computeEndFrame() / fps, decoder.duration);
+        const url = new URL(src, location.href);
+        const params = url.searchParams;
+        if (!params.get("filename") && url.pathname !== "/xzg/davinci/view-abs") {
+            return this.prepareComparisonCache(onProgress);
+        }
+        const controller = new AbortController();
+        this._comparisonRequest = controller;
+        try {
+            const response = await fetch("/xzg/video_compare_frames", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    token: params.get("token"),
+                    filename: params.get("filename"),
+                    type: params.get("type") || "input",
+                    subfolder: params.get("subfolder") || "",
+                    start, end, i420: typeof VideoFrame === "function",
+                }),
+                signal: controller.signal,
+            });
+            if (!response.ok || !response.body) {
+                throw new Error(`FFmpeg 缓存请求失败（HTTP ${response.status}）`);
+            }
+            const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+            let pending = "";
+            for (;;) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                pending += value;
+                const lines = pending.split("\n");
+                pending = lines.pop();
+                for (const line of lines) {
+                    if (!line) continue;
+                    const message = JSON.parse(line);
+                    if (message.error) throw new Error(message.error);
+                    if (message.frames) {
+                        const url = `/xzg/video_compare_frames/${encodeURIComponent(message.token)}`;
+                        if (this._destroyed || controller.signal.aborted) {
+                            this._releaseComparisonFile(url);
+                            return;
+                        }
+                        let offset = 0;
+                        const i420 = message.format === "yuv420p";
+                        const frames = message.frames.map(([timestamp, width, height]) => {
+                            const size = i420
+                                ? width * height + 2 * Math.ceil(width / 2) * Math.ceil(height / 2)
+                                : width * height * 4;
+                            const frame = { timestamp, width, height, offset, size };
+                            offset += size;
+                            return frame;
+                        });
+                        if (!frames.length) {
+                            this._releaseComparisonFile(url);
+                            throw new Error("FFmpeg returned an empty frame index");
+                        }
+                        const file = { url, frames, size: offset, i420, transfer: message.transfer };
+                        this._comparisonFile = file;
+                        const cachedFrames = [];
+                        const timing = { requests: 0, bytes: 0, responseMs: 0, receiveMs: 0, frameViewsMs: 0 };
+                        const preloadStart = performance.now();
+                        const batchBytes = 128 * 1024 * 1024;
+                        for (let start = 0; start < frames.length;) {
+                            let end = start + 1;
+                            while (end < frames.length &&
+                                frames[end].offset + frames[end].size - frames[start].offset <= batchBytes) {
+                                end++;
+                            }
+                            const batch = await this._readComparisonFrames(file, start, end - start, controller.signal, timing);
+                            cachedFrames.push(...batch);
+                            start = end;
+                            onProgress(0.5 + 0.5 * cachedFrames.length / frames.length);
+                        }
+                        if (this._destroyed || controller.signal.aborted) return;
+                        this._comparisonFrames = cachedFrames;
+                        this._comparisonCacheReady = true;
+                        console.info("[小珠光视频对比] 全量预读计时", JSON.stringify({
+                            filename: params.get("filename") || "绝对路径视频",
+                            frames: cachedFrames.length,
+                            elapsedMs: Math.round(performance.now() - preloadStart),
+                            ...timing,
+                        }));
+                        onProgress(1);
+                        return;
+                    }
+                    onProgress(message.progress * 0.5);
+                }
+            }
+            throw new Error("FFmpeg frame index was not returned");
+        } finally {
+            controller.abort();
+            if (this._comparisonRequest === controller) this._comparisonRequest = null;
+        }
+    }
+
+    _releaseComparisonFile(url) {
+        fetch(url, { method: "DELETE", keepalive: true }).catch(() => {});
+    }
+
+    _comparisonFrameIndex(time) {
+        const { frames } = this._comparisonFile;
+        let low = 0;
+        let high = frames.length;
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2);
+            if (frames[middle].timestamp <= time + 0.000001) low = middle + 1;
+            else high = middle;
+        }
+        return Math.max(0, low - 1);
+    }
+
+    async _readComparisonFrames(file, start, count, signal, timing) {
+        const end = Math.min(start + count, file.frames.length);
+        const firstByte = file.frames[start].offset;
+        const endByte = file.frames[end]?.offset ?? file.size;
+        const requestedAt = performance.now();
+        const response = await fetch(file.url, {
+            headers: { Range: `bytes=${firstByte}-${endByte - 1}` },
+            signal,
+        });
+        if (response.status !== 206) throw new Error(`读取视频缓存失败（HTTP ${response.status}）`);
+        const headersAt = performance.now();
+        const data = await response.arrayBuffer();
+        const receivedAt = performance.now();
+        if (data.byteLength !== endByte - firstByte) throw new Error("视频缓存数据不完整");
+        const frames = file.frames.slice(start, end).map(({ timestamp, width, height, offset, size }) => {
+            const pixels = new Uint8ClampedArray(data, offset - firstByte, size);
+            if (file.i420) return { timestamp, width, height, yuv: pixels, transfer: file.transfer };
+            return { timestamp, imageData: new ImageData(pixels, width, height) };
+        });
+        if (timing) {
+            timing.requests++;
+            timing.bytes += data.byteLength;
+            timing.responseMs += headersAt - requestedAt;
+            timing.receiveMs += receivedAt - headersAt;
+            timing.frameViewsMs += performance.now() - receivedAt;
+        }
+        return frames;
+    }
+
+    async _seekComparisonFile(time) {
+        this._comparisonSeek?.abort();
+        const controller = new AbortController();
+        this._comparisonSeek = controller;
+        try {
+            const [frame] = await this._readComparisonFrames(
+                this._comparisonFile, this._comparisonFrameIndex(time), 1, controller.signal
+            );
+            if (!controller.signal.aborted && !this._destroyed && !this._isPlayingState) {
+                this._drawComparisonFrame(frame);
+            }
+        } catch (error) {
+            if (!controller.signal.aborted) this.onError?.(error);
+        } finally {
+            if (this._comparisonSeek === controller) this._comparisonSeek = null;
+        }
+    }
+
+    _drawComparisonFrame(frame) {
+        const ctx = this._canvas.getContext("2d");
+        if (frame.imageData || frame.yuv) {
+            const { width, height } = frame.imageData || frame;
+            if (this._canvas.width !== width || this._canvas.height !== height) {
+                this._canvas.width = width;
+                this._canvas.height = height;
+            }
+            if (frame.yuv) {
+                const videoFrame = new VideoFrame(frame.yuv, {
+                    format: "I420", codedWidth: width, codedHeight: height,
+                    timestamp: Math.round(frame.timestamp * 1000000),
+                    colorSpace: { matrix: "bt709", primaries: "bt709", transfer: frame.transfer, fullRange: false },
+                });
+                try {
+                    ctx.drawImage(videoFrame, 0, 0);
+                } finally {
+                    videoFrame.close();
+                }
+            } else {
+                ctx.putImageData(frame.imageData, 0, 0);
+            }
+        } else {
+            ctx.drawImage(frame.canvas, 0, 0, this._canvas.width, this._canvas.height);
         }
     }
 
     _createPlaybackIterator(time) {
+        if (this._comparisonFile && !this._comparisonCacheReady) {
+            this._comparisonRead?.abort();
+            const controller = new AbortController();
+            this._comparisonRead = controller;
+            const file = this._comparisonFile;
+            const batchSize = 8;
+            let index = this._comparisonFrameIndex(time);
+            let batch = [];
+            return {
+                next: async () => {
+                    if (index >= file.frames.length) return { done: true };
+                    if (!batch.length) batch = await this._readComparisonFrames(file, index, batchSize, controller.signal);
+                    index++;
+                    return { value: batch.shift(), done: false };
+                },
+            };
+        }
         if (!this._comparisonCacheReady) return this._currentDecoder.createPlaybackIterator(time);
         const frames = this._comparisonFrames;
-        let index = frames.findIndex(frame => frame.timestamp >= time - 0.5 / (this._frameRate || 24));
+        let index = this._comparisonFile ? this._comparisonFrameIndex(time)
+            : frames.findIndex(frame => frame.timestamp >= time - 0.5 / (this._frameRate || 24));
         if (index < 0) index = frames.length;
         return {next: async () => index < frames.length
             ? {value: frames[index++], done: false} : {done: true}};
@@ -1962,6 +2163,7 @@ export class XiaozhuguangVideoPlayer {
         this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._playbackStartFrame = startFrame;
+        this._playbackMediaStartTime = startLocalTime;
         this._playbackStartTime = performance.now();
         this._isBuffering = false;
         this._fillPlaybackBuffer();
@@ -1971,12 +2173,13 @@ export class XiaozhuguangVideoPlayer {
         this._playbackLastFrame = startFrame;
         let lastRafTime = performance.now();
         let waitingForGroup = !!this.playbackReadyGate;
-        const loop = () => {
+        let waitingForFrames = false;
+        const loop = (wallTime) => {
             if (!this._isPlayingState || !this._currentDecoder) {
                 this._playbackRaf = 0;
                 return;
             }
-            const now = performance.now();
+            let now = performance.now();
             if (waitingForGroup) {
                 const startTime = this.playbackReadyGate();
                 if (startTime == null) {
@@ -1988,22 +2191,50 @@ export class XiaozhuguangVideoPlayer {
                 lastRafTime = now;
                 this._startAudioPlayback();
             }
+            if (this.playbackGroupClock) {
+                const groupTime = this.playbackGroupClock(wallTime);
+                if (groupTime == null) {
+                    if (!waitingForFrames) {
+                        waitingForFrames = true;
+                        this._stopAudio();
+                        this._stopStreamAudio();
+                    }
+                    this._playbackRaf = requestAnimationFrame(loop);
+                    return;
+                }
+                now = groupTime;
+                this._comparisonClockTime = groupTime;
+                if (waitingForFrames) {
+                    waitingForFrames = false;
+                    this._startAudioPlayback();
+                }
+            }
             // P17: 标签页后台恢复时 RAF 间隔过大，重置计时避免快进追赶
             const rafDelta = now - lastRafTime;
             lastRafTime = now;
-            if (rafDelta > 500) {
+            if (rafDelta > 500 && !this.playbackGroupClock) {
                 // 后台恢复：重置起始时间，跳到当前应播放的帧
                 this._playbackStartTime = now - (this._playbackLastFrame - this._playbackStartFrame) * frameDuration;
             }
             const elapsedMs = now - this._playbackStartTime;
             const expectedFrame = this._playbackStartFrame + Math.floor(elapsedMs / frameDuration);
             const framesToAdvance = Math.min(expectedFrame - this._playbackLastFrame, 5); // P17: 限制单次追赶帧数
-            if (framesToAdvance > 0) {
+            if (this._comparisonFile) {
+                const targetTime = this._playbackMediaStartTime + Math.max(0, elapsedMs) * rate / 1000;
+                let frame;
+                while (this._playbackBuffer[0]?.timestamp <= targetTime + 0.000001) {
+                    frame = this._playbackBuffer.shift();
+                }
+                if (frame) {
+                    this._drawComparisonFrame(frame);
+                    this._currentTime = frame.timestamp;
+                    if (!this._comparisonCacheReady) this._fillPlaybackBuffer();
+                }
+            } else if (framesToAdvance > 0) {
                 for (let i = 0; i < framesToAdvance; i++) {
                     if (this._playbackBuffer.length > 0) {
                         const frame = this._playbackBuffer.shift();
-                        const ctx = this._canvas.getContext('2d');
-                        ctx.drawImage(frame.canvas, 0, 0, decoder.previewWidth || decoder.width, decoder.previewHeight || decoder.height);
+                        this._drawComparisonFrame(frame);
                         this._currentTime = frame.timestamp;
                         this._playbackLastFrame++;
                         if (!this._comparisonCacheReady) this._fillPlaybackBuffer();
@@ -2027,6 +2258,7 @@ export class XiaozhuguangVideoPlayer {
                     this._playbackIteratorDone = false;
                     this._playbackBuffer = [];
                     this._playbackStartTime = performance.now();
+                    this._playbackMediaStartTime = startTime;
                     const sf = this._previewLoaded ? 0 : this._skipFrames;
                     this._playbackStartFrame = sf;
                     this._playbackLastFrame = sf;
@@ -2053,7 +2285,8 @@ export class XiaozhuguangVideoPlayer {
         if (!this._playbackIterator) return;
         if (this._comparisonCacheReady) {
             const frames = this._comparisonFrames;
-            const index = frames.findIndex(f => f.timestamp >= this._currentTime - 0.5 / (this._frameRate || 24));
+            const index = this._comparisonFile ? this._comparisonFrameIndex(this._currentTime)
+                : frames.findIndex(f => f.timestamp >= this._currentTime - 0.5 / (this._frameRate || 24));
             this._playbackBuffer = index < 0 ? [] : frames.slice(index);
             this._playbackIteratorDone = true;
             return;
@@ -2069,7 +2302,9 @@ export class XiaozhuguangVideoPlayer {
                     break;
                 }
                 const wc = result.value;
-                if (wc && wc.canvas) {
+                if (wc?.imageData || wc?.yuv) {
+                    this._playbackBuffer.push(wc);
+                } else if (wc && wc.canvas) {
                     const copy = document.createElement('canvas');
                     copy.width = wc.canvas.width;
                     copy.height = wc.canvas.height;
@@ -2078,13 +2313,18 @@ export class XiaozhuguangVideoPlayer {
                 }
             }
         } catch (e) {
+            if (iterator !== this._playbackIterator) return;
             console.error("[小珠光] 预缓冲失败:", e);
+            if (this._comparisonFile) this.onError?.(e);
         } finally {
             if (iterator === this._playbackIterator) this._isBuffering = false;
         }
     }
 
     _stopPlaybackLoop() {
+        this._comparisonClockTime = null;
+        this._comparisonRead?.abort();
+        this._comparisonRead = null;
         if (this._playbackRaf) {
             cancelAnimationFrame(this._playbackRaf);
             this._playbackRaf = 0;
@@ -2553,6 +2793,12 @@ export class XiaozhuguangVideoPlayer {
     }
 
     destroy() {
+        this._comparisonRequest?.abort();
+        this._comparisonSeek?.abort();
+        if (this._comparisonFile) {
+            this._releaseComparisonFile(this._comparisonFile.url);
+            this._comparisonFile = null;
+        }
         this._comparisonCacheReady = false;
         this._comparisonFrames = null;
         if (this._destroyed) return;

@@ -359,6 +359,7 @@ async function saveShortcuts(list) {
 /** 全局 keydown 监听（capture 阶段，优先于输入框判断） */
 function onKeyDown(e) {
     if (!shortcuts.length) return;
+    if ((e.code === "Space" || e.key === " ") && document.querySelector("[data-xzg-video-preview]")) return;
     // 快剪打开时，裸 Z 归预览重置；不能抢先中断并截断编辑器的键盘事件。
     const editor = window._xzgVideoEditorInstance;
     if (editor && !editor._destroyed && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&

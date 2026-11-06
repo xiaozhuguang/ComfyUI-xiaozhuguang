@@ -212,6 +212,7 @@ from .nodes.xzg_duplicate_first_frame import XiaozhuguangDuplicateFirstFrame
 from .nodes.xzg_frame_extract import XiaozhuguangFrameExtract
 from .nodes.xzg_image_loader import XiaozhuguangImageLoader
 from .nodes.xzg_video_loader import XiaozhuguangVideoLoader
+from .nodes import xzg_video_compare_cache
 from .nodes.xzg_video_batch_loader import XiaozhuguangVideoBatchMerge
 from .nodes.xzg_video_loader_lm import XiaozhuguangVideoLoaderLM
 from .nodes.xzg_video_loader_davinci import XiaozhuguangVideoLoaderDaVinci
