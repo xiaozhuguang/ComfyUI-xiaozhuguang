@@ -1911,7 +1911,7 @@ async def xzg_delete_images(request):
     return web.json_response({"deleted": deleted, "errors": errors})
 
 
-def _resize_image_to_input(filename, axis, value, multiple=1):
+def _resize_image_to_input(filename, axis, value, multiple=1, crop=None, padding_color="#ffffff"):
     if axis not in ("width", "height") or isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 32768:
         raise ValueError("请输入 1 到 32768 的整数宽度或高度")
     if isinstance(multiple, bool) or not isinstance(multiple, int) or multiple not in (1, 8, 16, 32):
@@ -1932,13 +1932,32 @@ def _resize_image_to_input(filename, axis, value, multiple=1):
     with Image.open(source_path) as opened:
         image = ImageOps.exif_transpose(opened)
         width, height = image.size
+        image = image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB")
+        if crop is not None:
+            if not isinstance(crop, (list, tuple)) or len(crop) != 4:
+                raise ValueError("invalid crop rectangle")
+            try:
+                x, y, w, h = (int(round(float(component))) for component in crop)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("invalid crop rectangle") from None
+            scale = max(1.0, max(width, height) / 3840.0)
+            x, y, w, h = (int(round(component * scale)) for component in (x, y, w, h))
+            if w < 1 or h < 1 or max(w, h) > 50000 or w * h > 150_000_000:
+                raise ValueError("invalid crop dimensions")
+            padding_rgb = _parse_crop_padding_color(json.dumps({"__padding_color": padding_color}))
+            cropped = Image.new(image.mode, (w, h), padding_rgb + (255,) if image.mode == "RGBA" else padding_rgb)
+            sx0, sy0 = max(0, x), max(0, y)
+            sx1, sy1 = min(width, x + w), min(height, y + h)
+            if sx1 > sx0 and sy1 > sy0:
+                cropped.paste(image.crop((sx0, sy0, sx1, sy1)), (sx0 - x, sy0 - y))
+            image = cropped
+            width, height = image.size
         def snap(dimension):
             return max(multiple, int(dimension / multiple + 0.5) * multiple)
         primary = snap(value)
         target = (primary, snap(height * primary / width)) if axis == "width" else (snap(width * primary / height), primary)
         if max(target) > 32768 or target[0] * target[1] > 150_000_000:
             raise ValueError("调整后的图片尺寸过大")
-        image = image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB")
         resized = image.resize(target, Image.Resampling.LANCZOS)
     stem = os.path.splitext(os.path.basename(relative))[0]
     input_dir = folder_paths.get_input_directory()
@@ -1960,7 +1979,7 @@ def _resize_image_to_input(filename, axis, value, multiple=1):
 async def xzg_resize_loader_image(request):
     data = await request.json()
     try:
-        result = await _xzg_asyncio.to_thread(_resize_image_to_input, data.get("filename"), data.get("axis"), data.get("value"), data.get("multiple", 1))
+        result = await _xzg_asyncio.to_thread(_resize_image_to_input, data.get("filename"), data.get("axis"), data.get("value"), data.get("multiple", 1), data.get("crop"), data.get("padding_color", "#ffffff"))
     except (ValueError, TypeError) as error:
         return web.json_response({"error": str(error)}, status=400)
     except FileNotFoundError:

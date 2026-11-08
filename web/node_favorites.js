@@ -5993,6 +5993,7 @@ app.registerExtension({
                                 <span class="nf-drag-handle" draggable="true" title="${xzgT('拖拽调整顺序','Drag to reorder')}" style="cursor: grab; color: #888; font-size: 13px; user-select: none; line-height: 1;">⋮⋮</span>
                                 <span style="font-size: 12px; color: #FFD700; width: 50px; white-space: nowrap;">${xzgT('标签','Label')}${i}</span>
                                 <input type="text" id="nf-label-${i}" value="${labels[String(i)] || ""}" placeholder="${xzgT('留空显示','Empty → shows')} ${i}" style="flex: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #222; color: #ddd; font-size: 13px;" />
+                                <button type="button" class="nf-delete-label" title="${count <= 2 ? xzgT('至少保留两个标签','Keep at least two labels') : xzgT('删除此标签','Delete this label')}" ${count <= 2 ? 'disabled' : ''} style="flex-shrink:0;padding:4px 8px;border:1px solid #744;border-radius:4px;background:#322;color:#ff9999;cursor:${count <= 2 ? 'default' : 'pointer'};opacity:${count <= 2 ? '0.4' : '1'};">${xzgT('删除','Delete')}</button>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
                                 <span style="font-size: 11px; color: #88ccff; width: 50px; white-space: nowrap;">${xzgT('输出','Output')}</span>
@@ -6167,6 +6168,8 @@ app.registerExtension({
                 };
 
                 const originalSettings = JSON.parse(JSON.stringify(settings));
+                const selectionWidget = node.widgets?.find(w => w.name === "label");
+                const originalSelection = selectionWidget?.value;
                 const originalSize = node.size ? [...node.size] : null;
                 const layoutKey = s => JSON.stringify([
                     s.count, s.columns, s.btnWidth, s.btnHeight, s.gapBias,
@@ -6210,8 +6213,9 @@ app.registerExtension({
                     curSettings.fontColor = curFontColor;
                     curSettings.inactiveColor = curInactiveColor;
                     setNodeSettings(node, curSettings);
-                    // 与 xzg_selector.js 中鼠标点击刷新方式一致
-                    node.setDirtyCanvas(true, true);
+                    // 标签绘制在独立的 DOM canvas 上，需要直接刷新标签控件。
+                    node._xzgSelectorUI?.refresh?.(true);
+                    node.setDirtyCanvas?.(true, true);
                 };
 
                 color1Input.addEventListener("input", () => { applyColorPreview(); });
@@ -6220,6 +6224,9 @@ app.registerExtension({
                 colorDirectionInput.addEventListener("change", () => { applyColorPreview(); });
                 fontColorInput?.addEventListener("input", () => { applyColorPreview(); });
                 inactiveColorInput?.addEventListener("input", () => { applyColorPreview(); });
+                [color1Input, color2Input, color3Input, fontColorInput, inactiveColorInput].forEach(input => {
+                    input?.addEventListener("change", applyColorPreview);
+                });
 
                 const updateColumnsState = () => {
                     const curCount = parseInt(countSelect.value, 10);
@@ -6243,6 +6250,34 @@ app.registerExtension({
                     if (body) body.scrollTop = scrollTop;
                     if (countValueEl) countValueEl.textContent = String(newCount);
                     updateColumnsState();
+                    applyCurrentSettings();
+                });
+
+                labelsContainer.addEventListener("click", (e) => {
+                    const button = e.target.closest?.(".nf-delete-label");
+                    if (!button || button.disabled) return;
+                    const row = button.closest(".nf-selector-row");
+                    const index = Number(row?.getAttribute("data-idx"));
+                    const { newCount, newLabels, newWidths, newOutputs } = getCurrentLabels();
+                    if (newCount <= 2 || !Number.isInteger(index) || index < 0 || index >= newCount) return;
+                    const nextCount = newCount - 1;
+                    for (const values of [newLabels, newWidths, newOutputs]) {
+                        const remaining = Array.from({ length: newCount }, (_, i) => values[String(i)]);
+                        remaining.splice(index, 1);
+                        Object.keys(values).forEach(key => { delete values[key]; });
+                        remaining.forEach((value, i) => { values[String(i)] = value; });
+                    }
+                    const current = Number(selectionWidget?.value);
+                    if (selectionWidget && Number.isInteger(current)) {
+                        selectionWidget.value = String(current > index ? current - 1 : Math.min(current, nextCount - 1));
+                    }
+                    const body = dialog.querySelector(".nf-dialog-body");
+                    const scrollTop = body?.scrollTop || 0;
+                    countSelect.value = String(nextCount);
+                    if (countValueEl) countValueEl.textContent = String(nextCount);
+                    updateColumnsState();
+                    labelsContainer.innerHTML = buildLabelsHTML(newLabels, newWidths, newOutputs, nextCount, Number(columnsInput?.value) || 1);
+                    if (body) body.scrollTop = scrollTop;
                     applyCurrentSettings();
                 });
 
@@ -6511,6 +6546,7 @@ app.registerExtension({
                     if (dialogClosed) return;
                     try {
                         setNodeSettings(node, originalSettings);
+                        if (selectionWidget) selectionWidget.value = originalSelection;
                         if (originalSize) node.size = [...originalSize];
                         refreshSelectorNode(node);
                     } catch (e) {

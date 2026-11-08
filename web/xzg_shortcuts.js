@@ -76,6 +76,14 @@ async function executeNodes(nodes) {
             }
 
             for (const id of nodeIds) addNode(id);
+            for (const id of nodeIds) {
+                if (newOutput[id]?.class_type === "VideoWatermarkDetector") {
+                    newOutput[id] = { ...newOutput[id], class_type: "XZGManualTrackingLoadPreview" };
+                } else if (newOutput[id]?.class_type === "XiaozhuguangPointsEditor") {
+                    newOutput[id] = { ...newOutput[id], class_type: "XZGPointsEditorLoadPreview" };
+                }
+            }
+            prompt.xzgExecuteToNode = [...nodeIds].join(",");
             prompt.output = newOutput;
         }
         api.queuePrompt = origApiQueuePrompt;

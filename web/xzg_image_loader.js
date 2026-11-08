@@ -353,6 +353,17 @@ function getPreviewUrl(filename) {
     return getThumbUrl(filename, 3840);
 }
 
+function getCroppedImageSize(width, height, crop) {
+    if (!Array.isArray(crop) || crop.length !== 4 || !(crop[2] > 0 && crop[3] > 0)) {
+        return { width, height };
+    }
+    const scale = Math.max(1, Math.max(width, height) / 3840);
+    return {
+        width: Math.max(1, Math.round(Math.round(crop[2]) * scale)),
+        height: Math.max(1, Math.round(Math.round(crop[3]) * scale)),
+    };
+}
+
 // 原始分辨率缓存：filename → {width, height}
 const _xzgImgInfoCache = new Map();
 
@@ -728,8 +739,11 @@ function createImgBatchUI(node) {
             const image = new Image();
             image.src = getOriginalImageUrl(imageName);
             await image.decode();
-            const originalWidth = image.naturalWidth;
-            const originalHeight = image.naturalHeight;
+            const storedCrop = _cropByImage[imageName];
+            const crop = Array.isArray(storedCrop) && storedCrop.length === 4 && storedCrop[2] > 0 && storedCrop[3] > 0
+                ? [...storedCrop] : null;
+            const paddingColor = _cropPaddingColor;
+            const { width: originalWidth, height: originalHeight } = getCroppedImageSize(image.naturalWidth, image.naturalHeight, crop);
             let axis = "width";
             const dialog = document.createElement("dialog");
             dialog.style.cssText = "background:var(--comfy-menu-bg,#222);color:var(--input-text,#eee);padding:24px;border:1px solid #666;border-radius:10px;";
@@ -802,7 +816,7 @@ function createImgBatchUI(node) {
                     const response = await api.fetchApi("/xzg/image-loader/resize", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ filename: imageName, axis, value: Number(inputs[axis].value), multiple: Number(multipleSelect.value) }),
+                        body: JSON.stringify({ filename: imageName, axis, value: Number(inputs[axis].value), multiple: Number(multipleSelect.value), crop, padding_color: paddingColor }),
                     });
                     const result = await response.json();
                     if (!response.ok) throw new Error(result.error || response.statusText);
@@ -3713,21 +3727,10 @@ function createImgBatchUI(node) {
     function _updateSingleResLabel() {
         syncCropSizeInputs();
         _updateSingleCropBadge();
-        // 存在裁剪选区：显示「真实输出分辨率」（原图像素），而非压缩预览图坐标尺寸。
-        // 前端选区坐标取自最长边3840的预览图，需按 原图宽/预览图宽 换算回原图坐标；
-        // 该比例在后端同样用于把预览坐标还原为原图像素，故标签与最终输出一致。
+        // 与修改分辨率及后端输出统一使用最长边3840的裁剪坐标换算。
         if (cropRect) {
-            let w = cropRect.w, h = cropRect.h;
-            if (_singleOrigW > 0) {
-                const pv = singleImgEl.naturalWidth || 0; // 当前预览图宽度
-                if (pv > 0) {
-                    const ratio = _singleOrigW / pv; // 原图/预览 等比缩放比
-                    if (ratio > 0 && Math.abs(ratio - 1) > 1e-9) {
-                        w = Math.round(cropRect.w * ratio);
-                        h = Math.round(cropRect.h * ratio);
-                    }
-                }
-            }
+            const { width: w, height: h } = getCroppedImageSize(_singleOrigW, _singleOrigH,
+                [cropRect.x, cropRect.y, cropRect.w, cropRect.h]);
             singleResLabel.textContent = `${w} × ${h}`;
             singleResLabel.style.display = "flex";
             return;
@@ -5961,6 +5964,7 @@ function createImgBatchUI(node) {
             // 从 widget 加载裁剪数据并刷新裁剪结果预览：即使不在裁剪模式，
             // 存在裁剪选区时节点上显示的也是裁剪后的效果
             _loadCropFromWidget();
+            _updateSingleResLabel();
             _refreshCropPreview();
             _renderTransformPreview();
             _refreshMaskToolbar();
@@ -6088,7 +6092,8 @@ function createImgBatchUI(node) {
                 "position:absolute;left:50%;transform:translateX(-50%);bottom:2px;max-width:calc(100% - 4px);font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:1;line-height:1.2;text-align:center;color:#fff;background:rgba(0,0,0,0.75);text-shadow:0 1px 2px #000;border-radius:2px;padding:1px 4px;z-index:1;";
             _xzgFetchOriginalSize(name).then((info) => {
                 if (!info || !label.isConnected) return;
-                label.textContent = `${info.width}×${info.height}`;
+                const size = getCroppedImageSize(info.width, info.height, _cropByImage[name]);
+                label.textContent = `${size.width}×${size.height}`;
             });
 
             // 该图已裁剪 → 缩略图显示裁剪后的画面，并加「已裁剪」角标

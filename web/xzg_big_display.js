@@ -37,18 +37,39 @@ async function showDisplayHistory(node) {
             row.addEventListener("toggle", () => { if (row.open) expanded.add(entry); else expanded.delete(entry); });
             row.style.cssText = "border:1px solid #555;border-radius:6px;padding:12px;margin-bottom:12px";
             const label = document.createElement("summary");
-            label.style.cssText = "cursor:pointer;overflow-wrap:anywhere;line-height:1.6";
+            label.style.cssText = "display:flex;align-items:center;gap:12px;cursor:pointer;line-height:1.6";
             const state = entry.state;
+            const text = (state.channels?.texts[state.channel] || state.texts).join("\n");
             const snippet = (state.channels?.texts[state.channel] || state.texts).join(" ").replace(/\s+/g, " ").slice(0, 160);
-            label.textContent = `${new Date(entry.time).toLocaleString()} · ${entry.title} #${entry.nodeId} · ${snippet}`;
+            const description = document.createElement("span");
+            description.style.cssText = "flex:1;min-width:0;overflow-wrap:anywhere";
+            description.textContent = `${new Date(entry.time).toLocaleString()} · ${entry.title} #${entry.nodeId} · ${snippet}`;
             const preview = document.createElement("textarea");
             preview.readOnly = true;
             preview.value = state.channels ? state.channels.texts.map((texts, i) => `${i ? "B" : "A"}:\n${texts.join("\n")}`).join("\n\n") : state.texts.join("\n");
             preview.style.cssText = "width:100%;box-sizing:border-box;height:clamp(180px,45dvh,600px);margin:8px 0;resize:vertical;background:var(--comfy-input-bg,#111);color:inherit;font:14px/1.6 Consolas,monospace;padding:12px";
             const copy = document.createElement("button");
+            copy.type = "button";
+            copy.style.cssText = "flex-shrink:0;cursor:pointer";
             copy.textContent = xzgT("复制文本", "Copy Text");
-            copy.onclick = () => node.copyTextToClipboard((state.channels?.texts[state.channel] || state.texts).join("\n"));
-            row.append(label, preview, copy);
+            copy.onclick = event => {
+                event.preventDefault();
+                event.stopPropagation();
+                dialog.close();
+                node.copyTextToClipboard(text);
+            };
+            const send = document.createElement("button");
+            send.type = "button";
+            send.style.cssText = "flex-shrink:0;cursor:pointer";
+            send.textContent = xzgT("发送到文本框-化神级", "Send to Godlike Text Box");
+            send.onclick = event => {
+                event.preventDefault();
+                event.stopPropagation();
+                dialog.close();
+                sendToTextBox(node, text);
+            };
+            label.append(description, copy, send);
+            row.append(label, preview);
             list.append(row);
         }
     };
@@ -77,8 +98,7 @@ const _NODE_TYPE = "XiaozhuguangBigDisplay";
 //   · 目标：当前图已有的「小珠光文本框-化神级」，只有一个时直接发送，不创建节点
 //   · 默认替换内容；多个目标时弹窗选择，允许手动改为追加
 //   · 写入路径与 _applyGodPreset / _xzgAppendToLoader 一致：widget.value + textarea input 事件 + callback
-function sendToTextBox(source) {
-    const text = (source._texts || []).join("\n");
+function sendToTextBox(source, text = (source._texts || []).join("\n")) {
     const notify = (summary, severity = "warn") => app.extensionManager?.toast?.add({ summary, severity, life: 4000 });
     if (!text.trim()) { notify(xzgT("无内容可发送", "Nothing to send")); return; }
     const graph = source.graph;
@@ -198,6 +218,8 @@ const DEFAULT_CFG = {
     maxFontSize: 20,     // 自适应字号上限
     autoFit: true,       // 文字大小自适应：开启后字号自动放大/缩小以尽量填满内容区
     fontColor: "#ffffff",
+    backgroundColorA: "#1a1a1a",
+    backgroundColorB: "#243447",
     textAlign: "left",  // left / center / right
     vAlign: "top",      // 上下对齐：top / center / bottom
     lineHeight: 1.1,
@@ -569,7 +591,7 @@ app.registerExtension({
                 // 样式设置：置于收藏到提示词库之后
                 options.push(null, {
                     content: xzgT("样式设置", "Style…"),
-                    color: '#FFD700',
+                    color: '#FFFFFF',
                     callback: () => this._openStyleDialog(),
                 });
             };
@@ -602,7 +624,7 @@ app.registerExtension({
         // 右键大字样式设置对话框
         nodeType.prototype._openStyleDialog = function () {
             const node = this;
-            const cfg = { ...(this._cfg || DEFAULT_CFG) };
+            const cfg = { ...DEFAULT_CFG, ...this._cfg };
             cfg.minFontSize = Math.min(500, Math.max(4, Math.round(Number(cfg.minFontSize) || DEFAULT_CFG.minFontSize)));
             cfg.maxFontSize = Math.min(500, Math.max(4, Math.round(Number(cfg.maxFontSize) || DEFAULT_CFG.maxFontSize)));
             if (cfg.minFontSize > cfg.maxFontSize) cfg.maxFontSize = cfg.minFontSize;
@@ -674,6 +696,8 @@ app.registerExtension({
                 { key: "minFontSize", label: xzgT("自适应字号保底", "Auto-fit Minimum Size"), type: "number", min: 4, max: 500, step: 1 },
                 { key: "maxFontSize", label: xzgT("自适应字号上限", "Auto-fit Maximum Size"), type: "number", min: 4, max: 500, step: 1 },
                 { key: "fontColor", label: xzgT("文字颜色", "Text Color"), type: "color" },
+                { key: "backgroundColorA", label: xzgT("A 背景色", "A Background"), type: "color" },
+                { key: "backgroundColorB", label: xzgT("B 背景色", "B Background"), type: "color" },
                 { key: "bold", label: xzgT("加粗", "Bold"), type: "checkbox" },
             ];
 
@@ -1081,9 +1105,9 @@ app.registerExtension({
             }
 
             ctx.save();
-            // 节点默认主体底色（非主题）：主题模式下级联主题绘制会跳过本节点主体填充，
-            // 这里用节点自身 bgcolor 兜底铺满正文区，避免主题下正文区域变成全透明、文字悬空。
-            const _bodyBg = (this.bgcolor && this.bgcolor !== "transparent") ? this.bgcolor : "#1a1a1a";
+            // A/B 使用各自的背景色；旧工作流缺少颜色配置时使用默认值。
+            const backgroundKey = this._xzgDisplayChannel === 1 ? "backgroundColorB" : "backgroundColorA";
+            const _bodyBg = cfg[backgroundKey] || DEFAULT_CFG[backgroundKey];
             ctx.fillStyle = _bodyBg;
             ctx.fillRect(0, 0, w, h);
 
@@ -1436,15 +1460,28 @@ app.registerExtension({
         // options.length=0 只能清掉调用那一刻的内容，拦不住这些后续追加项，因此在此最外层对
         // getNodeMenuOptions 的返回结果做白名单过滤。
         // —— 过滤函数 ——
+        if (!document.getElementById("xzg-display-menu-style")) {
+            const style = document.createElement("style");
+            style.id = "xzg-display-menu-style";
+            style.textContent = `
+                .litemenu-entry.xzg-display-menu-item { font-size: 14px !important; }
+                .litemenu-entry.xzg-display-menu-item ~ .litemenu-entry.xzg-display-menu-item { border-top: 1px solid #555 !important; }
+                .litemenu-entry.xzg-display-menu-queue, .litemenu-entry.xzg-display-menu-queue * { color: #FFD700 !important; }
+                .litemenu-entry.xzg-display-menu-style, .litemenu-entry.xzg-display-menu-style * { color: #FFFFFF !important; }
+            `;
+            document.head.appendChild(style);
+        }
         const catOf = (content) => {
+            if (content.includes("取消收藏") || content.includes("Unfavorite") ||
+                content.includes("从快速连线移除") || content.includes("Remove from Quick Links")) return -1;
             if (content.includes("历史记录") || content.includes("Display History")) return 1;
-            if (content.includes("发送到文本框") || content.includes("Send to Godlike Text Box")) return 1;
+            if (content.includes("发送到文本框") || content.includes("Send to Godlike Text Box")) return 3;
             if (content.includes("对所选输出节点进行排队") || content.includes("Queue Selected Output")) return 0; // 排队 → 第一行
-            if (content.includes("复制文本")) return 1; // 复制文本 + 收藏到提示词库 同一组
-            if (content.includes("收藏到提示词库")) return 1;
-            if (content.includes("样式设置")) return 2; // 样式设置 + 收藏 + 快速连线 同一组
-            if (content.includes("收藏节点") || content.includes("取消收藏")) return 2;
-            if (content.includes("添加到快速连线") || content.includes("从快速连线移除")) return 2;
+            if (content.includes("复制文本") || content.includes("Copy Text")) return 2;
+            if (content.includes("收藏到提示词库") || content.includes("Favorite to Prompt Library")) return 3;
+            if (content.includes("样式设置") || content.includes("Style…")) return 4;
+            if (content.includes("收藏节点") || content.includes("Favorite Node")) return 4;
+            if (content.includes("添加到快速连线") || content.includes("Add to Quick Links")) return 4;
             return -1; // 其余一律隐藏
         };
         const filterFn = (options) => {
@@ -1452,15 +1489,14 @@ app.registerExtension({
             const kept = options
                 .filter((item) => item && typeof item.content === "string" && catOf(item.content) >= 0)
                 .sort((a, b) => catOf(a.content) - catOf(b.content));
-            // 分组：相邻两项类别不同则插入分割线；
-            // 复制文本+收藏到提示词库 同组，样式设置+收藏+快速连线 同组，组内不加分割线。
+            // 每个菜单项之间都添加分割线，并统一最终菜单的指定颜色。
             const result = [];
-            kept.forEach((item, i) => {
-                if (i > 0) {
-                    const prevCat = catOf(kept[i - 1].content);
-                    const curCat = catOf(item.content);
-                    if (curCat !== prevCat) result.push(null);
-                }
+            kept.forEach((item) => {
+                const classes = new Set((item.className || "").split(/\s+/).filter(Boolean));
+                classes.add("xzg-display-menu-item");
+                if (catOf(item.content) === 0) classes.add("xzg-display-menu-queue");
+                if (item.content.includes("样式设置") || item.content.includes("Style…")) classes.add("xzg-display-menu-style");
+                item = { ...item, className: [...classes].join(" ") };
                 result.push(item);
             });
             return result;

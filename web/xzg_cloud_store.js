@@ -120,6 +120,7 @@ const UI_GEOMETRY_KEYS = [
     "xzg_prompt_skill_manager_geometry",
     "xzg_prompt_rule_manager_geometry",
     "xzg_text_box_god_manager_geometry",
+    "xzg_text_box_god_manager_pane_width",
     "xzg_theme_panel_pos",
 ];
 

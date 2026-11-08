@@ -521,6 +521,14 @@ function _xzgAppendToLoader(loaderNode, annotatedName) {
 
 // 多个加载器时弹出选择对话框
 function _xzgShowLoaderSelector(loaders, annotatedName) {
+    xzgShowLoaderTargetSelector(loaders, {
+        title: xzgTh("选择目标图像加载器", "Select target Image Loader"),
+        onSelect: node => _xzgAppendToLoader(node, annotatedName),
+    });
+}
+
+// 图片和视频发送共用目标选择、画布定位及黄色连线指示。
+export function xzgShowLoaderTargetSelector(loaders, { title: selectorTitle, onSelect }) {
     let locateRaf = null;
     let moveRaf = null;
     const stopLocate = () => {
@@ -605,7 +613,7 @@ function _xzgShowLoaderSelector(loaders, annotatedName) {
 
     const title = document.createElement("div");
     title.style.cssText = "font-size:13px;color:var(--input-text,#ddd);margin-bottom:14px;";
-    title.textContent = xzgTh("选择目标图像加载器", "Select target Image Loader");
+    title.textContent = selectorTitle;
     dialog.appendChild(title);
 
     const list = document.createElement("div");
@@ -621,7 +629,7 @@ function _xzgShowLoaderSelector(loaders, annotatedName) {
         item.addEventListener("click", () => {
             stopLocate();
             overlay.remove();
-            _xzgAppendToLoader(n, annotatedName);
+            onSelect(n);
         });
         list.appendChild(item);
     });

@@ -282,7 +282,7 @@ class VideoWatermarkDetector:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    OUTPUT_NODE = True  # 标记为输出节点，rgtree/右键"仅执行到本节点"等功能可用
+    OUTPUT_NODE = False  # 普通队列仅在下游需要遮罩时执行。
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("逐帧遮罩",)
     FUNCTION = "detect"
@@ -374,8 +374,17 @@ class VideoWatermarkDetector:
         }
 
 
+class XZGManualTrackingLoadPreview(VideoWatermarkDetector):
+    """Only used by the editor's explicit load request, never saved in workflows."""
+
+    OUTPUT_NODE = True
+    CATEGORY = "小珠光/内部"
+    DEPRECATED = True
+
+
 NODE_CLASS_MAPPINGS = {
     "VideoWatermarkDetector": VideoWatermarkDetector,
+    "XZGManualTrackingLoadPreview": XZGManualTrackingLoadPreview,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {

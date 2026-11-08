@@ -65,12 +65,12 @@ function strengthInput(value, commit) {
     input.type = "text";
     input.inputMode = "decimal";
     input.value = String(value);
-    input.title = "左右拖动：0～1，步进 0.1；单击输入，可超过 1，支持两位小数";
+    input.title = "左右拖动：-10～10，步进 0.1；单击输入，支持两位小数";
     let current = value, gesture = null;
     function save() {
         const parsed = Number(input.value);
         if (!input.value.trim() || !Number.isFinite(parsed)) { input.value = String(current); return; }
-        current = Math.round(Math.max(0, parsed) * 100) / 100;
+        current = Math.round(Math.min(10, Math.max(-10, parsed)) * 100) / 100;
         input.value = String(current);
         commit(current);
     }
@@ -91,7 +91,7 @@ function strengthInput(value, commit) {
         if (!gesture.moved && Math.abs(dx) < 5) return;
         gesture.moved = true;
         const steps = Math.round(dx / 10);
-        input.value = String(Math.round(Math.min(1, Math.max(0, gesture.value + steps * .1)) * 10) / 10);
+        input.value = String(Math.round(Math.min(10, Math.max(-10, gesture.value + steps * .1)) * 10) / 10);
     });
     function finish(event) {
         if (!gesture || gesture.id !== event.pointerId) return;
@@ -175,7 +175,11 @@ function button(text, action, parent) {
 
 function widget(node, name) { return node.widgets?.find(w => w.name === name); }
 function selection(node) { return JSON.parse(widget(node, "loras").value || "[]"); }
-function saveSelection(node, list) {
+function saveSelection(node, list, activeItem) {
+    if (node.properties?.xzgLoraSingle === true) {
+        const active = activeItem?.enabled !== false && activeItem ? activeItem : list.find(item => item.enabled !== false);
+        for (const item of list) item.enabled = item === active;
+    }
     widget(node, "loras").value = JSON.stringify(list);
     node._xzgRenderLoras?.();
     node.setDirtyCanvas(true, true);
@@ -621,7 +625,7 @@ async function openManager(node) {
         if (list.some(x => x.id === item.id)) { status.textContent = "该 LoRA 已在当前加载器中"; return; }
         list.push({ id: item.id, path: item.path, thumbnail: !!item.thumbnail, enabled: true,
             strength_model: item.strength_model ?? 1 });
-        saveSelection(node, list); status.textContent = `已添加：${item.path.split("/").pop()} · 共 ${list.length} 个 LoRA`;
+        saveSelection(node, list, list[list.length - 1]); status.textContent = `已添加：${item.path.split("/").pop()} · 共 ${list.length} 个 LoRA`;
 
     }
 
@@ -707,6 +711,13 @@ app.registerExtension({
             }
             const actions = element("div", "xzg-lora-node-actions");
             button("打开 LoRA 管理器", () => openManager(this), actions);
+            const modeToggle = button("", () => {
+                this.properties ||= {};
+                this.properties.xzgLoraSingle = this.properties.xzgLoraSingle !== true;
+                saveSelection(this, selection(this));
+            }, actions);
+            modeToggle.title = "切换单/多 LoRA：单 LoRA 时，开启一个会自动关闭其他项";
+            modeToggle.setAttribute("aria-label", "单/多 LoRA");
             installCompactToggle(this, actions);
             button("一键清除 LoRA", () => saveSelection(this, []), actions);
             this.addDOMWidget("lora_actions", "div", actions, { serialize: false, getMinHeight: () => 36, getMaxHeight: () => 36, getHeight: () => 36 });
@@ -727,6 +738,9 @@ app.registerExtension({
                 getMinHeight: () => this.properties?.xzgLoraCompact === true ? 40 : 180,
                 getHeight: () => this.properties?.xzgLoraCompact === true ? Math.max(40, Math.min(260, selection(this).length * 20 + 4)) : 260 });
             this._xzgRenderLoras = () => {
+                const single = this.properties?.xzgLoraSingle === true;
+                modeToggle.textContent = single ? "单 LoRA" : "多 LoRA";
+                modeToggle.setAttribute("aria-pressed", String(single));
                 this._xzgUpdateCompactToggle?.();
                 const compact = this.properties?.xzgLoraCompact === true;
                 stack.classList.toggle("xzg-lora-compact", compact);
@@ -785,7 +799,7 @@ app.registerExtension({
                     name.tabIndex = 0;
                     const toggleEnabled = () => {
                         item.enabled = item.enabled === false;
-                        saveSelection(this, list);
+                        saveSelection(this, list, item);
                     };
                     name.addEventListener("click", event => { event.stopPropagation(); toggleEnabled(); });
                     name.addEventListener("keydown", event => {
@@ -796,7 +810,7 @@ app.registerExtension({
                     const enabled = element("input"); enabled.type = "checkbox"; enabled.checked = item.enabled !== false; enabled.title = "启用";
                     enabled.onchange = () => {
                         item.enabled = enabled.checked;
-                        saveSelection(this, list);
+                        saveSelection(this, list, item);
                     }; controls.append(enabled);
                     for (const [key, label] of [["strength_model", "模型强度"]]) {
                         controls.append(element("span", "", label));
@@ -925,7 +939,8 @@ app.registerExtension({
             if (clipInput >= 0) this.removeInput(clipInput);
             const clipOutput = this.outputs?.findIndex(output => output.type === "CLIP");
             if (clipOutput >= 0) this.removeOutput(clipOutput);
-            this._xzgRenderLoras?.();
+            if (this.properties?.xzgLoraSingle === true) saveSelection(this, selection(this));
+            else this._xzgRenderLoras?.();
         };
     }
 });

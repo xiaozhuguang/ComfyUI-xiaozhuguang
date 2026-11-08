@@ -1,14 +1,62 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden, XZG_MENU_CAPTURE_FRAME } from "./xzg_loader_settings.js";
+import { xzgOrderedPreviewActions, xzgPreviewButtonVisible, xzgGetPreviewButtonGap, xzgSetPreviewButtonsDefaultHidden, xzgMenuItemVisible, XZG_MENU_CAPTURE_FRAME } from "./xzg_loader_settings.js";
 import { xzgCopyFiles } from "./xzg_codex_upload.js";
 import { xzgAddFrameCaptureMenu } from "./xzg_frame_capture.js";
+import { xzgShowLoaderTargetSelector } from "./xzg_image_save.js";
 
 // 小珠光视频保存-化神级（XiaozhuguangVideoSaveDaVinci）
 // 复用「小珠光视频保存」的全部交互（预览/缓存/恢复见父类 xzg_video_combine.js 注册器），
 // 额外在预览区叠加「导出到达芬奇」悬浮按钮：把该节点最近一次保存的视频导入达芬奇
 // （进当前媒体池 + 新建视频轨道 + 对齐播放头所在最上层片段前端，不推移/不分割）。
 const SAVE_DAVINCI_NODE = "XiaozhuguangVideoSaveDaVinci";
+const SEND_VIDEO_MENU = "send_video_loader";
+const SEND_VIDEO_SETTING = "xiaozhuguang.Menu.VideoSaveDaVinciSendVideo";
+
+async function _sendSavedVideoToLoader(node, target) {
+    try {
+        const info = _getSavedVideoInfo(node);
+        if (!info) throw new Error("请先保存或预览视频");
+        let name = (info.subfolder ? `${info.subfolder}/` : "") + info.filename;
+        let type = info.type || "output";
+        if (info.abs_token) {
+            const resp = await api.fetchApi("/xzg/davinci/video-to-input", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token: info.abs_token }),
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.name) throw new Error(data.error || "视频复制失败");
+            name = data.name;
+            type = "input";
+        }
+        const widget = target.widgets?.find(w => w.name === "视频");
+        if (!widget) throw new Error("视频加载器尚未就绪");
+        const annotated = `${name} [${type}]`;
+        if (Array.isArray(widget.options?.values) && !widget.options.values.includes(annotated)) widget.options.values.push(annotated);
+        widget.value = annotated;
+        widget.callback?.(annotated);
+        target.setDirtyCanvas?.(true, true);
+        _toast("已发送到视频加载器-化神级");
+    } catch (error) {
+        _toast(`发送视频失败：${error.message || error}`, true);
+    }
+}
+
+function _savedVideoMenu(node) {
+    if (app.ui?.settings?.getSettingValue?.(SEND_VIDEO_SETTING) === false || !xzgMenuItemVisible(node, SEND_VIDEO_MENU)) return [];
+    const targets = (node.graph?.nodes || app.graph?.nodes || []).filter(n => n.type === "XiaozhuguangVideoLoaderDaVinci" && n.mode !== 2 && n.mode !== 4);
+    const ready = !!_getSavedVideoInfo(node);
+    const send = target => _sendSavedVideoToLoader(node, target);
+    const item = { content: "发送到视频加载器", disabled: !ready };
+    if (targets.length > 1) {
+        item.callback = () => {
+            xzgShowLoaderTargetSelector(targets, { title: "选择目标视频加载器-化神级", onSelect: send });
+        };
+    } else {
+        item.callback = () => targets.length ? send(targets[0]) : _toast("请先添加并启用一个视频加载-化神级节点", true);
+    }
+    return [item];
+}
 const _videoDavinciTargetKey = (node) => {
     const parts = (node?.graph?.nodes || []).filter(n => n?.id != null && n.type)
         .map(n => `${n.id}:${n.type}`).sort();
@@ -440,7 +488,8 @@ function _xzgOpenVideoOutputSettings(node) {
         sortable: true,
         fontSize: true,
         actions: SAVE_PREVIEW_ACTIONS.map(({ id, label }) => ({ id, label })),
-        menuItems: [{ id: XZG_MENU_CAPTURE_FRAME, label: "右键菜单：截取当前帧发送到加载器" }],
+        menuItems: [{ id: XZG_MENU_CAPTURE_FRAME, label: "右键菜单：截取当前帧发送到加载器" },
+            { id: SEND_VIDEO_MENU, label: "右键菜单：发送到视频加载器" }],
         refresh: () => _syncHoverButtonSize(node),
     });
 }
@@ -528,6 +577,11 @@ function _createExportDavinciButton(node) {
 
 app.registerExtension({
     name: "Xiaozhuguang.VideoSave.DaVinci",
+    setup() {
+        app.ui?.settings?.addSetting?.({ id: SEND_VIDEO_SETTING,
+            name: "[小珠光] 视频保存-化神级右键菜单：发送到视频加载器",
+            type: "boolean", defaultValue: true });
+    },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData?.name !== SAVE_DAVINCI_NODE) return;
 
@@ -653,5 +707,17 @@ app.registerExtension({
         // 右键菜单：截取预览当前帧 → 上传 input → 发送到小珠光图像加载器
         // （菜单项可在 设置 → 小珠光 中关闭，见 xzg_frame_capture.js）
         xzgAddFrameCaptureMenu(nodeType, "save");
+        const originalMenu = nodeType.prototype.getExtraMenuOptions;
+        nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+            originalMenu?.apply(this, arguments);
+            if (Array.isArray(options)) options.unshift(..._savedVideoMenu(this));
+        };
+        const originalCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const result = originalCreated?.apply(this, arguments);
+            const previous = this._xzgPlayerMenuItems;
+            this._xzgPlayerMenuItems = () => [...(previous?.call(this) || []), ..._savedVideoMenu(this)];
+            return result;
+        };
     },
 });

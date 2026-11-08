@@ -4264,17 +4264,11 @@ class XZGWorkflowsManager {
                     await new Promise(r => setTimeout(r, 50));
                     persistedWf = wfStore.getWorkflowByPath(officialPath);
                 }
-                // 兜底：store 可能未索引到磁盘上的该文件，遍历已加载列表按路径/名称匹配
+                // 只匹配完整路径，避免误选其他分类或回收站中的同名工作流。
                 if (!persistedWf) {
                     const list = wfStore.workflows || (typeof wfStore.getWorkflows === 'function' ? wfStore.getWorkflows() : null);
                     if (Array.isArray(list)) {
-                        const name = path.split('/').pop();
-                        persistedWf = list.find(w => w && (
-                            w.path === officialPath ||
-                            (w.path && w.path.endsWith(path + '.json')) ||
-                            w.filename === name ||
-                            w.name === name
-                        )) || null;
+                        persistedWf = list.find(w => w?.path === officialPath) || null;
                     }
                 }
 

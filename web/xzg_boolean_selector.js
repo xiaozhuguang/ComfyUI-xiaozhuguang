@@ -615,7 +615,7 @@ function createBoolDOMWidget(node, boolWidget) {
     };
 
     node._xzgBoolUI = {
-        refresh: () => requestAnimationFrame(resize),
+        refresh: (immediate = false) => immediate ? resize() : requestAnimationFrame(resize),
         canvas,
         hitTest: hitTestButton,
         // 供设置面板等外部改动尺寸后同步持久化
@@ -902,7 +902,7 @@ function openBoolSettingsPanel(node) {
             node.size[0] = Math.max(node.size[0], getBoolMinNodeWidth(node));
             node.size[1] = Math.max(node.size[1], getBoolMinNodeHeight(node));
         }
-        node._xzgBoolUI?.refresh?.();
+        node._xzgBoolUI?.refresh?.(true);
         node.setDirtyCanvas?.(true, true);
     }
 

@@ -12,6 +12,37 @@ spec.loader.exec_module(m)
 
 
 class TranslationTest(unittest.TestCase):
+    def test_same_resolved_inputs_reuse_translation_and_seed_refreshes(self):
+        node = m.XiaozhuguangAPITranslate()
+        with patch.object(m.requests, "post") as post:
+            response = post.return_value.__enter__.return_value
+            response.ok = True
+            response.json.return_value = {"choices": [{"message": {"content": "你好"}}]}
+            inputs = ("Hello", "https://example.com/v1", "key", "model", "简体中文")
+            self.assertEqual(node.translate(*inputs), ("你好",))
+            self.assertEqual(node.translate(*inputs), ("你好",))
+            self.assertEqual(post.call_count, 1)
+            node.translate(*inputs, seed=1)
+            self.assertEqual(post.call_count, 2)
+            node.translate("Goodbye", *inputs[1:])
+            node.translate(*inputs, instructions="Keep names")
+            node.translate(*inputs[:4], "English")
+            self.assertEqual(post.call_count, 5)
+
+    def test_failed_translation_is_retried(self):
+        node = m.XiaozhuguangAPITranslate()
+        with patch.object(m.requests, "post") as post:
+            response = post.return_value.__enter__.return_value
+            response.ok = False
+            response.status_code = 429
+            inputs = ("Hello", "https://example.com/v1", "key", "model", "English")
+            with self.assertRaises(RuntimeError):
+                node.translate(*inputs)
+            response.ok = True
+            response.json.return_value = {"choices": [{"message": {"content": "Hello"}}]}
+            self.assertEqual(node.translate(*inputs), ("Hello",))
+            self.assertEqual(post.call_count, 2)
+
     def test_gguf_delegates_to_installed_node(self):
         class Backend:
             @classmethod
@@ -31,6 +62,8 @@ class TranslationTest(unittest.TestCase):
             result = node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
                                     gguf_target="Japanese", gguf_unload=True)
             self.assertEqual(result, ("こんにちは",))
+            self.assertEqual(node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
+                                            gguf_target="Japanese", gguf_unload=True), result)
             translate.assert_called_once_with(model="Hy-MT2.gguf", translate_style="Default",
                                               translate_to="Japanese", text="Hello", unload_after_run=True)
             with self.assertRaises(ValueError):

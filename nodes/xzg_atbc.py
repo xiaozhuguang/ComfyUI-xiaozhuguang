@@ -33,7 +33,7 @@ class XiaozhuguangATBC:
                 "tracking_preference": (["稳定优先", "紧凑优先"], {"default": "稳定优先", "tooltip": "仅稳定跟踪生效。稳定优先使用较大范围减少移动；紧凑优先保持较小范围。均不缩减扩展参数要求的范围。"}),
                 "tracking_scale": (["固定大小", "动态缩放"], {"default": "固定大小", "tooltip": "仅稳定跟踪生效。固定大小只移动；动态缩放同时规划大小，输出分辨率统一，ATR按每帧记录恢复。"}),
                 "alignment_mode": (["扩充", "变形"], {"default": "扩充", "tooltip": "仅控制整除对齐：扩充保持内容比例并扩展范围或补色；变形直接缩放到整除尺寸，不额外扩大裁剪框。图像和遮罩同步处理，ATR自动按原裁剪框还原。"}),
-                "min_margin": ("INT", {"default": 30, "min": 0, "max": 16384, "step": 1, "tooltip": "遮罩外接框到裁剪框四边的最小原图像素距离；现有倍数和像素扩展不足时才补足，并保持所选比例。0关闭。超出原图部分按填充色补齐；不移动遮罩接缝，关闭裁剪时忽略。"}),
+                "margin_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0, "tooltip": "按原遮罩外接框短边的百分比计算每边最小边距，0关闭。视频整批取最大短边统一计算，避免边距抖动。ATR使用计算后的原图像素边距。"}),
             }
         }
 
@@ -555,6 +555,7 @@ class XiaozhuguangATBC:
                           "source_crop_size": (pw, ph), "alignment_mode": alignment_mode})
             infos[-1]["seam_box"] = seam_boxes[i]
             infos[-1]["subject_box"] = self._subject_box(masks[i] * 255)
+            infos[-1]["min_margin"] = min_margin
             if "output_valid_box" in valid_info:
                 infos[-1].update({key: valid_info[key] for key in ("source_valid_box", "output_valid_box")})
             outputs.append(torch.from_numpy(canvas)); output_masks.append(torch.from_numpy(canvas_mask))
@@ -571,7 +572,21 @@ class XiaozhuguangATBC:
                 return mask[..., 0]
         raise ValueError("ATBC · 高级：遮罩输入需要 [批次, 高, 宽] 或 [高, 宽] 的 MASK 格式。")
 
-    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=32, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小", alignment_mode="扩充", min_margin=30):
+    def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None, Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=32, ratio="auto", startup_threshold=0.4, fill_color="#FFFFFF", mask_smooth=0.0, sum_mask=False, Box_grow_pixels=0, enable_crop=True, crop_mode="遮罩平滑", tracking_preference="稳定优先", tracking_scale="固定大小", alignment_mode="扩充", min_margin=None, margin_percent=10.0):
+        if isinstance(margin_percent, bool) or not isinstance(margin_percent, (int,float)) or not math.isfinite(margin_percent) or not 0 <= margin_percent <= 100:
+            raise ValueError("ATBC：边距比例必须为0到100的有限数值。")
+        if min_margin is None:
+            normalized = self._normalize_mask_input(mask)
+            short_sides = []
+            if normalized is not None:
+                arrays = normalized.detach().cpu().numpy()
+                if arrays.ndim == 2:
+                    arrays = arrays[None]
+                for frame in arrays:
+                    ys, xs = np.where(frame > 1/255)
+                    if len(xs):
+                        short_sides.append(min(int(xs.max()-xs.min()+1), int(ys.max()-ys.min()+1)))
+            min_margin = math.ceil(max(short_sides, default=0) * margin_percent / 100)
         # Legacy API keyword remains accepted; pixel expansion is superseded by min_margin.
         Box_grow_pixels = 0
         # ComfyUI widgets may be replaced by arbitrary upstream values when
@@ -715,6 +730,7 @@ class XiaozhuguangATBC:
         def resize_frame(frame):
             cropped_image, cropped_mask, info, target_width, target_height = frame
             info["alignment_mode"] = alignment_mode
+            info["min_margin"] = min_margin
             if not enable_crop:
                 height, width = cropped_image.shape[:2]
                 scale = math.sqrt(kilopixels * 1000 / (width * height))

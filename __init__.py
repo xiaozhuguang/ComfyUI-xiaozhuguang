@@ -953,7 +953,7 @@ class XiaozhuguangPointsEditor:
     RETURN_NAMES = ("positive_coords", "negative_coords", "bbox", "frame_index")
     FUNCTION = "execute"
     CATEGORY = "小珠光/视频"
-    OUTPUT_NODE = True
+    OUTPUT_NODE = False  # 下游需要标注结果时才读取图像和生成预览。
 
     def execute(self, image, info, preview_pixels=100):
         positive_coords = None
@@ -1042,6 +1042,14 @@ class XiaozhuguangPointsEditor:
                 frame_index,
             )
         }
+
+
+class XZGPointsEditorLoadPreview(XiaozhuguangPointsEditor):
+    """Explicit editor execution only; ordinary workflows remain demand-driven."""
+
+    OUTPUT_NODE = True
+    CATEGORY = "小珠光/内部"
+    DEPRECATED = True
 
 
 class _SelectorAnyType(str):
@@ -1341,6 +1349,7 @@ class XiaozhuguangUniversalSlider:
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAPITranslate": XiaozhuguangAPITranslate,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
+    "XZGPointsEditorLoadPreview": XZGPointsEditorLoadPreview,
     "XiaozhuguangSelector": XiaozhuguangSelector,
     "XiaozhuguangBooleanSelector": XiaozhuguangBooleanSelector,
     "XiaozhuguangBoolNot": XiaozhuguangBoolNot,

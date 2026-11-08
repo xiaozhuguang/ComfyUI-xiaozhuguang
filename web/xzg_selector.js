@@ -576,7 +576,7 @@ function createSelectorDOMWidget(node, tagWidget) {
         return previousRemoved?.apply(this, arguments);
     };
     node._xzgSelectorUI = {
-        refresh: () => requestAnimationFrame(resize),
+        refresh: (immediate = false) => immediate ? resize() : requestAnimationFrame(resize),
         canvas,
         hitTest: hitTestButton,
         // 供设置面板等外部改动尺寸后同步持久化

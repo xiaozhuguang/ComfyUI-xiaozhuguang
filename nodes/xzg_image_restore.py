@@ -17,10 +17,7 @@ class XiaozhuguangImageRestore:
                 "processed_image": ("IMAGE",),
                 "crop_box": ("XZG_IMAGE_CROPBOX",),
                 "edge_color_match": ("BOOLEAN", {"default": False, "tooltip": "根据最终遮罩的接缝区域修正处理图像的颜色偏差"}),
-                "color_band_width": ("INT", {"default": 16, "min": 1, "max": 256, "step": 1, "tooltip": "沿最终融合遮罩的50%轮廓向内分析的带宽，单位为原图像素"}),
                 "color_match_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05}),
-                "color_correction_range": ("INT", {"default": 128, "min": 1, "max": 512, "step": 1, "tooltip": "覆盖羽化过渡带并向接缝内侧渐弱的范围，单位为原图像素"}),
-                "color_temporal_smooth": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "批次内颜色修正量的时间平滑，0为关闭"}),
             },
             "optional": {
                 "mask": ("MASK",),

@@ -1,6 +1,10 @@
 """Translate through a Chat Completions endpoint or the Hy-MT2 GGUF node."""
 
 import sys
+import hashlib
+import json
+from collections import OrderedDict
+from threading import Lock
 from urllib.parse import urlsplit
 
 import requests
@@ -66,12 +70,31 @@ class XiaozhuguangAPITranslate:
 
     def __init__(self):
         self.gguf_translator = None
+        self._translation_cache = OrderedDict()
+        self._translation_lock = Lock()
 
     def translate(self, text, api_url, api_key, model, target_language, instructions="", timeout=120,
                   provider="自定义", seed=0, gguf_model=None, gguf_style="Default", gguf_target="Auto",
                   gguf_unload=False):
-        # ComfyUI includes seed in the input cache key, even though providers do
-        # not consistently support generation seeds. Keep it out of the payload.
+        # Upstream signatures can change even when their output text is identical.
+        # Cache successful translations by actual inputs, without retaining keys/text
+        # in the cache key. Seed remains an explicit way to request a new translation.
+        inputs = (text, api_url, api_key, model, target_language, instructions, timeout,
+                  provider, seed, gguf_model, gguf_style, gguf_target, gguf_unload)
+        key = hashlib.sha256(json.dumps(inputs, ensure_ascii=False).encode("utf-8")).digest()
+        with self._translation_lock:
+            if key in self._translation_cache:
+                self._translation_cache.move_to_end(key)
+                return self._translation_cache[key]
+            result = self._translate_uncached(*inputs)
+            self._translation_cache[key] = result
+            if len(self._translation_cache) > 8:
+                self._translation_cache.popitem(last=False)
+            return result
+
+    def _translate_uncached(self, text, api_url, api_key, model, target_language, instructions="", timeout=120,
+                            provider="自定义", seed=0, gguf_model=None, gguf_style="Default", gguf_target="Auto",
+                            gguf_unload=False):
         if not text.strip():
             return ("",)
         if provider == GGUF_PROVIDER:

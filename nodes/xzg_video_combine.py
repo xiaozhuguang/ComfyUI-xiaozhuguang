@@ -497,6 +497,25 @@ class XiaozhuguangVideoCombine:
     将图像序列合并为视频文件，支持 mp4/webm/gif 格式，可选音频合并
     """
 
+    # Only file paths are retained; never retain the input frames here.
+    _output_files = {}
+
+    @classmethod
+    def _output_cache_key(cls, prompt, unique_id):
+        return (str(unique_id), hashlib.sha256(
+            json.dumps(prompt or {}, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest())
+
+    @classmethod
+    def IS_CHANGED(cls, prompt=None, unique_id=None, **kwargs):
+        record = cls._output_files.get(cls._output_cache_key(prompt, unique_id))
+        if record is None:
+            return 0
+        if record[0] and not os.path.isfile(record[0]):
+            record[0] = None
+            record[1] += 1
+        return record[1]
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -691,6 +710,11 @@ class XiaozhuguangVideoCombine:
                 "output_dir": output_dir,
             }
         }
+        key = self._output_cache_key(prompt, unique_id)
+        revision = self._output_files.get(key, [None, 0])[1]
+        self._output_files[key] = [file_path, revision]
+        if len(self._output_files) > 256:
+            self._output_files.pop(next(iter(self._output_files)))
         return ui
 
 

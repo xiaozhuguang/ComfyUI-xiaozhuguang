@@ -71,3 +71,43 @@ test('unified backup maps display history to its independent category', () => {
     assert.equal(h.run('xzgExportCategoryForKey(DISPLAY_HISTORY_KEY)'), 'displayHistory');
     assert.equal(h.run('xzgExportCategoryForKey("xzg_text_box_god_presets")'), 'textBoxGodPresets');
 });
+
+test('collapsed history rows copy or send the saved channel and close without expanding', async () => {
+    class Element {
+        constructor(tag) { this.tag = tag; this.children = []; this.style = {}; this.value = ''; this.listeners = {}; }
+        append(...children) { this.children.push(...children); }
+        replaceChildren() { this.children = []; }
+        addEventListener(name, callback) { this.listeners[name] = callback; }
+        showModal() { this.open = true; }
+        close() { this.open = false; this.listeners.close?.(); }
+        remove() { this.removed = true; }
+    }
+    for (const action of ['Copy Text', 'Send to Godlike Text Box']) {
+        const body = new Element('body');
+        const copied = [], sent = [];
+        const target = { type: 'XiaozhuguangTextBoxGod', widgets: [{ name: 'text', value: 'old', callback: value => sent.push(value) }] };
+        const node = { graph: { _nodes: [target] }, _texts: ['current content'], copyTextToClipboard: text => copied.push(text) };
+        const context = vm.createContext({
+            document: { body, createElement: tag => new Element(tag) },
+            getDisplayHistory: async () => [{ time: 1, title: 'saved', nodeId: '1', state: { texts: ['A'], channels: { texts: [['A'], ['saved B', 'second line']] }, channel: 1 } }],
+            DISPLAY_HISTORY_LIMIT: 200, xzgT: (zh, en) => en, app: {},
+        });
+        vm.runInContext(display.slice(display.indexOf('async function showDisplayHistory'), display.indexOf('// ═', display.indexOf('async function showDisplayHistory'))), context);
+        vm.runInContext(display.slice(display.indexOf('function sendToTextBox('), display.indexOf('\n}', display.indexOf('function sendToTextBox(')) + 2), context);
+        context.node = node;
+        await vm.runInContext('showDisplayHistory(node)', context);
+        const dialog = node._xzgHistoryDialog;
+        const row = dialog.children[0].children[3].children[0];
+        assert.equal(row.open, false);
+        const button = row.children[0].children.find(child => child.textContent === action);
+        assert.ok(button, 'action is visible in the collapsed summary');
+        let prevented = false, stopped = false;
+        button.onclick({ preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+        assert.ok(prevented && stopped);
+        assert.equal(dialog.open, false);
+        assert.equal(dialog.removed, true);
+        assert.equal(node._xzgHistoryDialog, undefined);
+        assert.deepEqual(action === 'Copy Text' ? copied : sent, ['saved B\nsecond line']);
+        assert.deepEqual(node._texts, ['current content']);
+    }
+});

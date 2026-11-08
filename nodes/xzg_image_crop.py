@@ -26,7 +26,7 @@ class XiaozhuguangImageCrop:
                 "ratio": (["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
                 "startup_threshold": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "当mask的box面积与输入图像的面积占比达到此阈值时，跳过ratio和box_grow_factor判断"}),
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
-                "min_margin": ("INT", {"default": 30, "min": 0, "max": 16384, "step": 1, "tooltip": "主体到裁剪框四边的最小原图像素距离，0关闭。为自动接缝提供周围画面。"}),
+                "margin_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0, "tooltip": "每边边距为原遮罩外接框短边的百分比，0关闭。"}),
             }
         }
 
@@ -37,14 +37,14 @@ class XiaozhuguangImageCrop:
     def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None,
                         Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=8,
                         ratio="auto", startup_threshold=.4, fill_color="#FFFFFF",
-                        Box_grow_pixels=0, min_margin=30):
+                        Box_grow_pixels=0, min_margin=None, margin_percent=10.0):
         from .xzg_atbc import XiaozhuguangATBC
         if mask is not None and mask.ndim >= 3:
             mask = mask[:1]
         result, boxes, cropped_mask = XiaozhuguangATBC().crop_and_resize(
             image[:1], mask=mask, Box_grow_factor=Box_grow_factor,
             kilopixels=kilopixels, divisible_by=divisible_by, ratio=ratio,
-            fill_color=fill_color, min_margin=min_margin)
+            fill_color=fill_color, min_margin=min_margin, margin_percent=margin_percent)
         info = boxes["crop_infos"][0]
         info["full_image_restore"] = mask is None
         return result, info, cropped_mask

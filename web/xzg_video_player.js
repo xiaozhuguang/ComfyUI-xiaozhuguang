@@ -1307,6 +1307,16 @@ export class XiaozhuguangVideoPlayer {
         this._renderExtraContextMenu(extraItems);
         if (!showDesktop && !showView && !showFrame && extraItems.length === 0) return;
         this._contextMenuDesktop.style.display = showDesktop ? "" : "none";
+        if (this._node?.type === "XiaozhuguangVideoSaveDaVinci") {
+            // 内置项和动态项统一样式；隐藏项不占用分割线位置。
+            const rows = [...menu.children].flatMap(el =>
+                el === this._contextMenuExtra ? [...el.children] : [el]
+            ).filter(el => el.style.display !== "none");
+            rows.forEach((el, index) => {
+                el.style.fontSize = "14px";
+                el.style.borderTop = index ? "1px solid #444" : "none";
+            });
+        }
         menu.style.left = x + "px";
         menu.style.top = y + "px";
         menu.style.display = "block";
@@ -1351,7 +1361,7 @@ export class XiaozhuguangVideoPlayer {
                 el.addEventListener("click", (e) => {
                     e.stopPropagation();
                     this._hideContextMenu();
-                    item.callback?.();
+                    item.callback?.(item, undefined, e);
                 });
             }
             container.appendChild(el);

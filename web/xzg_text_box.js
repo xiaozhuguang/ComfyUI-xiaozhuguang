@@ -420,7 +420,7 @@ async function _addGodFavorite(prompt) {
     while (Object.prototype.hasOwnProperty.call(presets, key)) key = `${base} (${suffix++})`;
     const order = Object.values(presets).filter(item => item?.category === category && !item?._categoryOnly)
         .reduce((min, item) => Math.min(min, Number.isFinite(item.order) ? item.order : 0), 0) - 1000;
-    presets[key] = { category, name: snippet, text, order, ...(category === _GOD_FAVORITES_CATEGORY ? { _xzgFavorite: true } : {}) };
+    presets[key] = { category, name: snippet, text, order, createdAt: new Date().toISOString(), ...(category === _GOD_FAVORITES_CATEGORY ? { _xzgFavorite: true } : {}) };
     _refreshGodPresetSelectionNames(presets);
     try { localStorage.setItem(_GOD_PRESETS_KEY, JSON.stringify(presets)); } catch (_) {}
     _godPresetsRestorePromise = Promise.resolve(presets);
@@ -464,18 +464,26 @@ function _godPresetChildName(key, preset) {
     return typeof preset?.name === "string" && preset.name ? preset.name : key;
 }
 
+function _godRecordTime(value) {
+    const date = value ? new Date(value) : null;
+    return date && Number.isFinite(date.getTime())
+        ? date.toLocaleString(xzgLang() === "en" ? "en-GB" : "zh-CN", { hour12: false })
+        : (xzgLang() === "en" ? "Time not recorded" : "未记录时间");
+}
+
 function _readGodPromptHistory() {
     try {
         const history = JSON.parse(localStorage.getItem(_GOD_HISTORY_KEY) || "[]");
-        return Array.isArray(history) ? history.filter(item => typeof item === "string" && item.trim()).slice(0, _GOD_HISTORY_LIMIT) : [];
+        return Array.isArray(history) ? history.map(item => typeof item === "string" ? { text: item, recordedAt: null } : item)
+            .filter(item => item && typeof item.text === "string" && item.text.trim()).slice(0, _GOD_HISTORY_LIMIT) : [];
     } catch (_) { return []; }
 }
 
 function _saveGodPromptHistory(prompt) {
     const text = String(prompt || "").trim();
     if (!text) return;
-    const history = _readGodPromptHistory().filter(item => item !== text);
-    history.unshift(text);
+    const history = _readGodPromptHistory().filter(item => item.text !== text);
+    history.unshift({ text, recordedAt: new Date().toISOString() });
     try { localStorage.setItem(_GOD_HISTORY_KEY, JSON.stringify(history.slice(0, _GOD_HISTORY_LIMIT))); } catch (_) {}
 }
 
@@ -500,11 +508,18 @@ if (typeof window !== "undefined" && !window._xzgGodPromptHistoryExecutionListen
 }
 
 function _showGodPromptHistory(node, textarea) {
+    document.querySelector(".xzg-text-box-history-overlay")?._xzgClose?.();
+    const overlay = document.createElement("div");
+    overlay.className = "xzg-text-box-history-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:100000;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box";
     const menu = document.createElement("div");
     menu.className = "xzg-text-box-history-menu";
-    menu.style.cssText = "position:fixed;z-index:100000;left:0;top:0;width:320px;max-height:280px;display:flex;flex-direction:column;overflow:hidden;background:#202124;border:1px solid #666;border-radius:6px;box-shadow:0 5px 18px #0009;color:#eee;font:12px/1.4 sans-serif";
+    menu.style.cssText = "box-sizing:border-box;width:min(1100px,100%);height:min(800px,100%);min-height:0;display:flex;flex-direction:column;overflow:hidden;background:#202124;border:1px solid #666;border-radius:8px;box-shadow:0 12px 40px #0009;color:#eee;font:14px/1.6 sans-serif";
+    menu.setAttribute("role", "dialog");
+    menu.setAttribute("aria-modal", "true");
+    menu.setAttribute("aria-label", xzgLang() === "en" ? "Prompt History" : "历史提示词");
     const header = document.createElement("div");
-    header.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #484848;flex:none";
+    header.style.cssText = "display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #484848;flex:none";
     const title = document.createElement("span");
     title.textContent = xzgLang() === "en" ? "Prompt History" : "历史提示词";
     title.style.cssText = "flex:1;font-weight:600";
@@ -512,8 +527,37 @@ function _showGodPromptHistory(node, textarea) {
     clearButton.type = "button";
     clearButton.textContent = xzgLang() === "en" ? "Clear" : "清空";
     clearButton.style.cssText = "padding:3px 8px;border:1px solid #777;border-radius:4px;background:#303236;color:#eee;cursor:pointer";
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.textContent = xzgLang() === "en" ? "Close" : "关闭";
+    closeButton.style.cssText = clearButton.style.cssText;
+    const close = () => {
+        historyResizeObserver.disconnect();
+        overlay.remove();
+        document.querySelector(".xzg-text-box-favorite-context")?.remove();
+        document.removeEventListener("keydown", onKey, true);
+        node._xzgGodHistoryButton?.focus();
+    };
+    const onKey = event => {
+        if (event.key === "Escape" && !document.querySelector(".xzg-god-favorite-dialog")) {
+            event.preventDefault(); event.stopPropagation(); close();
+        }
+    };
+    overlay._xzgClose = close;
+    closeButton.addEventListener("click", close);
+    overlay.addEventListener("pointerdown", event => { if (event.target === overlay) close(); });
     const list = document.createElement("div");
-    list.style.cssText = "overflow:auto;padding:5px";
+    list.style.cssText = "flex:1;min-height:0;overflow:auto;padding:12px 18px;overscroll-behavior:contain";
+    const historyResizeObserver = new ResizeObserver(() => {
+        for (const row of list.children) {
+            const content = row.querySelector("[data-history-content]");
+            const toggle = row.querySelector("[data-history-toggle]");
+            if (content && toggle && toggle.getAttribute("aria-expanded") !== "true") {
+                toggle.hidden = content.scrollHeight <= content.clientHeight + 1;
+            }
+        }
+    });
+    historyResizeObserver.observe(list);
     const renderHistory = () => {
         list.replaceChildren();
         const history = _readGodPromptHistory();
@@ -526,12 +570,34 @@ function _showGodPromptHistory(node, textarea) {
             list.appendChild(empty);
             return;
         }
-        history.forEach(prompt => {
+        history.forEach(record => {
+        const prompt = record.text;
+        const row = document.createElement("div");
+        row.style.cssText = "margin-bottom:10px;border:1px solid #444;border-radius:5px;overflow:hidden";
+        const recordedTime = document.createElement("div");
+        recordedTime.textContent = _godRecordTime(record.recordedAt);
+        recordedTime.style.cssText = "padding:10px 16px 0;color:#aaa;font-size:12px";
         const item = document.createElement("button");
         item.type = "button";
-        item.textContent = prompt.replace(/\s+/g, " ").slice(0, 100) || (xzgLang() === "en" ? "(empty)" : "（空）");
-        item.title = prompt;
-        item.style.cssText = "display:block;width:100%;padding:7px 8px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:transparent;border:0;border-radius:3px;color:#eee;cursor:pointer";
+        item.style.cssText = "display:block;box-sizing:border-box;width:100%;padding:14px 16px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:transparent;border:0;color:#eee;font:inherit;cursor:pointer";
+        const content = document.createElement("span");
+        content.dataset.historyContent = "1";
+        content.textContent = prompt || (xzgLang() === "en" ? "(empty)" : "（空）");
+        content.style.cssText = "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden";
+        item.appendChild(content);
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.dataset.historyToggle = "1";
+        toggle.setAttribute("aria-expanded", "false");
+        toggle.textContent = xzgLang() === "en" ? "Expand" : "展开";
+        toggle.style.cssText = "margin:0 16px 10px;padding:3px 0;border:0;background:transparent;color:#e7b94f;font:inherit;cursor:pointer";
+        toggle.addEventListener("click", event => {
+            event.preventDefault(); event.stopPropagation();
+            const expanded = toggle.getAttribute("aria-expanded") !== "true";
+            toggle.setAttribute("aria-expanded", String(expanded));
+            content.style.webkitLineClamp = expanded ? "unset" : "5";
+            toggle.textContent = xzgLang() === "en" ? (expanded ? "Collapse" : "Expand") : (expanded ? "收起" : "展开");
+        });
         item.addEventListener("mouseenter", () => { item.style.background = "#3b3d40"; });
         item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
         item.addEventListener("contextmenu", event => {
@@ -567,9 +633,10 @@ function _showGodPromptHistory(node, textarea) {
             if (widget) { widget.value = prompt; widget.callback?.(prompt); }
             if (textarea) { textarea.value = prompt; textarea.dispatchEvent(new Event("input", { bubbles: true })); }
             try { app.graph?.change?.(); } catch (_) {}
-            menu.remove();
+            close();
         });
-            list.appendChild(item);
+            row.append(recordedTime, item, toggle);
+            list.appendChild(row);
         });
     };
     clearButton.addEventListener("click", event => {
@@ -577,19 +644,13 @@ function _showGodPromptHistory(node, textarea) {
         try { localStorage.removeItem(_GOD_HISTORY_KEY); } catch (_) {}
         renderHistory();
     });
-    header.append(title, clearButton);
+    header.append(title, clearButton, closeButton);
     menu.append(header, list);
     renderHistory();
-    document.body.appendChild(menu);
-    const rect = textarea?.getBoundingClientRect?.();
-    menu.style.left = `${Math.max(4, Math.min(window.innerWidth - menu.offsetWidth - 4, rect?.left ?? 4))}px`;
-    menu.style.top = `${Math.max(4, (rect?.bottom ?? 4) - menu.offsetHeight)}px`;
-    const close = event => {
-        if (menu.contains(event.target) || event.target === button) return;
-        menu.remove(); document.removeEventListener("pointerdown", close, true);
-    };
-    const button = node._xzgGodHistoryButton;
-    setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
+    overlay.appendChild(menu);
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKey, true);
+    closeButton.focus();
 }
 
 function _installGodPromptHistory(node, textarea) {
@@ -609,7 +670,7 @@ function _installGodPromptHistory(node, textarea) {
     button.textContent = "◷";
     button.title = xzgLang() === "en" ? "Prompt history (last 100)" : "历史提示词（最近 100 条）";
     button.setAttribute("aria-label", button.title);
-    button.style.cssText = "position:absolute;left:0;bottom:0;z-index:20;width:26px;height:26px;padding:0;border:0;border-radius:0;background:transparent;color:#b8b8b8;font:19px/26px sans-serif;cursor:pointer;opacity:.72;transition:opacity .15s ease";
+    button.style.cssText = "position:absolute;left:0;bottom:0;z-index:20;width:26px;height:26px;padding:0;border:0;border-radius:0;background:transparent;color:#e7b94f;font:19px/26px sans-serif;cursor:pointer;opacity:.72;transition:opacity .15s ease";
     button.addEventListener("mouseenter", () => { button.style.opacity = "1"; });
     button.addEventListener("mouseleave", () => { button.style.opacity = ".72"; });
     button.addEventListener("pointerdown", event => event.stopPropagation());
@@ -808,6 +869,7 @@ async function _openGodPresetManagerTree(node) {
     working = _ensureGodFavoritesCategory(working && typeof working === "object" && !Array.isArray(working) ? { ...working } : {});
     const zh = xzgLang() !== "en";
     const geometryKey = "xzg_text_box_god_manager_geometry";
+    const paneWidthKey = "xzg_text_box_god_manager_pane_width";
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;z-index:2000005;background:#0009;display:block;padding:20px;box-sizing:border-box";
     const dialog = document.createElement("div");
@@ -1116,6 +1178,13 @@ async function _openGodPresetManagerTree(node) {
     addCategoryButton.style.cssText = "box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;padding:0;background:transparent;color:#fff;border:0;border-radius:0;font:32px/32px Arial,sans-serif;cursor:pointer";
     home.querySelector("[data-add-category]").replaceWith(addCategoryButton);
     const leftPane = home.querySelector("[data-left-pane]"), splitDivider = home.querySelector("[data-split-divider]");
+    try {
+        const savedWidth = Number(localStorage.getItem(paneWidthKey));
+        if (Number.isFinite(savedWidth) && savedWidth >= 160) {
+            const width = Math.max(160, Math.min(home.getBoundingClientRect().width - 240, savedWidth));
+            leftPane.style.width = `${width}px`; leftPane.style.flex = `0 0 ${width}px`;
+        }
+    } catch (_) {}
     splitDivider.addEventListener("pointerdown", event => {
         if (event.button !== 0) return;
         event.preventDefault();
@@ -1124,7 +1193,11 @@ async function _openGodPresetManagerTree(node) {
             const width = Math.max(160, Math.min(bounds.width - 240, startWidth + e.clientX - startX));
             leftPane.style.width = `${width}px`; leftPane.style.flex = `0 0 ${width}px`;
         };
-        const end = () => { splitDivider.removeEventListener("pointermove", move); };
+        const end = () => {
+            splitDivider.removeEventListener("pointermove", move);
+            try { localStorage.setItem(paneWidthKey, String(Math.round(leftPane.getBoundingClientRect().width))); } catch (_) {}
+            cloudUIQueueGeometry();
+        };
         splitDivider.setPointerCapture(event.pointerId); splitDivider.addEventListener("pointermove", move); splitDivider.addEventListener("pointerup", end, { once: true }); splitDivider.addEventListener("pointercancel", end, { once: true });
     });
     let categoryInsertIndex = null;
@@ -1150,6 +1223,13 @@ async function _openGodPresetManagerTree(node) {
     });
     categoryList.addEventListener("drop", reorderCategoryDrop);
     categoryList.addEventListener("dragend", () => { clearInsertMarker(categoryList); categoryInsertIndex = null; });
+    const contentTooltip = document.createElement("div");
+    contentTooltip.style.cssText = "display:none;position:fixed;z-index:2000011;box-sizing:border-box;width:min(640px,calc(100vw - 32px));max-height:min(60vh,520px);overflow:auto;padding:12px 14px;background:#151617;color:#eee;border:1px solid #666;border-radius:5px;box-shadow:0 6px 24px #0009;font:13px/1.6 Arial,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text";
+    overlay.appendChild(contentTooltip);
+    const hideContentTooltip = () => { contentTooltip.style.display = "none"; };
+    contentTooltip.addEventListener("pointerleave", hideContentTooltip);
+    subcategoryList.addEventListener("scroll", hideContentTooltip);
+    subcategoryList.addEventListener("dragstart", hideContentTooltip);
     let onExternalPresets = null;
     const close = () => { document.removeEventListener("keydown", onKey, true); if (onExternalPresets) window.removeEventListener("xzg:text-box-presets-imported", onExternalPresets); overlay.remove(); node._xzgGodPresetDialogOpen = false; };
     const openEditor = key => { const p = working[key]; if (!p) return; editingKey = key; title.textContent = zh ? "编辑细分内容" : "Edit Subcategory Content"; setEditorHeaderState(true); const catSelect = dialog.querySelector("[data-editor-category]"); catSelect.innerHTML = categories().map(c => `<option value="${c.replace(/"/g, "&quot;")}"${c === String(p.category || "") ? " selected" : ""}>${c === _GOD_FAVORITES_CATEGORY ? "★ " + c : c}</option>`).join(""); dialog.querySelector("[data-editor-name]").value = _godPresetChildName(key, p); textArea.value = typeof p.text === "string" ? p.text : ""; refreshEditorThumbnail(p); home.style.display = "none"; editorView.style.display = "flex"; textArea.focus(); };
@@ -1158,7 +1238,7 @@ async function _openGodPresetManagerTree(node) {
         const name = await askText(zh ? `在“${category}”中增加子项` : `Add an item to “${category}”`); if (!name) return;
         const key = keyFor(category, name);
         const nextOrder = Object.values(working).filter(p => p?.category === category && !p?._categoryOnly).reduce((max, p) => Math.max(max, Number.isFinite(p.order) ? p.order : -1000), -1000) + 1000;
-        working[key] = { category, name, text: "", order: nextOrder };
+        working[key] = { category, name, text: "", order: nextOrder, createdAt: new Date().toISOString() };
         await save(); render();
     };
     const moveKeysToCategory = async (keys, cat) => {
@@ -1224,6 +1304,7 @@ async function _openGodPresetManagerTree(node) {
         await save(); render();
     });
     const render = () => {
+        hideContentTooltip();
         const cats = categories();
         if (!cats.includes(selectedCategory)) selectedCategory = cats[0] || "";
         categoryList.replaceChildren(); subcategoryList.replaceChildren();
@@ -1335,7 +1416,37 @@ async function _openGodPresetManagerTree(node) {
             checkboxLabel.addEventListener("click", e => e.stopPropagation());
             checkbox.addEventListener("change", () => { if (checkbox.checked) selectedKeys.add(key); else selectedKeys.delete(key); render(); });
             const dragHandle = document.createElement("span"); dragHandle.className = "xzg-preset-drag-handle"; dragHandle.textContent = "⠿"; dragHandle.title = zh ? "拖动调整顺序" : "Drag to reorder";
-            const name = document.createElement("span"); name.textContent = _godPresetChildName(key, p); name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#fff";
+            const name = document.createElement("span");
+            const childName = _godPresetChildName(key, p);
+            const contentLabel = String(p.text || "").trim().replace(/\s+/g, " ");
+            name.textContent = contentLabel && (!p.name || childName === contentLabel.slice(0, 36)) ? contentLabel : childName;
+            name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#fff";
+            name.style.cursor = "pointer";
+            card.addEventListener("pointerenter", () => {
+                const text = typeof p.text === "string" ? p.text : "";
+                if (!text) return;
+                contentTooltip.textContent = text;
+                contentTooltip.style.display = "block";
+                const rect = card.getBoundingClientRect();
+                const tooltipRect = contentTooltip.getBoundingClientRect();
+                contentTooltip.style.left = `${Math.max(16, Math.min(rect.left, innerWidth - tooltipRect.width - 16))}px`;
+                const top = rect.bottom + 10 + tooltipRect.height <= innerHeight - 16 ? rect.bottom + 10 : rect.top - tooltipRect.height - 10;
+                contentTooltip.style.top = `${Math.max(16, top)}px`;
+            });
+            card.addEventListener("pointerleave", event => {
+                if (!contentTooltip.contains(event.relatedTarget)) hideContentTooltip();
+            });
+            name.addEventListener("dblclick", event => {
+                event.preventDefault(); event.stopPropagation();
+                const textWidget = node.widgets?.find(widget => widget?.name === "text");
+                if (!textWidget) return;
+                const prompt = typeof p.text === "string" ? p.text : "";
+                textWidget.value = prompt;
+                textWidget.callback?.(prompt);
+                node.setDirtyCanvas?.(true, true);
+                try { app.graph?.change?.(); } catch (_) {}
+                close();
+            });
             const hasContent = typeof p.text === "string" && p.text.trim().length > 0;
             const contentIndicator = document.createElement("span");
             contentIndicator.title = hasContent ? (zh ? "已有编辑内容" : "Has content") : (zh ? "暂无编辑内容" : "No content");
@@ -1351,11 +1462,15 @@ async function _openGodPresetManagerTree(node) {
             const move = button(zh ? "移动" : "Move", e => { e.stopPropagation(); moveSubcategory(key, e); });
             move.title = zh ? "移动到其他分类" : "Move to another category";
             const edit = button(zh ? "编辑内容" : "Edit Content", () => openEditor(key));
-            const del = button(zh ? "删除" : "Delete", async () => { if (!await askConfirm(zh ? `确定删除子项“${name.textContent}”及其提示词？` : `Delete item “${name.textContent}” and its prompt?`)) return; selectedKeys.delete(key); delete working[key]; await save(); render(); }, true);
+            const del = button(zh ? "删除" : "Delete", async () => { if (!await askConfirm(zh ? `确定删除子项“${childName}”及其提示词？` : `Delete item “${childName}” and its prompt?`)) return; selectedKeys.delete(key); delete working[key]; await save(); render(); }, true);
             for (const b of [move, edit]) b.style.cssText += ";background:transparent;border:0;color:#fff";
             move.style.cssText += ";color:#e7b94f";
             del.style.cssText += ";background:transparent;border:0;color:#c75c5c";
-            card.append(checkboxLabel, dragHandle, contentIndicator, thumbnailIndicator, name, move, edit, del); subcategoryList.appendChild(card);
+            const recordedTime = document.createElement("span");
+            recordedTime.textContent = _godRecordTime(p.createdAt || p.updatedAt);
+            recordedTime.title = zh ? "记录时间" : "Recorded time";
+            recordedTime.style.cssText = "flex:none;color:#aaa;font-size:11px;white-space:nowrap";
+            card.append(checkboxLabel, dragHandle, contentIndicator, thumbnailIndicator, name, recordedTime, move, edit, del); subcategoryList.appendChild(card);
         }
     };
     addSubButton.addEventListener("click", () => createSubcategory(selectedCategory));
@@ -1630,6 +1745,7 @@ function ensureTextarea(node) {
         if (!ta) return;
         if (!ta._xzgTagged) { ta._xzgTagged = true; ta.classList.add("xzg-text-box"); }
         const isGodTier = node.type === _NODE_TYPE_GOD || node.comfyClass === _NODE_TYPE_GOD;
+        ta.classList.toggle("xzg-text-box-god", isGodTier);
         const want = ""; // 普通版与化神级均不显示暗色 placeholder 注释
         if (ta.getAttribute("placeholder") !== want) {
             ta.setAttribute("placeholder", want);
@@ -1726,7 +1842,7 @@ input.xzg-text-box-modal-input:active {
     document.head.appendChild(s);
 })();
 
-// 全局 capture：textarea 不可滚动时把 wheel 转发给画布缩放
+// 化神级文本框始终将滚轮交给画布，文本仍可通过滚动条滚动。
 (function () {
     if (window.__xzg_textarea_wheel_fixed) return;
     window.__xzg_textarea_wheel_fixed = true;
@@ -1734,7 +1850,7 @@ input.xzg-text-box-modal-input:active {
     window.addEventListener("wheel", (e) => {
         const el = e.target;
         if (!el || el.tagName !== "TEXTAREA") return;
-        if (el.scrollHeight > el.clientHeight + 1) return;
+        if (!el.classList.contains("xzg-text-box-god") && el.scrollHeight > el.clientHeight + 1) return;
         const cv = app.canvas?.canvas;
         if (!cv) return;
         e.preventDefault();

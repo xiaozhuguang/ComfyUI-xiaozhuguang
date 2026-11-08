@@ -521,7 +521,7 @@
       "tracking_preference": { "name": "跟踪偏好仅跟踪" },
       "tracking_scale": { "name": "缩放模式仅跟踪" },
       "alignment_mode": { "name": "整除对齐模式" },
-      "min_margin": { "name": "最小边距" },
+      "margin_percent": { "name": "边距比例（%）" },
       "fill_color": { "name": "填充颜色" },
       "mask_smooth": { "name": "遮罩平滑" },
       "sum_mask": { "name": "遮罩求和" }
@@ -905,7 +905,7 @@
   "XiaozhuguangImageCrop": {
     "display_name": "小珠光图像裁剪",
     "inputs": {
-      "min_margin": { "name": "最小边距" },
+      "margin_percent": { "name": "边距比例（%）" },
       "image": {
         "name": "图像"
       },
@@ -989,7 +989,7 @@
   },
   "XiaozhuguangVideoColorCalibrator": {
     "display_name": "小珠光视频颜色矫正",
-    "description": "先估计整体颜色变换，再降低内容差异区域的统计权重；短暂失配参考邻帧，持续失配逐步减弱校正。稳健亮度分位数曲线匹配；色度矩阵校正色相、饱和度和偏色。所有参数时间平滑，检测到双路大幅画面变化时重置。两段视频必须帧数相同、时间和位置对齐，不含光流。",
+    "description": "先估计整体颜色变换，再降低内容差异区域的统计权重；不可靠匹配原样输出并重置校正历史。稳健亮度分位数曲线匹配；色度矩阵校正色相、饱和度和偏色。所有参数时间平滑，检测到双路大幅画面变化时重置。两段视频必须帧数相同、时间和位置对齐，不含光流。 自动检查空间结构；缺少足够可靠对应区域时跳过校正，不可靠匹配不沿用邻帧校正。",
     "inputs": {
       "video_original": {
         "name": "原版视频"

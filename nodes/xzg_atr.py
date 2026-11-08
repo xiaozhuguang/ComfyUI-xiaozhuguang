@@ -25,9 +25,7 @@ class XiaozhuguangATR:
             "optional": {
                 "mask": ("MASK",),
                 "edge_color_match": ("BOOLEAN", {"default": False, "tooltip": "分析接缝附近可靠的对应背景，分离亮度与色度进行稳健修正；只作用于羽化过渡区，主体内部保持原色"}),
-                "color_band_width": ("INT", {"default": 16, "min": 1, "max": 256, "step": 1, "tooltip": "沿最终融合权重50%轮廓向内取样的带宽，单位为原图像素；异常样本自动降权；短暂失配参考历史，持续失配逐渐减弱修正"}),
                 "color_match_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "过渡区颜色修正强度；1仍受样本可靠程度及增益、偏移上限约束，0关闭修正"}),
-                "color_correction_range": ("INT", {"default": 128, "min": 1, "max": 512, "step": 1, "tooltip": "控制接缝附近修正权重的空间衰减，单位为原图像素；实际作用受自动羽化区限制，不修改完全保留的主体内部"}),
                 "color_temporal_smooth": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 0.98, "step": 0.05, "tooltip": "亮度增益、亮度偏移和色度偏移的时间平滑；0关闭。短暂失配延续历史，持续失配逐渐减弱；双路画面结构明显变化时重置，仅在本批次内生效"}),
                 "seam_preview": ("BOOLEAN", {"default": False, "tooltip": "仅调试接缝时开启；关闭可跳过预览计算"}),
             }
@@ -222,7 +220,7 @@ class XiaozhuguangATR:
     def _cached_auto_seam_weights(self, info, mask, width, height):
         geometry = tuple((name, tuple(info[name]) if info.get(name) is not None else None)
                          for name in ("original_coords", "pad_info", "original_image_size", "subject_box", "seam_box"))
-        key = (geometry, width, height, None if mask is None else
+        key = (geometry, info.get("min_margin"), width, height, None if mask is None else
                (mask.shape, hashlib.blake2b(np.ascontiguousarray(mask).tobytes(), digest_size=16).digest()))
         cached = getattr(self, "_auto_weight_cache", None)
         if cached is not None and cached[0] == key:
@@ -271,15 +269,24 @@ class XiaozhuguangATR:
             distance = np.hypot(dx, dy).astype(np.float32)
         else:
             distance = distance_transform_edt(~core).astype(np.float32)
-        # Scale the automatic cap with subject size. Local edge distance narrows
-        # the band point by point rather than limiting all sides to the tightest.
-        size = max(1., float(np.sqrt(core.sum())))
-        cap = max(1., size * .15)
-        protection = min(30., size * .03) if mask is None else 0.
-        safe_protection = np.minimum(protection, np.maximum(0, (distance + edge) * .2))
-        outer = np.maximum(0, distance - safe_protection)
-        span = np.minimum(cap, outer + edge)
-        t = np.clip(outer / np.maximum(span, 1e-6), 0, 1)
+        # Use the entire locally available corridor from subject to crop edge.
+        # The subject itself is protected by core=1; reserving another interior
+        # plateau or capping by subject size would unnecessarily shorten feathering.
+        # Physical image edges have infinite clearance and require no transition.
+        margin = max(0., float(info.get("min_margin", 0)))
+        if margin > 0:
+            # Feather outward from the protected region for 90% of the requested
+            # margin; leave the final 10% as untouched original pixels. Extra
+            # ratio/alignment padding must not widen the transition.
+            reserve = margin * .1
+            span = np.minimum(margin * .9, np.maximum(0, distance + edge - reserve))
+            t = np.clip(distance / np.maximum(span, 1e-6), 0, 1)
+            # Physical frame boundaries are not seams.
+            t = np.where(np.isinf(edge), 0, t)
+        else:
+            # Legacy crop records carry no requested margin.
+            span = distance + edge
+            t = np.clip(distance / np.maximum(span, 1e-6), 0, 1)
         weights = 1 - t*t*(3-2*t)
         weights = np.maximum(weights, soft)
         weights[core] = 1
@@ -469,10 +476,9 @@ class XiaozhuguangATR:
         cols = torch.arange(width, device=processed.device) + x1
         valid_region = ((rows >= top) & (rows < top + oh))[:, None] & ((cols >= left) & (cols < left + ow))[None, :]
         support = torch.where(valid_region, support, 1)
-        padded = self._color_pad(support, band, crop_info)
-        inner = -F.max_pool2d(-padded, (1, band * 2 + 1), stride=1)
-        inner = -F.max_pool2d(-inner, (band * 2 + 1, 1), stride=1)
-        ring = (support - inner).clamp_(0, 1) * valid_region
+        # Sample the actual middle of the transition, automatically following
+        # local feather width. Fully retained content never enters the fit.
+        ring = ((alpha > .15) & (alpha < .85)).to(processed.dtype) * valid_region
         # Estimate in luma/chroma coordinates; fit only paired seam pixels.
         luma = processed.new_tensor([.299, .587, .114]).reshape(1, 3, 1, 1)
         src_y = (processed * luma).sum(1, keepdim=True)
@@ -519,17 +525,9 @@ class XiaozhuguangATR:
         dr, db = tint[:, :1], tint[:, 1:]
         dg = -(.299*dr + .114*db)/.587
         correction = delta_y + torch.cat((dr, dg, db), dim=1)
-        padded = self._color_pad(support, reach, crop_info)
-        kernel = reach * 2 + 1
-        sums = F.pad(padded.cumsum(-1), (1, 0))
-        average = (sums[..., kernel:] - sums[..., :-kernel]) / kernel
-        sums = F.pad(average.cumsum(-2), (0, 0, 1, 0))
-        average = (sums[..., kernel:, :] - sums[..., :-kernel, :]) / kernel
-        inward_weight = (2 * (1 - average)).clamp_(0, 1) * support
-        # 覆盖最终羽化过渡带的两侧，避免在 50% 融合轮廓处突然开启修正。
-        weight = torch.maximum(inward_weight, transition) * (alpha > 0) * valid_region
-        # Never recolor the fully retained subject interior.
-        weight = weight * (alpha < 1 - 1e-6)
+        # A bounded smooth envelope vanishes at both ends; no independent
+        # spatial filter can introduce a step at the protected interior.
+        weight = transition.square() * valid_region
         return (processed + correction * weight * strength).round().clamp_(0, 255)
 
     def _match_edge_color_numpy(self, processed, original, final_mask, crop_info, options, state):

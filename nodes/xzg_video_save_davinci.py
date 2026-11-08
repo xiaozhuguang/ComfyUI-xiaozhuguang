@@ -340,6 +340,19 @@ if getattr(_PS, "instance", None) is not None and getattr(_PS.instance, "routes"
         result["copied"] = True
         return _web.json_response(result)
 
+    @_PS.instance.routes.post("/xzg/davinci/video-to-input")
+    @_safe_handler
+    async def xzg_saved_video_to_input(request):
+        data = await request.json()
+        source = _lookup_abs_token(data.get("token") or "")
+        if not source or not os.path.isfile(source):
+            return _web.json_response({"error": "视频不存在或已失效，请重新执行保存节点"}, status=404)
+        import uuid
+        name = "xzg-saved-" + uuid.uuid4().hex + os.path.splitext(source)[1]
+        destination = os.path.join(folder_paths.get_input_directory(), name)
+        await asyncio.to_thread(shutil.copy2, source, destination)
+        return _web.json_response({"name": name})
+
     @_PS.instance.routes.get("/xzg/davinci/view-abs")
     @_safe_handler
     async def xzg_davinci_view_abs(request):

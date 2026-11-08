@@ -508,7 +508,7 @@
   "XiaozhuguangATBC": {
     "display_name": "ATBC (Advanced)",
     "inputs": {
-      "min_margin": { "name": "Minimum Margin" },
+      "margin_percent": { "name": "Margin (%)" },
       "image": { "name": "image" },
       "mask": { "name": "Mask" },
       "Box_grow_factor": { "name": "box grow factor" },
@@ -890,7 +890,7 @@
   "XiaozhuguangImageCrop": {
     "display_name": "Xiaozhuguang Image Crop",
     "inputs": {
-      "min_margin": { "name": "Minimum Margin" },
+      "margin_percent": { "name": "Margin (%)" },
       "image": {
         "name": "image"
       },
@@ -974,7 +974,7 @@
   },
   "XiaozhuguangVideoColorCalibrator": {
     "display_name": "XZG Video Color Calibrator",
-    "description": "Robust global paired calibration: estimates overall color alignment before downweighting changed content; bridges brief correspondence losses within a scene and fades correction during prolonged loss. Robust quantile matching corrects the luminance tone curve. A chroma matrix corrects hue, saturation and tint. All parameters are temporally smoothed and reset on large changes in both streams. Requires equal frame counts and spatial/temporal alignment; no optical flow.",
+    "description": "Robust global paired calibration: estimates overall color alignment before downweighting changed content; passes unreliable matches through unchanged and resets correction history. Robust quantile matching corrects the luminance tone curve. A chroma matrix corrects hue, saturation and tint. All parameters are temporally smoothed and reset on large changes in both streams. Requires equal frame counts and spatial/temporal alignment; no optical flow. Spatial structure is checked automatically; insufficient correspondence skips correction without borrowing corrections from neighboring frames.",
     "inputs": {
       "video_original": {
         "name": "original video"

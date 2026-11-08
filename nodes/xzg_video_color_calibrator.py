@@ -74,6 +74,66 @@ def _stable_weights(ref, src):
     return weights
 
 
+def _correspondence_mask(ref, src):
+    """Require spatial agreement before fitting colors, independent of skin hue."""
+    a = _luma(ref).permute(0,3,1,2)
+    b = _luma(src).permute(0,3,1,2)
+    mean_a, mean_b = a.mean(), b.mean()
+    sd_a, sd_b = a.std(unbiased=False), b.std(unbiased=False)
+    # Constant images have no geometric evidence, but a constant offset is safe.
+    if max(sd_a.item(),sd_b.item())<.003:
+        return torch.ones_like(a)
+    correlation = ((a-mean_a)*(b-mean_b)).mean()/(sd_a*sd_b).clamp_min(1e-8)
+    # Exact global color changes should retain the full tonal range, including
+    # smooth ramps with no high-frequency features.
+    x = torch.cat((src.reshape(-1,3),torch.ones_like(src.reshape(-1,3)[:,:1])),-1)
+    prior = torch.cat((torch.eye(3,device=src.device),src.new_zeros(1,3)))
+    fit = _fit(x,ref.reshape(-1,3),src.new_ones(x.shape[0]),prior)
+    error = (x@fit-ref.reshape(-1,3)).square().mean().sqrt()
+    if correlation>.9 and error<.005:
+        return torch.ones_like(a)
+
+    def patch_correlation(left,right,minimum):
+        def pool(v):
+            return F.adaptive_avg_pool2d(v,(8,8))
+        ml,mr = pool(left),pool(right)
+        sl = (pool(left.square())-ml.square()).clamp_min(0).sqrt()
+        sr = (pool(right.square())-mr.square()).clamp_min(0).sqrt()
+        corr = (pool(left*right)-ml*mr)/(sl*sr).clamp_min(1e-8)
+        return corr,(sl>minimum)&(sr>minimum)
+
+    raw,detail = patch_correlation(a,b,.008)
+    ah = a-F.avg_pool2d(F.pad(a,(2,2,2,2),mode='replicate'),5,1)
+    bh = b-F.avg_pool2d(F.pad(b,(2,2,2,2),mode='replicate'),5,1)
+    high,high_detail = patch_correlation(ah,bh,.001)
+    good = (raw>.75)&detail&(high>.35)&high_detail
+    # Smooth but aligned nonlinear tone changes can lack high-frequency detail.
+    if correlation>.9 and ((raw>.95)&detail).float().mean()>.8:
+        return torch.ones_like(a)
+    quadrants = F.avg_pool2d(good.float(),4,4)>0
+    if good.sum()<12 or quadrants.sum()<2:
+        return torch.zeros_like(a)
+    return F.interpolate(good.float(),size=a.shape[-2:],mode='nearest')
+
+
+def _unmatched_boundaries(unmatched, cuts):
+    """Hard failures must neither borrow nor propagate temporal corrections."""
+    cuts = list(cuts)
+    for i, failed in enumerate(unmatched):
+        if failed:
+            cuts[i] = True
+            if i + 1 < len(cuts):
+                cuts[i + 1] = True
+    return cuts
+
+
+def _distributed_support(weights, shape):
+    support = (weights.reshape(shape[0], shape[1]) > 0.1).float()[None, None]
+    patches = F.adaptive_avg_pool2d(support, (8, 8)) >= 0.25
+    quadrants = F.avg_pool2d(patches.float(), 4, 4) > 0
+    return bool(patches.sum() >= 12 and quadrants.sum() >= 2)
+
+
 def _interp(values, xs, ys):
     idx = torch.searchsorted(xs.contiguous(), values.contiguous(), right=True) - 1
     idx = idx.clamp(0, xs.numel() - 2)
@@ -292,6 +352,7 @@ class XiaozhuguangVideoColorCalibrator:
                     "tooltip": "校正强度：0=严格保留编辑图，1=应用估计的完整校正",
                 }),
             },
+
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -301,7 +362,8 @@ class XiaozhuguangVideoColorCalibrator:
     DESCRIPTION = (
         "对齐两段视频的全局颜色：先估计整体偏色，再降低内容差异区域的统计权重。"
         "稳健分位数匹配亮度曲线；色度矩阵校正色相、饱和度和偏色。"
-        "所有参数时间平滑，双路大幅画面变化时重置。短暂失配参考邻帧，持续失配逐步减弱校正。"
+        "所有参数时间平滑，双路大幅画面变化时重置。可靠帧内平滑；不可靠匹配原样输出并重置历史。"
+        "自动检查空间结构，缺少足够且分布广泛的可靠对应区域时跳过校正。"
         "两段视频必须帧数相同、时间与位置对齐；不含光流或语义匹配。"
     )
 
@@ -317,8 +379,8 @@ class XiaozhuguangVideoColorCalibrator:
                 raise ValueError(f'{name} contains NaN or infinity')
             return value
 
-        original = validate(video_original, 'video_original')
         edited = validate(video_edited, 'video_edited')
+        original = validate(video_original, 'video_original')
         if original.shape[0] != edited.shape[0]:
             raise ValueError('Original and edited videos must have the same frame count and be frame-aligned')
         # Legacy API mode values are accepted but use the single quantile algorithm.
@@ -334,7 +396,7 @@ class XiaozhuguangVideoColorCalibrator:
         grid = torch.linspace(0, 1, _GRID_SIZE, device=device)
         identity = torch.eye(2, device=device)
         last_ref = last_src = None
-        estimates, cuts, fit_errors = [], [], []
+        estimates, cuts, fit_errors, unmatched = [], [], [], []
         for bi in range(edited.shape[0]):
             src = edited[bi:bi + 1, ..., :3].float()
             ref = original[bi:bi + 1, ..., :3].to(device=device, dtype=torch.float32)
@@ -354,9 +416,16 @@ class XiaozhuguangVideoColorCalibrator:
             last_ref, last_src = small_ref, small_src
             cuts.append(cut)
             a, b = small_ref.reshape(-1, 3), small_src.reshape(-1, 3)
-            weights = _stable_weights(a, b)
+            correspondence = _correspondence_mask(small_ref,small_src).reshape(-1)
+            geometry_failed = not bool(correspondence.any())
+            unmatched.append(geometry_failed)
+            weights = torch.zeros_like(correspondence)
+            if not geometry_failed:
+                selected = correspondence > 0
+                weights[selected] = _stable_weights(a[selected], b[selected])
             count = (weights > 0.1).sum().item()
-            if count < 64 or count / weights.numel() < 0.05:
+            if count < 64 or not _distributed_support(weights, small_src.shape[1:3]):
+                unmatched[-1] = True
                 estimates.append(None)
                 fit_errors.append(float('inf'))
             else:
@@ -367,15 +436,25 @@ class XiaozhuguangVideoColorCalibrator:
                 current = (grid + (curve - grid) * confidence,
                            identity + (matrix - identity) * confidence,
                            offset * confidence)
-                estimates.append(current)
                 predicted = _apply(b, grid, *current).clamp(0, 1)
                 error = ((predicted - a).abs().mean(-1) * weights).sum() / weights.sum()
-                fit_errors.append(error.item())
+                baseline = ((b - a).abs().mean(-1) * weights).sum() / weights.sum()
+                if not torch.isfinite(error) or error > baseline + 0.001:
+                    estimates.append(None)
+                    unmatched[-1] = True
+                    fit_errors.append(float('inf'))
+                else:
+                    estimates.append(current)
+                    fit_errors.append(error.item())
 
+        cuts = _unmatched_boundaries(unmatched,cuts)
         neutral = (grid, identity, grid.new_zeros(2))
         parameters = _temporal_parameters(estimates, cuts, smooth, neutral, fit_errors)
         output = []
         for bi, current in enumerate(parameters):
+            if current is None:
+                output.append(edited[bi:bi + 1])
+                continue
             src = edited[bi:bi + 1, ..., :3].float()
             if src.shape[-1] == 1:
                 src = src.expand(-1, -1, -1, 3)

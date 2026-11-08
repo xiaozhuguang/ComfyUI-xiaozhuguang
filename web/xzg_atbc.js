@@ -22,8 +22,8 @@ app.registerExtension({
                 const item = widget(name);
                 if (item && !values.includes(item.value)) item.value = values[0];
             }
-            const margin = widget("min_margin");
-            if (margin && !Number.isFinite(margin.value)) margin.value = 30;
+            const margin = widget("margin_percent");
+            if (margin && !Number.isFinite(margin.value)) margin.value = 10;
             // Runtime input values, including external connections, decide applicability.
             for (const name of ["tracking_preference", "tracking_scale", "mask_smooth", "crop_mode"]) {
                 const item = widget(name);
@@ -78,8 +78,20 @@ app.registerExtension({
                 info = { ...info, widgets_values: [...normalized] };
                 info.widgets_values.splice(7, 1);
             }
+            const marginIndex = this.widgets?.findIndex(w => w.name === "margin_percent") ?? -1;
+            if (marginIndex >= 0 && Array.isArray(info?.widgets_values) && !info.xzg_margin_percent) {
+                const values = [...info.widgets_values];
+                values[marginIndex] = 10;
+                info = { ...info, widgets_values: values };
+            }
             const result = configure?.call(this, info, ...args);
             sync(this);
+            return result;
+        };
+        const serialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function(info, ...args) {
+            const result = serialize?.call(this, info, ...args);
+            info.xzg_margin_percent = true;
             return result;
         };
     },
