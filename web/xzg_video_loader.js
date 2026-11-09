@@ -2039,7 +2039,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         player._xzgLoadHooked = true;
         player._currentFile = "";
         const _origPlayerLoad = player.load.bind(player);
-        player.load = function (url) {
+        player.load = function (url, opts) {
         if (url) {
             try {
                 const p = new URL(url, location.origin);
@@ -2063,7 +2063,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                 try { player.setCustomSize(0, 0); } catch (_) { }
             }
         }
-        return _origPlayerLoad(url);
+        return _origPlayerLoad(url, opts);
     };
     }
 
@@ -2239,8 +2239,8 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         // 执行后立即加载预览视频覆盖预览区（ComfyUI 内置 executed 处理会调用 node.onExecuted，
         // 一定触发；api.addEventListener 的 executed 事件在新版前端可能分发到不同 api 实例，
         // 不能作为唯一路径）。output 即 ui 数据（含 video_preview/video_info）。
-        // 去重 key 用文件名区分：同一输出文件不重复加载，新执行产生新文件则重新加载。
-        _loadPreviewFromOutput?.(output, "executed-" + ((output?.video_preview?.[0]?.filename) || ""));
+        // 只有播放器仍指向同一结果文件时才跳过重复通知。
+        _loadPreviewFromOutput?.(output.ui || output);
         // ComfyUI onExecuted output 结构：{ result: [...], ui: {...} }
         // video_info 是返回值数组的第三个元素（index 2）
         const result = output.result || output;
@@ -2594,6 +2594,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             // 延迟一帧执行 load，确保拖动的 pointerup 事件先处理完毕，
             // 避免页面重渲染导致数字输入框意外进入编辑模式
             requestAnimationFrame(() => {
+                if (_isPreviewLoaded) return;
                 player.setPreviewLoaded(false);
                 player.load(getVideoUrl(vw.value));
             });
@@ -2708,9 +2709,21 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         };
 
         // 工作流加载后重新同步（graph configure 后连线才可用）
+        const rotationWidget = node.widgets?.find(w => w.name === "旋转角度");
+        const syncRotation = () => player.setSourceRotation(parseInt(rotationWidget.value, 10) || 0);
+        if (rotationWidget) {
+            const origRotationCb = rotationWidget.callback;
+            rotationWidget.callback = function () {
+                origRotationCb?.apply(this, arguments);
+                _resetToSourceVideo();
+                syncRotation();
+            };
+            syncRotation();
+        }
         const origOnAfterGraphConfigured = node.onAfterGraphConfigured;
         node.onAfterGraphConfigured = function () {
             origOnAfterGraphConfigured?.apply(this, arguments);
+            if (rotationWidget) syncRotation();
             setTimeout(() => { _hookAllUpstream(); syncCustomSize(); _syncLoadRange?.(); _applyRatioModeFit(); }, 0);
         };
 
@@ -2852,6 +2865,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         // ═══════════════════════════════════════════════════════════════════
 
         let _previewLoadedForPrompt = new Set();  // 记录已经加载过 preview 的 prompt_id，避免重复
+        let _executedPreviewUrl;
 
         _loadPreviewFromOutput = (output, promptId) => {
             if (promptId && _previewLoadedForPrompt.has(promptId)) return false;
@@ -2878,7 +2892,14 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             const subfolder = preview?.subfolder || "";
             const type = preview?.type || "temp";
             const params = new URLSearchParams({ filename, type, subfolder });
-            const url = `/view?${params.toString()}&rand=${Math.random()}`;
+            const url = `/view?${params.toString()}`;
+            if (_isPreviewLoaded && _executedPreviewUrl === url && player.getSrc() === url) {
+                if (promptId) _previewLoadedForPrompt.add(promptId);
+                return true;
+            }
+            _cancelRestorePreview();
+            _restoreFadePending = false;
+            _executedPreviewUrl = url;
             console.warn("[小珠光视频加载器] (立即)加载预览视频到预览区: " + filename);
             // 保存原视频总帧数/帧率：预览视频(输出片段)帧数 < 原视频，
             // 播放条分母必须始终是源总帧数（如全片1000帧），不能变成段帧数。

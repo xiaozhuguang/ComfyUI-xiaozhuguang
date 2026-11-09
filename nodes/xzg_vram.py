@@ -10,14 +10,15 @@ from comfy import model_management as mm
 import execution
 
 _lock = threading.RLock()
-_defaults = dict(enabled=False, reserved=0.6, clean_gpu_before=False, clean_gpu_after=False)
+_defaults = dict(enabled=False, reserved=0.6, clean_gpu_before=False, clean_gpu_after=False,
+                 clean_ram_before=False, clean_ram_after=False)
 _default_reserved = getattr(mm, "EXTRA_RESERVED_VRAM", 0)
 _changed_reserved = False
 _state = dict(stage="idle", message="", updated_at=0, actual_gb=None)
 
 def validate(data):
     result = dict(_defaults)
-    for key in ("enabled", "clean_gpu_before", "clean_gpu_after"):
+    for key in ("enabled", "clean_gpu_before", "clean_gpu_after", "clean_ram_before", "clean_ram_after"):
         if key in data:
             if not isinstance(data[key], bool):
                 raise ValueError("开关必须为布尔值")
@@ -45,20 +46,25 @@ def report(stage, message, **values):
 async def get_settings(request):
     return web.json_response(snapshot())
 
-def prepare(prompt_id, config):
+def clean_resources(executor, clear_execution_cache):
+    mm.unload_all_models()
+    if clear_execution_cache:
+        executor.reset()
+    gc.collect()
+    mm.soft_empty_cache()
+
+def prepare(executor, prompt_id, config):
     try:
-        if config["clean_gpu_before"]:
-            report("cleaning", "正在卸载模型并清理显存…", prompt_id=prompt_id)
-            gc.collect()
-            mm.unload_all_models()
-            mm.soft_empty_cache()
+        clean_ram = config["clean_ram_before"]
+        clean_before = config["clean_gpu_before"] or clean_ram
+        if clean_before:
+            message = "正在清理模型、显存和节点缓存…" if clean_ram else "正在卸载模型并清理显存…"
+            report("cleaning", message, prompt_id=prompt_id)
+            clean_resources(executor, clean_ram)
         if not config["enabled"]:
-            report("cleaned" if config["clean_gpu_before"] else "idle",
-                   "运行前已清理显存和模型" if config["clean_gpu_before"] else "",
-                   prompt_id=prompt_id)
+            if not clean_before:
+                report("idle", "", prompt_id=prompt_id)
             return
-        if config["clean_gpu_before"]:
-            report("cleaned", "运行前已清理显存和模型", prompt_id=prompt_id)
         report("setting", "正在设置显存预留…", prompt_id=prompt_id)
         value = config["reserved"]
         fallback = False
@@ -124,32 +130,30 @@ if not getattr(execution.PromptExecutor.execute_async, "_xzg_vram_hook", False):
             except Exception as error:
                 report("error", f"恢复默认预留失败：{error}", prompt_id=prompt_id)
             _changed_reserved = False
-        clean_after = config["clean_gpu_after"]
-        prepare(prompt_id, config)
+        clean_ram_after = config["clean_ram_after"]
+        clean_after = config["clean_gpu_after"] or clean_ram_after
+        prepare(self, prompt_id, config)
         if snapshot()["stage"] != "error":
             start_parts = []
             if config["enabled"]:
                 start_parts.append(f"预留 {snapshot()['actual_gb']:.2f} GB")
-            if config["clean_gpu_before"]:
+            if config["clean_ram_before"]:
+                start_parts.append("运行前已清理模型、显存和节点缓存")
+            elif config["clean_gpu_before"]:
                 start_parts.append("运行前已清理显存和模型")
             if start_parts:
                 report("start_done", " · ".join(start_parts), prompt_id=prompt_id)
         try:
             return await _original(self, prompt, prompt_id, *args, **kwargs)
         finally:
-            end_parts = []
             if clean_after:
                 try:
-                    report("cleaning_after", "运行后正在卸载模型并清理显存…", prompt_id=prompt_id)
-                    mm.unload_all_models()
-                    gc.collect()
-                    mm.soft_empty_cache()
-                    report("cleaned", "运行后已清理显存和模型", prompt_id=prompt_id)
-                    end_parts.append("已清理显存和模型")
+                    resources = "模型、显存和节点缓存" if clean_ram_after else "显存和模型"
+                    report("cleaning_after", f"运行后正在清理{resources}…", prompt_id=prompt_id)
+                    clean_resources(self, clean_ram_after)
+                    report("end_done", f"运行后已清理{resources}", prompt_id=prompt_id)
                 except Exception as error:
                     report("error", f"运行后清理失败：{error}", prompt_id=prompt_id)
-            if end_parts:
-                report("end_done", " · ".join(end_parts), prompt_id=prompt_id)
 
     execute_with_vram._xzg_vram_hook = True
     execution.PromptExecutor.execute_async = execute_with_vram

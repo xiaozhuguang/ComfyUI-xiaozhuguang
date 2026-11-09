@@ -1074,7 +1074,7 @@ function wm_ensureViewer(node) {
             window.addEventListener("mouseup", stopStep);
             return btn;
         };
-        // 中间播放/暂停：正向/反向两个按钮（互斥），从当前帧逐帧前进/后退（100ms/帧），
+        // 中间播放/暂停：正向/反向两个按钮（互斥），按预览帧率从当前帧逐帧前进/后退，
         // 播到末帧/首帧自动停止并复位图标；停在端点时再按则从另一端开始。
         // 按钮排列：◀ 上一帧 | ◀ 反向播放 | ▶ 正向播放 | ▶ 下一帧
         let _playIV = null, _playDir = 0;
@@ -1101,7 +1101,7 @@ function wm_ensureViewer(node) {
                     const next = (state.frameIdx || 0) + dir;
                     if (next < 0 || next > nf2 - 1) { stopPlay(); return; } // 到端点自动停
                     showFrame(next);
-                }, 100);
+                }, Math.min(2 ** 31 - 1, 1000 / state.playbackFps));
             };
             return btn;
         };
@@ -1126,13 +1126,20 @@ function wm_ensureViewer(node) {
         container.addEventListener("pointerenter", () => { _panelHover = true; });
         container.addEventListener("pointerleave", () => { _panelHover = false; });
         window.addEventListener("keydown", (e) => {
-            if (!_panelHover) return;
-            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            if (!_panelHover || !container.isConnected) return;
+            const isSpace = e.code === "Space" || e.key === " ";
+            if (!isSpace && e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
             if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
             const ae = document.activeElement;
-            if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+            if (ae && (ae.matches("input, textarea, select") || ae.isContentEditable)) return;
             e.preventDefault();
             e.stopImmediatePropagation(); // 阻止 ComfyUI 的节点跳转快捷键
+            if (isSpace) {
+                if (e.repeat) return;
+                if (_playIV) stopPlay();
+                else playFwdBtn.click();
+                return;
+            }
             stopPlay(); // 手动步进时停止正/反向自动播放
             const nf = state.frames.length;
             if (!nf) return;
@@ -1738,6 +1745,7 @@ function wm_ensureViewer(node) {
             manualKeyframes: {},
             trackId: 1,
             sampleIdx: [],
+            playbackFps: 10,
             frames: [],             // 预加载的采样帧 Image 数组
             frameIdx: 0,
             detectRegions: [],      // 检测区（归一化 0~1 {x1,y1,x2,y2}）
@@ -2574,12 +2582,35 @@ function wm_ensureViewer(node) {
             e.preventDefault();
             e.stopPropagation();
             closeBarMenu();
-            if (!state.image || state.mode !== 'manual' || state.curveDraft) return;
+            if (!state.image || state.mode !== 'manual') return;
             stopPlay();
             const frame = state.frameIdx;
             const L = calcLayout(), c = toImg(e);
             const p = {x:c.x/L.imgW, y:c.y/L.imgH};
             const cr = canvas.getBoundingClientRect();
+            const curve = state.curveDraft || (state.shapeSelected && state.manualKeyframes[state.trackId]?.[frame]?.[0]?.curve);
+            if (curve) {
+                const distance = q => Math.hypot((q.x-p.x)*cr.width, (q.y-p.y)*cr.height);
+                let closest = CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
+                let index = -1;
+                for (let i = 0; i < curve.length; i++) {
+                    const d = distance(curve[i]);
+                    if (d >= closest) continue;
+                    closest = d;
+                    index = i;
+                }
+                if (index !== -1) {
+                    if (!state.curveDraft && curve.length <= 3) return;
+                    curve.splice(index, 1);
+                    smoothCurve(curve, !state.curveDraft);
+                    if (!state.curveDraft) saveCurve(curve);
+                    else if (!curve.length) state.curveDraft = null;
+                    updateCurveCursor();
+                    redraw();
+                    return;
+                }
+            }
+            if (state.curveDraft) return;
             // Prefer the selected track when outlines overlap. Only preceding,
             // nonempty keyframes are eligible; never overwrite an existing keyframe.
             const tids = Object.keys(state.manualKeyframes).map(Number)
@@ -2751,6 +2782,7 @@ function wm_ensureViewer(node) {
                 if (Array.isArray(pd) && pd.length > 0) {
                     stopPlay();
                     loadedPreview = pv.preview_str;
+                    state.playbackFps = Number.isFinite(pd0.fps) && pd0.fps > 0 ? pd0.fps : 10;
                     const generation = ++previewGeneration;
                     if (pd0 && pd0.sample_idx) state.sampleIdx = pd0.sample_idx;
                     // 载入「新视频」时才清空区域框：用后端下发的 video_id（视频特征哈希）判断，
@@ -2924,7 +2956,7 @@ function showWmDetHelp() {
                 <li>6、切换不同颜色分类，可跟踪多个目标</li>
                 <li>7、右键关键帧三角 →「一键扩展到首尾」：把该颜色分类的最左/最右关键帧分别复制到第一帧和最后一帧，遮罩覆盖视频全程</li>
                 <li>8、「显示全部 / 显示当前」：仅查看当前颜色分类的关键帧与画框，再次点击恢复显示全部分类</li>
-                <li>9、「← / ◀ / ▶ / →」控制组（位于显示全部/显示当前之后）：左箭头上一帧、反向播放（左三角）、正向播放（右三角）、右箭头下一帧。播放自动逐帧前进/后退（100ms/帧），到首/末帧自动停止，端点再按则从另一端播放；两个播放按钮互斥，播放中同方向再按即暂停；步进按钮长按可连续步进。鼠标悬停在预览面板上时，键盘 ← / → 也可逐帧移动播放头</li>
+                <li>9、「← / ◀ / ▶ / →」控制组（位于显示全部/显示当前之后）：左箭头上一帧、反向播放（左三角）、正向播放（右三角）、右箭头下一帧。播放按输入帧率逐帧前进/后退（未连接时为 10 FPS），到首/末帧自动停止，端点再按则从另一端播放；两个播放按钮互斥，播放中同方向再按即暂停；步进按钮长按可连续步进。鼠标悬停在预览面板上时，键盘 ← / → 也可逐帧移动播放头</li>
             </ul>
 
             <h4>参数（手工跟踪）</h4>
@@ -2964,6 +2996,8 @@ const WM_LABEL_MAP = [
 ];
 function wm_applyLabels(node) {
     if (!node || !node.widgets) return;
+    const fpsInput = node.inputs?.find(input => input.name === "fps");
+    if (fpsInput) fpsInput.label = xzgT("帧率", "Frame rate");
     for (const w of node.widgets) {
         const hit = WM_LABEL_MAP.find(([name]) => name === w.name);
         if (hit) w.label = xzgT(hit[1], hit[2]);

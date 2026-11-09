@@ -392,10 +392,18 @@ def _build_framerate_filters(force_rate, source_fps, source_frame_offset=0):
 
 
 
+_ROTATION_FILTERS = {
+    "0°": (),
+    "90°": ("transpose=clock",),
+    "180°": ("hflip", "vflip"),
+    "270°": ("transpose=cclock",),
+}
+
+
 def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
                            custom_width, custom_height, downscale_ratio=8,
                            aspect_ratio=None, ratio_mode=1, ratio_dim=0, fit_mode="crop",
-                           progress_cb=None, segment_start=0.0, segment_end=0.0):
+                           progress_cb=None, segment_start=0.0, segment_end=0.0, rotation="0°"):
     args_input = ["-i", video]
     args_dummy = [ffmpeg_path] + args_input + ['-c', 'copy', '-frames:v', '1', "-f", "null", "-"]
     size_base = None
@@ -499,6 +507,10 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
 
     args_all_frames = [ffmpeg_path, "-v", "error", "-an"] + args_input + ["-pix_fmt", "rgba64le"] + post_seek
 
+    source_size = size_base
+    if rotation in ("90°", "270°"):
+        size_base = size_base[::-1]
+
     # 应用视频比例约束（自定义比例时跳过）
     if aspect_ratio and aspect_ratio != "自定义比例":
         _ratio_map = {
@@ -539,6 +551,7 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
     # 帧率转换（与达芬奇相同的 Bresenham floor 映射）
     fr_filters, is_upscale = _build_framerate_filters(force_rate, fps_base, source_start_frame)
     vfilters.extend(fr_filters)
+    vfilters.extend(_ROTATION_FILTERS[rotation])
     if custom_width != 0 or custom_height != 0:
         size = target_size(size_base[0], size_base[1], custom_width,
                            custom_height, downscale_ratio=downscale_ratio)
@@ -592,7 +605,7 @@ def ffmpeg_frame_generator(video, force_rate, frame_load_cap, skip_frames,
         args_all_frames += ["-frames:v", str(int(yieldable_frames))]
 
     # 元组第5位 = 源总帧数（全片）：前端 video_info.source_frame_count / 红蓝杠分母依赖
-    yield (size_base[0], size_base[1], fps_base, duration, source_frame_count,
+    yield (source_size[0], source_size[1], fps_base, duration, source_frame_count,
            1.0 / (force_rate or fps_base), yieldable_frames, size[0], size[1], alpha)
 
     # 降帧时使用 passthrough 同步：FFmpeg >= 7 用 -fps_mode，< 7 用 -vsync
@@ -807,7 +820,11 @@ class XiaozhuguangVideoLoader:
 
     def load_video_impl(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                         帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
-                        补帧到=0, unique_id=None, xzg_video_index="0"):
+                        补帧到=0, unique_id=None, xzg_video_index="0", rotation="0°"):
+        # 旧工作流和 API 可能传入数字 0，或省略角度值中的 °。
+        rotation = str(rotation).strip().removesuffix("°") + "°"
+        if rotation not in _ROTATION_FILTERS:
+            rotation = "0°"
         强制帧率 = float_or_int(强制帧率, 0)
         # 空选/文件丢失时回退到内置占位视频，避免 "Invalid video file" 中断（与化神级一致）。
         视频, _used_fallback = _resolve_video_widget(视频)
@@ -857,6 +874,7 @@ class XiaozhuguangVideoLoader:
             progress_cb=progress_cb,
             segment_start=片段起点,
             segment_end=片段终点,
+            rotation=rotation,
         )
 
         info = next(gen)
@@ -890,6 +908,7 @@ class XiaozhuguangVideoLoader:
                         ratio_dim=ratio_dim,
                         fit_mode=fit_mode,
                         progress_cb=progress_cb,
+                        rotation=rotation,
                     )
                     info = next(gen)
                     (src_w, src_h, src_fps, src_dur, src_frames,
@@ -1025,10 +1044,11 @@ class XiaozhuguangVideoLoader:
             preview_path = os.path.join(temp_dir, preview_filename)
 
             # 构建 vf 滤镜（基于已解码的 info：src_w/src_h 原始尺寸，new_w/new_h 目标尺寸）
-            src_ar = src_w / src_h if src_h > 0 else 1.0
+            rotated_w, rotated_h = (src_h, src_w) if rotation in ("90°", "270°") else (src_w, src_h)
+            src_ar = rotated_w / rotated_h if rotated_h > 0 else 1.0
             dst_ar = new_w / new_h if new_h > 0 else 1.0
-            vf_parts = []
-            if new_w != src_w or new_h != src_h:
+            vf_parts = list(_ROTATION_FILTERS[rotation])
+            if new_w != rotated_w or new_h != rotated_h:
                 if abs(src_ar - dst_ar) < 0.01:
                     vf_parts.append(f"scale={new_w}:{new_h}:flags=lanczos")
                 elif fit_mode == "fill":

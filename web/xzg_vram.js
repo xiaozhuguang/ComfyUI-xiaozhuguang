@@ -13,7 +13,7 @@ document.head.appendChild(saveStyle);
 let state = null;
 let panel = null;
 let panelGraph = null;
-const defaults = {enabled:false, reserved:0.6, clean_gpu_before:false, clean_gpu_after:false};
+const defaults = {enabled:false, reserved:0.6, clean_gpu_before:false, clean_gpu_after:false, clean_ram_before:false, clean_ram_after:false};
 function workflowConfig(graph = app.graph) {
   const raw = graph?.extra?.xzg_vram_settings || {};
   return Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, typeof raw[key] === typeof value ? raw[key] : value]));
@@ -98,7 +98,7 @@ function draw() {
     capsule.appendChild(button);
   }
   const config = workflowConfig();
-  const configured = config.enabled || config.clean_gpu_before || config.clean_gpu_after;
+  const configured = Object.keys(defaults).some(key => key !== "reserved" && config[key]);
   button.style.color = configured ? "#ffd666" : "#a6a6a6";
   button.style.opacity = "1";
   let summary = capsule.querySelector(".xzg-vram-summary");
@@ -135,7 +135,7 @@ function open(button) {
   button.setAttribute("aria-expanded", "true");
   panel = document.createElement("form");
   panel.style.cssText = "position:fixed;z-index:100100;width:290px;max-width:calc(100vw - 24px);box-sizing:border-box;padding:16px;background:#20242c;color:#e5edf7;border:1px solid #4c6078;border-radius:14px;box-shadow:0 12px 40px #0008;font:13px system-ui;display:grid;gap:12px;user-select:none;-webkit-user-select:none";
-  panel.innerHTML = `<strong>显存设置</strong><fieldset style="margin:0;padding:12px;border:1px solid #4c6078;border-radius:10px;display:grid;gap:12px"><label style="display:flex;align-items:center;justify-content:space-between;gap:16px"><strong>额外显存预留</strong><input name="enabled" type="checkbox" role="switch" aria-label="开启额外显存预留"></label><label style="display:flex;align-items:center;justify-content:space-between">预留量 <span><input name="reserved" aria-label="预留量 GB" type="number" min="-2" step="0.1" style="width:85px;user-select:text;-webkit-user-select:text"> GB</span></label></fieldset><div style="display:grid;gap:10px"><strong>运行清理</strong><label><input name="clean_gpu_before" type="checkbox"> 运行<span style="color:#ff6666">前</span>清理显存和模型</label><label><input name="clean_gpu_after" type="checkbox"> 运行<span style="color:#ff6666">后</span>清理显存和模型</label></div><small style="color:#aab5c5">清理后可能需要重新加载模型。设置随工作流保存，修改用于下次任务。</small><small data-result role="status"></small><button type="submit" class="xzg-vram-save">保存</button>`;
+  panel.innerHTML = `<strong>显存设置</strong><fieldset style="margin:0;padding:12px;border:1px solid #4c6078;border-radius:10px;display:grid;gap:12px"><label style="display:flex;align-items:center;justify-content:space-between;gap:16px"><strong>额外显存预留</strong><input name="enabled" type="checkbox" role="switch" aria-label="开启额外显存预留"></label><label style="display:flex;align-items:center;justify-content:space-between">预留量 <span><input name="reserved" aria-label="预留量 GB" type="number" min="-2" step="0.1" style="width:85px;user-select:text;-webkit-user-select:text"> GB</span></label></fieldset><div style="display:grid;gap:10px"><strong>运行清理</strong><label><input name="clean_gpu_before" type="checkbox"> 运行<span style="color:#ff6666">前</span>清理显存和模型</label><label><input name="clean_gpu_after" type="checkbox"> 运行<span style="color:#ff6666">后</span>清理显存和模型</label><label><input name="clean_ram_before" type="checkbox" role="switch"> 运行<span style="color:#ff6666">前</span>清理内存</label><label><input name="clean_ram_after" type="checkbox" role="switch"> 运行<span style="color:#ff6666">后</span>清理内存</label></div><small style="color:#aab5c5">清理内存会同时卸载模型并清空节点执行缓存，下次运行可能需要重新加载模型和计算节点。设置随工作流保存，修改用于下次任务。</small><small data-result role="status"></small><button type="submit" class="xzg-vram-save">保存</button>`;
   panelGraph = app.graph;
   const config = workflowConfig(panelGraph);
   for (const [key, value] of Object.entries(config)) {
@@ -152,7 +152,7 @@ function open(button) {
     e.preventDefault();
     const current = panel;
     const config = {};
-    for (const key of ["enabled", "reserved", "clean_gpu_before", "clean_gpu_after"]) {
+    for (const key of Object.keys(defaults)) {
       const input = current.elements.namedItem(key);
       config[key] = input.type === "checkbox" ? input.checked : input.type === "number" ? Number(input.value) : input.value;
     }

@@ -632,6 +632,11 @@ export class XiaozhuguangVideoPlayer {
         document.addEventListener("keydown", this._onDocKeyDown);
     }
 
+    setSourceRotation(degrees) {
+        this._sourceRotation = degrees;
+        this._updateSurfaceSize();
+    }
+
     _updateSurfaceSize() {
         if (!this._videoSurface || this._destroyed) return;
         const el = this.container;
@@ -648,7 +653,10 @@ export class XiaozhuguangVideoPlayer {
         // 输出视频宽高 = 自定义宽高（或预设比例），裁剪/拉伸/留边只改变画面内容
         // （objectFit cover/fill/contain），不改变画面外框比例。铺满容器是错误行为——
         // 会按容器比例而非目标比例显示（如自定义 300x711 竖屏，容器 16:9 时画面会变横）。
-        const ratio = this._customRatio || this._videoRatio || 16 / 9;
+        const rotation = this._previewLoad ? 0 : this._sourceRotation || 0;
+        const quarterTurn = rotation === 90 || rotation === 270;
+        const sourceRatio = this._videoRatio || 16 / 9;
+        const ratio = this._customRatio || (quarterTurn ? 1 / sourceRatio : sourceRatio);
         let w = containerW;
         let h = containerW / ratio;
         if (h > containerH) {
@@ -662,7 +670,15 @@ export class XiaozhuguangVideoPlayer {
 
         this._videoSurface.style.width = w + "px";
         this._videoSurface.style.height = h + "px";
+        const canvasStyle = this._canvas.style;
+        canvasStyle.position = rotation ? "absolute" : "";
+        canvasStyle.left = rotation ? "50%" : "";
+        canvasStyle.top = rotation ? "50%" : "";
+        canvasStyle.width = quarterTurn ? h + "px" : "100%";
+        canvasStyle.height = quarterTurn ? w + "px" : "100%";
+        canvasStyle.transform = rotation ? `translate(-50%, -50%) rotate(${rotation}deg)` : "";
         this._updateProgressBarSize(h);
+        this._positionFrameCountOverlay();
     }
 
     _updateProgressBarSize(surfaceH) {
@@ -1511,7 +1527,7 @@ export class XiaozhuguangVideoPlayer {
             const poolType = filename ? type : "blob";
             // 解码源切换：HEVC 等 WebCodecs 解不了的编码 → 用后端转码的 H.264 源（懒触发、有缓存）
             let playSrc = src;
-            if (filename && !this._preserveSourceQuality) {
+            if (filename && !this._previewLoad && !this._preserveSourceQuality) {
                 const switched = await this._ensureDecodableUrl(filename, type, subfolder);
                 if (switched) playSrc = switched;
             }
@@ -1593,7 +1609,7 @@ export class XiaozhuguangVideoPlayer {
             // 修复首帧黑屏：renderFrame 是 fire-and-forget（只调度 RAF、不等待解码绘制完成），
             // 且部分视频在 time=0 处取不到帧（首帧 PTS 非 0）→ 偶发"首帧黑屏、播放一次后正常"。
             // 改用 renderFrameAwait 真正等待绘制完成（内部带 time=0 时间容错）；不存在时回退旧逻辑。
-            const startFrame = this._skipFrames > 0 ? this._skipFrames : 0;
+            const startFrame = this._previewLoad ? 0 : Math.max(0, this._skipFrames || 0);
             const targetFrame = Math.max(0, Math.min(startFrame, Math.max(0, decoder.frameCount - 1)));
             if (typeof decoder.renderFrameAwait === "function") {
                 await decoder.renderFrameAwait(targetFrame, this._canvas);
@@ -1662,8 +1678,17 @@ export class XiaozhuguangVideoPlayer {
 
     load(src, opts = {}) {
         if (this._destroyed) return;
+        const wasPreview = this._previewLoad;
         this._src = src || "";
         this._previewLoad = !!(opts && opts.isPreview);
+        if (this._sourceRotation != null && (wasPreview || this._previewLoad)) {
+            // A decoder may still finish drawing a frame after the source changes.
+            // Give it a detached canvas instead of the new source's display target.
+            const canvas = this._canvas.cloneNode(false);
+            this._canvas.replaceWith(canvas);
+            this._canvas = canvas;
+        }
+        if (this._sourceRotation != null) this._updateSurfaceSize();
         // 只有这一轮 load 的 onLoadedMetadata 完成后才能使用预览坐标。
         // 在切换到新预览期间保留旧的 true 会令普通源视频也从 0 秒起播，
         // 跳过帧数因此失效。
@@ -2769,6 +2794,18 @@ export class XiaozhuguangVideoPlayer {
         }
         overlay.style.display = this._src && this._currentDecoder && !this._isPlayingState
             && Number.isFinite(count) ? "block" : "none";
+        this._positionFrameCountOverlay();
+    }
+
+    _positionFrameCountOverlay() {
+        const overlay = this._frameCountOverlay;
+        if (!overlay || overlay.style.display === "none") return;
+        const leftGutter = this._videoSurface.offsetLeft;
+        const badgeWidth = overlay.offsetWidth;
+        // 留白放得下时居中摆放，窄节点则沿用画面内的位置。
+        overlay.style.left = leftGutter >= badgeWidth + 8
+            ? `-${Math.floor((leftGutter + badgeWidth) / 2)}px`
+            : "12px";
     }
 
     _updateDisplay() {

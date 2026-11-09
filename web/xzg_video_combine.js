@@ -83,8 +83,24 @@ function _xzgKeepConvertedWidgetVisible(widget, node) {
 // ═══════════════════════════════════════════════════════════════════════
 // 自定义数值 widget（VHS 同款方案：从源头创建 canvas 不认识的 widget 类型）
 // ═══════════════════════════════════════════════════════════════════════
+// 在原生控件注册 onClick 前接管事件，Nodes 2 的独立画布也走这条路径。
+function _xzgVideoSaveWidgetPointerDown(pointer, node) {
+    const widget = this;
+    const dispatch = (event) => widget.mouse?.(event, [event.offsetX, event.offsetY], node);
+    dispatch(pointer.eDown);
+    pointer.onClick = undefined;
+    pointer.onDoubleClick = undefined;
+    pointer.onDrag = dispatch;
+    pointer.finally = () => {
+        if (pointer.eUp) dispatch(pointer.eUp);
+        widget._xzgNumberDragged = false;
+        app.canvas.node_widget = null;
+        widget.triggerDraw?.();
+    };
+    return true;
+}
+
 function _xzgWidgetNumberMouse(event, [x, y], node) {
-    const widgetWidth = this._xzgDrawW || this.width || node.size[0];
     const oldValue = this.value;
     const step = this._xzgStep || 1;
     const min = this._xzgMin;
@@ -96,34 +112,65 @@ function _xzgWidgetNumberMouse(event, [x, y], node) {
         return v;
     };
 
-    if (event.type === 'pointermove') {
+    if (event.type === 'pointerdown') {
+        this._xzgNumberDragged = false;
+    } else if (event.type === 'pointermove') {
         if (event.deltaX) {
             this.value = clamp(this.value + event.deltaX);
-            app.canvas._xzgValueDragged = true;
+            this._xzgNumberDragged = true;
         }
     } else if (event.type === 'pointerup') {
-        if (app.canvas._xzgValueDragged) {
+        if (this._xzgNumberDragged) {
             this.value = clamp(Math.round(this.value / step) * step);
         } else {
-            app.canvas._xzgAllowPrompt = true;
-            app.canvas?.prompt?.(
-                this.label || this.name,
-                this.value,
-                (v) => {
-                    this.value = clamp(Number(v));
-                    if (this.callback) this.callback(this.value);
-                    node.setDirtyCanvas?.(true, true);
-                },
-                event
-            );
+            _xzgVideoSavePrompt(this, node, event, (text) => {
+                if (String(text).trim() === '') return;
+                const value = Number(text);
+                if (Number.isFinite(value)) this.value = clamp(value);
+            });
             return true;
         }
-        app.canvas._xzgValueDragged = false;
+        this._xzgNumberDragged = false;
     }
 
     if (oldValue !== this.value) {
         if (this.callback) this.callback(this.value);
         node.setDirtyCanvas?.(true, true);
+    }
+    return true;
+}
+
+function _xzgVideoSavePrompt(widget, node, event, update) {
+    // 等鼠标捕获和画布手势清理完成，再打开输入框。
+    queueMicrotask(() => {
+        app.canvas._xzgAllowPrompt = true;
+        try {
+            app.canvas.prompt(widget.label || widget.name, widget.value, (text) => {
+                update(text);
+                widget.callback?.(widget.value);
+                widget.triggerDraw?.();
+                node.setDirtyCanvas?.(true, true);
+            }, event);
+        } finally {
+            app.canvas._xzgAllowPrompt = false;
+        }
+    });
+}
+
+function _xzgCRFWidgetMouse(event, position, node) {
+    if (event.type !== 'pointerup') return true;
+    _xzgVideoSavePrompt(this, node, event, (text) => {
+        if (String(text).trim() === '') return;
+        const value = Number(text);
+        if (!Number.isFinite(value)) return;
+        this.value = Math.min(this._xzgMax ?? 51, Math.max(this._xzgMin ?? 0, Math.round(value)));
+    });
+    return true;
+}
+
+function _xzgVideoSaveTextMouse(event, position, node) {
+    if (event.type === 'pointerup') {
+        _xzgVideoSavePrompt(this, node, event, (text) => { this.value = String(text); });
     }
     return true;
 }
@@ -347,6 +394,7 @@ function _xzgCreateNumberWidget(node, inputName, inputData) {
         computeSize(width) { return [width, 20]; },
         draw: _xzgDrawWidget,
         mouse: _xzgWidgetNumberMouse,
+        onPointerDown: _xzgVideoSaveWidgetPointerDown,
         callback(v) { if (this._xzgCb) this._xzgCb(v); },
     };
     if (!node.widgets) node.widgets = [];
@@ -409,32 +457,12 @@ function _xzgCreateBoolWidget(node, inputName, inputData) {
         computeSize(width) { return [width, 20]; },
         draw: _xzgDrawBoolWidget,
         mouse: _xzgBoolWidgetMouse,
+        onPointerDown: _xzgVideoSaveWidgetPointerDown,
         callback(v) { if (this._xzgCb) this._xzgCb(v); },
     };
     if (!node.widgets) node.widgets = [];
     node.widgets.push(w);
     return w;
-}
-
-function _xzgPatchCanvasPrompt() {
-    if (app.canvas._xzgPromptPatched) return;
-    const origPrompt = app.canvas.prompt;
-    app.canvas.prompt = function () {
-        if (app.canvas._xzgAllowPrompt) {
-            app.canvas._xzgAllowPrompt = false;
-            app.canvas._xzgLastPromptMs = Date.now();
-            return origPrompt.apply(this, arguments);
-        }
-        if (app.canvas._xzgValueDragged) {
-            app.canvas._xzgValueDragged = false;
-            return null;
-        }
-        if (app.canvas._xzgLastPromptMs && Date.now() - app.canvas._xzgLastPromptMs < 300) {
-            return null;
-        }
-        return origPrompt.apply(this, arguments);
-    };
-    app.canvas._xzgPromptPatched = true;
 }
 
 const VIDEO_PREVIEW_WIDGET_NAME = "xzg_video_combine_preview";
@@ -550,70 +578,16 @@ function _extractFilename(url) {
     }
 }
 
-// 在原生数值控件处理前消费点击，避免列表和 Value 输入框同时弹出。
-function _xzgVideoSaveControlHit(event) {
-    const canvas = app.canvas;
-    const canvasEl = canvas?.canvas;
-    if (!canvasEl || (event.target !== canvasEl && !canvasEl.contains?.(event.target))) return null;
-    // 画布尚未初始化完成时（如工作流 configure 早期）该方法不存在，直接放行
-    if (typeof canvas.convertEventToCanvasCoordinates !== "function") return null;
-    const point = canvas.convertEventToCanvasCoordinates(event);
-    for (const node of app.graph?.nodes || []) {
-        if (node.type !== "XiaozhuguangVideoCombine" && node.type !== "XiaozhuguangVideoSaveDaVinci") continue;
-        if (node.flags?.collapsed) continue;
-        const x = point[0] - node.pos[0], y = point[1] - node.pos[1];
-        for (const widget of node.widgets || []) {
-            if (widget.name !== "格式" && widget.name !== "模式") continue;
-            if (!Number.isFinite(widget._xzgControlY) || !Number.isFinite(widget._xzgControlH)) continue;
-            if (x >= 16 && x <= widget._xzgDrawW - 16 &&
-                y >= widget._xzgControlY && y <= widget._xzgControlY + widget._xzgControlH) {
-                return { node, widget, x, y };
-            }
-        }
-    }
-    return null;
-}
-
-function _xzgPatchVideoSaveControlPointer() {
-    // 扩展热重载/重复注册时，window 级捕获监听器会一层层叠加：每次点击被多个
-    // stopImmediatePropagation 拦截，画布越来越卡，也容易引出各种诡异交互问题。
-    if (window.__xzgVideoSavePointerPatched) return;
-    window.__xzgVideoSavePointerPatched = true;
-    let pendingControl = null;
-    window.addEventListener("pointerdown", (event) => {
-        if (event.button !== 0) return;
-        pendingControl = _xzgVideoSaveControlHit(event);
-        if (!pendingControl) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-    }, true);
-    window.addEventListener("pointerup", (event) => {
-        if (!pendingControl) return;
-        const { node, widget } = pendingControl;
-        pendingControl = null;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        const hit = _xzgVideoSaveControlHit(event);
-        if (hit?.node !== node || hit.widget !== widget) return;
-        widget.mouse(event, [hit.x, hit.y], node);
-    }, true);
-    window.addEventListener("pointercancel", () => { pendingControl = null; }, true);
-}
-
 app.registerExtension({
     name: "xiaozhuguang.video_combine",
     init() {
-        _xzgPatchVideoSaveControlPointer();
         _xzgVideoOutputs.install(api, app);
-
     },
     getCustomWidgets() {
         return {
-            XZGINT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
-            XZGFLOAT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
-            XZGBOOL: (node, name, data) => _xzgCreateBoolWidget(node, name, data),
+            XZG_VIDEO_SAVE_INT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
+            XZG_VIDEO_SAVE_FLOAT: (node, name, data) => _xzgCreateNumberWidget(node, name, data),
+            XZG_VIDEO_SAVE_BOOL: (node, name, data) => _xzgCreateBoolWidget(node, name, data),
         };
     },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -621,26 +595,26 @@ app.registerExtension({
         if (nodeData?.name !== "XiaozhuguangVideoCombine" &&
             nodeData?.name !== "XiaozhuguangVideoSaveDaVinci") return;
 
-        // 给 combo widget（格式、模式）设置 XZGINT 类型，避免原生 combo 下拉列表
+        // 给 combo widget（格式、模式）设置视频保存专用类型，避免原生 combo 下拉列表
         // 模式：仅需点击切换 保存/预览，不弹列表
         for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
             if (Array.isArray(inp[0]) && typeof inp[1] === 'object') {
-                inp[1].widgetType = "XZGINT";
+                inp[1].widgetType = "XZG_VIDEO_SAVE_INT";
             }
         }
 
         for (const inp of Object.values({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
             if (["INT", "FLOAT"].includes(inp[0]) && inp[1]) {
-                inp[1].widgetType ??= "XZG" + inp[0];
+                inp[1].widgetType = "XZG_VIDEO_SAVE_" + inp[0];
             }
         }
 
-        // BOOLEAN 开关（如「自动导出到达芬奇」「默认输出」）改用 XZGBOOL 同款圆角深色块外观，
+        // BOOLEAN 开关（如「自动导出到达芬奇」「默认输出」）改用视频保存专用开关 同款圆角深色块外观，
         // 与数值/combo 保持统一（原生 ComfyUI 复选框是其风格不一致的根源）
         for (const [inpName, inp] of Object.entries({ ...nodeData.input?.required, ...nodeData.input?.optional })) {
             if (inp && inp[0] === "BOOLEAN" && ["自动导出到达芬奇", "use_default_output"].includes(inpName)) {
                 if (!inp[1]) inp[1] = {};
-                inp[1].widgetType = "XZGBOOL";
+                inp[1].widgetType = "XZG_VIDEO_SAVE_BOOL";
             }
         }
 
@@ -1005,7 +979,6 @@ app.registerExtension({
             // 暴露预览容器（DOM 宿主），供化神级保存节点在其上叠加「导出到达芬奇」按钮
             node._xzgPreviewContainer = playerContainer;
 
-            _xzgPatchCanvasPrompt();
 
             // 统一渲染风格：combo 用圆角 draw；所有 widget 加双语 label / value 显示
             for (const w of this.widgets || []) {
@@ -1033,8 +1006,6 @@ app.registerExtension({
                 if (w.name === '格式') {
                     w.draw = function(ctx, nd, width, y, H) {
                         [width, y, H] = _xzgVideoSaveRowLayout(ctx, nd, width, y, H);
-                        this._xzgControlY = y;
-                        this._xzgControlH = H;
                         _xzgDrawComboWidget.call(this, ctx, nd, width, y, H);
                     };
                     w.mouse = _xzgFpsComboMouse;
@@ -1050,8 +1021,10 @@ app.registerExtension({
                 } else if (w.name === '文件名前缀') {
                     // STRING 文本框：圆角矩形 + 标签 + 值
                     w.draw = _xzgDrawWidget;
+                    w.mouse = _xzgVideoSaveTextMouse;
                     if (!w._xzgValueColor) w._xzgValueColor = '#fff';
                 } else if (w.name === 'CRF') {
+                    w.mouse = _xzgCRFWidgetMouse;
                     w.draw = function(ctx, node, width, y, H) {
                         [width, y, H] = _xzgVideoSaveRowLayout(ctx, node, width, y, H);
                         this._xzgDrawW = width;
@@ -1091,8 +1064,6 @@ app.registerExtension({
                     w.draw = function(ctx, nd, width, y, H) {
                         [width, y, H] = _xzgVideoSaveRowLayout(ctx, nd, width, y, H);
                         this._xzgDrawW = width;
-                        this._xzgControlY = y;
-                        this._xzgControlH = H;
                         const pad = 16, r = 6, wr = width - pad * 2;
                         ctx.fillStyle = '#2a2a2a';
                         ctx.beginPath();
@@ -1131,6 +1102,9 @@ app.registerExtension({
             for (const w of this.widgets || []) {
                 if (['帧率', '文件名前缀', '格式', 'CRF', '模式'].includes(w.name)) {
                     _xzgKeepConvertedWidgetVisible(w, node);
+                }
+                if (['帧率', '文件名前缀', '格式', 'CRF', '模式'].includes(w.name)) {
+                    w.onPointerDown = _xzgVideoSaveWidgetPointerDown;
                 }
             }
 

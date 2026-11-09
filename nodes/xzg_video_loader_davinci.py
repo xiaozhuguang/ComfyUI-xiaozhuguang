@@ -111,15 +111,19 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
         inputs = super().INPUT_TYPES()
         video = inputs["required"]["视频"]
         inputs["required"]["视频"] = ([*video[0], "（不加载视频）"], *video[1:])
+        inputs.setdefault("optional", {})["旋转角度"] = (
+            ["0°", "90°", "180°", "270°"],
+            {"default": "0°", "tooltip": "按所选角度顺时针旋转输出画面"},
+        )
         return inputs
 
     def load_video(self, 视频, 强制帧率=0, 视频比例="原始比例", 比例模式="裁剪(crop)", 自定义宽度=0, 自定义高度=0,
                    帧数上限=0, 跳过帧数=0, 片段起点=0.0, 片段终点=0.0, 内存模式="标准",
-                   补帧到=0, unique_id=None, xzg_video_index="0"):
+                   补帧到=0, unique_id=None, xzg_video_index="0", 旋转角度="0°"):
         if 视频 == "（不加载视频）":
             视频 = ""  # 清除仅影响选择/预览；执行时沿用内置占位视频兜底。
         视频, _used_fallback = _resolve_video_widget(视频)
-        return super().load_video(
+        return self.load_video_impl(
             视频=视频,
             强制帧率=强制帧率,
             视频比例=视频比例,
@@ -134,6 +138,7 @@ class XiaozhuguangVideoLoaderDaVinci(XiaozhuguangVideoBatchLoader):
             补帧到=补帧到,
             unique_id=unique_id,
             xzg_video_index=xzg_video_index,
+            rotation=旋转角度,
         )
 
     @classmethod

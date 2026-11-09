@@ -22,6 +22,7 @@ import time
 import json
 import random
 import hashlib
+import math
 import cv2
 import numpy as np
 import torch
@@ -279,6 +280,9 @@ class VideoWatermarkDetector:
                     "default": "",
                     "tooltip": _param_tooltip("regions_data")}),
             },
+            "optional": {
+                "fps": ("FLOAT", {"forceInput": True, "tooltip": "预览播放帧率，未连接时使用 10 FPS"}),
+            },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
@@ -290,7 +294,7 @@ class VideoWatermarkDetector:
     DESCRIPTION = ""  # 悬停不弹使用说明（说明走前端视窗「使用说明」按钮）
 
     def detect(self, image, model_name=MANUAL_MODEL_NAME,
-               temporal_dilate=0, regions_data="", unique_id=None, **kwargs):
+               temporal_dilate=0, regions_data="", unique_id=None, fps=10.0, **kwargs):
         B, H, W, C = image.shape
         if B == 0:
             raise ValueError("[视频水印检测] 输入图像批次为空")
@@ -367,8 +371,9 @@ class VideoWatermarkDetector:
         # 预览帧数：手工跟踪取全部帧（逐帧精确打点追踪）；
         # 长边压到 768（仅前端视窗显示用，关键帧为归一化坐标，输出遮罩始终按原始分辨率计算）
         preview, sample_idx_out, vid = _build_preview(image, max_side=768, max_frames=int(image.shape[0]))
+        playback_fps = fps if math.isfinite(fps) and fps > 0 else 10.0
         return {
-            "ui": {"preview": [{"preview_str": json.dumps({"frames": preview, "sample_idx": sample_idx_out, "video_id": vid}, ensure_ascii=False),
+            "ui": {"preview": [{"preview_str": json.dumps({"frames": preview, "sample_idx": sample_idx_out, "video_id": vid, "fps": playback_fps}, ensure_ascii=False),
                                 "is_init": True}]},
             "result": (mask_tensor,),
         }
