@@ -45,6 +45,9 @@ class XiaozhuguangVideoScheduler:
                 "帧率": ("FLOAT", {"forceInput": True}),
                 "遮罩": ("MASK",),
                 "缓存批次": ("STRING", {"default": ""}),
+                "分段模式": (["场景切点", "4N+1", "17N+5", "自定义"], {"default": "场景切点"}),
+                "分段帧数": ("INT", {"default": 100, "min": 1, "max": 1000000, "step": 1,
+                                    "tooltip": "自定义模式的每段帧数，或规则模式的帧数上限。"}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -99,6 +102,22 @@ class XiaozhuguangVideoScheduler:
         return [(a, b, 0) for a, b in zip(cuts, cuts[1:]) if b > a]
 
     @staticmethod
+    def _fixed_segments(total, mode, limit):
+        if mode == "自定义":
+            step, base = 1, 1
+        elif mode == "4N+1":
+            step, base = 4, 1
+        else:
+            step, base = 17, 5
+        if limit < base:
+            raise ValueError(f"{mode} 模式的分段帧数至少为 {base}")
+        length = limit - (limit - base) % step
+        segments = [(start, min(start + length, total), 0) for start in range(0, total, length)]
+        remainder = total % length
+        padding = (base - remainder) % step if remainder >= base else base - remainder
+        return segments, padding if remainder else 0
+
+    @staticmethod
     def _slice_audio(waveform, sr, start_sec, end_sec):
         """在整片波形上按时间区间切片，返回 [1, C, samples]；区间超出末端的部分补零。"""
         w = waveform
@@ -134,14 +153,15 @@ class XiaozhuguangVideoScheduler:
         return segment
 
     def schedule(self, 段表="", 当前段=0, 场景阈值=0.35,
-                 帧率=0, 图像=None, 音频=None, unique_id=None, 遮罩=None, 缓存批次=""):
+                 帧率=0, 图像=None, 音频=None, unique_id=None, 遮罩=None, 缓存批次="",
+                 分段模式="场景切点", 分段帧数=100):
         # 外层只负责快照生命周期：任何异常都先清掉本节点快照。快照持有整片张量引用，
         # 不清理会让 ComfyUI 也无法回收这块内存，中断的批处理会一直占着。
         snapshot_key = f"{unique_id}:{缓存批次}" if unique_id else ""
         try:
             return self._schedule_segment(
                 段表, 当前段,
-                帧率, 图像, 音频, 遮罩, snapshot_key, 场景阈值,
+                帧率, 图像, 音频, 遮罩, snapshot_key, 场景阈值, 分段模式, 分段帧数,
             )
         except Exception:
             if snapshot_key:
@@ -149,14 +169,18 @@ class XiaozhuguangVideoScheduler:
             raise
 
     def _schedule_segment(self, 段表, 当前段,
-                          帧率, 图像, 音频, 遮罩, snapshot_key, threshold):
+                          帧率, 图像, 音频, 遮罩, snapshot_key, threshold, mode, limit):
         preparing = int(当前段 or 0) == 1000000
         snapshot = _SCHEDULER_SNAPSHOT.get(snapshot_key) if snapshot_key else None
         if 图像 is not None:
             if int(图像.shape[0]) <= 0:
                 raise ValueError("上游「图像」为空，无法分段")
+            if mode == "场景切点":
+                segments, padding = self._detect_segments(图像, threshold), 0
+            else:
+                segments, padding = self._fixed_segments(int(图像.shape[0]), mode, limit)
             snapshot = {"frames": 图像, "audio": 音频, "fps": 帧率, "mask": 遮罩,
-                        "segments": self._detect_segments(图像, threshold)}
+                        "segments": segments, "padding": padding}
             if snapshot_key:
                 _SCHEDULER_SNAPSHOT[snapshot_key] = snapshot
         if snapshot is None:
@@ -186,7 +210,8 @@ class XiaozhuguangVideoScheduler:
         segs = snapshot["segments"]
         table = ",".join(f"{a}:{b}" for a, b, _ in segs)
         if preparing:
-            return {"ui": {"scene_table": [table], "scene_fps": [fps], "scene_frames": [total]},
+            return {"ui": {"scene_table": [table], "scene_fps": [fps], "scene_frames": [total],
+                           "scene_tail_pad": [snapshot["padding"]]},
                     "result": (full_frames[:1], {"waveform": full_frames.new_zeros((1, 2, 1)),
                                                "sample_rate": AUDIO_SAMPLE_RATE}, fps, 1,
                                self._slice_masks(遮罩, 0, 1, full_frames[:1]))}
@@ -219,6 +244,11 @@ class XiaozhuguangVideoScheduler:
         # 图像：整片张量按段切片（含头部重叠帧；内存视图，不复制、不重新解码）
         image_tensor = full_frames[decode_start:min(end, total)] if total > 0 else full_frames[decode_start:end]
         mask_tensor = self._slice_masks(遮罩, decode_start, min(end, total), image_tensor)
+        padding = snapshot["padding"] if index == len(segs) - 1 else 0
+        if padding:
+            image_tensor = torch.cat((image_tensor, image_tensor[-1:].expand(padding, -1, -1, -1)))
+            mask_tensor = torch.cat((mask_tensor, mask_tensor[-1:].expand(padding, -1, -1)))
+            count += padding
 
         start_sec = (start / fps) if fps > 0 else 0.0
         end_sec = (end / fps) if fps > 0 else 0.0
@@ -229,6 +259,9 @@ class XiaozhuguangVideoScheduler:
                 "waveform": self._slice_audio(full_wave, full_sr, start_sec, end_sec),
                 "sample_rate": full_sr,
             }
+            if padding:
+                samples = round((end + padding) / fps * full_sr) - round(end_sec * full_sr)
+                audio["waveform"] = torch.nn.functional.pad(audio["waveform"], (0, samples))
         else:
             samples = max(int(round(full_sr * count / fps)), 1) if fps > 0 else max(count, 1)
             audio = {

@@ -2401,10 +2401,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
     if (mergeNodes.length) {
 
 
-        // 前置检查：每个合并节点必须接了「图像」输入（位于加载器下游已由过滤保证），
-
-
-        // 且下游接有输出节点（如「小珠光视频保存」），否则最终合并的完整视频无处产出
+        // 两种模式都需要「图像」输入，普通模式还需要下游保存节点。
 
 
         for (let mi = 0; mi < mergeNodes.length; mi++) {
@@ -2440,7 +2437,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                 .filter((n) => n && n.constructor?.nodeData?.output_node);
 
 
-            if (!belowNodes.length) {
+            if (!belowNodes.length && findWidget(mn, "合并模式")?.value !== "低内存") {
 
 
                 throw new Error(`${label}的下游没有连接任何输出节点（如「小珠光视频保存」）：\n请把合并节点的「图像」「音频」输出接到保存视频节点，最终合并的完整视频才会被保存/预览`);
@@ -3246,7 +3243,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
         // 最终合并：逐个合并节点串行执行（置位「执行合并」→ 单独跑一次 → 恢复）。
 
 
-        // 串行是刻意的：finalize 要把完整视频解码为帧张量（内存≈整支视频），并行会叠加峰值内存
+        // 普通模式会拼出完整帧张量，串行执行避免多个合并节点叠加内存峰值。
 
 
         // 合并不再借用加载器：「图像/音频」已从本次提交里摘掉（见下方 stripUpstreamInputs），
@@ -3273,7 +3270,9 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                 if (!wGo) throw new Error("「小珠光视频分段合并」节点缺少「执行合并」控件，请刷新页面后重试");
 
 
-                ui.status(`合并内存中的片段…（${mi + 1}/${mergeIds.length}）`);
+                const disk = findWidget(liveMerge, "合并模式")?.value === "低内存";
+                const finalIds = disk ? new Set([nid]) : collectDownstream(liveMerge);
+                ui.status(`正在合并片段…（${mi + 1}/${mergeIds.length}）`);
 
 
                 const savedGo = wGo.value;
@@ -3302,18 +3301,20 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                     try {
 
 
-                        // 最终合并这一跑不需要上游：合并节点直接从缓冲目录解码整段视频。
+                        // 最终合并直接读取已缓存的分段，无需执行上游处理链。
                         // 「图像/音频/帧率」都是可选输入 → 从本次提交里把三个依赖全摘掉，
                         // 上游处理链/模型完全不执行（不再为了触发合并白跑一遍上游）。
                         // 漏掉「帧率」时：它连着加载器/分段节点，后端仍会连带执行整条上游，
                         // 表现为「明明跑完了又激活上游再跑一次」。
                         const stripUpstreamInputs = prompt => {
-                            const downstream = collectDownstream(liveMerge);
-                            prepareMergePrompt(prompt, nid, downstream);
-                            filterPromptOutput(prompt, downstream);
+                            prepareMergePrompt(prompt, nid, finalIds);
+                            if (schedNode && !skippedByNode.get(nid)?.has(segments.length)) {
+                                prompt.output[nid].inputs["末尾裁帧"] = Number(segments.lastPadFrames) || 0;
+                            }
+                            filterPromptOutput(prompt, finalIds);
                         };
 
-                        await runOnce(collectDownstream(liveMerge), mBox, mCollected, stripUpstreamInputs, session);
+                        await runOnce(finalIds, mBox, mCollected, stripUpstreamInputs, session);
 
 
                     } finally {
@@ -3355,7 +3356,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                     if (!vid && mBox.id) {
 
 
-                        const vids = await fetchHistoryOutputByPrompt(mBox.id, collectDownstream(liveMerge));
+                        const vids = await fetchHistoryOutputByPrompt(mBox.id, finalIds);
 
 
                         if (vids.length) vid = vids[vids.length - 1];
@@ -3367,6 +3368,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                     if (!vid) {
 
 
+                        if (disk) throw new Error(`合并节点 ${nid} 未生成 MP4，请查看 ComfyUI 控制台中的 FFmpeg 日志`);
                         throw new Error(`合并节点 ${mi + 1}（id ${nid}）已执行但未收集到最终视频：请确认「小珠光视频保存」节点连接在该合并节点的「图像」「音频」输出之后（完整视频经保存节点产出），并查看 ComfyUI 控制台报错`);
 
 
@@ -4049,7 +4051,7 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
             setNodeWidgetValue(sched, "当前段", 0);
             const ranges = table.split(",").map(part => part.split(":").map(Number));
             segments = ranges.map(([a, b]) => ({start: a / fps, end: b / fps}));
-            segments.lastPadFrames = 0;
+            segments.lastPadFrames = Number(info?.scene_tail_pad?.[0]) || 0;
             const rows = ranges.map(([a, b], i) => ({
                 time: `#${i + 1}  ${fmtTime(a / fps)} → ${fmtTime(b / fps)}`,
                 frames: `${b - a} 帧 ${a}-${b - 1}`, status: "待执行", color: "#888",
@@ -4443,6 +4445,9 @@ app.registerExtension({
 
 
                     if (w) w.value = false;
+
+                    const mergeMode = findWidget(this, "合并模式");
+                    if (mergeMode?.value === "IMAGE") mergeMode.value = "普通模式";
 
 
                     // 清理旧版本残留的输入接口（如 重叠帧/重叠表/过渡方式 被转为输入后的残留）。

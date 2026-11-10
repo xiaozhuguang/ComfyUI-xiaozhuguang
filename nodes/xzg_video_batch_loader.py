@@ -7,11 +7,9 @@
    配合前端「场景逐段批处理」编排器（web/xzg_video_batch.js）逐段加载视频。
    分段窗口只由「跳过帧数/帧数上限」表达（片段起点/终点、补帧到已从面板移除）。
 
-2. XiaozhuguangVideoBatchMerge「小珠光视频分段合并」（内存拼接节点）：
-   - 每段处理完成后，将图像张量和音频波形复制到 CPU 内存；不生成分段视频或 WAV 文件；
-   - 最后按顺序拼接内存张量，输出完整图像与音频供视频保存节点编码。
-   - 分段之间硬切衔接；最终合并后立即释放该节点的内存缓存。
-   注意：分段结果会一直占用主机内存到最终合并完成，长视频或高分辨率素材需要足够内存。
+2. XiaozhuguangVideoBatchMerge「小珠光视频分段合并」：
+   - 普通模式：暂存 CPU 图像和音频张量，最终拼接成完整张量供保存节点编码。
+   - 低内存：逐段编码到临时目录，最终用 FFmpeg 拼接并直接保存 MP4。
    「执行合并」由前端编排器在最后一步自动置位。
 """
 
@@ -25,6 +23,7 @@ from .xzg_video_loader import (
     _resolve_video_widget,
 )
 from .xzg_video_batch_memory import append_segment, get_segments, clear_node_segments
+from .xzg_video_batch_disk import encode_segment, finalize_segments
 
 
 class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
@@ -87,7 +86,7 @@ class XiaozhuguangVideoBatchLoader(XiaozhuguangVideoLoader):
 
 
 class XiaozhuguangVideoBatchMerge:
-    """小珠光视频分段合并：分段结果暂存在进程内存，最终输出完整图像与音频。"""
+    """按顺序将分段结果合并为张量或 MP4。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -96,6 +95,10 @@ class XiaozhuguangVideoBatchMerge:
                 "执行合并": ("BOOLEAN", {"default": False}),
                 # 编排器专用：末段为满足 17N+5（复制末帧）补齐的帧数，合并成片前裁掉（0=不裁）
                 "末尾裁帧": ("INT", {"default": 0, "min": 0, "max": BIGMAX, "step": 1}),
+                "合并模式": (["普通模式", "低内存"], {
+                    "default": "普通模式",
+                    "tooltip": "低内存：逐段编码落盘，最终直接保存 MP4 到 output，无需连接视频保存节点。",
+                }),
             },
             "optional": {
                 # 端口顺序 = 图像 → 音频 → 帧率（required 在前、optional 在后）
@@ -117,6 +120,12 @@ class XiaozhuguangVideoBatchMerge:
     # 必须为输出节点：逐段阶段下游保存节点被编排器排除后，
     # 只有靠本节点自身作为输出节点才会执行，才能收集每段处理结果
     OUTPUT_NODE = True
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, 合并模式="普通模式"):
+        if 合并模式 in ("普通模式", "低内存", "IMAGE"):
+            return True
+        return "无效的合并模式"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -202,9 +211,19 @@ class XiaozhuguangVideoBatchMerge:
         return image, audio
 
     def merge_videos(self, 执行合并=False, 帧率=0, 图像=None, 音频=None, 末尾裁帧=0,
-                     unique_id=None):
+                     unique_id=None, 合并模式="普通模式"):
+        disk = 合并模式 == "低内存"
+        segments = get_segments(unique_id)
+        if segments and (segments[0]["directory"] is not None) != disk:
+            raise ValueError("本轮已有不同合并模式的分段，请清空缓存后重新开始批处理")
         if 执行合并:
             try:
+                if disk:
+                    if not segments:
+                        raise ValueError("分段缓存为空，请先运行场景切点分段批处理")
+                    video = finalize_segments(segments, 末尾裁帧)
+                    clear_node_segments(unique_id)
+                    return {"result": (None, None, segments[0]["fps"]), "ui": {"videos": [video]}}
                 return self._finalize(unique_id, fps=帧率, tail_trim=末尾裁帧)
             except Exception:
                 clear_node_segments(unique_id)
@@ -212,6 +231,18 @@ class XiaozhuguangVideoBatchMerge:
         if 图像 is None:
             raise ValueError("缓冲模式需要图像输入：请把处理链的「图像」接入本节点")
         fps = self._resolve_fps(帧率)
+        if disk:
+            if 0 < 末尾裁帧 < 图像.shape[0]:
+                图像 = 图像[:-末尾裁帧]
+            size = (int(图像.shape[2]), int(图像.shape[1]))
+            if segments and (size != segments[0]["info"]["size"] or fps != segments[0]["fps"]):
+                raise ValueError("低内存合并要求各段的分辨率和帧率一致")
+            directory, has_audio = encode_segment(图像, 音频, fps)
+            info = append_segment(unique_id, None, None, fps, {
+                "filename": "disk", "frames": int(图像.shape[0]), "with_audio": has_audio, "size": size,
+            }, directory=directory)
+            info["node"] = str(unique_id)
+            return {"result": (None, None, fps), "ui": {"buffered": [info]}}
         info = self._buffer_segment(图像, 音频, fps, unique_id, trim_tail=末尾裁帧)
         info["node"] = str(unique_id)
         return {"result": (图像, 音频, fps), "ui": {"buffered": [info]}}

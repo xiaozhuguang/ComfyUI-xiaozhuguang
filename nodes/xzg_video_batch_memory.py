@@ -16,13 +16,14 @@ def reset_segments():
         _SEGMENTS.clear()
 
 
-def append_segment(node_id, image, audio, fps, info):
+def append_segment(node_id, image, audio, fps, info, directory=None):
     key = str(node_id or "")
     with _LOCK:
         items = _SEGMENTS.setdefault(key, [])
         entry = dict(info)
         entry["index"] = len(items) + 1
-        items.append({"image": image, "audio": audio, "fps": float(fps), "info": entry})
+        items.append({"image": image, "audio": audio, "fps": float(fps), "info": entry,
+                      "directory": directory})
         return dict(entry)
 
 

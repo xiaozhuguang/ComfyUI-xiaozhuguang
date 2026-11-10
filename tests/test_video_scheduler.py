@@ -44,6 +44,29 @@ class SchedulerTest(unittest.TestCase):
             帧率=30, unique_id="158", 缓存批次="test")
         self.assertEqual(result["ui"]["scene_table"], ["0:144"])
 
+    def test_fixed_modes_round_down_and_pad_only_tail(self):
+        for mode, split, tail_pad in (("4N+1", 97, 2), ("17N+5", 90, 2), ("自定义", 100, 0)):
+            with self.subTest(mode=mode):
+                options = {"unique_id": "158", "缓存批次": "fixed", "分段模式": mode, "分段帧数": 100}
+                info = self.node.schedule(当前段=1000000, 图像=self.frames, 帧率=30,
+                    音频={"waveform": self.wave, "sample_rate": 30}, 遮罩=self.mask, **options)["ui"]
+                self.assertEqual(info["scene_table"], [f"0:{split},{split}:144"])
+                self.assertEqual(info["scene_tail_pad"], [tail_pad])
+                first = self.node.schedule(当前段=0, **options)
+                tail = self.node.schedule(当前段=1, **options)
+                self.assertEqual(first[3], split)
+                self.assertEqual(tail[3], 144 - split + tail_pad)
+                torch.testing.assert_close(tail[0][-1], self.frames[-1])
+                torch.testing.assert_close(tail[4][-1], self.mask[-1])
+                torch.testing.assert_close(tail[1]["waveform"][..., :144 - split], self.wave[..., split:])
+                self.assertEqual(tail[1]["waveform"].shape[-1], tail[3])
+                self.assertEqual(int(torch.count_nonzero(tail[1]["waveform"][..., 144 - split:])), 0)
+
+    def test_rule_mode_can_pad_a_clip_shorter_than_its_minimum(self):
+        self.assertEqual(self.node._fixed_segments(2, "17N+5", 100), ([(0, 2, 0)], 3))
+        with self.assertRaisesRegex(ValueError, "至少为 5"):
+            self.node._fixed_segments(2, "17N+5", 4)
+
     def test_missing_cache_fails_instead_of_using_another_batch(self):
         self.prepare()
         with self.assertRaisesRegex(ValueError, "缓存已释放"):
