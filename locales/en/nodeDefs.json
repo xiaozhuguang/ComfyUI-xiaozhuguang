@@ -37,7 +37,7 @@
     }
   },
   "XiaozhuguangMaskCleanupRepair": {
-    "display_name": "Xiaozhuguang Video Mask Cleanup & Repair",
+    "display_name": "Xiaozhuguang Video Mask Repair",
     "inputs": {
       "mask": { "name": "Video Masks" },
       "cleanup_enabled": { "name": "Clean Noise" },
@@ -55,7 +55,10 @@
       "fill_holes": { "name": "Close Small Holes" },
       "remove_isolated_pixels": { "name": "Remove Thin Regions" },
       "smooth": { "name": "Smooth" },
-      "blur": { "name": "Blur" }
+      "blur": { "name": "Blur" },
+      "temporal_smooth_radius": { "name": "Contour Smoothing Radius (Frames)" },
+      "position_smoothing_frames": { "name": "Position Smoothing" },
+      "scale_smoothing_frames": { "name": "Scale Smoothing" }
     },
     "outputs": { "0": { "name": "Masks" } }
   },
@@ -517,11 +520,9 @@
       "divisible_by": { "name": "divisible by" },
       "ratio": { "name": "ratio" },
       "enable_crop": { "name": "enable crop" },
-      "crop_mode": { "name": "Crop Mode" },
-      "tracking_preference": { "name": "Tracking Preference" },
-      "tracking_scale": { "name": "Tracking Scale" },
+      "position_smoothing_frames": { "name": "Position Smoothing" },
+      "scale_smoothing_frames": { "name": "Scale Smoothing" },
       "fill_color": { "name": "fill color" },
-      "mask_smooth": { "name": "mask smooth" },
       "sum_mask": { "name": "sum mask" }
     },
     "outputs": {

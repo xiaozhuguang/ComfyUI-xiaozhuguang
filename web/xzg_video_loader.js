@@ -789,6 +789,7 @@ export function _applyWidgetStyles(node) {
         '视频': 1, '上传视频': 1, '多视频队列': 1,
         '强制帧率': 1, '视频比例': 1, '比例模式': 1, '自定义宽度': 1,
         '自定义高度': 1, '跳过帧数': 1, '帧数上限': 1, '内存模式': 1,
+        '旋转角度': 1,
     };
     for (const w of node.widgets || []) {
         if (w.name === VIDEO_PREVIEW_WIDGET_NAME) continue;
@@ -1762,7 +1763,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
         player = new XiaozhuguangVideoPlayer({
         allowSaveCurrentFrame: true,
         frameCountOverlay: "range",
-        resolutionOverlay: node.type === "XiaozhuguangVideoLoaderDaVinci",
+        resolutionOverlay: node.type !== "XiaozhuguangVideoLoaderLM",
         node,
         container: playerContainer,
         // 仅 Nodes 2 使用 flex 收缩布局；Nodes 1 保留原来的播放器布局。
@@ -2635,7 +2636,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
                     // 解析 "横屏16:9" / "竖屏9:16" / "等比1:1" 等
                     const m = String(ratioVal).match(/(\d+)\s*[:：]\s*(\d+)/);
                     if (m) {
-                        player.setCustomSize(parseInt(m[1], 10), parseInt(m[2], 10));
+                        player.setCustomSize(parseInt(m[1], 10), parseInt(m[2], 10), { aspectRatioOnly: true });
                     }
                 }
                 return;

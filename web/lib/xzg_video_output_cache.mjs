@@ -23,6 +23,13 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
     const key = (owner, nodeId) => JSON.stringify([owner, String(nodeId)]);
     const storeKey = (outputKey) => `xzg_video_output_v2:${outputKey}`;
 
+    function save(owner, outputKey, info) {
+        outputs.set(outputKey, info);
+        if (owner.startsWith("workflow:")) {
+            try { storage?.setItem(storeKey(outputKey), JSON.stringify(info)); } catch {}
+        }
+    }
+
     function receive(detail, order = ++eventSequence) {
         if (!detail?.output || detail.prompt_id == null) return;
         const promptId = String(detail.prompt_id);
@@ -45,10 +52,7 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
         if ((received.get(outputKey) || 0) > order) return;
         received.set(outputKey, order);
         const saved = { ...info, type: info.type || "output", subfolder: info.subfolder || "" };
-        outputs.set(outputKey, saved);
-        if (job.owner.startsWith("workflow:")) {
-            try { storage?.setItem(storeKey(outputKey), JSON.stringify(saved)); } catch {}
-        }
+        save(job.owner, outputKey, saved);
         for (const [node, apply] of subscribers) {
             if (identity(node.graph) === job.owner && String(node.id) === nodeId) apply(detail.output);
         }
@@ -62,6 +66,11 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
             if (outputs.has(outputKey)) return outputs.get(outputKey);
             if (!owner.startsWith("workflow:")) return null;
             try { return JSON.parse(storage?.getItem(storeKey(outputKey)) || "null"); } catch { return null; }
+        },
+        restoreCopy(graph, nodeId, info) {
+            const owner = identity(graph);
+            if (!owner || typeof info?.filename !== "string" || !info.filename) return;
+            save(owner, key(owner, nodeId), info);
         },
         subscribe(node, apply) {
             subscribers.set(node, apply);

@@ -1483,7 +1483,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangBigDisplay": "小珠光展示任意",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskConvert": "小珠光图像遮罩智能互转",
-    "XiaozhuguangMaskCleanupRepair": "小珠光遮罩清理修复",
+    "XiaozhuguangMaskCleanupRepair": "小珠光遮罩修复",
     "XiaozhuguangImageSize": "小珠光获取尺寸",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
     "XiaozhuguangColorAdjust": "小珠光颜色调整",

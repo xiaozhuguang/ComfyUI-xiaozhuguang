@@ -5,6 +5,7 @@ app.registerExtension({
     name: "xiaozhuguang.atbcCropToggle",
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "XiaozhuguangATBC") return;
+        const smoothingWidgets = ["position_smoothing_frames", "scale_smoothing_frames"];
         const sync = node => {
             const mask = node.inputs?.find(input => input.name === "mask");
             if (mask) {
@@ -12,39 +13,20 @@ app.registerExtension({
                 mask.label = mask.localized_name = xzgT("遮罩", "Mask");
             }
             const widget = name => node.widgets?.find(w => w.name === name);
-            // Older saved nodes have no serialized values for the appended controls.
-            for (const [name, values] of Object.entries({
-                crop_mode: ["遮罩平滑", "视频稳定跟踪"],
-                tracking_preference: ["稳定优先", "紧凑优先"],
-                tracking_scale: ["固定大小", "动态缩放"],
-                alignment_mode: ["扩充", "变形"],
-            })) {
-                const item = widget(name);
-                if (item && !values.includes(item.value)) item.value = values[0];
-            }
             const margin = widget("margin_percent");
             if (margin && !Number.isFinite(margin.value)) margin.value = 10;
-            // Runtime input values, including external connections, decide applicability.
-            for (const name of ["tracking_preference", "tracking_scale", "mask_smooth", "crop_mode"]) {
+            for (const name of smoothingWidgets) {
                 const item = widget(name);
-                if (item) item.disabled = false;
+                const defaultValue = nodeData.input?.optional?.[name]?.[1]?.default;
+                if (item && !Number.isFinite(item.value) && Number.isFinite(defaultValue)) {
+                    item.value = defaultValue;
+                }
             }
             node.setDirtyCanvas?.(true, true);
         };
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function (...args) {
             const result = created?.apply(this, args);
-            for (const name of ["enable_crop", "sum_mask", "crop_mode"]) {
-                const widget = this.widgets?.find(w => w.name === name);
-                if (!widget) continue;
-                const callback = widget.callback;
-                widget.callback = (value, ...rest) => {
-                    widget.value = value;
-                    const result = callback?.call(widget, value, ...rest);
-                    sync(this);
-                    return result;
-                };
-            }
             sync(this);
             return result;
         };
@@ -79,9 +61,30 @@ app.registerExtension({
                 info.widgets_values.splice(7, 1);
             }
             const marginIndex = this.widgets?.findIndex(w => w.name === "margin_percent") ?? -1;
+            if (marginIndex >= 0 && Array.isArray(info?.widgets_values)) {
+                const saved = [...info.widgets_values];
+                if (["遮罩平滑", "逐帧裁剪", "视频稳定跟踪", "人脸构图"].includes(saved[marginIndex])) {
+                    saved.splice(marginIndex, 1);
+                    if (typeof saved[marginIndex] === "number") saved.splice(marginIndex, 1);
+                    if (["稳定优先", "紧凑优先"].includes(saved[marginIndex])) saved.splice(marginIndex, 1);
+                    if (["固定大小", "动态缩放"].includes(saved[marginIndex])) saved.splice(marginIndex, 1);
+                    if (["扩充", "变形"].includes(saved[marginIndex])) saved.splice(marginIndex, 1);
+                    info = { ...info, widgets_values: saved };
+                }
+            }
             if (marginIndex >= 0 && Array.isArray(info?.widgets_values) && !info.xzg_margin_percent) {
                 const values = [...info.widgets_values];
                 values[marginIndex] = 10;
+                info = { ...info, widgets_values: values };
+            }
+            if (Array.isArray(info?.widgets_values) && !info.xzg_smoothing_frames) {
+                const values = [...info.widgets_values];
+                for (const name of smoothingWidgets) {
+                    const index = this.widgets?.findIndex(w => w.name === name) ?? -1;
+                    if (index >= 0 && Number.isFinite(values[index])) {
+                        values[index] = Math.max(1, Math.min(240, Math.round(values[index] * 6)));
+                    }
+                }
                 info = { ...info, widgets_values: values };
             }
             const result = configure?.call(this, info, ...args);
@@ -92,6 +95,7 @@ app.registerExtension({
         nodeType.prototype.onSerialize = function(info, ...args) {
             const result = serialize?.call(this, info, ...args);
             info.xzg_margin_percent = true;
+            info.xzg_smoothing_frames = true;
             return result;
         };
     },

@@ -2279,6 +2279,9 @@ function createImgBatchUI(node) {
     const cropSizeRow = document.createElement("div");
     cropSizeRow.style.cssText = "display:none;flex:0 0 auto;align-items:center;gap:7px;padding-left:8px;border-left:1px solid rgba(255,255,255,.22);box-sizing:border-box;white-space:nowrap;";
     const cropSizeInputs = {};
+    let cropSizeAxis = "width";
+    let lastSizedCrop = null;
+    let lastSizeRatio = null;
     for (const [key, caption] of [["width", xzgT("宽度", "Width")], ["height", xzgT("高度", "Height")]]) {
         const label = document.createElement("label");
         label.style.cssText = "display:flex;align-items:center;gap:4px;font-size:14px;white-space:nowrap;";
@@ -2293,11 +2296,21 @@ function createImgBatchUI(node) {
         label.append(input);
         cropSizeRow.append(label);
         cropSizeInputs[key] = input;
-        input.addEventListener("input", () => createCropFromSize({ normalize: false, silent: true }));
-        input.addEventListener("change", () => createCropFromSize({ silent: true }));
+        input.addEventListener("input", () => {
+            cropSizeAxis = key;
+            createCropFromSize({ normalize: false, silent: true });
+        });
+        input.addEventListener("change", () => {
+            cropSizeAxis = key;
+            createCropFromSize({ silent: true });
+        });
         input.addEventListener("keydown", event => {
             event.stopPropagation();
-            if (event.key === "Enter") { event.preventDefault(); createCropFromSize(); }
+            if (event.key === "Enter") {
+                event.preventDefault();
+                cropSizeAxis = key;
+                createCropFromSize();
+            }
         });
     }
     const cropMultipleSelect = document.createElement("select");
@@ -2316,23 +2329,29 @@ function createImgBatchUI(node) {
     }
     function createCropFromSize({ normalize = true, silent = false } = {}) {
         if (!cropEnabled) return;
-        const width = Number(cropSizeInputs.width.value), height = Number(cropSizeInputs.height.value);
-        if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 32768)) {
+        const box = _cropPending || cropRect;
+        const imageWidth = _maskImgNaturalW || singleImgEl.naturalWidth;
+        const imageHeight = _maskImgNaturalH || singleImgEl.naturalHeight;
+        if (!imageWidth || !imageHeight) return;
+        const ratio = _cropAspect ?? (box && box === lastSizedCrop ? lastSizeRatio :
+            box ? box.w / box.h : (_singleOrigW || imageWidth) / (_singleOrigH || imageHeight));
+        const value = Number(cropSizeInputs[cropSizeAxis].value);
+        const multiple = Number(cropMultipleSelect.value);
+        const snap = dimension => Math.max(multiple, Math.floor(dimension / multiple + 0.5) * multiple);
+        const primary = snap(value);
+        const editingWidth = cropSizeAxis === "width";
+        const targetWidth = editingWidth ? primary : snap(primary * ratio);
+        const targetHeight = editingWidth ? snap(primary / ratio) : primary;
+        if (!Number.isInteger(value) || value < 1 || value > 32768 ||
+            targetWidth > 32768 || targetHeight > 32768) {
             if (!silent) xzgAlert(xzgT("宽高请输入 1 到 32768 的整数", "Enter integer dimensions from 1 to 32768"));
             return;
         }
-        const multiple = Number(cropMultipleSelect.value);
-        const snap = value => Math.max(multiple, Math.floor(value / multiple + 0.5) * multiple);
-        const targetWidth = snap(width), targetHeight = snap(height);
         if (targetWidth * targetHeight > 150000000) {
             if (!silent) xzgAlert(xzgT("裁剪尺寸过大", "Crop dimensions are too large"));
             return;
         }
         const scale = cropOriginalScale();
-        const box = _cropPending || cropRect;
-        const imageWidth = _maskImgNaturalW || singleImgEl.naturalWidth;
-        const imageHeight = _maskImgNaturalH || singleImgEl.naturalHeight;
-        if (!imageWidth || !imageHeight) return;
         const cx = box ? box.x + box.w / 2 : imageWidth / 2;
         const cy = box ? box.y + box.h / 2 : imageHeight / 2;
         const w = targetWidth / scale, h = targetHeight / scale;
@@ -2340,12 +2359,10 @@ function createImgBatchUI(node) {
         const pending = { x: Math.round((cx - w / 2) * scale) / scale, y: Math.round((cy - h / 2) * scale) / scale, w, h };
         _clearCropBox();
         _cropPending = pending;
-        _cropAspect = null;
-        if (normalize) {
-            cropSizeInputs.width.value = targetWidth;
-            cropSizeInputs.height.value = targetHeight;
-        }
-        refreshCropRatioUI();
+        lastSizedCrop = pending;
+        lastSizeRatio = ratio;
+        if (normalize || !editingWidth) cropSizeInputs.width.value = targetWidth;
+        if (normalize || editingWidth) cropSizeInputs.height.value = targetHeight;
         _lastCropPreviewKey = null;
         _refreshCropPreview();
         _renderTransformPreview();

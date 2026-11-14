@@ -1,4 +1,5 @@
-import { createVideoOutputCache } from "./lib/xzg_video_output_cache.mjs";
+// .mjs 会被浏览器缓存。该模块只提供工厂，由本扩展创建并安装唯一的缓存实例。
+import { createVideoOutputCache } from "./lib/xzg_video_output_cache.mjs?v=2";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
@@ -552,6 +553,7 @@ function _xzgFixVueWidgetGutter(node) {
 
 // 预览身份和执行归属集中管理，禁止按节点结构猜测工作流。
 const _xzgVideoOutputs = createVideoOutputCache();
+const VIDEO_CLIPBOARD_PROPERTY = "xzgCopiedVideoPreview";
 
 function getVideoUrl(filename, type, subfolder, absToken, previewId) {
     if (!filename) return "";
@@ -582,6 +584,28 @@ app.registerExtension({
     name: "xiaozhuguang.video_combine",
     init() {
         _xzgVideoOutputs.install(api, app);
+    },
+    setup() {
+        const canvas = app.canvas;
+        const serializeItems = canvas?._serializeItems;
+        if (!serializeItems) return;
+        // 节点剪贴板与工作流分别序列化，只有剪贴板携带视频引用。
+        canvas._serializeItems = function () {
+            const data = serializeItems.apply(this, arguments);
+            for (const item of data.nodes) {
+                if (item.type !== "XiaozhuguangVideoSaveDaVinci") continue;
+                const video = _xzgVideoOutputs.get(this.graph, item.id);
+                if (!video?.filename) continue;
+                const { filename, type, subfolder, preview_id, abs_token, davinci_abs_token,
+                    is_absolute, frame_rate, frame_count } = video;
+                item.properties = {
+                    ...item.properties,
+                    [VIDEO_CLIPBOARD_PROPERTY]: { filename, type, subfolder, preview_id, abs_token,
+                        davinci_abs_token, is_absolute, frame_rate, frame_count },
+                };
+            }
+            return data;
+        };
     },
     getCustomWidgets() {
         return {
@@ -821,6 +845,13 @@ app.registerExtension({
 
             const origOnConfigure = node.onConfigure;
             node.onConfigure = function (info) {
+                if (nodeData.name === "XiaozhuguangVideoSaveDaVinci") {
+                    const copied = this.properties?.[VIDEO_CLIPBOARD_PROPERTY];
+                    if (copied) {
+                        delete this.properties[VIDEO_CLIPBOARD_PROPERTY];
+                        _xzgVideoOutputs.restoreCopy(this.graph, this.id, copied);
+                    }
+                }
                 origOnConfigure?.apply(this, arguments);
                 requestAnimationFrame(() => {
                     _xzgFixVueWidgetGutter(node);

@@ -302,6 +302,11 @@ export class XiaozhuguangVideoPlayer {
                 this._resolutionLabel = document.createElement("div");
                 this._resolutionLabel.style.cssText = "font-size:16px;line-height:1.4;";
                 this._frameCountOverlay.appendChild(this._resolutionLabel);
+                if (this._frameCountOverlayMode === "range") {
+                    this._fpsLabel = document.createElement("div");
+                    this._fpsLabel.style.cssText = this._resolutionLabel.style.cssText;
+                    this._frameCountOverlay.appendChild(this._fpsLabel);
+                }
             }
             this._videoSurface.appendChild(this._frameCountOverlay);
         }
@@ -635,6 +640,7 @@ export class XiaozhuguangVideoPlayer {
     setSourceRotation(degrees) {
         this._sourceRotation = degrees;
         this._updateSurfaceSize();
+        this._updateFrameCountOverlay();
     }
 
     _updateSurfaceSize() {
@@ -1897,9 +1903,11 @@ export class XiaozhuguangVideoPlayer {
         this._loopPlayback = !!loop;
     }
 
-    setCustomSize(w, h) {
+    setCustomSize(w, h, { aspectRatioOnly = false } = {}) {
         const cw = Math.max(0, Math.floor(w || 0));
         const ch = Math.max(0, Math.floor(h || 0));
+        this._customWidth = aspectRatioOnly ? 0 : cw;
+        this._customHeight = aspectRatioOnly ? 0 : ch;
         if (cw > 0 && ch > 0) {
             this._customRatio = cw / ch;
         } else {
@@ -1907,6 +1915,7 @@ export class XiaozhuguangVideoPlayer {
         }
         this._applyVideoFit();
         this._updateSurfaceSize();
+        this._updateFrameCountOverlay();
     }
 
     // 设置画面适配模式：cover(裁剪铺满) | fill(拉伸变形) | contain(留边/完整画面)
@@ -2786,11 +2795,23 @@ export class XiaozhuguangVideoPlayer {
         }
         this._frameCountLabel.textContent = String(Math.round(count || 0));
         if (this._resolutionLabel) {
-            const width = this.videoWidth;
-            const height = this.videoHeight;
+            let width = this.videoWidth;
+            let height = this.videoHeight;
+            if (!this._previewLoad && (this._sourceRotation === 90 || this._sourceRotation === 270)) {
+                [width, height] = [height, width];
+            }
+            const ratio = width > 0 && height > 0 ? width / height : 0;
+            if (this._customWidth || this._customHeight) {
+                width = this._customWidth || (ratio ? Math.round(this._customHeight * ratio / 8) * 8 : 0);
+                height = this._customHeight || (ratio ? Math.round(this._customWidth / ratio / 8) * 8 : 0);
+            }
             const hasResolution = width > 0 && height > 0;
             this._resolutionLabel.textContent = hasResolution ? `${width} × ${height}` : "";
             this._resolutionLabel.style.display = hasResolution ? "block" : "none";
+        }
+        if (this._fpsLabel) {
+            const fps = this.getFrameRate();
+            this._fpsLabel.textContent = `${Number(fps.toFixed(2))} fps`;
         }
         overlay.style.display = this._src && this._currentDecoder && !this._isPlayingState
             && Number.isFinite(count) ? "block" : "none";

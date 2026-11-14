@@ -2,21 +2,79 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { test } from 'node:test';
+import { createVideoOutputCache } from '../web/lib/xzg_video_output_cache.mjs';
 
 const source = fs.readFileSync(new URL('../web/xzg_video_combine.js', import.meta.url), 'utf8')
     .replace(/^import\s[^;]+;\r?\n/gm, '');
 
-function load() {
+function load(overrides = {}) {
     let extension;
     const jobs = [], prompts = [];
     const app = { registerExtension(value) { extension = value; }, canvas: {
         prompt(label, value, callback) { prompts.push({ label, value, callback }); },
     } };
     const context = vm.createContext({ app, createVideoOutputCache: () => ({}),
-        queueMicrotask: job => jobs.push(job), xzgLang: () => 'zh' });
+        queueMicrotask: job => jobs.push(job), xzgLang: () => 'zh', ...overrides });
     vm.runInContext(source, context);
     return { context, app, jobs, prompts, extension };
 }
+
+test('Godlike save nodes paste the copied video into a new node and can be copied again', async () => {
+    const storage = new Map();
+    const cache = createVideoOutputCache({ getItem: key => storage.get(key),
+        setItem: (key, value) => storage.set(key, value) });
+    const frames = [];
+    const { extension, app } = load({
+        createVideoOutputCache: () => cache,
+        URLSearchParams,
+        api: { fetchApi: async () => ({ json: async () => ({ output_dir: '/output' }) }) },
+        document: { hidden: false, createElement: () => ({ style: {}, appendChild() {},
+            clientWidth: 300, clientHeight: 500 }) },
+        ResizeObserver: class { observe() {} },
+        requestAnimationFrame: callback => frames.push(callback),
+        xzgEnableCanvasPanOnSpace() {},
+        XiaozhuguangVideoPlayer: class {
+            resize() {}
+            load(url) { this.url = url; }
+            setBackendFrameCount(count) { this.frames = count; }
+        },
+    });
+    const type = 'XiaozhuguangVideoSaveDaVinci';
+    const sourceGraph = { id: 'source' };
+    const targetGraph = { id: 'target' };
+    const video = { filename: 'original.mp4', type: 'output', subfolder: 'preview/source/7',
+        preview_id: 'version', abs_token: 'original-token', frame_count: 42, abs_path: 'private-path' };
+    cache.restoreCopy(sourceGraph, 7, video);
+    const properties = { existing: true };
+    app.canvas.graph = sourceGraph;
+    let selected = { type, id: 7, properties };
+    app.canvas._serializeItems = () => ({ nodes: [{ ...selected }] });
+    extension.setup();
+    const copied = JSON.parse(JSON.stringify(app.canvas._serializeItems())).nodes[0];
+    assert.deepEqual(properties, { existing: true });
+    assert.doesNotMatch(JSON.stringify(copied), /private-path/);
+
+    class Node {
+        widgets = [];
+        addDOMWidget() { return {}; }
+        setDirtyCanvas() {}
+        setSize() {}
+    }
+    await extension.beforeRegisterNodeDef(Node, { name: type }, app);
+    const pasted = Object.assign(new Node(), { graph: targetGraph, id: 19, properties: copied.properties });
+    pasted.onNodeCreated();
+    pasted.onConfigure({ ...copied, id: -1 });
+    for (const frame of frames.splice(0)) frame();
+    assert.equal(pasted._xzgVideoPlayer.url, '/xzg/davinci/view-abs?token=original-token&v=version');
+    assert.equal(pasted._xzgVideoPlayer.frames, 42);
+    assert.deepEqual(pasted.properties, { existing: true });
+    assert.equal(cache.get(targetGraph, 19).subfolder, 'preview/source/7');
+    assert.equal(cache.get(sourceGraph, 7), video);
+    app.canvas.graph = targetGraph;
+    selected = { type, id: 19, properties: pasted.properties };
+    const recopied = JSON.parse(JSON.stringify(app.canvas._serializeItems())).nodes[0];
+    assert.equal(recopied.properties.xzgCopiedVideoPreview.abs_token, 'original-token');
+});
 
 test('save schemas use private factories even when other extensions replace shared factories', async () => {
     const { extension, app } = load();

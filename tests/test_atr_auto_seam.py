@@ -69,7 +69,7 @@ class AutoSeamTests(unittest.TestCase):
         image = torch.zeros((1,160,160,3))
         mask = torch.zeros((1,160,160))
         mask[:,50:90,50:90] = 1
-        for mode in ('遮罩平滑','视频稳定跟踪'):
+        for mode in ('逐帧裁剪','视频稳定跟踪'):
             processed, boxes, cropped_mask = atbc.crop_and_resize(image,mask=mask,kilopixels=100,crop_mode=mode)
             self.assertEqual(boxes['crop_infos'][0]['subject_box'], (50,50,90,90))
             for connected in (None,cropped_mask):

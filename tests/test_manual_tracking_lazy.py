@@ -66,13 +66,23 @@ class ManualTrackingLazyTest(unittest.TestCase):
         self.assertIn("load", sorter.pendingNodes)
         self.assertEqual(self.mapping["VideoWatermarkDetector"].INPUT_TYPES(), self.mapping["XZGManualTrackingLoadPreview"].INPUT_TYPES())
 
-
 class PointsEditorLazyTest(ManualTrackingLazyTest):
     def setUp(self):
         super().setUp()
         definitions(ROOT / "__init__.py", {"XiaozhuguangPointsEditor", "XZGPointsEditorLoadPreview"}, self.ns)
         self.mapping["VideoWatermarkDetector"] = self.ns["XiaozhuguangPointsEditor"]
         self.mapping["XZGManualTrackingLoadPreview"] = self.ns["XZGPointsEditorLoadPreview"]
+
+
+class CachedPreviewTest(unittest.TestCase):
+    def test_cached_mask_node_is_eligible_for_preview_replay(self):
+        fixture = ManualTrackingLazyTest()
+        fixture.setUp()
+        ns = fixture.ns
+        definitions(ROOT.parents[1] / "execution.py", {"_is_intermediate_output"}, ns)
+        prompt = ns["DynamicPrompt"]({"track": {"class_type": "VideoWatermarkDetector", "inputs": {}}})
+        self.assertTrue(ns["_is_intermediate_output"](prompt, "track"))
+        self.assertFalse(fixture.mapping["VideoWatermarkDetector"].OUTPUT_NODE)
 
 
 if __name__ == "__main__":

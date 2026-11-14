@@ -68,6 +68,31 @@ class XiaozhuguangATR:
         y1 = max(y0 + 1, min(height, round(box[3] * sy)))
         return image[..., y0:y1, x0:x1, :]
 
+    @staticmethod
+    def _restore_subpixel_crop(image, info):
+        """Map processed NCHW pixels back onto the integer destination envelope."""
+        x0, y0, x1, y1 = info["original_coords"]
+        left, top, _, _ = info["pad_info"]
+        sx0, sy0, sx1, sy1 = info["subpixel_box"]
+        x = torch.arange(x0 - left, x1 - left, device=image.device, dtype=image.dtype) + 0.5
+        y = torch.arange(y0 - top, y1 - top, device=image.device, dtype=image.dtype) + 0.5
+        source_w, source_h = info["original_image_size"]
+        out_h, out_w = image.shape[-2:]
+
+        def grid_axis(centers, start, end, source_length, output_length):
+            scale = output_length / (end - start)
+            # Clamp interpolation to sampled image pixels, away from fill.
+            first = max(0, min(output_length - 1, math.ceil(-start * scale - 0.5)))
+            last = max(first, min(output_length - 1, math.ceil((source_length - start) * scale - 0.5) - 1))
+            indices = ((centers - start) * scale - 0.5).clamp(first, last)
+            return 2 * (indices + 0.5) / output_length - 1
+
+        gx = grid_axis(x, sx0, sx1, source_w, out_w)
+        gy = grid_axis(y, sy0, sy1, source_h, out_h)
+        gy, gx = torch.meshgrid(gy, gx, indexing="ij")
+        grid = torch.stack((gx, gy), dim=-1).unsqueeze(0).expand(len(image), -1, -1, -1)
+        return F.grid_sample(image, grid, mode="bilinear", padding_mode="border", align_corners=False)
+
     @classmethod
     def _restore_valid_crop(cls, image, info, resize_mode="Pillow Lanczos"):
         """Invert the separately resized real-image region without sampling fill."""
@@ -136,7 +161,9 @@ class XiaozhuguangATR:
         return padded
 
     def _restore_single_image(self, orig_np, proc_np, crop_info, blur_amount, mask_expand, single_mask=None, color_options=None, color_state=None, seam_data=None, resize_mode="Pillow Lanczos", seam_preview=True, auto_seam=False):
-        if single_mask is not None and single_mask.shape[:2] == proc_np.shape[:2]:
+        subpixel = "subpixel_box" in crop_info
+        mask_in_crop_space = single_mask is not None and single_mask.shape[:2] == proc_np.shape[:2]
+        if mask_in_crop_space and not subpixel:
             single_mask = self._restore_valid_crop(single_mask[..., None], crop_info, resize_mode)
             single_mask = (single_mask if "output_valid_box" in crop_info else self._remove_output_padding(single_mask, crop_info))[..., 0]
         proc_np = self._restore_valid_crop(proc_np, crop_info, resize_mode)
@@ -154,7 +181,14 @@ class XiaozhuguangATR:
         crop_height = original_coords[3] - original_coords[1]
         x1, y1 = original_coords[0], original_coords[1]
 
-        resized_processed = self._resize_numpy(proc_np, crop_width, crop_height, resize_mode)
+        if subpixel:
+            pixels = torch.from_numpy(np.ascontiguousarray(proc_np)).float().movedim(-1, 0).unsqueeze(0)
+            resized_processed = self._restore_subpixel_crop(pixels, crop_info)[0].movedim(0, -1).numpy()
+            if mask_in_crop_space:
+                pixels = torch.from_numpy(np.ascontiguousarray(single_mask)).float()[None, None]
+                single_mask = self._restore_subpixel_crop(pixels, crop_info)[0, 0].round().byte().numpy()
+        else:
+            resized_processed = self._resize_numpy(proc_np, crop_width, crop_height, resize_mode)
         rect = self._seam_rect(crop_info) if single_mask is None and not auto_seam else None
         if rect is not None:
             a, b, c, d = rect
@@ -219,7 +253,7 @@ class XiaozhuguangATR:
 
     def _cached_auto_seam_weights(self, info, mask, width, height):
         geometry = tuple((name, tuple(info[name]) if info.get(name) is not None else None)
-                         for name in ("original_coords", "pad_info", "original_image_size", "subject_box", "seam_box"))
+                         for name in ("original_coords", "pad_info", "original_image_size", "subject_box", "seam_box", "subpixel_box"))
         key = (geometry, info.get("min_margin"), width, height, None if mask is None else
                (mask.shape, hashlib.blake2b(np.ascontiguousarray(mask).tobytes(), digest_size=16).digest()))
         cached = getattr(self, "_auto_weight_cache", None)
@@ -290,6 +324,10 @@ class XiaozhuguangATR:
         weights = 1 - t*t*(3-2*t)
         weights = np.maximum(weights, soft)
         weights[core] = 1
+        if "subpixel_box" in info:
+            sx0, sy0, sx1, sy1 = info["subpixel_box"]
+            x, y = xx + x0 - left + 0.5, yy + y0 - top + 0.5
+            weights *= (x >= sx0) & (x < sx1) & (y >= sy0) & (y < sy1)
         return weights.astype(np.float32)
 
     def restore_image(self, original_image, processed_image, crop_box, blur_amount=0, mask_expand=0, mask=None, compute_device="GPU", edge_color_match=False, color_band_width=16, color_match_strength=0.5, color_correction_range=128, color_temporal_smooth=0.8, resize_mode="Pillow Lanczos", seam_preview=False, auto_seam=True):
@@ -772,7 +810,12 @@ class XiaozhuguangATR:
             padded_processed_size = processed.shape[1:3]
             processed = (self._restore_valid_crop(processed, info, resize_mode) if "output_valid_box" in info
                          else self._remove_output_padding(processed, info))
-            processed = self._prepare_gpu_input(processed, x2 - x1, y2 - y1, resize_mode, device)
+            subpixel = "subpixel_box" in info
+            if subpixel:
+                pixels = processed.to(device=device, dtype=torch.float32).movedim(-1, 1) * 255
+                processed = self._restore_subpixel_crop(pixels, info)
+            else:
+                processed = self._prepare_gpu_input(processed, x2 - x1, y2 - y1, resize_mode, device)
             original = (original * 255).clamp_(0, 255).floor_()
             chunk_mask = None
             if mask is not None:
@@ -781,7 +824,11 @@ class XiaozhuguangATR:
                 if source_mask.shape[1:3] == padded_processed_size:
                     source_mask = (self._restore_valid_crop(source_mask, info, resize_mode) if "output_valid_box" in info
                                    else self._remove_output_padding(source_mask, info))
-                chunk_mask = self._prepare_gpu_input(source_mask, x2 - x1, y2 - y1, resize_mode, device)
+                if subpixel and source_mask.shape[1:3] == padded_processed_size:
+                    pixels = source_mask.to(device=device, dtype=torch.float32).movedim(-1, 1) * 255
+                    chunk_mask = self._restore_subpixel_crop(pixels, info)
+                else:
+                    chunk_mask = self._prepare_gpu_input(source_mask, x2 - x1, y2 - y1, resize_mode, device)
             seam_data = {} if seam_preview else None
             result = self._restore_gpu_chunk(original, processed, info, blur_amount, mask_expand, chunk_mask, color_options, color_state, seam_data, resize_mode, auto_seam=True)
             output[start:end] = result.cpu()

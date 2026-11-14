@@ -8,7 +8,7 @@ class XiaozhuguangMaskCleanupRepair:
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("mask",)
     FUNCTION = "execute"
-    DESCRIPTION = "视频遮罩：清理碎片和短暂杂点，扩展/收缩遮罩，修复形状，最后可选二值化。自动选择CPU/GPU，分批控制显存。扩展和二值化独立于清理/修复开关，无输入返回None。"
+    DESCRIPTION = "视频遮罩：清理杂点，扩展/收缩，修复形状，跨帧平滑，最后可选二值化。时间平滑独立于清理和修复开关，无输入返回None。"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -42,7 +42,15 @@ class XiaozhuguangMaskCleanupRepair:
                 "mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
                                             "tooltip": "二值化阈值；等于阈值时为0。仅开启二值化时生效。"}),
             },
-            "optional": {"mask": ("MASK",)},
+            "optional": {
+                "mask": ("MASK",),
+                "temporal_smooth_radius": ("INT", {"default": 0, "min": 0, "max": 16,
+                    "tooltip": "用前后帧抑制当前遮罩短暂凸出的轮廓，不在当前轮廓外添加像素。0关闭，空遮罩帧隔断平滑。"}),
+                "position_smoothing_frames": ("INT", {"default": 1, "min": 1, "max": 240,
+                    "tooltip": "平滑遮罩中心位置。数值越大，中心移动越平缓。1关闭。"}),
+                "scale_smoothing_frames": ("INT", {"default": 1, "min": 1, "max": 240,
+                    "tooltip": "平滑遮罩宽高的变化。数值越大，缩放越平缓。1关闭。"}),
+            },
         }
 
     @staticmethod
@@ -157,14 +165,47 @@ class XiaozhuguangMaskCleanupRepair:
                 del x
         return result
 
+    @staticmethod
+    def _smooth_geometry(segment, position_frames, scale_frames, ndi, check):
+        centers = []
+        sizes = []
+        for frame in segment:
+            check()
+            foreground = frame > frame.max() * 0.5
+            axes = [np.flatnonzero(foreground.any(axis=axis)) for axis in (1, 0)]
+            centers.append([(indices[0] + indices[-1]) / 2 for indices in axes])
+            sizes.append([indices[-1] - indices[0] + 1 for indices in axes])
+        centers = np.asarray(centers)
+        sizes = np.asarray(sizes)
+        target_centers = centers
+        if position_frames > 1:
+            target_centers = ndi.gaussian_filter1d(
+                centers, max(0.5, position_frames / 6), axis=0, mode="nearest")
+        inverse_scales = np.ones_like(centers)
+        if scale_frames > 1:
+            log_sizes = np.log(sizes)
+            smoothed = ndi.gaussian_filter1d(
+                log_sizes, max(0.5, scale_frames / 6), axis=0, mode="nearest")
+            inverse_scales = np.exp(log_sizes - smoothed)
+        for index, frame in enumerate(segment):
+            check()
+            scale = inverse_scales[index]
+            offset = centers[index] - target_centers[index] * scale
+            if not (np.allclose(scale, 1) and np.allclose(offset, 0, atol=1e-6)):
+                segment[index] = ndi.affine_transform(
+                    frame, np.diag(scale), offset=offset, order=1, mode="grid-constant")
+
     def execute(self, cleanup_enabled=True, threshold=0.3,
                 method="收缩重建", shrink=4, min_pixels=32, min_frames=2, edge_grow=4,
                 repair_enabled=False, erode_dilate=0, fill_holes=0,
                 remove_isolated_pixels=0, smooth=0, blur=0, mask=None,
-                mask_binarize=False, mask_threshold=0.5, tapered_corners=False):
+                mask_binarize=False, mask_threshold=0.5, tapered_corners=False,
+                temporal_smooth_radius=0, position_smoothing_frames=1, scale_smoothing_frames=1):
         if mask is None or mask.numel() == 0:
             return (None,)
-        if not cleanup_enabled and not repair_enabled and not erode_dilate and not mask_binarize:
+        smooth_geometry = position_smoothing_frames > 1 or scale_smoothing_frames > 1
+        if not any((cleanup_enabled, repair_enabled, erode_dilate, mask_binarize,
+                    temporal_smooth_radius, smooth_geometry)):
             return (mask,)
         from scipy import ndimage as ndi
         try:
@@ -197,15 +238,33 @@ class XiaozhuguangMaskCleanupRepair:
             if use_gpu:
                 try:
                     values = self._repair_gpu(values, *options, check, tapered_corners)
-                    print("[小珠光遮罩清理修复] 修复使用GPU分批处理，输出已转回CPU。")
+                    print("[小珠光遮罩修复] 修复使用GPU分批处理，输出已转回CPU。")
                 except torch.cuda.OutOfMemoryError:
-                    print("[小珠光遮罩清理修复] GPU显存不足，回退CPU。")
+                    print("[小珠光遮罩修复] GPU显存不足，回退CPU。")
                     use_gpu = False
                 finally:
                     # GPU helper scope has ended; release only unused allocator blocks.
                     torch.cuda.empty_cache()
             if not use_gpu:
                 values = self._repair_cpu(values, *options, ndi, check, tapered_corners)
+        if (temporal_smooth_radius or smooth_geometry) and len(values) > 1:
+            active = values.max(axis=(1, 2)) > 0
+            boundaries = np.flatnonzero(np.diff(active, prepend=False, append=False))
+            for start, stop in zip(boundaries[::2], boundaries[1::2]):
+                check()
+                if stop - start < 2:
+                    continue
+                segment = values[start:stop]
+                if smooth_geometry:
+                    self._smooth_geometry(segment, position_smoothing_frames, scale_smoothing_frames, ndi, check)
+                if temporal_smooth_radius:
+                    # Filter row strips to bound temporary memory for long videos.
+                    for top in range(0, segment.shape[1], 32):
+                        check()
+                        strip = segment[:, top:top + 32]
+                        median = ndi.median_filter(strip, size=(2 * temporal_smooth_radius + 1, 1, 1),
+                                                   mode="nearest")
+                        np.minimum(strip, median, out=strip)
         if mask_binarize:
             values = (values > float(mask_threshold)).astype(np.float32)
         check()

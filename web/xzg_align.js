@@ -342,13 +342,7 @@ app.registerExtension({
 
             beginChange();
             if (verticalLayout) {
-                // 上下分布 → 等宽，以最宽的节点为锚点（只加宽不加窄）
-                const maxW = Math.max(...nodes.map(n => n.size[0]));
-                nodes.forEach(n => {
-                    const cx = n.pos[0] + n.size[0] / 2;
-                    n.size[0] = maxW;
-                    n.pos[0] = cx - maxW / 2;
-                });
+                matchWidthAndCenter(nodes);
             } else {
                 // 左右分布 → 等高，以最高的节点为锚点（只加高不加窄）
                 const maxH = Math.max(...nodes.map(n => n.size[1]));
@@ -361,17 +355,23 @@ app.registerExtension({
             endChange();
         }
 
+        // 等宽后沿最上面节点原来的中心线对齐
+        function matchWidthAndCenter(nodes) {
+            const anchor = getTopmost(nodes);
+            const cx = anchor.pos[0] + anchor.size[0] / 2;
+            const maxW = Math.max(...nodes.map(n => n.size[0]));
+            nodes.forEach(n => {
+                n.size[0] = maxW;
+                n.pos[0] = cx - maxW / 2;
+            });
+        }
+
         // 强制等宽（左右拖）
         function sameWidth() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
             beginChange();
-            const maxW = Math.max(...nodes.map(n => n.size[0]));
-            nodes.forEach(n => {
-                const cx = n.pos[0] + n.size[0] / 2;
-                n.size[0] = maxW;
-                n.pos[0] = cx - maxW / 2;
-            });
+            matchWidthAndCenter(nodes);
             endChange();
         }
 
@@ -504,12 +504,49 @@ app.registerExtension({
 
             const anchorCenterY = anchorY + anchor.size[1] / 2;
 
+            // 保留原有上下顺序，只有交换相邻节点能减少列间交叉时才换位。
+            const layerOrder = new Map();
+            for (const list of layers.values()) {
+                list.sort((a, b) => a.pos[1] - b.pos[1]);
+                list.forEach((node, index) => layerOrder.set(node.id, index));
+            }
+
+            function crossingReduction(firstLinks, secondLinks, currentDepth) {
+                let reduction = 0;
+                for (const first of firstLinks) {
+                    const otherDepth = depth.get(first);
+                    if (otherDepth === currentDepth) continue;
+                    for (const second of secondLinks) {
+                        if (depth.get(second) !== otherDepth) continue;
+                        reduction += Math.sign(layerOrder.get(first) - layerOrder.get(second));
+                    }
+                }
+                return reduction;
+            }
+
+            for (const sweep of [[...sortedDepths].reverse(), sortedDepths]) {
+                for (const d of sweep) {
+                    const list = layers.get(d);
+                    for (let i = 1; i < list.length; i++) {
+                        const first = list[i - 1];
+                        const second = list[i];
+                        const reduction =
+                            crossingReduction(inputsOf.get(first.id), inputsOf.get(second.id), d) +
+                            crossingReduction(outputsOf.get(first.id), outputsOf.get(second.id), d);
+                        if (reduction > 0) {
+                            list[i - 1] = second;
+                            list[i] = first;
+                            layerOrder.set(first.id, i);
+                            layerOrder.set(second.id, i - 1);
+                        }
+                    }
+                }
+            }
+
             sortedDepths.forEach((d) => {
                 const list = layers.get(d);
                 const totalH = layerHeights.get(d);
                 const startY = anchorCenterY - totalH / 2;
-
-                list.sort((a, b) => a.pos[1] - b.pos[1]);
 
                 const anchorIdx = list.findIndex(n => n.id === anchor.id);
                 let adjustedStartY = startY;

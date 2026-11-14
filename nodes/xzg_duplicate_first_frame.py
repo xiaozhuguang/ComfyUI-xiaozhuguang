@@ -9,7 +9,7 @@ class XiaozhuguangDuplicateFirstFrame:
     小珠光帧优化
     根据原始帧数自动计算补帧数量，可复制首帧前补或尾帧后补
     4N+1：ceil(a/4)*4 + 5 - a；17N+5：补到不小于原始帧数的最小 17N+5
-    开启下限：开启后，用尾帧补至下限值（向上对齐到所选帧数规则）
+    开启下限：将下限值作为分段长度，用尾帧补齐最后一段；优先于帧数规则
 
     图像与遮罩均可独立输入（至少连一个）：
     - 双输入：遮罩按与图像完全相同的补帧规则处理（单帧遮罩自动复制到图像帧数，
@@ -23,9 +23,9 @@ class XiaozhuguangDuplicateFirstFrame:
             "required": {
                 "multi_fill": ("BOOLEAN", {"default": False}),
                 "min_frames": ("INT", {"default": 73, "min": 1, "max": 2147483647, "step": 1,
-                                      "tooltip": "开启下限时生效，自动向上对齐到所选帧数规则；不足时复制尾帧补足。"}),
+                                      "tooltip": "开启下限时用此值作为分段长度，复制尾帧补足最后一段。例：下限为 73 时，72 帧补至 73，75 帧补至 146。"}),
                 "frame_rule": (["4N+1", "17N+5"], {"default": "4N+1",
-                               "tooltip": "按补帧位置复制首帧或尾帧，使总帧数满足所选规则。"}),
+                               "tooltip": "关闭下限时，按补帧位置复制首帧或尾帧，使总帧数满足所选规则。"}),
                 "fps": ("FLOAT", {"forceInput": True, "min": 0.01, "max": 1000.0,
                                   "tooltip": "必须连接输入视频的帧率，并与视频合成帧率一致，用于计算音频补静音和裁剪时长。"}),
             },
@@ -34,7 +34,7 @@ class XiaozhuguangDuplicateFirstFrame:
                 "mask": ("MASK",),
                 "audio": ("AUDIO",),
                 "fill_position": (["前补帧", "后补帧", "不补帧"], {"default": "前补帧",
-                                  "tooltip": "前补帧复制首帧，后补帧复制尾帧；下限额外补帧仍追加在末尾。不补帧时原样输出，忽略帧数规则和下限，前补帧输出为0。"}),
+                                  "tooltip": "前补帧复制首帧，后补帧复制尾帧。开启下限时统一在末尾补齐最后一段。选择不补帧时原样输出。"}),
             },
         }
 
@@ -64,24 +64,20 @@ class XiaozhuguangDuplicateFirstFrame:
         if fill_position == "不补帧":
             return (image, batch_count, batch_count, 0, 0, mask, audio)
 
-        if frame_rule == "17N+5":
-            period, offset = 17, 5
-            front_fill = (offset - batch_count) % period
-        else:
-            period, offset = 4, 1
-            front_fill = ((batch_count + period - 1) // period) * period + 5 - batch_count
-
+        front_fill = 0
         back_fill = 0
         if multi_fill:
-            lower_bound = max(1, int(min_frames))
-            target = max(0, (lower_bound - offset + period - 1) // period) * period + offset
-            current = batch_count + front_fill
-            if current < target:
-                back_fill = target - current
-
-        if fill_position == "后补帧":
-            back_fill += front_fill
-            front_fill = 0
+            segment_frames = max(1, int(min_frames))
+            back_fill = (-batch_count) % segment_frames
+        else:
+            if frame_rule == "17N+5":
+                fill = (5 - batch_count) % 17
+            else:
+                fill = ((batch_count + 3) // 4) * 4 + 5 - batch_count
+            if fill_position == "后补帧":
+                back_fill = fill
+            else:
+                front_fill = fill
 
         # ── 图像 ──
         result = None

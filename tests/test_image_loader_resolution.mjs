@@ -7,6 +7,35 @@ const source = fs.readFileSync(new URL('../web/xzg_image_loader.js', import.meta
 const helper = source.slice(source.indexOf('function getCroppedImageSize('), source.indexOf('// 原始分辨率缓存'));
 const label = source.slice(source.indexOf('    function _updateSingleResLabel()'), source.indexOf('    singleImgEl.onerror'));
 
+test('fullscreen crop dimensions stay linked without accumulating rounding drift', () => {
+    const start = source.indexOf('    function createCropFromSize(');
+    const end = source.indexOf('    cropMultipleSelect.addEventListener', start);
+    const context = vm.createContext({
+        cropEnabled: true, _cropAspect: null, _cropPending: null, cropRect: null,
+        _singleOrigW: 1600, _singleOrigH: 900, _maskImgNaturalW: 1600, _maskImgNaturalH: 900,
+        cropSizeAxis: 'width', lastSizedCrop: null, lastSizeRatio: null,
+        cropSizeInputs: { width: { value: '6' }, height: { value: '900' } },
+        cropMultipleSelect: { value: '1' },
+        cropOriginalScale: () => 1,
+        _clearCropBox() {}, _refreshCropPreview() {}, _renderTransformPreview() {},
+        _renderMaskOverlay() {}, _updateSingleResLabel() {},
+    });
+    vm.runInContext(source.slice(start, end) + 'createCropFromSize({ normalize: false });', context);
+    assert.equal(context.cropSizeInputs.height.value, 3);
+    context.cropSizeInputs.width.value = '640';
+    vm.runInContext('createCropFromSize();', context);
+    assert.equal(context.cropSizeInputs.height.value, 360);
+
+    context._cropAspect = 3 / 4;
+    context.cropSizeAxis = 'height';
+    context.cropSizeInputs.height.value = '399';
+    context.cropMultipleSelect.value = '16';
+    vm.runInContext('createCropFromSize();', context);
+    assert.equal(context.cropSizeInputs.width.value, 304);
+    assert.equal(context.cropSizeInputs.height.value, 400);
+    assert.equal(context._cropAspect, 3 / 4);
+});
+
 test('applied crop immediately updates the single image resolution label', () => {
     const context = vm.createContext({
         syncCropSizeInputs() {}, _updateSingleCropBadge() {},

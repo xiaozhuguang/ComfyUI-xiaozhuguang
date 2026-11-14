@@ -42,6 +42,30 @@ class MaskProcessingTest(unittest.TestCase):
         mask = torch.rand(2, 5, 7)
         self.assertIs(self.process(mask), mask)
 
+    def test_temporal_smoothing_is_independent_and_does_not_cross_empty_frames(self):
+        mask = torch.tensor([[[1., 0.]], [[1., 1.]], [[1., 0.]], [[0., 0.]], [[0., 1.]]])
+        smooth = self.process(mask, temporal_smooth_radius=1)
+        self.assertEqual(smooth[0, 0, 1], 0)
+        self.assertLess(smooth[1, 0, 1], 1)
+        torch.testing.assert_close(smooth[3:], mask[3:])
+        torch.testing.assert_close(self.process(mask[:1], temporal_smooth_radius=1), mask[:1])
+        binary = self.process(mask, temporal_smooth_radius=1, mask_binarize=True)
+        torch.testing.assert_close(binary, (smooth > .5).to(dtype=mask.dtype))
+
+    def test_position_and_scale_smoothing_change_mask_geometry_independently(self):
+        mask = torch.zeros(3, 25, 25)
+        mask[:, 10:15, 10:15] = 1
+        mask[1].zero_()
+        mask[1, 8:17, 12:21] = 1
+        placed = self.process(mask, position_smoothing_frames=7)
+        scaled = self.process(mask, scale_smoothing_frames=7)
+        x = torch.arange(25)
+        centers = lambda frames: (frames * x).sum((1, 2)) / frames.sum((1, 2))
+        self.assertLess(centers(placed)[1], centers(mask)[1])
+        torch.testing.assert_close(placed.sum((1, 2)), mask.sum((1, 2)))
+        self.assertLess(scaled[1].sum(), mask[1].sum())
+        torch.testing.assert_close(centers(scaled), centers(mask))
+
     def test_binary_only_and_exact_threshold(self):
         mask = torch.tensor([[[0., .3, .5, .51, 1.]]], dtype=torch.float64)
         output = self.process(mask, mask_binarize=True, mask_threshold=.5)

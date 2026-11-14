@@ -917,7 +917,7 @@ function wm_ensureViewer(node) {
 
         const toolbar = document.createElement("div");
         // 加高 8px（28→36）：容纳加大 4px 后的「点击加载视频」行，避免文字贴边
-        toolbar.style.cssText = "flex: 0 0 36px; width: 100%; background: #222; display: flex; align-items: center; justify-content: space-between; padding: 0 6px; box-sizing: border-box; border-bottom: 1px solid #333; z-index: 10;";
+        toolbar.style.cssText = "flex:0 0 54px;width:100%;background:#222;display:flex;align-items:center;gap:12px;padding:0 12px;box-sizing:border-box;border-bottom:1px solid #333;z-index:10;overflow-x:auto;scrollbar-width:thin;";
         container.appendChild(toolbar);
         // 工具栏（点击加载视频这一栏）屏蔽浏览器原生右键菜单；
         // 轨道数字等自带右键菜单的元素会 stopPropagation，不受影响
@@ -938,29 +938,33 @@ function wm_ensureViewer(node) {
 .xzg-wmdet-ft-manual{color:#cba46c;animation:none;font-size:14px;font-weight:400;}
 @keyframes xzgWmdetSweep{0%{background-position:130% 0;}100%{background-position:-30% 0;}}`;
         const trackBar = document.createElement("div");
-        trackBar.style.cssText = "display:flex;align-items:center;gap:6px;margin-left:10px;";
+        trackBar.style.cssText = "display:flex;flex:0 0 auto;align-items:center;justify-content:flex-start;gap:16px;";
+        const colorTracks = document.createElement("div");
+        colorTracks.style.cssText = "display:flex;align-items:center;gap:5px;";
+        trackBar.appendChild(colorTracks);
         const trackBtns = [];
-        let trackUnlocked = new Set([1]); // 已解锁轨道：默认仅 1；点任意占位槽可单独增加该数字的分类（中间可留空）
+        let trackUnlocked = new Set([1]);
+        const selectTrack = tid => {
+            state.curveDraft = null; state.curveDrag = null; state.rectDrag = null;
+            state.trackingAreaDraft = null;
+            state.trackId = tid; state.shapeSelected = true;
+            refreshTrackBtns();
+            redraw();
+        };
         for (let t = 1; t <= 8; t++) {
             (function(t){
                 const b = document.createElement("div");
                 // 随工具栏整体放大：框 14→20px、数字 14→18px，间隙 4→6px
-                b.style.cssText = "width:20px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:18px;font-weight:400;user-select:none;border:1px solid transparent;position:relative;font-variant-numeric:tabular-nums;";
+                b.style.cssText = "width:20px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;font-size:14px;font-weight:400;user-select:none;border:1px solid transparent;position:relative;font-variant-numeric:tabular-nums;";
                 b.innerText = String(t);
                 // 选中圆点：当前选中轨道数字的高亮框下方的小圆点提醒（与数字同一中心）
                 const dot = document.createElement("div");
                 dot.style.cssText = "position:absolute;left:0;right:0;margin:0 auto;bottom:-5px;width:4px;height:4px;border-radius:50%;display:none;";
                 b.appendChild(dot);
                 b._dot = dot;
-                // 已解锁：点击切换到该轨道；占位槽：点击单独增加该数字的分类
                 b.onclick = (e) => {
                     e.stopPropagation();
-                    trackUnlocked.add(t);
-                    state.curveDraft = null; state.curveDrag = null; state.rectDrag = null;
-                    state.trackId = t; state.shapeSelected = true;
-                    refreshTrackBtns();
-                    drawKfBar();
-                    redraw();
+                    selectTrack(t);
                 };
                 // 右键轨道数字：删除当前分类（轨道 1 不可删；删除后数字消失，可用「+」再加回）
                 if (t > 1) b.addEventListener("contextmenu", (e) => {
@@ -971,7 +975,9 @@ function wm_ensureViewer(node) {
                             label: "删除当前分类",
                             fn: () => {
                                 if (state.manualKeyframes[t]) delete state.manualKeyframes[t];
-                                trackUnlocked.delete(t);  // 数字消失；点该槽位的「+」可单独加回
+                                delete state.autoTracking.tracks[t];
+                                if (state.trackingAreas) delete state.trackingAreas[t];
+                                trackUnlocked.delete(t);
                                 if (state.trackId === t) state.trackId = 1;
                                 writeData();
                                 redraw();           // redraw 内部会 drawKfBar，三角随之消失
@@ -980,39 +986,52 @@ function wm_ensureViewer(node) {
                         },
                     ]);
                 });
-                trackBar.appendChild(b); trackBtns.push(b);
+                Object.assign(b.style, {width: "28px", height: "30px", fontSize: "14px"});
+                colorTracks.appendChild(b); trackBtns.push(b);
             })(t);
         }
-        // 占位槽即「+」：显示加号，点击解锁该数字的轨道（无独立 + 按钮）
-        // 一键扩展关键帧：把指定颜色分类的最左关键帧复制到第一帧、最右关键帧复制到最后一帧，
-        // 使遮罩覆盖视频全程（首尾之外无需再手动画框）。
-        // 入口：右键播放条关键帧三角 → 菜单项（不在工具栏直接显示按钮）
-        const extendTrackToEdges = (tid) => {
-            const nf = state.frames.length;
-            if (nf < 2) return;                                   // 不足两帧无需扩展
-            const km = state.manualKeyframes[tid];
-            if (!km) return;
-            const kfs = Object.keys(km).map(Number)
-                .filter(f => Array.isArray(km[f]) && km[f].length)
-                .sort((a, b) => a - b);
-            if (!kfs.length) return;                              // 该轨道没有关键帧
-            const first = kfs[0], last = kfs[kfs.length - 1];
-            let changed = false;
-            // 扩展产生的关键帧打标记：播放条上用小一号三角区分（仅会话内有效）
-            state.extKf = state.extKf || {};
-            if (first !== 0) { km[0] = JSON.parse(JSON.stringify(km[first])); state.extKf[tid + ":0"] = true; changed = true; }
-            if (last !== nf - 1) { km[nf - 1] = JSON.parse(JSON.stringify(km[last])); state.extKf[tid + ":" + (nf - 1)] = true; changed = true; }
-            if (changed) {
-                writeData();
-                redraw();
-                refreshTrackBtns();
-            }
+        const addTrackBtn = document.createElement("button");
+        addTrackBtn.type = "button";
+        addTrackBtn.textContent = "+";
+        addTrackBtn.title = "增加颜色轨道";
+        addTrackBtn.setAttribute("aria-label", addTrackBtn.title);
+        addTrackBtn.style.cssText = "width:22px;height:22px;padding:0;line-height:1;border:1px dashed #666;border-radius:4px;background:transparent;color:#aaa;font-size:14px;cursor:pointer;";
+        addTrackBtn.onclick = e => {
+            e.stopPropagation();
+            const next = trackBtns.findIndex((_, index) => !trackUnlocked.has(index + 1)) + 1;
+            if (!next) return;
+            if (e.detail > 0) addTrackBtn.blur();
+            trackUnlocked.add(next);
+            selectTrack(next);
         };
+        Object.assign(addTrackBtn.style, {width: "30px", height: "32px", fontSize: "14px"});
+        colorTracks.appendChild(addTrackBtn);
+        const fillEdgesBtn = document.createElement("button");
+        fillEdgesBtn.type = "button";
+        fillEdgesBtn.style.cssText = "height:22px;padding:0 6px;border:1px solid #666;border-radius:4px;color:#eee;cursor:pointer;white-space:nowrap;";
+        fillEdgesBtn.title = "开启时允许轨道首尾留空，关闭时用最近的关键帧遮罩补齐";
+        const refreshFillEdgesBtn = () => {
+            const allowEmpty = !state.fillEdges;
+            fillEdgesBtn.textContent = allowEmpty ? "允许遮罩为空 · 开启" : "允许遮罩为空 · 关闭";
+            fillEdgesBtn.setAttribute("aria-pressed", String(allowEmpty));
+            fillEdgesBtn.style.background = allowEmpty ? "#6b522b" : "#3a3a3c";
+        };
+        fillEdgesBtn.onclick = (e) => {
+            e.stopPropagation();
+            // Pointer clicks should not leave the toggle focused during frame stepping.
+            if (e.detail > 0) fillEdgesBtn.blur();
+            state.fillEdges = !state.fillEdges;
+            refreshFillEdgesBtn();
+            writeData();
+            redraw();
+        };
+        Object.assign(fillEdgesBtn.style, {height: "34px", padding: "0 10px", fontSize: "14px"});
+        trackBar.appendChild(fillEdgesBtn);
         // 仅显示当前分类：激活后播放条三角与画布画框只显示当前颜色轨道。
         // 文案/配色随状态切换：激活=当前分类色的单色文案；关闭=按 1-8 轨道色逐字对应的多彩文案
         let _solo = false;
         const soloBtn = document.createElement("div");
-        soloBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:18px;font-weight:400;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:none;box-sizing:border-box;";
+        soloBtn.style.cssText = "height:20px;padding:0 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:14px;font-weight:400;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:none;box-sizing:border-box;";
         soloBtn.title = "仅显示当前颜色分类的关键帧与画框（再次点击恢复显示全部分类）";
         const SOLO_TEXT_ON = "显示当前";
         const SOLO_TEXT_OFF = "显示全部";
@@ -1037,107 +1056,102 @@ function wm_ensureViewer(node) {
         soloBtn.onmouseout = () => { if (!_solo) soloBtn.style.backgroundColor = "#3a3a3c"; };
         // 注意：此处不能立即调用 refreshSoloBtn()——state/TRACK_COLORS 尚未初始化（定义在后方），
         // 立即执行会抛错并中断整个视窗创建。初始填充由稍后的 applySwitch→refreshTrackBtns 完成
-        trackBar.appendChild(soloBtn);
-        // 播放控制按钮组：◀ 上一帧 | ▶ 播放/暂停 | ▶ 下一帧（位于 显示全部/显示当前 之后）。
-        // 步进按钮支持长按连步：按下立即步进，400ms 后以 80ms 间隔连续步进，松开停止。
-        // 按钮尺寸 22px（较初版 20px 放大 2px）
+        colorTracks.appendChild(soloBtn);
         const mkCtrlBtn = (label, title) => {
             const btn = document.createElement("div");
-            // ←/→ 箭头字形在字体 em 框内偏上，包一层 span 下移 1px 实现视觉垂直居中
-            btn.innerHTML = '<span style="display:block;line-height:1;transform:translateY(-1px)">' + label + '</span>';
+            btn.textContent = label;
             btn.title = title;
-            btn.style.cssText = "height:20px;min-width:20px;padding:0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:13px;color:#ccc;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:none;box-sizing:border-box;";
+            btn.style.cssText = "height:20px;min-width:20px;padding:0 4px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:14px;color:#ccc;user-select:none;white-space:nowrap;flex-shrink:0;margin-left:4px;border:none;box-sizing:border-box;";
             btn.onmouseover = () => { btn.style.backgroundColor = "#4a4a4e"; };
             btn.onmouseout = () => { btn.style.backgroundColor = "#3a3a3c"; };
             return btn;
         };
-        const mkStepBtn = (label, delta, title) => {
-            const btn = mkCtrlBtn(label, title + "（长按可连步）");
-            let _holdTO = null, _holdIV = null;
-            const stepOnce = () => {
-                const nf = state.frames.length;
-                if (!nf) return;
-                const to = Math.max(0, Math.min(nf - 1, (state.frameIdx || 0) + delta));
-                if (to !== state.frameIdx) showFrame(to); // 精准逐帧：播放头/画面/帧号同步
+        let _playIV = null;
+        const stopPlay = () => {
+            if (_playIV === null) return;
+            clearInterval(_playIV);
+            _playIV = null;
+            refreshPlaybackButton();
+        };
+        const togglePlayback = () => {
+            if (_playIV !== null) { stopPlay(); return; }
+            const last = state.frames.length - 1;
+            if (last < 1) return;
+            if (state.frameIdx >= last) showFrame(0);
+            _playIV = setInterval(() => {
+                if (state.frameIdx >= last) { stopPlay(); return; }
+                showFrame(state.frameIdx + 1);
+            }, Math.min(2 ** 31 - 1, 1000 / state.playbackFps));
+            refreshPlaybackButton();
+        };
+        const trackDirections = [[-1, "← 向后跟踪"], [0, "双向跟踪"], [1, "向前跟踪 →"]];
+        const autoTrackBtns = trackDirections.map(([direction, label]) => {
+            const btn = mkCtrlBtn(label, "从当前帧开始跟踪。右键可清除当前轨道的自动结果");
+            btn.style.backgroundColor = "#24445a";
+            btn.style.color = "#d8efff";
+            btn.style.border = "1px solid #46748f";
+            btn.onmouseover = () => { btn.style.backgroundColor = "#315b75"; };
+            btn.onmouseout = () => { btn.style.backgroundColor = "#24445a"; };
+            btn.style.fontSize = "14px";
+            btn.style.height = "24px";
+            btn.onclick = e => {
+                e.stopPropagation();
+                if (!trackingRequest) runMaskTracking(direction);
             };
-            const stopStep = () => {
-                if (_holdTO) { clearTimeout(_holdTO); _holdTO = null; }
-                if (_holdIV) { clearInterval(_holdIV); _holdIV = null; }
-            };
-            btn.onmouseout = () => { btn.style.backgroundColor = "#3a3a3c"; stopStep(); };
-            btn.onmousedown = (e) => {
+            btn.oncontextmenu = e => {
                 e.preventDefault();
                 e.stopPropagation();
-                stepOnce();
-                _holdTO = setTimeout(() => { _holdIV = setInterval(stepOnce, 80); }, 400);
-            };
-            window.addEventListener("mouseup", stopStep);
-            return btn;
-        };
-        // 中间播放/暂停：正向/反向两个按钮（互斥），按预览帧率从当前帧逐帧前进/后退，
-        // 播到末帧/首帧自动停止并复位图标；停在端点时再按则从另一端开始。
-        // 按钮排列：◀ 上一帧 | ◀ 反向播放 | ▶ 正向播放 | ▶ 下一帧
-        let _playIV = null, _playDir = 0;
-        const mkPlayBtn = (dir) => {
-            const fwd = dir > 0;
-            const btn = mkCtrlBtn(fwd ? "▶" : "◀", fwd ? "正向播放" : "反向播放");
-            btn._icon = fwd ? "▶" : "◀";
-            btn._title = fwd ? "正向播放" : "反向播放";
-            btn.onclick = (e) => {
-                e.stopPropagation();
-                if (_playIV && _playDir === dir) { stopPlay(); return; } // 同方向再按=暂停
-                stopPlay();                                              // 反方向按下=切换方向
-                const nf = state.frames.length;
-                if (!nf) return;
-                if (fwd && (state.frameIdx || 0) >= nf - 1) showFrame(0);        // 末帧正向→从头播
-                if (!fwd && (state.frameIdx || 0) <= 0) showFrame(nf - 1);       // 首帧反向→从末尾播
-                _playDir = dir;
-                playBtns.forEach(b => { b.textContent = b._icon; b.title = b._title; });
-                btn.textContent = "❚❚";
-                btn.title = fwd ? "暂停（正向播放中）" : "暂停（反向播放中）";
-                _playIV = setInterval(() => {
-                    const nf2 = state.frames.length;
-                    if (!nf2) { stopPlay(); return; }
-                    const next = (state.frameIdx || 0) + dir;
-                    if (next < 0 || next > nf2 - 1) { stopPlay(); return; } // 到端点自动停
-                    showFrame(next);
-                }, Math.min(2 ** 31 - 1, 1000 / state.playbackFps));
+                const track = state.trackId;
+                if (trackingRequest) return;
+                const frame = state.frameIdx;
+                const items = [{
+                    label: "绘制独立跟踪区域",
+                    fn: () => {
+                        state.trackingAreaDraft = {track, frame};
+                        trackingNotice("在当前画面拖出矩形，圈住与目标一起移动的纹理");
+                    },
+                }];
+                if (state.trackingAreas?.[track]?.[frame]) items.push({
+                    label: "取消当前帧的独立跟踪区域",
+                    fn: () => {
+                        delete state.trackingAreas[track][frame];
+                        writeData();
+                    },
+                });
+                if (activeAutoTracks()[track]) items.push({
+                    label: "清除当前轨道的自动跟踪",
+                    fn: () => {
+                        delete state.autoTracking.tracks[track];
+                        writeData();
+                        redraw();
+                    },
+                });
+                showBarMenu(e.clientX, e.clientY, items);
             };
             return btn;
-        };
-        const playFwdBtn = mkPlayBtn(1);
-        const playRevBtn = mkPlayBtn(-1);
-        const playBtns = [playFwdBtn, playRevBtn];
-        const stopPlay = () => {
-            if (_playIV) { clearInterval(_playIV); _playIV = null; }
-            _playDir = 0;
-            playBtns.forEach(b => { b.textContent = b._icon; b.title = b._title; });
-        };
-        trackBar.appendChild(mkStepBtn("←", -1, "上一帧"));
-        trackBar.appendChild(playRevBtn);
-        trackBar.appendChild(playFwdBtn);
-        trackBar.appendChild(mkStepBtn("→", 1, "下一帧"));
+        });
         toolbar.appendChild(trackBar);
         // 键盘 ← / → 精准逐帧：仅当鼠标悬停在本预览面板内时生效（pointerenter/leave 维护标记），
         // 避免抢占 ComfyUI 画布与其他节点的按键；输入类元素聚焦时忽略。
         // 注意：ComfyUI 前端的"跳转上/下一个节点"快捷键监听在 window 捕获/冒泡阶段，
         // 必须在 window 捕获阶段最先拦截（stopImmediatePropagation）才能屏蔽它
         let _panelHover = false;
+        let workspace = null;
         container.addEventListener("pointerenter", () => { _panelHover = true; });
         container.addEventListener("pointerleave", () => { _panelHover = false; });
         window.addEventListener("keydown", (e) => {
-            if (!_panelHover || !container.isConnected) return;
+            if ((!_panelHover && !workspace) || !container.isConnected) return;
             const isSpace = e.code === "Space" || e.key === " ";
             if (!isSpace && e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
             if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
             const ae = document.activeElement;
-            if (ae && (ae.matches("input, textarea, select") || ae.isContentEditable)) return;
+            if (ae && (ae.matches("input, textarea, select") || ae.isContentEditable ||
+                (isSpace && ae.matches("button")))) return;
             e.preventDefault();
             e.stopImmediatePropagation(); // 阻止 ComfyUI 的节点跳转快捷键
             if (isSpace) {
                 if (e.repeat) return;
-                if (_playIV) stopPlay();
-                else playFwdBtn.click();
+                togglePlayback();
                 return;
             }
             stopPlay(); // 手动步进时停止正/反向自动播放
@@ -1164,40 +1178,23 @@ function wm_ensureViewer(node) {
             refreshSoloBtn(); // solo 激活时，文案颜色跟随当前选中的分类色
             trackBtns.forEach((b, idx) => {
                 const tid = idx + 1;
-                const c = TRACK_COLORS[idx];
-                const kfsAll = state.manualKeyframes || {};
-                const kfs = kfsAll[tid] || {};
-                const hasBox = Object.values(kfs).some(fr => Array.isArray(fr) && fr.length);
-                const unlocked = trackUnlocked.has(tid); // 未解锁的槽位显示为「+」
-                b.title = unlocked ? `轨道 ${tid}` : `点击增加轨道 ${tid}`;
-                b.innerText = unlocked ? String(tid) : "+";
-                b.style.fontSize = "18px";
-                b.style.background = "transparent";
-                b.style.borderStyle = unlocked ? "solid" : "dashed";
-                if (unlocked) {
-                    b.style.color = c;
-                    // 仅选中轨道画边框（轨道色），不带辉光；未选中一律无边框
-                    const selected = tid === state.trackId;
-                    b.style.borderColor = selected ? c : "transparent";
-                    b.style.boxShadow = "none";
-                    b.style.cursor = "pointer";
-                    b.style.pointerEvents = "auto";
-                } else {
-                    // 占位槽：淡色「+」+ 虚线边，点击解锁该数字
-                    b.style.color = "#6b7280";
-                    b.style.borderColor = "rgba(255,255,255,0.12)";
-                    b.style.cursor = "pointer";
-                    b.style.pointerEvents = "auto";
-                }
-                if (b._dot) { b._dot.style.display = (unlocked && tid === state.trackId) ? "block" : "none"; b._dot.style.background = c; }
+                const color = TRACK_COLORS[idx];
+                const selected = tid === state.trackId;
+                b.style.display = trackUnlocked.has(tid) ? "flex" : "none";
+                b.title = `轨道 ${tid}`;
+                b.style.color = color;
+                b.style.borderColor = selected ? color : "transparent";
+                b._dot.style.display = selected ? "block" : "none";
+                b._dot.style.background = color;
             });
+            addTrackBtn.hidden = trackUnlocked.size >= trackBtns.length;
             trackBar.style.display = (state.mode === "manual") ? "flex" : "none";
             refreshToolBtn();
         };
 
         // 标注工具切换：▭ 框选 / ✎ 手绘（仅手工跟踪模式显示）
         const toolBtn = document.createElement("div");
-        toolBtn.style.cssText = "height:20px;min-width:64px;padding:0 8px;margin-left:4px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:18px;font-weight:400;user-select:none;border:none;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
+        toolBtn.style.cssText = "height:20px;min-width:64px;padding:0 8px;margin-left:4px;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border-radius:4px;background:#3a3a3c;font-size:14px;font-weight:400;user-select:none;border:none;box-sizing:border-box;white-space:nowrap;flex-shrink:0;";
         toolBtn.onmouseover = () => { toolBtn.style.backgroundColor = "#4a4a4e"; };
         toolBtn.onmouseout = () => { toolBtn.style.backgroundColor = "#3a3a3c"; };
         toolBtn.title = "标注工具：框选 / 曲线；点击打点自动生成弧线，可拖动方向手柄，点击首点闭合；当前关键帧可拖点调整";
@@ -1214,7 +1211,14 @@ function wm_ensureViewer(node) {
                 toolBtn.innerHTML = '<svg style="display:block;flex-shrink:0" width="16" height="13" viewBox="0 0 12 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="9" height="7" rx="1"/></svg><span style="display:block;line-height:13px">框选</span>';
             }
         };
-        toolBtn.onclick = (e) => { e.stopPropagation(); state.curveDraft = null; state.curveDrag = null; state.rectDrag = null; state.tool = (state.tool === "rect") ? "brush" : "rect"; refreshToolBtn(); redraw(); };
+        toolBtn.onclick = (e) => {
+            e.stopPropagation();
+            state.curveDraft = state.curveDrag = state.rectDrag = null;
+            state.tool = state.tool === "rect" ? "brush" : "rect";
+            writeData(false);
+            refreshToolBtn();
+            redraw();
+        };
 
         const right = document.createElement("div");
         right.style.display = "flex";
@@ -1225,7 +1229,7 @@ function wm_ensureViewer(node) {
         toolbar.appendChild(right);
 
         const hint = document.createElement("div");
-        hint.style.cssText = "color: #777; font-size: 16px; user-select: none; display: none; white-space: nowrap;";
+        hint.style.cssText = "color: #777; font-size:14px; user-select: none; display: none; white-space: nowrap;";
         hint.innerText = "左键框选";
         right.appendChild(hint);
 
@@ -1233,8 +1237,8 @@ function wm_ensureViewer(node) {
         // 「引入上游图片」按钮：手动执行当前节点（含上游）引入画面（切换模式不再自动引入）
         const runBtn = document.createElement("div");
         // 加高 8px（20→28）、文字加大 4px（14→18，⏎ 符号随字号等比变大）
-        runBtn.style.cssText = "height: 20px; min-width: 64px; padding: 0 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; background: #3a3a3c; color: #d8d8d8; font-size: 18px; font-weight: 400; user-select: none; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;";
-        runBtn.innerHTML = '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:0.78em">⏎</span></span>';
+        runBtn.style.cssText = "height: 20px; min-width: 64px; padding: 0 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; background: #3a3a3c; color: #d8d8d8; font-size:14px; font-weight: 400; user-select: none; box-sizing: border-box; white-space: nowrap; flex-shrink: 0;";
+        runBtn.innerHTML = '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:14px">⏎</span></span>';
         runBtn.title = "执行当前节点（含上游），预览检测画面";
         runBtn.onmouseover = () => { runBtn.style.backgroundColor = "#4a4a4e"; };
         runBtn.onmouseout = () => { runBtn.style.backgroundColor = "#3a3a3c"; };
@@ -1246,10 +1250,10 @@ function wm_ensureViewer(node) {
             runBtn.style.display = "flex";
             runBtn.style.color = (m === "filter") ? "#3ef558" : "#cba46c";
             runBtn.innerHTML = (m === "filter")
-                ? '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:0.78em">⏎</span></span>'
+                ? '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:14px">⏎</span></span>'
                   + '<span style="color:#888;font-weight:400;margin-left:20px">1、不操作为全域跟踪</span>'
                   + '<span style="color:#888;font-weight:400;margin-left:20px">2、点击加载时候，画方框为限定区域跟踪</span>'
-                : '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:0.78em">⏎</span></span>';
+                : '<span style="display:block;transform:translateY(-1px)">点击加载视频<span style="font-size:14px">⏎</span></span>';
         };
 
         // 仅执行到本节点（含上游）：按钮 / 右键菜单共用
@@ -1346,12 +1350,11 @@ function wm_ensureViewer(node) {
         helpBtn.onmouseout = () => { helpBtn.style.color = "#FFD700"; helpBtn.style.backgroundColor = "#3a3a3c"; };
         helpBtn.onclick = (e) => { e.stopPropagation(); try { showWmDetHelp(); } catch (err) { console.error("[小珠光][水印] showWmDetHelp 错误:", err); } };
         toolbar.insertBefore(helpBtn, runBtn);
-
         const clearBtn = document.createElement("div");
         // 小垃圾桶：仅删除当前颜色分类（当前轨道）的关键帧
         const clearCurBtn = document.createElement("div");
         clearCurBtn.style.cssText = "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; user-select: none; flex-shrink: 0;";
-        clearCurBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
+        clearCurBtn.innerHTML = '<svg width="14.4" height="14.4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
         clearCurBtn.title = "删除当前颜色分类的关键帧";
         clearCurBtn.onmouseover = () => { clearCurBtn.style.backgroundColor = "#333"; };
         clearCurBtn.onmouseout = () => { clearCurBtn.style.backgroundColor = "transparent"; };
@@ -1359,13 +1362,15 @@ function wm_ensureViewer(node) {
             e.stopPropagation();
             if (state.manualKeyframes[state.trackId]) {
                 delete state.manualKeyframes[state.trackId];
+                delete state.autoTracking.tracks[state.trackId];
+                if (state.trackingAreas) delete state.trackingAreas[state.trackId];
                 writeData();
                 redraw();
                 refreshTrackBtns();
             }
         };
-        clearBtn.style.cssText = "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; font-size: 18px; user-select: none; flex-shrink: 0;";
-        clearBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
+        clearBtn.style.cssText = "width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; color: #ccc; font-size:14px; user-select: none; flex-shrink: 0;";
+        clearBtn.innerHTML = '<svg width="16.8" height="16.8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
         clearBtn.title = "删除全部标注（所有分类的关键帧 + 检测/排除区）";
         clearBtn.onmouseover = () => { clearBtn.style.backgroundColor = "#333"; };
         clearBtn.onmouseout = () => { clearBtn.style.backgroundColor = "transparent"; };
@@ -1374,23 +1379,80 @@ function wm_ensureViewer(node) {
             state.detectRegions = [];
             state.excludeRegions = [];
             state.manualKeyframes = {};
+            state.autoTracking = {tracks: {}};
+            state.trackingAreas = {};
             trackUnlocked = new Set([1]); // 除轨道 1 外，其他分类的数字一并收回
             state.trackId = 1;
             writeData();
             redraw();
             refreshTrackBtns();
         };
-        right.appendChild(clearBtn);
-        right.insertBefore(clearCurBtn, clearBtn); // 小垃圾桶在大垃圾桶左侧
+        const clearGroup = document.createElement("div");
+        clearGroup.style.cssText = "display:flex;align-items:center;gap:6px;";
+        for (const button of [clearCurBtn, clearBtn]) {
+            Object.assign(button.style, {width: "32px", height: "34px"});
+            const icon = button.querySelector("svg");
+            icon.setAttribute("width", button === clearCurBtn ? "18" : "21");
+            icon.setAttribute("height", button === clearCurBtn ? "18" : "21");
+            clearGroup.appendChild(button);
+        }
 
         hint.innerText = "左键框选 (检测区)";
+
+        const resetViewBtn = mkCtrlBtn("恢复视图", "恢复预览的默认大小和居中位置");
+        resetViewBtn.onclick = e => {
+            e.stopPropagation();
+            resetPreviewView();
+        };
+        const trackingGroup = document.createElement("div");
+        trackingGroup.style.cssText = "display:flex;align-items:center;gap:8px;";
+        for (const button of [...autoTrackBtns, resetViewBtn]) {
+            Object.assign(button.style, {height: "34px", padding: "0 10px", marginLeft: "0", fontSize: "14px", lineHeight: "20px"});
+        }
+        const undoBtn = mkCtrlBtn("撤销", "撤销上一步");
+        const redoBtn = mkCtrlBtn("重做", "恢复已撤销的操作");
+        for (const [button, direction] of [[undoBtn, -1], [redoBtn, 1]]) {
+            button.style.height = "34px";
+            button.style.padding = "0 10px";
+            button.onclick = e => { e.stopPropagation(); stepEditHistory(direction); };
+        }
+        trackingGroup.append(...autoTrackBtns, undoBtn, redoBtn, clearGroup, resetViewBtn);
+        trackBar.appendChild(trackingGroup);
+        const fullscreenBtn = mkCtrlBtn("全屏编辑", "打开全屏编辑");
+        Object.assign(fullscreenBtn.style, {height: "34px", padding: "0 10px"});
+        fullscreenBtn.onclick = e => {
+            e.stopPropagation();
+            if (workspace) closeWorkspace();
+            else openWorkspace();
+        };
+        const playbackBtn = document.createElement("button");
+        playbackBtn.type = "button";
+        playbackBtn.style.cssText = "width:42px;height:42px;flex:0 0 42px;border:1px solid #666;border-radius:50%;padding:0;display:grid;place-items:center;background:#3a3a3c;color:#fff;cursor:pointer;";
+        const refreshPlaybackButton = () => {
+            const playing = _playIV !== null;
+            playbackBtn.title = playing ? "暂停" : "播放";
+            playbackBtn.setAttribute("aria-label", playbackBtn.title);
+            playbackBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${playing ? "M6 4h4v16H6z M14 4h4v16h-4z" : "M8 3l14 9-14 9z"}"/></svg>`;
+        };
+        playbackBtn.onclick = e => {
+            e.stopPropagation();
+            if (e.detail > 0) playbackBtn.blur();
+            togglePlayback();
+        };
+        refreshPlaybackButton();
+        right.appendChild(fullscreenBtn);
+        for (const button of [helpBtn, runBtn, toolBtn, soloBtn]) {
+            Object.assign(button.style, {height: "34px", padding: "0 10px", marginLeft: "0", marginRight: "0"});
+        }
+        helpBtn.querySelector("svg")?.setAttribute("width", "20");
+        helpBtn.querySelector("svg")?.setAttribute("height", "20");
 
         // 帧控制栏（帧号 + 滑块）：加高 15px（52→67），为播放条后续优化预留空间
         const tracker = document.createElement("div");
         tracker.style.cssText = "flex: 0 0 67px; width: 100%; background: #222; position:relative; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid #333; gap: 4px;";
         container.appendChild(tracker);
-        // 播放条区域屏蔽浏览器原生右键菜单（三角的关键帧菜单已自行 preventDefault，
-        // 其余位置右键静默忽略，避免误触浏览器菜单打断标注节奏）
+        tracker.appendChild(playbackBtn);
+        // 播放条和关键帧三角均屏蔽浏览器原生右键菜单。
         tracker.addEventListener("contextmenu", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -1401,8 +1463,6 @@ function wm_ensureViewer(node) {
         frameInfo.innerText = "0/0";
         tracker.appendChild(frameInfo);
 
-        // 注：stopPlay 已在上方播放控制组中定义为真正的停止逻辑（清定时器+复位图标），
-        // 拖动播放条/切帧等调用点会自动停止正/反向播放
 
         const slider = document.createElement("input");
         slider.type = "range";
@@ -1471,10 +1531,38 @@ function wm_ensureViewer(node) {
             if (fr !== state.frameIdx) showFrame(fr);
         };
         hitzone.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
             e.preventDefault();
             dragging = true;
             spawnThumbGhost(); // 先在播放头原位置留半透明残影，再让播放头跳到点击处
             setFrameFromX(e.clientX);
+        });
+        tracker.addEventListener("contextmenu", e => {
+            if (trackingRequest || !state.frames.length) return;
+            const bounds = slider.getBoundingClientRect();
+            if (!bounds.width) return;
+            const radius = getThumbRadius() * bounds.width / (slider.clientWidth || bounds.width);
+            const frame = Math.round((e.clientX - bounds.left - radius) /
+                Math.max(1, bounds.width - 2 * radius) * (state.frames.length - 1));
+            const keys = state.manualKeyframes[state.trackId] || {};
+            const anchors = Object.keys(keys).map(Number)
+                .filter(index => index >= 0 && index < state.frames.length && keys[index]?.length)
+                .sort((a, b) => a - b);
+            const left = anchors.findLast(index => index < frame);
+            const right = anchors.find(index => index > frame);
+            if (keys[frame]?.length || left === undefined || right === undefined) return;
+            const frames = activeAutoTracks()[state.trackId];
+            showBarMenu(e.clientX, e.clientY, [{
+                label: `清除第 ${left}–${right} 帧之间的自动跟踪`,
+                fn: () => {
+                    if (!frames) return;
+                    for (let index = left; index <= right; index++) {
+                        delete frames[state.sampleIdx[index] ?? index];
+                    }
+                    writeData();
+                    redraw();
+                },
+            }]);
         });
         window.addEventListener("mousemove", (e) => { if (dragging) setFrameFromX(e.clientX); });
         window.addEventListener("mouseup", () => {
@@ -1486,7 +1574,7 @@ function wm_ensureViewer(node) {
         // flex:1 让它吃掉 tool 条/帧条之外的全部容器高度，否则高度由 canvas 子元素推导，
         // 画面大小会被锁死、无法随预览窗自适应；padding:30px 为视频四周保留黑色留边，
         // 画方框时不会贴到节点内边缘。
-        canvasWrapper.style.cssText = "flex:1; width:100%; box-sizing:border-box; position:relative; overflow:hidden; padding:30px; display:flex; align-items:center; justify-content:center; background:#0f1011;";
+        canvasWrapper.style.cssText = "flex:1; width:100%; min-height:0; box-sizing:border-box; position:relative; overflow:hidden; padding:30px; display:flex; align-items:center; justify-content:center; background:#0f1011;";
         container.appendChild(canvasWrapper);
 
         const canvas = document.createElement("canvas");
@@ -1522,23 +1610,98 @@ function wm_ensureViewer(node) {
             brushOverlay.getContext("2d").setTransform(1, 0, 0, 1, 0, 0);
             brushOverlay.getContext("2d").clearRect(0, 0, brushOverlay.width, brushOverlay.height);
         };
-        // 将节点布局像素换算成屏幕像素，让手柄跟随 ComfyUI 画布缩放。
-        const controlScreenScale = () => {
+        const overlayScreenScale = () => {
             const width = brushOverlay.clientWidth;
             return width > 0 ? brushOverlay.getBoundingClientRect().width / width : 1;
         };
+        // The video and overlay have independent transforms.
+        const controlScreenScale = () => {
+            const width = canvas.clientWidth;
+            return width > 0 ? canvas.getBoundingClientRect().width / width : overlayScreenScale();
+        };
+        const curveOutline = (curve, closed = true) => {
+            if (!curve.some(node => node.roundness !== undefined)) return curve;
+            const point = (a, b, t) => ({x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t});
+            return curve.flatMap((node, i) => {
+                const prev = curve[i-1] || (closed ? curve.at(-1) : node);
+                const next = curve[i+1] || (closed ? curve[0] : node);
+                const amount = node.roundness ?? .25;
+                const entry = point(node, prev, amount), exit = point(node, next, amount);
+                return [
+                    {...entry, in:entry, out:point(entry,node,2/3)},
+                    {...exit, in:point(exit,node,2/3), out:exit},
+                ];
+            });
+        };
+        const curveCornerGuide = (prev, node, next) => {
+            const tangent = (a, b, t) => {
+                const u = 1 - t;
+                return Object.fromEntries(['x', 'y'].map(axis => [axis,
+                    u*u*(a.out[axis]-a[axis]) + 2*u*t*(b.in[axis]-a.out[axis]) + t*t*(b[axis]-b.in[axis])]));
+            };
+            const start = cubicPoint(prev, node, .7), end = cubicPoint(node, next, .3);
+            const incoming = tangent(prev, node, .7), outgoing = tangent(node, next, .3);
+            const cross = incoming.x*outgoing.y - incoming.y*outgoing.x;
+            if (Math.abs(cross) < 1e-10) return null;
+            const dx = end.x-start.x, dy = end.y-start.y;
+            const t = (dx*outgoing.y-dy*outgoing.x)/cross;
+            const s = (dx*incoming.y-dy*incoming.x)/cross;
+            if (t <= 0 || s >= 0) return null;
+            const joint = {x:start.x+t*incoming.x, y:start.y+t*incoming.y};
+            if (Math.hypot(joint.x-node.x,joint.y-node.y) > Math.hypot(dx,dy)) return null;
+            return {start, joint, end};
+        };
+        const curveControls = (curve, cr, scale, closed = true) => {
+            const xs = curve.map(a => a.x), ys = curve.map(a => a.y);
+            const left = Math.min(...xs), right = Math.max(...xs);
+            const top = Math.min(...ys), bottom = Math.max(...ys);
+            const cx = (left + right) / 2, cy = (top + bottom) / 2;
+            const pad = 12 * scale;
+            const box = {x1:left-pad/cr.width, y1:top-pad/cr.height,
+                x2:right+pad/cr.width, y2:bottom+pad/cr.height};
+            const handles = curve.map((a, i) => {
+                const prev = curve[i - 1] || (closed ? curve.at(-1) : a);
+                const next = curve[i + 1] || (closed ? curve[0] : a);
+                const outward = neighbor => {
+                    const x = (a.x - neighbor.x) * cr.width, y = (a.y - neighbor.y) * cr.height;
+                    const length = Math.hypot(x, y) || 1;
+                    return {x: x / length, y: y / length};
+                };
+                const before = outward(prev), after = outward(next);
+                let dx = before.x + after.x, dy = before.y + after.y;
+                if (Math.hypot(dx, dy) < .05) {
+                    dx = (a.x-cx)*cr.width; dy = (a.y-cy)*cr.height;
+                }
+                const length = Math.hypot(dx, dy);
+                const ux = length ? dx/length : 0, uy = length ? dy/length : -1;
+                const tangent = (Math.hypot((a.in.x-a.x)*cr.width,(a.in.y-a.y)*cr.height) +
+                    Math.hypot((a.out.x-a.x)*cr.width,(a.out.y-a.y)*cr.height)) / 2;
+                const reach = nodeHandleReach(a, scale, tangent);
+                return {x:a.x+ux*reach/cr.width, y:a.y+uy*reach/cr.height, ux, uy};
+            });
+            const guides = curve.map((node, i) => {
+                const prev = curve[i - 1] || (closed ? curve.at(-1) : null);
+                const next = curve[i + 1] || (closed ? curve[0] : null);
+                return node.roundness === undefined && prev && next && curve.length >= 3
+                    ? curveCornerGuide(prev, node, next) : null;
+            });
+            return {box, handles, guides, anchors: curve.map((node, i) => guides[i]?.joint || node)};
+        };
+        const nodeHandleReach = (node, scale, tangent) => 10 * scale +
+            (node.roundness === undefined ? Math.min(26 * scale, tangent) : 52 * scale * node.roundness);
         const drawActiveOverlay = () => {
-            const curve = state.curveDraft || (state.shapeSelected ? state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0]?.curve : null);
-            const region = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
+            if (!state.image) { clearBrushOverlay(); return; }
+            const region = state.shapeSelected ? visibleTrackRegions(state.trackId, state.frameIdx)[0] : null;
+            const curve = state.curveDraft || region?.curve;
             const rect = state.shapeSelected && !state.curveDraft && region && !region.poly ? region : null;
             const hasBrush = !!curve?.length;
             const hasRect = !!state.drawing;
-            const hasTracks = state.image && state.mode === "manual";
+            const hasTracks = state.mode === "manual";
             if (!hasBrush && !hasRect && !rect && !hasTracks) { clearBrushOverlay(); return; }
             syncBrushOverlaySize();
             const bctx = brushOverlay.getContext("2d");
             // 用 overlay 位图和实际屏幕尺寸的比例映射绘图坐标。
-            // 控制点尺寸乘以画布缩放比例，与节点内容同步缩放。
+            // 控制点跟随视频预览缩放，轮廓线按节点缩放绘制。
             const or = brushOverlay.getBoundingClientRect();
             bctx.setTransform(1, 0, 0, 1, 0, 0);
             bctx.clearRect(0, 0, brushOverlay.width, brushOverlay.height);
@@ -1547,9 +1710,13 @@ function wm_ensureViewer(node) {
             const cr = canvas.getBoundingClientRect();
             if (!cr.width) return;
             const controlScale = controlScreenScale();
-            const anchorHalf = (hasBrush ? 2.5 : 5) * controlScale;
+            const lineScale = overlayScreenScale();
+            const rectangleLineWidth = 2 * lineScale;
+            const anchorHalf = 2.5 * controlScale;
             const handleRadius = 2 * controlScale;
             const cc = state.mode === "manual" ? TRACK_COLORS[(state.trackId - 1) % 8] : "#22c55e";
+            const hover = state.controlHover;
+            const highlight = "#00ffff";
             bctx.lineJoin = "round";
             bctx.lineCap = "round";
             // All saved and interpolated outlines use the screen-resolution overlay.
@@ -1561,18 +1728,18 @@ function wm_ensureViewer(node) {
                 bctx.clip();
                 for (const tid of Object.keys(state.manualKeyframes).map(Number)) {
                     if (_solo && tid !== state.trackId) continue;
-                    const dashed = !state.manualKeyframes[tid]?.[state.frameIdx]?.length;
                     for (const r of visibleTrackRegions(tid,state.frameIdx)) {
-                        if (hasBrush && r.curve === curve) continue;
+                        if (!state.curveDraft && tid === state.trackId && region?.curve) continue;
                         const pos = p => [cr.left-or.left+p.x*cr.width, cr.top-or.top+p.y*cr.height];
-                        bctx.strokeStyle = TRACK_COLORS[(tid-1)%TRACK_COLORS.length];
-                        bctx.lineWidth = controlScale;
-                        bctx.setLineDash(dashed ? [6*controlScale,4*controlScale] : []);
+                        bctx.strokeStyle = tid === state.trackId && hover?.kind === "whole"
+                            ? highlight : TRACK_COLORS[(tid-1)%TRACK_COLORS.length];
+                        bctx.lineWidth = r.poly || r.curve ? lineScale : rectangleLineWidth;
                         bctx.beginPath();
                         if (r.curve?.length) {
-                            bctx.moveTo(...pos(r.curve[0]));
-                            r.curve.forEach((a,i) => {
-                                const b=r.curve[(i+1)%r.curve.length];
+                            const outline = curveOutline(r.curve);
+                            bctx.moveTo(...pos(outline[0]));
+                            outline.forEach((a,i) => {
+                                const b=outline[(i+1)%outline.length];
                                 bctx.bezierCurveTo(...pos(a.out),...pos(b.in),...pos(b));
                             });
                             bctx.closePath();
@@ -1586,43 +1753,111 @@ function wm_ensureViewer(node) {
                         bctx.stroke();
                     }
                 }
+                const area = state.trackingAreas?.[state.trackId]?.[state.frameIdx];
+                if (area) {
+                    bctx.strokeStyle = "#80ffff";
+                    bctx.lineWidth = controlScale;
+                    bctx.setLineDash([4 * controlScale, 4 * controlScale]);
+                    bctx.strokeRect(cr.left - or.left + area.x1 * cr.width,
+                        cr.top - or.top + area.y1 * cr.height, (area.x2 - area.x1) * cr.width,
+                        (area.y2 - area.y1) * cr.height);
+                }
                 bctx.restore();
                 bctx.setLineDash([]);
             }
             if (hasBrush) {
                 const pos = p => [cr.left - or.left + p.x * cr.width, cr.top - or.top + p.y * cr.height];
-                bctx.strokeStyle = cc;
+                bctx.strokeStyle = hover?.kind === "whole" ? highlight : cc;
                 bctx.fillStyle = cc;
-                bctx.lineWidth = 1 * controlScale;
+                bctx.lineWidth = lineScale;
                 bctx.beginPath();
-                bctx.moveTo(...pos(curve[0]));
-                const count = state.curveDraft ? curve.length - 1 : curve.length;
+                let previewCurve = curve;
+                const pointer = state.curvePreviewPointer;
+                if (state.curveDraft && !state.curveDrag && pointer) {
+                    const point = {x:(pointer.clientX-cr.left)/cr.width, y:(pointer.clientY-cr.top)/cr.height};
+                    const near = anchor => Math.hypot((anchor.x-point.x)*cr.width, (anchor.y-point.y)*cr.height)
+                        < CURVE_CONTROL_HIT_RADIUS * controlScale;
+                    if (!near(curve.at(-1)) && !(curve.length >= 3 && near(curve[0]))) {
+                        previewCurve = [...curve, {...point, in:point, out:point, roundness:.25}];
+                    }
+                }
+                const closed = !state.curveDraft || previewCurve.length >= 3;
+                const outline = curveOutline(previewCurve, closed);
+                bctx.moveTo(...pos(outline[0]));
+                const count = closed ? outline.length : outline.length - 1;
                 for (let i = 0; i < count; i++) {
-                    const a = curve[i], b = curve[(i + 1) % curve.length];
+                    const a = outline[i], b = outline[(i + 1) % outline.length];
                     bctx.bezierCurveTo(...pos(a.out), ...pos(b.in), ...pos(b));
                 }
-                if (!state.curveDraft) bctx.closePath();
+                if (closed) bctx.closePath();
                 bctx.stroke();
-                curve.forEach(a => {
-                    for (const h of [a.in, a.out]) {
-                        // Handle guides and tips use cyan, independent of the track colour.
-                        bctx.strokeStyle = "#80ffff";
-                        bctx.beginPath(); bctx.moveTo(...pos(a)); bctx.lineTo(...pos(h)); bctx.stroke();
-                        bctx.fillStyle = "#80ffff"; bctx.strokeStyle = "#101820";
-                        bctx.beginPath(); bctx.arc(...pos(h), handleRadius, 0, Math.PI * 2); bctx.fill(); bctx.stroke();
+                bctx.strokeStyle = "#467aff";
+                bctx.setLineDash([5 * lineScale, 4 * lineScale]);
+                bctx.save();
+                if (closed) {
+                    // Show only the portions of the anchor polygon outside the outline.
+                    bctx.rect(0, 0, or.width, or.height);
+                    bctx.clip("evenodd");
+                }
+                bctx.beginPath();
+                bctx.moveTo(...pos(previewCurve[0]));
+                for (const anchor of previewCurve.slice(1)) bctx.lineTo(...pos(anchor));
+                if (closed) bctx.closePath();
+                bctx.stroke();
+                bctx.restore();
+                bctx.setLineDash([]);
+                const {box, handles, guides, anchors} = curveControls(previewCurve, cr, controlScale, closed);
+                if (!state.curveDraft) {
+                    const [left, top] = pos({x:box.x1, y:box.y1});
+                    const [right, bottom] = pos({x:box.x2, y:box.y2});
+                    bctx.strokeStyle = "#fff";
+                    bctx.setLineDash([3 * lineScale, 3 * lineScale]);
+                    bctx.strokeRect(left, top, right-left, bottom-top);
+                    bctx.setLineDash([]);
+                    bctx.fillStyle = "#fff";
+                    for (const x of [left, (left + right)/2, right]) {
+                        for (const y of [top, (top + bottom)/2, bottom]) {
+                            if (x === (left + right)/2 && y === (top + bottom)/2) continue;
+                            bctx.fillRect(x-handleRadius, y-handleRadius, 2*handleRadius, 2*handleRadius);
+                        }
                     }
-                    const [x, y] = pos(a);
-                    bctx.fillStyle = "#FFD700"; bctx.strokeStyle = "#101820";
+                }
+                curve.forEach((a, i) => {
+                    const [hx, hy] = pos(handles[i]);
+                    bctx.strokeStyle = "#467aff";
+                    const guide = guides[i];
+                    if (guide) {
+                        bctx.setLineDash([5 * lineScale, 4 * lineScale]);
+                        bctx.beginPath();
+                        bctx.moveTo(...pos(guide.start));
+                        bctx.lineTo(...pos(guide.joint));
+                        bctx.lineTo(...pos(guide.end));
+                        bctx.stroke();
+                        bctx.setLineDash([]);
+                    }
+                    bctx.beginPath(); bctx.moveTo(...pos(guide?.joint || a)); bctx.lineTo(hx, hy); bctx.stroke();
+                    bctx.fillStyle = hover?.kind === "handle" && hover.index === i ? highlight : "#467aff";
+                    bctx.fillRect(hx-handleRadius, hy-handleRadius, 2*handleRadius, 2*handleRadius);
+                    const [x, y] = pos(anchors[i]);
+                    bctx.fillStyle = hover?.kind === "anchor" && hover.index === i ? highlight : "#dbe8ff";
+                    bctx.strokeStyle = "#467aff";
                     bctx.fillRect(x - anchorHalf, y - anchorHalf, anchorHalf * 2, anchorHalf * 2);
                     bctx.strokeRect(x - anchorHalf, y - anchorHalf, anchorHalf * 2, anchorHalf * 2);
                 });
             }
             if (rect) {
-                bctx.strokeStyle = "#101820"; bctx.fillStyle = "#FFD700"; bctx.lineWidth = 1.5 * controlScale;
+                const side = Math.min(10 * controlScale, (rect.x2 - rect.x1) * cr.width / 3,
+                                      (rect.y2 - rect.y1) * cr.height / 3);
+                const half = side / 2;
+                bctx.strokeStyle = "#101820"; bctx.fillStyle = "#FFD700";
+                bctx.lineWidth = Math.min(controlScale, half);
                 for (const [x, y] of [[rect.x1, rect.y1], [rect.x2, rect.y1], [rect.x2, rect.y2], [rect.x1, rect.y2]]) {
+                    const keys = hover?.keys;
+                    bctx.fillStyle = keys?.length === 2 && rect[keys[0]] === x && rect[keys[1]] === y
+                        ? highlight : "#FFD700";
                     const px = cr.left-or.left+x*cr.width, py = cr.top-or.top+y*cr.height;
-                    bctx.fillRect(px-anchorHalf, py-anchorHalf, anchorHalf*2, anchorHalf*2);
-                    bctx.strokeRect(px-anchorHalf, py-anchorHalf, anchorHalf*2, anchorHalf*2);
+                    bctx.fillRect(px-half, py-half, side, side);
+                    bctx.strokeRect(px-half, py-half, side, side);
                 }
             }
             if (hasRect) {
@@ -1633,8 +1868,8 @@ function wm_ensureViewer(node) {
                 const rx2 = Math.max(state.drawing.x1, state.drawing.x2) / iw;
                 const ry2 = Math.max(state.drawing.y1, state.drawing.y2) / ih;
                 bctx.strokeStyle = cc;
-                bctx.lineWidth = Math.max(1, (cr.width / iw) * 1.2);
-                bctx.setLineDash([5, 5]);
+                bctx.lineWidth = rectangleLineWidth;
+                bctx.setLineDash([]);
                 bctx.strokeRect(cr.left - or.left + rx1 * cr.width, cr.top - or.top + ry1 * cr.height,
                     (rx2 - rx1) * cr.width, (ry2 - ry1) * cr.height);
                 bctx.setLineDash([]);
@@ -1743,6 +1978,8 @@ function wm_ensureViewer(node) {
             image: null,            // 当前显示帧
             mode: 'off',            // 初始化即固定 'manual'（off/filter 仅存于历史防御分支）
             manualKeyframes: {},
+            autoTracking: {tracks: {}},
+            fillEdges: true,
             trackId: 1,
             sampleIdx: [],
             playbackFps: 10,
@@ -1846,6 +2083,10 @@ function wm_ensureViewer(node) {
         const isCurveCorner = a => Math.hypot(a.in.x-a.x,a.in.y-a.y)<1e-9 && Math.hypot(a.out.x-a.x,a.out.y-a.y)<1e-9;
         const toggleCurveCorner = (curve, i, closed) => {
             const a=curve[i];
+            if (a.roundness !== undefined) {
+                a.roundness = a.roundness ? 0 : .25;
+                return;
+            }
             if (isCurveCorner(a)) {
                 if (a.smoothHandles) {
                     const h=a.smoothHandles;
@@ -1867,13 +2108,15 @@ function wm_ensureViewer(node) {
         };
         // 命中范围以节点布局像素为基准，与可见手柄一起随画布缩放。
         const CONTROL_HIT_RADIUS = 15;
-        const CURVE_CONTROL_HIT_RADIUS = 6;
+        const CURVE_CONTROL_HIT_RADIUS = 10;
         const OUTLINE_HIT_RADIUS = 8;
         const hitCurveSegment = (curve, p, width, height, closed) => {
+            const outline = curveOutline(curve, closed);
             let best = null;
             const distance = q => ((q.x-p.x)*width)**2+((q.y-p.y)*height)**2;
-            for (let i=0; i<(closed ? curve.length : curve.length-1); i++) {
-                const a=curve[i], b=curve[(i+1)%curve.length];
+            for (let i=0; i<(closed ? outline.length : outline.length-1); i++) {
+                if (outline !== curve && i % 2 === 0) continue;
+                const a=outline[i], b=outline[(i+1)%outline.length];
                 // Search each small interval, including curves with multiple local minima.
                 for (let j=0; j<64; j++) {
                     let lo=j/64, hi=(j+1)/64;
@@ -1882,7 +2125,9 @@ function wm_ensureViewer(node) {
                         if (distance(cubicPoint(a,b,l)) < distance(cubicPoint(a,b,r))) hi=r; else lo=l;
                     }
                     const t=(lo+hi)/2, d=distance(cubicPoint(a,b,t));
-                    if (d<(OUTLINE_HIT_RADIUS * controlScreenScale())**2 && (!best || d<best.d)) best={i,t,d};
+                    if (d<(OUTLINE_HIT_RADIUS * controlScreenScale())**2 && (!best || d<best.d)) {
+                        best={i:outline === curve ? i : Math.floor(i/2),t,d,point:cubicPoint(a,b,t)};
+                    }
                 }
             }
             return best;
@@ -1922,6 +2167,7 @@ function wm_ensureViewer(node) {
         };
         // Keep editable cubic anchors alongside the polygon consumed by the mask backend.
         const curvePoly = (curve) => {
+            curve = curveOutline(curve);
             const pts = [];
             curve.forEach((a, i) => {
                 const b = curve[(i + 1) % curve.length];
@@ -1934,14 +2180,43 @@ function wm_ensureViewer(node) {
             pts.push({...pts[0]});
             return resamplePoly(pts, 96);
         };
-        const saveCurve = curve => {
+        const saveCurve = (curve, original) => {
             const tid = state.trackId;
+            const auto = state.autoTracking;
+            const frames = auto?.video_id === state.srcKey ? auto?.tracks?.[tid] : null;
+            if (original?.length === curve.length && frames) {
+                const start = state.frameIdx;
+                for (const direction of [-1, 1]) {
+                    for (let distance = 1; distance < 12; distance++) {
+                        const frame = start + direction * distance;
+                        if (frame < 0 || frame >= state.frames.length || state.manualKeyframes[tid]?.[frame]?.length) break;
+                        const region = frames[state.sampleIdx[frame] ?? frame];
+                        if (region?.curve?.length !== curve.length) break;
+                        const weight = 1 - distance / 12;
+                        region.curve.forEach((node, i) => {
+                            const offset = (point, edited, base) => {
+                                point.x += (edited.x - base.x) * weight;
+                                point.y += (edited.y - base.y) * weight;
+                            };
+                            offset(node, curve[i], original[i]);
+                            offset(node.in, curve[i].in, original[i].in);
+                            offset(node.out, curve[i].out, original[i].out);
+                            if (curve[i].roundness !== undefined && node.roundness !== undefined) {
+                                node.roundness = Math.max(0, Math.min(.5,
+                                    node.roundness + (curve[i].roundness - (original[i].roundness ?? .25)) * weight));
+                            }
+                        });
+                        region.poly = curvePoly(region.curve);
+                        region.manual_transition = true;
+                    }
+                }
+            }
             state.manualKeyframes[tid] ||= {};
             state.manualKeyframes[tid][state.frameIdx] = [{curve, poly: curvePoly(curve)}];
             writeData(); refreshTrackBtns();
         };
         const cancelCurve = () => {
-            if (state.curveDrag && !state.curveDraft) saveCurve(state.curveDrag.curve);
+            if (state.curveDrag && !state.curveDraft) saveCurve(state.curveDrag.curve, state.curveDrag.original);
             finishRectDrag();
             state.curveDraft = null; state.curveDrag = null; redraw();
         };
@@ -1974,13 +2249,19 @@ function wm_ensureViewer(node) {
         const visibleTrackRegions = (tid, frame) => {
             const kfs = state.manualKeyframes[tid] || {};
             if (kfs[frame]?.length) return kfs[frame];
-            const keys = Object.keys(kfs).map(Number).filter(k => kfs[k]?.length).sort((a,b)=>a-b);
+            const auto = state.autoTracking;
+            const tracked = auto?.video_id === state.srcKey
+                ? auto?.tracks?.[tid]?.[state.sampleIdx?.[frame] ?? frame] : null;
+            if (tracked) return [tracked];
+            const keys = Object.keys(kfs).map(Number)
+                .filter(k => Number.isInteger(k) && k >= 0 && k < state.frames.length && kfs[k]?.length)
+                .sort((a,b)=>a-b);
             if (!keys.length) return [];
-            if (keys.length === 1) return kfs[keys[0]];
             const before = keys.filter(k => k < frame).at(-1);
             const after = keys.find(k => k > frame);
-            if (before === undefined) return [];
-            if (after === undefined) return kfs[before];
+            if (before === undefined || after === undefined) {
+                return state.fillEdges ? kfs[before ?? after] : [];
+            }
             const a = kfs[before][0], b = kfs[after][0], t = (frame-before)/(after-before);
             const mix = (x,y) => x+(y-x)*t;
             if (a.curve && b.curve && a.curve.length === b.curve.length) {
@@ -1993,7 +2274,9 @@ function wm_ensureViewer(node) {
                     const j = pb.findIndex(v => v[0]===aligned[i][0] && v[1]===aligned[i][1]);
                     const r = b.curve[j];
                     const point = (u,v) => ({x:mix(u.x,v.x), y:mix(u.y,v.y)});
-                    return {...point(q,r), in:point(q.in,reverse?r.out:r.in), out:point(q.out,reverse?r.in:r.out), auto:false};
+                    const node = {...point(q,r), in:point(q.in,reverse?r.out:r.in), out:point(q.out,reverse?r.in:r.out), auto:false};
+                    if (q.roundness !== undefined || r.roundness !== undefined) node.roundness = mix(q.roundness ?? .25, r.roundness ?? .25);
+                    return node;
                 });
                 return [{curve, poly:curvePoly(curve)}];
             }
@@ -2002,7 +2285,7 @@ function wm_ensureViewer(node) {
                 return [{poly:a.poly.map((q,i)=>[mix(q[0],aligned[i][0]),mix(q[1],aligned[i][1])])}];
             }
             if (!a.poly && !b.poly) return [Object.fromEntries(['x1','y1','x2','y2'].map(k=>[k,mix(a[k],b[k])]))];
-            return [];
+            return state.fillEdges ? kfs[t < 0.5 ? before : after] : [];
         };
         const promoteVisibleRegion = tid => {
             const kfs = state.manualKeyframes[tid];
@@ -2016,10 +2299,9 @@ function wm_ensureViewer(node) {
             kfs[state.frameIdx] = regions;
             return regions[0];
         };
-        const drawRegionBox = (r, color, fill, label, dashed = false) => {
+        const drawRegionBox = (r, color, fill, label) => {
             const L = calcLayout();
             ctx.save();
-            ctx.setLineDash(dashed ? [6, 4] : []);
             if (r.poly && Array.isArray(r.poly) && r.poly.length >= 3) {
                 // 多边形：1px 实线、无填充（与矩形框一致的细线样式）。
                 // 裁剪到视频区显示：手绘允许画进黑边（绘制中黑边内实时显示笔迹），
@@ -2094,7 +2376,7 @@ function wm_ensureViewer(node) {
             return 8;
         };
 
-        // ---- 播放条右键菜单（关键帧三角 / 播放头共用）----
+        // ---- 轨道和画布的右键菜单 ----
         let _barMenuEl = null;
         const closeBarMenu = () => { if (_barMenuEl) { _barMenuEl.remove(); _barMenuEl = null; } };
         const showBarMenu = (x, y, items) => {
@@ -2110,58 +2392,12 @@ function wm_ensureViewer(node) {
                 it.addEventListener("click", (ev) => { ev.stopPropagation(); closeBarMenu(); fn(); });
                 menu.appendChild(it);
             });
-            document.body.appendChild(menu);
+            (workspace?.overlay || document.body).appendChild(menu);
             const r = menu.getBoundingClientRect();
             menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + "px";
             menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + "px";
             _barMenuEl = menu;
         };
-        // 关键帧三角菜单：删除 / 复制到当前播放头 / 移动到播放头 / 一键扩展到首尾（按三角所属轨道 tid 操作）
-        const showKfMenu = (x, y, fr, tid) => showBarMenu(x, y, [
-            {
-                label: "一键扩展到首尾",
-                fn: () => extendTrackToEdges(tid),   // 扩展该轨道：最左关键帧→第一帧，最右关键帧→最后一帧
-            },
-            {
-                label: "删除关键帧",
-                fn: () => {
-                    const km = state.manualKeyframes[tid];
-                    if (km && km[fr]) {
-                        delete km[fr];
-                        writeData();
-                        redraw();          // redraw 内部会 drawKfBar，三角随之消失
-                        refreshTrackBtns(); // 轨道按钮的关键帧描边状态同步
-                    }
-                },
-            },
-            {
-                label: "复制关键帧到播放头",
-                fn: () => {
-                    const km = state.manualKeyframes[tid];
-                    const src = km ? km[fr] : null;
-                    if (!src || !src.length) return;               // 该三角无关键帧数据
-                    if (state.frameIdx === fr) return;             // 播放头就在此帧，无需复制
-                    km[state.frameIdx] = JSON.parse(JSON.stringify(src)); // 深拷贝框数据到播放头所在帧
-                    writeData();
-                    redraw();   // 播放头位置立即出现复制来的框
-                    refreshTrackBtns();
-                },
-            },
-            {
-                label: "移动关键帧到播放头",
-                fn: () => {
-                    const km = state.manualKeyframes[tid];
-                    const src = km ? km[fr] : null;
-                    if (!src || !src.length) return;               // 该三角无关键帧数据
-                    if (state.frameIdx === fr) return;             // 播放头就在此帧，无需移动
-                    km[state.frameIdx] = src;                      // 数据整体搬到播放头所在帧
-                    delete km[fr];                                 // 原位置删除
-                    writeData();
-                    redraw();   // 关键帧三角与框同步落到播放头所在帧
-                    refreshTrackBtns();
-                },
-            },
-        ]);
         // 点击菜单外任意处关闭
         document.addEventListener("mousedown", (e) => { if (_barMenuEl && !_barMenuEl.contains(e.target)) closeBarMenu(); });
 
@@ -2222,7 +2458,30 @@ function wm_ensureViewer(node) {
             const barLeft = Math.max(0, Math.min(w - 2, posX(0)));
             bar.style.cssText = `position:absolute;left:${barLeft}px;top:calc(50% - 2px);width:${Math.max(4, barW)}px;height:4px;border-radius:2px;background:#5f5f5f;`;
             frag.appendChild(bar);
-            // 关键帧标记：仅显示当前分类时只画当前轨道三角，否则画全部轨道（各自轨道色）。
+            const auto = state.autoTracking;
+            const tracked = auto?.video_id === state.srcKey ? auto?.tracks?.[state.trackId] : null;
+            if (tracked) {
+                const keys = state.manualKeyframes[state.trackId] || {};
+                const usesTracking = frame => frame >= 0 && frame < nf &&
+                    !keys[frame]?.length && !!tracked[state.sampleIdx?.[frame] ?? frame];
+                let start = null;
+                for (let frame = 0; frame <= nf; frame++) {
+                    const joinsTracking = keys[frame]?.length && usesTracking(frame + 1) &&
+                        (frame === 0 || usesTracking(frame - 1));
+                    if (usesTracking(frame) || joinsTracking) {
+                        start ??= frame;
+                    } else if (start !== null) {
+                        const x = posX(Math.max(0, start - .5));
+                        const end = posX(Math.min(nf - 1, frame - .5));
+                        const segment = document.createElement("div");
+                        segment.style.cssText = `position:absolute;left:${x}px;top:calc(50% - 2px);width:${Math.max(1, end-x)}px;height:4px;background:#30d158;pointer-events:none;`;
+                        frag.appendChild(segment);
+                        start = null;
+                    }
+                }
+            }
+            const manualColor = "#30d158", autoColor = "#ff453a";
+            // 手工关键帧用绿色三角标记。
             // 同一帧被多个分类标记时，三角按层上下排列（每层 13px），避免互相遮挡
             if (nf > 0) {
                 const kfsAll = state.manualKeyframes || {};
@@ -2230,7 +2489,6 @@ function wm_ensureViewer(node) {
                 const tids = _solo ? [state.trackId] : Object.keys(kfsAll).map(Number).sort((a, b) => a - b);
                 tids.forEach(tid => {
                     const kfs = kfsAll[tid] || {};
-                    const color = TRACK_COLORS[(tid-1) % TRACK_COLORS.length];
                 Object.keys(kfs).map(Number).forEach(fr => {
                     const tier = tierAt[fr] || 0;
                     tierAt[fr] = tier + 1;
@@ -2239,7 +2497,21 @@ function wm_ensureViewer(node) {
                     // 避免误触发：三角下方仍走播放条的拖拽换帧判定
                     const hit = document.createElement("div");
                     hit.style.cssText = `position:absolute;left:${posX(fr) - 8}px;top:${tier * 13}px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:auto;`;
-                    hit.title = `第 ${fr} 帧关键帧（点击跳转 / 拖动移动 / 右键菜单）`;
+                    hit.title = `第 ${fr} 帧关键帧（点击跳转 / 拖动移动）`;
+                    hit.addEventListener("contextmenu", e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        showBarMenu(e.clientX, e.clientY, [{
+                            label: `删除第 ${fr} 帧关键帧`,
+                            fn: () => {
+                                if (state.manualKeyframes[tid] !== kfs || !kfs[fr]?.length) return;
+                                delete kfs[fr];
+                                writeData();
+                                refreshTrackBtns();
+                                redraw();
+                            },
+                        }]);
+                    });
                     // 按住左键开始拖动：移动中播放头与画面跟随，松手落位并持久化
                     hit.addEventListener("mousedown", (e) => {
                         if (e.button !== 0) return;
@@ -2248,20 +2520,18 @@ function wm_ensureViewer(node) {
                         spawnThumbGhost(); // 拖关键帧时播放头会跟随，先在播放头原位置留黑色参考残影
                         _kfDrag = { trackId: tid, from: fr, cur: fr };
                     });
-                    // 扩展（一键扩展复制到首尾）的关键帧用小一号三角，与手画的关键帧区分
-                    const ext = !!(state.extKf && state.extKf[tid + ":" + fr]);
                     const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                    mark.setAttribute("width", ext ? "11" : "14");
-                    mark.setAttribute("height", ext ? "9" : "12");
-                    mark.setAttribute("viewBox", ext ? "0 0 11 9" : "0 0 14 12");
+                    mark.setAttribute("width", "14");
+                    mark.setAttribute("height", "12");
+                    mark.setAttribute("viewBox", "0 0 14 12");
                     mark.style.cssText = "display:block;flex-shrink:0;margin-top:1px;";
                     // 高亮规则：播放头停在关键帧帧号上（三角形正下方）→ 白边高亮；
                     // 鼠标悬停 → 同样高亮；两者都不满足 → 纯色无边框。
                     // showFrame → redraw → drawKfBar 会随播放头移动自动刷新
                     const active = fr === state.frameIdx;
                     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                    path.setAttribute("d", ext ? "M1 1 L10 1 L5.5 8 Z" : "M1 1 L13 1 L7 11 Z");
-                    path.setAttribute("fill", color);
+                    path.setAttribute("d", "M1 1 L13 1 L7 11 Z");
+                    path.setAttribute("fill", kfs[fr][0]?.tracking_origin ? autoColor : manualColor);
                     path.setAttribute("stroke", "#ffffff");
                     path.setAttribute("stroke-width", active ? "1.5" : "0");
                     path.setAttribute("stroke-linejoin", "round");
@@ -2282,12 +2552,6 @@ function wm_ensureViewer(node) {
                         e.stopPropagation();
                         showFrame(fr);
                     });
-                    // 右键三角：弹出关键帧菜单（删除 / 复制到播放头）
-                    hit.addEventListener("contextmenu", (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        showKfMenu(e.clientX, e.clientY, fr, tid);
-                    });
                     frag.appendChild(hit);
                 });
                 });
@@ -2297,19 +2561,21 @@ function wm_ensureViewer(node) {
         };
 
         // ---- 帧切换 ----
-        // 自动清空检测区/排除区框（切换样本帧或载入新视频时，避免旧框残留/继续限域）。
-        // 手工跟踪的关键帧画框（manualKeyframes）不随视频切换清空：保持持久化，
-        // 只要不重启后端、不手动清理画框，即便上游更换视频也保留上次画框。
         const clearRegions = () => {
-            if (state.detectRegions.length || state.excludeRegions.length) {
-                state.detectRegions = [];
-                state.excludeRegions = [];
-                writeData();
-            }
+            state.detectRegions = [];
+            state.excludeRegions = [];
+            state.manualKeyframes = {};
+            state.autoTracking = {tracks: {}};
+            state.trackingAreas = {};
+            state.trackingAreaDraft = null;
+            state.drawing = state.curveDraft = state.curveDrag = state.rectDrag = null;
+            state.trackId = 1;
+            trackUnlocked = new Set([1]);
         };
         const showFrame = (i) => {
             const nf = state.frames.length;
             if (!nf) return;
+            state.trackingAreaDraft = null;
             // 0..N-1 索引语义：v=0 首帧，v=N-1 末帧（12 帧显示 0-11）
             i = Math.max(0, Math.min(nf - 1, i));
             // 跳帧预览不做任何清空：检测区/排除区框是跨帧全局的，画框后拖动播放头应保持；
@@ -2340,38 +2606,82 @@ function wm_ensureViewer(node) {
         };
         const cornerCursor=curveToggleCursor(false), smoothCursor=curveToggleCursor(true);
         let curveHoverPointer=null, curveAltDown=false;
-        const rectDragTarget = (r, p, cr) => {
+        const rectDragTarget = (r, p, cr, hitRadius = CONTROL_HIT_RADIUS) => {
             if (!r || r.poly) return null;
-            const radius = CONTROL_HIT_RADIUS * controlScreenScale();
+            const radius = hitRadius * controlScreenScale();
+            const width = (r.x2-r.x1)*cr.width, height = (r.y2-r.y1)*cr.height;
+            const handleRadius = Math.min(radius, Math.min(width, height)/3);
             const corners = [['x1','y1'], ['x2','y1'], ['x2','y2'], ['x1','y2']];
-            const corner = corners.find(([x,y]) => Math.hypot((r[x]-p.x)*cr.width, (r[y]-p.y)*cr.height) < radius);
+            const corner = corners.find(([x,y]) => Math.hypot((r[x]-p.x)*cr.width, (r[y]-p.y)*cr.height)
+                < Math.min(radius + 3 * controlScreenScale(), Math.min(width, height)/2));
             if (corner) return {keys:corner, cursor:(corner[0]==='x1') === (corner[1]==='y1') ? 'nwse-resize' : 'nesw-resize'};
             const inX = p.x >= r.x1 && p.x <= r.x2, inY = p.y >= r.y1 && p.y <= r.y2;
             const edges = [['x1',inY,cr.width,p.x], ['x2',inY,cr.width,p.x], ['y1',inX,cr.height,p.y], ['y2',inX,cr.height,p.y]];
-            const edge = edges.filter(([key,inside,scale,v]) => inside && Math.abs(r[key]-v)*scale < radius)
+            const edge = edges.filter(([key,inside,scale,v]) => inside && Math.abs(r[key]-v)*scale < handleRadius)
                 .sort((a,b) => Math.abs(r[a[0]]-a[3])*a[2] - Math.abs(r[b[0]]-b[3])*b[2])[0];
             if (edge) return {keys:[edge[0]], cursor:edge[0][0]==='x' ? 'ew-resize' : 'ns-resize'};
-            return inX && inY ? {keys:[], cursor:'move'} : null;
+            const inset = Math.min(handleRadius + 3 * controlScreenScale(), Math.min(width, height)*.4);
+            return inX && inY && Math.min((p.x-r.x1)*cr.width, (r.x2-p.x)*cr.width,
+                (p.y-r.y1)*cr.height, (r.y2-p.y)*cr.height) >= inset ? {keys:[], cursor:'move'} : null;
+        };
+        const curveBoundsTarget = (box, p, cr) => rectDragTarget(box, p, cr, 6);
+        const canMoveCurve = (curve, p, cr) => {
+            if (!insideCurve(curve, p)) return false;
+            const points = curvePoly(curve);
+            const margin = 8 * controlScreenScale();
+            return points.every(([x,y], i) => {
+                const [u,v] = points[(i+1)%points.length];
+                const dx = (u-x)*cr.width, dy = (v-y)*cr.height;
+                const px = (p.x-x)*cr.width, py = (p.y-y)*cr.height;
+                const t = Math.max(0, Math.min(1, (px*dx+py*dy)/(dx*dx+dy*dy || 1)));
+                return Math.hypot(px-t*dx,py-t*dy) >= margin;
+            });
         };
         const updateCurveCursor = () => {
             let cursor='crosshair', title='';
+            let hover = null;
             if (curveHoverPointer && state.image && state.mode==='manual') {
                 const cr=canvas.getBoundingClientRect();
                 const p={x:(curveHoverPointer.clientX-cr.left)/cr.width,y:(curveHoverPointer.clientY-cr.top)/cr.height};
                 const near=q=>Math.hypot((q.x-p.x)*cr.width,(q.y-p.y)*cr.height)<CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
-                const curve=state.curveDraft || (state.shapeSelected ? state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0]?.curve : null);
-                const anchor=curve?.find(near);
-                if (anchor && curveAltDown && !state.curveDrag) {
-                    const rounded=isCurveCorner(anchor);
+                const region = state.shapeSelected ? visibleTrackRegions(state.trackId, state.frameIdx)[0] : null;
+                const curve = state.curveDraft || region?.curve;
+                const controls = curve?.length ? curveControls(curve, cr, controlScreenScale(), !state.curveDraft || curve.length >= 3) : null;
+                const anchorIndex = controls?.anchors.findIndex(near) ?? -1;
+                const handleIndex = controls?.handles.findIndex(near) ?? -1;
+                const anchor = curve?.[anchorIndex];
+                const bounds = !state.curveDraft && controls ? curveBoundsTarget(controls.box,p,cr) : null;
+                if (state.curveDrag?.kind === 'bounds') {
+                    cursor = state.curveDrag.cursor;
+                } else if (state.rectDrag) {
+                    const {keys, cursor: dragCursor} = state.rectDrag;
+                    hover = keys.length ? {kind:"resize", keys} : {kind:"whole"};
+                    cursor = dragCursor || "move";
+                } else if (state.curveDrag) {
+                    const {kind, i:index} = state.curveDrag;
+                    hover = {kind:kind === "roundness" ? "handle" : kind, index};
+                    cursor = "move";
+                } else if (bounds?.keys.length === 2) {
+                    cursor = bounds.cursor;
+                } else if (anchor && curveAltDown && !state.curveDrag) {
+                    const rounded=anchor.roundness === undefined ? isCurveCorner(anchor) : anchor.roundness === 0;
                     cursor=rounded?smoothCursor:cornerCursor;
                     title=rounded?'Alt 单击：恢复平滑曲线':'Alt 单击：转换为尖角';
-                } else if (anchor || curve?.some(a=>near(a.in)||near(a.out))) cursor='pointer';
-                else if (state.curveDrag || state.rectDrag) cursor='grabbing';
-                else if (state.curveDraft) {
-                    if (hitCurveSegment(state.curveDraft,p,cr.width,cr.height,false)) cursor='pointer';
-                } else {
-                    const rect = state.shapeSelected && rectDragTarget(state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0],p,cr);
-                    if (rect) cursor=rect.cursor;
+                } else if (anchor || handleIndex >= 0) {
+                    hover = anchor ? {kind:"anchor", index:anchorIndex} : {kind:"handle", index:handleIndex};
+                    cursor = "move";
+                }
+                else if (!state.curveDraft) {
+                    const rect = curve?.length
+                        ? curveBoundsTarget(curveControls(curve, cr, controlScreenScale()).box, p, cr)
+                        : rectDragTarget(region, p, cr);
+                    if (rect?.keys.length) {
+                        cursor=rect.cursor;
+                        if (!curve) hover = {kind:"resize", keys:rect.keys};
+                    } else if (curve ? canMoveCurve(curve,p,cr) : rect) {
+                        cursor = "move";
+                        hover = {kind:"whole"};
+                    }
                     for (const tid of Object.keys(state.manualKeyframes).map(Number)) {
                         if (rect) break;
                         if (_solo && tid!==state.trackId) continue;
@@ -2384,11 +2694,21 @@ function wm_ensureViewer(node) {
             canvasWrapper.style.cursor=cursor;
             canvas.style.cursor=cursor;
             canvasWrapper.title=title;
+            if (JSON.stringify(state.controlHover) !== JSON.stringify(hover)) {
+                state.controlHover = hover;
+                drawActiveOverlay();
+            }
         };
         canvasWrapper.addEventListener('pointerenter', e => {
             curveHoverPointer={clientX:e.clientX,clientY:e.clientY}; curveAltDown=e.altKey; updateCurveCursor();
+            state.curvePreviewPointer = curveHoverPointer;
+            if (state.curveDraft) drawActiveOverlay();
         });
-        canvasWrapper.addEventListener('pointerleave', () => { curveHoverPointer=null; updateCurveCursor(); });
+        canvasWrapper.addEventListener('pointerleave', () => {
+            state.curvePreviewPointer = curveHoverPointer = null;
+            updateCurveCursor();
+            if (state.curveDraft) drawActiveOverlay();
+        });
         window.addEventListener('keydown', e => { if(e.key==='Alt') { if (_panelHover) e.preventDefault(); curveAltDown=true; updateCurveCursor(); } });
         window.addEventListener('keyup', e => { if(e.key==='Alt') { curveAltDown=false; updateCurveCursor(); } });
         window.addEventListener('blur', () => { curveAltDown=false; updateCurveCursor(); });
@@ -2396,11 +2716,13 @@ function wm_ensureViewer(node) {
             stopPlay();
             if (!state.image) return;
             if (state.mode === 'off') return;   // 关：禁用框选
-            // 右键框体删除已移除：删除关键帧统一走「右键播放条三角 → 删除关键帧」，
-            // 避免两处删除入口（画布右键按框删除 / 播放条按帧删除）语义混淆
             if (e.button !== 0) return;
             try { canvasWrapper.setPointerCapture(e.pointerId); } catch (_) {}
             const c = toImg(e);
+            if (state.trackingAreaDraft) {
+                state.drawing = {start: c, x1: c.x, y1: c.y, x2: c.x, y2: c.y};
+                return;
+            }
             if (!state.curveDraft && state.mode === 'manual') {
                 const L=calcLayout(), cr=canvas.getBoundingClientRect();
                 const p={x:c.x/L.imgW,y:c.y/L.imgH};
@@ -2409,28 +2731,44 @@ function wm_ensureViewer(node) {
                     if (_solo && tid!==state.trackId) continue;
                     if (tid===state.trackId && state.shapeSelected && state.manualKeyframes[tid]?.[state.frameIdx]?.length) continue;
                     const visible=visibleTrackRegions(tid,state.frameIdx)[0];
-                    if (!visible || !hitEditableRegion(visible,p,cr)) continue;
+                    if (tid === state.trackId && state.tool === 'brush' && visible && !visible.curve && !visible.poly) continue;
+                    const target = rectDragTarget(visible,p,cr);
+                    const selectedCurve = tid === state.trackId && state.shapeSelected ? visible?.curve : null;
+                    const controls = selectedCurve?.length ? curveControls(selectedCurve, cr, controlScreenScale()) : null;
+                    const handle = controls && ([...controls.anchors, ...controls.handles].some(point =>
+                        Math.hypot((point.x-p.x)*cr.width, (point.y-p.y)*cr.height) <
+                            CURVE_CONTROL_HIT_RADIUS * controlScreenScale()) || curveBoundsTarget(controls.box,p,cr)?.keys.length);
+                    if (!visible || (!target && !handle && !hitEditableRegion(visible,p,cr))) continue;
+                    const promoted = !state.manualKeyframes[tid]?.[state.frameIdx]?.length;
                     const r=promoteVisibleRegion(tid);
                     const curve=r.curve;
                     if (r) {
                         state.trackId=tid; state.shapeSelected=true; state.tool=curve?'brush':'rect';
                         if (!r.poly && !curve) {
-                            const target=rectDragTarget(r,p,cr);
-                            if (target) state.rectDrag={region:r, keys:target.keys, start:p, original:{...r}};
+                            if (target) state.rectDrag={region:r, keys:target.keys, cursor:target.cursor, start:p, original:{...r}};
                         }
-                        if (curve) state.curveDrag={curve,kind:'whole',p};
+                        if (promoted && !state.rectDrag && !curve) writeData();
+                        if (selectedCurve) break;
+                        if (curve && canMoveCurve(curve,p,cr)) state.curveDrag={curve,kind:'whole',p};
+                        else if (curve && promoted) writeData();
                         refreshTrackBtns(); refreshToolBtn(); updateCurveCursor(); redraw(); return;
                     }
                 }
             }
             const region = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
-            if (state.shapeSelected && !state.curveDraft && region && !region.poly) {
+            // An interpolated or tracked curve also occupies this frame, even before it is promoted.
+            if (!state.curveDraft && !region) {
+                const visible = visibleTrackRegions(state.trackId, state.frameIdx)[0];
+                if (visible?.curve || visible?.poly) return;
+            }
+            if (state.shapeSelected && state.tool !== 'brush' && !state.curveDraft && region && !region.poly) {
                 const cr = canvas.getBoundingClientRect(), L = calcLayout();
                 const p = {x:c.x/L.imgW, y:c.y/L.imgH};
                 const target = rectDragTarget(region,p,cr);
-                if (target) { state.rectDrag = {region, keys:target.keys, start:p, original:{...region}}; updateCurveCursor(); return; }
+                if (target) { state.rectDrag = {region, keys:target.keys, cursor:target.cursor, start:p, original:{...region}}; updateCurveCursor(); return; }
             }
-            if (state.mode === "manual" && (state.curveDraft || (region?.curve && state.shapeSelected) || (!region && state.tool === "brush"))) {
+            if (state.mode === "manual" && (state.curveDraft || (region?.curve && state.shapeSelected) ||
+                (state.tool === "brush" && !region?.poly && !region?.curve))) {
                 const L = calcLayout(), p = {x: c.x / L.imgW, y: c.y / L.imgH};
                 const cr = canvas.getBoundingClientRect();
                 const near = q => Math.hypot((q.x-p.x)*cr.width, (q.y-p.y)*cr.height) < CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
@@ -2440,67 +2778,182 @@ function wm_ensureViewer(node) {
                 }
                 if (curve) {
                     // Anchors take priority over coincident handles. Alt-drag separates a handle.
+                    const controls = curveControls(curve, cr, controlScreenScale(), !state.curveDraft || curve.length >= 3);
+                    const target = state.curveDraft ? null : curveBoundsTarget(controls.box,p,cr);
                     for (let i = 0; i < curve.length; i++) {
-                        if (near(curve[i])) { state.curveDrag = {curve, i, kind:e.altKey ? 'out' : 'anchor', p, fresh:e.altKey, cornerClick:e.altKey}; return; }
-                    }
-                    for (let i = 0; i < curve.length; i++) {
-                        for (const kind of ['in', 'out']) if (near(curve[i][kind])) {
-                            state.curveDrag = {curve, i, kind, p}; return;
+                        if (target?.keys.length !== 2 && near(controls.anchors[i])) {
+                            const kind = e.altKey ? (curve[i].roundness === undefined ? 'out' : 'roundness') : 'anchor';
+                            state.curveDrag = {curve, i, kind, p, fresh:e.altKey, cornerClick:e.altKey};
+                            return;
                         }
                     }
+                    const i = controls.handles.findIndex(near);
+                    if (i >= 0 && target?.keys.length !== 2) {
+                        state.curveDrag = {curve, i, kind:'roundness', p, handle:controls.handles[i]};
+                        return;
+                    }
+                    if (target?.keys.length) {
+                        state.curveDrag = {curve, kind:'bounds', p, box:controls.box, keys:target.keys, cursor:target.cursor};
+                        updateCurveCursor();
+                        return;
+                    }
                 }
-                if (curve?.length >= 2 && !e.altKey) {
+                if (!state.curveDraft && curve?.length >= 2 && !e.altKey) {
                     const hit = hitCurveSegment(curve,p,cr.width,cr.height,!state.curveDraft);
                     if (hit) {
-                        const i=splitCurveSegment(curve,hit.i,hit.t);
+                        let i = hit.i + 1;
+                        if (curve[hit.i].roundness !== undefined) {
+                            const point = hit.point;
+                            curve.splice(i, 0, {...point, in:{...point}, out:{...point}, roundness:0, auto:false});
+                        } else i = splitCurveSegment(curve,hit.i,hit.t);
                         state.curveDrag={curve,i,kind:'anchor',p};
                         if (!state.curveDraft) saveCurve(curve);
                         redraw(); return;
                     }
                 }
-                if (!state.curveDraft && region) {
-                    if (curve && insideCurve(curve,p)) {
+                if (!state.curveDraft && region?.curve) {
+                    if (curve && canMoveCurve(curve,p,cr)) {
                         state.curveDrag={curve,kind:'whole',p}; updateCurveCursor(); return;
                     }
-                    state.shapeSelected=hitEditableRegion(region,{x:c.x/calcLayout().imgW,y:c.y/calcLayout().imgH},canvas.getBoundingClientRect()); updateCurveCursor(); redraw(); return;
+                    return;
                 }
                 if (!state.curveDraft) { curve = state.curveDraft = []; state.shapeSelected=true; }
-                curve.push({...p, in:{...p}, out:{...p}, auto:true});
+                curve.push({...p, in:{...p}, out:{...p}, roundness:.25, auto:false});
                 smoothCurve(curve, false);
-                state.curveDrag = {curve, i:curve.length-1, kind:'out', p, fresh:true};
+                state.curveDrag = {curve, i:curve.length-1, kind:'roundness', p, fresh:true};
                 redraw(); return;
             }
-            if (state.mode === 'manual' && region) {
-                state.shapeSelected=hitEditableRegion(region,{x:c.x/calcLayout().imgW,y:c.y/calcLayout().imgH},canvas.getBoundingClientRect()); updateCurveCursor(); redraw(); return;
-            }
+            if (state.mode === 'manual' && region) return;
             state.shapeSelected=true;
-            state.drawing = { x1: c.x, y1: c.y, x2: c.x, y2: c.y };
+            state.drawing = { start: c, x1: c.x, y1: c.y, x2: c.x, y2: c.y };
         });
+
+        const updateDrawingRect = e => {
+            const drawing = state.drawing;
+            const {x, y} = toImg(e);
+            const {imgW, imgH} = calcLayout();
+            const {start} = drawing;
+            if (!e.shiftKey) {
+                Object.assign(drawing, {x1: start.x, y1: start.y, x2: x, y2: y});
+                return;
+            }
+            const x1 = Math.max(0, Math.min(imgW, start.x));
+            const y1 = Math.max(0, Math.min(imgH, start.y));
+            const sx = x < x1 ? -1 : 1;
+            const sy = y < y1 ? -1 : 1;
+            const side = Math.min(Math.max(Math.abs(x - x1), Math.abs(y - y1)),
+                sx < 0 ? x1 : imgW - x1, sy < 0 ? y1 : imgH - y1);
+            Object.assign(drawing, {x1, y1, x2: x1 + sx * side, y2: y1 + sy * side});
+        };
 
         canvasWrapper.addEventListener('pointermove', (e) => {
             curveHoverPointer={clientX:e.clientX,clientY:e.clientY}; curveAltDown=e.altKey;
+            state.curvePreviewPointer = curveHoverPointer;
             updateCurveCursor();
             if (state.rectDrag) {
-                const {region, keys, start, original} = state.rectDrag, c = toImg(e), L = calcLayout();
+                const drag = state.rectDrag;
+                const {region, keys, start, original} = drag, c = toImg(e), L = calcLayout();
+                const dx = c.x/L.imgW-start.x, dy = c.y/L.imgH-start.y;
+                if (!drag.moved) {
+                    const cr = canvas.getBoundingClientRect();
+                    if (Math.hypot(dx*cr.width, dy*cr.height) < 3) return;
+                    drag.moved = true;
+                }
                 if (!keys.length) {
-                    const dx = Math.max(-original.x1, Math.min(1-original.x2, c.x/L.imgW-start.x));
-                    const dy = Math.max(-original.y1, Math.min(1-original.y2, c.y/L.imgH-start.y));
-                    region.x1=original.x1+dx; region.x2=original.x2+dx;
-                    region.y1=original.y1+dy; region.y2=original.y2+dy;
+                    const moveX = Math.max(-original.x1, Math.min(1-original.x2, dx));
+                    const moveY = Math.max(-original.y1, Math.min(1-original.y2, dy));
+                    region.x1=original.x1+moveX; region.x2=original.x2+moveX;
+                    region.y1=original.y1+moveY; region.y2=original.y2+moveY;
+                } else if (e.altKey) {
+                    const cx = (original.x1 + original.x2) / 2;
+                    const cy = (original.y1 + original.y2) / 2;
+                    const xKey = keys.find(key => key[0] === 'x');
+                    const yKey = keys.find(key => key[0] === 'y');
+                    const maxX = Math.min(cx, 1 - cx) * L.imgW;
+                    const maxY = Math.min(cy, 1 - cy) * L.imgH;
+                    let halfWidth = xKey ? Math.max(1, (original[xKey] + dx - cx) * L.imgW * (xKey === 'x1' ? -1 : 1))
+                        : (original.x2 - original.x1) * L.imgW / 2;
+                    let halfHeight = yKey ? Math.max(1, (original[yKey] + dy - cy) * L.imgH * (yKey === 'y1' ? -1 : 1))
+                        : (original.y2 - original.y1) * L.imgH / 2;
+                    if (e.shiftKey) {
+                        const side = xKey && yKey ? Math.max(halfWidth, halfHeight) : xKey ? halfWidth : halfHeight;
+                        halfWidth = halfHeight = Math.min(side, maxX, maxY);
+                    }
+                    const rx = Math.min(halfWidth, maxX) / L.imgW;
+                    const ry = Math.min(halfHeight, maxY) / L.imgH;
+                    Object.assign(region, {x1: cx - rx, x2: cx + rx, y1: cy - ry, y2: cy + ry});
+                } else if (e.shiftKey) {
+                    const xKey = keys.find(key => key[0] === 'x');
+                    const yKey = keys.find(key => key[0] === 'y');
+                    const anchorX = xKey ? original[xKey === 'x1' ? 'x2' : 'x1'] : (original.x1 + original.x2) / 2;
+                    const anchorY = yKey ? original[yKey === 'y1' ? 'y2' : 'y1'] : (original.y1 + original.y2) / 2;
+                    const width = xKey ? (original[xKey] + dx - anchorX) * L.imgW : 0;
+                    const height = yKey ? (original[yKey] + dy - anchorY) * L.imgH : 0;
+                    const sx = Math.sign(width) || (xKey === 'x1' ? -1 : 1);
+                    const sy = Math.sign(height) || (yKey === 'y1' ? -1 : 1);
+                    const maxWidth = xKey ? (sx < 0 ? anchorX : 1 - anchorX) : 2 * Math.min(anchorX, 1 - anchorX);
+                    const maxHeight = yKey ? (sy < 0 ? anchorY : 1 - anchorY) : 2 * Math.min(anchorY, 1 - anchorY);
+                    const side = Math.min(Math.max(Math.abs(width), Math.abs(height)), maxWidth * L.imgW, maxHeight * L.imgH);
+                    Object.assign(region, original);
+                    if (xKey) region[xKey] = anchorX + sx * side / L.imgW;
+                    else { region.x1 = anchorX - side / (2 * L.imgW); region.x2 = anchorX + side / (2 * L.imgW); }
+                    if (yKey) region[yKey] = anchorY + sy * side / L.imgH;
+                    else { region.y1 = anchorY - side / (2 * L.imgH); region.y2 = anchorY + side / (2 * L.imgH); }
                 } else {
-                    for (const key of keys) region[key] = Math.max(0, Math.min(1, key[0]==='x' ? c.x/L.imgW : c.y/L.imgH));
+                    Object.assign(region, original);
+                    for (const key of keys) {
+                        region[key] = Math.max(0, Math.min(1, original[key] + (key[0]==='x' ? dx : dy)));
+                    }
                 }
                 redraw(); return;
             }
             if (state.curveDrag) {
                 const d = state.curveDrag, a = d.curve[d.i], c = toImg(e), L = calcLayout();
+                if (!state.curveDraft) d.original ||= JSON.parse(JSON.stringify(d.curve));
                 const p = {x:c.x/L.imgW, y:c.y/L.imgH};
                 if (d.fresh) {
                     const cr = canvas.getBoundingClientRect();
                     if (Math.hypot((p.x-d.p.x)*cr.width,(p.y-d.p.y)*cr.height) < 3) return;
                     d.fresh = false; d.cornerClick = false;
                 }
-                if (d.kind === 'whole') {
+                if (d.kind === 'bounds') {
+                    for (const key of d.keys) {
+                        const axis = key[0];
+                        const pivot = d.box[axis + (key[1] === '1' ? '2' : '1')];
+                        const ratio = Math.max(.01, 1 + (p[axis]-d.p[axis]) / (d.box[key]-pivot));
+                        d.curve.forEach((node, i) => {
+                            const base = d.original[i];
+                            node[axis] = pivot + (base[axis]-pivot)*ratio;
+                            for (const side of ['in','out']) node[side][axis] = pivot + (base[side][axis]-pivot)*ratio;
+                            node.auto = false;
+                        });
+                    }
+                } else if (d.kind === 'roundness') {
+                    const cr = canvas.getBoundingClientRect(), scale = controlScreenScale();
+                    const handle = d.handle || curveControls(d.curve, cr, scale, !state.curveDraft || d.curve.length >= 3).handles[d.i];
+                    const initial = d.initialPointer ||= d.p;
+                    const delta = (p.x-initial.x)*cr.width*handle.ux + (p.y-initial.y)*cr.height*handle.uy;
+                    if (a.roundness !== undefined) {
+                        d.handle = handle;
+                        d.initialRoundness ??= a.roundness;
+                        a.roundness = Math.max(0, Math.min(.5, d.initialRoundness + delta/(52*scale)));
+                    } else {
+                    const base = d.original?.[d.i] || a;
+                    const originalTangent = d.tangent ??= (Math.hypot((base.in.x-base.x)*cr.width,(base.in.y-base.y)*cr.height) +
+                        Math.hypot((base.out.x-base.x)*cr.width,(base.out.y-base.y)*cr.height)) / 2;
+                    d.handle = handle;
+                    a.auto = true;
+                    smoothCurve(d.curve, !state.curveDraft);
+                    const tangent = (Math.hypot((a.in.x-a.x)*cr.width,(a.in.y-a.y)*cr.height) +
+                        Math.hypot((a.out.x-a.x)*cr.width,(a.out.y-a.y)*cr.height)) / 2;
+                    const roundness = Math.max(0, Math.min(2, (originalTangent + delta)/Math.max(1, tangent)));
+                    for (const side of ['in','out']) {
+                        a[side].x = a.x + (a[side].x-a.x)*roundness;
+                        a[side].y = a.y + (a[side].y-a.y)*roundness;
+                    }
+                    a.auto = false;
+                    }
+                } else if (d.kind === 'whole') {
                     const dx=p.x-d.p.x, dy=p.y-d.p.y;
                     for (const anchor of d.curve) {
                         for (const q of [anchor,anchor.in,anchor.out]) { q.x+=dx; q.y+=dy; }
@@ -2514,17 +2967,18 @@ function wm_ensureViewer(node) {
                     a[d.kind] = {...p};
                     if (!e.altKey) a[d.kind === 'in' ? 'out' : 'in'] = {x:2*a.x-p.x, y:2*a.y-p.y};
                 }
-                d.p = p;
+                if (d.kind !== 'bounds') d.p = p;
                 if (!state.curveDraft) {
                     const r = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
                     if (r?.curve === d.curve) r.poly = curvePoly(d.curve);
                 }
                 redraw(); return;
             }
-            if (!state.drawing) return;
-            const c = toImg(e);
-            state.drawing.x2 = c.x;
-            state.drawing.y2 = c.y;
+            if (!state.drawing) {
+                if (state.curveDraft) drawActiveOverlay();
+                return;
+            }
+            updateDrawingRect(e);
             // 方框实时预览走 overlay（黑边内可见、逐事件刷新跟手）
             drawActiveOverlay();
         });
@@ -2537,13 +2991,11 @@ function wm_ensureViewer(node) {
                     toggleCurveCorner(curve,d.i,!state.curveDraft);
                 }
                 state.curveDrag = null;
-                if (!state.curveDraft) saveCurve(curve);
+                if (!state.curveDraft) saveCurve(curve, d.original);
                 updateCurveCursor(); redraw(); return;
             }
             if (!state.drawing) return;
-            const c = toImg(e);
-            state.drawing.x2 = c.x;
-            state.drawing.y2 = c.y;
+            updateDrawingRect(e);
             const L = calcLayout();
             const r = {
                 x1: Math.max(0, Math.min(1, Math.min(state.drawing.x1, state.drawing.x2) / L.imgW)),
@@ -2553,6 +3005,17 @@ function wm_ensureViewer(node) {
             };
             state.drawing = null;
             clearBrushOverlay();
+            if (state.trackingAreaDraft) {
+                const {track, frame} = state.trackingAreaDraft;
+                state.trackingAreaDraft = null;
+                if (r.x2 > r.x1 && r.y2 > r.y1) {
+                    state.trackingAreas ||= {};
+                    (state.trackingAreas[track] ||= {})[frame] = r;
+                    writeData();
+                }
+                redraw();
+                return;
+            }
             if (!(r.x2 - r.x1 > 0.002 && r.y2 - r.y1 > 0.002)) return;   // 极小框忽略
             if (state.mode === "manual") {
                 const tid = state.trackId;
@@ -2568,14 +3031,60 @@ function wm_ensureViewer(node) {
 
         const finishRectDrag = () => {
             if (!state.rectDrag) return;
-            const r = state.rectDrag.region;
+            const {region: r, original} = state.rectDrag;
+            if (r.x1 === r.x2) { r.x1 = original.x1; r.x2 = original.x2; }
+            if (r.y1 === r.y2) { r.y1 = original.y1; r.y2 = original.y2; }
             [r.x1, r.x2] = [Math.min(r.x1,r.x2), Math.max(r.x1,r.x2)];
             [r.y1, r.y2] = [Math.min(r.y1,r.y2), Math.max(r.y1,r.y2)];
+            const edges = ["x1", "y1", "x2", "y2"];
+            const changed = edges.some(edge => r[edge] !== original[edge]);
+            if (changed) delete r.tracking_origin;
+            const auto = state.autoTracking;
+            const track = state.trackId;
+            const frames = auto?.video_id === state.srcKey ? auto?.tracks?.[track] : null;
+            if (changed && frames) {
+                const start = state.frameIdx;
+                const keys = state.manualKeyframes[track];
+                const transitionFrames = 12;
+                for (const direction of [-1, 1]) {
+                    const pending = [];
+                    let anchor = null;
+                    let distance = 0;
+                    for (let frame = start + direction; frame >= 0 && frame < state.frames.length; frame += direction) {
+                        distance++;
+                        const manual = keys[frame]?.[0];
+                        const tracked = frames[state.sampleIdx?.[frame] ?? frame];
+                        const target = manual || tracked;
+                        if (!target || !edges.every(edge => Number.isFinite(target[edge]))) break;
+                        if (manual || (distance >= transitionFrames && tracked.tracking_reliable !== false)) {
+                            anchor = target;
+                            break;
+                        }
+                        pending.push(tracked);
+                    }
+                    const span = anchor ? distance : Math.max(transitionFrames, pending.length + 1);
+                    const corrected = pending.map((tracked, index) => {
+                        const t = (index + 1) / span;
+                        const result = {};
+                        for (const edge of edges) {
+                            const base = tracked.tracking_reliable === false
+                                ? original[edge] + ((anchor?.[edge] ?? original[edge]) - original[edge]) * t
+                                : tracked[edge];
+                            result[edge] = base + (r[edge] - original[edge]) * (1 - t);
+                        }
+                        return result;
+                    });
+                    for (let i = 0; i < pending.length; i++) {
+                        Object.assign(pending[i], corrected[i], {manual_transition: true});
+                    }
+                }
+            }
             state.rectDrag = null; writeData(); refreshTrackBtns(); updateCurveCursor();
         };
         canvasWrapper.addEventListener('pointercancel', () => {
             finishRectDrag();
-            if (state.curveDrag && !state.curveDraft) saveCurve(state.curveDrag.curve);
+            if (state.curveDrag && !state.curveDraft) saveCurve(state.curveDrag.curve, state.curveDrag.original);
+            state.trackingAreaDraft = null;
             state.curveDrag = null; state.drawing = null; redraw();
         });
         canvasWrapper.addEventListener('contextmenu', (e) => {
@@ -2583,6 +3092,17 @@ function wm_ensureViewer(node) {
             e.stopPropagation();
             closeBarMenu();
             if (!state.image || state.mode !== 'manual') return;
+            if (state.curveDraft) {
+                if (state.curveDraft.length >= 3) {
+                    const curve = state.curveDraft;
+                    smoothCurve(curve, true);
+                    state.curveDraft = state.curveDrag = null;
+                    saveCurve(curve);
+                    updateCurveCursor();
+                    redraw();
+                }
+                return;
+            }
             stopPlay();
             const frame = state.frameIdx;
             const L = calcLayout(), c = toImg(e);
@@ -2591,22 +3111,40 @@ function wm_ensureViewer(node) {
             const curve = state.curveDraft || (state.shapeSelected && state.manualKeyframes[state.trackId]?.[frame]?.[0]?.curve);
             if (curve) {
                 const distance = q => Math.hypot((q.x-p.x)*cr.width, (q.y-p.y)*cr.height);
+                const {anchors} = curveControls(curve, cr, controlScreenScale(), !state.curveDraft || curve.length >= 3);
                 let closest = CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
                 let index = -1;
                 for (let i = 0; i < curve.length; i++) {
-                    const d = distance(curve[i]);
+                    const d = distance(anchors[i]);
                     if (d >= closest) continue;
                     closest = d;
                     index = i;
                 }
-                if (index !== -1) {
-                    if (!state.curveDraft && curve.length <= 3) return;
+                if (index !== -1 && (state.curveDraft || curve.length > 3)) {
                     curve.splice(index, 1);
                     smoothCurve(curve, !state.curveDraft);
                     if (!state.curveDraft) saveCurve(curve);
                     else if (!curve.length) state.curveDraft = null;
                     updateCurveCursor();
                     redraw();
+                    return;
+                }
+                if (!state.curveDraft && (index !== -1 || insideCurve(curve, p) ||
+                    hitCurveSegment(curve, p, cr.width, cr.height, true))) {
+                    const track = state.trackId;
+                    const keys = state.manualKeyframes[track];
+                    showBarMenu(e.clientX, e.clientY, [{
+                        label: "删除当前帧曲线",
+                        fn: () => {
+                            if (keys[frame]?.[0]?.curve !== curve) return;
+                            delete keys[frame];
+                            const tracked = activeAutoTracks()[track];
+                            if (tracked) delete tracked[state.sampleIdx[frame] ?? frame];
+                            writeData();
+                            refreshTrackBtns();
+                            redraw();
+                        },
+                    }]);
                     return;
                 }
             }
@@ -2659,6 +3197,19 @@ function wm_ensureViewer(node) {
         const forwardWheel = (e) => {
             e.preventDefault();
             e.stopPropagation();
+            if ((workspace || e.ctrlKey) && canvasWrapper.contains(e.target)) {
+                if (!state.image || !e.deltaY) return;
+                const zoom = Math.max(0.1, Math.min(8, view.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+                const bounds = canvas.getBoundingClientRect();
+                const scale = previewScreenScale();
+                const ratio = zoom / view.zoom;
+                view.x += (e.clientX - bounds.left - bounds.width / 2) * (1 - ratio) / scale;
+                view.y += (e.clientY - bounds.top - bounds.height / 2) * (1 - ratio) / scale;
+                view.zoom = zoom;
+                applyPreviewView();
+                return;
+            }
+            if (workspace) return;
             const cvs = app.canvas?.canvas;
             if (cvs) {
                 const ev = new WheelEvent('wheel', {
@@ -2672,10 +3223,133 @@ function wm_ensureViewer(node) {
         };
         container.addEventListener('wheel', forwardWheel, { passive: false });
 
+        const view = {zoom: 1, x: 0, y: 0};
+        let viewDrag = null;
+        const previewScreenScale = () => canvasWrapper.getBoundingClientRect().width / canvasWrapper.offsetWidth || 1;
+        const applyPreviewView = () => {
+            canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+            drawActiveOverlay();
+        };
+        const resetPreviewView = () => {
+            Object.assign(view, {zoom: 1, x: 0, y: 0});
+            applyPreviewView();
+        };
+        canvasWrapper.addEventListener("pointerdown", e => {
+            const pan = (e.ctrlKey && e.button === 0) || e.button === 1;
+            if (!state.image || !pan || viewDrag ||
+                state.drawing || state.rectDrag || state.curveDrag) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            stopPlay();
+            canvasWrapper.setPointerCapture(e.pointerId);
+            viewDrag = {id: e.pointerId, x: e.clientX, y: e.clientY, left: view.x, top: view.y};
+            canvas.style.cursor = canvasWrapper.style.cursor = "move";
+        }, true);
+        canvasWrapper.addEventListener("pointermove", e => {
+            if (viewDrag?.id !== e.pointerId) return;
+            e.stopImmediatePropagation();
+            const scale = previewScreenScale();
+            view.x = viewDrag.left + (e.clientX - viewDrag.x) / scale;
+            view.y = viewDrag.top + (e.clientY - viewDrag.y) / scale;
+            applyPreviewView();
+        }, true);
+        const endViewDrag = e => {
+            if (viewDrag?.id !== e.pointerId) return;
+            e.stopImmediatePropagation();
+            viewDrag = null;
+            canvas.style.cursor = canvasWrapper.style.cursor = "crosshair";
+        };
+        for (const event of ["pointerup", "pointercancel", "lostpointercapture"]) {
+            canvasWrapper.addEventListener(event, endViewDrag, true);
+        }
+
+        const openWorkspace = () => {
+            const parent = container.parentElement;
+            if (!parent) return;
+            closeBarMenu();
+            const anchor = document.createComment("xzg-video-mask-workspace");
+            parent.insertBefore(anchor, container);
+            const overlay = document.createElement("div");
+            overlay.style.cssText = "position:fixed;inset:0;z-index:1000000;display:flex;box-sizing:border-box;padding:14px;background:#0f1011;";
+            overlay.addEventListener("pointerdown", e => e.stopPropagation());
+            workspace = {anchor, overlay, style: container.style.cssText};
+            overlay.appendChild(container);
+            Object.assign(container.style, {height: "100%", flex: "1 1 auto", pointerEvents: "auto"});
+            document.body.appendChild(overlay);
+            fullscreenBtn.textContent = fullscreenBtn.title = "退出全屏";
+            syncSize();
+            redraw();
+        };
+        const closeWorkspace = () => {
+            if (!workspace) return;
+            const {anchor, overlay, style} = workspace;
+            workspace = null;
+            closeBarMenu();
+            stopPlay();
+            _panelHover = false;
+            if (anchor.isConnected) anchor.replaceWith(container);
+            container.style.cssText = style;
+            overlay.remove();
+            fullscreenBtn.textContent = "全屏编辑";
+            fullscreenBtn.title = "打开全屏编辑";
+            if (container.isConnected) { syncSize(); redraw(); }
+        };
+        const onWorkspaceEscape = e => {
+            if (!workspace || e.key !== "Escape" || document.querySelector(".xzg-wmdet-help-ok")) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (_barMenuEl) closeBarMenu();
+            else if (state.curveDraft || state.curveDrag || state.rectDrag) cancelCurve();
+            else closeWorkspace();
+        };
+        window.addEventListener("keydown", onWorkspaceEscape, true);
+        chainCallback(node, "onRemoved", () => {
+            closeWorkspace();
+            window.removeEventListener("keydown", onWorkspaceEscape, true);
+        });
+
         // ---- 数据回写（{detect:[...], exclude:[...]}）----
-        const writeData = () => {
+        const undoHistory = [], redoHistory = [];
+        const refreshEditHistory = () => {
+            for (const [button, entries] of [[undoBtn, undoHistory], [redoBtn, redoHistory]]) {
+                button.setAttribute("aria-disabled", String(!entries.length));
+                button.style.opacity = entries.length ? "1" : ".4";
+            }
+        };
+        const resetEditHistory = () => {
+            undoHistory.length = redoHistory.length = 0;
+            refreshEditHistory();
+        };
+        const stepEditHistory = direction => {
+            if (trackingRequest || state.curveDrag || state.rectDrag || state.drawing) return;
+            const [from, to] = direction < 0 ? [undoHistory, redoHistory] : [redoHistory, undoHistory];
+            if (!from.length) return;
+            to.push(dataWidget.value);
+            dataWidget.value = from.pop();
+            state.curveDraft = state.trackingAreaDraft = null;
+            trackUnlocked = new Set([1, state.trackId]);
+            readData();
+            refreshTrackBtns();
+            refreshEditHistory();
+            redraw();
+            node.setDirtyCanvas?.(true, true);
+        };
+        const writeData = (record = true) => {
             if (!dataWidget) return;
-            dataWidget.value = JSON.stringify({ detect: state.detectRegions, exclude: state.excludeRegions, mode: state.mode, manual: state.manualKeyframes, sample_idx: state.sampleIdx || [] });
+            const data = { detect: state.detectRegions, exclude: state.excludeRegions, mode: state.mode, tool: state.tool, manual: state.manualKeyframes, fill_edges: state.fillEdges, sample_idx: state.sampleIdx || [] };
+            if (state.srcKey) data.video_id = state.srcKey;
+            if (state.trackingAreas) data.tracking_areas = state.trackingAreas;
+            if (Object.keys(state.autoTracking.tracks).length) {
+                data.auto_tracking = state.autoTracking;
+            }
+            const value = JSON.stringify(data);
+            if (record && value !== dataWidget.value) {
+                undoHistory.push(dataWidget.value || "{}");
+                if (undoHistory.length > 30) undoHistory.shift();
+                redoHistory.length = 0;
+                refreshEditHistory();
+            }
+            dataWidget.value = value;
             // 不调 callback，避免画框时自动触发节点执行
             try { node.setDirtyCanvas(true, true); } catch (e) {}
         };
@@ -2687,15 +3361,24 @@ function wm_ensureViewer(node) {
                 if (!dataWidget || !dataWidget.value) return;
                 const d = JSON.parse(dataWidget.value);
                 if (!d) return;
-                if (Array.isArray(d.detect)) state.detectRegions = d.detect.filter(v => v && typeof v.x1 === 'number');
-                if (Array.isArray(d.exclude)) state.excludeRegions = d.exclude.filter(v => v && typeof v.x1 === 'number');
+                state.detectRegions = Array.isArray(d.detect) ? d.detect.filter(v => v && typeof v.x1 === 'number') : [];
+                state.excludeRegions = Array.isArray(d.exclude) ? d.exclude.filter(v => v && typeof v.x1 === 'number') : [];
                 // 仅手工跟踪模式（旧版模式下拉已隐藏取消）
                 state.mode = 'manual';
+                state.tool = d.tool === "brush" ? "brush" : "rect";
+                refreshToolBtn();
+                state.fillEdges = d.fill_edges !== false;
+                refreshFillEdgesBtn();
                 state.manualKeyframes = (d.manual && typeof d.manual === 'object') ? d.manual : {};
+                state.autoTracking = d.auto_tracking?.tracks && typeof d.auto_tracking.tracks === 'object'
+                    ? d.auto_tracking : {tracks: {}};
+                state.trackingAreas = d.tracking_areas || {};
                 if (state.image) { try { syncSize(); } catch (e) {} redraw(); }
             } catch (e) {}
         };
         readData();
+        refreshEditHistory();
+        refreshFillEdgesBtn();
 
         // ---- 开关：控制框选可用性 ----
         const applySwitch = () => {
@@ -2763,6 +3446,7 @@ function wm_ensureViewer(node) {
                 // temporal_dilate 与 regions_data 之间隔 0 个值（当前）或 2 个值（旧格式 ex/ey）
                 setW('temporal_dilate', (ri >= 4 ? (Number(vals[ri - 3]) || 0) : (Number(vals[1]) || 0)));
                 setW('regions_data', typeof vals[ri] === 'string' ? vals[ri] : '');
+                resetEditHistory();
                 try { readData(); } catch (e) {}   // 重映射后同步视窗标注
             } catch (e) {}
         });
@@ -2770,39 +3454,230 @@ function wm_ensureViewer(node) {
         // ---- 接收预览帧（后端 execute 发来的视频采样帧）----
         let loadedPreview = "";
         let previewGeneration = 0;
+        const failedPreviewFrames = new Set();
+        const loadPreviewFrame = (file, index, generation) => {
+            failedPreviewFrames.delete(index);
+            const img = new Image();
+            img.onload = () => {
+                if (generation !== previewGeneration) return;
+                state.frames[index] = img;
+                if (index === state.frameIdx) {
+                    state.image = img;
+                    syncSize();
+                    redraw();
+                }
+            };
+            img.onerror = () => {
+                if (generation === previewGeneration) failedPreviewFrames.add(index);
+            };
+            img.src = getRealURL(file);
+        };
+        let trackingRequest = null;
+        let previewFirstFrame = null;
+        const activeAutoTracks = () => state.autoTracking.video_id === state.srcKey ? state.autoTracking.tracks : {};
+        const trackingNotice = (message, type = "info") => {
+            app.extensionManager?.toast?.add({
+                summary: "遮罩自动跟踪", detail: message, severity: type, life: 5000,
+            });
+        };
+        const runMaskTracking = async direction => {
+            const {trackId, frameIdx: start, srcKey: videoId} = state;
+            const keys = state.manualKeyframes[trackId] || {};
+            const source = visibleTrackRegions(trackId, start)[0];
+            if (!previewFirstFrame || state.frames.length < 2) {
+                trackingNotice("请先加载至少两帧视频", "warn");
+                return;
+            }
+            if (!source) {
+                trackingNotice("请在当前轨道画好遮罩，再从这一帧开始跟踪", "warn");
+                return;
+            }
+            const spans = (direction ? [direction] : [-1, 1]).map(step => {
+                let end = start + step;
+                while (end >= 0 && end < state.frames.length && !keys[end]?.length) end += step;
+                const anchored = end >= 0 && end < state.frames.length;
+                return {step, end: anchored ? end : end - step};
+            }).filter(span => span.end !== start);
+            if (!spans.length) {
+                trackingNotice("该方向没有可跟踪的帧");
+                return;
+            }
+            const {x1, y1, x2, y2} = source;
+            const area = state.trackingAreas?.[trackId]?.[start];
+            const corners = ({x1, y1, x2, y2}) => [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+            const polygon = area ? corners(area) : source.poly || corners(source);
+            const generation = previewGeneration;
+            const snapshot = dataWidget.value;
+            const controller = new AbortController();
+            trackingRequest = controller;
+            const button = autoTrackBtns[trackDirections.findIndex(([step]) => step === direction)];
+            button.textContent = "跟踪中…";
+            stopPlay();
+            try {
+                const results = [];
+                for (const {step, end} of spans) {
+                    const response = await api.fetchApi("/xzg/manual-mask/track", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({video_id: videoId, first_frame: previewFirstFrame, start, end, polygon}),
+                        signal: controller.signal,
+                    });
+                    if (response.status === 404) throw new Error("请重启 ComfyUI 后端并重新加载视频");
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || "跟踪请求失败");
+                    results.push({step, end, result});
+                    if (controller.signal.aborted || generation !== previewGeneration) return;
+                }
+                if (snapshot !== dataWidget.value) {
+                    trackingNotice("遮罩已编辑，请从当前标注重新跟踪");
+                    return;
+                }
+                const tracks = activeAutoTracks();
+                keys[start] ||= [JSON.parse(JSON.stringify(source))];
+                if (start === 0) keys[start][0].tracking_origin = true;
+                state.manualKeyframes[trackId] = keys;
+                const frames = tracks[trackId] ||= {};
+                for (const {step, end, result} of results) {
+                    const transforms = result.transforms;
+                    for (let frame = start + step; frame !== end + step; frame += step) {
+                        delete frames[state.sampleIdx[frame] ?? frame];
+                    }
+                    const projectRegion = matrix => {
+                        const map = (x, y) => matrix.map(([a, b, c]) => a*x + b*y + c);
+                        const [cx, cy] = map((x1 + x2) / 2, (y1 + y2) / 2);
+                        const scale = Math.sqrt(Math.abs(matrix[0][0] * matrix[1][1] -
+                                                        matrix[0][1] * matrix[1][0]));
+                        const halfWidth = (x2 - x1) * scale / 2;
+                        const halfHeight = (y2 - y1) * scale / 2;
+                        const region = source.poly ? {poly: source.poly.map(point => map(...point))}
+                            : {x1: cx - halfWidth, y1: cy - halfHeight, x2: cx + halfWidth, y2: cy + halfHeight};
+                        if (source.curve) {
+                            const point = ({x, y}) => {
+                                const [u, v] = map(x, y);
+                                return {x: u, y: v};
+                            };
+                            region.curve = source.curve.map(q => ({
+                                ...q, ...point(q), in: point(q.in), out: point(q.out), auto: false,
+                            }));
+                        }
+                        return region;
+                    };
+                    const anchor = transforms.length === Math.abs(end - start) ? keys[end]?.[0] : null;
+                    const projectedEnd = anchor ? projectRegion(transforms.at(-1)) : null;
+                    const edges = ["x1", "y1", "x2", "y2"];
+                    const targetPoly = anchor && (anchor.poly || corners(anchor));
+                    const endPoly = projectedEnd && (projectedEnd.poly || corners(projectedEnd));
+                    const aligned = endPoly && targetPoly.length === endPoly.length ? alignPoly(targetPoly, endPoly) : null;
+                    const endCurve = projectedEnd?.curve;
+                    const targetCurve = anchor?.curve;
+                    const matchingCurves = endCurve && targetCurve?.length === endCurve.length;
+                    transforms.forEach((matrix, index) => {
+                        const frame = start + step * (index + 1);
+                        if (keys[frame]?.length) return;
+                        const region = projectRegion(matrix);
+                        if (anchor) {
+                            const t = (index + 1) / transforms.length;
+                            if (!region.poly && !anchor.poly) {
+                                for (const edge of edges) region[edge] += (anchor[edge] - projectedEnd[edge]) * t;
+                            } else if (matchingCurves) {
+                                const shift = (point, from, to) => ({
+                                    x: point.x + (to.x - from.x) * t,
+                                    y: point.y + (to.y - from.y) * t,
+                                });
+                                region.curve = region.curve.map((node, i) => {
+                                    const from = endCurve[i], to = targetCurve[i];
+                                    const corrected = {...node, ...shift(node, from, to),
+                                        in: shift(node.in, from.in, to.in), out: shift(node.out, from.out, to.out)};
+                                    if (from.roundness !== undefined || to.roundness !== undefined) {
+                                        corrected.roundness = (from.roundness ?? .25)
+                                            + ((to.roundness ?? .25) - (from.roundness ?? .25)) * t;
+                                    }
+                                    return corrected;
+                                });
+                                region.poly = curvePoly(region.curve);
+                            } else {
+                                const sample = points => resamplePoly([...points, points[0]].map(([x,y]) => ({x,y})), 96);
+                                const points = region.poly || corners(region);
+                                const baseline = aligned ? endPoly : sample(endPoly);
+                                const target = aligned || alignPoly(sample(targetPoly), baseline);
+                                region.poly = (aligned ? points : sample(points)).map(([x,y], i) => [
+                                    x + (target[i][0] - baseline[i][0]) * t,
+                                    y + (target[i][1] - baseline[i][1]) * t,
+                                ]);
+                                delete region.curve;
+                            }
+                        }
+                        region.tracking_reliable = result.reliable?.[index] !== false;
+                        frames[state.sampleIdx[frame] ?? frame] = region;
+                    });
+                    if (result.reason === "limit") {
+                        trackingNotice(`该方向已跟踪 ${transforms.length} 帧，可从最后一帧继续。`);
+                    }
+                }
+                state.autoTracking = {video_id: videoId, tracks};
+                writeData();
+                if (direction && state.trackId === trackId && state.frameIdx === start) {
+                    showFrame(start + direction * results[0].result.transforms.length);
+                } else redraw();
+            } catch (error) {
+                if (!controller.signal.aborted) trackingNotice(error.message || "跟踪失败", "error");
+            } finally {
+                if (trackingRequest === controller) {
+                    trackingRequest = null;
+                    autoTrackBtns.forEach((btn, index) => { btn.textContent = trackDirections[index][1]; });
+                }
+            }
+        };
+        chainCallback(node, "onRemoved", () => trackingRequest?.abort());
         chainCallback(node, "onExecuted", function (message) {
             hideProgress();
             const pv = (Array.isArray(message.preview) ? message.preview[0] : message.preview) || {};
             if (!pv || !pv.preview_str) return;
-            // ComfyUI 每段都会重放上游节点的缓存预览，不能重新加载整片或复位播放头。
-            if (pv.preview_str === loadedPreview) return;
             try {
             const pd0 = JSON.parse(pv.preview_str);
                 const pd = (pd0 && pd0.frames) ? pd0.frames : pd0;
                 if (Array.isArray(pd) && pd.length > 0) {
+                    if (pv.preview_str === loadedPreview) {
+                        state.image = state.frames[state.frameIdx] || null;
+                        readData();
+                        syncSize();
+                        redraw();
+                        for (const index of failedPreviewFrames) {
+                            loadPreviewFrame(pd[index], index, previewGeneration);
+                        }
+                        return;
+                    }
                     stopPlay();
+                    trackingRequest?.abort();
                     loadedPreview = pv.preview_str;
+                    previewFirstFrame = pd[0]?.filename;
                     state.playbackFps = Number.isFinite(pd0.fps) && pd0.fps > 0 ? pd0.fps : 10;
                     const generation = ++previewGeneration;
-                    if (pd0 && pd0.sample_idx) state.sampleIdx = pd0.sample_idx;
-                    // 载入「新视频」时才清空区域框：用后端下发的 video_id（视频特征哈希）判断，
-                    // 仅当源视频变化时清理；排队/快捷键 D 重复执行同一视频不清，保留已画标注
-                    const newKey = (pd0 && pd0.video_id) ? pd0.video_id : (pd[0] ? String(pd[0]).split(/[/\\?]/).pop() : '');
-                    if (newKey && state.srcKey && newKey !== state.srcKey) clearRegions();
-                    if (newKey) state.srcKey = newKey;
+                    failedPreviewFrames.clear();
+                    state.sampleIdx = pd0.sample_idx || [];
+                    const newKey = pd0.video_id;
+                    let saved = {};
+                    try { saved = JSON.parse(dataWidget.value) || {}; } catch {}
+                    const previousKey = saved.video_id || state.srcKey || saved.auto_tracking?.video_id;
                     // 总帧数与图片加载进度无关，关键帧刻度从载入开始就固定。
                     state.frames = new Array(pd.length);
                     state.frameIdx = 0;
                     state.image = null;
-                    pd.forEach((p, i) => {
-                        const img = new Image();
-                        img.onload = () => {
-                            if (generation !== previewGeneration) return;
-                            state.frames[i] = img;
-                            if (i === state.frameIdx) { state.image = img; readData(); syncSize(); redraw(); }
-                        };
-                        img.src = getRealURL(p);
-                    });
+                    readData();
+                    if (newKey && previousKey && newKey !== previousKey) {
+                        clearRegions();
+                        resetPreviewView();
+                    }
+                    if (newKey) {
+                        state.srcKey = newKey;
+                        if (saved.video_id !== newKey) {
+                            writeData(false);
+                            resetEditHistory();
+                        }
+                    }
+                    refreshTrackBtns();
+                    redraw();
+                    pd.forEach((file, index) => loadPreviewFrame(file, index, generation));
                     slider.max = Math.max(0, pd.length - 1);
                     slider.value = 0;
                     slider.disabled = pd.length < 2;
@@ -2840,10 +3715,9 @@ function wm_ensureViewer(node) {
         // minHeight 保底 + 吸收节点剩余空间；前端 DomWidget 组件为容器挂 h-full/w-full
         // 并按布局结果统一克隆定位/定尺寸。此处不再写 container.style.height
         //（旧 syncH 双写高度 + 定位随缩放换算，是"节点下方死区"的根源）。
-        const MIN_PREVIEW_H = 220;
-        // 最小宽度按手工跟踪模式整行标签不被裁切计算（一键扩展移入右键菜单后收紧）：
-        // 笔记本图标(~24) + 点击加载视频⏎18px(~150) + 框选/手绘(~85) + 轨道1-8(20px框×8+间隙6×7+margin10=212) + 显示全部18px(~72) + 控制按钮×4(112) + 垃圾桶×2(50) + 工具栏内边距(12) ≈ 717，留缓冲取 725
-        const MIN_NODE_W = 725;
+        const MIN_PREVIEW_H = 238;
+        // 为轨道、空遮罩开关、播放和清理按钮留出一行的宽度。
+        const MIN_NODE_W = 905;
         // 本 DOM widget 顶部 y：优先用 LiteGraph 绘制时记录的 widget.y；
         // 否则自己累加前面可见 widget 的 computeSize 高度回退。（仅用于一次性初始尺寸）
         const measureTop = (sizeW) => {
@@ -2946,22 +3820,26 @@ function showWmDetHelp() {
               .xzg-wmdet-help-body li{margin:3px 0;}
             </style>
 
-            <h4>手工跟踪</h4>
+            <h4>加载与标注</h4>
             <ul>
-                <li>1、轨道 1-8 各自颜色不同，先选轨道再画框；可选「框选」或「曲线」画目标轮廓。在对应关键帧，框选显示四个角点，拖动角点可实时调整矩形大小。曲线模式点击添加锚点，自动生成平滑弧线；也可按住拖动手动调整弯度手柄，至少三个点后点击首点闭合；Esc 取消未完成曲线。当前关键帧可拖动锚点或手柄调整，单击曲线可选中并显示控制点，选中后再单击线段可增加锚点；Alt 单击锚点切换尖角／平滑曲线，按住 Alt 悬停锚点时鼠标图标提示即将切换的形状；Alt 拖锚点可拉出手柄，Alt 拖手柄可单独调整一侧；点击空白处取消选中，点击已有框体重新选中；同一颜色分类每帧只保留一个框体，已有框体时空白处不会新建或覆盖；在其他帧绘制可添加该分类的跟踪关键帧</li>
-                <li>2、右键播放条上的三角可删除 / 跳转 / 复制关键帧到播放头 / 移动关键帧到播放头（移动会把关键帧搬到播放头所在帧并删除原位置）；非关键帧显示虚线轮廓，可直接拖动虚线框或曲线，自动生成当前帧关键帧，无需先右键复制。</li>
-                <li>3、在某一颜色分类，在播放头不同进度位置画框，自动跟踪过渡。若当前颜色分类，只画一个框，则代表全帧遮罩。</li>
-                <li>4、播放条上方三角标记定位关键帧，点击三角播放头即跳转到该帧</li>
-                <li>5、按住三角左右拖动可移动关键帧，播放头跟随移动；拖动播放条或关键帧时，播放头原位置会留一个白色虚线参考播放头，松手落位后消失</li>
-                <li>6、切换不同颜色分类，可跟踪多个目标</li>
-                <li>7、右键关键帧三角 →「一键扩展到首尾」：把该颜色分类的最左/最右关键帧分别复制到第一帧和最后一帧，遮罩覆盖视频全程</li>
-                <li>8、「显示全部 / 显示当前」：仅查看当前颜色分类的关键帧与画框，再次点击恢复显示全部分类</li>
-                <li>9、「← / ◀ / ▶ / →」控制组（位于显示全部/显示当前之后）：左箭头上一帧、反向播放（左三角）、正向播放（右三角）、右箭头下一帧。播放按输入帧率逐帧前进/后退（未连接时为 10 FPS），到首/末帧自动停止，端点再按则从另一端播放；两个播放按钮互斥，播放中同方向再按即暂停；步进按钮长按可连续步进。鼠标悬停在预览面板上时，键盘 ← / → 也可逐帧移动播放头</li>
+                <li>点「点击加载视频」，切到要编辑的帧，再选「框选」或「曲线」。默认显示轨道 1，点「＋」可增加颜色轨道，最多 8 条。「显示全部／显示当前」切换预览中可见的轨道。</li>
+                <li>点击已有遮罩可将当前帧保存为关键帧。拖动矩形内部可移动，拖动边角可调整大小。点击空白处会保留手柄。</li>
+                <li>曲线至少需要三个锚点，右键点击预览区或点击首点完成绘制，按 Esc 取消。拖动锚点或手柄可调整轮廓，点击已选曲线的线段可增加锚点，Alt 单击锚点可切换尖角和平滑曲线。</li>
             </ul>
 
-            <h4>参数（手工跟踪）</h4>
+            <h4>自动跟踪与修正</h4>
             <ul>
-                <li><b>时域膨胀</b>：0=关闭（建议 3~5）。把每帧遮罩与其前后若干帧合并，兜底关键帧之间遗漏的帧。设太大会让移动快的水印拖出轨迹带。</li>
+                <li>从当前矩形或闭合曲线点「向前跟踪」「向后跟踪」或「双向跟踪」。右键跟踪按钮可在当前帧绘制独立跟踪区域，用一块稳定纹理带动遮罩。每个方向在遇到手工关键帧前停止。</li>
+                <li>跟丢时先沿用最近可靠的轮廓，再尝试恢复。拖动矩形或调整曲线锚点和手柄后，修正量会在两侧逐帧减小。</li>
+                <li>点击关键帧三角可跳转，拖动可移动关键帧，右键可删除。右键点击两个关键帧之间的播放条，可清除这段自动跟踪并恢复两端之间的手工插值。</li>
+            </ul>
+
+            <h4>预览与输出</h4>
+            <ul>
+                <li>鼠标悬停在预览区时，左右键逐帧切换，空格播放或暂停。Ctrl + 滚轮缩放，按住中键或 Ctrl + 左键拖动平移，点「恢复视图」回到默认大小和位置。</li>
+                <li>点「全屏编辑」放大工作区。全屏预览中直接滚轮缩放，按住鼠标中键或 Ctrl + 左键拖动画面。点「退出全屏」或按 Esc 返回节点。</li>
+                <li>开启「允许遮罩为空」后，轨道首尾没有标注的帧留空。默认关闭，首尾沿用最近的遮罩。</li>
+                <li>「时域膨胀」为 0 时关闭。增大数值会把邻近帧的遮罩合并到当前帧，数值过大时，快速移动的目标可能留下较宽的遮罩轨迹。</li>
             </ul>
         </div>
         <div style="padding:12px 18px;border-top:1px solid #333;display:flex;justify-content:flex-end;flex-shrink:0;">
@@ -2973,6 +3851,7 @@ function showWmDetHelp() {
     const close = () => { try { overlay.remove(); } catch (e) {} };
     dialog.querySelector(".xzg-wmdet-help-close")?.addEventListener("click", close);
     dialog.querySelector(".xzg-wmdet-help-ok")?.addEventListener("click", close);
+    dialog.querySelector(".xzg-wmdet-help-ok")?.focus();
     overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 }
 

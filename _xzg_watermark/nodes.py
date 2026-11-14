@@ -6,7 +6,7 @@ Comfyui-Video-Watermark-Detection-xzg —— 视频遮罩手工跟踪（原视�
 1. 视窗内逐轨道打关键帧（矩形框 / 手绘多边形），帧间线性插值生成逐帧遮罩；
 2. 预览下发全部帧（逐帧精确打点追踪）；
 3. 遮罩支持时域膨胀（temporal_dilate）；
-4. 单关键帧轨道全帧沿用，多关键帧轨道按帧号线性插值（矩形对角插值 / 同点数多边形逐点插值）。
+4. 默认用最近的关键帧补齐首尾，兼容形状之间按帧号线性插值。
 
 历史说明：
   原 YOLO 自动检测（yolo11x-train28-best）与 SAM3 / SAM3.1 语义分割模式已下线，
@@ -23,17 +23,47 @@ import json
 import random
 import hashlib
 import math
+import asyncio
+import weakref
+from bisect import bisect_right
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 import folder_paths
+from aiohttp import web
+from server import PromptServer
+
+from .mask_tracking import track_outline
 
 MANUAL_MODEL_NAME = "手工跟踪"
 
 # 预览结果缓存：key=(视频内容哈希,帧数,宽,高,max_side,max_frames) -> {files, idx, vid}
 # 同视频重复"点击加载视频"直接复用已落盘文件（秒回）；temp 被清理时按文件存在性自动失效
 _PREVIEW_CACHE = {}
+_LATEST_TRACKING_SOURCE = None
+
+
+@PromptServer.instance.routes.post("/xzg/manual-mask/track")
+async def track_manual_mask(request):
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("跟踪请求无效")
+        entry = next((entry for entry in _PREVIEW_CACHE.copy().values()
+                      if entry["vid"] == payload.get("video_id")
+                      and entry["files"][0]["filename"] == payload.get("first_frame")), None)
+        if entry is None:
+            raise ValueError("预览已失效，请重新加载视频")
+        image = entry["source"]()
+        if image is None:
+            raise ValueError("原始视频帧已释放，请点击加载视频后重新跟踪")
+        result = await asyncio.to_thread(track_outline, image, entry["idx"],
+                                         payload.get("start"), payload.get("end"),
+                                         payload.get("polygon"))
+        return web.json_response(result)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
 
 # =====================================================================
 # 参数说明的唯一知识源（Single Source of Truth）
@@ -136,23 +166,23 @@ def _fill_box_or_poly(masks, t, r, W, H):
 
 
 def _parse_regions(data):
-    """解析手工跟踪标注（前端视窗画框写入）：返回 (manual_kf, sample_idx)。
+    """解析手工跟踪标注（前端视窗画框写入）：返回 (manual_kf, sample_idx, fill_edges)。
     manual_kf: {tid: {预览帧序: [{x1,y1,x2,y2} | {poly:[[x,y],...]}]}}
     sample_idx: 预览帧序 -> 实际帧号 的映射表；空表示未同步（按实际帧号处理）。"""
     if not data:
-        return {}, []
+        return {}, [], True
     try:
         d = json.loads(data) if isinstance(data, str) else data
     except Exception:
-        return {}, []
+        return {}, [], True
     if not isinstance(d, dict):
-        return {}, []
+        return {}, [], True
     manual = d.get("manual") if isinstance(d.get("manual"), dict) else {}
     try:
         sample_idx = [int(x) for x in (d.get("sample_idx") or [])]
     except Exception:
         sample_idx = []
-    return manual, sample_idx
+    return manual, sample_idx, d.get("fill_edges") is not False
 
 
 def _dilate_time(masks, k):
@@ -200,6 +230,7 @@ def _build_preview(image, max_side=1280, max_frames=12):
     vid 为逐帧 uint8 字节流增量 md5：同视频同算法稳定、换视频必变。
     前端仅用它做会话内「是否换了视频」检测（标注持久化在 regions_data 控件值里，
     与 video_id 无关），因此缩放/编码算法变更不影响已有工作流的标注。"""
+    global _LATEST_TRACKING_SOURCE
     from .. import tensor_to_pil
     from PIL import Image as _PILImage
     B = int(image.shape[0])
@@ -214,6 +245,8 @@ def _build_preview(image, max_side=1280, max_frames=12):
     out_dir = folder_paths.get_temp_directory()
     cached = _PREVIEW_CACHE.get(cache_key)
     if cached and all(os.path.exists(os.path.join(out_dir, f["filename"])) for f in cached["files"]):
+        cached["source"] = weakref.ref(image)
+        _LATEST_TRACKING_SOURCE = image
         return cached["files"], cached["idx"], cached["vid"]
 
     w0, h0 = W, H
@@ -236,7 +269,8 @@ def _build_preview(image, max_side=1280, max_frames=12):
         files.append({"filename": fname, "subfolder": "", "type": "temp"})
     vid = hasher.hexdigest()
 
-    _PREVIEW_CACHE[cache_key] = {"files": files, "idx": idx, "vid": vid}
+    _PREVIEW_CACHE[cache_key] = {"files": files, "idx": idx, "vid": vid, "source": weakref.ref(image)}
+    _LATEST_TRACKING_SOURCE = image
     if len(_PREVIEW_CACHE) > 24:  # 防无界增长：超出保留最近的 24 个视频
         for k in list(_PREVIEW_CACHE.keys())[:-24]:
             _PREVIEW_CACHE.pop(k, None)
@@ -244,22 +278,12 @@ def _build_preview(image, max_side=1280, max_frames=12):
 
 
 def _video_id(image):
-    """轻量视频特征：采样数帧缩放为 32x32 的 uint8 再 hash，用于判断「是否换了视频」。
-    （与前端预览 JSON 里的 video_id 相互独立，仅后端内部做换视频检测。）
-    同一视频重复执行特征不变，换成不同视频则必不同。"""
-    b = image.detach().cpu().numpy()
-    b = np.asarray(b, np.float32)
-    if b.ndim != 4 or b.shape[0] == 0:
-        return hashlib.md5(b.tobytes()).hexdigest()
-    step = max(1, b.shape[0] // 4)
-    chunks = []
-    for f in b[::step][:4]:
-        try:
-            f = cv2.resize(f, (32, 32), interpolation=cv2.INTER_AREA)
-        except Exception:
-            pass
-        chunks.append((np.clip(f, 0, 1) * 255).astype(np.uint8).tobytes())
-    return hashlib.md5(b"".join(chunks)).hexdigest()
+    """Hash every input frame so videos with matching sampled frames keep distinct previews."""
+    digest = hashlib.md5()
+    for frame in image:
+        pixels = frame.detach().cpu().contiguous().numpy()
+        digest.update(pixels)
+    return digest.hexdigest()
 
 
 class VideoWatermarkDetector:
@@ -287,6 +311,7 @@ class VideoWatermarkDetector:
         }
 
     OUTPUT_NODE = False  # 普通队列仅在下游需要遮罩时执行。
+    HAS_INTERMEDIATE_OUTPUT = True  # Replay the editor preview when the MASK is cached.
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("逐帧遮罩",)
     FUNCTION = "detect"
@@ -305,55 +330,76 @@ class VideoWatermarkDetector:
         n = B                       # 手工跟踪处理全部帧（逐帧精确打点）
         sel = list(range(B))
 
-        # 画框持久化：不随视频切换作废标注 / 采样帧号映射。关键帧框（归一化坐标）
-        # 与 sample_idx 都保留，换视频后仍按上次画框生成遮罩；采样帧号映射
-        # （手工跟踪为逐帧 [0..N-1]，恒等映射）由前端在 onExecuted 后用新视频的
-        # sample_idx 覆盖，无需在此作废。
-        manual_kf, sample_idx = _parse_regions(regions_data)
+        manual_kf, sample_idx, fill_edges = _parse_regions(regions_data)
+        preview, sample_idx_out, vid = _build_preview(image, max_side=768, max_frames=n)
+        try:
+            data = json.loads(regions_data) if isinstance(regions_data, str) else regions_data
+            auto = data.get("auto_tracking", {})
+            source_id = data.get("video_id") or (auto.get("video_id") if isinstance(auto, dict) else None)
+            if source_id and source_id != vid:
+                manual_kf = {}
+            tracked = auto["tracks"] if auto["video_id"] == vid else {}
+            if not isinstance(tracked, dict):
+                tracked = {}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            tracked = {}
 
-        # ---- 1) 手工跟踪：不跑模型，遮罩由关键帧插值直接生成 ----
         masks = np.zeros((n, H, W), dtype=np.uint8)
-        if manual_kf:
-            try:
-                sf = [int(x) for x in sample_idx] if sample_idx else []
-                if sf:
-                    for tid, kf_pv in manual_kf.items():
-                        if not isinstance(kf_pv, dict): continue
-                        kf_actual = { sf[int(k)]: [b for b in v if isinstance(b, dict)]
-                                      for k, v in kf_pv.items() if int(k) < len(sf) }
-                        keys = sorted(kf_actual.keys())
-                        if not keys: continue
-                        single = len(keys) == 1
-                        for t in range(B):
-                            boxes_here = []
-                            if t in kf_actual and kf_actual[t]:
-                                boxes_here = kf_actual[t]
-                            elif single:
-                                boxes_here = kf_actual[keys[0]]
-                            else:
-                                a = max([k for k in keys if k <= t], default=None)
-                                b = min([k for k in keys if k >= t], default=None)
-                                if a is not None and b is not None and a != b and kf_actual[a] and kf_actual[b]:
-                                    ra, rb = kf_actual[a][0], kf_actual[b][0]
-                                    tt = (t - a) / (b - a)
-                                    # 两侧均为同点数多边形 → 逐点线性插值（先对齐绕向/起点，防翻转）
-                                    pa = ra.get("poly") if isinstance(ra, dict) else None
-                                    pb = rb.get("poly") if isinstance(rb, dict) else None
-                                    if (isinstance(pa, list) and isinstance(pb, list)
-                                            and len(pa) == len(pb) and len(pa) >= 3):
-                                        pb = _align_poly(pb, pa)
-                                        boxes_here = [{'poly': [[pa[i][0] + (pb[i][0] - pa[i][0]) * tt,
-                                                                 pa[i][1] + (pb[i][1] - pa[i][1]) * tt]
-                                                                for i in range(len(pa))]}]
-                                    else:
-                                        boxes_here = [{'x1': ra['x1']+(rb['x1']-ra['x1'])*tt,
-                                                       'y1': ra['y1']+(rb['y1']-ra['y1'])*tt,
-                                                       'x2': ra['x2']+(rb['x2']-ra['x2'])*tt,
-                                                       'y2': ra['y2']+(rb['y2']-ra['y2'])*tt}]
-                            for r in boxes_here:
-                                _fill_box_or_poly(masks, t, r, W, H)
-            except Exception as _me:
-                print(f'[视频水印检测] 手工遮罩插值失败: {_me}')
+        for track_id, track in manual_kf.items():
+            if not isinstance(track, dict):
+                continue
+            kf_actual = {}
+            for key, regions in track.items():
+                try:
+                    frame = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if frame < 0 or not isinstance(regions, list):
+                    continue
+                if sample_idx and frame >= len(sample_idx):
+                    continue
+                actual = sample_idx[frame] if sample_idx else frame
+                boxes = [box for box in regions if isinstance(box, dict)]
+                if 0 <= actual < n and boxes:
+                    kf_actual[actual] = boxes
+            keys = sorted(kf_actual)
+            if not keys:
+                continue
+            auto_frames = tracked.get(track_id, {})
+            if not isinstance(auto_frames, dict):
+                auto_frames = {}
+
+            for t in range(n):
+                boxes_here = kf_actual.get(t)
+                if boxes_here is None:
+                    region = auto_frames.get(str(t))
+                    if isinstance(region, dict):
+                        boxes_here = [region]
+                if boxes_here is None:
+                    index = bisect_right(keys, t)
+                    if index == 0 or index == len(keys):
+                        if not fill_edges:
+                            continue
+                        boxes_here = kf_actual[keys[0] if index == 0 else keys[-1]]
+                    else:
+                        a, b = keys[index - 1:index + 1]
+                        ra, rb = kf_actual[a][0], kf_actual[b][0]
+                        tt = (t - a) / (b - a)
+                        pa, pb = ra.get("poly"), rb.get("poly")
+                        if (isinstance(pa, list) and isinstance(pb, list)
+                                and len(pa) == len(pb) and len(pa) >= 3):
+                            pb = _align_poly(pb, pa)
+                            boxes_here = [{"poly": [[x + (u - x) * tt, y + (v - y) * tt]
+                                                    for (x, y), (u, v) in zip(pa, pb)]}]
+                        elif all(k in ra and k in rb for k in ("x1", "y1", "x2", "y2")):
+                            boxes_here = [{k: ra[k] + (rb[k] - ra[k]) * tt
+                                           for k in ("x1", "y1", "x2", "y2")}]
+                        elif fill_edges:
+                            boxes_here = kf_actual[a if tt < 0.5 else b]
+                        else:
+                            continue
+                for r in boxes_here:
+                    _fill_box_or_poly(masks, t, r, W, H)
 
         if temporal_dilate > 0:
             masks = _dilate_time(masks, int(temporal_dilate) | 1)
@@ -370,7 +416,6 @@ class VideoWatermarkDetector:
               f"耗时 {time.time() - t_start:.2f}s")
         # 预览帧数：手工跟踪取全部帧（逐帧精确打点追踪）；
         # 长边压到 768（仅前端视窗显示用，关键帧为归一化坐标，输出遮罩始终按原始分辨率计算）
-        preview, sample_idx_out, vid = _build_preview(image, max_side=768, max_frames=int(image.shape[0]))
         playback_fps = fps if math.isfinite(fps) and fps > 0 else 10.0
         return {
             "ui": {"preview": [{"preview_str": json.dumps({"frames": preview, "sample_idx": sample_idx_out, "video_id": vid, "fps": playback_fps}, ensure_ascii=False),

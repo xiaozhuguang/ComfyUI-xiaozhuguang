@@ -24,7 +24,7 @@ class SeamContextTest(unittest.TestCase):
         mask[0, :, 60:140] = 1
         mask[1, :, 100:180] = 1
         for device in devices:
-            for mode in ("遮罩平滑", "视频稳定跟踪"):
+            for mode in ("逐帧裁剪", "视频稳定跟踪"):
                 for alignment in ("扩充", "变形"):
                     for blur, expand in ((0, 0), (7, -5)):
                         results = []

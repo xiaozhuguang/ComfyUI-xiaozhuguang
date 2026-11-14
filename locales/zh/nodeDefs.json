@@ -37,7 +37,7 @@
     }
   },
   "XiaozhuguangMaskCleanupRepair": {
-    "display_name": "小珠光遮罩清理修复",
+    "display_name": "小珠光遮罩修复",
     "inputs": {
       "mask": { "name": "视频遮罩" },
       "cleanup_enabled": { "name": "清理杂点" },
@@ -55,7 +55,10 @@
       "fill_holes": { "name": "填补小孔" },
       "remove_isolated_pixels": { "name": "去除细碎区域" },
       "smooth": { "name": "平滑" },
-      "blur": { "name": "模糊" }
+      "blur": { "name": "模糊" },
+      "temporal_smooth_radius": { "name": "轮廓时间平滑半径（帧）" },
+      "position_smoothing_frames": { "name": "位置平滑" },
+      "scale_smoothing_frames": { "name": "缩放平滑" }
     },
     "outputs": { "0": { "name": "遮罩" } }
   },
@@ -517,13 +520,10 @@
       "divisible_by": { "name": "整除数" },
       "ratio": { "name": "比例" },
       "enable_crop": { "name": "开启裁剪" },
-      "crop_mode": { "name": "裁剪模式" },
-      "tracking_preference": { "name": "跟踪偏好仅跟踪" },
-      "tracking_scale": { "name": "缩放模式仅跟踪" },
-      "alignment_mode": { "name": "整除对齐模式" },
+      "position_smoothing_frames": { "name": "位置平滑" },
+      "scale_smoothing_frames": { "name": "缩放平滑" },
       "margin_percent": { "name": "边距比例（%）" },
       "fill_color": { "name": "填充颜色" },
-      "mask_smooth": { "name": "遮罩平滑" },
       "sum_mask": { "name": "遮罩求和" }
     },
     "outputs": {
