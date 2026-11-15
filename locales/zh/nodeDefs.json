@@ -305,8 +305,7 @@
     "inputs": {
       "image_list": { "name": "图片列表" },
       "index": { "name": "索引" },
-      "batch_mode": { "name": "批次模式" },
-      "remove_alpha": { "name": "移除图片 Alpha" }
+      "batch_mode": { "name": "批次模式" }
     },
     "outputs": {
       "0": { "name": "图像" },
@@ -637,8 +636,9 @@
     "outputs": {
       "0": { "name": "整数" },
       "1": { "name": "浮点" },
-      "2": { "name": "文本" }
-      ,"3": { "name": "字符串" }
+      "2": { "name": "文本" },
+      "3": { "name": "字符串" },
+      "4": { "name": "数字" }
     }
   },
   "XiaozhuguangBatchImageGetter": {
@@ -930,8 +930,8 @@
       "ratio": {
         "name": "比例"
       },
-      "startup_threshold": {
-        "name": "启动阈值"
+      "enable_crop": {
+        "name": "开启裁剪"
       },
       "fill_color": {
         "name": "填充颜色"
@@ -946,13 +946,26 @@
       },
       "2": {
         "name": "裁剪遮罩"
-      }
+      },
+      "3": { "name": "宽度" },
+      "4": { "name": "高度" }
     }
   },
   "XiaozhuguangImageRestore": {
     "display_name": "小珠光 图像回贴",
+    "description": "将处理后的单张图像粘贴回原图。批次输入时，每路图像和遮罩只取第一项。接缝处理区域以红色标示当前接缝轮廓和羽化过渡带，以蓝线标示相同羽化设置下遮罩扩张为 0 时的接缝位置。重合时优先显示蓝线。",
     "inputs": {
-      "resize_mode": { "name": "缩放模式" },
+      "resize_mode": {
+        "name": "缩放模式",
+        "tooltip": "缩小时使用所选抗锯齿算法，放大时使用 Lanczos4。快速模式适合大幅缩小。",
+        "options": {
+          "Pillow Lanczos": { "text": "Pillow Lanczos" },
+          "Pillow Lanczos (fast)": { "text": "Pillow Lanczos（快速）" },
+          "Pillow Bicubic": { "text": "Pillow 双三次插值" },
+          "Pillow Bilinear": { "text": "Pillow 双线性插值" }
+        }
+      },
+      "seam_preview": { "name": "接缝预览", "tooltip": "显示自动接缝轮廓和羽化过渡带" },
       "original_image": {
         "name": "原始图像"
       },

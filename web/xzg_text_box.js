@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { xzgLang } from "./xzg_i18n.js";
+import { xzgLang, xzgT } from "./xzg_i18n.js";
 import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_cloud_store.js";
 
 // ═══════════════════════════════════════════════
@@ -1735,6 +1735,190 @@ function applyBilingual(node) {
     node.setDirtyCanvas?.(true, true);
 }
 
+let _godMentionPointer;
+for (const type of ["pointermove", "pointerdown"]) {
+    window.addEventListener(type, event => {
+        if (event.pointerType === "mouse" || event.pointerType === "pen") {
+            _godMentionPointer = { x: event.clientX, y: event.clientY };
+        }
+    }, { capture: true, passive: true });
+}
+
+function _installGodMediaMentions(node, textarea) {
+    if (node._xzgMediaMentionTextarea === textarea) return;
+    node._xzgDisposeMediaMentions?.();
+    node._xzgMediaMentionTextarea = textarea;
+    const listeners = new AbortController();
+    const options = { signal: listeners.signal };
+    let menu, anchor, start, end, active;
+    let rows = [];
+
+    function close() {
+        menu?.remove();
+        menu = null;
+        rows = [];
+    }
+
+    function insert(label) {
+        close();
+        textarea.setRangeText(label, start, end, "end");
+        const value = textarea.value;
+        const widget = node.widgets?.find(w => w.name === "text");
+        if (widget && widget.value !== value) {
+            widget.value = value;
+            widget.callback?.(value);
+        }
+        textarea.setSelectionRange(start + label.length, start + label.length);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        node.graph?.change?.();
+        textarea.focus();
+    }
+
+    function open(query) {
+        close();
+        const loaders = (node.graph?._nodes || [])
+            .filter(n => ["XiaozhuguangImageLoader", "XiaozhuguangVideoLoader", "XiaozhuguangVideoLoaderDaVinci"]
+                .includes(n.comfyClass || n.type))
+            .sort((a, b) => Number(a.id) - Number(b.id));
+        let imageCount = 0, videoCount = 0;
+        menu = document.createElement("div");
+        menu.style.cssText = "position:fixed;z-index:2147483647;overflow:auto;box-sizing:border-box;padding:4px;background:#191a1b;border:1px solid #555;border-radius:6px;box-shadow:0 5px 16px #0009;color:#eee;font:13px sans-serif";
+        for (const loader of loaders) {
+            const isImage = (loader.comfyClass || loader.type) === "XiaozhuguangImageLoader";
+            let names;
+            if (isImage) {
+                names = String(loader.widgets?.find(w => w.name === "image_list")?.value ?? "")
+                    .split("\n").map(name => name.trim()).filter(Boolean);
+                const limit = Number(loader.widgets?.find(w => w.name === "max_images")?.value);
+                if (limit >= 1) names = names.slice(0, Math.floor(limit));
+            } else {
+                const queue = loader.properties?.xzgMultiVideo && loader.properties.xzgVideoQueue;
+                const selected = loader.widgets?.find(w => w.name === "视频")?.value;
+                names = (Array.isArray(queue) && queue.length ? queue : [selected])
+                    .filter(name => typeof name === "string" && name.trim()
+                        && name !== "（不加载视频）" && name !== "xzg_fallback_reference.mp4");
+            }
+            for (const name of names) {
+                const label = isImage ? `图片${++imageCount}` : `视频${++videoCount}`;
+                const filename = name.replace(/\s+\[(?:input|output|temp)\]$/i, "").split(/[\\/]/).pop();
+                const details = `${filename} · #${loader.id}`;
+                if (!`${label} ${details}`.toLowerCase().includes(query.toLowerCase())) continue;
+                const row = document.createElement("button");
+                row.type = "button";
+                row.title = details;
+                row.style.cssText = "display:flex;align-items:center;gap:8px;width:100%;padding:4px;border:0;border-radius:4px;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer";
+                const shortcut = document.createElement("span");
+                shortcut.setAttribute("aria-hidden", "true");
+                shortcut.style.cssText = "display:grid;place-items:center;width:18px;height:18px;flex:none;border-radius:4px;color:#ddd;font-size:11px";
+                if (rows.length < 9) {
+                    shortcut.textContent = String(rows.length + 1);
+                    shortcut.style.background = "#292b2e";
+                    row.setAttribute("aria-keyshortcuts", shortcut.textContent);
+                }
+                const preview = document.createElement(isImage ? "img" : "span");
+                preview.style.cssText = "display:grid;place-items:center;width:42px;height:34px;flex:none;object-fit:contain;background:#101112;border-radius:3px";
+                if (isImage) {
+                    preview.alt = "";
+                    preview.loading = "lazy";
+                    preview.src = api.apiURL(`/xzg_image_loader_thumb?filename=${encodeURIComponent(name)}&size=96`);
+                } else {
+                    preview.textContent = "▶";
+                    preview.setAttribute("aria-hidden", "true");
+                }
+                const caption = document.createElement("span");
+                caption.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+                caption.textContent = `${label} · ${details}`;
+                row.append(shortcut, preview, caption);
+                row.addEventListener("mouseenter", () => select(rows.indexOf(row)));
+                row.addEventListener("click", () => insert(label));
+                rows.push(row);
+                menu.appendChild(row);
+            }
+        }
+        if (!rows.length) {
+            menu.style.padding = "8px";
+            menu.textContent = imageCount || videoCount
+                ? xzgT("没有匹配的图片或视频", "No matching images or videos")
+                : xzgT("当前图的加载器里没有图片或视频", "No loaded images or videos in this graph");
+        }
+        const gap = 8;
+        const width = Math.min(Math.max(textarea.getBoundingClientRect().width, 220), 360, innerWidth - 2 * gap);
+        const below = innerHeight - anchor.y;
+        const above = below < 240 + 2 * gap && anchor.y > below;
+        const height = Math.min(240, Math.max(40, (above ? anchor.y : below) - 2 * gap));
+        const left = anchor.x + gap + width <= innerWidth - gap ? anchor.x + gap : anchor.x - gap - width;
+        menu.style.width = `${width}px`;
+        menu.style.maxHeight = `${height}px`;
+        menu.style.left = `${Math.max(gap, left)}px`;
+        if (above) menu.style.bottom = `${below + gap}px`;
+        else menu.style.top = `${anchor.y + gap}px`;
+        menu.addEventListener("pointerdown", event => {
+            if (event.pointerType === "mouse" && event.button === 0 && event.target.closest("button")) {
+                event.preventDefault();
+            }
+            event.stopPropagation();
+        });
+        document.body.appendChild(menu);
+        active = -1;
+        if (rows.length) select(0);
+    }
+
+    function select(index) {
+        if (active >= 0) rows[active].style.background = "";
+        active = index;
+        rows[active].style.background = "#383a3c";
+    }
+
+    function update(allowOpen) {
+        const caret = textarea.selectionStart;
+        if (caret !== textarea.selectionEnd) return close();
+        if (!menu) {
+            if (!allowOpen || !/[@＠]/.test(textarea.value.charAt(caret - 1))) return;
+            start = caret - 1;
+            const { left, bottom } = textarea.getBoundingClientRect();
+            anchor = _godMentionPointer ?? { x: left, y: bottom };
+        }
+        const token = textarea.value.slice(start, caret);
+        if (!/^[@＠][^\s@＠]*$/.test(token)) return close();
+        end = caret;
+        open(token.slice(1));
+    }
+
+    textarea.addEventListener("input", event => {
+        if (!event.isComposing) update(event.inputType === "insertText");
+    }, options);
+    textarea.addEventListener("compositionend", () => update(true), options);
+    // 选项的 click 在 pointerdown 之后发出，文本框失焦时菜单仍需留在原位。
+    window.addEventListener("pointerdown", event => {
+        if (menu && !menu.contains(event.target)) close();
+    }, { capture: true, ...options });
+    textarea.addEventListener("keydown", event => {
+        if (!menu || event.isComposing || event.keyCode === 229) return;
+        const key = event.key;
+        const numberedRow = /^[1-9]$/.test(key) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+            ? rows[Number(key) - 1] : null;
+        if (numberedRow) numberedRow.click();
+        else if (key === "Escape") close();
+        else if (rows.length && (key === "ArrowDown" || key === "ArrowUp")) {
+            select((active + (key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length);
+            rows[active].scrollIntoView({ block: "nearest" });
+        } else if (rows.length && key === "Enter" && !event.shiftKey) rows[active].click();
+        else {
+            if (["ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Tab"].includes(key)) close();
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+    }, options);
+    window.addEventListener("resize", close, options);
+    node._xzgDisposeMediaMentions = () => {
+        close();
+        listeners.abort();
+        node._xzgMediaMentionTextarea = null;
+        node._xzgDisposeMediaMentions = null;
+    };
+}
+
 // 给 textarea 打 class + 占位符双语（onNodeCreated 里 DOM 可能还没 ready，用延时）
 function ensureTextarea(node) {
     if (node._xzgTextareaObserver) {
@@ -1750,7 +1934,10 @@ function ensureTextarea(node) {
         if (ta.getAttribute("placeholder") !== want) {
             ta.setAttribute("placeholder", want);
         }
-        if (isGodTier) _installGodPromptHistory(node, ta);
+        if (isGodTier) {
+            _installGodPromptHistory(node, ta);
+            _installGodMediaMentions(node, ta);
+        }
     };
 
     const tryAttach = () => {
@@ -1797,14 +1984,15 @@ function ensureTextarea(node) {
     node.onRemoved = function (...args) {
         obs.disconnect();
         clearTimeout(attachTimer);
+        node._xzgDisposeMediaMentions?.();
         node._xzgTextareaObserver = null;
         node._xzgAttachTextarea = null;
         return originalRemoved?.apply(this, args);
     };
     tryAttach();
     // 再补两次延时兜底（setSize 之后 textarea 才 ready）
-    setTimeout(() => tryAttach(), 0);
-    setTimeout(() => tryAttach(), 50);
+    setTimeout(() => node._xzgAttachTextarea?.(), 0);
+    setTimeout(() => node._xzgAttachTextarea?.(), 50);
 }
 
 // 注入 CSS：缩小小珠光文本框 placeholder 字体

@@ -17,6 +17,44 @@ ATR = load("xzg_atr").XiaozhuguangATR
 
 
 class PaddingRoundtripTest(unittest.TestCase):
+    def test_fill_aligns_full_image_and_restores_original_size(self):
+        image = torch.full((1, 97, 143, 3), .25)
+        cropped, info, cropped_mask = ATBC().crop_and_resize(
+            image, mask=torch.ones(image.shape[:3]), enable_crop=False,
+            kilopixels=100, divisible_by=64, fill_color="#FF00FF")
+        height, width = cropped.shape[1:3]
+        self.assertEqual((width, height), (384, 320))
+        self.assertEqual(info["crop_infos"][0]["output_content_box"], (0, 0, width, height))
+        torch.testing.assert_close(cropped, torch.full_like(cropped, .25), atol=1/255, rtol=0)
+        torch.testing.assert_close(cropped_mask, torch.ones_like(cropped_mask))
+        for device in ("CPU", "GPU") if torch.cuda.is_available() else ("CPU",):
+            with self.subTest(device=device):
+                restored = ATR().restore_image(
+                    image, torch.full_like(cropped, .75), info,
+                    mask=cropped_mask, compute_device=device)[0]
+                torch.testing.assert_close(restored, torch.full_like(image, .75), atol=1/255, rtol=0)
+
+    def test_face_at_frame_edge_keeps_fill_and_an_in_frame_feather(self):
+        image = torch.full((2, 96, 128, 3), .2)
+        mask = torch.zeros(2, 96, 128)
+        mask[:, 30:62, :32] = 1
+        cropped, info, cropped_mask = ATBC().crop_and_resize(
+            image, mask=mask, crop_mode="人脸构图", ratio="1:1",
+            margin_percent=25, kilopixels=100, fill_color="#FF00FF")
+        self.assertGreaterEqual(info["crop_infos"][0]["pad_info"][0], 8)
+        torch.testing.assert_close(cropped[0, cropped.shape[1] // 2, 0], torch.tensor([1., 0., 1.]))
+        self.assertEqual(cropped_mask[..., 0].max().item(), 0)
+        edited = torch.full_like(cropped, .8)
+        edited[..., 0, :] = torch.tensor([1., 0., 1.])
+        for device in ("CPU", "GPU") if torch.cuda.is_available() else ("CPU",):
+            with self.subTest(device=device):
+                restored = ATR().restore_image(
+                    image, edited, info, mask=cropped_mask, compute_device=device)[0]
+                self.assertAlmostEqual(restored[0, 45, 0, 0].item(), .8, delta=2/255)
+                self.assertGreater(restored[0, 45, 35, 0].item(), .2)
+                self.assertLess(restored[0, 45, 35, 0].item(), .8)
+                torch.testing.assert_close(restored[0, 45, 42], image[0, 45, 42], atol=2/255, rtol=0)
+
     def check_roundtrip(self, device):
         for crop_mode in ("逐帧裁剪", "视频稳定跟踪"):
             for alignment in ("变形", "扩充"):

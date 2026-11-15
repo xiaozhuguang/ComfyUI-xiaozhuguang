@@ -7,6 +7,7 @@ import {
 } from "./xzg_save_utils.js";
 import { xzgT, xzgTh } from "./xzg_i18n.js";
 import { xzgCopyImageToClipboard } from "./xzg_image_clipboard.js";
+import { snapImageRect } from "./xzg_image_canvas.js";
 
 const XZG_IMAGE_SAVE_TYPE = "XiaozhuguangImageSave";
 const XZG_IMAGE_SAVE_CUSTOM_TYPE = "XiaozhuguangImageSaveCustom";
@@ -1237,6 +1238,7 @@ class XzgImageSaveWidget {
             }
             destX = IMAGE_MARGIN + (effW - targetW) / 2;
             destY = y + (nodeHeight - targetH) / 2;
+            [destX, destY, targetW, targetH] = snapImageRect(ctx, destX, destY, targetW, targetH);
             if (imgData.has_alpha) _xzgDrawTransparencyBackground(ctx, node, imgData, destX, destY, targetW, targetH);
             ctx.drawImage(img, destX, destY, targetW, targetH);
 
@@ -1326,10 +1328,9 @@ class XzgImageSaveWidget {
                 const ia = img.naturalWidth / img.naturalHeight;
                 let tw = cell, th = cell;
                 if (ia > 1) th = cell / ia; else tw = cell * ia;
-                const imgX = cx + (cell - tw) / 2;
-                const imgY = cy + (cell - th) / 2;
-                if (imgData.has_alpha) _xzgDrawTransparencyBackground(ctx, node, imgData, imgX, imgY, tw, th);
-                ctx.drawImage(img, imgX, imgY, tw, th);
+                const [imgX, imgY, imgW, imgH] = snapImageRect(ctx, cx + (cell - tw) / 2, cy + (cell - th) / 2, tw, th);
+                if (imgData.has_alpha) _xzgDrawTransparencyBackground(ctx, node, imgData, imgX, imgY, imgW, imgH);
+                ctx.drawImage(img, imgX, imgY, imgW, imgH);
 
                 // 网格缩略图底部显示分辨率（cell ≥ 60 时才显示，避免拥挤）
                 // 优先使用后端返回的原始分辨率 real_width/real_height

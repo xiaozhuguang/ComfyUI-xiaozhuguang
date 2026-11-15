@@ -22,32 +22,34 @@ class XiaozhuguangImageCrop:
                 "mask": ("MASK", {"tooltip": "裁剪遮罩，可不连接；未连接时自动按输入图大小生成全黑遮罩（即整图裁剪）"}),
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
                 "kilopixels": ("FLOAT", {"default": 1000.0, "min": 100.0, "max": 10000.0, "step": 10.0, "tooltip": "目标图像的千像素数（十进制，1千像素=1000像素）。1000千像素=1000*1000像素，4194千像素≈2048*2048像素"}),
-                "divisible_by": ("INT", {"default": 8, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
+                "divisible_by": ("INT", {"default": 8, "min": 1, "max": 1024, "step": 1, "tooltip": "先确定裁剪框和目标尺寸，再分别缩放宽和高到指定倍数。"}),
                 "ratio": (["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], {"default": "auto", "tooltip": "裁剪比例模式，auto为自动检测最接近比例"}),
-                "startup_threshold": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "当mask的box面积与输入图像的面积占比达到此阈值时，跳过ratio和box_grow_factor判断"}),
+                "enable_crop": ("BOOLEAN", {"default": True, "tooltip": "开启：先按遮罩、扩展和边距裁剪，再做整除对齐。关闭：保留整图，按原图比例计算目标尺寸后做整除对齐。"}),
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
                 "margin_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0, "tooltip": "每边边距为原遮罩外接框短边的百分比，0关闭。"}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "XZG_IMAGE_CROPBOX", "MASK")
-    RETURN_NAMES = ("cropped_image", "crop_box", "cropped_mask")
+    RETURN_TYPES = ("IMAGE", "XZG_IMAGE_CROPBOX", "MASK", "INT", "INT")
+    RETURN_NAMES = ("cropped_image", "crop_box", "cropped_mask", "width", "height")
     FUNCTION = "crop_and_resize"
 
     def crop_and_resize(self, image, resize_mode="Pillow Lanczos", mask=None,
                         Box_grow_factor=1.0, kilopixels=1000.0, divisible_by=8,
                         ratio="auto", startup_threshold=.4, fill_color="#FFFFFF",
-                        Box_grow_pixels=0, min_margin=None, margin_percent=10.0):
+                        Box_grow_pixels=0, min_margin=None, margin_percent=10.0, enable_crop=True):
         from .xzg_atbc import XiaozhuguangATBC
         if mask is not None and mask.ndim >= 3:
             mask = mask[:1]
         result, boxes, cropped_mask = XiaozhuguangATBC().crop_and_resize(
             image[:1], mask=mask, Box_grow_factor=Box_grow_factor,
             kilopixels=kilopixels, divisible_by=divisible_by, ratio=ratio,
-            fill_color=fill_color, min_margin=min_margin, margin_percent=margin_percent)
+            fill_color=fill_color, min_margin=min_margin, margin_percent=margin_percent,
+            enable_crop=enable_crop)
         info = boxes["crop_infos"][0]
         info["full_image_restore"] = mask is None
-        return result, info, cropped_mask
+        height, width = result.shape[1:3]
+        return result, info, cropped_mask, width, height
 
     def _find_best_aspect_ratio(self, width, height):
         aspect_ratios = [(1, 1), (3, 2), (2, 3), (16, 9), (9, 16)]

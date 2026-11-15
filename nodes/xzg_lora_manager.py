@@ -108,9 +108,13 @@ def scan(user):
         removed = set(data["items"]) - present
         for key in removed:
             del data["items"][key]
+        image_dir = library_dir(user) / "thumbnails"
+        for key, item in data["items"].items():
+            if item.get("thumbnail") and not (image_dir / (key + ".png")).is_file():
+                del item["thumbnail"]
+                changed = True
         if changed or removed:
             write_library(user, data)
-        image_dir = library_dir(user) / "thumbnails"
         if image_dir.is_dir():
             for image in image_dir.glob("*.png"):
                 if image.stem not in data["items"]:
@@ -349,11 +353,15 @@ async def upload_thumbnail(request):
 async def get_thumbnail(request):
     user, key = request_user(request), request.match_info["id"]
     with LOCK:
-        if key not in read_library(user)["items"]:
+        data = read_library(user)
+        item = data["items"].get(key)
+        if item is None:
             raise web.HTTPNotFound()
-    path = library_dir(user) / "thumbnails" / (key + ".png")
-    if not path.exists():
-        raise web.HTTPNotFound()
+        path = library_dir(user) / "thumbnails" / (key + ".png")
+        if not path.is_file():
+            if item.pop("thumbnail", None):
+                write_library(user, data)
+            raise web.HTTPNotFound()
     return web.FileResponse(path)
 
 
@@ -378,11 +386,18 @@ class XiaozhuguangLoraManager:
     DESCRIPTION = "打开管理器选择多个 LoRA。资料与缩略图保存在当前用户目录，支持手动导入导出。"
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        # Moves and replacements on disk must invalidate ComfyUI execution cache.
-        return float("nan")
+    def IS_CHANGED(cls, loras="[]", library_user="default", **kwargs):
+        # ComfyUI cannot resolve linked widget values when computing this key.
+        if loras is None or library_user is None:
+            return float("nan")
+        fingerprint = []
+        for path, strength in cls._active_loras(loras, library_user, **kwargs):
+            info = path.stat()
+            fingerprint.append((str(path), strength, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino))
+        return tuple(fingerprint)
 
-    def load(self, model, loras="[]", library_user="default", **kwargs):
+    @staticmethod
+    def _active_loras(loras, library_user, **kwargs):
         selections = json.loads(loras)
         if not isinstance(selections, list):
             raise ValueError("LoRA 列表格式无效")
@@ -391,24 +406,38 @@ class XiaozhuguangLoraManager:
             mode = "serial"
         if mode == "parallel":
             selections = [selection for selection in selections if selection.get("enabled", True)][:1]
-        with LOCK:
-            data = read_library(library_user)
+        records = {}
+        if any(selection.get("id") and selection.get("enabled", True) for selection in selections):
+            with LOCK:
+                records = read_library(library_user)["items"]
+        configured_roots = roots()
+        extensions = folder_paths.folder_names_and_paths["loras"][1]
         for selection in selections:
             if not selection.get("enabled", True):
                 continue
-            item = data["items"].get(selection.get("id"))
-            if item is None:
-                raise ValueError("LoRA 文件或资料已移除，请打开管理器重新选择：" + selection.get("path", ""))
-            if item["root"] not in roots():
-                raise ValueError("LoRA 所属根目录未配置，请重新选择：" + item["path"])
-            path = inside(item["root"], item["path"])
-            if not path.is_file() or path.suffix.lower() not in folder_paths.folder_names_and_paths["loras"][1]:
-                raise ValueError("LoRA 文件不存在或格式不支持：" + item["path"])
+            item = records.get(selection.get("id"))
+            relative = item["path"] if item is not None else selection.get("path")
+            root = item["root"] if item is not None else selection.get("root")
+            if root is not None and root not in configured_roots:
+                raise ValueError(f"LoRA 所属根目录未配置，请重新选择：{relative}")
+            if not relative:
+                raise ValueError("LoRA 记录已失效且缺少文件路径，请打开管理器重新选择")
+            candidates = (inside(base, relative) for base in ([root] if root is not None else configured_roots))
+            matches = {path for path in candidates if path.suffix.lower() in extensions and path.is_file()}
+            if not matches:
+                raise ValueError(f"LoRA 文件不存在或格式不支持：{relative}")
+            if len(matches) > 1:
+                raise ValueError(f"多个 LoRA 根目录中存在相同相对路径，请打开管理器重新选择：{relative}")
+            path = matches.pop()
             sm = float(selection.get("strength_model", 1))
             if not math.isfinite(sm):
                 raise ValueError("LoRA 强度必须是有限数字")
             if sm == 0:
                 continue
+            yield path, sm
+
+    def load(self, model, loras="[]", library_user="default", **kwargs):
+        for path, strength in self._active_loras(loras, library_user, **kwargs):
             weights = comfy.utils.load_torch_file(str(path), safe_load=True)
-            model, _ = comfy.sd.load_lora_for_models(model, None, weights, sm, 0)
+            model, _ = comfy.sd.load_lora_for_models(model, None, weights, strength, 0)
         return (model,)

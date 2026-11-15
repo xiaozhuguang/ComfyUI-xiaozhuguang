@@ -9,14 +9,14 @@ class XiaozhuguangImageSize:
             },
         }
 
-    RETURN_TYPES = ("INT", "INT", "INT", "INT", "STRING")
-    RETURN_NAMES = ("宽度", "高度", "长边", "短边", "分辨率")
+    RETURN_TYPES = ("INT", "INT", "INT", "INT", "INT")
+    RETURN_NAMES = ("宽度", "高度", "长边", "短边", "像素量")
     FUNCTION = "execute"
     CATEGORY = "小珠光/图片"
     DESCRIPTION = (
         "获取图像尺寸或遮罩非零区域的外接矩形尺寸（裁掉空白边缘）。"
         "同一接口可连接图像或遮罩，自动识别。"
-        "分辨率格式为宽×高；全黑遮罩返回0×0。批次仅获取第一张，输出一组尺寸。"
+        "像素量为宽度乘以高度；全黑遮罩的尺寸和像素量均为 0。批次仅获取第一张，输出一组尺寸。"
     )
 
     def execute(self, 图像或遮罩):
@@ -41,5 +41,5 @@ class XiaozhuguangImageSize:
             height,
             max(width, height),
             min(width, height),
-            f"{width}×{height}",
+            width * height,
         )

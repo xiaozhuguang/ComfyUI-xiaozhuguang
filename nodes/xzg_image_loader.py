@@ -1644,6 +1644,8 @@ def _parse_mask_data(mask_str, image_name=None):
         data = parsed.get(name)
         if isinstance(data, str) and data:
             return data
+        if isinstance(data, dict) and data.get("space") == "crop" and isinstance(data.get("png"), str):
+            return data
     return ""
 
 
@@ -2097,7 +2099,6 @@ class XiaozhuguangImageLoader:
                 "mask_output_color": ("STRING", {"default": "#ff0000"}),
                 # 着色输出的着色透明度（百分比 0-100，前端“着色透明度”输入框写入）
                 "mask_output_opacity": ("FLOAT", {"default": 100.0, "min": 0.0, "max": 100.0, "step": 1.0}),
-                "remove_alpha": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -2107,7 +2108,7 @@ class XiaozhuguangImageLoader:
     FUNCTION = "load_images"
     CATEGORY = "小珠光/图片"
 
-    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, remove_alpha=False, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000", mask_output_opacity=100.0):
+    def load_images(self, image_list, index, batch_mode, batch_align=False, max_images=0, unique_id=None, mask_data="", crop_data="", upload_mode="append", mask_output_enabled=False, mask_output_color="#ff0000", mask_output_opacity=100.0):
         mask_output_enabled = mask_output_enabled is True or str(mask_output_enabled).strip().lower() in ("true", "1")
         # 着色透明度：数值即百分比（0-100），越界与非法值收敛到 0-100。
         try:
@@ -2116,7 +2117,6 @@ class XiaozhuguangImageLoader:
             _opacity_pct = 100.0
         _opacity_pct = max(0.0, min(100.0, _opacity_pct))
         mask_output_alpha = _opacity_pct / 100.0
-        remove_alpha = remove_alpha is True or str(remove_alpha).strip().lower() in ("true", "1")
         crop_padding_rgb = _parse_crop_padding_color(crop_data)
         # 空选/所列图片全部丢失时回退到内置占位图片（防报错，与视频加载器同一机制）。
         names = [n.strip() for n in (image_list or "").split("\n") if n.strip()]
@@ -2126,7 +2126,6 @@ class XiaozhuguangImageLoader:
             images = []
             loaded_names = []
             orig_sizes = []  # 每张图裁剪前的原始尺寸 (w, h)
-            image_alphas = []  # 每张图的 alpha 通道（无 alpha 则 None），用于无用户遮罩时回退提取
             crops_loaded = []  # 与 images 对齐，每张图自己的裁剪矩形（原图像素，None=该图不裁剪）
             transforms_loaded = []
             for name in names_list:
@@ -2157,15 +2156,13 @@ class XiaozhuguangImageLoader:
                                        int(round(_crop_i[1] * _ratio0)),
                                        int(round(_crop_i[2] * _ratio0)),
                                        int(round(_crop_i[3] * _ratio0)))
-                    # 保留原图 Alpha 到 IMAGE 的第 4 通道，除非用户主动选择移除。
-                    alpha = img.getchannel('A') if 'A' in img.getbands() and not remove_alpha else None
-                    if remove_alpha and 'A' in img.getbands():
+                    if any(band in ("A", "a") for band in img.getbands()) or "transparency" in img.info:
                         # 合成到不透明背景，避免透明像素的 RGB 残留造成色边。
+                        if img.mode == "La":
+                            img = img.convert("LA")
                         rgba = img.convert("RGBA")
                         opaque = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
                         img = Image.alpha_composite(opaque, rgba).convert("RGB")
-                    elif 'A' in img.getbands():
-                        img = img.convert("RGBA")
                     else:
                         img = img.convert("RGB")
                     image = img
@@ -2174,20 +2171,19 @@ class XiaozhuguangImageLoader:
                     images.append(image)
                     loaded_names.append(name)
                     orig_sizes.append(orig_size)
-                    image_alphas.append(alpha)
                     # 仅在图成功载入 images 后再对齐追加裁剪，避免失败图导致列表错位
                     crops_loaded.append(_crop_i)
                     transforms_loaded.append(_parse_image_transform(crop_data, name))
                 except Exception:
                     continue
-            return images, loaded_names, orig_sizes, image_alphas, crops_loaded, transforms_loaded
+            return images, loaded_names, orig_sizes, crops_loaded, transforms_loaded
 
-        images, loaded_names, orig_sizes, image_alphas, crops_loaded, transforms_loaded = _load_names(names)
+        images, loaded_names, orig_sizes, crops_loaded, transforms_loaded = _load_names(names)
         if not images:
             # 空选（image_list 为空）或所列文件全部缺失/加载失败：加载内置占位图片，避免输出空列表。
             fallback_names = _fallback_image_names()
             if fallback_names:
-                images, loaded_names, orig_sizes, image_alphas, crops_loaded, transforms_loaded = _load_names(fallback_names)
+                images, loaded_names, orig_sizes, crops_loaded, transforms_loaded = _load_names(fallback_names)
 
         # 加载图片上限：max_images>0 时最多加载前 N 张（默认 0 表示无限制），对批次/列表模式均生效
         try:
@@ -2198,30 +2194,16 @@ class XiaozhuguangImageLoader:
             images = images[:limit]
             loaded_names = loaded_names[:limit]
             orig_sizes = orig_sizes[:limit]
-            image_alphas = image_alphas[:limit]
             crops_loaded = crops_loaded[:limit]
             transforms_loaded = transforms_loaded[:limit]
 
         # 解析遮罩数据
         # 语义约定：白色(255 / 1.0) = 用户绘制过的区域；黑色(0 / 0.0) = 未绘制区域
-        # 无用户遮罩数据时，从图片 alpha 通道提取（与官方 LoadImage 行为一致）：
-        #   alpha=255(不透明)→mask=0(未遮罩)，alpha=0(透明)→mask=1(已遮罩)
         # 所有返回均为 3D 张量 (1, H, W)，匹配官方 LoadImage 的 MASK 输出形状
-        def _decode_mask(mask_str, ref_h, ref_w, pil_alpha=None):
+        def _decode_mask(mask_str, ref_h, ref_w):
             if ref_h <= 0 or ref_w <= 0:
                 return torch.zeros((1, max(1, ref_h), max(1, ref_w)), dtype=torch.float32)
             if not mask_str:
-                # 无用户绘制的遮罩，尝试从图片 alpha 通道提取（与官方 LoadImage 一致）
-                if pil_alpha is not None:
-                    try:
-                        if pil_alpha.size != (ref_w, ref_h):
-                            pil_alpha = pil_alpha.resize((ref_w, ref_h), Image.LANCZOS)
-                        arr = np.array(pil_alpha).astype(np.float32) / 255.0
-                        # 反转：alpha=255(不透明)→mask=0，alpha=0(透明)→mask=1
-                        mask = 1. - torch.from_numpy(arr)
-                        return mask.unsqueeze(0)  # (1, H, W) — 3D
-                    except Exception as e:
-                        print(f"[小珠光图像加载器] alpha 遮罩提取失败: {e}")
                 return torch.zeros((1, ref_h, ref_w), dtype=torch.float32)
             try:
                 import base64
@@ -2265,9 +2247,7 @@ class XiaozhuguangImageLoader:
             # 覆盖强度由“着色透明度”控制：100% 完全不透明，0% 等于不着色。
             alpha = (mask_tensor >= 0.5).to(dtype=image_tensor.dtype).unsqueeze(-1) * mask_output_alpha
             color_tensor = torch.tensor(overlay_rgb, dtype=image_tensor.dtype, device=image_tensor.device)
-            tinted_rgb = image_tensor[..., :3] * (1.0 - alpha) + color_tensor * alpha
-            if image_tensor.shape[-1] > 3:
-                return torch.cat((tinted_rgb, image_tensor[..., 3:]), dim=-1).clamp(0.0, 1.0)
+            tinted_rgb = image_tensor * (1.0 - alpha) + color_tensor * alpha
             return tinted_rgb.clamp(0.0, 1.0)
 
         # 逐图裁剪图片与遮罩，保持每个输出项同尺寸。
@@ -2279,9 +2259,15 @@ class XiaozhuguangImageLoader:
         masks = []
         for i, name in enumerate(loaded_names):
             orig_w, orig_h = orig_sizes[i]
-            mask = _decode_mask(_parse_mask_data(mask_data, name), orig_h, orig_w, image_alphas[i])
-            if crops_loaded[i]:
-                mask = _crop_mask(mask, crops_loaded[i], orig_w, orig_h)
+            saved_mask = _parse_mask_data(mask_data, name)
+            if isinstance(saved_mask, dict):
+                # The PNG already includes the filled area in cropped-image coordinates.
+                _, height, width, _ = images[i].shape
+                mask = _decode_mask(saved_mask["png"] if crops_loaded[i] else "", height, width)
+            else:
+                mask = _decode_mask(saved_mask, orig_h, orig_w)
+                if crops_loaded[i]:
+                    mask = _crop_mask(mask, crops_loaded[i], orig_w, orig_h)
             transform = transforms_loaded[i]
             if transform["flip_x"] or transform["flip_y"]:
                 images[i] = _transform_tensor(images[i], transform)
@@ -2315,7 +2301,7 @@ class XiaozhuguangImageLoader:
                     continue
 
                 img_arr = (img[0].numpy().clip(0, 1) * 255).astype(np.uint8)
-                img_pil = Image.fromarray(img_arr, mode="RGBA" if img_arr.shape[-1] == 4 else "RGB")
+                img_pil = Image.fromarray(img_arr, mode="RGB")
                 mask_pil = Image.fromarray((mask[0].numpy() * 255).clip(0, 255).astype(np.uint8))
                 if use_letterbox:
                     # letterbox 留边：等比缩放至完全放入 max_w×max_h，四周用黑色填充补齐
@@ -2323,7 +2309,7 @@ class XiaozhuguangImageLoader:
                     new_h = max(1, int(round(h * scale)))
                     new_w = max(1, int(round(w * scale)))
                     img_pil = img_pil.resize((new_w, new_h), Image.LANCZOS)
-                    canvas = Image.new(img_pil.mode, (max_w, max_h), (0, 0, 0, 0) if img_pil.mode == "RGBA" else (0, 0, 0))
+                    canvas = Image.new("RGB", (max_w, max_h))
                     left = (max_w - new_w) // 2
                     top = (max_h - new_h) // 2
                     canvas.paste(img_pil, (left, top))

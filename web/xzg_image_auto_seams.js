@@ -28,6 +28,15 @@ app.registerExtension({
                 values[marginIndex] = 10;
                 info = { ...info, widgets_values: values };
             }
+            if (data.name === "XiaozhuguangImageCrop" && Array.isArray(info?.widgets_values)) {
+                const index = this.widgets?.findIndex(w => w.name === "enable_crop") ?? -1;
+                if (index >= 0 && typeof info.widgets_values[index] === "number") {
+                    const values = [...info.widgets_values];
+                    // Legacy thresholds were ignored by the shared crop implementation.
+                    values[index] = true;
+                    info = { ...info, widgets_values: values };
+                }
+            }
             return configure?.call(this, info, ...args);
         };
         const serialize = type.prototype.onSerialize;

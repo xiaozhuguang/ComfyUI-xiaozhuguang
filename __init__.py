@@ -1136,7 +1136,7 @@ class XiaozhuguangBoolNot:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "boolean": ("BOOLEAN", {"default": False}),
+                "boolean": ("BOOLEAN", {"forceInput": True}),
             },
         }
 

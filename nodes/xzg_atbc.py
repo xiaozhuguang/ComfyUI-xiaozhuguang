@@ -27,7 +27,7 @@ class XiaozhuguangATBC:
                 "mask": ("MASK", {"tooltip": "输入遮罩，保留灰度。单张复用于整批，其他数量须与图片数一致。未连接时走整图缩放及补边，保留ATR回贴信息。"}),
                 "Box_grow_factor": ("FLOAT", {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.05, "tooltip": "裁剪区域的扩展倍数，1.0表示不扩展，大于1.0表示按比例扩大"}),
                 "kilopixels": ("FLOAT", {"default": 1000.0, "min": 100.0, "max": 10000.0, "step": 10.0, "tooltip": "目标图像的千像素数（十进制，1千像素=1000像素）。1000千像素=1000*1000像素，4194千像素≈2048*2048像素"}),
-                "divisible_by": ("INT", {"default": 32, "min": 1, "max": 1024, "step": 1, "tooltip": "目标分辨率必须被此数字整除"}),
+                "divisible_by": ("INT", {"default": 32, "min": 1, "max": 1024, "step": 1, "tooltip": "先确定裁剪区域和比例，再分别缩放宽高，使输出尺寸能被此数字整除。"}),
                 "ratio": (["auto", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"], {"default": "auto", "tooltip": "auto以整批裁剪框宽、高的中位数和目标千像素统一估算输出尺寸，在宽高上下相邻的32倍数候选中优先选择总像素最接近目标的尺寸，各帧扩充裁剪框完整覆盖遮罩，整批输出尺寸相同。整除数与32共同对齐。"}),
                 "enable_crop": ("BOOLEAN", {"default": True, "tooltip": "开启：按遮罩、比例和扩展裁剪。关闭：保留整图，按原图比例执行目标千像素缩放和整除对齐，忽略裁剪比例、扩展、平滑和遮罩求和。"}),
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
@@ -262,7 +262,7 @@ class XiaozhuguangATBC:
         info["output_size"] = (width, height)
         return result
 
-    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color, align_crop=True, auto_ratio=False, target_dimensions=None, required_subject=None, fitted_box=None):
+    def _crop_single_image(self, img, mask, kilopixels, divisible_by, original_width, original_height, crop_coords, fill_color, align_crop=True, auto_ratio=False, target_dimensions=None, required_subject=None, fitted_box=None, min_margin=0, crop_aspect=None, *, allow_oversize=False):
         # img: (H,W,3) uint8; mask: (H,W) uint8.
         crop_x1, crop_y1, crop_x2, crop_y2 = crop_coords
         crop_width, crop_height = crop_x2 - crop_x1, crop_y2 - crop_y1
@@ -271,7 +271,8 @@ class XiaozhuguangATBC:
             kilopixels, (crop_width, crop_height), divisible_by)
         if align_crop:
             box = fitted_box if fitted_box is not None else self._fit_crop_to_output(
-                crop_coords, original_width, original_height, target_width / target_height, required_subject)
+                crop_coords, original_width, original_height, crop_aspect or target_width / target_height, required_subject, min_margin,
+                allow_oversize=allow_oversize)
             if any(edge != int(edge) for edge in box):
                 cropped, cropped_mask = self._sample_subpixel_crop(
                     img, mask, box, target_width, target_height, fill_color)
@@ -467,13 +468,20 @@ class XiaozhuguangATBC:
         return [tuple(box) for box in np.column_stack([starts, starts + sizes])]
 
     @staticmethod
-    def _fit_crop_to_output(box, width, height, output_aspect, subject):
+    def _fit_crop_to_output(box, width, height, output_aspect, subject, margin=0, *, allow_oversize=False):
         x0, y0, x1, y1 = box
         desired_h = max(y1 - y0, (x1 - x0) / output_aspect)
         max_h = min(height, width / output_aspect)
         sx0, sy0, sx1, sy1 = subject if subject is not None else (0, 0, 0, 0)
+        needs_edge_context = subject is not None and margin > 0 and (
+            min(sx0, sy0, width - sx1, height - sy1) < margin
+        )
+        if needs_edge_context:
+            # Keep the requested context on every side of an edge-adjacent
+            # subject. The portion outside the frame becomes fill padding.
+            sx0, sy0, sx1, sy1 = sx0 - margin, sy0 - margin, sx1 + margin, sy1 + margin
         required_h = max(sy1 - sy0, (sx1 - sx0) / output_aspect)
-        crop_h = max(required_h, min(desired_h, max_h))
+        crop_h = max(required_h, desired_h if allow_oversize and subject is not None else min(desired_h, max_h))
         crop_w = crop_h * output_aspect
 
         def place(center, size, length, low, high):
@@ -481,6 +489,9 @@ class XiaozhuguangATBC:
             limit = length - size
             start_min, start_max = min(0.0, limit), max(0.0, limit)
             if subject is not None:
+                if needs_edge_context:
+                    start_min = min(start_min, low)
+                    start_max = max(start_max, high - size)
                 start_min = max(start_min, high - size)
                 start_max = min(start_max, low)
             return min(max(center - size / 2, start_min), start_max)
@@ -535,19 +546,21 @@ class XiaozhuguangATBC:
         # One output resolution for the whole clip; each frame has its own inverse geometry.
         first = boxes[0]
         aspect = (first[2] - first[0]) / (first[3] - first[1])
-        if face_composition and ratio != "auto":
+        if ratio != "auto":
             ar_w, ar_h = map(int, ratio.split(":"))
             aspect = ar_w / ar_h
         content_h = max(1, round(math.sqrt(kilopixels * 1000 / aspect)))
-        content_w = max(1, round(content_h * aspect))
+        content_w = max(1, round(math.sqrt(kilopixels * 1000 * aspect)))
         multiple = max(1, int(divisible_by))
         out_w = math.ceil(content_w / multiple) * multiple
         out_h = math.ceil(content_h / multiple) * multiple
-        if ratio == "auto":
-            out_w, out_h = self._calculate_auto_dimensions(kilopixels, (aspect, 1), divisible_by)
         subjects = [self._subject_box(frame * 255) for frame in masks]
-        boxes = [self._fit_crop_to_output(box, width, height, out_w / out_h, subject)
-                 for box, subject in zip(boxes, subjects)]
+        margins = [math.ceil(min(subject[2] - subject[0], subject[3] - subject[1]) * margin_percent / 100)
+                   if subject is not None and face_composition and margin_percent is not None else min_margin
+                   for subject in subjects]
+        boxes = [self._fit_crop_to_output(box, width, height, aspect, subject, margin,
+                                         allow_oversize=factor > 1.0)
+                 for box, subject, margin in zip(boxes, subjects, margins)]
         valid_frames = [index for index, subject in enumerate(subjects) if subject is not None]
         missing_frames = [index for index, subject in enumerate(subjects) if subject is None]
         if valid_frames and missing_frames:
@@ -615,10 +628,7 @@ class XiaozhuguangATBC:
             infos[-1]["seam_box"] = seam_boxes[i]
             infos[-1]["subject_box"] = subjects[i]
             subject = infos[-1]["subject_box"]
-            infos[-1]["min_margin"] = min_margin
-            if face_composition and margin_percent is not None:
-                infos[-1]["min_margin"] = 0 if subject is None else math.ceil(
-                    min(subject[2] - subject[0], subject[3] - subject[1]) * margin_percent / 100)
+            infos[-1]["min_margin"] = margins[i] if subject is not None else min_margin
             if "output_valid_box" in valid_info:
                 infos[-1].update({key: valid_info[key] for key in ("source_valid_box", "output_valid_box")})
             outputs.append(torch.from_numpy(canvas)); output_masks.append(torch.from_numpy(canvas_mask))
@@ -775,21 +785,23 @@ class XiaozhuguangATBC:
         # Pick one resolution before processing any frame. Per-frame source
         # windows may vary, but must fit this shared output aspect and budget.
         target_dimensions = None
+        crop_aspect = None
         if enable_crop:
             if ratio == "auto":
                 batch_aspect = (np.median([box[2] - box[0] for box in crop_boxes]),
                                 np.median([box[3] - box[1] for box in crop_boxes]))
                 target_dimensions = self._calculate_auto_dimensions(kilopixels, batch_aspect, divisible_by)
             else:
+                batch_aspect = tuple(map(int, ratio.split(":")))
                 target_dimensions = self._calculate_target_dimensions(
-                    kilopixels, tuple(map(int, ratio.split(":"))), divisible_by)
+                    kilopixels, batch_aspect, divisible_by)
+            crop_aspect = batch_aspect[0] / batch_aspect[1]
 
         fixed_box = None
         if summed_mask is not None:
-            out_w, out_h = target_dimensions
             fixed_box = self._fit_crop_to_output(
-                unified_crop_coords, original_width, original_height, out_w / out_h,
-                self._subject_box(summed_mask))
+                unified_crop_coords, original_width, original_height, crop_aspect,
+                self._subject_box(summed_mask), min_margin, allow_oversize=Box_grow_factor > 1.0)
 
         frames = []
         for i in range(batch_size):
@@ -800,11 +812,13 @@ class XiaozhuguangATBC:
                 img_i, m_i, kilopixels, divisible_by, original_width, original_height,
                 crop_boxes[i], fill_color_rgb, align_crop=enable_crop,
                 auto_ratio=enable_crop and ratio == "auto", target_dimensions=target_dimensions,
-                required_subject=subject, fitted_box=fixed_box,
+                required_subject=subject, fitted_box=fixed_box, min_margin=min_margin, crop_aspect=crop_aspect,
+                allow_oversize=Box_grow_factor > 1.0,
             ))
             if seam_boxes is not None:
                 frames[-1][2]["seam_box"] = seam_boxes[i]
                 frames[-1][2]["subject_box"] = subject
+                frames[-1][2]["min_margin"] = min_margin
 
         def resize_frame(frame):
             cropped_image, cropped_mask, info, target_width, target_height = frame
@@ -818,19 +832,10 @@ class XiaozhuguangATBC:
                 multiple = max(1, int(divisible_by))
                 target_width = math.ceil(content_width / multiple) * multiple
                 target_height = math.ceil(content_height / multiple) * multiple
-                image = self._resize_numpy(cropped_image, content_width, content_height, resize_mode)
-                mask = self._resize_numpy(cropped_mask, content_width, content_height, resize_mode)
-                padded_image = np.full((target_height, target_width, image.shape[2]), fill_color_rgb, dtype=image.dtype)
-                padded_mask = np.zeros((target_height, target_width), dtype=mask.dtype)
-                left = (target_width - content_width) // 2
-                top = (target_height - content_height) // 2
-                right = left + content_width
-                bottom = top + content_height
-                padded_image[top:bottom, left:right] = image
-                padded_mask[top:bottom, left:right] = mask
                 info["output_size"] = (target_width, target_height)
-                info["output_content_box"] = (left, top, right, bottom)
-                return padded_image, padded_mask
+                info["output_content_box"] = (0, 0, target_width, target_height)
+                return (self._resize_numpy(cropped_image, target_width, target_height, resize_mode),
+                        self._resize_numpy(cropped_mask, target_width, target_height, resize_mode))
             if "subpixel_box" in info:
                 return cropped_image, cropped_mask
             resize = lambda data, w, h: self._resize_numpy(data, w, h, resize_mode)

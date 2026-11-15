@@ -6,6 +6,59 @@ const BASE = "/xzg/lora/";
 const SIDEBAR_SETTING = "xiaozhuguang.Toggle.EnableLoraSidebar";
 const SIDEBAR_BUTTON = '.xzg-lora-library-tab-button, [data-testid="xzg-lora-library-tab-button"], [data-tab-id="xzg-lora-library"]';
 let panel;
+let pendingLibrary;
+
+function fetchLibrary() {
+    pendingLibrary ??= request("library").then(response => response.json()).finally(() => {
+        pendingLibrary = null;
+    });
+    return pendingLibrary;
+}
+
+function updateNodeLibrary(data, target) {
+    const nodes = new Set(app.graph?.findNodesByType?.(TYPE) || []);
+    if (target) nodes.add(target);
+    for (const node of nodes) {
+        node._xzgLoraMetadata = data.items;
+        let list;
+        try { list = selection(node); } catch { continue; }
+        if (list.some(entry => entry.id && (entry.path || findLoraMetadata(data.items, entry)))) {
+            saveSelection(node, list.map(entry => {
+                if (!entry.id) return entry;
+                const record = findLoraMetadata(data.items, entry);
+                if (!record && !entry.path) return entry;
+                const { root, path } = record || entry;
+                return { root, path, enabled: entry.enabled, strength_model: entry.strength_model };
+            }));
+        } else {
+            node._xzgRenderLoras?.();
+        }
+    }
+}
+
+function findLoraMetadata(items = [], entry) {
+    const byId = entry.id && items.find(item => item.id === entry.id);
+    if (byId) return byId;
+    const matches = items.filter(item => item.path === entry.path && (!entry.root || entry.root === item.root));
+    return matches.length === 1 ? matches[0] : undefined;
+}
+
+function updateMovedSelections(items, root, source, target) {
+    for (const node of app.graph?.findNodesByType?.(TYPE) || []) {
+        let list;
+        try { list = selection(node); } catch { continue; }
+        let changed = false;
+        for (const entry of list) {
+            const record = findLoraMetadata(items, entry);
+            if (record?.root !== root || !(record.path === source || record.path.startsWith(source + "/"))) continue;
+            entry.root = root;
+            entry.path = target + record.path.slice(source.length);
+            delete entry.id;
+            changed = true;
+        }
+        if (changed) saveSelection(node, list);
+    }
+}
 
 function setSidebarEnabled(enabled) {
     document.documentElement.classList.toggle("xzg-hide-lora-sidebar", !enabled);
@@ -18,10 +71,7 @@ function installCompactToggle(node, actions) {
         node.properties.xzgLoraCompact = compact;
         node.properties.xzgLoraHoverPreview = !compact;
         node._xzgLoraPreview?.remove();
-        node._xzgLoraPreviewId = null;
-        if (compact) node._xzgLoraExpandedSize = [...node.size];
         node._xzgRenderLoras?.();
-        node.setSize(compact ? [320, Math.max(140, Math.min(360, 100 + selection(node).length * 20))] : (node._xzgLoraExpandedSize || [500, 360]));
         node.graph?.change?.();
         node.setDirtyCanvas?.(true, true);
         updateLabel();
@@ -50,7 +100,6 @@ function installCompactToggle(node, actions) {
     const removed = node.onRemoved;
     node.onRemoved = function () {
         node._xzgLoraPreview?.remove();
-        node._xzgLoraPreviewId = null;
         return removed?.apply(this, arguments);
     };
 }
@@ -148,8 +197,7 @@ async function request(path, body, method = "POST") {
     if (body !== undefined && !(body instanceof FormData)) options.headers = { "Content-Type": "application/json" };
     const response = await api.fetchApi(BASE + path, options);
     if (!response.ok) {
-        if ((response.status === 404 || response.status === 405) &&
-            (path === "clear-maintenance" || path.startsWith("triggers/"))) {
+        if ((response.status === 404 || response.status === 405) && path === "clear-maintenance") {
             throw Error("ComfyUI 后端尚未加载此功能。请完整重启 ComfyUI，再刷新页面；仅刷新浏览器无效。");
         }
         const error = await response.json().catch(() => ({}));
@@ -165,6 +213,13 @@ function element(tag, className, text) {
     return e;
 }
 
+function loadThumbnail(img, item, onError, query = "") {
+    img.style.visibility = "hidden";
+    img.addEventListener("load", () => { img.style.removeProperty("visibility"); }, { once: true });
+    img.addEventListener("error", onError, { once: true });
+    img.src = api.apiURL(BASE + "thumbnail/" + item.id + query);
+}
+
 function button(text, action, parent) {
     const b = element("button", "", text);
     b.type = "button";
@@ -174,13 +229,24 @@ function button(text, action, parent) {
 }
 
 function widget(node, name) { return node.widgets?.find(w => w.name === name); }
-function selection(node) { return JSON.parse(widget(node, "loras").value || "[]"); }
+function selection(node) {
+    const list = JSON.parse(widget(node, "loras").value || "[]");
+    if (!Array.isArray(list) || list.some(entry => !entry || typeof entry !== "object" || Array.isArray(entry))) {
+        throw Error("LoRA 列表格式无效");
+    }
+    return list;
+}
+function serializeSelection(list) {
+    return JSON.stringify(list.map(({ id, root, path, enabled, strength_model }) => ({
+        id, root, path, enabled, strength_model,
+    })));
+}
 function saveSelection(node, list, activeItem) {
     if (node.properties?.xzgLoraSingle === true) {
         const active = activeItem?.enabled !== false && activeItem ? activeItem : list.find(item => item.enabled !== false);
         for (const item of list) item.enabled = item === active;
     }
-    widget(node, "loras").value = JSON.stringify(list);
+    widget(node, "loras").value = serializeSelection(list);
     node._xzgRenderLoras?.();
     node.setDirtyCanvas(true, true);
     app.graph?.change?.();
@@ -266,7 +332,8 @@ function style() {
     .xzg-lora-node-actions{display:flex;gap:5px;align-items:center;box-sizing:border-box;width:100%;height:100%;padding:2px 6px;font:12px system-ui}
     .xzg-lora-node-actions button{flex:1;min-width:max-content;white-space:nowrap;background:#343434;color:#eee;border:1px solid #62605a;border-radius:4px;padding:5px 8px;cursor:pointer}
     .xzg-lora-node-actions button:hover{border-color:#eee}
-    .xzg-lora-stack-row{padding:8px 0;border-bottom:1px solid #555;overflow-wrap:anywhere;white-space:normal}
+    .xzg-lora-stack-row{padding:8px 0;overflow-wrap:anywhere;white-space:normal}
+    .xzg-lora-stack-row:not(:last-child){border-bottom:1px solid #555}
     .xzg-lora-stack-row>.xzg-lora-name{cursor:grab;user-select:none;font-size:12px;font-weight:400;line-height:1.4}
     .xzg-lora-stack-row.xzg-lora-has-thumbnail{display:grid;grid-template-columns:minmax(0,1fr) 50px;column-gap:8px;align-items:center;min-height:50px}
     .xzg-lora-has-thumbnail>.xzg-lora-name{grid-column:1;grid-row:1}
@@ -280,6 +347,7 @@ function style() {
     .xzg-lora-stack .xzg-lora-remove:hover{color:#ffb3b3;border-color:#cf6875;background:#532a30}
     .xzg-lora-stack .xzg-lora-copy,.xzg-lora-stack .xzg-lora-icon{border:0;background:transparent;box-shadow:none}
     .xzg-lora-stack .xzg-lora-copy{height:26px;padding:2px 4px;display:inline-flex;align-items:center;justify-content:center;line-height:1}
+    .xzg-lora-stack .xzg-lora-copy:disabled{opacity:.45;cursor:default}
     .xzg-lora-stack .xzg-lora-icon{width:24px;height:26px;padding:3px}
     .xzg-lora-stack .xzg-lora-copy+.xzg-lora-icon,.xzg-lora-stack .xzg-lora-icon+.xzg-lora-icon{margin-left:-3px}
     .xzg-lora-stack-controls{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;width:100%;margin-top:6px;white-space:nowrap}
@@ -306,7 +374,7 @@ function style() {
     .xzg-lora-stack.xzg-lora-compact .xzg-lora-stack-controls>input[type=checkbox],
     .xzg-lora-stack.xzg-lora-compact .xzg-lora-copy,
     .xzg-lora-stack.xzg-lora-compact .xzg-lora-icon:not(.xzg-lora-remove){display:none}
-    .xzg-lora-node-actions.xzg-lora-compact button{min-width:0;padding:2px;font-size:10px;white-space:nowrap}
+    .xzg-lora-node-actions.xzg-lora-compact button{padding:2px 4px;font-size:10px}
     @media(max-width:950px){.xzg-lora-sidebar{width:180px}.xzg-lora-detail{width:260px}}
     `;
     document.head.append(s);
@@ -398,17 +466,7 @@ async function openManager(node) {
     async function reload() {
         data = await (await request("library")).json();
         if (!overlay.isConnected) return;
-        if (node) {
-            widget(node, "library_user").value = data.user;
-            const list = selection(node);
-            const byId = new Map(data.items.map(item => [item.id, item]));
-            for (const entry of list) {
-                const item = byId.get(entry.id);
-                if (item) Object.assign(entry, { path: item.path, thumbnail: !!item.thumbnail });
-                delete entry.name;
-            }
-            saveSelection(node, list);
-        }
+        updateNodeLibrary(data, node);
         const oldTag = tag.value; tag.replaceChildren();
         for (const t of ["", ...new Set(data.items.flatMap(x => (x.tags || "").split(/[,，]/).map(v => v.trim()).filter(Boolean)))].sort()) {
             const option = element("option", "", t || "全部标签"); option.value = t; tag.append(option);
@@ -436,6 +494,7 @@ async function openManager(node) {
         const target = directory.path.split("/").slice(0, -1).concat(name).join("/");
         if (!confirm("这会重命名磁盘上的真实文件夹。其他加载器保存的旧路径可能失效。继续？")) return;
         await request("files", { action: "move", root: directory.root, path: directory.path, target });
+        updateMovedSelections(data.items, directory.root, directory.path, target);
         if (folder?.root === directory.root && (folder.path === directory.path || folder.path.startsWith(directory.path + "/"))) {
             folder = { ...folder, path: target + folder.path.slice(directory.path.length) };
         }
@@ -542,6 +601,7 @@ async function openManager(node) {
                 const target = [directory.path, item.path.split("/").pop()].filter(Boolean).join("/");
                 if (target === item.path) continue;
                 await request("files", { action: "move", root: item.root, path: item.path, target });
+                updateMovedSelections(data.items, item.root, item.path, target);
             }
         } finally { dirty = false; await reload(); }
     }
@@ -551,7 +611,7 @@ async function openManager(node) {
         tooltip.hidden = true;
         content.replaceChildren();
         const grid = element("div", "xzg-lora-grid"); content.append(grid);
-        const addedIds = new Set(node ? selection(node).map(item => item.id) : []);
+        const addedIds = new Set(node ? selection(node).map(item => findLoraMetadata(data.items, item)?.id) : []);
         const query = search.value;
         const items = data.items.filter(x => (!folder || x.root === folder.root && (x.path.startsWith(folder.path ? folder.path + "/" : ""))) &&
             (!favorites || x.favorite) &&
@@ -572,7 +632,10 @@ async function openManager(node) {
             card.onclick = () => { if (mayDiscard()) edit(item); };
             if (item.thumbnail) {
                 const img = element("img", "xzg-lora-image"); img.loading = "lazy"; img.alt = item.path;
-                img.src = api.apiURL(BASE + "thumbnail/" + item.id + "?v=" + (item._thumbnailVersion || "1")); card.append(img);
+                loadThumbnail(img, item, () => {
+                    img.replaceWith(element("div", "xzg-lora-image xzg-lora-placeholder", "LoRA"));
+                }, "?v=" + (item._thumbnailVersion || "1"));
+                card.append(img);
             } else card.append(element("div", "xzg-lora-image xzg-lora-placeholder", "LoRA"));
             const info = element("div", "xzg-lora-card-info");
             info.append(element("div", "xzg-lora-name", item.path.split("/").pop()));
@@ -618,12 +681,11 @@ async function openManager(node) {
             if (!node.pos?.every(Number.isFinite)) node.pos = [100, 100];
             app.graph.add(node);
         }
-        widget(node, "library_user").value = data.user;
-
+        node._xzgLoraMetadata = data.items;
 
         const list = selection(node);
-        if (list.some(x => x.id === item.id)) { status.textContent = "该 LoRA 已在当前加载器中"; return; }
-        list.push({ id: item.id, path: item.path, thumbnail: !!item.thumbnail, enabled: true,
+        if (list.some(x => findLoraMetadata(data.items, x)?.id === item.id)) { status.textContent = "该 LoRA 已在当前加载器中"; return; }
+        list.push({ root: item.root, path: item.path, enabled: true,
             strength_model: item.strength_model ?? 1 });
         saveSelection(node, list, list[list.length - 1]); status.textContent = `已添加：${item.path.split("/").pop()} · 共 ${list.length} 个 LoRA`;
 
@@ -634,11 +696,17 @@ async function openManager(node) {
         active = item.id; dirty = false; detail.replaceChildren();
         detail.append(element("div", "xzg-lora-name", item.path.split("/").pop()));
         if (item.thumbnail) {
-            const image = element("img", "xzg-lora-image"); image.src = api.apiURL(BASE + "thumbnail/" + item.id + "?v=" + Date.now()); detail.append(image);
+            const image = element("img", "xzg-lora-image");
+            loadThumbnail(image, item, () => image.remove(), "?v=" + Date.now());
+            detail.append(image);
         }
         button("上传 / 替换缩略图", () => filePicker("image/*", async file => {
             const form = new FormData(); form.append("file", file);
-            await request("thumbnail/" + item.id, form); item.thumbnail = true; item._thumbnailVersion = Date.now(); renderCards();
+            await request("thumbnail/" + item.id, form);
+            item.thumbnail = true;
+            item._thumbnailVersion = Date.now();
+            updateNodeLibrary(data, node);
+            renderCards();
             status.textContent = "缩略图已保存";
         }), detail);
         const fields = {};
@@ -720,8 +788,10 @@ app.registerExtension({
             modeToggle.setAttribute("aria-label", "单/多 LoRA");
             installCompactToggle(this, actions);
             button("一键清除 LoRA", () => saveSelection(this, []), actions);
-            this.addDOMWidget("lora_actions", "div", actions, { serialize: false, getMinHeight: () => 36, getMaxHeight: () => 36, getHeight: () => 36 });
+            const actionsWidget = this.addDOMWidget("lora_actions", "div", actions, { serialize: false, getMinHeight: () => 36, getMaxHeight: () => 36, getHeight: () => 36 });
             const stack = element("div", "xzg-lora-stack");
+            const rows = element("div");
+            stack.append(rows);
             stack.addEventListener("wheel", event => {
                 const canvas = app.canvas?.canvas;
                 if (!canvas) return;
@@ -734,9 +804,55 @@ app.registerExtension({
                     bubbles: true, cancelable: true,
                 }));
             }, { capture: true, passive: false });
-            this.addDOMWidget("lora_stack", "div", stack, { serialize: false,
-                getMinHeight: () => this.properties?.xzgLoraCompact === true ? 40 : 180,
-                getHeight: () => this.properties?.xzgLoraCompact === true ? Math.max(40, Math.min(260, selection(this).length * 20 + 4)) : 260 });
+            const stackMargin = 3;
+            let stackHeight = 40 + 2 * stackMargin;
+            const stackWidget = this.addDOMWidget("lora_stack", "div", stack, {
+                serialize: false,
+                margin: stackMargin,
+                getMinHeight: () => stackHeight,
+                getMaxHeight: () => stackHeight,
+                getHeight: () => stackHeight,
+            });
+            stackWidget.computeLayoutSize = () => ({ minHeight: stackHeight, maxHeight: stackHeight, minWidth: 0 });
+            // The properties panel shares these widgets with the canvas and writes its own row width.
+            const node = this;
+            for (const domWidget of [actionsWidget, stackWidget]) {
+                Object.defineProperty(domWidget, "width", {
+                    configurable: true,
+                    get() { return node.size?.[0] || 0; },
+                    set(_) {},
+                });
+            }
+            // Keep the DOM layout's minimum widget heights and trim its default bottom allowance.
+            this._xzgLoraHeight = () => this.computeSize()[1] - 8;
+            const fitSize = () => {
+                if (!rows.isConnected || !rows.offsetWidth) return;
+                const compact = this.properties?.xzgLoraCompact === true;
+                const padding = compact ? 4 : 12;
+                actions.style.width = "max-content";
+                this._xzgLoraMinWidth = Math.max(compact ? 300 : 380, actions.offsetWidth + 2 * actionsWidget.margin);
+                actions.style.width = "";
+                // ComfyUI insets DOM widgets by their margin on both edges.
+                stackHeight = Math.max(40, rows.offsetHeight + padding) + 2 * stackMargin;
+                const width = Math.max(this.size[0], this._xzgLoraMinWidth);
+                const height = this._xzgLoraHeight();
+                if (this.size[0] !== width || this.size[1] !== height) {
+                    this.setSize([width, height]);
+                    this.setDirtyCanvas(true, true);
+                }
+            };
+            const observer = new ResizeObserver(fitSize);
+            observer.observe(rows);
+            const added = this.onAdded;
+            this.onAdded = function () {
+                added?.apply(this, arguments);
+                observer.observe(rows);
+            };
+            const removed = this.onRemoved;
+            this.onRemoved = function () {
+                observer.disconnect();
+                removed?.apply(this, arguments);
+            };
             this._xzgRenderLoras = () => {
                 const single = this.properties?.xzgLoraSingle === true;
                 modeToggle.textContent = single ? "单 LoRA" : "多 LoRA";
@@ -746,14 +862,14 @@ app.registerExtension({
                 stack.classList.toggle("xzg-lora-compact", compact);
                 actions.classList.toggle("xzg-lora-compact", compact);
                 this._xzgLoraPreview?.remove();
-                this._xzgLoraPreviewId = null;
-                stack.replaceChildren();
+                rows.replaceChildren();
+                requestAnimationFrame(fitSize);
                 let list;
-                try { list = selection(this); } catch { stack.textContent = "LoRA 列表格式无效，请检查 loras 数据"; return; }
-                if (!list.length) stack.textContent = "尚未选择 LoRA，请打开管理器添加。";
-                let draggedId = null;
+                try { list = selection(this); } catch { rows.textContent = "LoRA 列表格式无效，请检查 loras 数据"; return; }
+                if (!list.length) rows.textContent = "尚未选择 LoRA，请打开管理器添加。";
+                let draggedIndex = null;
                 const clearDropMarks = () => {
-                    for (const row of stack.children) row.classList.remove("xzg-lora-drop-before", "xzg-lora-drop-after");
+                    for (const row of rows.children) row.classList.remove("xzg-lora-drop-before", "xzg-lora-drop-after");
                 };
                 list.forEach((item, index) => {
                     const row = element("div", "xzg-lora-stack-row");
@@ -762,38 +878,42 @@ app.registerExtension({
                     row.ondragstart = event => {
                         if (event.target.closest(".xzg-lora-stack-controls")) { event.preventDefault(); return; }
                         event.stopPropagation();
-                        draggedId = item.id;
-                        event.dataTransfer.setData("text/plain", item.id);
+                        draggedIndex = index;
+                        event.dataTransfer.setData("text/plain", item.path || "");
                         event.dataTransfer.effectAllowed = "move";
                         row.classList.add("xzg-lora-dragging");
                     };
                     row.ondragover = event => {
-                        if (!draggedId || draggedId === item.id) return;
+                        if (draggedIndex === null || draggedIndex === index) return;
                         event.preventDefault(); event.stopPropagation(); clearDropMarks();
                         const rect = row.getBoundingClientRect();
                         row.classList.add(event.clientY < rect.top + rect.height / 2 ? "xzg-lora-drop-before" : "xzg-lora-drop-after");
                         event.dataTransfer.dropEffect = "move";
                     };
                     row.ondrop = event => {
-                        if (!draggedId || draggedId === item.id) return;
+                        if (draggedIndex === null || draggedIndex === index) return;
                         event.preventDefault(); event.stopPropagation();
-                        const from = list.findIndex(entry => entry.id === draggedId);
+                        const from = draggedIndex;
                         const rect = row.getBoundingClientRect();
                         let to = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
-                        if (from < 0) return;
                         const [moving] = list.splice(from, 1);
                         if (from < to) to--;
                         list.splice(to, 0, moving);
-                        draggedId = null; saveSelection(this, list);
+                        draggedIndex = null; saveSelection(this, list);
                     };
-                    row.ondragend = () => { draggedId = null; row.classList.remove("xzg-lora-dragging"); clearDropMarks(); };
-                    if (item.thumbnail) {
+                    row.ondragend = () => { draggedIndex = null; row.classList.remove("xzg-lora-dragging"); clearDropMarks(); };
+                    const info = findLoraMetadata(this._xzgLoraMetadata, item);
+                    if (info?.thumbnail) {
                         row.classList.add("xzg-lora-has-thumbnail");
-                        const img = element("img", "xzg-lora-row-thumbnail"); img.src = api.apiURL(BASE + "thumbnail/" + item.id);
+                        const img = element("img", "xzg-lora-row-thumbnail");
+                        loadThumbnail(img, info, () => {
+                            img.remove();
+                            row.classList.remove("xzg-lora-has-thumbnail");
+                        }, info._thumbnailVersion ? "?v=" + info._thumbnailVersion : "");
                         img.draggable = false;
                         row.append(img);
                     }
-                    const name = element("div", "xzg-lora-name", item.path.split("/").pop());
+                    const name = element("div", "xzg-lora-name", (info?.path || item.path || "").split("/").pop() || "未知 LoRA");
                     name.title = item.path + "\n" + (item.enabled === false ? "点击启用此 LoRA" : "点击停用此 LoRA");
                     name.setAttribute("role", "button");
                     name.tabIndex = 0;
@@ -823,12 +943,22 @@ app.registerExtension({
                         input.setAttribute("aria-label", label + "强度");
                         controls.append(input);
                     }
-                    const copyTriggers = button("复制触发词", async () => {
-                        const result = await (await request("triggers/" + encodeURIComponent(item.id))).json();
-                        if (result.triggers.trim()) await navigator.clipboard.writeText(result.triggers);
+                    let triggers = "";
+                    const copyTriggers = button("复制触发词", () => {
+                        if (!copyTriggers.disabled) return navigator.clipboard.writeText(triggers);
                     }, controls);
                     copyTriggers.className = "xzg-lora-copy";
-                    const openFolder = button("", () => request("open-directory", { id: item.id }), controls);
+                    const updateCopyTriggers = info => {
+                        triggers = typeof info?.triggers === "string" ? info.triggers : "";
+                        copyTriggers.disabled = !triggers.trim();
+                        copyTriggers.title = copyTriggers.disabled ? "未填写触发词" : "复制触发词";
+                    };
+                    updateCopyTriggers(info);
+                    const openFolder = button("", async () => {
+                        const record = findLoraMetadata((await fetchLibrary()).items, item);
+                        if (!record) throw Error("LoRA 文件缺失或路径不唯一，请打开管理器检查");
+                        await request("open-directory", { id: record.id });
+                    }, controls);
                     openFolder.className = "xzg-lora-icon";
                     openFolder.title = "打开目录";
                     openFolder.setAttribute("aria-label", "打开目录");
@@ -845,7 +975,6 @@ app.registerExtension({
                         if (this.properties?.xzgLoraCompact === true) return;
                         this._xzgLoraPreview?.remove();
                         this._xzgLoraPreview = preview;
-                        this._xzgLoraPreviewId = item.id;
                         document.body.append(preview);
                         preview.style.display = "block";
                         const position = () => {
@@ -876,13 +1005,15 @@ app.registerExtension({
                             preview.style.alignItems = "flex-start";
                             if (info.thumbnail) {
                                 const image = element("img");
-                                image.src = api.apiURL(BASE + "thumbnail/" + item.id);
-                                image.style.cssText = "display:block;width:220px;max-width:38%;max-height:260px;object-fit:contain;flex-shrink:0";
+                                image.style.cssText = "width:220px;max-width:38%;max-height:260px;object-fit:contain;flex-shrink:0";
+                                loadThumbnail(image, info, () => {
+                                    if (image.parentElement === preview) render({ ...info, thumbnail: false });
+                                });
                                 image.draggable = false; preview.append(image);
                             }
                             const description = element("div");
                             description.style.cssText = "flex:1;min-width:0;max-height:calc(100vh - 46px);overflow:auto;white-space:pre-wrap";
-                            description.append(element("strong", "", item.path.split("/").pop()));
+                            description.append(element("strong", "", info.path?.split("/").pop() || ""));
                             preview.append(description);
                             for (const [label, key] of [["备注", "notes"], ["标签", "tags"], ["触发词", "triggers"]]) {
                                 const value = Array.isArray(info[key]) ? info[key].join("，") : info[key];
@@ -890,46 +1021,32 @@ app.registerExtension({
                             }
                             position();
                         };
-                        render(this._xzgLoraMetadata?.get(item.id) || item);
+                        render(findLoraMetadata(this._xzgLoraMetadata, item) || item);
                         try {
-                            const library = await (await request("library")).json();
-                            this._xzgLoraMetadata = new Map(library.items.map(entry => [entry.id, entry]));
-                            if (this._xzgLoraPreviewId === item.id && preview.isConnected) render(this._xzgLoraMetadata.get(item.id) || item);
+                            const library = await fetchLibrary();
+                            this._xzgLoraMetadata = library.items;
+                            const updated = findLoraMetadata(library.items, item);
+                            updateCopyTriggers(updated);
+                            if (preview.isConnected) render(updated || item);
                         } catch (error) {
                             if (preview.isConnected) preview.append(element("div", "", error.message));
                         }
                     };
                     row.addEventListener("pointerenter", showPreview);
-                    row.addEventListener("pointerleave", () => {
-                        preview.remove();
-                        if (this._xzgLoraPreviewId === item.id) this._xzgLoraPreviewId = null;
-                    });
+                    row.addEventListener("pointerleave", () => preview.remove());
                     row.addEventListener("dragstart", () => preview.remove());
-                    stack.append(row);
-                });
-                this._xzgLoraMinWidth = 320;
-                requestAnimationFrame(() => {
-                    if (!stack.isConnected) return;
-                    actions.style.width = "max-content";
-                    const actionsWidth = actions.scrollWidth + 28;
-                    actions.style.width = "";
-                    const controlWidth = Math.max(0, ...[...stack.querySelectorAll(".xzg-lora-stack-controls")].map(controls => {
-                        const children = [...controls.children];
-                        const width = children.reduce((total, child) => total + child.offsetWidth, 0) + Math.max(0, children.length - 1) * 6;
-                        const thumbnailWidth = controls.parentElement.classList.contains("xzg-lora-has-thumbnail") ? 58 : 0;
-                        return width + thumbnailWidth + 44;
-                    }));
-                    this._xzgLoraMinWidth = compact ? 240 : Math.max(320, actionsWidth, controlWidth);
-                    if (this.size[0] < this._xzgLoraMinWidth) this.setSize([this._xzgLoraMinWidth, this.size[1]]);
+                    rows.append(row);
                 });
             };
-            this._xzgRenderLoras(); this.setSize([500, 360]);
+            this._xzgRenderLoras(); this.setSize([500, this.computeSize()[1]]);
         };
         const resize = nodeType.prototype.onResize;
         nodeType.prototype.onResize = function (size) {
-            size[0] = Math.max(size[0], this.properties?.xzgLoraCompact === true ? 240 : (this._xzgLoraMinWidth || 320));
             const result = resize?.apply(this, arguments);
-            this.size[0] = Math.max(this.size[0], this.properties?.xzgLoraCompact === true ? 240 : (this._xzgLoraMinWidth || 320));
+            if (this._xzgLoraHeight) {
+                size[0] = Math.max(size[0], this._xzgLoraMinWidth ?? 300);
+                size[1] = this._xzgLoraHeight();
+            }
             return result;
         };
         const configure = nodeType.prototype.onConfigure;
@@ -939,8 +1056,20 @@ app.registerExtension({
             if (clipInput >= 0) this.removeInput(clipInput);
             const clipOutput = this.outputs?.findIndex(output => output.type === "CLIP");
             if (clipOutput >= 0) this.removeOutput(clipOutput);
-            if (this.properties?.xzgLoraSingle === true) saveSelection(this, selection(this));
+            const input = widget(this, "loras");
+            let list;
+            try { list = selection(this); } catch {
+                this._xzgRenderLoras?.();
+                return;
+            }
+            input.value = serializeSelection(list);
+            if (this.properties?.xzgLoraSingle === true) saveSelection(this, list);
             else this._xzgRenderLoras?.();
+            if (list.length) {
+                fetchLibrary().then(data => {
+                    updateNodeLibrary(data, this);
+                }).catch(() => {});
+            }
         };
     }
 });

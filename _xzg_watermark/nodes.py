@@ -35,6 +35,7 @@ from aiohttp import web
 from server import PromptServer
 
 from .mask_tracking import track_outline
+from . import mask_history
 
 MANUAL_MODEL_NAME = "手工跟踪"
 
@@ -42,6 +43,12 @@ MANUAL_MODEL_NAME = "手工跟踪"
 # 同视频重复"点击加载视频"直接复用已落盘文件（秒回）；temp 被清理时按文件存在性自动失效
 _PREVIEW_CACHE = {}
 _LATEST_TRACKING_SOURCE = None
+_TRACK_PROGRESS = {}
+
+
+@PromptServer.instance.routes.get("/xzg/manual-mask/progress/{job}")
+async def manual_mask_progress(request):
+    return web.json_response({"processed": _TRACK_PROGRESS.get(request.match_info["job"], [0])[0]})
 
 
 @PromptServer.instance.routes.post("/xzg/manual-mask/track")
@@ -58,9 +65,22 @@ async def track_manual_mask(request):
         image = entry["source"]()
         if image is None:
             raise ValueError("原始视频帧已释放，请点击加载视频后重新跟踪")
-        result = await asyncio.to_thread(track_outline, image, entry["idx"],
-                                         payload.get("start"), payload.get("end"),
-                                         payload.get("polygon"))
+        job = payload.get("job")
+        if job is not None and (not isinstance(job, str) or len(job) != 32 or job in _TRACK_PROGRESS):
+            raise ValueError("无效的跟踪任务标识")
+        counter = [0]
+        def progress(processed):
+            counter[0] = processed
+
+        if job:
+            _TRACK_PROGRESS[job] = counter
+        try:
+            result = await asyncio.to_thread(track_outline, image, entry["idx"],
+                                             payload.get("start"), payload.get("end"),
+                                             payload.get("polygon"), progress)
+        finally:
+            if job:
+                _TRACK_PROGRESS.pop(job, None)
         return web.json_response(result)
     except ValueError as error:
         return web.json_response({"error": str(error)}, status=400)

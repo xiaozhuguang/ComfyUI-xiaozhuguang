@@ -70,7 +70,7 @@ class AutoRatioTest(unittest.TestCase):
             self.assertGreater((sy1 - sy0) / (y1 - y0), 0.45)
             self.assertLess(abs((sx0 + sx1 - x0 - x1 + 2 * left) / (2 * (x1 - x0))), 0.14)
 
-    def test_face_crop_crosses_source_height_without_padding_or_jump(self):
+    def test_face_crop_preserves_top_margin_as_subject_reaches_edge(self):
         node = module.XiaozhuguangATBC()
         image = torch.full((6, 64, 96, 3), 0.5)
         mask = torch.zeros(6, 64, 96)
@@ -83,10 +83,12 @@ class AutoRatioTest(unittest.TestCase):
                     alignment_mode=alignment, Box_grow_factor=2.0, kilopixels=100,
                     fill_color="#000000", face_position_smoothing=0, face_scale_smoothing=0)
                 boxes = np.array([item["subpixel_box"] for item in info["crop_infos"]])
-                np.testing.assert_allclose(boxes[:, 1], 0)
+                np.testing.assert_allclose(boxes[:, 1], [0, -1, -2, -3, -3, -3])
                 self.assertLessEqual(boxes[:, 3].max(), 64)
                 self.assertLessEqual(np.abs(np.diff(boxes[:, 3])).max(), 2.000001)
-                torch.testing.assert_close(result, torch.full_like(result, 0.5))
+                self.assertEqual(result[-1, 0].max().item(), 0)
+                torch.testing.assert_close(result[:, result.shape[1] // 2],
+                                           torch.full_like(result[:, result.shape[1] // 2], 0.5))
 
     def test_face_composition_rejects_isolated_bbox_spike(self):
         node = module.XiaozhuguangATBC()
@@ -132,11 +134,11 @@ class AutoRatioTest(unittest.TestCase):
             mask[0].numpy() * 255, 400, 240, 1, "auto", min_margin=10)
         self.assertEqual(expanded, (40, 40, 310, 160))
         output, _, _ = node.crop_and_resize(image, mask=mask, kilopixels=100, divisible_by=32)
-        self.assertEqual(tuple(output.shape[1:3]), (224, 448))
+        self.assertEqual(tuple(output.shape[1:3]), (224, 480))
         _, manual = node._compute_crop_box(mask[0].numpy() * 255, 400, 240, 1, "16:9")
         self.assertAlmostEqual(manual[0] / manual[1], 16 / 9)
 
-    def test_all_crop_modes_pad_only_when_subject_cannot_fit(self):
+    def test_all_crop_modes_preserve_context_for_edge_subjects(self):
         node = module.XiaozhuguangATBC()
         image = torch.full((2, 64, 96, 3), 0.5)
         mask = torch.zeros(2, 64, 96)
@@ -148,9 +150,10 @@ class AutoRatioTest(unittest.TestCase):
                     image, mask=mask, crop_mode=mode, ratio="1:1", kilopixels=100,
                     Box_grow_factor=2, fill_color="#000000")
                 first, second = info["crop_infos"]
-                self.assertEqual(first["pad_info"], (0, 0, 0, 0))
+                self.assertGreater(first["pad_info"][0], 0)
+                self.assertGreater(first["pad_info"][1], 0)
                 self.assertGreater(sum(second["pad_info"]), 0)
-                torch.testing.assert_close(result[0], torch.full_like(result[0], 0.5), atol=1/255, rtol=0)
+                self.assertEqual(result[0, 0, 0].max().item(), 0)
                 for frame in (first, second):
                     l, t, _, _ = frame["pad_info"]
                     x0, y0, x1, y1 = frame["original_coords"]
@@ -185,7 +188,7 @@ class AutoRatioTest(unittest.TestCase):
         self.assertGreaterEqual(x1 - pl, 300)
         self.assertGreaterEqual(y1 - pt, 150)
         x0, y0, x1, y1 = crop.get("subpixel_box", (x0, y0, x1, y1))
-        self.assertAlmostEqual((x1-x0)/(y1-y0), 1504/672)
+        self.assertAlmostEqual((x1-x0)/(y1-y0), 2.25)
 
     def test_stable_tracking_smoothing_preserves_coverage(self):
         node = module.XiaozhuguangATBC()
@@ -283,6 +286,8 @@ class AutoRatioTest(unittest.TestCase):
                 self.assertEqual(width % 32, 0)
                 self.assertEqual(height % 32, 0)
                 self.assertLess(abs(width * height - 1000000), 100000)
+                _, other_info, _ = node.crop_and_resize(
+                    image, mask=mask, kilopixels=1000, divisible_by=64, Box_grow_pixels=10, **options)
                 for i, crop in enumerate(info["crop_infos"]):
                     self.assertEqual(crop["output_size"], (width, height))
                     self.assertEqual(crop["output_content_box"], (0, 0, width, height))
@@ -294,7 +299,8 @@ class AutoRatioTest(unittest.TestCase):
                     self.assertLessEqual(sy0, ys.min())
                     self.assertGreaterEqual(sx1, xs.max() + 1)
                     self.assertGreaterEqual(sy1, ys.max() + 1)
-                    self.assertAlmostEqual((sx1-sx0)/(sy1-sy0), width/height)
+                    for key in ("original_coords", "subpixel_box", "pad_info"):
+                        self.assertEqual(crop.get(key), other_info["crop_infos"][i].get(key))
 
 
 

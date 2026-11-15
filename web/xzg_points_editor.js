@@ -2,6 +2,26 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
 
+const maskHistoryRecorders = new WeakMap();
+const queueMaskHistory = api.queuePrompt;
+api.queuePrompt = async function (index, prompt, ...args) {
+    const pending = [];
+    if (!prompt?.xzgExecuteToNode) {
+        for (const [id, entry] of Object.entries(prompt?.output || {})) {
+            if (entry.class_type !== "VideoWatermarkDetector") continue;
+            const node = app.graph?.getNodeById(id);
+            const record = node && maskHistoryRecorders.get(node);
+            const data = entry.inputs?.regions_data;
+            if (record && typeof data === "string") pending.push([record, data]);
+        }
+    }
+    const result = await queueMaskHistory.call(this, index, prompt, ...args);
+    if (result?.prompt_id != null) {
+        for (const [record, data] of pending) record(data);
+    }
+    return result;
+};
+
 const getRealURL = obj => {
     return api.apiURL(`/view?filename=${encodeURIComponent(obj.filename)}&type=${obj.type}&subfolder=${obj.subfolder}&rand=${Math.random()}`)
 }
@@ -1416,7 +1436,13 @@ function wm_ensureViewer(node) {
             button.style.padding = "0 10px";
             button.onclick = e => { e.stopPropagation(); stepEditHistory(direction); };
         }
-        trackingGroup.append(...autoTrackBtns, undoBtn, redoBtn, clearGroup, resetViewBtn);
+        const historyBtn = mkCtrlBtn("历史", "查看自动保存的遮罩版本");
+        Object.assign(historyBtn.style, {height: "34px", padding: "0 10px"});
+        historyBtn.onclick = e => {
+            e.stopPropagation();
+            openMaskHistory();
+        };
+        trackingGroup.append(...autoTrackBtns, undoBtn, redoBtn, clearGroup, historyBtn, resetViewBtn);
         trackBar.appendChild(trackingGroup);
         const fullscreenBtn = mkCtrlBtn("全屏编辑", "打开全屏编辑");
         Object.assign(fullscreenBtn.style, {height: "34px", padding: "0 10px"});
@@ -3320,6 +3346,91 @@ function wm_ensureViewer(node) {
             undoHistory.length = redoHistory.length = 0;
             refreshEditHistory();
         };
+        const canUseMaskHistory = () => !trackingRequest && !state.curveDraft &&
+            !state.curveDrag && !state.rectDrag && !state.drawing && !state.trackingAreaDraft && !_kfDrag;
+        const maskHistoryUrl = () => {
+            node.properties ||= {};
+            if (!node.properties.maskHistoryId) {
+                node.properties.maskHistoryId = Array.from(crypto.getRandomValues(new Uint8Array(18)),
+                    byte => byte.toString(16).padStart(2, "0")).join("");
+                node.setDirtyCanvas?.(true, true);
+            }
+            return `/xzg/manual-mask/history/${node.properties.maskHistoryId}`;
+        };
+        const requestMaskHistory = async (url, options) => {
+            const response = await api.fetchApi(url, options);
+            if (!response.ok) throw new Error("遮罩历史读写失败，请检查 ComfyUI 后端");
+            return response.json();
+        };
+        const storeMaskHistory = async entry => {
+            const legacy = node.properties?.maskHistory;
+            const versions = Array.isArray(legacy) ? legacy.slice(0, 10) : [];
+            if (entry) versions.push(entry);
+            if (!versions.length) return;
+            await requestMaskHistory(maskHistoryUrl(), {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(versions),
+            });
+            if (node.properties.maskHistory === legacy && legacy) {
+                delete node.properties.maskHistory;
+                node.setDirtyCanvas?.(true, true);
+            }
+        };
+        const saveMaskVersion = async data => {
+            try {
+                const videoId = JSON.parse(data)?.video_id;
+                if (videoId) await storeMaskHistory({videoId, savedAt: Date.now(), data});
+                else await storeMaskHistory();
+            } catch (error) {
+                trackingNotice(error.message, "warn");
+            }
+        };
+        maskHistoryRecorders.set(node, saveMaskVersion);
+        const openMaskHistory = async () => {
+            if (!state.srcKey || !canUseMaskHistory()) {
+                trackingNotice("请先加载视频并结束当前编辑或跟踪");
+                return;
+            }
+            const videoId = state.srcKey;
+            try {
+                await storeMaskHistory();
+                const url = `${maskHistoryUrl()}?video=${encodeURIComponent(videoId)}`;
+                const versions = await requestMaskHistory(url);
+                if (state.srcKey !== videoId || !canUseMaskHistory()) return;
+                if (!versions.length) {
+                    trackingNotice("当前视频暂无历史版本。运行工作流时会自动记录。");
+                    return;
+                }
+                const items = versions.map(version => ({
+                    label: `恢复 ${new Date(version.savedAt).toLocaleString(undefined, {hour12:false})}`,
+                    fn: async () => {
+                        const previous = dataWidget.value;
+                        try {
+                            const {data} = await requestMaskHistory(`${url}&version=${encodeURIComponent(version.id)}`);
+                            if (state.srcKey !== videoId || !canUseMaskHistory() ||
+                                dataWidget.value !== previous || previous === data) return;
+                            undoHistory.push(previous || "{}");
+                            if (undoHistory.length > 30) undoHistory.shift();
+                            redoHistory.length = 0;
+                            dataWidget.value = data;
+                            trackUnlocked = new Set([1, state.trackId]);
+                            readData();
+                            refreshTrackBtns();
+                            refreshEditHistory();
+                            redraw();
+                            node.setDirtyCanvas?.(true, true);
+                        } catch (error) {
+                            trackingNotice(error.message, "warn");
+                        }
+                    },
+                }));
+                const bounds = historyBtn.getBoundingClientRect();
+                showBarMenu(bounds.left, bounds.bottom + 4, items);
+            } catch (error) {
+                trackingNotice(error.message, "warn");
+            }
+        };
         const stepEditHistory = direction => {
             if (trackingRequest || state.curveDrag || state.rectDrag || state.drawing) return;
             const [from, to] = direction < 0 ? [undoHistory, redoHistory] : [redoHistory, undoHistory];
@@ -3473,6 +3584,11 @@ function wm_ensureViewer(node) {
             img.src = getRealURL(file);
         };
         let trackingRequest = null;
+        const trackingProgress = document.createElement("progress");
+        trackingProgress.setAttribute("aria-label", "遮罩跟踪进度");
+        trackingProgress.style.cssText = "position:absolute;inset:0 0 auto;width:100%;height:8px;z-index:7;accent-color:#30d158;pointer-events:none;";
+        trackingProgress.hidden = true;
+        canvasWrapper.appendChild(trackingProgress);
         let previewFirstFrame = null;
         const activeAutoTracks = () => state.autoTracking.video_id === state.srcKey ? state.autoTracking.tracks : {};
         const trackingNotice = (message, type = "info") => {
@@ -3512,19 +3628,45 @@ function wm_ensureViewer(node) {
             trackingRequest = controller;
             const button = autoTrackBtns[trackDirections.findIndex(([step]) => step === direction)];
             button.textContent = "跟踪中…";
+            const total = spans.reduce((sum, span) => sum + Math.abs(span.end - start), 0);
+            trackingProgress.max = total;
+            trackingProgress.value = 0;
+            trackingProgress.hidden = false;
+            let completed = 0;
+            let progressTimer;
             stopPlay();
             try {
                 const results = [];
                 for (const {step, end} of spans) {
+                    const offset = completed;
+                    const job = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+                        byte => byte.toString(16).padStart(2, "0")).join("");
+                    const poll = async () => {
+                        try {
+                            const response = await api.fetchApi(`/xzg/manual-mask/progress/${job}`,
+                                {signal: controller.signal, cache: "no-store"});
+                            if (response.ok) {
+                                const {processed} = await response.json();
+                                if (trackingRequest === controller && !controller.signal.aborted) {
+                                    trackingProgress.value = Math.max(trackingProgress.value, offset + processed);
+                                    button.textContent = `跟踪中 ${Math.floor(100 * trackingProgress.value / total)}%`;
+                                }
+                            }
+                        } catch {}
+                    };
+                    progressTimer = setInterval(poll, 250);
                     const response = await api.fetchApi("/xzg/manual-mask/track", {
                         method: "POST",
                         headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify({video_id: videoId, first_frame: previewFirstFrame, start, end, polygon}),
+                        body: JSON.stringify({video_id: videoId, first_frame: previewFirstFrame, start, end, polygon, job}),
                         signal: controller.signal,
                     });
                     if (response.status === 404) throw new Error("请重启 ComfyUI 后端并重新加载视频");
                     const result = await response.json();
                     if (!response.ok) throw new Error(result.error || "跟踪请求失败");
+                    clearInterval(progressTimer);
+                    completed += result.transforms.length;
+                    trackingProgress.value = completed;
                     results.push({step, end, result});
                     if (controller.signal.aborted || generation !== previewGeneration) return;
                 }
@@ -3562,7 +3704,8 @@ function wm_ensureViewer(node) {
                         }
                         return region;
                     };
-                    const anchor = transforms.length === Math.abs(end - start) ? keys[end]?.[0] : null;
+                    const anchor = transforms.length === Math.abs(end - start) && result.reliable?.at(-1) !== false
+                        ? keys[end]?.[0] : null;
                     const projectedEnd = anchor ? projectRegion(transforms.at(-1)) : null;
                     const edges = ["x1", "y1", "x2", "y2"];
                     const targetPoly = anchor && (anchor.poly || corners(anchor));
@@ -3573,7 +3716,7 @@ function wm_ensureViewer(node) {
                     const matchingCurves = endCurve && targetCurve?.length === endCurve.length;
                     transforms.forEach((matrix, index) => {
                         const frame = start + step * (index + 1);
-                        if (keys[frame]?.length) return;
+                        if (keys[frame]?.length || result.reliable?.[index] === false) return;
                         const region = projectRegion(matrix);
                         if (anchor) {
                             const t = (index + 1) / transforms.length;
@@ -3610,9 +3753,6 @@ function wm_ensureViewer(node) {
                         region.tracking_reliable = result.reliable?.[index] !== false;
                         frames[state.sampleIdx[frame] ?? frame] = region;
                     });
-                    if (result.reason === "limit") {
-                        trackingNotice(`该方向已跟踪 ${transforms.length} 帧，可从最后一帧继续。`);
-                    }
                 }
                 state.autoTracking = {video_id: videoId, tracks};
                 writeData();
@@ -3622,9 +3762,13 @@ function wm_ensureViewer(node) {
             } catch (error) {
                 if (!controller.signal.aborted) trackingNotice(error.message || "跟踪失败", "error");
             } finally {
+                clearInterval(progressTimer);
                 if (trackingRequest === controller) {
                     trackingRequest = null;
                     autoTrackBtns.forEach((btn, index) => { btn.textContent = trackDirections[index][1]; });
+                    setTimeout(() => {
+                        if (!trackingRequest) trackingProgress.hidden = true;
+                    }, controller.signal.aborted ? 0 : 600);
                 }
             }
         };

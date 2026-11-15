@@ -202,6 +202,13 @@ function cleanupDrag(node) {
     }
 }
 
+function finishSliderDrag(node) {
+    if (!node._xzgUs?._dragging) return;
+    cleanupDrag(node);
+    updateVis(node);
+    node.graph?.change?.();
+}
+
 // ── showSettings ─────────────────────────────
 function showSettings(node) {
     cleanupDrag(node);
@@ -755,7 +762,7 @@ function attachSliderCanvasPointer(node, wrapper, track) {
     g._domEvents?.abort();
     g._pointerWrapper = wrapper;
     g._domEvents = new AbortController();
-    wrapper.addEventListener("pointerdown", (event) => {
+    const startDrag = (event) => {
         if (event.button !== 0) return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -787,6 +794,10 @@ function attachSliderCanvasPointer(node, wrapper, track) {
         const options = { capture: true, signal: events.signal };
         window.addEventListener("pointermove", (move) => {
             if (move.pointerId !== pointerId) return;
+            if (!(move.buttons & 1)) {
+                finishSliderDrag(node);
+                return;
+            }
             move.preventDefault();
             move.stopImmediatePropagation();
             update(move);
@@ -796,15 +807,19 @@ function attachSliderCanvasPointer(node, wrapper, track) {
             up.preventDefault();
             up.stopImmediatePropagation();
             if (up.type === "pointerup") update(up);
-            cleanupDrag(node);
-            updateVis(node);
-            node.graph?.change?.();
+            finishSliderDrag(node);
         };
         window.addEventListener("pointerup", finish, options);
         window.addEventListener("pointercancel", finish, options);
+        wrapper.addEventListener("lostpointercapture", (lost) => {
+            if (lost.target === wrapper && lost.pointerId === pointerId) finishSliderDrag(node);
+        }, options);
+        window.addEventListener("blur", () => finishSliderDrag(node), options);
         try { wrapper.setPointerCapture?.(pointerId); } catch (_) {}
         update(event);
-    }, { capture: true, signal: g._domEvents.signal });
+    };
+    g._startPointerDrag = startDrag;
+    wrapper.addEventListener("pointerdown", startDrag, { capture: true, signal: g._domEvents.signal });
 }
 
 // ── setupSlider ──────────────────────────────
@@ -1024,45 +1039,16 @@ function setupSlider(node) {
             /* ── 滚轮不拦截，交给画布缩放 ── */
             if (event.type === "wheel") return false;
 
-            /* ── mouseup / pointerup：结束拖拽 ── */
-            if (event.type === "mouseup" || event.type === "pointerup") {
-                if (g._dragging) {
-                    g._dragging = false;
-                    if (g._docCleanup) { g._docCleanup(); g._docCleanup = null; }
-                    node.setDirtyCanvas(true, true);
-                    if (node.graph && typeof node.graph.change === "function") node.graph.change();
-                    return true;
-                }
-                return;
-            }
-
-            /* ── mousemove / pointermove：拖拽中实时更新 ── */
-            if ((event.type === "mousemove" || event.type === "pointermove") && g._dragging) {
-                const isInt = p.sliderType === "int";
-                const ratio = clamp((pos[0] - ds.trackLeft) / ds.trackW, 0, 1);
-                let v;
-                if (p.useSnaps && p.snaps && p.snaps.length > 0) {
-                    const snaps = p.snaps;
-                    const idx = Math.round(ratio * (snaps.length - 1));
-                    v = snaps[Math.max(0, Math.min(snaps.length - 1, idx))];
-                } else {
-                    v = p.sliderMin + ratio * (p.sliderMax - p.sliderMin);
-                    v = calcValue(v, p.sliderMin, p.sliderMax, p.sliderStep, isInt);
-                }
-                if (g.widget) g.widget.value = v;
-                node.setDirtyCanvas(true, false);
-                return true;
-            }
+            // LiteGraph uses this return value to set dirty_canvas after our
+            // window listener has already updated the value.
+            if (event.type === "pointermove" || event.type === "mousemove") return g._dragging;
 
             /* ── 仅处理左键 mousedown / pointerdown ── */
             if (event.type !== "mousedown" && event.type !== "pointerdown") return;
             if (event.button !== 0) return;
 
             /* ── 清理可能残留的拖拽状态 ── */
-            if (g._dragging) {
-                g._dragging = false;
-                if (g._docCleanup) { g._docCleanup(); g._docCleanup = null; }
-            }
+            cleanupDrag(node);
 
             /* ── 左键：跳到点击位置并开始拖拽 ── */
             const isInt = p.sliderType === "int";
@@ -1082,49 +1068,44 @@ function setupSlider(node) {
 
             g._dragging = true;
 
-            /* ── document 备用监听（防止 LiteGraph 不转发后续事件时的保底） ── */
+            // 在捕获阶段监听，避免画布消费事件后收不到松手。
             const startCX  = event.clientX;
-            const startVal = v;
+            const startX   = pos[0];
+            const pointerId = event.pointerId;
+            const events = new AbortController();
+            const options = { capture: true, signal: events.signal };
+            const isPointer = event.type === "pointerdown";
 
-            function onDocMove(e2) {
-                if (!g._dragging) return;
+            function onMove(e2) {
+                if (e2.pointerId !== pointerId) return;
+                if (!(e2.buttons & 1)) {
+                    finishSliderDrag(node);
+                    return;
+                }
                 const dx       = e2.clientX - startCX;
                 const scale    = app.canvas.ds.scale || 1;
                 const graphDx  = dx / scale;
-                const ratioD   = graphDx / ds.trackW;
-                let nv = startVal + ratioD * (p.sliderMax - p.sliderMin);
+                const ratio    = clamp((startX + graphDx - ds.trackLeft) / ds.trackW, 0, 1);
+                let nv;
                 if (p.useSnaps && p.snaps && p.snaps.length > 0) {
-                    const snaps = p.snaps;
-                    let idx = 0;
-                    let minDist = Math.abs(nv - snaps[0]);
-                    for (let i = 1; i < snaps.length; i++) {
-                        const dist = Math.abs(nv - snaps[i]);
-                        if (dist < minDist) { minDist = dist; idx = i; }
-                    }
-                    nv = snaps[idx];
+                    nv = p.snaps[Math.round(ratio * (p.snaps.length - 1))];
                 } else {
-                    nv = calcValue(nv, p.sliderMin, p.sliderMax, p.sliderStep, isInt);
+                    nv = calcValue(p.sliderMin + ratio * (p.sliderMax - p.sliderMin),
+                        p.sliderMin, p.sliderMax, p.sliderStep, isInt);
                 }
                 if (g.widget) g.widget.value = nv;
                 node.setDirtyCanvas(true, false);
             }
 
-            function onDocUp() {
-                if (!g._dragging) return;
-                g._dragging = false;
-                g._docCleanup = null;
-                document.removeEventListener("mousemove", onDocMove);
-                document.removeEventListener("mouseup", onDocUp);
-                node.setDirtyCanvas(true, true);
-                if (node.graph && typeof node.graph.change === "function") node.graph.change();
+            function onUp(up) {
+                if (up.pointerId === pointerId) finishSliderDrag(node);
             }
 
-            g._docCleanup = function () {
-                document.removeEventListener("mousemove", onDocMove);
-                document.removeEventListener("mouseup", onDocUp);
-            };
-            document.addEventListener("mousemove", onDocMove);
-            document.addEventListener("mouseup", onDocUp);
+            g._docCleanup = () => events.abort();
+            window.addEventListener(isPointer ? "pointermove" : "mousemove", onMove, options);
+            window.addEventListener(isPointer ? "pointerup" : "mouseup", onUp, options);
+            if (isPointer) window.addEventListener("pointercancel", onUp, options);
+            window.addEventListener("blur", () => finishSliderDrag(node), options);
 
             return true;
         },
@@ -1165,8 +1146,46 @@ function setupSlider(node) {
 app.registerExtension({
     name: "ComfyUI.xiaozhuguang.universal.slider",
 
+    setup() {
+        document.addEventListener("pointerdown", (event) => {
+            if (event.button !== 0 || !globalThis.LiteGraph?.vueNodesMode) return;
+            const path = event.composedPath();
+            const index = path.findIndex((element) => element.matches?.(".lg-node[data-node-id]"));
+            if (index < 0) return;
+            const root = path[index];
+            const node = app.canvas?.graph?.getNodeById(root.dataset.nodeId);
+            if (node?.type !== "XiaozhuguangUniversalSlider") return;
+            if (node.flags.collapsed || path.slice(0, index).some((element) =>
+                element.matches?.(".lg-node-header, [data-corner], [data-testid='slot-connection-dot']"))) return;
+
+            const startDrag = (press) => {
+                if (press !== event) return;
+                press.stopPropagation();
+                node._xzgUs?._startPointerDrag?.(press);
+            };
+            const child = path[index - 1];
+            if (!child) {
+                startDrag(event);
+                return;
+            }
+            // The widget can handle the press first. Unhandled presses on the
+            // body use the same slider drag before reaching the Vue node.
+            child.addEventListener("pointerdown", startDrag, { once: true });
+            setTimeout(() => child.removeEventListener("pointerdown", startDrag), 0);
+        }, true);
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "XiaozhuguangUniversalSlider") return;
+
+        const onMouseDown = nodeType.prototype.onMouseDown;
+        nodeType.prototype.onMouseDown = function (event, pos) {
+            if (onMouseDown?.apply(this, arguments)) return true;
+            if (event.button !== 0 || pos[1] < 0 || this.flags.collapsed ||
+                this.findResizeDirection?.(event.canvasX, event.canvasY)) return false;
+            this._xzgUs?.uiWidget?.mouse(event, pos, this);
+            return true;
+        };
 
         /* ── 圆角标题补丁 ── */
         if (

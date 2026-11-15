@@ -308,15 +308,18 @@ class XiaozhuguangATR:
         # plateau or capping by subject size would unnecessarily shorten feathering.
         # Physical image edges have infinite clearance and require no transition.
         margin = max(0., float(info.get("min_margin", 0)))
-        if margin > 0:
+        oversized = width > ow or height > oh
+        if oversized or margin > 0:
             # Feather outward from the protected region for 90% of the requested
             # margin; leave the final 10% as untouched original pixels. Extra
             # ratio/alignment padding must not widen the transition.
             reserve = margin * .1
             span = np.minimum(margin * .9, np.maximum(0, distance + edge - reserve))
             t = np.clip(distance / np.maximum(span, 1e-6), 0, 1)
-            # Physical frame boundaries are not seams.
-            t = np.where(np.isinf(edge), 0, t)
+            # An oversized crop may have no internal edge anywhere. Keep its
+            # blend local to the subject and requested margin in that case too.
+            if not oversized:
+                t = np.where(np.isinf(edge), 0, t)
         else:
             # Legacy crop records carry no requested margin.
             span = distance + edge

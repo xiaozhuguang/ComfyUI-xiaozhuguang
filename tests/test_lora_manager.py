@@ -33,6 +33,7 @@ class LoraManagerTests(unittest.TestCase):
         self.models.mkdir()
         fp = types.ModuleType("folder_paths")
         fp.get_public_user_directory = lambda user: str(self.base / "user" / user) if not user.startswith("__") else None
+        fp.get_user_directory = lambda: str(self.base / "user")
         fp.get_folder_paths = lambda kind: [str(self.models)]
         fp.folder_names_and_paths = {"loras": ([str(self.models)], {".safetensors"})}
         comfy = types.ModuleType("comfy")
@@ -66,6 +67,24 @@ class LoraManagerTests(unittest.TestCase):
         self.assertEqual(self.m.read_library("default")["items"], {})
         self.assertFalse(thumbnail.exists())
 
+    def test_missing_thumbnail_clears_only_thumbnail_flag(self):
+        key = self.item["id"]
+        request = types.SimpleNamespace(match_info={"id": key})
+        for scan_first in (True, False):
+            with self.subTest(scan_first=scan_first):
+                data = self.m.read_library("default")
+                data["items"][key].update(notes="自己的备注", thumbnail=True)
+                self.m.write_library("default", data)
+                if scan_first:
+                    self.assertNotIn("thumbnail", self.m.scan("default")["items"][0])
+                else:
+                    with patch.object(self.m, "request_user", return_value="default"):
+                        with self.assertRaises(self.m.web.HTTPNotFound):
+                            asyncio.run(self.m.get_thumbnail(request))
+                item = self.m.read_library("default")["items"][key]
+                self.assertNotIn("thumbnail", item)
+                self.assertEqual(item["notes"], "自己的备注")
+
     def test_move_folder_keeps_id_and_loader_resolves_new_path(self):
         (self.models / "人物").mkdir()
         self.m.file_operation("default", {"action": "move", "root": str(self.models), "path": self.item["path"], "target": "人物/测试长名称.safetensors"})
@@ -86,6 +105,57 @@ class LoraManagerTests(unittest.TestCase):
             self.assertIsNone(load.call_args.args[1])
             self.assertEqual(load.call_args.args[-2:], (.6, 0))
             self.assertEqual(self.m.XiaozhuguangLoraManager.RETURN_TYPES, ("MODEL",))
+
+    def test_stale_id_uses_unique_saved_path_and_reports_missing_or_ambiguous_file(self):
+        node = self.m.XiaozhuguangLoraManager()
+        path = self.item["path"]
+        selection = {"id": "stale-id", "path": path, "strength_model": .7}
+        self.assertEqual(node.load(0, json.dumps([selection])), (.7,))
+        fingerprint = node.IS_CHANGED(loras=json.dumps([selection]))
+        self.assertEqual(fingerprint[0][:2], (str(self.models / path), .7))
+
+        second_root = self.base / "other-loras"
+        second_root.mkdir()
+        (second_root / path).write_bytes(b"other")
+        with patch.object(self.m, "roots", return_value=[str(self.models), str(second_root)]):
+            with self.assertRaisesRegex(ValueError, "多个 LoRA 根目录"):
+                node.load(0, json.dumps([selection]))
+            selection["root"] = str(self.models)
+            self.assertEqual(node.load(0, json.dumps([selection])), (.7,))
+            (self.models / path).unlink()
+            with self.assertRaisesRegex(ValueError, "LoRA 文件不存在"):
+                node.load(0, json.dumps([selection]))
+        selection["enabled"] = False
+        self.assertEqual(node.load(0, json.dumps([selection])), (0,))
+
+    def test_path_selection_loads_and_fingerprints_without_metadata_library(self):
+        node = self.m.XiaozhuguangLoraManager()
+        path = self.item["path"]
+        selection = json.dumps([{"root": str(self.models), "path": path, "strength_model": .6}])
+        with patch.object(self.m, "read_library", side_effect=AssertionError("unexpected library read")):
+            self.assertEqual(node.load(0, selection), (.6,))
+            self.assertEqual(node.IS_CHANGED(loras=selection)[0][:2], (str(self.models / path), .6))
+
+    def test_cache_fingerprint_tracks_only_active_lora_files(self):
+        node = self.m.XiaozhuguangLoraManager
+        active = self.models / self.item["path"]
+        inactive = self.models / "inactive.safetensors"
+        inactive.write_bytes(b"inactive")
+        inactive_id = next(item["id"] for item in self.m.scan("default")["items"] if item["path"] == inactive.name)
+        selections = json.dumps([{"id": self.item["id"]}, {"id": inactive_id, "enabled": False}])
+
+        original = node.IS_CHANGED(loras=selections)
+        inactive.write_bytes(b"changed inactive file")
+        self.assertEqual(node.IS_CHANGED(loras=selections), original)
+        active.write_bytes(b"changed active file")
+        replaced = node.IS_CHANGED(loras=selections)
+        self.assertNotEqual(replaced, original)
+        self.assertEqual(node.IS_CHANGED(loras=selections), replaced)
+
+        self.m.file_operation("default", {
+            "action": "move", "root": str(self.models), "path": active.name, "target": "moved.safetensors",
+        })
+        self.assertNotEqual(node.IS_CHANGED(loras=selections), replaced)
 
     def test_conflict_and_escape_leave_files_untouched(self):
         (self.models / "other.safetensors").write_bytes(b"other")
@@ -212,12 +282,14 @@ class LoraManagerTests(unittest.TestCase):
             f["_media_build_archive"](str(path), config, "default")
             with zipfile.ZipFile(path) as archive:
                 self.assertEqual(set(archive.namelist()), {"config.json", "lora_library.zip"})
+            data["items"][self.item["id"]]["notes"] = "导出后的备注"
+            self.m.write_library("default", data)
             checked = f["_media_read_archive"](str(path), False, "other-user")
             self.assertEqual(checked["loraLibrary"]["count"], 1)
-            self.assertFalse(self.m.library_dir("other-user").exists())
+            self.assertEqual(self.m.read_library("other-user"), data)
             with self.assertRaises(ValueError):
                 f["_media_read_archive"](str(path), {"loraLibrary": False}, "other-user")
-            self.assertFalse(self.m.library_dir("other-user").exists())
+            self.assertEqual(self.m.read_library("other-user"), data)
             result = f["_media_read_archive"](str(path), {"loraLibrary": True}, "other-user")
             self.assertEqual(result["restoredLoras"], 1)
             self.assertEqual(self.m.read_library("other-user")["items"][self.item["id"]]["notes"], "统一备份")

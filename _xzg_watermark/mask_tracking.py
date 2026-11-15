@@ -1,15 +1,11 @@
 """Track an outline using local regions of the original input frames."""
 import math
-import time
 
 import cv2
 import numpy as np
 
 
-MAX_STEPS = 600
-
-
-def track_outline(image, frame_indices, start, end, polygon):
+def track_outline(image, frame_indices, start, end, polygon, progress=None):
     if (type(start) is not int or type(end) is not int
             or not 0 <= start < len(frame_indices) or not 0 <= end < len(frame_indices) or start == end):
         raise ValueError("请选择有效的跟踪起点和方向")
@@ -26,9 +22,6 @@ def track_outline(image, frame_indices, start, end, polygon):
     transforms = []
     reliable = []
     direction = 1 if end > start else -1
-    limit = min(abs(end - start), MAX_STEPS)
-    deadline = time.monotonic() + 45
-    reason = "limit" if limit < abs(end - start) else "complete"
     options = dict(winSize=(21, 21), maxLevel=3)
 
     def gray(index, bounds, dimensions):
@@ -69,10 +62,7 @@ def track_outline(image, frame_indices, start, end, polygon):
     previous = start
     cached_reference = None
     reference_key = None
-    for offset in range(1, limit + 1):
-        if time.monotonic() >= deadline:
-            reason = "limit"
-            break
+    for offset in range(1, abs(end - start) + 1):
         current = start + offset * direction
         low, high = outline.min(axis=0), outline.max(axis=0)
         padding = np.maximum(48, (high - low) * .5)
@@ -107,4 +97,6 @@ def track_outline(image, frame_indices, start, end, polygon):
         normalized[:, :2] *= size
         normalized /= size[:, None]
         transforms.append(normalized.tolist())
-    return {"transforms": transforms, "reliable": reliable, "reason": reason}
+        if progress is not None:
+            progress(offset)
+    return {"transforms": transforms, "reliable": reliable, "reason": "complete"}

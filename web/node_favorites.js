@@ -5668,6 +5668,14 @@ app.registerExtension({
 
     beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "XiaozhuguangDuplicateFirstFrame") {
+            const syncMinimumWidget = (node) => {
+                const enabled = node.widgets?.find(widget => widget.name === "multi_fill");
+                const minimum = node.widgets?.find(widget => widget.name === "min_frames");
+                if (enabled && minimum) {
+                    minimum.disabled = !enabled.value;
+                    node.graph?.setDirtyCanvas(true, true);
+                }
+            };
             const moveFpsToBottom = (node) => {
                 const index = node.inputs?.findIndex(input => input.name === "fps") ?? -1;
                 if (index < 0 || index === node.inputs.length - 1) return;
@@ -5681,6 +5689,11 @@ app.registerExtension({
             nodeType.prototype.onConfigure = function () {
                 const result = origOnConfigure?.apply(this, arguments);
                 moveFpsToBottom(this);
+                const fillPosition = this.widgets?.find(widget => widget.name === "fill_position");
+                if (fillPosition?.value === "不补帧") fillPosition.value = "前补帧";
+                const frameRule = this.widgets?.find(widget => widget.name === "frame_rule");
+                if (frameRule?.value === "H3 滑窗对齐") frameRule.value = "17N+5";
+                syncMinimumWidget(this);
                 return result;
             };
             const translatedName = xzgT("小珠光帧优化", "Xiaozhuguang Frame Optimization");
@@ -5734,11 +5747,18 @@ app.registerExtension({
                 const w = this.widgets?.find(w => w.name === "multi_fill");
                 if (w) {
                     w.label = xzgT("开启下限", "enable minimum");
+                    const originalCallback = w.callback;
+                    w.callback = (...args) => {
+                        const result = originalCallback?.apply(w, args);
+                        syncMinimumWidget(this);
+                        return result;
+                    };
                 }
                 const minFramesWidget = this.widgets?.find(w => w.name === "min_frames");
                 if (minFramesWidget) {
                     minFramesWidget.label = xzgT("下限值", "minimum frames");
                 }
+                syncMinimumWidget(this);
                 const fpsWidget = this.widgets?.find(w => w.name === "fps");
                 if (fpsWidget) fpsWidget.label = xzgT("帧率", "fps");
                 const frameRuleWidget = this.widgets?.find(w => w.name === "frame_rule");

@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { xzgCopyImageToClipboard } from "./xzg_image_clipboard.js";
+import { snapImageRect } from "./xzg_image_canvas.js";
 import { xzgTh } from "./xzg_i18n.js";
 
 const XZG_IMAGE_COMPARE_TYPE = "XiaozhuguangImageCompare";
@@ -657,29 +658,18 @@ class XzgImageCompareWidget {
             targetW = nodeHeight * imageAspect;
         }
 
-        const destX = IMAGE_MARGIN + (effW - targetW) / 2;
-        const destY = y + (nodeHeight - targetH) / 2;
+        const x = IMAGE_MARGIN + (effW - targetW) / 2;
+        const top = y + (nodeHeight - targetH) / 2;
+        const [destX, destY, destWidth, destHeight] = snapImageRect(ctx, x, top, targetW, targetH);
+        if (destWidth <= 0 || destHeight <= 0) return;
 
-        const widthMultiplier = imgW / targetW;
-        const sourceX = 0;
-        const sourceY = 0;
-        const cropOffset = cropX != null ? cropX - destX : 0;
-        // 限制裁剪偏移在 [0, targetW]：鼠标进入图片右侧留白区时 cropOffset 会超过图片宽度，
-        // 若直接用会导致 sourceWidth > imgW（源图被 clamp 但目标宽度不变）→ B 图横向拉伸变形。
-        const clampOffset = cropX != null ? Math.min(Math.max(cropOffset, 0), targetW) : 0;
-        const sourceWidth = cropX != null ? clampOffset * widthMultiplier : imgW;
-        const sourceHeight = imgH;
-        const destWidth = cropX != null ? clampOffset : targetW;
-        const destHeight = targetH;
+        const visibleWidth = cropX == null ? targetW : Math.min(Math.max(cropX - x, 0), targetW);
+        const [, , drawWidth] = snapImageRect(ctx, x, top, visibleWidth, targetH);
+        if (drawWidth <= 0) return;
 
         ctx.save();
-        ctx.beginPath();
-        if (cropX != null) {
-            ctx.rect(destX, destY, destWidth, destHeight);
-            ctx.clip();
-        }
-        drawCheckerboard(ctx, node, imgData, destX, destY, destWidth, destHeight, targetW);
-        ctx.drawImage(img, sourceX, sourceY, sourceWidth, sourceHeight, destX, destY, destWidth, destHeight);
+        drawCheckerboard(ctx, node, imgData, destX, destY, drawWidth, destHeight, destWidth);
+        ctx.drawImage(img, 0, 0, imgW * (drawWidth / destWidth), imgH, destX, destY, drawWidth, destHeight);
 
         ctx.restore();
     }

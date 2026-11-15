@@ -1312,7 +1312,21 @@ class XiaozhuguangNinimaxH3Prompt:
         print(f"[小珠光 H3] 推理：{output_language}")
         try:
             out = _xzg_call_chat_completion(llm, messages=messages, params=params)
-        except (RuntimeError, KeyError, ValueError, Exception) as e:
+        except Exception as e:
+            if (
+                total_image_count > 0
+                and isinstance(e, ValueError)
+                and "mtmd_helper_eval_chunk_single" in str(e)
+                and str(e).endswith("Media evaluation failed with error code 1.")
+            ):
+                raise ValueError(
+                    f"视觉推理失败：{total_image_count} 张参考图，当前模型上下文 n_ctx={n_ctx}。\n"
+                    "如果 ComfyUI 控制台显示 'failed to find a memory slot'，"
+                    "请提高上游模型加载器的 context_length，或减少参考图数量、缩小图片。\n"
+                    "小珠光模型加载器的 24GB 档会将上下文限制在 8192；"
+                    "如需更长上下文，请选择 48GB 档并设置 context_length。\n"
+                    f"底层错误：{e}"
+                ) from e
             if _xzg_is_model_valid(llm) and "Context Shift is explicitly disabled" not in str(e):
                 if "Context Shift" in str(e):
                     current_n_ctx = getattr(llm, "n_ctx", "unknown")

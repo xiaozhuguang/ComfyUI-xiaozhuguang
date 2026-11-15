@@ -14,7 +14,7 @@ _XZG_TEXT_TYPE = _XzgTextType("*")
 
 
 class XiaozhuguangStringToNumber:
-    """将任意输入转换为文本、整数、浮点数与字符串。"""
+    """将任意输入转换为整数、浮点、文本、字符串和数字。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -25,11 +25,11 @@ class XiaozhuguangStringToNumber:
             },
         }
 
-    RETURN_TYPES = ("INT", "FLOAT", _XZG_TEXT_TYPE, "STRING")
-    RETURN_NAMES = ("integer", "float", "text", "string")
+    RETURN_TYPES = ("INT", "FLOAT", _XZG_TEXT_TYPE, "STRING", "NUMBER")
+    RETURN_NAMES = ("integer", "float", "text", "string", "number")
     FUNCTION = "convert"
     CATEGORY = "小珠光/逻辑"
-    DESCRIPTION = "将任意输入转换为整数、浮点数、文本和字符串；无法解析为数值时整数与浮点输出 0。"
+    DESCRIPTION = "将任意输入转换为整数、浮点、文本、字符串和数字（NUMBER）；无法解析时数值端口输出 0。"
 
     @staticmethod
     def _to_text(value):
@@ -63,4 +63,4 @@ class XiaozhuguangStringToNumber:
             result = math.floor(value)
         else:
             result = round(value)
-        return int(result), value, text_value, text_value
+        return int(result), value, text_value, text_value, value

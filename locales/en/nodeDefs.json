@@ -303,8 +303,7 @@
     "inputs": {
       "image_list": { "name": "image list" },
       "index": { "name": "index" },
-      "batch_mode": { "name": "batch mode" },
-      "remove_alpha": { "name": "Remove image alpha" }
+      "batch_mode": { "name": "batch mode" }
     },
     "outputs": {
       "0": { "name": "images" },
@@ -916,8 +915,8 @@
       "ratio": {
         "name": "ratio"
       },
-      "startup_threshold": {
-        "name": "startup threshold"
+      "enable_crop": {
+        "name": "Enable Crop"
       },
       "fill_color": {
         "name": "fill color"
@@ -932,13 +931,26 @@
       },
       "2": {
         "name": "cropped mask"
-      }
+      },
+      "3": { "name": "Width" },
+      "4": { "name": "Height" }
     }
   },
   "XiaozhuguangImageRestore": {
     "display_name": "Xiaozhuguang Image Restore",
+    "description": "Pastes a processed image back into the original. With batched inputs, it uses the first image from each input and the first mask. The seam treatment preview shows the current seam and feathered transition in red. The blue line marks where the seam would be with zero mask expansion and the same feathering. Blue takes precedence where they overlap.",
     "inputs": {
-      "resize_mode": { "name": "Resize Mode" },
+      "resize_mode": {
+        "name": "Resize Mode",
+        "tooltip": "Uses the selected antialiasing filter for downscaling and Lanczos4 for upscaling. The fast option is suited to large reductions.",
+        "options": {
+          "Pillow Lanczos": { "text": "Pillow Lanczos" },
+          "Pillow Lanczos (fast)": { "text": "Pillow Lanczos (fast)" },
+          "Pillow Bicubic": { "text": "Pillow Bicubic" },
+          "Pillow Bilinear": { "text": "Pillow Bilinear" }
+        }
+      },
+      "seam_preview": { "name": "Seam Preview", "tooltip": "Show the automatically detected seam and feathered transition" },
       "original_image": {
         "name": "original image"
       },
