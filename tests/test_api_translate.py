@@ -1,14 +1,22 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import threading
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location("api_translate", Path(__file__).resolve().parents[1] / "nodes/xzg_api_translate.py")
+NODES = Path(__file__).resolve().parents[1] / "nodes"
+package = types.ModuleType("xzg_api_translate_test")
+package.__path__ = [str(NODES)]
+folder_paths = types.ModuleType("folder_paths")
+folder_paths.models_dir = str(Path(__file__).resolve().parents[1] / ".test_models")
+spec = importlib.util.spec_from_file_location("xzg_api_translate_test.xzg_api_translate", NODES / "xzg_api_translate.py")
 m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
+with patch.dict(sys.modules, {package.__name__: package, "folder_paths": folder_paths}):
+    spec.loader.exec_module(m)
 
 
 class TranslationTest(unittest.TestCase):
@@ -43,20 +51,24 @@ class TranslationTest(unittest.TestCase):
             self.assertEqual(node.translate(*inputs), ("Hello",))
             self.assertEqual(post.call_count, 2)
 
-    def test_gguf_delegates_to_installed_node(self):
-        class Backend:
-            @classmethod
-            def INPUT_TYPES(cls):
-                return {"required": {
-                    "model": (["Hy-MT2.gguf"], {"default": "Hy-MT2.gguf"}),
-                    "translate_style": (["Default"],),
-                    "translate_to": (["Auto", "Japanese"],),
-                    "unload_after_run": ("BOOLEAN", {"default": False}),
-                }}
+    def test_gguf_delegates_to_local_translator(self):
+        class Translator:
+            def __init__(self):
+                self.calls = []
 
+            def translate(self, **kwargs):
+                self.calls.append(kwargs)
+                return ("こんにちは",)
+
+        translator = Translator()
         node = m.XiaozhuguangAPITranslate()
-        with patch.object(m, "gguf_backend", return_value=Backend), \
-                patch.object(Backend, "translate", return_value=("こんにちは",), create=True) as translate, \
+        with patch.object(m, "gguf_inputs", return_value={
+                    "gguf_model": (["Hy-MT2.gguf"], {"default": "Hy-MT2.gguf"}),
+                    "gguf_style": (["Default"], {"default": "Default"}),
+                    "gguf_target": (["Auto", "Japanese"], {"default": "Auto"}),
+                    "gguf_unload": ("BOOLEAN", {"default": False}),
+                }), \
+                patch.object(m, "HyMT2Translator", return_value=translator) as factory, \
                 patch.object(m.requests, "post") as post:
             self.assertEqual(node.INPUT_TYPES()["optional"]["gguf_model"][0], ["Hy-MT2.gguf"])
             result = node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
@@ -64,8 +76,9 @@ class TranslationTest(unittest.TestCase):
             self.assertEqual(result, ("こんにちは",))
             self.assertEqual(node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
                                             gguf_target="Japanese", gguf_unload=True), result)
-            translate.assert_called_once_with(model="Hy-MT2.gguf", translate_style="Default",
-                                              translate_to="Japanese", text="Hello", unload_after_run=True)
+            factory.assert_called_once_with()
+            self.assertEqual(translator.calls, [dict(model="Hy-MT2.gguf", translate_style="Default",
+                                                     translate_to="Japanese", text="Hello", unload_after_run=True)])
             with self.assertRaises(ValueError):
                 node.translate("Hello", "", "", "", "English", provider=m.GGUF_PROVIDER,
                                gguf_model="../other.gguf")

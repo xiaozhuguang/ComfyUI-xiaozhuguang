@@ -40,7 +40,7 @@ class XiaozhuguangBypassCheck:
     RETURN_TYPES = ("BOOLEAN",)
     RETURN_NAMES = ("判断",)
     FUNCTION = "execute"
-    CATEGORY = "xiaozhuguang"
+    CATEGORY = "小珠光/逻辑"
     DESCRIPTION = "检测「输入」所连接的上游节点是否为绕过状态。返回 true=已绕过，false=开启。前端每次提交时检测并注入状态，状态未变时复用缓存。"
 
     # bypass_status is a submitted input, so ComfyUI already invalidates the

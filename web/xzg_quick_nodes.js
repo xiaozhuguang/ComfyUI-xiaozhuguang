@@ -517,7 +517,7 @@ class XZGQuickNodes {
                 }
             };
             
-            const separator = { content: null };
+            const separator = null;
             
             let insertIndex = menuOptions.length;
             for (let i = 0; i < menuOptions.length; i++) {

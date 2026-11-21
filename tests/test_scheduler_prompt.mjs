@@ -3,6 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import { test } from "node:test";
 import { prepareSchedulerPrompt, useSchedulerCache, prepareMergePrompt } from "../web/lib/xzg_scheduler_prompt.mjs";
+import { createVideoOutputCache } from "../web/lib/xzg_video_output_cache.mjs";
 
 const source = fs.readFileSync(new URL("../web/xzg_video_batch.js", import.meta.url), "utf8");
 const start = source.indexOf("function filterPromptOutput(");
@@ -10,6 +11,33 @@ const end = source.indexOf("\n}", start) + 2;
 const context = vm.createContext({});
 vm.runInContext(source.slice(start, end), context);
 const prune = context.filterPromptOutput;
+
+test("disk merge retains the saver prefix before pruning the saver", () => {
+    const prompt = {output: {
+        1: {inputs: {}},
+        2: {class_type: "XiaozhuguangVideoSaveDaVinci", inputs: {图像: ["1", 0], 文件名前缀: "成片"}},
+    }};
+    prune(prompt, new Set(["1", "2"]));
+    prepareMergePrompt(prompt, 1, new Set(["1"]), true);
+    prune(prompt, new Set(["1"]));
+    assert.deepEqual(Object.keys(prompt.output), ["1"]);
+    assert.equal(prompt.output[1].inputs.文件名前缀, "成片");
+});
+
+test("disk video preview is restored only to the originating workflow", () => {
+    const values = new Map();
+    const storage = {getItem: key => values.get(key), setItem: (key, value) => values.set(key, value)};
+    const cache = createVideoOutputCache(storage);
+    const seen = [];
+    cache.subscribe({id: 2, graph: {id: "another-workflow"}}, output => seen.push(output));
+    const video = {filename: "成片_1.mp4", subfolder: "", type: "output"};
+    cache.publish({id: "original-workflow"}, [2], video);
+    assert.deepEqual(seen, []);
+    assert.deepEqual(createVideoOutputCache(storage).get({id: "original-workflow"}, 2), video);
+    cache.subscribe({id: 2, graph: {id: "original-workflow"}}, output => seen.push(output));
+    cache.publish({id: "original-workflow"}, [2], video);
+    assert.deepEqual(seen, [{video: [video]}]);
+});
 
 test("preparation keeps actual image/audio/fps/mask input dependencies", () => {
     const prompt = {output: {

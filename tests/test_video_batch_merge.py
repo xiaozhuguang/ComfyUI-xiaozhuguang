@@ -16,6 +16,16 @@ Merge = namespace["XiaozhuguangVideoBatchMerge"]
 
 
 class MergeTest(unittest.TestCase):
+    def test_disk_segment_reports_same_id_as_buffer_list(self):
+        memory["reset_segments"]()
+        self.addCleanup(memory["reset_segments"])
+        directory = Path("segment")
+        first = memory["append_segment"]("79", None, None, 24, {}, directory=directory)
+        second = memory["append_segment"]("79", None, None, 24, {}, directory=directory)
+        files = memory["list_segments"]()["byNode"]["79"]["files"]
+        self.assertEqual(files, [first["filename"], second["filename"]])
+        self.assertNotEqual(first["filename"], second["filename"])
+
     def test_processed_fps_survives_finalization_without_upstream_inputs(self):
         memory["reset_segments"]()
         node = Merge()

@@ -83,12 +83,14 @@ export class XiaozhuguangVideoPlayer {
         this._showUi = options.ui !== false;
         this._frameCountOverlayMode = options.frameCountOverlay || null;
         this._showResolutionOverlay = options.resolutionOverlay ?? (this._frameCountOverlayMode === "total");
+        // 额外显示帧率行：加载器 range 模式自带；保存节点（total 模式）通过 fpsOverlay 开启
+        this._showFpsOverlay = !!options.fpsOverlay || this._frameCountOverlayMode === "range";
         // 独占解码：同步对比预览等多播放器同时 seek/渲染时使用，
         // 避免共享解码器的渲染状态互相抢占（见 _loadDecoderAsync / getExclusive）
         this._exclusiveDecoder = !!options.exclusiveDecoder;
         this._preserveSourceQuality = !!options.preserveSourceQuality;
         this._playbackBufferMaxFrames = Number.isFinite(options.playbackBufferFrames)
-            ? Math.max(2, Math.min(10, Math.round(options.playbackBufferFrames))) : 10;
+            ? Math.max(2, Math.min(24, Math.round(options.playbackBufferFrames))) : 10;
         // 低内存版选项（小珠光视频加载低内存版专用，默认关闭不影响既有播放器）：
         // - decoderPool：自带 LRU 上限的独立解码器池（B2，切换视频自动释放旧解码器）
         // - streamSource：流式打开（B3，UrlSource 按 Range 拉取，整文件不驻留内存）
@@ -302,7 +304,7 @@ export class XiaozhuguangVideoPlayer {
                 this._resolutionLabel = document.createElement("div");
                 this._resolutionLabel.style.cssText = "font-size:16px;line-height:1.4;";
                 this._frameCountOverlay.appendChild(this._resolutionLabel);
-                if (this._frameCountOverlayMode === "range") {
+                if (this._frameCountOverlayMode === "range" || this._showFpsOverlay) {
                     this._fpsLabel = document.createElement("div");
                     this._fpsLabel.style.cssText = this._resolutionLabel.style.cssText;
                     this._frameCountOverlay.appendChild(this._fpsLabel);
@@ -1822,8 +1824,7 @@ export class XiaozhuguangVideoPlayer {
         this._currentTime = target;
         if (this._comparisonFile && !this._comparisonCacheReady && !this._isPlayingState) {
             this._updateProgressDisplay(target, dur);
-            this._seekComparisonFile(target);
-            return;
+            return this._seekComparisonFile(target);
         }
         if (this._comparisonCacheReady && !this._isPlayingState) {
             const frames = this._comparisonFrames;
@@ -1991,6 +1992,8 @@ export class XiaozhuguangVideoPlayer {
         }
         const controller = new AbortController();
         this._comparisonRequest = controller;
+        // 默认读取原始分辨率，保证对比清晰度；确需代理时可在 URL 加 proxy=720。
+        const proxyHeight = Math.max(0, Number(params.get("proxy")) || 0);
         try {
             const response = await fetch("/xzg/video_compare_frames", {
                 method: "POST",
@@ -2001,6 +2004,7 @@ export class XiaozhuguangVideoPlayer {
                     type: params.get("type") || "input",
                     subfolder: params.get("subfolder") || "",
                     start, end, i420: typeof VideoFrame === "function",
+                    max_height: proxyHeight || undefined,
                 }),
                 signal: controller.signal,
             });
@@ -2039,36 +2043,71 @@ export class XiaozhuguangVideoPlayer {
                             this._releaseComparisonFile(url);
                             throw new Error("FFmpeg returned an empty frame index");
                         }
-                        const file = { url, frames, size: offset, i420, transfer: message.transfer };
+                        const file = { url, frames, size: offset, i420, color: message.color || null };
                         this._comparisonFile = file;
-                        const cachedFrames = [];
-                        const timing = { requests: 0, bytes: 0, responseMs: 0, receiveMs: 0, frameViewsMs: 0 };
-                        const preloadStart = performance.now();
-                        const batchBytes = 128 * 1024 * 1024;
-                        for (let start = 0; start < frames.length;) {
-                            let end = start + 1;
-                            while (end < frames.length &&
-                                frames[end].offset + frames[end].size - frames[start].offset <= batchBytes) {
-                                end++;
-                            }
-                            const batch = await this._readComparisonFrames(file, start, end - start, controller.signal, timing);
-                            cachedFrames.push(...batch);
-                            start = end;
-                            onProgress(0.5 + 0.5 * cachedFrames.length / frames.length);
+                        if (message.reused) {
+                            console.info("[小珠光视频对比] 命中持久缓存，跳过 FFmpeg 解码", frames.length);
                         }
+                        // 按真实单帧字节数收紧/放宽预缓冲：I420 只占 RGBA 的约 1/2.7。
+                        const frameBytes = file.frames[0]?.size || 0;
+                        if (frameBytes > 0) {
+                            this._playbackBufferSize = Math.max(2, Math.min(
+                                this._playbackBufferSize || 10,
+                                Math.floor((200 * 1024 * 1024) / frameBytes)
+                            ));
+                        }
+                        const timing = { requests: 0, bytes: 0, responseMs: 0, receiveMs: 0, frameViewsMs: 0 };
+                        const prepareStart = performance.now();
+                        // 小体量：等全部帧缓存完成再允许播放（与旧版一致，最流畅、无逐帧 IO 延迟）。
+                        // 超过上限才走按需读取，避免整段原始帧堆进浏览器内存导致崩溃。
+                        const fullPreloadLimit = 512 * 1024 * 1024;
+                        if (offset <= fullPreloadLimit) {
+                            const cachedFrames = [];
+                            const batchBytes = 96 * 1024 * 1024;
+                            for (let start = 0; start < frames.length;) {
+                                let end = start + 1;
+                                while (end < frames.length &&
+                                    frames[end].offset + frames[end].size - frames[start].offset <= batchBytes) {
+                                    end++;
+                                }
+                                const batch = await this._readComparisonFrames(file, start, end - start, controller.signal, timing);
+                                cachedFrames.push(...batch);
+                                start = end;
+                                onProgress(0.8 + 0.2 * cachedFrames.length / frames.length);
+                            }
+                            if (this._destroyed || controller.signal.aborted) return;
+                            this._comparisonFrames = cachedFrames;
+                            this._comparisonCacheReady = true;
+                            console.info("[小珠光视频对比] 全量缓存完成", JSON.stringify({
+                                filename: params.get("filename") || "绝对路径视频",
+                                proxy: proxyHeight ? `${proxyHeight}p` : "original",
+                                frames: cachedFrames.length,
+                                bytes: offset,
+                                elapsedMs: Math.round(performance.now() - prepareStart),
+                                ...timing,
+                            }));
+                            onProgress(1);
+                            return;
+                        }
+                        // 大体量：只预读首帧校验 Range 通路，其余帧在 seek/播放时按需拉取。
+                        await this._readComparisonFrames(file, 0, Math.min(2, frames.length), controller.signal, timing);
                         if (this._destroyed || controller.signal.aborted) return;
-                        this._comparisonFrames = cachedFrames;
-                        this._comparisonCacheReady = true;
-                        console.info("[小珠光视频对比] 全量预读计时", JSON.stringify({
+                        this._comparisonFrames = null;
+                        this._comparisonCacheReady = false;
+                        this._startComparisonKeepAlive(url);
+                        console.info("[小珠光视频对比] 按需读取已启用", JSON.stringify({
                             filename: params.get("filename") || "绝对路径视频",
-                            frames: cachedFrames.length,
-                            elapsedMs: Math.round(performance.now() - preloadStart),
+                            proxy: proxyHeight ? `${proxyHeight}p` : "original",
+                            frames: frames.length,
+                            frameBytes: frames[0].size,
+                            bytes: offset,
+                            warmupMs: Math.round(performance.now() - prepareStart),
                             ...timing,
                         }));
                         onProgress(1);
                         return;
                     }
-                    onProgress(message.progress * 0.5);
+                    onProgress(message.progress * 0.8);
                 }
             }
             throw new Error("FFmpeg frame index was not returned");
@@ -2080,6 +2119,21 @@ export class XiaozhuguangVideoPlayer {
 
     _releaseComparisonFile(url) {
         fetch(url, { method: "DELETE", keepalive: true }).catch(() => {});
+    }
+
+    // 按需读取期间服务端缓存仍需存活：默认 30 分钟无访问会回收，定期 HEAD 续期。
+    _startComparisonKeepAlive(url) {
+        this._stopComparisonKeepAlive();
+        this._comparisonKeepAlive = setInterval(() => {
+            fetch(url, { method: "HEAD", cache: "no-store" }).catch(() => {});
+        }, 10 * 60 * 1000);
+    }
+
+    _stopComparisonKeepAlive() {
+        if (this._comparisonKeepAlive) {
+            clearInterval(this._comparisonKeepAlive);
+            this._comparisonKeepAlive = null;
+        }
     }
 
     _comparisonFrameIndex(time) {
@@ -2110,7 +2164,7 @@ export class XiaozhuguangVideoPlayer {
         if (data.byteLength !== endByte - firstByte) throw new Error("视频缓存数据不完整");
         const frames = file.frames.slice(start, end).map(({ timestamp, width, height, offset, size }) => {
             const pixels = new Uint8ClampedArray(data, offset - firstByte, size);
-            if (file.i420) return { timestamp, width, height, yuv: pixels, transfer: file.transfer };
+            if (file.i420) return { timestamp, width, height, yuv: pixels, colorSpace: file.color };
             return { timestamp, imageData: new ImageData(pixels, width, height) };
         });
         if (timing) {
@@ -2150,10 +2204,16 @@ export class XiaozhuguangVideoPlayer {
                 this._canvas.height = height;
             }
             if (frame.yuv) {
+                const color = frame.colorSpace || {};
                 const videoFrame = new VideoFrame(frame.yuv, {
                     format: "I420", codedWidth: width, codedHeight: height,
                     timestamp: Math.round(frame.timestamp * 1000000),
-                    colorSpace: { matrix: "bt709", primaries: "bt709", transfer: frame.transfer, fullRange: false },
+                    colorSpace: {
+                        matrix: color.matrix || "bt709",
+                        primaries: color.primaries || "bt709",
+                        transfer: color.transfer || "bt709",
+                        fullRange: !!color.full_range,
+                    },
                 });
                 try {
                     ctx.drawImage(videoFrame, 0, 0);
@@ -2174,14 +2234,36 @@ export class XiaozhuguangVideoPlayer {
             const controller = new AbortController();
             this._comparisonRead = controller;
             const file = this._comparisonFile;
-            const batchSize = 8;
-            let index = this._comparisonFrameIndex(time);
+            // 按帧字节数限制单次 Range 读取量（约 96MB），4K 时自动减小批量
+            const frameBytes = file.frames[0]?.size || 1;
+            const batchSize = Math.max(1, Math.min(8, Math.floor((96 * 1024 * 1024) / frameBytes)));
+            let nextFetch = this._comparisonFrameIndex(time);
             let batch = [];
+            let pending = null;
+            const startFetch = () => {
+                if (pending || nextFetch >= file.frames.length) return;
+                const fetchStart = nextFetch;
+                const count = Math.min(batchSize, file.frames.length - fetchStart);
+                pending = this._readComparisonFrames(file, fetchStart, count, controller.signal)
+                    .then((frames) => {
+                        nextFetch = fetchStart + frames.length;
+                        return frames;
+                    });
+                pending.catch(() => {});
+            };
+            const takeBatch = async () => {
+                if (!pending) startFetch();
+                if (!pending) return false;
+                const request = pending;
+                pending = null;
+                batch = await request;
+                // 后台预取下一批，隐藏 Range 读取延迟，避免批边界停顿。
+                startFetch();
+                return batch.length > 0;
+            };
             return {
                 next: async () => {
-                    if (index >= file.frames.length) return { done: true };
-                    if (!batch.length) batch = await this._readComparisonFrames(file, index, batchSize, controller.signal);
-                    index++;
+                    if (!batch.length && !(await takeBatch())) return { done: true };
                     return { value: batch.shift(), done: false };
                 },
             };
@@ -2265,8 +2347,11 @@ export class XiaozhuguangVideoPlayer {
             const framesToAdvance = Math.min(expectedFrame - this._playbackLastFrame, 5); // P17: 限制单次追赶帧数
             if (this._comparisonFile) {
                 const targetTime = this._playbackMediaStartTime + Math.max(0, elapsedMs) * rate / 1000;
-                if (this._playbackBuffer[0]?.timestamp <= targetTime + 0.000001) {
-                    const frame = this._playbackBuffer.shift();
+                let frame;
+                while (this._playbackBuffer[0]?.timestamp <= targetTime + 0.000001) {
+                    frame = this._playbackBuffer.shift();
+                }
+                if (frame) {
                     this._drawComparisonFrame(frame);
                     this._currentTime = frame.timestamp;
                     if (!this._comparisonCacheReady) this._fillPlaybackBuffer();
@@ -2531,6 +2616,18 @@ export class XiaozhuguangVideoPlayer {
                 this._updateLoadRangeMarkers();
             }
             this._updateFrameCountOverlay();
+        }
+    }
+
+    clearBackendFrameCount() {
+        this._backendFrameCount = null;
+        if (!this._enableLoadRange) {
+            this._totalFrames = null;
+            this._sourceTotalFrames = null;
+            this._rangeTotalFrames = null;
+            this._updateFrameTicks();
+            this._updateDisplay();
+            this._updateLoadRangeMarkers();
         }
     }
 
@@ -2860,6 +2957,7 @@ export class XiaozhuguangVideoPlayer {
     destroy() {
         this._comparisonRequest?.abort();
         this._comparisonSeek?.abort();
+        this._stopComparisonKeepAlive();
         if (this._comparisonFile) {
             this._releaseComparisonFile(this._comparisonFile.url);
             this._comparisonFile = null;

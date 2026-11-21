@@ -26,6 +26,13 @@ export async function getDisplayHistory() {
     await pending;
     return JSON.parse(JSON.stringify(entries));
 }
+export function clearDisplayHistory() {
+    pending = pending.then(async () => {
+        entries = [];
+        await cloudSave(DISPLAY_HISTORY_KEY, entries);
+    });
+    return pending;
+}
 export function addDisplayHistory(node) {
     // Capture before awaiting storage: another execution may already have replaced the node content.
     const state = normalizeDisplayState({ texts: node._texts, channels: node._xzgDisplayChannels, channel: node._xzgDisplayChannel });

@@ -1,4 +1,5 @@
 const SAVE_TYPES = new Set(["XiaozhuguangVideoCombine", "XiaozhuguangVideoSaveDaVinci"]);
+const NIL_WORKFLOW_ID = "00000000-0000-0000-0000-000000000000";
 
 export function createVideoOutputCache(storage = globalThis.localStorage) {
     const outputs = new Map();
@@ -14,7 +15,7 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
 
     function identity(graph) {
         if (!graph) return "";
-        if (graph.id) return `workflow:${graph.id}`;
+        if (graph.id && graph.id !== NIL_WORKFLOW_ID) return `workflow:${graph.id}`;
         // 老工作流没有 UUID 时仅在当前图实例内恢复，不能按节点结构猜归属。
         if (!graphKeys.has(graph)) graphKeys.set(graph, `session:${++sequence}`);
         return graphKeys.get(graph);
@@ -59,6 +60,20 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
     }
 
     return {
+        publish(graph, nodeIds, info) {
+            const owner = identity(graph);
+            if (!owner || !info?.filename) return;
+            for (const nodeId of nodeIds) {
+                const outputKey = key(owner, nodeId);
+                received.set(outputKey, ++eventSequence);
+                save(owner, outputKey, info);
+                for (const [node, apply] of subscribers) {
+                    if (identity(node.graph) === owner && String(node.id) === String(nodeId)) {
+                        apply({video: [info]});
+                    }
+                }
+            }
+        },
         get(graph, nodeId) {
             const owner = identity(graph);
             if (!owner) return null;
@@ -82,7 +97,9 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
             const original = api.queuePrompt;
             api.queuePrompt = async function (index, prompt, ...rest) {
                 const graph = app.graph;
-                const owner = prompt?.workflow?.id ? `workflow:${prompt.workflow.id}` : identity(graph);
+                const workflowId = prompt?.workflow?.id;
+                const owner = workflowId && workflowId !== NIL_WORKFLOW_ID
+                    ? `workflow:${workflowId}` : identity(graph);
                 const ids = new Set(Object.entries(prompt?.output || {})
                     .filter(([, value]) => SAVE_TYPES.has(value.class_type)).map(([id]) => id));
                 queuing++;
@@ -106,3 +123,5 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
         },
     };
 }
+
+export const videoOutputCache = createVideoOutputCache();

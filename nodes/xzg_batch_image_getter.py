@@ -145,5 +145,79 @@ class XiaozhuguangBatchMaskGetter(XiaozhuguangBatchImageGetter):
         return tuple(masks[i] if i < len(masks) and i < count else None for i in range(self.OUTPUT_COUNT))
 
 
-NODE_CLASS_MAPPINGS = {"XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter, "XiaozhuguangBatchMaskGetter": XiaozhuguangBatchMaskGetter}
-NODE_DISPLAY_NAME_MAPPINGS = {"XiaozhuguangBatchImageGetter": "小珠光批次列表图像获取-阻断", "XiaozhuguangBatchMaskGetter": "小珠光批次列表遮罩获取-阻断"}
+class XiaozhuguangBatchListGetter(XiaozhuguangBatchMaskGetter):
+    DEFAULT_MODE = "图像"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = XiaozhuguangBatchImageGetter.INPUT_TYPES()
+        inputs["required"]["类型"] = (["图像", "遮罩"], {"default": cls.DEFAULT_MODE})
+        # 新工作流用一个 IMAGE/MASK 通用端口；旧字段暂留，供旧版 API prompt 兼容。
+        inputs["optional"] = {
+            "数据": ("IMAGE,MASK", {"input_is_list": True}),
+            "图像": ("IMAGE", {"input_is_list": True}),
+            "遮罩": ("MASK", {"input_is_list": True}),
+        }
+        return inputs
+
+    # 后端注册的类型固定，画布端口随下拉选项显示 IMAGE 或 MASK。
+    RETURN_TYPES = ("*",) * XiaozhuguangBatchImageGetter.OUTPUT_COUNT
+    FUNCTION = "get_items"
+    INPUT_IS_LIST = True
+    DEPRECATED = False
+    DESCRIPTION = "通过单个图像／遮罩输入，按类型逐项拆分批次或列表，缺少的项输出为空。"
+
+    def get_items(self, 类型=None, 输出数量=None, 数据=None, 图像=None, 遮罩=None):
+        if isinstance(类型, (list, tuple)):
+            类型 = 类型[0] if 类型 else "图像"
+        if 类型 is None:
+            类型 = self.DEFAULT_MODE
+        # 兼容旧工作流：优先使用当前类型对应的旧输入端口。
+        if 数据 is None:
+            数据 = 遮罩 if 类型 == "遮罩" else 图像
+        if 类型 == "遮罩":
+            return self.get_masks(数据, 输出数量)
+        return self.get_images(数据, 输出数量)
+
+
+class XiaozhuguangLegacyImageListGetter(XiaozhuguangBatchListGetter):
+    """旧图像节点 ID 的兼容入口，使用新的通用端口和拆分逻辑。"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs["required"].pop("类型")
+        inputs["optional"]["类型"] = (["图像", "遮罩"], {"default": cls.DEFAULT_MODE})
+        return inputs
+
+    DEFAULT_MODE = "图像"
+    DEPRECATED = False
+    DESCRIPTION = "兼容旧图像批次列表节点；使用通用图像／遮罩输入，默认按图像拆分。"
+
+
+class XiaozhuguangLegacyMaskListGetter(XiaozhuguangBatchListGetter):
+    """旧遮罩节点 ID 的兼容入口，使用新的通用端口和拆分逻辑。"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs["required"].pop("类型")
+        inputs["optional"]["类型"] = (["图像", "遮罩"], {"default": cls.DEFAULT_MODE})
+        return inputs
+
+    DEFAULT_MODE = "遮罩"
+    DEPRECATED = False
+    DESCRIPTION = "兼容旧遮罩批次列表节点；使用通用图像／遮罩输入，默认按遮罩拆分。"
+
+
+NODE_CLASS_MAPPINGS = {
+    # 保留旧 type ID，让已有 workflow 加载为新通用节点的兼容变体。
+    "XiaozhuguangBatchImageGetter": XiaozhuguangLegacyImageListGetter,
+    "XiaozhuguangBatchMaskGetter": XiaozhuguangLegacyMaskListGetter,
+    "XiaozhuguangBatchListGetter": XiaozhuguangBatchListGetter,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "XiaozhuguangBatchImageGetter": "小珠光批次列表图像获取-阻断",
+    "XiaozhuguangBatchMaskGetter": "小珠光批次列表遮罩获取-阻断",
+    "XiaozhuguangBatchListGetter": "小珠光批次列表获取-阻断",
+}

@@ -1,4 +1,24 @@
 {
+  "XiaozhuguangLoopStart": {
+    "display_name": "小珠光循环开始",
+    "inputs": {
+      "mode": { "name": "循环模式" },
+      "count": { "name": "次数" },
+      "state": { "name": "输入数据" },
+      "state_2": { "name": "输入数据 2" },
+      "state_3": { "name": "输入数据 3" }
+    }
+  },
+  "XiaozhuguangLoopEnd": {
+    "display_name": "小珠光循环结束",
+    "inputs": {
+      "flow": { "name": "循环标记" },
+      "data": { "name": "循环结束 1" },
+      "data_2": { "name": "循环结束 2" },
+      "data_3": { "name": "循环结束 3" },
+      "stop": { "name": "停止条件" }
+    }
+  },
   "XiaozhuguangAPITranslate": {
     "display_name": "小珠光翻译",
     "inputs": {
@@ -56,11 +76,39 @@
       "remove_isolated_pixels": { "name": "去除细碎区域" },
       "smooth": { "name": "平滑" },
       "blur": { "name": "模糊" },
-      "temporal_smooth_radius": { "name": "轮廓时间平滑半径（帧）" },
+      "temporal_smooth_radius": { "name": "最大补漏帧数" },
       "position_smoothing_frames": { "name": "位置平滑" },
       "scale_smoothing_frames": { "name": "缩放平滑" }
     },
     "outputs": { "0": { "name": "遮罩" } }
+  },
+  "XiaozhuguangYoloMask": {
+    "display_name": "小珠光 YOLO 识别到遮罩",
+    "description": "批量检测图像并输出遮罩。分割模型输出轮廓，检测模型输出矩形框。模型目录为 ComfyUI/models/ultralytics。",
+    "inputs": {
+      "image": {"name":"图像"},
+      "model": {"name":"YOLO 模型"},
+      "confidence": {"name":"置信度阈值"},
+      "iou": {"name":"IoU 阈值"},
+      "mask_padding": {"name":"遮罩扩张（像素）"},
+      "invert_mask": {"name":"反转遮罩"},
+      "class_id": {"name":"类别编号","tooltip":"-1 保留全部类别。其他编号按模型的类别定义筛选。"}
+    },
+    "outputs": {"0":{"name":"遮罩"}}
+  },
+  "XiaozhuguangYoloFaceMask": {
+    "display_name": "小珠光 YOLO 识别到遮罩",
+    "description": "批量检测图像并输出遮罩。分割模型输出轮廓，检测模型输出矩形框。模型目录为 ComfyUI/models/ultralytics。",
+    "inputs": {
+      "image": {"name":"图像"},
+      "model": {"name":"YOLO 模型"},
+      "confidence": {"name":"置信度阈值"},
+      "iou": {"name":"IoU 阈值"},
+      "mask_padding": {"name":"遮罩扩张（像素）"},
+      "invert_mask": {"name":"反转遮罩"},
+      "class_id": {"name":"类别编号","tooltip":"-1 保留全部类别。其他编号按模型的类别定义筛选。"}
+    },
+    "outputs": {"0":{"name":"遮罩"}}
   },
   "XiaozhuguangImageMaskConvert": {
     "display_name": "小珠光图像遮罩智能互转",
@@ -642,15 +690,20 @@
     }
   },
   "XiaozhuguangBatchImageGetter": {
-    "display_name": "小珠光批次列表图像获取-阻断",
-    "description": "把图像批次或列表拆为单图，输出数量控制端口数量，缺少的图像输出为空。",
+    "display_name": "小珠光批次列表图像获取",
+    "description": "兼容旧图像批次列表节点；使用通用图像／遮罩输入，默认按图像拆分。",
     "inputs": {
-      "图像": {
-        "name": "图像"
-      },
       "输出数量": {
         "name": "输出数量"
-      }
+      },
+      "类型": {
+        "name": "类型",
+        "options": {
+          "图像": { "text": "图像" },
+          "遮罩": { "text": "遮罩" }
+        }
+      },
+      "数据": { "name": "图像／遮罩" }
     },
     "outputs": {
       "0": {
@@ -715,16 +768,36 @@
       }
     }
   },
-  "XiaozhuguangBatchMaskGetter": {
-    "display_name": "小珠光批次列表遮罩获取-阻断",
-    "description": "把遮罩批次或列表拆为单张遮罩，输出数量控制端口数量，缺少的遮罩输出为空。",
+  "XiaozhuguangBatchListGetter": {
+    "display_name": "小珠光批次列表获取-阻断",
+    "description": "通过单个图像／遮罩输入，按类型拆分批次或列表并按序号输出，缺少的项输出为空。",
     "inputs": {
-      "遮罩": {
-        "name": "遮罩"
+      "输出数量": { "name": "输出数量" },
+      "类型": {
+        "name": "类型",
+        "options": {
+          "图像": { "text": "图像" },
+          "遮罩": { "text": "遮罩" }
+        }
       },
+      "数据": { "name": "图像／遮罩" }
+    }
+  },
+  "XiaozhuguangBatchMaskGetter": {
+    "display_name": "小珠光批次列表遮罩获取",
+    "description": "兼容旧遮罩批次列表节点；使用通用图像／遮罩输入，默认按遮罩拆分。",
+    "inputs": {
       "输出数量": {
         "name": "输出数量"
-      }
+      },
+      "类型": {
+        "name": "类型",
+        "options": {
+          "图像": { "text": "图像" },
+          "遮罩": { "text": "遮罩" }
+        }
+      },
+      "数据": { "name": "图像／遮罩" }
     },
     "outputs": {
       "0": {
@@ -1023,6 +1096,16 @@
       "0": {
         "name": "图像"
       }
+    }
+  },
+  "XZGSelectTrackedMask": {
+    "display_name": "小珠光跟踪遮罩颜色选择",
+    "inputs": {
+      "mask_batch": { "name": "逐帧遮罩批次" },
+      "color_index": { "name": "颜色轨道索引", "tooltip": "选择要提取的遮罩颜色轨道。" }
+    },
+    "outputs": {
+      "0": { "name": "逐帧遮罩" }
     }
   }
 }

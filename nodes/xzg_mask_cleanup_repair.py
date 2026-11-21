@@ -45,7 +45,7 @@ class XiaozhuguangMaskCleanupRepair:
             "optional": {
                 "mask": ("MASK",),
                 "temporal_smooth_radius": ("INT", {"default": 0, "min": 0, "max": 16,
-                    "tooltip": "用前后帧抑制当前遮罩短暂凸出的轮廓，不在当前轮廓外添加像素。0关闭，空遮罩帧隔断平滑。"}),
+                    "tooltip": "补齐前后都有遮罩的连续漏检帧。数值为允许补齐的最大空档帧数，0关闭。"}),
                 "position_smoothing_frames": ("INT", {"default": 1, "min": 1, "max": 240,
                     "tooltip": "平滑遮罩中心位置。数值越大，中心移动越平缓。1关闭。"}),
                 "scale_smoothing_frames": ("INT", {"default": 1, "min": 1, "max": 240,
@@ -195,6 +195,36 @@ class XiaozhuguangMaskCleanupRepair:
                 segment[index] = ndi.affine_transform(
                     frame, np.diag(scale), offset=offset, order=1, mode="grid-constant")
 
+    @staticmethod
+    def _fill_missing_frames(values, boundaries, max_gap, ndi, check):
+        def geometry(frame):
+            foreground = frame > frame.max() * 0.5
+            axes = [np.flatnonzero(foreground.any(axis=axis)) for axis in (1, 0)]
+            low = np.array([axis[0] for axis in axes])
+            high = np.array([axis[-1] for axis in axes])
+            return (low + high) / 2, high - low + 1
+
+        for start, stop in zip(boundaries[1:-1:2], boundaries[2::2]):
+            gap = stop - start
+            if gap > max_gap:
+                continue
+            left, right = values[start - 1], values[stop]
+            left_center, left_size = geometry(left)
+            right_center, right_size = geometry(right)
+            for i in range(start, stop):
+                check()
+                weight = (i - start + 1) / (gap + 1)
+                center = (1 - weight) * left_center + weight * right_center
+                size = (1 - weight) * left_size + weight * right_size
+                before_scale, after_scale = left_size / size, right_size / size
+                before = ndi.affine_transform(
+                    left, before_scale, offset=left_center - center * before_scale,
+                    order=1, mode="grid-constant")
+                after = ndi.affine_transform(
+                    right, after_scale, offset=right_center - center * after_scale,
+                    order=1, mode="grid-constant")
+                values[i] = (1 - weight) * before + weight * after
+
     def execute(self, cleanup_enabled=True, threshold=0.3,
                 method="收缩重建", shrink=4, min_pixels=32, min_frames=2, edge_grow=4,
                 repair_enabled=False, erode_dilate=0, fill_holes=0,
@@ -257,14 +287,8 @@ class XiaozhuguangMaskCleanupRepair:
                 segment = values[start:stop]
                 if smooth_geometry:
                     self._smooth_geometry(segment, position_smoothing_frames, scale_smoothing_frames, ndi, check)
-                if temporal_smooth_radius:
-                    # Filter row strips to bound temporary memory for long videos.
-                    for top in range(0, segment.shape[1], 32):
-                        check()
-                        strip = segment[:, top:top + 32]
-                        median = ndi.median_filter(strip, size=(2 * temporal_smooth_radius + 1, 1, 1),
-                                                   mode="nearest")
-                        np.minimum(strip, median, out=strip)
+            if temporal_smooth_radius:
+                self._fill_missing_frames(values, boundaries, temporal_smooth_radius, ndi, check)
         if mask_binarize:
             values = (values > float(mask_threshold)).astype(np.float32)
         check()

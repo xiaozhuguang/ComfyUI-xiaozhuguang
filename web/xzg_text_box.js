@@ -511,18 +511,18 @@ function _showGodPromptHistory(node, textarea) {
     document.querySelector(".xzg-text-box-history-overlay")?._xzgClose?.();
     const overlay = document.createElement("div");
     overlay.className = "xzg-text-box-history-overlay";
-    overlay.style.cssText = "position:fixed;inset:0;z-index:100000;background:#0009;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:100000;background:#0009;display:flex;align-items:center;justify-content:center";
     const menu = document.createElement("div");
     menu.className = "xzg-text-box-history-menu";
-    menu.style.cssText = "box-sizing:border-box;width:min(1100px,100%);height:min(800px,100%);min-height:0;display:flex;flex-direction:column;overflow:hidden;background:#202124;border:1px solid #666;border-radius:8px;box-shadow:0 12px 40px #0009;color:#eee;font:14px/1.6 sans-serif";
+    menu.style.cssText = "width:calc(100vw - 32px);height:calc(100dvh - 32px);box-sizing:border-box;display:flex;flex-direction:column;gap:12px;overflow:hidden;padding:20px;border:1px solid #555;border-radius:8px;background:var(--comfy-menu-bg,#222);color:var(--input-text,#eee);font:14px/1.6 sans-serif";
     menu.setAttribute("role", "dialog");
     menu.setAttribute("aria-modal", "true");
     menu.setAttribute("aria-label", xzgLang() === "en" ? "Prompt History" : "历史提示词");
     const header = document.createElement("div");
-    header.style.cssText = "display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid #484848;flex:none";
-    const title = document.createElement("span");
+    header.style.cssText = "display:flex;align-items:center;gap:12px;flex-shrink:0";
+    const title = document.createElement("h3");
     title.textContent = xzgLang() === "en" ? "Prompt History" : "历史提示词";
-    title.style.cssText = "flex:1;font-weight:600";
+    title.style.cssText = "flex:1;margin:0";
     const clearButton = document.createElement("button");
     clearButton.type = "button";
     clearButton.textContent = xzgLang() === "en" ? "Clear" : "清空";
@@ -530,7 +530,7 @@ function _showGodPromptHistory(node, textarea) {
     const closeButton = document.createElement("button");
     closeButton.type = "button";
     closeButton.textContent = xzgLang() === "en" ? "Close" : "关闭";
-    closeButton.style.cssText = clearButton.style.cssText;
+    closeButton.style.cssText = "flex-shrink:0;padding:8px 24px;cursor:pointer;background:#dc2626;color:#fff;border:1px solid #f87171;border-radius:6px;font-weight:700";
     const close = () => {
         historyResizeObserver.disconnect();
         overlay.remove();
@@ -547,7 +547,7 @@ function _showGodPromptHistory(node, textarea) {
     closeButton.addEventListener("click", close);
     overlay.addEventListener("pointerdown", event => { if (event.target === overlay) close(); });
     const list = document.createElement("div");
-    list.style.cssText = "flex:1;min-height:0;overflow:auto;padding:12px 18px;overscroll-behavior:contain";
+    list.style.cssText = "flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable;overscroll-behavior:contain";
     const historyResizeObserver = new ResizeObserver(() => {
         for (const row of list.children) {
             const content = row.querySelector("[data-history-content]");
@@ -579,7 +579,7 @@ function _showGodPromptHistory(node, textarea) {
         recordedTime.style.cssText = "padding:10px 16px 0;color:#aaa;font-size:12px";
         const item = document.createElement("button");
         item.type = "button";
-        item.style.cssText = "display:block;box-sizing:border-box;width:100%;padding:14px 16px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:transparent;border:0;color:#eee;font:inherit;cursor:pointer";
+        item.style.cssText = "display:block;box-sizing:border-box;width:100%;padding:14px 16px;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:transparent;border:0;color:inherit;font:inherit;cursor:pointer";
         const content = document.createElement("span");
         content.dataset.historyContent = "1";
         content.textContent = prompt || (xzgLang() === "en" ? "(empty)" : "（空）");
@@ -598,7 +598,7 @@ function _showGodPromptHistory(node, textarea) {
             content.style.webkitLineClamp = expanded ? "unset" : "5";
             toggle.textContent = xzgLang() === "en" ? (expanded ? "Collapse" : "Expand") : (expanded ? "收起" : "展开");
         });
-        item.addEventListener("mouseenter", () => { item.style.background = "#3b3d40"; });
+        item.addEventListener("mouseenter", () => { item.style.background = "var(--comfy-input-bg,#3b3d40)"; });
         item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
         item.addEventListener("contextmenu", event => {
             event.preventDefault(); event.stopPropagation();

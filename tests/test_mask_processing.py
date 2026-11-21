@@ -42,12 +42,15 @@ class MaskProcessingTest(unittest.TestCase):
         mask = torch.rand(2, 5, 7)
         self.assertIs(self.process(mask), mask)
 
-    def test_temporal_smoothing_is_independent_and_does_not_cross_empty_frames(self):
-        mask = torch.tensor([[[1., 0.]], [[1., 1.]], [[1., 0.]], [[0., 0.]], [[0., 1.]]])
+    def test_temporal_repair_interpolates_short_internal_gaps(self):
+        mask = torch.zeros(7, 3, 7)
+        mask[1, :, 0:2] = 1
+        mask[3, :, 4:6] = 1
+        mask[6, :, 4:6] = 1
         smooth = self.process(mask, temporal_smooth_radius=1)
-        self.assertEqual(smooth[0, 0, 1], 0)
-        self.assertLess(smooth[1, 0, 1], 1)
-        torch.testing.assert_close(smooth[3:], mask[3:])
+        expected = mask.clone()
+        expected[2, :, 2:4] = 1
+        torch.testing.assert_close(smooth, expected)
         torch.testing.assert_close(self.process(mask[:1], temporal_smooth_radius=1), mask[:1])
         binary = self.process(mask, temporal_smooth_radius=1, mask_binarize=True)
         torch.testing.assert_close(binary, (smooth > .5).to(dtype=mask.dtype))

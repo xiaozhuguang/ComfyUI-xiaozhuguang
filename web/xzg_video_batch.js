@@ -1,7 +1,8 @@
 ﻿import { app } from "../../scripts/app.js";
 
 import { api } from "../../scripts/api.js";
-import { prepareSchedulerPrompt, useSchedulerCache, prepareMergePrompt } from "./lib/xzg_scheduler_prompt.mjs";
+import { prepareSchedulerPrompt, useSchedulerCache, prepareMergePrompt, directVideoSaverIds } from "./lib/xzg_scheduler_prompt.mjs?v=2";
+import { videoOutputCache } from "./lib/xzg_video_output_cache.mjs?v=3";
 
 
 import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
@@ -56,6 +57,10 @@ function saveBatchCheckpoint(session, patch = {}) {
 }
 
 async function restoreBatchAfterRefresh() {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(BATCH_CHECKPOINT_KEY) || "null"); } catch (_) { return; }
+    if (saved?.state !== "running" || saved.signature !== graphSignature()
+        || (saved.workflowId && saved.workflowId !== app.graph?.id)) return;
     if (globalThis.navigator?.locks?.request) {
         return navigator.locks.request(BATCH_RUN_LOCK, {ifAvailable: true}, lock =>
             lock ? restoreBatchAfterRefreshLocked(true) : undefined);
@@ -67,7 +72,8 @@ async function restoreBatchAfterRefreshLocked(lockHeld) {
     if (batchRestoring || activeSession?.isRunning) return;
     let saved;
     try { saved = JSON.parse(localStorage.getItem(BATCH_CHECKPOINT_KEY) || "null"); } catch (_) { return; }
-    if (saved?.state !== "running" || saved.signature !== graphSignature()) return;
+    if (saved?.state !== "running" || saved.signature !== graphSignature()
+        || (saved.workflowId && saved.workflowId !== app.graph?.id)) return;
     const loader = findLiveNode(saved.nodeId, BATCH_NODE_TYPE);
     const sched = findLiveNode(saved.schedulerId, SCHEDULER_NODE_TYPE);
     if (!loader || !sched || String(findWidget(loader, "视频")?.value || "") !== saved.video) return;
@@ -84,14 +90,19 @@ async function restoreBatchAfterRefreshLocked(lockHeld) {
                     fetch("/history?max_items=100", {cache: "no-store"}).then(r => r.json()),
                 ]);
                 const matches = new Set();
-                const matchesInput = output => output?.[saved.schedulerId]?.inputs?.["当前段"] === saved.segmentIndex
-                    && output?.[saved.schedulerId]?.inputs?.["缓存批次"] === saved.cacheBatch;
+                const matchesInput = output => saved.phase === "merging"
+                    ? output?.[saved.mergeNodeId || saved.mergeIds[0]]?.inputs?.["执行合并"] === true
+                    : output?.[saved.schedulerId]?.inputs?.["当前段"] === saved.segmentIndex
+                        && output?.[saved.schedulerId]?.inputs?.["缓存批次"] === saved.cacheBatch;
+                const matchesWorkflow = item => !saved.workflowId
+                    || item?.[3]?.extra_pnginfo?.workflow?.id === saved.workflowId;
                 for (const item of [...(queue.queue_running || []), ...(queue.queue_pending || [])]) {
-                    if (matchesInput(item[2])) matches.add(String(item[1]));
+                    if (matchesWorkflow(item) && matchesInput(item[2])) matches.add(String(item[1]));
                 }
                 for (const [id, entry] of Object.entries(history)) {
                     const started = entry.status?.messages?.find(m => m[0] === "execution_start")?.[1]?.timestamp || 0;
-                    if (started >= saved.queuedAt - 1000 && matchesInput(entry.prompt?.[2])) matches.add(id);
+                    if (started >= saved.queuedAt - 1000 && matchesWorkflow(entry.prompt)
+                        && matchesInput(entry.prompt?.[2])) matches.add(id);
                 }
                 if (matches.size > 1) throw new Error("发现多个相同分段任务，无法安全自动续跑，请检查任务历史");
                 saved.promptId = [...matches][0] || null;
@@ -108,6 +119,17 @@ async function restoreBatchAfterRefreshLocked(lockHeld) {
             if (saved.phase === "merging") {
                 // 最终合并可能已清理缓冲，不能再次生成或盲目重复合并。
                 if (saved.mergeIds.length !== 1) throw new Error("最终合并期间刷新，请先核对各输出节点的完成记录；已停止自动重提");
+                const graph = app.graph;
+                if (saved.signature === graphSignature() && (!saved.workflowId || saved.workflowId === graph?.id)) {
+                    const diskOutput = entry.outputs?.[saved.mergeIds[0]]?.videos?.[0];
+                    if (diskOutput) videoOutputCache.publish(graph, saved.videoSaverIds || [], diskOutput);
+                    for (const [id, output] of Object.entries(entry.outputs || {})) {
+                        const type = entry.prompt?.[2]?.[id]?.class_type;
+                        if (type === "XiaozhuguangVideoCombine" || type === "XiaozhuguangVideoSaveDaVinci") {
+                            videoOutputCache.publish(graph, [id], (output.video || output.videos)?.[0]);
+                        }
+                    }
+                }
                 saved.state = "completed";
                 localStorage.setItem(BATCH_CHECKPOINT_KEY, JSON.stringify(saved));
                 status("刷新前的最终合并已执行成功，请查看视频保存节点或执行历史。");
@@ -118,7 +140,13 @@ async function restoreBatchAfterRefreshLocked(lockHeld) {
             for (const id of saved.mergeIds) {
                 const produced = entry.outputs?.[id]?.buffered || [];
                 const files = new Set(bufNodeFiles(buffers, id));
-                if (!produced.length || produced.some(item => !files.has(item.filename))) {
+                if (!produced.length || produced.some(item => {
+                    // 兼容更新前的执行历史；旧节点只上报存储方式和段序号。
+                    const legacy = item.filename === "disk" || item.filename === "memory";
+                    const name = legacy && Number.isInteger(item.index) && item.index > 0
+                        ? `memory_${String(item.index).padStart(5, "0")}` : item.filename;
+                    return !files.has(name);
+                })) {
                     throw new Error(`合并节点 ${id} 的分段缓冲缺失，已停止恢复以避免重复或缺段`);
                 }
             }
@@ -502,7 +530,7 @@ function extractVideoOutputs(output) {
             if ((it.type || "output") !== "output") continue; // temp/预览输出不收集
 
 
-            files.push({ filename: it.filename, subfolder: it.subfolder || "", type: "output" });
+            files.push({ ...it, subfolder: it.subfolder || "", type: "output" });
 
 
         }
@@ -671,6 +699,7 @@ async function waitForPromptDone(promptId, timeoutMs = 3600000) {
 
 
     const t0 = Date.now();
+    let missingSince = null;
 
 
     while (Date.now() - t0 < timeoutMs) {
@@ -680,7 +709,9 @@ async function waitForPromptDone(promptId, timeoutMs = 3600000) {
         try {
 
 
-            const r = await fetch(`/history/${promptId}`, {cache: "no-store"});
+            const r = await fetch(`/history/${promptId}`, {
+                cache: "no-store", signal: AbortSignal.timeout(5000),
+            });
 
 
             if (r.ok) {
@@ -718,6 +749,20 @@ async function waitForPromptDone(promptId, timeoutMs = 3600000) {
 
                 }
 
+                const queueResponse = await fetch("/queue", {
+                    cache: "no-store", signal: AbortSignal.timeout(5000),
+                });
+                if (queueResponse.ok) {
+                    const queue = await queueResponse.json();
+                    if ([...queue.queue_running, ...queue.queue_pending].some(item => String(item[1]) === String(promptId))) {
+                        missingSince = null;
+                    } else {
+                        missingSince ??= Date.now();
+                    }
+                } else {
+                    missingSince = null;
+                }
+
 
             }
 
@@ -730,10 +775,15 @@ async function waitForPromptDone(promptId, timeoutMs = 3600000) {
 
             // 已取得历史记录后抛出的错误是执行错误，不是网络抖动。
             if (entry) throw e;
+            missingSince = null;
 
 
         }
 
+        // 执行结束时队列可能先于历史更新，持续缺失才视为任务已丢失。
+        if (missingSince !== null && Date.now() - missingSince >= 5000) {
+            throw new Error("分段任务已不在后台队列中，且没有执行记录，已停止等待");
+        }
 
         await new Promise((r) => setTimeout(r, 300));
 
@@ -1112,13 +1162,12 @@ function findSchedulerNode() {
 
 // ── 分段信息镜像到调度节点：直接显示在节点上，免开批处理弹窗 ─────────────────
 // rows: [{time, frames, status, color}]，由探测/批处理流程在更新弹窗的同时镜像。
-// 用 DOM 控件承载（而不是 canvas 自绘）：新旧内核下都由节点自身布局，高度自动跟随内容，
-// 不会出现「画到节点顶部盖住控件」「节点留一大片空白」这类坐标错位。
+// DOM 控件由新旧内核排版，长列表限制在固定的可见行数内。
 const SEG_ROWS_WIDGET_NAME = "xzg_seg_rows";
 const SEG_ROW_PX = 16;
+const SEG_VISIBLE_ROWS = 8;
 
 function xzgBindSegRowsWheel(node, element) {
-    // 内层 pointer-events:none 不能穿透内核创建的 DOM widget 包装层。
     // 在捕获阶段按列表实际位置识别事件，再交给画布自身的滚轮处理。
     const onWheel = event => {
         const canvas = app.canvas?.canvas;
@@ -1152,16 +1201,20 @@ function xzgBindSegRowsWheel(node, element) {
 }
 
 function xzgBindSegRowsDrag(node, element) {
-    // 分段列表是纯展示区（pointer-events:none），按下事件的落点两种渲染模式不同：
-    // 旧画布落到 canvas、Vue 节点落到内核包装层，都不会启动「按住列表拖动节点」。
-    // 与滚轮转发同一套「文档捕获 + 坐标命中」方案：捕获阶段识别按下列表区域，
-    // 吃掉原始事件后自行驱动节点位移（不依赖 LiteGraph/内核各自的拖动实现，模式间行为一致）。
+    // 列表内容区仍可拖动节点，滚动条交给浏览器处理。
     let drag = null;
     const onPointerDown = (event) => {
         if (event.button !== 0 || !element.isConnected) return;
         const rect = element.getBoundingClientRect();
         if (!rect.width || !rect.height || event.clientX < rect.left || event.clientX > rect.right
             || event.clientY < rect.top || event.clientY > rect.bottom) return;
+        const viewport = node._xzgSegRowsViewport;
+        if (viewport?.scrollHeight > viewport.clientHeight && viewport.offsetWidth > viewport.clientWidth) {
+            const scrollRect = viewport.getBoundingClientRect();
+            const gutter = (viewport.offsetWidth - viewport.clientWidth) * scrollRect.width / viewport.offsetWidth;
+            if (event.clientX >= scrollRect.right - gutter && event.clientX <= scrollRect.right
+                && event.clientY >= scrollRect.top && event.clientY <= scrollRect.bottom) return;
+        }
         // 等价于点在节点本体上：顺手选中节点，保住「点一下再按 Delete 删除」的习惯
         try {
             const canvas = app.canvas;
@@ -1224,12 +1277,8 @@ function xzgSegRowPatch(i, patch) {
 
 function xzgSegRowsHeight(node) {
     const n = Array.isArray(node?._xzgSegRows) ? node._xzgSegRows.length : 0;
-    // 布局阶段内核常会重设 DOM 控件样式，这里顺手再压一次指针穿透，
-    // 保证滚轮停在分段列表上时仍然缩放画布。
-    try {
-        node?._xzgSegRowsEl?.style.setProperty("pointer-events", "none", "important");
-    } catch (_) { /* ignore */ }
-    return (n ? n * SEG_ROW_PX + 6 : 0) + (node?._xzgBatchStatus?.text ? 38 : 0);
+    return (n ? Math.min(n, SEG_VISIBLE_ROWS) * SEG_ROW_PX + 6 : 0)
+        + (node?._xzgBatchStatus?.text ? 38 : 0);
 }
 
 function xzgEscapeHtml(text) {
@@ -1241,18 +1290,20 @@ function xzgEscapeHtml(text) {
 function xzgRenderSegRows(node) {
     const el = node?._xzgSegRowsEl;
     if (!el) return;
-    // 纯展示容器必须穿透指针事件：某些内核会在挂载/重排时把 pointer-events 改回 auto，
-    // 那样滚轮停在分段列表上只会滚 DOM，画布缩放就失效了。这里每次渲染都压回 none。
-    try { el.style.setProperty("pointer-events", "none", "important"); } catch (_) { /* ignore */ }
+    const viewport = node._xzgSegRowsViewport;
+    const statusEl = node._xzgSegRowsStatus;
     const rows = Array.isArray(node._xzgSegRows) ? node._xzgSegRows : [];
     const message = node._xzgBatchStatus;
     if (!rows.length && !message?.text) {
-        el.innerHTML = "";
+        viewport.replaceChildren();
+        statusEl.replaceChildren();
         el.style.display = "none";
         return;
     }
     el.style.display = "block";
-    el.innerHTML = rows.map((row, i) => {
+    viewport.style.overflowY = rows.length > SEG_VISIBLE_ROWS ? "scroll" : "hidden";
+    const scrollTop = viewport.scrollTop;
+    viewport.innerHTML = rows.map((row, i) => {
         const time = xzgEscapeHtml(row.time || `#${i + 1}`);
         const frames = xzgEscapeHtml(row.frames || "");
         const status = xzgEscapeHtml(row.status || "");
@@ -1262,9 +1313,11 @@ function xzgRenderSegRows(node) {
             + `<span style="flex:0 0 auto;color:#7a9c8f;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">${frames}</span>`
             + `<span style="flex:0 0 auto;color:${color};">${status}</span>`
             + `</div>`;
-    }).join("") + (message?.text
+    }).join("");
+    viewport.scrollTop = scrollTop;
+    statusEl.innerHTML = message?.text
         ? `<div title="${xzgEscapeHtml(message.text)}" style="margin-top:4px;line-height:16px;max-height:32px;overflow:hidden;overflow-wrap:anywhere;color:${message.warn ? '#f90' : '#9ab'};">${xzgEscapeHtml(message.text)}</div>`
-        : "");
+        : "";
     // 旧画布：内容放不下时才增高，保留用户拉大并保存的尺寸。
     // （绝不能传 node.size 进去，那会把尺寸写坏）
     try {
@@ -2088,6 +2141,7 @@ async function releaseSchedulerCache(session) {
         await api.fetchApi("/xzg_video_scheduler_release", {
             method: "POST", headers: {"Content-Type": "application/json"},
             body: JSON.stringify({node_id: session.schedulerId, batch: session.cacheBatch}),
+            signal: AbortSignal.timeout(5000),
         });
     } catch (error) { console.error("[小珠光分段] 释放缓存失败", error); }
 }
@@ -2369,7 +2423,8 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
 
 
     // 存在分段节点时，执行分支从它开始，图像等输入依赖在提交时移除
-    const rootNode = findSchedulerNode() || node;
+    const schedNode = findSchedulerNode();
+    const rootNode = schedNode || node;
     const loaderDownIds = collectDownstream(rootNode);
 
 
@@ -2519,6 +2574,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
     if (session) {
         session.checkpoint = session.resume || {
             state: "running", signature: graphSignature(), nodeId, schedulerId: String(rootNode.id),
+            workflowId: session.graphId !== NIL_GRAPH_ID ? session.graphId : undefined,
             video: String(findWidget(liveNode, "视频")?.value || ""),
             segments: segments.map(segment => ({...segment})), lastPadFrames: segments.lastPadFrames || 0, fps: srcFps,
             table: String(findWidget(rootNode, "段表")?.value || ""), cacheBatch: session.cacheBatch, mergeIds,
@@ -2691,10 +2747,6 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
 
 
             let pendingIds = mergeIds.slice();
-
-
-            // 存在分段节点时，只从后端已准备的素材缓存切片
-            const schedNode = findSchedulerNode();
 
 
             // 末段补帧要读满片尾后复制末帧，只有分段处理节点能做到（加载器窗口读不满就只能少帧）
@@ -3271,7 +3323,11 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
 
 
                 const disk = findWidget(liveMerge, "合并模式")?.value === "低内存";
-                const finalIds = disk ? new Set([nid]) : collectDownstream(liveMerge);
+                const downstreamIds = collectDownstream(liveMerge);
+                const finalIds = disk ? new Set([nid]) : downstreamIds;
+                const outputGraph = app.graph?.id && app.graph.id !== NIL_GRAPH_ID
+                    ? {id: app.graph.id} : app.graph;
+                let videoSaverIds = [];
                 ui.status(`正在合并片段…（${mi + 1}/${mergeIds.length}）`);
 
 
@@ -3307,14 +3363,16 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                         // 漏掉「帧率」时：它连着加载器/分段节点，后端仍会连带执行整条上游，
                         // 表现为「明明跑完了又激活上游再跑一次」。
                         const stripUpstreamInputs = prompt => {
-                            prepareMergePrompt(prompt, nid, finalIds);
+                            if (disk) videoSaverIds = directVideoSaverIds(prompt.output, nid);
+                            saveBatchCheckpoint(session, {mergeNodeId: nid, videoSaverIds});
+                            prepareMergePrompt(prompt, nid, finalIds, disk);
                             if (schedNode && !skippedByNode.get(nid)?.has(segments.length)) {
                                 prompt.output[nid].inputs["末尾裁帧"] = Number(segments.lastPadFrames) || 0;
                             }
                             filterPromptOutput(prompt, finalIds);
                         };
 
-                        await runOnce(finalIds, mBox, mCollected, stripUpstreamInputs, session);
+                        await runOnce(downstreamIds, mBox, mCollected, stripUpstreamInputs, session);
 
 
                     } finally {
@@ -3329,7 +3387,9 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                     await waitQueueIdle();
 
 
-                    let vid = mCollected[mCollected.length - 1] || null;
+                    let vid = disk && mBox.id
+                        ? (await fetchHistoryOutputByPrompt(mBox.id, finalIds)).at(-1) || null
+                        : mCollected[mCollected.length - 1] || null;
 
 
                     // 兜底 1：executed 事件可能晚到，稍等再查
@@ -3341,7 +3401,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                         await new Promise((r) => setTimeout(r, 300));
 
 
-                        vid = mCollected[mCollected.length - 1] || null;
+                        if (!disk || !mBox.id) vid = mCollected[mCollected.length - 1] || null;
 
 
                     }
@@ -3376,6 +3436,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
 
 
                     merged.push(vid);
+                    if (disk) videoOutputCache.publish(outputGraph, videoSaverIds, vid);
 
 
                     ui.log(`合并节点 ${mi + 1}/${mergeIds.length} 完成 → ${vid.filename || ""}`);
@@ -4023,7 +4084,7 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
         }
     };
 
-    $("xzg-batch-detect").onclick = async () => {
+    const detectSegments = async () => {
         if (running || session.isPreparing) return;
         const sched = findSchedulerNode();
         if (!sched) return;
@@ -4060,10 +4121,6 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
             $("xzg-batch-segments").innerHTML = rows.map((row, i) =>
                 `<div id="xzg-batch-seg-row-${i}">${row.time} <span id="xzg-batch-seg-f-${i}">${row.frames}</span> <span id="xzg-batch-seg-s-${i}">待执行</span></div>`).join("");
             ui.status(`缓存完成：${info.scene_frames[0]} 帧，共 ${segments.length} 段，自动开始执行…`);
-            if (session.autoStart) {
-                session.autoStart = false;
-                setTimeout(() => $("xzg-batch-run").click(), 0);
-            }
         } catch (error) {
             session.autoStart = false;
             await releaseSchedulerCache(session);
@@ -4072,6 +4129,7 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
             session.isPreparing = false;
             setUiLocked(false);
         }
+        if (session.autoStart && !session.abortFlag.v) await startBatch();
     };
 
     const startBatch = async () => {
@@ -4190,13 +4248,18 @@ function openBatchDialog(node, autoStart = false, resume = null, resumeLockHeld 
 
     };
 
-    $("xzg-batch-run").onclick = () => {
-        if (!globalThis.navigator?.locks?.request) return startBatch();
+    const withBatchLock = (action) => {
+        if (!globalThis.navigator?.locks?.request) return action();
         return navigator.locks.request(BATCH_RUN_LOCK, {ifAvailable: true}, lock => {
-            if (!lock) { ui.status("已有浏览器页面正在执行分段任务，请勿重复启动。", true); return; }
-            return startBatch();
+            if (!lock) {
+                ui.status("分段任务锁仍被占用。请检查其他 ComfyUI 标签页是否暂停了批处理，关闭闲置标签页后重试。", true);
+                return;
+            }
+            return action();
         });
     };
+    $("xzg-batch-detect").onclick = () => withBatchLock(detectSegments);
+    $("xzg-batch-run").onclick = () => withBatchLock(startBatch);
     if (resume) {
         session.cacheBatch = resume.cacheBatch;
         session.schedulerId = String(resume.schedulerId);
@@ -4299,18 +4362,24 @@ app.registerExtension({
                         w.draw = () => {};
                     }
                 }
-                // 分段行容器：DOM 控件（随节点布局、高度跟随行数），
-                // 不再用 canvas 自绘——Vue 节点下自绘坐标和 DOM 控件对不上，会盖到输入上
                 const segEl = document.createElement("div");
-                // pointer-events:none：纯展示容器，点击必须穿透到画布/节点上，
-                // 否则点过这里后焦点被 DOM 抢走，Delete 键就删不掉节点了
                 segEl.style.cssText = "width:100%;box-sizing:border-box;padding:2px 8px 4px;"
                     + "font:11px 'Segoe UI',system-ui,sans-serif;color:#93a1b3;user-select:none;overflow:hidden;"
                     + "pointer-events:none;";
                 segEl.style.display = "none";
                 this._xzgSegRowsEl = segEl;
+                const viewport = document.createElement("div");
+                viewport.style.cssText = `max-height:${SEG_VISIBLE_ROWS * SEG_ROW_PX}px;overflow:hidden;`
+                    + "overflow-anchor:none;pointer-events:auto!important;";
+                viewport.className = "xzg-seg-rows-viewport";
+                const scrollbarStyle = document.createElement("style");
+                scrollbarStyle.textContent = ".xzg-seg-rows-viewport::-webkit-scrollbar{width:8px}"
+                    + ".xzg-seg-rows-viewport::-webkit-scrollbar-thumb{background:#66717d;border-radius:4px}";
+                const statusEl = document.createElement("div");
+                segEl.append(scrollbarStyle, viewport, statusEl);
+                this._xzgSegRowsViewport = viewport;
+                this._xzgSegRowsStatus = statusEl;
                 xzgBindSegRowsWheel(this, segEl);
-                // 按住分段列表区域拖动 = 移动节点（列表是纯展示区，见 xzgBindSegRowsDrag）
                 xzgBindSegRowsDrag(this, segEl);
                 try {
                     this.addDOMWidget(SEG_ROWS_WIDGET_NAME, SEG_ROWS_WIDGET_NAME, segEl, {
@@ -4328,6 +4397,17 @@ app.registerExtension({
                 if (Array.isArray(this._xzgSegRows) && this._xzgSegRows.length) xzgRenderSegRows(this);
                 return ret;
             };
+            const modeSchema = nodeData.input.optional["分段模式"];
+            const framesSchema = nodeData.input.optional["分段帧数"][1];
+            const origSchedSerialize = nodeType.prototype.onSerialize;
+            nodeType.prototype.onSerialize = function (info) {
+                const result = origSchedSerialize?.apply(this, arguments);
+                info.xzgSegmentSettings = {
+                    mode: findWidget(this, "分段模式")?.value,
+                    frames: findWidget(this, "分段帧数")?.value,
+                };
+                return result;
+            };
             // 载入旧工作流时清理已删除参数的残留输入/输出
             // （输入：分割方式/切点重叠/自动批处理；输出：总帧数/段数/段序号）
             // 白名单动态取自当前节点定义：只清理定义里已不存在的端口，
@@ -4338,6 +4418,18 @@ app.registerExtension({
                 const savedSize = Array.from(arguments[0]?.size || this.size || []);
                 const r = origSchedConfigure?.apply(this, arguments);
                 try {
+                    const info = arguments[0];
+                    const values = Array.isArray(info?.widgets_values) ? info.widgets_values : [];
+                    const modeIndex = values.findIndex((value, index) => index >= 3 && modeSchema[0].includes(value));
+                    const mode = info?.xzgSegmentSettings?.mode ?? values[modeIndex];
+                    // 旧版错位后再次保存时，帧数可能已落进模式原来的位置。
+                    const frames = info?.xzgSegmentSettings?.frames ?? (modeIndex >= 0
+                        ? values[modeIndex + 1] : values[4]);
+                    const modeWidget = findWidget(this, "分段模式");
+                    const framesWidget = findWidget(this, "分段帧数");
+                    if (modeWidget) modeWidget.value = modeSchema[0].includes(mode) ? mode : modeSchema[1].default;
+                    if (framesWidget) framesWidget.value = Number.isInteger(frames)
+                        && frames >= framesSchema.min && frames <= framesSchema.max ? frames : framesSchema.default;
                     pruneLegacyInputs(this, new Set([
                         ...Object.keys(nodeData.input?.required || {}),
                         ...Object.keys(nodeData.input?.optional || {}),
@@ -4366,9 +4458,13 @@ app.registerExtension({
                     xzgRenderSegRows(this);
                 } catch (e) { /* ignore */ }
                 if (savedSize.length === 2 && savedSize.every(v => Number.isFinite(v) && v > 0)) {
+                    const rowCount = this._xzgSegRows?.length || 0;
+                    const fittedHeight = rowCount > SEG_VISIBLE_ROWS && savedSize[1] >= rowCount * SEG_ROW_PX + 6
+                        ? Number(this.computeSize?.()?.[1]) : NaN;
                     this.setSize?.([
                         Math.max(savedSize[0], this.size?.[0] || 0),
-                        Math.max(savedSize[1], this.size?.[1] || 0),
+                        Number.isFinite(fittedHeight) && fittedHeight > 0
+                            ? fittedHeight : Math.max(savedSize[1], this.size?.[1] || 0),
                     ]);
                 }
                 return r;
@@ -4399,7 +4495,7 @@ app.registerExtension({
 
 
                     // 「末尾裁帧」也是编排器专用信号：切点修复补出的重复末帧在合并前裁掉
-                    for (const name of ["执行合并", "末尾裁帧"]) {
+                    for (const name of ["执行合并", "末尾裁帧", "文件名前缀"]) {
 
 
                         const w = (this.widgets || []).find((x) => x.name === name);

@@ -778,3 +778,68 @@ app.registerExtension({
         }
     },
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 旧版视频加载节点自动升级
+// 「小珠光视频加载器」「小珠光视频加载低内存版」已并入「小珠光视频加载-化神级」。
+// 后端仍注册这两个旧类型（标记 DEPRECATED，节点菜单默认隐藏）以兼容旧工作流：
+// 打开旧工作流时，在图配置之前把节点类型替换为化神级，并补齐新增控件值，
+// 让旧节点自动获得场景逐段批处理、达芬奇导入、内存模式等能力。
+// ─────────────────────────────────────────────────────────────────────────────
+const LEGACY_VIDEO_LOADER_TYPES = {
+    XiaozhuguangVideoLoader: "标准",
+    XiaozhuguangVideoLoaderLM: "低内存",
+};
+
+// 旧版控件顺序：视频 / 强制帧率 / 视频比例 / 比例模式 / 自定义宽度 / 自定义高度 / 跳过帧数 / 帧数上限
+// （之后可能还有「上传视频」等前端补充控件，需整体后移，不能覆盖）
+const LEGACY_VIDEO_LOADER_WIDGET_COUNT = 8;
+
+function _upgradeLegacyVideoLoaderNode(node) {
+    const memoryMode = LEGACY_VIDEO_LOADER_TYPES[node?.type];
+    if (memoryMode === undefined) return false;
+
+    node.type = DAVINCI_NODE;
+    if (node.properties && typeof node.properties === "object"
+        && "Node name for S&R" in node.properties) {
+        node.properties["Node name for S&R"] = DAVINCI_NODE;
+    }
+
+    if (Array.isArray(node.widgets_values)) {
+        const values = node.widgets_values.slice();
+        const insertAt = Math.min(LEGACY_VIDEO_LOADER_WIDGET_COUNT, values.length);
+        values.splice(insertAt, 0, memoryMode, "0°");
+        node.widgets_values = values;
+    }
+    const named = node.widgets_values_named;
+    if (named && typeof named === "object") {
+        named["内存模式"] = memoryMode;
+        named["旋转角度"] = "0°";
+    }
+    return true;
+}
+
+function _upgradeLegacyVideoLoaderNodes(graphData) {
+    let changed = false;
+    const walk = (nodes) => {
+        if (!Array.isArray(nodes)) return;
+        for (const node of nodes) {
+            if (_upgradeLegacyVideoLoaderNode(node)) changed = true;
+        }
+    };
+    walk(graphData?.nodes);
+    const subgraphs = graphData?.definitions?.subgraphs;
+    if (Array.isArray(subgraphs)) {
+        for (const subgraph of subgraphs) walk(subgraph?.nodes);
+    }
+    return changed;
+}
+
+app.registerExtension({
+    name: "Xiaozhuguang.VideoLoader.LegacyUpgrade",
+    async beforeConfigureGraph(graphData) {
+        if (_upgradeLegacyVideoLoaderNodes(graphData)) {
+            console.info("[小珠光] 旧版视频加载节点已自动升级为「小珠光视频加载-化神级」");
+        }
+    },
+});

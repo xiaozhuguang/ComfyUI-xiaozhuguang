@@ -176,15 +176,29 @@ export function showRunAnalysisPicker(records, selectedId, display, onRename = n
   generate.disabled = !selected.size;
   generate.addEventListener("click", () => {
     const html = buildRunAnalysisHtml(records.filter((record) => selected.has(record.id)), display);
-    const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-    const tab = window.open(url, "_blank");
+    const tab = window.open("about:blank", "_blank");
     if (!tab) {
-      note.textContent = "浏览器阻止了新标签页，请允许弹出窗口后重试。";
-      URL.revokeObjectURL(url);
+      const report = document.createElement("dialog");
+      report.style.cssText = "width:96vw;height:92vh;max-width:none;max-height:none;padding:8px;border:1px solid #62604b;border-radius:10px;background:#101319;color:#eee;z-index:100006;color-scheme:dark;";
+      const close = document.createElement("button");
+      close.textContent = "关闭图表";
+      close.style.cssText = "position:absolute;right:14px;top:10px;z-index:1;padding:6px 10px;border:1px solid #596273;border-radius:5px;background:#2a303b;color:#ddd;cursor:pointer";
+      close.addEventListener("click", () => report.close());
+      const frame = document.createElement("iframe");
+      frame.title = "GPU 与工作流运行分析";
+      frame.style.cssText = "width:100%;height:100%;border:0;background:#101319";
+      frame.srcdoc = html;
+      report.append(close, frame);
+      report.addEventListener("close", () => report.remove(), { once: true });
+      document.body.appendChild(report);
+      report.showModal();
+      dialog.close();
       return;
     }
     tab.opener = null;
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    tab.document.open();
+    tab.document.write(html);
+    tab.document.close();
     dialog.close();
   });
   dialog.addEventListener("close", () => dialog.remove());

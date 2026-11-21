@@ -1,5 +1,5 @@
 // .mjs 会被浏览器缓存。该模块只提供工厂，由本扩展创建并安装唯一的缓存实例。
-import { createVideoOutputCache } from "./lib/xzg_video_output_cache.mjs?v=2";
+import { videoOutputCache as _xzgVideoOutputs } from "./lib/xzg_video_output_cache.mjs?v=3";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { XiaozhuguangVideoPlayer } from "./xzg_video_player.js";
@@ -552,7 +552,6 @@ function _xzgFixVueWidgetGutter(node) {
 }
 
 // 预览身份和执行归属集中管理，禁止按节点结构猜测工作流。
-const _xzgVideoOutputs = createVideoOutputCache();
 const VIDEO_CLIPBOARD_PROPERTY = "xzgCopiedVideoPreview";
 
 function getVideoUrl(filename, type, subfolder, absToken, previewId) {
@@ -689,9 +688,12 @@ app.registerExtension({
             };
             applyPreviewHostLayout(useVueResizeLayout);
             const player = new XiaozhuguangVideoPlayer({
+                // 播放区域已按视频比例计算，填满它可避免整数尺寸差造成细黑边。
+                fit: nodeData.name === "XiaozhuguangVideoSaveDaVinci" ? "fill" : "contain",
                 allowSaveCurrentFrame: true,
                 enableLoadRange: false,
                 frameCountOverlay: "total",
+                fpsOverlay: true,
                 node,
                 container: playerContainer,
                 placeholderText: "🎬 暂无视频",
@@ -788,9 +790,8 @@ app.registerExtension({
                         const url = getVideoUrl(filename, type, subfolder, v.abs_token, v.preview_id);
                         if (url) {
                             const info = { ...saved };
-                            // 权威总帧数：复用执行时写入的 player._videoInfo.frame_count（load 不清 _backendFrameCount）
-                            if (player._videoInfo?.frame_count) info.frame_count = player._videoInfo.frame_count;
                             player._videoInfo = info;
+                            player.clearBackendFrameCount?.();
                             if (info.frame_count) player.setBackendFrameCount?.(info.frame_count);
                             // 注意：不再把文件名写进 node.properties —— 那会并入图/extra_pnginfo，
                             // 改变缓存签名导致每次运行都重编码。预览恢复只读取已确认的执行输出。
@@ -923,6 +924,7 @@ app.registerExtension({
                     player._videoInfo = info;
                     const url = getVideoUrl(info.filename, info.type, info.subfolder, info.abs_token, info.preview_id);
                     if (url) {
+                        player.clearBackendFrameCount?.();
                         if (info.frame_rate) player.setFrameRate?.(info.frame_rate);
                         // 总帧数优先用后端实测值：setBackendFrameCount 存入播放器权威帧数（load 不清空、
                         // 加载完成后优先采用；容器时长×帧率推算会因音轨尾差虚高 1 帧，如 459→460）
@@ -973,6 +975,7 @@ app.registerExtension({
                                 player._lastAppliedKey = key;
                                 player._videoInfo = saved;
                                 if (saved.frame_rate) player.setFrameRate?.(saved.frame_rate);
+                                player.clearBackendFrameCount?.();
                                 if (saved.frame_count) player.setBackendFrameCount?.(saved.frame_count);
                                 const url = getVideoUrl(saved.filename, saved.type, saved.subfolder, saved.abs_token, saved.preview_id);
                                 if (url) player.load(url);

@@ -1857,6 +1857,7 @@ export function bindVideoLoaderInteractions(node, isLM = false, opts = {}) {
             try { player?.destroy?.(); } catch (_e) {}
             _isPreviewLoaded = false;
             _createPlayer();
+            playerContainer.appendChild(hintText);
             if (url) {
                 requestAnimationFrame(() => {
                     player.setPreviewLoaded(false);

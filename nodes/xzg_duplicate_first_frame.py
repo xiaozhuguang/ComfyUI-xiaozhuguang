@@ -27,8 +27,6 @@ class XiaozhuguangDuplicateFirstFrame:
                                       "tooltip": "开启下限时生效，自动向上对齐到所选帧数规则；不足时复制尾帧补足。"}),
                 "frame_rule": (["4N+1", "17N+5"], {"default": "4N+1",
                                "tooltip": "按所选规则补齐总帧数。MiniMax H3（含上下文窗口）使用 17N+5。"}),
-                "fps": ("FLOAT", {"forceInput": True, "min": 0.01, "max": 1000.0,
-                                  "tooltip": "必须连接输入视频的帧率，并与视频合成帧率一致，用于计算音频补静音和裁剪时长。"}),
             },
             "optional": {
                 "image": ("IMAGE",),
@@ -36,6 +34,8 @@ class XiaozhuguangDuplicateFirstFrame:
                 "audio": ("AUDIO",),
                 "fill_position": (["前补帧", "后补帧"], {"default": "前补帧",
                                   "tooltip": "前补帧复制首帧，后补帧复制尾帧；下限额外补帧仍追加在末尾。"}),
+                "fps": ("FLOAT", {"forceInput": True, "min": 0.01, "max": 1000.0,
+                                  "tooltip": "接入音频时需连接视频帧率，用于补静音和裁剪；无音频时可留空。"}),
             },
         }
 
@@ -47,12 +47,12 @@ class XiaozhuguangDuplicateFirstFrame:
 
     @classmethod
     def IS_CHANGED(cls, multi_fill=False, image=None, mask=None, min_frames=73, frame_rule="4N+1",
-                   fps=24.0, audio=None, fill_position="前补帧"):
+                   fps=None, audio=None, fill_position="前补帧"):
         # 纯函数：前置输入未变则直接使用 ComfyUI 缓存，不重算
         return None
 
     def execute(self, multi_fill=False, image=None, mask=None, min_frames=73, frame_rule="4N+1",
-                fps=24.0, audio=None, fill_position="前补帧"):
+                fps=None, audio=None, fill_position="前补帧"):
         if image is None and mask is None:
             raise ValueError("[小珠光] 帧优化缺少输入：image 与 mask 至少连接一个")
 
@@ -118,6 +118,8 @@ class XiaozhuguangDuplicateFirstFrame:
         out_batch = batch_count + front_fill + back_fill
         audio_out = None
         if audio is not None:
+            if fps is None:
+                raise ValueError("[小珠光] 帧优化接入音频时需要连接视频帧率")
             if not math.isfinite(fps) or fps <= 0:
                 raise ValueError("[小珠光] 音频同步帧率必须为正数")
             sample_rate = audio["sample_rate"]

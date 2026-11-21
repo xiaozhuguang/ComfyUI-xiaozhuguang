@@ -76,7 +76,6 @@ function installCompactToggle(node, actions) {
         node.setDirtyCanvas?.(true, true);
         updateLabel();
     }, actions);
-    toggle.title = "开启极小化：单行显示，隐藏缩略图及悬浮预览；关闭后恢复普通显示";
     function updateLabel() {
         const compact = node.properties?.xzgLoraCompact === true;
         toggle.textContent = compact ? "极小化：开" : "极小化：关";
@@ -114,7 +113,6 @@ function strengthInput(value, commit) {
     input.type = "text";
     input.inputMode = "decimal";
     input.value = String(value);
-    input.title = "左右拖动：-10～10，步进 0.1；单击输入，支持两位小数";
     let current = value, gesture = null;
     function save() {
         const parsed = Number(input.value);
@@ -695,20 +693,42 @@ async function openManager(node) {
         if (!item) { active = null; detail.replaceChildren(); return; }
         active = item.id; dirty = false; detail.replaceChildren();
         detail.append(element("div", "xzg-lora-name", item.path.split("/").pop()));
-        if (item.thumbnail) {
-            const image = element("img", "xzg-lora-image");
-            loadThumbnail(image, item, () => image.remove(), "?v=" + Date.now());
-            detail.append(image);
-        }
-        button("上传 / 替换缩略图", () => filePicker("image/*", async file => {
+        const thumbnailPreview = element("div");
+        detail.append(thumbnailPreview);
+        const uploadThumbnail = button("上传 / 替换缩略图", () => filePicker("image/*", async file => {
             const form = new FormData(); form.append("file", file);
-            await request("thumbnail/" + item.id, form);
-            item.thumbnail = true;
-            item._thumbnailVersion = Date.now();
-            updateNodeLibrary(data, node);
-            renderCards();
-            status.textContent = "缩略图已保存";
+            await changeThumbnail(() => request("thumbnail/" + item.id, form), true);
         }), detail);
+        const deleteThumbnail = button("删除缩略图", () => changeThumbnail(
+            () => request("thumbnail/" + item.id + "/delete", {}), false
+        ), detail);
+        deleteThumbnail.className = "xzg-lora-danger";
+        function renderThumbnail(record) {
+            thumbnailPreview.replaceChildren();
+            deleteThumbnail.hidden = !record.thumbnail;
+            if (record.thumbnail) {
+                const image = element("img", "xzg-lora-image");
+                loadThumbnail(image, record, () => image.remove(), "?v=" + Date.now());
+                thumbnailPreview.append(image);
+            }
+        }
+        async function changeThumbnail(save, hasThumbnail) {
+            if (uploadThumbnail.disabled) return;
+            uploadThumbnail.disabled = deleteThumbnail.disabled = true;
+            try {
+                await save();
+                const record = data.items.find(entry => entry.id === item.id) || item;
+                record.thumbnail = hasThumbnail;
+                record._thumbnailVersion = Date.now();
+                renderThumbnail(record);
+                updateNodeLibrary(data, node);
+                renderCards();
+                status.textContent = hasThumbnail ? "缩略图已保存" : "缩略图已删除";
+            } finally {
+                uploadThumbnail.disabled = deleteThumbnail.disabled = false;
+            }
+        }
+        renderThumbnail(item);
         const fields = {};
         for (const [key, label, type] of [["tags", "标签（用逗号分隔）", "text"], ["notes", "备注 / 使用心得", "textarea"], ["triggers", "触发词", "textarea"],
             ["strength_model", "推荐模型强度", "number"]]) {
@@ -774,8 +794,17 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             original?.apply(this, arguments);
             for (const name of ["loras", "library_user"]) {
-                const w = widget(this, name); w.type = "hidden"; w.computeSize = () => [0, -4];
-                if (w.inputEl) w.inputEl.style.display = "none";
+                const w = widget(this, name);
+                if (!w) continue;
+                // Keep the value for workflow serialization and prompt submission.
+                // Older canvas widgets can still call their own renderer after a type change.
+                w.type = "hidden";
+                w.hidden = true;
+                w.draw = () => {};
+                w.mouse = () => false;
+                w.computeSize = () => [0, -4];
+                w.computeLayoutSize = () => ({ minHeight: 0, maxHeight: 0, minWidth: 0 });
+                if (w.inputEl) w.inputEl.style.setProperty("display", "none", "important");
             }
             const actions = element("div", "xzg-lora-node-actions");
             button("打开 LoRA 管理器", () => openManager(this), actions);
@@ -784,11 +813,19 @@ app.registerExtension({
                 this.properties.xzgLoraSingle = this.properties.xzgLoraSingle !== true;
                 saveSelection(this, selection(this));
             }, actions);
-            modeToggle.title = "切换单/多 LoRA：单 LoRA 时，开启一个会自动关闭其他项";
             modeToggle.setAttribute("aria-label", "单/多 LoRA");
             installCompactToggle(this, actions);
-            button("一键清除 LoRA", () => saveSelection(this, []), actions);
-            const actionsWidget = this.addDOMWidget("lora_actions", "div", actions, { serialize: false, getMinHeight: () => 36, getMaxHeight: () => 36, getHeight: () => 36 });
+            const actionsHeight = () => this.properties?.xzgLoraCompact === true ? 26 : 36;
+            const actionsWidget = this.addDOMWidget("lora_actions", "div", actions, {
+                serialize: false,
+                margin: 3,
+                getMinHeight: actionsHeight,
+                getMaxHeight: actionsHeight,
+                getHeight: actionsHeight,
+            });
+            actionsWidget.computeLayoutSize = () => ({
+                minHeight: actionsHeight(), maxHeight: actionsHeight(), minWidth: 0,
+            });
             const stack = element("div", "xzg-lora-stack");
             const rows = element("div");
             stack.append(rows);
@@ -914,8 +951,8 @@ app.registerExtension({
                         row.append(img);
                     }
                     const name = element("div", "xzg-lora-name", (info?.path || item.path || "").split("/").pop() || "未知 LoRA");
-                    name.title = item.path + "\n" + (item.enabled === false ? "点击启用此 LoRA" : "点击停用此 LoRA");
                     name.setAttribute("role", "button");
+                    name.setAttribute("aria-pressed", String(item.enabled !== false));
                     name.tabIndex = 0;
                     const toggleEnabled = () => {
                         item.enabled = item.enabled === false;
@@ -927,7 +964,8 @@ app.registerExtension({
                     });
                     row.append(name);
                     const controls = element("div", "xzg-lora-stack-controls");
-                    const enabled = element("input"); enabled.type = "checkbox"; enabled.checked = item.enabled !== false; enabled.title = "启用";
+                    const enabled = element("input"); enabled.type = "checkbox"; enabled.checked = item.enabled !== false;
+                    enabled.setAttribute("aria-label", "启用 LoRA");
                     enabled.onchange = () => {
                         item.enabled = enabled.checked;
                         saveSelection(this, list, item);
@@ -940,7 +978,7 @@ app.registerExtension({
                             this.setDirtyCanvas(true, true);
                             app.graph?.change?.();
                         });
-                        input.setAttribute("aria-label", label + "强度");
+                        input.setAttribute("aria-label", label);
                         controls.append(input);
                     }
                     let triggers = "";
@@ -951,7 +989,6 @@ app.registerExtension({
                     const updateCopyTriggers = info => {
                         triggers = typeof info?.triggers === "string" ? info.triggers : "";
                         copyTriggers.disabled = !triggers.trim();
-                        copyTriggers.title = copyTriggers.disabled ? "未填写触发词" : "复制触发词";
                     };
                     updateCopyTriggers(info);
                     const openFolder = button("", async () => {
@@ -960,13 +997,11 @@ app.registerExtension({
                         await request("open-directory", { id: record.id });
                     }, controls);
                     openFolder.className = "xzg-lora-icon";
-                    openFolder.title = "打开目录";
                     openFolder.setAttribute("aria-label", "打开目录");
                     openFolder.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M3 10h18"/></svg>';
                     const remove = button("", () => { list.splice(index, 1); saveSelection(this, list); }, controls);
                     remove.className = "xzg-lora-icon xzg-lora-remove";
                     remove.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
-                    remove.title = "移除 LoRA";
                     remove.setAttribute("aria-label", "移除 LoRA");
                     row.append(controls);
                     const preview = element("div", "xzg-lora-node-preview");

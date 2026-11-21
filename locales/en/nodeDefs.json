@@ -56,11 +56,39 @@
       "remove_isolated_pixels": { "name": "Remove Thin Regions" },
       "smooth": { "name": "Smooth" },
       "blur": { "name": "Blur" },
-      "temporal_smooth_radius": { "name": "Contour Smoothing Radius (Frames)" },
+      "temporal_smooth_radius": { "name": "Max Missing Frames to Fill" },
       "position_smoothing_frames": { "name": "Position Smoothing" },
       "scale_smoothing_frames": { "name": "Scale Smoothing" }
     },
     "outputs": { "0": { "name": "Masks" } }
+  },
+  "XiaozhuguangYoloMask": {
+    "display_name": "Xiaozhuguang YOLO to Mask",
+    "description": "Detect objects in image batches and output masks. Segmentation models produce contours, and detection models produce rectangles. Model directory: ComfyUI/models/ultralytics.",
+    "inputs": {
+      "image": {"name":"Image"},
+      "model": {"name":"YOLO Model"},
+      "confidence": {"name":"Confidence Threshold"},
+      "iou": {"name":"IoU Threshold"},
+      "mask_padding": {"name":"Mask Expansion (px)"},
+      "invert_mask": {"name":"Invert Mask"},
+      "class_id": {"name":"Class ID","tooltip":"Use -1 for all classes, or enter a class ID defined by the model."}
+    },
+    "outputs": {"0":{"name":"Mask"}}
+  },
+  "XiaozhuguangYoloFaceMask": {
+    "display_name": "Xiaozhuguang YOLO to Mask",
+    "description": "Detect objects in image batches and output masks. Segmentation models produce contours, and detection models produce rectangles. Model directory: ComfyUI/models/ultralytics.",
+    "inputs": {
+      "image": {"name":"Image"},
+      "model": {"name":"YOLO Model"},
+      "confidence": {"name":"Confidence Threshold"},
+      "iou": {"name":"IoU Threshold"},
+      "mask_padding": {"name":"Mask Expansion (px)"},
+      "invert_mask": {"name":"Invert Mask"},
+      "class_id": {"name":"Class ID","tooltip":"Use -1 for all classes, or enter a class ID defined by the model."}
+    },
+    "outputs": {"0":{"name":"Mask"}}
   },
   "XiaozhuguangImageMaskConvert": {
     "display_name": "Xiaozhuguang Smart Image/Mask Converter",
@@ -627,15 +655,20 @@
     }
   },
   "XiaozhuguangBatchImageGetter": {
-    "display_name": "Xiaozhuguang Image Getter",
-    "description": "Split image batches or lists into numbered images. Output count controls visible sockets; missing items are empty.",
+    "display_name": "Xiaozhuguang Image Batch Getter",
+    "description": "Legacy image batch node compatibility entry; uses the generic image/mask input and defaults to images.",
     "inputs": {
-      "图像": {
-        "name": "images"
-      },
       "输出数量": {
         "name": "output count"
-      }
+      },
+      "类型": {
+        "name": "type",
+        "options": {
+          "图像": { "text": "Image" },
+          "遮罩": { "text": "Mask" }
+        }
+      },
+      "数据": { "name": "image / mask" }
     },
     "outputs": {
       "0": {
@@ -700,16 +733,36 @@
       }
     }
   },
-  "XiaozhuguangBatchMaskGetter": {
-    "display_name": "Xiaozhuguang Mask Getter",
-    "description": "Split mask batches or lists into numbered masks. Output count controls visible sockets; missing items are empty.",
+  "XiaozhuguangBatchListGetter": {
+    "display_name": "Xiaozhuguang Batch List Getter - Block",
+    "description": "Split an image or mask batch or list from one input into numbered outputs. Missing items produce empty outputs.",
     "inputs": {
-      "遮罩": {
-        "name": "masks"
+      "输出数量": { "name": "output count" },
+      "类型": {
+        "name": "type",
+        "options": {
+          "图像": { "text": "Image" },
+          "遮罩": { "text": "Mask" }
+        }
       },
+      "数据": { "name": "image / mask" }
+    }
+  },
+  "XiaozhuguangBatchMaskGetter": {
+    "display_name": "Xiaozhuguang Mask Batch Getter",
+    "description": "Legacy mask batch node compatibility entry; uses the generic image/mask input and defaults to masks.",
+    "inputs": {
       "输出数量": {
         "name": "output count"
-      }
+      },
+      "类型": {
+        "name": "type",
+        "options": {
+          "图像": { "text": "Image" },
+          "遮罩": { "text": "Mask" }
+        }
+      },
+      "数据": { "name": "image / mask" }
     },
     "outputs": {
       "0": {
@@ -1008,6 +1061,16 @@
       "0": {
         "name": "image"
       }
+    }
+  },
+  "XZGSelectTrackedMask": {
+    "display_name": "XZG Tracked Mask Color Selector",
+    "inputs": {
+      "mask_batch": { "name": "per-frame mask batch" },
+      "color_index": { "name": "mask color track index", "tooltip": "Select the mask color track to extract." }
+    },
+    "outputs": {
+      "0": { "name": "per-frame mask" }
     }
   }
 }

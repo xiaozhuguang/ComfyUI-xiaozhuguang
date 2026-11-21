@@ -333,6 +333,19 @@ def _build_main_pass(format_name, crf):
     return base
 
 
+def next_video_filename(folder, stem, extension):
+    matcher = re.compile(rf"{re.escape(stem)}_(\d+)\D*\..+", re.IGNORECASE)
+    max_counter = 0
+    try:
+        for existing_file in os.listdir(folder):
+            match = matcher.fullmatch(existing_file)
+            if match:
+                max_counter = max(max_counter, int(match.group(1)))
+    except OSError:
+        pass
+    return f"{stem}_{max_counter + 1}.{extension}", matcher
+
+
 def _embed_video_workflow(path, video_format, prompt, extra_pnginfo):
     """Write native container metadata; use a file input to avoid command-line limits."""
     metadata = {"workflow": (extra_pnginfo or {}).get("workflow")}
@@ -637,23 +650,8 @@ class XiaozhuguangVideoCombine:
         if subfolder_extra:
             subfolder = os.path.normpath(os.path.join(subfolder_extra, subfolder)) if subfolder else subfolder_extra
 
-        # 计算下一个可用的计数器
-        max_counter = 0
-        matcher = re.compile(f"{re.escape(filename)}_(\\d+)\\D*\\..+", re.IGNORECASE)
-        try:
-            for existing_file in os.listdir(full_output_folder):
-                match = matcher.fullmatch(existing_file)
-                if match:
-                    file_counter = int(match.group(1))
-                    if file_counter > max_counter:
-                        max_counter = file_counter
-        except Exception:
-            pass
-        counter = max_counter + 1
-
         extension = VIDEO_FORMATS[格式]["extension"]
-        # 序号不补零：xzg_video_1.mp4、xzg_video_2.mp4 ... xzg_video_123.mp4（旧的 00001 补零格式不再产生）
-        file = f"{filename}_{counter}.{extension}"
+        file, matcher = next_video_filename(full_output_folder, filename, extension)
         file_path = os.path.join(full_output_folder, file)
 
         export_to_video(

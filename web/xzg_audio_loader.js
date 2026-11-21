@@ -3,6 +3,10 @@ import { api } from "../../scripts/api.js";
 import { showMediaLibrary } from "./xzg_media_library.js";
 import { xzgT } from "./xzg_i18n.js";
 import {
+    xzgCloseLoaderSettings, xzgGetPreviewButtonGap, xzgOrderedPreviewActions,
+    xzgPreviewButtonVisible, xzgSetPreviewButtonsDefaultHidden, xzgShowLoaderSettings,
+} from "./xzg_loader_settings.js";
+import {
     downloadAudio,
     xzgTimestamp,
 } from "./xzg_save_utils.js";
@@ -15,6 +19,14 @@ const AUDIO_WAVEFORM_WIDGET_NAME = "xzg_audio_waveform";
 const AUDIO_CONTROLS_WIDGET_NAME = "xzg_audio_controls";
 const AUDIO_WAVEFORM_H = 120;   // 波形固定高度
 const AUDIO_CONTROLS_H = 0;
+const AUDIO_PREVIEW_ACTIONS = [
+    ["media_library", "_xzgAudioMediaLibraryBtn", "#ffd700", "资源媒体", "Media assets"],
+    ["media_favorite", "_xzgAudioMediaFavoriteBtn", "#ffd700", "收藏", "Save to media library"],
+    ["quickcut_load", "_xzgFcDomBtn", "#ffd700", "从快剪加载", "Load from Quick Cut"],
+    ["quickcut_send", "_xzgAudioLoaderQuickCutBtn", "#ffd700", "发送到快剪", "Send to Quick Cut"],
+    ["davinci_import", "_xzgDvBtn", "#3ef558", "从达芬奇加载", "Load from DaVinci"],
+    ["davinci_export", "_xzgAudioLoaderExportBtn", "#3ef558", "导出到达芬奇", "Export to DaVinci"],
+].map(([id, key, defaultColor, zh, en]) => ({ id, key, defaultColor, defaultSize: 12, zh, en }));
 function _xzgAudioLoaderDavinciKey(node) {
     const parts = (node?.graph?.nodes || []).filter(n => n?.id != null && n.type).map(n => `${n.id}:${n.type}`).sort();
     let h = 5381;
@@ -236,10 +248,7 @@ class XiaozhuguangWaveformViewer {
         // 循环/单次播放：true=循环，false=单次
         this._loopPlayback = false;
         this._loopBtn = null;
-        // 「从快剪加载」canvas 按钮：状态 + 命中矩形 + 点击回调
-        // （与「全览/📝」同机制：canvas 绘制 + 节点局部坐标命中，缩放平移绝不错位）
-        this._fastcut = { visible: false, busy: false, text: '快剪', color: '#FFD700', hover: false };
-        this._fastcutBtn = null;
+        this._fastcut = { busy: false, color: '#FFD700' };
         this.onFastcutClick = null;
         // 播放头拖动结束时间（防止拖动到界面外后误触发播放）
         this._lastPlayheadEnd = 0;
@@ -1050,9 +1059,6 @@ class XiaozhuguangWaveformViewer {
 
         // 音量显示（左上角）
         const volText = `音量${Math.round(this.volume * 100)}`;
-        // 化神级顶栏最右的「从达芬奇导入」DOM 按钮宽度（canvas 本地单位），
-        // 「从快剪加载」与时间码保留区需整体左移让位；普通加载器为 0 不影响
-        const _dvW = this._xzgDvBtnWidth || 0;
         const volStartX = pad + 2;
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
         ctx.font = '12px sans-serif';
@@ -1070,13 +1076,7 @@ class XiaozhuguangWaveformViewer {
         // 时长：若被红/蓝裁剪（start/end 标记），显示裁剪后的时长；否则即总时长
         const durLabel = fmt(Math.max(0, this.endTime - this.startTime));
         const volTextW = ctx.measureText(volText).width;
-        // 右侧保留区：从快剪加载可见时预留其宽度，否则保留 全览/📝
-        let _fcw = 0;
-        if (this._fastcut && this._fastcut.visible) {
-            // 化神级：从快剪加载 + 导出到达芬奇/发送到快剪按钮的让位宽度
-            _fcw = (this._xzgFcBtnWidth || 0) + (this._xzgActBtnsWidth || 0);
-        }
-        const rightZone = w - pad - 15 - _dvW - _fcw - 8;
+        const rightZone = w - pad - 23;
         const timeBaseX = volStartX + volTextW + 6;
         // 时间码宽度不足时逐级截断：全量(含范围/时长) → 当前/时长 → 当前 → 空
         let timeText = `${curTime} / ${rangeStr} 时长${durLabel}`;
@@ -1138,9 +1138,6 @@ class XiaozhuguangWaveformViewer {
         ctx.fillText('📝', helpIconX + helpIconW / 2, helpIconY - 1);
         this._helpBtn = { x: helpIconX, y: helpIconY, w: helpIconW, h: 18 };
     }
-
-    // ── 「从快剪加载」按钮已改为 DOM 按钮（见 bindAudioLoaderInteractions /
-    //    _createFastcutDomButton），与「从达芬奇导入」同机制同帧同步 ──
 
     // ── LiteGraph widget 鼠标事件 ──
     handleMouse(event, localX, localY) {
@@ -1979,8 +1976,7 @@ function bindAudioLoaderInteractions(node) {
         return origSetSize?.apply(this, arguments);
     };
     node.setSize([320, 212]);
-    // 化神级：最小宽度与默认宽度均为 500（底部一行 5 个悬浮按钮靠右排布）。
-    // 仅影响新建节点；已保存工作流在 configure 阶段按保存尺寸恢复，不受此默认值影响。
+    // 化神级节点预留更多空间给波形区的悬浮按钮。
     if ((node.comfyClass || node.type) === XZG_AUDIO_DAVINCI_TYPE) {
         node.minWidth = 360;
         node.setSize([360, 212]);
@@ -2053,11 +2049,10 @@ function bindAudioLoaderInteractions(node) {
         Object.assign(waveformViewer._fastcut, patch);
         if (!fastcutDom) return;
         if (patch.text !== undefined) fastcutDom.setText(patch.text);
-        if (patch.color !== undefined) fastcutDom.setColor(patch.color);
-        fastcutDom.sync();
+        node._xzgAudioLayout?.();
     };
 
-    // canvas 按钮点击回调（由 handleMouse 命中后调用）；普通加载器无按钮不注册
+    // 从快剪加载按钮的点击回调。
     if (fastcutDom) waveformViewer.onFastcutClick = () => {
         if (waveformViewer._davinciActionBusy || node._xzgFcDomBtn?.disabled) return;
         _setFastcutState({ busy: true, text: "等待确认..." });
@@ -2114,16 +2109,12 @@ function bindAudioLoaderInteractions(node) {
 
         // 打开快剪编辑器前隐藏所有悬浮按钮，避免浮在编辑器上方
         waveformViewer._fastcutEditorOpen = true;
-        try {
-            node._xzgFcDomBtn && (node._xzgFcDomBtn.style.opacity = "0");
-            ["_xzgAudioLoaderExportBtn","_xzgAudioLoaderQuickCutBtn"].forEach(k => {
-                node[k] && (node[k].style.opacity = "0");
-            });
-        } catch (e) {}
+        node._xzgAudioLayout?.();
         if (typeof window._xzgOpenVideoEditor === "function") {
             // modeFilter: "audio" → 快剪只显示音频格式、隐藏「导出」按钮（仅「确认」导出）
             window._xzgOpenVideoEditor({ confirmCallback, modeFilter: "audio" });
         } else {
+            waveformViewer._fastcutEditorOpen = false;
             _setFastcutState({ busy: false, text: "快剪未加载", color: "#ff6b6b" });
             setTimeout(() => {
                 _setFastcutState({ text: _fastcutOriginalText, color: "#FFD700" });
@@ -2471,7 +2462,14 @@ function bindAudioLoaderInteractions(node) {
     const origOnConfigure = node.onConfigure;
     node.onConfigure = function (info) {
         origOnConfigure?.apply(this, arguments);
-        if (node.type === XZG_AUDIO_DAVINCI_TYPE) requestAnimationFrame(() => _xzgRestoreAudioLoaderDavinciTarget(node));
+        if (_isDvAudioLoader) {
+            // 旧工作流没有此属性，继续使用原来的悬浮按钮显示方式。
+            if (!info?.properties?.xzg_preview_buttons && node.properties) {
+                delete node.properties.xzg_preview_buttons;
+            }
+            node._xzgAudioLayout?.();
+            requestAnimationFrame(() => _xzgRestoreAudioLoaderDavinciTarget(node));
+        }
         requestAnimationFrame(() => {
             _applyAudioWidgetStyles(node);
             syncVolumeFromWidget();
@@ -2838,9 +2836,7 @@ function _xzgForwardCanvasWheel(e) {
 
 function _createDavinciImportButton(node) {
     if (node._xzgDvBtn) return node._xzgDvBtn;
-    const viewer = node._xzgWaveformViewer;
-    if (!viewer) return null;
-    return _createAudioLoaderAction(node, viewer, "_xzgDvBtn", "达芬奇", "#3ef558", async (btn, labelSpan) => {
+    return _createAudioLoaderAction(node, "_xzgDvBtn", "达芬奇", "#3ef558", async (btn, labelSpan) => {
         if (btn._xzgDavinciBusy) return;
         const audioWidget = node.widgets?.find(w => w.name === "音频");
         if (!audioWidget) return;
@@ -2923,100 +2919,20 @@ function _createFastcutDomButton(node, viewer) {
         if (viewer._davinciActionBusy || btn.disabled || (viewer._fastcut && viewer._fastcut.busy)) return;
         viewer.onFastcutClick && viewer.onFastcutClick();
     };
-    viewer._xzgFcBtnWidth = 100;  // 画布端让位宽度初始估计（sync 每帧用实测值覆盖）
-
-    // 悬停判定区 = 整个节点边界（与「从达芬奇导入」一致）；busy 导出中强制常显
-    const _lastMouse = { x: -1, y: -1 };
-    let _hoverRect = null;
-    const _updateVisibility = () => {
-        if (viewer._fastcutEditorOpen || viewer._davinciActionBusy) {
-            if (viewer._fastcut) viewer._fastcut.visible = false;
-            btn.style.opacity = "0";
-            btn.disabled = true;
-            // 按钮在波形轨道上沿附近；忙碌时将它移出视口，避免透明 DOM 仍能被点到。
-            btn.style.left = "-10000px";
-            btn.style.top = "-10000px";
-            btn.style.pointerEvents = "none";
-            return;
-        }
-        btn.disabled = false;
-        const busy = !!(viewer._fastcut && viewer._fastcut.busy);
-        let vis = busy;
-        if (!vis && _hoverRect) {
-            const r = _hoverRect;
-            const inside = _lastMouse.x >= r.x && _lastMouse.x <= r.x + r.w &&
-                           _lastMouse.y >= r.y && _lastMouse.y <= r.y + r.h;
-            vis = inside || btn.matches(":hover");
-        }
-        if (viewer._fastcut) viewer._fastcut.visible = vis;
-        btn.style.opacity = vis ? "1" : "0";
-        btn.style.pointerEvents = "auto";
-    };
-    const onMove = (e) => {
-        _lastMouse.x = e.clientX;
-        _lastMouse.y = e.clientY;
-        _updateVisibility();
-    };
-    document.addEventListener("pointermove", onMove, true);
-
-    const sync = () => {
-        try {
-            const cv = app.canvas?.canvas;
-            const ds = app.canvas?.ds;
-            const npos = node.pos;
-            const drawW = viewer._drawW || 0;
-            if (!cv || !ds || !npos || drawW <= 0) return;
-            const rect = cv.getBoundingClientRect();
-            const scale = ds.scale || 1;
-            const x0 = (npos[0] + ds.offset[0]) * scale + rect.left;
-            const y0 = (npos[1] + ds.offset[1] + viewer._drawY) * scale + rect.top;
-            const dvW = viewer._xzgDvBtnWidth || 0;
-            const bw = btn.offsetWidth || 100;
-            viewer._xzgFcBtnWidth = bw;
-            // 悬停判定区 = 整个节点边界（与「从达芬奇导入」一致）
-            _hoverRect = {
-                x: x0,
-                y: (npos[1] + ds.offset[1]) * scale + rect.top,
-                w: (node.size?.[0] || 0) * scale,
-                h: (node.size?.[1] || 0) * scale,
-            };
-            const s = scale; // 完全跟随画布缩放（不再夹取区间）
-            btn.style.transformOrigin = "top left";
-            btn.style.transform = `scale(${s})`;
-            // 顶栏右二：「从达芬奇导入」（最右）左侧，预留 dvW + 6；整体左移 5px 避开蓝杠
-            btn.style.left = Math.round(x0 + drawW * scale - (15 + dvW + 6 + bw) * scale) + "px";
-            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
-            _updateVisibility();
-        } catch (e) { /* 画布未就绪等场景忽略 */ }
-    };
-    // 钩进波形绘制帧：平移/缩放/拖动节点时按钮实时跟随
-    const origDrawOnNode = viewer.drawOnNode;
-    viewer.drawOnNode = function (ctx, a, b, c) {
-        const r = origDrawOnNode.apply(this, arguments);
-        node._xzgFcSyncBtn?.();
-        return r;
-    };
-    node._xzgFcSyncBtn = sync;
-
     const origOnRemoved = node.onRemoved;
     node.onRemoved = function () {
-        document.removeEventListener("pointermove", onMove, true);
         try { btn.remove(); } catch (e) {}
         node._xzgFcDomBtn = null;
-        node._xzgFcSyncBtn = null;
         return origOnRemoved?.apply(this, arguments);
     };
 
     node._xzgFcDomBtn = btn;
     return {
-        btn,
         setText: (t) => {
             const spans = btn.querySelectorAll("span");
             const ts = spans[spans.length - 1];
             if (ts) ts.textContent = t;
         },
-        setColor: (c) => { btn.style.color = c; },
-        sync,
     };
 }
 
@@ -3059,26 +2975,11 @@ function _setAudioDavinciBusy(node, btn, busy) {
     viewer._davinciActionBusy = !!busy;
     viewer._davinciBusyButton = busy ? btn : null;
     viewer._davinciBusyLabel = busy ? (btn?.lastElementChild?.textContent || '正在处理达芬奇操作…') : '';
-    if (node._xzgFcDomBtn) {
-        node._xzgFcDomBtn.disabled = !!busy;
-        if (busy) {
-            node._xzgFcDomBtn.style.opacity = "0";
-            node._xzgFcDomBtn.style.pointerEvents = "none";
-        } else {
-            node._xzgFcDomBtn.style.pointerEvents = "auto";
-        }
-    }
     node._xzgAudioLayout?.();
     node.setDirtyCanvas?.(true, true);
-    if (!busy) node._xzgFcSyncBtn?.();
 }
 
-function _createAudioLoaderAction(node, viewer, key, text, color, onClick, iconHtml = '<span style="font-size:13px;">🎬</span>') {
-    // 关键修复：锚点必须在创建期捕获（链条：从快剪加载 → 导出到达芬奇 → 发送到快剪）。
-    // 禁止绘制期回读 node._xzgAudioActionAnchor——三个包装器会读到链条末端的同一个按钮：
-    // 末位按钮自锚每帧左移（无限漂移）、其余按钮重叠其上、透明度互相拷贝恒为 0 → 按钮永远不可见。
-    const anchor = node._xzgAudioActionAnchor || node._xzgFcDomBtn;
-    if (!anchor) return null;
+function _createAudioLoaderAction(node, key, text, color, onClick, iconHtml = '<span style="font-size:13px;">🎬</span>') {
     const btn = document.createElement("button");
     btn.style.cssText = "position:fixed;z-index:100001;display:inline-flex;align-items:center;gap:4px;" +
         "padding:2px 8px;font-size:12px;line-height:1;background:transparent;border:none;" +
@@ -3097,49 +2998,23 @@ function _createAudioLoaderAction(node, viewer, key, text, color, onClick, iconH
         btn.querySelector(".xzg-davinci-clover")?.classList.remove("spinning");
     });
     btn.onclick = () => { if (!btn.disabled) onClick(btn, labelSpan); };
-    const oldDraw = viewer.drawOnNode;
-    viewer.drawOnNode = function (...args) {
-        const r = oldDraw.apply(this, args);
-        const cv = app.canvas?.canvas, ds = app.canvas?.ds;
-        if (cv && ds && anchor?.style?.left) {
-            const scale = ds.scale || 1;
-            const left = parseFloat(anchor.style.left);
-            const top = parseFloat(anchor.style.top);
-            const bw = btn.offsetWidth || 80;
-            btn.style.transformOrigin = "top left";
-            btn.style.transform = `scale(${scale})`;
-            btn.style.left = Math.round(left - (bw + 6) * scale) + "px";
-            btn.style.top = top + "px";
-            // 快剪编辑器打开时全部隐藏；busy 按钮常显；有任一按钮 busy 时其他按钮隐藏
-            if (viewer._fastcutEditorOpen) { btn.style.opacity = "0"; }
-            else {
-                const anyBusy = ["_xzgAudioLoaderExportBtn","_xzgAudioLoaderQuickCutBtn"].some(k => node[k]?.disabled);
-                btn.style.opacity = btn.disabled
-                    ? "1"
-                    : (anyBusy ? "0" : (anchor.matches(":hover") || btn.matches(":hover") ? "1" : anchor.style.opacity));
-            }
-        }
-        return r;
-    };
-    node._xzgAudioActionAnchor = btn;
     node[key] = btn;
     // 节点移除时清理按钮（与「从达芬奇导入」一致），避免 DOM 残留；只装一次
     if (!node._xzgAudioActionCleanup) {
         node._xzgAudioActionCleanup = true;
         const origOnRemoved = node.onRemoved;
         node.onRemoved = function () {
-            for (const k of ["_xzgAudioLoaderExportBtn", "_xzgAudioLoaderQuickCutBtn", "_xzgDvBtn", "_xzgAudioMediaLibraryBtn", "_xzgAudioMediaFavoriteBtn"]) {
+            for (const k of ["_xzgAudioLoaderExportBtn", "_xzgAudioLoaderQuickCutBtn", "_xzgDvBtn", "_xzgAudioMediaLibraryBtn", "_xzgAudioMediaFavoriteBtn", "_xzgAudioSettingsBtn"]) {
                 try { node[k]?.remove(); node[k] = null; } catch (e) {}
             }
-            node._xzgAudioActionAnchor = null;
             return origOnRemoved?.apply(this, arguments);
         };
     }
     return btn;
 }
 
-function _createAudioMediaLibraryButtons(node, viewer) {
-    _createAudioLoaderAction(node, viewer, "_xzgAudioMediaLibraryBtn", xzgT("资源媒体", "Media"), "#FFD700", () => {
+function _createAudioMediaLibraryButtons(node) {
+    _createAudioLoaderAction(node, "_xzgAudioMediaLibraryBtn", xzgT("资源媒体", "Media"), "#FFD700", () => {
         showMediaLibrary({
             kind: "audio",
             alertUser: message => _xzgDavinciToast(message, true),
@@ -3154,7 +3029,7 @@ function _createAudioMediaLibraryButtons(node, viewer) {
             },
         });
     }, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" style="display:block" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="5"/><polyline points="8,11.0 8,13.0"/><polyline points="10,10.0 10,14.0"/><polyline points="12,10.5 12,13.5"/><polyline points="14,10.0 14,14.0"/><polyline points="16,11.0 16,13.0"/></svg>');
-    _createAudioLoaderAction(node, viewer, "_xzgAudioMediaFavoriteBtn", xzgT("收藏", "Save"), "#FFD700", async (btn, label) => {
+    _createAudioLoaderAction(node, "_xzgAudioMediaFavoriteBtn", xzgT("收藏", "Save"), "#FFD700", async (btn, label) => {
         const info = _xzgAudioLoadedInfo(node);
         if (!info) return _xzgDavinciToast(xzgT("请先选择或上传音频", "Select or upload audio first"), true);
         btn.disabled = true;
@@ -3175,7 +3050,7 @@ function _installAudioLoaderActions(node) {
     const viewer = node._xzgWaveformViewer;
     if (!viewer || node._xzgAudioLoaderExportBtn) return;
     // 导出到达芬奇：注解原样发后端（get_annotated_filepath 自行解析 [output]）
-    _createAudioLoaderAction(node, viewer, "_xzgAudioLoaderExportBtn", "导出", "#3ef558", async (btn, label) => {
+    _createAudioLoaderAction(node, "_xzgAudioLoaderExportBtn", "导出", "#3ef558", async (btn, label) => {
         const info = _xzgAudioLoadedInfo(node);
         if (!info) return _xzgDavinciToast("[导出到达芬奇] 请先选择音频。", true);
         btn.disabled = true;
@@ -3227,7 +3102,7 @@ function _installAudioLoaderActions(node) {
         }
     }, _xzgDavinciCloverIcon());
     // 发送到快剪：必须解析注解取 filename + type（output 音频硬编码 input 会找不到文件）
-    _createAudioLoaderAction(node, viewer, "_xzgAudioLoaderQuickCutBtn", "发送", "#FFD700", async (btn, label) => {
+    _createAudioLoaderAction(node, "_xzgAudioLoaderQuickCutBtn", "发送", "#FFD700", async (btn, label) => {
         const info = _xzgAudioLoadedInfo(node);
         if (!info) return _xzgDavinciToast("[发送到快剪] 请先选择音频。", true);
         if (typeof window._xzgVideoEditorReceiveMedia !== "function") {
@@ -3247,63 +3122,47 @@ function _installAudioLoaderActions(node) {
         }
     }, _CLAPPER_SVG);
     _createDavinciImportButton(node);
-    _createAudioMediaLibraryButtons(node, viewer);
-    // 画布端让位：按钮可见时顶栏时间码整体左移（与 _xzgFcBtnWidth 同机制上报三钮总宽）
-    const origDraw = viewer.drawOnNode;
-    viewer.drawOnNode = function (...args) {
-        const r = origDraw.apply(this, args);
-        let total = 0;
-        for (const b of [node._xzgAudioLoaderExportBtn, node._xzgAudioLoaderQuickCutBtn]) {
-            if (b) total += (b.offsetWidth || 0) + 6;
-        }
-        viewer._xzgActBtnsWidth = total;
-        return r;
-    };
+    _createAudioMediaLibraryButtons(node);
+
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 // 统一悬浮按钮布局（音频加载-化神级）：
-//   音轨底部一行（左→右）：从快剪加载 · 发送到快剪 · 从达芬奇加载 · 导出到达芬奇
-//   每帧在所有按钮各自 sync 之后（最外层 wrapper）统一覆盖 left/top/opacity，
-//   保证五个按钮等高、同帧显隐；按钮全部在底部，顶栏不再让位。
+//   设置入口在左下方，已启用的悬浮按钮在音轨底部靠右排列。
 // ═══════════════════════════════════════════════════════════════════════
 function _installAudioLoaderLayout(node) {
     const viewer = node._xzgWaveformViewer;
     if (!viewer || node._xzgAudioLayoutInstalled) return;
     node._xzgAudioLayoutInstalled = true;
 
-    // 音轨底部一行（左→右）：从快剪加载 · 发送到快剪 · 从达芬奇加载 · 导出到达芬奇
-    const bottomRow = () => [
-        node._xzgFcDomBtn,               // 从快剪加载（最左）
-        node._xzgAudioLoaderQuickCutBtn, // 发送到快剪
-        node._xzgDvBtn,                  // 从达芬奇加载
-        node._xzgAudioLoaderExportBtn,   // 导出到达芬奇（最右）
-    ].filter(Boolean);
-    const mediaRow = () => [node._xzgAudioMediaLibraryBtn, node._xzgAudioMediaFavoriteBtn].filter(Boolean);
-    const allButtons = () => [...bottomRow(), ...mediaRow()];
+    const actions = AUDIO_PREVIEW_ACTIONS.filter(({ key }) => node[key]);
+    const settingsLabel = xzgT("加载器设置", "Loader settings");
+    const settings = _createAudioLoaderAction(node, "_xzgAudioSettingsBtn", "", "#aeb8c8",
+        () => {
+            xzgShowLoaderSettings(node, actions.map(action => ({
+                ...action, label: xzgT(action.zh, action.en),
+            })), layout);
+            layout();
+        }, '<span aria-hidden="true">⚙</span>');
+    settings.title = settingsLabel;
+    settings.setAttribute("aria-label", settingsLabel);
 
     const mouse = { x: -1, y: -1 };
-    const onMove = (e) => { mouse.x = e.clientX; mouse.y = e.clientY; };
-    document.addEventListener("pointermove", onMove, true);
-
-    const wOf = (b) => (b ? (b.offsetWidth || 90) : 0);
+    const onMove = (e) => {
+        mouse.x = e.clientX;
+        mouse.y = e.clientY;
+        layout();
+    };
 
     const layout = () => {
         try {
             const cv = app.canvas?.canvas, ds = app.canvas?.ds;
             const npos = node.pos;
             const drawW = viewer._drawW || 0, drawH = viewer._drawH || 0;
-            const btns = allButtons();
-            // 快剪打开期间，画布上的鼠标坐标仍可能落在节点范围内；不要让统一布局
-            // 每帧重新显示五个 body 悬浮按钮（其原生 title 提示也会盖到快剪界面）。
-            if (viewer._fastcutEditorOpen) {
-                for (const b of btns) b.style.opacity = "0";
-                if (viewer._fastcut) viewer._fastcut.visible = false;
-                return;
-            }
-            if (!cv || !ds || !npos || drawW <= 0 || drawH <= 0 || btns.length === 0) {
-                for (const b of btns) b.style.opacity = "0";
-                if (viewer._fastcut) viewer._fastcut.visible = false;
+            if (viewer._fastcutEditorOpen || !cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
+                for (const btn of [settings, ...actions.map(({ key }) => node[key])]) {
+                    btn.style.display = "none";
+                }
                 return;
             }
             const rect = cv.getBoundingClientRect();
@@ -3321,66 +3180,67 @@ function _installAudioLoaderLayout(node) {
                 mouse.x >= x0 && mouse.x <= x0 + nw &&
                 mouse.y >= nodeTop && mouse.y <= nodeTop + nh;
 
-            const s = scale;
+            const previewing = node._xzgLoaderSettingsDialog?.open;
+            const gap = xzgGetPreviewButtonGap(node);
             const isBusy = (b) => b.disabled || (b === node._xzgFcDomBtn && !!viewer._fastcut?.busy);
-            const place = (b, leftPx, topPx) => {
-                // 统一为「从达芬奇加载」同款盒模型：固定高度+垂直居中，保证五个按钮等高对齐
+            const prepare = (b, size) => {
                 b.style.boxSizing = "border-box";
-                b.style.height = "20px";
+                b.style.height = `${Math.max(20, size + 8)}px`;
                 b.style.padding = "2px 8px";
                 b.style.display = "inline-flex";
                 b.style.alignItems = "center";
-                b.style.justifyContent = "center";
                 b.style.gap = "5px";
-                b.style.fontSize = "12px";
+                b.style.fontSize = `${size}px`;
                 b.style.lineHeight = "1";
-                b.style.border = "none";
-                b.style.background = "transparent";
-                const icon = b.firstElementChild;
-                if (icon) { icon.style.flex = "0 0 auto"; icon.style.alignSelf = "center"; }
                 b.style.transformOrigin = "top left";
-                b.style.transform = `scale(${s})`;
+                b.style.transform = `scale(${scale})`;
+            };
+            const place = (b, leftPx, topPx, visible) => {
                 b.style.top = topPx + "px";
                 b.style.left = Math.round(leftPx) + "px";
-                if (viewer._davinciActionBusy) {
-                    b.style.opacity = "0";
-                    b.style.pointerEvents = "none";
-                } else {
-                    b.style.pointerEvents = "auto";
-                    b.style.opacity = (inside || b.matches(":hover") || isBusy(b)) ? "1" : "0";
-                }
+                b.style.opacity = visible ? "1" : "0";
+                b.style.pointerEvents = visible ? "auto" : "none";
             };
 
-            // 音轨底部一行，整体靠右（视觉左→右：从快剪加载 · 发送到快剪 · 从达芬奇加载 · 导出到达芬奇）
-            const BTN_H = 20;
-            const bottomPx = Math.round(y0 + h - BTN_H * s - 2 * s);
-            let rEdge = x0 + w - 13 * scale;  // 最右按钮贴右缘（留 13px 边距）
-            const row = bottomRow();
-            const mediaWidth = mediaRow().reduce((total, b) => total + wOf(b) + 6, 0);
-            const actionWidth = row.reduce((total, b) => total + wOf(b) + 2, 0);
-            const actionTop = mediaWidth + actionWidth + 21 > drawW ? bottomPx - 24 * scale : bottomPx;
-            for (let k = row.length - 1; k >= 0; k--) {
-                const b = row[k];
-                const bw = b.offsetWidth || 90;
-                place(b, rEdge - bw * s, actionTop);
-                rEdge -= (bw + 2) * scale;
+            const bottom = y0 + h - 2 * scale;
+            prepare(settings, 14);
+            place(settings, x0 + 8 * scale, bottom - settings.offsetHeight * scale, inView);
+            const leftEdge = x0 + (8 + settings.offsetWidth + gap) * scale;
+            const rightEdge = x0 + w - 13 * scale;
+            let right = rightEdge;
+            let rowBottom = bottom;
+            let rowHeight = 0;
+            for (const { id, key, defaultColor, defaultSize } of xzgOrderedPreviewActions(node, actions).reverse()) {
+                const b = node[key];
+                if (!xzgPreviewButtonVisible(node, id)) {
+                    b.style.display = "none";
+                    continue;
+                }
+                const size = node.properties?.xzg_preview_button_font_sizes?.[id] ?? node.properties?.xzg_preview_button_font_size;
+                prepare(b, Math.max(9, Math.min(48, Number(size) || defaultSize)));
+                const hover = b.matches(":hover");
+                const statusColor = id === "quickcut_load" && viewer._fastcut.color !== "#FFD700"
+                    ? viewer._fastcut.color : null;
+                b.style.color = hover ? "#fff" : statusColor || node.properties?.xzg_preview_button_colors?.[id] || defaultColor;
+                const bw = b.offsetWidth * scale;
+                const bh = b.offsetHeight * scale;
+                if (right !== rightEdge && right - bw < leftEdge) {
+                    rowBottom -= rowHeight + gap * scale;
+                    right = rightEdge;
+                    rowHeight = 0;
+                }
+                place(b, right - bw, Math.max(y0, rowBottom - bh),
+                    inView && !viewer._davinciActionBusy && (previewing || inside || hover || isBusy(b)));
+                right -= bw + gap * scale;
+                rowHeight = Math.max(rowHeight, bh);
             }
-            let left = x0 + 8 * scale;
-            for (const b of mediaRow()) {
-                place(b, left, bottomPx);
-                left += (wOf(b) + 6) * scale;
-            }
-            if (viewer._fastcut) viewer._fastcut.visible = viewer._davinciActionBusy ? false : inside;
-
-            // 五个按钮全部移至音轨底部，顶栏时间码不再需要让位
-            viewer._xzgDvBtnWidth = 0;
-            viewer._xzgFcBtnWidth = 0;
-            viewer._xzgActBtnsWidth = 0;
         } catch (e) { /* 画布未就绪等场景忽略 */ }
     };
     node._xzgAudioLayout = layout;
+    document.addEventListener("pointermove", onMove, true);
+    layout();
 
-    // 最外层 wrapper：在所有按钮自身 sync 之后执行，最终覆盖位置/显隐
+    // 随波形重绘更新按钮位置，跟随节点移动和缩放。
     const origDraw = viewer.drawOnNode;
     viewer.drawOnNode = function (...args) {
         const r = origDraw.apply(this, args);
@@ -3390,7 +3250,9 @@ function _installAudioLoaderLayout(node) {
 
     const origRemoved = node.onRemoved;
     node.onRemoved = function () {
+        xzgCloseLoaderSettings(node);
         document.removeEventListener("pointermove", onMove, true);
+        delete node._xzgAudioLayout;
         return origRemoved?.apply(this, arguments);
     };
 }
@@ -3441,6 +3303,7 @@ app.registerExtension({
                 _applyAudioWidgetStyles(this);
                 // 化神级：波纹区悬浮「从达芬奇导入」按钮
                 if (isDavinci) {
+                    xzgSetPreviewButtonsDefaultHidden(this, AUDIO_PREVIEW_ACTIONS.map(({ id }) => id));
                     const node = this;
                     requestAnimationFrame(() => {
                         _installAudioLoaderActions(node);

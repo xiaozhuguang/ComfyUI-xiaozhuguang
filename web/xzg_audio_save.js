@@ -10,6 +10,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { downloadAudio, xzgTimestamp } from "./xzg_save_utils.js";
+import { xzgPreviewButtonVisible } from "./xzg_loader_settings.js";
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2384,6 +2385,9 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
     document.addEventListener("pointermove", onMove, true);
 
     const syncBtn = () => {
+        const visible = xzgPreviewButtonVisible(node, favorite ? "favorite" : "quickcut_send");
+        btn.style.display = visible ? "inline-flex" : "none";
+        if (!visible) return;
         try {
             const canvas = app?.canvas;
             const cv = canvas?.canvas;
@@ -2529,6 +2533,9 @@ function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
     document.addEventListener("pointermove", onMove, true);
 
     const syncBtn = () => {
+        const visible = xzgPreviewButtonVisible(node, "davinci_export");
+        btn.style.display = visible ? "inline-flex" : "none";
+        if (!visible) return;
         try {
             const canvas = app?.canvas;
             const cv = canvas?.canvas;
@@ -2605,7 +2612,20 @@ function _createAudioSaveOutputButton(node, waveformViewer) {
     btn.addEventListener("wheel", _xzgForwardCanvasWheel, { passive: false });
     btn.addEventListener("pointerdown", (e) => e.stopPropagation());
     btn.onclick = () => {
-        if (window._xzgShowDirBrowser) window._xzgShowDirBrowser(node);
+        if (window._xzgShowDirBrowser) window._xzgShowDirBrowser(node, {
+            actions: [
+                { id: "quickcut_send", label: "发送到快剪" },
+                { id: "davinci_export", label: "导出到达芬奇" },
+                { id: "favorite", label: "收藏" },
+            ],
+            refresh: () => {
+                node._xzgDvSyncBtn?.();
+                node._xzgQcSyncBtn?.();
+                node._xzgOutSyncBtn?.();
+                node._xzgFavoriteSyncBtn?.();
+                node.setDirtyCanvas?.(true, true);
+            },
+        });
         else _xzgToast("输出设置弹窗不可用，请刷新页面。", true);
     };
 
@@ -2613,7 +2633,7 @@ function _createAudioSaveOutputButton(node, waveformViewer) {
     // 锚点值；盒模型一致 → 文字基线对齐。opacity 目标值与锚点同帧写入，配合相同 0.2s 过渡同步显隐。
     node._xzgOutSyncBtn = () => {
         const anchor = node._xzgQcFloatBtn;
-        if (!anchor?.style?.left) return;
+        if (!anchor) return;
         const scale = app.canvas?.ds?.scale || 1;
         const left = parseFloat(anchor.style.left), top = parseFloat(anchor.style.top);
         const bw = btn.offsetWidth || 90;
@@ -2623,6 +2643,9 @@ function _createAudioSaveOutputButton(node, waveformViewer) {
         btn.style.left = Math.round(left - (bw + 6) * scale) + "px";
         btn.style.top = top + "px";
         btn.style.opacity = anchor.matches(":hover") || btn.matches(":hover") ? "1" : anchor.style.opacity;
+        // 设置入口始终可用，发送按钮关闭后仍可重新打开显示选项。
+        if (sendHidden) btn.style.opacity = "1";
+        btn.style.pointerEvents = btn.style.opacity === "0" ? "none" : "auto";
     };
 
     // 节点移除时清理按钮（与快剪/达芬奇按钮一致），避免 DOM 残留

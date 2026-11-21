@@ -107,6 +107,7 @@ class XiaozhuguangVideoBatchMerge:
                 # 帧率只允许从输入端口接入（forceInput：无手工控件），由上游计算保证准确；
                 # 放在 optional 只是为了排在音频后面，未接入时缓冲模式会给出明确报错
                 "帧率": ("FLOAT", {"forceInput": True}),
+                "文件名前缀": ("STRING", {"default": "xzg_video"}),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -160,7 +161,7 @@ class XiaozhuguangVideoBatchMerge:
                 waveform = torch.nn.functional.pad(waveform, (0, target - waveform.shape[-1]))
             audio_memory = {"waveform": waveform.detach().to(device="cpu").contiguous().clone(), "sample_rate": sr}
         info = append_segment(node_id, image_memory, audio_memory, fps, {
-            "filename": "memory", "frames": int(image_memory.shape[0]), "with_audio": bool(has_audio),
+            "frames": int(image_memory.shape[0]), "with_audio": bool(has_audio),
         })
         print(f"[小珠光视频分段合并] 已缓存第 {info['index']} 段（{image_memory.shape[0]} 帧）→ 进程内存")
         return info
@@ -211,7 +212,7 @@ class XiaozhuguangVideoBatchMerge:
         return image, audio
 
     def merge_videos(self, 执行合并=False, 帧率=0, 图像=None, 音频=None, 末尾裁帧=0,
-                     unique_id=None, 合并模式="普通模式"):
+                     unique_id=None, 合并模式="普通模式", 文件名前缀="xzg_video"):
         disk = 合并模式 == "低内存"
         segments = get_segments(unique_id)
         if segments and (segments[0]["directory"] is not None) != disk:
@@ -221,7 +222,7 @@ class XiaozhuguangVideoBatchMerge:
                 if disk:
                     if not segments:
                         raise ValueError("分段缓存为空，请先运行场景切点分段批处理")
-                    video = finalize_segments(segments, 末尾裁帧)
+                    video = finalize_segments(segments, 末尾裁帧, 文件名前缀)
                     clear_node_segments(unique_id)
                     return {"result": (None, None, segments[0]["fps"]), "ui": {"videos": [video]}}
                 return self._finalize(unique_id, fps=帧率, tail_trim=末尾裁帧)
@@ -239,7 +240,7 @@ class XiaozhuguangVideoBatchMerge:
                 raise ValueError("低内存合并要求各段的分辨率和帧率一致")
             directory, has_audio = encode_segment(图像, 音频, fps)
             info = append_segment(unique_id, None, None, fps, {
-                "filename": "disk", "frames": int(图像.shape[0]), "with_audio": has_audio, "size": size,
+                "frames": int(图像.shape[0]), "with_audio": has_audio, "size": size,
             }, directory=directory)
             info["node"] = str(unique_id)
             return {"result": (None, None, fps), "ui": {"buffered": [info]}}

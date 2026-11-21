@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { xzgLang, xzgT } from "./xzg_i18n.js";
-import { normalizeDisplayState, addDisplayHistory, getDisplayHistory, DISPLAY_HISTORY_LIMIT } from "./xzg_display_history.js";
+import { normalizeDisplayState, addDisplayHistory, getDisplayHistory, clearDisplayHistory, DISPLAY_HISTORY_LIMIT } from "./xzg_display_history.js";
 
 async function showDisplayHistory(node) {
     if (node._xzgHistoryDialog?.open) { node._xzgHistoryDialog.focus(); return; }
@@ -15,6 +15,10 @@ async function showDisplayHistory(node) {
     const title = document.createElement("h3");
     title.style.cssText = "margin:0;flex-shrink:0";
     title.textContent = xzgT("展示任意 · 历史记录", "Display Anything · History");
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.textContent = xzgT("清空", "Clear");
+    clearButton.style.cssText = "padding:3px 8px;border:1px solid #777;border-radius:4px;background:#303236;color:#eee;cursor:pointer";
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0";
     const hint = document.createElement("p");
@@ -30,7 +34,11 @@ async function showDisplayHistory(node) {
         list.replaceChildren();
         const query = search.value.toLowerCase();
         const filtered = entries.filter(e => JSON.stringify(e.state).toLowerCase().includes(query) || String(e.title).toLowerCase().includes(query));
-        if (!filtered.length) list.textContent = xzgT("暂无匹配的历史内容", "No matching history");
+        clearButton.disabled = entries.length === 0;
+        clearButton.style.opacity = entries.length ? "1" : ".5";
+        if (!filtered.length) list.textContent = query
+            ? xzgT("暂无匹配的历史内容", "No matching history")
+            : xzgT("暂无历史内容", "No history");
         for (const entry of filtered) {
             const row = document.createElement("details");
             row.open = expanded.has(entry);
@@ -74,12 +82,21 @@ async function showDisplayHistory(node) {
         }
     };
     search.oninput = render;
+    clearButton.addEventListener("click", async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!entries.length) return;
+        clearButton.disabled = true;
+        await clearDisplayHistory();
+        entries.splice(0, entries.length);
+        render();
+    });
     const close = document.createElement("button");
     close.textContent = xzgT("关闭", "Close");
     close.style.cssText = "flex-shrink:0;padding:8px 24px;cursor:pointer;background:#dc2626;color:#fff;border:1px solid #f87171;border-radius:6px;font-weight:700";
     close.onclick = () => dialog.close();
     dialog.addEventListener("close", () => { delete node._xzgHistoryDialog; dialog.remove(); }, { once: true });
-    header.append(title, close);
+    header.append(title, clearButton, close);
     layout.append(header, hint, search, list);
     dialog.append(layout);
     document.body.append(dialog);

@@ -221,12 +221,13 @@ class VideoDecoderInstance {
         // 预览缩放 sink（高分辨率视频自动降级解码，加速 seek）
         if (this._width > maxPreviewSide || this._height > maxPreviewSide) {
             const ratio = Math.min(maxPreviewSide / this._width, maxPreviewSide / this._height);
-            this._previewWidth = Math.round(this._width * ratio);
-            this._previewHeight = Math.round(this._height * ratio);
+            this._previewWidth = Math.max(1, Math.round(this._width * ratio));
+            this._previewHeight = Math.max(1, Math.round(this._height * ratio));
             this._previewSink = new mb.CanvasSink(vt, {
                 width: this._previewWidth,
                 height: this._previewHeight,
-                fit: 'contain',
+                // 两边已按同一比例缩放，直接填满取整后的画布，避免再次留边。
+                fit: 'fill',
                 poolSize: 0,
             });
         }

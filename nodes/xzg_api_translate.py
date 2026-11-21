@@ -1,6 +1,5 @@
-"""Translate through a Chat Completions endpoint or the Hy-MT2 GGUF node."""
+"""Translate through a Chat Completions endpoint or local Hy-MT2 GGUF inference."""
 
-import sys
 import hashlib
 import json
 from collections import OrderedDict
@@ -9,24 +8,13 @@ from urllib.parse import urlsplit
 
 import requests
 
+from .xzg_hy_mt2 import HyMT2Translator, gguf_inputs
+
 PROVIDERS = {
     "智谱": ("https://open.bigmodel.cn/api/paas/v4", "glm-4-flash-250414"),
     "百度千帆": ("https://qianfan.baidubce.com/v2", "ernie-4.5-turbo-128k"),
 }
 GGUF_PROVIDER = "Hy-MT2 (GGUF)"
-
-
-def gguf_backend():
-    registry = getattr(sys.modules.get("nodes"), "NODE_CLASS_MAPPINGS", {})
-    return registry.get("HyMT_Translation_GGUF")
-
-
-GGUF_INPUTS = {
-    "gguf_model": "model",
-    "gguf_style": "translate_style",
-    "gguf_target": "translate_to",
-    "gguf_unload": "unload_after_run",
-}
 
 
 def completion_url(address):
@@ -42,8 +30,6 @@ def completion_url(address):
 class XiaozhuguangAPITranslate:
     @classmethod
     def INPUT_TYPES(cls):
-        backend = gguf_backend()
-        gguf_inputs = backend.INPUT_TYPES()["required"] if backend else {}
         return {"required": {
             "text": ("STRING", {"multiline": True, "default": ""}),
             "api_url": ("STRING", {"default": "https://api.openai.com/v1",
@@ -55,18 +41,18 @@ class XiaozhuguangAPITranslate:
                                         "tooltip": "可选术语、语气要求，例如：保留角色名，使用自然流畅的中文。"}),
             "timeout": ("INT", {"default": 120, "min": 10, "max": 600}),
         }, "optional": {
-            "provider": ([*PROVIDERS, GGUF_PROVIDER], {"default": "智谱", "tooltip": "Hy-MT2 使用 GGUF 专用设置；智谱、百度千帆使用官方地址，模型留空时使用默认模型。"}),
+            "provider": ([GGUF_PROVIDER, *PROVIDERS], {"default": GGUF_PROVIDER, "tooltip": "Hy-MT2 使用本地 GGUF 模型，需要兼容的 llama-cpp-python。"}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF,
                              "control_after_generate": True,
                              "tooltip": "改变种子会重新请求翻译；保持种子和其他输入不变时可复用缓存。此种子不发送给 API，不保证译文措辞复现。"}),
-            **{name: gguf_inputs[source] for name, source in GGUF_INPUTS.items() if source in gguf_inputs},
+            **gguf_inputs(),
         }}
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("译文",)
     FUNCTION = "translate"
     CATEGORY = "小珠光/文本"
-    DESCRIPTION = "支持 Chat Completions 兼容 API 和 Hy-MT2 GGUF 本地翻译。GGUF 模式需要 ComfyUI-Hy-MT2；首次运行官方预设可能下载模型。API 密钥随工作流保存，分享前请清空。"
+    DESCRIPTION = "支持 Chat Completions 兼容 API 和 Hy-MT2 GGUF 本地翻译。首次运行官方预设可能下载模型。API 密钥随工作流保存，分享前请清空。"
 
     def __init__(self):
         self.gguf_translator = None
@@ -98,16 +84,13 @@ class XiaozhuguangAPITranslate:
         if not text.strip():
             return ("",)
         if provider == GGUF_PROVIDER:
-            backend = gguf_backend()
-            if backend is None:
-                raise RuntimeError("Hy-MT2 GGUF 节点未加载，请检查 ComfyUI-Hy-MT2 是否已安装并成功启动。")
-            models, options = backend.INPUT_TYPES()["required"]["model"]
+            models, options = gguf_inputs()["gguf_model"]
             if gguf_model is None:
                 gguf_model = options["default"]
             if not gguf_model or gguf_model not in models:
                 raise ValueError("请选择列表中的 Hy-MT2 GGUF 模型。")
             if self.gguf_translator is None:
-                self.gguf_translator = backend()
+                self.gguf_translator = HyMT2Translator()
             translated, = self.gguf_translator.translate(
                 model=gguf_model, translate_style=gguf_style, translate_to=gguf_target,
                 text=text, unload_after_run=gguf_unload,

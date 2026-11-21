@@ -706,12 +706,8 @@ app.registerExtension({
 
         // 右键菜单：截取预览当前帧 → 上传 input → 发送到小珠光图像加载器
         // （菜单项可在 设置 → 小珠光 中关闭，见 xzg_frame_capture.js）
-        xzgAddFrameCaptureMenu(nodeType, "save");
-        const originalMenu = nodeType.prototype.getExtraMenuOptions;
-        nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
-            originalMenu?.apply(this, arguments);
-            if (Array.isArray(options)) options.unshift(..._savedVideoMenu(this));
-        };
+        // 保存节点只在预览区提供右键菜单，节点级右键不再显示截帧/发送到视频加载器。
+        xzgAddFrameCaptureMenu(nodeType, "save", { nodeMenu: false });
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = originalCreated?.apply(this, arguments);
@@ -719,5 +715,50 @@ app.registerExtension({
             this._xzgPlayerMenuItems = () => [...(previous?.call(this) || []), ..._savedVideoMenu(this)];
             return result;
         };
+    },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 旧版视频保存节点自动升级
+// 「小珠光视频保存 / 合并视频」（XiaozhuguangVideoCombine）已并入「小珠光视频保存-化神级」。
+// 后端仍注册旧类型（标记 DEPRECATED，节点菜单默认隐藏）以兼容旧工作流/API：
+// 打开旧工作流时，在图配置之前把节点类型替换为化神级。
+// 旧版控件顺序（帧率/文件名前缀/格式/CRF/模式）与化神级前 5 个控件完全一致，
+// 化神级新增的控件都追加在末尾，按位置恢复时自动取默认值，无需重排。
+// ─────────────────────────────────────────────────────────────────────────────
+const LEGACY_VIDEO_SAVE_NODE = "XiaozhuguangVideoCombine";
+
+function _upgradeLegacyVideoSaveNode(node) {
+    if (node?.type !== LEGACY_VIDEO_SAVE_NODE) return false;
+    node.type = SAVE_DAVINCI_NODE;
+    if (node.properties && typeof node.properties === "object"
+        && "Node name for S&R" in node.properties) {
+        node.properties["Node name for S&R"] = SAVE_DAVINCI_NODE;
+    }
+    return true;
+}
+
+function _upgradeLegacyVideoSaveNodes(graphData) {
+    let changed = false;
+    const walk = (nodes) => {
+        if (!Array.isArray(nodes)) return;
+        for (const node of nodes) {
+            if (_upgradeLegacyVideoSaveNode(node)) changed = true;
+        }
+    };
+    walk(graphData?.nodes);
+    const subgraphs = graphData?.definitions?.subgraphs;
+    if (Array.isArray(subgraphs)) {
+        for (const subgraph of subgraphs) walk(subgraph?.nodes);
+    }
+    return changed;
+}
+
+app.registerExtension({
+    name: "Xiaozhuguang.VideoSave.LegacyUpgrade",
+    async beforeConfigureGraph(graphData) {
+        if (_upgradeLegacyVideoSaveNodes(graphData)) {
+            console.info("[小珠光] 旧版视频保存节点已自动升级为「小珠光视频保存-化神级」");
+        }
     },
 });

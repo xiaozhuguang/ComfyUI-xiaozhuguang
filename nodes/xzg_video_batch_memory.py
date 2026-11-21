@@ -22,6 +22,7 @@ def append_segment(node_id, image, audio, fps, info, directory=None):
         items = _SEGMENTS.setdefault(key, [])
         entry = dict(info)
         entry["index"] = len(items) + 1
+        entry["filename"] = f"memory_{entry['index']:05d}"
         items.append({"image": image, "audio": audio, "fps": float(fps), "info": entry,
                       "directory": directory})
         return dict(entry)
@@ -30,6 +31,12 @@ def append_segment(node_id, image, audio, fps, info, directory=None):
 def get_segments(node_id):
     with _LOCK:
         return list(_SEGMENTS.get(str(node_id or ""), ()))
+
+
+def active_segment_directories():
+    with _LOCK:
+        return {item["directory"] for items in _SEGMENTS.values() for item in items
+                if item["directory"] is not None}
 
 
 def clear_node_segments(node_id):
@@ -45,9 +52,9 @@ def list_segments():
             infos = [dict(item["info"]) for item in items]
             by_node[safe_node_id] = {
                 "count": len(infos),
-                "files": [f"memory_{i:05d}" for i in range(1, len(infos) + 1)],
+                "files": [info["filename"] for info in infos],
                 "segments": infos,
             }
-        files = [f"{_safe_node_id(node_id)}/memory_{i:05d}"
-                 for node_id, items in _SEGMENTS.items() for i in range(1, len(items) + 1)]
+        files = [f"{node_id}/{filename}" for node_id, info in by_node.items()
+                 for filename in info["files"]]
         return {"count": len(files), "files": files, "byNode": by_node, "storage": "memory"}

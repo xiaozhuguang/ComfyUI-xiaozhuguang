@@ -156,24 +156,27 @@ export async function xzgSendCurrentFrameToLoader(node) {
 
 // 给节点类型挂右键菜单项（两个化神级视频节点共用）。
 // nodeKind 传给 xzgFrameCaptureMenuEnabled 决定读取哪个设置开关。
+// options.nodeMenu=false 时只注入预览区右键菜单，不再挂节点级菜单。
 // 挂载点有两个：
 // ① 节点级 getExtraMenuOptions —— 右键标题栏/节点边缘等未落在播放器预览上的区域；
 // ② 播放器自建右键菜单 —— 预览区的 contextmenu 被播放器 stopPropagation 拦截，
 //    节点菜单收不到，需通过 node._xzgPlayerMenuItems 注入（见 xzg_video_player.js）。
-export function xzgAddFrameCaptureMenu(nodeType, nodeKind) {
-    const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
-    nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
-        if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
-        if (!Array.isArray(options)) return;
-        if (!_captureMenuVisible(this, nodeKind)) return;
-        const ready = _xzgFrameReady(this);
-        options.unshift({
-            content: xzgT("✂ 截取当前帧发送到加载器", "✂ Capture Current Frame to Image Loader"),
-            color: ready ? "#FFD700" : "#888",
-            disabled: !ready,
-            callback: () => { xzgSendCurrentFrameToLoader(this); },
-        }, null);
-    };
+export function xzgAddFrameCaptureMenu(nodeType, nodeKind, { nodeMenu = true } = {}) {
+    if (nodeMenu) {
+        const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+        nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
+            if (origGetExtraMenuOptions) origGetExtraMenuOptions.call(this, canvas, options);
+            if (!Array.isArray(options)) return;
+            if (!_captureMenuVisible(this, nodeKind)) return;
+            const ready = _xzgFrameReady(this);
+            options.unshift({
+                content: xzgT("✂ 截取当前帧发送到加载器", "✂ Capture Current Frame to Image Loader"),
+                color: ready ? "#FFD700" : "#888",
+                disabled: !ready,
+                callback: () => { xzgSendCurrentFrameToLoader(this); },
+            }, null);
+        };
+    }
 
     // 播放器自建菜单的动态项提供器：挂在节点上，播放器销毁重建（内存模式切换）后依然生效
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;

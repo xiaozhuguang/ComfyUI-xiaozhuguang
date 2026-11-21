@@ -2,15 +2,48 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
+from time import time
 from uuid import uuid4
 
 import folder_paths
 import torch
 from comfy.model_management import throw_exception_if_processing_interrupted
 
-from .xzg_video_combine import ffmpeg_path
+from .xzg_video_combine import ffmpeg_path, next_video_filename
+from .xzg_video_batch_memory import active_segment_directories
+
+
+_CACHE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+
+
+def _cache_root():
+    return Path(folder_paths.get_input_directory()) / "xzg_video_batch_cache"
+
+
+def cleanup_expired_video_cache():
+    root = _cache_root()
+    cutoff = time() - _CACHE_RETENTION_SECONDS
+    active = active_segment_directories()
+    try:
+        if root.resolve().parent != root.parent.resolve():
+            return
+        for directory in root.iterdir():
+            if (directory in active or not directory.name.startswith(("xzg-segment-", "xzg-concat-"))
+                    or directory.is_symlink() or not directory.is_dir()):
+                continue
+            try:
+                if directory.stat().st_mtime <= cutoff:
+                    shutil.rmtree(directory)
+            except OSError:
+                continue
+    except OSError:
+        return
+
+
+cleanup_expired_video_cache()
 
 
 def _run(args):
@@ -28,8 +61,10 @@ def encode_segment(image, audio, fps):
     frames, height, width, channels = image.shape
     if not frames or channels not in (3, 4):
         raise ValueError("低内存合并需要非空的 RGB 或 RGBA 图像")
-    directory = TemporaryDirectory(prefix="xzg-segment-", dir=folder_paths.get_temp_directory())
-    path = Path(directory.name)
+    cleanup_expired_video_cache()
+    root = _cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = Path(mkdtemp(prefix="xzg-segment-", dir=root))
     try:
         waveform = audio.get("waveform") if isinstance(audio, dict) else None
         has_audio = waveform is not None and waveform.numel() > 0
@@ -62,22 +97,24 @@ def encode_segment(image, audio, fps):
                 raise
         if has_audio:
             audio_path.unlink()
-        return directory, has_audio
+        path.touch()
+        return path, has_audio
     except BaseException:
-        directory.cleanup()
+        shutil.rmtree(path, ignore_errors=True)
         raise
 
 
-def finalize_segments(segments, tail_trim):
+def finalize_segments(segments, tail_trim, filename_prefix="xzg_video"):
+    segment_directories = [item["directory"] for item in segments]
     fps = segments[0]["fps"]
     if tail_trim >= sum(item["info"]["frames"] for item in segments):
         tail_trim = 0
     while tail_trim >= segments[-1]["info"]["frames"]:
         tail_trim -= segments[-1]["info"]["frames"]
         segments = segments[:-1]
-    with TemporaryDirectory(prefix="xzg-concat-", dir=folder_paths.get_temp_directory()) as work:
+    with TemporaryDirectory(prefix="xzg-concat-", dir=_cache_root()) as work:
         work = Path(work)
-        paths = [Path(item["directory"].name) / "segment.mkv" for item in segments]
+        paths = [item["directory"] / "segment.mkv" for item in segments]
         last = segments[-1]["info"]
         if tail_trim > 0:
             kept = last["frames"] - tail_trim
@@ -97,15 +134,32 @@ def finalize_segments(segments, tail_trim):
                 lines.append(f"duration {item['info']['frames'] / fps:.12f}\n")
         manifest.write_text("".join(lines), encoding="utf-8")
 
-        output_dir = Path(folder_paths.get_output_directory())
-        filename = f"xzg_batch_{uuid4().hex}.mp4"
-        temporary_output = output_dir / f".{filename}.part"
+        folder, stem, _, subfolder, _ = folder_paths.get_save_image_path(
+            filename_prefix or "xzg_video", folder_paths.get_output_directory(),
+        )
+        output_dir = Path(folder)
+        temporary_output = output_dir / f".xzg_batch_{uuid4().hex}.mp4.part"
         audio_args = ["-c:a", "aac", "-b:a", "192k"] if any(
             item["info"]["with_audio"] for item in segments) else ["-an"]
         try:
             _run(["-f", "concat", "-safe", "0", "-i", str(manifest), "-c:v", "copy",
                   *audio_args, "-movflags", "+faststart", "-f", "mp4", str(temporary_output)])
-            os.replace(temporary_output, output_dir / filename)
+            while True:
+                filename, _ = next_video_filename(output_dir, stem, "mp4")
+                destination = output_dir / filename
+                try:
+                    with destination.open("xb"):
+                        pass
+                    break
+                except FileExistsError:
+                    continue
+            try:
+                os.replace(temporary_output, destination)
+            except BaseException:
+                destination.unlink(missing_ok=True)
+                raise
         finally:
             temporary_output.unlink(missing_ok=True)
-        return {"filename": filename, "subfolder": "", "type": "output"}
+    for directory in segment_directories:
+        shutil.rmtree(directory, ignore_errors=True)
+    return {"filename": filename, "subfolder": subfolder, "type": "output"}

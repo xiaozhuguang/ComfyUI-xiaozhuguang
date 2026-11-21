@@ -124,15 +124,15 @@ export function xzgBuildPreviewActionSettings(container, node, actions, sortable
     if (container.parentElement) container.parentElement.insertBefore(gapRow, container);
     const render = () => {
         container.replaceChildren();
-        ordered.forEach(({ id, label }) => {
+        ordered.forEach(({ id, label, defaultColor, defaultSize }) => {
             const row = document.createElement("div");
             row.style.cssText = "display:flex;align-items:center;gap:6px;padding:5px 0;";
             row.dataset.actionId = id;
-            const actionColor = node.properties?.xzg_preview_button_colors?.[id] || PREVIEW_BUTTON_DEFAULT_COLORS[id] || "#ffffff";
+            const actionColor = node.properties?.xzg_preview_button_colors?.[id] || defaultColor || PREVIEW_BUTTON_DEFAULT_COLORS[id] || "#ffffff";
             const picker = document.createElement("input"); picker.type = "color"; picker.title = xzgT("字体颜色", "Text color"); picker.value = /^#[0-9a-f]{6}$/i.test(actionColor) ? actionColor : "#ffffff"; picker.style.cssText = "width:42px;height:28px;padding:2px;cursor:pointer;";
             colorInputs.set(id, picker);
             picker.addEventListener("input", () => onColors?.(checks, ordered.map(action => action.id), Number(node.properties?.xzg_preview_button_font_size ?? 14), Object.fromEntries([...colorInputs].map(([key, input]) => [key, input.value])), Object.fromEntries([...sizeInputs].map(([key, input]) => [key, Number(input.value)]))));
-            const sizeInput = document.createElement("input"); sizeInput.type = "number"; sizeInput.min = "9"; sizeInput.max = "48"; sizeInput.step = "1"; sizeInput.title = xzgT("该标签字体大小", "Font size for this label"); sizeInput.value = String(node.properties?.xzg_preview_button_font_sizes?.[id] ?? node.properties?.xzg_preview_button_font_size ?? 14); sizeInput.style.cssText = "width:52px;box-sizing:border-box;";
+            const sizeInput = document.createElement("input"); sizeInput.type = "number"; sizeInput.min = "9"; sizeInput.max = "48"; sizeInput.step = "1"; sizeInput.title = xzgT("该标签字体大小", "Font size for this label"); sizeInput.value = String(node.properties?.xzg_preview_button_font_sizes?.[id] ?? node.properties?.xzg_preview_button_font_size ?? defaultSize ?? 14); sizeInput.style.cssText = "width:52px;box-sizing:border-box;";
             sizeInputs.set(id, sizeInput);
             sizeInput.addEventListener("input", () => onSizes?.(checks, ordered.map(action => action.id), Number(node.properties?.xzg_preview_button_font_size ?? 14), Object.fromEntries([...colorInputs].map(([key, input]) => [key, input.value])), Object.fromEntries([...sizeInputs].map(([key, input]) => [key, Math.max(9, Math.min(48, Number(input.value) || 12))]))));
             const caption = document.createElement("label");

@@ -56,8 +56,46 @@ def _patch_subprocess_encoding():
     subprocess._xzg_patched = True
 
 
+def _patch_asyncio_connection_lost():
+    """抑制 Windows 上 asyncio 的连接断开噪音报错。
+
+    对端（浏览器/客户端）先复位连接时，事件循环回调
+    _ProactorBasePipeTransport._call_connection_lost 里的 socket.shutdown()
+    会抛 OSError（常见 WinError 10038 / 10054）。该异常发生在 call_soon 回调中，
+    请求处理器无法捕获，asyncio 只会打印
+    "Exception in callback _ProactorBasePipeTransport._call_connection_lost"，
+    不影响功能，属于已知良性噪音，这里包一层吞掉即可。
+    """
+    try:
+        from asyncio import proactor_events as _pe
+    except Exception:
+        return
+    transport = getattr(_pe, "_ProactorBasePipeTransport", None)
+    if transport is None or getattr(transport, "_xzg_patched", False):
+        return
+
+    _orig_call_connection_lost = transport._call_connection_lost
+
+    def _patched_call_connection_lost(self, exc):
+        try:
+            _orig_call_connection_lost(self, exc)
+        except (OSError, AttributeError):
+            # 原始实现会跳过后面的 sock 关闭，这里补上避免句柄泄漏
+            try:
+                if self._sock is not None:
+                    self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+            self._called_connection_lost = True
+
+    transport._call_connection_lost = _patched_call_connection_lost
+    transport._xzg_patched = True
+
+
 _patch_subprocess_encoding()
 _ensure_ffmpeg_path()
+_patch_asyncio_connection_lost()
 
 
 # ---------- 通用：小珠光 aiohttp 路由 handler 安全装饰器 ----------
@@ -248,11 +286,21 @@ from .nodes.xzg_seed import XiaozhuguangSeed
 from .nodes.xzg_batch_count import XiaozhuguangBatchCount
 from .nodes.xzg_list_count import XiaozhuguangListCount
 from .nodes.xzg_image_from_list import XiaozhuguangImageFromList
-from .nodes.xzg_batch_image_getter import XiaozhuguangBatchImageGetter, XiaozhuguangBatchMaskGetter
+from .nodes.xzg_loop import (
+    NODE_CLASS_MAPPINGS as _LOOP_NODES,
+    NODE_DISPLAY_NAME_MAPPINGS as _LOOP_NAMES,
+)
+from .nodes.xzg_batch_image_getter import (
+    XiaozhuguangBatchListGetter,
+    XiaozhuguangLegacyImageListGetter,
+    XiaozhuguangLegacyMaskListGetter,
+)
 from .nodes.xzg_big_display import XiaozhuguangBigDisplay
+from .nodes.xzg_memory_cleanup import XiaozhuguangMemoryCleanup
 from .nodes.xzg_api_translate import XiaozhuguangAPITranslate
 from .nodes.xzg_mask_invert import XiaozhuguangMaskInvert
 from .nodes.xzg_image_mask_convert import XiaozhuguangImageMaskConvert
+from .nodes.xzg_yolo_mask import XiaozhuguangYoloMask
 from .nodes.xzg_mask_cleanup_repair import XiaozhuguangMaskCleanupRepair
 from .nodes.xzg_image_size import XiaozhuguangImageSize
 from .nodes.xzg_color_match_fast import XiaozhuguangColorMatchFast
@@ -1346,6 +1394,25 @@ class XiaozhuguangUniversalSlider:
         return processed_value
 
 
+class _LegacyYoloMask(XiaozhuguangYoloMask):
+    DEPRECATED = True
+
+
+# 旧版视频加载/保存节点：功能已并入对应「化神级」节点，节点菜单中默认隐藏（DEPRECATED），
+# 仅用于兼容旧工作流/API（前端打开旧工作流时会自动升级为化神级节点）。
+# 注意：别名直接继承旧类而不是化神级，避免旧 API 提示词缺少化神级新增的必填控件而校验失败。
+class _LegacyVideoLoader(XiaozhuguangVideoLoader):
+    DEPRECATED = True
+
+
+class _LegacyVideoLoaderLM(XiaozhuguangVideoLoaderLM):
+    DEPRECATED = True
+
+
+class _LegacyVideoSave(XiaozhuguangVideoCombine):
+    DEPRECATED = True
+
+
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAPITranslate": XiaozhuguangAPITranslate,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
@@ -1363,15 +1430,15 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangDuplicateFirstFrame": XiaozhuguangDuplicateFirstFrame,
     "XiaozhuguangFrameExtract": XiaozhuguangFrameExtract,
     "XiaozhuguangImageLoader": XiaozhuguangImageLoader,
-    "XiaozhuguangVideoLoader": XiaozhuguangVideoLoader,
+    "XiaozhuguangVideoLoader": _LegacyVideoLoader,
     "XiaozhuguangVideoBatchMerge": XiaozhuguangVideoBatchMerge,
-    "XiaozhuguangVideoLoaderLM": XiaozhuguangVideoLoaderLM,
+    "XiaozhuguangVideoLoaderLM": _LegacyVideoLoaderLM,
     "XiaozhuguangVideoLoaderDaVinci": XiaozhuguangVideoLoaderDaVinci,
     "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
     "XiaozhuguangAudioLoaderDaVinci": XiaozhuguangAudioLoaderDaVinci,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
     "XiaozhuguangVideoScheduler": XiaozhuguangVideoScheduler,
-    "XiaozhuguangVideoCombine": XiaozhuguangVideoCombine,
+    "XiaozhuguangVideoCombine": _LegacyVideoSave,
     "XiaozhuguangVideoSaveDaVinci": XiaozhuguangVideoSaveDaVinci,
     "XiaozhuguangImageCompare": XiaozhuguangImageCompare,
     "XiaozhuguangImageCompareCustom": XiaozhuguangImageCompareCustom,
@@ -1403,11 +1470,15 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangBatchCount": XiaozhuguangBatchCount,
     "XiaozhuguangListCount": XiaozhuguangListCount,
     "XiaozhuguangImageFromList": XiaozhuguangImageFromList,
-    "XiaozhuguangBatchImageGetter": XiaozhuguangBatchImageGetter,
-    "XiaozhuguangBatchMaskGetter": XiaozhuguangBatchMaskGetter,
+    "XiaozhuguangBatchImageGetter": XiaozhuguangLegacyImageListGetter,
+    "XiaozhuguangBatchMaskGetter": XiaozhuguangLegacyMaskListGetter,
+    "XiaozhuguangBatchListGetter": XiaozhuguangBatchListGetter,
     "XiaozhuguangBigDisplay": XiaozhuguangBigDisplay,
+    "XiaozhuguangMemoryCleanup": XiaozhuguangMemoryCleanup,
     "XiaozhuguangMaskInvert": XiaozhuguangMaskInvert,
     "XiaozhuguangImageMaskConvert": XiaozhuguangImageMaskConvert,
+    "XiaozhuguangYoloMask": XiaozhuguangYoloMask,
+    "XiaozhuguangYoloFaceMask": _LegacyYoloMask,
     "XiaozhuguangMaskCleanupRepair": XiaozhuguangMaskCleanupRepair,
     "XiaozhuguangImageSize": XiaozhuguangImageSize,
     "XiaozhuguangColorMatchFast": XiaozhuguangColorMatchFast,
@@ -1480,9 +1551,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangImageFromList": "小珠光批次列表遮罩图像获取",
     "XiaozhuguangBatchImageGetter": "小珠光批次列表图像获取-阻断",
     "XiaozhuguangBatchMaskGetter": "小珠光批次列表遮罩获取-阻断",
+    "XiaozhuguangBatchListGetter": "小珠光批次列表获取-阻断",
     "XiaozhuguangBigDisplay": "小珠光展示任意",
+    "XiaozhuguangMemoryCleanup": "小珠光显存内存清理",
     "XiaozhuguangMaskInvert": "小珠光反转遮罩极速版",
     "XiaozhuguangImageMaskConvert": "小珠光图像遮罩智能互转",
+    "XiaozhuguangYoloMask": "小珠光 YOLO 识别到遮罩",
+    "XiaozhuguangYoloFaceMask": "小珠光 YOLO 识别到遮罩",
     "XiaozhuguangMaskCleanupRepair": "小珠光遮罩修复",
     "XiaozhuguangImageSize": "小珠光获取尺寸",
     "XiaozhuguangColorMatchFast": "小珠光颜色匹配高速版",
@@ -1537,5 +1612,8 @@ from . import xzg_codex_upload
 from .nodes.xzg_lora_manager import XiaozhuguangLoraManager
 NODE_CLASS_MAPPINGS["XiaozhuguangLoraManager"] = XiaozhuguangLoraManager
 NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangLoraManager"] = "小珠光 LoRA 管理加载器"
+
+NODE_CLASS_MAPPINGS.update(_LOOP_NODES)
+NODE_DISPLAY_NAME_MAPPINGS.update(_LOOP_NAMES)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

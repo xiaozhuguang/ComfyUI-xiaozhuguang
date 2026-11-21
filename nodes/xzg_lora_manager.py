@@ -63,13 +63,22 @@ def write_library(user, data):
 
 
 def roots():
-    return list(dict.fromkeys(str(Path(p).resolve()) for p in folder_paths.get_folder_paths("loras")))
+    paths = folder_paths.get_folder_paths("loras")
+    pod_root = Path("/poddata/ComfyUI/models/loras")
+    if os.name != "nt" and pod_root.is_dir():
+        paths = [*paths, pod_root]
+    return list(dict.fromkeys(str(Path(p).resolve()) for p in paths))
+
+
+def model_path(root, relative):
+    if (not isinstance(relative, str) or "\\" in relative or ":" in relative
+            or Path(relative).is_absolute() or ".." in Path(relative).parts):
+        raise ValueError("请使用模型目录内的相对路径")
+    return Path(root) / relative
 
 
 def inside(root, relative):
-    if not isinstance(relative, str) or "\\" in relative or ":" in relative:
-        raise ValueError("请使用模型目录内的相对路径")
-    path = (Path(root) / relative).resolve()
+    path = model_path(root, relative).resolve()
     if not path.is_relative_to(Path(root).resolve()):
         raise ValueError("路径超出 LoRA 目录")
     return path
@@ -88,14 +97,18 @@ def scan(user):
             if not Path(root).is_dir():
                 continue
             directories.append({"root": root, "path": ""})
-            for current, dirs, files in os.walk(root, followlinks=False, onerror=scan_error):
-                dirs[:] = sorted(d for d in dirs if not Path(current, d).is_symlink())
+            ancestors_by_dir = {Path(root): set()}
+            for current, dirs, files in os.walk(root, followlinks=True, onerror=scan_error):
                 directory = Path(current)
+                ancestors = ancestors_by_dir.pop(directory) | {directory.resolve()}
+                dirs[:] = sorted(d for d in dirs if (directory / d).resolve() not in ancestors)
+                for child in dirs:
+                    ancestors_by_dir[directory / child] = ancestors
                 if directory != Path(root):
                     directories.append({"root": root, "path": directory.relative_to(root).as_posix()})
                 for filename in sorted(files):
                     path = directory / filename
-                    if path.suffix.lower() not in extensions or path.is_symlink():
+                    if path.suffix.lower() not in extensions or not path.is_file():
                         continue
                     relative = path.relative_to(root).as_posix()
                     key, item = by_path.get((root, relative), (None, None))
@@ -182,7 +195,7 @@ def import_library(user, raw, replace=False, dry_run=False):
             root, relative = value["root"], value["path"]
             if not isinstance(root, str) or not isinstance(relative, str):
                 raise ValueError("文件关联无效")
-            inside(root, relative)
+            model_path(root, relative)
             valid_key = isinstance(old_key, str) and len(old_key) == 32 and all(c in "0123456789abcdef" for c in old_key)
             key = by_path.get((root, relative)) or (old_key if valid_key and old_key not in data["items"] else uuid.uuid4().hex)
             item = {"root": root, "path": relative, **clean_metadata(value)}
@@ -241,7 +254,7 @@ def open_directory(user, key):
         item = read_library(user)["items"][key]
         if item["root"] not in roots():
             raise ValueError("LoRA 根目录未配置")
-        path = inside(item["root"], item["path"])
+        path = model_path(item["root"], item["path"])
         if not path.is_file():
             raise ValueError("LoRA 文件不存在，请刷新列表")
     if os.name != "nt":
@@ -365,6 +378,21 @@ async def get_thumbnail(request):
     return web.FileResponse(path)
 
 
+@routes.post("/xzg/lora/thumbnail/{id}/delete")
+async def delete_thumbnail(request):
+    async def run():
+        user, key = request_user(request), request.match_info["id"]
+        with LOCK:
+            data = read_library(user)
+            item = data["items"][key]
+            path = library_dir(user) / "thumbnails" / (key + ".png")
+            path.unlink(missing_ok=True)
+            if item.pop("thumbnail", None) is not None:
+                write_library(user, data)
+        return web.json_response({"ok": True})
+    return await handle(request, run)
+
+
 @routes.post("/xzg/lora/files")
 async def manage_files(request):
     async def run():
@@ -422,8 +450,8 @@ class XiaozhuguangLoraManager:
                 raise ValueError(f"LoRA 所属根目录未配置，请重新选择：{relative}")
             if not relative:
                 raise ValueError("LoRA 记录已失效且缺少文件路径，请打开管理器重新选择")
-            candidates = (inside(base, relative) for base in ([root] if root is not None else configured_roots))
-            matches = {path for path in candidates if path.suffix.lower() in extensions and path.is_file()}
+            candidates = (model_path(base, relative) for base in ([root] if root is not None else configured_roots))
+            matches = {path.resolve() for path in candidates if path.suffix.lower() in extensions and path.is_file()}
             if not matches:
                 raise ValueError(f"LoRA 文件不存在或格式不支持：{relative}")
             if len(matches) > 1:

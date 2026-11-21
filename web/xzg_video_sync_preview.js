@@ -107,6 +107,16 @@ function getVideoFromNode(node) {
     return item;
 }
 
+/** 视频加载类节点（其产出视为“原视频”，对比时排在最左侧） */
+const VIDEO_LOADER_TYPES = new Set([
+    "XiaozhuguangVideoLoader",
+    "XiaozhuguangVideoLoaderLM",
+    "XiaozhuguangVideoLoaderDaVinci",
+]);
+function isVideoLoaderNode(node) {
+    return !!node && VIDEO_LOADER_TYPES.has(node.type);
+}
+
 /** 小珠光图片加载器当前选中的图片。 */
 function nodeHasImage(node) {
     if (!node || node.mode === 4) return false;
@@ -291,7 +301,7 @@ function openImageCompare(items) {
         img.src = item.url; img.alt = item.name; img.draggable = false;
         img.style.cssText = "width:100%;height:100%;object-fit:contain;display:block";
         holder.appendChild(img); cell.append(label, holder); grid.appendChild(cell);
-        return { cell, holder };
+        return { cell, holder, img };
     });
     if (cells.length === 2) {
         // 双图默认左右并排，避免竖屏图片在默认自动布局中上下堆叠。
@@ -311,11 +321,11 @@ function openImageCompare(items) {
         grid.style.gridTemplateRows = "repeat(2, minmax(0, 1fr))";
     }
     const wipeBtn = document.createElement("button"); wipeBtn.className = "xzg-sp-btn"; wipeBtn.textContent = "🔀 划像对比";
-    const swapBtn = document.createElement("button"); swapBtn.className = "xzg-sp-btn"; swapBtn.textContent = "⇄ 交换左右";
+    wipeBtn.title = "在左侧缩略图中选择两张图片";
     const ultrawideBtn = document.createElement("button"); ultrawideBtn.className = "xzg-sp-btn"; ultrawideBtn.textContent = "🖥 带鱼屏";
     ultrawideBtn.title = "双路竖屏图片靠近窗口中间显示";
     ultrawideBtn.style.display = cells.length === 2 ? "" : "none";
-    header.append(swapBtn, wipeBtn, zoomSyncBtn, zoomBtn, ultrawideBtn, close);
+    header.append(wipeBtn, zoomSyncBtn, zoomBtn, ultrawideBtn, close);
     let ultrawideMode = false;
     const applyImageCompareLayout = () => {
         if (cells.length !== 2) return;
@@ -365,30 +375,116 @@ function openImageCompare(items) {
     }
     applyImageCompareLayout();
     const wipe = document.createElement("div"); wipe.className = "xzg-sp-wipe";
+    const wipeSide = document.createElement("div"); wipeSide.className = "xzg-sp-wipe-side";
+    const wipeMain = document.createElement("div"); wipeMain.className = "xzg-sp-wipe-main";
+    const wipeLabel = document.createElement("div"); wipeLabel.className = "xzg-sp-wipe-label";
+    const originalLabel = document.createElement("span"); originalLabel.textContent = "原图";
+    const newLabel = document.createElement("span"); newLabel.textContent = "新图";
+    wipeLabel.append(originalLabel, newLabel);
+    const wipeStage = document.createElement("div"); wipeStage.className = "xzg-sp-wipe-stage xzg-sp-image-wipe-stage";
+    const wipeHint = document.createElement("div"); wipeHint.className = "xzg-sp-wipe-hint";
+    wipeHint.textContent = "请在左侧选择两张图片进行划像对比";
     const divider = document.createElement("div"); divider.className = "xzg-sp-wipe-divider";
-    divider.title = "拖动分界线进行划像对比"; wipe.appendChild(divider);
-    let wipeOn = false, swapped = false, wipeX = 50;
-    const updateWipe = () => { wipe.style.setProperty("--wipe", `${wipeX}%`); divider.style.left = `${wipeX}%`; };
+    divider.title = "拖动分界线进行划像对比";
+    wipeStage.append(wipeHint);
+    wipeMain.append(wipeLabel, wipeStage, divider);
+    wipe.append(wipeSide, wipeMain);
+    let wipeOn = false, wipeX = 50;
+    let wipePair = [0, 1];
+    const updateWipeLabels = () => {
+        if (!wipeOn || wipePair.length !== 2) return;
+        const stage = wipeStage.getBoundingClientRect();
+        const split = stage.left + stage.width * wipeX / 100;
+        [originalLabel, newLabel].forEach((label, side) => {
+            const { img } = cells[wipePair[side]];
+            const rect = img.getBoundingClientRect();
+            const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+            const width = img.naturalWidth * scale;
+            const height = img.naturalHeight * scale;
+            const left = Math.max(stage.left, side === 1 ? split : stage.left, rect.left + (rect.width - width) / 2);
+            const right = Math.min(stage.right, side === 0 ? split : stage.right, rect.right - (rect.width - width) / 2);
+            const top = Math.max(stage.top, rect.top + (rect.height - height) / 2);
+            const bottom = Math.min(stage.bottom, rect.bottom - (rect.height - height) / 2);
+            label.hidden = !(right > left && bottom > top);
+            if (label.hidden) return;
+            label.style.left = `${left - stage.left}px`;
+            label.style.width = `${right - left}px`;
+        });
+    };
+    const updateWipe = () => {
+        wipeMain.style.setProperty("--wipe", `${wipeX}%`);
+        updateWipeLabels();
+    };
+    overlay._xzgWinResize = updateWipeLabels;
+    window.addEventListener("resize", updateWipeLabels);
+    const layoutWipePair = () => {
+        const ready = wipePair.length === 2;
+        cells.forEach(({ cell, holder }) => {
+            holder.classList.remove("wipe-top");
+            cell.appendChild(holder);
+        });
+        wipeHint.style.display = ready ? "none" : "";
+        wipeLabel.style.display = ready ? "" : "none";
+        divider.style.display = ready ? "" : "none";
+        if (ready) {
+            const [left, right] = wipePair;
+            wipeStage.append(cells[right].holder, cells[left].holder);
+            cells[left].holder.classList.add("wipe-top");
+            if (!wipePair.includes(activeIndex)) {
+                activeIndex = left;
+                updateZoomModeUI();
+                applyImageTransform(left);
+            }
+        }
+        thumbs.forEach((thumb, index) => {
+            const selected = wipePair.includes(index);
+            thumb.classList.toggle("sel", selected);
+            thumb.disabled = ready && !selected;
+            thumb.classList.toggle("dim", thumb.disabled);
+            thumb.setAttribute("aria-pressed", String(selected));
+        });
+        updateWipeLabels();
+    };
+    const thumbs = cells.length < 2 ? [] : cells.map(({ img }, index) => {
+        const thumb = document.createElement("button");
+        thumb.type = "button";
+        thumb.className = "xzg-sp-wipe-thumb";
+        thumb.title = img.alt;
+        thumb.setAttribute("aria-label", img.alt);
+        const preview = document.createElement("img");
+        preview.alt = "";
+        preview.draggable = false;
+        const updateThumbnail = () => { preview.src = img.src; };
+        img.addEventListener("load", updateThumbnail);
+        img.addEventListener("load", updateWipeLabels);
+        updateThumbnail();
+        const label = document.createElement("span"); label.className = "tag"; label.textContent = img.alt;
+        const check = document.createElement("span"); check.className = "chk"; check.textContent = "✓";
+        check.setAttribute("aria-hidden", "true");
+        thumb.append(preview, label, check);
+        thumb.onclick = () => {
+            wipePair = wipePair.includes(index)
+                ? wipePair.filter(selected => selected !== index)
+                : [...wipePair, index].sort((a, b) => a - b);
+            layoutWipePair();
+        };
+        wipeSide.appendChild(thumb);
+        return thumb;
+    });
     const setWipe = (on) => {
-        if (cells.length !== 2) return;
-        wipeOn = on; wipe.classList.toggle("active", on); grid.style.display = on ? "none" : "grid";
+        if (cells.length < 2) return;
+        wipeOn = on;
+        wipe.classList.toggle("active", on);
+        wipe.classList.toggle("multi", on);
+        grid.style.display = on ? "none" : "grid";
         if (on) {
-            wipe.insertBefore(cells[swapped ? 1 : 0].holder, divider);
-            wipe.insertBefore(cells[swapped ? 0 : 1].holder, divider);
-            cells[swapped ? 0 : 1].holder.classList.add("wipe-top");
-            cells[swapped ? 1 : 0].holder.classList.remove("wipe-top");
+            layoutWipePair();
             updateWipe();
         } else for (const c of cells) { c.holder.classList.remove("wipe-top"); c.cell.appendChild(c.holder); }
         wipeBtn.textContent = on ? "⬒ 并排对比" : "🔀 划像对比";
     };
-    wipeBtn.style.display = cells.length === 2 ? "" : "none";
-    swapBtn.style.display = cells.length === 2 ? "" : "none";
+    wipeBtn.style.display = cells.length >= 2 ? "" : "none";
     wipeBtn.onclick = () => setWipe(!wipeOn);
-    swapBtn.onclick = () => {
-        swapped = !swapped;
-        if (wipeOn) setWipe(true);
-        else grid.insertBefore(cells[swapped ? 1 : 0].cell, cells[swapped ? 0 : 1].cell);
-    };
     let zoomSync = true;
     let activeIndex = 0;
     const viewStates = cells.map(() => ({ zoom: 1, panX: 0, panY: 0 }));
@@ -433,6 +529,7 @@ function openImageCompare(items) {
             image.style.willChange = state.zoom === 1 && state.panX === 0 && state.panY === 0 ? "" : "transform";
         }
         zoomBtn.textContent = `🔍 ${Math.round(viewStates[activeIndex]?.zoom * 100 || 100)}%`;
+        updateWipeLabels();
     };
     const setZoomSync = (sync) => {
         if (zoomSync === sync) return;
@@ -536,22 +633,22 @@ function openImageCompare(items) {
     updateZoomModeUI();
     let dragging = false;
     const followWipePointer = (e) => {
-        const r = wipe.getBoundingClientRect();
+        const r = wipeStage.getBoundingClientRect();
         if (!r.width) return;
         wipeX = Math.max(0, Math.min(100, (e.clientX - r.left) / r.width * 100));
         updateWipe();
     };
     // 与视频对比划线一致：悬停移动时分界线持续跟随鼠标，无需按住拖动。
-    wipe.addEventListener("mousemove", followWipePointer);
-    wipe.addEventListener("wheel", (e) => {
-        if (!wipeOn) return;
+    wipeMain.addEventListener("mousemove", followWipePointer);
+    wipeMain.addEventListener("wheel", (e) => {
+        if (!wipeOn || wipePair.length !== 2) return;
         e.preventDefault();
         e.stopPropagation();
-        const rect = wipe.getBoundingClientRect();
+        const rect = wipeStage.getBoundingClientRect();
         if (!rect.width) return;
         const pointerPct = (e.clientX - rect.left) / rect.width * 100;
         const onTopImage = pointerPct <= wipeX;
-        const index = onTopImage ? (swapped ? 0 : 1) : (swapped ? 1 : 0);
+        const index = wipePair[onTopImage ? 0 : 1];
         activeIndex = index;
         updateZoomModeUI();
         zoomAt(index, e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY, cells[index].holder);
@@ -614,6 +711,14 @@ function closeSyncPreview() {
         window.removeEventListener("mouseup", _overlay._xzgWipeUp, true);
         _overlay._xzgWipeUp = null;
     }
+    if (_overlay && _overlay._xzgWinResize) {
+        window.removeEventListener("resize", _overlay._xzgWinResize);
+        _overlay._xzgWinResize = null;
+    }
+    if (_overlay && _overlay._xzgStopThumbs) {
+        _overlay._xzgStopThumbs();
+        _overlay._xzgStopThumbs = null;
+    }
     for (const p of _players) {
         try { p.destroy(); } catch (_) {}
     }
@@ -655,7 +760,7 @@ function _ensureStyle() {
     }
     .xzg-sp-close:hover { color: #ff9494; }
     .xzg-sp-grid {
-        flex: 1; overflow: hidden; padding: 14px;
+        flex: 1; overflow: hidden; padding: 0 14px 14px; /* 去掉与上方控制栏之间的空白 */
         display: grid; gap: 14px;
     }
     .xzg-sp-cell {
@@ -665,7 +770,9 @@ function _ensureStyle() {
         min-width: 0;
     }
     .xzg-sp-label {
-        padding: 6px 8px; font-size: 11px; color: #aaa;
+        position: relative; z-index: 3; /* 固定在自己的位置，缩放/平移视频时不跟随、不被盖住 */
+        height: 30px; line-height: 30px; box-sizing: border-box; /* 与划像模式标题栏等高 */
+        padding: 0 8px; font-size: 15px; color: #dcc85b; text-align: center;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         background: #232323; flex-shrink: 0;
     }
@@ -699,15 +806,91 @@ function _ensureStyle() {
         outline: none;
     }
     .xzg-sp-scrub-time { font-size: 12px; color: #bbb; white-space: nowrap; }
+    /* 帧数显示：位于时间码左侧，右对齐避免数字跳动 */
+    .xzg-sp-scrub-frame { font-size: 12px; color: #bbb; white-space: nowrap; text-align: right; }
     .xzg-sp-wipe {
         position: relative; flex: 1; overflow: hidden; background: #000;
         display: none;
     }
-    .xzg-sp-wipe.active { display: block; }
+    .xzg-sp-wipe.active { display: flex; }
+    .xzg-sp-wipe-main {
+        position: relative; /* 分界线的定位基准：贯穿标题栏与画面 */
+        display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0;
+    }
+    .xzg-sp-wipe-stage {
+        position: relative; flex: 1; min-width: 0; overflow: hidden; background: #000;
+    }
+    .xzg-sp-wipe-hint {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        color: #888; font-size: 13px; pointer-events: none; z-index: 6;
+    }
+    .xzg-sp-wipe-label {
+        flex: none; height: 30px; line-height: 30px; box-sizing: border-box; /* 与并排标题栏等高、同底色 */
+        position: relative;
+        font-size: 15px;
+        color: #dcc85b; background: #232323;
+    }
+    .xzg-sp-wipe-label > span {
+        position: absolute; top: 0; text-align: center;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .xzg-sp-wipe-side { display: none; }
+    .xzg-sp-wipe.multi .xzg-sp-wipe-side {
+        display: flex; flex-direction: column; gap: 8px; padding: 6px;
+        width: 130px; flex: 0 0 130px; overflow-y: auto; overflow-x: hidden;
+        background: #141414; border-right: 1px solid #2a2a2a;
+    }
+    .xzg-sp-wipe-thumb {
+        position: relative; width: 100%; height: 136px; flex: 0 0 auto;
+        border: 1px solid #3a3a3a; border-radius: 6px;
+        background: #000; overflow: hidden; cursor: pointer; box-sizing: border-box;
+    }
+    .xzg-sp-wipe-thumb canvas { display: block; width: 100%; height: 100%; }
+    .xzg-sp-wipe-thumb > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    button.xzg-sp-wipe-thumb { padding: 0; }
+    .xzg-sp-wipe-thumb .tag {
+        position: absolute; left: 5px; top: 4px; font-size: 14px; color: #ddd;
+        max-width: calc(100% - 34px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        text-shadow: 0 1px 2px #000; outline: none;
+    }
+    .xzg-sp-rename-mask {
+        position: absolute; inset: 0; z-index: 60; display: flex;
+        align-items: center; justify-content: center; background: rgba(0,0,0,.45);
+    }
+    .xzg-sp-rename-box {
+        width: 280px; padding: 12px; display: flex; flex-direction: column; gap: 10px;
+        background: #2a2a2c; border: 1px solid #444; border-radius: 8px;
+        box-shadow: 0 12px 30px rgba(0,0,0,.55);
+    }
+    .xzg-sp-rename-title { font-size: 13px; font-weight: 600; color: #dcc85b; }
+    .xzg-sp-rename-input {
+        height: 30px; padding: 0 8px; font-size: 13px; color: #eee;
+        background: #1c1c1e; border: 1px solid #444; border-radius: 6px; outline: none;
+    }
+    .xzg-sp-rename-input:focus { border-color: #dcc85b; }
+    .xzg-sp-rename-btns { display: flex; justify-content: flex-end; gap: 8px; }
+    .xzg-sp-rename-btns button {
+        height: 26px; padding: 0 14px; font-size: 12px; color: #ddd;
+        background: #333; border: 1px solid #4a4a4a; border-radius: 6px; cursor: pointer;
+    }
+    .xzg-sp-rename-btns button:last-child {
+        color: #111; background: #dcc85b; border-color: #dcc85b; font-weight: 600;
+    }
+    .xzg-sp-wipe-thumb .chk {
+        position: absolute; right: 5px; top: 4px; width: 20px; height: 20px;
+        border-radius: 50%; border: 1px solid #666; background: rgba(0,0,0,.55);
+        color: #111; font-size: 12px; line-height: 20px; text-align: center;
+    }
+    .xzg-sp-wipe-thumb.sel { border-color: #dcc85b; box-shadow: 0 0 0 1px rgba(220,200,91,.45); }
+    .xzg-sp-wipe-thumb.sel .chk { background: #dcc85b; border-color: #dcc85b; }
+    .xzg-sp-wipe-thumb.dim { opacity: .38; pointer-events: none; }
     .xzg-sp-wipe .xzg-sp-player {
         position: absolute; inset: 0;
     }
-    .xzg-sp-wipe .xzg-sp-player.wipe-top {                          /* 上层：按 --wipe 裁剪 */
+    .xzg-sp-image-wipe-stage > .xzg-sp-player {
+        width: auto !important; height: auto !important; aspect-ratio: auto !important;
+    }
+    .xzg-sp-wipe .xzg-sp-player.wipe-top {                          /* 图片对比上层：按 --wipe 裁剪 */
         z-index: 2;
         clip-path: inset(0 calc(100% - var(--wipe, 50%)) 0 0);
     }
@@ -761,16 +944,18 @@ function openSyncPreview(items) {
     const initialRows = fixedThreeByTwo || _n === 4 ? 2 : 1;
     grid.style.gridTemplateColumns = `repeat(${initialColumns}, minmax(0, 1fr))`;
     grid.style.gridTemplateRows = `repeat(${initialRows}, minmax(0, 1fr))`;
-    // 多路播放时减少预读帧数，控制全分辨率帧的内存占用。
-    const playbackBufferFrames = _n <= 2 ? 6 : 4;
+    // 双路对比保留更大的预读窗口（受播放器 200MB 预算约束），多路时适当收紧。
+    const playbackBufferFrames = _n <= 2 ? 24 : 10;
     const players = [];
     for (const it of items) {
         const cell = document.createElement("div");
         cell.className = "xzg-sp-cell";
         const label = document.createElement("div");
         label.className = "xzg-sp-label";
-        label.textContent = it.name || "video";
-        label.title = it.url;
+        // 默认临时名称 A/B/C…（与划像缩略图一致，右键可重命名）
+        label.textContent = players.length < 26
+            ? String.fromCharCode(65 + players.length)
+            : String(players.length + 1);
         const holder = document.createElement("div");
         holder.className = "xzg-sp-player";
         cell.appendChild(label);
@@ -795,12 +980,14 @@ function openSyncPreview(items) {
         if (it.skipFrames || it.frameLimit) {
             try { player.setLoadRange(it.skipFrames || 0, it.frameLimit || 0); } catch (_) {}
         }
-        players.push({ player, url: it.url, holder, cell });
+        players.push({ player, url: it.url, holder, cell, labelEl: label, name: it.name || "video", isOriginal: !!it._isOriginal });
         // closeSyncPreview owns disposal, including players still loading.
         _players.push(player);
     }
     const videoArea = document.createElement("div");
     videoArea.style.cssText = "position:relative;display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden";
+    // 屏蔽预览区/缩略图上的浏览器右键菜单（播放器若有自定义右键并阻止冒泡则不受影响）
+    videoArea.addEventListener("contextmenu", (e) => e.preventDefault());
     videoArea.appendChild(grid);
     win.appendChild(videoArea);
     const bufferPanel = document.createElement("div");
@@ -863,13 +1050,29 @@ function openSyncPreview(items) {
         p.player.playbackReadyGate = playbackReadyGate;
     }
 
-    // 划像对比容器（仅两个视频时使用）：两视频重叠，拖动金色分界线左右对比
+    // 划像对比容器：多路时左侧是缩略图选择栏，右侧舞台内叠加选中的两路做划像
     const wipe = document.createElement("div");
     wipe.className = "xzg-sp-wipe";
+    const wipeSide = document.createElement("div");
+    wipeSide.className = "xzg-sp-wipe-side";
+    const wipeStage = document.createElement("div");
+    wipeStage.className = "xzg-sp-wipe-stage";
+    const wipeHint = document.createElement("div");
+    wipeHint.className = "xzg-sp-wipe-hint";
+    // 在预览上方显示当前名称（可在缩略图上双击临时命名）。
+    const wipeLabel = document.createElement("div");
+    wipeLabel.className = "xzg-sp-wipe-label";
+    wipeLabel.style.display = "none";
+    const wipeLabels = [document.createElement("span"), document.createElement("span")];
+    wipeLabel.append(...wipeLabels);
     const wipeDivider = document.createElement("div");
     wipeDivider.className = "xzg-sp-wipe-divider";
-    wipeDivider.title = "拖动分界线进行划像对比";
-    wipe.appendChild(wipeDivider);
+    wipeDivider.style.display = "none";
+    const wipeMain = document.createElement("div");
+    wipeMain.className = "xzg-sp-wipe-main";
+    wipeStage.append(wipeHint);
+    wipeMain.append(wipeLabel, wipeStage, wipeDivider); // 分界线放在标题栏之上，贯穿到画面
+    wipe.append(wipeSide, wipeMain);
     videoArea.appendChild(wipe);
 
     // 控制栏
@@ -891,38 +1094,17 @@ function openSyncPreview(items) {
     const muteBtn = mkBtn("🔊", "静音开关（默认仅播放最左侧视频的音频）");
     const zoomSyncBtn = mkBtn(_n === 1 ? "🔗 缩放联动" : "🔗 同步中", _n === 1 ? "切换缩放和移动模式；也可双击视频切换" : "切换视频缩放和移动同步状态；也可双击视频切换");
     const zoomBtn = mkBtn("🔍 100%", "滚轮缩放视频，点击重置");
-    const wipeBtn = mkBtn("🔀 划像对比", "两个视频重叠，拖动金色分界线左右对比（仅 2 个视频可用）");
-    if (_n !== 2) wipeBtn.style.display = "none"; // 仅两个视频时提供划像对比
-    const swapBtn = mkBtn("⇄ 交换左右", "交换两个视频的左右顺序（仅 2 个视频）");
-    if (_n !== 2) swapBtn.style.display = "none";
+    const wipeBtn = mkBtn("🔀 划像对比", _n > 2 ? "左侧勾选两个视频，只对这两路做划像对比" : "拖动金色分界线左右对比");
+    if (_n < 2) wipeBtn.style.display = "none"; // 单视频无需划像对比
     const ultrawideBtn = mkBtn("🖥 带鱼屏", "双路竖屏时让视频靠近中间，避免在带鱼屏上相距过远");
     if (_n !== 2) ultrawideBtn.style.display = "none";
     let ultrawideMode = false;
-    let _swapped = false;
-    const setSwap = (s) => {
-        _swapped = s;
-        // 交换 players 顺序：并排左右 与 划像底层/上层 都随之对调
-        [players[0], players[1]] = [players[1], players[0]];
-        applyCompareAudio(players, _syncMuted);
-        // 同步交换累计平移：_holderT 与 players 索引一一对应，
-        // 基线重录（recordHolderBase）依赖它反推布局矩形，错位会导致缩放锚点错乱
-        [_holderT[0], _holderT[1]] = [_holderT[1], _holderT[0]];
-        [_zoomScales[0], _zoomScales[1]] = [_zoomScales[1], _zoomScales[0]];
-        // 统一让 players[0] 的格子排在前（左侧）
-        grid.insertBefore(players[0].cell, players[1].cell);
-        if (wipeMode) setWipeMode(true); // 划像模式：重新布置底层/上层
-        requestAnimationFrame(() => {
-            for (const p of players) {
-                try { p.player.resize?.(); } catch (_) {}
-            }
-            recordHolderBase();
-            if (wipeMode) updateDividerPos();
-        });
-    };
-    swapBtn.addEventListener("click", () => setSwap(!_swapped));
     // 播放台：共享进度条，同时控制所有视频的播放进度（按各自时长的比例同步跳转）
     const scrubWrap = document.createElement("div");
     scrubWrap.className = "xzg-sp-scrub";
+    const scrubFrame = document.createElement("span");
+    scrubFrame.className = "xzg-sp-scrub-frame";
+    scrubFrame.textContent = "帧 0/0";
     const scrubTime = document.createElement("span");
     scrubTime.className = "xzg-sp-scrub-time";
     scrubTime.textContent = "00:00 / 00:00";
@@ -930,6 +1112,7 @@ function openSyncPreview(items) {
     scrubRange.type = "range";
     scrubRange.min = 0; scrubRange.max = 1000; scrubRange.value = 0;
     scrubRange.title = _n === 1 ? "控制视频的播放进度" : "同步控制所有视频的播放进度";
+    scrubWrap.appendChild(scrubFrame);
     scrubWrap.appendChild(scrubTime);
     scrubWrap.appendChild(scrubRange);
     const statusEl = document.createElement("span");
@@ -985,10 +1168,10 @@ function openSyncPreview(items) {
         const { skip, len } = playerRange(p);
         const localOffset = offset / playerFps(pickMain()) * playerFps(p);
         const off = Math.max(0, len > 0 ? Math.min(localOffset, len) : localOffset);
-        try { p.player.seek((skip + off) / playerFps(p)); } catch (_) {}
+        try { return p.player.seek((skip + off) / playerFps(p)); } catch (_) {}
     };
     const seekAllToOffset = (offset) => {
-        for (const p of players) seekPlayerToOffset(p, offset);
+        return Promise.all(players.map(p => seekPlayerToOffset(p, offset)));
     };
     const fmtTime = (t) => {
         if (!isFinite(t) || t < 0) t = 0;
@@ -996,32 +1179,62 @@ function openSyncPreview(items) {
         return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
     };
     let _scrubbing = false;
+    let resumeAfterScrub = false;
+    let scrubPreviewPending = false;
+    let pendingScrubOffset = null;
     let _loopRestarting = false; // 共享循环重启中（避免 rAF 重复触发）
-    // 拖动进度条：按对比时间轴长度换算「区间内偏移」，各路 seek 到自身起点 + 偏移
-    const seekAllToRatio = (ratio) => {
-        const main = pickMain();
-        const d = main.player.duration;
-        if (!d || !isFinite(d) || d <= 0) return;
-        seekAllToOffset(Math.round(ratio * timelineFrames()));
+    const scrubOffset = (length) => Math.min(length, Math.round(+scrubRange.value / 1000 * length));
+    const previewScrub = async () => {
+        if (scrubPreviewPending) return;
+        scrubPreviewPending = true;
+        try {
+            // 按需读取时等待两路返回，再预览最新位置，避免连续拖动取消每一次读帧。
+            while (_scrubbing && _overlay === overlay && pendingScrubOffset != null) {
+                const offset = pendingScrubOffset;
+                pendingScrubOffset = null;
+                await seekAllToOffset(offset);
+            }
+        } finally {
+            scrubPreviewPending = false;
+        }
     };
     scrubRange.addEventListener("input", () => {
-        _scrubbing = true;
-        seekAllToRatio((+scrubRange.value) / 1000);
+        if (!mediaReady) return;
+        if (!_scrubbing) {
+            _scrubbing = true;
+            resumeAfterScrub = playing;
+            if (playing) syncPause();
+        }
         const main = pickMain();
         const fps = playerFps(main);
         const len = timelineFrames();
-        const off = len * ((+scrubRange.value) / 1000);
+        const off = scrubOffset(len);
         // 时间码按对比时间轴显示（0 起 → 区间长度），不显示源片绝对时间
         scrubTime.textContent = fmtTime(off / fps) + " / " + fmtTime(len / fps);
+        scrubFrame.textContent = `帧 ${Math.round(off)}/${Math.round(len)}`;
+        pendingScrubOffset = off;
+        void previewScrub();
     });
-    scrubRange.addEventListener("change", () => {
+    const finishScrub = () => {
+        if (!_scrubbing) return;
         _scrubbing = false;
+        pendingScrubOffset = null;
+        const length = timelineFrames();
+        const offset = scrubOffset(length);
+        if (resumeAfterScrub && offset < length) syncResume(offset);
+        else seekAllToOffset(offset);
         try { scrubRange.blur(); } catch (_) {}
-    });
+    };
+    scrubRange.addEventListener("change", finishScrub);
+    scrubRange.addEventListener("pointercancel", finishScrub);
     // 点击/拖动进度条结束后主动释放焦点，避免播放条被键盘焦点高亮边框包裹
     scrubRange.addEventListener("pointerup", () => {
         // 延后一拍，先让原生 change 事件完成（重置拖动标记），再释放焦点
-        setTimeout(() => { try { scrubRange.blur(); } catch (_) {} }, 0);
+        setTimeout(() => {
+            if (_overlay !== overlay) return;
+            finishScrub();
+            try { scrubRange.blur(); } catch (_) {}
+        }, 0);
     });
     // Check time drift frequently; tolerate frame timestamp quantization,
     // rather than allowing a visible quarter-second gap to persist.
@@ -1059,7 +1272,7 @@ function openSyncPreview(items) {
         const now = performance.now();
         if (!_scrubbing) {
             // 最高帧率一路走到共同区间末尾时，所有视频一起回到各自的起点。
-            if (playing && !_loopRestarting) {
+            if (playing && !_loopRestarting && groupStartTime != null) {
                 const ref = pickMain();
                 const len = timelineFrames();
                 if (ref && len > 0 && playerOffsetFrames(ref) >= len - 1) {
@@ -1081,6 +1294,8 @@ function openSyncPreview(items) {
                     if (v !== scrubRange.value) scrubRange.value = v;
                     const txt = fmtTime(off / fps) + " / " + fmtTime(len / fps);
                     if (txt !== scrubTime.textContent) scrubTime.textContent = txt;
+                    const frameTxt = `帧 ${Math.round(off)}/${Math.round(len)}`;
+                    if (frameTxt !== scrubFrame.textContent) scrubFrame.textContent = frameTxt;
                 }
             }
         }
@@ -1091,14 +1306,18 @@ function openSyncPreview(items) {
     // 同步播放/暂停：点击任一视频画面（或左下角按钮）时，所有视频一起播放/暂停
     // _syncing 防止同步动作再次触发 onPlay/onPause 造成递归
     let _syncing = false;
-    // 从暂停处继续播放：不 seek，各视频从自己的当前进度继续
-    const syncResume = () => {
+    // 暂停后各路最后显示的帧可能不同。恢复时用同一个区间偏移重建起播基准。
+    const syncResume = (offset = playerOffsetFrames(pickMain())) => {
         if (_syncing || !mediaReady) return;
         groupStartTime = null;
         _syncing = true;
         try {
             for (const p of players) {
-                if (!p.player.isPlaying) p.player.play();
+                if (p.player.isPlaying) p.player.pause();
+            }
+            seekAllToOffset(offset >= timelineFrames() ? 0 : offset);
+            for (const p of players) {
+                p.player.play();
             }
             playing = true;
             playPauseBtn.textContent = "⏸ 暂停";
@@ -1106,21 +1325,7 @@ function openSyncPreview(items) {
         } finally { _syncing = false; }
     };
     // 从头一起播放：各路回到「自己区间的起点」再一起播（左侧 100 帧 ↔ 右侧 0 帧）
-    const syncPlayFromStart = () => {
-        if (_syncing || !mediaReady) return;
-        syncPause();
-        groupStartTime = null;
-        _syncing = true;
-        try {
-            seekAllToOffset(0);
-            for (const p of players) {
-                if (!p.player.isPlaying) p.player.play();
-            }
-            playing = true;
-            playPauseBtn.textContent = "⏸ 暂停";
-            statusEl.textContent = "▶ 播放中（自动循环）";
-        } finally { _syncing = false; }
-    };
+    const syncPlayFromStart = () => syncResume(0);
     const syncPause = () => {
         if (_syncing) return;
         _syncing = true;
@@ -1137,12 +1342,8 @@ function openSyncPreview(items) {
     const playAll = syncResume;
     const pauseAll = syncPause;
     const restartAll = () => {
-        _syncing = true; // 阻止 pause/seek 触发同步回调
-        try {
-            for (const p of players) p.player.pause();
-            seekAllToOffset(0); // 各路回到自己区间的起点（左侧区间首帧 ↔ 右侧首帧）
-        } finally { _syncing = false; }
         if (playing) syncPlayFromStart();
+        else seekAllToOffset(0);
     };
     // 逐帧浏览：先暂停全部，然后按「区间内偏移 ± delta」同步跳帧。
     // 左侧区间 100~200、右侧 0~100 时，左侧第 100+k 帧 ↔ 右侧第 0+k 帧，按偏移严格对齐。
@@ -1156,7 +1357,7 @@ function openSyncPreview(items) {
         playPauseBtn.textContent = "▶ 播放";
         statusEl.textContent = "已暂停";
         const main = pickMain();
-        const targetOffset = Math.max(0, playerOffsetFrames(main) + delta);
+        const targetOffset = Math.max(0, Math.min(timelineFrames(), playerOffsetFrames(main) + delta));
         seekAllToOffset(targetOffset);
     };
     prevFrameBtn.addEventListener("click", () => stepFrame(-1));
@@ -1172,119 +1373,362 @@ function openSyncPreview(items) {
         applyCompareAudio(players, _syncMuted);
     });
 
-    // ── 划像对比（仅两个视频）──────────────────────────────
+    // ── 划像对比 ─────────────────────────────────────────────
+    // 2 路：直接整屏叠加划像；
+    // 3 路以上：进入划像后左侧出现缩略图，最多勾选两个视频，只对这两路做划像。
     let wipeMode = false;
+    let _wipeEdge = 50;          // 分界线位置（0-100，未缩放坐标）
+    let _wipePair = [];          // 参与划像的两个视频下标（第一个在左）
+    const _thumbItems = [];      // 左侧缩略图 { index, el, canvas, ctx, check }
+    let _thumbTimer = null;
+    // 关闭窗口时停止缩略图刷新，避免定时器泄漏
+    overlay._xzgStopThumbs = () => {
+        if (_thumbTimer) { clearInterval(_thumbTimer); _thumbTimer = null; }
+    };
+
+    // 临时名称：原视频（加载器）默认“原视频”，其余依次“新视频1、新视频2…”；
+    // 右键缩略图或并排视图标题栏可重命名（仅本次对比窗口有效）
+    let _newVideoIndex = 0;
+    players.forEach((p, i) => {
+        if (!p.label) {
+            p.label = p.isOriginal ? "原视频" : `新视频${++_newVideoIndex}`;
+        }
+        if (p.labelEl) p.labelEl.textContent = p.label;
+    });
+    const _updateWipeLabels = () => {
+        const ready = _wipePair.length === 2;
+        wipeLabel.style.display = ready ? "" : "none";
+        if (!ready) return;
+        const stage = wipeStage.getBoundingClientRect();
+        wipeLabels.forEach((label, side) => {
+            const { player, holder, label: name } = players[_wipePair[side]];
+            if (label.textContent !== name) label.textContent = name;
+            const canvas = player._canvas;
+            const frame = canvas?.getBoundingClientRect() ?? stage;
+            const pane = holder.getBoundingClientRect();
+            const split = pane.left + pane.width * _wipeEdge / 100;
+            let width = frame.width;
+            if (canvas?.width && canvas.height && canvas.style.objectFit === "contain") {
+                const rotated = /rotate\((90|270)deg\)/.test(canvas.style.transform);
+                const ratio = rotated ? canvas.height / canvas.width : canvas.width / canvas.height;
+                width = Math.min(width, frame.height * ratio);
+            }
+            const contentLeft = frame.left + (frame.width - width) / 2;
+            const left = Math.max(stage.left, pane.left, contentLeft, side === 1 ? split : stage.left);
+            const right = Math.min(stage.right, pane.right, contentLeft + width, side === 0 ? split : stage.right);
+            label.style.left = `${left - stage.left}px`;
+            label.style.width = `${Math.max(0, right - left)}px`;
+        });
+    };
+
+    const _applyWipePair = () => {
+        for (const p of players) p.holder.style.clipPath = "";
+        if (_wipePair.length !== 2) return;
+        // 不限制在 0~100：缩放/平移后内容边界可能超出舞台，裁切值允许越界
+        const e = _wipeEdge;
+        // 左侧显示先勾选的视频，右侧显示后勾选的视频（默认 A 在左、B 在右）
+        players[_wipePair[0]].holder.style.clipPath = `inset(0 ${100 - e}% 0 0)`; // 左
+        players[_wipePair[1]].holder.style.clipPath = `inset(0 0 0 ${e}%)`;        // 右
+    };
+    // 分界线跟随缩放/平移后的裁切边界
+    const updateDividerPos = () => {
+        if (_wipePair.length !== 2) return;
+        const W = wipeStage.clientWidth;
+        if (!W) return;
+        const idx = _wipePair[0];
+        const t0 = _holderT[idx] || { x: 0, y: 0 };
+        const s = _zoomScales[idx] || 1;
+        const leftPct = _wipeEdge * s + (t0.x / W) * 100;
+        wipeDivider.style.left = Math.max(-4, Math.min(104, leftPct)) + "%";
+        _updateWipeLabels();
+    };
+    // 选中的两路放进舞台，其余留在舞台但隐藏（保持解码/缩略图刷新）
+    const _layoutWipePair = () => {
+        const ready = _wipePair.length === 2;
+        players.forEach((p, i) => {
+            const selected = _wipePair.includes(i);
+            p.holder.style.position = "absolute";
+            p.holder.style.inset = "0";
+            p.holder.style.visibility = selected ? "" : "hidden";
+            if (p.holder.parentElement !== wipeStage) wipeStage.appendChild(p.holder);
+        });
+        wipeMain.appendChild(wipeDivider); // 分界线始终在最上层
+        wipeDivider.style.display = ready ? "" : "none";
+        wipeHint.style.display = ready ? "none" : "";
+        wipeHint.textContent = _wipePair.length === 0
+            ? "在左侧勾选两个视频进行划像对比"
+            : "再勾选一个视频开始划像";
+        _applyWipePair();
+        _updateWipeLabels();
+        requestAnimationFrame(() => {
+            for (const p of players) {
+                try { p.player.resize?.() } catch (_) {}
+            }
+            recordHolderBase();
+            updateDividerPos();
+        });
+    };
+    const _renderThumbs = () => {
+        const maxed = _wipePair.length >= 2;
+        for (const t of _thumbItems) {
+            const sel = _wipePair.includes(t.index);
+            t.el.classList.toggle("sel", sel);
+            t.el.classList.toggle("dim", !sel && maxed);
+            t.check.textContent = sel ? "✓" : "";
+        }
+    };
+    const _drawThumbs = () => {
+        for (const t of _thumbItems) {
+            const canvas = t.canvas;
+            const ctx = t.ctx;
+            ctx.fillStyle = "#000";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const src = players[t.index].player._canvas;
+            if (!src || !src.width || !src.height) continue;
+            const s = Math.min(canvas.width / src.width, canvas.height / src.height);
+            const dw = src.width * s;
+            const dh = src.height * s;
+            ctx.drawImage(src, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+        }
+    };
+    // 临时命名对话框（右键缩略图打开）
+    const renameMask = document.createElement("div");
+    renameMask.className = "xzg-sp-rename-mask";
+    renameMask.style.display = "none";
+    const renameBox = document.createElement("div");
+    renameBox.className = "xzg-sp-rename-box";
+    const renameTitle = document.createElement("div");
+    renameTitle.className = "xzg-sp-rename-title";
+    renameTitle.textContent = "重命名";
+    const renameInput = document.createElement("input");
+    renameInput.className = "xzg-sp-rename-input";
+    renameInput.maxLength = 10;
+    renameInput.placeholder = "输入临时名称（最多 10 字）";
+    const renameBtns = document.createElement("div");
+    renameBtns.className = "xzg-sp-rename-btns";
+    const renameCancelBtn = document.createElement("button");
+    renameCancelBtn.textContent = "取消";
+    const renameOkBtn = document.createElement("button");
+    renameOkBtn.textContent = "确定";
+    renameBtns.append(renameCancelBtn, renameOkBtn);
+    renameBox.append(renameTitle, renameInput, renameBtns);
+    renameMask.appendChild(renameBox);
+    win.appendChild(renameMask);
+    let _renameIndex = -1;
+    const closeRename = () => {
+        renameMask.style.display = "none";
+        _renameIndex = -1;
+    };
+    const commitRename = () => {
+        if (_renameIndex >= 0) {
+            const text = renameInput.value.replace(/\s+/g, " ").trim().slice(0, 10);
+            if (text) players[_renameIndex].label = text;
+            const item = _thumbItems.find((t) => t.index === _renameIndex);
+            if (item) item.tag.textContent = players[_renameIndex].label;
+            const pl = players[_renameIndex];
+            if (pl.labelEl) pl.labelEl.textContent = pl.label;
+            _updateWipeLabels();
+        }
+        closeRename();
+    };
+    const openRename = (i) => {
+        _renameIndex = i;
+        renameInput.value = players[i].label;
+        renameMask.style.display = "flex";
+        requestAnimationFrame(() => { renameInput.focus(); renameInput.select(); });
+    };
+    renameOkBtn.addEventListener("click", commitRename);
+    renameCancelBtn.addEventListener("click", closeRename);
+    renameMask.addEventListener("mousedown", (e) => { if (e.target === renameMask) closeRename(); });
+    renameInput.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+        else if (e.key === "Escape") { e.preventDefault(); closeRename(); }
+    });
+    // 并排视图每个视频顶部的名称：右键同样弹出重命名对话框
+    players.forEach((p, i) => {
+        if (!p.labelEl) return;
+        p.labelEl.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openRename(i);
+        });
+    });
+    // 划像时显示左侧缩略图栏（两路也显示，方便右键重命名；3 路以上还可勾选参与对比的两路）
+    if (_n >= 2) {
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        players.forEach((p, i) => {
+            const el = document.createElement("div");
+            el.className = "xzg-sp-wipe-thumb";
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(118 * dpr);
+            canvas.height = Math.round(136 * dpr);
+            const tag = document.createElement("div");
+            tag.className = "tag";
+            tag.textContent = p.label;
+            // 右键缩略图 → 弹出对话框临时命名（名称会显示在划像画面两侧）
+            el.addEventListener("contextmenu", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!wipeMode) return;
+                openRename(i);
+            });
+            const check = document.createElement("div");
+            check.className = "chk";
+            el.append(canvas, tag, check);
+            el.addEventListener("click", () => {
+                if (!wipeMode) return;
+                if (_n === 2) return; // 只有两路时固定都参与对比，点击不取消
+                const selected = _wipePair.includes(i);
+                if (!selected && _wipePair.length >= 2) return; // 最多两个
+                _wipePair = selected
+                    ? _wipePair.filter((x) => x !== i)
+                    : _wipePair.concat(i).sort((a, b) => a - b); // 按列表顺序：左为靠前的一路
+                // 保持当前缩放/平移与分界线位置，仅切换参与对比的视频
+                _layoutWipePair();
+                _renderThumbs();
+            });
+            wipeSide.appendChild(el);
+            _thumbItems.push({ index: i, el, canvas, ctx: canvas.getContext("2d"), check, tag });
+        });
+    }
     const setWipeMode = (on) => {
-        if (_n !== 2) return;
+        if (_n < 2) return;
         wipeMode = on;
         if (on) {
             grid.style.display = "none";
             wipe.classList.add("active");
-            // 播放器在容器上设置了内联 position:relative，会覆盖 CSS 的 absolute，
-            // 因此必须内联强制 absolute + inset:0，两个视频才能真正重叠
+            wipe.classList.toggle("multi", _n >= 2); // 两路也显示左侧缩略图
+            _wipeEdge = 50;
+            // 默认选中前两路：A 在左、B 在右（多路可在左侧改选）
+            _wipePair = [0, 1];
             for (const p of players) {
                 p.holder.style.position = "absolute";
                 p.holder.style.inset = "0";
+                p.holder.style.clipPath = "";
+                wipeStage.appendChild(p.holder);
             }
-            // 底层 = 第 1 个视频（右侧），上层 = 第 2 个视频（按 --wipe 裁剪显示左侧）
-            wipe.insertBefore(players[0].holder, wipeDivider);
-            wipe.insertBefore(players[1].holder, wipeDivider);
-            players[1].holder.classList.add("wipe-top");
-            players[0].holder.classList.remove("wipe-top");
+            wipeMain.appendChild(wipeDivider);
+            if (_n === 2) {
+                wipeDivider.style.display = "";
+                wipeHint.style.display = "none";
+                _applyWipePair();
+                _updateWipeLabels();
+                // 进入后按实际布局定位分界线与名称（缩放/平移状态下也能对齐）
+                requestAnimationFrame(() => {
+                    for (const p of players) {
+                        try { p.player.resize?.() } catch (_) {}
+                    }
+                    recordHolderBase();
+                    updateDividerPos();
+                });
+            } else {
+                _layoutWipePair();
+            }
+            _renderThumbs();
+            _drawThumbs();
+            if (_thumbTimer) clearInterval(_thumbTimer);
+            _thumbTimer = setInterval(_drawThumbs, 400);
         } else {
+            if (_thumbTimer) { clearInterval(_thumbTimer); _thumbTimer = null; }
+            wipe.classList.remove("active", "multi");
+            wipeDivider.style.display = "none";
+            wipeLabel.style.display = "none";
             grid.style.display = "";
-            wipe.classList.remove("active");
-            players[0].cell.appendChild(players[0].holder);
-            players[1].cell.appendChild(players[1].holder);
-            players[1].holder.classList.remove("wipe-top");
-            // 恢复播放器默认布局（position:relative 由播放器自己管理，这里清空内联覆盖）
             for (const p of players) {
+                p.cell.appendChild(p.holder);
+                // 恢复播放器默认布局（position:relative 由播放器自己管理，这里清空内联覆盖）
                 p.holder.style.position = "";
                 p.holder.style.inset = "";
+                p.holder.style.visibility = "";
+                p.holder.style.clipPath = "";
             }
+            _wipePair = [];
+            _renderThumbs();
         }
         // 切换视图时重置缩放/平移，避免残留 transform 造成错乱
         for (const p of players) {
             p.holder.style.transform = "none";
             p.holder.style.transformOrigin = "0 0";
         }
-        wipeDivider.style.transform = "none";
-        wipeDivider.style.transformOrigin = "0 0";
         _holderT = players.map(() => ({ x: 0, y: 0 }));
         _zoomScales = players.map(() => 1);
         applyZoomText();
         // 布局/画布尺寸变化后重录基线并校准
         requestAnimationFrame(() => {
             for (const p of players) {
-                try { p.player.resize?.(); } catch (_) {}
+                try { p.player.resize?.() } catch (_) {}
             }
             recordHolderBase();
-            if (wipeMode) updateDividerPos();
+            if (wipeMode) {
+                _applyWipePair();
+                updateDividerPos();
+            }
         });
         wipeBtn.textContent = on ? "⬒ 并排对比" : "🔀 划像对比";
     };
     wipeBtn.addEventListener("click", () => setWipeMode(!wipeMode));
 
-    // 划像交互：鼠标悬停位置即分界线位置（无需按住左键）；左键单击仍由播放器处理播放/暂停。
-    // 分界线本身也支持按住拖动微调。
+    // 划像交互：鼠标在舞台内移动即移动分界线（无需按住左键）；分界线也支持按住拖动。
+    // 舞台和分界线统一切换整组播放状态。
     let _wiping = false;          // 分界线拖动中
-    let _wipeX = 50;              // 划像位置（0-100，未缩放坐标，相对 wipe 宽度）
     let _downX = 0, _downY = 0, _downMoved = false; // 按住移动判定：拖动后抑制 click，避免误触播放/暂停
-    // 分界线定位到 clip 边界的实际视觉位置：clip 边界 = 未缩放 X% 处经窗格缩放/平移后的位置
-    const updateDividerPos = () => {
-        const W = wipe.clientWidth;
-        if (!W) return;
-        const t0 = _holderT[0] || { x: 0, y: 0 };
-        const leftPct = _wipeX * (_zoomScales[0] || 1) + (t0.x / W) * 100;
-        wipeDivider.style.left = Math.max(-4, Math.min(104, leftPct)) + "%";
+    // 鼠标位置 → 未缩放坐标百分比（消除缩放/平移影响，与 clip-path 坐标一致）
+    // 不做 0~100 夹取：缩放/平移后内容坐标可超出舞台，否则分界线会在中途“划不动”
+    const pointerContentPct = (e) => {
+        const r = wipeStage.getBoundingClientRect();
+        if (!r.width) return null;
+        const idx = _wipePair[0] ?? 0;
+        const t0 = _holderT[idx] || { x: 0, y: 0 };
+        const s = _zoomScales[idx] || 1;
+        const px = Math.max(0, Math.min(r.width, e.clientX - r.left));
+        return ((px - t0.x) / (r.width * s)) * 100;
     };
-    const updateWipe = (e) => {
-        const r = wipe.getBoundingClientRect();
-        if (!r.width) return;
-        // 鼠标指向的内容在本地坐标中的比例（消除缩放与平移的影响）：
-        // clip-path 的 inset 百分比相对未缩放内容坐标，直接取容器比例会在放大/平移后错位
-        const t0 = _holderT[0] || { x: 0, y: 0 };
-        const s = _zoomScales[0] || 1;
-        let x = ((e.clientX - r.left - t0.x) / (r.width * s)) * 100;
-        x = Math.max(0, Math.min(100, x));
-        _wipeX = x;
-        wipe.style.setProperty("--wipe", x + "%"); // clip-path 用它（相对窗格本地坐标）
-        updateDividerPos();                         // 分界线跟随 clip 边界视觉位置
+    const moveEdge = (x) => {
+        if (!wipeMode || _wipePair.length !== 2) return;
+        _wipeEdge = x;
+        _applyWipePair();
+        updateDividerPos();
     };
-    wipeDivider.addEventListener("mousedown", (e) => {
+    wipeMain.addEventListener("mousemove", (e) => {
+        if (!_downMoved && Math.abs(e.clientX - _downX) + Math.abs(e.clientY - _downY) > 4) _downMoved = true;
+        if (_wiping || _wipePair.length !== 2) return; // 拖动中由 onWipeMove 接管
+        const x = pointerContentPct(e);
+        if (x != null) moveEdge(x);
+    });
+    // 快速滑动时鼠标可能一次就跨出舞台，最后一帧采样会停在半路（看起来像卡住）。
+    // 指针横向离开舞台时直接贴到对应边界，保证快速划到最左/最右。
+    wipeStage.addEventListener("mouseleave", (e) => {
+        if (!wipeMode || _wiping || _wipePair.length !== 2) return;
+        const r = wipeStage.getBoundingClientRect();
+        if (e.clientX <= r.left) moveEdge(0);
+        else if (e.clientX >= r.right) moveEdge(100);
+    });
+    wipeMain.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
+        _downX = e.clientX; _downY = e.clientY;
+        _downMoved = false;
+        const divider = e.target.closest?.(".xzg-sp-wipe-divider");
+        if (!divider || _wipePair.length !== 2) return;
         e.preventDefault();
         e.stopPropagation();
         _wiping = true;
-        _downX = e.clientX; _downY = e.clientY;
-        _downMoved = false;
-        updateWipe(e);
+        const x = pointerContentPct(e);
+        if (x != null) moveEdge(x);
     });
-    // 单击分界线 = 播放/暂停（悬停划像下鼠标总在分界线上，单击即点在分界线上；
-    // 拖动分界线后 click 已被 onWipeUp 抑制，不会误触播放）
-    wipeDivider.addEventListener("click", (e) => {
+    wipeMain.addEventListener("click", (e) => {
+        if (!wipeMode || _wipePair.length !== 2) return;
         e.stopPropagation();
         if (playing) pauseAll(); else playAll();
-    });
-    // 悬停划像：鼠标在画面上移动，分界线跟随（无需按住左键）；左键单击由播放器处理播放/暂停
-    const onWipeHover = (e) => {
-        if (!_downMoved && Math.abs(e.clientX - _downX) + Math.abs(e.clientY - _downY) > 4) _downMoved = true;
-        if (_wiping) return; // 分界线拖动中由 onWipeMove 接管
-        updateWipe(e);
-    };
-    wipe.addEventListener("mousemove", onWipeHover);
-    wipe.addEventListener("mousedown", (e) => {
-        if (e.button !== 0) return;
-        _downX = e.clientX; _downY = e.clientY;
-        _downMoved = false;
-    });
+    }, true);
     const onWipeMove = (e) => {
         if (!_wiping) return;
         if (!_downMoved && Math.abs(e.clientX - _downX) + Math.abs(e.clientY - _downY) > 4) _downMoved = true;
-        updateWipe(e); // 分界线按住拖动：跟手
+        const x = pointerContentPct(e);
+        if (x != null) moveEdge(x); // 分界线按住拖动：跟手
     };
     const onWipeUp = () => {
-        if (_wiping && _downMoved) _suppressClick = true; // 拖动分界线/画面后抑制 click，避免误触播放/暂停
+        if (_wiping && _downMoved) _suppressClick = true; // 拖动分界线后抑制 click，避免误触播放/暂停
         _wiping = false;
         _downMoved = false;
     };
@@ -1292,6 +1736,14 @@ function openSyncPreview(items) {
     window.addEventListener("mouseup", onWipeUp, true);
     overlay._xzgWipeMove = onWipeMove;
     overlay._xzgWipeUp = onWipeUp;
+    // 窗口尺寸变化后重新对齐裁切边界与分界线
+    const onWinResize = () => {
+        if (!wipeMode) return;
+        _applyWipePair();
+        updateDividerPos();
+    };
+    window.addEventListener("resize", onWinResize);
+    overlay._xzgWinResize = onWinResize;
 
     ctrl.appendChild(videoCompareTitle);
     ctrl.appendChild(playPauseBtn);
@@ -1302,7 +1754,6 @@ function openSyncPreview(items) {
     ctrl.appendChild(zoomSyncBtn);
     ctrl.appendChild(zoomBtn);
     ctrl.appendChild(wipeBtn);
-    ctrl.appendChild(swapBtn);
     ctrl.appendChild(ultrawideBtn);
     ctrl.appendChild(scrubWrap);
     ctrl.appendChild(statusEl);
@@ -1447,6 +1898,7 @@ function openSyncPreview(items) {
     let _panStartT = [];
     let _panTargetIndexes = [];
     win.addEventListener("mousedown", (e) => {
+        _suppressClick = false;
         // 中键，或 Ctrl+左键：进入平移模式
         const wantPan = (e.button === 1) || (e.button === 0 && e.ctrlKey);
         if (!wantPan) return;
@@ -1454,7 +1906,7 @@ function openSyncPreview(items) {
         e.stopPropagation();
         const targetIndex = players.findIndex((p) => p.holder.contains(e.target));
         if (targetIndex < 0) return;
-        _suppressClick = true;
+        _suppressClick = e.button === 0;
         _panning = true;
         _panStartX = e.clientX; _panStartY = e.clientY;
         _panStartT = _holderT.map(t => ({ x: t.x, y: t.y }));
@@ -1695,7 +2147,10 @@ async function previewNodes(nodes) {
     const items = [];
     for (const n of nodes || []) {
         const video = getVideoFromNode(n);
-        if (video) items.push(video);
+        if (video) {
+            video._isOriginal = isVideoLoaderNode(n); // 加载器 → 原视频
+            items.push(video);
+        }
         else {
             try {
                 items.push(...await getImagesFromNode(n));
@@ -1713,6 +2168,8 @@ async function previewNodes(nodes) {
         console.warn("[小珠光同步预览] 选中的节点中没有可预览的视频或图片");
         return false;
     }
+    // 排序：视频加载器产出的原视频放最左，其余（新视频）保持原顺序排在后面
+    items.sort((a, b) => (a._isOriginal ? 0 : 1) - (b._isOriginal ? 0 : 1));
     if (items.some((item) => item.kind === "image")) {
         const images = items.filter((item) => item.kind === "image");
         if (images.length !== items.length) {

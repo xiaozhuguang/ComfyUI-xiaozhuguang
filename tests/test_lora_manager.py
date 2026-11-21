@@ -67,6 +67,35 @@ class LoraManagerTests(unittest.TestCase):
         self.assertEqual(self.m.read_library("default")["items"], {})
         self.assertFalse(thumbnail.exists())
 
+    def test_delete_thumbnail_preserves_models_and_metadata(self):
+        other_model = self.models / "other.safetensors"
+        other_model.write_bytes(b"other")
+        other = next(item for item in self.m.scan("default")["items"] if item["path"] == other_model.name)
+        key = self.item["id"]
+        data = self.m.read_library("default")
+        metadata = {"notes": "保留备注", "tags": "测试", "triggers": "trigger", "favorite": True, "strength_model": 0.7}
+        data["items"][key].update(metadata, thumbnail=True)
+        data["items"][other["id"]]["thumbnail"] = True
+        self.m.write_library("default", data)
+        directory = self.m.library_dir("default") / "thumbnails"
+        directory.mkdir()
+        thumbnail = directory / (key + ".png")
+        other_thumbnail = directory / (other["id"] + ".png")
+        thumbnail.write_bytes(b"preview")
+        other_thumbnail.write_bytes(b"other preview")
+
+        request = types.SimpleNamespace(match_info={"id": key})
+        with patch.object(self.m, "request_user", return_value="default"):
+            for _ in range(2):
+                self.assertEqual(asyncio.run(self.m.delete_thumbnail(request)).status, 200)
+
+        self.assertFalse(thumbnail.exists())
+        self.assertEqual(other_thumbnail.read_bytes(), b"other preview")
+        self.assertEqual((self.models / self.item["path"]).read_bytes(), b"test")
+        saved = self.m.read_library("default")["items"]
+        self.assertEqual(saved[key], {"root": self.item["root"], "path": self.item["path"], **metadata})
+        self.assertTrue(saved[other["id"]]["thumbnail"])
+
     def test_missing_thumbnail_clears_only_thumbnail_flag(self):
         key = self.item["id"]
         request = types.SimpleNamespace(match_info={"id": key})

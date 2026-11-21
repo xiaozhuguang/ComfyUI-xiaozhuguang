@@ -15,11 +15,26 @@ export function useSchedulerCache(prompt, nodeId, batch) {
     for (const name of ["图像", "音频", "帧率", "遮罩"]) delete entry.inputs[name];
 }
 
-export function prepareMergePrompt(prompt, nodeId, downstreamIds) {
+export function directVideoSaverIds(output, nodeId) {
+    return Object.entries(output).filter(([, entry]) => {
+        const image = entry.inputs?.["图像"];
+        return ["XiaozhuguangVideoCombine", "XiaozhuguangVideoSaveDaVinci"].includes(entry.class_type)
+            && Array.isArray(image) && String(image[0]) === String(nodeId) && image[1] === 0;
+    }).map(([id]) => id);
+}
+
+export function prepareMergePrompt(prompt, nodeId, downstreamIds, disk = false) {
     const out = prompt.output;
     const id = String(nodeId);
     const merge = out?.[id];
     if (!merge?.inputs) throw new Error("提交中缺少合并节点");
+    if (disk) {
+        const saver = out[directVideoSaverIds(out, id)[0]];
+        const prefix = saver?.inputs?.["文件名前缀"];
+        if (typeof prefix === "string" || Array.isArray(prefix)) {
+            merge.inputs["文件名前缀"] = prefix;
+        }
+    }
     const fpsLink = merge.inputs["帧率"];
     const sameLink = value => Array.isArray(fpsLink) && Array.isArray(value)
         && String(value[0]) === String(fpsLink[0]) && value[1] === fpsLink[1];

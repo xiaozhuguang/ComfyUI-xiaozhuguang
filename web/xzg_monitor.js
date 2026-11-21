@@ -530,7 +530,8 @@ let _onRunChange = null;
 // 曲线记录保存到浏览器本机 IndexedDB，不写入 localStorage、云端或配置备份。
 let _runRecordingEnabled = true;
 let _activeRunMetrics = null;
-const XZG_RUN_METRICS_TAIL_MS = 2000; // 工作流结束后继续记录 2 秒资源释放过程，不计入运行时长
+const XZG_RUN_METRICS_TAIL_MS = 2000;
+const XZG_SCHEDULER_RUN_GAP_MS = 10000;
 let _runMetricsTailTimer = null;
 let _lastRunMetrics = null;
 let _monitorGpus = [];
@@ -912,13 +913,29 @@ function displayNodeId(id) {
 
 function startRun() {
   if (_run.running) return;
-  if (_activeRunMetrics) finalizeActiveRunMetrics(_activeRunMetrics.status);
+  const schedulerBatch = (app.graph?._nodes || []).some(node =>
+    node?.type === "XiaozhuguangVideoScheduler");
+  const continueSchedulerBatch = schedulerBatch && _activeRunMetrics?.schedulerBatch
+    && _activeRunMetrics.finishedAt != null
+    && Date.now() - _activeRunMetrics.finishedAt < XZG_SCHEDULER_RUN_GAP_MS;
+  if (_runMetricsTailTimer != null) clearTimeout(_runMetricsTailTimer);
+  _runMetricsTailTimer = null;
+  if (_activeRunMetrics && !continueSchedulerBatch) finalizeActiveRunMetrics(_activeRunMetrics.status);
   _run.running = true;
   _run.name = resolveWorkflowName(); // 起跑时冻结工作流名
-  _run.startTs = Date.now();
+  _run.startTs = continueSchedulerBatch ? _activeRunMetrics.startedAt : Date.now();
   _runOwnerGraph = app.graph || null;
   _currentRunNode = null;
-  if (_runRecordingEnabled) beginRunMetricsCapture(_run.startTs);
+  if (_runRecordingEnabled) {
+    if (continueSchedulerBatch) {
+      _activeRunMetrics.finishedAt = null;
+      _activeRunMetrics.status = "运行中";
+      _activeRunMetrics.schedulerBatch = true;
+    } else {
+      beginRunMetricsCapture(_run.startTs);
+      if (_activeRunMetrics) _activeRunMetrics.schedulerBatch = schedulerBatch;
+    }
+  }
   // 保持已打开的曲线窗口，并立即切到本次工作流的实时记录。
   try { _liveRunChartRefresh?.(); } catch (error) { console.warn("[小珠光] 实时曲线切换失败:", error); }
   if (_onRunChange) _onRunChange();
@@ -928,7 +945,6 @@ function stopRun(status) {
   if (!_run.running) return;
   _run.running = false;
   const end = Date.now();
-  _lastRunDuration = Math.max(0, end - _run.startTs);
   finishRunNodeInterval(end);
   _currentRunNode = null;
   if (_activeRunMetrics) {
@@ -936,11 +952,14 @@ function stopRun(status) {
     record.finishedAt = end;
     record.durationMs = Math.max(0, end - record.startedAt);
     record.status = status;
+    _lastRunDuration = record.durationMs;
+    const finalizeDelay = record.schedulerBatch ? XZG_SCHEDULER_RUN_GAP_MS : XZG_RUN_METRICS_TAIL_MS;
     _runMetricsTailTimer = setTimeout(() => {
       if (_activeRunMetrics === record) finalizeActiveRunMetrics(status, end);
-    }, XZG_RUN_METRICS_TAIL_MS);
+    }, finalizeDelay);
     try { _liveRunChartRefresh?.(); } catch (error) { console.warn("[小珠光] 实时曲线刷新失败:", error); }
   }
+  if (!_activeRunMetrics) _lastRunDuration = Math.max(0, end - _run.startTs);
   _run.startTs = 0;
   if (_onRunChange) _onRunChange();
 }
