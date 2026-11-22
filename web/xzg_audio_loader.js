@@ -2895,11 +2895,11 @@ function _createFastcutDomButton(node, viewer) {
     const btn = document.createElement("button");
     btn.title = "静默导出快剪编辑器的时间线内容并加载到当前节点";
     btn.style.cssText =
-        "position:fixed;z-index:100001;" +
+        "position:absolute;" +
         "display:inline-flex;align-items:center;gap:5px;" +
         "padding:2px 8px;font-size:12px;line-height:1;" +
         "background:transparent;border:none;" +
-        "color:#FFD700;cursor:pointer;pointer-events:auto;" +
+        "color:#FFD700;cursor:pointer;pointer-events:none;" +
         "transition:color 0.15s;opacity:0;" +
         "text-shadow:0 1px 2px rgba(0,0,0,.8);";
     btn.innerHTML = _CLAPPER_SVG + '<span>快剪</span>';
@@ -2981,9 +2981,9 @@ function _setAudioDavinciBusy(node, btn, busy) {
 
 function _createAudioLoaderAction(node, key, text, color, onClick, iconHtml = '<span style="font-size:13px;">🎬</span>') {
     const btn = document.createElement("button");
-    btn.style.cssText = "position:fixed;z-index:100001;display:inline-flex;align-items:center;gap:4px;" +
+    btn.style.cssText = "position:absolute;display:inline-flex;align-items:center;gap:4px;" +
         "padding:2px 8px;font-size:12px;line-height:1;background:transparent;border:none;" +
-        `color:${color};cursor:pointer;pointer-events:auto;opacity:0;text-shadow:0 1px 2px rgba(0,0,0,.8);`;
+        `color:${color};cursor:pointer;pointer-events:none;opacity:0;text-shadow:0 1px 2px rgba(0,0,0,.8);`;
     btn.innerHTML = `${iconHtml}<span>${text}</span>`;
     const labelSpan = btn.lastElementChild;
     document.body.appendChild(btn);
@@ -3147,6 +3147,12 @@ function _installAudioLoaderLayout(node) {
     settings.title = settingsLabel;
     settings.setAttribute("aria-label", settingsLabel);
 
+    // 把操作按钮限制在画布可视区域，避免覆盖侧栏和工作流管理器。
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;overflow:hidden;pointer-events:none;z-index:10;";
+    const buttons = [settings, ...actions.map(({ key }) => node[key])];
+    overlay.append(...buttons);
+
     const mouse = { x: -1, y: -1 };
     const onMove = (e) => {
         mouse.x = e.clientX;
@@ -3159,13 +3165,17 @@ function _installAudioLoaderLayout(node) {
             const cv = app.canvas?.canvas, ds = app.canvas?.ds;
             const npos = node.pos;
             const drawW = viewer._drawW || 0, drawH = viewer._drawH || 0;
-            if (viewer._fastcutEditorOpen || !cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
-                for (const btn of [settings, ...actions.map(({ key }) => node[key])]) {
-                    btn.style.display = "none";
-                }
+            if (viewer._fastcutEditorOpen || !cv?.parentElement || !ds || !npos || drawW <= 0 || drawH <= 0) {
+                overlay.style.display = "none";
                 return;
             }
             const rect = cv.getBoundingClientRect();
+            if (overlay.parentElement !== cv.parentElement) cv.parentElement.appendChild(overlay);
+            overlay.style.display = "";
+            overlay.style.left = rect.left + "px";
+            overlay.style.top = rect.top + "px";
+            overlay.style.width = rect.width + "px";
+            overlay.style.height = rect.height + "px";
             const scale = ds.scale || 1;
             const x0 = (npos[0] + ds.offset[0]) * scale + rect.left;
             const nodeTop = (npos[1] + ds.offset[1]) * scale + rect.top;
@@ -3196,8 +3206,8 @@ function _installAudioLoaderLayout(node) {
                 b.style.transform = `scale(${scale})`;
             };
             const place = (b, leftPx, topPx, visible) => {
-                b.style.top = topPx + "px";
-                b.style.left = Math.round(leftPx) + "px";
+                b.style.top = (topPx - rect.top) + "px";
+                b.style.left = Math.round(leftPx - rect.left) + "px";
                 b.style.opacity = visible ? "1" : "0";
                 b.style.pointerEvents = visible ? "auto" : "none";
             };
@@ -3252,6 +3262,7 @@ function _installAudioLoaderLayout(node) {
     node.onRemoved = function () {
         xzgCloseLoaderSettings(node);
         document.removeEventListener("pointermove", onMove, true);
+        overlay.remove();
         delete node._xzgAudioLayout;
         return origRemoved?.apply(this, arguments);
     };
