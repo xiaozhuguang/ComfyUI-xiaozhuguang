@@ -1,6 +1,16 @@
 const SAVE_TYPES = new Set(["XiaozhuguangVideoCombine", "XiaozhuguangVideoSaveDaVinci"]);
 const NIL_WORKFLOW_ID = "00000000-0000-0000-0000-000000000000";
 
+function withVideoTiming(info) {
+    if (!info?.metadata) return info;
+    // Disk batch merge supplies the probed timing in metadata.
+    return {
+        ...info,
+        frame_count: info.frame_count > 0 ? info.frame_count : info.metadata.frame_count,
+        frame_rate: info.frame_rate > 0 ? info.frame_rate : info.metadata.fps,
+    };
+}
+
 export function createVideoOutputCache(storage = globalThis.localStorage) {
     const outputs = new Map();
     const jobs = new Map();
@@ -63,13 +73,14 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
         publish(graph, nodeIds, info) {
             const owner = identity(graph);
             if (!owner || !info?.filename) return;
+            const saved = withVideoTiming(info);
             for (const nodeId of nodeIds) {
                 const outputKey = key(owner, nodeId);
                 received.set(outputKey, ++eventSequence);
-                save(owner, outputKey, info);
+                save(owner, outputKey, saved);
                 for (const [node, apply] of subscribers) {
                     if (identity(node.graph) === owner && String(node.id) === String(nodeId)) {
-                        apply({video: [info]});
+                        apply({video: [saved]});
                     }
                 }
             }
@@ -80,12 +91,12 @@ export function createVideoOutputCache(storage = globalThis.localStorage) {
             const outputKey = key(owner, nodeId);
             if (outputs.has(outputKey)) return outputs.get(outputKey);
             if (!owner.startsWith("workflow:")) return null;
-            try { return JSON.parse(storage?.getItem(storeKey(outputKey)) || "null"); } catch { return null; }
+            try { return withVideoTiming(JSON.parse(storage?.getItem(storeKey(outputKey)) || "null")); } catch { return null; }
         },
         restoreCopy(graph, nodeId, info) {
             const owner = identity(graph);
             if (!owner || typeof info?.filename !== "string" || !info.filename) return;
-            save(owner, key(owner, nodeId), info);
+            save(owner, key(owner, nodeId), withVideoTiming(info));
         },
         subscribe(node, apply) {
             subscribers.set(node, apply);

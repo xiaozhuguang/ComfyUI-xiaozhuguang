@@ -53,17 +53,17 @@ test("preparation keeps actual image/audio/fps/mask input dependencies", () => {
     assert.equal(prompt.output[158].inputs.缓存批次, "batch-a");
 });
 
-test("segment submission uses cache and removes the upstream execution branch", () => {
+test("segment submission overwrites a stale index and removes the upstream execution branch", () => {
     const prompt = {output: {
         161: {inputs: {}},
         158: {inputs: {图像: ["161", 0], 音频: ["161", 1], 帧率: ["161", 2], 遮罩: ["161", 3], 当前段: 1}},
         133: {inputs: {图像: ["158", 0]}},
     }};
-    useSchedulerCache(prompt, 158, "batch-a");
+    useSchedulerCache(prompt, 158, "batch-a", 5);
     prune(prompt, new Set(["133"]));
     assert.deepEqual(Object.keys(prompt.output).sort(), ["133", "158"]);
-    assert.deepEqual(prompt.output[158].inputs, {当前段: 1, 缓存批次: "batch-a"});
-    assert.throws(() => useSchedulerCache(prompt, 158, ""));
+    assert.deepEqual(prompt.output[158].inputs, {当前段: 5, 缓存批次: "batch-a"});
+    assert.throws(() => useSchedulerCache(prompt, 158, "", 5));
 });
 
 test("final save takes processed fps from merge without rerunning interpolation", () => {

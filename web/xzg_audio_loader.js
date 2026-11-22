@@ -1698,7 +1698,7 @@ async function uploadAudioFiles(files) {
     return uploaded;
 }
 
-async function refreshAudioCombo(audioWidget, selectName, nodeType = "XiaozhuguangAudioLoader", options = {}) {
+async function refreshAudioCombo(audioWidget, selectName, nodeType, options = {}) {
     const { requireExact = false } = options;
     try {
         const resp = await api.fetchApi("/object_info/" + nodeType);
@@ -2522,7 +2522,7 @@ function bindAudioLoaderInteractions(node) {
             uploaded.forEach(name => _xzgWaveformCacheInvalidate(name));
             const audioWidget = node.widgets?.find(w => w.name === "音频");
             if (audioWidget) {
-                await refreshAudioCombo(audioWidget, uploaded[0]);
+                await refreshAudioCombo(audioWidget, uploaded[0], node.type);
                 loadWaveformForFile(audioWidget.value);
             }
         }
@@ -3259,6 +3259,19 @@ function _installAudioLoaderLayout(node) {
 
 app.registerExtension({
     name: "xiaozhuguang.audio_loader",
+    beforeConfigureGraph(graphData) {
+        // 化神级沿用旧版的音频控件和端口顺序，直接迁移节点类型即可。
+        const subgraphs = graphData?.definitions?.subgraphs ?? [];
+        for (const graph of [graphData, ...subgraphs]) {
+            for (const node of graph?.nodes ?? []) {
+                if (node.type !== "XiaozhuguangAudioLoader") continue;
+                node.type = XZG_AUDIO_DAVINCI_TYPE;
+                if (node.properties?.["Node name for S&R"] === "XiaozhuguangAudioLoader") {
+                    node.properties["Node name for S&R"] = XZG_AUDIO_DAVINCI_TYPE;
+                }
+            }
+        }
+    },
     setup() {
         // canvas 就绪后安装 processMouseDown hook
         _xzgPatchProcessMouseDown();

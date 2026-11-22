@@ -1413,6 +1413,14 @@ class _LegacyVideoSave(XiaozhuguangVideoCombine):
     DEPRECATED = True
 
 
+class _LegacyAudioLoader(XiaozhuguangAudioLoader):
+    DEPRECATED = True
+
+
+class _LegacyAudioSave(XiaozhuguangAudioSave):
+    DEPRECATED = True
+
+
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangAPITranslate": XiaozhuguangAPITranslate,
     "XiaozhuguangPointsEditor": XiaozhuguangPointsEditor,
@@ -1434,7 +1442,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangVideoBatchMerge": XiaozhuguangVideoBatchMerge,
     "XiaozhuguangVideoLoaderLM": _LegacyVideoLoaderLM,
     "XiaozhuguangVideoLoaderDaVinci": XiaozhuguangVideoLoaderDaVinci,
-    "XiaozhuguangAudioLoader": XiaozhuguangAudioLoader,
+    "XiaozhuguangAudioLoader": _LegacyAudioLoader,
     "XiaozhuguangAudioLoaderDaVinci": XiaozhuguangAudioLoaderDaVinci,
     "XiaozhuguangVideoInfoReader": XiaozhuguangVideoInfoReader,
     "XiaozhuguangVideoScheduler": XiaozhuguangVideoScheduler,
@@ -1445,7 +1453,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangImageSave": XiaozhuguangImageSave,
     "XiaozhuguangImageSaveCustom": XiaozhuguangImageSaveCustom,
     "XiaozhuguangAudioSaveDaVinci": XiaozhuguangAudioSaveDaVinci,
-    "XiaozhuguangAudioSave": XiaozhuguangAudioSave,
+    "XiaozhuguangAudioSave": _LegacyAudioSave,
     "XiaozhuguangInputLazyCheck": XiaozhuguangInputLazyCheck,
     "XiaozhuguangDataIsEmpty": XiaozhuguangDataIsEmpty,
     "XiaozhuguangBypassCheck": XiaozhuguangBypassCheck,

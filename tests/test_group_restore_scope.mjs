@@ -7,7 +7,9 @@ const source = fs.readFileSync(new URL('../web/xzg_group.js', import.meta.url), 
 function harness() {
     const root = { extra: {}, _nodes: [] };
     const app = { graph: root, canvas: { graph: root }, registerExtension() {} };
+    const frames = [];
     const context = vm.createContext({ app, window: {}, console: { log() {} },
+        requestAnimationFrame(callback) { frames.push(callback); },
         localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} } });
     vm.runInContext(source.replace(/^import .*;\r?\n/gm, '') + '\nglobalThis.group = XZGGroup;', context);
     const group = context.group;
@@ -15,9 +17,32 @@ function harness() {
     group.applyBypassStates = () => {};
     group.calcBounds = () => ({ x: 0, y: 0, w: 300, h: 200 });
     group._installGroupGraphHooks = () => {};
-    return { root, app, group };
+    return { root, app, group, frames };
 }
 const backup = () => ({ id: 'parent', title: 'Main group', nodeIds: [1], bounds: { x: 10, y: 20, w: 600, h: 400 } });
+
+test('plain group keeps its screen bounds in sync when the canvas background skips a frame', () => {
+    const { app, group, frames } = harness();
+    const ds = app.canvas.ds = { scale: 0.56, offset: [200, -80] };
+    app.canvas.canvas = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 900 }) };
+    group._switchGraph = () => {};
+    group._setupImmediateSync = () => {};
+    group.syncNodeMembership = () => {};
+    group.updateGroupStyle = () => {};
+    const style = {};
+    group.groups = { parent: backup() };
+    group.groupEls = { parent: { style, _xzgRefs: {}, querySelector: () => null } };
+    group.updatePositions();
+    assert.equal(style.width, 600 * 0.56 + 'px');
+
+    group.startSyncLoop();
+    ds.scale = 0.83;
+    ds.offset[0] = 100;
+    frames.shift()();
+    assert.equal(style.width, 600 * 0.83 + 'px');
+    assert.equal(style.left, 110 * 0.83 + 'px');
+    assert.deepEqual(group.groups.parent.bounds, backup().bounds);
+});
 
 test('entering a subgraph does not restore parent groups from any node backup', () => {
     for (const field of ['_xzgGroupData', '_xzgGroup', 'properties']) {

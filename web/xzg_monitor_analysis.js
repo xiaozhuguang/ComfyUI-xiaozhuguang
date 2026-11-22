@@ -109,29 +109,47 @@ export function showRunAnalysisPicker(records, selectedId, display, onRename = n
   document.getElementById("xzg-analysis-picker")?.remove();
   const dialog = document.createElement("dialog");
   dialog.id = "xzg-analysis-picker";
-  dialog.style.cssText = "width:min(620px,calc(100vw - 32px));max-height:80vh;padding:22px;border:1px solid #62604b;border-radius:12px;background:#20242d;color:#eee;font:14px/1.6 'Segoe UI',system-ui,sans-serif;z-index:100005;color-scheme:dark;";
+  dialog.style.cssText = "position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;box-sizing:border-box;margin:0;padding:clamp(12px,2vw,24px);border:0;border-radius:0;background:#20242d;color:#eee;font:14px/1.6 'Segoe UI',system-ui,sans-serif;z-index:100005;color-scheme:dark;";
+  const content = document.createElement("div");
+  content.style.cssText = "display:flex;flex-direction:column;height:100%;";
+  const header = document.createElement("div");
+  header.style.cssText = "display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:8px 16px;";
   const title = document.createElement("h3");
   title.textContent = "选择历史记录 · 图表分析";
-  title.style.cssText = "margin:0 0 8px;color:#FFD700;";
+  title.style.cssText = "margin:0;color:#FFD700;";
   const note = document.createElement("p");
   note.textContent = "勾选一条生成单次分析，勾选多条生成对比。资源指标跟随胶囊启用项。";
-  note.style.cssText = "color:#abb4c3;margin:0 0 12px;";
+  note.style.cssText = "color:#abb4c3;margin:8px 0 12px;";
   const list = document.createElement("div");
-  list.style.cssText = "max-height:44vh;overflow:auto;display:grid;gap:6px;";
+  list.style.cssText = "flex:1;min-height:0;overflow:auto;display:grid;align-content:start;gap:6px;";
   // 默认全选全部历史记录（selectedId 仅用于界面定位，不影响勾选状态）
   const selected = new Set(records.map((record) => record.id));
   const checks = [];
   for (const record of records) {
     const label = document.createElement("div");
-    label.style.cssText = "display:flex;align-items:center;gap:10px;padding:9px;border-radius:5px;background:#2a303b;cursor:pointer;white-space:nowrap;min-width:0;";
+    label.style.cssText = "display:flex;align-items:center;gap:8px;padding:9px;border-radius:5px;background:#2a303b;min-width:0;";
     const check = document.createElement("input");
     check.type = "checkbox";
     check.checked = selected.has(record.id);
     check.style.accentColor = "#FFD700";
+    const timestamp = document.createElement("time");
+    const startedAt = new Date(record.startedAt ?? NaN);
+    const hasStartTime = Number.isFinite(startedAt.getTime());
+    if (hasStartTime) timestamp.dateTime = startedAt.toISOString();
+    timestamp.textContent = hasStartTime ? startedAt.toLocaleString() : "时间未知";
+    timestamp.style.cssText = "flex:none;width:19ch;color:#abb4c3;font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;";
+    const details = document.createElement("label");
+    check.id = `xzg-analysis-check-${checks.length}`;
+    details.htmlFor = check.id;
+    details.style.cssText = "display:flex;align-items:baseline;flex-wrap:wrap;column-gap:8px;min-width:0;flex:1;cursor:pointer;";
     const text = document.createElement("span");
     const seconds = Math.max(0, Number(record.durationMs ?? record.samples?.at(-1)?.[0]) || 0) / 1000;
-    text.textContent = `${record.workflowName || "未命名工作流"} · ${new Date(record.startedAt).toLocaleString()} · ${seconds.toFixed(1)} 秒`;
-    text.style.cssText = "min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    text.title = text.textContent = record.workflowName || "未命名工作流";
+    text.style.cssText = "min-width:0;flex:1 1 8ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    const duration = document.createElement("span");
+    duration.textContent = `${seconds.toFixed(1)} 秒`;
+    duration.style.cssText = "color:#abb4c3;white-space:nowrap;font-size:12px;";
+    details.append(text, duration);
     check.addEventListener("change", () => {
       if (check.checked) selected.add(record.id); else selected.delete(record.id);
       generate.disabled = selected.size === 0;
@@ -145,15 +163,15 @@ export function showRunAnalysisPicker(records, selectedId, display, onRename = n
       const value = await showRenameDialog(record.workflowName || "未命名工作流");
       if (value == null) return;
       record.workflowName = value || "未命名工作流";
-      text.textContent = `${record.workflowName} · ${new Date(record.startedAt).toLocaleString()} · ${seconds.toFixed(1)} 秒`;
+      text.title = text.textContent = record.workflowName;
       try { await onRename?.(record); } catch (error) { console.warn("[小珠光] 运行记录重命名保存失败", error); }
     });
-    label.append(check, text, rename);
+    label.append(check, timestamp, details, rename);
     list.appendChild(label);
   }
   if (!records.length) list.textContent = "暂无历史记录，完成一次工作流运行后即可生成分析。";
   const actions = document.createElement("div");
-  actions.style.cssText = "display:flex;gap:8px;align-items:center;margin-top:16px;";
+  actions.style.cssText = "display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;align-items:center;margin-left:auto;";
   const makeButton = (text, kind = "default") => {
     const button = document.createElement("button");
     button.type = "button";
@@ -204,7 +222,9 @@ export function showRunAnalysisPicker(records, selectedId, display, onRename = n
   dialog.addEventListener("close", () => dialog.remove());
   dialog.addEventListener("pointerdown", (event) => event.stopPropagation());
   actions.append(all, cancel, generate);
-  dialog.append(title, note, list, actions);
+  header.append(title, actions);
+  content.append(header, note, list);
+  dialog.appendChild(content);
   document.body.appendChild(dialog);
   dialog.showModal();
 }

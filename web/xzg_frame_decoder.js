@@ -200,8 +200,13 @@ class VideoDecoderInstance {
         this._height = await vt.getDisplayHeight();
 
         let dur = await vt.getDurationFromMetadata();
-        if (!dur || dur <= 0) {
-            try { dur = await vt.computeDuration(); } catch (_) {}
+        // MP4 metadata can extend past the last video sample. Use the indexed
+        // sample end so the preview does not count that gap as another frame.
+        if (!dur || dur <= 0 || (await this._input.getFormat()) instanceof mb.Mp4InputFormat) {
+            try {
+                const sampleEnd = await vt.computeDuration();
+                if (sampleEnd > 0) dur = sampleEnd;
+            } catch (_) {}
         }
         this._duration = dur || 0;
 

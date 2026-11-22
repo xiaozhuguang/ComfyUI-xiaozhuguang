@@ -7,10 +7,11 @@ export function prepareSchedulerPrompt(prompt, nodeId, batch) {
     entry.inputs["缓存批次"] = batch;
 }
 
-export function useSchedulerCache(prompt, nodeId, batch) {
+export function useSchedulerCache(prompt, nodeId, batch, segmentIndex) {
     const entry = prompt.output?.[String(nodeId)];
     if (!entry) throw new Error("提交中缺少分段节点");
     if (!batch) throw new Error("缺少本轮素材缓存标识，请重新运行工作流");
+    entry.inputs["当前段"] = segmentIndex;
     entry.inputs["缓存批次"] = batch;
     for (const name of ["图像", "音频", "帧率", "遮罩"]) delete entry.inputs[name];
 }

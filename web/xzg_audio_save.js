@@ -1246,6 +1246,22 @@ function _xzgPatchAudioSaveModePointer() {
 
 app.registerExtension({
     name: "xiaozhuguang.audio_save",
+    beforeConfigureGraph(graphData) {
+        const subgraphs = graphData?.definitions?.subgraphs ?? [];
+        for (const graph of [graphData, ...subgraphs]) {
+            for (const node of graph?.nodes ?? []) {
+                if (node.type !== "XiaozhuguangAudioSave") continue;
+                node.type = "XiaozhuguangAudioSaveDaVinci";
+                if (node.properties?.["Node name for S&R"] === "XiaozhuguangAudioSave") {
+                    node.properties["Node name for S&R"] = node.type;
+                }
+                if (Array.isArray(node.widgets_values) && node.widgets_values.length > 5) {
+                    // 化神级在音量之后、已保存的波形之前增加了七个控件。
+                    node.widgets_values.splice(5, 0, false, false, true, "", "xzg-audio", false, false);
+                }
+            }
+        }
+    },
     init() {
         // 记录「发起执行的图」：点击 Run 走 app.queuePrompt，此刻 app.graph 即发起图。
         // 包 app.queuePrompt 而非 api.queuePrompt（与视频保存一致，避免被其它模块临时包装影响）。
@@ -2079,7 +2095,7 @@ function _xzgFindAudioLoaders() {
     const loaders = [];
     const nodes = app.graph?.nodes || [];
     for (const n of nodes) {
-        if (n && n.type === "XiaozhuguangAudioLoader") {
+        if (n?.type === "XiaozhuguangAudioLoader" || n?.type === "XiaozhuguangAudioLoaderDaVinci") {
             loaders.push(n);
         }
     }
@@ -2105,7 +2121,7 @@ function _xzgSendToAudioLoader(annotatedName) {
     const loaders = _xzgFindAudioLoaders();
 
     if (loaders.length === 0) {
-        const msg = "未找到小珠光音频加载器节点，请先添加一个";
+        const msg = "未找到小珠光音频加载器节点，请先添加「小珠光音频加载器-化神级」";
         console.warn("[小珠光音频保存] " + msg);
         alert(msg);
         return;
@@ -2387,7 +2403,8 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
     const syncBtn = () => {
         const visible = xzgPreviewButtonVisible(node, favorite ? "favorite" : "quickcut_send");
         btn.style.display = visible ? "inline-flex" : "none";
-        if (!visible) return;
+        // 「设置」仍以发送按钮为定位基准，即使发送按钮已关闭。
+        if (!visible && favorite) return;
         try {
             const canvas = app?.canvas;
             const cv = canvas?.canvas;
@@ -2644,7 +2661,7 @@ function _createAudioSaveOutputButton(node, waveformViewer) {
         btn.style.top = top + "px";
         btn.style.opacity = anchor.matches(":hover") || btn.matches(":hover") ? "1" : anchor.style.opacity;
         // 设置入口始终可用，发送按钮关闭后仍可重新打开显示选项。
-        if (sendHidden) btn.style.opacity = "1";
+        if (!xzgPreviewButtonVisible(node, "quickcut_send")) btn.style.opacity = "1";
         btn.style.pointerEvents = btn.style.opacity === "0" ? "none" : "auto";
     };
 

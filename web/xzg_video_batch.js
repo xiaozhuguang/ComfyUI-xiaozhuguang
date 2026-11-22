@@ -2834,7 +2834,7 @@ async function runBatch(node, segments, ui, abortFlag, session = null, selected 
                         ? (attempt === 1 ? downIds : new Set(pendingIds))
                         : downIds;
                     await runOnce(segDownIds, idBox, collected, schedNode ? prompt => {
-                        useSchedulerCache(prompt, schedNode.id, session.cacheBatch);
+                        useSchedulerCache(prompt, schedNode.id, session.cacheBatch, i);
                         // Remove the now-unneeded upstream nodes from the execution graph.
                         filterPromptOutput(prompt, segDownIds);
                     } : null, session);

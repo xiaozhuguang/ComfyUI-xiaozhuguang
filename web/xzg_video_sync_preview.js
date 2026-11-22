@@ -1386,13 +1386,12 @@ function openSyncPreview(items) {
         if (_thumbTimer) { clearInterval(_thumbTimer); _thumbTimer = null; }
     };
 
-    // 临时名称：原视频（加载器）默认“原视频”，其余依次“新视频1、新视频2…”；
+    // 多视频对比以最左侧为原视频，其余按显示顺序编号。
     // 右键缩略图或并排视图标题栏可重命名（仅本次对比窗口有效）
-    let _newVideoIndex = 0;
     players.forEach((p, i) => {
-        if (!p.label) {
-            p.label = p.isOriginal ? "原视频" : `新视频${++_newVideoIndex}`;
-        }
+        p.label = players.length === 1
+            ? (p.isOriginal ? "原视频" : "新视频1")
+            : (i === 0 ? "原视频" : `新视频${i}`);
         if (p.labelEl) p.labelEl.textContent = p.label;
     });
     const _updateWipeLabels = () => {
@@ -2168,7 +2167,7 @@ async function previewNodes(nodes) {
         console.warn("[小珠光同步预览] 选中的节点中没有可预览的视频或图片");
         return false;
     }
-    // 排序：视频加载器产出的原视频放最左，其余（新视频）保持原顺序排在后面
+    // 视频加载器的预览优先显示，同类节点保持原顺序。
     items.sort((a, b) => (a._isOriginal ? 0 : 1) - (b._isOriginal ? 0 : 1));
     if (items.some((item) => item.kind === "image")) {
         const images = items.filter((item) => item.kind === "image");

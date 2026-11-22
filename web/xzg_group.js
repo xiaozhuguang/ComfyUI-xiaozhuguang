@@ -854,16 +854,14 @@ const XZGGroup = {
             if (self._needRestore && self._pendingGroups && XZGGroup._groupGraph()?._nodes?.length) {
                 self.restoreGroups();
             }
-            // 几何同步：updatePositions 原本只在 onDrawBackground（canvas 渲染帧）内调用，
-            // 让编组框DOM与背景、节点在同一帧、同一 scale 更新，消除缩放不同步。
-            // 但新版 ComfyUI 前端画布静止时不再重绘，onDrawBackground 不被调用，
-            // 边框特效动画随之冻结（表现为必须晃动画布才有动画）。
-            // 故本循环检测到有编组开启特效时逐帧补调 updatePositions 驱动动画，
-            // 无特效时零额外开销。
-            // 有特效时需逐帧驱动动画颜色。但画布正在缩放/平移（_canvasMoving）时，
-            // 位置更新必须严格由 canvas 绘制帧（onDrawBackground→updatePositions）负责，
-            // 否则 rAF 抢跑会与节点错位（缩放不同步）；静止时才由 rAF 驱动动画。
-            if (self._positionsPending || (self._hasActiveEffect() && !self._canvasMoving)) { self.updatePositions(); self._positionsPending = false; }
+            // 优先由 onDrawBackground 同步几何；背景未重绘时补上视口变化。
+            const ds = app.canvas?.ds;
+            const last = self._positionView;
+            const viewChanged = ds && (!last || last.ds !== ds || last.scale !== ds.scale ||
+                last.x !== ds.offset[0] || last.y !== ds.offset[1]) && Object.keys(self.groupEls).length > 0;
+            if (self._positionsPending || viewChanged || (self._hasActiveEffect() && !self._canvasMoving)) {
+                self.updatePositions();
+            }
             // 画布移动隐藏/渐入检测
             self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
@@ -971,6 +969,7 @@ const XZGGroup = {
         const scale = c.ds.scale || 1;
         const ox = c.ds.offset[0] || 0;
         const oy = c.ds.offset[1] || 0;
+        const view = { ds: c.ds, scale: c.ds.scale, x: c.ds.offset[0], y: c.ds.offset[1] };
         const canvasRect = c.canvas.getBoundingClientRect();
         const mouseX = this._lastMouseX - canvasRect.left;
         const mouseY = this._lastMouseY - canvasRect.top;
@@ -1261,6 +1260,8 @@ const XZGGroup = {
             this._lastBgHash = bgHash;
             XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);
         }
+        this._positionsPending = false;
+        this._positionView = view;
     },
 
     /* ── 画布移动检测：移动时隐藏编组，停止后渐入（按编组独立控制） ── */
