@@ -1,6 +1,5 @@
 import { api } from "../../scripts/api.js";
 import { xzgT } from "./xzg_i18n.js";
-import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 const endpoint = "/xzg/media-library";
 const thumbnailCacheName = "xzg-media-library-thumbnails-v1";
@@ -71,7 +70,6 @@ export function showMediaLibrary({ addImages, alertUser, confirmUser, kind = "im
     }
     const isVideo = kind === "video";
     const isAudio = kind === "audio";
-    const geometryKey = kind === "image" ? "xzg_media_library_geometry" : `xzg_${kind}_media_library_geometry`;
     const request = (path = "", options = {}) => mediaRequest(path, options, kind);
     const url = path => mediaUrl(path, kind);
     const ALL_FOLDER = "__all__";
@@ -110,90 +108,21 @@ export function showMediaLibrary({ addImages, alertUser, confirmUser, kind = "im
     const overlay = document.createElement("div");
     overlay.className = "xzg-media-library-surface";
     overlay.dataset.xzgMediaLibrary = "1";
-    overlay.style.cssText = "position:fixed;inset:0;z-index:200000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:200000;display:flex;";
     const dialog = document.createElement("div");
     dialog.tabIndex = -1;
-    // 初始以绝对定位居中显示，之后可由标题栏拖动、右下角手柄缩放。
-    dialog.style.cssText = "position:absolute;left:50%;top:50%;width:1200px;height:800px;max-width:calc(100vw - 40px);max-height:calc(100vh - 40px);min-width:560px;min-height:360px;margin:0;transform:translate(-50%,-50%);display:flex;flex-direction:column;background:var(--comfy-menu-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:8px;overflow:hidden;box-sizing:border-box;";
+    dialog.style.cssText = "flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--comfy-menu-bg);color:var(--input-text);overflow:hidden;";
     dialog.addEventListener("click", event => event.stopPropagation());
-    let geometryChanged = false;
-    const saveGeometry = () => {
-        geometryChanged = true;
-        const rect = dialog.getBoundingClientRect();
-        cloudSave(geometryKey, { width: rect.width, height: rect.height, x: rect.left, y: rect.top });
-    };
 
     const header = document.createElement("div");
-    header.style.cssText = "display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border-color);cursor:move;user-select:none;touch-action:none;";
-    header.title = xzgT("拖动移动窗口", "Drag to move the window");
-    // 标题栏拖动：移动 dialog 窗口位置
-    let drag = null;
-    const onHeaderDown = (event) => {
-        if (event.button !== 0 || event.target.closest("input,button")) return;
-        const rect = dialog.getBoundingClientRect();
-        drag = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
-        dialog.style.left = `${rect.left}px`;
-        dialog.style.top = `${rect.top}px`;
-        dialog.style.transform = "none";
-        header.setPointerCapture(event.pointerId);
-        event.preventDefault();
-        event.stopPropagation();
-    };
-    const onHeaderMove = (event) => {
-        if (!drag) return;
-        const left = Math.max(0, Math.min(window.innerWidth - dialog.offsetWidth, drag.left + event.clientX - drag.x));
-        const top = Math.max(0, Math.min(window.innerHeight - 32, drag.top + event.clientY - drag.y));
-        dialog.style.left = `${left}px`;
-        dialog.style.top = `${top}px`;
-        event.stopPropagation();
-    };
-    const onHeaderUp = () => { if (drag) saveGeometry(); drag = null; };
-    header.addEventListener("pointerdown", onHeaderDown);
-    header.addEventListener("pointermove", onHeaderMove);
-    header.addEventListener("pointerup", onHeaderUp);
-    header.addEventListener("pointercancel", onHeaderUp);
-
-    // 右下角缩放手柄：拖动改变窗口大小
-    const resizeHandle = document.createElement("div");
-    resizeHandle.title = xzgT("拖动调整窗口大小", "Drag to resize the window");
-    resizeHandle.style.cssText = "position:absolute;right:0;bottom:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;z-index:5;";
-    resizeHandle.style.background = "linear-gradient(135deg,transparent 48%,var(--border-color) 48%,var(--border-color) 55%,transparent 55%)";
-    let resize = null;
-    const onResizeDown = (event) => {
-        if (event.button !== 0) return;
-        const rect = dialog.getBoundingClientRect();
-        dialog.style.left = `${rect.left}px`;
-        dialog.style.top = `${rect.top}px`;
-        resize = { x: event.clientX, y: event.clientY, w: dialog.offsetWidth, h: dialog.offsetHeight };
-        dialog.style.transform = "none";
-        resizeHandle.setPointerCapture(event.pointerId);
-        event.preventDefault();
-        event.stopPropagation();
-    };
-    const onResizeMove = (event) => {
-        if (!resize) return;
-        const minW = 560, minH = 360;
-        const w = Math.max(minW, Math.min(window.innerWidth - 40, resize.w + event.clientX - resize.x));
-        const h = Math.max(minH, Math.min(window.innerHeight - 40, resize.h + event.clientY - resize.y));
-        dialog.style.width = `${w}px`;
-        dialog.style.height = `${h}px`;
-        event.stopPropagation();
-    };
-    const onResizeUp = () => { if (resize) saveGeometry(); resize = null; };
-    resizeHandle.addEventListener("pointerdown", onResizeDown);
-    resizeHandle.addEventListener("pointermove", onResizeMove);
-    resizeHandle.addEventListener("pointerup", onResizeUp);
-    resizeHandle.addEventListener("pointercancel", onResizeUp);
-    dialog.appendChild(resizeHandle);
-
+    header.style.cssText = "display:flex;flex:none;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border-color);user-select:none;";
     const title = document.createElement("strong");
     title.textContent = isAudio ? xzgT("资源媒体库 · 音频", "Media library · Audio") : isVideo ? xzgT("资源媒体库 · 视频", "Media library · Videos") : xzgT("资源媒体库 · 图片", "Media library · Images");
     title.style.cssText = "font-size:15px;flex:1;";
     const search = document.createElement("input");
     search.placeholder = isAudio ? xzgT("搜索音频…", "Search audio…") : isVideo ? xzgT("搜索视频…", "Search videos…") : xzgT("搜索图片…", "Search images…");
-    search.style.cssText = "width:180px;padding:6px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;font-size:14px;";
+    search.style.cssText = "width:180px;min-width:0;padding:6px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;font-size:14px;";
     const closeLibrary = () => {
-        saveGeometry();
         closeContextMenu();
         window.removeEventListener("keydown", onLibraryKeyDown, true);
         window.removeEventListener("keyup", onLibraryKeyUp, true);
@@ -210,17 +139,17 @@ export function showMediaLibrary({ addImages, alertUser, confirmUser, kind = "im
     const body = document.createElement("div");
     body.style.cssText = "flex:1;display:flex;min-height:0;";
     const sidebar = document.createElement("div");
-    sidebar.style.cssText = "width:168px;flex:0 0 168px;overflow:auto;padding:6px;border-right:1px solid var(--border-color);display:flex;flex-direction:column;gap:2px;";
+    sidebar.style.cssText = "flex:0 0 clamp(132px, 32vw, 280px);box-sizing:border-box;overflow:auto;padding:6px;border-right:1px solid var(--border-color);display:flex;flex-direction:column;gap:2px;";
 
     const grid = document.createElement("div");
-    grid.style.cssText = "flex:1;overflow:auto;padding:0;display:block;user-select:none;scrollbarGutter:stable;";
+    grid.style.cssText = "flex:1;min-width:0;overflow:auto;padding:0;display:block;user-select:none;scrollbarGutter:stable;";
 const virtualStage = document.createElement("div");
 virtualStage.style.cssText = "position:relative;width:100%;";
 grid.appendChild(virtualStage);
 let lastWindowKey = "";
     body.append(sidebar, grid);
     const footer = document.createElement("div");
-    footer.style.cssText = "display:flex;align-items:center;gap:8px;padding:10px 36px 10px 16px;border-top:1px solid var(--border-color);";
+    footer.style.cssText = "display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--border-color);";
     const makeButton = (label, action) => {
         const button = document.createElement("button");
         button.textContent = label;
@@ -371,6 +300,8 @@ let lastWindowKey = "";
 
     let items = [];
     let folders = [];
+    let folderCounts = {};
+    let libraryTotal = 0;
     let libraryLoaded = false;
     let libraryLoadError = "";
     let currentFolder = ALL_FOLDER;
@@ -952,8 +883,14 @@ let lastWindowKey = "";
             row.style.background = value === currentFolder ? "rgba(255,255,255,.12)" : "transparent";
             const nameEl = document.createElement("span");
             nameEl.textContent = label;
+            nameEl.title = label;
             nameEl.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--input-text);";
-            row.appendChild(nameEl);
+            const total = value === ALL_FOLDER ? libraryTotal : (folderCounts[value] ?? 0);
+            const countEl = document.createElement("span");
+            countEl.textContent = total;
+            countEl.title = isAudio ? xzgT(`${total} 个音频`, `${total} audio files`) : isVideo ? xzgT(`${total} 个视频`, `${total} videos`) : xzgT(`${total} 张图片`, `${total} images`);
+            countEl.style.cssText = "flex:none;font-size:12px;opacity:.75;font-variant-numeric:tabular-nums;";
+            row.append(nameEl, countEl);
             const iconBtn = (glyph, title, color, onClick, fontSize = 18) => {
                 const btn = document.createElement("button");
                 btn.type = "button";
@@ -1066,20 +1003,26 @@ let lastWindowKey = "";
         clearInsertMarker();
         folderInsertIndex = null;
     });
+    let refreshId = 0;
     const refresh = async () => {
+        const id = ++refreshId;
         const q = currentFolder ? `?folder=${encodeURIComponent(currentFolder)}` : "";
         let result;
         try {
             result = await request(q);
         } catch (error) {
+            if (id !== refreshId || !overlay.isConnected) return;
             if (!libraryLoaded) {
                 libraryLoadError = xzgT("媒体库加载失败，请关闭后重试", "Failed to load media library. Close and try again.");
                 render();
             }
             throw error;
         }
+        if (id !== refreshId || !overlay.isConnected) return;
         folders = result.folders || [];
         items = result.items || [];
+        folderCounts = result.folder_counts || {};
+        libraryTotal = result.total ?? items.length;
         libraryLoaded = true;
         libraryLoadError = "";
         lastClickedName = null;
@@ -1100,16 +1043,6 @@ let lastWindowKey = "";
         } catch (error) { alertUser(error.message); }
         finally { input.value = ""; upload.disabled = false; }
     };
-    cloudLoad(geometryKey, { fallbackValue: null }).then(saved => {
-        if (!overlay.isConnected || geometryChanged || !saved) return;
-        if (Number.isFinite(saved.width)) dialog.style.width = `${Math.max(560, Math.min(window.innerWidth - 40, saved.width))}px`;
-        if (Number.isFinite(saved.height)) dialog.style.height = `${Math.max(360, Math.min(window.innerHeight - 40, saved.height))}px`;
-        if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-            dialog.style.transform = "none";
-            dialog.style.left = `${Math.max(0, Math.min(window.innerWidth - dialog.offsetWidth, saved.x))}px`;
-            dialog.style.top = `${Math.max(0, Math.min(window.innerHeight - dialog.offsetHeight, saved.y))}px`;
-        }
-    });
     render();
     refresh().catch(error => alertUser(error.message));
 }

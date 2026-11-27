@@ -376,7 +376,7 @@ function createBoolDOMWidget(node, boolWidget) {
             rrect(ctx, r.x, r.y, r.w, r.h, 5);
             ctx.fill();
 
-            ctx.strokeStyle = isActive ? settings.colors.color1 : "#444";
+            ctx.strokeStyle = "#444";
             ctx.lineWidth = 1;
             ctx.stroke();
 

@@ -8,7 +8,7 @@ function harness() {
     const root = { extra: {}, _nodes: [] };
     const app = { graph: root, canvas: { graph: root }, registerExtension() {} };
     const frames = [];
-    const context = vm.createContext({ app, window: {}, console: { log() {} },
+    const context = vm.createContext({ app, window: {}, performance: { now: () => 0 }, console: { log() {} },
         requestAnimationFrame(callback) { frames.push(callback); },
         localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} } });
     vm.runInContext(source.replace(/^import .*;\r?\n/gm, '') + '\nglobalThis.group = XZGGroup;', context);
@@ -17,9 +17,71 @@ function harness() {
     group.applyBypassStates = () => {};
     group.calcBounds = () => ({ x: 0, y: 0, w: 300, h: 200 });
     group._installGroupGraphHooks = () => {};
-    return { root, app, group, frames };
+    return { root, app, group, frames, clock: context.performance };
 }
 const backup = () => ({ id: 'parent', title: 'Main group', nodeIds: [1], bounds: { x: 10, y: 20, w: 600, h: 400 } });
+
+test('canvas redraw commits group geometry and opacity together during zoom', () => {
+    const { app, group, frames, clock } = harness();
+    const canvas = app.canvas;
+    const ds = canvas.ds = { scale: 1, offset: [0, 0] };
+    canvas.canvas = {
+        addEventListener() {},
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 900 })
+    };
+    let dirty = false;
+    canvas.setDirty = () => { dirty = true; };
+    const fills = [];
+    canvas.ctx = {
+        globalAlpha: 1,
+        save() {},
+        beginPath() {},
+        roundRect(x, y, width, height) { this.rect = [x, y, width, height]; },
+        fill() { fills.push({ opacity: this.globalAlpha, rect: this.rect }); },
+        restore() { this.globalAlpha = 1; }
+    };
+    group._switchGraph = () => {};
+    group._setupImmediateSync = () => {};
+    group.syncNodeMembership = () => {};
+    group.updateGroupStyle = () => {};
+    const style = {};
+    const parent = { ...backup(), fadeEnabled: true, bgColor: 'rgba(20, 30, 40, 0.5)' };
+    group.overlay = {};
+    group.syncOverlayPosition = () => {};
+    group.groups = { parent };
+    group.groupEls = { parent: { style, _xzgRefs: {}, querySelector: () => null } };
+    group.setupCanvasBgDraw();
+    group.startSyncLoop();
+    const draw = () => {
+        dirty = false;
+        canvas.onDrawBackground(canvas.ctx);
+    };
+    draw();
+    assert.equal(style.width, '600px');
+    assert.equal(style.opacity, '1');
+
+    ds.scale = 0.5;
+    frames.shift()();
+    assert.equal(dirty, true);
+    assert.equal(style.width, '600px');
+    draw();
+    assert.equal(style.width, '300px');
+    assert.equal(style.opacity, '0');
+    assert.equal(fills.length, 1);
+
+    frames.shift()();
+    assert.equal(dirty, true);
+    draw();
+    clock.now = () => 500;
+    draw();
+    assert.equal(style.opacity, '0.5');
+    assert.deepEqual(fills.at(-1), { opacity: 0.5, rect: [10, 38, 600, 382] });
+
+    parent.fadeEnabled = false;
+    draw();
+    assert.equal(style.opacity, '1');
+    assert.equal(fills.at(-1).opacity, 1);
+});
 
 test('plain group keeps its screen bounds in sync when the canvas background skips a frame', () => {
     const { app, group, frames } = harness();

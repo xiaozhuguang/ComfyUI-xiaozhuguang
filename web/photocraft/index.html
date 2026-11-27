@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>图片编辑器</title>
+  
+<script type="module">
+import init, * as bindings from './photocraft-web-boot-f1b57f4718fcff8.mjs';
+import { installGpuCleanup } from './xzg_gpu_cleanup.mjs';
+import { installEditorBridge } from './xzg_editor_bridge.mjs';
+const canvas = document.getElementById("photocraft_canvas");
+installGpuCleanup(canvas);
+const chinese = new URLSearchParams(location.search).get("xzgLang") === "zh-hans";
+const editorName = chinese ? "图片编辑器" : "Image editor";
+document.documentElement.lang = chinese ? "zh-Hans" : "en";
+document.title = editorName;
+if (!chinese) {
+  document.getElementById("xzg-editor-loading-message").textContent = "Loading the image editor…";
+  document.getElementById("xzg-editor-reload").textContent = "Reload";
+  document.getElementById("xzg-editor-stopped-message").textContent = "The image editor stopped.";
+}
+// The bundled runtime can replace the diagnostic text after an initialization error.
+for (const id of ["photocraft_loading", "photocraft_stopped"]) {
+  const panel = document.getElementById(id);
+  new MutationObserver(() => {
+    const nodes = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT);
+    while (nodes.nextNode()) {
+      const node = nodes.currentNode;
+      if (node.data.includes("PhotoCraft")) node.data = node.data.replaceAll("PhotoCraft", editorName);
+    }
+  }).observe(panel, { childList: true, characterData: true, subtree: true });
+}
+installEditorBridge(canvas);
+const wasm = await init({ module_or_path: './photocraft-web-boot-f1b57f4718fcff8_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #262626; }
+    #photocraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #photocraft_loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 0 16px; text-align: center; color: #b8b8b8; font: 14px system-ui, sans-serif; pointer-events: none; }
+    #photocraft_loading p { margin: 0 0 8px; max-width: 420px; line-height: 1.5; }
+    #photocraft_loading a { color: #e0e0e0; pointer-events: auto; }
+    /* The app removes this element once it runs. If the WebAssembly never downloads or doesn't match
+       this page, no Rust runs to say so, so the page itself shows what to do after a while. */
+    #photocraft_stalled { color: #8c8c8c; visibility: hidden; animation: photocraft-stalled 0s 20s forwards; }
+    @keyframes photocraft-stalled { to { visibility: visible; } }
+    /* Revealed by the app when the module traps (an allocation it could not satisfy, or a panic):
+       the page would otherwise sit on the last frame, frozen. Static text, so it shows even if Rust
+       can no longer build any. */
+    #photocraft_stopped { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 0 16px; text-align: center; color: #e0e0e0; background: rgba(38, 38, 38, 0.92); font: 14px system-ui, sans-serif; pointer-events: auto; }
+    #photocraft_stopped[hidden] { display: none; }
+    #photocraft_stopped p { margin: 0 0 8px; max-width: 460px; line-height: 1.5; }
+    #photocraft_stopped a { color: #ffffff; }
+    #photocraft_stopped_detail { color: #b8b8b8; }
+  </style>
+<link rel="modulepreload" href="./photocraft-web-boot-f1b57f4718fcff8.mjs" crossorigin="anonymous" integrity="sha384-NGpcjvLwD263a2H7mEx3893SE6Ou9wH0N7vpjVrgv6I49p6zx52fmGpUafGyvBc3"><link rel="modulepreload" href="./snippets/eframe-d31a8450ea12dfc1/inline0.mjs" crossorigin="anonymous" integrity="sha384-uPZQ72BwgZ4v7Km6+UIFbkDDlt7ShGEsAVEHVN/+wZSGFhItJZB83iKMFQXauTSs"><link rel="preload" href="./photocraft-web-boot-f1b57f4718fcff8_bg.wasm" crossorigin="anonymous" integrity="sha384-jc/qOZ50+le05tY/Y+sRXN3FRRICCxZNdsUwl3lY86njhxHfcMYvn543CCOkWM8Z" as="fetch" type="application/wasm"></head>
+<body>
+  <canvas id="photocraft_canvas"></canvas>
+  <div id="photocraft_loading">
+    <p id="xzg-editor-loading-message">正在加载图片编辑器…</p>
+    <p id="photocraft_stalled"><a id="xzg-editor-reload" href="">重新加载</a></p>
+  </div>
+  <div id="photocraft_stopped" hidden role="alert">
+    <p><strong id="xzg-editor-stopped-message">图片编辑器已停止运行。</strong></p>
+    <p id="photocraft_stopped_detail"></p>
+  </div>
+</body>
+</html>

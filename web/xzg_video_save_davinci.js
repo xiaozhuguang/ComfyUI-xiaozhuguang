@@ -11,7 +11,6 @@ import { xzgShowLoaderTargetSelector } from "./xzg_image_save.js";
 // （进当前媒体池 + 新建视频轨道 + 对齐播放头所在最上层片段前端，不推移/不分割）。
 const SAVE_DAVINCI_NODE = "XiaozhuguangVideoSaveDaVinci";
 const SEND_VIDEO_MENU = "send_video_loader";
-const SEND_VIDEO_SETTING = "xiaozhuguang.Menu.VideoSaveDaVinciSendVideo";
 
 async function _sendSavedVideoToLoader(node, target) {
     try {
@@ -43,7 +42,7 @@ async function _sendSavedVideoToLoader(node, target) {
 }
 
 function _savedVideoMenu(node) {
-    if (app.ui?.settings?.getSettingValue?.(SEND_VIDEO_SETTING) === false || !xzgMenuItemVisible(node, SEND_VIDEO_MENU)) return [];
+    if (!xzgMenuItemVisible(node, SEND_VIDEO_MENU)) return [];
     const targets = (node.graph?.nodes || app.graph?.nodes || []).filter(n => n.type === "XiaozhuguangVideoLoaderDaVinci" && n.mode !== 2 && n.mode !== 4);
     const ready = !!_getSavedVideoInfo(node);
     const send = target => _sendSavedVideoToLoader(node, target);
@@ -488,7 +487,7 @@ function _xzgOpenVideoOutputSettings(node) {
         sortable: true,
         fontSize: true,
         actions: SAVE_PREVIEW_ACTIONS.map(({ id, label }) => ({ id, label })),
-        menuItems: [{ id: XZG_MENU_CAPTURE_FRAME, label: "右键菜单：截取当前帧发送到加载器" },
+        menuItems: [{ id: XZG_MENU_CAPTURE_FRAME, label: "预览区右键菜单：截取当前帧发送到图片加载器" },
             { id: SEND_VIDEO_MENU, label: "右键菜单：发送到视频加载器" }],
         refresh: () => _syncHoverButtonSize(node),
     });
@@ -577,11 +576,6 @@ function _createExportDavinciButton(node) {
 
 app.registerExtension({
     name: "Xiaozhuguang.VideoSave.DaVinci",
-    setup() {
-        app.ui?.settings?.addSetting?.({ id: SEND_VIDEO_SETTING,
-            name: "[小珠光] 视频保存-化神级右键菜单：发送到视频加载器",
-            type: "boolean", defaultValue: true });
-    },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData?.name !== SAVE_DAVINCI_NODE) return;
 
@@ -707,7 +701,7 @@ app.registerExtension({
         // 右键菜单：截取预览当前帧 → 上传 input → 发送到小珠光图像加载器
         // （菜单项可在 设置 → 小珠光 中关闭，见 xzg_frame_capture.js）
         // 保存节点只在预览区提供右键菜单，节点级右键不再显示截帧/发送到视频加载器。
-        xzgAddFrameCaptureMenu(nodeType, "save", { nodeMenu: false });
+        xzgAddFrameCaptureMenu(nodeType);
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = originalCreated?.apply(this, arguments);

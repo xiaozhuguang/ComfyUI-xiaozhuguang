@@ -496,9 +496,12 @@ async def xzg_media_library_list(request):
     if not all_view and folder and not _media_safe_folder(folder):
         return web.json_response({"error": "invalid folder"}, status=400)
     folders = _media_folders(directory)
+    folder_counts = dict.fromkeys(folders, 0)
+    names = _media_ordered_names(directory)
     items = []
-    for rel in _media_ordered_names(directory):
+    for rel in names:
         rel_folder = _media_folder_of(rel)
+        folder_counts[rel_folder] = folder_counts.get(rel_folder, 0) + 1
         if not all_view and rel_folder != folder:
             continue
         path = _media_resolve_path(directory, rel)
@@ -506,7 +509,10 @@ async def xzg_media_library_list(request):
             stat = os.stat(path)
             version = f"{stat.st_mtime_ns}-{stat.st_ctime_ns}-{stat.st_size}"
             items.append({"name": rel, "folder": rel_folder, "size": stat.st_size, "mtime": stat.st_mtime, "version": version})
-    return web.json_response({"folders": folders, "folder": folder, "items": items}, headers={"Cache-Control": "no-store"})
+    return web.json_response(
+        {"folders": folders, "folder": folder, "items": items, "folder_counts": folder_counts, "total": len(names)},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @routes.put("/xzg/media-library/order")

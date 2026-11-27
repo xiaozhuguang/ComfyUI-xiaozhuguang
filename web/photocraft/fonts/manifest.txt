@@ -1,0 +1,1 @@
+Noto Sans SC | Regular | fonts/NotoSansSC-Regular.ttf | Hans | OFL-1.1 | fonts/OFL-NotoSansSC.txt | 288395a18c85b87a3e8b560236cefc60bc9d4e7a2d3fd7aca73dd48c3865e1c8 | https://github.com/google/fonts/tree/a85815a42757630ce188fdad368c2dfc444d4773/ofl/notosanssc

@@ -1,4 +1,16 @@
 {
+  "XZGLiveVideoCompare": {
+    "display_name": "小烛光 · 采样视频对比 · 参考KJ",
+    "inputs": {
+      "model": { "name": "模型", "tooltip": "接入视频模型。右侧模型输出接采样器。" },
+      "reference_images": { "name": "参考图像", "tooltip": "可选。接单张图或按时间顺序排列的 IMAGE 帧批次。" },
+      "output_fps": { "name": "帧率", "tooltip": "参考图像序列和生成视频共用的帧率，用于按时间对齐画面。" },
+      "tiny_vae": {"name":"Tiny VAE","tooltip":"auto 自动匹配当前模型，none 使用 Latent2RGB。也可手动选择 vae_approx 中匹配的解码器。"}
+    },
+    "outputs": {
+      "0": { "name": "模型" }
+    }
+  },
   "XiaozhuguangLoopStart": {
     "display_name": "小珠光循环开始",
     "inputs": {
@@ -1075,17 +1087,13 @@
   },
   "XiaozhuguangVideoColorCalibrator": {
     "display_name": "小珠光视频颜色矫正",
-    "description": "先估计整体颜色变换，再降低内容差异区域的统计权重；不可靠匹配原样输出并重置校正历史。稳健亮度分位数曲线匹配；色度矩阵校正色相、饱和度和偏色。所有参数时间平滑，检测到双路大幅画面变化时重置。两段视频必须帧数相同、时间和位置对齐，不含光流。 自动检查空间结构；缺少足够可靠对应区域时跳过校正，不可靠匹配不沿用邻帧校正。",
+    "description": "使用亮度曲线和色度矩阵校正全局颜色。同一镜头共用一组校正参数，可靠且一致的估计不足时整镜头透传。两段视频必须帧数相同、时间和位置对齐。",
     "inputs": {
       "video_original": {
         "name": "原版视频"
       },
       "video_edited": {
         "name": "编辑版视频"
-      },
-      "smooth": {
-        "name": "时间平滑",
-        "tooltip": "全部校正参数的时间平滑：0=逐帧独立；越大越平滑但响应越慢。大幅画面变化时重置。"
       },
       "strength": {
         "name": "校正强度",

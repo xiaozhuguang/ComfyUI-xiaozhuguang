@@ -1,4 +1,16 @@
 {
+  "XZGLiveVideoCompare": {
+    "display_name": "XZG · Sampling Video Compare · KJ Reference",
+    "inputs": {
+      "model": { "name": "model", "tooltip": "Connect the video model, then connect the model output to the sampler." },
+      "reference_images": { "name": "reference images", "tooltip": "Optional. Connect a single image or an IMAGE batch in frame order." },
+      "output_fps": { "name": "FPS", "tooltip": "Shared frame rate of the reference sequence and generated video. Used to align them by time." },
+      "tiny_vae": {"name":"Tiny VAE","tooltip":"Auto selects a decoder for the current model. None uses Latent2RGB. You can also select a compatible decoder from vae_approx."}
+    },
+    "outputs": {
+      "0": { "name": "model" }
+    }
+  },
   "XiaozhuguangAPITranslate": {
     "display_name": "Xiaozhuguang Translate",
     "inputs": {
@@ -1040,17 +1052,13 @@
   },
   "XiaozhuguangVideoColorCalibrator": {
     "display_name": "XZG Video Color Calibrator",
-    "description": "Robust global paired calibration: estimates overall color alignment before downweighting changed content; passes unreliable matches through unchanged and resets correction history. Robust quantile matching corrects the luminance tone curve. A chroma matrix corrects hue, saturation and tint. All parameters are temporally smoothed and reset on large changes in both streams. Requires equal frame counts and spatial/temporal alignment; no optical flow. Spatial structure is checked automatically; insufficient correspondence skips correction without borrowing corrections from neighboring frames.",
+    "description": "Corrects global color with a luminance curve and a chroma matrix. Each shot uses one correction when a majority of frames support it. Shots without enough support pass through unchanged. Requires equal frame counts and spatial and temporal alignment.",
     "inputs": {
       "video_original": {
         "name": "original video"
       },
       "video_edited": {
         "name": "edited video"
-      },
-      "smooth": {
-        "name": "temporal smoothing",
-        "tooltip": "EMA for all correction parameters: 0 = independent frames; higher = smoother but slower response. Resets on large frame changes."
       },
       "strength": {
         "name": "correction strength",

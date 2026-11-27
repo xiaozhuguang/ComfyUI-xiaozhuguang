@@ -1,11 +1,11 @@
 # 小珠光依赖安装器（Windows）
 
-把 `ComfyUI-xiaozhuguang.zip` 解压到任意文件夹，双击解压目录中的 `一键安装依赖.exe`。
+把 `ComfyUI-xiaozhuguang.zip` 解压到任意文件夹，双击解压目录中的 `一键安装依赖.bat`。
 安装器会检查附近目录、上次使用的 ComfyUI 和磁盘根目录下常见的 ComfyUI 整合包（例如 `E:\ComfyUI-aki-XZG`）。
 未找到或检测到多个候选时，可点击「选择 ComfyUI」，选择主目录、`custom_nodes` 或整合包目录。
 点击「安装」后，依赖安装成功时会将插件复制到目标的 `custom_nodes\ComfyUI-xiaozhuguang`。
-目标已有插件时，安装器使用已安装版本的依赖配置并保留现有插件。仅显示安装界面，不弹出命令窗口。
-无需先加载插件，也不要求Python安装Tk。EXE为轻量启动器，须与installer目录一起保留。
+目标已有插件时，安装器使用已安装版本的依赖配置并保留现有插件。安装界面打开时会保留命令窗口，关闭安装界面后命令窗口会退出。
+无需先加载插件，也不要求Python安装Tk。BAT 须与 installer 目录一起保留。
 
 1. 确认Python为ComfyUI实际使用的环境，支持常见整合包、便携版和venv自动寻找。
 2. 选择下载源。默认检测官方、清华、阿里云的可达性和响应速度；也可指定HTTPS源。
@@ -30,6 +30,5 @@ CuPy按PyTorch编译CUDA主版本选择12或13轮子，由pip预检可用性。
 失败时可切换源后重试；已满足版本的包跳过。pip不是事务安装工具，失败时可能有部分包已安装，
 此时日志与下次检查会反映实际状态。本工具不修改原有ComfyUI-Manager的install.py入口。
 
-开发验证：`powershell -NoProfile -STA -File installer\install.ps1 -ValidateOnly`。
-重新构建EXE：`powershell -NoProfile -File installer\build.ps1`，使用系统.NET Framework编译器，无需下载打包工具。
+开发验证：运行 `一键安装依赖.bat --validate-only`。
 命令行检查：使用目标Python运行 `installer/engine.py --action check --profile base --source auto`。

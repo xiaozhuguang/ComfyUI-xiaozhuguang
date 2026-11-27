@@ -934,10 +934,11 @@ function wm_ensureViewer(node) {
         // ---- 容器（工具栏 + 帧控制栏 + 画布）----
         const container = document.createElement("div");
         container.style.cssText = "position: relative; width: 100%; background: #0f1011; overflow: hidden; box-sizing: border-box; border-radius: 4px; margin: 0; padding: 0; display: flex; flex-direction: column;";
+        let trackingRequest = null;
 
         const toolbar = document.createElement("div");
         // 加高 8px（28→36）：容纳加大 4px 后的「点击加载视频」行，避免文字贴边
-        toolbar.style.cssText = "flex:0 0 54px;width:100%;background:#222;display:flex;align-items:center;gap:12px;padding:0 12px;box-sizing:border-box;border-bottom:1px solid #333;z-index:10;overflow-x:auto;scrollbar-width:thin;";
+        toolbar.style.cssText = "flex:0 0 54px;width:100%;background:var(--xzg-wmdet-toolbar-bg,#222);display:flex;align-items:center;gap:12px;padding:0 12px;box-sizing:border-box;border-bottom:1px solid #333;z-index:10;overflow-x:auto;scrollbar-width:thin;";
         container.appendChild(toolbar);
         // 工具栏（点击加载视频这一栏）屏蔽浏览器原生右键菜单；
         // 轨道数字等自带右键菜单的元素会 stopPropagation，不受影响
@@ -956,6 +957,10 @@ function wm_ensureViewer(node) {
 .xzg-wmdet-ft-off{color:#e53935;animation:none;font-size:14px;font-weight:400;}
 .xzg-wmdet-ft-filter{color:#3ef558;animation:none;font-size:14px;font-weight:400;}
 .xzg-wmdet-ft-manual{color:#cba46c;animation:none;font-size:14px;font-weight:400;}
+.xzg-wmdet-tracking > .xzg-wmdet-dim::after{content:"";position:absolute;inset:0;background:rgba(0,0,0,.6);z-index:31;cursor:wait;}
+.xzg-wmdet-tracking{--xzg-wmdet-toolbar-bg:#0e0e0e;}
+.xzg-wmdet-tracking .xzg-wmdet-dim-controls,.xzg-wmdet-tracking .xzg-wmdet-tracking-group > :not(.xzg-wmdet-tracking-active){filter:brightness(.4);}
+.xzg-wmdet-tracking .xzg-wmdet-tracking-active{font-variant-numeric:tabular-nums;}
 @keyframes xzgWmdetSweep{0%{background-position:130% 0;}100%{background-position:-30% 0;}}`;
         const trackBar = document.createElement("div");
         trackBar.style.cssText = "display:flex;flex:0 0 auto;align-items:center;justify-content:flex-start;gap:16px;";
@@ -1091,22 +1096,29 @@ function wm_ensureViewer(node) {
             btn.onmouseout = () => { btn.style.backgroundColor = "#3a3a3c"; };
             return btn;
         };
-        let _playIV = null;
+        let playbackRequest = null;
         const stopPlay = () => {
-            if (_playIV === null) return;
-            clearInterval(_playIV);
-            _playIV = null;
+            if (playbackRequest === null) return;
+            cancelAnimationFrame(playbackRequest);
+            playbackRequest = null;
             refreshPlaybackButton();
         };
         const togglePlayback = () => {
-            if (_playIV !== null) { stopPlay(); return; }
+            if (playbackRequest !== null) { stopPlay(); return; }
             const last = state.frames.length - 1;
             if (last < 1) return;
             if (state.frameIdx >= last) showFrame(0);
-            _playIV = setInterval(() => {
-                if (state.frameIdx >= last) { stopPlay(); return; }
-                showFrame(state.frameIdx + 1);
-            }, Math.min(2 ** 31 - 1, 1000 / state.playbackFps));
+            const startFrame = state.frameIdx;
+            const startedAt = performance.now();
+            const frameDurationMs = 100; // 10 FPS
+            const tick = now => {
+                const frame = startFrame + Math.floor((now - startedAt) / frameDurationMs);
+                const nextFrame = Math.min(frame, last);
+                if (nextFrame > state.frameIdx) showFrame(nextFrame);
+                if (frame > last) { stopPlay(); return; }
+                playbackRequest = requestAnimationFrame(tick);
+            };
+            playbackRequest = requestAnimationFrame(tick);
             refreshPlaybackButton();
         };
         const trackingButtonIcon = direction => {
@@ -1181,6 +1193,11 @@ function wm_ensureViewer(node) {
         container.addEventListener("pointerenter", () => { _panelHover = true; });
         container.addEventListener("pointerleave", () => { _panelHover = false; });
         window.addEventListener("keydown", (e) => {
+            if (trackingRequest) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                return;
+            }
             if ((!_panelHover && !workspace) || !container.isConnected) return;
             const isSpace = e.code === "Space" || e.key === " ";
             const isHorizontalArrow = e.key === "ArrowLeft" || e.key === "ArrowRight";
@@ -1494,7 +1511,7 @@ function wm_ensureViewer(node) {
         playbackBtn.type = "button";
         playbackBtn.style.cssText = "width:42px;height:42px;flex:0 0 42px;border:1px solid #666;border-radius:50%;padding:0;display:grid;place-items:center;background:#3a3a3c;color:#fff;cursor:pointer;";
         const refreshPlaybackButton = () => {
-            const playing = _playIV !== null;
+            const playing = playbackRequest !== null;
             playbackBtn.title = playing ? "暂停" : "播放";
             playbackBtn.setAttribute("aria-label", playbackBtn.title);
             playbackBtn.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${playing ? "M6 4h4v16H6z M14 4h4v16h-4z" : "M8 3l14 9-14 9z"}"/></svg>`;
@@ -1512,9 +1529,11 @@ function wm_ensureViewer(node) {
         helpBtn.querySelector("svg")?.setAttribute("width", "20");
         helpBtn.querySelector("svg")?.setAttribute("height", "20");
 
-        // 帧控制栏（帧号 + 滑块）：加高 15px（52→67），为播放条后续优化预留空间
+        // 播放控件固定在首行，关键帧轨道在下方增加高度。
+        const playbackRowHeight = 66;
+        const laneHeight = 18;
         const tracker = document.createElement("div");
-        tracker.style.cssText = "flex: 0 0 67px; width: 100%; background: #222; position:relative; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid #333; gap: 4px;";
+        tracker.style.cssText = `flex:0 0 ${playbackRowHeight + 1}px;width:100%;background:#222;position:relative;display:grid;grid-template-columns:42px auto minmax(0,1fr);grid-template-rows:${playbackRowHeight}px;align-items:center;padding:0 8px;box-sizing:border-box;border-bottom:1px solid #333;column-gap:4px;`;
         container.appendChild(tracker);
         tracker.appendChild(playbackBtn);
         // 播放条和关键帧三角均屏蔽浏览器原生右键菜单。
@@ -1536,7 +1555,7 @@ function wm_ensureViewer(node) {
         slider.value = "0";
         slider.step = "1";
         slider.disabled = true;
-        slider.style.cssText = "flex: 1; height: 4px; cursor: default; accent-color: #e8c547; opacity: 0.3; pointer-events: none; position: relative; z-index: 4;";
+        slider.style.cssText = "justify-self:stretch;min-width:0;height:4px;cursor:default;accent-color:#e8c547;opacity:0.3;pointer-events:none;position:relative;z-index:4;";
         // 播放头手柄：圆形 → 三角形+竖杠（金色，与 accent-color 一致）。
         // 实心倒三角 + 下方竖线，SVG data URI 作为 thumb 背景；
         // 全局注入一次，多个节点共用。thumb 宽 16px 高 20px，
@@ -1602,9 +1621,14 @@ function wm_ensureViewer(node) {
         }, true);
         const endPreviewScrub = e => {
             if (previewScrub?.pointerId !== e.pointerId) return;
+            const { mode, startX, startY } = previewScrub;
             previewScrub = null;
             suppressPreviewContextMenuUntil = Date.now() + 800;
             if (scrubValueOverlay) scrubValueOverlay.style.display = "none";
+            if (e.type === "pointerup" && !mode &&
+                Math.max(Math.abs(e.clientX - startX), Math.abs(e.clientY - startY)) < 4) {
+                handleCurveRightClick(e);
+            }
         };
         window.addEventListener("pointerup", endPreviewScrub, true);
         window.addEventListener("pointercancel", endPreviewScrub, true);
@@ -2132,7 +2156,6 @@ function wm_ensureViewer(node) {
             fillEdges: true,
             trackId: 1,
             sampleIdx: [],
-            playbackFps: 10,
             frames: [],             // 预加载的采样帧 Image 数组
             frameIdx: 0,
             detectRegions: [],      // 检测区（归一化 0~1 {x1,y1,x2,y2}）
@@ -2586,9 +2609,14 @@ function wm_ensureViewer(node) {
 
         const drawKfBar = () => {
             const nf = (state.frames || []).length;
+            const kfsAll = state.manualKeyframes || {};
+            const tids = !nf ? [] : _solo ? [state.trackId] : Object.keys(kfsAll).map(Number).sort((a, b) => a - b);
+            const requiredHeight = `${playbackRowHeight + 1 + tids.length * laneHeight}px`;
+            if (tracker.style.flexBasis !== requiredHeight) tracker.style.flexBasis = requiredHeight;
             // 以滑块 content box 为基准（补偿可能的 border/padding），
             // 保证刻度坐标与浏览器定位 thumb 使用的坐标系完全一致
             const left = slider.offsetLeft + ((slider.offsetWidth - slider.clientWidth) / 2);
+            const barTop = slider.offsetTop;
             const w = slider.clientWidth || slider.offsetWidth;
             if (!w) { kfBar.innerHTML = ""; requestAnimationFrame(() => drawKfBar()); return; }
             kfBar.style.left = left + "px";
@@ -2606,7 +2634,7 @@ function wm_ensureViewer(node) {
             const bar = document.createElement("div");
             const barW = nf > 0 ? Math.max(0, posX(nf - 1) - posX(0)) : usable;
             const barLeft = Math.max(0, Math.min(w - 2, posX(0)));
-            bar.style.cssText = `position:absolute;left:${barLeft}px;top:calc(50% - 2px);width:${Math.max(4, barW)}px;height:4px;border-radius:2px;background:#5f5f5f;`;
+            bar.style.cssText = `position:absolute;left:${barLeft}px;top:${barTop}px;width:${Math.max(4, barW)}px;height:4px;border-radius:2px;background:#5f5f5f;`;
             frag.appendChild(bar);
             const auto = state.autoTracking;
             const tracked = auto?.video_id === state.srcKey ? auto?.tracks?.[state.trackId] : null;
@@ -2624,20 +2652,17 @@ function wm_ensureViewer(node) {
                         const x = posX(Math.max(0, start - .5));
                         const end = posX(Math.min(nf - 1, frame - .5));
                         const segment = document.createElement("div");
-                        segment.style.cssText = `position:absolute;left:${x}px;top:calc(50% - 2px);width:${Math.max(1, end-x)}px;height:4px;background:#30d158;pointer-events:none;`;
+                        segment.style.cssText = `position:absolute;left:${x}px;top:${barTop}px;width:${Math.max(1, end-x)}px;height:4px;background:#30d158;pointer-events:none;`;
                         frag.appendChild(segment);
                         start = null;
                     }
                 }
             }
             // 每个已建立的颜色分类占用独立播放条，关键帧不会挤在同一行。
-            if (nf > 0) {
-                const kfsAll = state.manualKeyframes || {};
-                const tids = _solo ? [state.trackId] : Object.keys(kfsAll).map(Number).sort((a, b) => a - b);
-                tids.forEach((tid, lane) => {
-                    const kfs = kfsAll[tid] || {};
+            tids.forEach((tid, lane) => {
+                const kfs = kfsAll[tid] || {};
                 const trackColor = TRACK_COLORS[(tid - 1) % TRACK_COLORS.length];
-                const laneY = 67 + lane * 18;
+                const laneY = playbackRowHeight + 1 + lane * laneHeight;
                 const laneBar = document.createElement("div");
                 laneBar.style.cssText = `position:absolute;left:${posX(0)}px;top:${laneY + 7}px;width:${Math.max(4, posX(nf - 1) - posX(0))}px;height:4px;border-radius:2px;background:#454545;pointer-events:none;`;
                 frag.appendChild(laneBar);
@@ -2704,14 +2729,7 @@ function wm_ensureViewer(node) {
                     });
                     frag.appendChild(hit);
                 });
-                });
-                const laneCount = tids.length;
-                const requiredHeight = 67 + laneCount * 18;
-                if (tracker.style.height !== `${requiredHeight}px`) {
-                    tracker.style.height = `${requiredHeight}px`;
-                    tracker.style.flexBasis = `${requiredHeight}px`;
-                }
-            }
+            });
             kfBar.innerHTML = "";
             kfBar.appendChild(frag);
         };
@@ -2866,7 +2884,25 @@ function wm_ensureViewer(node) {
         window.addEventListener('keydown', e => { if(e.key==='Alt') { if (_panelHover) e.preventDefault(); curveAltDown=true; updateCurveCursor(); } });
         window.addEventListener('keyup', e => { if(e.key==='Alt') { curveAltDown=false; updateCurveCursor(); } });
         window.addEventListener('blur', () => { curveAltDown=false; updateCurveCursor(); });
+        const finishCurveDraft = () => {
+            const curve = state.curveDraft;
+            if (!curve || curve.length < 3) return;
+            smoothCurve(curve, true);
+            state.curveDraft = state.curveDrag = null;
+            saveCurve(curve);
+            updateCurveCursor();
+            redraw();
+        };
         canvasWrapper.addEventListener('pointerdown', (e) => {
+            if (e.button === 2 && state.mode === 'manual' && state.curveDraft) {
+                e.preventDefault();
+                e.stopPropagation();
+                suppressPreviewContextMenuUntil = Date.now() + 800;
+                stopPlay();
+                closeBarMenu();
+                finishCurveDraft();
+                return;
+            }
             if (e.button === 2 && state.image && state.frames.length) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3308,20 +3344,11 @@ function wm_ensureViewer(node) {
             state.trackingAreaDraft = null;
             state.curveDrag = null; state.drawing = null; redraw();
         });
-        canvasWrapper.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+        const handleCurveRightClick = (e) => {
             closeBarMenu();
             if (!state.image || state.mode !== 'manual') return;
             if (state.curveDraft) {
-                if (state.curveDraft.length >= 3) {
-                    const curve = state.curveDraft;
-                    smoothCurve(curve, true);
-                    state.curveDraft = state.curveDrag = null;
-                    saveCurve(curve);
-                    updateCurveCursor();
-                    redraw();
-                }
+                finishCurveDraft();
                 return;
             }
             stopPlay();
@@ -3329,29 +3356,28 @@ function wm_ensureViewer(node) {
             const L = calcLayout(), c = toImg(e);
             const p = {x:c.x/L.imgW, y:c.y/L.imgH};
             const cr = canvas.getBoundingClientRect();
-            const curve = state.curveDraft || (state.shapeSelected && state.manualKeyframes[state.trackId]?.[frame]?.[0]?.curve);
+            const curve = state.shapeSelected && state.manualKeyframes[state.trackId]?.[frame]?.[0]?.curve;
             if (curve) {
                 const distance = q => Math.hypot((q.x-p.x)*cr.width, (q.y-p.y)*cr.height);
-                const {anchors} = curveControls(curve, cr, controlScreenScale(), !state.curveDraft || curve.length >= 3);
+                const {anchors, handles} = curveControls(curve, cr, controlScreenScale(), true);
                 let closest = CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
                 let index = -1;
                 for (let i = 0; i < curve.length; i++) {
-                    const d = distance(anchors[i]);
+                    const d = Math.min(distance(anchors[i]), distance(handles[i]));
                     if (d >= closest) continue;
                     closest = d;
                     index = i;
                 }
-                if (index !== -1 && (state.curveDraft || curve.length > 3)) {
+                if (index !== -1 && curve.length > 3) {
                     curve.splice(index, 1);
-                    smoothCurve(curve, !state.curveDraft);
-                    if (!state.curveDraft) saveCurve(curve);
-                    else if (!curve.length) state.curveDraft = null;
+                    smoothCurve(curve, true);
+                    saveCurve(curve);
                     updateCurveCursor();
                     redraw();
                     return;
                 }
-                if (!state.curveDraft && (index !== -1 || insideCurve(curve, p) ||
-                    hitCurveSegment(curve, p, cr.width, cr.height, true))) {
+                if (index !== -1 || insideCurve(curve, p) ||
+                    hitCurveSegment(curve, p, cr.width, cr.height, true)) {
                     const track = state.trackId;
                     const keys = state.manualKeyframes[track];
                     showBarMenu(e.clientX, e.clientY, [{
@@ -3369,7 +3395,11 @@ function wm_ensureViewer(node) {
                     return;
                 }
             }
-            if (state.curveDraft) return;
+        };
+        canvasWrapper.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleCurveRightClick(e);
         });
 
         // 滚轮事件转发给 ComfyUI 画布（预览区不拦截滚轮，保持画布缩放）
@@ -3730,10 +3760,12 @@ function wm_ensureViewer(node) {
             };
             img.src = getRealURL(file);
         };
-        let trackingRequest = null;
+        for (const surface of [tracker, canvasWrapper]) surface.classList.add("xzg-wmdet-dim");
+        for (const controls of [colorTracks, right]) controls.classList.add("xzg-wmdet-dim-controls");
+        trackingGroup.classList.add("xzg-wmdet-tracking-group");
         const trackingProgress = document.createElement("progress");
         trackingProgress.setAttribute("aria-label", "遮罩跟踪进度");
-        trackingProgress.style.cssText = "position:absolute;inset:0 0 auto;width:100%;height:8px;z-index:7;accent-color:#30d158;pointer-events:none;";
+        trackingProgress.style.cssText = "position:absolute;inset:0 0 auto;width:100%;height:8px;z-index:32;accent-color:#30d158;pointer-events:none;";
         trackingProgress.hidden = true;
         canvasWrapper.appendChild(trackingProgress);
         let previewFirstFrame = null;
@@ -3773,16 +3805,36 @@ function wm_ensureViewer(node) {
             const snapshot = dataWidget.value;
             const controller = new AbortController();
             trackingRequest = controller;
-            const button = autoTrackBtns[trackDirections.findIndex(([step]) => step === direction)];
-            button.textContent = "跟踪中…";
+            const buttonIndex = trackDirections.findIndex(([step]) => step === direction);
+            const button = autoTrackBtns[buttonIndex];
             const total = spans.reduce((sum, span) => sum + Math.abs(span.end - start), 0);
-            trackingProgress.max = total;
-            trackingProgress.value = 0;
-            trackingProgress.hidden = false;
+            const updateProgress = processed => {
+                trackingProgress.value = Math.max(trackingProgress.value, processed);
+                button.textContent = `${Math.floor(100 * trackingProgress.value / total)}%`;
+                button.setAttribute("aria-label", `遮罩跟踪进度 ${button.textContent}`);
+            };
+            const blockInteraction = e => {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            };
+            const blockedEvents = ["pointerdown", "pointermove", "pointerup", "mousedown", "mousemove",
+                "mouseup", "click", "dblclick", "auxclick", "contextmenu", "wheel", "touchstart", "touchmove", "keyup"];
             let completed = 0;
             let progressTimer;
-            stopPlay();
             try {
+                for (const event of blockedEvents) {
+                    window.addEventListener(event, blockInteraction, {capture: true, passive: false});
+                }
+                trackingProgress.max = total;
+                trackingProgress.value = 0;
+                updateProgress(0);
+                trackingProgress.hidden = false;
+                container.classList.add("xzg-wmdet-tracking");
+                button.classList.add("xzg-wmdet-tracking-active");
+                button.setAttribute("aria-disabled", "true");
+                closeBarMenu();
+                stopTimelineDrag();
+                stopPlay();
                 const results = [];
                 for (const {step, end} of spans) {
                     const offset = completed;
@@ -3795,8 +3847,7 @@ function wm_ensureViewer(node) {
                             if (response.ok) {
                                 const {processed} = await response.json();
                                 if (trackingRequest === controller && !controller.signal.aborted) {
-                                    trackingProgress.value = Math.max(trackingProgress.value, offset + processed);
-                                    button.textContent = `跟踪中 ${Math.floor(100 * trackingProgress.value / total)}%`;
+                                    updateProgress(offset + processed);
                                 }
                             }
                         } catch {}
@@ -3813,7 +3864,7 @@ function wm_ensureViewer(node) {
                     if (!response.ok) throw new Error(result.error || "跟踪请求失败");
                     clearInterval(progressTimer);
                     completed += result.transforms.length;
-                    trackingProgress.value = completed;
+                    updateProgress(completed);
                     results.push({step, end, result});
                     if (controller.signal.aborted || generation !== previewGeneration) return;
                 }
@@ -3929,17 +3980,19 @@ function wm_ensureViewer(node) {
                 if (direction && state.trackId === trackId && state.frameIdx === start) {
                     showFrame(start + direction * results[0].result.transforms.length);
                 } else redraw();
+                await new Promise(resolve => setTimeout(resolve, 600));
             } catch (error) {
                 if (!controller.signal.aborted) trackingNotice(error.message || "跟踪失败", "error");
             } finally {
                 clearInterval(progressTimer);
-                if (trackingRequest === controller) {
-                    trackingRequest = null;
-                    autoTrackBtns.forEach((btn, index) => { btn.textContent = trackDirections[index][1]; });
-                    setTimeout(() => {
-                        if (!trackingRequest) trackingProgress.hidden = true;
-                    }, controller.signal.aborted ? 0 : 600);
-                }
+                for (const event of blockedEvents) window.removeEventListener(event, blockInteraction, true);
+                trackingRequest = null;
+                trackingProgress.hidden = true;
+                container.classList.remove("xzg-wmdet-tracking");
+                button.classList.remove("xzg-wmdet-tracking-active");
+                button.removeAttribute("aria-disabled");
+                button.innerHTML = trackingButtonIcon(direction);
+                button.setAttribute("aria-label", trackDirections[buttonIndex][1]);
             }
         };
         chainCallback(node, "onRemoved", () => trackingRequest?.abort());
@@ -3965,7 +4018,6 @@ function wm_ensureViewer(node) {
                     trackingRequest?.abort();
                     loadedPreview = pv.preview_str;
                     previewFirstFrame = pd[0]?.filename;
-                    state.playbackFps = Number.isFinite(pd0.fps) && pd0.fps > 0 ? pd0.fps : 10;
                     const generation = ++previewGeneration;
                     failedPreviewFrames.clear();
                     state.sampleIdx = pd0.sample_idx || [];
@@ -4192,12 +4244,10 @@ function wm_applyLabels(node) {
     if (!node || !node.widgets) return;
     // 隐藏控件仍用于序列化，但其输入口会叠在图像端口附近。
     for (let i = (node.inputs?.length ?? 0) - 1; i >= 0; i--) {
-        if (["model_name", "regions_data", "temporal_dilate", "color_index"].includes(node.inputs[i].name)) {
+        if (["model_name", "regions_data", "temporal_dilate", "color_index", "fps"].includes(node.inputs[i].name)) {
             node.removeInput(i);
         }
     }
-    const fpsInput = node.inputs?.find(input => input.name === "fps");
-    if (fpsInput) fpsInput.label = xzgT("帧率", "Frame rate");
     for (const w of node.widgets) {
         const hit = WM_LABEL_MAP.find(([name]) => name === w.name);
         if (hit) w.label = xzgT(hit[1], hit[2]);

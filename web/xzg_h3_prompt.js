@@ -525,6 +525,16 @@ app.registerExtension({
                 }
                 this._syncTargetModel();
                 if (supportsCustomPromptRules) {
+                    const skillWidget = this.widgets?.find(w => w.name === "skill");
+                    if (skillWidget) {
+                        const callback = skillWidget.callback;
+                        const node = this;
+                        skillWidget.callback = function (...args) {
+                            const result = callback?.apply(this, args);
+                            node._syncSkillOverride();
+                            return result;
+                        };
+                    }
                     this._addPromptRulePresetControls();
                     // 预设从云端恢复是异步的：恢复完成前 _syncTargetModel 保持已保存的
                     // 规则选择不变，完成后再由 _refreshPromptRulePresetTypes 重建列表。
@@ -586,8 +596,23 @@ app.registerExtension({
                 ensureCombo("generation_mode", "_xzgGenerationModeComboRebuilt", H3_GEN_MODES[0], [...H3_GEN_MODES]);
             };
 
+            nodeType.prototype._syncSkillOverride = function () {
+                const skillWidget = this.widgets?.find(w => w.name === "skill");
+                const disabled = !!String(skillWidget?.value ?? "").trim();
+                let changed = false;
+                for (const name of ["target_model", "generation_mode"]) {
+                    const widget = this.widgets?.find(w => w.name === name);
+                    if (!widget || (widget.disabled === disabled && widget.options.disabled === disabled)) continue;
+                    widget.disabled = disabled;
+                    widget.options.disabled = disabled;
+                    changed = true;
+                }
+                if (changed) this.setDirtyCanvas?.(true, true);
+            };
+
             nodeType.prototype._syncTargetModel = function () {
                 this._ensureTargetModelCombo();
+                if (supportsCustomPromptRules) this._syncSkillOverride();
                 const targetWidget = this.widgets?.find(w => w.name === "target_model");
                 const gmWidget = this.widgets?.find(w => w.name === "generation_mode");
                 if (!gmWidget?.options) return;

@@ -116,17 +116,6 @@ def _correspondence_mask(ref, src):
     return F.interpolate(good.float(),size=a.shape[-2:],mode='nearest')
 
 
-def _unmatched_boundaries(unmatched, cuts):
-    """Hard failures must neither borrow nor propagate temporal corrections."""
-    cuts = list(cuts)
-    for i, failed in enumerate(unmatched):
-        if failed:
-            cuts[i] = True
-            if i + 1 < len(cuts):
-                cuts[i + 1] = True
-    return cuts
-
-
 def _distributed_support(weights, shape):
     support = (weights.reshape(shape[0], shape[1]) > 0.1).float()[None, None]
     patches = F.adaptive_avg_pool2d(support, (8, 8)) >= 0.25
@@ -270,72 +259,27 @@ def _parameter_distance(left, right):
     return max(tone, chroma, tint)
 
 
-def _temporal_parameters(estimates, cuts, smooth, neutral, fit_errors):
-    """Repair brief estimation failures within scenes, then smooth all parameters.
-
-    Uses batch lookahead, never transfers fitted parameters across detected cuts.
-    With smooth=0, parameters remain fully independent as documented.
-    """
-    if smooth == 0:
-        return estimates
-    repaired = list(estimates)
+def _locked_shot_parameters(estimates, cuts):
+    """Apply one representative fit only when most of the shot supports it."""
+    result = [None] * len(estimates)
     start = 0
     boundaries = [i for i in range(1, len(cuts)) if cuts[i]] + [len(cuts)]
     for end in boundaries:
-        # Compare raw neighbors so rejecting one frame cannot cascade.
-        for i in range(start + 1, end - 1):
-            left, center, right = estimates[i-1:i+2]
-            if left is not None and center is not None and right is not None:
-                if (fit_errors[i] > 0.025 and
-                        _parameter_distance(left, right) < 0.025 and
-                        _parameter_distance(center, left) > 0.045 and
-                        _parameter_distance(center, right) > 0.045):
-                    repaired[i] = tuple((a + b) * 0.5 for a, b in zip(left, right))
-        i = start
-        while i < end:
-            if repaired[i] is not None:
-                i += 1
-                continue
-            gap_start = i
-            while i < end and repaired[i] is None:
-                i += 1
-            # Only bridge short gaps bounded by reliable frames in this scene.
-            if i - gap_start <= 6 and gap_start > start and i < end:
-                left, right = repaired[gap_start - 1], repaired[i]
-                if _parameter_distance(left, right) < 0.06:
-                    for j in range(gap_start, i):
-                        fraction = (j - gap_start + 1) / (i - gap_start + 1)
-                        repaired[j] = tuple(torch.lerp(a, b, fraction) for a, b in zip(left, right))
+        length = end - start
+        valid = [fit for fit in estimates[start:end] if fit is not None]
+        if len(valid) * 2 > length:
+            median = tuple(torch.stack(values).median(dim=0).values for values in zip(*valid))
+            distances = [_parameter_distance(fit, median) for fit in valid]
+            if sum(distance < 0.025 for distance in distances) * 2 > length:
+                # Use an actual fitted transform so the chroma matrix retains its constraints.
+                best = min(range(len(valid)), key=distances.__getitem__)
+                result[start:end] = [valid[best]] * length
         start = end
-
-    result = []
-    previous = None
-    missing = 0
-    for i, current in enumerate(repaired):
-        if cuts[i]:
-            previous = None
-            missing = 0
-        if current is None:
-            missing += 1
-            if previous is None:
-                result.append(None)
-                continue
-            # Brief loss holds the last correction; prolonged loss fades toward
-            # identity rather than abruptly switching back to the edited colors.
-            current = previous if missing <= 6 else tuple(
-                torch.lerp(a, b, 0.25) for a, b in zip(previous, neutral))
-        else:
-            missing = 0
-            if previous is not None:
-                current = tuple(smooth * old + (1-smooth) * new
-                                for old, new in zip(previous, current))
-        previous = current
-        result.append(current)
     return result
 
 
 class XiaozhuguangVideoColorCalibrator:
-    """稳健全局匹配：亮度曲线、二维色度变换及完整参数时间平滑。"""
+    """稳健全局匹配：每个镜头共用一组亮度曲线与色度变换。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -343,16 +287,11 @@ class XiaozhuguangVideoColorCalibrator:
             "required": {
                 "video_original": ("IMAGE",),
                 "video_edited": ("IMAGE",),
-                "smooth": ("FLOAT", {
-                    "default": 0.6, "min": 0.0, "max": 0.95, "step": 0.05,
-                    "tooltip": "矫正参数的时间平滑系数：0=逐帧独立，越大越平滑（防色闪）",
-                }),
                 "strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
                     "tooltip": "校正强度：0=严格保留编辑图，1=应用估计的完整校正",
                 }),
             },
-
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -362,13 +301,14 @@ class XiaozhuguangVideoColorCalibrator:
     DESCRIPTION = (
         "对齐两段视频的全局颜色：先估计整体偏色，再降低内容差异区域的统计权重。"
         "稳健分位数匹配亮度曲线；色度矩阵校正色相、饱和度和偏色。"
-        "所有参数时间平滑，双路大幅画面变化时重置。可靠帧内平滑；不可靠匹配原样输出并重置历史。"
-        "自动检查空间结构，缺少足够且分布广泛的可靠对应区域时跳过校正。"
+        "每个镜头使用固定校正，避免局部失配造成颜色闪烁。可靠且一致的估计不足时整镜头原样输出。"
+        "双路画面变化达到切镜阈值时按新镜头重新估计。"
         "两段视频必须帧数相同、时间与位置对齐；不含光流或语义匹配。"
     )
 
     @torch.no_grad()
-    def run(self, video_original, video_edited, mode='quantile', smooth=0.6, strength=1.0):
+    def run(self, video_original, video_edited, mode='quantile', smooth=0.6, strength=1.0,
+            lock_per_shot=True):
         def validate(value, name):
             if not isinstance(value, torch.Tensor) or value.ndim not in (3, 4):
                 raise ValueError(f'{name} must be an IMAGE tensor [B,H,W,C]')
@@ -383,11 +323,9 @@ class XiaozhuguangVideoColorCalibrator:
         original = validate(video_original, 'video_original')
         if original.shape[0] != edited.shape[0]:
             raise ValueError('Original and edited videos must have the same frame count and be frame-aligned')
-        # Legacy API mode values are accepted but use the single quantile algorithm.
+        # Legacy arguments stay in the signature for saved API callers.
         if not math.isfinite(float(strength)) or not 0 <= strength <= 1:
             raise ValueError('strength must be between 0 and 1')
-        if not math.isfinite(float(smooth)) or not 0 <= smooth <= 0.95:
-            raise ValueError('smooth must be between 0 and 0.95')
         if strength == 0:
             return (edited,)
 
@@ -396,7 +334,7 @@ class XiaozhuguangVideoColorCalibrator:
         grid = torch.linspace(0, 1, _GRID_SIZE, device=device)
         identity = torch.eye(2, device=device)
         last_ref = last_src = None
-        estimates, cuts, fit_errors, unmatched = [], [], [], []
+        estimates, cuts = [], []
         for bi in range(edited.shape[0]):
             src = edited[bi:bi + 1, ..., :3].float()
             ref = original[bi:bi + 1, ..., :3].to(device=device, dtype=torch.float32)
@@ -408,8 +346,7 @@ class XiaozhuguangVideoColorCalibrator:
                 ref = F.interpolate(ref.permute(0, 3, 1, 2), size=src.shape[1:3],
                                     mode='bilinear', align_corners=False).permute(0, 2, 3, 1)
             small_ref, small_src = _thumbnail(ref), _thumbnail(src)
-            # Require a large change in BOTH streams: an edited-only flash or
-            # correspondence failure must not discard temporal history.
+            # Require a large change in both streams to declare a scene cut.
             cut = last_ref is not None and min(
                 (small_ref - last_ref).abs().mean().item(),
                 (small_src - last_src).abs().mean().item()) > 0.18
@@ -417,17 +354,13 @@ class XiaozhuguangVideoColorCalibrator:
             cuts.append(cut)
             a, b = small_ref.reshape(-1, 3), small_src.reshape(-1, 3)
             correspondence = _correspondence_mask(small_ref,small_src).reshape(-1)
-            geometry_failed = not bool(correspondence.any())
-            unmatched.append(geometry_failed)
+            selected = correspondence > 0
             weights = torch.zeros_like(correspondence)
-            if not geometry_failed:
-                selected = correspondence > 0
+            if selected.any():
                 weights[selected] = _stable_weights(a[selected], b[selected])
             count = (weights > 0.1).sum().item()
             if count < 64 or not _distributed_support(weights, small_src.shape[1:3]):
-                unmatched[-1] = True
                 estimates.append(None)
-                fit_errors.append(float('inf'))
             else:
                 confidence = min(1.0, count / (weights.numel() * 0.3))
                 curve = _tone_curve(a, b, weights, grid)
@@ -441,15 +374,10 @@ class XiaozhuguangVideoColorCalibrator:
                 baseline = ((b - a).abs().mean(-1) * weights).sum() / weights.sum()
                 if not torch.isfinite(error) or error > baseline + 0.001:
                     estimates.append(None)
-                    unmatched[-1] = True
-                    fit_errors.append(float('inf'))
                 else:
                     estimates.append(current)
-                    fit_errors.append(error.item())
 
-        cuts = _unmatched_boundaries(unmatched,cuts)
-        neutral = (grid, identity, grid.new_zeros(2))
-        parameters = _temporal_parameters(estimates, cuts, smooth, neutral, fit_errors)
+        parameters = _locked_shot_parameters(estimates, cuts)
         output = []
         for bi, current in enumerate(parameters):
             if current is None:
@@ -458,7 +386,7 @@ class XiaozhuguangVideoColorCalibrator:
             src = edited[bi:bi + 1, ..., :3].float()
             if src.shape[-1] == 1:
                 src = src.expand(-1, -1, -1, 3)
-            corrected = src if current is None else _apply(src, grid, *current)
+            corrected = _apply(src, grid, *current)
             # Gamut clipping and intensity blending happen only once at the end.
             result = torch.lerp(src, corrected.clamp(0, 1), strength)
             if edited.shape[-1] == 1:

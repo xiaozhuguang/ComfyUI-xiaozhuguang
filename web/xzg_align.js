@@ -3,8 +3,9 @@ import { cloudLoad, cloudSave } from "./xzg_cloud_store.js";
 
 // 天工对齐偏好云存储防抖计时器（颜色/间距/快捷键合并一个云键）
 let _alignCloudTimer = null;
+const ALIGN_ENABLED_SETTING = "xiaozhuguang.Toggle.EnableTianAlign";
 
-// 小珠光 - 田字格对齐面板 (Alt+A)
+// 小珠光 - 田字格对齐面板 (Alt+S)
 app.registerExtension({
     name: "Comfy.Xiaozhuguang.Align",
     async setup() {
@@ -16,7 +17,7 @@ app.registerExtension({
         let V_GAP = parseInt(localStorage.getItem("xiaozhuguang.tian.vGap")) || DEFAULT_V_GAP;
         let H_GAP = parseInt(localStorage.getItem("xiaozhuguang.tian.hGap")) || DEFAULT_H_GAP;
 
-        const DEFAULT_SHORTCUT = { key: "a", alt: true, ctrl: false, shift: false, meta: false };
+        const DEFAULT_SHORTCUT = { key: "s", alt: true, ctrl: false, shift: false, meta: false };
         let SHORTCUT = JSON.parse(localStorage.getItem("xiaozhuguang.tian.shortcut") || "null") || { ...DEFAULT_SHORTCUT };
 
         // 云持久化：对齐偏好（颜色/间距/快捷键）合并一个云键，本地先写兜底、异步以服务端为准覆盖
@@ -53,6 +54,7 @@ app.registerExtension({
                 if (s.shortcut && typeof s.shortcut === "object" && s.shortcut.key) {
                     SHORTCUT = s.shortcut;
                     localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(s.shortcut));
+                    updateShortcutHint();
                 }
             } catch (e) {
                 console.warn("[小珠光] 从云同步对齐设置失败:", e);
@@ -127,7 +129,14 @@ app.registerExtension({
         };
 
         let tianPanel = null;
+        let alignmentEnabled = true;
+        let recordingShortcut = false;
         let tianIsOpen = false;
+        let tianOpenedFromSelection = false;
+        let panelTransition = null;
+        let shortcutHint = null;
+        let previousSelection = new Set();
+        let selectionRAF = null;
         let svgLineEls = {};
         let svgQuadEls = [];
         let centerDot = null;
@@ -143,13 +152,19 @@ app.registerExtension({
         let dirArrow = null;
         let pressRing = null;
         let pressTimer = null;
+        let successRAF = null;
+        let autoArrangeMenu = null;
         let pressStartTime = 0;
         const DRAG_THRESHOLD = 60;
         const LONG_PRESS_MS = 1500;
 
         // --- 辅助函数 ---
         function getSelectedNodes() {
-            return Object.values(app.canvas?.selected_nodes || {});
+            const canvas = app.canvas;
+            if (canvas?.selectedItems) {
+                return [...canvas.selectedItems].filter(item => canvas.graph?.getNodeById(item.id) === item);
+            }
+            return Object.values(canvas?.selected_nodes || {});
         }
         function beginChange() { app.canvas.graph.beforeChange(); }
         function endChange()   { app.canvas.graph.afterChange(); app.canvas.draw(true, true); }
@@ -161,9 +176,6 @@ app.registerExtension({
         }
         function getTopmost(nodes) {
             return nodes.reduce((a, n) => (n.pos[1] < a.pos[1] ? n : a), nodes[0]);
-        }
-        function getBottommost(nodes) {
-            return nodes.reduce((a, n) => (n.pos[1] + n.size[1] > a.pos[1] + a.size[1] ? n : a), nodes[0]);
         }
         function getClosestToCenterH(nodes) {
             const avgCX = nodes.reduce((a, n) => a + n.pos[0] + n.size[0] / 2, 0) / nodes.length;
@@ -187,58 +199,52 @@ app.registerExtension({
         }
 
         // --- 6个线对齐功能 ---
-        // 左对齐、水平居中、右对齐：以最上面的节点为锚（不动）
-        // 上对齐、垂直居中、下对齐：以最左侧的节点为锚（不动）
+        function alignColumnsVertically(columns, anchorRatio) {
+            const anchorColumn = columns[0];
+            const top = Math.min(...anchorColumn.map(node => node.pos[1]));
+            const bottom = Math.max(...anchorColumn.map(node => node.pos[1] + node.size[1]));
+            const anchorY = top + (bottom - top) * anchorRatio;
+            beginChange();
+            for (const column of columns) {
+                const height = column.reduce((sum, node) => sum + node.size[1], 0)
+                    + (column.length - 1) * V_GAP;
+                let y = anchorY - height * anchorRatio;
+                for (const node of column) {
+                    node.pos[1] = y;
+                    y += node.size[1] + V_GAP;
+                }
+            }
+            endChange();
+        }
+
         function alignLeft() {
-            const nodes = getSelectedNodes();
-            if (nodes.length < 2) return;
-            beginChange();
-            const anchor = getTopmost(nodes);
-            nodes.forEach(n => { n.pos[0] = anchor.pos[0]; });
-            endChange();
-        }
-        function alignRight() {
-            const nodes = getSelectedNodes();
-            if (nodes.length < 2) return;
-            beginChange();
-            const anchor = getTopmost(nodes);
-            const tx = anchor.pos[0] + anchor.size[0];
-            nodes.forEach(n => { n.pos[0] = tx - n.size[0]; });
-            endChange();
-        }
-        function alignTop() {
-            const nodes = getSelectedNodes();
-            if (nodes.length < 2) return;
-            beginChange();
-            const anchor = getLeftmost(nodes);
-            nodes.forEach(n => { n.pos[1] = anchor.pos[1]; });
-            endChange();
-        }
-        function alignBottom() {
-            const nodes = getSelectedNodes();
-            if (nodes.length < 2) return;
-            beginChange();
-            const anchor = getLeftmost(nodes);
-            const ty = anchor.pos[1] + anchor.size[1];
-            nodes.forEach(n => { n.pos[1] = ty - n.size[1]; });
-            endChange();
+            alignHorizontal(0);
         }
         function alignHCenter() {
+            alignHorizontal(0.5);
+        }
+        function alignRight() {
+            alignHorizontal(1);
+        }
+        function alignHorizontal(anchorRatio) {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
-            beginChange();
             const anchor = getTopmost(nodes);
-            const cx = anchor.pos[0] + anchor.size[0] / 2;
-            nodes.forEach(n => { n.pos[0] = cx - n.size[0] / 2; });
+            const x = anchor.pos[0] + anchor.size[0] * anchorRatio;
+            beginChange();
+            nodes.forEach(node => { node.pos[0] = x - node.size[0] * anchorRatio; });
             endChange();
         }
-        function alignVCenter() {
+        function alignTop()     { alignVertical(0); }
+        function alignVCenter() { alignVertical(0.5); }
+        function alignBottom()  { alignVertical(1); }
+        function alignVertical(anchorRatio) {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
-            beginChange();
             const anchor = getLeftmost(nodes);
-            const cy = anchor.pos[1] + anchor.size[1] / 2;
-            nodes.forEach(n => { n.pos[1] = cy - n.size[1] / 2; });
+            const y = anchor.pos[1] + anchor.size[1] * anchorRatio;
+            beginChange();
+            nodes.forEach(node => { node.pos[1] = y - node.size[1] * anchorRatio; });
             endChange();
         }
 
@@ -392,6 +398,7 @@ app.registerExtension({
         function autoArrange() {
             const nodes = getSelectedNodes();
             if (nodes.length < 2) return;
+            const widths = new Map(nodes.map(node => [node, node.size[0]]));
             beginChange();
 
             const nodeMap = new Map();
@@ -448,61 +455,10 @@ app.registerExtension({
                 layers.get(d).push(n);
             });
 
-            let anchor = null;
-            let minAnchorScore = Infinity;
-            nodes.forEach(n => {
-                const d = depth.get(n.id) || 0;
-                const score = d * 10000 + n.pos[1];
-                if (score < minAnchorScore) {
-                    minAnchorScore = score;
-                    anchor = n;
-                }
-            });
-            if (!anchor) anchor = nodes[0];
-            const anchorX = anchor.pos[0];
-            const anchorY = anchor.pos[1];
-            const anchorDepth = depth.get(anchor.id) || 0;
-
-            const H_GAP = 70;
-            const V_GAP = 50;
-
-            const layerHeights = new Map();
-            const layerMaxWidths = new Map();
-            for (const [d, list] of layers) {
-                const totalH = list.reduce((a, n) => a + n.size[1], 0) + V_GAP * (list.length - 1);
-                layerHeights.set(d, totalH);
-                const maxW = Math.max(...list.map(n => n.size[0] || 200));
-                layerMaxWidths.set(d, maxW);
-            }
-
-            const layerXs = new Map();
             const sortedDepths = [...layers.keys()].sort((a, b) => a - b);
-
-            {
-                let rightX = anchorX + (layerMaxWidths.get(anchorDepth) || 200);
-                for (const d of sortedDepths) {
-                    if (d < anchorDepth) continue;
-                    if (d === anchorDepth) {
-                        layerXs.set(d, anchorX);
-                    } else {
-                        const lx = rightX + H_GAP;
-                        layerXs.set(d, lx);
-                        rightX = lx + (layerMaxWidths.get(d) || 200);
-                    }
-                }
-            }
-
-            {
-                let leftX = anchorX;
-                const reversedDepths = [...sortedDepths].filter(d => d < anchorDepth).sort((a, b) => b - a);
-                for (const d of reversedDepths) {
-                    const lx = leftX - H_GAP - (layerMaxWidths.get(d) || 200);
-                    layerXs.set(d, lx);
-                    leftX = lx;
-                }
-            }
-
-            const anchorCenterY = anchorY + anchor.size[1] / 2;
+            const anchor = getTopmost(layers.get(sortedDepths[0]));
+            const startY = anchor.pos[1];
+            let x = anchor.pos[0];
 
             // 保留原有上下顺序，只有交换相邻节点能减少列间交叉时才换位。
             const layerOrder = new Map();
@@ -543,30 +499,136 @@ app.registerExtension({
                 }
             }
 
-            sortedDepths.forEach((d) => {
-                const list = layers.get(d);
-                const totalH = layerHeights.get(d);
-                const startY = anchorCenterY - totalH / 2;
+            const columns = sortedDepths.map(d => layers.get(d));
+            placeColumns(columns, widths, x, startY);
+            endChange();
+            return { columns, widths, inputsOf, outputsOf };
+        }
 
-                const anchorIdx = list.findIndex(n => n.id === anchor.id);
-                let adjustedStartY = startY;
-                if (anchorIdx >= 0) {
-                    let aboveH = 0;
-                    for (let i = 0; i < anchorIdx; i++) {
-                        aboveH += list[i].size[1] + V_GAP;
-                    }
-                    adjustedStartY = anchorY - aboveH;
+        function placeColumns(columns, widths, x, startY) {
+            for (const column of columns) {
+                const width = Math.max(...column.map(node => widths.get(node)));
+                let y = startY;
+                for (const node of column) {
+                    node.pos[0] = x;
+                    node.pos[1] = y;
+                    node.size[0] = width;
+                    y += node.size[1] + V_GAP;
+                }
+                x += width + H_GAP;
+            }
+        }
+
+        function balanceColumnHeights({ columns, widths, inputsOf, outputsOf }) {
+            const columnOf = new Map();
+            const heights = columns.map((column, index) => {
+                for (const node of column) columnOf.set(node.id, index);
+                return column.reduce((height, node) => height + node.size[1] + V_GAP, 0) - V_GAP;
+            });
+            const x = columns[0][0].pos[0];
+            const y = columns[0][0].pos[1];
+            let changed = false;
+
+            while (true) {
+                let best = null;
+                let bestSpread = Math.max(...heights) - Math.min(...heights);
+                let bestGain = 0;
+                const destinations = new Map();
+
+                function considerMove(node, from, to, height, exchange) {
+                    const gain = height * (heights[from] - heights[to] - height);
+                    if (height <= 0 || gain <= 0) return;
+                    const nextHeights = heights.slice();
+                    nextHeights[from] -= height;
+                    nextHeights[to] += height;
+                    const spread = Math.max(...nextHeights) - Math.min(...nextHeights);
+                    if (spread > bestSpread || (spread === bestSpread && gain <= bestGain)) return;
+                    best = { node, from, to, height, exchange };
+                    bestSpread = spread;
+                    bestGain = gain;
                 }
 
-                let y = adjustedStartY;
-                const lx = layerXs.get(d) || 0;
-                list.forEach(n => {
-                    n.pos[0] = lx;
-                    n.pos[1] = y;
-                    y += n.size[1] + V_GAP;
-                });
-            });
+                for (const [from, column] of columns.entries()) {
+                    for (const node of column) {
+                        let first = 0;
+                        let last = columns.length - 1;
+                        for (const input of inputsOf.get(node.id)) first = Math.max(first, columnOf.get(input) + 1);
+                        for (const output of outputsOf.get(node.id)) last = Math.min(last, columnOf.get(output) - 1);
+                        destinations.set(node, [first, last]);
+                        if (column.length < 2) continue;
+                        const height = node.size[1] + V_GAP;
+                        for (let to = first; to <= last; to++) {
+                            if (from !== to) considerMove(node, from, to, height);
+                        }
+                    }
+                }
 
+                // 单独挪动会让目标列过高时，尝试用较矮的节点交换。
+                if (!best) {
+                    for (const [node, [first, last]] of destinations) {
+                        const from = columnOf.get(node.id);
+                        for (let to = first; to <= last; to++) {
+                            if (heights[to] >= heights[from]) continue;
+                            for (const exchange of columns[to]) {
+                                const [exchangeFirst, exchangeLast] = destinations.get(exchange);
+                                if (from < exchangeFirst || from > exchangeLast) continue;
+                                considerMove(node, from, to, node.size[1] - exchange.size[1], exchange);
+                            }
+                        }
+                    }
+                }
+                if (!best) break;
+                const { node, from, to, height, exchange } = best;
+                columns[from].splice(columns[from].indexOf(node), 1);
+                if (exchange) {
+                    columns[to].splice(columns[to].indexOf(exchange), 1);
+                    columns[from].push(exchange);
+                    columnOf.set(exchange.id, from);
+                }
+                columns[to].push(node);
+                columnOf.set(node.id, to);
+                heights[from] -= height;
+                heights[to] += height;
+                changed = true;
+            }
+
+            const typicalHeight = heights.slice().sort((a, b) => a - b)[Math.floor((heights.length - 1) / 2)];
+            const balancedColumns = [];
+            for (const [index, column] of columns.entries()) {
+                column.sort((a, b) => a.pos[1] - b.pos[1]);
+                const tallest = Math.max(...column.map(node => node.size[1]));
+                const height = heights[index];
+                let split = 0;
+                if (column.length > 1 && height > Math.max(typicalHeight, tallest) * 1.4) {
+                    let leftHeight = -V_GAP;
+                    let bestHeight = height;
+                    const leftIds = new Set();
+                    for (let i = 1; i < column.length; i++) {
+                        const node = column[i - 1];
+                        leftIds.add(node.id);
+                        leftHeight += node.size[1] + V_GAP;
+                        const largest = Math.max(leftHeight, height - leftHeight - V_GAP);
+                        if (largest >= bestHeight) continue;
+                        const hasBackwardLink = column.slice(i).some(right =>
+                            [...outputsOf.get(right.id)].some(id => leftIds.has(id))
+                        );
+                        if (hasBackwardLink) continue;
+                        split = i;
+                        bestHeight = largest;
+                    }
+                }
+                if (split) {
+                    balancedColumns.push(column.slice(0, split), column.slice(split));
+                    changed = true;
+                } else {
+                    balancedColumns.push(column);
+                }
+            }
+
+            if (!changed) return;
+            beginChange();
+            columns.splice(0, columns.length, ...balancedColumns);
+            placeColumns(columns, widths, x, y);
             endChange();
         }
 
@@ -574,6 +636,8 @@ app.registerExtension({
         function applyThemeToVisuals() {
             if (!tianPanel) return;
             updateThemeColors();
+            updateShortcutHint();
+            if (autoArrangeMenu) applyAutoArrangeMenuTheme();
 
             // 中心发光环
             if (centerGlow) {
@@ -882,11 +946,10 @@ app.registerExtension({
             shortcutDisplay.textContent = formatShortcut(SHORTCUT);
             shortcutDisplay.title = "点击修改快捷键";
 
-            let recording = false;
             let tempShortcut = null;
 
             function startRecording() {
-                recording = true;
+                recordingShortcut = true;
                 tempShortcut = { key: "", alt: false, ctrl: false, shift: false, meta: false };
                 shortcutDisplay.textContent = "按下快捷键...";
                 shortcutDisplay.style.borderColor = "#FFD700";
@@ -895,12 +958,13 @@ app.registerExtension({
             }
 
             function stopRecording(save) {
-                recording = false;
+                recordingShortcut = false;
                 shortcutDisplay.style.borderColor = "rgba(255,255,255,0.25)";
                 shortcutDisplay.style.boxShadow = "none";
                 shortcutDisplay.style.background = "rgba(255,255,255,0.08)";
                 if (save && tempShortcut && tempShortcut.key) {
                     SHORTCUT = { ...tempShortcut };
+                    updateShortcutHint();
                     localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(SHORTCUT));
                     alignQueueSave();
                 }
@@ -910,7 +974,7 @@ app.registerExtension({
 
             shortcutDisplay.addEventListener("click", (e) => {
                 e.stopPropagation();
-                if (recording) {
+                if (recordingShortcut) {
                     stopRecording(false);
                 } else {
                     startRecording();
@@ -918,12 +982,12 @@ app.registerExtension({
             });
 
             shortcutDisplay.addEventListener("mouseenter", () => {
-                if (!recording) {
+                if (!recordingShortcut) {
                     shortcutDisplay.style.borderColor = "rgba(255,215,0,0.5)";
                 }
             });
             shortcutDisplay.addEventListener("mouseleave", () => {
-                if (!recording) {
+                if (!recordingShortcut) {
                     shortcutDisplay.style.borderColor = "rgba(255,255,255,0.25)";
                 }
             });
@@ -954,6 +1018,7 @@ app.registerExtension({
                 applyVGap(DEFAULT_V_GAP);
                 applyHGap(DEFAULT_H_GAP);
                 SHORTCUT = { ...DEFAULT_SHORTCUT };
+                updateShortcutHint();
                 localStorage.setItem("xiaozhuguang.tian.shortcut", JSON.stringify(SHORTCUT));
                 alignQueueSave();
                 shortcutDisplay.textContent = formatShortcut(SHORTCUT);
@@ -976,7 +1041,7 @@ app.registerExtension({
             updateSwatchSelection();
 
             function handleRecordKey(e) {
-                if (!recording) return;
+                if (!recordingShortcut) return;
                 e.preventDefault();
                 e.stopPropagation();
 
@@ -1005,6 +1070,9 @@ app.registerExtension({
             }
             document.addEventListener("keydown", handleRecordKey, true);
 
+            colorMenu._cancelShortcutRecording = () => {
+                if (recordingShortcut) stopRecording(false);
+            };
             colorMenu._customInput = customInput;
             colorMenu._shortcutDisplay = shortcutDisplay;
             colorMenu._updateShortcutDisplay = function() {
@@ -1036,7 +1104,10 @@ app.registerExtension({
         }
 
         function hideColorMenu() {
-            if (colorMenu) colorMenu.style.display = "none";
+            if (colorMenu) {
+                colorMenu._cancelShortcutRecording();
+                colorMenu.style.display = "none";
+            }
             colorMenuOpen = false;
         }
 
@@ -1419,6 +1490,21 @@ app.registerExtension({
             `;
             tianPanel.appendChild(tipEl);
 
+            shortcutHint = document.createElement("div");
+            shortcutHint.className = "xzg-tian-shortcut-hint";
+            shortcutHint.style.cssText = `
+                position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+                border-radius:6px; background:#181818; padding:5px 10px;
+                font-size:34px; font-weight:600; white-space:nowrap; pointer-events:none;
+            `;
+            const hintStyle = document.createElement("style");
+            hintStyle.textContent = `
+                #xzg-tian-panel > .xzg-tian-shortcut-hint { display:none; }
+                #xzg-tian-panel[data-selection-open] > :not(.xzg-tian-shortcut-hint) { display:none; }
+                #xzg-tian-panel[data-selection-open] > .xzg-tian-shortcut-hint { display:block; }
+            `;
+            tianPanel.append(shortcutHint, hintStyle);
+
             // 交互覆盖层
             overlay = document.createElement("div");
             overlay.style.cssText = `
@@ -1429,7 +1515,10 @@ app.registerExtension({
             `;
             function getLocal(e) {
                 const r = overlay.getBoundingClientRect();
-                return { x: e.clientX - r.left, y: e.clientY - r.top };
+                return {
+                    x: (e.clientX - r.left) * TIAN_SIZE / r.width,
+                    y: (e.clientY - r.top) * TIAN_SIZE / r.height,
+                };
             }
             function isInCenter(x, y) {
                 return Math.hypot(x - CX, y - CY) < CENTER_RADIUS;
@@ -1520,7 +1609,6 @@ app.registerExtension({
             }
 
             let pressRAF = null;
-            let successRAF = null;
             function updatePressRing(progress) {
                 if (!pressRing) return;
                 const r = CENTER_RADIUS + 6;
@@ -1549,6 +1637,11 @@ app.registerExtension({
                     }
                     if (t < 1) {
                         successRAF = requestAnimationFrame(tick);
+                    } else {
+                        successRAF = null;
+                        const layout = autoArrange();
+                        if (layout) showAutoArrangeMenu(layout);
+                        else closeTianPanel();
                     }
                 }
                 successRAF = requestAnimationFrame(tick);
@@ -1581,16 +1674,9 @@ app.registerExtension({
                 pressRAF = requestAnimationFrame(tick);
                 pressTimer = setTimeout(() => {
                     if (centerDrag && centerDrag.active && !centerDrag.dragging) {
+                        cancelLongPress();
+                        centerDrag = null;
                         playSuccessAnimation();
-                        if (getSelectedNodes().length >= 2) {
-                            setTimeout(() => {
-                                autoArrange();
-                            }, 120);
-                        }
-                        setTimeout(() => {
-                            cancelLongPress();
-                            closeTianPanel();
-                        }, 280);
                     }
                 }, LONG_PRESS_MS);
             }
@@ -1637,7 +1723,7 @@ app.registerExtension({
                 setHover(null, null);
             });
             overlay.addEventListener("mousedown", (e) => {
-                if (e.button !== 0) return;
+                if (e.button !== 0 || successRAF) return;
                 if (colorMenuOpen) { hideColorMenu(); return; }
                 const { x, y } = getLocal(e);
                 if (isInCenter(x, y)) {
@@ -1649,6 +1735,7 @@ app.registerExtension({
                 }
             });
             overlay.addEventListener("click", (e) => {
+                if (successRAF) return;
                 if (colorMenuOpen) { hideColorMenu(); return; }
                 if (wasCenterDrag) {
                     wasCenterDrag = false;
@@ -1694,6 +1781,7 @@ app.registerExtension({
             overlay.addEventListener("contextmenu", (e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (successRAF) return;
                 if (centerDrag && centerDrag.active) {
                     cancelLongPress();
                     centerDrag = null;
@@ -1707,16 +1795,91 @@ app.registerExtension({
             document.body.appendChild(tianPanel);
         }
 
-        function openTianPanel() {
+        function applyAutoArrangeMenuTheme() {
+            const style = autoArrangeMenu.style;
+            style.setProperty("--xzg-align-color", GOLD);
+            style.setProperty("--xzg-align-fill", QZONE_BG);
+            style.setProperty("--xzg-align-border", QZONE_BORDER);
+            style.setProperty("--xzg-align-hover", hexToRgba(THEME_COLOR, 0.24));
+        }
+
+        function showAutoArrangeMenu(layout) {
+            autoArrangeMenu = document.createElement("div");
+            autoArrangeMenu.id = "xzg-auto-arrange-menu";
+            autoArrangeMenu.style.cssText = `
+                position:absolute; inset:0; display:flex; flex-direction:column;
+                justify-content:center; gap:8px; padding:20px;
+                border-radius:inherit; background:#181818;
+            `;
+            updateThemeColors();
+            applyAutoArrangeMenuTheme();
+            const actions = [
+                ["高度居中", () => alignColumnsVertically(layout.columns, 0.5)],
+                ["顶部对齐", () => alignColumnsVertically(layout.columns, 0)],
+                ["底部对齐", () => alignColumnsVertically(layout.columns, 1)],
+                ["均衡列高", () => balanceColumnHeights(layout)],
+            ];
+            for (const [label, action] of actions) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = label;
+                button.addEventListener("click", () => {
+                    action();
+                    closeTianPanel();
+                });
+                autoArrangeMenu.appendChild(button);
+            }
+            const style = document.createElement("style");
+            style.textContent = `
+                #xzg-auto-arrange-menu > button {
+                    padding:7px; border:1px solid var(--xzg-align-border); border-radius:6px;
+                    background:var(--xzg-align-fill); color:var(--xzg-align-color); cursor:pointer;
+                }
+                #xzg-auto-arrange-menu > button:hover {
+                    background:var(--xzg-align-hover); border-color:var(--xzg-align-color);
+                }
+                #xzg-auto-arrange-menu > button:focus-visible {
+                    outline:none; text-decoration:underline;
+                }
+            `;
+            autoArrangeMenu.appendChild(style);
+            tianPanel.appendChild(autoArrangeMenu);
+        }
+
+        function updateShortcutHint() {
+            if (!shortcutHint) return;
+            shortcutHint.textContent = formatShortcut(SHORTCUT);
+            shortcutHint.style.color = THEME_COLOR;
+        }
+
+        function openTianPanel(fromSelection = false) {
             buildTianPanel();
             setHover(null, null);
+            updateShortcutHint();
+            tianPanel.toggleAttribute("data-selection-open", fromSelection);
+            tianPanel.style.left = fromSelection ? "auto" : "50%";
+            tianPanel.style.top = fromSelection ? "auto" : "50%";
+            tianPanel.style.right = fromSelection ? "16px" : "auto";
+            tianPanel.style.bottom = fromSelection ? "72px" : "auto";
+            tianPanel.style.marginLeft = fromSelection ? "0" : `-${TIAN_SIZE / 2}px`;
+            tianPanel.style.marginTop = fromSelection ? "0" : `-${TIAN_SIZE / 2}px`;
+            tianPanel.style.transformOrigin = fromSelection ? "bottom right" : "center";
+            tianPanel.style.transform = fromSelection ? "scale(0.35)" : "none";
+            tianPanel.style.pointerEvents = fromSelection ? "none" : "";
             tianPanel.style.display = "block";
             tianIsOpen = true;
+            tianOpenedFromSelection = fromSelection;
         }
         function closeTianPanel() {
             if (!tianPanel) return;
+            panelTransition?.cancel();
+            panelTransition = null;
+            if (successRAF) { cancelAnimationFrame(successRAF); successRAF = null; }
+            autoArrangeMenu?.remove();
+            autoArrangeMenu = null;
             tianPanel.style.display = "none";
             tianIsOpen = false;
+            tianOpenedFromSelection = false;
             hoveredType = null;
             hoveredKey = null;
             centerDrag = null;
@@ -1726,28 +1889,91 @@ app.registerExtension({
             hideColorMenu();
         }
         function toggleTianPanel() {
+            const openCentered = !tianIsOpen || tianOpenedFromSelection;
+            const start = tianOpenedFromSelection && !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+                ? tianPanel.getBoundingClientRect() : null;
             if (tianIsOpen) closeTianPanel();
-            else {
-                if (getSelectedNodes().length < 2) return;
-                openTianPanel();
+            if (!openCentered || getSelectedNodes().length < 2) return;
+            openTianPanel();
+            if (!start) return;
+
+            const end = tianPanel.getBoundingClientRect();
+            const dx = start.left + start.width / 2 - end.left - end.width / 2;
+            const dy = start.top + start.height / 2 - end.top - end.height / 2;
+            const scale = start.width / end.width;
+            panelTransition = tianPanel.animate([
+                { transform: `translate(${dx}px, ${dy}px) scale(${scale})` },
+                { transform: "translate(0, 0) scale(1)" },
+            ], { duration: 260, easing: "cubic-bezier(0.2, 0.75, 0.25, 1)" });
+        }
+
+        function syncSelectionPanel() {
+            selectionRAF = null;
+            if (!alignmentEnabled) return;
+            const selection = new Set(getSelectedNodes());
+            const changed = selection.size !== previousSelection.size
+                || [...selection].some(node => !previousSelection.has(node));
+            previousSelection = selection;
+            if (!changed) return;
+            if (selection.size < 2) {
+                if (tianIsOpen) closeTianPanel();
+            } else if (!tianIsOpen || tianOpenedFromSelection) {
+                if (tianIsOpen) closeTianPanel();
+                openTianPanel(true);
+            }
+        }
+
+        function queueSelectionCheck() {
+            if (alignmentEnabled && selectionRAF === null) {
+                selectionRAF = requestAnimationFrame(syncSelectionPanel);
             }
         }
 
         window.__xzg_tian_close = closeTianPanel;
+        previousSelection = new Set(getSelectedNodes());
+        app.ui?.settings?.addSetting?.({
+            id: ALIGN_ENABLED_SETTING,
+            name: "[小珠光] 启用「田字格对齐」",
+            defaultValue: true,
+            type: "boolean",
+            onChange(value) {
+                const enabled = value !== false;
+                if (alignmentEnabled === enabled) return;
+                alignmentEnabled = enabled;
+                if (enabled) {
+                    previousSelection.clear();
+                    queueSelectionCheck();
+                } else {
+                    if (selectionRAF !== null) cancelAnimationFrame(selectionRAF);
+                    selectionRAF = null;
+                    closeTianPanel();
+                }
+            },
+        });
+        alignmentEnabled = app.ui?.settings?.getSettingValue?.(ALIGN_ENABLED_SETTING) !== false;
+        document.addEventListener("pointerup", queueSelectionCheck, true);
+        document.addEventListener("keyup", queueSelectionCheck, true);
 
         // --- 键盘 ---
         document.addEventListener("keydown", (e) => {
-            if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
+            if (!alignmentEnabled || recordingShortcut || e.defaultPrevented || e.isComposing) return;
+            if (e.target.closest?.("input, textarea, select") || e.target.isContentEditable) return;
             const keyMatch = e.key.toLowerCase() === SHORTCUT.key;
             const altMatch = e.altKey === SHORTCUT.alt;
             const ctrlMatch = e.ctrlKey === SHORTCUT.ctrl;
             const shiftMatch = e.shiftKey === SHORTCUT.shift;
             const metaMatch = e.metaKey === SHORTCUT.meta;
             if (keyMatch && altMatch && ctrlMatch && shiftMatch && metaMatch && SHORTCUT.key) {
+                if (!tianIsOpen && getSelectedNodes().length < 2) return;
                 e.preventDefault();
-                toggleTianPanel();
-                return;
+                e.stopPropagation();
+                if (!e.repeat) toggleTianPanel();
             }
+        }, true);
+
+        document.addEventListener("keydown", (e) => {
+            if (!alignmentEnabled || e.defaultPrevented) return;
+            if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable) return;
             if (e.key === "Escape" && tianIsOpen) {
                 e.preventDefault();
                 if (colorMenuOpen) { hideColorMenu(); return; }

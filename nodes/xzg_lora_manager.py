@@ -469,3 +469,31 @@ class XiaozhuguangLoraManager:
             weights = comfy.utils.load_torch_file(str(path), safe_load=True)
             model, _ = comfy.sd.load_lora_for_models(model, None, weights, strength, 0)
         return (model,)
+
+
+class XiaozhuguangWanLoraManager(XiaozhuguangLoraManager):
+    DEPRECATED = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        del inputs["required"]["model"]
+        return inputs
+
+    RETURN_TYPES = ("WANVIDLORA",)
+    RETURN_NAMES = ("lora",)
+    DESCRIPTION = "通过管理器选择 Wan LoRA，输出到 Wan 模型加载器或 SetLoRAs。"
+
+    def load(self, loras="[]", library_user="default", **kwargs):
+        selected = []
+        for path, strength in self._active_loras(loras, library_user, **kwargs):
+            selected.append({
+                "path": str(path),
+                "strength": strength,
+                "name": path.stem,
+                "blocks": {},
+                "layer_filter": "",
+                "low_mem_load": False,
+                "merge_loras": False,
+            })
+        return (selected or None,)

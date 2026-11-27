@@ -1,6 +1,20 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
+const queuePrompt = api.queuePrompt;
+api.queuePrompt = function (index, prompt, options, ...rest) {
+  if (prompt?.workflow && (prompt.xzgExecuteToNode || options?.partialExecutionTargets?.length)) {
+    prompt = {
+      ...prompt,
+      workflow: {
+        ...prompt.workflow,
+        extra: { ...prompt.workflow.extra, xzg_partial_execution: true },
+      },
+    };
+  }
+  return queuePrompt.call(this, index, prompt, options, ...rest);
+};
+
 const saveStyle = document.createElement("style");
 saveStyle.textContent = `
 .xzg-vram-save{width:100%;padding:7px 16px;background:transparent;color:#FFD700;border:1px solid #555;border-radius:4px;cursor:pointer;font-size:15px;font-weight:bold;text-shadow:0 0 8px rgba(255,215,0,.6);transition:background .2s,text-shadow .2s;}
@@ -135,7 +149,7 @@ function open(button) {
   button.setAttribute("aria-expanded", "true");
   panel = document.createElement("form");
   panel.style.cssText = "position:fixed;z-index:100100;width:290px;max-width:calc(100vw - 24px);box-sizing:border-box;padding:16px;background:#20242c;color:#e5edf7;border:1px solid #4c6078;border-radius:14px;box-shadow:0 12px 40px #0008;font:13px system-ui;display:grid;gap:12px;user-select:none;-webkit-user-select:none";
-  panel.innerHTML = `<strong>显存设置</strong><fieldset style="margin:0;padding:12px;border:1px solid #4c6078;border-radius:10px;display:grid;gap:12px"><label style="display:flex;align-items:center;justify-content:space-between;gap:16px"><strong>额外显存预留</strong><input name="enabled" type="checkbox" role="switch" aria-label="开启额外显存预留"></label><label style="display:flex;align-items:center;justify-content:space-between">预留量 <span><input name="reserved" aria-label="预留量 GB" type="number" min="-2" step="0.1" style="width:85px;user-select:text;-webkit-user-select:text"> GB</span></label></fieldset><div style="display:grid;gap:10px"><strong>运行清理</strong><label><input name="clean_gpu_before" type="checkbox"> 运行<span style="color:#ff6666">前</span>清理显存和模型</label><label><input name="clean_gpu_after" type="checkbox"> 运行<span style="color:#ff6666">后</span>清理显存和模型</label><label><input name="clean_ram_before" type="checkbox" role="switch"> 运行<span style="color:#ff6666">前</span>清理内存</label><label><input name="clean_ram_after" type="checkbox" role="switch"> 运行<span style="color:#ff6666">后</span>清理内存</label></div><small style="color:#aab5c5">清理内存会同时卸载模型并清空节点执行缓存，下次运行可能需要重新加载模型和计算节点。设置随工作流保存，修改用于下次任务。</small><small data-result role="status"></small><button type="submit" class="xzg-vram-save">保存</button>`;
+  panel.innerHTML = `<strong>显存设置</strong><fieldset style="margin:0;padding:12px;border:1px solid #4c6078;border-radius:10px;display:grid;gap:12px"><label style="display:flex;align-items:center;justify-content:space-between;gap:16px"><strong>额外显存预留</strong><input name="enabled" type="checkbox" role="switch" aria-label="开启额外显存预留"></label><label style="display:flex;align-items:center;justify-content:space-between">预留量 <span><input name="reserved" aria-label="预留量 GB" type="number" min="-2" step="0.1" style="width:85px;user-select:text;-webkit-user-select:text"> GB</span></label></fieldset><div style="display:grid;gap:10px"><strong>完整工作流运行清理</strong><label><input name="clean_gpu_before" type="checkbox"> 运行<span style="color:#ff6666">前</span>清理显存和模型</label><label><input name="clean_gpu_after" type="checkbox"> 运行<span style="color:#ff6666">后</span>清理显存和模型</label><label><input name="clean_ram_before" type="checkbox" role="switch"> 运行<span style="color:#ff6666">前</span>清理内存</label><label><input name="clean_ram_after" type="checkbox" role="switch"> 运行<span style="color:#ff6666">后</span>清理内存</label></div><small style="color:#aab5c5">清理内存会同时卸载模型并清空节点执行缓存，下次运行可能需要重新加载模型和计算节点。局部运行跳过清理。设置随工作流保存。</small><small data-result role="status"></small><button type="submit" class="xzg-vram-save">保存</button>`;
   panelGraph = app.graph;
   const config = workflowConfig(panelGraph);
   for (const [key, value] of Object.entries(config)) {

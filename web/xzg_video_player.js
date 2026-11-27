@@ -1992,7 +1992,7 @@ export class XiaozhuguangVideoPlayer {
         }
         const controller = new AbortController();
         this._comparisonRequest = controller;
-        // 默认读取原始分辨率，保证对比清晰度；确需代理时可在 URL 加 proxy=720。
+        // 仅在 URL 明确指定代理规格时才缩放缓存。
         const proxyHeight = Math.max(0, Number(params.get("proxy")) || 0);
         try {
             const response = await fetch("/xzg/video_compare_frames", {
@@ -2286,6 +2286,14 @@ export class XiaozhuguangVideoPlayer {
         const startFrame = Math.max(0, Math.round(startLocalTime * fps));
         // 创建播放迭代器
         this._playbackIterator = this._createPlaybackIterator(startLocalTime);
+        if (!this._playbackIterator && this.playbackGroupClock) {
+            queueMicrotask(() => {
+                if (this._isPlayingState && !this._playbackIterator) {
+                    this.onError?.(new Error("无法启动视频顺序解码"));
+                }
+            });
+            return;
+        }
         this._playbackIteratorDone = false;
         this._playbackBuffer = [];
         this._playbackStartFrame = startFrame;
@@ -2345,7 +2353,7 @@ export class XiaozhuguangVideoPlayer {
             const elapsedMs = now - this._playbackStartTime;
             const expectedFrame = this._playbackStartFrame + Math.floor(elapsedMs / frameDuration);
             const framesToAdvance = Math.min(expectedFrame - this._playbackLastFrame, 5); // P17: 限制单次追赶帧数
-            if (this._comparisonFile) {
+            if (this._comparisonFile || this.playbackGroupClock) {
                 const targetTime = this._playbackMediaStartTime + Math.max(0, elapsedMs) * rate / 1000;
                 let frame;
                 while (this._playbackBuffer[0]?.timestamp <= targetTime + 0.000001) {
@@ -2428,7 +2436,8 @@ export class XiaozhuguangVideoPlayer {
                     break;
                 }
                 const wc = result.value;
-                if (wc?.imageData || wc?.yuv) {
+                // 顺序对比解码的 CanvasSink 不复用 canvas，可以直接保留。
+                if (wc?.imageData || wc?.yuv || (wc?.canvas && this.playbackGroupClock)) {
                     this._playbackBuffer.push(wc);
                 } else if (wc && wc.canvas) {
                     const copy = document.createElement('canvas');
@@ -2441,7 +2450,7 @@ export class XiaozhuguangVideoPlayer {
         } catch (e) {
             if (iterator !== this._playbackIterator) return;
             console.error("[小珠光] 预缓冲失败:", e);
-            if (this._comparisonFile) this.onError?.(e);
+            if (this._comparisonFile || this.playbackGroupClock) this.onError?.(e);
         } finally {
             if (iterator === this._playbackIterator) this._isBuffering = false;
         }

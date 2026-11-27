@@ -21,7 +21,6 @@ import time
 import json
 import random
 import hashlib
-import math
 import asyncio
 import weakref
 from bisect import bisect_right
@@ -285,7 +284,6 @@ class VideoWatermarkDetector:
                     "tooltip": _param_tooltip("regions_data")}),
             },
             "optional": {
-                "fps": ("FLOAT", {"forceInput": True, "tooltip": "预览播放帧率，未连接时使用 10 FPS"}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -299,7 +297,7 @@ class VideoWatermarkDetector:
     DESCRIPTION = ""  # 悬停不弹使用说明（说明走前端视窗「使用说明」按钮）
 
     def detect(self, image, model_name=MANUAL_MODEL_NAME,
-               regions_data="", unique_id=None, fps=10.0, **kwargs):
+               regions_data="", unique_id=None, **kwargs):
         B, H, W, C = image.shape
         if B == 0:
             raise ValueError("[视频水印检测] 输入图像批次为空")
@@ -400,9 +398,8 @@ class VideoWatermarkDetector:
               f"耗时 {time.time() - t_start:.2f}s")
         # 预览帧数：手工跟踪取全部帧（逐帧精确打点追踪）；
         # 长边压到 768（仅前端视窗显示用，关键帧为归一化坐标，输出遮罩始终按原始分辨率计算）
-        playback_fps = fps if math.isfinite(fps) and fps > 0 else 10.0
         return {
-            "ui": {"preview": [{"preview_str": json.dumps({"frames": preview, "sample_idx": sample_idx_out, "video_id": vid, "fps": playback_fps}, ensure_ascii=False),
+            "ui": {"preview": [{"preview_str": json.dumps({"frames": preview, "sample_idx": sample_idx_out, "video_id": vid}, ensure_ascii=False),
                                 "is_init": True}]},
             "result": (mask_batch,),
         }
@@ -434,6 +431,8 @@ class XZGSelectTrackedMask:
     CATEGORY = "小珠光/视频"
 
     def select(self, mask_batch, color_index=0):
+        if not 0 <= color_index < len(mask_batch):
+            return (mask_batch.new_zeros(mask_batch.shape[1:]),)
         return (mask_batch[color_index],)
 
 

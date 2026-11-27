@@ -21,7 +21,7 @@ powershell.exe -NoLogo -NoProfile -Command ^
     "  (Test-Path -LiteralPath $_ -PathType Leaf)" ^
     "});" ^
     "$launcher = -join ((0x4E00,0x952E,0x5B89,0x88C5,0x4F9D,0x8D56) | ForEach-Object { [char]$_ });" ^
-    "foreach ($required in @('__init__.py', 'requirements.txt', 'installer/install.ps1', 'installer/engine.py', ($launcher + '.exe'))) {" ^
+    "foreach ($required in @('__init__.py', 'requirements.txt', 'installer/install.ps1', 'installer/engine.py', ($launcher + '.bat'))) {" ^
     "  if ($files -notcontains $required) { throw ('Missing release file: ' + $required) }" ^
     "};" ^
     "$outputDir = 'dist'; if ($env:XZG_RELEASE_OUTPUT) { $outputDir = $env:XZG_RELEASE_OUTPUT };" ^

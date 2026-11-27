@@ -52,6 +52,25 @@ class LoraManagerTests(unittest.TestCase):
         (self.models / "测试长名称.safetensors").write_bytes(b"test")
         self.item = self.m.scan("default")["items"][0]
 
+    def test_wan_loader_outputs_unmerged_loras(self):
+        node = self.m.XiaozhuguangWanLoraManager()
+        self.assertEqual(set(node.INPUT_TYPES()["required"]), {"loras", "library_user"})
+        self.assertNotIn("optional", node.INPUT_TYPES())
+        self.assertEqual(node.RETURN_TYPES, ("WANVIDLORA",))
+        loras = json.dumps([{"id": self.item["id"], "strength_model": -0.7}])
+        (selected,) = node.load(loras=loras)
+        self.assertEqual(selected, [{
+            "path": str((self.models / self.item["path"]).resolve()),
+            "strength": -0.7,
+            "name": Path(self.item["path"]).stem,
+            "blocks": {},
+            "layer_filter": "",
+            "low_mem_load": False,
+            "merge_loras": False,
+        }])
+        self.assertEqual(node.load(), (None,))
+        self.assertEqual(self.loaded, [])
+
     def test_missing_file_removes_metadata_and_thumbnail(self):
         data = self.m.read_library("default")
         data["items"][self.item["id"]].update(notes="自己的备注", tags="人物,写实", thumbnail=True)

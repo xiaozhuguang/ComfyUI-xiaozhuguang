@@ -606,7 +606,7 @@ class XZGWorkflowsManager {
                 <div class="xzg-wf-dialog">
                     <div class="xzg-wf-dialog-title">${escapeAttr(title)}</div>
                     <div class="xzg-wf-dialog-body">
-                        <input type="${opts.password ? "password" : "text"}" class="xzg-wf-dialog-input" id="xzg-wf-dialog-input"
+                        <input type="text" class="xzg-wf-dialog-input" id="xzg-wf-dialog-input"
                             value="${escapeAttr(defaultValue)}" placeholder="${escapeAttr(opts.placeholder || "")}" />
                     </div>
                     <div class="xzg-wf-dialog-footer">
@@ -820,7 +820,7 @@ class XZGWorkflowsManager {
                 } else if (action === "toggle-bookmark") {
                     this.toggleWorkflowBookmark(wf);
                 } else if (action === "rename") {
-                    this.renameWorkflow(wf);
+                    this.renameWorkflow(wf.path);
                 } else if (action === "custom-usage") {
                     this.customWorkflowUsage(wf);
                 } else if (action === "delete-usage") {
@@ -3315,7 +3315,7 @@ class XZGWorkflowsManager {
         const workflowMeta = workflowMetaPath ? this.getWorkflowMeta(workflowMetaPath) : null;
         const isReadOnly = workflowMeta?.readOnly === true;
         const items = [
-            { icon: "pi pi-pencil", label: xzgT("重命名", "Rename"), disabled: !workflow.isPersisted, action: async () => { await this._activateOwnedWorkflowTab(workflow); await app.extensionManager?.command?.execute?.("Comfy.RenameWorkflow"); } },
+            { icon: "pi pi-pencil", label: xzgT("重命名", "Rename"), disabled: !workflow.isPersisted || isReadOnly, action: () => this.renameWorkflow(workflowMetaPath) },
             { icon: "pi pi-copy", label: xzgT("复制", "Duplicate"), action: async () => {
                 if (!workflow.isLoaded) await workflow.load();
                 const state = JSON.parse(JSON.stringify(workflow.activeState));
@@ -3636,22 +3636,21 @@ class XZGWorkflowsManager {
             const tree = await res.json();
             // 官方 store 的通知和兼容轮询不应在内容未变时重建面板。
             if (background && JSON.stringify(tree) === JSON.stringify(this.tree)) return;
-            const previousPaths = new Set(this.workflows.map(w => w.path));
-            const metadataCount = Object.keys(this.meta.workflows).length;
+            const knownPaths = new Set(Object.keys(this.meta.workflows));
             this.tree = tree;
             this.workflows = this.flattenTree(tree);
             let addedWorkflow = false;
             if (this._workflowListLoaded) {
                 const lastUsed = this.workflows.reduce((latest, w) => Math.max(latest, w.lastUsed || 0), Date.now()) + 1;
                 for (const workflow of this.workflows) {
-                    if (previousPaths.has(workflow.path)) continue;
+                    if (knownPaths.has(workflow.path)) continue;
                     this.getWorkflowMeta(workflow.path).lastUsed = lastUsed;
                     workflow.lastUsed = lastUsed;
                     addedWorkflow = true;
                 }
             }
             this._workflowListLoaded = true;
-            if (addedWorkflow || Object.keys(this.meta.workflows).length !== metadataCount) this.saveMeta();
+            if (addedWorkflow || Object.keys(this.meta.workflows).length !== knownPaths.size) this.saveMeta();
             this.syncCategories();
             this.renderCategories();
             this.renderWorkflowList();
@@ -4433,7 +4432,9 @@ class XZGWorkflowsManager {
             try {
                 const open = (wfStore.openWorkflows || []).find(w => w && w.path === p);
                 if (!open) continue;
-                await wfStore.renameWorkflow(open, newPrefix + p.slice(oldPrefix.length));
+                const newPath = newPrefix + p.slice(oldPrefix.length);
+                await wfStore.renameWorkflow(open, newPath);
+                this._moveWorkflowMeta(this._workflowMetaPath(p), this._workflowMetaPath(newPath));
                 count++;
             } catch (e) {
                 console.warn("[小珠光] 官方重命名失败（打开标签）:", p, e);
@@ -4442,16 +4443,23 @@ class XZGWorkflowsManager {
         return count;
     }
 
-    async renameWorkflow(wf) {
-        if (this.getWorkflowMeta(wf.path).readOnly) {
+    _moveWorkflowMeta(oldPath, newPath) {
+        if (oldPath === newPath || !Object.hasOwn(this.meta.workflows, oldPath)) return;
+        this.meta.workflows[newPath] = this.meta.workflows[oldPath];
+        delete this.meta.workflows[oldPath];
+        this.saveMeta();
+    }
+
+    async renameWorkflow(oldPath) {
+        if (!oldPath) return;
+        if (this.getWorkflowMeta(oldPath).readOnly) {
             alert(xzgT('该工作流已设为只读，无法重命名。请先右键取消只读。', 'This workflow is read-only. Right-click to disable read-only first.'));
             return;
         }
-        const newName = await this.showInputDialog("重命名工作流", wf.name);
-        if (!newName || newName === wf.name) return;
-
-        const oldPath = wf.path;
-        const folder = wf.folder === "未分类" ? "" : wf.folder + "/";
+        const folder = oldPath.slice(0, oldPath.lastIndexOf("/") + 1);
+        const oldName = oldPath.slice(folder.length);
+        const newName = await this.showInputDialog("重命名工作流", oldName);
+        if (!newName || newName === oldName) return;
         const newPath = folder + newName;
 
         try {
@@ -4484,11 +4492,7 @@ class XZGWorkflowsManager {
                 }
             }
 
-            if (this.meta.workflows[oldPath]) {
-                this.meta.workflows[newPath] = this.meta.workflows[oldPath];
-                delete this.meta.workflows[oldPath];
-                this.saveMeta();
-            }
+            this._moveWorkflowMeta(oldPath, newPath);
 
             await this.loadWorkflows();
             if (!officialDone) {
@@ -4497,7 +4501,7 @@ class XZGWorkflowsManager {
                 // 新前端 open 一定走了官方分支且成功，失败也已 console.warn 提示）。
                 if (wfStore?.loadWorkflows) { try { await wfStore.loadWorkflows(); } catch (e) {} }
                 if (open) {
-                    const newDir = "workflows" + (wf.folder === "未分类" ? "" : "/" + wf.folder);
+                    const newDir = newFull.slice(0, newFull.lastIndexOf("/"));
                     this._patchOpenWorkflowFields(oldFull, newFull, newName, newDir);
                 }
             }
@@ -4645,6 +4649,12 @@ class XZGWorkflowsManager {
             // 第二步：服务端整体改名剩余文件。若第一步官方 move 已创建新目录，
             // 后端会自动进入合并模式（把旧目录剩余内容移入新目录）。
             await this.renameFolder(cat.path, newName);
+            const oldPrefix = oldFolder + "/";
+            for (const path of Object.keys(this.meta.workflows)) {
+                if (path.startsWith(oldPrefix)) {
+                    this._moveWorkflowMeta(path, newFolderPath + path.slice(oldFolder.length));
+                }
+            }
 
             // 重命名后刷新整棵树与官方 store，保证工作流路径同步、点击不再 404
             if (this.currentCategory === cat.id) {
@@ -4843,24 +4853,11 @@ class XZGWorkflowsManager {
         if (this.renderCategories) this.renderCategories();
     }
 
-    /** 自定义使用频率：密码验证后手动输入数值设置使用次数（不影响最近使用时间；设为 0 时一并清空） */
+    /** 自定义使用频率：设为 0 时同时清空最近使用时间。 */
     async customWorkflowUsage(wf) {
         const path = wf && wf.path;
         if (!path) return;
 
-        // 第一步：密码验证
-        const pwd = await this.showInputDialog(
-            xzgT('自定义使用频率 - 请输入密码', 'Custom Usage Count - Enter Password'),
-            "",
-            { password: true, placeholder: "******" }
-        );
-        if (pwd == null) return;
-        if (pwd !== "xiaozhuguang") {
-            alert(xzgT('密码错误，无法自定义使用频率。', 'Wrong password, cannot customize usage frequency.'));
-            return;
-        }
-
-        // 第二步：输入使用次数
         const val = await this.showInputDialog(
             xzgT(`设置「${wf.name}」的使用频率（使用次数）`, `Set usage frequency (use count) for "${wf.name}"`),
             String(wf.useCount || 0),

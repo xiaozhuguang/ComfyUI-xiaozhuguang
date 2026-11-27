@@ -1459,6 +1459,7 @@ app.registerExtension({
                 },
             });
             node._xzgWaveformViewer = waveformViewer;
+            let actionOverlay;
 
             // 「发送到快剪」「导出到达芬奇」悬浮按钮仅化神级节点创建；
             // 精简版（XiaozhuguangAudioSave）无此高级功能，不创建按钮
@@ -1485,6 +1486,10 @@ app.registerExtension({
                     filename: savedFilename, type: savedType, subfolder: savedSubfolder,
                     davinci_abs_token: savedDavinciToken,
                 }), true);
+                actionOverlay = document.createElement("div");
+                actionOverlay.style.cssText = "position:fixed;overflow:hidden;pointer-events:none;z-index:10;";
+                actionOverlay.append(node._xzgDvFloatBtn, node._xzgQcFloatBtn,
+                    node._xzgOutFloatBtn, node._xzgAudioFavoriteBtn);
             }
 
             // 波形 canvas widget（直接在节点画布上绘制，与加载器一致的自适应高度）
@@ -1509,10 +1514,21 @@ app.registerExtension({
                     }
                     // 悬浮「发送到快剪」「导出到达芬奇」按钮跟随波纹区屏幕位置
                     // （平移/缩放/拖动节点时同步；快剪按钮先同步，达芬奇按钮以其为左移基准）
-                    node._xzgDvSyncBtn?.();
-                    node._xzgQcSyncBtn?.();
-                    node._xzgOutSyncBtn?.();
-                    node._xzgFavoriteSyncBtn?.();
+                    const canvas = app.canvas?.canvas;
+                    if (actionOverlay && canvas?.parentElement) {
+                        const rect = canvas.getBoundingClientRect();
+                        if (actionOverlay.parentElement !== canvas.parentElement) {
+                            canvas.parentElement.appendChild(actionOverlay);
+                        }
+                        actionOverlay.style.left = rect.left + "px";
+                        actionOverlay.style.top = rect.top + "px";
+                        actionOverlay.style.width = rect.width + "px";
+                        actionOverlay.style.height = rect.height + "px";
+                        node._xzgDvSyncBtn?.();
+                        node._xzgQcSyncBtn?.();
+                        node._xzgOutSyncBtn?.();
+                        node._xzgFavoriteSyncBtn?.();
+                    }
                 },
                 mouse: function(event, [x, y], node) {
                     return waveformViewer.handleMouse(event, x, y);
@@ -1940,6 +1956,9 @@ app.registerExtension({
             const origOnConfigure = node.onConfigure;
             node.onConfigure = function(info) {
                 origOnConfigure?.apply(this, arguments);
+                if (typeof qualityWidget?.value === "number") {
+                    qualityWidget.value = String(qualityWidget.value);
+                }
                 requestAnimationFrame(() => {
                     node.onResize?.(node.size);
                     // 工作流加载后同步自动发送/自动导出开关图标状态（widget 值此时才恢复）
@@ -2075,6 +2094,7 @@ app.registerExtension({
             const origOnRemoved = node.onRemoved;
             node.onRemoved = function () {
                 waveformViewer.destroy();
+                actionOverlay?.remove();
                 origOnRemoved?.apply(this, arguments);
             };
         };
@@ -2347,11 +2367,11 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
     const btn = document.createElement("button");
     btn.title = "发送到快剪媒体库（打开快剪后可手动拖入轨道使用）";
     btn.style.cssText =
-        "position:fixed;z-index:100001;" +
+        "position:absolute;" +
         "display:inline-flex;align-items:center;gap:5px;" +
         "padding:2px 8px;font-size:12px;line-height:1;" +
         "background:transparent;color:#FFD700;border:none;" +
-        "cursor:pointer;pointer-events:auto;" +
+        "cursor:pointer;pointer-events:none;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;" +
         "text-shadow:0 1px 2px rgba(0,0,0,.8);";
     btn.innerHTML = `<span style="display:inline-flex;color:#FFD700;">${_CLAPPER_SVG}</span><span>发送</span>`;
@@ -2359,7 +2379,6 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
         btn.title = "收藏当前音频到音频媒体库";
         btn.innerHTML = '<span style="font-size:13px">☆</span><span>收藏</span>';
     }
-    document.body.appendChild(btn);
     const iconSpan = btn.querySelector("span:first-child");
     const labelSpan = btn.querySelector("span:last-child");
 
@@ -2415,6 +2434,7 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
             if (!cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
                 _hoverRect = null;
                 btn.style.opacity = "0";
+                btn.style.pointerEvents = "none";
                 return;
             }
             const rect = cv.getBoundingClientRect();
@@ -2434,14 +2454,14 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
             // 左移基准：达芬奇按钮的 left（其 sync 在本帧已先执行，贴右缘）；兜底自算右缘
             const dv = node._xzgDvFloatBtn;
             let dvLeft = dv ? parseFloat(dv.style.left) : NaN;
-            if (!isFinite(dvLeft)) dvLeft = x0 + w - 10 * scale - (dv?.offsetWidth || 90) * s;
-            btn.style.left = Math.round(favorite ? x0 + 6 * scale : dvLeft - 6 * scale - bw * s) + "px";
+            if (!isFinite(dvLeft)) dvLeft = x0 - rect.left + w - 10 * scale - (dv?.offsetWidth || 90) * s;
+            btn.style.left = Math.round(favorite ? x0 - rect.left + 6 * scale : dvLeft - 6 * scale - bw * s) + "px";
             // 垂直对齐：与加载器音轨顶栏文字一致（波纹区顶部 + 2px，节点本地坐标）。
             // 按钮文字视觉顶 = top + 上内边距(2px)*s，故 top = y0 + 2*scale - 2*s
             // 收藏贴左下角，避开顶部时间码；其他按钮保持顶部位置。
-            btn.style.top = Math.round(favorite
+            btn.style.top = Math.round((favorite
                 ? y0 + h - ((btn.offsetHeight || 20) + 4) * s
-                : y0 + 2 * scale - 2 * s) + "px";
+                : y0 + 2 * scale - 2 * s) - rect.top) + "px";
             // 悬停波纹区显示、离开隐藏（节点在视口外时不显示）
             const inside = _lastMouse.x >= x0 && _lastMouse.x <= x0 + w &&
                            _lastMouse.y >= y0 && _lastMouse.y <= y0 + h &&
@@ -2449,6 +2469,7 @@ function _createQuickCutFloatButton(node, waveformViewer, getSavedInfo, favorite
                            y0 + h > rect.top && y0 < rect.bottom;
             const overBtn = btn.matches(":hover");
             btn.style.opacity = (inside || overBtn) ? "1" : "0";
+            btn.style.pointerEvents = btn.style.opacity === "1" ? "auto" : "none";
         } catch (e) { /* 画布未就绪等场景忽略 */ }
     };
     node[syncKey] = syncBtn;
@@ -2500,15 +2521,14 @@ function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
     const btn = document.createElement("button");
     btn.title = "把当前节点保存的音频导入达芬奇（进媒体池 + 复用空白音频轨道/无则新建 + 对齐播放头片段前端）";
     btn.style.cssText =
-        "position:fixed;z-index:100001;" +
+        "position:absolute;" +
         "display:inline-flex;align-items:center;gap:5px;" +
         "padding:2px 8px;font-size:12px;line-height:1;" +
         "background:transparent;color:#3ef558;border:none;" +
-        "cursor:pointer;pointer-events:auto;" +
+        "cursor:pointer;pointer-events:none;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;" +
         "text-shadow:0 1px 2px rgba(0,0,0,.8);outline:none;-webkit-tap-highlight-color:transparent;box-shadow:none;";
     btn.innerHTML = `<span style="display:inline-flex;">${_xzgDvToggleClover(false)}</span><span>导出</span>`;
-    document.body.appendChild(btn);
     const iconSpan = btn.querySelector("span:first-child");
     // 图标包装器内部的三叶草 span 自身也是 :last-child，会被 querySelector 先命中，
     // 导致忙碌状态更新把三叶草替换成状态文字。直接取最后一个元素子节点当文字标签。
@@ -2563,6 +2583,7 @@ function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
             if (!cv || !ds || !npos || drawW <= 0 || drawH <= 0) {
                 _hoverRect = null;
                 btn.style.opacity = "0";
+                btn.style.pointerEvents = "none";
                 return;
             }
             const rect = cv.getBoundingClientRect();
@@ -2576,8 +2597,8 @@ function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
             btn.style.transform = `scale(${s})`;
             const bw = btn.offsetWidth || 90;
             // 达芬奇贴波纹区右缘（最右）：视觉右缘 = 节点右缘 - 10*scale
-            btn.style.left = Math.round(x0 + w - 10 * scale - bw * s) + "px";
-            btn.style.top = Math.round(y0 + 2 * scale - 2 * s) + "px";
+            btn.style.left = Math.round(x0 - rect.left + w - 10 * scale - bw * s) + "px";
+            btn.style.top = Math.round(y0 - rect.top + 2 * scale - 2 * s) + "px";
             // 悬停波纹区显示、离开隐藏（节点在视口外时不显示）
             const inside = _lastMouse.x >= x0 && _lastMouse.x <= x0 + w &&
                            _lastMouse.y >= y0 && _lastMouse.y <= y0 + h &&
@@ -2585,6 +2606,7 @@ function _createDavinciFloatButton(node, waveformViewer, getSavedInfo) {
                            y0 + h > rect.top && y0 < rect.bottom;
             const overBtn = btn.matches(":hover");
             btn.style.opacity = (inside || overBtn) ? "1" : "0";
+            btn.style.pointerEvents = btn.style.opacity === "1" ? "auto" : "none";
         } catch (e) { /* 画布未就绪等场景忽略 */ }
     };
     node._xzgDvSyncBtn = syncBtn;
@@ -2613,16 +2635,15 @@ function _createAudioSaveOutputButton(node, waveformViewer) {
     // 相同 padding/line-height），保证三个按钮高度与文字基线一致；opacity 同样 0.2s 过渡，
     // 悬停波纹区时三个按钮同时淡入淡出。
     btn.style.cssText =
-        "position:fixed;z-index:100001;" +
+        "position:absolute;" +
         "display:inline-flex;align-items:center;gap:5px;" +
         "padding:2px 8px;font-size:12px;line-height:1;" +
         "background:transparent;color:#8ab4f8;border:none;" +
-        "cursor:pointer;pointer-events:auto;" +
+        "cursor:pointer;pointer-events:none;" +
         "transition:color 0.15s,opacity 0.2s;opacity:0;" +
         "text-shadow:0 1px 2px rgba(0,0,0,.8);";
     btn.innerHTML =
         `<span style="display:inline-flex;">${_GEAR_SVG}</span><span>设置</span>`;
-    document.body.appendChild(btn);
 
     btn.addEventListener("mouseenter", () => { if (!btn.disabled) btn.style.color = "#fff"; });
     btn.addEventListener("mouseleave", () => { if (!btn.disabled) btn.style.color = "#8ab4f8"; });

@@ -110,8 +110,12 @@ if not getattr(execution.PromptExecutor.execute_async, "_xzg_vram_hook", False):
         extra_data = args[0] if args else kwargs.get("extra_data", {})
         try:
             workflow = (extra_data or {}).get("extra_pnginfo", {}).get("workflow", {})
-            raw_config = workflow.get("extra", {}).get("xzg_vram_settings", {})
+            workflow_extra = workflow.get("extra", {})
+            raw_config = workflow_extra.get("xzg_vram_settings", {})
             config = validate(raw_config if isinstance(raw_config, dict) else {})
+            if workflow_extra.get("xzg_partial_execution") is True:
+                config.update(clean_gpu_before=False, clean_gpu_after=False,
+                              clean_ram_before=False, clean_ram_after=False)
         except (ValueError, TypeError, AttributeError):
             config = dict(_defaults)
         global _changed_reserved

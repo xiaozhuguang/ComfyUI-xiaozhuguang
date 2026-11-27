@@ -10,6 +10,7 @@ import { cloudLoad, cloudSave, cloudUIInit, cloudUIQueueGeometry } from "./xzg_c
 const FAV_STATE_KEY = "xzg_favorites_state";
 // xzg_title_state：上次标题配置（与编组工具共用，新建标题节点默认样式）
 const TITLE_STATE_KEY = "xzg_title_state";
+const XZG_NODE_CATEGORY = "xzg:registered-nodes";
 
 let _favCloudTimer = null;
 
@@ -3746,11 +3747,28 @@ class Xiaozhuguang {
     }
 
     getFilteredFavorites() {
-        let nodes = this.favorites.nodes;
+        let nodes;
+        if (this.currentCategory === XZG_NODE_CATEGORY) {
+            const registered = LiteGraph.registered_node_types;
+            const pythonModule = registered.XiaozhuguangTitle?.nodeData?.python_module;
+            const favorites = new Map(this.favorites.nodes.map(node => [node.type, node]));
+            nodes = Object.entries(registered)
+                .filter(([, def]) => pythonModule && def.nodeData?.python_module === pythonModule)
+                .map(([type, def]) => ({
+                    ...favorites.get(type),
+                    type,
+                    displayName: def.title || def.nodeData.display_name || type,
+                    category: def.category || def.nodeData.category,
+                }));
+        } else {
+            nodes = this.favorites.nodes;
 
-        if (this.currentCategory !== "all") {
-            nodes = nodes.filter(n => n.categoryId === this.currentCategory);
+            if (this.currentCategory !== "all") {
+                nodes = nodes.filter(n => n.categoryId === this.currentCategory);
+            }
         }
+
+        nodes = nodes.filter(node => node.type !== "XiaozhuguangWanLoraManager");
 
         if (this.currentSearch) {
             nodes = nodes.filter(n =>
@@ -3776,6 +3794,7 @@ class Xiaozhuguang {
     }
 
     getFilteredWorkflows() {
+        if (this.currentCategory === XZG_NODE_CATEGORY) return [];
         let workflows = this.favorites.workflows || [];
         if (this.currentCategory !== "all") {
             workflows = workflows.filter(w => w.categoryId === this.currentCategory);
@@ -3831,6 +3850,9 @@ class Xiaozhuguang {
                 <span class="nf-cat-name">全部</span>
                 ${allInvalid > 0 ? `<span class="nf-cat-invalid-count" title="${allInvalid}个失效节点">${allInvalid}</span>` : ''}
             </div>
+            <div class="nf-category-item ${this.currentCategory === XZG_NODE_CATEGORY ? 'active' : ''}" data-cat="${XZG_NODE_CATEGORY}">
+                <span class="nf-cat-name">${xzgT('小珠光节点', 'Xiaozhuguang Nodes')}</span>
+            </div>
         `;
 
         for (const cat of cats) {
@@ -3853,6 +3875,7 @@ class Xiaozhuguang {
                 this.renderCategories();
                 this.renderFavorites();
             });
+            if (item.dataset.cat === XZG_NODE_CATEGORY) return;
             item.addEventListener("dragover", (e) => {
                 e.preventDefault();
                 const isCatDrag = e.dataTransfer && Array.from(e.dataTransfer.types).includes("text/xzg-cat-id");
@@ -4073,7 +4096,7 @@ class Xiaozhuguang {
                 <div class="nf-dialog">
                     <div class="nf-dialog-title">${escapeAttr(title)}</div>
                     <div class="nf-dialog-body">
-                        <input type="${opts.password ? "password" : "text"}" id="nf-custom-input"
+                        <input type="text" id="nf-custom-input"
                             value="${escapeAttr(defaultValue)}" placeholder="${escapeAttr(opts.placeholder || "")}"
                             style="width:100%;padding:6px;background:#2a2a2a;border:1px solid #555;border-radius:4px;color:#ddd;margin-bottom:10px;box-sizing:border-box;" />
                     </div>
@@ -4113,25 +4136,12 @@ class Xiaozhuguang {
         });
     }
 
-    /** 自定义使用频率：密码验证后手动输入数值设置使用次数（不影响最近使用时间；设为 0 时一并清空）— 与工作流管理一致 */
+    /** 自定义使用频率：设为 0 时同时清空最近使用时间。 */
     async customNodeUsage(nodeType) {
         const node = this.favorites.nodes.find(n => n.type === nodeType);
         if (!node) return;
         const displayName = node.displayName || node.type;
 
-        // 第一步：密码验证
-        const pwd = await this.showNodeInputDialog(
-            xzgT('自定义使用频率 - 请输入密码', 'Custom Usage Count - Enter Password'),
-            "",
-            { password: true, placeholder: "******" }
-        );
-        if (pwd == null) return;
-        if (pwd !== "xiaozhuguang") {
-            alert(xzgT('密码错误，无法自定义使用频率。', 'Wrong password, cannot customize usage frequency.'));
-            return;
-        }
-
-        // 第二步：输入使用次数
         const val = await this.showNodeInputDialog(
             xzgT(`设置「${displayName}」的使用频率（使用次数）`, `Set usage frequency (use count) for "${displayName}"`),
             String(node.useCount || 0),
@@ -4197,7 +4207,10 @@ class Xiaozhuguang {
         const totalCount = nodes.length + workflows.length;
 
         if (totalCount === 0) {
-            this.favoritesList.innerHTML = `<div class="nf-empty-tip">暂无匹配的收藏节点</div>`;
+            const message = this.currentCategory === XZG_NODE_CATEGORY
+                ? xzgT('暂无匹配的小珠光节点', 'No matching Xiaozhuguang nodes')
+                : '暂无匹配的收藏节点';
+            this.favoritesList.innerHTML = `<div class="nf-empty-tip">${message}</div>`;
             return;
         }
 
@@ -4376,6 +4389,7 @@ class Xiaozhuguang {
                     this.showWorkflowContextMenu(e.clientX, e.clientY, wfId, wfName);
                 } else {
                     const nodeType = item.dataset.type;
+                    if (!this.isNodeFavorited(nodeType)) return;
                     const nodeName = item.querySelector(".nf-fav-name")?.textContent || nodeType;
                     this.showNodeContextMenu(e.clientX, e.clientY, nodeType, nodeName);
                 }
@@ -5380,8 +5394,8 @@ class Xiaozhuguang {
         if (!this.categoryList) return;
         const indicator = document.createElement("div");
         indicator.className = "nf-cat-insert-indicator";
-        // DOM 中首个子项是“全部”，真实分类从索引 1 开始
-        const domIndex = insertIndex + 1;
+        // “全部”和“小珠光节点”在可排序分类之前。
+        const domIndex = insertIndex + 2;
         const refNode = this.categoryList.children[domIndex] || null;
         this.categoryList.insertBefore(indicator, refNode);
     }

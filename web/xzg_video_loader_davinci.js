@@ -586,7 +586,7 @@ function _createLoaderSettingsButton(node) {
         () => xzgShowLoaderSettings(node,
             PREVIEW_ACTIONS.filter(([, key]) => node[key]).map(([id, , zh, en]) => ({ id, label: xzgT(zh, en) })),
             () => _layoutPreviewActions(node),
-            [{ id: XZG_MENU_CAPTURE_FRAME, label: xzgT("右键菜单：截取当前帧发送到加载器", "Context menu: Capture Current Frame to Image Loader") }]),
+            [{ id: XZG_MENU_CAPTURE_FRAME, label: xzgT("预览区右键菜单：截取当前帧发送到图片加载器", "Preview context menu: Capture Current Frame to Image Loader") }]),
         '<span style="font-size:13px;line-height:1;">⚙</span>'
     );
 }
@@ -767,7 +767,7 @@ app.registerExtension({
 
             // 右键菜单：截取播放器当前帧 → 上传 input → 发送到小珠光图像加载器
             // （菜单项可在 设置 → 小珠光 中关闭，见 xzg_frame_capture.js）
-            xzgAddFrameCaptureMenu(nodeType, "loader");
+            xzgAddFrameCaptureMenu(nodeType);
             // Install after frame capture has supplied its own player menu provider.
             const onCreatedWithCapture = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {

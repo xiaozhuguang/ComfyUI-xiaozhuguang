@@ -1,6 +1,6 @@
 # ComfyUI 小珠光插件
 
-Windows 依赖安装：双击根目录 **一键安装依赖.exe**，选择 ComfyUI 的 Python 和下载源即可检查或安装。只显示安装界面，不弹出命令窗口。支持自动选源、基础/完整范围及安装日志；保留已有 PyTorch/NumPy 配置。详见 [安装器说明](installer/README.md)。
+Windows 依赖安装：双击根目录 **一键安装依赖.bat**，选择 ComfyUI 的 Python 和下载源即可检查或安装。安装界面打开时会保留命令窗口。支持自动选源、基础/完整范围及安装日志；保留已有 PyTorch/NumPy 配置。详见 [安装器说明](installer/README.md)。
 
 [![GitHub](https://img.shields.io/badge/GitHub-ComfyUI--xiaozhuguang-FFD700?style=flat-square)](https://github.com/xiaozhuguang/ComfyUI-xiaozhuguang)
 
@@ -46,7 +46,7 @@ ComfyUI 美化增强插件，提供节点收藏管理、工作流管理、主题
 
 在主题面板统一配置备份中导出 ZIP，可同时保存配置及所选媒体库原文件，无需 Base64 转码；导入时可分别选择图像、视频、音频媒体库，旧 JSON 备份仍可导入。备份文件包含实际媒体，体积取决于原文件大小。
 
-媒体原文件与分类排序写入 ComfyUI 用户目录，面板位置尺寸通过后端配置持久化，同一 ComfyUI 用户可跨浏览器使用。云端部署需持久挂载用户目录，并在迁移前导出 ZIP。
+媒体库打开时铺满浏览器可视区，侧栏显示各分类的文件总数。媒体原文件与分类排序写入 ComfyUI 用户目录，同一 ComfyUI 用户可跨浏览器使用。云端部署需持久挂载用户目录，并在迁移前导出 ZIP。
 
 ## 📚 参考与致谢
 
@@ -376,7 +376,7 @@ LongCat 原插件 `nodes/loader.py` 的三条联网路径：
 
 ### 打开面板
 
-- **快捷键**：默认 `Alt + A`，可在面板设置中自定义
+- **快捷键**：默认 `Alt + S`，可在面板设置中自定义
 - **条件**：需选中 **≥ 2 个** 节点
 
 ### 6 种线对齐

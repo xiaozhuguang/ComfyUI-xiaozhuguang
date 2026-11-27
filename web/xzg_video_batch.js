@@ -316,6 +316,15 @@ function findWidget(node, name) {
 
 }
 
+function syncSchedulerThreshold(node) {
+    const mode = findWidget(node, "分段模式");
+    const threshold = findWidget(node, "场景阈值");
+    if (!mode || !threshold) return;
+
+    threshold.disabled = mode.value !== "场景切点";
+    node.setDirtyCanvas?.(true, true);
+}
+
 
 
 
@@ -1204,7 +1213,7 @@ function xzgBindSegRowsDrag(node, element) {
     // 列表内容区仍可拖动节点，滚动条交给浏览器处理。
     let drag = null;
     const onPointerDown = (event) => {
-        if (event.button !== 0 || !element.isConnected) return;
+        if (event.button !== 0 || !element.isConnected || !element.contains(event.target)) return;
         const rect = element.getBoundingClientRect();
         if (!rect.width || !rect.height || event.clientX < rect.left || event.clientX > rect.right
             || event.clientY < rect.top || event.clientY > rect.bottom) return;
@@ -1300,8 +1309,7 @@ function xzgRenderSegRows(node) {
         el.style.display = "none";
         return;
     }
-    el.style.display = "block";
-    viewport.style.overflowY = rows.length > SEG_VISIBLE_ROWS ? "scroll" : "hidden";
+    el.style.display = "flex";
     const scrollTop = viewport.scrollTop;
     viewport.innerHTML = rows.map((row, i) => {
         const time = xzgEscapeHtml(row.time || `#${i + 1}`);
@@ -4354,6 +4362,16 @@ app.registerExtension({
             const origSchedCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const ret = origSchedCreated?.apply(this, arguments);
+                const mode = findWidget(this, "分段模式");
+                if (mode) {
+                    const callback = mode.callback;
+                    mode.callback = (...args) => {
+                        const result = callback?.apply(mode, args);
+                        syncSchedulerThreshold(this);
+                        return result;
+                    };
+                }
+                syncSchedulerThreshold(this);
                 const hiddenNames = new Set(["段表", "当前段", "缓存批次"]);
                 for (const w of this.widgets || []) {
                     if (w && hiddenNames.has(w.name)) {
@@ -4363,19 +4381,20 @@ app.registerExtension({
                     }
                 }
                 const segEl = document.createElement("div");
-                segEl.style.cssText = "width:100%;box-sizing:border-box;padding:2px 8px 4px;"
+                segEl.style.cssText = "width:100%;height:100%;box-sizing:border-box;padding:2px 8px 4px;"
                     + "font:11px 'Segoe UI',system-ui,sans-serif;color:#93a1b3;user-select:none;overflow:hidden;"
-                    + "pointer-events:none;";
+                    + "flex-direction:column;pointer-events:none;";
                 segEl.style.display = "none";
                 this._xzgSegRowsEl = segEl;
                 const viewport = document.createElement("div");
-                viewport.style.cssText = `max-height:${SEG_VISIBLE_ROWS * SEG_ROW_PX}px;overflow:hidden;`
+                viewport.style.cssText = "min-height:0;overflow:hidden auto;"
                     + "overflow-anchor:none;pointer-events:auto!important;";
                 viewport.className = "xzg-seg-rows-viewport";
                 const scrollbarStyle = document.createElement("style");
                 scrollbarStyle.textContent = ".xzg-seg-rows-viewport::-webkit-scrollbar{width:8px}"
                     + ".xzg-seg-rows-viewport::-webkit-scrollbar-thumb{background:#66717d;border-radius:4px}";
                 const statusEl = document.createElement("div");
+                statusEl.style.flexShrink = "0";
                 segEl.append(scrollbarStyle, viewport, statusEl);
                 this._xzgSegRowsViewport = viewport;
                 this._xzgSegRowsStatus = statusEl;
@@ -4385,7 +4404,8 @@ app.registerExtension({
                     this.addDOMWidget(SEG_ROWS_WIDGET_NAME, SEG_ROWS_WIDGET_NAME, segEl, {
                         serialize: false,
                         hideOnZoom: false,
-                        getHeight: () => xzgSegRowsHeight(this),
+                        getMinHeight: () => xzgSegRowsHeight(this),
+                        getHeight: () => "100%",
                     });
                 } catch (e) {
                     console.warn("[小珠光场景切点分段] 分段行控件创建失败:", e);
@@ -4428,6 +4448,7 @@ app.registerExtension({
                     const modeWidget = findWidget(this, "分段模式");
                     const framesWidget = findWidget(this, "分段帧数");
                     if (modeWidget) modeWidget.value = modeSchema[0].includes(mode) ? mode : modeSchema[1].default;
+                    syncSchedulerThreshold(this);
                     if (framesWidget) framesWidget.value = Number.isInteger(frames)
                         && frames >= framesSchema.min && frames <= framesSchema.max ? frames : framesSchema.default;
                     pruneLegacyInputs(this, new Set([
@@ -4458,13 +4479,9 @@ app.registerExtension({
                     xzgRenderSegRows(this);
                 } catch (e) { /* ignore */ }
                 if (savedSize.length === 2 && savedSize.every(v => Number.isFinite(v) && v > 0)) {
-                    const rowCount = this._xzgSegRows?.length || 0;
-                    const fittedHeight = rowCount > SEG_VISIBLE_ROWS && savedSize[1] >= rowCount * SEG_ROW_PX + 6
-                        ? Number(this.computeSize?.()?.[1]) : NaN;
                     this.setSize?.([
                         Math.max(savedSize[0], this.size?.[0] || 0),
-                        Number.isFinite(fittedHeight) && fittedHeight > 0
-                            ? fittedHeight : Math.max(savedSize[1], this.size?.[1] || 0),
+                        Math.max(savedSize[1], this.size?.[1] || 0),
                     ]);
                 }
                 return r;

@@ -45,7 +45,7 @@ const XZGGroup = {
     _lastOffsetY: null,
     _lastScale: null,
     _canvasMoving: false,
-    _moveStopTimer: null,
+    _groupFadeActive: false,
 
     _copyGroups(groups) { return JSON.parse(JSON.stringify(groups || {})); },
 
@@ -854,16 +854,16 @@ const XZGGroup = {
             if (self._needRestore && self._pendingGroups && XZGGroup._groupGraph()?._nodes?.length) {
                 self.restoreGroups();
             }
-            // 优先由 onDrawBackground 同步几何；背景未重绘时补上视口变化。
-            const ds = app.canvas?.ds;
+            const canvas = app.canvas;
+            const ds = canvas?.ds;
             const last = self._positionView;
             const viewChanged = ds && (!last || last.ds !== ds || last.scale !== ds.scale ||
                 last.x !== ds.offset[0] || last.y !== ds.offset[1]) && Object.keys(self.groupEls).length > 0;
-            if (self._positionsPending || viewChanged || (self._hasActiveEffect() && !self._canvasMoving)) {
+            if (canvas?._xzgBgDrawHooked && (self._positionsPending || viewChanged || self._canvasMoving || self._groupFadeActive)) {
+                canvas.setDirty?.(true, true);
+            } else if (self._positionsPending || viewChanged || self._hasActiveEffect()) {
                 self.updatePositions();
             }
-            // 画布移动隐藏/渐入检测
-            self._checkCanvasMovement();
             self._raf = requestAnimationFrame(loop);
         };
         this._raf = requestAnimationFrame(loop);
@@ -1283,115 +1283,18 @@ const XZGGroup = {
         this._lastOffsetY = oy;
         this._lastScale = scale;
 
-        const hasAnyEnabled = Object.values(this.groups).some(g => g.fadeEnabled);
-        if (!hasAnyEnabled) return;
-
-        if (moved) {
-            if (!this._canvasMoving) {
-                this._canvasMoving = true;
-                // 第一时间隐藏编组框：画布一开始移动就立即消失（不等松手），
-                // 停止移动时由 else 分支从 opacity:0 渐入，
-                // 表现为「消失→渐入」而非「保持→消失→渐入」
-                this._hideGroupsOnMoveStart();
-            }
-            if (this._moveStopTimer) {
-                clearTimeout(this._moveStopTimer);
-                this._moveStopTimer = null;
-            }
-        } else if (this._canvasMoving) {
-            this._canvasMoving = false;
-            const useFastFade = !!this._flashGroupActive;
-            const fadeDurMs = useFastFade ? 100 : null;
-            let maxFadeIn = 0;
-            const fadeInStartNow = performance.now();
-            for (const [gid, g] of Object.entries(this.groups)) {
-                if (!g.fadeEnabled) continue;
-                const el = this.groupEls[gid];
-                if (!el) continue;
-                // 画布移动时编组框保持可见（不做渐隐，避免与节点缩放不同步）。
-                // 停止移动时从 opacity:0 开始渐入。边框与背景共用同一时间戳与同一
-                // easing（easeInOutCubic）：边框 opacity 由 _driveBorderFades 逐帧驱动，
-                // 背景由 _drawGroupBackgrounds 里的 domOp 按同一公式计算，二者逐帧严格同步。
-                // （不用 CSS transition，避免与 canvas 重绘各自 easing 不同步。）
-                const fadeInMs = fadeDurMs ?? g.fadeInDuration ?? 1000;
-                el.style.transition = 'none';
-                el.style.opacity = '0';
-                g._fadeStart = fadeInStartNow;
-                g._fadeDur = fadeInMs;
-                g._fadeTarget = 1;
-                maxFadeIn = Math.max(maxFadeIn, fadeInMs);
-            }
-            // canvas 背景跟随 DOM 渐入：持续触发重绘
-            this._kickCanvasRepaint(maxFadeIn);
-            // 边框/标题栏 DOM 逐帧渐入：与 canvas 背景同一时间戳+同一 easing，严格同步
-            this._driveBorderFades(maxFadeIn);
-        }
-    },
-
-    /* ── 画布开始移动时立即隐藏编组：DOM 边框与 canvas 背景同一时刻归零（目标 0、极短时长），
-        停止移动后由 _checkCanvasMovement 的 else 分支从 opacity:0 渐入 ── */
-    _hideGroupsOnMoveStart() {
-        const now = performance.now();
-        let anyFade = false;
-        for (const [gid, g] of Object.entries(this.groups)) {
-            if (!g.fadeEnabled) continue;
-            const el = this.groupEls[gid];
-            if (!el) continue;
-            el.style.transition = 'none';
-            el.style.opacity = '0';       // DOM 边框/标题栏立即隐藏
-            g._fadeStart = now;           // canvas 背景绘制走同一时间戳机制：目标 0
-            g._fadeDur = 1;               // 极短时长，下一帧即稳定到 0（不做渐隐过渡）
-            g._fadeTarget = 0;
-            anyFade = true;
-        }
-        if (anyFade) {
-            this._kickCanvasRepaint(0);   // 立即重绘，canvas 背景同步隐藏
-            this._driveBorderFades(0);    // 已有渐入循环在跑则一并接管到 0
-        }
-    },
-
-    /* ── 边框/标题栏渐入驱动：与 canvas 背景共用同一时间戳与 easing（easeInOutCubic），
-        逐帧设置 DOM opacity，保证边框与背景渐入逐帧严格同步（不使用 CSS transition）。
-        采用“活跃循环”模型：只要还有任何渐入进行中（或刚结束需兜底复位）就继续跑，
-        随时可能被新触发的 _fadeStart 接手，避免长渐入 + 反复停移动时提前退出导致
-        边框停在 opacity:0 消失的概率性 bug ── */
-    _driveBorderFades(durationMs) {
-        if (this._fadeLoopActive) return; // 已有活跃循环，新触发的组由既有循环逐帧接管
-        this._fadeLoopActive = true;
-        const step = () => {
+        const wasMoving = this._canvasMoving;
+        this._canvasMoving = moved && Object.values(this.groups).some(g => g.fadeEnabled);
+        if (this._canvasMoving) {
+            for (const g of Object.values(this.groups)) delete g._fadeStart;
+        } else if (wasMoving) {
             const now = performance.now();
-            let anyActive = false;
-            let anyDone = false;
-            for (const [gid, g] of Object.entries(this.groups)) {
+            for (const g of Object.values(this.groups)) {
                 if (!g.fadeEnabled) continue;
-                const el = this.groupEls[gid];
-                if (!el) continue;
-                if (g._fadeDur > 0 && g._fadeStart !== undefined) {
-                    // 进行中的渐入：逐帧按时间戳+同一 easing 计算，与背景严格同步
-                    const t = Math.min(1, (now - g._fadeStart) / g._fadeDur);
-                    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
-                    el.style.opacity = String(g._fadeTarget === 0 ? (1 - e) : e);
-                    if (t < 1) {
-                        anyActive = true;
-                    } else {
-                        delete g._fadeStart;
-                        // 这一帧刚完成，下一帧要兜底复位为最终值，防停在中间值
-                        anyDone = true;
-                    }
-                } else {
-                    // 无进行中渐入的编组：确保最终可见/隐藏（兜底复位，防止曾停在中途值）
-                    // 注：g.hidden 仅控制编组列表标签页显隐，不影响画布边框可见性
-                    el.style.opacity = g._fadeTarget === 0 ? '0' : '1';
-                }
+                g._fadeStart = now;
+                g._fadeDur = this._flashGroupActive ? 100 : (g.fadeInDuration ?? 1000);
             }
-            if (anyActive || anyDone) {
-                requestAnimationFrame(step);
-            } else {
-                // 完全空闲：没有任何渐入，停止循环
-                this._fadeLoopActive = false;
-            }
-        };
-        requestAnimationFrame(step);
+        }
     },
 
     /* ── 画布背景绘制：编组背景色画在 LiteGraph 节点下层（不遮挡节点） ── */
@@ -1402,36 +1305,27 @@ const XZGGroup = {
         let anyAnimating = false;
         for (const [gid, g] of Object.entries(this.groups)) {
             if (!g?.bounds) continue;
-            // 画布移动中：渐入组背景立即隐藏（与 DOM 边框第一时间消失保持同步），
-            // 即使 _fadeStart 已被渐入循环清理，移动期间也不再绘制
-            if (this._canvasMoving && g.fadeEnabled) continue;
-            const rgba = g.bgColor;
-            if (!rgba) continue;
-            // 解析 alpha，完全透明跳过
-            const m = rgba.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*([\d.]+)\s*)?\)/);
-            if (!m) continue;
-            const bgAlpha = m[1] === undefined ? 1 : parseFloat(m[1]);
-            if (!(bgAlpha > 0)) continue;
-            // 渐入/渐隐：基于确定性时间戳平滑计算透明度（不读取 DOM 过渡中间态，
-            // 避免 CSS transition 与 canvas 重绘不同步造成的档位跳变/闪动）。
-            // 起点（_fadeStart）与 DOM 框体的 opacity 过渡同刻记录，两者视觉同步。
-            let domOp = 1;
-            if (g._fadeStart !== undefined && g._fadeDur > 0) {
-                const t = Math.min(1, (now - g._fadeStart) / g._fadeDur);
-                const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
-                domOp = g._fadeTarget === 0 ? (1 - e) : e;
-                if (t >= 1) {
-                    if (g._fadeTarget === 0) {
-                        domOp = 0;
-                    } else {
-                        domOp = 1;
-                        delete g._fadeStart; // 完成后不再视为过渡中
-                    }
-                }
+            let opacity = 1;
+            if (g.fadeEnabled && this._canvasMoving) {
+                opacity = 0;
+            } else if (g.fadeEnabled && g._fadeStart !== undefined) {
+                const duration = g._fadeDur;
+                const t = duration > 0 ? Math.min(1, (now - g._fadeStart) / duration) : 1;
+                opacity = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+                if (t < 1) anyAnimating = true;
+                else delete g._fadeStart;
+            } else {
+                delete g._fadeStart;
             }
-            if (domOp <= 0.01) continue;
-            // 渐隐/渐入进行中（尚未稳定到 0/1）：纳入持续重绘循环保持平滑
-            if (domOp < 1) anyAnimating = true;
+
+            // 边框与背景共用本次画布绘制的透明度，包括没有填充色的编组。
+            const el = this.groupEls[gid];
+            const borderOpacity = String(opacity);
+            if (el && el.style.opacity !== borderOpacity) el.style.opacity = borderOpacity;
+            const rgba = g.bgColor;
+            if (opacity <= 0 || !rgba) continue;
+            const m = rgba.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*([\d.]+)\s*)?\)/);
+            if (!m || (m[1] !== undefined && !(parseFloat(m[1]) > 0))) continue;
             const b = g.bounds;
             // 标题栏区域不绘制背景：标题栏颜色由 DOM 层的 headerBgColor 独立控制，
             // 避免 canvas 背景透过半透明标题栏混色影响标题栏观感
@@ -1454,7 +1348,7 @@ const XZGGroup = {
             r = Math.max(0, Math.min(r, b.w / 2, gh / 2));
 
             ctx.save();
-            ctx.globalAlpha = ctx.globalAlpha * domOp * (lgc.editor_alpha ?? 1);
+            ctx.globalAlpha = ctx.globalAlpha * opacity * (lgc.editor_alpha ?? 1);
             ctx.fillStyle = rgba;
             ctx.beginPath();
             // 顶部两角紧贴标题栏底边（无圆角），底部两角与 DOM 框体圆角对齐
@@ -1463,29 +1357,7 @@ const XZGGroup = {
             ctx.fill();
             ctx.restore();
         }
-        // 渐隐/渐入进行中：持续触发画布重绘直到过渡自然结束
-        if (anyAnimating && !this._fadeRepainting) {
-            const c = app?.canvas;
-            if (c) {
-                this._fadeRepainting = true;
-                const tick = () => {
-                    c.setDirty?.(true, true);
-                    const now2 = performance.now();
-                    const still = Object.values(this.groups).some(g =>
-                        // DOM 渐隐/渐入进行中：按时间戳未完成时继续重绘保持平滑
-                        g._fadeStart !== undefined && g._fadeDur > 0 &&
-                        now2 < g._fadeStart + g._fadeDur + 20
-                    );
-                    if (still) {
-                        requestAnimationFrame(tick);
-                    } else {
-                        this._fadeRepainting = false;
-                        c.setDirty?.(true, true); // 最终帧
-                    }
-                };
-                requestAnimationFrame(tick);
-            }
-        }
+        this._groupFadeActive = anyAnimating;
     },
 
     setupCanvasBgDraw(retryCount = 0) {
@@ -1510,22 +1382,11 @@ const XZGGroup = {
             // 在此与 canvas 同帧更新 DOM 框体位置/尺寸：此时 ds.scale 已是最新，
             // 节点将在本次 render 内用同一 scale 绘制，编组框不再“提前缩/滞后”，
             // 与节点、原生编组保持同一帧的缩放同步
+            self._checkCanvasMovement();
             self.updatePositions();
             self._drawGroupBackgrounds(this, ctx);
         };
         console.log('[小珠光编组] 画布背景绘制钩子已安装（节点下层）');
-    },
-
-    /* 在指定时长内持续触发画布重绘（让 canvas 背景跟随 DOM opacity 渐变） */
-    _kickCanvasRepaint(durationMs) {
-        const c = app?.canvas;
-        if (!c) return;
-        const end = performance.now() + (durationMs || 100) + 60;
-        const tick = () => {
-            c.setDirty?.(true, true);
-            if (performance.now() < end) requestAnimationFrame(tick);
-        };
-        requestAnimationFrame(tick);
     },
 
     /* ── 清理节点上的冗余编组数据 ── */
@@ -2430,6 +2291,7 @@ const XZGGroup = {
             }
             if (fadeDurationRow) fadeDurationRow.style.display = enabled ? 'flex' : 'none';
             group.fadeEnabled = enabled;
+            app.canvas?.setDirty?.(true, true);
         };
         fadeToggle.addEventListener('click', () => {
             const isOn = fadeToggle.dataset.checked === 'true';
@@ -2454,9 +2316,7 @@ const XZGGroup = {
                 updateHeaderHiddenToggle(next);
                 // 实时预览：立即应用并刷新编组视觉（背景/圆点/竖杠/标题/左右1/5），无需关闭弹窗
                 group.headerHidden = next;
-                self.updatePositions();
-                const _c = app?.canvas;
-                if (_c) _c.setDirty?.(true, true);
+                app.canvas?.setDirty?.(true, true);
             });
         }
 
@@ -2478,9 +2338,7 @@ const XZGGroup = {
                 updateRunBtnToggle(next);
                 // 实时预览：立即应用并刷新编组，无需关闭弹窗
                 group.runBtnEnabled = next;
-                self.updatePositions();
-                const _c = app?.canvas;
-                if (_c) _c.setDirty?.(true, true);
+                app.canvas?.setDirty?.(true, true);
             });
         }
 
@@ -2501,7 +2359,7 @@ const XZGGroup = {
             fsV.textContent = v;
             group.fontSize = v;
             // 实时预览标题栏大小：完整刷新（标题栏高度/编组框上移增高/锁定删除按钮/文字大小）
-            self.updatePositions();
+            app.canvas?.setDirty?.(true, true);
         });
 
         // 文字颜色 - 隐藏颜色选择器
@@ -2758,14 +2616,6 @@ const XZGGroup = {
                 }
                 const header = this.groupEls[g2.id]?.querySelector('.xzg-group-header');
                 if (header) header.style.background = headerBgColor;
-                // 同步渐隐状态：如果关闭了，确保编组可见
-                if (!fadeEnabled) {
-                    const el = self.groupEls[g2.id];
-                    if (el) {
-                        el.style.transition = 'none';
-                        el.style.opacity = '1';
-                    }
-                }
             }
             // 标记工作流已修改
             XZGGroup._groupGraph()?.setDirtyCanvas?.(true, true);

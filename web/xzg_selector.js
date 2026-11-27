@@ -364,7 +364,7 @@ function createSelectorDOMWidget(node, tagWidget) {
                     : drawLinearGradient(ctx, rect.x, rect.y, rect.w, rect.h, settings.colors.direction, settings.colors))
                 : (settings.inactiveColor || "#2a2a2a");
             ctx.fill();
-            ctx.strokeStyle = selected ? settings.colors.color1 : "#444";
+            ctx.strokeStyle = "#444";
             ctx.lineWidth = 1;
             ctx.stroke();
             const label = getDisplayLabel(String(i), settings.labels);

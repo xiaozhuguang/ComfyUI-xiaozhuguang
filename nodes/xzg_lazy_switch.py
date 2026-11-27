@@ -1,4 +1,6 @@
-"""小珠光单路惰性开关。"""
+"""小珠光单路和双路惰性开关。"""
+
+from comfy_api.latest import io
 
 
 class _LazySwitchAnyType(str):
@@ -38,10 +40,41 @@ class XiaozhuguangLazySwitch:
         return (ON_TRUE if boolean else ON_FALSE,)
 
 
+class XiaozhuguangLazySwitch2way(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="XiaozhuguangLazySwitch2way",
+            display_name="小珠光惰性开关-双路",
+            category=XiaozhuguangLazySwitch.CATEGORY,
+            inputs=[
+                io.Boolean.Input("boolean", default=True),
+                io.AnyType.Input("ON_TRUE", lazy=True),
+                io.AnyType.Input("on_true", lazy=True),
+                io.AnyType.Input("ON_FALSE", lazy=True),
+                io.AnyType.Input("on_false", lazy=True),
+            ],
+            outputs=[io.AnyType.Output("OUTPUT"), io.AnyType.Output("output")],
+        )
+
+    @classmethod
+    def check_lazy_status(cls, boolean, ON_TRUE=None, on_true=None, ON_FALSE=None, on_false=None):
+        selected = (("ON_TRUE", ON_TRUE), ("on_true", on_true)) if boolean else (
+            ("ON_FALSE", ON_FALSE), ("on_false", on_false)
+        )
+        return [name for name, value in selected if value is None]
+
+    @classmethod
+    def execute(cls, boolean, ON_TRUE=None, on_true=None, ON_FALSE=None, on_false=None):
+        return io.NodeOutput(ON_TRUE, on_true) if boolean else io.NodeOutput(ON_FALSE, on_false)
+
+
 NODE_CLASS_MAPPINGS = {
     "XiaozhuguangLazySwitch": XiaozhuguangLazySwitch,
+    "XiaozhuguangLazySwitch2way": XiaozhuguangLazySwitch2way,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangLazySwitch": "小珠光惰性开关",
+    "XiaozhuguangLazySwitch2way": "小珠光惰性开关-双路",
 }

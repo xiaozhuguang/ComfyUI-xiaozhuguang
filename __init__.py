@@ -268,7 +268,7 @@ from .nodes.xzg_audio_save_lite import XiaozhuguangAudioSave
 from .nodes.xzg_lazy_check import XiaozhuguangInputLazyCheck
 from .nodes.xzg_data_is_empty import XiaozhuguangDataIsEmpty
 from .nodes.xzg_bypass_check import XiaozhuguangBypassCheck
-from .nodes.xzg_lazy_switch import XiaozhuguangLazySwitch
+from .nodes.xzg_lazy_switch import XiaozhuguangLazySwitch, XiaozhuguangLazySwitch2way
 from .nodes.xzg_text_box import XiaozhuguangTextBox, XiaozhuguangTextBoxGod
 from .nodes.xzg_batch_prompt_list import XiaozhuguangBatchPromptList
 from .nodes.xzg_h3_prompt import XiaozhuguangNinimaxH3Prompt, XiaozhuguangNinimaxH3PromptNoSkill
@@ -1458,6 +1458,7 @@ NODE_CLASS_MAPPINGS = {
     "XiaozhuguangDataIsEmpty": XiaozhuguangDataIsEmpty,
     "XiaozhuguangBypassCheck": XiaozhuguangBypassCheck,
     "XiaozhuguangLazySwitch": XiaozhuguangLazySwitch,
+    "XiaozhuguangLazySwitch2way": XiaozhuguangLazySwitch2way,
     "XiaozhuguangTextBox": XiaozhuguangTextBox,
     "XiaozhuguangTextBoxGod": XiaozhuguangTextBoxGod,
     "XiaozhuguangBatchPromptList": XiaozhuguangBatchPromptList,
@@ -1540,6 +1541,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "XiaozhuguangDataIsEmpty": "小珠光数据是否为空",
     "XiaozhuguangBypassCheck": "小珠光绕过判断",
     "XiaozhuguangLazySwitch": "小珠光惰性开关",
+    "XiaozhuguangLazySwitch2way": "小珠光惰性开关-双路",
     "XiaozhuguangTextBox": "小珠光文本框",
     "XiaozhuguangTextBoxGod": "小珠光文本框-化神级",
     "XiaozhuguangBatchPromptList": "小珠光批次提示词列表",
@@ -1617,11 +1619,17 @@ except Exception as _xzg_wm_err:
 from . import workflows
 from . import xzg_codex_upload
 
-from .nodes.xzg_lora_manager import XiaozhuguangLoraManager
+from .nodes.xzg_lora_manager import XiaozhuguangLoraManager, XiaozhuguangWanLoraManager
 NODE_CLASS_MAPPINGS["XiaozhuguangLoraManager"] = XiaozhuguangLoraManager
 NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangLoraManager"] = "小珠光 LoRA 管理加载器"
+NODE_CLASS_MAPPINGS["XiaozhuguangWanLoraManager"] = XiaozhuguangWanLoraManager
+NODE_DISPLAY_NAME_MAPPINGS["XiaozhuguangWanLoraManager"] = "小珠光 LoRA 管理加载器（Wan）"
 
 NODE_CLASS_MAPPINGS.update(_LOOP_NODES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_LOOP_NAMES)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+
+from .xzg_live_video_compare import XZGLiveVideoCompare
+NODE_CLASS_MAPPINGS["XZGLiveVideoCompare"] = XZGLiveVideoCompare
+NODE_DISPLAY_NAME_MAPPINGS["XZGLiveVideoCompare"] = "小烛光 · 采样视频对比 · 参考KJ"

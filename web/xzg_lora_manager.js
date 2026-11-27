@@ -1,12 +1,58 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { ensurePinyin, getPinyin } from "./xzg_pinyin_loader.js";
 
 const TYPE = "XiaozhuguangLoraManager";
+const WAN_TYPE = "XiaozhuguangWanLoraManager";
+const TYPES = [TYPE, WAN_TYPE];
+const HIDDEN_FIELDS = ["loras", "library_user"];
 const BASE = "/xzg/lora/";
 const SIDEBAR_SETTING = "xiaozhuguang.Toggle.EnableLoraSidebar";
 const SIDEBAR_BUTTON = '.xzg-lora-library-tab-button, [data-testid="xzg-lora-library-tab-button"], [data-tab-id="xzg-lora-library"]';
 let panel;
 let pendingLibrary;
+
+function pruneHiddenInputs(node) {
+    for (let index = (node.inputs?.length || 0) - 1; index >= 0; index--) {
+        const input = node.inputs[index];
+        if (input.link == null && HIDDEN_FIELDS.includes(input.widget?.name || input.name)) {
+            node.removeInput(index);
+            node._widgetSlotsDirty = true;
+        }
+    }
+}
+
+function switchOutputMode(node, targetType) {
+    const graph = node.graph;
+    if (!graph) return;
+    const replacement = LiteGraph.createNode(targetType);
+    if (!replacement) {
+        alert("目标 LoRA 节点尚未注册，请重启 ComfyUI 并刷新页面。");
+        return;
+    }
+    replacement.pos = [...node.pos];
+    replacement.size = [...node.size];
+    replacement.mode = node.mode;
+    replacement.flags = { ...node.flags };
+    replacement.properties = { ...node.properties };
+    if (node.title && node.title !== node.constructor.title) replacement.title = node.title;
+    if (node.color) replacement.color = node.color;
+    if (node.bgcolor) replacement.bgcolor = node.bgcolor;
+    for (const name of HIDDEN_FIELDS) {
+        widget(replacement, name).value = widget(node, name).value;
+    }
+    replacement._xzgLoraMetadata = node._xzgLoraMetadata;
+    graph.beforeChange?.();
+    try {
+        graph.add(replacement);
+        if (replacement.graph !== graph) return;
+        graph.remove(node);
+        replacement._xzgRenderLoras?.();
+        graph.setDirtyCanvas?.(true, true);
+    } finally {
+        graph.afterChange?.();
+    }
+}
 
 function fetchLibrary() {
     pendingLibrary ??= request("library").then(response => response.json()).finally(() => {
@@ -15,8 +61,12 @@ function fetchLibrary() {
     return pendingLibrary;
 }
 
+function managerNodes() {
+    return TYPES.flatMap(type => app.graph?.findNodesByType?.(type) || []);
+}
+
 function updateNodeLibrary(data, target) {
-    const nodes = new Set(app.graph?.findNodesByType?.(TYPE) || []);
+    const nodes = new Set(managerNodes());
     if (target) nodes.add(target);
     for (const node of nodes) {
         node._xzgLoraMetadata = data.items;
@@ -44,7 +94,7 @@ function findLoraMetadata(items = [], entry) {
 }
 
 function updateMovedSelections(items, root, source, target) {
-    for (const node of app.graph?.findNodesByType?.(TYPE) || []) {
+    for (const node of managerNodes()) {
         let list;
         try { list = selection(node); } catch { continue; }
         let changed = false;
@@ -105,7 +155,13 @@ function installCompactToggle(node, actions) {
 
 function matchesSearch(item, query) {
     const text = [item.path, item.notes, item.tags, item.triggers].join(" ").toLowerCase();
-    return query.toLowerCase().trim().split(/\s+/).filter(Boolean).every(word => text.includes(word));
+    const unmatched = query.toLowerCase().trim().split(/\s+/).filter(word => word && !text.includes(word));
+    if (!unmatched.length) return true;
+    const pinyin = getPinyin();
+    if (!pinyin || !/[\u3400-\u9fff]/.test(text)) return false;
+    const full = pinyin(text, { toneType: "none", separator: "" });
+    const syllables = pinyin(text, { toneType: "none" });
+    return unmatched.every(word => full.includes(word) || syllables.includes(word));
 }
 
 function strengthInput(value, commit) {
@@ -330,14 +386,14 @@ function style() {
     .xzg-lora-node-actions{display:flex;gap:5px;align-items:center;box-sizing:border-box;width:100%;height:100%;padding:2px 6px;font:12px system-ui}
     .xzg-lora-node-actions button{flex:1;min-width:max-content;white-space:nowrap;background:#343434;color:#eee;border:1px solid #62605a;border-radius:4px;padding:5px 8px;cursor:pointer}
     .xzg-lora-node-actions button:hover{border-color:#eee}
-    .xzg-lora-stack-row{padding:8px 0;overflow-wrap:anywhere;white-space:normal}
+    .xzg-lora-stack-row{padding:8px 0;overflow-wrap:anywhere;white-space:normal;cursor:pointer}
     .xzg-lora-stack-row:not(:last-child){border-bottom:1px solid #555}
-    .xzg-lora-stack-row>.xzg-lora-name{cursor:grab;user-select:none;font-size:12px;font-weight:400;line-height:1.4}
+    .xzg-lora-stack-row>.xzg-lora-name{cursor:inherit;user-select:none;font-size:12px;font-weight:400;line-height:1.4}
     .xzg-lora-stack-row.xzg-lora-has-thumbnail{display:grid;grid-template-columns:minmax(0,1fr) 50px;column-gap:8px;align-items:center;min-height:50px}
     .xzg-lora-has-thumbnail>.xzg-lora-name{grid-column:1;grid-row:1}
     .xzg-lora-has-thumbnail>.xzg-lora-stack-controls{grid-column:1;grid-row:2}
     .xzg-lora-has-thumbnail>.xzg-lora-row-thumbnail{grid-column:2;grid-row:1 / 3;width:50px;height:50px;object-fit:contain;align-self:center}
-    .xzg-lora-stack-row.xzg-lora-dragging{opacity:.4}
+    .xzg-lora-stack-row.xzg-lora-dragging{opacity:.4;cursor:grabbing}
     .xzg-lora-stack-row.xzg-lora-drop-before{box-shadow:inset 0 2px #cda56d}
     .xzg-lora-stack-row.xzg-lora-drop-after{box-shadow:inset 0 -2px #cda56d}
     .xzg-lora-stack .xzg-lora-icon{width:28px;height:28px;padding:4px;display:inline-flex;align-items:center;justify-content:center}
@@ -390,7 +446,7 @@ async function openManager(node) {
     titleBar.append(element("strong", "", "小珠光 · LoRA 管理器"));
     const toolbar = element("div", "xzg-lora-toolbar");
     container.append(titleBar, toolbar);
-    const search = element("input"); search.placeholder = "搜索名称、标签等，空格分隔多个词"; search.style.width = "340px";
+    const search = element("input"); search.placeholder = "搜索名称、标签或拼音，空格分隔多个词"; search.style.width = "340px";
     toolbar.append(search);
     const tag = element("select", "xzg-lora-tags"); toolbar.append(tag);
     const body = element("div", "xzg-lora-body");
@@ -749,11 +805,28 @@ async function openManager(node) {
             await request("metadata", values); dirty = false; await reload(); status.textContent = "资料已保存";
         }, detail);
     }
+    ensurePinyin().then(() => {
+        if (overlay.isConnected && search.value.trim()) renderCards();
+    }).catch(() => {});
     await reload(); search.focus();
+}
+
+function getNodeMenuItems(node) {
+    if (!TYPES.includes(node?.type)) return [];
+    const targetType = node.type === WAN_TYPE ? TYPE : WAN_TYPE;
+    const label = targetType === WAN_TYPE ? "Wan（WANVIDLORA）" : "普通（MODEL）";
+    const connected = node.inputs?.some(input => input.link != null)
+        || node.outputs?.some(output => output.links?.length);
+    return [{
+        content: `切换 LoRA 接口 → ${label}${connected ? "（断开当前连线）" : ""}`,
+        color: "#FFD700",
+        callback: () => switchOutputMode(node, targetType),
+    }];
 }
 
 app.registerExtension({
     name: "Xiaozhuguang.LoraManager",
+    getNodeMenuItems,
     setup() {
         style();
         const sidebarIcon = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg>')}")`;
@@ -789,11 +862,12 @@ app.registerExtension({
             type: "custom", render: el => el.replaceChildren() });
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== TYPE) return;
+        if (!TYPES.includes(nodeData.name)) return;
+        if (nodeData.name === WAN_TYPE) nodeType.skip_list = true;
         const original = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             original?.apply(this, arguments);
-            for (const name of ["loras", "library_user"]) {
+            for (const name of HIDDEN_FIELDS) {
                 const w = widget(this, name);
                 if (!w) continue;
                 // Keep the value for workflow serialization and prompt submission.
@@ -806,6 +880,7 @@ app.registerExtension({
                 w.computeLayoutSize = () => ({ minHeight: 0, maxHeight: 0, minWidth: 0 });
                 if (w.inputEl) w.inputEl.style.setProperty("display", "none", "important");
             }
+            pruneHiddenInputs(this);
             const actions = element("div", "xzg-lora-node-actions");
             button("打开 LoRA 管理器", () => openManager(this), actions);
             const modeToggle = button("", () => {
@@ -958,7 +1033,11 @@ app.registerExtension({
                         item.enabled = item.enabled === false;
                         saveSelection(this, list, item);
                     };
-                    name.addEventListener("click", event => { event.stopPropagation(); toggleEnabled(); });
+                    row.addEventListener("click", event => {
+                        if (draggedIndex !== null || event.target.closest("button, input, select, textarea, label, a, [contenteditable=true]")) return;
+                        event.stopPropagation();
+                        toggleEnabled();
+                    });
                     name.addEventListener("keydown", event => {
                         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); toggleEnabled(); }
                     });
@@ -1087,6 +1166,16 @@ app.registerExtension({
         const configure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             configure?.apply(this, arguments);
+            if (nodeData.name === WAN_TYPE) {
+                for (let index = (this.inputs?.length || 0) - 1; index >= 0; index--) {
+                    const input = this.inputs[index];
+                    if (["prev_lora", "merge_loras"].includes(input.widget?.name || input.name)) {
+                        this.removeInput(index);
+                        this._widgetSlotsDirty = true;
+                    }
+                }
+            }
+            pruneHiddenInputs(this);
             const clipInput = this.inputs?.findIndex(input => input.name === "clip");
             if (clipInput >= 0) this.removeInput(clipInput);
             const clipOutput = this.outputs?.findIndex(output => output.type === "CLIP");

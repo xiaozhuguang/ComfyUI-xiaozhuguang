@@ -58,12 +58,12 @@ function getVideoUrl(filename, type, subfolder, absToken, previewId) {
     return `/view?${params.toString()}`;
 }
 
-function _extractFilename(url) {
+function _extractFilename(url, fallback = "video.mp4") {
     try {
         const params = new URLSearchParams(new URL(url, location.origin).search);
-        return params.get("filename") || "video.mp4";
+        return params.get("filename") || fallback;
     } catch (_) {
-        return "video.mp4";
+        return fallback;
     }
 }
 
@@ -95,7 +95,7 @@ function getVideoFromNode(node) {
         src = getVideoUrl(p._videoInfo.filename, p._videoInfo.type, p._videoInfo.subfolder, p._videoInfo.abs_token, p._videoInfo.preview_id);
     }
     if (!src) return null;
-    const item = { url: src, name: _extractFilename(src) };
+    const item = { url: src, name: _extractFilename(src, p._videoInfo?.filename) };
     // 携带节点自身播放器已应用的加载范围（跳过帧数/帧数上限）：
     // 对比窗口里各视频可以各自有区间（左侧裁剪、右侧完整），
     // 起播/逐帧/拖动都按「各自区间内的相对帧号」对齐（见 seekPlayerToOffset）
@@ -776,6 +776,14 @@ function _ensureStyle() {
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         background: #232323; flex-shrink: 0;
     }
+    [data-xzg-video-preview] .xzg-sp-video-label {
+        display: flex; justify-content: center; align-items: center; gap: 8px;
+        font-size: 18px;
+    }
+    .xzg-sp-video-name {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .xzg-sp-video-resolution { flex-shrink: 0; }
     .xzg-sp-player {
         position: relative; flex: 1; min-height: 0;
         background: #000 !important; /* 覆盖播放器 _buildDOM 设置的 inline 灰色 #1a1a1a，视频缩小后填充区为黑色 */
@@ -946,16 +954,30 @@ function openSyncPreview(items) {
     grid.style.gridTemplateRows = `repeat(${initialRows}, minmax(0, 1fr))`;
     // 双路对比保留更大的预读窗口（受播放器 200MB 预算约束），多路时适当收紧。
     const playbackBufferFrames = _n <= 2 ? 24 : 10;
+    const updateVideoLabel = (element, { label, player }) => {
+        const width = player.videoWidth, height = player.videoHeight;
+        const resolution = width > 0 && height > 0 ? `${width}×${height}` : "";
+        const title = resolution ? `${label}  ${resolution}` : label;
+        if (element.title === title) return;
+        element.title = title;
+        const name = document.createElement("span");
+        name.className = "xzg-sp-video-name";
+        name.textContent = label;
+        element.replaceChildren(name);
+        if (resolution) {
+            const dimensions = document.createElement("span");
+            dimensions.className = "xzg-sp-video-resolution";
+            dimensions.textContent = resolution;
+            element.appendChild(dimensions);
+        }
+    };
     const players = [];
     for (const it of items) {
         const cell = document.createElement("div");
         cell.className = "xzg-sp-cell";
         const label = document.createElement("div");
-        label.className = "xzg-sp-label";
-        // 默认临时名称 A/B/C…（与划像缩略图一致，右键可重命名）
-        label.textContent = players.length < 26
-            ? String.fromCharCode(65 + players.length)
-            : String(players.length + 1);
+        label.className = "xzg-sp-label xzg-sp-video-label";
+        const filename = (it.name || _extractFilename(it.url)).split(/[\\/]/).pop() || "video.mp4";
         const holder = document.createElement("div");
         holder.className = "xzg-sp-player";
         cell.appendChild(label);
@@ -980,7 +1002,9 @@ function openSyncPreview(items) {
         if (it.skipFrames || it.frameLimit) {
             try { player.setLoadRange(it.skipFrames || 0, it.frameLimit || 0); } catch (_) {}
         }
-        players.push({ player, url: it.url, holder, cell, labelEl: label, name: it.name || "video", isOriginal: !!it._isOriginal });
+        const entry = { player, url: it.url, holder, cell, labelEl: label, label: filename };
+        players.push(entry);
+        updateVideoLabel(label, entry);
         // closeSyncPreview owns disposal, including players still loading.
         _players.push(player);
     }
@@ -1064,6 +1088,7 @@ function openSyncPreview(items) {
     wipeLabel.className = "xzg-sp-wipe-label";
     wipeLabel.style.display = "none";
     const wipeLabels = [document.createElement("span"), document.createElement("span")];
+    wipeLabels.forEach(label => { label.className = "xzg-sp-video-label"; });
     wipeLabel.append(...wipeLabels);
     const wipeDivider = document.createElement("div");
     wipeDivider.className = "xzg-sp-wipe-divider";
@@ -1243,7 +1268,7 @@ function openSyncPreview(items) {
     const alignPlayers = (now) => {
         if (groupStartTime == null) return;
         if (!playing) return; // 暂停时不强制对齐：避免逐帧浏览时各播放器帧位被拉回主时间
-        if (players.every(({ player }) => player._comparisonFile)) return;
+        if (players.every(({ player }) => player.playbackGroupClock)) return;
         if (_lastAlignAt && now - _lastAlignAt < ALIGN_INTERVAL) return;
         _lastAlignAt = now;
         const main = pickMain();
@@ -1386,22 +1411,15 @@ function openSyncPreview(items) {
         if (_thumbTimer) { clearInterval(_thumbTimer); _thumbTimer = null; }
     };
 
-    // 多视频对比以最左侧为原视频，其余按显示顺序编号。
-    // 右键缩略图或并排视图标题栏可重命名（仅本次对比窗口有效）
-    players.forEach((p, i) => {
-        p.label = players.length === 1
-            ? (p.isOriginal ? "原视频" : "新视频1")
-            : (i === 0 ? "原视频" : `新视频${i}`);
-        if (p.labelEl) p.labelEl.textContent = p.label;
-    });
     const _updateWipeLabels = () => {
         const ready = _wipePair.length === 2;
         wipeLabel.style.display = ready ? "" : "none";
         if (!ready) return;
         const stage = wipeStage.getBoundingClientRect();
         wipeLabels.forEach((label, side) => {
-            const { player, holder, label: name } = players[_wipePair[side]];
-            if (label.textContent !== name) label.textContent = name;
+            const entry = players[_wipePair[side]];
+            const { player, holder } = entry;
+            updateVideoLabel(label, entry);
             const canvas = player._canvas;
             const frame = canvas?.getBoundingClientRect() ?? stage;
             const pane = holder.getBoundingClientRect();
@@ -1523,9 +1541,9 @@ function openSyncPreview(items) {
             const text = renameInput.value.replace(/\s+/g, " ").trim().slice(0, 10);
             if (text) players[_renameIndex].label = text;
             const item = _thumbItems.find((t) => t.index === _renameIndex);
-            if (item) item.tag.textContent = players[_renameIndex].label;
             const pl = players[_renameIndex];
-            if (pl.labelEl) pl.labelEl.textContent = pl.label;
+            if (item) item.tag.textContent = item.tag.title = pl.label;
+            updateVideoLabel(pl.labelEl, pl);
             _updateWipeLabels();
         }
         closeRename();
@@ -1565,6 +1583,7 @@ function openSyncPreview(items) {
             const tag = document.createElement("div");
             tag.className = "tag";
             tag.textContent = p.label;
+            tag.title = p.label;
             // 右键缩略图 → 弹出对话框临时命名（名称会显示在划像画面两侧）
             el.addEventListener("contextmenu", (e) => {
                 e.preventDefault();
@@ -1774,7 +1793,7 @@ function openSyncPreview(items) {
     let _zoomScales = players.map(() => 1);
     let zoomSync = true;
     let activeIndex = 0;
-    const ZOOM_MIN = 0.3, ZOOM_MAX = 10;
+    const ZOOM_MIN = 0.3, ZOOM_MAX = 20;
     let _zoomAnchorRX = 50, _zoomAnchorRY = 50;
     let _holderBase = []; // 各窗格 scale=1 时的屏幕矩形
     let _holderT = [];    // 各窗格累计 translate
@@ -1959,10 +1978,10 @@ function openSyncPreview(items) {
         const ratios = players.map(p => p.player._videoRatio || 16 / 9);
         let cols, rows;
         const portraitPair = _n === 2 && ratios.every(r => r < 1);
-        if (fixedThreeByTwo) {
-            // 五/六路不随视频宽高比改变行列，保持上三下三；五路右下角留空。
+        if (_n === 3 || fixedThreeByTwo) {
+            // 三路保持横向一排；五/六路固定三列两行。
             cols = 3;
-            rows = 2;
+            rows = fixedThreeByTwo ? 2 : 1;
             grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
             grid.style.justifyContent = "";
         } else if (ultrawideMode && portraitPair) {
@@ -2027,7 +2046,7 @@ function openSyncPreview(items) {
         if (readyCount >= players.length) {
             forceStarted = true;
             mediaReady = true;
-            if (players.some(({ player }) => player._comparisonFile)) {
+            if (players.length >= 3 || players.some(({ player }) => player._comparisonFile)) {
                 for (const { player } of players) player.playbackGroupClock = playbackGroupClock;
             }
             bufferPanel.style.display = "none";
@@ -2046,10 +2065,20 @@ function openSyncPreview(items) {
     let cacheQueue = Promise.resolve();
     for (const p of players) {
         p.player.onLoadedMetadata = () => {
+            // 多路顺序解码压缩源，只在浏览器里缓冲少量原尺寸帧，
+            // 避免通过本地 HTTP 持续传输多路未压缩帧。
+            if (_overlay !== overlay || loadFailed) return;
+            updateVideoLabel(p.labelEl, p);
+            _updateWipeLabels();
+            if (players.length >= 3) {
+                readyCount++;
+                tryStart();
+                return;
+            }
             cacheQueue = cacheQueue.then(async () => {
                 if (_overlay !== overlay || loadFailed) return;
                 let displayedPercent = -1;
-                const name = p.cell.firstChild.textContent;
+                const name = p.label;
                 const renderCacheProgress = () => {
                     const percent = Math.max(0, displayedPercent);
                     statusEl.textContent = players.length === 1
@@ -2077,7 +2106,7 @@ function openSyncPreview(items) {
             loadFailed = true;
             if (playing) syncPause();
             console.warn("[小珠光同步预览] 视频加载或缓存失败:", p.url, error);
-            const message = `视频加载或缓存失败 · ${p.cell.firstChild.textContent}`;
+            const message = `视频加载或缓存失败 · ${p.label}`;
             statusEl.textContent = message;
             showBuffer(message, 0);
         };

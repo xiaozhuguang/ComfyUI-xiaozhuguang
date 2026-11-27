@@ -292,6 +292,9 @@ def save_audio_to_file(waveform, sample_rate, output_path, format_name="mp3", qu
     return output_path
 
 
+_AUDIO_SAVE_QUALITIES = ("320", "192", "128")
+
+
 class XiaozhuguangAudioSaveDaVinci:
     """小珠光音频保存 - 将 AUDIO tensor 保存为多种格式"""
 
@@ -301,7 +304,7 @@ class XiaozhuguangAudioSaveDaVinci:
             "required": {
                 "音频": ("AUDIO",),
                 "格式": (["mp3", "wav", "flac"], {"default": "mp3"}),
-                "质量": (["320", "192", "128"], {"default": "128"}),
+                "质量": (list(_AUDIO_SAVE_QUALITIES), {"default": "128"}),
                 "文件名前缀": ("STRING", {"default": "xzg-audio"}),
             },
             "optional": {
@@ -333,6 +336,13 @@ class XiaozhuguangAudioSaveDaVinci:
     FUNCTION = "save_audio"
     CATEGORY = "小珠光/音频"
     OUTPUT_NODE = True
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, 质量):
+        # 部分旧工作流和 API 请求以整数保存比特率。
+        if str(质量) not in _AUDIO_SAVE_QUALITIES:
+            return f"不支持的音频质量：{质量}。可选比特率为 320、192、128 kbps。"
+        return True
 
     def save_audio(self, 音频, 格式, 质量, 文件名前缀,
                    模式="保存", 音量=1.0, 自动导出到达芬奇=False, **kwargs):

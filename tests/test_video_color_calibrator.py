@@ -18,8 +18,8 @@ class ColorCalibrationTest(unittest.TestCase):
         self.node = m.XiaozhuguangVideoColorCalibrator()
         self.ref = torch.rand(1, 64, 64, 3, generator=torch.Generator().manual_seed(7)) * .6 + .2
 
-    def run_node(self, ref, src, mode='linear', smooth=0, strength=1):
-        return self.node.run(ref, src, mode, smooth, strength)[0]
+    def run_node(self, ref, src, mode='linear', strength=1):
+        return self.node.run(ref, src, mode, strength=strength)[0]
 
     def test_zero_strength_exact_and_alpha(self):
         src = torch.cat((self.ref * .7, self.ref[..., :1]), -1)
@@ -81,10 +81,10 @@ class ColorCalibrationTest(unittest.TestCase):
         weights = m._stable_weights(src.reshape(-1,3), src.reshape(-1,3))
         self.assertGreater(weights.mean().item(), .95)
 
-    def test_cut_resets_smoothing(self):
+    def test_cut_uses_separate_correction(self):
         ref = torch.cat((self.ref*.4, .65+self.ref*.3))
         src = torch.cat((self.ref*.4+.04, .65+self.ref*.3-.08))
-        out = self.run_node(ref, src, smooth=.95)
+        out = self.run_node(ref, src)
         independent = self.run_node(ref[1:], src[1:])
         self.assertTrue(torch.allclose(out[1:], independent, atol=1e-6))
 
@@ -106,62 +106,33 @@ class ColorCalibrationTest(unittest.TestCase):
         black = torch.zeros_like(self.ref)
         self.assertTrue(torch.equal(self.run_node(black, black), black))
 
-    def test_temporal_smoothing_reduces_parameter_jump(self):
-        ref = self.ref.expand(2, -1, -1, -1).clone()
-        src = torch.cat((self.ref - .02, self.ref - .08))
-        raw = self.run_node(ref, src, smooth=0)
-        smoothed = self.run_node(ref, src, smooth=.9)
-        # The current correction should lag after an abrupt exposure change.
-        self.assertGreater((smoothed[1] - raw[1]).abs().mean().item(), .02)
-        self.assertTrue(torch.allclose(smoothed[0], raw[0], atol=1e-6))
+    def test_legacy_controls_cannot_disable_shot_lock(self):
+        ref = self.ref.repeat(9, 1, 1, 1)
+        src = ref * .72 + torch.tensor([.04, .01, 0.])
+        ref[1::2] = torch.rand(ref[1::2].shape, generator=torch.Generator().manual_seed(51)) * .6 + .2
+        out, = self.node.run(ref, src)
+        legacy, = self.node.run(ref, src, smooth=0, lock_per_shot=False)
+        self.assertTrue(torch.equal(legacy, out))
+        self.assertTrue(torch.equal(out, out[:1].expand_as(out)))
+        self.assertLess((out[0] - ref[0]).abs().mean().item(), .01)
 
-    def test_six_frame_geometry_loss_passes_through_and_resets_history(self):
-        ref = self.ref.expand(10, -1, -1, -1).clone()
-        src = (ref - .08) / 1.12
-        src[2:8] = torch.rand((6,64,64,3), generator=torch.Generator().manual_seed(21))*.6+.1
-        out = self.run_node(ref, src, smooth=.6)
-        # Rejected geometry must never inherit a neighboring correction.
-        correction = (out-src).mean((1,2))
-        self.assertTrue(torch.equal(out[2:8], src[2:8]))
-        self.assertLess((correction[8]-correction[1]).abs().max().item(), .005)
-        independent = self.run_node(ref, src, smooth=0)
-        self.assertTrue(torch.equal(independent[2:8], src[2:8]))
+    def test_shot_lock_requires_consensus_and_respects_cuts(self):
+        grid = torch.linspace(0, 1, 129)
+        warm = (grid + .1, torch.eye(2), torch.tensor([.1, -.1]))
+        cool = (grid - .1, torch.eye(2), torch.tensor([-.1, .1]))
+        estimates = [warm, None, None, cool, cool, None, warm, warm, cool, cool]
+        result = m._locked_shot_parameters(estimates, [False] * 3 + [True, False, False, True, False, False, False])
+        self.assertTrue(all(fit is None for fit in result[:3] + result[6:]))
+        self.assertTrue(all(fit is cool for fit in result[3:6]))
 
     def test_long_geometry_loss_passes_through_immediately(self):
         ref = self.ref.expand(18, -1, -1, -1).clone()
         src = (ref - .08) / 1.12
         src[2:] = torch.rand((16,64,64,3), generator=torch.Generator().manual_seed(21))*.6+.1
-        out = self.run_node(ref, src, smooth=.6)
+        out = self.run_node(ref, src)
         correction = (out-src).mean((1,2))
         self.assertTrue(torch.equal(out[2:], src[2:]))
         self.assertLess(correction[-1].abs().max().item(), .015)
-
-    def test_edited_only_unrelated_frame_cannot_borrow_history(self):
-        ref = self.ref.expand(4,-1,-1,-1).clone()
-        src = ref*.65
-        src[2] = torch.rand((64,64,3), generator=torch.Generator().manual_seed(29))*.1+.8
-        out = self.run_node(ref, src, smooth=.6)
-        self.assertTrue(torch.equal(out[2],src[2]))
-        self.assertTrue(torch.allclose(out[3:],self.run_node(ref[3:],src[3:]),atol=1e-6))
-
-    def test_temporal_outlier_rejection_respects_fit_quality(self):
-        grid = torch.linspace(0,1,129)
-        neutral = (grid, torch.eye(2), torch.zeros(2))
-        normal = (grid+.04, torch.eye(2), torch.zeros(2))
-        bad = (grid+.16, torch.eye(2), torch.tensor([.08,-.08]))
-        rejected = m._temporal_parameters([normal,bad,normal], [False]*3, .6, neutral, [.001,.1,.001])
-        self.assertTrue(torch.allclose(rejected[1][0], normal[0]))
-        # A well-supported actual grading change must not be labeled an outlier.
-        supported = m._temporal_parameters([normal,bad,normal], [False]*3, .6, neutral, [.001]*3)
-        self.assertGreater((supported[1][0]-normal[0]).mean().item(), .04)
-
-    def test_no_gap_interpolation_across_scene_boundary(self):
-        grid = torch.linspace(0,1,129)
-        neutral = (grid,torch.eye(2),torch.zeros(2))
-        warm = (grid+.1,torch.eye(2),torch.zeros(2))
-        result = m._temporal_parameters([warm,None,None,neutral], [False,False,True,False], .6, neutral, [0,float('inf'),float('inf'),0])
-        self.assertIsNone(result[2])
-        self.assertTrue(torch.equal(result[3][0], grid))
 
     def test_chroma_fit_never_reflects_color_plane(self):
         grid = torch.linspace(0,1,129)
@@ -226,7 +197,7 @@ class ColorCalibrationTest(unittest.TestCase):
         self.assertFalse(m._correspondence_mask(ref,src).any())
         ref=ref.expand(9,-1,-1,-1)
         edited=torch.cat((src.expand(9,-1,-1,-1),src[...,:1].expand(9,-1,-1,-1)),-1)
-        out=self.node.run(ref,edited,smooth=.9)[0]
+        out=self.node.run(ref,edited)[0]
         self.assertTrue(torch.equal(out,edited))
 
     def test_one_narrow_matching_border_is_not_enough(self):
@@ -243,16 +214,10 @@ class ColorCalibrationTest(unittest.TestCase):
         self.assertGreater(mask[:,:,:,40:].mean().item(),.9)
         self.assertLess(mask[:,:,:,0:20].mean().item(),.1)
 
-    def test_success_after_long_geometry_loss_does_not_reuse_stale_parameters(self):
-        cuts=m._unmatched_boundaries([False]+[True]*8+[False],[False]*10)
-        self.assertTrue(cuts[9])
-        brief=m._unmatched_boundaries([False]+[True]*6+[False],[False]*8)
-        self.assertTrue(all(brief[1:]))
-
-    def test_schema_keeps_only_existing_two_controls(self):
+    def test_schema_exposes_only_strength_control(self):
         inputs=self.node.INPUT_TYPES()
-        self.assertEqual(list(inputs['required']),['video_original','video_edited','smooth','strength'])
-        self.assertNotIn('skip_correction',inputs.get('optional',{}))
+        self.assertEqual(list(inputs['required']), ['video_original', 'video_edited', 'strength'])
+        self.assertNotIn('optional', inputs)
 
     def test_final_support_must_be_distributed_not_just_numerous(self):
         weights = torch.zeros(64,64)
@@ -265,24 +230,14 @@ class ColorCalibrationTest(unittest.TestCase):
         weights[:,32:] = 1
         self.assertTrue(m._distributed_support(weights,(64,64)))
 
-    def test_seeded_unrelated_warm_frames_never_borrow_a_valid_correction(self):
-        for seed in range(12):
-            g = torch.Generator().manual_seed(1000 + seed)
-            ref = self.ref.expand(3,-1,-1,-1).clone()
-            src = ref * .75
-            src[1] = torch.rand((64,64,3),generator=g)*.12+torch.tensor([.45,.3,.2])
-            out = self.run_node(ref,src,smooth=.95)
-            self.assertTrue(torch.equal(out[1],src[1]),msg=f'seed={seed}')
-            self.assertTrue(torch.allclose(out[2:],self.run_node(ref[2:],src[2:]),atol=1e-6))
-
-    def test_rejected_rgba_half_precision_is_exact_with_history(self):
+    def test_unsupported_rgba_shot_passes_through_exactly(self):
         g = torch.Generator().manual_seed(52)
         ref = self.ref.expand(3,-1,-1,-1).clone()
         src = ref*.75
-        src[1] = torch.rand((64,64,3),generator=g)*.6+.2
+        src[1:] = torch.rand((2,64,64,3),generator=g)*.6+.2
         rgba = torch.cat((src,torch.rand((3,64,64,1),generator=g)),-1).half()
-        out = self.node.run(ref,rgba,smooth=.9)[0]
-        self.assertTrue(torch.equal(out[1],rgba[1]))
+        out = self.node.run(ref, rgba)[0]
+        self.assertTrue(torch.equal(out, rgba))
         self.assertTrue(torch.equal(out[...,3],rgba[...,3]))
         self.assertEqual(out.dtype,rgba.dtype)
 
