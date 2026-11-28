@@ -104,7 +104,7 @@ def _param_tooltip(name):
 
 
 def _box_to_px(r, W, H):
-    """单个归一化框 x1,y1,x2,y2 -> 像素 (px1,py1,px2,py2)；空 / 面积过小返回 None。"""
+    """将矩形中心和尺寸分别量化，避免等宽框平移时宽度跳变。"""
     try:
         x1 = float(r["x1"]); y1 = float(r["y1"])
         x2 = float(r["x2"]); y2 = float(r["y2"])
@@ -114,7 +114,11 @@ def _box_to_px(r, W, H):
     px2 = max(0.0, min(float(W), x2 * W)); py2 = max(0.0, min(float(H), y2 * H))
     if px2 - px1 < 1.0 or py2 - py1 < 1.0:
         return None
-    return (px1, py1, px2, py2)
+    width = int(round(px2 - px1, 9) + 0.5)
+    height = int(round(py2 - py1, 9) + 0.5)
+    left = int((px1 + px2 - width) / 2 + 0.5)
+    top = int((py1 + py2 - height) / 2 + 0.5)
+    return left, top, min(W, left + width), min(H, top + height)
 
 
 def _poly_to_px(poly, W, H):
@@ -161,6 +165,51 @@ def _align_poly(pb, pa):
     return pts[bi:] + pts[:bi]
 
 
+def _interpolate_rectangle(keyframes, keys, index, t, fill_edges):
+    a, b = keys[index - 1:index + 1]
+    span = b - a
+
+    def box(frame):
+        region = keyframes[frame][0]
+        if region.get("poly") or not all(k in region for k in ("x1", "y1", "x2", "y2")):
+            return None
+        x1, y1, x2, y2 = (float(region[k]) for k in ("x1", "y1", "x2", "y2"))
+        return (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
+
+    def tangent(first, second, left_span, right_span):
+        if first * second <= 0:
+            return 0
+        w1, w2 = 2 * right_span + left_span, right_span + 2 * left_span
+        return (w1 + w2) / (w1 / first + w2 / second)
+
+    left, right = box(a), box(b)
+    previous = box(keys[index - 2]) if index > 1 else None
+    following = box(keys[index + 1]) if index + 1 < len(keys) else None
+    values = []
+    for i, (start, end) in enumerate(zip(left, right)):
+        slope = (end - start) / span
+        m0 = m1 = 0 if fill_edges else slope
+        if previous is not None:
+            distance = a - keys[index - 2]
+            m0 = tangent((start - previous[i]) / distance, slope, distance, span)
+        if following is not None:
+            distance = keys[index + 1] - b
+            m1 = tangent(slope, (following[i] - end) / distance, span, distance)
+        # Keep the middle of the span close to constant speed. Match tangent
+        # speeds near the keys so a long ease does not create a fast middle.
+        ramp = 0.2
+        cruise = (slope - ramp * (m0 + m1) / 2) / (1 - ramp)
+        if t < ramp:
+            values.append(start + span * t * (m0 + (cruise - m0) * t / (2 * ramp)))
+        elif t > 1 - ramp:
+            tail = 1 - t
+            values.append(end - span * tail * (m1 + (cruise - m1) * tail / (2 * ramp)))
+        else:
+            values.append(start + span * (m0 * ramp / 2 + cruise * (t - ramp / 2)))
+    x, y, w, h = values
+    return {"x1": x - w / 2, "y1": y - h / 2, "x2": x + w / 2, "y2": y + h / 2}
+
+
 def _fill_box_or_poly(masks, t, r, W, H):
     """按 r 是否带 poly 用多边形 / 矩形填充 masks[t]；非法输入静默跳过。"""
     if isinstance(r, dict) and r.get("poly"):
@@ -170,11 +219,8 @@ def _fill_box_or_poly(masks, t, r, W, H):
         return
     rect = _box_to_px(r, W, H)
     if rect:
-        x1, y1, x2, y2 = [int(v) for v in rect]
-        x1 = max(0, min(W, x1)); y1 = max(0, min(H, y1))
-        x2 = max(0, min(W, x2)); y2 = max(0, min(H, y2))
-        if x2 > x1 and y2 > y1:
-            masks[t][y1:y2, x1:x2] = 255
+        x1, y1, x2, y2 = rect
+        masks[t, y1:y2, x1:x2] = 255
 
 
 def _parse_regions(data):
@@ -283,8 +329,6 @@ class VideoWatermarkDetector:
                     "default": "",
                     "tooltip": _param_tooltip("regions_data")}),
             },
-            "optional": {
-            },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
@@ -353,6 +397,7 @@ class VideoWatermarkDetector:
             if not isinstance(auto_frames, dict):
                 auto_frames = {}
 
+            rectangles = [None] * n
             for t in range(n):
                 boxes_here = kf_actual.get(t)
                 if boxes_here is None:
@@ -375,15 +420,36 @@ class VideoWatermarkDetector:
                             pb = _align_poly(pb, pa)
                             boxes_here = [{"poly": [[x + (u - x) * tt, y + (v - y) * tt]
                                                     for (x, y), (u, v) in zip(pa, pb)]}]
-                        elif all(k in ra and k in rb for k in ("x1", "y1", "x2", "y2")):
-                            boxes_here = [{k: ra[k] + (rb[k] - ra[k]) * tt
-                                           for k in ("x1", "y1", "x2", "y2")}]
+                        elif not pa and not pb and all(k in ra and k in rb for k in ("x1", "y1", "x2", "y2")):
+                            boxes_here = [_interpolate_rectangle(kf_actual, keys, index, tt, fill_edges)]
                         elif fill_edges:
                             boxes_here = kf_actual[a if tt < 0.5 else b]
                         else:
                             continue
-                for r in boxes_here:
-                    _fill_box_or_poly(track_mask, t, r, W, H)
+                rect = None
+                if boxes_here and len(boxes_here) == 1 and not boxes_here[0].get("poly"):
+                    rect = _box_to_px(boxes_here[0], W, H)
+                if rect is None:
+                    for r in boxes_here or ():
+                        _fill_box_or_poly(track_mask, t, r, W, H)
+                else:
+                    rectangles[t] = rect
+
+            margin = 4
+            previous = None
+            for t, rect in enumerate(rectangles):
+                if rect is None:
+                    previous = None
+                    continue
+                # Only suppress a one-frame excursion. Holding a small forward step
+                # would turn steady motion into a staircase of larger jumps.
+                if (previous is not None and t + 1 < n and rectangles[t + 1] == previous
+                        and all(abs(edge - old) <= margin for edge, old in zip(rect, previous))):
+                    rect = previous
+                x1, y1, x2, y2 = rect
+                previous = rect
+                track_mask[t, max(0, y1 - margin):min(H, y2 + margin),
+                           max(0, x1 - margin):min(W, x2 + margin)] = 255
 
         # ---- 2) 遮罩转张量（检测分辨率=原尺寸，无需缩放）----
         ordered_masks = [track_masks[index] for index in sorted(track_masks)]

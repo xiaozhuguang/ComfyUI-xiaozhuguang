@@ -1,4 +1,4 @@
-"""Compressed, per-node mask history stored in the ComfyUI user directory."""
+"""Local mask history shared by workflows that use the same video."""
 import asyncio
 import gzip
 import hashlib
@@ -7,21 +7,54 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from threading import Lock
+from threading import RLock
 
 from aiohttp import web
 import folder_paths
 from server import PromptServer
 
 
-_lock = Lock()
+_lock = RLock()
 _routes = PromptServer.instance.routes
+
+
+def _history_directory():
+    return Path(folder_paths.get_user_directory()) / "xiaozhuguang" / "manual_mask_history"
+
+
+def _shared_path(video_id):
+    if not isinstance(video_id, str) or not video_id:
+        raise ValueError("无效的视频标识")
+    return _history_directory() / "videos" / (hashlib.sha256(video_id.encode()).hexdigest() + ".json.gz")
+
+
+def _store_shared(entries):
+    by_video = {}
+    for entry in entries:
+        video_id = entry.get("videoId")
+        _shared_path(video_id)
+        by_video.setdefault(video_id, []).append(entry)
+    for video_id, versions in by_video.items():
+        _store(_shared_path(video_id), versions)
+
+
+def _migrate_node_history():
+    directory = _history_directory()
+    marker = directory / "videos" / ".node-history-migrated"
+    with _lock:
+        if marker.exists():
+            return
+        for path in directory.glob("*.json.gz"):
+            if re.fullmatch(r"[0-9a-f]{36}\.json\.gz", path.name):
+                _store_shared(_read(path))
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
 
 
 def _history_path(key):
     if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{36}", key):
         raise ValueError("无效的遮罩历史标识")
-    return Path(folder_paths.get_user_directory()) / "xiaozhuguang" / "manual_mask_history" / (key + ".json.gz")
+    return _history_directory() / (key + ".json.gz")
 
 
 def _read(path):
@@ -71,7 +104,10 @@ async def save_history(request):
         entries = await request.json()
         if not isinstance(entries, list) or not 1 <= len(entries) <= 11 or any(not isinstance(entry, dict) for entry in entries):
             raise ValueError("无效的遮罩历史请求")
-        await asyncio.to_thread(_store, _history_path(request.match_info["key"]), entries)
+        key = request.match_info["key"]
+        if key != "shared":
+            await asyncio.to_thread(_store, _history_path(key), entries)
+        await asyncio.to_thread(_store_shared, entries)
         return web.json_response({"ok": True})
     except ValueError as error:
         return web.json_response({"error": str(error)}, status=400)
@@ -80,8 +116,14 @@ async def save_history(request):
 @_routes.get("/xzg/manual-mask/history/{key}")
 async def load_history(request):
     try:
-        versions = await asyncio.to_thread(_load, _history_path(request.match_info["key"]))
+        key = request.match_info["key"]
         video_id = request.query.get("video")
+        if key == "shared":
+            path = _shared_path(video_id)
+            await asyncio.to_thread(_migrate_node_history)
+        else:
+            path = _history_path(key)
+        versions = await asyncio.to_thread(_load, path)
         version_id = request.query.get("version")
         matches = [version for version in versions if version["videoId"] == video_id]
         if version_id:

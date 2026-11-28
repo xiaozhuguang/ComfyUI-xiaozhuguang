@@ -35,19 +35,19 @@ class XiaozhuguangMaskCleanupRepair:
                 "remove_isolated_pixels": ("INT", {"default": 0, "min": 0, "max": 32,
                                                     "tooltip": "灰度开运算的像素半径，清除细碎区域；可能改变细小轮廓。"}),
                 "smooth": ("INT", {"default": 0, "min": 0, "max": 128,
-                                    "tooltip": "先以0.5二值化，再高斯平滑；数值为核半径，会改变原有软边。"}),
+                                    "tooltip": "平滑黑白遮罩的轮廓，平滑后的边缘仍是纯黑白。数值为平滑半径，0关闭。"}),
                 "blur": ("INT", {"default": 0, "min": 0, "max": 128,
                                   "tooltip": "直接对灰度遮罩做高斯模糊，数值为核半径。0不处理。"}),
                 "mask_binarize": ("BOOLEAN", {"default": False, "tooltip": "最后一步二值化：大于阈值变为1，其余变为0。独立于清理和修复开关。"}),
                 "mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
-                                            "tooltip": "二值化阈值；等于阈值时为0。仅开启二值化时生效。"}),
+                                            "tooltip": "调高阈值，半透明边缘更容易变黑，白色遮罩更容易缩小。调低阈值，更多半透明区域会变白，白色遮罩更容易扩大。仅开启遮罩二值化时生效。"}),
             },
             "optional": {
                 "mask": ("MASK",),
                 "temporal_smooth_radius": ("INT", {"default": 0, "min": 0, "max": 16,
                     "tooltip": "补齐前后都有遮罩的连续漏检帧。数值为允许补齐的最大空档帧数，0关闭。"}),
                 "position_smoothing_frames": ("INT", {"default": 1, "min": 1, "max": 240,
-                    "tooltip": "平滑遮罩中心位置。数值越大，中心移动越平缓。1关闭。"}),
+                    "tooltip": "平滑视频遮罩的移动轨迹，减少相邻帧之间的位置抖动。数值越大，移动越平缓，快速转向也更容易被抹平。1关闭。"}),
                 "scale_smoothing_frames": ("INT", {"default": 1, "min": 1, "max": 240,
                     "tooltip": "平滑遮罩宽高的变化。数值越大，缩放越平缓。1关闭。"}),
             },
@@ -109,6 +109,7 @@ class XiaozhuguangMaskCleanupRepair:
                 frame = ndi.grey_opening(frame, size=2 * remove_isolated_pixels + 1, mode="nearest")
             if smooth:
                 frame = ndi.gaussian_filter((frame > 0.5).astype(np.float32), sigma=max(0.5, smooth / 3), radius=smooth, mode="nearest")
+                frame = (frame > 0.5).astype(np.float32)
             if blur:
                 frame = ndi.gaussian_filter(frame, sigma=max(0.5, blur / 3), radius=blur, mode="nearest")
             values[i] = frame
@@ -159,6 +160,7 @@ class XiaozhuguangMaskCleanupRepair:
                     x = morph(morph(x, remove_isolated_pixels, False), remove_isolated_pixels, True)
                 if smooth:
                     x = gaussian((x > 0.5).float(), smooth)
+                    x = (x > 0.5).float()
                 if blur:
                     x = gaussian(x, blur)
                 result[start:start + len(x)] = x[:, 0].cpu().numpy()

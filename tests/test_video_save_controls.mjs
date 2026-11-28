@@ -13,7 +13,7 @@ function load(overrides = {}) {
     const app = { registerExtension(value) { extension = value; }, canvas: {
         prompt(label, value, callback) { prompts.push({ label, value, callback }); },
     } };
-    const context = vm.createContext({ app, createVideoOutputCache: () => ({}),
+    const context = vm.createContext({ app,
         queueMicrotask: job => jobs.push(job), xzgLang: () => 'zh', ...overrides });
     vm.runInContext(source, context);
     return { context, app, jobs, prompts, extension };
@@ -25,7 +25,7 @@ test('Godlike save nodes paste the copied video into a new node and can be copie
         setItem: (key, value) => storage.set(key, value) });
     const frames = [];
     const { extension, app } = load({
-        createVideoOutputCache: () => cache,
+        _xzgVideoOutputs: cache,
         URLSearchParams,
         api: { fetchApi: async () => ({ json: async () => ({ output_dir: '/output' }) }) },
         document: { hidden: false, createElement: () => ({ style: {}, appendChild() {},

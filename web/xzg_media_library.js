@@ -123,6 +123,7 @@ export function showMediaLibrary({ addImages, alertUser, confirmUser, kind = "im
     search.placeholder = isAudio ? xzgT("搜索音频…", "Search audio…") : isVideo ? xzgT("搜索视频…", "Search videos…") : xzgT("搜索图片…", "Search images…");
     search.style.cssText = "width:180px;min-width:0;padding:6px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;font-size:14px;";
     const closeLibrary = () => {
+        cancelMediaDrag();
         closeContextMenu();
         window.removeEventListener("keydown", onLibraryKeyDown, true);
         window.removeEventListener("keyup", onLibraryKeyUp, true);
@@ -264,7 +265,7 @@ let lastWindowKey = "";
             row.onclick = () => { ov.remove(); resolve(value); };
             return row;
         };
-        list.appendChild(makeOption(xzgT("根目录", "Root")));
+        list.appendChild(makeOption(xzgT("根目录", "Root"), ""));
         folders.forEach(f => list.appendChild(makeOption(f, f)));
         const actions = document.createElement("div");
         actions.style.cssText = "display:flex;justify-content:flex-end;margin-top:12px;";
@@ -401,11 +402,16 @@ let lastWindowKey = "";
         });
     });
     let lastClickedName = null;
+    const folderForName = name => name.slice(0, Math.max(0, name.lastIndexOf("/")));
     const visibleItems = () => {
         const filter = search.value.trim().toLowerCase();
         return items.filter(item => item.name.toLowerCase().includes(filter));
     };
     const updateCount = () => {
+        const selectedFolders = new Set([...selected].map(folderForName));
+        sidebar.querySelectorAll("[data-media-folder]").forEach(row => {
+            row.style.borderColor = selectedFolders.has(row.dataset.mediaFolder) ? "#ffd700" : "transparent";
+        });
         const where = currentFolder === ALL_FOLDER ? "" : (currentFolder ? `${currentFolder} · ` : "");
         count.textContent = isAudio ? xzgT(`${where}${items.length} 个音频 · 已选 ${selected.size} 个`, `${where}${items.length} audio files · ${selected.size} selected`) : isVideo ? xzgT(`${where}${items.length} 个视频 · 已选 ${selected.size} 个`, `${where}${items.length} videos · ${selected.size} selected`) : xzgT(`${where}${items.length} 张图片 · 已选 ${selected.size} 张`, `${where}${items.length} images · ${selected.size} selected`);
     };
@@ -421,6 +427,16 @@ let lastWindowKey = "";
     };
     let contextMenu = null;
     let closeContextMenu = () => {};
+    const moveToFolder = async (names, folder) => {
+        const targets = names.filter(name => folderForName(name) !== folder);
+        if (!targets.length) return;
+        try {
+            const result = await request("/move", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names: targets, folder }) });
+            targets.forEach(name => selected.delete(name));
+            await refresh();
+            if (result.names) alertUser(xzgT(`已移动 ${result.names.length} 个文件`, `Moved ${result.names.length} files`));
+        } catch (error) { alertUser(error.message); }
+    };
     const showRenameDialog = oldName => {
         const slash = oldName.lastIndexOf("/");
         const folder = slash >= 0 ? oldName.slice(0, slash + 1) : "";
@@ -502,15 +518,7 @@ let lastWindowKey = "";
             const targets = selected.has(name) ? [...selected] : [name];
             closeContextMenu();
             const target = await chooseFolder();
-            if (target === null || target === currentFolder) return;
-            try {
-                const result = await request("/move", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names: targets, folder: target }) });
-                if (selected.has(name)) selected.clear();
-                else selected.delete(name);
-                lastClickedName = null;
-                await refresh();
-                if (result.names) alertUser(xzgT(`已移动 ${result.names.length} 个文件`, `Moved ${result.names.length} files`));
-            } catch (error) { alertUser(error.message); }
+            if (target !== null) await moveToFolder(targets, target);
         });
         move.style.cssText = "display:block;width:100%;padding:7px 10px;text-align:left;border:0;background:transparent;color:var(--input-text);cursor:pointer;";
         menu.appendChild(move);
@@ -567,7 +575,7 @@ let lastWindowKey = "";
     const createCard = (item) => {
         const card = document.createElement("div");
         card.dataset.mediaName = item.name;
-        card.title = `${item.name}\n${xzgT("拖动调序；双击加入加载器", "Drag to reorder; double-click to add to loader")}`;
+        card.title = `${item.name}\n${xzgT("拖动调序或移入分类；双击加入加载器", "Drag to reorder or move to a folder; double-click to add to loader")}`;
         card.style.cssText = `position:absolute;box-sizing:border-box;border:1px solid ${selected.has(item.name) ? "#ffd700" : "var(--border-color)"};box-shadow:${selected.has(item.name) ? "inset 0 0 0 1px #ffd700" : "none"};border-radius:5px;background:var(--comfy-input-bg);color:var(--input-text);cursor:pointer;overflow:hidden;display:flex;flex-direction:column;`;
         card.dataset.xzgSelected = selected.has(item.name) ? "1" : "0";
         const imageBox = document.createElement("div");
@@ -585,15 +593,11 @@ let lastWindowKey = "";
             imageBox.appendChild(uncategorized);
         }
         const image = document.createElement("img");
+        const thumbnailUrl = api.apiURL(url(`/thumb?name=${encodeURIComponent(item.name)}&v=${thumbnailCacheEpoch}`));
         image.loading = "lazy";
-        image.draggable = true;
-        image.style.cssText = "width:100%;height:100%;object-fit:contain;cursor:grab;";
-        image.addEventListener("dragstart", event => {
-            if (event.ctrlKey || event.metaKey) { event.preventDefault(); return; }
-            dragSource = item.name;
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", item.name);
-        });
+        image.draggable = false;
+        image.style.cssText = "width:100%;height:100%;object-fit:contain;cursor:grab;touch-action:none;";
+        image.addEventListener("pointerdown", event => startMediaDrag(event, item.name, thumbnailUrl));
         imageBox.append(image, number);
         const label = document.createElement("span");
         label.textContent = item.name;
@@ -623,7 +627,7 @@ let lastWindowKey = "";
             image.onload = release;
             image.onerror = release;
         } else {
-            image.src = api.apiURL(url(`/thumb?name=${encodeURIComponent(item.name)}&v=${thumbnailCacheEpoch}`));
+            image.src = thumbnailUrl;
             image.onload = () => prefetchThumbBlob(item.name);
             image.onerror = () => prefetchThumbBlob(item.name);
         }
@@ -724,46 +728,12 @@ let lastWindowKey = "";
         virtualStage.appendChild(frag);
     };
     grid.addEventListener("scroll", () => render(false));
-    let dragSource = null;
-    let dragTarget = null;
-    const clearDragTarget = () => {
-        if (dragTarget) dragTarget.style.outline = "";
-        dragTarget = null;
-    };
-    grid.addEventListener("dragover", event => {
-        if (!dragSource) return;
-        const card = event.target.closest("[data-media-name]");
-        if (card && card.dataset.mediaName !== dragSource) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            if (dragTarget !== card) {
-                clearDragTarget();
-                dragTarget = card;
-                card.style.outline = "2px dashed #ffd700";
-            }
-        }
-        // 拖动到列表顶部/底部边缘时自动滚动，支持长距离调序
-        const rect = grid.getBoundingClientRect();
-        const py = event.clientY;
-        const edge = 60;
-        if (py < rect.top + edge) {
-            grid.scrollTop -= 30;
-        } else if (py > rect.bottom - edge) {
-            grid.scrollTop += 30;
-        }
-    });
-    grid.addEventListener("drop", async event => {
-        if (!dragSource) return;
-        event.preventDefault();
-        const targetName = event.target.closest("[data-media-name]")?.dataset.mediaName;
-        clearDragTarget();
-        const sourceName = dragSource;
-        dragSource = null;
-        if (!targetName || targetName === sourceName) return;
+    let cancelMediaDrag = () => {};
+    const reorderMedia = async (sourceName, targetName) => {
         const oldItems = [...items];
         const from = items.findIndex(item => item.name === sourceName);
         const to = items.findIndex(item => item.name === targetName);
-        if (from < 0 || to < 0) return;
+        if (from < 0 || to < 0 || from === to) return;
         const [moved] = items.splice(from, 1);
         items.splice(to, 0, moved);
         render();
@@ -778,8 +748,82 @@ let lastWindowKey = "";
             render();
             alertUser(error.message);
         }
-    });
-    grid.addEventListener("dragend", () => { dragSource = null; clearDragTarget(); });
+    };
+    const startMediaDrag = (event, sourceName, thumbnailUrl) => {
+        if (!event.isPrimary || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || shiftHeld) return;
+        cancelMediaDrag();
+        const { pointerId, clientX: startX, clientY: startY } = event;
+        const controller = new AbortController();
+        const options = { signal: controller.signal };
+        const names = selected.has(sourceName) ? [...selected] : [sourceName];
+        let preview = null;
+        let previewUrl = null;
+        let target = null;
+        const hitTest = pointerEvent => {
+            const hit = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY);
+            const row = hit?.closest("[data-media-folder]");
+            if (row && sidebar.contains(row) && row.dataset.mediaFolder !== ALL_FOLDER &&
+                names.some(name => folderForName(name) !== row.dataset.mediaFolder)) return row;
+            const card = hit?.closest("[data-media-name]");
+            return card && grid.contains(card) && card.dataset.mediaName !== sourceName ? card : null;
+        };
+        const clear = () => {
+            controller.abort();
+            if (target) target.style.outline = "";
+            preview?.remove();
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            grid.style.cursor = "";
+            cancelMediaDrag = () => {};
+        };
+        cancelMediaDrag = () => {
+            clear();
+            if (grid.hasPointerCapture(pointerId)) grid.releasePointerCapture(pointerId);
+        };
+        window.addEventListener("pointermove", move => {
+            if (move.pointerId !== pointerId) return;
+            if (!preview) {
+                if (Math.hypot(move.clientX - startX, move.clientY - startY) < 5) return;
+                grid.setPointerCapture(pointerId);
+                grid.style.cursor = "grabbing";
+                preview = document.createElement("img");
+                preview.alt = "";
+                preview.draggable = false;
+                preview.style.cssText = "position:fixed;top:0;left:0;z-index:200001;width:96px;height:96px;box-sizing:border-box;object-fit:contain;background:#181818;border:1px solid #ffd700;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.6);pointer-events:none;";
+                const blob = getCachedBlob(sourceName);
+                if (blob) previewUrl = URL.createObjectURL(blob);
+                preview.src = previewUrl || thumbnailUrl;
+                overlay.appendChild(preview);
+            }
+            preview.style.transform = `translate(${move.clientX + 14}px, ${move.clientY + 14}px)`;
+            const rect = grid.getBoundingClientRect();
+            if (move.clientX >= rect.left && move.clientX < rect.right && move.clientY >= rect.top && move.clientY < rect.bottom) {
+                if (move.clientY < rect.top + 60) grid.scrollTop -= 30;
+                else if (move.clientY > rect.bottom - 60) grid.scrollTop += 30;
+            }
+            const next = hitTest(move);
+            if (next === target) return;
+            if (target) target.style.outline = "";
+            target = next;
+            if (target) target.style.outline = "2px dashed #ffd700";
+        }, options);
+        window.addEventListener("pointerup", up => {
+            if (up.pointerId !== pointerId) return;
+            const drop = preview ? hitTest(up) : null;
+            clear();
+            if (!drop) return;
+            if (drop.dataset.mediaFolder !== undefined) moveToFolder(names, drop.dataset.mediaFolder);
+            else reorderMedia(sourceName, drop.dataset.mediaName);
+        }, options);
+        const cancelPointer = cancel => {
+            if (cancel.pointerId === pointerId) cancelMediaDrag();
+        };
+        window.addEventListener("pointercancel", cancelPointer, options);
+        grid.addEventListener("lostpointercapture", lost => {
+            if (lost.target === grid) cancelPointer(lost);
+        }, options);
+        window.addEventListener("blur", cancelMediaDrag, options);
+    };
+    grid.addEventListener("dragstart", event => event.preventDefault());
     grid.addEventListener("contextmenu", event => {
         const name = event.target.closest("[data-media-name]")?.dataset.mediaName;
         if (!name) return;
@@ -879,6 +923,7 @@ let lastWindowKey = "";
         // 拖拽排序状态（仅针对文件夹项），容器级 drop（与文本框预设管理一致）
         const makeItem = (label, value) => {
             const row = document.createElement("div");
+            row.dataset.mediaFolder = value;
             row.style.cssText = "display:flex;align-items:center;gap:6px;padding:6px 8px 6px 9px;border-radius:4px;cursor:pointer;font-size:14px;border:1px solid transparent;box-sizing:border-box;";
             row.style.background = value === currentFolder ? "rgba(255,255,255,.12)" : "transparent";
             const nameEl = document.createElement("span");
@@ -902,7 +947,7 @@ let lastWindowKey = "";
                 btn.onclick = (e) => { e.stopPropagation(); onClick(); };
                 return btn;
             };
-            if (!value || value === ALL_FOLDER) {
+            if (value === ALL_FOLDER) {
                 // “全部/根目录”行：右侧“+”新建文件夹（放大版，突出主入口）
                 const addBtn = document.createElement("button");
                 addBtn.type = "button";
@@ -913,7 +958,7 @@ let lastWindowKey = "";
                 addBtn.onmouseleave = () => { addBtn.style.background = "transparent"; addBtn.style.opacity = ".7"; };
                 addBtn.onclick = (e) => { e.stopPropagation(); createFolder(); };
                 row.append(addBtn);
-            } else {
+            } else if (value) {
                 // 文件夹项：可拖拽排序 + 右侧操作图标（✎ 重命名 / × 删除，与文本框-化神级提示词类型管理一致）
                 row.draggable = true;
                 row.dataset.folderRow = "1";
@@ -968,6 +1013,7 @@ let lastWindowKey = "";
             return row;
         };
         sidebar.appendChild(makeItem(xzgT("全部", "All"), ALL_FOLDER));
+        sidebar.appendChild(makeItem(xzgT("未分类", "Uncategorized"), ""));
         folders.forEach(f => sidebar.appendChild(makeItem(f, f)));
         const spacer = document.createElement("div");
         spacer.style.cssText = "flex:1;";

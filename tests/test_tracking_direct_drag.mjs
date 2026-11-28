@@ -9,12 +9,11 @@ function harness(manual,frame=5) {
     const handlers={}; let writes=0;
     const wrapper={addEventListener:(key,fn)=>handlers[key]=fn,setPointerCapture(){}};
     const ctx=vm.createContext({state,canvasWrapper:wrapper,canvas:{getBoundingClientRect:()=>({width:1000,height:1000})},
-        _solo:false,CONTROL_HIT_RADIUS:15,CURVE_CONTROL_HIT_RADIUS:10,controlScreenScale:()=>1,
+        previewScrub:null,curveHoverPointer:null,curveAltDown:false,_solo:false,CONTROL_HIT_RADIUS:15,CURVE_CONTROL_HIT_RADIUS:10,controlScreenScale:()=>1,
         calcLayout:()=>({imgW:100,imgH:100}),toImg:e=>({x:e.x*100,y:e.y*100}),
         stopPlay(){},refreshTrackBtns(){},refreshToolBtn(){},updateCurveCursor(){},redraw(){},drawActiveOverlay(){},clearBrushOverlay(){},
         writeData(){writes++},curvePoly:curve=>curve.map(q=>[q.x,q.y]),
-        insideCurve:()=>true,hitCurveSegment:()=>null,smoothCurve(){},hitEditableRegion:(r,p)=>r.curve ? p.x < .8 : (p.x>=r.x1&&p.x<=r.x2&&p.y>=r.y1&&p.y<=r.y2),
-        saveCurve:curve=>{state.manualKeyframes[state.trackId][state.frameIdx]=[{curve,poly:curve.map(q=>[q.x,q.y])}];writes++}
+        insideCurve:()=>true,hitCurveSegment:()=>null,smoothCurve(){},hitEditableRegion:(r,p)=>r.curve ? p.x < .8 : (p.x>=r.x1&&p.x<=r.x2&&p.y>=r.y1&&p.y<=r.y2)
     });
     const helpers=source.slice(source.indexOf('        const polySignedArea ='),source.indexOf('        const drawRegionBox ='));
     const target=source.slice(source.indexOf('        const rectDragTarget ='),source.indexOf('        const updateCurveCursor ='));
@@ -22,7 +21,8 @@ function harness(manual,frame=5) {
     const events=source.slice(start,source.indexOf("        canvasWrapper.addEventListener('contextmenu'",start));
     const controls=source.slice(source.indexOf('        const curveCornerGuide ='),source.indexOf('        const drawActiveOverlay ='));
     const cubic=source.slice(source.indexOf('        const cubicPoint ='),source.indexOf('        // 命中范围'));
-    vm.runInContext(helpers+cubic+controls+target+events+"\nglobalThis.visible = visibleTrackRegions;",ctx);
+    const saveCurve=source.slice(source.indexOf('        const saveCurve ='),source.indexOf('        const cancelCurve ='));
+    vm.runInContext(helpers+cubic+controls+target+saveCurve+events+"\nglobalThis.visible = visibleTrackRegions;",ctx);
     const event=(x,y)=>({x,y,button:0,pointerId:1,altKey:false});
     return {state,handlers,event,visible:ctx.visible,writes:()=>writes};
 }
@@ -220,4 +220,44 @@ test('dragging a rectangle blends both sides without removing automatic results 
     assert.equal(h.visible(1, 9)[0].x1, .6);
     assert.equal(frames[10].manual_transition, undefined);
     assert.equal(frames[4].manual_transition, true);
+});
+
+test('dragging on another frame edits the locked rectangle until unlocked', () => {
+    const locked = {x1:.1,y1:.1,x2:.4,y2:.4};
+    const current = {x1:.5,y1:.5,x2:.8,y2:.8};
+    const track = {0:[locked],5:[current]};
+    const h = harness({1:track});
+    h.state.lockedKeyframe = {track, frame:0};
+    h.state.srcKey = 'video';
+    const tracked = {x1:.12,y1:.12,x2:.42,y2:.42};
+    h.state.autoTracking = {video_id:'video', tracks:{1:{1:tracked}}};
+    h.handlers.pointerdown(h.event(.25,.25));
+    h.handlers.pointermove(h.event(.35,.35));
+    h.handlers.pointerup(h.event(.35,.35));
+    assert.ok(Math.abs(locked.x1-.2) < 1e-9);
+    assert.equal(current.x1, .5);
+    assert.equal(tracked.x1, .12);
+    assert.equal(h.state.frameIdx, 5);
+    assert.equal(h.writes(), 1);
+
+    h.state.lockedKeyframe = null;
+    h.handlers.pointerdown(h.event(.65,.65));
+    h.handlers.pointermove(h.event(.7,.7));
+    h.handlers.pointerup(h.event(.7,.7));
+    assert.ok(Math.abs(current.x1-.55) < 1e-9);
+});
+
+test('dragging a locked curve writes its polygon back to the locked keyframe', () => {
+    const curve = [[.2,.2],[.6,.2],[.6,.6],[.2,.6]].map(([x,y]) => ({
+        x,y,in:{x,y},out:{x,y},roundness:0,auto:false,
+    }));
+    const track = {0:[{curve, poly:curve.map(({x,y}) => [x,y])}]};
+    const h = harness({1:track});
+    h.state.lockedKeyframe = {track, frame:0};
+    h.handlers.pointerdown(h.event(.4,.4));
+    h.handlers.pointermove(h.event(.5,.5));
+    h.handlers.pointerup(h.event(.5,.5));
+    assert.ok(Math.abs(track[0][0].poly[0][0]-.3) < 1e-9);
+    assert.deepEqual(Object.keys(track), ['0']);
+    assert.equal(h.writes(), 1);
 });

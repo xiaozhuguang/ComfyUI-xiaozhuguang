@@ -1184,7 +1184,7 @@ function wm_ensureViewer(node) {
             return btn;
         });
         toolbar.appendChild(trackBar);
-        // 键盘 ← / → 精准逐帧：仅当鼠标悬停在本预览面板内时生效（pointerenter/leave 维护标记），
+        // 键盘 ← / → 逐帧，↑ / ↓ 跳转关键帧：仅当鼠标悬停在本预览面板内时生效（pointerenter/leave 维护标记），
         // 避免抢占 ComfyUI 画布与其他节点的按键；输入类元素聚焦时忽略。
         // 注意：ComfyUI 前端的"跳转上/下一个节点"快捷键监听在 window 捕获/冒泡阶段，
         // 必须在 window 捕获阶段最先拦截（stopImmediatePropagation）才能屏蔽它
@@ -1201,10 +1201,12 @@ function wm_ensureViewer(node) {
             if ((!_panelHover && !workspace) || !container.isConnected) return;
             const isSpace = e.code === "Space" || e.key === " ";
             const isHorizontalArrow = e.key === "ArrowLeft" || e.key === "ArrowRight";
-            if (!isSpace && !isHorizontalArrow) return;
+            const isVerticalArrow = e.key === "ArrowUp" || e.key === "ArrowDown";
+            if (!isSpace && !isHorizontalArrow && !isVerticalArrow) return;
             if (e.altKey || e.metaKey) return;
             const ae = document.activeElement;
-            if (ae && (ae.matches("input, textarea, select") || ae.isContentEditable ||
+            if (ae && ((ae.matches("input, textarea, select") && !(isVerticalArrow && ae === slider)) ||
+                ae.isContentEditable ||
                 (isSpace && ae.matches("button")))) return;
             e.preventDefault();
             e.stopImmediatePropagation(); // 阻止 ComfyUI 的节点跳转快捷键
@@ -1217,7 +1219,22 @@ function wm_ensureViewer(node) {
             const nf = state.frames.length;
             if (!nf) return;
             const delta = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
-            const to = Math.max(0, Math.min(nf - 1, (state.frameIdx || 0) + delta));
+            if (isVerticalArrow) {
+                const tracks = _solo ? [state.manualKeyframes[state.trackId]] : Object.values(state.manualKeyframes);
+                let next = delta < 0 ? -1 : nf;
+                for (const keys of tracks) {
+                    for (const [key, regions] of Object.entries(keys || {})) {
+                        const frame = Number(key);
+                        if (!Number.isInteger(frame) || frame < 0 || frame >= nf || !regions?.length) continue;
+                        if (delta < 0 ? frame < state.frameIdx && frame > next : frame > state.frameIdx && frame < next) {
+                            next = frame;
+                        }
+                    }
+                }
+                if (next >= 0 && next < nf) showFrame(next);
+                return;
+            }
+            const to = Math.max(0, Math.min(nf - 1, state.frameIdx + delta));
             if (to !== state.frameIdx) showFrame(to);
         }, true);
         // 从已有数据推导已解锁轨道（加载含多轨道标注的工作流时自动点亮对应数字）
@@ -1292,14 +1309,24 @@ function wm_ensureViewer(node) {
         const scrubFramesInput = document.createElement("input");
         scrubFramesInput.type = "text";
         scrubFramesInput.inputMode = "numeric";
+        const sensitivityKey = "xzg.manualMask.scrubSensitivity";
+        const normalizeSensitivity = value => String(Math.max(1, Math.min(99999, parseInt(value, 10) || 10)));
+        const readSensitivity = () => {
+            try {
+                scrubFramesInput.value = normalizeSensitivity(localStorage.getItem(sensitivityKey));
+            } catch {}
+        };
+        const saveSensitivity = () => {
+            scrubFramesInput.value = normalizeSensitivity(scrubFramesInput.value);
+            try { localStorage.setItem(sensitivityKey, scrubFramesInput.value); } catch {}
+        };
         scrubFramesInput.value = "10";
+        readSensitivity();
+        container.addEventListener("pointerenter", readSensitivity);
         scrubFramesInput.title = "右键拖动预览画面可调灵敏度，数值越大移动越快";
         scrubFramesInput.style.cssText = "width:27px;height:24px;box-sizing:border-box;background:#151515;color:#eee;border:1px solid #555;border-radius:4px;padding:2px 1px;text-align:center;user-select:text;";
         let scrubValueOverlay = null;
-        scrubFramesInput.addEventListener("change", () => {
-            scrubFramesInput.value = String(Math.max(1, Math.min(99999,
-                parseInt(scrubFramesInput.value, 10) || 10)));
-        });
+        scrubFramesInput.addEventListener("change", saveSensitivity);
         scrubFramesInput.addEventListener("keydown", e => e.stopPropagation());
         scrubSensitivity.appendChild(scrubFramesInput);
         toolbar.insertBefore(scrubSensitivity, right);
@@ -1476,6 +1503,7 @@ function wm_ensureViewer(node) {
         hint.innerText = "左键框选 (检测区)";
 
         const resetViewBtn = mkCtrlBtn("恢复视图", "恢复预览的默认大小和居中位置");
+        resetViewBtn.style.color = "#FFD700";
         resetViewBtn.onclick = e => {
             e.stopPropagation();
             resetPreviewView();
@@ -1622,6 +1650,7 @@ function wm_ensureViewer(node) {
         const endPreviewScrub = e => {
             if (previewScrub?.pointerId !== e.pointerId) return;
             const { mode, startX, startY } = previewScrub;
+            if (mode === "sensitivity") saveSensitivity();
             previewScrub = null;
             suppressPreviewContextMenuUntil = Date.now() + 800;
             if (scrubValueOverlay) scrubValueOverlay.style.display = "none";
@@ -1632,7 +1661,9 @@ function wm_ensureViewer(node) {
         };
         window.addEventListener("pointerup", endPreviewScrub, true);
         window.addEventListener("pointercancel", endPreviewScrub, true);
-        window.addEventListener("blur", () => { previewScrub = null; });
+        window.addEventListener("blur", () => {
+            if (previewScrub) endPreviewScrub({pointerId: previewScrub.pointerId, type: "blur"});
+        });
         // 播放头拖动残影：按下时在播放头"原位置"放一个半透明同款播放头（三角+竖杠），
         // 拖动期间保持不动作为原位置参照；松开后播放头已落实到新位置，残影消失。
         let thumbGhost = null;
@@ -1866,7 +1897,7 @@ function wm_ensureViewer(node) {
             (node.roundness === undefined ? Math.min(26 * scale, tangent) : 52 * scale * node.roundness);
         const drawActiveOverlay = () => {
             if (!state.image) { clearBrushOverlay(); return; }
-            const region = state.shapeSelected ? visibleTrackRegions(state.trackId, state.frameIdx)[0] : null;
+            const region = state.shapeSelected ? visibleTrackRegions(state.trackId, editFrame())[0] : null;
             const curve = state.curveDraft || region?.curve;
             const rect = state.shapeSelected && !state.curveDraft && region && !region.poly ? region : null;
             const hasBrush = !!curve?.length;
@@ -1903,7 +1934,7 @@ function wm_ensureViewer(node) {
                 bctx.clip();
                 for (const tid of Object.keys(state.manualKeyframes).map(Number)) {
                     if (_solo && tid !== state.trackId) continue;
-                    for (const r of visibleTrackRegions(tid,state.frameIdx)) {
+                    for (const r of visibleTrackRegions(tid, tid === state.trackId ? editFrame() : state.frameIdx)) {
                         if (!state.curveDraft && tid === state.trackId && region?.curve) continue;
                         const pos = p => [cr.left-or.left+p.x*cr.width, cr.top-or.top+p.y*cr.height];
                         bctx.strokeStyle = TRACK_COLORS[(tid-1)%TRACK_COLORS.length];
@@ -1989,10 +2020,11 @@ function wm_ensureViewer(node) {
                     bctx.strokeRect(left, top, right-left, bottom-top);
                     bctx.setLineDash([]);
                     bctx.fillStyle = "#fff";
+                    const cornerHalf = Math.min(handleRadius, (right - left) / 12, (bottom - top) / 12);
                     for (const x of [left, (left + right)/2, right]) {
                         for (const y of [top, (top + bottom)/2, bottom]) {
                             if (x === (left + right)/2 && y === (top + bottom)/2) continue;
-                            bctx.fillRect(x-handleRadius, y-handleRadius, 2*handleRadius, 2*handleRadius);
+                            bctx.fillRect(x-cornerHalf, y-cornerHalf, 2*cornerHalf, 2*cornerHalf);
                         }
                     }
                 }
@@ -2020,8 +2052,8 @@ function wm_ensureViewer(node) {
                 });
             }
             if (rect) {
-                const side = Math.min(10 * controlScale, (rect.x2 - rect.x1) * cr.width / 3,
-                                      (rect.y2 - rect.y1) * cr.height / 3);
+                const side = Math.min(10 * controlScale, Math.abs(rect.x2 - rect.x1) * cr.width / 6,
+                                      Math.abs(rect.y2 - rect.y1) * cr.height / 6);
                 const half = side / 2;
                 bctx.strokeStyle = "#101820"; bctx.fillStyle = "#FFD700";
                 bctx.lineWidth = Math.min(controlScale, half);
@@ -2032,6 +2064,22 @@ function wm_ensureViewer(node) {
                     const px = cr.left-or.left+x*cr.width, py = cr.top-or.top+y*cr.height;
                     bctx.fillRect(px-half, py-half, side, side);
                     bctx.strokeRect(px-half, py-half, side, side);
+                }
+                if (lockedEditFrame() !== null) {
+                    const x = cr.left - or.left + (rect.x1 + rect.x2) * cr.width / 2;
+                    const y = cr.top - or.top + (rect.y1 + rect.y2) * cr.height / 2;
+                    const scale = lineScale;
+                    bctx.fillStyle = "#101820";
+                    bctx.beginPath();
+                    bctx.arc(x, y, 10 * scale, 0, 2 * Math.PI);
+                    bctx.fill();
+
+                    bctx.strokeStyle = "#FFD700";
+                    bctx.lineWidth = 1.5 * scale;
+                    bctx.beginPath();
+                    bctx.arc(x, y - scale, 3 * scale, Math.PI, 2 * Math.PI);
+                    bctx.stroke();
+                    bctx.strokeRect(x - 5 * scale, y - scale, 10 * scale, 6 * scale);
                 }
             }
             if (hasRect) {
@@ -2152,6 +2200,7 @@ function wm_ensureViewer(node) {
             image: null,            // 当前显示帧
             mode: 'off',            // 初始化即固定 'manual'（off/filter 仅存于历史防御分支）
             manualKeyframes: {},
+            lockedKeyframe: null,
             autoTracking: {tracks: {}},
             fillEdges: true,
             trackId: 1,
@@ -2357,7 +2406,7 @@ function wm_ensureViewer(node) {
             const tid = state.trackId;
             const auto = state.autoTracking;
             const frames = auto?.video_id === state.srcKey ? auto?.tracks?.[tid] : null;
-            if (original?.length === curve.length && frames) {
+            if (original?.length === curve.length && frames && lockedEditFrame() === null) {
                 const start = state.frameIdx;
                 for (const direction of [-1, 1]) {
                     for (let distance = 1; distance < 12; distance++) {
@@ -2385,7 +2434,7 @@ function wm_ensureViewer(node) {
                 }
             }
             state.manualKeyframes[tid] ||= {};
-            state.manualKeyframes[tid][state.frameIdx] = [{curve, poly: curvePoly(curve)}];
+            state.manualKeyframes[tid][editFrame()] = [{curve, poly: curvePoly(curve)}];
             writeData(); refreshTrackBtns();
         };
         const cancelCurve = () => {
@@ -2417,6 +2466,38 @@ function wm_ensureViewer(node) {
                 if (d < bd) { bd = d; bi = i; }
             }
             return pts.slice(bi).concat(pts.slice(0, bi));
+        };
+        // Match the backend's monotone interpolation of rectangle centers and sizes.
+        const interpolateRectangle = (kfs, keys, index, t) => {
+            const a = keys[index - 1], b = keys[index], span = b - a;
+            const box = frame => {
+                const r = kfs[frame]?.[0];
+                if (!r || r.poly || r.curve) return null;
+                return [(r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2, r.x2 - r.x1, r.y2 - r.y1];
+            };
+            const tangent = (first, second, leftSpan, rightSpan) => {
+                if (first * second <= 0) return 0;
+                const w1 = 2 * rightSpan + leftSpan, w2 = rightSpan + 2 * leftSpan;
+                return (w1 + w2) / (w1 / first + w2 / second);
+            };
+            const previous = box(keys[index - 2]), following = box(keys[index + 1]);
+            const right = box(b);
+            const [x, y, w, h] = box(a).map((start, i) => {
+                const end = right[i], slope = (end - start) / span;
+                const leftSpan = a - keys[index - 2], rightSpan = keys[index + 1] - b;
+                const edgeSlope = state.fillEdges ? 0 : slope;
+                const m0 = previous ? tangent((start - previous[i]) / leftSpan, slope, leftSpan, span) : edgeSlope;
+                const m1 = following ? tangent(slope, (following[i] - end) / rightSpan, span, rightSpan) : edgeSlope;
+                const ramp = .2;
+                const cruise = (slope - ramp * (m0 + m1) / 2) / (1 - ramp);
+                if (t < ramp) return start + span * t * (m0 + (cruise - m0) * t / (2 * ramp));
+                if (t > 1 - ramp) {
+                    const tail = 1 - t;
+                    return end - span * tail * (m1 + (cruise - m1) * tail / (2 * ramp));
+                }
+                return start + span * (m0 * ramp / 2 + cruise * (t - ramp / 2));
+            });
+            return {x1:x - w / 2, y1:y - h / 2, x2:x + w / 2, y2:y + h / 2};
         };
         // Resolve the same outline for drawing, hovering and promotion to a keyframe.
         const visibleTrackRegions = (tid, frame) => {
@@ -2457,19 +2538,30 @@ function wm_ensureViewer(node) {
                 const aligned = alignPoly(b.poly,a.poly);
                 return [{poly:a.poly.map((q,i)=>[mix(q[0],aligned[i][0]),mix(q[1],aligned[i][1])])}];
             }
-            if (!a.poly && !b.poly) return [Object.fromEntries(['x1','y1','x2','y2'].map(k=>[k,mix(a[k],b[k])]))];
+            if (!a.poly && !b.poly) return [interpolateRectangle(kfs, keys, keys.indexOf(after), t)];
             return state.fillEdges ? kfs[t < 0.5 ? before : after] : [];
         };
+        const isLockedKeyframe = (tid, frame) => {
+            const lock = state.lockedKeyframe;
+            return !!lock && lock.track === state.manualKeyframes[tid] && lock.frame === frame;
+        };
+        const lockedEditFrame = () => {
+            const lock = state.lockedKeyframe;
+            return lock && lock.frame < state.frames.length && isLockedKeyframe(state.trackId, lock.frame) &&
+                lock.track[lock.frame]?.length ? lock.frame : null;
+        };
+        const editFrame = () => lockedEditFrame() ?? state.frameIdx;
         const promoteVisibleRegion = tid => {
             const kfs = state.manualKeyframes[tid];
-            if (kfs[state.frameIdx]?.length) return kfs[state.frameIdx][0];
-            const regions = JSON.parse(JSON.stringify(visibleTrackRegions(tid,state.frameIdx)));
+            const frame = tid === state.trackId ? editFrame() : state.frameIdx;
+            if (kfs[frame]?.length) return kfs[frame][0];
+            const regions = JSON.parse(JSON.stringify(visibleTrackRegions(tid,frame)));
             if (!regions.length) return null;
             // Old polygon-only tracks remain editable as closed, straight cubic segments.
             for (const r of regions) if (r.poly && !r.curve) {
                 r.curve = r.poly.map(([x,y])=>({x,y,in:{x,y},out:{x,y},auto:false}));
             }
-            kfs[state.frameIdx] = regions;
+            kfs[frame] = regions;
             return regions[0];
         };
         const drawRegionBox = (r, color, fill, label) => {
@@ -2556,9 +2648,10 @@ function wm_ensureViewer(node) {
             closeBarMenu();
             const menu = document.createElement("div");
             menu.style.cssText = "position:fixed;z-index:100000;min-width:130px;padding:4px;background:rgba(24,26,33,0.97);border:1px solid rgba(255,255,255,0.16);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,0.55);color:#e8e8e8;font:13px/1.4 sans-serif;user-select:none;";
-            items.forEach(({ label, fn }) => {
+            items.forEach(({ label, fn, color }) => {
                 const it = document.createElement("div");
                 it.style.cssText = "padding:6px 12px;border-radius:5px;cursor:pointer;white-space:nowrap;";
+                if (color) it.style.color = color;
                 it.innerText = label;
                 it.addEventListener("mouseenter", () => { it.style.background = "rgba(255,255,255,0.08)"; });
                 it.addEventListener("mouseleave", () => { it.style.background = "transparent"; });
@@ -2572,7 +2665,41 @@ function wm_ensureViewer(node) {
             _barMenuEl = menu;
         };
         // 点击菜单外任意处关闭
-        document.addEventListener("mousedown", (e) => { if (_barMenuEl && !_barMenuEl.contains(e.target)) closeBarMenu(); });
+        document.addEventListener("pointerdown", (e) => {
+            if (_barMenuEl && !_barMenuEl.contains(e.target)) closeBarMenu();
+        }, true);
+
+        const scaleAllRectangles = factor => {
+            stopPlay();
+            const rectangles = new Set();
+            for (const track of Object.values(state.manualKeyframes)) {
+                for (const regions of Object.values(track)) {
+                    for (const region of regions) rectangles.add(region);
+                }
+            }
+            for (const track of Object.values(activeAutoTracks())) {
+                for (const region of Object.values(track)) rectangles.add(region);
+            }
+            let changed = false;
+            for (const region of rectangles) {
+                if (!region || region.poly || region.curve) continue;
+                const {x1, y1, x2, y2} = region;
+                if (![x1, y1, x2, y2].every(Number.isFinite) || x1 >= x2 || y1 >= y2) continue;
+                const dx = (x2 - x1) * (factor - 1) / 2;
+                const dy = (y2 - y1) * (factor - 1) / 2;
+                Object.assign(region, {x1: x1 - dx, y1: y1 - dy, x2: x2 + dx, y2: y2 + dy});
+                changed = true;
+            }
+            if (changed) {
+                writeData();
+                updateCurveCursor();
+                redraw();
+            } else {
+                app.extensionManager?.toast?.add({
+                    summary: "全局调整", detail: "当前视频没有可调整的矩形框", severity: "info",
+                });
+            }
+        };
 
         // ---- 关键帧拖动：按住三角左右移动，松手落位 ----
         // 拖动状态放在节点闭包层：拖动过程中 showFrame→redraw 会重建三角元素，
@@ -2596,6 +2723,8 @@ function wm_ensureViewer(node) {
             if (!km) return;
             const data = km[_kfDrag.cur];
             if (!data) { _kfDrag = null; return; }
+            if (isLockedKeyframe(_kfDrag.trackId, _kfDrag.cur)) state.lockedKeyframe.frame = to;
+            else if (isLockedKeyframe(_kfDrag.trackId, to)) state.lockedKeyframe = null;
             delete km[_kfDrag.cur];
             km[to] = data;   // 目标位置已有关键帧时直接覆盖
             _kfDrag.cur = to;
@@ -2672,14 +2801,38 @@ function wm_ensureViewer(node) {
                     // 避免误触发：三角下方仍走播放条的拖拽换帧判定
                     const hit = document.createElement("div");
                     hit.style.cssText = `position:absolute;left:${posX(fr) - 8}px;top:${laneY}px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:auto;`;
-                    hit.title = `第 ${fr} 帧关键帧（点击跳转 / 拖动移动）`;
+                    const locked = isLockedKeyframe(tid, fr);
+                    hit.title = `第 ${fr} 帧关键帧（${locked ? "已锁定编辑 / " : ""}点击跳转 / 拖动移动）`;
                     hit.addEventListener("contextmenu", e => {
                         e.preventDefault();
                         e.stopPropagation();
                         showBarMenu(e.clientX, e.clientY, [{
-                            label: `删除第 ${fr} 帧关键帧`,
+                            label: locked ? "不生成关键帧(关闭)" : "不生成关键帧(开启)",
+                            color: locked ? "#30d158" : "#00ffff",
                             fn: () => {
                                 if (state.manualKeyframes[tid] !== kfs || !kfs[fr]?.length) return;
+                                stopPlay();
+                                state.lockedKeyframe = locked ? null : {track: kfs, frame: fr};
+                                selectTrack(tid);
+                                updateCurveCursor();
+                            },
+                        }, {
+                            label: "全局调整（所有矩形框）",
+                            color: "#ffd700",
+                            fn: () => showBarMenu(e.clientX, e.clientY, [
+                                {label: "放大 5%", fn: () => scaleAllRectangles(1.05)},
+                                {label: "放大 10%", fn: () => scaleAllRectangles(1.10)},
+                                {label: "放大 20%", fn: () => scaleAllRectangles(1.20)},
+                                {label: "缩小 5%", fn: () => scaleAllRectangles(.95)},
+                                {label: "缩小 10%", fn: () => scaleAllRectangles(.90)},
+                                {label: "缩小 20%", fn: () => scaleAllRectangles(.80)},
+                            ]),
+                        }, {
+                            label: "删除关键帧",
+                            color: "#ff6961",
+                            fn: () => {
+                                if (state.manualKeyframes[tid] !== kfs || !kfs[fr]?.length) return;
+                                if (isLockedKeyframe(tid, fr)) state.lockedKeyframe = null;
                                 delete kfs[fr];
                                 writeData();
                                 refreshTrackBtns();
@@ -2712,6 +2865,16 @@ function wm_ensureViewer(node) {
                     path.setAttribute("stroke-linejoin", "round");
                     if (active) mark.style.filter = "drop-shadow(0 0 3px #ffffff)";
                     mark.appendChild(path);
+                    if (locked) {
+                        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        dot.setAttribute("cx", "7");
+                        dot.setAttribute("cy", "4");
+                        dot.setAttribute("r", "2");
+                        dot.setAttribute("fill", "#fff");
+                        dot.setAttribute("stroke", "#141414");
+                        dot.setAttribute("stroke-width", "0.7");
+                        mark.appendChild(dot);
+                    }
                     hit.addEventListener("mouseenter", () => {
                         path.setAttribute("stroke-width", "1.5");
                         mark.style.filter = "drop-shadow(0 0 3px #ffffff)";
@@ -2818,7 +2981,7 @@ function wm_ensureViewer(node) {
                 const cr=canvas.getBoundingClientRect();
                 const p={x:(curveHoverPointer.clientX-cr.left)/cr.width,y:(curveHoverPointer.clientY-cr.top)/cr.height};
                 const near=q=>Math.hypot((q.x-p.x)*cr.width,(q.y-p.y)*cr.height)<CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
-                const region = state.shapeSelected ? visibleTrackRegions(state.trackId, state.frameIdx)[0] : null;
+                const region = state.shapeSelected ? visibleTrackRegions(state.trackId, editFrame())[0] : null;
                 const curve = state.curveDraft || region?.curve;
                 const controls = curve?.length ? curveControls(curve, cr, controlScreenScale(), !state.curveDraft || curve.length >= 3) : null;
                 const anchorIndex = controls?.anchors.findIndex(near) ?? -1;
@@ -2857,7 +3020,7 @@ function wm_ensureViewer(node) {
                         hover = {kind:"whole"};
                     }
                     if (!rect) {
-                        const r = visibleTrackRegions(state.trackId, state.frameIdx)[0];
+                        const r = visibleTrackRegions(state.trackId, editFrame())[0];
                         if (r && hitEditableRegion(r, p, cr)) cursor = 'pointer';
                     }
                 }
@@ -2932,10 +3095,11 @@ function wm_ensureViewer(node) {
                 state.drawing = {start: c, x1: c.x, y1: c.y, x2: c.x, y2: c.y};
                 return;
             }
+            const frame = editFrame();
             if (!state.curveDraft && state.mode === 'manual') {
                 const L=calcLayout(), cr=canvas.getBoundingClientRect();
                 const p={x:c.x/L.imgW,y:c.y/L.imgH};
-                const selectedVisible = visibleTrackRegions(state.trackId, state.frameIdx)[0];
+                const selectedVisible = visibleTrackRegions(state.trackId, frame)[0];
                 if (selectedVisible && !selectedVisible.poly && !selectedVisible.curve) {
                     const target = rectDragTarget(selectedVisible, p, cr);
                     const region = promoteVisibleRegion(state.trackId);
@@ -2957,11 +3121,11 @@ function wm_ensureViewer(node) {
                         return;
                     }
                 }
-                const hasCurrentKeyframe = !!state.manualKeyframes[state.trackId]?.[state.frameIdx]?.length;
+                const hasCurrentKeyframe = !!state.manualKeyframes[state.trackId]?.[frame]?.length;
                 const tids = [state.trackId];
                 for (const tid of tids) {
-                    if (tid===state.trackId && state.shapeSelected && state.manualKeyframes[tid]?.[state.frameIdx]?.length) continue;
-                    const visible=visibleTrackRegions(tid,state.frameIdx)[0];
+                    if (tid===state.trackId && state.shapeSelected && state.manualKeyframes[tid]?.[frame]?.length) continue;
+                    const visible=visibleTrackRegions(tid,frame)[0];
                     if (hasCurrentKeyframe && state.tool === 'brush' &&
                         visible && !visible.curve && !visible.poly) continue;
                     const target = rectDragTarget(visible,p,cr);
@@ -2971,7 +3135,7 @@ function wm_ensureViewer(node) {
                         Math.hypot((point.x-p.x)*cr.width, (point.y-p.y)*cr.height) <
                             CURVE_CONTROL_HIT_RADIUS * controlScreenScale()) || curveBoundsTarget(controls.box,p,cr)?.keys.length);
                     if (!visible || (!target && !handle && !hitEditableRegion(visible,p,cr))) continue;
-                    const promoted = !state.manualKeyframes[tid]?.[state.frameIdx]?.length;
+                    const promoted = !state.manualKeyframes[tid]?.[frame]?.length;
                     const r=promoteVisibleRegion(tid);
                     const curve=r.curve;
                     if (r) {
@@ -2992,12 +3156,12 @@ function wm_ensureViewer(node) {
                 }
             }
             if (state.mode === "manual" &&
-                !state.manualKeyframes[state.trackId]?.[state.frameIdx]?.length &&
-                visibleTrackRegions(state.trackId, state.frameIdx).length) return;
-            const region = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
+                !state.manualKeyframes[state.trackId]?.[frame]?.length &&
+                visibleTrackRegions(state.trackId, frame).length) return;
+            const region = state.manualKeyframes[state.trackId]?.[frame]?.[0];
             // An interpolated or tracked curve also occupies this frame, even before it is promoted.
             if (!state.curveDraft && !region) {
-                const visible = visibleTrackRegions(state.trackId, state.frameIdx)[0];
+                const visible = visibleTrackRegions(state.trackId, frame)[0];
                 if (visible?.curve || visible?.poly) return;
             }
             if (state.shapeSelected && state.tool !== 'brush' && !state.curveDraft && region && !region.poly) {
@@ -3011,7 +3175,7 @@ function wm_ensureViewer(node) {
                 const L = calcLayout(), p = {x: c.x / L.imgW, y: c.y / L.imgH};
                 const cr = canvas.getBoundingClientRect();
                 const near = q => Math.hypot((q.x-p.x)*cr.width, (q.y-p.y)*cr.height) < CURVE_CONTROL_HIT_RADIUS * controlScreenScale();
-                let curve = state.curveDraft || state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0]?.curve;
+                let curve = state.curveDraft || state.manualKeyframes[state.trackId]?.[frame]?.[0]?.curve;
                 if (!e.altKey && state.curveDraft?.length >= 3 && near(curve[0])) {
                     smoothCurve(curve, true); state.curveDraft = null; saveCurve(curve); redraw(); return;
                 }
@@ -3211,7 +3375,7 @@ function wm_ensureViewer(node) {
                 }
                 if (d.kind !== 'bounds') d.p = p;
                 if (!state.curveDraft) {
-                    const r = state.manualKeyframes[state.trackId]?.[state.frameIdx]?.[0];
+                    const r = state.manualKeyframes[state.trackId]?.[editFrame()]?.[0];
                     if (r?.curve === d.curve) r.poly = curvePoly(d.curve);
                 }
                 redraw(); return;
@@ -3288,7 +3452,7 @@ function wm_ensureViewer(node) {
             const auto = state.autoTracking;
             const track = state.trackId;
             const frames = auto?.video_id === state.srcKey ? auto?.tracks?.[track] : null;
-            if (changed && frames) {
+            if (changed && frames && lockedEditFrame() === null) {
                 const start = state.frameIdx;
                 const keys = state.manualKeyframes[track];
                 const transitionFrames = 12;
@@ -3352,7 +3516,7 @@ function wm_ensureViewer(node) {
                 return;
             }
             stopPlay();
-            const frame = state.frameIdx;
+            const frame = editFrame();
             const L = calcLayout(), c = toImg(e);
             const p = {x:c.x/L.imgW, y:c.y/L.imgH};
             const cr = canvas.getBoundingClientRect();
@@ -3381,9 +3545,10 @@ function wm_ensureViewer(node) {
                     const track = state.trackId;
                     const keys = state.manualKeyframes[track];
                     showBarMenu(e.clientX, e.clientY, [{
-                        label: "删除当前帧曲线",
+                        label: `删除第 ${frame} 帧曲线`,
                         fn: () => {
                             if (keys[frame]?.[0]?.curve !== curve) return;
+                            if (isLockedKeyframe(track, frame)) state.lockedKeyframe = null;
                             delete keys[frame];
                             const tracked = activeAutoTracks()[track];
                             if (tracked) delete tracked[state.sampleIdx[frame] ?? frame];
@@ -3501,7 +3666,11 @@ function wm_ensureViewer(node) {
             overlay.remove();
             fullscreenBtn.textContent = "全屏编辑";
             fullscreenBtn.title = "打开全屏编辑";
-            if (container.isConnected) { syncSize(); redraw(); }
+            if (container.isConnected) {
+                resetPreviewView();
+                syncSize();
+                redraw();
+            }
         };
         const onWorkspaceEscape = e => {
             if (!workspace || e.key !== "Escape" || document.querySelector(".xzg-wmdet-help-ok")) return;
@@ -3531,18 +3700,16 @@ function wm_ensureViewer(node) {
         };
         const canUseMaskHistory = () => !trackingRequest && !state.curveDraft &&
             !state.curveDrag && !state.rectDrag && !state.drawing && !state.trackingAreaDraft && !_kfDrag;
-        const maskHistoryUrl = () => {
-            node.properties ||= {};
-            if (!node.properties.maskHistoryId) {
-                node.properties.maskHistoryId = Array.from(crypto.getRandomValues(new Uint8Array(18)),
-                    byte => byte.toString(16).padStart(2, "0")).join("");
-                node.setDirtyCanvas?.(true, true);
-            }
-            return `/xzg/manual-mask/history/${node.properties.maskHistoryId}`;
-        };
+        const maskHistoryUrl = "/xzg/manual-mask/history/shared";
         const requestMaskHistory = async (url, options) => {
             const response = await api.fetchApi(url, options);
-            if (!response.ok) throw new Error("遮罩历史读写失败，请检查 ComfyUI 后端");
+            if (!response.ok) {
+                const {error} = await response.json().catch(() => ({}));
+                if (response.status === 400 && error === "无效的遮罩历史标识") {
+                    throw new Error("当前 ComfyUI 后端尚未加载共享遮罩历史，请重启 ComfyUI 后端并刷新页面");
+                }
+                throw new Error(error || `遮罩历史读写失败（HTTP ${response.status}）`);
+            }
             return response.json();
         };
         const storeMaskHistory = async entry => {
@@ -3550,7 +3717,7 @@ function wm_ensureViewer(node) {
             const versions = Array.isArray(legacy) ? legacy.slice(0, 10) : [];
             if (entry) versions.push(entry);
             if (!versions.length) return;
-            await requestMaskHistory(maskHistoryUrl(), {
+            await requestMaskHistory(maskHistoryUrl, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify(versions),
@@ -3578,11 +3745,11 @@ function wm_ensureViewer(node) {
             const videoId = state.srcKey;
             try {
                 await storeMaskHistory();
-                const url = `${maskHistoryUrl()}?video=${encodeURIComponent(videoId)}`;
+                const url = `${maskHistoryUrl}?video=${encodeURIComponent(videoId)}`;
                 const versions = await requestMaskHistory(url);
                 if (state.srcKey !== videoId || !canUseMaskHistory()) return;
                 if (!versions.length) {
-                    trackingNotice("当前视频暂无历史版本。运行工作流时会自动记录。");
+                    trackingNotice("当前视频暂无历史版本。完成自动跟踪或运行工作流后会自动记录。");
                     return;
                 }
                 const items = versions.map(version => ({
@@ -3663,6 +3830,7 @@ function wm_ensureViewer(node) {
                 refreshToolBtn();
                 state.fillEdges = d.fill_edges !== false;
                 refreshFillEdgesBtn();
+                state.lockedKeyframe = null;
                 state.manualKeyframes = (d.manual && typeof d.manual === 'object') ? d.manual : {};
                 state.autoTracking = d.auto_tracking?.tracks && typeof d.auto_tracking.tracks === 'object'
                     ? d.auto_tracking : {tracks: {}};
@@ -3977,6 +4145,7 @@ function wm_ensureViewer(node) {
                 }
                 state.autoTracking = {video_id: videoId, tracks};
                 writeData();
+                void saveMaskVersion(dataWidget.value);
                 if (direction && state.trackId === trackId && state.frameIdx === start) {
                     showFrame(start + direction * results[0].result.transforms.length);
                 } else redraw();
@@ -4197,12 +4366,12 @@ function showWmDetHelp() {
             <ul>
                 <li>从当前矩形或闭合曲线点「向前跟踪」「向后跟踪」或「双向跟踪」。右键跟踪按钮可在当前帧绘制独立跟踪区域，用一块稳定纹理带动遮罩。每个方向在遇到手工关键帧前停止。</li>
                 <li>跟丢时先沿用最近可靠的轮廓，再尝试恢复。拖动矩形或调整曲线锚点和手柄后，修正量会在两侧逐帧减小。</li>
-                <li>点击关键帧三角可跳转，拖动可移动关键帧，右键可删除。右键点击两个关键帧之间的播放条，可清除这段自动跟踪并恢复两端之间的手工插值。</li>
+                <li>点击关键帧三角可跳转，拖动可移动关键帧，右键可删除、锁定编辑或全局缩放所有矩形框。锁定的三角会带白色圆点，切换到其他帧后拖动遮罩仍会编辑锁定帧。右键点击两个关键帧之间的播放条，可清除这段自动跟踪并恢复两端之间的手工插值。</li>
             </ul>
 
             <h4>预览与输出</h4>
             <ul>
-                <li>鼠标悬停在预览区时，左右键逐帧切换，空格播放或暂停。Ctrl + 滚轮缩放，按住中键或 Ctrl + 左键拖动平移，点「恢复视图」回到默认大小和位置。</li>
+                <li>鼠标悬停在预览区时，左右键逐帧切换，上下键跳到上一个或下一个可见轨道的关键帧，空格播放或暂停。Ctrl + 滚轮缩放，按住中键或 Ctrl + 左键拖动平移，点「恢复视图」回到默认大小和位置。</li>
                 <li>点「全屏编辑」放大工作区。全屏预览中直接滚轮缩放，按住鼠标中键或 Ctrl + 左键拖动画面。点「退出全屏」或按 Esc 返回节点。</li>
                 <li>开启「允许遮罩为空」后，轨道首尾没有标注的帧留空。默认关闭，首尾沿用最近的遮罩。</li>
             </ul>

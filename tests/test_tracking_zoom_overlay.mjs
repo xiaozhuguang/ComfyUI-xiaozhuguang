@@ -39,7 +39,7 @@ test('unselected curves use solid cubic paths at screen size and pixel density',
     const curve=[{x:.1,y:.1,in:{x:.1,y:.1},out:{x:.3,y:.1}},{x:.8,y:.8,in:{x:.6,y:.8},out:{x:.8,y:.8}}];
     const region={curve,poly:[[.1,.1],[.8,.8]]};
     const state={image:{},mode:'manual',manualKeyframes:{1:{0:[region]}},frameIdx:5,trackId:1,shapeSelected:false};
-    const ctx=vm.createContext({state,brushOverlay:overlay,canvas:{clientWidth:200,getBoundingClientRect:()=>({left:0,top:0,width:200*zoom*previewZoom,height:100*zoom*previewZoom})},window:{devicePixelRatio:2},TRACK_COLORS:['red'],_solo:false,visibleTrackRegions:()=>[region]});
+    const ctx=vm.createContext({state,brushOverlay:overlay,canvas:{clientWidth:200,getBoundingClientRect:()=>({left:0,top:0,width:200*zoom*previewZoom,height:100*zoom*previewZoom})},window:{devicePixelRatio:2},TRACK_COLORS:['red'],_solo:false,editFrame:()=>state.frameIdx,visibleTrackRegions:()=>[region]});
     vm.runInContext(code+'globalThis.draw=drawActiveOverlay;',ctx);
     ctx.draw();assert.equal(overlay.width,400);assert.equal(paths.length,2);assert.equal(paths[0][0],60);
     zoom=2;paths.length=0;ctx.draw();assert.equal(overlay.width,800);assert.equal(overlay.height,400);assert.equal(paths.length,2);assert.equal(paths[0][0],120);

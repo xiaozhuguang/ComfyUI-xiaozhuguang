@@ -86,7 +86,7 @@
       "tapered_corners": { "name": "扩展收尖角" },
       "fill_holes": { "name": "填补小孔" },
       "remove_isolated_pixels": { "name": "去除细碎区域" },
-      "smooth": { "name": "平滑" },
+      "smooth": { "name": "边缘平滑" },
       "blur": { "name": "模糊" },
       "temporal_smooth_radius": { "name": "最大补漏帧数" },
       "position_smoothing_frames": { "name": "位置平滑" },

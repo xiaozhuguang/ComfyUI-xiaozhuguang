@@ -70,14 +70,10 @@ let _arrowBackupDirty = false;
 let _arrowFlushed = false;
 // 延迟显示（等节点渲染完成）的切换令牌：快速连续切换时递增，旧 rAF 链据此取消
 let _arrowSwitchToken = 0;
-// 切换 tab/新建后“首帧同绘显示”挂起标记：onDrawBackground 同帧钩子首绘完成立即显示覆盖层
+// 切换 tab/新建后“首帧同绘显示”挂起标记：onRender 同帧钩子首绘完成立即显示覆盖层
 let _arrowInstantShowPending = false;
-// 最近一次首帧同绘显示的时间戳：宽限期内忽略工作流视图适配造成的 transform 跳变
-let _arrowInstantShownAt = 0;
 // 本次挂起显示使用的渐入时长（毫秒）：由 scheduleArrowRedrawAfterSwitch 按场景写入，同帧钩子/兜底统一读取
 let _arrowInstantShowDurMs = 0;
-// 首帧显示后的视图适配宽限期（毫秒）：刷新后首次显示用长宽限覆盖加载期视图适配，切换用短宽限
-let _arrowAdaptGraceMs = 250;
 // 刷新浏览器后的首次工作流显示是否已完成：首次显示不渐入（与普通节点一致，直接出现）
 let _arrowInitialShowDone = false;
 const ARROW_BACKUP_PREFIX = "xzg_arrow_backup_";
@@ -96,6 +92,7 @@ let bezierDrawStage = 0;
 // 箭头设置
 const arrowSettings = {
     color: "#FF5555",
+    fillColor: null,
     lineWidth: 2,
     arrowSize: 10,
     opacity: 1.0,
@@ -115,6 +112,7 @@ const arrowSettings = {
     fadeInDuration: 1000,   // 渐入时长（ms）
     smoothness: 50,         // 手绘平滑幅度（5-100px，最小收集距离）
     closed: false,          // 曲线闭合
+    behindNodes: false,
     deactivateClickSelect: false  // 钝化激活：禁止点击画布选择箭头
 };
 
@@ -132,9 +130,6 @@ let resizeObserver = null;
 let litegraphCanvas = null;
 // 变换状态由 ComfyUI 真实画布重绘时检查。此前这里有一个永久 rAF 轮询，
 // 即使画布静止、没有箭头也会每帧唤醒主线程。
-let _arrowLastTransformStr = "";
-let _arrowCanvasMoving = false;
-let _arrowMoveStopTimer = null;
 
 // 历史记录
 let history = [];
@@ -169,12 +164,20 @@ function toggleSelection(idx) { if (selectedArrowIndices.has(idx)) selectedArrow
 function getFirstSelectedIndex() { return selectedArrowIndices.size > 0 ? [...selectedArrowIndices][0] : -1; }
 
 // 批量应用属性到所有选中的箭头，返回是否成功应用
+function supportsFill(shape) {
+    return ["rectangle", "ellipse", "circle"].includes(shape.type);
+}
+
 function applyToSelectedArrows(prop, val) {
     if (!hasSelection()) return false;
-    const selIndices = getSelectedIndices();
-    for (const idx of selIndices) {
-        arrows[idx][prop] = val;
+    let changed = false;
+    for (const idx of getSelectedIndices()) {
+        const shape = arrows[idx];
+        if (prop === "fillColor" && !supportsFill(shape)) continue;
+        shape[prop] = val;
+        changed = true;
     }
+    if (!changed) return false;
     // 属性被修改：标记尚未落盘
     _arrowFlushed = false;
     return true;
@@ -267,7 +270,6 @@ function createOverlay(container) {
 
     canvasContext = canvasElement.getContext("2d", {
         alpha: true,
-        desynchronized: true,
         willReadFrequently: false
     });
 
@@ -290,7 +292,7 @@ function updateCanvasSize() {
     if (canvasElement.width !== bufferWidth || canvasElement.height !== bufferHeight) {
         canvasElement.width = bufferWidth;
         canvasElement.height = bufferHeight;
-        canvasContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+        renderArrows();
     }
 }
 
@@ -306,7 +308,7 @@ function setupResizeObserver(container) {
 }
 
 function setPointerEventsMode(mode) {
-    if (overlayElement) overlayElement.style.pointerEvents = mode;
+    if (overlayElement) overlayElement.style.pointerEvents = arrowSettings.behindNodes ? "none" : mode;
 }
 
 function setCursor(cursor) {
@@ -327,16 +329,6 @@ function clearCanvas() {
     if (!canvasContext || !canvasElement) return;
     canvasContext.setTransform(1, 0, 0, 1, 0, 0);
     canvasContext.clearRect(0, 0, canvasElement.width, canvasElement.height);
-}
-
-// 使用 requestAnimationFrame 节流渲染，避免鼠标高频事件导致卡顿
-let _renderRafId = null;
-function scheduleRender() {
-    if (_renderRafId !== null) return;
-    _renderRafId = requestAnimationFrame(() => {
-        _renderRafId = null;
-        renderArrows();
-    });
 }
 
 // ============================================================================
@@ -1206,7 +1198,7 @@ function drawRectShape(ctx, shape, mode) {
         ctx.beginPath();
         if (br > 0 && ctx.roundRect) ctx.roundRect(x, y, w, h, br);
         else ctx.rect(x, y, w, h);
-        ctx.fillStyle = shape.color;
+        ctx.fillStyle = shape.fillColor ?? shape.color;
         ctx.fill();
     } else {
         ctx.beginPath();
@@ -1240,7 +1232,7 @@ function drawEllipseShape(ctx, shape, mode) {
     if (mode === "fill") {
         ctx.beginPath();
         ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.fillStyle = shape.color;
+        ctx.fillStyle = shape.fillColor ?? shape.color;
         ctx.fill();
     } else {
         ctx.beginPath();
@@ -1273,7 +1265,7 @@ function drawCircleShape(ctx, shape, mode) {
     if (mode === "fill") {
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.fillStyle = shape.color;
+        ctx.fillStyle = shape.fillColor ?? shape.color;
         ctx.fill();
     } else {
         ctx.beginPath();
@@ -2016,8 +2008,9 @@ function sdRoundedRect(px, py, cx, cy, hw, hh, r) {
 }
 
 // 点击测试：返回点击位置命中的形状索引，-1 表示未命中
-function hitTestShape(canvasX, canvasY) {
+function hitTestShape(canvasX, canvasY, includeRectangleInterior = false) {
     const threshold = 10;
+    let rectangleInterior = -1;
     for (let i = arrows.length - 1; i >= 0; i--) {
         const a = arrows[i];
         const type = a.type || "arrow";
@@ -2090,6 +2083,9 @@ function hitTestShape(canvasX, canvasY) {
                         // 使用 SDF 检测点到圆角矩形边框的距离
                         const sd = sdRoundedRect(lx, ly, cx, cy, w / 2, h / 2, br);
                         if (Math.abs(sd) <= threshold) return i;
+                        if (includeRectangleInterior && sd < 0 && rectangleInterior < 0) {
+                            rectangleInterior = i;
+                        }
                     } else if (type === "ellipse" || type === "circle") {
                         const r = type === "circle" ? Math.max(rx, ry) : 1;
                         const rxActual = type === "circle" ? r : rx;
@@ -2104,7 +2100,7 @@ function hitTestShape(canvasX, canvasY) {
             }
         }
     }
-    return -1;
+    return rectangleInterior;
 }
 
 // 整体偏移形状的所有点
@@ -2329,28 +2325,10 @@ function stopAnimLoop() {
 }
 
 function renderArrows() {
-    // 功能被设置开关关闭时：覆盖层已隐藏，跳过绘制（画布重绘同步钩子仍会调用本函数）
-    if (!isArrowToolEnabled()) return;
-    const ctx = canvasContext;
-    const canvas = canvasElement;
-    if (!ctx || !canvas) return;
+    app.canvas?.setDirty?.(true, false);
+}
 
-    const dpr = window.devicePixelRatio || 1;
-
-    // 清空画布
-    clearCanvas();
-
-    // 应用 LiteGraph 变换
-    const transform = getTransform();
-    ctx.setTransform(
-        transform.scale * dpr,
-        0,
-        0,
-        transform.scale * dpr,
-        transform.offsetX * transform.scale * dpr,
-        transform.offsetY * transform.scale * dpr
-    );
-
+function drawArrowShapes(ctx) {
     // 绘制所有已完成形状
     for (let i = 0; i < arrows.length; i++) {
         const isSel = isSelected(i) && !_hideSelectionHighlight;
@@ -2372,13 +2350,6 @@ function renderArrows() {
         ctx.fillRect(_boxSelectRect.x, _boxSelectRect.y, _boxSelectRect.w, _boxSelectRect.h);
         ctx.strokeRect(_boxSelectRect.x, _boxSelectRect.y, _boxSelectRect.w, _boxSelectRect.h);
         ctx.restore();
-    }
-
-    // 绘制模式指示器（屏幕坐标）
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (isArrowModeActive) {
-        const { width, height } = getCanvasDimensions();
-        drawModeIndicator(ctx, width, height);
     }
 }
 
@@ -2519,7 +2490,7 @@ function setupPointerEvents() {
     document.addEventListener("pointerup", (e) => {
         if (e.button === 1 && overlayElement) {
             if (isArrowModeActive) {
-                overlayElement.style.pointerEvents = "auto";
+                setPointerEventsMode("auto");
             } else {
                 overlayElement.style.pointerEvents = "none";
             }
@@ -2545,54 +2516,75 @@ function setupPointerEvents() {
 }
 
 // 双击画布关闭面板（或在贝塞尔绘制时完成曲线）
-function setupCanvasDoubleClick() {
-    // 覆盖层上的双击：仅用于完成贝塞尔曲线打点绘制（不再关闭面板）
-    if (canvasElement) {
-        canvasElement.addEventListener("dblclick", (e) => {
-            if (isArrowModeActive) {
-                // 贝塞尔绘制中：双击完成曲线（移除双击产生的重复点）
-                if (isDrawing && currentArrow?.type === "bezier" && currentArrow.points?.length >= 2) {
-                    const pts = currentArrow.points;
-                    const last = pts[pts.length - 1];
-                    const secondLast = pts[pts.length - 2];
-                    if (Math.hypot(last.x - secondLast.x, last.y - secondLast.y) < 5) {
-                        pts.pop(); // 移除双击产生的重复点
-                    }
-                    finishBezierDrawing();
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-            }
-        });
-    }
-    // LiteGraph 画布上的双击：模式激活时拦截，避免触发其他行为
-    if (litegraphCanvas) {
-        litegraphCanvas.addEventListener("dblclick", (e) => {
-            if (isArrowModeActive && isDrawing && currentArrow?.type === "bezier") {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-        });
-    }
+function handleArrowDoubleClick(e) {
+    if (!isArrowModeActive || !isDrawing || currentArrow?.type !== "bezier" ||
+        currentArrow.points?.length < 2) return;
+    const pts = currentArrow.points;
+    const last = pts[pts.length - 1];
+    const secondLast = pts[pts.length - 2];
+    if (Math.hypot(last.x - secondLast.x, last.y - secondLast.y) < 5) pts.pop();
+    finishBezierDrawing();
+    e.preventDefault();
+    e.stopImmediatePropagation();
 }
 
-// 在 LiteGraph 画布上检测箭头点击（当模式未激活时，覆盖层 pointer-events:none 不接收事件）
+function setupCanvasDoubleClick() {
+    canvasElement?.addEventListener("dblclick", handleArrowDoubleClick);
+    litegraphCanvas?.addEventListener("dblclick", (e) => {
+        if (arrowSettings.behindNodes && !isNodeAtPointer(e)) handleArrowDoubleClick(e);
+    }, true);
+}
+
+function isNodeAtPointer(e) {
+    const rect = litegraphCanvas.getBoundingClientRect();
+    const pos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+    return app.canvas?.graph?.getNodeOnPos?.(pos.x, pos.y);
+}
+
+// 下层模式保留原生事件目标，仅在空白画布上接管箭头手势。
 function setupLiteGraphArrowClick() {
     if (!litegraphCanvas) return;
+    let arrowPointerId = null;
 
-    // 追踪鼠标在画布上的坐标（面板关闭时 overlay 不接收事件，需在 LiteGraph 画布上追踪）
     litegraphCanvas.addEventListener("pointermove", (e) => {
-        const rect = litegraphCanvas.getBoundingClientRect();
-        const screenX = e.clientX - rect.left;
-        const screenY = e.clientY - rect.top;
-        _lastMouseCanvasPos = screenToCanvas(screenX, screenY);
-    });
+        if (arrowPointerId === e.pointerId) {
+            handlePointerMove(e);
+            e.stopImmediatePropagation();
+        } else if (isArrowModeActive && arrowSettings.behindNodes && !e.buttons && !isNodeAtPointer(e)) {
+            handlePointerMove(e);
+        } else {
+            const rect = litegraphCanvas.getBoundingClientRect();
+            _lastMouseCanvasPos = screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
+        }
+    }, true);
+
+    const finishPointer = (e) => {
+        if (arrowPointerId !== e.pointerId) return;
+        arrowPointerId = null;
+        if (e.type === "pointerup") handlePointerUp(e);
+        else handlePointerCancel(e);
+        e.stopImmediatePropagation();
+    };
+    litegraphCanvas.addEventListener("pointerup", finishPointer, true);
+    litegraphCanvas.addEventListener("pointercancel", finishPointer, true);
+    litegraphCanvas.addEventListener("lostpointercapture", finishPointer);
 
     litegraphCanvas.addEventListener("pointerdown", (e) => {
         // 功能被设置开关关闭时不响应（覆盖层已隐藏，正常无箭头可命中，双保险）
         if (!isArrowToolEnabled()) return;
-        // 模式激活时由覆盖层处理，无需在此处理
-        if (isArrowModeActive) return;
+        if (arrowSettings.behindNodes && isNodeAtPointer(e)) return;
+        if (isArrowModeActive) {
+            if (!arrowSettings.behindNodes || arrowPointerId !== null) return;
+            const finishesBezier = e.button === 2 && isDrawing && currentArrow?.type === "bezier";
+            if (e.button !== 0 && !finishesBezier) return;
+            handlePointerDown(e);
+            if (e.button === 0) {
+                arrowPointerId = e.pointerId;
+                litegraphCanvas.setPointerCapture(e.pointerId);
+            }
+            e.stopImmediatePropagation();
+            return;
+        }
 
         const rect = litegraphCanvas.getBoundingClientRect();
         const screenX = e.clientX - rect.left;
@@ -2626,6 +2618,18 @@ function setupLiteGraphArrowClick() {
     }, true); // 使用 capture 阶段确保在 LiteGraph 之前处理
 }
 
+function startShapeDrag(index, pos) {
+    const indices = getSelectedIndices();
+    const center = _getShapeCenter(arrows[index]);
+    _draggingShape = {
+        arrowIndices: indices,
+        refIndex: index,
+        offsetX: pos.x - center.x,
+        offsetY: pos.y - center.y,
+        startCenters: indices.map(i => _getShapeCenter(arrows[i]))
+    };
+}
+
 function handlePointerDown(e) {
     // 右键结束贝塞尔曲线绘制
     if (e.button === 2 && isDrawing && currentArrow?.type === "bezier") {
@@ -2642,7 +2646,7 @@ function handlePointerDown(e) {
     const ctrlHeld = e.ctrlKey || e.metaKey;
 
     // 检查是否点击到已有箭头（贝塞尔打点进行中时跳过命中检测，继续打点）
-    const hitIndex = (bezierDrawStage > 0) ? -1 : hitTestShape(canvasPos.x, canvasPos.y);
+    const hitIndex = (bezierDrawStage > 0) ? -1 : hitTestShape(canvasPos.x, canvasPos.y, isArrowModeActive);
     if (hitIndex >= 0) {
         // Ctrl+点击：切换该形状的选中状态
         if (ctrlHeld) {
@@ -2675,16 +2679,7 @@ function handlePointerDown(e) {
             // 中心手柄：拖拽所有选中的形状
             const centerHit = hitTestShapeCenter(canvasPos.x, canvasPos.y);
             if (centerHit) {
-                const selIndices = getSelectedIndices();
-                const startCenters = selIndices.map(i => _getShapeCenter(arrows[i]));
-                const center = _getShapeCenter(arrows[centerHit.arrowIndex]);
-                _draggingShape = {
-                    arrowIndices: selIndices,
-                    refIndex: centerHit.arrowIndex,
-                    offsetX: canvasPos.x - center.x,
-                    offsetY: canvasPos.y - center.y,
-                    startCenters: startCenters
-                };
+                startShapeDrag(centerHit.arrowIndex, canvasPos);
                 e.preventDefault();
                 return;
             }
@@ -2750,8 +2745,13 @@ function handlePointerDown(e) {
             setPointerEventsMode("auto");
             setCursor("crosshair");
         }
-        // 单选该形状
-        setSingleSelection(hitIndex);
+        if (arrows[hitIndex].type === "rectangle") {
+            if (!isSelected(hitIndex)) setSingleSelection(hitIndex);
+            startShapeDrag(hitIndex, canvasPos);
+            if (e.target === canvasElement) canvasElement.setPointerCapture(e.pointerId);
+        } else {
+            setSingleSelection(hitIndex);
+        }
         renderArrows();
         updateToolbarState();
         updateTransformSliders();
@@ -2789,16 +2789,7 @@ function handlePointerDown(e) {
         }
         const centerHit = hitTestShapeCenter(canvasPos.x, canvasPos.y);
         if (centerHit && isSelected(centerHit.arrowIndex)) {
-            const selIndices = getSelectedIndices();
-            const startCenters = selIndices.map(i => _getShapeCenter(arrows[i]));
-            const center = _getShapeCenter(arrows[centerHit.arrowIndex]);
-            _draggingShape = {
-                arrowIndices: selIndices,
-                refIndex: centerHit.arrowIndex,
-                offsetX: canvasPos.x - center.x,
-                offsetY: canvasPos.y - center.y,
-                startCenters: startCenters
-            };
+            startShapeDrag(centerHit.arrowIndex, canvasPos);
             e.preventDefault();
             return;
         }
@@ -2908,6 +2899,7 @@ function handlePointerDown(e) {
         start: { x: canvasPos.x, y: canvasPos.y },
         end: { x: canvasPos.x, y: canvasPos.y },
         color: arrowSettings.color,
+        fillColor: arrowSettings.fillColor,
         lineWidth: arrowSettings.lineWidth,
         arrowSize: arrowSettings.arrowSize,
         opacity: arrowSettings.opacity,
@@ -2930,9 +2922,7 @@ function handlePointerDown(e) {
     }
     lastPoint = { x: canvasPos.x, y: canvasPos.y };
 
-    if (e.target.setPointerCapture) {
-        e.target.setPointerCapture(e.pointerId);
-    }
+    if (e.target === canvasElement) canvasElement.setPointerCapture(e.pointerId);
     e.preventDefault();
 }
 
@@ -2951,7 +2941,7 @@ function handlePointerMove(e) {
         const w = Math.abs(canvasPos.x - _boxSelectStart.x);
         const h = Math.abs(canvasPos.y - _boxSelectStart.y);
         _boxSelectRect = { x, y, w, h };
-        scheduleRender();
+        renderArrows();
         e.preventDefault();
         return;
     }
@@ -3062,7 +3052,7 @@ function handlePointerMove(e) {
                     last.y = canvasPos.y;
                 }
             }
-            scheduleRender();
+            renderArrows();
         }
         e.preventDefault();
         return;
@@ -3079,7 +3069,7 @@ function handlePointerMove(e) {
             _rotateShape(arrow, _draggingRotation.centerX, _draggingRotation.centerY, targetAngleDeg - prevRotation);
             arrow.rotation = ((targetAngleDeg % 360) + 360) % 360;
             _draggingRotation.startAngle = currentAngle;
-            scheduleRender();
+            renderArrows();
         }
         e.preventDefault();
         return;
@@ -3096,7 +3086,7 @@ function handlePointerMove(e) {
         for (const idx of _draggingShape.arrowIndices) {
             _offsetShape(arrows[idx], dx, dy);
         }
-        scheduleRender();
+        renderArrows();
         e.preventDefault();
         return;
     }
@@ -3140,7 +3130,7 @@ function handlePointerMove(e) {
     }
     lastPoint = { x: canvasPos.x, y: canvasPos.y };
 
-    scheduleRender();
+    renderArrows();
     e.preventDefault();
 }
 
@@ -3253,6 +3243,7 @@ function handlePointerUp(e) {
                 start: { x: currentArrow.start.x, y: currentArrow.start.y },
                 end: { x: currentArrow.end.x, y: currentArrow.end.y },
                 color: currentArrow.color,
+                fillColor: currentArrow.fillColor,
                 lineWidth: currentArrow.lineWidth,
                 arrowSize: currentArrow.arrowSize,
                 opacity: currentArrow.opacity,
@@ -3659,6 +3650,13 @@ function updateTransformSliders() {}
 
 function updateStyleSliders() {
     if (!toolbarElement) return;
+    const fillInput = toolbarElement.querySelector(".xzg-arrow-fill-input");
+    const source = arrows[getFirstSelectedIndex()];
+    if (fillInput) {
+        fillInput.value = source && supportsFill(source)
+            ? (source.fillColor ?? source.color)
+            : (arrowSettings.fillColor ?? arrowSettings.color);
+    }
     const colorInput = toolbarElement.querySelector(".xzg-arrow-color-input");
     const widthSlider = toolbarElement.querySelector(".xzg-arrow-width-slider");
     const widthDisplay = toolbarElement.querySelector(".xzg-arrow-width-value");
@@ -3976,11 +3974,7 @@ function setArrowToolEnabled(v) {
         hideToolbar();
         hideOverlay();
         stopArrowWorkflowPolling();
-        if (_arrowMoveStopTimer) {
-            clearTimeout(_arrowMoveStopTimer);
-            _arrowMoveStopTimer = null;
-        }
-        _arrowCanvasMoving = false;
+        renderArrows();
         setPointerEventsMode("none");
         setCursor("default");
     }
@@ -4037,6 +4031,7 @@ function makeArrowExtraData() {
                 start: { x: a.start.x, y: a.start.y },
                 end: { x: a.end.x, y: a.end.y },
                 color: a.color,
+                ...(a.fillColor != null ? { fillColor: a.fillColor } : {}),
                 lineWidth: a.lineWidth,
                 arrowSize: a.arrowSize,
                 opacity: a.opacity,
@@ -4073,6 +4068,7 @@ function applyArrowExtraData(data) {
             start: { x: a.start.x, y: a.start.y },
             end: { x: a.end.x, y: a.end.y },
             color: a.color || "#FF5555",
+            fillColor: a.fillColor ?? null,
             lineWidth: a.lineWidth || 3,
             arrowSize: a.arrowSize || 10,
             opacity: a.opacity !== undefined ? a.opacity : 1.0,
@@ -4236,7 +4232,7 @@ function arrowFadeInOnce(ms) {
  */
 function scheduleArrowRedrawAfterSwitch() {
     // 与普通节点一致不等待：先隐藏覆盖层清掉上一工作流残留画面，置挂起标记；
-    // 由 patchCanvasArrowRedrawSync 的 onDrawBackground 同帧钩子在新工作流首帧
+    // 由 patchCanvasArrowRedrawSync 的 onRender 同帧钩子在新工作流首帧
     // 用与节点相同的 transform 绘制并立即显示；200ms 兜底防个别场景无重绘导致不显示。
     const el = canvasElement;
     if (el) el.style.opacity = "0";
@@ -4248,15 +4244,11 @@ function scheduleArrowRedrawAfterSwitch() {
     _arrowInstantShowDurMs = isInitial
         ? 0
         : (arrowSettings.fadeInEnabled ? (arrowSettings.fadeInDuration || 1000) : 0);
-    // 首次显示用长宽限期：覆盖刷新后工作流加载/视图适配（fit view / ds 恢复）造成的
-    // transform 跳变，避免“立即显示→隐藏→再渐入”的双重过渡；切换保持短宽限 250ms。
-    _arrowAdaptGraceMs = isInitial ? 2000 : 250;
     _arrowInstantShowPending = true;
     setTimeout(() => {
         if (token !== _arrowSwitchToken) return;   // 已发起新一轮切换，取消本链
         if (!_arrowInstantShowPending) return;     // 同帧钩子已显示过
         _arrowInstantShowPending = false;
-        _arrowInstantShownAt = Date.now();
         renderArrows();
         arrowFadeInOnce(_arrowInstantShowDurMs);
     }, 200);
@@ -4522,31 +4514,7 @@ function setupPersistence() {
                 if (this._arrowWorkflow && arrows.length > 0) {
                     // 确保箭头已写入 graph.extra
                     if (!this.extra) this.extra = {};
-                    this.extra[EXTENSION_KEY] = {
-                        version: 3,
-                        arrows: arrows.map(a => {
-                            const obj = {
-                                start: { x: a.start.x, y: a.start.y },
-                                end: { x: a.end.x, y: a.end.y },
-                                color: a.color,
-                                lineWidth: a.lineWidth,
-                                arrowSize: a.arrowSize,
-                                opacity: a.opacity,
-                                type: a.type || "arrow",
-                                mode: a.mode || "border",
-                                borderRadius: a.borderRadius || 0,
-                                lineStyle: a.lineStyle || "solid",
-                                animType: a.animType || "none",
-                                animSpeed: a.animSpeed !== undefined ? a.animSpeed : 1,
-                                animCount: a.animCount !== undefined ? a.animCount : 5,
-                                animSize: a.animSize !== undefined ? a.animSize : 50
-                            };
-                            if (a.rotation !== undefined) obj.rotation = a.rotation;
-                            if (a.points) obj.points = a.points.map(p => ({ x: p.x, y: p.y }));
-                            if (a.control) obj.control = { x: a.control.x, y: a.control.y };
-                            return obj;
-                        })
-                    };
+                    this.extra[EXTENSION_KEY] = makeArrowExtraData();
                     // 序列化当前图（含箭头）写入旧工作流的 content
                     const serialized = this.serialize();
                     if (serialized) {
@@ -4650,15 +4618,55 @@ async function arrowCloudRestore() {
         const s = await cloudLoad(ARROW_STATE_KEY, { fallbackValue: null });
         if (!s || typeof s !== "object") return;
         const set = (k, v) => { try { localStorage.setItem(k, typeof v === "string" ? v : JSON.stringify(v)); } catch(e) {} };
-        if (s.settings && typeof s.settings === "object") set(STORAGE_SETTINGS_KEY, s.settings);
+        // 本机最后一次修改优先。云端配置用于本机尚无配置时的恢复。
+        if (localStorage.getItem(STORAGE_SETTINGS_KEY) === null) {
+            const settings = typeof s.settings === "string" ? JSON.parse(s.settings) : s.settings;
+            if (settings && typeof settings === "object" && !Array.isArray(settings)) {
+                set(STORAGE_SETTINGS_KEY, settings);
+            }
+        }
         if (s.shortcut && typeof s.shortcut === "object" && s.shortcut.key) set(STORAGE_SHORTCUT_KEY, s.shortcut);
         if (s.position && typeof s.position === "object" && typeof s.position.top === "number" && typeof s.position.left === "number") set(STORAGE_POSITION_KEY, s.position);
         if (s.size && typeof s.size === "object" && typeof s.size.width === "number") set(STORAGE_SIZE_KEY, s.size);
         // 重载内存态
         loadSettings();
         loadShortcut();
-        // 工具栏已打开则直接应用云端位置/尺寸
+        setPointerEventsMode(isArrowModeActive ? "auto" : "none");
+        renderArrows();
+        // 工具栏已创建时同步异步恢复的设置、位置与尺寸。
         if (toolbarElement) {
+            updateStyleSliders();
+            const layerToggle = toolbarElement.querySelector(".xzg-arrow-layer-toggle");
+            if (layerToggle) layerToggle.checked = arrowSettings.behindNodes;
+            for (const [name, enabled] of [
+                ["fadein", arrowSettings.fadeInEnabled],
+                ["deactivate", arrowSettings.deactivateClickSelect]
+            ]) {
+                const toggle = toolbarElement.querySelector(`.xzg-arrow-${name}-toggle`);
+                if (!toggle) continue;
+                toggle.dataset.checked = String(enabled);
+                const track = toggle.querySelector('[class$="-track"]');
+                const thumb = toggle.querySelector('[class$="-thumb"]');
+                if (track) track.style.background = enabled ? "#4CAF50" : "#666666";
+                if (thumb) thumb.style.left = enabled ? "14px" : "2px";
+            }
+            const deactivateState = toolbarElement.querySelector(".xzg-arrow-deactivate-state");
+            if (deactivateState) {
+                deactivateState.textContent = arrowSettings.deactivateClickSelect ? xzgT("开", "ON") : xzgT("关", "OFF");
+                deactivateState.style.color = arrowSettings.deactivateClickSelect ? "#4CAF50" : "#999";
+            }
+            const fadeSlider = toolbarElement.querySelector(".xzg-arrow-fadein-slider");
+            const fadeValue = toolbarElement.querySelector(".xzg-arrow-fadein-value");
+            const fadeOpacity = arrowSettings.fadeInEnabled ? "1" : "0.4";
+            if (fadeSlider) {
+                fadeSlider.value = arrowSettings.fadeInDuration;
+                fadeSlider.style.opacity = fadeOpacity;
+            }
+            if (fadeValue) {
+                fadeValue.textContent = (arrowSettings.fadeInDuration / 1000).toFixed(1) + "s";
+                fadeValue.style.opacity = fadeOpacity;
+            }
+            updateShortcutDisplay();
             if (s.position && typeof s.position.top === "number" && typeof s.position.left === "number") {
                 toolbarElement.style.top = s.position.top + "px";
                 toolbarElement.style.left = s.position.left + "px";
@@ -4679,8 +4687,9 @@ function loadSettings() {
         if (saved) {
             const parsed = JSON.parse(saved);
             if (parsed.color) arrowSettings.color = parsed.color;
+            arrowSettings.fillColor = parsed.fillColor ?? null;
             if (parsed.lineWidth) arrowSettings.lineWidth = parsed.lineWidth;
-            if (parsed.arrowSize) arrowSettings.arrowSize = parsed.arrowSize;
+            if (parsed.arrowSize !== undefined) arrowSettings.arrowSize = parsed.arrowSize;
             if (parsed.opacity !== undefined) arrowSettings.opacity = parsed.opacity;
             if (parsed.shapeType) arrowSettings.shapeType = parsed.shapeType;
             if (parsed.shapeMode) arrowSettings.shapeMode = parsed.shapeMode;
@@ -4695,6 +4704,7 @@ function loadSettings() {
             if (parsed.fadeInDuration !== undefined) arrowSettings.fadeInDuration = parsed.fadeInDuration;
             if (parsed.smoothness !== undefined) arrowSettings.smoothness = parsed.smoothness;
             if (parsed.closed !== undefined) arrowSettings.closed = parsed.closed;
+            arrowSettings.behindNodes = parsed.behindNodes === true;
             if (parsed.deactivateClickSelect !== undefined) arrowSettings.deactivateClickSelect = parsed.deactivateClickSelect;
             if (parsed.pacmanDots !== undefined) arrowSettings.pacmanDots = parsed.pacmanDots;
             if (parsed.pacmanSize !== undefined) arrowSettings.pacmanSize = parsed.pacmanSize;
@@ -4780,6 +4790,9 @@ function resetArrowSettings() {
         }
     };
     updateToggle(".xzg-arrow-fadein-toggle", null, arrowSettings.fadeInEnabled);
+    const layerToggle = toolbarElement.querySelector(".xzg-arrow-layer-toggle");
+    if (layerToggle) layerToggle.checked = arrowSettings.behindNodes;
+    setPointerEventsMode(isArrowModeActive ? "auto" : "none");
     updateToggle(".xzg-arrow-deactivate-toggle", ".xzg-arrow-deactivate-state", arrowSettings.deactivateClickSelect);
     updateToggle(".xzg-arrow-closed-toggle", ".xzg-arrow-closed-state", arrowSettings.closed);
 
@@ -4832,6 +4845,7 @@ function resetArrowSettings() {
         for (const idx of selIndices) {
             const arrow = arrows[idx];
             arrow.color = DEFAULT_ARROW_SETTINGS.color;
+            arrow.fillColor = DEFAULT_ARROW_SETTINGS.fillColor;
             arrow.lineWidth = DEFAULT_ARROW_SETTINGS.lineWidth;
             arrow.arrowSize = DEFAULT_ARROW_SETTINGS.arrowSize;
             arrow.opacity = DEFAULT_ARROW_SETTINGS.opacity;
@@ -4950,6 +4964,7 @@ function showArrowHelp() {
         '<ul>',
         '<li>' + xzgT("快捷键：T（默认），点击标题栏「快捷键」按钮可自定义", 'Shortcut: T (default); click the "Shortcut" button to customize') + '</li>',
         '<li>' + xzgT("点击面板底部「确定」按钮关闭面板", 'Click the "OK" button at the bottom to close the panel') + '</li>',
+        '<li>' + xzgT("重新打开面板或刷新页面后，新绘图沿用上次设置，包括颜色、填充色、透明度、形状、特效和层级等。", "New drawings use your last settings after you reopen the panel or refresh the page, including color, fill color, opacity, shape, effects, and layer.") + '</li>',
         '</ul>',
         '<h4>' + xzgT("绘制形状", "Draw Shapes") + '</h4>',
         '<ul>',
@@ -4962,7 +4977,8 @@ function showArrowHelp() {
         '<h4>' + xzgT("编辑已有绘图", "Edit Existing Drawings") + '</h4>',
         '<ul>',
         '<li>' + xzgT("选中已有绘图，可修改颜色、线宽、透明度、特效等参数，不可修改现有形状，比如将箭头改为矩形", "Select an existing drawing to adjust color, line width, opacity, effects, etc.; shape cannot be changed, e.g. arrow cannot be changed to rectangle") + '</li>',
-        '<li>' + xzgT("选中绘图后，右侧「▣」按钮可将当前参数应用到所有绘图", 'After selecting a drawing, click the "▣" button to apply that parameter to all drawings') + '</li>',
+        '<li>' + xzgT("在面板打开时，按住矩形内部空白处即可拖动矩形。端点和旋转手柄可调整大小和角度。", "With the panel open, drag from inside a rectangle to move it. Use the endpoint and rotation handles to resize or rotate it.") + '</li>',
+        '<li>' + xzgT("点击参数右侧的「▣」可批量应用。颜色适用于所有绘图，填充色适用于矩形、椭圆和圆形，并在填充模式下显示。批量应用其他参数前，先选中一个绘图。", 'Click "▣" beside a setting to apply it in bulk. Color applies to all drawings. Fill color applies to rectangles, ellipses, and circles and appears in Fill mode. Select a drawing first to apply other settings in bulk.') + '</li>',
         '</ul>',
         '<h4>' + xzgT("参数说明", "Parameter Guide") + '</h4>',
         '<ul>',
@@ -4975,6 +4991,7 @@ function showArrowHelp() {
         '<li><b>' + xzgT("线型", "Line") + '</b>：' + xzgT("实线 / 虚线 / 圆点虚线", "Solid / Dashed / Dotted") + '</li>',
         '<li><b>' + xzgT("间距", "Gap") + '</b>：' + xzgT("虚线/圆点的间距倍数", "Dash/dot gap multiplier") + '</li>',
         '<li><b>' + xzgT("特效", "Effect") + '</b>：' + xzgT("动画特效类型及参数（速度、数量、大小、淡入）", "Animation effect type and parameters (speed, count, size, fade-in)") + '</li>',
+        '<li>' + xzgT("开启「层级」后，绘图位于节点下方、编组背景上方。即使面板打开，点击重叠处也会优先操作节点。", "Turn on Layer to place drawings behind nodes and above group backgrounds. Nodes receive clicks where they overlap drawings, even while the panel is open.") + '</li>',
         '<li><b>' + xzgT("钝化激活", "Deactivate") + '</b>：' + xzgT("开启后，只能通过快捷键 T 打开面板后点选绘图内容，无法在画布上直接点选激活", "When enabled, drawings can only be selected after opening the panel via shortcut T; direct canvas click selection is disabled") + '</li>',
         '</ul>',
         '</div>',
@@ -5222,6 +5239,12 @@ function buildToolbarHTML() {
                     <button class="xzg-apply-prop-btn" data-prop="color" title="应用到所有">▣</button>
                 </div>
                 <div class="xzg-arrow-setting-row">
+                    <label class="xzg-arrow-red-label" for="xzg-arrow-fill-input">${xzgT("填充色", "Fill color")}</label>
+                    <input type="color" id="xzg-arrow-fill-input" class="xzg-arrow-fill-input" value="${arrowSettings.fillColor ?? arrowSettings.color}">
+                    <span class="xzg-arrow-color-placeholder"></span>
+                    <button type="button" class="xzg-apply-prop-btn" data-prop="fillColor" title="${xzgT("将填充色应用到所有矩形、椭圆和圆形", "Apply fill color to all rectangles, ellipses, and circles")}">▣</button>
+                </div>
+                <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-red-label">${xzgT("线宽", "Width")}</label>
                     <input type="range" class="xzg-arrow-width-slider xzg-arrow-red-slider" min="1" max="10" value="${arrowSettings.lineWidth}">
                     <span class="xzg-arrow-width-value">${arrowSettings.lineWidth}</span>
@@ -5319,6 +5342,10 @@ function buildToolbarHTML() {
                     <input type="range" class="xzg-arrow-fadein-slider xzg-arrow-copper-slider" style="min-width:0;opacity:${arrowSettings.fadeInEnabled ? '1' : '0.4'};" min="100" max="8000" step="100" value="${arrowSettings.fadeInDuration}">
                     <span class="xzg-arrow-fadein-value" style="min-width:36px;text-align:right;font-size:12px;padding-right:4px;box-sizing:content-box;opacity:${arrowSettings.fadeInEnabled ? '1' : '0.4'};">${(arrowSettings.fadeInDuration / 1000).toFixed(1)}s</span>
                     <button class="xzg-apply-prop-btn" data-prop="fadeInDuration" title="应用到所有">▣</button>
+                </div>
+                <div class="xzg-arrow-setting-row">
+                    <label class="xzg-arrow-copper-label" for="xzg-arrow-layer-toggle" title="${xzgT("开启后，绘图位于节点下方、编组背景上方", "Draw above group backgrounds and behind nodes")}">${xzgT("层级", "Layer")}</label>
+                    <input type="checkbox" id="xzg-arrow-layer-toggle" class="xzg-arrow-layer-toggle" ${arrowSettings.behindNodes ? "checked" : ""}>
                 </div>
                 <div class="xzg-arrow-setting-row">
                     <label class="xzg-arrow-copper-label" style="white-space:nowrap;">${xzgT("钝化激活", "Deactivate")}</label>
@@ -5582,9 +5609,6 @@ function applyToolbarStyles() {
             color: #aaaaaa;
         }
         .xzg-arrow-silver-group {
-            border: 1px solid #C0C0C0;
-            border-radius: 4px;
-            padding: 6px 8px;
             margin-bottom: 8px;
         }
         .xzg-arrow-silver-group .xzg-arrow-setting-row .xzg-arrow-blue-label {
@@ -5687,7 +5711,7 @@ function applyToolbarStyles() {
             padding-right: 4px;
             box-sizing: content-box;
         }
-        .xzg-arrow-color-input {
+        :is(.xzg-arrow-color-input, .xzg-arrow-fill-input) {
             flex: 1;
             height: 24px;
             padding: 0;
@@ -5700,10 +5724,10 @@ function applyToolbarStyles() {
             width: 35px;
             flex-shrink: 0;
         }
-        .xzg-arrow-color-input::-webkit-color-swatch-wrapper {
+        :is(.xzg-arrow-color-input, .xzg-arrow-fill-input)::-webkit-color-swatch-wrapper {
             padding: 2px;
         }
-        .xzg-arrow-color-input::-webkit-color-swatch {
+        :is(.xzg-arrow-color-input, .xzg-arrow-fill-input)::-webkit-color-swatch {
             border-radius: 2px;
             border: none;
         }
@@ -5964,12 +5988,16 @@ function setupToolbarEvents() {
 
     // 颜色选择
     const colorInput = toolbarElement.querySelector(".xzg-arrow-color-input");
+    const fillInput = toolbarElement.querySelector(".xzg-arrow-fill-input");
     colorInput?.addEventListener("input", (e) => {
         arrowSettings.color = e.target.value;
         if (currentArrow) {
             currentArrow.color = e.target.value;
         }
         applyToSelectedArrows("color", e.target.value);
+        const source = arrows[getFirstSelectedIndex()];
+        const fillColor = source && supportsFill(source) ? source.fillColor : arrowSettings.fillColor;
+        if (fillInput && fillColor == null) fillInput.value = e.target.value;
         renderArrows();
         saveSettings();
     });
@@ -5977,6 +6005,19 @@ function setupToolbarEvents() {
         if (hasSelection()) {
             recordState(xzgT("修改箭头颜色", "Change arrow color"));
         }
+    });
+
+    let fillChanged = false;
+    fillInput?.addEventListener("input", (e) => {
+        arrowSettings.fillColor = e.target.value;
+        if (currentArrow && supportsFill(currentArrow)) currentArrow.fillColor = e.target.value;
+        fillChanged = applyToSelectedArrows("fillColor", e.target.value) || fillChanged;
+        renderArrows();
+        saveSettings();
+    });
+    fillInput?.addEventListener("change", () => {
+        if (fillChanged) recordState(xzgT("修改填充色", "Change fill color"));
+        fillChanged = false;
     });
 
     // 线宽滑块
@@ -6287,6 +6328,13 @@ function setupToolbarEvents() {
         saveSettings();
     });
 
+    toolbarElement.querySelector(".xzg-arrow-layer-toggle")?.addEventListener("change", (e) => {
+        arrowSettings.behindNodes = e.currentTarget.checked;
+        setPointerEventsMode(isArrowModeActive ? "auto" : "none");
+        saveSettings();
+        renderArrows();
+    });
+
     // 钝化激活开关
     const deactivateToggle = toolbarElement.querySelector(".xzg-arrow-deactivate-toggle");
     deactivateToggle?.addEventListener("click", (e) => {
@@ -6325,15 +6373,23 @@ function setupToolbarEvents() {
         e.stopPropagation();
         const prop = btn.dataset.prop;
         if (!prop) return;
-        if (!hasSelection()) return;
         const source = arrows[getFirstSelectedIndex()];
-        if (!source || source[prop] === undefined) return;
-        const val = source[prop];
-        for (let i = 0; i < arrows.length; i++) {
-            arrows[i][prop] = val;
+        const val = prop === "fillColor" ? fillInput.value
+            : prop === "color" ? colorInput.value
+            : source?.[prop];
+        if (val === undefined) return;
+        let changed = false;
+        for (const shape of arrows) {
+            if (prop === "fillColor" && !supportsFill(shape)) continue;
+            if (shape[prop] === val) continue;
+            shape[prop] = val;
+            changed = true;
         }
+        if (!changed) return;
+        recordState(xzgT("应用参数到所有绘图", "Apply parameter to all drawings"));
+        syncArrowsToExtra();
+        updateStyleSliders();
         renderArrows();
-        recordState(xzgT("应用" + prop, "Apply " + prop));
     });
 
     // 清除按钮
@@ -6656,70 +6712,38 @@ function initializeArrowSystem(litegraphCanvas) {
 // 全局 API：供编组拖动时移动箭头
 // ============================================================================
 
-/**
- * 让箭头在画布每次重绘后同步绘制一遍：
- * 箭头覆盖层使用与节点完全相同的当前变换，切换/缩放/平移的动画过程中二者逐帧对齐，
- * 从根本上消除“残影”“错位→移动”。仅在画布真正重绘（脏帧）时才会触发，空闲不额外开销。
- */
-let _arrowCanvasSyncInstalled = false;
-
-// 只在 ComfyUI 已经决定重绘画布时检查变换；静止时不会额外创建 rAF 循环。
-function handleArrowCanvasTransform() {
-    if (!isArrowToolEnabled() || !canvasElement) return;
-    const transform = getTransform();
-    const transformStr = `${transform.scale},${transform.offsetX},${transform.offsetY}`;
-    if (transformStr === _arrowLastTransformStr) return;
-    _arrowLastTransformStr = transformStr;
-
-    if (!arrowSettings.fadeInEnabled) return;
-    // 首帧同绘显示后的视图适配不触发隐藏/渐入，避免双重过渡。
-    if (Date.now() - _arrowInstantShownAt < _arrowAdaptGraceMs) {
-        _arrowCanvasMoving = false;
-        if (_arrowMoveStopTimer) {
-            clearTimeout(_arrowMoveStopTimer);
-            _arrowMoveStopTimer = null;
-        }
-        return;
-    }
-    if (!_arrowCanvasMoving) {
-        _arrowCanvasMoving = true;
-        canvasElement.style.transition = "opacity 0s";
-        canvasElement.style.opacity = "0";
-    }
-    if (_arrowMoveStopTimer) clearTimeout(_arrowMoveStopTimer);
-    _arrowMoveStopTimer = setTimeout(() => {
-        _arrowCanvasMoving = false;
-        _arrowMoveStopTimer = null;
-        const fadeDur = (arrowSettings.fadeInDuration || 1000) / 1000;
-        if (!isArrowToolEnabled() || !canvasElement) return;
-        canvasElement.style.transition = `opacity ${fadeDur}s ease`;
-        canvasElement.style.opacity = "1";
-    }, 150);
-}
-
 function patchCanvasArrowRedrawSync() {
-    const cv = window.app?.canvas || window.LiteGraph?.LGraphCanvas?.active_canvas;
-    if (!cv) { setTimeout(patchCanvasArrowRedrawSync, 200); return; }
-    if (_arrowCanvasSyncInstalled) return;
-    _arrowCanvasSyncInstalled = true;
-    const orig = cv.onDrawBackground;
-    cv.onDrawBackground = function () {
-        try { if (typeof orig === "function") orig.apply(this, arguments); } catch (e) {}
-        // 新工作流已开始绘制、但箭头状态还没完成提交时，跳过旧 arrows，防止串帧闪现。
+    const cv = app.canvas;
+    const onRender = cv.onRender;
+    cv.onRender = function (canvas, ctx) {
+        onRender?.apply(this, arguments);
+        if (!isArrowToolEnabled() || overlayElement.style.display === "none") return;
+
+        clearCanvas();
         if (shouldSuppressStaleArrowFrame()) return;
-        try { handleArrowCanvasTransform(); } catch (e) {}
-        // 每次画布重绘都同步绘制箭头（与节点同一帧、同一 transform）
-        try { renderArrows(); } catch (e) {}
-        // 切换 tab/新建后：新工作流首帧已与节点同帧同 transform 绘制完成 → 立即显示覆盖层
+        if (_arrowInstantShowPending) {
+            _arrowInstantShowPending = false;
+            arrowFadeInOnce(_arrowInstantShowDurMs);
+        }
+
+        // onRender 位于背景合成后、节点绘制前。两个层级都使用节点即将应用的变换。
+        ctx.save();
         try {
-            if (_arrowInstantShowPending) {
-                _arrowInstantShowPending = false;
-                _arrowInstantShownAt = Date.now();
-                // 显示时长由 scheduleArrowRedrawAfterSwitch 按场景预先决定：
-                // 刷新浏览器后的首次显示=0（立即出现，不渐入）；后续切换=跟随渐入设置
-                arrowFadeInOnce(_arrowInstantShowDurMs);
+            this.ds.toCanvasContext(ctx);
+            if (arrowSettings.behindNodes) {
+                drawArrowShapes(ctx);
+            } else {
+                canvasContext.setTransform(ctx.getTransform());
+                drawArrowShapes(canvasContext);
             }
-        } catch (e) {}
+        } finally {
+            ctx.restore();
+        }
+        if (isArrowModeActive) {
+            const { width, height, dpr } = getCanvasDimensions();
+            canvasContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+            drawModeIndicator(canvasContext, width, height);
+        }
     };
 }
 

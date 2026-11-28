@@ -37,6 +37,7 @@ const XZGGroup = {
     _groupCloudStarted: false,
     groups: {},       // groupId → {id, title, nodeIds, bypassed, bounds, fontSize}
     groupEls: {},
+    _groupsWithRunButton: new WeakSet(),
     overlay: null,
     canvasMoveHideActive: false,
     fadeOutDuration: 0,
@@ -591,7 +592,7 @@ const XZGGroup = {
             if (!btn) continue;
             const gid = el.dataset.groupId;
             const g = gid ? this.groups?.[gid] : null;
-            const btnEnabled = gid ? this.groups?.[gid]?.runBtnEnabled !== false : true;
+            const btnEnabled = this._groupsWithRunButton.has(g);
             const r = el.getBoundingClientRect();
             const hovered = btnEnabled && !g?.bypassed && onCanvas && r.width > 0 && r.height > 0 &&
                 x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
@@ -1022,7 +1023,7 @@ const XZGGroup = {
             if (runBtn) {
                 const left = (b.x + ox) * scale;
                 const top = (b.y + oy) * scale - extraTop;
-                const hovered = g.runBtnEnabled !== false && !g.bypassed && mouseOnCanvas && mouseX >= left && mouseX <= left + b.w * scale &&
+                const hovered = this._groupsWithRunButton.has(g) && !g.bypassed && mouseOnCanvas && mouseX >= left && mouseX <= left + b.w * scale &&
                     mouseY >= top && mouseY <= top + b.h * scale + extraTop;
                 runBtn.style.visibility = hovered ? 'visible' : 'hidden';
                 runBtn.style.opacity = hovered ? '0.5' : '0';
@@ -1980,6 +1981,7 @@ const XZGGroup = {
     openSettings(group) {
         const self = this;
         const gid = group.id;
+        const runButtonWasEnabled = this._groupsWithRunButton.has(group);
 
         // 保存快照，防止取消后仍未还原
         const _snapshot = {
@@ -1994,6 +1996,8 @@ const XZGGroup = {
             headerHidden: group.headerHidden
         };
         const revertSnapshot = () => {
+            if (runButtonWasEnabled) this._groupsWithRunButton.add(group);
+            else this._groupsWithRunButton.delete(group);
             Object.assign(group, {
                 title: _snapshot.title,
                 fontSize: _snapshot.fontSize,
@@ -2058,11 +2062,11 @@ const XZGGroup = {
                     </button>
                     <span style="flex:1;min-width:6px;"></span>
                     <span style="color:#fff;font-size:12px;flex-shrink:0;white-space:nowrap;">悬浮执行按钮</span>
-                    <button type="button" class="xzg-set-runbtn-toggle" data-checked="${group.runBtnEnabled !== false ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 4px;background:transparent;border:none;cursor:pointer;" title="鼠标移入编组时是否显示右上角悬浮执行按钮">
-                        <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${group.runBtnEnabled !== false ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
-                            <span class="xzg-fade-toggle-thumb" style="position:absolute;left:${group.runBtnEnabled !== false ? '14px' : '2px'};top:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.2s;"></span>
+                    <button type="button" class="xzg-set-runbtn-toggle" data-checked="${runButtonWasEnabled ? 'true' : 'false'}" style="flex-shrink:0;display:flex;align-items:center;gap:6px;height:20px;padding:0 4px;background:transparent;border:none;cursor:pointer;" title="鼠标移入编组时是否显示右上角悬浮执行按钮">
+                        <span class="xzg-fade-toggle-track" style="width:32px;height:20px;border-radius:10px;background:${runButtonWasEnabled ? '#dcc85b' : '#a855f7'};position:relative;transition:background 0.2s;">
+                            <span class="xzg-fade-toggle-thumb" style="position:absolute;left:${runButtonWasEnabled ? '14px' : '2px'};top:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left 0.2s;"></span>
                         </span>
-                        <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${group.runBtnEnabled !== false ? '#FFD700' : '#777'};min-width:20px;">${group.runBtnEnabled !== false ? '开' : '关'}</span>
+                        <span class="xzg-fade-toggle-label" style="font-size:12px;font-weight:bold;color:${runButtonWasEnabled ? '#FFD700' : '#777'};min-width:20px;">${runButtonWasEnabled ? '开' : '关'}</span>
                     </button>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;height:24px;margin-bottom:6px;">
@@ -2337,7 +2341,8 @@ const XZGGroup = {
                 const next = !isOn;
                 updateRunBtnToggle(next);
                 // 实时预览：立即应用并刷新编组，无需关闭弹窗
-                group.runBtnEnabled = next;
+                if (next) this._groupsWithRunButton.add(group);
+                else this._groupsWithRunButton.delete(group);
                 app.canvas?.setDirty?.(true, true);
             });
         }
@@ -2525,7 +2530,6 @@ const XZGGroup = {
             targetGroup.titleColor = titleColorPicker.value || '#FFD700';
             targetGroup.fadeEnabled = fadeToggle.dataset.checked === 'true';
             if (headerHiddenToggle) targetGroup.headerHidden = headerHiddenToggle.dataset.checked === 'true';
-            if (runBtnToggle) targetGroup.runBtnEnabled = runBtnToggle.dataset.checked === 'true';
             targetGroup.fadeInDuration = parseInt(fadeDurR.value) || 1000;
             if (targetGroup.fadeOutDuration === undefined) targetGroup.fadeOutDuration = 0;
 
@@ -2646,7 +2650,7 @@ Ctrl+拖拽编组标题栏或边框：仅移动框体，框内节点不跟随<br
 点击标题栏 🔒 锁图标：锁定/解锁当前编组（锁定后无法拖动和调整大小）<br>
 Ctrl+鼠标左键 点击锁图标：一键锁定/解锁所有编组<br>
 <div style="color:#FFD700;font-weight:bold;margin-top:6px;">4、执行框内节点</div>
-按键盘 F 键，或鼠标移入编组后点击内部右上角的悬浮执行按钮：执行当前编组框内的所有节点`;
+按 F 执行当前编组框内的所有节点。在编组设置中开启「悬浮执行按钮」后，鼠标移入编组时也可点击右上角的按钮执行。新建或重新打开工作流时，悬浮按钮默认关闭。`;
             overlay.appendChild(box);
             document.body.appendChild(overlay);
             overlay.addEventListener('click', () => overlay.remove());

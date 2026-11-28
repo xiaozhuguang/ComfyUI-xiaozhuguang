@@ -33,8 +33,8 @@ class XiaozhuguangATBC:
                 "fill_color": ("STRING", {"default": "#FFFFFF", "tooltip": "边界超出时的填充颜色，支持hex格式(#FFFFFF/#FFF)或颜色名称(red/blue/green等)"}),
                 "sum_mask": ("BOOLEAN", {"default": False, "tooltip": "合并当前批次的全部遮罩，锁定原画面上的裁剪位置和大小。各帧输出各自的遮罩。"}),
                 "margin_percent": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0, "tooltip": "按遮罩外接框短边计算四边相同的像素边距，0关闭。自动比例以加边后的框确定宽高比，固定比例可能在某个方向额外留边。"}),
-                "position_smoothing_frames": ("INT", {"default": 21, "min": 1, "max": 240, "step": 1, "tooltip": "位置平滑的帧数，1关闭。数值越大，裁剪中心移动越平缓。"}),
-                "scale_smoothing_frames": ("INT", {"default": 51, "min": 1, "max": 240, "step": 1, "tooltip": "缩放平滑的帧数，1关闭。数值越大，裁剪框大小变化越平缓。"}),
+                "position_smoothing_frames": ("INT", {"default": 21, "min": 1, "max": 240, "step": 1, "tooltip": "位置平滑的帧数，1关闭。平滑裁剪中心，也平滑人脸构图输出遮罩的中心。"}),
+                "scale_smoothing_frames": ("INT", {"default": 51, "min": 1, "max": 240, "step": 1, "tooltip": "缩放平滑的帧数，1关闭。平滑裁剪框大小，也平滑人脸构图输出遮罩的宽高。"}),
             }
         }
 
@@ -360,7 +360,7 @@ class XiaozhuguangATBC:
     @staticmethod
     def _face_tracking_boxes(raw, valid, n, ar, factor, margin_percent, min_margin,
                              position_smoothing, scale_smoothing):
-        from scipy.ndimage import gaussian_filter1d, median_filter
+        from scipy.ndimage import gaussian_filter1d, maximum_filter1d, median_filter
 
         frames = np.arange(n)
         centers = (raw[:, :2] + raw[:, 2:]) / 2
@@ -372,11 +372,10 @@ class XiaozhuguangATBC:
             trajectory = median_filter(trajectory, size=3, mode="nearest")
             return gaussian_filter1d(trajectory, sigma=sigma, mode="nearest")
 
-        center_path = np.column_stack([smooth(axis, position_smoothing) for axis in centers.T])
+        center_path = np.column_stack([np.interp(frames, valid, axis) for axis in centers.T])
         desired_height = np.exp(smooth(np.log(heights), scale_smoothing)) * factor
 
-        # Use the smoothed geometry for context too. Constraining it to every
-        # raw detection would reintroduce jitter when the crop is tight.
+        # Use the smoothed geometry for the desired framing.
         widths = raw[:, 2] - raw[:, 0]
         face_width = np.exp(smooth(np.log(widths), scale_smoothing))
         face_height = desired_height / factor
@@ -386,6 +385,40 @@ class XiaozhuguangATBC:
         crop_height = np.maximum.reduce([
             desired_height, face_height + 2 * margin, (face_width + 2 * margin) / ratio
         ])
+        if position_smoothing > 0:
+            # Spend part of the available crop context on holding the camera
+            # still. Only subject movement beyond that room moves the target.
+            subject_size = np.column_stack([face_width, face_height])
+            crop_size = crop_height[:, None] * np.array([ratio, 1])
+            room = np.minimum(subject_size * 0.05, np.maximum(0, crop_size - subject_size) / 4)
+            center_path = median_filter(center_path, size=(3, 1), mode="nearest")
+            for i in range(1, n):
+                center = center_path[i]
+                center_path[i] = np.clip(center_path[i - 1], center - room[i], center + room[i])
+            center_path = gaussian_filter1d(center_path, position_smoothing, axis=0, mode="nearest")
+        # Leave room around the smoothed center before the final containment
+        # check. Otherwise a tight crop gets pushed towards each raw detection.
+        half_extent = np.maximum(center_path[valid] - raw[:, :2], raw[:, 2:] - center_path[valid])
+        required = 2 * np.maximum(half_extent[:, 0] / ratio, half_extent[:, 1])
+        extra = np.zeros(n)
+        extra[valid] = np.maximum(0, required - crop_height[valid])
+        # Large detections still use the per-frame fit without zooming nearby frames.
+        extra[extra > crop_height * 0.25] = 0
+        if scale_smoothing > 0 and np.any(extra):
+            radius = math.ceil(2 * scale_smoothing)
+            envelope = maximum_filter1d(extra, size=2 * radius + 1, mode="nearest")
+            extra = np.maximum(extra, gaussian_filter1d(envelope, scale_smoothing, mode="nearest"))
+        crop_height += extra
+        if scale_smoothing > 0:
+            # A nearly static subject can still make the crop breathe when its
+            # rasterized outline changes size by a pixel or two.
+            lower_bound = np.zeros(n)
+            lower_bound[valid] = np.minimum(required, crop_height[valid])
+            tolerance = np.minimum(2.0, crop_height * 0.02)
+            for i in range(1, n):
+                height = crop_height[i]
+                crop_height[i] = np.clip(
+                    crop_height[i - 1], max(lower_bound[i], height - tolerance[i]), height + tolerance[i])
         sizes = np.column_stack([crop_height * ratio, crop_height])
         starts = center_path - sizes / 2
         return [tuple(box) for box in np.column_stack([starts, starts + sizes])]
@@ -518,6 +551,68 @@ class XiaozhuguangATBC:
         cropped_mask[~inside] = 0
         return cropped, cropped_mask
 
+    @staticmethod
+    def _smooth_cropped_masks(masks, infos, position_sigma, scale_sigma):
+        from scipy.ndimage import gaussian_filter1d
+
+        def edges(profile):
+            indices = np.flatnonzero(profile > 0.5)
+            if not indices.size:
+                return None
+            left, right = indices[0], indices[-1]
+            low = (left - 0.5 if left == 0 else
+                   left - (profile[left] - 0.5) / (profile[left] - profile[left - 1]))
+            high = (right + 0.5 if right == len(profile) - 1 else
+                    right + (profile[right] - 0.5) / (profile[right] - profile[right + 1]))
+            return low, high
+
+        def box(mask, info):
+            if any(info["pad_info"]):
+                return None
+            horizontal, vertical = edges(mask.max(axis=0)), edges(mask.max(axis=1))
+            if horizontal is None or vertical is None:
+                return None
+            return horizontal[0], vertical[0], horizontal[1], vertical[1]
+
+        def settle(values, sigma, tolerance, offset=0):
+            if sigma <= 0:
+                return values
+            path = gaussian_filter1d(values, sigma, axis=0, mode="nearest")
+            path[0] = np.round(path[0] - offset) + offset
+            for i in range(1, len(path)):
+                target = path[i]
+                candidate = np.round(target - offset) + offset
+                path[i] = np.where(np.abs(target - path[i - 1]) <= tolerance,
+                                   path[i - 1], candidate)
+            return path
+
+        boxes = [box(mask, info) for mask, info in zip(masks, infos)]
+        active = np.array([box is not None for box in boxes])
+        boundaries = np.flatnonzero(np.diff(active, prepend=False, append=False))
+        for start, end in zip(boundaries[::2], boundaries[1::2]):
+            if end - start < 2:
+                continue
+            bounds = np.asarray(boxes[start:end], dtype=float)
+            centers = (bounds[:, :2] + bounds[:, 2:]) / 2
+            sizes = bounds[:, 2:] - bounds[:, :2]
+            target_sizes = settle(sizes, scale_sigma, 2.0)
+            if scale_sigma > 0:
+                target_sizes = np.maximum(1, target_sizes)
+            offsets = (target_sizes - 1) / 2
+            if position_sigma > 0 and scale_sigma > 0:
+                target_centers = settle(centers - offsets, position_sigma, 1.25) + offsets
+            else:
+                target_centers = settle(centers, position_sigma, 1.25)
+            scales = sizes / target_sizes
+            for i, (center, target, scale) in enumerate(zip(centers, target_centers, scales), start):
+                offset = center - target * scale
+                if np.allclose(scale, 1) and np.allclose(offset, 0, atol=1e-6):
+                    continue
+                mask = masks[i]
+                matrix = np.array([[scale[0], 0, offset[0]], [0, scale[1], offset[1]]])
+                masks[i] = cv2.warpAffine(mask, matrix, (mask.shape[1], mask.shape[0]),
+                                          flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR)
+
     def _tracked_crop_and_resize(self, image, mask, factor, pixels, ratio, preference, scaling,
                                  kilopixels, divisible_by, fill_color, alignment_mode="扩充", min_margin=30,
                                  face_composition=False, margin_percent=None,
@@ -631,8 +726,13 @@ class XiaozhuguangATBC:
             infos[-1]["min_margin"] = margins[i] if subject is not None else min_margin
             if "output_valid_box" in valid_info:
                 infos[-1].update({key: valid_info[key] for key in ("source_valid_box", "output_valid_box")})
-            outputs.append(torch.from_numpy(canvas)); output_masks.append(torch.from_numpy(canvas_mask))
-        return torch.stack(outputs), {"batch_size": n, "crop_infos": infos}, torch.stack(output_masks)
+            outputs.append(torch.from_numpy(canvas))
+            output_masks.append(canvas_mask)
+        if face_composition and n >= 2 and (face_position_smoothing > 0 or face_scale_smoothing > 0):
+            self._smooth_cropped_masks(output_masks, infos, face_position_smoothing, face_scale_smoothing)
+        for cropped_mask in output_masks:
+            cropped_mask[...] = cropped_mask >= 0.5
+        return torch.stack(outputs), {"batch_size": n, "crop_infos": infos}, torch.from_numpy(np.stack(output_masks))
 
     @staticmethod
     def _normalize_mask_input(mask):
@@ -884,7 +984,7 @@ class XiaozhuguangATBC:
                 output_masks = padded_masks
 
         output_image = torch.from_numpy(np.stack(output_images, axis=0))
-        output_mask = torch.from_numpy(np.stack(output_masks, axis=0))
+        output_mask = torch.from_numpy(np.stack(output_masks, axis=0)).ge_(0.5)
 
         crop_info_batch = {
             "batch_size": batch_size,

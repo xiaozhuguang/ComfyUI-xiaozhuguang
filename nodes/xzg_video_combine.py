@@ -651,7 +651,7 @@ class XiaozhuguangVideoCombine:
             subfolder = os.path.normpath(os.path.join(subfolder_extra, subfolder)) if subfolder else subfolder_extra
 
         extension = VIDEO_FORMATS[格式]["extension"]
-        file, matcher = next_video_filename(full_output_folder, filename, extension)
+        file, _ = next_video_filename(full_output_folder, filename, extension)
         file_path = os.path.join(full_output_folder, file)
 
         export_to_video(
@@ -666,22 +666,7 @@ class XiaozhuguangVideoCombine:
         if save_workflow:
             _embed_video_workflow(file_path, 格式, prompt, extra_pnginfo)
 
-        # 预览模式：清理本子目录内的旧同前缀文件（只保留最新），避免累积。
-        # 每次真实重跑都会因计数器递增而生成新文件名 → 前端 key 变化 → 触发重载刷新预览；
-        # 输入未变时节点不会被重跑，文件保持不变 → 前端判定未变化不再读条（保持惰性）。
-        if not is_save:
-            try:
-                for old_name in os.listdir(full_output_folder):
-                    if old_name == file:
-                        continue
-                    if matcher.fullmatch(old_name):
-                        try:
-                            os.remove(os.path.join(full_output_folder, old_name))
-                        except OSError:
-                            pass
-            except Exception:
-                pass
-
+        # 粘贴的保存节点仍引用当时的预览文件，重跑后也需要用它做对比。
         ui = {
             "result": (),
             "ui": {
